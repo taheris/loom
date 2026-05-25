@@ -118,10 +118,7 @@ async fn parallel_creates_worktrees() -> Result<()> {
             bead.id,
         );
         assert_eq!(slot.worktree.path, expected_path);
-        assert_eq!(
-            slot.worktree.branch,
-            format!("loom/harness/{}", bead.id)
-        );
+        assert_eq!(slot.worktree.branch, format!("loom/harness/{}", bead.id));
         assert_eq!(slot.bead.id, bead.id);
     }
 
@@ -345,6 +342,70 @@ async fn parallel_conflict_preserves_worktree() -> Result<()> {
         branches,
     );
 
+    Ok(())
+}
+
+/// Spec contract: `merge_back` runs sequentially — the output
+/// `BatchResult` vector preserves the input `BatchSlot` order. The spec
+/// pins this as the mitigation for index-lock contention ("single-threaded
+/// merge avoids index lock races"); a future refactor to `JoinSet` /
+/// `join_all` would scramble the order, so a stable-order assertion is a
+/// direct behavioural fence against accidental parallelism.
+#[tokio::test]
+async fn merge_back_preserves_input_slot_order() -> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("harness");
+    // Use bead ids that sort differently lexically and numerically so a
+    // scrambling re-order would be observable on either axis.
+    let beads = vec![
+        fake_bead("wx-zeta"),
+        fake_bead("wx-alpha"),
+        fake_bead("wx-mu"),
+        fake_bead("wx-beta"),
+    ];
+
+    let slots = create_worktrees(&client, &label, beads.clone()).await?;
+
+    // Mark each worktree with a unique commit so merges are real, not
+    // empty-tree no-ops.
+    for slot in &slots {
+        let file = format!("{}.txt", slot.bead.id);
+        std::fs::write(slot.worktree.path.join(&file), b"work\n")?;
+        git(&slot.worktree.path, &["add", &file])?;
+        git(
+            &slot.worktree.path,
+            &["commit", "-q", "-m", &format!("work {}", slot.bead.id)],
+        )?;
+    }
+
+    let batch_slots: Vec<BatchSlot> = slots
+        .iter()
+        .map(|w| BatchSlot {
+            bead: w.bead.clone(),
+            worktree: w.worktree.clone(),
+            outcome: AgentOutcome::Success,
+        })
+        .collect();
+
+    let outcome = merge_back(&client, batch_slots).await?;
+    let observed: Vec<&str> = outcome
+        .results
+        .iter()
+        .map(|r| match r {
+            BatchResult::Merged { bead } => bead.as_str(),
+            BatchResult::Conflict { bead, .. } => bead.as_str(),
+            BatchResult::AgentFailed { bead, .. } => bead.as_str(),
+            BatchResult::AgentBlocked { bead, .. } => bead.as_str(),
+            BatchResult::AgentClarify { bead, .. } => bead.as_str(),
+        })
+        .collect();
+    let expected: Vec<&str> = beads.iter().map(|b| b.id.as_str()).collect();
+    assert_eq!(
+        observed, expected,
+        "merge_back must produce results in input order — parallel dispatch \
+         would scramble them and race the git index",
+    );
     Ok(())
 }
 
