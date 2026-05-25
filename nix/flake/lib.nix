@@ -19,6 +19,24 @@ in
       loomLib.mkLoom {
         inherit pkgs crane fenix toolchain src;
       };
+
+    # Build per-profile container images with loom bundled in by default.
+    # `pkgs` is required so loom can be built from loom's own flake inputs;
+    # pass `loomBin` to override with a specific build.
+    mkProfileManifest =
+      {
+        pkgs,
+        wrapixLib,
+        profiles ? { inherit (wrapixLib.profiles) base rust python; },
+        loomBin ? (loomLib.mkLoom { inherit pkgs crane fenix toolchain src; }).bin,
+        crane ? inputs.crane,
+        fenix ? inputs.fenix,
+        toolchain ? null,
+        src ? loomSrc,
+      }:
+      loomLib.mkProfileManifest {
+        inherit wrapixLib profiles loomBin;
+      };
   };
 
   perSystem =
@@ -45,20 +63,29 @@ in
         sha256 = rustToolchainSha256;
       };
 
-      sandbox = wrapixLib.mkSandbox { profile = rustProfile; };
-
-      debugSandbox = wrapixLib.mkSandbox {
-        profile = rustProfile;
-        packages = [ pkgs.podman ];
-      };
-
-      profileManifest = loomLib.mkProfileManifest { inherit wrapixLib; };
-
       loom = loomLib.mkLoom {
         inherit pkgs;
         inherit (inputs) crane fenix;
         toolchain = rustToolchain;
         src = loomSrc;
+      };
+
+      sandbox = wrapixLib.mkSandbox {
+        profile = rustProfile;
+        packages = [ loom.bin ];
+      };
+
+      debugSandbox = wrapixLib.mkSandbox {
+        profile = rustProfile;
+        packages = [
+          loom.bin
+          pkgs.podman
+        ];
+      };
+
+      profileManifest = loomLib.mkProfileManifest {
+        inherit wrapixLib;
+        loomBin = loom.bin;
       };
 
       loomBin = loomLib.mkLoomBin {

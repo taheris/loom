@@ -2,6 +2,7 @@
 # callable from non-flake contexts via `import ./nix/lib.nix`.
 
 let
+  inherit (builtins) mapAttrs;
   workspaceBuilder = import ./workspace.nix;
 in
 {
@@ -12,17 +13,25 @@ in
   # Build a `profile-images.json` derivation for the given profile set,
   # suitable for `export LOOM_PROFILES_MANIFEST=...`. `profiles` is an attrset
   # of wrapix profile definitions; default covers the three wrapix ships out
-  # of the box.
+  # of the box. `loomBin` is the loom binary to thread into every sandbox's
+  # package set — required, so the in-container PATH always carries `loom`.
+  # Callers without a pre-built loom should use `flake.lib.mkProfileManifest`
+  # (the flake-level override), which auto-builds loom from the loom flake's
+  # inputs.
   mkProfileManifest =
     {
       wrapixLib,
+      loomBin,
       profiles ? { inherit (wrapixLib.profiles) base rust python; },
     }:
     let
-      sandboxes = builtins.mapAttrs (
-        _: profile: wrapixLib.mkSandbox { inherit profile; }
+      sandboxes = mapAttrs (
+        _: profile: wrapixLib.mkSandbox {
+          inherit profile;
+          packages = [ loomBin ];
+        }
       ) profiles;
-      images = builtins.mapAttrs (_: s: s.image) sandboxes;
+      images = mapAttrs (_: s: s.image) sandboxes;
     in
     wrapixLib.mkProfileImages images;
 
