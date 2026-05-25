@@ -921,4 +921,46 @@ mod tests {
             "driver aborted instead of treating set_thinking_level rejection as advisory"
         );
     }
+
+    // -- command struct serialization -------------------------------------
+
+    /// `get_commands` body serializes with the two documented fields
+    /// (`type` discriminator, request `id`). The startup probe sends this
+    /// over stdin; a rename here would silently break pi's classification
+    /// of the probe request as a command rather than a stray event.
+    #[test]
+    fn get_commands_command_serializes_to_expected_shape() {
+        let cmd = GetCommandsCommand {
+            kind: "get_commands",
+            id: PROBE_REQUEST_ID,
+        };
+        let json = serde_json::to_string(&cmd).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["type"], "get_commands");
+        assert_eq!(v["id"], PROBE_REQUEST_ID);
+    }
+
+    /// `set_model` body serializes with all four documented fields,
+    /// including the `modelId` camelCase rename. Pi rejects unknown
+    /// fields silently for this command, so a missed rename would
+    /// produce a no-op handshake that the driver mistakes for success.
+    #[test]
+    fn set_model_command_serializes_to_expected_shape() {
+        let cmd = SetModelCommand {
+            kind: "set_model",
+            id: SET_MODEL_REQUEST_ID,
+            provider: "deepseek",
+            model_id: "deepseek-v3",
+        };
+        let json = serde_json::to_string(&cmd).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["type"], "set_model");
+        assert_eq!(v["id"], SET_MODEL_REQUEST_ID);
+        assert_eq!(v["provider"], "deepseek");
+        assert_eq!(v["modelId"], "deepseek-v3");
+        assert!(
+            v.get("model_id").is_none(),
+            "snake_case must not appear on the wire — pi expects camelCase modelId"
+        );
+    }
 }

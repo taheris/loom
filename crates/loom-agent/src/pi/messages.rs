@@ -387,4 +387,300 @@ mod tests {
         assert_eq!(v["id"], "loom-pi-set-thinking-level");
         assert_eq!(v["level"], "high");
     }
+
+    /// Two-phase classification: a `response` envelope populates BOTH
+    /// `msg_type` and `id`. Loom's parser inspects this pair before
+    /// re-deserializing into the concrete type; if pi renamed either field
+    /// the classification path would silently misroute the line.
+    #[test]
+    fn pi_envelope_response_line_populates_msg_type_and_id() {
+        let line = r#"{"type":"response","id":"r-7","command":"prompt","success":true}"#;
+        let env: PiEnvelope = serde_json::from_str(line).expect("parse envelope");
+        assert_eq!(env.msg_type.as_deref(), Some("response"));
+        assert_eq!(env.id.as_ref().map(RequestId::as_str), Some("r-7"));
+    }
+
+    /// Two-phase classification: an event envelope populates `msg_type` but
+    /// leaves `id` as `None`. Loom uses id-absence to fall through to the
+    /// event branch, so a stray `id` on an event would misclassify it as
+    /// an unknown response.
+    #[test]
+    fn pi_envelope_event_line_omits_id() {
+        let line = r#"{"type":"turn_start","extra":1}"#;
+        let env: PiEnvelope = serde_json::from_str(line).expect("parse envelope");
+        assert_eq!(env.msg_type.as_deref(), Some("turn_start"));
+        assert!(env.id.is_none());
+    }
+
+    /// Envelope tolerates a missing `type` field — the parser then falls
+    /// through to `UnknownMessageType`. Field-level pin: `msg_type` must
+    /// be `Option<String>`, not `String`, to round-trip the pathological
+    /// shape.
+    #[test]
+    fn pi_envelope_without_type_field_yields_none_msg_type() {
+        let line = r#"{"id":"x"}"#;
+        let env: PiEnvelope = serde_json::from_str(line).expect("parse envelope");
+        assert!(env.msg_type.is_none());
+        assert_eq!(env.id.as_ref().map(RequestId::as_str), Some("x"));
+    }
+
+    /// `ExtensionUiResponse` (the auto-cancel reply pi expects when an
+    /// extension blocks the agent) serializes with every field on the
+    /// wire: `type`, `id`, `cancelled`. Pin each field so a rename or
+    /// missed serialization on the host side fails this test before pi
+    /// silently hangs waiting for a reply.
+    #[test]
+    fn extension_ui_response_serializes_with_all_fields() {
+        let id = RequestId::new("u-42");
+        let payload = ExtensionUiResponse {
+            kind: "extension_ui_response",
+            id: &id,
+            cancelled: true,
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["type"], "extension_ui_response");
+        assert_eq!(v["id"], "u-42");
+        assert_eq!(v["cancelled"], true);
+    }
+
+    /// `message_update` carries a nested `assistantMessageEvent` — the
+    /// outer envelope's only documented field is `delta` (renamed from
+    /// `assistantMessageEvent` on the wire). The two-phase parser reaches
+    /// the inner delta via this rename; if pi dropped the camelCase the
+    /// envelope would fail to populate.
+    #[test]
+    fn pi_event_message_update_carries_assistant_message_event() {
+        let line =
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","text":"x"}}"#;
+        let event: PiEvent = serde_json::from_str(line).expect("parse");
+        match event {
+            PiEvent::MessageUpdate { delta } => match delta {
+                AssistantMessageDelta::TextDelta { text } => assert_eq!(text, "x"),
+                other => panic!("expected TextDelta, got {other:?}"),
+            },
+            other => panic!("expected MessageUpdate, got {other:?}"),
+        }
+    }
+
+    /// `tool_execution_update` field mapping — `toolCallId` (camelCase
+    /// rename) and `partialResult` round-trip. Long-running tools emit
+    /// these; a silent rename would drop progress events on the floor.
+    #[test]
+    fn pi_event_tool_execution_update_maps_all_fields() {
+        let line =
+            r#"{"type":"tool_execution_update","toolCallId":"tc-5","partialResult":"halfway"}"#;
+        let event: PiEvent = serde_json::from_str(line).expect("parse");
+        match event {
+            PiEvent::ToolExecutionUpdate {
+                tool_call_id,
+                partial_result,
+            } => {
+                assert_eq!(tool_call_id.as_str(), "tc-5");
+                assert_eq!(partial_result, serde_json::Value::String("halfway".into()));
+            }
+            other => panic!("expected ToolExecutionUpdate, got {other:?}"),
+        }
+    }
+
+    /// `compaction_start` field mapping: the `reason` token round-trips as
+    /// an opaque string so the parser can map it to a typed
+    /// `CompactionReason` downstream. Pin the field name so a rename on
+    /// pi's side fails the deserialization here.
+    #[test]
+    fn pi_event_compaction_start_maps_reason_field() {
+        let line = r#"{"type":"compaction_start","reason":"threshold"}"#;
+        let event: PiEvent = serde_json::from_str(line).expect("parse");
+        match event {
+            PiEvent::CompactionStart { reason } => assert_eq!(reason.as_deref(), Some("threshold")),
+            other => panic!("expected CompactionStart, got {other:?}"),
+        }
+    }
+
+    /// `compaction_end` field mapping: the `aborted` boolean round-trips
+    /// in both polarities. The success-path event (`aborted: false`) is
+    /// the default — easy to silently break when the wire field is
+    /// renamed because `#[serde(default)]` would then return `false`
+    /// regardless. Pinning both polarities catches the rename.
+    #[test]
+    fn pi_event_compaction_end_maps_aborted_field_true() {
+        let line = r#"{"type":"compaction_end","aborted":true}"#;
+        let event: PiEvent = serde_json::from_str(line).expect("parse");
+        match event {
+            PiEvent::CompactionEnd { aborted } => assert!(aborted),
+            other => panic!("expected CompactionEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pi_event_compaction_end_maps_aborted_field_false() {
+        let line = r#"{"type":"compaction_end","aborted":false,"willRetry":true}"#;
+        let event: PiEvent = serde_json::from_str(line).expect("parse");
+        match event {
+            PiEvent::CompactionEnd { aborted } => assert!(!aborted),
+            other => panic!("expected CompactionEnd, got {other:?}"),
+        }
+    }
+
+    /// `auto_retry_start` field mapping: all four documented fields
+    /// (`attempt`, `maxAttempts`, `delayMs`, `errorMessage`) round-trip
+    /// with their camelCase wire names. Loom surfaces these to the
+    /// renderer as transient-failure progress — silent renames would
+    /// blank the retry UI.
+    #[test]
+    fn pi_event_auto_retry_start_maps_all_fields() {
+        let line = r#"{"type":"auto_retry_start","attempt":3,"maxAttempts":7,"delayMs":2500,"errorMessage":"network"}"#;
+        let event: PiEvent = serde_json::from_str(line).expect("parse");
+        match event {
+            PiEvent::AutoRetryStart {
+                attempt,
+                max_attempts,
+                delay_ms,
+                error_message,
+            } => {
+                assert_eq!(attempt, 3);
+                assert_eq!(max_attempts, 7);
+                assert_eq!(delay_ms, 2500);
+                assert_eq!(error_message, "network");
+            }
+            other => panic!("expected AutoRetryStart, got {other:?}"),
+        }
+    }
+
+    /// Unit-form events drop any extension fields pi may add. Pin every
+    /// fieldless variant individually so an accidental change in serde
+    /// representation (e.g. adding a field but forgetting `#[serde(default)]`)
+    /// surfaces as a parse failure here.
+    #[test]
+    fn pi_event_unit_variants_drop_extension_fields() {
+        for (line, expected) in [
+            (r#"{"type":"turn_start","ignored":1}"#, "TurnStart"),
+            (r#"{"type":"turn_end","message":{"x":1}}"#, "TurnEnd"),
+            (r#"{"type":"agent_start","ignored":1}"#, "AgentStart"),
+            (r#"{"type":"agent_end","messages":[]}"#, "AgentEnd"),
+            (
+                r#"{"type":"queue_update","steering":[],"followUp":[]}"#,
+                "QueueUpdate",
+            ),
+            (
+                r#"{"type":"auto_retry_end","success":true}"#,
+                "AutoRetryEnd",
+            ),
+            (
+                r#"{"type":"extension_error","extensionPath":"/x","event":"y","error":"z"}"#,
+                "ExtensionError",
+            ),
+        ] {
+            let event: PiEvent = serde_json::from_str(line).expect("parse unit variant");
+            let actual = match event {
+                PiEvent::TurnStart => "TurnStart",
+                PiEvent::TurnEnd => "TurnEnd",
+                PiEvent::AgentStart => "AgentStart",
+                PiEvent::AgentEnd => "AgentEnd",
+                PiEvent::QueueUpdate => "QueueUpdate",
+                PiEvent::AutoRetryEnd => "AutoRetryEnd",
+                PiEvent::ExtensionError => "ExtensionError",
+                other => panic!("expected {expected}, got {other:?}"),
+            };
+            assert_eq!(actual, expected);
+        }
+    }
+
+    /// Forward-compatibility for brand-new pi event types: the
+    /// `#[serde(other)]` catch-all variant absorbs any unknown `type`
+    /// value without failing the deserialization. A regression here
+    /// would force every pi version bump to ship a Loom-side parser
+    /// change before the new build could speak to it.
+    #[test]
+    fn pi_event_unknown_type_falls_through_serde_other() {
+        let line = r#"{"type":"brand_new_event_in_v0_99","novel":42}"#;
+        let event: PiEvent = serde_json::from_str(line).expect("parse");
+        assert!(matches!(event, PiEvent::Unknown));
+    }
+
+    /// Inner `assistantMessageEvent` delta variants: `text_delta` round-trips
+    /// the `text` field; the parser later surfaces this as
+    /// `ParsedAgentEvent::TextDelta`. Direct deserialize pins the
+    /// field name independently of the outer envelope.
+    #[test]
+    fn assistant_delta_text_delta_maps_text_field() {
+        let line = r#"{"type":"text_delta","text":"hello"}"#;
+        let delta: AssistantMessageDelta = serde_json::from_str(line).expect("parse");
+        match delta {
+            AssistantMessageDelta::TextDelta { text } => assert_eq!(text, "hello"),
+            other => panic!("expected TextDelta, got {other:?}"),
+        }
+    }
+
+    /// `thinking_delta` round-trips the `text` field.
+    #[test]
+    fn assistant_delta_thinking_delta_maps_text_field() {
+        let line = r#"{"type":"thinking_delta","text":"thought"}"#;
+        let delta: AssistantMessageDelta = serde_json::from_str(line).expect("parse");
+        match delta {
+            AssistantMessageDelta::ThinkingDelta { text } => assert_eq!(text, "thought"),
+            other => panic!("expected ThinkingDelta, got {other:?}"),
+        }
+    }
+
+    /// `toolcall_delta` round-trips BOTH documented fields: `toolCallId`
+    /// (camelCase rename) and `delta` (raw chunk of streaming
+    /// tool-call JSON). A rename of either would silently lose
+    /// streaming-tool progress.
+    #[test]
+    fn assistant_delta_toolcall_delta_maps_both_fields() {
+        let line = r#"{"type":"toolcall_delta","toolCallId":"tc-1","delta":"chunk"}"#;
+        let delta: AssistantMessageDelta = serde_json::from_str(line).expect("parse");
+        match delta {
+            AssistantMessageDelta::ToolcallDelta {
+                tool_call_id,
+                delta,
+            } => {
+                assert_eq!(tool_call_id.as_str(), "tc-1");
+                assert_eq!(delta, "chunk");
+            }
+            other => panic!("expected ToolcallDelta, got {other:?}"),
+        }
+    }
+
+    /// `error` delta round-trips BOTH `reason` and `message` — they're
+    /// optional via `#[serde(default)]` because pi may emit either or
+    /// both. The parser layer uses `message.or(reason)` to surface a
+    /// single string; this test pins the wire fields.
+    #[test]
+    fn assistant_delta_error_maps_both_fields() {
+        let line = r#"{"type":"error","reason":"aborted","message":"user cancelled"}"#;
+        let delta: AssistantMessageDelta = serde_json::from_str(line).expect("parse");
+        match delta {
+            AssistantMessageDelta::Error { reason, message } => {
+                assert_eq!(reason.as_deref(), Some("aborted"));
+                assert_eq!(message.as_deref(), Some("user cancelled"));
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    /// `text_end` / `thinking_end` are unit-form deltas — paired
+    /// terminators carrying no fields. A drift in either's wire token
+    /// would fail this test before silently mis-pairing with their
+    /// `*_delta` openers.
+    #[test]
+    fn assistant_delta_unit_variants_deserialize_as_units() {
+        let text_end: AssistantMessageDelta =
+            serde_json::from_str(r#"{"type":"text_end"}"#).expect("parse text_end");
+        assert!(matches!(text_end, AssistantMessageDelta::TextEnd));
+
+        let thinking_end: AssistantMessageDelta =
+            serde_json::from_str(r#"{"type":"thinking_end"}"#).expect("parse thinking_end");
+        assert!(matches!(thinking_end, AssistantMessageDelta::ThinkingEnd));
+    }
+
+    /// Forward-compatibility: a brand-new delta type pi adds later
+    /// falls through to `Unknown` rather than failing the parse.
+    #[test]
+    fn assistant_delta_unknown_type_falls_through_serde_other() {
+        let line = r#"{"type":"brand_new_delta","novel":1}"#;
+        let delta: AssistantMessageDelta = serde_json::from_str(line).expect("parse");
+        assert!(matches!(delta, AssistantMessageDelta::Unknown));
+    }
 }

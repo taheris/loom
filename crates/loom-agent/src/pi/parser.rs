@@ -684,6 +684,52 @@ mod tests {
         ));
     }
 
+    /// The success-path `aborted: false` is distinct from the default-via-
+    /// missing-field path; if the wire field were renamed, `#[serde(default)]`
+    /// would return `false` for both polarities and this assertion would
+    /// remain green only by accident. Pinning the false case alongside the
+    /// true case (above) catches the rename.
+    #[test]
+    fn compaction_end_aborted_false_carries_through() {
+        let line = r#"{"type":"compaction_end","aborted":false,"willRetry":true}"#;
+        let p = parse(line);
+        assert!(matches!(
+            p.events[..],
+            [ParsedAgentEvent::CompactionEnd { aborted: false }]
+        ));
+    }
+
+    /// `error` delta with only `reason` present falls back to surfacing
+    /// `reason` as the human-readable message. The parser's
+    /// `message.or(reason).unwrap_or_default()` chain makes this contract;
+    /// pin it so reordering the chain (or renaming either field) surfaces
+    /// the regression.
+    #[test]
+    fn message_update_error_delta_falls_back_to_reason_when_message_absent() {
+        let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"error","reason":"aborted"}}"#;
+        let p = parse(line);
+        assert_eq!(p.events.len(), 1);
+        match &p.events[0] {
+            ParsedAgentEvent::Error { message, .. } => assert_eq!(message, "aborted"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    /// `error` delta with neither field present yields an empty-string
+    /// message rather than dropping the event. Renderers expect *some*
+    /// Error event so the failure shows up in the log even when pi
+    /// couldn't supply detail.
+    #[test]
+    fn message_update_error_delta_yields_empty_message_when_both_fields_absent() {
+        let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"error"}}"#;
+        let p = parse(line);
+        assert_eq!(p.events.len(), 1);
+        match &p.events[0] {
+            ParsedAgentEvent::Error { message, .. } => assert!(message.is_empty()),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
     #[test]
     fn observability_only_events_yield_no_agent_events() {
         // tool_execution_update and auto_retry_start surface as
