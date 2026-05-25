@@ -405,4 +405,74 @@ mod tests {
         assert_eq!(cfg.image_source, PathBuf::from("/nix/store/zzz-img.tar"));
         assert_eq!(cfg.env, vec![("A".to_string(), "1".to_string())]);
     }
+
+    /// The on-disk JSON shape is the contract with
+    /// `wrapix spawn --spawn-config <file>`. Key order is fixed by serde's
+    /// field-declaration order; reordering fields in [`SpawnConfig`] would
+    /// silently shift the wire payload. Pinning the expected key sequence
+    /// makes such drift fail loud here instead of in the wrapper.
+    #[test]
+    fn spawn_config_serializes_top_level_keys_in_declaration_order() {
+        let cfg = sample_config(Some(ModelSelection {
+            provider: "deepseek".into(),
+            model_id: "deepseek-v3".into(),
+        }));
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let expected = [
+            "\"image_ref\":",
+            "\"image_source\":",
+            "\"workspace\":",
+            "\"env\":",
+            "\"initial_prompt\":",
+            "\"agent_args\":",
+            "\"repin\":",
+            "\"scratch_dir\":",
+            "\"model\":",
+        ];
+        let mut cursor = 0usize;
+        for key in expected {
+            let rel = json[cursor..].find(key).unwrap_or_else(|| {
+                panic!("key {key} missing or out of order after byte {cursor} in {json}");
+            });
+            cursor += rel + key.len();
+        }
+    }
+
+    /// With every optional field skipped, the wire payload is the eight
+    /// mandatory keys in declaration order — the steady-state shape every
+    /// wrapper fixture pre-dating the optional knobs round-trips against.
+    #[test]
+    fn spawn_config_skips_all_optional_keys_when_unset() {
+        let cfg = sample_config(None);
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        for absent in [
+            "\"model\":",
+            "\"thinking_level\":",
+            "\"shutdown_grace\":",
+            "\"handshake_timeout\":",
+            "\"stall_warn_interval\":",
+        ] {
+            assert!(
+                !json.contains(absent),
+                "{absent} must be omitted when None: {json}",
+            );
+        }
+        let expected = [
+            "\"image_ref\":",
+            "\"image_source\":",
+            "\"workspace\":",
+            "\"env\":",
+            "\"initial_prompt\":",
+            "\"agent_args\":",
+            "\"repin\":",
+            "\"scratch_dir\":",
+        ];
+        let mut cursor = 0usize;
+        for key in expected {
+            let rel = json[cursor..].find(key).unwrap_or_else(|| {
+                panic!("key {key} missing or out of order after byte {cursor} in {json}");
+            });
+            cursor += rel + key.len();
+        }
+    }
 }
