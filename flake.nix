@@ -4,14 +4,16 @@
   inputs = {
     nixpkgs.url = "git+ssh://git@github.com/NixOS/nixpkgs.git?ref=nixos-unstable&shallow=1";
 
-    crane = {
-      url = "git+https://github.com/ipetkov/crane.git?ref=master&shallow=1";
+    wrapix = {
+      url = "git+ssh://git@github.com/taheris/wrapix.git?ref=main&shallow=1";
+      inputs = {
+        flake-parts.follows = "flake-parts";
+        nixpkgs.follows = "nixpkgs";
+      };
     };
 
-    fenix = {
-      url = "git+https://github.com/nix-community/fenix.git?ref=main&shallow=1";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    crane.follows = "wrapix/crane";
+    fenix.follows = "wrapix/fenix";
 
     flake-parts = {
       url = "git+ssh://git@github.com/hercules-ci/flake-parts.git?ref=main&shallow=1";
@@ -51,12 +53,30 @@
         };
 
       perSystem =
-        { pkgs, system, ... }:
+        {
+          config,
+          inputs',
+          pkgs,
+          system,
+          ...
+        }:
         let
           loom = import ./nix/loom.nix {
             inherit pkgs;
             inherit (inputs) crane fenix;
             src = ./.;
+          };
+
+          wrapixLib = inputs'.wrapix.legacyPackages.lib;
+          rustProfile = wrapixLib.profiles.rust;
+
+          sandbox = wrapixLib.mkSandbox {
+            profile = rustProfile;
+          };
+
+          debugSandbox = wrapixLib.mkSandbox {
+            profile = rustProfile;
+            packages = [ pkgs.podman ];
           };
 
           devToolchain =
@@ -70,18 +90,31 @@
             ];
         in
         {
-          packages.default = loom.bin;
-          packages.loom = loom.bin;
+          packages = {
+            default = sandbox.package;
+            sandbox = sandbox.package;
+            debug = debugSandbox.package;
+            loom = loom.bin;
+          };
 
           checks = {
             inherit (loom) bin clippy nextest;
           };
 
-          devShells.default = pkgs.mkShell {
+          devShells.default = wrapixLib.mkDevShell {
+            shellHook = ''
+              export PATH="${devToolchain}/bin:$PATH"
+              export RUSTC_WRAPPER="${pkgs.sccache}/bin/sccache"
+              export SCCACHE_DIR="''${SCCACHE_DIR:-$HOME/.cache/sccache}"
+              export SCCACHE_CACHE_SIZE="''${SCCACHE_CACHE_SIZE:-50G}"
+              export CARGO_INCREMENTAL="''${CARGO_INCREMENTAL:-0}"
+            '';
+
             packages = [
               devToolchain
+              pkgs.sccache
+              config.treefmt.build.wrapper
               pkgs.cargo-nextest
-              pkgs.git
             ];
           };
 
