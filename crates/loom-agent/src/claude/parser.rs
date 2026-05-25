@@ -640,4 +640,75 @@ mod tests {
             .expect("malformed JSON should fail");
         assert!(matches!(err, ProtocolError::InvalidJson(_)));
     }
+
+    /// Truncated tag-only string — the spec example: `{"type":"message_del`.
+    /// Same outcome as the structural truncation above; this pins the
+    /// specific case called out in `specs/tests.md`.
+    #[test]
+    fn truncated_tag_string_returns_invalid_json_error() {
+        let parser = empty();
+        let err = parser
+            .parse_line(r#"{"type":"message_del"#)
+            .err()
+            .expect("truncated JSON should fail");
+        assert!(matches!(err, ProtocolError::InvalidJson(_)));
+    }
+
+    /// Valid JSON object lacking the discriminator (`{"foo":42}`) fails the
+    /// tagged-union parse. Claude's `#[serde(other)]` catches unknown *tag
+    /// values*, not an absent tag — so the wrong-shape line surfaces as
+    /// `InvalidJson` rather than silently mapping to `Unknown`.
+    #[test]
+    fn valid_json_wrong_shape_returns_invalid_json_error() {
+        let parser = empty();
+        let err = parser
+            .parse_line(r#"{"foo":42}"#)
+            .err()
+            .expect("wrong-shape JSON should fail");
+        assert!(matches!(err, ProtocolError::InvalidJson(_)));
+    }
+
+    /// `#[serde(other)]` catches unknown event types. Acceptance criterion
+    /// `claude_unknown_event_type_does_not_error` is the message-layer
+    /// counterpart in `messages.rs`; this parser-layer mirror confirms the
+    /// `parse_line` path also tolerates the unknown variant without error.
+    #[test]
+    fn unknown_event_type_does_not_error() {
+        let parser = empty();
+        let parsed = parser
+            .parse_line(r#"{"type":"new_feature_event","data":"something"}"#)
+            .expect("unknown event must not error");
+        assert!(parsed.events.is_empty());
+        assert!(parsed.response.is_none());
+    }
+
+    /// An assistant text block whose `text` value contains an escaped `\n`
+    /// is parsed as one line with a literal newline in the payload — the
+    /// `\n` does *not* split the JSONL line because it's inside a string.
+    #[test]
+    fn escaped_newline_inside_string_value_preserves_literal() {
+        let parser = empty();
+        let line = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"line1\nline2"}]}}"#;
+        let p = parser.parse_line(line).expect("parse");
+        match &p.events[0] {
+            ParsedAgentEvent::TextDelta { text } => assert_eq!(text, "line1\nline2"),
+            other => panic!("expected TextDelta, got {other:?}"),
+        }
+    }
+
+    /// U+2028 and U+2029 inside a string value pass through verbatim — they
+    /// are *not* JSONL line terminators. The parser accepts the line and
+    /// preserves the codepoints.
+    #[test]
+    fn unicode_line_separators_inside_string_value_pass_through() {
+        let parser = empty();
+        let line = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"a\u{2028}b\u{2029}c\"}]}}";
+        let p = parser.parse_line(line).expect("parse");
+        match &p.events[0] {
+            ParsedAgentEvent::TextDelta { text } => {
+                assert_eq!(text, "a\u{2028}b\u{2029}c");
+            }
+            other => panic!("expected TextDelta, got {other:?}"),
+        }
+    }
 }
