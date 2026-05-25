@@ -96,8 +96,8 @@ fn sample_config() -> SpawnConfig {
 
 /// Locate `tests/mock-pi/pi.sh` by walking ancestors of the crate
 /// manifest dir — handles both the dev tree (`repo/crates/loom-agent/`
-/// → `repo/tests/loom/...`) and the crane build sandbox (the loom workspace
-/// is the staged root, `tests/loom/...` is staged next to it).
+/// → `repo/tests/...`) and the crane build sandbox (the loom workspace
+/// is the staged root, `tests/...` is staged next to it).
 fn mock_pi_path() -> PathBuf {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     for ancestor in manifest_dir.ancestors() {

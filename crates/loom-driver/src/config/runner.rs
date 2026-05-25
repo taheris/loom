@@ -318,37 +318,6 @@ parse = "json-lines"
         assert_eq!(custom.parse, Some(Parser::JsonLines));
     }
 
-    /// Loom-the-repo's checked-in `config.toml` must parse through the same
-    /// `LoomConfig::load` path production uses. The test walks up from
-    /// `CARGO_MANIFEST_DIR` to the workspace root so it works from any
-    /// nested test runner.
-    #[test]
-    fn loom_repo_config_loads_and_exposes_migrated_runner_blocks() {
-        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let mut workspace_root = manifest.as_path();
-        while !workspace_root.join("config.toml").is_file() {
-            workspace_root = workspace_root
-                .parent()
-                .expect("walked past filesystem root looking for config.toml");
-        }
-        let path = workspace_root.join("config.toml");
-        let cfg = LoomConfig::load(&path).unwrap();
-
-        let test = cfg.runner.tier("test").expect("[runner.test] migrated");
-        assert!(
-            test.command
-                .as_deref()
-                .is_some_and(|c| c.contains("cargo nextest run") && c.contains("--manifest-path")),
-            "test runner command preserves the manifest override: {:?}",
-            test.command
-        );
-        assert_eq!(test.parse, Some(Parser::LibtestJson));
-        assert_eq!(test.cwd.as_deref(), Some("."));
-
-        let check = cfg.runner.tier("check").expect("[runner.check] present");
-        assert_eq!(check.cwd.as_deref(), Some("loom"));
-    }
-
     #[test]
     fn unknown_parser_value_fails_parse() {
         let toml = r#"

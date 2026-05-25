@@ -27,6 +27,22 @@ fn write_spec_with_unresolvable_annotation(workspace: &Path, label: &str) {
     .expect("write spec");
 }
 
+/// Discover `true`'s directory on the ambient `PATH` so we can pin a
+/// minimal `PATH` for the loom child without assuming `/usr/bin:/bin`
+/// — those paths are empty on NixOS-style hosts where coreutils lives
+/// under `/nix/store/...`. The pinned `PATH` still excludes everything
+/// else, so `definitely-not-a-real-command-xyz-integrity-test` remains
+/// provably absent.
+fn pinned_path() -> String {
+    let path_var = std::env::var_os("PATH").expect("PATH must be set");
+    for dir in std::env::split_paths(&path_var) {
+        if dir.join("true").is_file() {
+            return dir.to_string_lossy().into_owned();
+        }
+    }
+    panic!("could not locate `true` on PATH={path_var:?}");
+}
+
 fn run_loom_gate(workspace: &Path, subcommand: &str) -> std::process::Output {
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     Command::new(loom_bin)
@@ -36,11 +52,7 @@ fn run_loom_gate(workspace: &Path, subcommand: &str) -> std::process::Output {
         .arg(subcommand)
         .arg("--tree")
         .env_remove("LOOM_INSIDE")
-        // Pin PATH so `definitely-not-a-real-command-xyz-integrity-test`
-        // is provably absent and `true` resolves. Using `/usr/bin:/bin`
-        // (coreutils) keeps the test independent of the developer's
-        // ambient PATH.
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", pinned_path())
         .output()
         .expect("spawn loom")
 }
@@ -88,7 +100,7 @@ fn gate_verify_fails_on_integrity_finding_for_unresolved_annotation() {
         .args(["gate", "verify", "--tree"])
         .env("LOOM_VERIFY_TIERS", "check")
         .env_remove("LOOM_INSIDE")
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", pinned_path())
         .output()
         .expect("spawn loom");
 

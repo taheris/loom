@@ -99,22 +99,22 @@ fn install_wrapix_shim(
     shim
 }
 
-/// Locate a shim script under `tests/loom/<rel>` by walking ancestors of the
+/// Locate a shim script under `tests/<rel>` by walking ancestors of the
 /// crate manifest dir. Two layouts are supported transparently:
 ///   - dev tree: `repo/crates/loom/` is the manifest dir, mock scripts
-///     live under `repo/tests/loom/`.
+///     live under `repo/tests/`.
 ///   - nix sandbox (crane buildPackage): the loom workspace IS the staged
-///     root and mock scripts live next to it under `<staged>/tests/loom/`.
+///     root and mock scripts live next to it under `<staged>/tests/`.
 fn locate_mock(rel: &str) -> PathBuf {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for ancestor in manifest_dir.ancestors() {
-        let candidate = ancestor.join("tests/loom").join(rel);
+        let candidate = ancestor.join("tests").join(rel);
         if candidate.is_file() {
             return candidate;
         }
     }
     panic!(
-        "could not locate tests/loom/{rel} above {} — neither dev-tree nor \
+        "could not locate tests/{rel} above {} — neither dev-tree nor \
          nix-sandbox layout matched.",
         manifest_dir.display(),
     );
