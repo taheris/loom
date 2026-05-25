@@ -13,10 +13,10 @@ nix run -- --help      # CLI overview
 nix flake check        # Clippy + nextest
 ```
 
-Inside `nix develop`, the workspace toolchain and `cargo-nextest` are on PATH:
+Inside `nix develop`, the pinned Rust toolchain (`rust-toolchain.toml`),
+`cargo-nextest`, `wrapix`, and the wrapped `loom` binary are on PATH:
 
 ```bash
-cd loom
 cargo build
 cargo nextest run
 ```
@@ -44,15 +44,60 @@ layout — lives in [`docs/README.md`](docs/README.md).
 Author specs per [`docs/spec-conventions.md`](docs/spec-conventions.md); follow
 [`docs/style-rules.md`](docs/style-rules.md) for code and tests.
 
-## Using With a Wrapix Sandbox
+## Using Loom
 
-At runtime, `loom run` shells out to `wrapix run` / `wrapix spawn`. Make sure
-`wrapix` is on `PATH` and the image-ref / image-source env vars (or a
-SpawnConfig) point at a sandbox image with the right agent runtime.
+The flake exposes a `loom` package whose binary already has `wrapix` on its
+internal PATH and `LOOM_PROFILES_MANIFEST` defaulted to a base/rust/python
+manifest. Add it to a wrapix devshell and `loom plan` works end-to-end:
 
-For the **Direct** backend specifically, the sandbox image must bundle the
-`loom-direct-runner` binary. Loom's flake exposes `lib.mkLoom` so wrapix can
-build a Linux-targeted runner and hand it to `mkSandbox`:
+```nix
+{
+  inputs = {
+    wrapix.url = "github:taheris/wrapix";
+    loom.url   = "github:taheris/loom";
+  };
+
+  outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } {
+    perSystem = { inputs', ... }: {
+      devShells.default = inputs'.wrapix.legacyPackages.lib.mkDevShell {
+        packages = [
+          inputs'.loom.packages.loom
+          # ... your other dev tools
+        ];
+      };
+    };
+  };
+}
+```
+
+### Custom profile sets
+
+`--set-default` only fires if `LOOM_PROFILES_MANIFEST` is unset, so a consumer
+exporting their own manifest wins. Build one via `lib.mkProfileManifest`:
+
+```nix
+let
+  wrapixLib = inputs'.wrapix.legacyPackages.lib;
+  manifest  = inputs.loom.lib.mkProfileManifest {
+    inherit wrapixLib;
+    profiles = { inherit (wrapixLib.profiles) base rust; };
+  };
+in
+{
+  devShells.default = wrapixLib.mkDevShell {
+    shellHook = ''
+      export LOOM_PROFILES_MANIFEST=${manifest}
+    '';
+    packages = [ inputs'.loom.packages.loom ];
+  };
+}
+```
+
+### Direct backend (embedding `loom-direct-runner` in a sandbox image)
+
+For the Direct agent backend, the sandbox image must bundle the
+`loom-direct-runner` binary. `lib.mkLoom` builds a Linux-targeted runner that
+wrapix can hand to `mkSandbox`:
 
 ```nix
 {

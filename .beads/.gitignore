@@ -67,6 +67,11 @@ backup/
 *.db-shm
 db.sqlite
 bd.db
+
+# JSONL export/import files — dead post-Dolt migration.
+# Dolt is the source of truth; sync uses .beads/dolt-remote/ on the beads branch.
+issues.jsonl
+interactions.jsonl
 # NOTE: Do NOT add negation patterns here.
 # They would override fork protection in .git/info/exclude.
 # Config files (metadata.json, config.yaml) are tracked by git by default

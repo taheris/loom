@@ -10,14 +10,16 @@
   crane,
   fenix,
   src,
+  toolchain ? null,
 }:
 
 let
   inherit (pkgs) lib;
 
   fenixPkgs = fenix.packages.${pkgs.stdenv.hostPlatform.system};
-  toolchain = fenixPkgs.combine [ fenixPkgs.stable.defaultToolchain ];
-  craneLib = (crane.mkLib pkgs).overrideToolchain (_: toolchain);
+  resolvedToolchain =
+    if toolchain != null then toolchain else fenixPkgs.combine [ fenixPkgs.stable.defaultToolchain ];
+  craneLib = (crane.mkLib pkgs).overrideToolchain (_: resolvedToolchain);
 
   # Keep templates/ and snapshot files alongside the Cargo workspace —
   # crane's default filter would exclude them.
@@ -101,6 +103,6 @@ in
     nextest
     cargoArtifacts
     craneLib
-    toolchain
     ;
+  toolchain = resolvedToolchain;
 }
