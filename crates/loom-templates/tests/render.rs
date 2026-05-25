@@ -155,6 +155,7 @@ fn todo_new_renders_spec_label_marker() -> Result<()> {
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
         implementation_notes: vec![],
+        criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     };
     let out = ctx.render()?;
@@ -178,6 +179,7 @@ fn todo_new_renders_implementation_notes_when_present() -> Result<()> {
             "Hidden constraint: touch lib/sandbox/linux/default.nix".into(),
             "Design trade-off: prefer single FK over join table".into(),
         ],
+        criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     };
     let out = ctx.render()?;
@@ -200,6 +202,7 @@ fn todo_update_renders_implementation_notes_when_present() -> Result<()> {
         existing_tasks: None,
         molecule_id: Some(MoleculeId::new("wx-mol")),
         implementation_notes: vec!["beware FK cascade ordering".into()],
+        criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     };
     let out = ctx.render()?;
@@ -220,6 +223,7 @@ fn todo_update_wraps_existing_tasks_in_agent_output() -> Result<()> {
         existing_tasks: Some("- wx-3hhwq.1: scaffold workspace".into()),
         molecule_id: Some(MoleculeId::new("wx-3hhwq")),
         implementation_notes: vec![],
+        criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     };
     let out = ctx.render()?;
@@ -1040,6 +1044,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         implementation_notes: vec![],
+        criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     }
     .render()?;
@@ -1053,6 +1058,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
         existing_tasks: None,
         molecule_id: Some(MoleculeId::new("wx-mol")),
         implementation_notes: vec![],
+        criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     }
     .render()?;
@@ -1198,6 +1204,7 @@ fn agent_output_markers_wrap_each_agent_supplied_field() -> Result<()> {
         existing_tasks: Some("AGENTOUT_TASKS_TOKEN".into()),
         molecule_id: Some(MoleculeId::new("wx-3hhwq")),
         implementation_notes: vec![],
+        criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     }
     .render()?;
@@ -1254,6 +1261,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             spec_path: "specs/harness.md".to_string(),
             companion_paths: vec!["lib/sandbox/".into()],
             implementation_notes: vec![],
+            criterion_status: vec![],
             scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         },
     )?;
@@ -1268,6 +1276,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             existing_tasks: Some("- wx-3hhwq.1: scaffold".into()),
             molecule_id: Some(MoleculeId::new("wx-3hhwq")),
             implementation_notes: vec![],
+            criterion_status: vec![],
             scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         },
     )?;

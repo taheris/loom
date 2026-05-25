@@ -62,6 +62,7 @@ fn todo_new_snapshot() {
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
         implementation_notes: vec![],
+        criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
@@ -78,6 +79,7 @@ fn todo_update_snapshot() {
         existing_tasks: Some("- wx-3hhwq.1: scaffold workspace".into()),
         molecule_id: Some(MoleculeId::new("wx-3hhwq")),
         implementation_notes: vec![],
+        criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());

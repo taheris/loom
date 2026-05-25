@@ -62,6 +62,7 @@ pub fn build_template_context(
                 existing_tasks: None,
                 molecule_id,
                 implementation_notes,
+                criterion_status: vec![],
                 scratchpad_path,
             })
         }
@@ -74,6 +75,7 @@ pub fn build_template_context(
             existing_tasks,
             molecule_id: Some(molecule.clone()),
             implementation_notes,
+            criterion_status: vec![],
             scratchpad_path,
         }),
         TierDecision::New => TodoTemplateContext::New(TodoNewContext {
@@ -82,6 +84,7 @@ pub fn build_template_context(
             spec_path,
             companion_paths,
             implementation_notes,
+            criterion_status: vec![],
             scratchpad_path,
         }),
     }
