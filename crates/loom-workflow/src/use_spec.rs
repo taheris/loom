@@ -48,6 +48,7 @@ pub fn run_with_timeout(
     let lock_mgr = LockManager::new(workspace)?;
     let _guard = lock_mgr.acquire_spec_with_timeout(label, timeout)?;
     let db = StateDb::open(db_path)?;
+    let _ = db.spec(label)?;
     db.set_current_spec(label)?;
     Ok(())
 }
@@ -56,16 +57,25 @@ pub fn run_with_timeout(
 mod tests {
     use super::*;
     use anyhow::Result;
+    use loom_driver::state::{ActiveMolecule, StateError};
 
     fn db_path(workspace: &std::path::Path) -> std::path::PathBuf {
         workspace.join(".wrapix/loom/state.db")
     }
 
+    fn seed_spec(workspace: &std::path::Path, label: &str) -> Result<StateDb> {
+        let specs_dir = workspace.join("specs");
+        std::fs::create_dir_all(&specs_dir)?;
+        std::fs::write(specs_dir.join(format!("{label}.md")), "# x\n")?;
+        let db = StateDb::open(db_path(workspace))?;
+        db.rebuild(workspace, &[] as &[ActiveMolecule])?;
+        Ok(db)
+    }
+
     #[test]
     fn use_round_trips_with_status_load() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        // Seed the DB so subsequent open() finds the meta table.
-        let _seed = StateDb::open(db_path(dir.path()))?;
+        let _seed = seed_spec(dir.path(), "harness")?;
         run(
             dir.path(),
             &SpecLabel::new("harness"),
@@ -83,7 +93,7 @@ mod tests {
     #[test]
     fn use_acquires_per_spec_lock() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let _seed = StateDb::open(db_path(dir.path()))?;
+        let _seed = seed_spec(dir.path(), "alpha")?;
         let mgr = LockManager::new(dir.path())?;
         let _hold = mgr.acquire_spec(&SpecLabel::new("alpha"))?;
 
@@ -99,5 +109,33 @@ mod tests {
             }
             other => Err(anyhow::anyhow!("expected SpecBusy, got {other:?}")),
         }
+    }
+
+    /// Spec contract (`specs/tests.md` § Auxiliary commands):
+    /// `loom use <unknown>` errors when no `specs` row matches the label.
+    /// Without this guard the meta table would happily point at a spec that
+    /// has never been registered, leaving `loom status` to display a label
+    /// that nothing else in the workspace knows about.
+    #[test]
+    fn use_unknown_spec_errors_with_spec_not_found() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let _seed = StateDb::open(db_path(dir.path()))?;
+        match run(
+            dir.path(),
+            &SpecLabel::new("ghost"),
+            &db_path(dir.path()),
+        ) {
+            Err(UseError::State(StateError::SpecNotFound { label })) => {
+                assert_eq!(label, "ghost");
+            }
+            other => return Err(anyhow::anyhow!("expected SpecNotFound, got {other:?}")),
+        }
+
+        let db = StateDb::open(db_path(dir.path()))?;
+        assert!(
+            db.current_spec()?.is_none(),
+            "current_spec must not be written for an unknown label",
+        );
+        Ok(())
     }
 }

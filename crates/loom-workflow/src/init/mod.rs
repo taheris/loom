@@ -383,6 +383,72 @@ mod tests {
         Ok(())
     }
 
+    /// A fresh `loom init` must lay down each of the four schema tables —
+    /// `specs`, `molecules`, `companions`, `meta` — so subsequent commands
+    /// see an immediately-queryable surface. Verified by exercising one
+    /// read per table through the typed API; each query succeeds only when
+    /// its backing table exists.
+    #[test]
+    fn run_creates_schema_with_specs_molecules_companions_meta() -> Result<()> {
+        let dir = temp_workspace()?;
+        let report = run(dir.path(), InitOpts::default(), &[])?;
+        let db = StateDb::open(&report.state_db_path)?;
+        let probe = SpecLabel::new("probe");
+
+        match db.spec(&probe) {
+            Err(loom_driver::state::StateError::SpecNotFound { .. }) => {}
+            other => return Err(anyhow!("expected SpecNotFound on empty specs table, got {other:?}")),
+        }
+        assert!(db.active_molecule(&probe)?.is_none());
+        assert!(db.companions(&probe)?.is_empty());
+        assert!(db.current_spec()?.is_none());
+        Ok(())
+    }
+
+    /// Plain `loom init` (no `--rebuild`) must preserve existing
+    /// `current_spec` and molecule rows. The state DB is the source of
+    /// truth for the active spec across sessions; clobbering it on every
+    /// init would erase that pointer the moment a user (or hook) re-runs
+    /// `loom init` to refresh the config.
+    #[test]
+    fn run_is_idempotent_and_preserves_current_spec_and_molecules() -> Result<()> {
+        let dir = temp_workspace()?;
+        let specs = dir.path().join("specs");
+        std::fs::create_dir_all(&specs)?;
+        std::fs::write(specs.join("alpha.md"), "# alpha\n")?;
+
+        run(dir.path(), InitOpts::default(), &[])?;
+        let db_path = dir.path().join(".wrapix/loom/state.db");
+        let db = StateDb::open(&db_path)?;
+        db.rebuild(
+            dir.path(),
+            &[ActiveMolecule {
+                id: MoleculeId::new("wx-mol.1"),
+                spec_label: SpecLabel::new("alpha"),
+                base_commit: Some("deadbeef".into()),
+            }],
+        )?;
+        db.set_current_spec(&SpecLabel::new("alpha"))?;
+        let bumped = db.increment_iteration(&MoleculeId::new("wx-mol.1"))?;
+        assert_eq!(bumped, 1);
+        drop(db);
+
+        let report = run(dir.path(), InitOpts::default(), &[])?;
+        assert!(report.rebuild.is_none(), "plain init must not run rebuild");
+        let db = StateDb::open(&db_path)?;
+        let current = db
+            .current_spec()?
+            .ok_or_else(|| anyhow!("current_spec was clobbered"))?;
+        assert_eq!(current.as_str(), "alpha");
+        let row = db
+            .active_molecule(&SpecLabel::new("alpha"))?
+            .ok_or_else(|| anyhow!("molecule row was clobbered"))?;
+        assert_eq!(row.id.as_str(), "wx-mol.1");
+        assert_eq!(row.iteration_count, 1, "iteration counter must survive a plain init");
+        assert_eq!(row.base_commit.as_deref(), Some("deadbeef"));
+        Ok(())
+    }
+
     #[test]
     fn workspace_lock_errors_when_spec_lock_held() -> Result<()> {
         let dir = temp_workspace()?;
