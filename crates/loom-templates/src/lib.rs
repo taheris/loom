@@ -19,6 +19,7 @@
 //! `review`, `msg`) are internal — consumers compose with the partials
 //! and typed contexts, not with the workflow shells.
 
+pub mod criterion_status;
 pub mod msg;
 pub mod plan;
 pub mod previous_failure;
@@ -26,6 +27,7 @@ pub mod review;
 pub mod run;
 pub mod todo;
 
+pub use criterion_status::{CriterionResult, CriterionStatus};
 pub use msg::{ClarifyBead, ClarifyOption, MsgContext};
 pub use plan::{PlanNewContext, PlanUpdateContext};
 pub use previous_failure::{
