@@ -1101,13 +1101,44 @@ mod tests {
     }
 
     #[test]
-    fn finish_with_color_emits_ansi_codes() {
+    fn finish_failed_emits_red_ansi_code() {
         let out = capture(RenderMode::Default, false, true, |r| {
             r.write_finish(BeadOutcome::Failed, std::time::Duration::from_secs(1))
                 .expect("finish");
         });
         assert!(out.contains(ANSI_RED), "{out:?}");
         assert!(out.contains(ANSI_RESET));
+    }
+
+    #[test]
+    fn finish_done_emits_green_ansi_code() {
+        let out = capture(RenderMode::Default, false, true, |r| {
+            r.write_finish(BeadOutcome::Done, std::time::Duration::from_secs(1))
+                .expect("finish");
+        });
+        assert!(out.contains(ANSI_GREEN), "{out:?}");
+        assert!(out.contains(ANSI_RESET));
+    }
+
+    #[test]
+    fn finish_retry_emits_yellow_ansi_code() {
+        let out = capture(RenderMode::Default, false, true, |r| {
+            r.write_finish(BeadOutcome::Retry, std::time::Duration::from_secs(1))
+                .expect("finish");
+        });
+        assert!(out.contains(ANSI_YELLOW), "{out:?}");
+        assert!(out.contains(ANSI_RESET));
+    }
+
+    #[test]
+    fn finish_with_color_off_omits_ansi_codes() {
+        let out = capture(RenderMode::Default, false, false, |r| {
+            r.write_finish(BeadOutcome::Done, std::time::Duration::from_secs(1))
+                .expect("finish");
+        });
+        assert!(!out.contains(ANSI_GREEN), "{out:?}");
+        assert!(!out.contains(ANSI_RESET), "{out:?}");
+        assert!(out.contains("done"), "{out:?}");
     }
 
     // -- summary-cell tests ------------------------------------------------
