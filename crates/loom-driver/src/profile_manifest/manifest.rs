@@ -80,6 +80,14 @@ impl ProfileImageManifest {
         &self.manifest_path
     }
 
+    /// Profile names the manifest declares, in `BTreeMap` key order. The
+    /// run-loop's `unknown-profile` blocked-cause path surfaces this set
+    /// in the operator-facing note so the human can relabel the bead to a
+    /// declared profile without re-reading the manifest.
+    pub fn declared_profiles(&self) -> impl ExactSizeIterator<Item = &ProfileName> {
+        self.entries.keys()
+    }
+
     /// Number of declared profiles (used by tests and the rebuild summary).
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -152,6 +160,27 @@ mod tests {
         } else {
             Err(anyhow!("expected ManifestMalformed, got {err:?}"))
         }
+    }
+
+    /// `declared_profiles` walks the underlying `BTreeMap` in key order so
+    /// the operator-facing `unknown-profile` blocked-cause note renders
+    /// the declared set deterministically across runs.
+    #[test]
+    fn declared_profiles_yields_keys_in_btreemap_order() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let body = r#"{
+          "rust":   { "ref": "r1", "source": "/s1" },
+          "base":   { "ref": "r2", "source": "/s2" },
+          "python": { "ref": "r3", "source": "/s3" }
+        }"#;
+        let path = write_manifest(dir.path(), body)?;
+        let manifest = ProfileImageManifest::from_path(&path)?;
+        let names: Vec<&str> = manifest
+            .declared_profiles()
+            .map(ProfileName::as_str)
+            .collect();
+        assert_eq!(names, vec!["base", "python", "rust"]);
+        Ok(())
     }
 
     #[test]

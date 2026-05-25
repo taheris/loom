@@ -26,6 +26,12 @@ pub const INFRA_PREFLIGHT_CAUSE: &str = "infra-preflight";
 /// infra failure inside the same `loom run` invocation.
 pub const INFRA_REPEATED_CAUSE: &str = "infra-repeated";
 
+/// Spec-table cause string written to `bd update --notes` when a bead's
+/// requested `profile:X` label is not declared in the profile-image
+/// manifest. Same routing pattern as [`INFRA_PREFLIGHT_CAUSE`]: no retry,
+/// the loop continues with the next ready bead.
+pub const UNKNOWN_PROFILE_CAUSE: &str = "unknown-profile";
+
 /// Driver-memory budget for mid-session infra retries. Spec
 /// (`specs/harness.md` §"Verdict Gate · Infra failures bypass the gate"):
 /// "one free retry per `loom run`". The counter is separate from
@@ -316,6 +322,12 @@ async fn process_one_bead<C: AgentLoopController>(
                     error,
                 });
             }
+            AgentOutcome::UnknownProfile { error } => {
+                return Ok(BeadResult::Blocked {
+                    cause: UNKNOWN_PROFILE_CAUSE.to_string(),
+                    error,
+                });
+            }
             AgentOutcome::InfraMidSession { error } => {
                 if *infra_retries_used >= INFRA_MIDSESSION_RETRY_BUDGET {
                     return Ok(BeadResult::Blocked {
@@ -598,6 +610,72 @@ mod tests {
             c.blocked[0].2.contains("image load failed"),
             "blocked notes must carry the raw error: {:?}",
             c.blocked[0].2,
+        );
+        assert_eq!(summary.beads_blocked, 1);
+        Ok(())
+    }
+
+    /// Spec gate (Implementation Note 6): a bead whose `profile:X` label
+    /// is missing from the manifest exits immediately as `loom:blocked`
+    /// cause `unknown-profile` — no retry — and the loop continues with
+    /// the next ready bead so a stray label on one bead does not stall
+    /// the molecule. The note carries enough detail (requested profile +
+    /// declared set) for the operator to relabel without re-reading the
+    /// manifest.
+    #[tokio::test]
+    async fn unknown_profile_routes_to_blocked_without_retry_then_continues() -> Result<(), RunError>
+    {
+        let mut c = FakeController::default();
+        c.ready_queue
+            .push_back(bead("wx-bad", &["profile:nonexistent"]));
+        c.ready_queue.push_back(bead("wx-ok", &["profile:base"]));
+        c.agent_outcomes.push_back(AgentOutcome::UnknownProfile {
+            error: "requested profile:nonexistent not declared; manifest declares: profile:base"
+                .into(),
+        });
+        c.agent_outcomes.push_back(AgentOutcome::Success);
+
+        let summary = run_loop(
+            &mut c,
+            RunMode::Continuous,
+            RetryPolicy { max_retries: 2 },
+            10,
+        )
+        .await?;
+
+        // Bad bead: one attempt, no retry, routed to blocked.
+        // Good bead: one attempt, reaches Done.
+        assert_eq!(
+            c.run_calls.len(),
+            2,
+            "unknown-profile must not retry and must not prevent the next bead from dispatching"
+        );
+        assert_eq!(c.run_calls[0].0, BeadId::new("wx-bad").expect("valid"));
+        assert_eq!(c.run_calls[1].0, BeadId::new("wx-ok").expect("valid"));
+        assert_eq!(
+            c.run_calls[0].1, None,
+            "unknown-profile must not thread a previous-failure body — there is no agent output",
+        );
+
+        assert_eq!(c.blocked.len(), 1, "exactly one bead blocked");
+        assert_eq!(c.blocked[0].0, BeadId::new("wx-bad").expect("valid"));
+        assert_eq!(c.blocked[0].1, UNKNOWN_PROFILE_CAUSE);
+        // The note must contain the unknown-profile cause token, the
+        // requested profile name, and at least one declared profile name
+        // so the operator can relabel without re-reading the manifest.
+        let note = &c.blocked[0].2;
+        assert!(
+            note.contains("profile:nonexistent"),
+            "blocked notes must name the requested profile: {note}",
+        );
+        assert!(
+            note.contains("profile:base"),
+            "blocked notes must name at least one declared profile: {note}",
+        );
+
+        assert!(
+            c.clarified.is_empty(),
+            "unknown-profile must not route through the clarify branch",
         );
         assert_eq!(summary.beads_blocked, 1);
         Ok(())

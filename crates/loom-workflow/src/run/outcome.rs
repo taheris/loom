@@ -34,6 +34,15 @@ pub enum AgentOutcome {
     /// invocation. A second mid-session failure inside the same
     /// `run_loop` invocation routes to `loom:blocked`.
     InfraMidSession { error: String },
+
+    /// The bead's requested `profile:X` label (or the CLI `--profile`
+    /// override) is not declared in the profile-image manifest. Routes
+    /// straight to `loom:blocked` cause `unknown-profile` — no retry, and
+    /// the loop continues with the next ready bead so a stray label on one
+    /// bead does not stall the molecule. `error` carries the requested
+    /// profile name and the manifest's declared set so the operator can
+    /// relabel from the bead's notes.
+    UnknownProfile { error: String },
 }
 
 /// Final state of one bead after retries have been exhausted (or the agent

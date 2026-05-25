@@ -24,7 +24,7 @@ use loom_driver::bd::{
 use loom_driver::config::Phase;
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
-use loom_driver::profile_manifest::ProfileImageManifest;
+use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
 use loom_driver::scratch::resolve_scratch_key;
 use tokio::process::Command;
 use tracing::info;
@@ -180,7 +180,7 @@ where
             &banner,
         )
         .map_err(|source| RunError::Protocol(ProtocolError::Io(source)))?;
-        let spawn_config = build_spawn_config_from_manifest(
+        let spawn_config = match build_spawn_config_from_manifest(
             &self.manifest,
             bead,
             self.cli_profile.as_ref(),
@@ -190,7 +190,16 @@ where
             scratch.path().to_path_buf(),
             vec![],
             vec![],
-        )?;
+        ) {
+            Ok(cfg) => cfg,
+            Err(ProfileError::UnknownProfile { name, .. }) => {
+                drop(scratch);
+                return Ok(AgentOutcome::UnknownProfile {
+                    error: format_unknown_profile_error(&name, &self.manifest),
+                });
+            }
+            Err(e) => return Err(RunError::Profile(e)),
+        };
         info!(
             bead = %bead.id,
             image_ref = %spawn_config.image_ref,
@@ -315,6 +324,26 @@ where
             review_marker: None,
         })
     }
+}
+
+/// Render the operator-facing note body for the `unknown-profile`
+/// blocked-cause path. Names the requested label as it appears on the
+/// bead (`profile:X`) and the manifest's declared set in the same form,
+/// so the human can relabel the bead without re-reading the manifest.
+pub fn format_unknown_profile_error(
+    requested: &ProfileName,
+    manifest: &ProfileImageManifest,
+) -> String {
+    let declared: Vec<String> = manifest
+        .declared_profiles()
+        .map(|p| format!("profile:{p}"))
+        .collect();
+    let declared_part = if declared.is_empty() {
+        "manifest declares no profiles".to_string()
+    } else {
+        format!("manifest declares: {}", declared.join(", "))
+    };
+    format!("requested profile:{requested} not declared; {declared_part}")
 }
 
 /// Look up the spec's `loom:active` epic and return its
@@ -980,6 +1009,64 @@ mod tests {
                 );
             }
             other => panic!("expected InfraMidSession, got {other:?}"),
+        }
+    }
+
+    /// Spec gate (Implementation Note 6): a bead whose `profile:X` label
+    /// is missing from the manifest must surface as
+    /// [`AgentOutcome::UnknownProfile`] (NOT [`AgentOutcome::Failure`])
+    /// so [`process_one_bead`](crate::run::run_loop) routes it straight to
+    /// `loom:blocked` cause `unknown-profile` without consuming a retry slot.
+    /// The error string must name the requested profile and the manifest's
+    /// declared set so the operator can relabel without re-reading the
+    /// manifest.
+    #[tokio::test]
+    async fn run_bead_translates_unknown_profile_into_unknown_profile_outcome() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir_all(&workspace).expect("ws dir");
+        // Manifest declares only `base` — the bead asks for `nonexistent`.
+        let manifest = write_manifest(dir.path());
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            SpecLabel::new("spec-x"),
+            PathBuf::from("/loom/bin"),
+            workspace,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                panic!("spawn closure must not be invoked when profile resolution fails");
+            },
+        );
+        let bad_bead = Bead {
+            id: BeadId::new("wx-5").expect("valid bead id"),
+            title: "needs a profile we do not have".into(),
+            description: "desc".into(),
+            status: "open".into(),
+            priority: 2,
+            issue_type: "task".into(),
+            labels: vec![Label::new("profile:nonexistent")],
+            parent: None,
+            metadata: Default::default(),
+            notes: None,
+        };
+        let outcome = controller
+            .run_bead(&bad_bead, None)
+            .await
+            .expect("run_bead must NOT bubble UnknownProfile up as RunError");
+        match outcome {
+            AgentOutcome::UnknownProfile { error } => {
+                assert!(
+                    error.contains("profile:nonexistent"),
+                    "error must name the requested profile (as it appears on the bead label): {error}",
+                );
+                assert!(
+                    error.contains("profile:base"),
+                    "error must name at least one declared profile so the operator can relabel: {error}",
+                );
+            }
+            other => panic!("expected UnknownProfile, got {other:?}"),
         }
     }
 
