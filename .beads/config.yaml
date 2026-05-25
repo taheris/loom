@@ -1,0 +1,14 @@
+# Beads Configuration File
+# See `bd config show` for full effective config.
+
+issue-prefix: "lm"
+
+# Git branch for beads data (used by bd dolt pull/push)
+sync-branch: "beads"
+
+# Sync configuration (dolt-native: bd dolt pull/push to the dolt-remote
+# stored on the beads git branch worktree at
+# .git/beads-worktrees/beads/.beads/dolt-remote/)
+sync:
+  mode: dolt-native
+  remote: "file:///home/shaun/src/github.com/taheris/loom/.git/beads-worktrees/beads/.beads/dolt-remote"
