@@ -1,0 +1,17 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"note\", \"set\"])"
+---
+Replace all notes for the spec
+
+Usage: loom note set [OPTIONS] --json <JSON> <LABEL>
+
+Arguments:
+  <LABEL>  Spec label
+
+Options:
+      --json <JSON>       JSON array of note strings: `'["note 1", "note 2"]'`
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi]
+      --kind <KIND>       Note kind [default: implementation]
+  -h, --help              Print help

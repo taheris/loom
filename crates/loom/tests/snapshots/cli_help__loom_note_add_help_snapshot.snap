@@ -1,0 +1,17 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"note\", \"add\"])"
+---
+Append a single note to the spec
+
+Usage: loom note add [OPTIONS] --text <TEXT> <LABEL>
+
+Arguments:
+  <LABEL>  Spec label
+
+Options:
+      --text <TEXT>       Note text
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi]
+      --kind <KIND>       Note kind [default: implementation]
+  -h, --help              Print help

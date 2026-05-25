@@ -1,0 +1,14 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"todo\"])"
+---
+Decompose the active spec into beads (four-tier detection)
+
+Usage: loom todo [OPTIONS]
+
+Options:
+  -s, --spec <LABEL>      Spec label override (defaults to `current_spec`)
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi]
+      --since <COMMIT>    Override the anchor's `base_commit` for tier-1 detection
+  -h, --help              Print help

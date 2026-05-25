@@ -1,0 +1,32 @@
+[package]
+name = "loom-agent"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+displaydoc = { workspace = true }
+glob = { workspace = true }
+loom-driver = { workspace = true }
+loom-events = { workspace = true }
+loom-llm = { workspace = true }
+nix = { workspace = true }
+regex = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+loom-test-support = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

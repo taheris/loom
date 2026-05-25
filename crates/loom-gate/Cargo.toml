@@ -1,0 +1,30 @@
+[package]
+name = "loom-gate"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Owns annotation dispatch, the status cache, the integrity gate, and
+# runner-discovery logic for `loom gate <subcommand>`. `loom-workflow`
+# depends on this crate; further consumers should not be added without
+# a spec change.
+[dependencies]
+displaydoc = { workspace = true }
+loom-events = { workspace = true }
+pulldown-cmark = { workspace = true }
+regex = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+shlex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

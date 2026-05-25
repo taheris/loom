@@ -1,0 +1,17 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"logs\"])"
+---
+Render (or tail) the most recent per-bead JSONL log
+
+Usage: loom logs [OPTIONS]
+
+Options:
+  -b, --bead <ID>         Restrict the search to a specific bead id
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi]
+  -f, --follow            Tail the selected log: block on EOF until the file grows or the user interrupts
+      --raw               Emit raw JSONL bytes verbatim (no parsing). Composes with `-f` to tail raw JSONL. Mutually exclusive with `-v` and `--path`
+  -v, --verbose           Stream assistant text deltas during render — equivalent to `loom run -v`. Mutually exclusive with `--raw` and `--path`
+      --path              Print the resolved log file path and exit. Mutually exclusive with `-f`, `-v`, `--raw`
+  -h, --help              Print help

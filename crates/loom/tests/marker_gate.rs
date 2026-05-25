@@ -1,0 +1,307 @@
+//! End-to-end verdict-gate tests covering `LOOM_BLOCKED`, `LOOM_CLARIFY`,
+//! and `LOOM_COMPLETE` marker handling, plus the invariant that the
+//! driver itself never invokes `bd close` (closure is the agent's
+//! responsibility per `specs/harness.md` § Verdict gate).
+//!
+//! Drives `loom run --once` against a Rust mock agent that emits the
+//! marker through the pi-mono protocol, with `bd-shim` standing in for
+//! the live beads socket. A prior bug collapsed every clean-exit
+//! session to `AgentOutcome::Success → bd close`, ignoring markers; the
+//! unit tests on `phase_verdict::decide` passed throughout because they
+//! never exercised `loom run`'s actual marker-routing wiring.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+fn seed_bead(state_dir: &Path, id: &str, title: &str, description: &str, labels: &[&str]) {
+    let bead_dir = state_dir.join(id);
+    std::fs::create_dir_all(&bead_dir).expect("mkdir bead dir");
+    std::fs::write(bead_dir.join("title"), title).expect("write title");
+    std::fs::write(bead_dir.join("description"), description).expect("write description");
+    std::fs::write(bead_dir.join("status"), "open").expect("write status");
+    std::fs::write(bead_dir.join("priority"), "2").expect("write priority");
+    std::fs::write(bead_dir.join("issue_type"), "task").expect("write issue_type");
+    let body = labels.join("\n");
+    std::fs::write(bead_dir.join("labels"), body).expect("write labels");
+}
+
+fn install_bd_shim(dir: &Path) -> PathBuf {
+    let bin_dir = dir.join("bd-bin");
+    std::fs::create_dir_all(&bin_dir).expect("mkdir bd-bin");
+    let bd_path = bin_dir.join("bd");
+    let source = PathBuf::from(env!("CARGO_BIN_EXE_bd-shim"));
+    match std::os::unix::fs::symlink(&source, &bd_path) {
+        Ok(_) => {}
+        Err(_) => {
+            std::fs::copy(&source, &bd_path).expect("copy bd-shim");
+            let mut perm = std::fs::metadata(&bd_path).expect("stat bd").permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&bd_path, perm).expect("chmod bd");
+        }
+    }
+    bin_dir
+}
+
+/// Write a profile manifest pointing at an empty tar; `loom run`
+/// resolves it via `LOOM_PROFILES_MANIFEST` even on the empty-queue
+/// fast path. The image is never instantiated — the mock agent
+/// replaces wrapix end-to-end — so the source tar can be empty.
+fn write_minimal_manifest(dir: &Path) -> PathBuf {
+    let source = dir.join("base.tar");
+    std::fs::write(&source, "").expect("write base.tar");
+    let manifest = dir.join("profile-images.json");
+    let body = format!(
+        r#"{{"base": {{"ref":"localhost/wrapix-base:test","source":{source:?}}}}}"#,
+        source = source.display().to_string(),
+    );
+    std::fs::write(&manifest, body).expect("write manifest");
+    manifest
+}
+
+fn run_loom_run_once(
+    workspace: &Path,
+    bin_dir: &Path,
+    state_dir: &Path,
+    manifest: &Path,
+    agent_mode: &str,
+    spec_label: &str,
+) -> std::process::Output {
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    let mut entries: Vec<PathBuf> = vec![bin_dir.to_path_buf()];
+    entries.extend(std::env::split_paths(&path_var));
+    let new_path = std::env::join_paths(entries).expect("join PATH");
+
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let mock_agent = env!("CARGO_BIN_EXE_mock-loom-agent");
+
+    Command::new(loom_bin)
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--agent")
+        .arg("pi")
+        .arg("run")
+        .arg("--once")
+        .arg("-s")
+        .arg(spec_label)
+        .env("PATH", new_path)
+        .env("LOOM_WRAPIX_BIN", mock_agent)
+        .env("LOOM_TEST_AGENT_MODE", agent_mode)
+        .env("LOOM_BIN", loom_bin)
+        .env("LOOM_PROFILES_MANIFEST", manifest)
+        .env("BD_STATE_DIR", state_dir)
+        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        // The nested-loom guard refuses `loom run` when LOOM_INSIDE=1.
+        // The cargo test runner inherits LOOM_INSIDE when this suite is
+        // executed inside a loom-managed container, which would block
+        // the child `loom run` invocation before it reached the marker
+        // routing under test. Strip it so the test exercises the live
+        // dispatch path the spec criterion pins.
+        .env_remove("LOOM_INSIDE")
+        .output()
+        .expect("spawn loom")
+}
+
+fn read_invocation_log(state_dir: &Path) -> String {
+    std::fs::read_to_string(state_dir.join(".invocations.log")).unwrap_or_default()
+}
+
+fn read_field(state_dir: &Path, id: &str, field: &str) -> String {
+    std::fs::read_to_string(state_dir.join(id).join(field)).unwrap_or_default()
+}
+
+fn read_labels(state_dir: &Path, id: &str) -> Vec<String> {
+    read_field(state_dir, id, "labels")
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// A `bd close <id>` invocation from the driver looks like
+/// `close <id>` in the shim's quoted argv log. Returns true iff any
+/// such line targets `target_id`.
+fn driver_closed_bead(log: &str, target_id: &str) -> bool {
+    log.lines().any(|line| {
+        let mut tokens = line.split_whitespace();
+        tokens.next() == Some("close") && tokens.next() == Some(target_id)
+    })
+}
+
+// -------------------------------------------------------------------
+// B5 — `test_gate_loom_blocked_marker`
+// -------------------------------------------------------------------
+
+/// Agent emits `LOOM_BLOCKED` with a reason. Verdict gate must:
+/// - leave the bead `open`,
+/// - add the `loom:blocked` label (via `bd update --add-label`),
+/// - NOT invoke `bd close` on that bead from the driver process.
+#[test]
+fn loom_run_once_routes_blocked_marker_to_label_and_leaves_bead_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let state_dir = workspace.join("bd-state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    seed_bead(
+        &state_dir,
+        "wx-blocka",
+        "spec missing schema",
+        "Need to land the schema section before this bead can proceed.\n",
+        &["spec:markertest", "profile:base"],
+    );
+
+    let bin_dir = install_bd_shim(workspace);
+    let manifest = write_minimal_manifest(workspace);
+
+    let output = run_loom_run_once(
+        workspace,
+        &bin_dir,
+        &state_dir,
+        &manifest,
+        "blocked-marker",
+        "markertest",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let log = read_invocation_log(&state_dir);
+    assert!(
+        output.status.success(),
+        "loom run --once must exit 0 on LOOM_BLOCKED.\n\
+         stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
+    );
+
+    let status = read_field(&state_dir, "wx-blocka", "status");
+    assert_eq!(
+        status.trim(),
+        "open",
+        "blocked bead must stay open. status={status:?}\nbd-shim log:\n{log}",
+    );
+
+    let labels = read_labels(&state_dir, "wx-blocka");
+    assert!(
+        labels.iter().any(|l| l == "loom:blocked"),
+        "blocked bead must carry loom:blocked. labels={labels:?}\nbd-shim log:\n{log}",
+    );
+
+    assert!(
+        !driver_closed_bead(&log, "wx-blocka"),
+        "driver must NOT call `bd close wx-blocka` on LOOM_BLOCKED.\nbd-shim log:\n{log}",
+    );
+}
+
+/// Agent emits `LOOM_CLARIFY` with a question. Same shape as
+/// blocked-marker: open, `loom:clarify` label, no driver-side close.
+#[test]
+fn loom_run_once_routes_clarify_marker_to_label_and_leaves_bead_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let state_dir = workspace.join("bd-state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    seed_bead(
+        &state_dir,
+        "wx-clara",
+        "deploy key path?",
+        "Need to know which deploy-key path to mount before continuing.\n",
+        &["spec:markertest", "profile:base"],
+    );
+
+    let bin_dir = install_bd_shim(workspace);
+    let manifest = write_minimal_manifest(workspace);
+
+    let output = run_loom_run_once(
+        workspace,
+        &bin_dir,
+        &state_dir,
+        &manifest,
+        "clarify-marker",
+        "markertest",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let log = read_invocation_log(&state_dir);
+    assert!(
+        output.status.success(),
+        "loom run --once must exit 0 on LOOM_CLARIFY.\n\
+         stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
+    );
+
+    let status = read_field(&state_dir, "wx-clara", "status");
+    assert_eq!(
+        status.trim(),
+        "open",
+        "clarify bead must stay open. status={status:?}\nbd-shim log:\n{log}",
+    );
+
+    let labels = read_labels(&state_dir, "wx-clara");
+    assert!(
+        labels.iter().any(|l| l == "loom:clarify"),
+        "clarify bead must carry loom:clarify. labels={labels:?}\nbd-shim log:\n{log}",
+    );
+
+    assert!(
+        !driver_closed_bead(&log, "wx-clara"),
+        "driver must NOT call `bd close wx-clara` on LOOM_CLARIFY.\nbd-shim log:\n{log}",
+    );
+}
+
+// -------------------------------------------------------------------
+// B6 — `test_run_does_not_close_bead`
+// -------------------------------------------------------------------
+
+/// Sweeps all three marker scenarios in one test and asserts a single
+/// invariant across them: the driver never calls `bd close <id>` on
+/// the dispatched bead — closure is the agent's responsibility per
+/// the verdict-gate decision table.
+///
+/// For LOOM_COMPLETE specifically: the mock agent does NOT call
+/// `bd close` itself (that's outside its mocked surface area). The
+/// bead is expected to remain open after the run. The point of the
+/// test is the driver's restraint, not the bd-closed observable.
+#[test]
+fn loom_run_never_invokes_bd_close_on_dispatched_bead_across_all_markers() {
+    for (mode, id) in [
+        ("blocked-marker", "wx-noclos"),
+        ("clarify-marker", "wx-noclos2"),
+        ("complete-marker", "wx-noclos3"),
+        ("no-marker", "wx-noclos4"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let state_dir = workspace.join("bd-state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+
+        seed_bead(
+            &state_dir,
+            id,
+            "no-driver-close gate",
+            "Driver must not call bd close on this bead.\n",
+            &["spec:noclostest", "profile:base"],
+        );
+
+        let bin_dir = install_bd_shim(workspace);
+        let manifest = write_minimal_manifest(workspace);
+
+        let output = run_loom_run_once(
+            workspace,
+            &bin_dir,
+            &state_dir,
+            &manifest,
+            mode,
+            "noclostest",
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let log = read_invocation_log(&state_dir);
+
+        assert!(
+            !driver_closed_bead(&log, id),
+            "[{mode}] driver must NOT invoke `bd close {id}` — closure is the \
+             agent's job per the verdict-gate decision table.\n\
+             stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
+        );
+    }
+}

@@ -1,0 +1,35 @@
+[package]
+name = "loom-llm"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.loom]
+public_contract = true
+
+# PUBLIC CONTRACT LEAF — external Rust consumers (RAG pipelines,
+# domain-specific review tools) depend on this crate for typed
+# multi-provider LLM access without taking on loom-driver / loom-agent /
+# loom-workflow. The dep surface is intentionally small; the underlying
+# multi-provider crate is an internal implementation dependency consumed
+# by concrete LlmClient impls in later beads, not re-exported.
+[dependencies]
+blake3 = { workspace = true }
+displaydoc = { workspace = true }
+futures-core = { workspace = true }
+genai = { workspace = true }
+loom-events = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_jcs = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+tokio-test = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,80 @@
+pinned_context = "docs/README.md"
+
+[beads]
+priority = 2
+default_type = "task"
+
+[loop]
+# Molecule-level: bounds `loom run`'s outer loop on fix-up beads. Each
+# full molecule pass — initial pass plus every verdict-gate-produced
+# fix-up pass — consumes one slot.
+max_iterations = 10
+# In-session: per-bead retry-with-`previous_failure` budget inside one
+# `process_one_bead` call. Independent of `max_iterations`.
+max_retries = 2
+
+[logs]
+# Delete log files under .wrapix/loom/logs/ older than this many days on
+# `loom run` startup. 0 disables sweeping (keep forever).
+retention_days = 14
+
+# Per-phase config. Resolution for any field: [phase.<name>] →
+# [phase.default] → built-in. `loom run` reads its profile from the
+# bead's `profile:X` label first, then [phase.run] / [phase.default];
+# the `--profile` CLI flag overrides everything.
+[phase.default]
+profile = "base"
+agent.backend = "claude"
+
+# [phase.todo]
+# profile = "rust"
+# agent.backend = "pi"
+# agent.provider = "deepseek"
+# agent.model_id = "deepseek-v3"
+#
+# [phase.check]
+# agent.backend = "claude"
+
+[claude]
+# Agent-runtime settings, applied wherever claude is selected. Seconds to
+# wait for clean exit after `result` before SIGTERM (shutdown watchdog).
+post_result_grace_secs = 5
+
+# Backend-agnostic liveness knobs. `handshake_timeout_secs` bounds the pi
+# startup probe + optional set_model response — a non-responsive launcher
+# fails fast with `HandshakeTimeout` instead of hanging. `stall_warn_secs`
+# emits a `warn!` every N seconds of agent silence on the run loop without
+# aborting; claude can legitimately think for minutes, so this is a
+# heartbeat, not a deadline. Defaults: 30s / 60s.
+# handshake_timeout_secs = 30
+# stall_warn_secs = 60
+
+[security]
+# Tool names to deny when claude sends control_request. Claude-only —
+# pi has no host-side permission flow (tools execute internally, no
+# control_request analog). Empty by default; the container sandbox is
+# the trust boundary.
+# denied_tools = ["SomeNewHostTool"]
+
+# Gate runners — per-tier batched dispatch with per-runner cwd. Full
+# schema (match patterns, target templates, parsers) is owned by
+# specs/gate.md § Runners. Consumers declare their own runners;
+# the blocks below are commented examples.
+#
+# [runner.test]
+# command = "cargo nextest run -E '{filter}' --message-format=libtest-json"
+# target  = "test({name})"
+# join    = " + "
+# parse   = "libtest-json"
+# cwd     = "."
+#
+# [runner.check]
+# cwd = "."
+#
+# [runner.system.nix]
+# match   = '^nix (build|run) \.#(\S+)$'
+# command = "nix build {targets}"
+# target  = ".#{capture_2}"
+# join    = " "
+# parse   = "nix-build-status"
+# cwd     = "."

@@ -1,0 +1,12 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"status\"])"
+---
+Print the active spec, current molecule, and iteration counter
+
+Usage: loom status [OPTIONS]
+
+Options:
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi]
+  -h, --help              Print help

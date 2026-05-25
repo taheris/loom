@@ -1,0 +1,106 @@
+# Build the loom Cargo workspace.
+#
+# Exposed as `legacyPackages.${system}.lib.mkLoom` so consumers (notably
+# wrapix dogfood + any flake that wires loom into a wrapix sandbox in
+# "direct" mode) can call it with their own `pkgs`/`crane`/`fenix` — for
+# example with `linuxPkgs` on a Darwin host to get a Linux-built
+# `loom-direct-runner` to drop into a wrapix sandbox image.
+{
+  pkgs,
+  crane,
+  fenix,
+  src,
+}:
+
+let
+  inherit (pkgs) lib;
+
+  fenixPkgs = fenix.packages.${pkgs.stdenv.hostPlatform.system};
+  toolchain = fenixPkgs.combine [ fenixPkgs.stable.defaultToolchain ];
+  craneLib = (crane.mkLib pkgs).overrideToolchain (_: toolchain);
+
+  # Keep templates/ and snapshot files alongside the Cargo workspace —
+  # crane's default filter would exclude them.
+  srcFilter =
+    path: type:
+    (craneLib.filterCargoSources path type)
+    || (lib.hasInfix "/loom-templates/templates/" path)
+    || (lib.hasSuffix ".snap" path);
+
+  cleanedSrc = lib.cleanSourceWith {
+    inherit src;
+    filter = srcFilter;
+  };
+
+  commonArgs = {
+    src = cleanedSrc;
+    cargoLock = "${src}/Cargo.lock";
+    nativeBuildInputs = [ pkgs.git ];
+    meta = {
+      description = "Rust workflow orchestrator";
+      mainProgram = "loom";
+    };
+  };
+
+  cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+  # Specs, mock binaries, and any other non-Cargo inputs the tests read
+  # from the workspace root.
+  extraSrcs = {
+    "tests/mock-pi" = "${src}/tests/mock-pi";
+    "tests/mock-claude" = "${src}/tests/mock-claude";
+    "specs" = "${src}/specs";
+    "docs" = "${src}/docs";
+  };
+
+  stagedSrc = pkgs.runCommand "loom-src-with-extras" { } (
+    ''
+      cp -r ${cleanedSrc} $out
+      chmod -R u+w $out
+    ''
+    + lib.concatStringsSep "\n" (
+      lib.mapAttrsToList (rel: abs: ''
+        mkdir -p "$(dirname "$out/${rel}")"
+        cp -r ${abs} "$out/${rel}"
+      '') extraSrcs
+    )
+  );
+
+  bin = craneLib.buildPackage (
+    commonArgs
+    // {
+      inherit cargoArtifacts;
+      doCheck = false;
+    }
+  );
+
+  clippy = craneLib.cargoClippy (
+    commonArgs
+    // {
+      src = stagedSrc;
+      inherit cargoArtifacts;
+      cargoClippyExtraArgs = "--all-targets";
+    }
+  );
+
+  nextest = craneLib.cargoNextest (
+    commonArgs
+    // {
+      src = stagedSrc;
+      inherit cargoArtifacts;
+      preCheck = ''
+        export HOME=$(mktemp -d)
+      '';
+    }
+  );
+in
+{
+  inherit
+    bin
+    clippy
+    nextest
+    cargoArtifacts
+    craneLib
+    toolchain
+    ;
+}

@@ -1,0 +1,15 @@
+[package]
+name = "loom-test-support"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Test-only helpers shared across loom proptest call sites. Consumers
+# depend on this crate exclusively via `[dev-dependencies]`; production
+# code never reaches the items it exposes.
+[dependencies]
+
+[lints]
+workspace = true

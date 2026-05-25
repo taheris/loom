@@ -1,0 +1,29 @@
+[package]
+name = "loom-events"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.loom]
+public_contract = true
+
+# PUBLIC CONTRACT LEAF — frontends, SSE bridges, log analyzers depend on
+# this crate to consume `AgentEvent` and the id newtypes without pulling
+# in the loom-driver runtime (rusqlite, gix, tokio). Adding a new dep
+# here changes the dependency surface every consumer ships; do not
+# expand this list without a spec change.
+[dependencies]
+futures-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# dev-dependencies are NOT part of the public contract — consumers see
+# only [dependencies]. Test-only crates live here.
+[dev-dependencies]
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

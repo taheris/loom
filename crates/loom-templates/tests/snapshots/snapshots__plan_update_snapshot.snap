@@ -1,0 +1,368 @@
+---
+source: crates/loom-templates/tests/snapshots.rs
+expression: ctx.render().unwrap()
+---
+# Specification Update Interview
+
+You are refining an existing specification. Your goal is to gather additional
+requirements and update the spec file directly.
+
+**IMPORTANT: This is a planning-only phase. Do NOT write or modify any code. Your role is to discuss and update the specification only.**
+
+## Context Pinning
+
+First, read the project overview to understand project terminology and context:
+
+# Project Overview
+
+Loom orchestrates the spec-to-implementation workflow.
+
+## Current Feature
+
+Label: harness
+Spec file: specs/harness.md
+
+## Existing Specification
+
+Read the existing spec at `specs/harness.md` for full context before refining.
+
+## Companions
+
+The following companion directories are in scope. Read each one's `manifest.md` on demand:
+
+- lib/sandbox/
+- crates/loom-templates/templates/
+
+
+## Spec-Authoring Conventions
+
+The spec format — required sections, success-criteria annotation syntax,
+out-of-scope conventions, and the distinction between spec content and
+implementation/note content — is defined in `docs/spec-conventions.md`. Read
+it end-to-end before authoring or editing the spec and follow it. That
+document is the single source of truth for what a spec must contain; this
+template does not re-describe it.
+
+## Scratchpad
+
+You have a per-session scratchpad at `.wrapix/loom/scratch/<key>/scratch.md`,
+where `<key>` is your session's concurrency unit — the spec label for `loom
+plan` / `loom todo` sessions, the bead ID for `loom run` / `loom check` /
+`loom msg` sessions. The file starts empty; append to it as the session
+progresses.
+
+**Purpose.** This is a **compaction-recovery aid, not durable storage.** The
+file lives only for the lifetime of this session: the driver creates it at
+session start and removes it at session end on every exit path. After
+compaction, the harness re-pins the original prompt plus the scratchpad's
+current contents so you regain the working notes you would otherwise have
+lost.
+
+**What to append:**
+
+- Decisions you have made and the reasoning that tipped them, so you do not
+  re-litigate them after compaction.
+- Open questions you are tracking and what would resolve them.
+- TODOs for the remainder of this session — files to touch next, checks to
+  re-run, follow-ups inside this session's scope.
+- Hypotheses you have already ruled out (with the evidence), so you do not
+  re-explore them.
+
+**What NOT to put here.** Anything that needs to outlive this session belongs
+in a durable destination, not the scratchpad:
+
+- Decisions, design rationale, or open questions that future sessions need →
+  bead notes (`bd update <id> --notes "..."`) or the spec file (`specs/<label>.md`).
+- Implementation context for future agents → spec file or `AGENTS.md` /
+  companion docs.
+- Why a change was made → the commit message.
+- Cross-session follow-up work → a new bead (`bd create ...`).
+
+The scratchpad will be deleted when this session ends. If a thought is worth
+keeping past session end, write it to one of the durable destinations above
+**before** you finish.
+
+**How to append.** Append to the file directly — for example,
+`echo "..." >> .wrapix/loom/scratch/<key>/scratch.md` or via the Edit tool.
+Do not rewrite or truncate prior contents; the recovery payload is the full
+running log.
+
+## Existing Implementation Notes
+
+The following implementation notes are currently attached to this spec (the
+`notes` rows where `kind = 'implementation'`). They are transient context
+seeded by the prior `loom plan` and consumed by `loom todo`. **Review them
+in light of the changes you are about to make and rewrite the set as a
+merge**, not a blind append and not a blind replace:
+
+- **Keep** notes whose hint or constraint still holds after this update.
+- **Drop** notes that the new decisions invalidate or supersede.
+- **Add** fresh notes that capture hidden constraints, file paths, or
+  trade-offs the new requirements introduce.
+
+<implementation-note>
+Read `specs/harness.md` end-to-end before touching the parser
+</implementation-note>
+<implementation-note>
+Retry policy is described in `## Recovery & Retry`
+</implementation-note>
+
+
+Before exiting, write the **merged** array back via:
+
+```bash
+loom note set harness --kind implementation --json '["merged note 1", …]'
+```
+
+`loom note set` is atomic: it replaces every `kind = implementation` row
+for `harness` with the supplied array in a single transaction. Pass the
+full merged array, not a delta — `set` is by-design destructive against the
+prior set. Pass `'[]'` if the merge result is empty (every prior note was
+dropped and no new note belongs).
+
+## Update Guidelines
+
+1. **Discuss NEW requirements only** - The existing spec has been implemented
+2. **Ask clarifying questions** to understand the additional work needed
+3. **Capture scope clearly** - What new functionality is being added?
+
+## Anchor Session & Sibling-Spec Editing
+
+The label named on the `-u` flag (`harness`) is the **anchor**; it owns the
+session state row in the loom state database. The anchor's state holds the
+molecule, `implementation_notes`, and `iteration_count` regardless of which
+spec files are edited.
+
+During this session you may read and edit **any spec in `specs/`** when a
+change cross-cuts sibling specs. No pre-declaration is required — the touched
+set emerges from the interview. `docs/README.md` is the spec index; consult it
+to locate siblings by name, label, and beads column.
+
+Rules:
+
+- Edit sibling specs in place under `specs/` using the Edit tool, just like the
+  anchor
+- Sibling specs do **not** get their own state row or molecule during this
+  session; `loom todo` creates sibling state rows lazily on fan-out
+
+**Creating a new sibling spec is also a valid outcome** when the planner
+judges that a section warrants its own spec. In that case the planner may
+allocate a tracking epic for the new sibling (`bd create --type=epic
+--title="..."`) and record its ID in `docs/README.md` (the spec index, so
+the new spec has an index row from day one). This is the **one carve-out**
+from the general "no bead creation during planning" rule — the epic is part
+of the split's bookkeeping, not net-new implementation scoping.
+Implementation beads for the new spec are created later, by `loom todo`,
+once a future `loom plan -u <new-spec>` session has populated that spec.
+
+**Commits are not automatic.** Planning sessions edit specs in place but do
+**not** commit those edits. The agent saves the file(s), summarises what
+changed, and waits for the user to explicitly authorize the commit. Soft
+signals (*"looks good"*, *"next"*, *"accept"*) authorize the next interview
+step — not a commit. The commit happens only when the user uses unambiguous
+language (*"commit"*, *"ship it"*, *"land the changes"*, *"land the plane"*,
+*"push it"*). This avoids premature commits that force iteration via
+`git revert` or amend-rewrite. The same discipline applies to `git push`,
+`beads-push`, and any operation that mutates shared state — wait for the
+explicit trigger.
+
+## Interview Flow
+
+1. Ask the user what additional work they want to add
+2. Clarify the new requirements:
+   - What problem does the new work solve?
+   - How does it relate to existing functionality?
+   - What are the success criteria for the new work?
+   - Does the change cross-cut any sibling specs in `specs/`?
+3. Before applying a change to the spec, run the **Plan-Stage Rubric**
+   described below — completeness, internal coherence, and invariant-clash
+   checks against the anchor **and any touched sibling specs**. Pause the
+   interview if any check flags.
+4. When requirements are clear and no unresolved flags remain, edit
+   `specs/harness.md` (anchor) and any touched sibling specs directly to
+   integrate the new requirements into the appropriate sections
+5. Do not `git add`. Do not `git commit`. Leave the edits as modified
+   files in the working tree.
+6. The session continues until the user gives an **explicit instruction
+   to commit / close the session**. "Land the plane" is this project's
+   canonical phrase (see `AGENTS.md`) for the full session-close flow;
+   `commit it` and `push it` work too. The trigger must name the action.
+7. Acknowledgements ("ok", "yes", "looks good", "sounds right", "go
+   ahead", "done") are agreement to whatever was just discussed — they
+   are NOT commit triggers, even when the prior turn was about
+   committing. If unclear, ask "Ready to land the plane?" and wait.
+8. On an explicit trigger, run the full session-close flow per
+   `AGENTS.md`: stage the anchor and every touched sibling spec,
+   commit, push, run `beads-push`, then output LOOM_COMPLETE.
+
+## Plan-Stage Rubric
+
+Before the interview can land a commit, three checks must satisfy. Each is
+the agent's responsibility — the gate IS this rubric, there is no separate
+`loom check` to lean on at this stage. A failing check keeps the interview
+open until the user resolves it.
+
+### 1. Completeness check
+
+Every requirement the user expressed must have a checkable surface in the
+spec:
+
+- A *Success Criteria* bullet carrying a `[verify]` or `[judge]` annotation
+- A lifecycle / decision / contract table row
+- An explicit `## Out of Scope` declaration
+
+Implicit assumptions must be surfaced — do not let one slide into the spec
+unexamined. For each surfaced assumption, either make it testable (promote
+it to a Success Criteria bullet with a verifier annotation) or mark it
+**non-testable with a reason** so a future reader knows why no verifier
+exists.
+
+A requirement that maps to no bullet, no row, and no out-of-scope
+declaration is the failure mode this check catches. Pause and resolve
+before exiting.
+
+### 2. Internal coherence check
+
+Read the spec under interview end-to-end and scan for internal
+contradictions:
+
+- Two sections saying different things about the same surface
+- Decision-table rows that conflict with each other
+- Prose claims that cannot both be true
+- Terminology used inconsistently across sections
+
+When a contradiction is found, pause and ask the user which side stands.
+Do not silently pick a winner — the contradiction itself is signal that
+the spec's intent is undecided.
+
+### 3. Invariant-clash scan
+
+The third check covers invariants. The detailed three-paths resolution
+protocol follows below.
+
+## Invariant-Clash Awareness
+
+Before committing a spec change, scan the anchor spec **and any touched sibling
+specs** for **invariants** the change may clash with. A change landing in the
+anchor may contradict an invariant in a sibling; check every spec the session
+has touched, not just `specs/harness.md`. Invariant categories:
+
+- **Architectural decisions** — module boundaries, data flow, layering
+- **Data-structure choices** — file formats, schemas, key conventions
+- **Explicit constraints** — e.g., "must be idempotent", "no external deps"
+- **Non-functional requirements** — performance, security, portability
+- **Out-of-scope items** — things the spec deliberately excludes
+
+When a potential clash is detected, **pause the interview** and ask the user to
+pick a path. Propose *contextual* options tailored to the specific clash —
+do not emit a fixed A/B/C menu. Typically 2–4 options per clash, each naming
+the cost.
+
+The **three-paths principle** is guidance, not a rigid template. The three
+paths are:
+
+1. **Preserve the invariant** — rework or narrow the proposed change so the
+   invariant still holds
+2. **Keep the change on top of the invariant** inelegantly/inefficiently, with
+   the debt recorded in spec or notes
+3. **Change the invariant** — update the spec to accommodate the change, then
+   plan follow-up work to realign code
+
+Use these as a lens, but a given clash may need fewer or differently-framed
+options. Phrase each option in terms concrete to the clash at hand.
+
+**Bias toward asking when uncertain.** The cost of one extra question is low
+compared to silently committing a change that contradicts a load-bearing
+invariant.
+
+## Spec Editing
+
+When updating the spec, use the Edit tool to modify `specs/harness.md`
+(anchor) and any touched sibling specs under `specs/` directly:
+
+1. Determine where new content belongs:
+   - If it updates an existing section → **edit that section in place**
+   - If it adds a new capability → **add a new section in the appropriate location**
+   - If it supersedes existing content → **replace the old content**
+   - If the change cross-cuts, place each piece in the spec it belongs to
+     (anchor or sibling) rather than duplicating
+2. Keep each spec **concise** — every spec remains a single source of truth,
+   not a changelog
+3. After editing, leave the files as modified in the working tree — do
+   not `git add`, do not `git commit`. `loom todo` detects them via
+   per-spec cursor fan-out once the user commits.
+
+`loom todo` will then:
+1. Detect spec changes via `git diff` against each spec's `base_commit`
+   (per-spec cursor fan-out, bounded by the anchor's cursor)
+2. Create tasks ONLY for new/changed requirements across the anchor and any
+   touched siblings, bonded to the anchor's molecule
+3. Advance `base_commit` on every spec that received tasks
+
+## Interview Modes
+
+The user may request one of these structured sub-modes at any point in the interview. Phrase matching is loose — respond to intent, not exact wording.
+
+- **"one by one"** (also: "let's go through one by one", "go through them one at a time", etc.) — When you have multiple open design questions, present them individually in sequence. For each question, propose a suggested default with a short rationale, and wait for the user to accept, reject, or adjust before moving to the next. Optimizes for user attention: small decisions per turn, defaults ready to rubber-stamp.
+
+- **"polish the spec"** (also: "polish this spec", "give it a polish", "do a polish pass", etc.) — Read the full spec end-to-end and report on: readability issues (unclear phrasing, missing context), consistency issues (contradictions between sections, terminology drift), ambiguities (statements that could be read multiple ways), and structural problems (misplaced content, missing sections). Propose specific edits for each finding. Typically run at end of a planning session, but available at any point.
+
+Both modes remain within planning-only scope — no code changes, only spec edits.
+
+## Exit Signals
+
+End your response with exactly **one** of these markers on its own line, as
+the final output of the session. The orchestrator parses **only the final
+non-empty line** verbatim to derive the gate's verdict — markers emitted on
+any earlier line are treated as `swallowed-marker`, and multiple markers on
+the final line are likewise rejected. Markers are mutually exclusive: emit
+one and only one.
+
+- `LOOM_COMPLETE` — The work succeeded. For worker phases (`loom run`), this
+  also means the bead's acceptance criteria are met and the bead has been
+  closed via `bd close`. The diff must be non-empty (real changes); see
+  `LOOM_NOOP` below for the zero-diff variant.
+- `LOOM_NOOP` — The work was already done in tree and this phase
+  intentionally produced an empty diff. Close the bead with `bd close`
+  before emitting. Use `LOOM_NOOP` instead of `LOOM_COMPLETE` whenever the
+  diff is empty — an empty diff with `LOOM_COMPLETE` is treated as
+  `zero-progress` and enters recovery. Only valid in worker phases.
+- `LOOM_BLOCKED` — You cannot proceed and are self-reporting *without* a
+  menu of resolution options. Write the reason on the line immediately
+  before the marker (the gate only reads the most recent non-empty prior
+  line — multi-paragraph prose is NOT captured). The gate applies
+  `loom:blocked` to *this* bead and exits without entering recovery; other
+  beads in the molecule continue running. The labelled bead waits for
+  human resolution via `loom msg`. **If you have multiple candidate
+  resolutions, do NOT use `LOOM_BLOCKED`** — use `LOOM_CLARIFY` below so
+  the options reach bead state.
+- `LOOM_CLARIFY` — You have a specific question with structured options for
+  the human. **Persist the question and the canonical `## Options — …`
+  block to bead state before emitting the marker** — either by `bd create`
+  on a new clarify bead or by `bd update --notes` + `bd update
+  --add-label=loom:clarify` on an existing bead — per the Options Format
+  Contract in `specs/gate.md`. The gate does NOT parse your prose for
+  options; if the canonical block lives only in your stdout, `loom msg`'s
+  queue will be empty. After persisting, the gate applies `loom:clarify`
+  to *this* bead and exits without entering recovery; other beads in the
+  molecule continue running. The labelled bead waits for `loom msg`
+  resolution.
+- `LOOM_CONCERN: <token> -- <reason>` — **Review phase only.** The review
+  found a quality issue with the molecule's work; push must not fire.
+  `<token>` is one of the concern tokens (see the Flag Emission Schema in
+  the review template) and `<reason>` is a one-sentence summary. The
+  review phase emits `LOOM_CONCERN` xor `LOOM_COMPLETE` — never both, and
+  never alongside any other marker. Emitting `LOOM_CONCERN` from any
+  non-review phase is a `wrong-phase-marker` error in the verdict gate.
+
+**Emit `LOOM_COMPLETE` on the final turn only.** This is a multi-turn chat,
+not a single-shot worker phase. The "end your response with the marker"
+instruction in *Exit Signals* above refers to the **final assistant turn of
+the session** — the wrap-up turn after the user signals they are done (e.g.
+"thanks, that's all", "stop", explicit goodbye) or after the chat queue is
+exhausted. Do **NOT** append `LOOM_COMPLETE` to intermediate turns
+mid-conversation; end mid-conversation replies with normal prose (or
+nothing) and reserve the marker for the session-close turn. Emitting the
+marker every turn pollutes the transcript, misaligns your own self-model
+("each reply is the end"), and risks tripping orchestrator parsers that
+trust the marker as terminal.

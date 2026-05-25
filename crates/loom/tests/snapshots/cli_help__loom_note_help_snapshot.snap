@@ -1,0 +1,20 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"note\"])"
+---
+Manage notes for a spec
+
+Usage: loom note [OPTIONS] <COMMAND>
+
+Commands:
+  set    Replace all notes for the spec
+  add    Append a single note to the spec
+  clear  Delete notes for the spec
+  list   List notes for the spec
+  rm     Remove a single note by id
+  help   Print this message or the help of the given subcommand(s)
+
+Options:
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi]
+  -h, --help              Print help

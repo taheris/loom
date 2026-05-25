@@ -1,0 +1,30 @@
+[package]
+name = "loom-render"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Depends on `loom-events` (public event contract) plus the rendering
+# deps. Must NOT depend on `loom-driver` — keeping the renderer free of
+# the driver runtime lets `loom logs`, SSE bridges, and external log
+# tools reuse it without pulling in rusqlite, gix, tokio, etc.
+#
+# H1 (wx-x3vg3) staged imara-diff / crossterm / owo-colors / colored_json
+# at the workspace level; H2 onwards wires them through this crate.
+[dependencies]
+crossterm = { workspace = true }
+displaydoc = { workspace = true }
+imara-diff = { workspace = true }
+loom-events = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

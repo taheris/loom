@@ -1,0 +1,34 @@
+[package]
+name = "loom-driver"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+displaydoc = { workspace = true }
+fd-lock = { workspace = true }
+gix = { workspace = true }
+loom-events = { workspace = true }
+loom-render = { workspace = true }
+pulldown-cmark = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+loom-test-support = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tokio-test = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

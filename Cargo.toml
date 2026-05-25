@@ -1,0 +1,94 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/loom",
+    "crates/loom-driver",
+    "crates/loom-events",
+    "crates/loom-llm",
+    "crates/loom-render",
+    "crates/loom-agent",
+    "crates/loom-direct-runner",
+    "crates/loom-gate",
+    "crates/loom-workflow",
+    "crates/loom-templates",
+    "crates/loom-test-support",
+    "crates/loom-walk",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+version = "0.1.0"
+license = "MIT"
+publish = false
+
+[workspace.metadata.crane]
+name = "loom"
+
+[workspace.dependencies]
+anyhow = "1"
+askama = "0.16"
+blake3 = "1"
+clap = { version = "4", features = ["derive"] }
+colored_json = "5"
+crossterm = "0.28"
+displaydoc = "0.2"
+fd-lock = "4"
+futures-core = "0.3"
+genai = "0.6.0-beta.20"
+glob = "0.3"
+imara-diff = "0.1"
+gix = { version = "0.83", default-features = false, features = [
+    "status",
+    "blob-diff",
+    "revision",
+    "parallel",
+    "sha1",
+] }
+insta = "1"
+nix = { version = "0.29", default-features = false, features = ["signal"] }
+owo-colors = { version = "4", features = ["supports-colors"] }
+proptest = "1"
+pulldown-cmark = { version = "0.13", default-features = false }
+regex = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_jcs = "0.2"
+serde_json = { version = "1", features = ["raw_value"] }
+shlex = "1"
+syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-test = "0.4"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+walkdir = "2"
+
+# Internal crates
+loom-driver = { path = "crates/loom-driver" }
+loom-events = { path = "crates/loom-events" }
+loom-llm = { path = "crates/loom-llm" }
+loom-render = { path = "crates/loom-render" }
+loom-agent = { path = "crates/loom-agent" }
+loom-direct-runner = { path = "crates/loom-direct-runner" }
+loom-gate = { path = "crates/loom-gate" }
+loom-workflow = { path = "crates/loom-workflow" }
+loom-templates = { path = "crates/loom-templates" }
+loom-test-support = { path = "crates/loom-test-support" }
+loom-walk = { path = "crates/loom-walk" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+panic = "deny"
+expect_used = "deny"
+allow_attributes = "warn"

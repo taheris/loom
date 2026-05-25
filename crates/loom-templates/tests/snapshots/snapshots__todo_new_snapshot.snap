@@ -1,0 +1,182 @@
+---
+source: crates/loom-templates/tests/snapshots.rs
+expression: ctx.render().unwrap()
+---
+# Task Decomposition
+
+You are decomposing a specification into implementable tasks. Your goal is to
+create a beads molecule (epic + child issues) that breaks down the work.
+
+## Context Pinning
+
+First, read the project overview to understand project terminology and context:
+
+# Project Overview
+
+Loom orchestrates the spec-to-implementation workflow.
+
+## Current Feature
+
+Label: harness
+Spec file: specs/harness.md
+
+## Specification Content
+
+Read the spec at `specs/harness.md` for full content before decomposing.
+
+## Companions
+
+The following companion directories are in scope. Read each one's `manifest.md` on demand:
+
+- lib/sandbox/
+
+
+## Scratchpad
+
+You have a per-session scratchpad at `.wrapix/loom/scratch/<key>/scratch.md`,
+where `<key>` is your session's concurrency unit — the spec label for `loom
+plan` / `loom todo` sessions, the bead ID for `loom run` / `loom check` /
+`loom msg` sessions. The file starts empty; append to it as the session
+progresses.
+
+**Purpose.** This is a **compaction-recovery aid, not durable storage.** The
+file lives only for the lifetime of this session: the driver creates it at
+session start and removes it at session end on every exit path. After
+compaction, the harness re-pins the original prompt plus the scratchpad's
+current contents so you regain the working notes you would otherwise have
+lost.
+
+**What to append:**
+
+- Decisions you have made and the reasoning that tipped them, so you do not
+  re-litigate them after compaction.
+- Open questions you are tracking and what would resolve them.
+- TODOs for the remainder of this session — files to touch next, checks to
+  re-run, follow-ups inside this session's scope.
+- Hypotheses you have already ruled out (with the evidence), so you do not
+  re-explore them.
+
+**What NOT to put here.** Anything that needs to outlive this session belongs
+in a durable destination, not the scratchpad:
+
+- Decisions, design rationale, or open questions that future sessions need →
+  bead notes (`bd update <id> --notes "..."`) or the spec file (`specs/<label>.md`).
+- Implementation context for future agents → spec file or `AGENTS.md` /
+  companion docs.
+- Why a change was made → the commit message.
+- Cross-session follow-up work → a new bead (`bd create ...`).
+
+The scratchpad will be deleted when this session ends. If a thought is worth
+keeping past session end, write it to one of the durable destinations above
+**before** you finish.
+
+**How to append.** Append to the file directly — for example,
+`echo "..." >> .wrapix/loom/scratch/<key>/scratch.md` or via the Edit tool.
+Do not rewrite or truncate prior contents; the recovery payload is the full
+running log.
+
+## Task Breakdown Guidelines
+
+- Each task should be **self-contained** with enough context for a fresh agent
+- Order tasks by **dependencies** (what must be done first)
+- Keep tasks **focused** - one clear objective per task
+- Include **test tasks** where appropriate
+- Consider: setup, implementation, tests, documentation
+- **Assign profile per-task** based on what that specific task needs
+
+## Profile Assignment
+
+Each task needs a `profile:X` label to select the right container toolchain in `loom run`:
+
+| Task Type | Profile | When to Use |
+|-----------|---------|-------------|
+| Rust implementation | `profile:rust` | Tasks touching `.rs` files or using cargo |
+| Python implementation | `profile:python` | Tasks touching `.py` files or using pytest/pip |
+| Nix/shell/docs | `profile:base` | Tasks touching only `.nix`, `.sh`, `.md` files |
+
+Different tasks in the same molecule can have different profiles. Assign based on what each specific task needs.
+
+## Instructions
+
+1. **Analyze the spec** - Understand all requirements and affected files
+2. **Create the epic** (molecule root) and **store its ID**:
+   ```bash
+   MOLECULE_ID=$(bd create --type=epic --title="<feature name>" --labels="spec:harness" --silent)
+   echo "Created molecule: $MOLECULE_ID"
+   ```
+   **CRITICAL:** Use the exact ID returned by `bd create --silent`. Do NOT substitute
+   a molecule ID from the spec index or any other source — `bd create` generates a
+   unique ID and that is the only valid value.
+3. **Create child tasks** with `--parent` and appropriate `profile:X` label:
+   ```bash
+   TASK_ID=$(bd create --title="<task title>" --description="<detailed description>" \
+     --type=task --labels="spec:harness,profile:rust" --parent="$MOLECULE_ID" --silent)
+   ```
+4. **Set execution order** with `bd dep add` for tasks that must run sequentially:
+   ```bash
+   bd dep add <later-task> <earlier-task>  # later-task waits for earlier-task
+   ```
+
+### Key Concepts
+
+| Mechanism | Purpose | Effect |
+|-----------|---------|--------|
+| `--parent` | Links task to molecule | Enables `loom status` progress tracking |
+| `bd dep add` | Sets execution order | Controls what `bd ready` returns next |
+| `profile:X` | Selects container profile | Determines toolchain available in `loom run` |
+
+Both `--parent` and `bd dep add` are required: `--parent` for visibility, `bd dep add` for ordering.
+
+## Output Format
+
+After creating all tasks:
+
+1. List the epic ID and all task IDs created
+2. Show the dependency graph
+3. Confirm the molecule was created
+
+## Exit Signals
+
+End your response with exactly **one** of these markers on its own line, as
+the final output of the session. The orchestrator parses **only the final
+non-empty line** verbatim to derive the gate's verdict — markers emitted on
+any earlier line are treated as `swallowed-marker`, and multiple markers on
+the final line are likewise rejected. Markers are mutually exclusive: emit
+one and only one.
+
+- `LOOM_COMPLETE` — The work succeeded. For worker phases (`loom run`), this
+  also means the bead's acceptance criteria are met and the bead has been
+  closed via `bd close`. The diff must be non-empty (real changes); see
+  `LOOM_NOOP` below for the zero-diff variant.
+- `LOOM_NOOP` — The work was already done in tree and this phase
+  intentionally produced an empty diff. Close the bead with `bd close`
+  before emitting. Use `LOOM_NOOP` instead of `LOOM_COMPLETE` whenever the
+  diff is empty — an empty diff with `LOOM_COMPLETE` is treated as
+  `zero-progress` and enters recovery. Only valid in worker phases.
+- `LOOM_BLOCKED` — You cannot proceed and are self-reporting *without* a
+  menu of resolution options. Write the reason on the line immediately
+  before the marker (the gate only reads the most recent non-empty prior
+  line — multi-paragraph prose is NOT captured). The gate applies
+  `loom:blocked` to *this* bead and exits without entering recovery; other
+  beads in the molecule continue running. The labelled bead waits for
+  human resolution via `loom msg`. **If you have multiple candidate
+  resolutions, do NOT use `LOOM_BLOCKED`** — use `LOOM_CLARIFY` below so
+  the options reach bead state.
+- `LOOM_CLARIFY` — You have a specific question with structured options for
+  the human. **Persist the question and the canonical `## Options — …`
+  block to bead state before emitting the marker** — either by `bd create`
+  on a new clarify bead or by `bd update --notes` + `bd update
+  --add-label=loom:clarify` on an existing bead — per the Options Format
+  Contract in `specs/gate.md`. The gate does NOT parse your prose for
+  options; if the canonical block lives only in your stdout, `loom msg`'s
+  queue will be empty. After persisting, the gate applies `loom:clarify`
+  to *this* bead and exits without entering recovery; other beads in the
+  molecule continue running. The labelled bead waits for `loom msg`
+  resolution.
+- `LOOM_CONCERN: <token> -- <reason>` — **Review phase only.** The review
+  found a quality issue with the molecule's work; push must not fire.
+  `<token>` is one of the concern tokens (see the Flag Emission Schema in
+  the review template) and `<reason>` is a one-sentence summary. The
+  review phase emits `LOOM_CONCERN` xor `LOOM_COMPLETE` — never both, and
+  never alongside any other marker. Emitting `LOOM_CONCERN` from any
+  non-review phase is a `wrong-phase-marker` error in the verdict gate.

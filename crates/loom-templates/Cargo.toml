@@ -1,0 +1,24 @@
+[package]
+name = "loom-templates"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.loom]
+public_contract = true
+
+[dependencies]
+askama = { workspace = true }
+loom-events = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+displaydoc = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+insta = { workspace = true }
+
+[lints]
+workspace = true

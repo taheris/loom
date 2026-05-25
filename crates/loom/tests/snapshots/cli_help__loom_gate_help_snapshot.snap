@@ -1,0 +1,23 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"gate\"])"
+---
+Quality gate — annotation-dispatched verifiers and LLM rubric
+
+Usage: loom gate [OPTIONS] [COMMAND]
+
+Commands:
+  audit   Run every deterministic verifier followed by the LLM rubric (`verify` then `review`). The full PR-gate path
+  verify  Run every `[check]` / `[test]` / `[system]` verifier — cheap relative to review, expensive relative to status
+  check   Run only `[check]`-tier verifiers (static analysis). Fastest tier
+  test    Run only `[test]`-tier verifiers, batched into one runner subprocess
+  system  Run only `[system]`-tier verifiers (containers, packaging, end-to-end). Slow
+  review  Run the LLM rubric — criterion-attached judges plus the rubric walk over the diff. Expensive
+  judge   Run only criterion-attached `[judge]` verifiers — skips the rubric walk
+  rubric  Run only the rubric walk over the diff — skips criterion-attached judges
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi]
+  -h, --help              Print help

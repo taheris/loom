@@ -1,0 +1,15 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"note\", \"rm\"])"
+---
+Remove a single note by id
+
+Usage: loom note rm [OPTIONS] <ID>
+
+Arguments:
+  <ID>  Note id
+
+Options:
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi]
+  -h, --help              Print help

@@ -1,0 +1,339 @@
+//! Production [`TodoController`] used by the `loom todo` binary.
+//!
+//! Resolves the per-bead [`SpawnConfig`] by running the four-tier detection
+//! against a real [`GitClient`] + [`StateDb`] and rendering `todo_new.md` /
+//! `todo_update.md` from `templates`.
+//!
+//! Agent dispatch happens in [`super::runner::run`] via a caller-provided
+//! closure, so this controller does not own the spawn surface.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use askama::Template;
+use loom_driver::agent::{RePinContent, SessionOutcome, SpawnConfig, set_loom_inside};
+use loom_driver::bd::{BdClient, BdError, CommandRunner, TokioRunner, UpdateOpts};
+use loom_driver::config::Phase;
+use loom_driver::git::GitClient;
+use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
+use loom_driver::profile_manifest::ProfileImageManifest;
+use loom_driver::scratch::resolve_scratch_key;
+use loom_driver::state::{BdUpdateFn, StateDb};
+use tracing::{debug, info, warn};
+
+use super::ExitSignal;
+use super::context::{TemplateBaseFields, TodoTemplateContext, build_template_context};
+use super::error::TodoError;
+use super::runner::{TodoController, TodoSession};
+use super::tier::{GitDiffSource, MoleculeState, TierInputs, compute_spec_diff};
+
+const BASE_COMMIT_METADATA_KEY: &str = "loom.base_commit";
+
+pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
+    label: SpecLabel,
+    workspace: PathBuf,
+    state: Arc<StateDb>,
+    manifest: Arc<ProfileImageManifest>,
+    phase_default: ProfileName,
+    git: Arc<GitClient>,
+    bd: Arc<BdClient<R>>,
+    since: Option<String>,
+}
+
+impl<R: CommandRunner> ProductionTodoController<R> {
+    #[expect(clippy::too_many_arguments, reason = "controller construction surface")]
+    pub fn new(
+        label: SpecLabel,
+        workspace: PathBuf,
+        state: Arc<StateDb>,
+        manifest: Arc<ProfileImageManifest>,
+        phase_default: ProfileName,
+        git: Arc<GitClient>,
+        bd: Arc<BdClient<R>>,
+        since: Option<String>,
+    ) -> Self {
+        Self {
+            label,
+            workspace,
+            state,
+            manifest,
+            phase_default,
+            git,
+            bd,
+            since,
+        }
+    }
+
+    fn build_prompt(&self) -> Result<String, TodoError> {
+        let active_mol = self.state.active_molecule(&self.label)?;
+        let molecule_id = active_mol.as_ref().map(|m| m.id.clone());
+        // Tolerate a missing spec row — tier-4 first-touch doesn't run plan
+        // before todo. Notes are sourced from the `notes` table below.
+        match self.state.spec(&self.label) {
+            Ok(_) => (),
+            Err(loom_driver::state::StateError::SpecNotFound { .. }) => (),
+            Err(e) => return Err(TodoError::State(e)),
+        }
+
+        let implementation_notes = self
+            .state
+            .notes_list(Some(&self.label), Some("implementation"))?
+            .into_iter()
+            .map(|row| row.text)
+            .collect::<Vec<_>>();
+
+        let molecule = active_mol.as_ref().map(|row| MoleculeState {
+            id: row.id.clone(),
+            base_commit: row.base_commit.clone(),
+        });
+
+        let spec_path = PathBuf::from("specs").join(format!("{}.md", self.label.as_str()));
+        let sibling_base = |label: &SpecLabel| -> Option<String> {
+            self.state
+                .active_molecule(label)
+                .ok()
+                .flatten()
+                .and_then(|m| m.base_commit)
+        };
+
+        let inputs = TierInputs {
+            label: &self.label,
+            spec_path: &spec_path,
+            molecule,
+            since: self.since.as_deref(),
+            sibling_base: &sibling_base,
+        };
+
+        let live_git = LiveGitDiffSource(Arc::clone(&self.git));
+        let tier = compute_spec_diff(&live_git, &inputs)?;
+        debug!(label = %self.label, ?tier, "tier decision");
+
+        let key = resolve_scratch_key(Phase::Todo, &self.label, None);
+        let scratchpad_path =
+            loom_driver::scratch::ScratchSession::scratchpad_path_for(&self.workspace, &key)
+                .to_string_lossy()
+                .into_owned();
+        let base = TemplateBaseFields {
+            label: self.label.clone(),
+            spec_path: spec_path.to_string_lossy().into_owned(),
+            pinned_context: String::new(),
+            companion_paths: vec![],
+            implementation_notes,
+            scratchpad_path,
+        };
+        let ctx = build_template_context(&tier, base, None, molecule_id);
+        let body = match ctx {
+            TodoTemplateContext::New(c) => c.render()?,
+            TodoTemplateContext::Update(c) => c.render()?,
+        };
+        Ok(body)
+    }
+}
+
+impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
+    async fn build_session(&mut self) -> Result<TodoSession, TodoError> {
+        let prompt = self.build_prompt()?;
+        let entry = self.manifest.lookup(&self.phase_default)?;
+        let banner = format!("loom todo @ {}", self.label);
+        let key = resolve_scratch_key(Phase::Todo, &self.label, None);
+        let scratch =
+            loom_driver::scratch::ScratchSession::open(&self.workspace, &key, &prompt, &banner)
+                .map_err(|source| {
+                    TodoError::Protocol(loom_driver::agent::ProtocolError::Io(source))
+                })?;
+        info!(
+            label = %self.label,
+            workspace = %self.workspace.display(),
+            image_ref = %entry.r#ref,
+            scratch_dir = %scratch.path().display(),
+            "loom todo: building spawn config",
+        );
+        let scratch_dir = scratch.path().to_path_buf();
+        let mut env = Vec::new();
+        set_loom_inside(&mut env);
+        Ok(TodoSession {
+            config: SpawnConfig {
+                image_ref: entry.r#ref.clone(),
+                image_source: entry.source.clone(),
+                workspace: self.workspace.clone(),
+                env,
+                initial_prompt: prompt,
+                agent_args: vec![],
+                repin: RePinContent {
+                    orientation: String::new(),
+                    pinned_context: String::new(),
+                    partial_bodies: vec![],
+                },
+                scratch_dir,
+                model: None,
+                thinking_level: None,
+                shutdown_grace: None,
+                handshake_timeout: None,
+                stall_warn_interval: None,
+            },
+            scratch,
+        })
+    }
+
+    async fn record_outcome(
+        &mut self,
+        outcome: &SessionOutcome,
+        marker: Option<&ExitSignal>,
+    ) -> Result<(), TodoError> {
+        if !base_commit_should_advance(outcome.exit_code, marker) {
+            info!(
+                label = %self.label,
+                exit_code = outcome.exit_code,
+                marker = ?marker,
+                "loom todo: base_commit not advanced — gate requires exit_code==0 AND LOOM_COMPLETE/LOOM_NOOP",
+            );
+            return Ok(());
+        }
+        let Some(mol) = self.state.active_molecule(&self.label)? else {
+            warn!(
+                label = %self.label,
+                "loom todo: productive completion observed but no active molecule — base_commit and notes unchanged",
+            );
+            return Ok(());
+        };
+        let head = self
+            .git
+            .head_commit_sha()
+            .await
+            .map_err(|e| TodoError::Io(std::io::Error::other(e.to_string())))?;
+        let bd = Arc::clone(&self.bd);
+        let bd_update: BdUpdateFn = Box::new(move |mol_id, new_base_commit| {
+            let bd = Arc::clone(&bd);
+            let mol_id_str = mol_id.as_str().to_owned();
+            let new_base_commit = new_base_commit.to_owned();
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async move {
+                    let bead_id = BeadId::new(&mol_id_str).map_err(BdError::CreateInvalidId)?;
+                    bd.update(
+                        &bead_id,
+                        UpdateOpts {
+                            set_metadata: vec![(
+                                BASE_COMMIT_METADATA_KEY.to_owned(),
+                                new_base_commit,
+                            )],
+                            ..UpdateOpts::default()
+                        },
+                    )
+                    .await
+                })
+            })
+        });
+        self.state
+            .consume_notes_and_refresh_base_commit(&self.label, &mol.id, &head, bd_update)?;
+        info!(
+            label = %self.label,
+            head = %head,
+            mol_id = %mol.id,
+            marker = ?marker,
+            "loom todo: implementation notes consumed and base_commit refreshed atomically",
+        );
+        Ok(())
+    }
+}
+
+/// Productive-completion gate: a `loom todo` session advances
+/// `loom.base_commit` only when the marker is `LOOM_COMPLETE` /
+/// `LOOM_NOOP` and the agent process exited zero — backend errors,
+/// network drops, and swallowed-marker turns must not skip the diff.
+fn base_commit_should_advance(exit_code: i32, marker: Option<&ExitSignal>) -> bool {
+    exit_code == 0 && matches!(marker, Some(ExitSignal::Complete | ExitSignal::Noop))
+}
+
+/// Bridge `compute_spec_diff`'s sync [`GitDiffSource`] surface to the async
+/// [`GitClient`]. Each method runs the underlying git CLI on the current
+/// tokio runtime via `block_in_place` + `Handle::current().block_on(...)`,
+/// which is sound only on multi-thread runtimes — production wires this
+/// from `loom`'s `Runtime::new()` (multi-thread by default), and tier-1
+/// tests in this module that exercise it use
+/// `#[tokio::test(flavor = "multi_thread")]`.
+///
+/// Errors are mapped to algorithm-safe defaults (`false` / empty) so a
+/// transient git failure degrades to "no tier-1 diff" rather than aborting
+/// the run; the user still sees a tier-2/4 prompt and can retry.
+struct LiveGitDiffSource(Arc<GitClient>);
+
+impl GitDiffSource for LiveGitDiffSource {
+    fn rev_exists(&self, rev: &str) -> bool {
+        let client = Arc::clone(&self.0);
+        let rev = rev.to_string();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(async move { client.rev_exists(&rev).await.unwrap_or(false) })
+        })
+    }
+
+    fn is_ancestor_of_head(&self, rev: &str) -> bool {
+        let client = Arc::clone(&self.0);
+        let rev = rev.to_string();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(async move { client.is_ancestor_of_head(&rev).await.unwrap_or(false) })
+        })
+    }
+
+    fn changed_spec_files(&self, base: &str) -> Vec<std::path::PathBuf> {
+        let client = Arc::clone(&self.0);
+        let base = base.to_string();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(async move { client.changed_spec_files(&base).await.unwrap_or_default() })
+        })
+    }
+
+    fn diff_spec(&self, base: &str, spec_path: &std::path::Path) -> String {
+        let client = Arc::clone(&self.0);
+        let base = base.to_string();
+        let spec_path = spec_path.to_path_buf();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                client
+                    .diff_spec(&base, &spec_path)
+                    .await
+                    .unwrap_or_default()
+            })
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Five terminal marker shapes × two exit codes — ten rows, two
+    /// truths: only `LOOM_COMPLETE`/`LOOM_NOOP` paired with `exit_code==0`
+    /// advances `loom.base_commit` (per `specs/harness.md`
+    /// *Productive-completion gate*).
+    #[test]
+    fn base_commit_should_advance_only_on_complete_or_noop_with_clean_exit() {
+        let blocked = ExitSignal::Blocked {
+            reason: "missing schema".into(),
+        };
+        let clarify = ExitSignal::Clarify {
+            question: "additive only?".into(),
+        };
+        let cases: &[(Option<&ExitSignal>, i32, bool, &str)] = &[
+            (Some(&ExitSignal::Complete), 0, true, "complete + exit 0"),
+            (Some(&ExitSignal::Noop), 0, true, "noop + exit 0"),
+            (Some(&blocked), 0, false, "blocked + exit 0"),
+            (Some(&clarify), 0, false, "clarify + exit 0"),
+            (None, 0, false, "no marker + exit 0"),
+            (Some(&ExitSignal::Complete), 1, false, "complete + exit 1"),
+            (Some(&ExitSignal::Noop), 1, false, "noop + exit 1"),
+            (Some(&blocked), 1, false, "blocked + exit 1"),
+            (Some(&clarify), 1, false, "clarify + exit 1"),
+            (None, 1, false, "no marker + exit 1"),
+        ];
+        for (marker, exit_code, expected, label) in cases {
+            assert_eq!(
+                base_commit_should_advance(*exit_code, *marker),
+                *expected,
+                "case `{label}`: expected advance={expected}",
+            );
+        }
+    }
+}
