@@ -36,6 +36,9 @@
         ./nix/flake/checks.nix
         ./nix/flake/devshell.nix
         ./nix/flake/formatter.nix
+        ./modules/flake/tests.nix
+        ./modules/flake/apps.nix
+        ./modules/flake/overlays.nix
       ];
 
       systems = [

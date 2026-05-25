@@ -103,6 +103,7 @@ in
     nextest
     cargoArtifacts
     craneLib
+    stagedSrc
     ;
   toolchain = resolvedToolchain;
 }
