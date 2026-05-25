@@ -20,23 +20,39 @@ orientation.
 5. **Backend-agnostic agent layer** — the `Session` trait lets pi-mono,
    Claude stream-json, and the Direct backend share the same workflow code.
 
-## Crate Topology
+## Repo Layout
 
 ```
-crates/
-├── loom/                    # CLI entry point, process plumbing
-├── loom-driver/             # State store, locks, scratchpads, bd shim, git client
-├── loom-events/             # Typed identifiers and event schema
-├── loom-agent/              # Session trait + pi / claude / direct backends
-├── loom-llm/                # Public LLM primitives (LlmClient, Conversation, observers)
-├── loom-direct-runner/      # Sandbox-aware tool runtime for the Direct backend
-├── loom-templates/          # Askama prompt templates with typed contexts
-├── loom-gate/               # `loom gate verify` + `loom gate review`
-├── loom-walk/               # [verify]/[check]/[system] annotation walker
-├── loom-render/             # Streaming output formatters and event sinks
-├── loom-workflow/           # Phase implementations (plan / todo / run / gate / msg)
-└── loom-test-support/       # Shared fixtures and helpers
+.
+├── Cargo.toml         # Workspace manifest
+├── Cargo.lock
+├── clippy.toml        # Workspace-wide clippy config
+├── crates/            # Rust crates (see table below)
+├── specs/             # Behavioural specifications
+├── docs/              # Spec-authoring conventions, style rules
+├── tests/
+│   ├── mock-pi/       # Mock pi binary for protocol tests
+│   ├── mock-claude/   # Mock claude binary for stream-json tests
+│   └── judges/        # LLM judge rubrics ([judge] annotations)
+└── flake.nix
 ```
+
+## Crates
+
+| Crate | Purpose |
+|-------|---------|
+| `loom` | CLI entry point and process plumbing |
+| `loom-agent` | Backend abstraction: pi-mono RPC, Claude stream-json, and Direct |
+| `loom-direct-runner` | Sandbox-aware tool runtime for the Direct backend |
+| `loom-driver` | State store (SQLite), bd shim, lock manager, scratchpads, git client |
+| `loom-events` | Typed event identifiers (`BeadId`, `SpecLabel`, `MoleculeId`, …) |
+| `loom-gate` | Quality gate: `loom gate verify` (deterministic) + `loom gate review` (LLM judge) |
+| `loom-llm` | Public-contract LLM primitives: `LlmClient`, `Conversation`, observers |
+| `loom-render` | Streaming output formatters and event sinks |
+| `loom-templates` | Askama prompt templates with typed contexts |
+| `loom-test-support` | Shared test fixtures and helpers |
+| `loom-walk` | Spec-annotation walker for `[verify]` / `[check]` / `[system]` |
+| `loom-workflow` | Phase implementations: `plan`, `todo`, `run`, `gate`, `msg` |
 
 ## Phases
 
