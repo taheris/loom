@@ -528,11 +528,11 @@ in
     '';
   };
 
-  # Container smoke — invoked via `nix run .#test-loom`. Excluded from
+  # Container smoke — invoked via `nix run .#test`. Excluded from
   # `flake check` because it needs podman at runtime. Annotated as
-  # [system](nix run .#test-loom) on its acceptance criterion.
+  # [system](nix run .#test) on its acceptance criterion.
   loom-smoke = pkgs.writeShellApplication {
-    name = "test-loom";
+    name = "test";
     runtimeInputs = [ loom bd pkgs.podman pkgs.jq ];
     text = builtins.readFile ./run-tests.sh;
   };
@@ -616,10 +616,10 @@ in Functional #4.
 
 ### Container smoke
 
-- `nix run .#test-loom` spawns a real podman container, runs
+- `nix run .#test` spawns a real podman container, runs
       `loom run --once` against a bead with `WRAPIX_AGENT=pi`
       `MOCK_PI_SCENARIO=happy-path`, exits 0 with the bead closed
-  [system](nix run .#test-loom)
+  [system](nix run .#test)
 
 ### Style enforcement
 
@@ -705,9 +705,9 @@ the rules:
 - `flake.nix` declares `tests` under `checks.<system>` for
       `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, `aarch64-darwin`
   [check](grep -q 'loomTests = craneLib.mkCargoDerivation' tests/loom/default.nix)
-- `nix run .#test-loom` is exposed only on Linux systems
+- `nix run .#test` is exposed only on Linux systems
   [check](grep -q 'isLinux' tests/loom/default.nix)
-- `nix run .#test-loom` on Darwin exits 0 with a clear "not
+- `nix run .#test` on Darwin exits 0 with a clear "not
       available on Darwin" message
   [check](grep -q 'container smoke not available on Darwin' tests/loom/default.nix)
 
@@ -718,9 +718,9 @@ the rules:
       `[test]` tier and dispatches per-annotation subprocesses for
       `[check]`); it joins the flake `checks` set under `rustChecks`
   [check](grep -q 'loom-tests = loomDeriv.loomTests' tests/default.nix)
-- `nix run .#test-loom` exists as a `writeShellApplication` exposed
+- `nix run .#test` exists as a `writeShellApplication` exposed
       on Linux platforms
-  [check](grep -q 'name = "test-loom"' tests/loom/default.nix)
+  [check](grep -q 'name = "test"' tests/loom/default.nix)
 - `nix run .#fuzz-loom` exists for on-demand `cargo fuzz` runs
       (not gated by `nix flake check`)
   [check](grep -q 'name = "fuzz-loom"' modules/flake/apps.nix)
@@ -750,7 +750,7 @@ the rules:
      the bead closes. Validates host↔container plumbing
      (entrypoint.sh, bind mounts, `WRAPIX_AGENT` branching, container
      teardown) — *not* protocol depth, which the integration level
-     already covers. Annotated `[system](nix run .#test-loom)`; run
+     already covers. Annotated `[system](nix run .#test)`; run
      via `loom gate system`. Linux-only (no podman in Darwin CI).
 
 2. **Mock agent processes** — process-level fixtures driven over real pipes
@@ -1144,16 +1144,18 @@ the rules:
 5. **CI-friendly** — `nix flake check` runs `loom gate verify`
    (deterministic verifiers: `[check]` + `[test]` + `[system]`) via a
    single Nix derivation. The container smoke is exposed as a
-   separate `nix run .#test-loom` app because it needs podman at
+   separate `nix run .#test` app because it needs podman at
    runtime; its acceptance criterion is annotated
-   `[system](nix run .#test-loom)`.
+   `[system](nix run .#test)`. Both entry points are also wired
+   into the prek pre-push hook; composition, stage budgets, and lock
+   semantics live in [pre-commit.md](pre-commit.md).
 6. **Real bd** — the container smoke runs against live `bd` (not a
    mock). The integration tier may mock `bd` where the test concern
    is orthogonal to the issue tracker, but the smoke validates that
    loom and `bd` interact correctly under realistic conditions.
 7. **Cross-platform** — unit and integration tests pass on Linux *and*
    Darwin (`x86_64`/`aarch64` for both). The container smoke is
-   Linux-only (podman dependency); on Darwin the `test-loom` app exits
+   Linux-only (podman dependency); on Darwin the `test` app exits
    0 with a clear "container smoke not available on Darwin" message.
    Tests use `tempfile::tempdir` exclusively, never hardcoded
    `/tmp/...` paths — Nix's Darwin build sandbox doesn't grant access

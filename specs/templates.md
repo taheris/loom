@@ -66,6 +66,7 @@ Current set:
 | `exit_signals.md` | Document the `LOOM_*` exit markers the phase accepts. **Markers are mutually exclusive — exactly one per session, on the final line.** For review-phase sessions: emit `LOOM_CONCERN: <token> -- <reason>` when a concern is found (review-phase only marker per [harness.md](harness.md#verdict-gate)), or `LOOM_COMPLETE` when the review is clean — **never both**. The earlier `LOOM_REVIEW_FLAG` name is retired; consumers and templates use `LOOM_CONCERN`. |
 | `chat_marker_final_turn_only.md` | Restrict `LOOM_COMPLETE` emission to the **final** assistant turn of a multi-turn chat. Included by `msg`, `plan_new`, and `plan_update` to disambiguate `exit_signals.md`'s "end your response with the marker" language (which is correct for single-shot worker phases but misreads as "every response" in chat). One-shot worker phases (`run`, `todo_*`, `review`) deliberately omit it because every response in those phases IS the final output. |
 | `interview_modes.md` | Describe the "one by one" / "polish the spec" interview sub-modes |
+| `chat_interview.md` | Require conversational, prose-based Q&A during planning sessions; forbid Claude Code's structured option-picker tool — see *Chat Discipline* below |
 | `plan_stage_rubric.md` | Gate the planning interview on completeness / coherence / invariant-clash before any commit |
 | `invariant_clash.md` | Describe the invariant-clash awareness scan (included transitively via `plan_stage_rubric.md`) |
 | `review_rubric.md` | Per-diff review rubric — see [gate.md](gate.md) |
@@ -112,6 +113,7 @@ Each partial is included by an explicit set of templates:
 | `exit_signals.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `chat_marker_final_turn_only.md` | ✓ | ✓ |  |  |  |  | ✓ |
 | `interview_modes.md` | ✓ | ✓ |  |  |  |  |  |
+| `chat_interview.md` | ✓ | ✓ |  |  |  |  |  |
 | `plan_stage_rubric.md` | ✓ | ✓ |  |  |  |  |  |
 | `invariant_clash.md` | ✓ | ✓ |  |  |  |  |  |
 | `review_rubric.md` |  |  |  |  |  | ✓ |  |
@@ -286,6 +288,33 @@ receiving agent can distinguish injected content from system
 instructions. This is a best-effort prompt-injection mitigation;
 the real trust boundary is the container.
 
+### Chat Discipline
+
+`partial/chat_interview.md` is included by `plan_new.md` and
+`plan_update.md`. It tells the planning agent the interview is a
+back-and-forth chat, not a structured questionnaire:
+
+- Questions go out in prose, in the assistant's normal reply.
+  Answers come back as user prose.
+- The agent does **not** use Claude Code's structured option-picker
+  tool (or any equivalent multi-choice UI) for planning interviews.
+  The picker forces premature commitment to N enumerated options
+  when the user's real answer may be a hybrid, a redirection, or
+  none-of-the-above; it also adds friction to the short text
+  replies that are the natural shape of planning discussion.
+- When the agent wants to propose alternatives, it lists them
+  inline in prose ("option A does X; option B does Y"). The user
+  replies "B" or "B with a tweak" or "neither, do Z" — natural
+  prose, no picker UI.
+- The "one by one" sub-mode (see *Interview Modes*) still applies:
+  it means one question per chat turn, not one picker per turn.
+
+The discipline is planning-specific. Worker phases (`run`, `todo_*`,
+`review`) are single-shot and do not interview the user, so the
+partial is not pinned there. `msg` resolves `loom:clarify` beads via
+the canonical *Options Format Contract* in [gate.md](gate.md), so
+the picker concern doesn't apply there either.
+
 ### Sibling-Spec Editing
 
 `partial/sibling_spec_editing.md` is included only in
@@ -455,6 +484,14 @@ documents in front of the agent with zero configuration.
   output; including the chat-only clause would mislead the agent
   into withholding the marker
   [test](worker_templates_omit_chat_final_turn_clause)
+- `partial/chat_interview.md` exists and is included by
+  `plan_new.md` and `plan_update.md` only; the body forbids
+  Claude Code's structured option-picker tool for planning Q&A
+  and requires conversational prose instead
+  [check](cargo run -p loom-walk -- template_pinning_matrix)
+- The partial body names the picker prohibition explicitly so a
+  grep for the rule succeeds (no rule-by-implication)
+  [check](grep -qi 'option-picker\|AskUserQuestion' crates/loom-templates/templates/partial/chat_interview.md)
 
 ### Agent-output markers
 
@@ -616,6 +653,14 @@ documents in front of the agent with zero configuration.
     the typed contexts + partial strings, not from Loom's workflow
     templates. Stability: additive type changes are minor bumps;
     removing or renaming fields / partial paths is a major bump.
+13. **Chat discipline in planning interviews.**
+    `partial/chat_interview.md`, pinned in `plan_new` and
+    `plan_update` only, requires the planning agent to conduct
+    interviews as back-and-forth conversational prose and forbids
+    Claude Code's structured option-picker tool (or any equivalent
+    multi-choice UI). Options are listed inline in prose; the user
+    replies in prose. The "one by one" sub-mode is preserved —
+    one question per chat turn, not one picker per turn.
 
 ### Non-Functional
 

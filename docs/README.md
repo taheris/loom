@@ -19,6 +19,7 @@ sessions.
 | [gate.md](../specs/gate.md) | [`crates/loom-gate/`](../crates/loom-gate/) | Quality gate: conformance + style + test-quality dimensions, plan/per-diff/standing stages, `loom gate verify` (deterministic) + `loom gate review` (LLM judge) |
 | [harness.md](../specs/harness.md) | [`crates/`](../crates/) | Platform: crate structure, workspace lints, process architecture, state store, command set |
 | [llm.md](../specs/llm.md) | [`crates/loom-llm/`](../crates/loom-llm/) | Public-contract LLM primitives: `LlmClient`, typed `CacheControl`, `Conversation` with built-in tool-use loop, agent-loop observers (doom-loop, duplicate-result) |
+| [pre-commit.md](../specs/pre-commit.md) | [`lib/prek/`](../lib/prek/), [`.pre-commit-config.yaml`](../.pre-commit-config.yaml) | Prek-driven git hooks: pre-commit (fast, ~1s) + pre-push (slow, ~10s) staged via `.pre-commit-config.yaml`, flock-serialized through `$XDG_STATE_HOME/loom/prek/<workspace-basename>/prek.lock` to defuse the stash/restore race |
 | [templates.md](../specs/templates.md) | [`crates/loom-templates/`](../crates/loom-templates/) | Askama templates, partials inventory, per-phase pinning policy |
 | [tests.md](../specs/tests.md) | [`tests/`](../tests/) | Test strategy: unit, integration, system tests |
 
