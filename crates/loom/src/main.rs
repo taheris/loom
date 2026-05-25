@@ -30,8 +30,8 @@ use loom_gate::{
     RustWorkspaceTestResolver, StatusCache, Tier, Verdict, render_report, row_for,
 };
 use loom_workflow::msg::{
-    DISMISS_NOTE, build_rows, compose_option_note, filter_msg_beads, kind_of, resolve_target,
-    spec_label_of,
+    DISMISS_NOTE, build_rows, compose_option_note, compose_resolved_notes, filter_msg_beads,
+    kind_of, resolve_target, spec_label_of,
 };
 use loom_workflow::review::{
     IterationCap, ProductionReviewController, ReviewLane, review_loop as run_review_loop,
@@ -2339,16 +2339,19 @@ fn run_msg_inner(
             target_bead.notes.as_deref(),
             &target_bead.description,
         )?;
+        // Single `--notes` payload strips the originating `## Options`
+        // block and records the resolution in one atomic update per
+        // specs/gate.md § Resolution lifecycle.
+        let new_notes = compose_resolved_notes(target_bead.notes.as_deref(), &note);
         let runtime = tokio::runtime::Runtime::new()?;
         let id_clone = target.clone();
-        let note_for_bd = note.clone();
         runtime.block_on(async move {
             let bd = BdClient::new();
             bd.update(
                 &id_clone,
                 UpdateOpts {
                     remove_labels: vec![label_to_remove],
-                    notes: Some(note_for_bd),
+                    notes: Some(new_notes),
                     ..UpdateOpts::default()
                 },
             )
@@ -2364,16 +2367,16 @@ fn run_msg_inner(
     if let Some(text) = reply {
         // `-r <text>` verbatim: store the raw text on the bead, drop the
         // loom:* label. Works on any bead kind regardless of Options.
+        let new_notes = compose_resolved_notes(target_bead.notes.as_deref(), &text);
         let runtime = tokio::runtime::Runtime::new()?;
         let id_clone = target.clone();
-        let text_for_bd = text.clone();
         runtime.block_on(async move {
             let bd = BdClient::new();
             bd.update(
                 &id_clone,
                 UpdateOpts {
                     remove_labels: vec![label_to_remove],
-                    notes: Some(text_for_bd),
+                    notes: Some(new_notes),
                     ..UpdateOpts::default()
                 },
             )
@@ -2387,6 +2390,7 @@ fn run_msg_inner(
     }
 
     if dismiss {
+        let new_notes = compose_resolved_notes(target_bead.notes.as_deref(), DISMISS_NOTE);
         let runtime = tokio::runtime::Runtime::new()?;
         let id_clone = target.clone();
         runtime.block_on(async move {
@@ -2395,7 +2399,7 @@ fn run_msg_inner(
                 &id_clone,
                 UpdateOpts {
                     remove_labels: vec![label_to_remove],
-                    notes: Some(DISMISS_NOTE.to_string()),
+                    notes: Some(new_notes),
                     ..UpdateOpts::default()
                 },
             )

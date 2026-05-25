@@ -2,7 +2,7 @@ use loom_driver::identifier::BeadId;
 
 use super::error::MsgError;
 use super::list::MsgKind;
-use super::options::{OptionsParse, parse_options_in};
+use super::options::{OptionsParse, parse_options_in, strip_options_block};
 
 /// What `loom msg -a <choice>` should write to the bead. `Option` is the
 /// composed `Chose option N — title: body` note from a successful integer
@@ -94,6 +94,35 @@ fn resolve_option(bead: &BeadId, n: u32, parsed: &OptionsParse) -> Result<FastRe
 /// after the label is removed.
 pub const DISMISS_NOTE: &str =
     "Dismissed via loom msg -d. Agent should work around the open question.";
+
+/// Compose the new `--notes` payload that records `resolution` while
+/// removing the originating `## Options` block from `existing_notes`.
+///
+/// Behaviour:
+/// - `existing_notes == None` → return `resolution` unchanged.
+/// - `existing_notes` contains an `## Options` block → strip it; if any
+///   non-blank prior content remains, return `<prior>\n\n<resolution>`;
+///   otherwise return `resolution`.
+/// - `existing_notes` carries no `## Options` block → return
+///   `<existing_notes>\n\n<resolution>` (still preserves prior content so
+///   accumulating clarifies on a single bead, e.g. the molecule epic, do
+///   not lose history).
+///
+/// `bd update --notes` replaces the notes field atomically; this function
+/// is the single replacement payload that satisfies the same-transaction
+/// requirement in `specs/gate.md` § Resolution lifecycle.
+pub fn compose_resolved_notes(existing_notes: Option<&str>, resolution: &str) -> String {
+    let Some(notes) = existing_notes else {
+        return resolution.to_string();
+    };
+    let stripped = strip_options_block(notes);
+    let trimmed = stripped.trim_end_matches(|c: char| c.is_whitespace());
+    if trimmed.is_empty() {
+        resolution.to_string()
+    } else {
+        format!("{trimmed}\n\n{resolution}")
+    }
+}
 
 #[cfg(test)]
 #[expect(
@@ -224,6 +253,77 @@ Accept. Cost: debt.
             other => panic!("expected Option, got {other:?}"),
         }
         Ok(())
+    }
+
+    fn options_notes() -> &'static str {
+        "\
+## Options — pick a path
+
+### Option 1 — Preserve invariant
+body 1
+
+### Option 2 — Keep on top
+body 2
+"
+    }
+
+    #[test]
+    fn compose_resolved_notes_returns_resolution_when_existing_is_none() {
+        let result = compose_resolved_notes(None, "the resolution");
+        assert_eq!(result, "the resolution");
+    }
+
+    #[test]
+    fn compose_resolved_notes_strips_block_and_returns_only_resolution_when_block_dominates() {
+        let result = compose_resolved_notes(Some(options_notes()), "Chose option 1");
+        assert!(!result.contains("## Options"));
+        assert!(!result.contains("### Option 1"));
+        assert!(!result.contains("### Option 2"));
+        assert_eq!(result.trim(), "Chose option 1");
+    }
+
+    #[test]
+    fn compose_resolved_notes_preserves_prior_history_around_block() {
+        let notes = "\
+Earlier resolution from a past clarify.
+
+## Options — current decision
+
+### Option 1 — foo
+body
+
+### Option 2 — bar
+body
+";
+        let result = compose_resolved_notes(Some(notes), "Chose option 2");
+        assert!(result.contains("Earlier resolution from a past clarify."));
+        assert!(result.contains("Chose option 2"));
+        assert!(!result.contains("## Options — current decision"));
+        assert!(!result.contains("### Option 1 — foo"));
+    }
+
+    #[test]
+    fn compose_resolved_notes_appends_when_no_options_block() {
+        let notes = "Some prior implementation note.\n";
+        let result = compose_resolved_notes(Some(notes), "Dismissed for now");
+        assert!(result.contains("Some prior implementation note."));
+        assert!(result.contains("Dismissed for now"));
+        assert!(result.starts_with("Some prior implementation note."));
+        assert!(result.trim_end().ends_with("Dismissed for now"));
+    }
+
+    #[test]
+    fn compose_resolved_notes_dismiss_path_strips_block() {
+        let result = compose_resolved_notes(Some(options_notes()), DISMISS_NOTE);
+        assert!(!result.contains("## Options"));
+        assert!(result.contains(DISMISS_NOTE));
+    }
+
+    #[test]
+    fn compose_resolved_notes_returns_blank_only_when_existing_is_pure_whitespace_after_strip() {
+        let notes = "\n\n## Options — x\n\n### Option 1\nbody\n\n";
+        let result = compose_resolved_notes(Some(notes), "the answer");
+        assert_eq!(result, "the answer");
     }
 
     #[test]

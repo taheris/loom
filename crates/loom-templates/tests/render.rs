@@ -900,6 +900,44 @@ fn msg_renders_clarify_bead_without_enumerate_first_framing() -> Result<()> {
     Ok(())
 }
 
+/// Per `specs/gate.md` § Resolution lifecycle, the rendered msg.md chat
+/// instructions must direct the Drafter agent to strip the originating
+/// `## Options — …` block from the bead's notes in the same `bd update`
+/// that records the resolution note. Without this clause the chat path
+/// drifts from the driver's `-o`/`-r`/`-d` paths (which call
+/// `compose_resolved_notes` to do the same strip) and accumulating
+/// clarifies on the molecule epic stop being lifecycle-clean.
+#[test]
+fn msg_chat_template_instructs_options_block_removal_on_resolution() -> Result<()> {
+    let ctx = MsgContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        companion_paths: vec![],
+        clarify_beads: vec![ClarifyBead {
+            id: BeadId::new("wx-clar.3")?,
+            spec_label: SpecLabel::new("harness"),
+            title: "Pick a thing".into(),
+            options_summary: Some("Pick".into()),
+            options: vec![ClarifyOption {
+                n: 1,
+                title: Some("A".into()),
+                body: Some("body".into()),
+            }],
+            kind: BeadKind::Clarify,
+        }],
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+    };
+    let out = ctx.render()?;
+    assert!(
+        out.contains("remove the originating `## Options"),
+        "chat template must direct the agent to remove the originating Options block: {out}",
+    );
+    assert!(
+        out.contains("Resolution lifecycle") || out.contains("specs/gate.md"),
+        "chat template must anchor the contract to the spec citation: {out}",
+    );
+    Ok(())
+}
+
 #[test]
 fn msg_renders_with_no_clarify_beads() -> Result<()> {
     let ctx = MsgContext {

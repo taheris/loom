@@ -1,5 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
+assertion_line: 287
 expression: ctx.render().unwrap()
 ---
 # Clarify Resolution — Drafter Session
@@ -136,10 +137,20 @@ Use a SQLite table.
    5. **Confirm** the draft with the user before writing.
    6. **Write** the note and clear the label. The label cleared is
       whichever the bead currently carries — `loom:clarify` for clarify
-      beads, `loom:blocked` for blocked beads:
+      beads, `loom:blocked` for blocked beads.
+
+      The new `--notes` payload must **remove the originating `## Options
+      — …` block** in the same `bd update` that records the resolution
+      (per `specs/gate.md` § Resolution lifecycle — the resolution
+      replaces the question on the bead's notes record). When the bead
+      carries other non-options notes (prior resolutions, implementation
+      notes), preserve them and append the resolution; otherwise the
+      payload is just the resolution. Run `bd show <id>` first to read
+      the current notes so you know what to preserve.
       ```bash
       bd update <id> --notes "$(cat <<'EOF'
-      <self-contained resolution note — see Note Format below>
+      <prior non-options notes if any, then the self-contained
+       resolution note — see Note Format below>
       EOF
       )"
       bd update <id> --remove-label=loom:clarify   # or loom:blocked

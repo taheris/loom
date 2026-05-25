@@ -17,6 +17,8 @@
 //! hyphen `--`. The parser tolerates any of these. Headings inside fenced
 //! code blocks are ignored.
 
+use std::ops::Range;
+
 use loom_driver::markdown::{Event, HeadingLevel, Tag, TagEnd, parser};
 use pulldown_cmark::OffsetIter;
 
@@ -152,6 +154,77 @@ pub fn parse_options_in(notes: Option<&str>, description: &str) -> OptionsParse 
         }
     }
     parse_options(description)
+}
+
+/// Byte range of the originating `## Options` block in `text`.
+///
+/// The block starts at the byte offset of the `## Options` H2 heading and
+/// ends at the byte offset of the next H2 heading, or at the end of `text`
+/// when no following H2 exists. Returns `None` when no `## Options` H2 is
+/// present.
+///
+/// Used by [`strip_options_block`] to splice the block out of a bead's
+/// notes when a `loom:clarify` resolution writes its note (per `specs/gate.md`
+/// § Resolution lifecycle).
+pub fn find_options_block_range(text: &str) -> Option<Range<usize>> {
+    let mut iter = parser(text).into_offset_iter();
+    let mut start: Option<usize> = None;
+    while let Some((event, range)) = iter.next() {
+        let Event::Start(Tag::Heading {
+            level: HeadingLevel::H2,
+            ..
+        }) = event
+        else {
+            continue;
+        };
+        let mut heading_text = String::new();
+        for (e, _) in iter.by_ref() {
+            if matches!(e, Event::End(TagEnd::Heading(_))) {
+                break;
+            }
+            if let Event::Text(t) | Event::Code(t) = e {
+                heading_text.push_str(&t);
+            }
+        }
+        let trimmed = heading_text.trim_start();
+        let Some(rest) = trimmed.strip_prefix("Options") else {
+            continue;
+        };
+        if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+            continue;
+        }
+        start = Some(range.start);
+        break;
+    }
+    let start = start?;
+    for (event, range) in iter {
+        if let Event::Start(Tag::Heading {
+            level: HeadingLevel::H2,
+            ..
+        }) = event
+        {
+            return Some(start..range.start);
+        }
+    }
+    Some(start..text.len())
+}
+
+/// Return `text` with the originating `## Options` block spliced out.
+///
+/// Returns the input unchanged when no `## Options` H2 heading is present.
+/// Adjacent trailing whitespace from the spliced range is preserved; callers
+/// typically `trim_end` the result before stitching it back to a resolution
+/// note (see [`super::reply::compose_resolved_notes`]).
+pub fn strip_options_block(text: &str) -> String {
+    match find_options_block_range(text) {
+        Some(range) => {
+            let mut out = String::with_capacity(text.len());
+            out.push_str(&text[..range.start]);
+            out.push_str(&text[range.end..]);
+            out
+        }
+        None => text.to_string(),
+    }
 }
 
 fn find_options_summary(iter: &mut OffsetIter<'_>) -> Option<String> {
@@ -375,6 +448,59 @@ ignored
         let parse = parse_options_in(Some("just notes"), "just a description");
         assert!(parse.summary.is_empty());
         assert!(parse.options.is_empty());
+    }
+
+    #[test]
+    fn strip_options_block_returns_unchanged_when_no_options_present() {
+        let text = "just notes\nwith no options block\n";
+        assert_eq!(strip_options_block(text), text);
+    }
+
+    #[test]
+    fn strip_options_block_removes_block_at_end_of_input() {
+        let text = "intro paragraph\n\n## Options — pick\n\n### Option 1 — t\nbody\n";
+        let stripped = strip_options_block(text);
+        assert!(!stripped.contains("## Options"));
+        assert!(!stripped.contains("### Option 1"));
+        assert!(stripped.contains("intro paragraph"));
+    }
+
+    #[test]
+    fn strip_options_block_preserves_content_after_terminating_h2() {
+        let text = "\
+## Options — pick
+
+### Option 1 — t
+body
+
+## Other section
+
+kept content
+";
+        let stripped = strip_options_block(text);
+        assert!(!stripped.contains("## Options"));
+        assert!(!stripped.contains("### Option 1"));
+        assert!(stripped.contains("## Other section"));
+        assert!(stripped.contains("kept content"));
+    }
+
+    #[test]
+    fn strip_options_block_preserves_prior_notes() {
+        let text = "\
+prior resolution note A
+
+## Options — current
+### Option 1 — t
+body
+
+## After block
+
+after-note
+";
+        let stripped = strip_options_block(text);
+        assert!(stripped.contains("prior resolution note A"));
+        assert!(stripped.contains("after-note"));
+        assert!(!stripped.contains("## Options — current"));
     }
 
     #[test]
