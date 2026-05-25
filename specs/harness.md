@@ -178,8 +178,12 @@ Per-bead dispatch is:
 
 1. Parse the bead's labels; pick the highest-precedence `profile:X` (or the
    value of `--profile` if set on the CLI).
-2. Look up `X` in the parsed manifest. Missing key → typed
-   `ProfileError::UnknownProfile { name, manifest_path }`.
+2. Look up `X` in the parsed manifest. Missing key → exit immediately as
+   `loom:blocked` with cause `unknown-profile`; no retry. The note on the
+   bead names the requested profile and the manifest's declared set so the
+   operator can relabel (`bd update`-shaped fix, not a `loom msg` chat
+   reply — the chat session does not retag beads). Same routing as
+   `infra-preflight` (see *Verdict gate* below).
 3. Build `SpawnConfig` with `image_ref = entry.ref` and `image_source =
    entry.source`. Hand it to `wrapix spawn`.
 
@@ -1781,6 +1785,21 @@ Criteria.
   [test](plan_update_threads_existing_companions_into_prompt)
 - `loom todo` implements four-tier detection with per-spec cursor fan-out
   [test](build_spawn_config_resolves_manifest_image_and_renders_new_template)
+- `loom todo` reads [gate.md](gate.md)'s sqlite status cache before
+      rendering the prompt and populates `criterion_status:
+      Vec<CriterionStatus>` on the rendered context (struct shape owned by
+      [templates.md](templates.md)); empty cache yields rows with
+      `CriterionResult::NoResult`, never an inline verifier run
+  [test](todo_populates_criterion_status_from_gate_cache)
+- The driver computes each `CriterionStatus.commits_since` via
+      `git rev-list --count <last_commit>..HEAD` at render time;
+      `last_commit = None` ⇒ `commits_since = None`
+  [test](criterion_status_commits_since_computed_from_git_rev_list)
+- `loom todo_new` creates the molecule epic before the agent's
+      gap-analysis pass, so the clarify-on-epic fallback has a
+      valid target mid-decomposition; an emitted `LOOM_CLARIFY`
+      with no epic in scope is a verdict-gate dispatch error
+  [test](todo_new_creates_epic_before_decomposition)
 - `loom run` continuous mode processes beads until molecule complete
   [test](continuous_loops_until_molecule_complete)
 - `loom run --once` processes single bead then exits
@@ -1869,6 +1888,13 @@ Criteria.
       and clears the label via `bd update --remove-label=loom:clarify`
       (or `loom:blocked`) per resolved bead
   [test](loom_msg_chat_writes_notes_and_clears_labels)
+- Clearing the `loom:clarify` label via any `loom msg` path
+      (`-o`, `-r`, `-d`, chat session) removes the originating
+      `## Options — …` block from the bead's notes in the same
+      transaction that records the resolution note, per
+      [gate.md](gate.md)'s *Resolution lifecycle*; only the
+      resolution note remains on the bead afterwards
+  [test](msg_resolution_removes_originating_options_block_from_notes)
 - The chat session ending mid-walk is a clean `LOOM_COMPLETE`;
       unresolved clarifies remain visible in the next session
   [test](loom_msg_chat_partial_progress_leaves_unresolved_clarifies_open)
@@ -1907,6 +1933,13 @@ Criteria.
 - `LOOM_CLARIFY` agent marker → bead transitions to `[clarify]`,
       recovery loop is skipped
   [test](clarify_marker_routes_to_clarify_with_question)
+- `LOOM_CLARIFY` from a `loom todo_new` / `loom todo_update` session
+      targets the **molecule epic** (rationale per
+      [templates.md — Decomposition Discipline](templates.md));
+      the agent's `## Options — …` block is persisted to the
+      epic's notes per [gate.md](gate.md)'s Options Format
+      Contract before the label is applied
+  [test](todo_clarify_marks_molecule_epic)
 - No marker emitted → recovery with cause `swallowed-marker`
   [test](missing_marker_routes_to_swallowed_marker_recovery)
 - `LOOM_COMPLETE` + bead not bd-closed → recovery with cause
@@ -1984,6 +2017,12 @@ Criteria.
 - Pre-flight infra failures (image load, container start) exit
       immediately as `loom:blocked` with cause `infra-preflight`; no retry
   [test](infra_preflight_routes_to_blocked_without_retry)
+- Per-bead dispatch with an undeclared `profile:X` label exits
+      immediately as `loom:blocked` with cause `unknown-profile`;
+      the bead's notes name the requested profile + the manifest's
+      declared set; the loop continues with the next ready bead
+      rather than aborting the workflow
+  [test](unknown_profile_label_routes_to_blocked_with_declared_set_in_notes)
 - Mid-session infra failures (agent process exit non-zero, container
       OOM, IO errors) get one free retry per `loom run`; second mid-
       session failure → `loom:blocked` with cause `infra-repeated`
@@ -2477,6 +2516,19 @@ two agent-loop observers.
     [llm.md](llm.md) (notably `DoomLoopObserver`'s
     stage 2). Without this routing, observer kills would
     mis-classify as `swallowed-marker`.
+18. **Decomposition-phase wiring.** `loom todo` reads
+    [gate.md](gate.md#status-cache)'s sqlite status cache before
+    rendering the prompt and surfaces a per-criterion
+    `CriterionStatus` row (shape owned by
+    [templates.md](templates.md)) so the decomposition agent
+    decides gaps from evidence rather than spec text alone.
+    `loom todo_new` creates the molecule epic before any path that
+    can emit `LOOM_CLARIFY`; clarify from a `todo_*` session
+    targets the epic (per-bead clarify is not appropriate when
+    the child beads under negotiation don't yet exist or are
+    exactly the set being authored). Empty cache surfaces as
+    `CriterionResult::NoResult` rows — staleness is exposed, not
+    papered over.
 
 ### Non-Functional
 

@@ -67,6 +67,7 @@ Current set:
 | `chat_marker_final_turn_only.md` | Restrict `LOOM_COMPLETE` emission to the **final** assistant turn of a multi-turn chat. Included by `msg`, `plan_new`, and `plan_update` to disambiguate `exit_signals.md`'s "end your response with the marker" language (which is correct for single-shot worker phases but misreads as "every response" in chat). One-shot worker phases (`run`, `todo_*`, `review`) deliberately omit it because every response in those phases IS the final output. |
 | `interview_modes.md` | Describe the "one by one" / "polish the spec" interview sub-modes |
 | `chat_interview.md` | Require conversational, prose-based Q&A during planning sessions; forbid Claude Code's structured option-picker tool — see *Chat Discipline* below |
+| `decomposition_discipline.md` | Pin the audit-before-fan-out rule on `todo_new` / `todo_update`: every bead must correspond to evidence-confirmed missing work, not a spec criterion in the abstract — see *Decomposition Discipline* below |
 | `plan_stage_rubric.md` | Gate the planning interview on completeness / coherence / invariant-clash before any commit |
 | `invariant_clash.md` | Describe the invariant-clash awareness scan (included transitively via `plan_stage_rubric.md`) |
 | `review_rubric.md` | Per-diff review rubric — see [gate.md](gate.md) |
@@ -114,6 +115,7 @@ Each partial is included by an explicit set of templates:
 | `chat_marker_final_turn_only.md` | ✓ | ✓ |  |  |  |  | ✓ |
 | `interview_modes.md` | ✓ | ✓ |  |  |  |  |  |
 | `chat_interview.md` | ✓ | ✓ |  |  |  |  |  |
+| `decomposition_discipline.md` |  |  | ✓ | ✓ |  |  |  |
 | `plan_stage_rubric.md` | ✓ | ✓ |  |  |  |  |  |
 | `invariant_clash.md` | ✓ | ✓ |  |  |  |  |  |
 | `review_rubric.md` |  |  |  |  |  | ✓ |  |
@@ -128,6 +130,14 @@ there would inflate prompt size without buying enforcement.
 **`spec_conventions.md` is pinned only in `plan_new` and
 `plan_update`** — the two phases that author spec content. Other
 phases consume specs but don't modify them.
+
+**`decomposition_discipline.md` is pinned only in `todo_new` and
+`todo_update`** — the two phases that authorize bead creation.
+The discipline is decomposition-specific: it tells the agent to
+confirm missing work by inspection before authoring any non-audit
+bead, and to fall back to `LOOM_CLARIFY` on the molecule epic when
+coverage cannot be determined. See *Decomposition Discipline* for
+the invariant and the two acceptable session outcomes.
 
 ### Template Variables
 
@@ -156,6 +166,7 @@ through the parse-don't-validate boundary defined in
 | `attempt` | `u32` | `run` (in-session per-bead retry counter — see *Attempt Counter* below) |
 | `beads_summary` | `Option<String>` | `review` |
 | `base_commit` | `Option<String>` | `review` |
+| `criterion_status` | `Vec<CriterionStatus>` | `todo_new`, `todo_update` (see *Criterion-Status Surface* below) |
 | `exit_signals` | `String` | all |
 | `scratchpad_path` | `String` | all |
 
@@ -167,6 +178,79 @@ template treats them as opaque typed values.
 `implementation_notes` is sourced from the state DB's `notes` table
 (kind = `implementation`); see *Notes lifecycle* in
 [harness.md](harness.md#sqlite-state-store).
+
+### Criterion-Status Surface
+
+`criterion_status` is the per-criterion record that gives `todo_*`
+decomposition agents evidence of which Success-Criteria bullets
+already pass before they fan out beads. Without this surface, the
+agent has only the spec text and a directory listing — the input
+shape that drives a decomposition agent to author beads for spec
+criteria whose verifiers already pass.
+
+```rust
+pub struct CriterionStatus {
+    /// Stable identifier for this criterion within the spec
+    /// (e.g. the trailing fragment of its anchor in the rendered
+    /// markdown). Format owned by the gate's status cache.
+    pub criterion_anchor: String,
+
+    /// The annotation target as the criterion declared it
+    /// (`[check](...)`, `[test](...)`, `[system](...)`, `[judge](...)`).
+    pub annotation: String,
+
+    /// Last cached verdict for this criterion's verifier.
+    pub last_result: CriterionResult,
+
+    /// Unix-millis timestamp of the verifier run that produced
+    /// `last_result`. `None` if no run has ever populated the cache.
+    pub last_timestamp_ms: Option<i64>,
+
+    /// Commit hash the cached result was recorded against. `None`
+    /// when `last_result` is `NoResult`.
+    pub last_commit: Option<String>,
+
+    /// Number of commits between `last_commit` and the current
+    /// HEAD (computed by the driver from `git rev-list --count`).
+    /// `None` when `last_commit` is `None`.
+    pub commits_since: Option<u32>,
+}
+
+pub enum CriterionResult {
+    Pass,
+    Fail,
+    /// The verifier reported the criterion was out of scope for
+    /// the run (e.g. file-scoped `--files` filter excluded it).
+    Skipped,
+    /// No cached run exists — this criterion has never been
+    /// verified on this machine.
+    NoResult,
+}
+```
+
+**Source.** The driver constructs `criterion_status` by reading
+the status cache that `loom gate verify` / `loom gate review`
+populate; cache contents per criterion (annotation target,
+last-run timestamp + commit hash, verdict, evidence string) are
+owned by [gate.md — Status cache](gate.md#status-cache). The
+driver computes `commits_since` against the current HEAD at
+prompt-render time. No new schema in gate.md is required for this
+surface — the existing cache fields suffice.
+
+**Spec the surface, not the policy.** This struct deliberately
+does not encode staleness thresholds (e.g. "≥ 24h is stale"). The
+partial body in `partial/decomposition_discipline.md` carries the
+heuristic the agent applies to these values; that heuristic can
+evolve without spec churn. The struct's contract is just "expose
+result + recency"; the agent's prompt instructions decide what
+counts as a gap.
+
+**Empty cache.** When no run has populated the cache (fresh
+checkout, never-verified spec), every criterion arrives with
+`last_result = NoResult`. The partial body treats this as the
+strongest signal toward either authoring beads or, when the
+volume is too large to inline-audit, emitting `LOOM_CLARIFY`
+against the molecule epic.
 
 ### Typed `PreviousFailure`
 
@@ -315,6 +399,76 @@ partial is not pinned there. `msg` resolves `loom:clarify` beads via
 the canonical *Options Format Contract* in [gate.md](gate.md), so
 the picker concern doesn't apply there either.
 
+### Decomposition Discipline
+
+`partial/decomposition_discipline.md` is included by `todo_new.md`
+and `todo_update.md`. It tells the decomposition agent that every
+bead it authors must correspond to **evidence-confirmed missing
+work**, not to a spec criterion in the abstract.
+
+Before authoring any non-audit bead, the agent must:
+
+1. Consult the `criterion_status` surface (see *Criterion-Status
+   Surface*) for the cached verdict + timestamp + commits-since on
+   each criterion in scope. A criterion whose verifier passed in a
+   fresh run, with no intervening commits, is positive evidence of
+   coverage — not a gap.
+2. Read representative existing implementations and verifier
+   functions for criteria where `criterion_status` is suspicious
+   (stale timestamp, many commits since, or the agent judges the
+   verifier name resolves to a path that doesn't exercise the
+   live system per [spec-conventions.md](../docs/spec-conventions.md)'s
+   "no tier-skipping" rule). A directory listing proves a file
+   exists; it does not prove the file contains the named target.
+
+A `loom todo` session has exactly two acceptable outcomes:
+
+- **(a) Gap-targeted bead set.** Beads are authored only for
+  criteria the audit confirms are missing, incomplete, or covered
+  by a dishonest verifier. The agent cites its evidence (the
+  `criterion_status` row, the file read that surfaced the gap, or
+  the verifier-source observation) in the bead description.
+- **(b) Clarify on the molecule epic.** When coverage cannot be
+  determined by inspection — spec ambiguity, conflicting verifier
+  targets, or the agent's judgement of cache trustworthiness is
+  contestable — the agent emits `LOOM_CLARIFY` with the question
+  and `## Options — …` block persisted to the **molecule epic's**
+  notes per the *Options Format Contract* in [gate.md](gate.md).
+  The verdict gate applies `loom:clarify` to the epic; the human
+  resolves via `loom msg <epic>`, and a subsequent `loom todo`
+  invocation consumes the answer from the epic's notes before
+  fanning out.
+
+Per-bead `loom:clarify` is not appropriate here because the child
+beads either don't yet exist (`todo_new`) or are exactly the set
+under negotiation (`todo_update`). The epic is the only
+session-stable carrier for "this molecule's decomposition is
+paused pending clarification".
+
+**Epic-first-always in `todo_new`.** For the clarify-on-epic
+fallback to be viable mid-decomposition, the `todo_new.md` flow
+creates the molecule epic before any criterion-by-criterion gap
+analysis runs. `todo_update` already operates against an
+existing molecule, so the ordering is automatic there.
+
+**Enumerate-everything defaults are forbidden by data, not by
+grep.** A fixed decomposition axis — e.g. "setup,
+implementation, tests, documentation" applied across the board
+irrespective of evidence — is the failure mode this discipline
+targets. The combined effect of (i) `criterion_status` exposing
+positive evidence that whole axes already pass and (ii) the
+audit clause's evidence-confirmation prerequisite for bead
+authorship makes such fan-outs structurally unviable.
+`loom gate review`'s judge-tier walk is what catches any
+decomposition that bypasses the `criterion_status` surface to
+re-introduce enumerate-everything beads.
+
+**Template-agnostic.** The partial describes the audit obligation
+in terms of "criteria in scope" and "representative
+implementations", not specific file paths or crate names.
+Downstream consumers of loom whose workspace layouts differ from
+this one inherit the same discipline against their own layouts.
+
 ### Sibling-Spec Editing
 
 `partial/sibling_spec_editing.md` is included only in
@@ -352,6 +506,9 @@ templates from `templates`' exposed building blocks:
 - `PinnedContext` (the project-overview + style-rules pinning shape)
 - `PreviousFailure`, `VerifierFailure`, `ReviewConcernKind`,
   `DriverNoticeCause` (the typed retry-context surface)
+- `CriterionStatus`, `CriterionResult` (the decomposition-phase
+  criterion-recency surface; consumers writing decomposition-
+  style tools reuse this shape against their own caches)
 - `RunContext`, `ReviewContext` (workflow-phase context shapes
   consumers can either reuse directly or model their own contexts
   after)
@@ -578,9 +735,9 @@ documents in front of the agent with zero configuration.
 ### Public surface
 
 - `templates` exposes `PreviousFailure`, `VerifierFailure`,
-  `ReviewConcernKind`, `DriverNoticeCause`, `RunContext`,
-  `ReviewContext`, `PinnedContext` as public types consumable from
-  external crates
+  `ReviewConcernKind`, `DriverNoticeCause`, `CriterionStatus`,
+  `CriterionResult`, `RunContext`, `ReviewContext`, `PinnedContext`
+  as public types consumable from external crates
   [check](cargo run -p loom-walk -- loom_templates_public_types)
 - Each partial in the *Partials* table is also exposed as a public
   `&'static str` constant (e.g. `SCRATCHPAD_PARTIAL`,
@@ -590,6 +747,46 @@ documents in front of the agent with zero configuration.
   `run.md`, `review.md`, `msg.md`) are NOT publicly exported —
   only the typed contexts and partial strings
   [check](cargo run -p loom-walk -- loom_templates_workflow_templates_not_exported)
+
+### Criterion-status surface
+
+- `TodoNewContext` and `TodoUpdateContext` carry
+  `criterion_status: Vec<CriterionStatus>`; no other phase context
+  does
+  [check](cargo run -p loom-walk -- todo_contexts_carry_criterion_status)
+- `CriterionStatus` is a struct with fields `criterion_anchor`,
+  `annotation`, `last_result`, `last_timestamp_ms`, `last_commit`,
+  `commits_since`; `CriterionResult` is a tagged enum with
+  variants `Pass`, `Fail`, `Skipped`, `NoResult`
+  [check](grep -q 'pub struct CriterionStatus' crates/loom-templates/src/criterion_status.rs)
+- `todo_new` and `todo_update` rendered prompts surface every
+  `CriterionStatus` row's annotation + last result + recency
+  signal so the agent can distinguish fresh-pass criteria from
+  stale or never-run ones
+  [test](todo_templates_render_criterion_status_rows)
+
+### Decomposition discipline
+
+- `partial/decomposition_discipline.md` exists and is included by
+  `todo_new.md` and `todo_update.md` only; the body names the
+  audit obligation and the two acceptable session outcomes
+  [check](cargo run -p loom-walk -- template_pinning_matrix)
+- The partial body names the discipline distinctively (so a grep
+  catches accidental emptying)
+  [check](grep -qi 'evidence-confirmed\|audit before' crates/loom-templates/templates/partial/decomposition_discipline.md)
+- Rendered `todo_new` and `todo_update` prompts contain a clause
+  committing the agent to confirm missing work by inspection
+  before authoring any non-audit bead
+  [test](todo_templates_render_pre_decomposition_audit_clause)
+- The partial documents `LOOM_CLARIFY` on the molecule epic as
+  the fallback when coverage cannot be determined, with the
+  `## Options — …` block per [gate.md](gate.md)'s Options Format
+  Contract
+  [check](grep -q 'LOOM_CLARIFY' crates/loom-templates/templates/partial/decomposition_discipline.md)
+- `todo_new.md` directs the agent to create the molecule epic
+  before the gap-analysis pass, so the clarify-on-epic fallback
+  has a valid target mid-decomposition
+  [check](cargo run -p loom-walk -- todo_new_creates_epic_before_decomposition)
 
 ## Requirements
 
@@ -661,6 +858,29 @@ documents in front of the agent with zero configuration.
     multi-choice UI). Options are listed inline in prose; the user
     replies in prose. The "one by one" sub-mode is preserved —
     one question per chat turn, not one picker per turn.
+14. **Criterion-status surface for decomposition.** `todo_new` and
+    `todo_update` contexts carry `criterion_status:
+    Vec<CriterionStatus>` where each `CriterionStatus` exposes
+    annotation target + last result (`Pass | Fail | Skipped |
+    NoResult`) + last timestamp + last commit + commits-since-HEAD.
+    The driver populates the surface from
+    [gate.md](gate.md#status-cache)'s sqlite cache. No new cache
+    schema; the existing fields suffice. The struct does not
+    encode staleness thresholds — the partial body owns the
+    heuristic.
+15. **Decomposition discipline in `todo_*` phases.**
+    `partial/decomposition_discipline.md`, pinned in `todo_new`
+    and `todo_update` only, requires the decomposition agent to
+    confirm missing work by consulting `criterion_status` and (for
+    suspicious or empty cache rows) reading representative
+    implementations before authoring any non-audit bead. The
+    partial defines the two acceptable session outcomes:
+    (a) a gap-targeted bead set citing evidence per bead, or
+    (b) `LOOM_CLARIFY` on the **molecule epic** with the
+    `## Options — …` block when coverage cannot be determined.
+    `todo_new.md` creates the molecule epic before the
+    gap-analysis pass — without an existing epic the
+    clarify-on-epic fallback has no target.
 
 ### Non-Functional
 

@@ -744,6 +744,33 @@ and the downstream user cannot fast-reply. The reviewer template
 in `loom-templates/templates/review.md` documents the required
 `bd` invocations.
 
+### Resolution lifecycle
+
+The `## Options — <summary>` block lives in the target bead's
+notes only from emit to resolution. When `loom:clarify` is
+cleared — via `loom msg -o`, `-r`, `-d`, or the chat session's
+`bd update --remove-label=loom:clarify` — the originating
+options block is removed from notes in the same transaction that
+records the resolution note (chosen option body, verbatim reply,
+or dismissal note). The resolution replaces the question on the
+bead's notes record.
+
+A single bead can receive multiple clarifications across its
+lifetime — notably the molecule epic, which hosts
+decomposition-phase clarifies emitted by successive `loom todo`
+invocations as well as push-gate clarifies. Without removal,
+options blocks accumulate and `loom msg` lists become ambiguous
+about which block belongs to the currently active label.
+
+For clarifies hosted on a **dedicated clarify bead** (created
+via `bd create` per the Persistence boundary above, closed on
+fast-reply per `loom msg`'s consumption shape above), the
+removal is moot — the whole bead is closed and the notes pass
+out of scope with it. The lifecycle contract is load-bearing
+for the **existing-bead** path (`bd update --notes` +
+`--add-label=loom:clarify`) where the bead survives the
+resolution.
+
 ## Output
 
 The gate's output is a verdict (pass / hard-fail / clarify) plus any
