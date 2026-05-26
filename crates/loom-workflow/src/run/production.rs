@@ -454,6 +454,7 @@ fn neutral_gate_inputs() -> GateInputs {
         diff_empty: false,
         verify_failures: vec![],
         review_flag: None,
+        ..GateInputs::default()
     }
 }
 

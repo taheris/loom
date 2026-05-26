@@ -80,26 +80,82 @@ fn fake_bead(id: &str) -> Bead {
     }
 }
 
-/// Acceptance: `--parallel 1` (default) does not create a worktree and works
-/// on the driver branch. The worktree branch is gated by `Parallelism::is_one`,
-/// so the contract is enforceable as a pure function on the parsed flag — the
-/// driver routes on the same predicate before ever calling `create_worktrees`.
-#[test]
-fn parallel_one_no_worktree() {
-    let p: Parallelism = "1".parse().expect("parses");
-    assert!(p.is_one(), "Parallelism::ONE must report is_one() == true");
-    assert_eq!(p.get(), 1);
+/// Acceptance (`specs/harness.md` line 1793 — `bead_dispatch_creates_worktree`):
+/// dispatching a single bead — even at `--parallel 1` — materialises
+/// `.wrapix/worktree/<label>/<bead-id>/` and runs the merge-back path after
+/// the bead completes. Universal worktree isolation: the main checkout is
+/// never the bead's workdir. The merge-back step (previously a no-op when
+/// N=1 ran on the driver branch) now always runs.
+#[tokio::test]
+async fn bead_dispatch_creates_worktree() -> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("harness");
+    let bead = fake_bead("wx-solo");
 
-    let bigger: Parallelism = "2".parse().expect("parses");
-    assert!(!bigger.is_one(), "N>1 must NOT take the no-worktree path");
-    let four: Parallelism = "4".parse().expect("parses");
-    assert!(!four.is_one());
+    // Step 1: dispatching a single bead through the `create_worktrees`
+    // path materialises the per-bead worktree at the spec-pinned path,
+    // even though only one bead is in the batch.
+    let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
+    assert_eq!(slots.len(), 1, "one worktree for one bead");
+    let slot = &slots[0];
+    let expected_path = repo.path().join(".wrapix/worktree/harness/wx-solo");
+    assert!(
+        slot.worktree.path.exists(),
+        "worktree path {:?} must exist after dispatch",
+        slot.worktree.path,
+    );
+    assert_eq!(slot.worktree.path, expected_path);
+    assert_eq!(slot.worktree.branch, "loom/harness/wx-solo");
+
+    // The main checkout is never the bead's workdir — the worktree path
+    // is strictly under `.wrapix/worktree/...`, not the repo root.
+    assert_ne!(
+        slot.worktree.path,
+        repo.path(),
+        "main checkout must NOT be the bead's workdir",
+    );
+
+    // Step 2: simulate a successful agent run inside the bead's worktree
+    // and assert the merge-back path runs (worktree removed, branch
+    // deleted, bead file present on driver). Pre-universal-dispatch, this
+    // path was a no-op for N=1; the bead now exercises it unconditionally.
+    let unique_file = format!("{}.txt", slot.bead.id);
+    std::fs::write(slot.worktree.path.join(&unique_file), "from-bead\n")?;
+    git(&slot.worktree.path, &["add", &unique_file])?;
+    git(
+        &slot.worktree.path,
+        &["commit", "-q", "-m", &format!("work for {}", slot.bead.id)],
+    )?;
+    let batch_slots = vec![BatchSlot {
+        bead: slot.bead.clone(),
+        worktree: slot.worktree.clone(),
+        outcome: AgentOutcome::Success,
+    }];
+    let outcome = merge_back(&client, batch_slots).await?;
+
+    assert_eq!(outcome.merged_ids(), vec![slot.bead.id.clone()]);
+    assert!(
+        repo.path().join(&unique_file).exists(),
+        "bead's file must land on the driver branch after merge-back",
+    );
+    assert!(
+        !slot.worktree.path.exists(),
+        "worktree must be removed after clean merge-back",
+    );
+    let branches = git_capture(repo.path(), &["branch", "--list", &slot.worktree.branch])?;
+    assert!(
+        branches.trim().is_empty(),
+        "bead's branch must be deleted after merge-back (got: {branches:?})",
+    );
+    Ok(())
 }
 
-/// Acceptance: `--parallel N` (`N > 1`) creates one worktree per dispatched
-/// bead under `.wrapix/worktree/<label>/<bead-id>/`.
+/// Acceptance (`specs/tests.md` line 597 — `parallel_run_two_beads_e2e`):
+/// `loom run --parallel 2` with two ready beads creates one worktree per
+/// bead under `.wrapix/worktree/<label>/<bead-id>/` (concurrent dispatch).
 #[tokio::test]
-async fn parallel_creates_worktrees() -> Result<()> {
+async fn parallel_run_two_beads_e2e() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");

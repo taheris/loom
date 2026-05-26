@@ -43,6 +43,7 @@ mod profile;
 mod retry;
 mod runner;
 mod spawn;
+mod tree_clean;
 
 pub use context::{RunContextInputs, build_run_context, render_run_prompt};
 pub use error::RunError;
@@ -62,3 +63,4 @@ pub use runner::{
     UNKNOWN_PROFILE_CAUSE, run_loop,
 };
 pub use spawn::build_spawn_config_from_manifest;
+pub use tree_clean::{TREE_NOT_CLEAN_CAP, dirty_paths_from_porcelain};

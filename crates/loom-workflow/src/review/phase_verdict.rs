@@ -120,6 +120,15 @@ pub enum RecoveryCause {
     /// `specs/harness.md` §"Disambiguating no marker". `reason` is
     /// the verbatim payload the observer emitted.
     ObserverAbort { reason: String },
+    /// Agent emitted `LOOM_COMPLETE` / `LOOM_NOOP` and bd-closed the bead,
+    /// but the bead's worktree left `git status --porcelain` non-empty.
+    /// Routes BEFORE verify-fail / review-concern (`specs/harness.md`
+    /// §"Verdict Gate · Tree-clean check") so verifiers do not run
+    /// against a half-staged tree. `dirty_paths` is the already-capped
+    /// list (up to 30 entries; an extra `"+N more"` element follows when
+    /// the underlying set was larger). Driver caps before construction;
+    /// the variant carries already-capped paths.
+    TreeNotClean { dirty_paths: Vec<String> },
 }
 
 impl RecoveryCause {
@@ -134,6 +143,7 @@ impl RecoveryCause {
             Self::VerifyFail { .. } => "verify-fail",
             Self::ReviewConcern(_) => "review-concern",
             Self::ObserverAbort { .. } => "observer-abort",
+            Self::TreeNotClean { .. } => "tree-not-clean",
         }
     }
 }
@@ -155,12 +165,21 @@ pub enum PhaseVerdict {
 }
 
 /// Mechanical inputs the gate consumes alongside the parsed exit marker.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GateInputs {
     /// Bead carries `closed` status after the phase ran.
     pub bd_closed: bool,
     /// `git diff` against the driver branch produced no output.
     pub diff_empty: bool,
+    /// Dirty entries reported by `git status --porcelain` on the bead's
+    /// worktree, **already capped** (up to 30 entries with an extra
+    /// `"+N more"` element when the underlying set was larger; see
+    /// [`crate::run::dirty_paths_from_porcelain`]). Empty when the tree
+    /// is clean. Non-empty drives the gate to
+    /// [`RecoveryCause::TreeNotClean`] BEFORE verify-fail /
+    /// review-concern, so verifiers do not run against a half-staged
+    /// tree (`specs/harness.md` §"Verdict Gate · Tree-clean check").
+    pub tree_dirty_paths: Vec<String>,
     /// Failure record for every `[verify]` script that exited non-zero.
     /// Empty when every script passed; the gate routes to
     /// [`RecoveryCause::VerifyFail`] when this is non-empty and threads the
@@ -229,6 +248,17 @@ fn decide_progress_marker(is_noop: bool, inputs: GateInputs) -> PhaseVerdict {
     if !is_noop && inputs.diff_empty {
         return PhaseVerdict::Recovery {
             cause: RecoveryCause::ZeroProgress,
+        };
+    }
+    // Tree-clean check precedes verify-fail / review-concern per
+    // `specs/harness.md` §"Verdict Gate · Tree-clean check" — verifiers
+    // do NOT run against a half-staged tree because that would conflate
+    // the agent's intended diff with its leftover scratch.
+    if !inputs.tree_dirty_paths.is_empty() {
+        return PhaseVerdict::Recovery {
+            cause: RecoveryCause::TreeNotClean {
+                dirty_paths: inputs.tree_dirty_paths,
+            },
         };
     }
     if !inputs.verify_failures.is_empty() {
@@ -313,6 +343,7 @@ mod tests {
             diff_empty,
             verify_failures,
             review_flag,
+            ..GateInputs::default()
         }
     }
 
@@ -457,6 +488,7 @@ mod tests {
             diff_empty: false,
             verify_failures: vec![sample_failure()],
             review_flag: Some(flag(ReviewConcern::VerifierBypass, detail)),
+            ..GateInputs::default()
         };
         match decide(Some(&ExitSignal::Complete), g) {
             PhaseVerdict::Recovery {
@@ -497,6 +529,7 @@ mod tests {
             diff_empty: false,
             verify_failures: failures.clone(),
             review_flag: None,
+            ..GateInputs::default()
         };
         match decide(Some(&ExitSignal::Complete), g) {
             PhaseVerdict::Recovery {
@@ -636,6 +669,121 @@ mod tests {
         );
     }
 
+    // --- Tree-not-clean rows (precede verify-fail / review-concern). ---
+
+    #[test]
+    fn complete_with_dirty_tree_routes_to_tree_not_clean_before_verify() {
+        // Spec gate (`specs/harness.md` §"Verdict Gate · Tree-clean check"):
+        // when the worktree is dirty after the bead bd-closed, the gate
+        // routes to `tree-not-clean` recovery BEFORE verify-fail /
+        // review-concern. Verifiers do not run against a half-staged tree.
+        // Set BOTH verify_failures and review_flag to non-default values so
+        // the test pins precedence — tree-not-clean wins over both.
+        let dirty = vec![" M src/foo.rs".to_string(), "?? scratch.tmp".to_string()];
+        let g = GateInputs {
+            bd_closed: true,
+            diff_empty: false,
+            tree_dirty_paths: dirty.clone(),
+            verify_failures: vec![sample_failure()],
+            review_flag: Some(flag(ReviewConcern::Scope, "out of scope")),
+        };
+        match decide(Some(&ExitSignal::Complete), g) {
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::TreeNotClean { dirty_paths },
+            } => {
+                assert_eq!(
+                    dirty_paths, dirty,
+                    "tree-not-clean carries the (already-capped) dirty paths verbatim",
+                );
+            }
+            other => panic!(
+                "expected Recovery::TreeNotClean (precedes verify-fail & review-concern), \
+                 got {other:?}",
+            ),
+        }
+    }
+
+    #[test]
+    fn noop_with_dirty_tree_routes_to_tree_not_clean() {
+        // Same gate fires for `LOOM_NOOP`: a NOOP claims "no work needed"
+        // but a dirty tree disagrees; surfacing the discrepancy beats
+        // letting the bead close on a false negative.
+        let dirty = vec![" M lib/prek/lock.sh".to_string()];
+        let g = GateInputs {
+            bd_closed: true,
+            diff_empty: true,
+            tree_dirty_paths: dirty.clone(),
+            verify_failures: vec![],
+            review_flag: None,
+        };
+        match decide(Some(&ExitSignal::Noop), g) {
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::TreeNotClean { dirty_paths },
+            } => {
+                assert_eq!(dirty_paths, dirty);
+            }
+            other => panic!("expected Recovery::TreeNotClean for NOOP+dirty, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tree_not_clean_detail_enumerates_and_caps_dirty_paths() {
+        // Spec (`specs/harness.md` §"Verdict Gate · Tree-clean check"):
+        // dirty paths capped at 30 entries with a "+N more" suffix when
+        // truncated. The driver caps before construction; the variant
+        // carries the already-capped list verbatim.
+        use crate::run::{TREE_NOT_CLEAN_CAP, dirty_paths_from_porcelain};
+
+        // 42 lines of porcelain → 30 cap + "+12 more" suffix == 31 entries.
+        let porcelain = (0..42)
+            .map(|i| format!(" M src/file_{i}.rs"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let capped = dirty_paths_from_porcelain(&porcelain);
+        assert_eq!(
+            capped.len(),
+            TREE_NOT_CLEAN_CAP + 1,
+            "cap of {TREE_NOT_CLEAN_CAP} + 1 overflow marker line",
+        );
+        assert_eq!(capped[0], " M src/file_0.rs");
+        assert_eq!(capped[TREE_NOT_CLEAN_CAP - 1], " M src/file_29.rs");
+        assert_eq!(
+            capped[TREE_NOT_CLEAN_CAP], "+12 more",
+            "final entry names the overflow count",
+        );
+
+        // Under the cap: every line passes through, no overflow marker.
+        let porcelain_small = (0..5)
+            .map(|i| format!("?? scratch_{i}.tmp"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let capped_small = dirty_paths_from_porcelain(&porcelain_small);
+        assert_eq!(capped_small.len(), 5);
+        assert!(
+            !capped_small.iter().any(|p| p.starts_with('+')),
+            "no overflow marker under the cap (got: {capped_small:?})",
+        );
+
+        // The verdict gate accepts the already-capped Vec verbatim — the
+        // capping discipline is enforced by the caller, not re-applied here.
+        let g = GateInputs {
+            bd_closed: true,
+            diff_empty: false,
+            tree_dirty_paths: capped.clone(),
+            verify_failures: vec![],
+            review_flag: None,
+        };
+        match decide(Some(&ExitSignal::Complete), g) {
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::TreeNotClean { dirty_paths },
+            } => {
+                assert_eq!(dirty_paths, capped);
+                assert_eq!(dirty_paths.last().map(String::as_str), Some("+12 more"));
+            }
+            other => panic!("expected Recovery::TreeNotClean, got {other:?}"),
+        }
+    }
+
     // --- Cause label round-trip (bd notes / log surfaces). ---
 
     #[test]
@@ -673,6 +821,13 @@ mod tests {
             }
             .as_str(),
             "observer-abort",
+        );
+        assert_eq!(
+            RecoveryCause::TreeNotClean {
+                dirty_paths: vec![" M src/foo.rs".into()],
+            }
+            .as_str(),
+            "tree-not-clean",
         );
     }
 

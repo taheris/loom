@@ -347,6 +347,7 @@ fn classify_review_phase(marker: Option<&ExitSignal>, exit_code: i32) -> ReviewO
         diff_empty: false,
         verify_failures: vec![],
         review_flag,
+        ..GateInputs::default()
     };
     match decide(marker, inputs) {
         PhaseVerdict::Done => ReviewOutcome::Complete,

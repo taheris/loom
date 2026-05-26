@@ -51,6 +51,10 @@ fn render_previous_failure(cause: &RecoveryCause) -> String {
         RecoveryCause::ObserverAbort { reason } => {
             format!("Session aborted by observer: {reason}.")
         }
+        RecoveryCause::TreeNotClean { dirty_paths } => PreviousFailure::TreeNotClean {
+            dirty_paths: dirty_paths.clone(),
+        }
+        .to_string(),
     }
 }
 
@@ -66,6 +70,9 @@ fn render_previous_failure(cause: &RecoveryCause) -> String {
 ///   `review_notes` flag, when present, must be carried separately on
 ///   `RunContext.review_notes` (this function does not embed it inline).
 /// - `ReviewConcern` → `ReviewConcern { concern: ReviewConcernKind, reason }`.
+/// - `TreeNotClean` → `TreeNotClean { dirty_paths }`. The capped path list
+///   passes through verbatim; the variant's `Display` impl emits the
+///   spec-pinned framing + per-path enumeration + `"+N more"` suffix.
 pub fn cause_to_previous_failure(cause: &RecoveryCause) -> PreviousFailure {
     match cause {
         RecoveryCause::SwallowedMarker => PreviousFailure::DriverNotice {
@@ -92,6 +99,9 @@ pub fn cause_to_previous_failure(cause: &RecoveryCause) -> PreviousFailure {
         RecoveryCause::ReviewConcern(flag) => PreviousFailure::ReviewConcern {
             concern: concern_to_kind(flag.concern),
             reason: flag.detail.clone(),
+        },
+        RecoveryCause::TreeNotClean { dirty_paths } => PreviousFailure::TreeNotClean {
+            dirty_paths: dirty_paths.clone(),
         },
     }
 }
@@ -268,6 +278,60 @@ mod tests {
                 assert_eq!(reason, "test mocks the agent backend");
             }
             other => panic!("expected ReviewConcern, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cause_to_previous_failure_maps_tree_not_clean_passes_paths_through() {
+        // Spec (`specs/harness.md` §"Verdict Gate · Tree-clean check"):
+        // dirty paths are capped by the driver before construction; the
+        // mapping passes the capped list verbatim to the typed variant so
+        // the template's render layer sees the same list (with `"+N more"`
+        // suffix when truncated) that the driver constructed.
+        let dirty = vec![
+            " M src/foo.rs".to_string(),
+            "?? scratch.tmp".to_string(),
+            "+7 more".to_string(),
+        ];
+        let cause = RecoveryCause::TreeNotClean {
+            dirty_paths: dirty.clone(),
+        };
+        match cause_to_previous_failure(&cause) {
+            PreviousFailure::TreeNotClean { dirty_paths } => {
+                assert_eq!(dirty_paths, dirty, "capped list passes through verbatim");
+            }
+            other => panic!("expected TreeNotClean, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tree_not_clean_cause_renders_with_dirty_paths_in_notes() {
+        // `retry-exhausted` notes preserve the original cause body so the
+        // human reading `bd show --notes` sees the same framing the agent
+        // would have seen in `previous_failure`. The body lines up with
+        // the typed render path (`PreviousFailure::TreeNotClean`'s
+        // `Display` impl) so framing stays identical across both
+        // surfaces.
+        let cause = RecoveryCause::TreeNotClean {
+            dirty_paths: vec![" M src/foo.rs".into(), "?? scratch.tmp".into()],
+        };
+        match resolve_recovery(&cause, 5, 3) {
+            RecoveryResolution::Blocked { cause: c, notes } => {
+                assert_eq!(c, RETRY_EXHAUSTED_CAUSE);
+                assert!(
+                    notes.contains("tree-not-clean"),
+                    "original cause label appears in notes: {notes}",
+                );
+                assert!(
+                    notes.contains("Working tree was not clean"),
+                    "spec-pinned framing appears in notes: {notes}",
+                );
+                assert!(
+                    notes.contains(" M src/foo.rs"),
+                    "dirty path appears in notes: {notes}",
+                );
+            }
+            other => panic!("expected Blocked, got {other:?}"),
         }
     }
 
