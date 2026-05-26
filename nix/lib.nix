@@ -15,20 +15,34 @@ in
   # of wrapix profile definitions; default covers the three wrapix ships out
   # of the box. `loomBin` is the loom binary to thread into every sandbox's
   # package set — required, so the in-container PATH always carries `loom`.
+  # `pkgs` is required so the rust profile's image can carry `flock` and
+  # `prek` on PATH — the worker-context hook contract owned by
+  # specs/pre-commit.md.
   # Callers without a pre-built loom should use `flake.lib.mkProfileManifest`
   # (the flake-level override), which auto-builds loom from the loom flake's
   # inputs.
   mkProfileManifest =
     {
+      pkgs,
       wrapixLib,
       loomBin,
       profiles ? { inherit (wrapixLib.profiles) base rust python; },
     }:
     let
+      extraForProfile =
+        name:
+        if name == "rust" then
+          [
+            pkgs.flock
+            pkgs.prek
+          ]
+        else
+          [ ];
       sandboxes = mapAttrs (
-        _: profile: wrapixLib.mkSandbox {
+        name: profile:
+        wrapixLib.mkSandbox {
           inherit profile;
-          packages = [ loomBin ];
+          packages = [ loomBin ] ++ extraForProfile name;
         }
       ) profiles;
       images = mapAttrs (_: s: s.image) sandboxes;

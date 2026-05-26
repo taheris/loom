@@ -17,25 +17,46 @@ in
         src ? loomSrc,
       }:
       loomLib.mkLoom {
-        inherit pkgs crane fenix toolchain src;
+        inherit
+          pkgs
+          crane
+          fenix
+          toolchain
+          src
+          ;
       };
 
     # Build per-profile container images with loom bundled in by default.
-    # `pkgs` is required so loom can be built from loom's own flake inputs;
-    # pass `loomBin` to override with a specific build.
+    # `pkgs` is required so loom can be built from loom's own flake inputs
+    # and so the rust profile image can carry flock/prek on PATH; pass
+    # `loomBin` to override with a specific build.
     mkProfileManifest =
       {
         pkgs,
         wrapixLib,
         profiles ? { inherit (wrapixLib.profiles) base rust python; },
-        loomBin ? (loomLib.mkLoom { inherit pkgs crane fenix toolchain src; }).bin,
+        loomBin ?
+          (loomLib.mkLoom {
+            inherit
+              pkgs
+              crane
+              fenix
+              toolchain
+              src
+              ;
+          }).bin,
         crane ? inputs.crane,
         fenix ? inputs.fenix,
         toolchain ? null,
         src ? loomSrc,
       }:
       loomLib.mkProfileManifest {
-        inherit wrapixLib profiles loomBin;
+        inherit
+          pkgs
+          wrapixLib
+          profiles
+          loomBin
+          ;
       };
   };
 
@@ -84,7 +105,7 @@ in
       };
 
       profileManifest = loomLib.mkProfileManifest {
-        inherit wrapixLib;
+        inherit pkgs wrapixLib;
         loomBin = loom.bin;
       };
 
