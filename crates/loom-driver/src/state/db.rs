@@ -188,6 +188,26 @@ impl StateDb {
         Ok(value.map(MoleculeId::new))
     }
 
+    /// Read every `current_molecule` row as `(spec_label, epic_id)` pairs
+    /// ordered by spec_label. Drives the reviewer-template threading at
+    /// `loom gate audit --tree` scope: the template renders each pair so
+    /// the agent uses it as `bd create --parent <epic_id>` when bonding
+    /// fix-ups to the spec's recovery molecule.
+    pub fn list_current_molecule_entries(
+        &self,
+    ) -> Result<Vec<(SpecLabel, MoleculeId)>, StateError> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn
+            .prepare("SELECT spec_label, epic_id FROM current_molecule ORDER BY spec_label ASC")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (label, epic) = row?;
+            out.push((SpecLabel::new(label), MoleculeId::new(epic)));
+        }
+        Ok(out)
+    }
+
     /// Upsert the `current_molecule` row for `label`, recording `epic_id`
     /// as the spec's active molecule pointer. Inserts a `specs` row if
     /// none exists yet so the foreign key holds on a fresh workspace.

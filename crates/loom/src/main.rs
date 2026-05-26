@@ -2132,6 +2132,7 @@ fn run_review(
     let phase_when = SystemClock::new().wall_now();
     let logs_root_for_spawn = logs_root.clone();
     let style_rules_for_review = config.style_rules.clone();
+    let tree_scope = opts.tree;
     let result = runtime.block_on(async move {
         let bd = BdClient::new();
         let mut controller = ProductionReviewController::new(
@@ -2168,7 +2169,29 @@ fn run_review(
         .with_style_rules(style_rules_for_review)
         .with_verify_exit(opts.verify_exit)
         .with_lane(opts.lane);
-        run_review_loop(&mut controller, IterationCap::default()).await
+        // `--tree` audit: snapshot recovery epics before and after the
+        // reviewer runs; re-open any closed `current_molecule` pointer
+        // so the agent's `bd create --parent <id>` doesn't fail; capture
+        // new recovery epics post-run into the state DB.
+        let pre_epics = if tree_scope {
+            for epic in controller.reopen_closed_recovery_epics().await? {
+                println!("loom gate audit --tree: re-opened recovery epic {epic}");
+            }
+            controller.snapshot_recovery_epics().await?
+        } else {
+            Vec::new()
+        };
+        let loop_result = run_review_loop(&mut controller, IterationCap::default()).await;
+        if tree_scope {
+            let post_epics = controller.snapshot_recovery_epics().await?;
+            for (spec, epic) in controller
+                .record_recovery_epics(&pre_epics, &post_epics)
+                .await?
+            {
+                println!("loom gate audit --tree: recorded current_molecule[{spec}] = {epic}");
+            }
+        }
+        loop_result
     })?;
     println!("loom review: {result:?}");
     Ok(())

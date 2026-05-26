@@ -178,6 +178,33 @@ fn state_current_molecule_round_trips() -> Result<()> {
 }
 
 #[test]
+fn list_current_molecule_entries_returns_every_pair_sorted_by_label() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let db = StateDb::open(dir.path().join("state.db"))?;
+
+    // Empty table → empty result.
+    assert!(db.list_current_molecule_entries()?.is_empty());
+
+    // Three entries written out of order; the accessor returns them
+    // sorted by spec_label so the reviewer-template render is
+    // deterministic across runs.
+    db.set_current_molecule(&SpecLabel::new("gamma"), &MoleculeId::new("wx-gam.1"))?;
+    db.set_current_molecule(&SpecLabel::new("alpha"), &MoleculeId::new("wx-alp.1"))?;
+    db.set_current_molecule(&SpecLabel::new("beta"), &MoleculeId::new("wx-bet.1"))?;
+
+    let entries = db.list_current_molecule_entries()?;
+    assert_eq!(
+        entries,
+        vec![
+            (SpecLabel::new("alpha"), MoleculeId::new("wx-alp.1")),
+            (SpecLabel::new("beta"), MoleculeId::new("wx-bet.1")),
+            (SpecLabel::new("gamma"), MoleculeId::new("wx-gam.1")),
+        ],
+    );
+    Ok(())
+}
+
+#[test]
 fn state_current_molecule_upsert_is_idempotent() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let db = StateDb::open(dir.path().join("state.db"))?;
