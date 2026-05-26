@@ -296,6 +296,32 @@ async fn commits_since_counts_revisions_added_after_a_commit() -> Result<()> {
     Ok(())
 }
 
+/// Spec gate (`specs/harness.md` § Bead worktree dispatch): every
+/// per-bead worktree created by `loom run` MUST have an empty `git
+/// status --porcelain` immediately after creation, so the verdict gate's
+/// tree-clean check is sound by construction — anything dirty the agent
+/// leaves behind is unambiguously the agent's own write.
+#[tokio::test]
+async fn bead_worktree_starts_with_empty_porcelain() -> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("wx-clean.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+
+    let porcelain = client.status_porcelain_at(&created.path).await?;
+    assert!(
+        porcelain.is_empty(),
+        "fresh bead worktree must have empty `git status --porcelain` so \
+         tree-clean checks attribute every dirty path to the agent. got: {porcelain:?}",
+    );
+
+    client.remove_worktree(&created.path).await?;
+    client.delete_branch(&created.branch).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn commits_since_surfaces_git_cli_error_on_unknown_commit() -> Result<()> {
     let repo = init_repo()?;

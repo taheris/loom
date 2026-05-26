@@ -277,6 +277,33 @@ body 2
         assert_eq!(result.trim(), "Chose option 1");
     }
 
+    /// Spec gate (`specs/harness.md` § `loom msg` modes):
+    /// `loom msg`'s resolution paths (`-o`, `-r`, `-d`, and the chat
+    /// session's `bd update --notes` call) MUST remove the originating
+    /// `## Options — …` block from the bead notes in the same write as
+    /// the resolution payload. Without this, a follow-up `loom msg`
+    /// would resurface the same options against a stale clarify and the
+    /// human would chase the wrong question.
+    #[test]
+    fn msg_resolution_removes_originating_options_block_from_notes() {
+        let notes = options_notes();
+        for resolution in ["Chose option 1", "free-form follow-up text", DISMISS_NOTE] {
+            let composed = compose_resolved_notes(Some(notes), resolution);
+            assert!(
+                !composed.contains("## Options"),
+                "resolution `{resolution}` must strip the originating `## Options` heading: {composed}",
+            );
+            assert!(
+                !composed.contains("### Option 1"),
+                "resolution `{resolution}` must strip every `### Option N` subsection: {composed}",
+            );
+            assert!(
+                composed.contains(resolution),
+                "resolution `{resolution}` must appear in the composed notes: {composed}",
+            );
+        }
+    }
+
     #[test]
     fn compose_resolved_notes_preserves_prior_history_around_block() {
         let notes = "\

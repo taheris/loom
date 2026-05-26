@@ -148,15 +148,30 @@ where
         // `status=blocked` transition that `apply_clarify` / `apply_blocked`
         // write alongside the label. `bd ready` natively excludes
         // status=blocked, so no exclude-label flag is needed.
+        //
+        // Epic-typed beads are skipped: workers dispatch leaf work, not
+        // molecule containers. A stray ready epic surfaces as one info-log
+        // line per skip so the operator sees the routing decision.
         let beads = self
             .bd
             .ready(ReadyOpts {
-                limit: Some(1),
+                limit: Some(8),
                 label: Some(self.spec_label_filter()),
                 exclude_label: vec![],
             })
             .await?;
-        Ok(beads.into_iter().next())
+        for bead in beads {
+            if bead.issue_type == "epic" {
+                info!(
+                    bead = %bead.id,
+                    spec = %self.label,
+                    "loom run: skipping epic-typed ready bead — workers dispatch leaves only",
+                );
+                continue;
+            }
+            return Ok(Some(bead));
+        }
+        Ok(None)
     }
 
     async fn run_bead(
@@ -1860,6 +1875,54 @@ mod tests {
         assert!(
             !argv.iter().any(|a| a.starts_with("--exclude-label")),
             "next_ready_bead must NOT forward --exclude-label; argv={argv:?}",
+        );
+    }
+
+    /// Spec gate (`specs/harness.md` § Worker-queue resolution): the
+    /// per-bead loop dispatches LEAVES, not molecule containers. A `bd
+    /// ready` response carrying a `type=epic` bead must be skipped over
+    /// and the next non-epic bead surfaced; the epic-skip emits an
+    /// info-level log line so operators see the routing decision.
+    #[tokio::test]
+    async fn worker_queue_skips_epic_type_beads_with_info_log() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let body = br#"[
+            {"id":"wx-epic.1","title":"epic","description":"","status":"open","priority":2,"issue_type":"epic","labels":["spec:gate","profile:base"]},
+            {"id":"wx-leaf.2","title":"leaf","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:gate","profile:base"]}
+        ]"#;
+        let scripted = ScriptedBd::new([ok_stdout(body)]);
+        let bd = BdClient::with_runner(scripted);
+        let mut controller = ProductionAgentLoopController::new(
+            bd,
+            SpecLabel::new("gate"),
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        );
+        let picked = controller
+            .next_ready_bead()
+            .await
+            .expect("ready ok")
+            .expect("a non-epic bead must surface");
+        assert_eq!(
+            picked.id.as_str(),
+            "wx-leaf.2",
+            "worker queue must skip the epic and return the leaf bead",
         );
     }
 }

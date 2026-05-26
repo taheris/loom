@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use displaydoc::Display;
 use loom_driver::agent::ProtocolError;
+use loom_driver::bd::BdError;
 use loom_driver::profile_manifest::ProfileError;
 use loom_driver::state::StateError;
 use thiserror::Error;
@@ -39,4 +40,7 @@ pub enum TodoError {
 
     /// profile-image manifest dispatch failed
     Profile(#[from] ProfileError),
+
+    /// bd client failure
+    Bd(#[from] BdError),
 }

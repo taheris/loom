@@ -539,3 +539,66 @@ async fn base_commit_advances_only_on_complete_or_noop_with_clean_exit() {
         }
     }
 }
+
+/// Spec gate (`specs/harness.md` § Marker routing for `loom todo`):
+/// `LOOM_CLARIFY` emitted from a `loom todo_new` / `loom todo_update`
+/// session MUST target the molecule epic — not the bead the agent
+/// was working on — per templates.md Decomposition Discipline. The
+/// agent has already persisted its `## Options — …` block to the
+/// epic's notes per gate.md's Options Format Contract; the driver
+/// stamps `loom:clarify` + status=blocked on the epic so `bd ready`
+/// excludes it until a human resolves via `loom msg`.
+#[tokio::test]
+async fn todo_clarify_marks_molecule_epic() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let label = "alpha";
+    let epic_id = "wx-alpha";
+    let git = init_repo(&workspace);
+    let state = seeded_state(&workspace, label, epic_id, None);
+
+    let runner = CapturingRunner::new([]);
+    let bd = Arc::new(BdClient::with_runner(runner.clone()));
+    let manifest = stub_manifest(&workspace);
+    let mut ctrl = ProductionTodoController::new(
+        SpecLabel::new(label),
+        workspace,
+        state,
+        manifest,
+        ProfileName::new("base"),
+        git,
+        bd,
+        None,
+    );
+
+    let outcome = SessionOutcome {
+        exit_code: 0,
+        cost_usd: None,
+    };
+    let marker = ExitSignal::Clarify {
+        question: "additive-only or breaking?".into(),
+    };
+    ctrl.record_outcome(&outcome, Some(&marker))
+        .await
+        .expect("record_outcome ok");
+
+    let calls = runner.calls();
+    assert!(
+        !calls.is_empty(),
+        "LOOM_CLARIFY MUST trigger a bd update on the molecule epic; got: {calls:?}",
+    );
+    let argv = calls
+        .iter()
+        .find(|argv| argv.first().map(String::as_str) == Some("update"))
+        .expect("a `bd update` call must target the epic");
+    assert_eq!(argv[1], epic_id, "update must target the molecule epic id");
+    assert!(
+        argv.iter().any(|a| a == "loom:clarify"),
+        "update must add loom:clarify label: {argv:?}",
+    );
+    assert!(
+        argv.windows(2)
+            .any(|w| w[0] == "--status" && w[1] == "blocked"),
+        "update must pair status=blocked with the label: {argv:?}",
+    );
+}

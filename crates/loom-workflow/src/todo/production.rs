@@ -191,6 +191,33 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         outcome: &SessionOutcome,
         marker: Option<&ExitSignal>,
     ) -> Result<(), TodoError> {
+        // Decomposition Discipline (`specs/templates.md`): LOOM_CLARIFY
+        // from a todo session targets the **molecule epic**, not a leaf
+        // bead. The agent has already persisted its `## Options — …`
+        // block to the epic notes per gate.md's Options Format Contract
+        // before emitting the marker; here we stamp the `loom:clarify`
+        // label + status=blocked transition so `bd ready` excludes the
+        // epic until a human resolves via `loom msg`.
+        if matches!(marker, Some(ExitSignal::Clarify { .. }))
+            && let Some(mol) = self.state.active_molecule(&self.label)?
+        {
+            let bead_id = BeadId::new(mol.id.as_str()).map_err(BdError::CreateInvalidId)?;
+            self.bd
+                .update(
+                    &bead_id,
+                    UpdateOpts {
+                        status: Some("blocked".to_string()),
+                        add_labels: vec!["loom:clarify".to_string()],
+                        ..UpdateOpts::default()
+                    },
+                )
+                .await?;
+            info!(
+                label = %self.label,
+                epic = %mol.id,
+                "loom todo: LOOM_CLARIFY routed to molecule epic",
+            );
+        }
         if !base_commit_should_advance(outcome.exit_code, marker) {
             info!(
                 label = %self.label,
