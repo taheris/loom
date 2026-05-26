@@ -318,6 +318,35 @@ impl GitClient {
         Ok(String::from_utf8(output.stdout)?)
     }
 
+    /// `git rev-list --count <commit>..HEAD` — number of commits between
+    /// `commit` and the current `HEAD`. Returns `0` when `commit` is `HEAD`,
+    /// and surfaces [`GitError::GitCli`] when `commit` does not resolve.
+    pub async fn commits_since(&self, commit: &str) -> Result<u32, GitError> {
+        let range = format!("{commit}..HEAD");
+        let output = run_git_raw(
+            &self.workdir,
+            self.clock.as_ref(),
+            ["rev-list", "--count", &range],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(GitError::GitCli {
+                status: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        let stdout = String::from_utf8(output.stdout)?;
+        let parsed: u32 = stdout
+            .trim()
+            .parse()
+            .map_err(|e: std::num::ParseIntError| GitError::GitCli {
+                status: 0,
+                stderr: format!("rev-list --count returned non-integer `{stdout}`: {e}"),
+            })?;
+        Ok(parsed)
+    }
+
     /// `git rev-parse HEAD` — full SHA of the current `HEAD`.
     pub async fn head_commit_sha(&self) -> Result<String, GitError> {
         let output = run_git_raw(

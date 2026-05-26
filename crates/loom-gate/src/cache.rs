@@ -134,6 +134,28 @@ impl StatusCache {
         })
     }
 
+    /// Read every row currently persisted for `spec_label`, sorted by
+    /// `criterion_anchor` for deterministic output. Empty when the spec has
+    /// no cached rows (fresh checkout, never-verified spec).
+    pub fn read_for_spec(&self, spec_label: &str) -> Result<Vec<CacheRow>, CacheError> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT spec_label, criterion_anchor, tier, annotation_target,
+                    last_run_ts_ms, last_run_commit, verdict, evidence
+             FROM gate_criteria
+             WHERE spec_label = ?1
+             ORDER BY criterion_anchor",
+        )?;
+        let rows = stmt
+            .query_map(params![spec_label], row_to_cache_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Read every row currently persisted, sorted by
     /// `(spec_label, criterion_anchor)` for deterministic output.
     pub fn read_all(&self) -> Result<Vec<CacheRow>, CacheError> {

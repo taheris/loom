@@ -276,6 +276,41 @@ async fn head_commit_sha_round_trips_through_git() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn commits_since_counts_revisions_added_after_a_commit() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let client = GitClient::open(path)?;
+
+    let base = capture_head(path)?;
+    assert_eq!(client.commits_since(&base).await?, 0);
+
+    std::fs::write(path.join("a.txt"), "a\n")?;
+    git(path, &["add", "a.txt"])?;
+    git(path, &["commit", "-q", "-m", "add a"])?;
+    std::fs::write(path.join("b.txt"), "b\n")?;
+    git(path, &["add", "b.txt"])?;
+    git(path, &["commit", "-q", "-m", "add b"])?;
+
+    assert_eq!(client.commits_since(&base).await?, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn commits_since_surfaces_git_cli_error_on_unknown_commit() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let client = GitClient::open(path)?;
+
+    let bogus = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    let err = client.commits_since(bogus).await;
+    assert!(
+        err.is_err(),
+        "commits_since against unknown commit must surface an error: {err:?}",
+    );
+    Ok(())
+}
+
 fn capture_head(repo: &Path) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")

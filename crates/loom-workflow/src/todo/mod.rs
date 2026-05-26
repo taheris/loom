@@ -14,6 +14,7 @@
 //! - Tier 4 (`new`): nothing → full spec decomposition.
 
 mod context;
+mod criterion_status;
 mod error;
 mod exit;
 mod production;
@@ -21,6 +22,7 @@ mod runner;
 mod tier;
 
 pub use context::{TemplateBaseFields, TodoTemplateContext, build_template_context};
+pub use criterion_status::build_criterion_status;
 pub use error::TodoError;
 pub use exit::{ExitSignal, parse_exit_signal};
 pub use production::ProductionTodoController;

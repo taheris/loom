@@ -1,4 +1,5 @@
 use loom_driver::identifier::{MoleculeId, SpecLabel};
+use loom_templates::criterion_status::CriterionStatus;
 use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
 
 use super::tier::{DiffCandidate, TierDecision};
@@ -40,6 +41,7 @@ pub fn build_template_context(
     base: TemplateBaseFields,
     existing_tasks: Option<String>,
     molecule_id: Option<MoleculeId>,
+    criterion_status: Vec<CriterionStatus>,
 ) -> TodoTemplateContext {
     let TemplateBaseFields {
         label,
@@ -62,7 +64,7 @@ pub fn build_template_context(
                 existing_tasks: None,
                 molecule_id,
                 implementation_notes,
-                criterion_status: vec![],
+                criterion_status,
                 scratchpad_path,
             })
         }
@@ -75,7 +77,7 @@ pub fn build_template_context(
             existing_tasks,
             molecule_id: Some(molecule.clone()),
             implementation_notes,
-            criterion_status: vec![],
+            criterion_status,
             scratchpad_path,
         }),
         TierDecision::New => TodoTemplateContext::New(TodoNewContext {
@@ -84,7 +86,7 @@ pub fn build_template_context(
             spec_path,
             companion_paths,
             implementation_notes,
-            criterion_status: vec![],
+            criterion_status,
             scratchpad_path,
         }),
     }
@@ -132,7 +134,7 @@ mod tests {
 
     #[test]
     fn new_tier_routes_to_todo_new_context() {
-        let ctx = build_template_context(&TierDecision::New, base_fields(), None, None);
+        let ctx = build_template_context(&TierDecision::New, base_fields(), None, None, vec![]);
         assert!(matches!(ctx, TodoTemplateContext::New(_)));
     }
 
@@ -146,6 +148,7 @@ mod tests {
             base_fields(),
             Some("- existing".into()),
             Some(mol.clone()),
+            vec![],
         );
         match ctx {
             TodoTemplateContext::Update(u) => {
@@ -161,7 +164,7 @@ mod tests {
     fn notes_thread_into_new_tier_context() {
         let mut base = base_fields();
         base.implementation_notes = vec!["note one".into(), "note two".into()];
-        let ctx = build_template_context(&TierDecision::New, base, None, None);
+        let ctx = build_template_context(&TierDecision::New, base, None, None, vec![]);
         match ctx {
             TodoTemplateContext::New(n) => {
                 assert_eq!(n.implementation_notes, vec!["note one", "note two"]);
@@ -181,11 +184,56 @@ mod tests {
             base,
             None,
             Some(MoleculeId::new("wx-mol")),
+            vec![],
         );
         match ctx {
             TodoTemplateContext::Update(u) => {
                 assert_eq!(u.implementation_notes, vec!["seeded note"]);
             }
+            _ => panic!("expected Update"),
+        }
+    }
+
+    #[test]
+    fn criterion_status_threads_into_new_tier_context() {
+        use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
+        let cs = vec![CriterionStatus {
+            criterion_anchor: "5".into(),
+            annotation: "[check](cargo run -p w -- a)".into(),
+            last_result: CriterionResult::Pass,
+            last_timestamp_ms: Some(42),
+            last_commit: Some("deadbeef".into()),
+            commits_since: Some(0),
+        }];
+        let ctx = build_template_context(&TierDecision::New, base_fields(), None, None, cs.clone());
+        match ctx {
+            TodoTemplateContext::New(n) => assert_eq!(n.criterion_status, cs),
+            _ => panic!("expected New"),
+        }
+    }
+
+    #[test]
+    fn criterion_status_threads_into_update_tier_context() {
+        use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
+        let cs = vec![CriterionStatus {
+            criterion_anchor: "9".into(),
+            annotation: "[test](crate::t::b)".into(),
+            last_result: CriterionResult::NoResult,
+            last_timestamp_ms: None,
+            last_commit: None,
+            commits_since: None,
+        }];
+        let ctx = build_template_context(
+            &TierDecision::Tasks {
+                molecule: MoleculeId::new("wx-mol"),
+            },
+            base_fields(),
+            None,
+            Some(MoleculeId::new("wx-mol")),
+            cs.clone(),
+        );
+        match ctx {
+            TodoTemplateContext::Update(u) => assert_eq!(u.criterion_status, cs),
             _ => panic!("expected Update"),
         }
     }
@@ -214,6 +262,7 @@ mod tests {
             base_fields(),
             None,
             Some(MoleculeId::new("wx-mol")),
+            vec![],
         );
         match ctx {
             TodoTemplateContext::Update(u) => {

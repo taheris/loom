@@ -23,6 +23,7 @@ use tracing::{debug, info, warn};
 
 use super::ExitSignal;
 use super::context::{TemplateBaseFields, TodoTemplateContext, build_template_context};
+use super::criterion_status::build_criterion_status;
 use super::error::TodoError;
 use super::runner::{TodoController, TodoSession};
 use super::tier::{GitDiffSource, MoleculeState, TierInputs, compute_spec_diff};
@@ -64,7 +65,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         }
     }
 
-    fn build_prompt(&self) -> Result<String, TodoError> {
+    async fn build_prompt(&self) -> Result<String, TodoError> {
         let active_mol = self.state.active_molecule(&self.label)?;
         let molecule_id = active_mol.as_ref().map(|m| m.id.clone());
         // Tolerate a missing spec row — tier-4 first-touch doesn't run plan
@@ -96,16 +97,17 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 .and_then(|m| m.base_commit)
         };
 
-        let inputs = TierInputs {
-            label: &self.label,
-            spec_path: &spec_path,
-            molecule,
-            since: self.since.as_deref(),
-            sibling_base: &sibling_base,
+        let tier = {
+            let inputs = TierInputs {
+                label: &self.label,
+                spec_path: &spec_path,
+                molecule,
+                since: self.since.as_deref(),
+                sibling_base: &sibling_base,
+            };
+            let live_git = LiveGitDiffSource(Arc::clone(&self.git));
+            compute_spec_diff(&live_git, &inputs)?
         };
-
-        let live_git = LiveGitDiffSource(Arc::clone(&self.git));
-        let tier = compute_spec_diff(&live_git, &inputs)?;
         debug!(label = %self.label, ?tier, "tier decision");
 
         let key = resolve_scratch_key(Phase::Todo, &self.label, None);
@@ -121,7 +123,16 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             implementation_notes,
             scratchpad_path,
         };
-        let ctx = build_template_context(&tier, base, None, molecule_id);
+        let cache_path = self.workspace.join(".wrapix/loom/gate-cache.sqlite");
+        let criterion_status = build_criterion_status(
+            &self.workspace,
+            &cache_path,
+            &self.label,
+            &spec_path,
+            self.git.as_ref(),
+        )
+        .await;
+        let ctx = build_template_context(&tier, base, None, molecule_id, criterion_status);
         let body = match ctx {
             TodoTemplateContext::New(c) => c.render()?,
             TodoTemplateContext::Update(c) => c.render()?,
@@ -132,7 +143,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
 
 impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
     async fn build_session(&mut self) -> Result<TodoSession, TodoError> {
-        let prompt = self.build_prompt()?;
+        let prompt = self.build_prompt().await?;
         let entry = self.manifest.lookup(&self.phase_default)?;
         let banner = format!("loom todo @ {}", self.label);
         let key = resolve_scratch_key(Phase::Todo, &self.label, None);
