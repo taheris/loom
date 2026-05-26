@@ -63,6 +63,7 @@ let
     + lib.concatStringsSep "\n" (
       lib.mapAttrsToList (rel: abs: ''
         mkdir -p "$(dirname "$out/${rel}")"
+        rm -rf "$out/${rel}"
         cp -r ${abs} "$out/${rel}"
       '') extraSrcs
     )
