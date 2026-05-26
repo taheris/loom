@@ -17,7 +17,7 @@ looks like.
 `templates` is a **public-contract crate**: external Rust
 consumers depending on `llm` for typed LLM calls can compose
 their own templates using `templates`' exposed typed context
-structs (`PinnedContext`, `PreviousFailure`, `RunContext`, etc.) and
+structs (`PinnedContext`, `PreviousFailure`, `LoopContext`, etc.) and
 partial strings. Loom's own *workflow templates* remain compiled-in
 Askama and internal — consumers do not override them — but the
 building blocks that go into those templates are shared.
@@ -516,7 +516,7 @@ templates from `templates`' exposed building blocks:
 - `CriterionStatus`, `CriterionResult` (the decomposition-phase
   criterion-recency surface; consumers writing decomposition-
   style tools reuse this shape against their own caches)
-- `RunContext`, `ReviewContext` (workflow-phase context shapes
+- `LoopContext`, `ReviewContext` (workflow-phase context shapes
   consumers can either reuse directly or model their own contexts
   after)
 
@@ -612,7 +612,7 @@ documents in front of the agent with zero configuration.
 - `spec_conventions.md` partial renders the `spec_conventions`
   variable; included only by `plan_new` and `plan_update`
   [check](cargo run -p loom-walk -- template_pinning_matrix)
-- `RunContext` and `ReviewContext` carry `style_rules: String`;
+- `LoopContext` and `ReviewContext` carry `style_rules: String`;
   other phase contexts do not
   [check](cargo test -p loom-templates --test render template_renders_are_byte_stable_across_runs)
 - `PlanNewContext` and `PlanUpdateContext` carry
@@ -722,7 +722,7 @@ documents in front of the agent with zero configuration.
 
 ### Attempt counter
 
-- `RunContext` carries `attempt: u32`; field is `0` on fresh
+- `LoopContext` carries `attempt: u32`; field is `0` on fresh
   bead dispatch
   [test](attempt_zero_on_fresh_bead_dispatch)
 - `run.md` omits the attempt line when `attempt == 0`
@@ -752,7 +752,7 @@ documents in front of the agent with zero configuration.
 
 - `templates` exposes `PreviousFailure`, `VerifierFailure`,
   `ReviewConcernKind`, `DriverNoticeCause`, `CriterionStatus`,
-  `CriterionResult`, `RunContext`, `ReviewContext`, `PinnedContext`
+  `CriterionResult`, `LoopContext`, `ReviewContext`, `PinnedContext`
   as public types consumable from external crates
   [check](cargo run -p loom-walk -- loom_templates_public_types)
 - Each partial in the *Partials* table is also exposed as a public
@@ -838,7 +838,7 @@ documents in front of the agent with zero configuration.
    `</agent-output>`.
 8. **Snapshot tests.** Every template × representative-input
    combination has an `insta` snapshot.
-9. **Typed `PreviousFailure`** — `RunContext.previous_failure` is
+9. **Typed `PreviousFailure`** — `LoopContext.previous_failure` is
    `Option<PreviousFailure>` where `PreviousFailure` is a tagged
    enum (`DriverNotice`, `VerifyFailures`, `ReviewConcern`,
    `BuildFailure`). The driver populates the right variant from
@@ -846,7 +846,7 @@ documents in front of the agent with zero configuration.
    with distinct framing per *Typed `PreviousFailure`* above.
    Caps: `PREVIOUS_FAILURE_MAX_LEN = 4000` total; per-block stderr
    tail ~1500 chars; `review_notes` separate ~1000-char budget.
-10. **Attempt counter.** `RunContext.attempt: u32` is the per-bead
+10. **Attempt counter.** `LoopContext.attempt: u32` is the per-bead
     in-session retry counter, bounded by `[loop] max_retries`
     (default 2), resets to 0 on fresh bead dispatch. Fix-up beads
     start at `attempt = 0`; molecule-level iteration is opaque to
@@ -859,7 +859,7 @@ documents in front of the agent with zero configuration.
     detail lives in the previous-failure block itself.
 12. **Public surface for consumers.** `templates` is a
     public-contract crate. Exposed: `PreviousFailure` (and its
-    sub-types), `RunContext`, `ReviewContext`, `PinnedContext`,
+    sub-types), `LoopContext`, `ReviewContext`, `PinnedContext`,
     and the partial-string constants for each entry in the
     *Partials* table. Loom's workflow template bodies themselves
     are not exposed — consumers compose their own templates from
@@ -929,7 +929,7 @@ documents in front of the agent with zero configuration.
   to allow consumers to drop in replacements for Loom's compiled
   Askama templates is bolt-on-able after the typed-context public
   surface lands and is deferred until a concrete consumer asks.
-- **Untyped `previous_failure`.** `RunContext.previous_failure` is
+- **Untyped `previous_failure`.** `LoopContext.previous_failure` is
   `Option<PreviousFailure>` — a typed enum, not a free string.
   Free-string detail (driver formats prose into a String the
   template prints unchanged) is excluded so heading shape, caps,

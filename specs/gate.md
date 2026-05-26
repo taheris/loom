@@ -158,7 +158,7 @@ inputs* below); otherwise it's skipped.
 
 | Flag | Input set | Typical caller |
 |---|---|---|
-| `--bead <id>` | The bead's success-criteria input files + the bead's own diff | `loom run` per-bead verdict gate |
+| `--bead <id>` | The bead's success-criteria input files + the bead's own diff | `loom loop` per-bead verdict gate |
 | `--diff <range>` | `git diff <range> --name-only` (committed + working tree in the range) | push gate (molecule.base_commit..HEAD); CI scoped to a PR; bare interactive `loom gate verify` |
 | `--files <paths>` | Explicit path list | pre-commit hooks (`loom gate verify --files $(git diff --cached --name-only)`) |
 | `--tree` | Every file in the workspace | nightly CI safety net; manual debugging; **not used by push gate** |
@@ -170,19 +170,19 @@ Filters compose with any scope flag:
   annotation target
 
 **Default for bare invocation.** When no scope flag is passed, the
-gate defaults to `--diff <molecule.base_commit>..HEAD` if
-`current_molecule[<active_spec>]` is set (the "what would fail if I
-pushed now?" question); else `--diff HEAD` (working-tree dirty
-changes vs HEAD). Bare `loom gate audit` never silently expands to
-`--tree` — users who want the full safety-net sweep type `--tree`
-explicitly.
+gate defaults to `--diff <molecule.base_commit>..HEAD` if the
+active spec has an open epic (single-query resolution; the "what
+would fail if I pushed now?" question); else `--diff HEAD`
+(working-tree dirty changes vs HEAD). Bare `loom gate audit` never
+silently expands to `--tree` — users who want the full safety-net
+sweep type `--tree` explicitly.
 
 | Stage | Default invocation | Scope |
 |---|---|---|
 | Pre-commit hook | `loom gate verify --files $(git diff --cached --name-only)` | `--files` |
-| `loom run` per-bead | `loom gate verify --bead <id>` | `--bead` |
-| `loom run` molecule completion (push gate) | `loom gate audit --diff <molecule.base_commit>..HEAD` | `--diff` |
-| Interactive bare `loom gate verify` | implicit `--diff <molecule.base_commit>..HEAD` if `current_molecule[<active_spec>]` is set; else `--diff HEAD` | `--diff` |
+| `loom loop` per-bead | `loom gate verify --bead <id>` | `--bead` |
+| `loom loop` molecule completion (receipt construction) | `loom gate audit --diff <molecule.base_commit>..HEAD` | `--diff` |
+| Interactive bare `loom gate verify` | implicit `--diff <molecule.base_commit>..HEAD` if active spec has an open epic; else `--diff HEAD` | `--diff` |
 | Nightly CI / on-demand audit | `loom gate audit --tree` | `--tree` |
 
 **Why push gate isn't `--tree`.** A `--tree` sweep runs every
@@ -209,7 +209,7 @@ underlying check is the same.
 |---|---|---|---|---|
 | **Plan** | `loom plan -n` / `loom plan -u` | Spec under interview | Lowest — no code yet | Missing claims, weak claims, missing verifier surfaces, invariant clashes in proposed spec changes |
 | **Per-diff** | `loom gate verify --bead <id>` then `loom gate review --bead <id>` (or `loom gate audit --bead <id>` for both) | Spec sections the diff touches; the diff itself; tests in the diff | Medium — one bead's worth | Conformance gaps in diff, lint violations, weak verifiers, contract gaps inside one diff's reach, invariant clashes in proposed code changes |
-| **Push** | `loom gate audit --diff <molecule.base_commit>..HEAD` (unconditionally on `loom run` molecule completion — see [harness.md FR1 + FR9](harness.md#functional)) | The molecule's own diff (files it touched) × every verifier whose declared inputs intersect that diff | Highest — **blocks push**, gate verdict encoded in [`GateOutcome`](harness.md#run-outcome-types) (`Success`/`Fail`/`NoGate`). `GateSuccess` is constructible only when all four FR9 conditions hold *and* on-disk review-log evidence is present; the type's `pub(crate)` constructor asserts each condition. Silent gate-skip is structurally unrepresentable | Conformance gaps in the molecule, integrity-gate findings (unresolved annotations, stub tests) within the molecule's diff, review concerns, dispatch errors |
+| **Push** | `loom gate audit --diff <molecule.base_commit>..HEAD` (unconditionally on `loom loop` molecule completion — see [harness.md FR1 + FR9](harness.md#functional)) | The molecule's own diff (files it touched) × every verifier whose declared inputs intersect that diff | Highest — **blocks push**, gate verdict encoded in [`GateOutcome`](harness.md#loop-outcome-types) (`Success`/`Fail`/`NoGate`). `GateSuccess` is constructible only when all four FR9 conditions hold *and* on-disk review-log evidence is present; the type's `pub(crate)` constructor asserts each condition. Silent gate-skip is structurally unrepresentable | Conformance gaps in the molecule, integrity-gate findings (unresolved annotations, stub tests) within the molecule's diff, review concerns, dispatch errors |
 | **Standing safety net** | `loom gate audit --tree` (on-demand, nightly CI, scheduled) | Entire spec tree × entire implementation | Catches **verifier-input-declaration drift** — any verifier the push-gate's `--diff` scope would have skipped on the same diff is surfaced here. Drift = a verifier-correctness bug, filed as `loom:clarify` against the verifier's owning bead | Cross-file incoherence the molecule's diff didn't surface, contracts orphaned across PRs, accumulated style/test regressions, template-vs-spec drift (Invariant 3), surface drift, verifier-input declarations that are too narrow |
 
 The plan stage has no separate command invocation — the agent runs
@@ -219,18 +219,18 @@ the surface that opens that interview. The other two stages compose
 audit` for both) as listed.
 
 The push stage is **non-optional and load-bearing across every
-execution mode of `loom run`** — sequential, parallel, `--once`,
+execution mode of `loom loop`** — sequential, parallel, `--once`,
 and `--all-specs`. It computes the four-condition AND of FR9 (bead
 labels + verify exit + review exit + integrity findings) and refuses
 push on any failure. The verdict is encoded in
-[`GateOutcome`](harness.md#run-outcome-types): `Success` only
+[`GateOutcome`](harness.md#loop-outcome-types): `Success` only
 when all four conditions hold *and* the review wrote a non-empty
 `review-*.jsonl` ending in a terminal `LOOM_COMPLETE` marker; `Fail`
 on any failure with the reason explicit; `NoGate` only for legitimate
 "no work to gate" terminals (`NoBeadsReady`, `OncePartial`). The
 `GateSuccess` constructor is `pub(crate)` in the gate-invocation
 module — no code path outside that module can mint one, so a clean
-`loom run` exit without the gate actually firing is unrepresentable.
+`loom loop` exit without the gate actually firing is unrepresentable.
 The standing safety net is **scheduled, not load-bearing for any
 individual push** — its job is to catch verifier-input-declaration
 drift over time, not to gate per-molecule pushes.
@@ -363,32 +363,36 @@ check:
   *Template-vs-Spec Drift Walk* partial, gated on `--tree` scope.
 
 Standing-safety-net flags become fix-up beads bonded to the spec's
-**current molecule** as recorded in the state DB's `current_molecule`
-table (see [harness.md SQLite State Store](harness.md#sqlite-state-store)).
-The reviewer agent identifies each concern's owning spec from the
-spec file the concern cites, looks up `current_molecule[<that_spec>]`
-in the threaded map, and uses the resolved epic ID as `--parent` in
-every `bd create`. At per-spec scope (`--tree --spec X`) the map has
-one entry; at all-specs scope the map covers every spec with a
-recorded pointer. Closed pointers are re-opened transparently (re-open is
-unrestricted). When no entry exists for a spec the agent has concerns
-about, behaviour depends on scope:
+open epic, resolved via single-query lookup (see
+[harness.md — Molecule lifecycle](harness.md#molecule-lifecycle)).
+For each concern, the reviewer agent identifies the owning spec from
+the spec file the concern cites and runs:
 
-- **`loom gate audit --tree --spec <X>`** — refuses to start with a
-  clear error naming the spec and pointing at `loom use <X> --epic
-  <id>` (when an epic ID is known) or `loom todo --spec <X>` (to
-  Tier-4-create a fresh molecule) as the fix. Returns non-zero, no
-  agent spawn.
-- **`loom gate audit --tree` (no `--spec`)** — for each concern about
-  a spec missing from `current_molecule`, the reviewer agent creates
-  a fresh recovery epic (`bd create --type=epic --title="<spec>
-  recovery" --labels="spec:<spec>" --metadata
-  "loom.base_commit=<HEAD>"`), bonds the fix-up to it, and the
-  orchestrator writes the new epic to `current_molecule[<spec>]`
-  post-run. Each auto-create surfaces on stdout naming the spec and
-  new epic ID. Specs *not* missing from `current_molecule` use the
-  recorded pointer (re-opening if closed) — the auto-create fires
-  only when no pointer exists at all.
+```
+bd find --type=epic --label=spec:<X> --status=open
+```
+
+The lookup is total and mechanical (no tiered fallback, no pointer
+table, no README parse):
+
+- **One open epic exists** — bond fix-up beads to that epic's
+  molecule. If the epic is part of an in-flight molecule, the
+  fix-ups extend it; iteration counters and base_commit cursors are
+  unaffected.
+- **No open epic exists** — mint molecule + epic (`bd create
+  --type=epic --title="<X>" --labels="spec:<X>" --metadata
+  "loom.base_commit=<HEAD>"`), bond fix-ups to the new molecule.
+  Each auto-create surfaces on stdout naming the spec and new epic
+  ID. This is the safety property — concerns about a spec with no
+  active work get a fresh container, not silently dropped.
+- **More than one open epic exists** — structural invariant
+  violation (see [harness.md — Molecule lifecycle](harness.md#molecule-lifecycle)'s
+  "at most one open epic per spec" rule). The audit refuses to
+  proceed and surfaces the conflicting epic IDs; the operator
+  closes one before re-running.
+
+This behaviour is uniform across `--tree`, `--tree --spec <X>`,
+and `--all-specs` scopes — same resolution, same outcome shape.
 
 Invariant clashes surfaced at the standing safety net raise
 `loom:clarify`.
@@ -850,12 +854,11 @@ Per-stage flag handling:
   by `bd ready` on subsequent ticks while non-dependent beads in
   the molecule continue running. `loom msg` resolves the clarify.
   Clashes never trigger fresh-agent retry.
-- **Standing** — fix-up beads are bonded to the spec's
-  `current_molecule` epic (state DB; closed pointer re-opened
-  transparently). Multi-spec `--tree` sweeps with missing pointers
-  auto-create recovery epics per *Standing-safety-net checks* above.
-  Invariant clashes surface via `loom:clarify` in the next `loom
-  msg` walk.
+- **Standing** — fix-up beads are bonded to the spec's open epic
+  (resolved via single bd query per *Standing-safety-net checks*
+  above); a fresh molecule + epic is minted when no open epic
+  exists for the spec. Invariant clashes surface via `loom:clarify`
+  in the next `loom msg` walk.
 
 ### Post-hoc recovery — when the push gate was skipped
 
@@ -874,26 +877,28 @@ needed — audit the full spec(s) against the full implementation,
 no diff math, no dependence on a still-valid `loom.base_commit`.
 
 ```bash
-# Single spec — current_molecule must be set first (the gate refuses
-# at --tree --spec scope when the pointer is empty)
-loom use <label> --epic <id>           # explicit seed; re-opens <id> if closed
-                                       #   (or: loom init --rebuild seeds from
-                                       #   the spec-index file)
-loom gate audit --tree --spec <label>  # standing rubric over the spec × implementation
-loom run                               # process the resulting fix-up beads; gate
+# Single spec
+loom gate audit --tree --spec <label>  # standing rubric; bonds fix-ups to the
+                                       #   spec's open epic, or mints one if absent
+loom loop                               # process the resulting fix-up beads; gate
                                        #   fires structurally on completion
 
 # Across every spec in the workspace
-loom init --rebuild                    # best-effort seed of current_molecule from
-                                       #   the consumer's spec-index file
-loom gate audit --tree                 # auto-creates recovery epics for specs
-                                       #   missing from current_molecule
-loom run --all-specs                   # iterates current_molecule, oldest-first
+loom gate audit --tree                 # walks every spec; mints molecule+epic
+                                       #   where no open epic exists
+loom loop --all-specs                   # iterates each spec with an open epic
 ```
 
-**Compositional safety.** The recovery flow's `loom run` produces
+No explicit seeding step is required — the audit resolves the
+target epic via single bd query (`bd find --type=epic
+--label=spec:<X> --status=open`) and mints a fresh molecule when
+the lookup returns nothing. This is the same single-tier resolution
+the standing safety net uses; recovery is just the safety net
+exercised explicitly.
+
+**Compositional safety.** The recovery flow's `loom loop` produces
 `GateOutcome` per molecule — silent skip is structurally
-unrepresentable (see [harness.md Run Outcome Types](harness.md#run-outcome-types)).
+unrepresentable (see [harness.md Loop Outcome Types](harness.md#loop-outcome-types)).
 The worker-queue filter (harness.md FR1) prevents the agent from
 receiving an epic as a worker task. Together, the conditions for
 the original gate-skip class are structurally unreachable.
@@ -985,26 +990,24 @@ PATH, and a `[judge]` annotation pointing at the gate's own
 
 ### Standing-safety-net bonding
 
-- `loom gate audit --tree --spec <X>` refuses to start with a
-  non-zero exit when state.db has no `current_molecule[X]` entry;
-  the error names the spec and points at `loom use <X> --epic <id>`
-  or `loom todo --spec <X>` as the fix. No agent is spawned
-  [test](tree_scope_refuses_when_no_current_molecule_for_spec)
-- `loom gate audit --tree` (all-specs sweep) auto-creates a fresh
-  recovery epic for each spec that has concerns but no
-  `current_molecule` entry; bonds fix-ups to the new epic; writes
-  the new pointer to state.db. Each auto-create surfaces on stdout
-  naming the spec and new epic ID
+- `loom gate audit --tree --spec <X>` resolves the bonding target
+  via single bd query (`bd find --type=epic --label=spec:<X>
+  --status=open`); zero results → mints molecule + epic and bonds
+  fix-ups to the new molecule; one result → bonds fix-ups to its
+  molecule; more than one → structural invariant violation, refuses
+  to proceed and surfaces the conflicting epic IDs
   [test](tree_scope_auto_creates_epics_for_missing_current_molecule_specs)
-- `loom gate audit --tree` (all-specs sweep) reuses existing
-  `current_molecule` entries when set; bonds fix-ups to the
-  recorded epic (re-opens transparently if closed); does NOT
-  auto-create for specs that already have a pointer
-  [test](tree_scope_reuses_existing_current_molecule_when_set)
-- The reviewer agent prompt at `--tree` scope threads
-  `current_molecule[<spec>]` (or the full map for all-specs scope)
-  as the bonding target; `bd create --parent <epic>` writes wire
-  through unchanged
+- `loom gate audit --tree` (all-specs sweep) applies the same
+  single-tier resolution per spec. Each spec independently mints
+  its own molecule + epic when the bd query returns zero, or bonds
+  to the existing molecule when it returns one. Each auto-create
+  surfaces on stdout naming the spec and new epic ID. No pointer
+  table is written
+  [test](tree_scope_orchestrator_does_not_clobber_existing_current_molecule)
+- The reviewer agent prompt at `--tree` scope threads the resolved
+  epic ID per spec (derived from the single-query walk) as the
+  bonding target; `bd create --parent <epic>` writes wire through
+  unchanged
   [test](tree_scope_threads_current_molecule_into_reviewer_prompt)
 
 ### Status cache

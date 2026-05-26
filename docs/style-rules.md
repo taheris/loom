@@ -284,6 +284,19 @@ the Mayor via `bd human` instead.
   `judges/`. Mass nouns (`metadata`, `data`) and abbreviations (`io`,
   `os`) are exempt — they aren't pluralizable.
 
+### Simplification mandate (RS-19)
+
+- **RS-19** — *Favor removing code over adding it.* When implementing
+  a change, look for surrounding code that's now unused, redundant
+  abstractions that no longer earn their place, or duplicated logic
+  that can collapse. A successful change often has a net-negative LOC
+  delta. Code volume tracks one-to-one with cognitive load and the
+  surface area for whole-class bugs (gate skips, silent drift,
+  unrepresented state). At review time, ask "what got removed?"
+  alongside "what got added?"; in spec interviews, prefer the smaller
+  mechanism over the more general one; in code, prefer deleting an
+  abstraction over keeping it "for future use."
+
 ## Comments (COM-)
 
 Cross-language: applies to shell, nix, rust, and any other source we keep here.

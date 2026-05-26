@@ -208,8 +208,8 @@ map to one outbound event.
 The session emits a stream of typed events. Event names are part of the
 wire format: they are serialized as snake_case (`text_delta`,
 `tool_call`, …) when the terminal renderer and on-disk JSONL log share
-the tee-style sink (see [loom-harness — Run UX &
-Logging](harness.md#run-ux--logging)). Log readers consume those
+the tee-style sink (see [loom-harness — Loop UX &
+Logging](harness.md#loop-ux--logging)). Log readers consume those
 names directly. Every variant carries a flat envelope (`bead_id`,
 `molecule_id?`, `iteration`, `source`, `ts_ms`, `seq`) in addition to
 the per-variant payload listed below.
@@ -823,11 +823,11 @@ connection, network filtering, session audit logging.
 - Container receives agent stdin/stdout via pipe
   [test](child_stdin_is_a_pipe_not_a_tty)
 - Entrypoint starts pi in RPC mode when `WRAPIX_AGENT=pi`
-  [check](grep -q 'pi --mode rpc' lib/sandbox/linux/entrypoint.sh)
+  [check](bash -c "grep -q 'pi --mode rpc' $(nix build --no-link --print-out-paths .#wrapixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
 - Entrypoint starts claude normally when `WRAPIX_AGENT=claude`
-  [check](grep -q 'dangerously-skip-permissions' lib/sandbox/linux/entrypoint.sh)
+  [check](bash -c "grep -q 'dangerously-skip-permissions' $(nix build --no-link --print-out-paths .#wrapixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
 - Entrypoint preserves git SSH, beads, network filtering for both agents
-  [check](grep -q '/git-ssh-setup.sh' lib/sandbox/linux/entrypoint.sh)
+  [check](bash -c "grep -q '/git-ssh-setup.sh' $(nix build --no-link --print-out-paths .#wrapixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
 
 ### Agent runtime layer
 

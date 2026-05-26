@@ -9,7 +9,7 @@ sessions.
   trust tiers, standard section structure. Pinned by `loom plan` sessions.
 - [`style-rules.md`](style-rules.md) — code-style and test-quality rules
   organized by rule family (SH-, NX-, DOC-, GIT-, TST-, RS-, COM-, CLI-).
-  Pinned by `loom run` and `loom gate review` sessions.
+  Pinned by `loom loop` and `loom gate review` sessions.
 
 ## Specs
 
@@ -32,7 +32,7 @@ sessions.
 | **JSONL** | JSON Lines — one complete JSON object per `\n`-terminated line; protocol framing for both pi-mono RPC and Claude stream-json |
 | **Loom** | Rust workflow orchestrator: spec-to-implementation pipeline with pi-mono, Claude Code, and Direct (loom-llm) backends |
 | **loom:clarify** | Bead label for items awaiting human response via `loom msg` |
-| **Molecule** | A planning grouping of beads sharing a `base_commit` and spec label |
+| **Molecule** | A cross-cutting unit of work from one plan session: contains one epic per touched spec plus the tasks fanned out from each. At most one open epic per spec at a time. |
 | **pi** | Anthropic's stdio-RPC agent runtime (pi-mono); one backend Loom drives |
 | **Profile** | Image-manifest entry naming the sandbox image used for a given phase |
 | **Scratchpad** | Per-session note file under `.wrapix/loom/scratch/<key>/`, used for compaction recovery |

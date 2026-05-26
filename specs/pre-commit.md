@@ -108,7 +108,7 @@ from the developer's interactive shell. Two preconditions and one
 prohibition cover this:
 
 - **Worker worktrees MUST be linked, not separate clones.**
-  `loom run --parallel N` (see
+  `loom loop --parallel N` (see
   [harness.md — Worktree Dispatch](harness.md)) creates worktrees
   under `.wrapix/worktree/<label>/<bead-id>/` via `git worktree add`.
   Linked worktrees share `.git/config` with the main checkout, so
@@ -322,7 +322,7 @@ This spec owns:
 8. **Worker-context hook invocation** — hooks MUST fire on
    `git commit` / `git push` from worker contexts, not only from
    the developer's interactive shell. Worker worktrees MUST be
-   linked worktrees (created by `loom run --parallel N` via
+   linked worktrees (created by `loom loop --parallel N` via
    `git worktree add`, per
    [harness.md — Worktree Dispatch](harness.md)) so they inherit
    `core.hooksPath` via shared `.git/config`; the worker container's

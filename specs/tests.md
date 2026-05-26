@@ -298,13 +298,13 @@ the contract:
   input set produces a `.snap` checked into
   `crates/loom-templates/tests/snapshots/`. Reviewers see the
   rendered diff in PRs.
-- CLI help text (`loom --help`, `loom run --help`, etc.) — `--help`
+- CLI help text (`loom --help`, `loom loop --help`, etc.) — `--help`
   output *is* the user contract.
 
 Substring + structural assertions for **flexibility surfaces** —
 outputs with intentional cosmetic latitude:
 
-- Run-time renderer (terminal tool-call lines, status colors,
+- Loop renderer (terminal tool-call lines, status colors,
   truncation). Tests assert bullet count, presence of key markers,
   and color-disabled-when-NO_COLOR; layout decisions remain free to
   evolve without churning a snapshot.
@@ -433,13 +433,13 @@ fn state_db_corruption_recovery() {
 
 Render tests assert on the contract (partials included, agent content
 wrapped, truncation applied) rather than full string parity. Contract
-shape comes from the typed `RunContext` struct; layout regressions are
+shape comes from the typed `LoopContext` struct; layout regressions are
 caught by `insta` snapshots (see *Snapshot Testing*).
 
 ```rust
 #[test]
 fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.into(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".into(),
@@ -591,7 +591,7 @@ in Functional #4.
       attached as a pipe (not a TTY); recorded `SpawnConfig` JSON
       matches the on-disk shape
   [test](wrapix_spawn_invocation_records_correct_argv)
-- Parallel run end-to-end: `loom run --parallel 2` with two ready
+- Parallel run end-to-end: `loom loop --parallel 2` with two ready
       beads dispatches two mock-agent spawns concurrently, each in its
       own worktree, then merges both branches back to driver
   [test](parallel_run_two_beads_e2e)
@@ -617,7 +617,7 @@ in Functional #4.
 ### Container smoke
 
 - `nix run .#test` spawns a real podman container, runs
-      `loom run --once` against a bead with `WRAPIX_AGENT=pi`
+      `loom loop --once` against a bead with `WRAPIX_AGENT=pi`
       `MOCK_PI_SCENARIO=happy-path`, exits 0 with the bead closed
   [system](nix run .#test)
 
@@ -696,7 +696,7 @@ the rules:
 - `loom --help` and every subcommand `--help` have `insta`
       snapshots
   [test](loom_help_snapshot)
-- Run-time renderer uses substring + structural assertions, not
+- Loop renderer uses substring + structural assertions, not
       `insta` (ensures terminal-output flexibility)
   [check](cargo run -p loom-walk -- renderer_no_insta_dependency)
 
@@ -746,7 +746,7 @@ the rules:
      `loom gate test`.
    - **Container smoke** — one happy-path scenario that spawns a real
      podman container via `wrapix spawn`, runs a mock agent *inside*
-     the container, drives `loom run --once` against it, and asserts
+     the container, drives `loom loop --once` against it, and asserts
      the bead closes. Validates host↔container plumbing
      (entrypoint.sh, bind mounts, `WRAPIX_AGENT` branching, container
      teardown) — *not* protocol depth, which the integration level
@@ -931,7 +931,7 @@ the rules:
      `todo`, `run`, `gate`, `msg`, `spec`, `init`, `status`, `use`,
      `logs`, `note`)
 
-   #### Run UX renderer (loom-workflow)
+   #### Loop UX renderer (loom-workflow)
    - Default mode: header line per bead, one line per tool call, no
      streamed assistant text deltas
    - `--verbose` / `-v` streams assistant text as it arrives
@@ -942,7 +942,7 @@ the rules:
    - Parallel mode: tool-call lines are bead-id-prefixed so interleaved
      output stays attributable
 
-   #### Run logger (loom-workflow)
+   #### Loop logger (loom-workflow)
    - Every bead spawn produces a file at
      `.wrapix/loom/logs/<spec-label>/<bead-id>-<timestamp>.jsonl` containing
      the raw event stream as one JSON object per line
@@ -955,7 +955,7 @@ the rules:
      no shared writer, no interleaving
    - Log file path is logged at `info!` when the spawn starts so users can
      `tail -f` it
-   - Retention sweep on `loom run` startup: with `retention_days = 14`,
+   - Retention sweep on `loom loop` startup: with `retention_days = 14`,
      files mtime'd 15+ days ago are deleted, files mtime'd today are kept
    - `retention_days = 0` is a no-op (no files deleted, no walk)
    - Best-effort: a single un-deletable file (read-only, locked) does not
@@ -1038,7 +1038,7 @@ the rules:
      stdin properties (TTY vs pipe), then exec's a mock agent. Asserts
      the JSON shape, the `--spawn-config <file> --stdio` argv, and that
      stdin is a pipe (not a TTY).
-   - **Parallel run end-to-end** — `loom run --parallel 2` with two
+   - **Parallel run end-to-end** — `loom loop --parallel 2` with two
      ready beads dispatches two mock-agent spawns concurrently
      (overlapping spawn timestamps captured by the mock), each in its
      own git worktree under `.wrapix/worktree/<label>/<bead-id>/`,
@@ -1104,7 +1104,7 @@ the rules:
 
 9. **Snapshot testing** — `insta` snapshots for templates and CLI help
     output (contract surfaces where layout regressions matter).
-    Substring + structural assertions for the run-time renderer
+    Substring + structural assertions for the loop renderer
     (terminal tool-call lines, status colors — surfaces with
     intentional flexibility). Snapshot updates require explicit
     acknowledgment in the PR description ("snapshot updated because:

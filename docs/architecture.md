@@ -8,7 +8,7 @@ orientation.
 ## Design Principles
 
 1. **Specs are the source of truth** — every phase reads `specs/<label>.md`;
-   `loom todo` decomposes it into beads; `loom run` works one bead at a time.
+   `loom todo` decomposes it into beads; `loom loop` works one bead at a time.
 2. **Typed primitives at the boundary** — IDs, events, and tool calls are
    newtypes (`BeadId`, `SpecLabel`, `MoleculeId`, …). Parse, don't validate.
 3. **One spec lock at a time** — `<label>.lock` serializes spec-scoped phases;
@@ -52,7 +52,7 @@ orientation.
 | `loom-templates` | Askama prompt templates with typed contexts |
 | `loom-test-support` | Shared test fixtures and helpers |
 | `loom-walk` | Spec-annotation walker for `[verify]` / `[check]` / `[system]` |
-| `loom-workflow` | Phase implementations: `plan`, `todo`, `run`, `gate`, `msg` |
+| `loom-workflow` | Phase implementations: `plan`, `todo`, `loop`, `gate`, `msg` |
 
 ## Phases
 
@@ -61,7 +61,7 @@ orientation.
 | Plan (new) | `loom plan -n <label>` | `<label>.lock` | Project context | `specs/<label>.md`, state row |
 | Plan (update) | `loom plan -u <label>` | `<label>.lock` | Existing spec, notes | Updated spec + notes |
 | Todo | `loom todo <label>` | `<label>.lock` | Spec, molecule | New beads via `bd create` |
-| Run | `loom run <label>` | `<label>.lock` | Beads, agent | Code changes, bead transitions |
+| Loop | `loom loop <label>` | `<label>.lock` | Beads, agent | Code changes, bead transitions |
 | Gate (verify) | `loom gate verify` | none | Spec annotations | Deterministic pass/fail |
 | Gate (review) | `loom gate review` | none | Diff, judge rubrics | LLM verdict |
 | Msg | `loom msg <bead>` | per-bead | `loom:clarify` bead | Resolved options, label removed |
