@@ -843,6 +843,122 @@ tracked in driver memory; a second mid-session failure exits as `blocked`
 with cause `infra-repeated`. This counter is separate from
 `[loop] max_iterations` and does not persist across `loom run` invocations.
 
+### Run Outcome Types
+
+Architecture-bearing types per
+[spec-conventions.md](../docs/spec-conventions.md) *In scope #4* —
+the shape of these types is how Invariant 4 of [gate.md](gate.md)
+("a divergence sits in the working tree undetected") becomes
+structurally unrepresentable. A code path that yields a clean
+`loom run` exit *without* invoking the gate cannot compile.
+
+**`RunOutcome`** — the typed return of every successful `loom run`
+invocation, sequential and parallel. `RunError` (`Result::Err`)
+covers paths that never reached a clean outcome. `RunOutcome` has
+no `Default` and carries `#[must_use]` so the binary cannot drop
+it on the floor:
+
+```rust
+#[must_use = "every loom run produces a gate outcome — the binary must \
+              inspect it before exiting"]
+pub struct RunOutcome {
+    pub beads_processed: u32,
+    pub beads_clarified: u32,
+    pub beads_blocked: u32,
+    pub outer_iterations: u32,
+    pub gate: GateOutcome,   // not Option, no default
+}
+```
+
+**`GateOutcome`** — three terminal variants. `Success` and `Fail`
+both require a receipt minted only by gate-invocation code; `NoGate`
+is the only legitimate "gate did not fire" terminal and carries the
+reason so the human-readable summary names it:
+
+```rust
+#[must_use]
+pub enum GateOutcome {
+    Success(GateSuccess),                              // clean ship
+    Fail(GateFail),                                    // gate ran, found problems
+    NoGate { beads_processed: u32, reason: NoGateReason },
+}
+
+pub enum NoGateReason {
+    NoBeadsReady,    // queue empty at start; nothing to gate
+    OncePartial,     // `--once` processed beads, molecule not complete
+}
+```
+
+**`GateSuccess`** — the bulletproof variant. Construction asserts
+every condition the FR9 four-condition AND covers *plus* on-disk
+evidence that the gate's child processes actually ran. Field shapes
+are non-`Option`: absence of any value is a failure path that
+constructs `GateFail` instead. The `pub(crate)` constructor lives
+in the same module as `exec_review` — outside the workflow crate,
+`GateSuccess` cannot be minted.
+
+```rust
+pub struct GateSuccess {
+    pub verify_exit: i32,            // always 0 by construction
+    pub review_exit: i32,            // always 0
+    pub review_marker: ExitSignal,   // always ExitSignal::Complete
+    pub review_log_path: PathBuf,    // file exists, non-empty, last line
+                                     //   is a terminal AgentEvent matching marker
+    pub total_handoffs: u32,         // >= 1
+    _private: (),                    // structural seal — no struct-literal path
+}
+
+impl GateSuccess {
+    /// Asserts: verify_exit == 0, review_exit == 0,
+    /// review_marker == ExitSignal::Complete, review_log_path exists,
+    /// file size > 0, last line parses as a terminal AgentEvent whose
+    /// marker matches review_marker, total_handoffs >= 1.
+    /// Any failure returns Err(GateFail::new(...)).
+    pub(crate) fn new(...) -> Result<Self, GateFail> { ... }
+}
+```
+
+**`GateFail`** — carries the failure reason explicitly so CLI/log
+summaries and the next outer-loop iteration consume it directly,
+without reverse-engineering from exit codes:
+
+```rust
+pub struct GateFail {
+    pub reason: GateFailReason,
+    pub verify_exit: Option<i32>,
+    pub review_exit: Option<i32>,
+    pub review_marker: Option<ExitSignal>,
+    pub review_log_path: Option<PathBuf>,
+    pub total_handoffs: u32,
+    pub stalled_at_max_iterations: bool,
+    _private: (),
+}
+
+pub enum GateFailReason {
+    VerifierFailed,                   // verify_exit != 0
+    ReviewConcern { token, reason },  // marker is LOOM_CONCERN
+    EmptyDiffNoop,                    // marker is LOOM_NOOP — no reviewable work
+    StalledMaxIterations,             // outer-loop counter exhausted
+    SignalKilled,                     // child terminated by signal
+    ReviewEvidenceMissing,            // log file absent / empty / mismatched marker
+    IntegrityFinding,                 // unresolved annotation / stub test
+}
+```
+
+**CLI exit-code mapping.** The binary's exit code is a pure
+function of `outcome.gate`:
+
+| `GateOutcome` variant | Exit |
+|---|---|
+| `Success(_)` | 0 |
+| `Fail(_)` | non-zero (1) |
+| `NoGate { .. }` | 0 |
+
+Plus `Err(RunError)` paths exit non-zero. This is a behaviour
+contract: any `loom run` invocation whose outcome was not
+`GateOutcome::Success(_)` or `NoGate { .. }` surfaces a non-zero
+exit. Wrapper scripts must consume this signal.
+
 ### Msg Modes
 
 `loom msg` is the human resolution channel for outstanding `loom:blocked`
@@ -1060,10 +1176,12 @@ template composition, and the snapshot-test contract all live there.
 - Uses `--json` flag where available
 - Parses output into typed structs (`Bead`, `Molecule`, `MolProgress`).
   Bead labels deserialize into a `Label` newtype that pre-parses the
-  `spec:`/`profile:`/`loom:clarify`/`loom:active` prefix families once at
+  `spec:`/`profile:`/`loom:clarify`/`loom:blocked` prefix families once at
   the boundary, so call sites read through typed accessors
-  (`spec_label()`, `profile_name()`, `is_clarify()`, `is_active()`)
-  rather than re-doing `strip_prefix` walks
+  (`spec_label()`, `profile_name()`, `is_clarify()`, `is_blocked()`)
+  rather than re-doing `strip_prefix` walks. The `loom:active` family
+  is **removed** — its prior role is carried by the state DB's
+  `current_molecule` table.
 - Maps CLI errors to typed error variants
 - All subprocess calls have a 60-second timeout (configurable). Prevents
   unbounded hangs from a stuck `bd` process.
@@ -1095,6 +1213,16 @@ CREATE TABLE molecules (
     spec_label      TEXT NOT NULL REFERENCES specs(label),
     base_commit     TEXT,                       -- cache of bead metadata `loom.base_commit`
     iteration_count INTEGER NOT NULL DEFAULT 0
+);
+
+-- Pointer to "the active molecule for this spec". Single row per spec
+-- when set; absence means no current molecule (next `loom plan -n` or
+-- `loom todo` Tier 4 creates one and writes here). Multiple bd-side
+-- open epics for the same spec are legal (recovery, parallel work); the
+-- orchestrator consults this pointer only.
+CREATE TABLE current_molecule (
+    spec_label TEXT PRIMARY KEY REFERENCES specs(label) ON DELETE CASCADE,
+    epic_id    TEXT NOT NULL                    -- bd epic id, no `loom:active` label dependency
 );
 
 CREATE TABLE companions (
@@ -1137,8 +1265,8 @@ diff base; advancing it serves both roles the cursor did.
 
 Typed Rust API — no raw SQL outside `loom-driver`. `loom-driver` owns a single
 `StateDb` handle that wraps the SQLite connection and exposes typed
-operations: open the DB at a path, fetch a spec row by label, fetch the
-active molecule for a spec label (zero or one), get/set the `current_spec`
+operations: open the DB at a path, fetch a spec row by label, read/write
+the `current_molecule[<spec_label>]` pointer, get/set the `current_spec`
 meta key, increment a molecule's iteration counter, manage notes
 (`set`/`add`/`clear`/`list` scoped by `(spec_label, kind)`; `rm` by note
 id), and run the rebuild described below. Every operation returns
@@ -1151,20 +1279,31 @@ spec_label, kind, text, created_at) — the columns of the `specs`,
 step.
 
 **Rebuild (`loom init --rebuild`):** Drops and recreates all tables, then
-repopulates from three sources:
+repopulates from four sources:
 
 1. Glob `specs/*.md` → one `specs` row per file (label from filename).
    ~10-20 files.
-2. `bd list --status=open --label=loom:active` → active molecules only
-   (typically 0-3). For each, `bd show <id> --json` reads the epic's
-   `loom.base_commit` metadata and produces one `molecules` row with
-   `base_commit` populated from that metadata. **Empty `base_commit`
-   on rebuild is a bug** — the metadata is the source of truth and is
-   set unconditionally by `loom plan` at molecule creation; beads
-   filed out-of-band via `bd create` inherit the value from their
-   parent on first read (see *Out-of-band `loom:active` beads inherit
-   `loom.base_commit` from their parent* below).
-3. Each spec markdown is parsed for a canonical `## Companions` section
+2. **Best-effort markdown-table parse of the consumer's spec-index
+   file** (default `docs/README.md`, configurable in `[rebuild]
+   spec_index = "<path>"` under `<workspace>/config.toml`). The parser
+   scans for a markdown table whose header includes a column matching
+   `Epic` or `Bead` (case-insensitive substring). For each data row
+   whose spec-label column points at a `specs/*.md` file (resolved
+   via markdown link), the candidate epic ID is validated via `bd
+   show <id>` (must exist, must be `type=epic`); on success the pair
+   is written to `current_molecule(spec_label, epic_id)`. Rows that
+   fail to match a column / parse / validate are skipped with a
+   single-line warning naming what was missed. The rebuild does NOT
+   fail on parser-miss — `current_molecule` is allowed to be
+   partial, with the remainder set later via `loom use --epic` or
+   created lazily by `loom todo` / `loom gate audit --tree`.
+3. `bd list --status=open --type=epic` → one `molecules` row per open
+   epic carrying a `spec:<label>` label (typically 0-N per spec;
+   multiple-open is legal). For each, `bd show <id> --json` reads
+   `loom.base_commit` metadata and populates the row's `base_commit`.
+   The rebuild seeds `molecules` independently of `current_molecule`;
+   one is the per-epic record, the other is the per-spec pointer.
+4. Each spec markdown is parsed for a canonical `## Companions` section
    (see *Companion declaration in specs* below); each listed path becomes
    one `companions` row. Specs without the section contribute zero
    companions, not an error.
@@ -1206,72 +1345,82 @@ This is the only contract between spec authors and the state DB on
 companions. The `loom plan` interview enforces the format when adding
 companion paths to a spec.
 
-**Plan creates the molecule.** At session start, `loom plan -n <label>`
-and `loom plan -u <label>` ensure an active molecule exists for the
-anchor before the agent runs:
+**Molecule lifecycle.** Epic creation is owned by `loom todo` and
+`loom gate audit --tree`; `loom plan` no longer creates epics at
+session start. The lifecycle is:
 
-- If no `loom:active` epic exists for `<label>`, the driver creates
-  one via `bd create --type=epic --title="<label>: pending decomposition"
-  --labels="spec:<label>,loom:active" --metadata "loom.base_commit=<HEAD>"
-  --silent`. The molecule starts empty (no children); children are
-  added later by `loom todo`.
-- If an active epic already exists for `<label>`, the driver **does
-  nothing** — no metadata overwrite, no relabel, idempotent reuse.
+- **`loom plan -n <label>` / `loom plan -u <label>`** — edits the
+  spec markdown only; no bd writes, no `current_molecule` writes.
+  Plan sessions can run repeatedly against a spec without spawning
+  empty epics.
+- **`loom todo --spec <label>` Tier 4** (no existing entry in
+  `current_molecule[<label>]`) — creates the molecule epic via `bd
+  create --type=epic --title="<label>" --labels="spec:<label>"
+  --metadata "loom.base_commit=<HEAD>"`, writes the new epic ID to
+  `current_molecule[<label>]`, then proceeds with fresh
+  decomposition. Tiers 1-3 reuse the existing pointer.
+- **`loom gate audit --tree`** — for each concern about a spec
+  missing from `current_molecule`, creates a recovery epic via `bd
+  create --type=epic --title="<label> recovery" --labels="spec:<label>"
+  --metadata "loom.base_commit=<HEAD>"` and writes
+  `current_molecule[<label>]`. Surfaces each auto-create on stdout
+  with the spec name and new epic ID. See [gate.md](gate.md)
+  *Recovery* for details.
+- **`loom use <label> --epic <id>`** — manual override. Writes
+  `current_molecule[<label>] = <id>`. If the named epic is closed,
+  transparently re-opens it (`bd update <id> --status open`) — re-open
+  is unrestricted; a closed epic with surfaced fix-up work is a
+  legitimate state transition, not a hygiene violation.
 
-The molecule's `loom.base_commit` metadata is the **single durable
-diff base** for the cycle, captured at plan start. Every subsequent
-`loom todo` reads it (via Beads) as the tier-1 diff base, regardless
-of whether the local state-DB cache survived. Tier-4 (New) is
-therefore unreachable from any `loom todo` that follows a `loom plan`
-session for the same anchor — the molecule exists, the base is set,
-tier-1 fires.
+**Multiple open epics per spec are legal.** The orchestrator
+consults `current_molecule[<label>]` exclusively to identify "the
+active molecule for this spec". Other open epics carrying
+`spec:<label>` are historical or parallel and do not affect the
+orchestrator's behavior. The `loom:active` label is **not used**
+anywhere — its prior role of disambiguating "the current molecule"
+is now carried by the state DB pointer.
 
-`loom plan` writes the metadata at session start (not session end)
-so the state is consistent even if the session is interrupted (Ctrl-C,
-crash) before `LOOM_COMPLETE`. A planning session that commits spec
-changes but never emits a marker still leaves a usable molecule for
-the next `loom todo`.
+**Epic close is gated structurally on `GateSuccess`** via the
+composition of three facts: (1) the worker queue filter excludes
+`type=epic` beads from worker dispatch (FR1), so the agent's
+`bd close <bead-id>` on `LOOM_COMPLETE` can never target an epic;
+(2) the workflow runtime does not call `bd close` from any other
+non-review path; (3) `auto_close_completed_epics` runs only inside
+`apply_verdict`'s `ReviewVerdict::Clean` branch, which is reachable
+only when `GateSuccess` is constructed (see *Run Outcome Types*
+above). Manual `bd close` by the user remains permitted — that is
+outside loom's scope to police.
 
-When `loom todo` successfully creates child beads, it advances
-`loom.base_commit` on the molecule's epic (via `bd update --metadata
-loom.base_commit=<HEAD>`) so subsequent `loom todo` runs against the
-same molecule diff only against new content. The state-DB
-`molecules.base_commit` cache is updated in the same transaction as
-the notes-consume step.
-
-**Out-of-band `loom:active` beads inherit `loom.base_commit` from
-their parent.** Beads created via `bd create` (outside `loom plan`)
-with the `loom:active` label may legitimately ship without a
-`loom.base_commit` of their own — typical when the user files a
-follow-up bug parented to an existing molecule's epic. The
-precondition is still **required** for every `loom:active` row, but
-`fetch_active_molecules` (the `loom init --rebuild` / `loom run` init
-entry point) self-heals as follows:
+**`loom.base_commit` inheritance for out-of-band beads.** Beads
+created via `bd create` (outside `loom todo`) that bond to an
+existing molecule's epic as `--parent` may legitimately ship
+without their own `loom.base_commit`. The `loom init --rebuild` /
+`loom run` init entry point self-heals:
 
 1. Read the bead's own `loom.base_commit` metadata. If present, use
-   it (no parent lookup).
+   it.
 2. Otherwise, follow the bead's `parent` to its parent bead's
    `loom.base_commit`. On a hit, write the value back to the child
-   via `bd update <id> --set-metadata loom.base_commit=<sha>` so
-   subsequent reads are self-sufficient and the inheritance is
-   logged at `info` level.
-3. If neither the bead nor its parent carries the metadata (or the
-   bead is unparented), `fetch_active_molecules` returns
-   `InitError::MoleculeMissingBaseCommit` whose `Display` text names
-   the exact `bd update` fix command. `loom run` exits with the
-   message printed verbatim.
+   via `bd update <id> --set-metadata loom.base_commit=<sha>`.
+3. If neither the bead nor its parent carries the metadata, the
+   init returns `InitError::MoleculeMissingBaseCommit` whose
+   `Display` text names the exact `bd update` fix command.
 
-This rule applies regardless of which `spec:<label>` the bead
-carries; the inheritance walks the bond, not the spec graph. The
-single-step lookup (child → parent, no further chain) is sufficient
-because Beads enforces at most one parent per bead and `loom plan`
-sets the metadata unconditionally on every molecule it creates.
+The single-step lookup is sufficient because Beads enforces at most
+one parent per bead and `loom todo` writes the metadata
+unconditionally on every molecule it creates.
 
-**Cycle close.** When the push gate fires clean, the molecule is
-closed and `loom:active` is removed. The next `loom plan` for the
-same anchor creates a new molecule with a fresh `loom.base_commit =
-HEAD`. Old molecules remain in Beads as history; only one
-`loom:active` molecule per anchor at a time.
+**Cycle close.** When the push gate constructs `GateSuccess`, the
+existing `auto_close_completed_epics` walk closes every epic whose
+direct children are all closed. The state DB's `current_molecule`
+entry for the closed epic's spec is **kept** (it still points at
+the historically-correct molecule for any retroactive auditing).
+Continuing work against the same molecule re-opens the closed epic
+transparently (`loom use <label> --epic <id>` or any new `loom
+todo`/`loom gate audit --tree` invocation that needs the pointer);
+starting a fresh cycle is `loom use <label> --epic <new-id>` after
+manually creating a new epic, or letting `loom gate audit --tree`
+auto-create one when no entry exists.
 
 **Notes lifecycle.** Notes are *transient hints* attached to a spec —
 bug-or-gotcha context, file paths to touch, design trade-offs left to
@@ -1304,8 +1453,8 @@ Lifecycle for `kind = implementation`:
 
 | Event | Effect on `notes` rows where `kind = 'implementation'` |
 |-------|--------------------------------------------------------|
-| `loom plan -n <label>` | Interview ends by calling `loom note set <label> --json '[…]'`. (Plan also creates the active molecule with `loom.base_commit` as bead metadata at session start — see *Plan creates the molecule* above.) |
-| `loom plan -u <label>` | Interview reads existing notes via `loom note list <label>`, then writes a **merged** array back via `loom note set` — agent's judgement, keeping what still applies, dropping what new decisions invalidate, adding what's fresh. Not a blind append or replace. (Plan reuses an existing `loom:active` molecule for the anchor; if none exists, creates one with `loom.base_commit = HEAD` at session start — see *Plan creates the molecule* above.) |
+| `loom plan -n <label>` | Interview ends by calling `loom note set <label> --json '[…]'`. Plan does NOT create a molecule epic; epic creation is owned by `loom todo` Tier 4 — see *Molecule lifecycle* above. |
+| `loom plan -u <label>` | Interview reads existing notes via `loom note list <label>`, then writes a **merged** array back via `loom note set` — agent's judgement, keeping what still applies, dropping what new decisions invalidate, adding what's fresh. Not a blind append or replace. Plan does NOT touch bd or `current_molecule`. |
 | `loom todo` (productive completion: `(LOOM_COMPLETE or LOOM_NOOP)` AND `exit_code == 0`) | Renders the notes into each new bead body, then atomically: deletes the notes, advances `loom.base_commit` on the molecule's epic (via `bd update --metadata`), and refreshes the `molecules.base_commit` cache. Single SQLite transaction wraps the local writes; the bead-metadata write is the durable source of truth. |
 | `loom todo` (any other terminal state) | Notes untouched; `loom.base_commit` untouched; next invocation reprocesses the same diff with the same notes. |
 | `loom init --rebuild` | All notes drop with the table — no filesystem source to reconstruct from. |
@@ -1813,10 +1962,31 @@ Criteria.
 
 ### Workflow commands
 
-- `loom plan -n <label>` spawns container with base profile, runs spec interview
+- `loom plan -n <label>` spawns container with base profile, runs
+      spec interview; edits the spec markdown only — no bd writes,
+      no `current_molecule` writes
   [test](plan_new_invokes_wrapix_run_and_records_companions)
-- `loom plan -u <label>` updates existing spec with anchor/sibling support
+- `loom plan -u <label>` updates existing spec with anchor/sibling
+      support; edits the spec markdown only — same isolation as
+      `-n`
   [test](plan_update_threads_existing_companions_into_prompt)
+- `loom use <label> --epic <id>` writes `current_molecule[<label>]
+      = <id>` to the state DB. If the named epic is closed,
+      transparently re-opens it via `bd update <id> --status open`.
+      Errors if `<id>` does not exist or is not `type=epic` or does
+      not carry `spec:<label>`
+  [test](loom_use_epic_writes_current_molecule_and_reopens_closed)
+- `loom use <label>` (no `--epic`) auto-picks the single open epic
+      for the spec when exactly one exists; errors with a list of
+      candidates when multiple are open; leaves `current_molecule`
+      blank when zero open epics exist
+  [test](loom_use_auto_picks_or_errors_on_multiple_open_epics)
+- After `GateSuccess` triggers `auto_close_completed_epics` and an
+      epic closes, the `current_molecule[<label>]` pointer for the
+      closed epic's spec is **kept** (not cleared); subsequent
+      reads of the pointer return the closed epic ID so retroactive
+      auditing and explicit re-open paths work without re-seeding
+  [test](current_molecule_pointer_persists_across_epic_auto_close)
 - `loom todo` implements four-tier detection with per-spec cursor fan-out
   [test](build_spawn_config_resolves_manifest_image_and_renders_new_template)
 - `loom todo` reads [gate.md](gate.md)'s sqlite status cache before
@@ -1836,11 +2006,54 @@ Criteria.
   [test](todo_new_creates_epic_before_decomposition)
 - `loom run` continuous mode processes beads until molecule complete
   [test](continuous_loops_until_molecule_complete)
-- `loom run --once` processes single bead then exits
-  [test](once_mode_processes_single_bead)
+- `loom run --once` processes a single bead then fires the gate if
+      that bead closed the molecule (queue subsequently empty); if
+      the bead did NOT close the molecule, exits with
+      `GateOutcome::NoGate { reason: OncePartial }`. `--once` never
+      silently skips the gate when the molecule is complete
+  [test](once_mode_fires_gate_when_molecule_closes_else_no_gate_partial)
 - `loom run --parallel N` (alias `-p N`) accepts a positive integer; non-
       positive or non-integer values fail with a clear error
   [test](default_is_one)
+- `loom run --all-specs` iterates every entry in `current_molecule`
+      ordered by bd's `Updated` timestamp ascending (oldest first),
+      running the per-spec outer loop to completion for each;
+      per-spec `GateOutcome::Fail` does not stop the iteration
+  [test](all_specs_iterates_by_bd_updated_asc)
+- `loom run --all-specs` aggregate exit code is non-zero iff any
+      spec ended in `GateOutcome::Fail`; `Success` and `NoGate`
+      across all specs → exit 0
+  [test](all_specs_exit_code_reflects_aggregate)
+- `loom run`'s worker queue resolution skips any bead with
+      `issue_type == "epic"`, emitting an info-level log line naming
+      the skipped epic. Sequential and parallel codepaths share the
+      chokepoint
+  [test](worker_queue_skips_epic_type_beads_with_info_log)
+- Every successful `loom run` invocation returns
+      `RunOutcome { gate: GateOutcome, .. }`; the binary's exit code
+      is a pure function of the `GateOutcome` variant
+      (`Success` → 0, `Fail` → non-zero, `NoGate` → 0)
+  [test](loom_run_exit_code_is_function_of_gate_outcome_variant)
+- `GateSuccess` is constructible only by the gate-invocation code
+      (`pub(crate)` constructor, no struct-literal path) and only
+      when verify_exit == 0, review_exit == 0, review_marker ==
+      ExitSignal::Complete, review_log_path exists, file is
+      non-empty, and last line is a terminal AgentEvent matching
+      review_marker; any condition failing returns `GateFail`
+      instead
+  [test](gate_success_constructor_asserts_every_evidence_condition)
+- Every `loom run` returning `RunOutcome { gate: Success(r), .. }`
+      produces a non-empty `review-*.jsonl` at `r.review_log_path`,
+      ending in a terminal `AgentEvent` whose marker equals
+      `r.review_marker`. Holds for all execution modes (`--once`,
+      `--parallel`, default continuous, `--all-specs`)
+  [test](every_successful_loom_run_writes_a_review_log_with_terminal_marker)
+- `run_parallel_run` returns `Result<RunOutcome, RunError>` —
+      identical type to the sequential codepath; parallel mode
+      invokes the same `exec_review` chokepoint after the batch
+      drains, constructs `GateOutcome` from the receipt, and
+      returns. There is no parallel-specific summary type
+  [test](parallel_codepath_returns_run_outcome_with_gate_field)
 - `loom run` reads profile from bead label and spawns correct container
   [test](resolve_profile_reads_label)
 - `loom run` retries failed beads with previous error context
@@ -1860,8 +2073,10 @@ Criteria.
   [test](continuous_outer_loop_processes_fix_up_bead_then_exits_on_stall)
 - Push gate is a **four-condition AND**: bead labels, verify exit,
       review exit, integrity findings. Failure on any one input
-      refuses the push. The push verdict consumes the verify and
-      review exit codes (not just bead labels)
+      refuses the push. The verdict is encoded as `GateOutcome`
+      (`Success` when all four hold, `Fail { reason }` otherwise);
+      the constructor for `GateSuccess` asserts each condition
+      structurally — see [Run Outcome Types](#run-outcome-types)
   [test](push_gate_evaluates_all_four_conditions)
 - Push gate refuses when `loom gate review`'s `--diff`-scoped
       invocation emits `LOOM_CONCERN`; molecule routes to recovery
@@ -2127,14 +2342,18 @@ two agent-loop observers.
 - `loom init` creates `<workspace>/config.toml` (or `$LOOM_CONFIG` when
       set) and `.wrapix/loom/state.db` with the default schema
   [test](run_creates_config_and_state_db)
-- `loom init --rebuild` repopulates the state DB from `specs/*.md`
-      and active beads
+- `loom init --rebuild` drops and repopulates the state DB from
+      four sources: `specs/*.md` (one row per file), the consumer's
+      spec-index file (best-effort markdown parse → `current_molecule`),
+      `bd list --status=open --type=epic` (one `molecules` row per
+      open epic), and each spec's `## Companions` section
   [test](rebuild_drops_and_repopulates_state_db)
-- `loom status` prints active spec, current molecule, iteration count
-      from the state DB
+- `loom status` prints the active spec (`current_spec` meta key),
+      `current_molecule[<active_spec>]`'s epic ID (or "(none)" when
+      unset), and the iteration count for that molecule
   [test](empty_state_reports_unset_spec)
 - `loom use <label>` sets `current_spec` in the state DB; round-trips
-      with `loom status`
+      with `loom status`. See *Workflow commands* for `--epic <id>`
   [test](use_round_trips_with_status_load)
 - Bare `loom logs` pretty-renders the most recent bead's full log
       via the same `AgentEvent` renderer used by `loom run`, then
@@ -2168,10 +2387,13 @@ two agent-loop observers.
 
 ### State database
 
-- `StateDb::open` creates tables on first open
+- `StateDb::open` creates tables on first open (including the
+      `current_molecule` table)
   [test](state_db_init_creates_tables)
-- `StateDb::rebuild` populates from spec files and active beads
-  [test](state_db_rebuild_populates_specs_and_molecules)
+- `StateDb::rebuild` populates `specs` from spec files, `molecules`
+      from open `type=epic` beads carrying `spec:<label>`, and
+      `current_molecule` from the spec-index markdown parse
+  [test](state_db_rebuild_populates_specs_molecules_and_current_molecule)
 - `StateDb::rebuild` parses each spec's `## Companions` section and
       writes one `companions` row per listed path; specs without the
       section contribute zero rows (not an error)
@@ -2180,32 +2402,48 @@ two agent-loop observers.
   [test](state_db_rebuild_resets_counters)
 - `current_spec` / `set_current_spec` round-trips correctly
   [test](state_current_spec_round_trips)
+- `current_molecule[<label>]` set/get/clear round-trips correctly;
+      multiple specs can be set simultaneously; clearing one leaves
+      the others intact
+  [test](state_current_molecule_round_trips_and_independent_per_spec)
 - `increment_iteration` returns updated count
   [test](state_increment_iteration_returns_updated_count)
 - Corrupted DB file → `loom init --rebuild` recovers
   [test](state_corruption_recovery)
-- `loom plan -n/-u` writes `loom.base_commit = HEAD` as bead metadata
-      on the newly-created (or reused) `loom:active` epic at session
-      start; idempotent re-runs do not overwrite an existing active
-      molecule's metadata
-  [test](plan_writes_base_commit_to_bead_metadata_at_session_start)
+- `loom plan -n/-u` does NOT create a molecule epic and does NOT
+      write to bd or `current_molecule`; plan sessions edit specs
+      only
+  [test](plan_does_not_create_epic_or_touch_bd)
+- `loom todo --spec <label>` Tier 4 (no `current_molecule[<label>]`)
+      creates a molecule epic via `bd create --type=epic
+      --labels="spec:<label>" --metadata "loom.base_commit=<HEAD>"`
+      and writes the new epic ID to `current_molecule`
+  [test](todo_tier4_creates_epic_and_writes_current_molecule)
 - `loom init --rebuild` populates `molecules.base_commit` from
-      `bd show <id> --json` reading `loom.base_commit` metadata;
-      no active molecule with empty `base_commit` is produced
-  [test](rebuild_reads_base_commit_from_bead_metadata)
+      `bd show <id> --json` reading `loom.base_commit` metadata for
+      every open `type=epic` bead carrying `spec:<label>`; multiple
+      open epics per spec are legal and each gets a row
+  [test](rebuild_reads_base_commit_for_every_open_epic_per_spec)
+- `loom init --rebuild` does a best-effort markdown-table parse of
+      the consumer's spec-index file (default `docs/README.md`,
+      configurable), scans for a column whose header matches `Epic`
+      or `Bead` (case-insensitive), validates each candidate epic
+      ID via `bd show`, and seeds `current_molecule` for matching
+      rows. Rows that fail to parse are skipped with a one-line
+      warning naming what was missed; the rebuild does not fail
+  [test](rebuild_parses_spec_index_epic_or_bead_column_best_effort)
 - `fetch_active_molecules` inherits `loom.base_commit` from a
-      bead's parent when the bead is missing the metadata of its
-      own, writes the inherited value back via
-      `bd update --set-metadata`, and surfaces the inherited value
-      to the rebuilt row
+      bead's parent when the bead is missing it of its own, writes
+      the inherited value back via `bd update --set-metadata`,
+      and surfaces the inherited value to the rebuilt row
   [test](rebuild_inherits_base_commit_from_parent_when_missing)
-- A `loom:active` bead with neither own `loom.base_commit` nor a
-      parent carrying it fails loudly with
+- An open epic with neither own `loom.base_commit` nor a parent
+      carrying it fails loudly with
       `InitError::MoleculeMissingBaseCommit`, and the error's
       `Display` text names the exact
       `bd update <id> --set-metadata loom.base_commit=<sha>`
       fix command
-  [test](rebuild_errors_when_active_molecule_lacks_base_commit_metadata)
+  [test](rebuild_errors_when_open_epic_lacks_base_commit_metadata)
 - `loom todo` advances `loom.base_commit` on the molecule's epic
       AND the local `molecules.base_commit` cache only when the
       session emitted `LOOM_COMPLETE` or `LOOM_NOOP` **and**
@@ -2326,23 +2564,38 @@ two agent-loop observers.
    **Workflow** — the loom loop, in execution order:
    - `loom plan` — spec interview (interactive agent session); flags
      `-n <label>` for a new spec and `-u <label>` for updating an existing
-     one. No hidden-spec flag: scratch / private specs are kept out of
-     git via `.git/info/exclude` rather than a separate spec home.
-   - `loom todo` — spec-to-beads decomposition
+     one. Plan sessions edit specs only — they do **not** create molecule
+     epics or write to bd. Epic creation is owned by `loom todo` (Tier 4)
+     and by `loom gate audit --tree`'s auto-create fallback (see
+     [gate.md](gate.md)). No hidden-spec flag: scratch / private specs
+     are kept out of git via `.git/info/exclude`.
+   - `loom todo` — spec-to-beads decomposition. In Tier 4 (no existing
+     molecule for the spec) creates the molecule epic and writes
+     `current_molecule[<spec_label>] = <epic_id>` to the state DB.
    - `loom run` — execute beads in loop (continuous or `--once`).
      The loop pulls beads via `bd ready` filtered to exclude
-     `loom:blocked` / `loom:clarify` beads (which are parked for
-     human resolution via `loom msg`). Under `--parallel N`, a
-     clarify or block on one of the N concurrent beads does not
-     cancel the others. On molecule completion, the driver invokes
-     `loom gate verify --diff <molecule.base_commit>..HEAD` then
-     `loom gate review --diff <molecule.base_commit>..HEAD` (the
-     molecule-completion scope is the molecule's own diff — not
-     `--tree` — so push-gate cost is proportional to the molecule's
+     `loom:blocked` / `loom:clarify` beads. **Worker queue excludes
+     epics structurally:** `loom run`'s ready-queue resolution skips
+     any bead with `issue_type == "epic"`, emitting an info-level log
+     line naming the skipped epic. The agent never receives an epic
+     as a worker task. Under `--parallel N`, a clarify or block on one
+     of the N concurrent beads does not cancel the others. **On
+     molecule completion** (the spec's `current_molecule` epic has no
+     remaining ready children), the driver invokes `loom gate verify
+     --diff <molecule.base_commit>..HEAD` then `loom gate review --diff
+     <molecule.base_commit>..HEAD` (scope is the molecule's own diff —
+     not `--tree` — so push-gate cost is proportional to the molecule's
      work), then evaluates the push gate per FR9. The outer loop
      iterates over molecule passes (initial pass + each
-     verdict-gate-produced fix-up pass) bounded by
-     `[loop] max_iterations`.
+     verdict-gate-produced fix-up pass) bounded by `[loop]
+     max_iterations`. **`loom run` returns a typed [`RunOutcome`](#run-outcome-types)
+     whose `gate: GateOutcome` field is non-optional; the binary's
+     exit code is a pure function of the `GateOutcome` variant.**
+     `--all-specs` iterates every entry in `current_molecule` ordered
+     by bd's `Updated` field ascending (oldest first), running the
+     per-spec outer loop to completion for each; per-spec failures
+     continue to the next spec; aggregate exit code is non-zero iff
+     any spec's outcome was `GateOutcome::Fail`.
    - `loom gate` — quality gate (annotation-dispatched verifiers +
      LLM rubric). Subcommands per [gate.md](gate.md)
      Commands table: bare `loom gate` reads the status cache;
@@ -2356,8 +2609,9 @@ two agent-loop observers.
      and one of the four scope flags `--bead <id>` / `--diff
      <range>` / `--files <paths>` / `--tree` (mutually exclusive;
      bare invocation defaults to `--diff <molecule.base_commit>..HEAD`
-     if an active molecule exists, else `--diff HEAD` — see
-     [gate.md](gate.md) for the scope-flag contract).
+     when `current_molecule[<active_spec>]` is set, else `--diff
+     HEAD` — see [gate.md](gate.md) for the scope-flag
+     contract).
      The surface-conformance walk (FR13) ships as a `[check]`-tier
      verifier dispatched by `loom gate check`.
    - `loom msg` — clarify resolution
@@ -2373,10 +2627,27 @@ two agent-loop observers.
      / `[judge]` verifier targets
 
    **State** — workspace lifecycle and persisted state:
-   - `loom init` — create `.wrapix/loom/` config + state DB; `--rebuild`
-     repopulates the state DB from `specs/*.md` and active beads
-   - `loom use <label>` — set `current_spec` in the state DB; `loom status`
-     reads it back
+   - `loom init` — create `.wrapix/loom/` config + state DB. `--rebuild`
+     drops and repopulates the state DB from `specs/*.md`, bd state, and
+     a **best-effort markdown-table parse** of the consumer's spec-index
+     file (default `docs/README.md`; configurable in
+     `<workspace>/config.toml`). The parser scans for a markdown table
+     whose header includes a column matching `Epic` or `Bead`
+     (case-insensitive); for each row whose spec-label column points at
+     a `specs/*.md` file, the epic ID is validated via `bd show` and
+     seeded into `current_molecule`. Rows that fail to parse or
+     validate are skipped with a single-line warning naming what was
+     missed; the rebuild does not fail. The orchestrator's hot path
+     never parses markdown — only `--rebuild` reads the spec-index
+     file.
+   - `loom use <label>` — set `current_spec` in the state DB.
+     `--epic <id>` additionally sets `current_molecule[<label>] =
+     <id>`; if the named epic is closed, transparently re-opens it
+     (`bd update <id> --status open`). Without `--epic`, behaviour is:
+     state DB already has an entry → unchanged; exactly one open epic
+     for the spec exists → auto-set; zero open epics → leave molecule
+     blank; multiple open epics → error listing them, ask for explicit
+     `--epic <id>`.
    - `loom note` — manage spec notes
 
    The single-line help text for every command follows CLI-1: one
@@ -2408,9 +2679,13 @@ two agent-loop observers.
    Loom's workflow templates themselves remain compile-time Askama and
    internal — consumers do not override them.
 3. **SQLite state store** — workflow state persisted in a SQLite database
-   (`.wrapix/loom/state.db`). Tracks active specs, molecules, iteration
-   counts, companions. Reconstructable from spec files on disk and active
-   beads via `loom init --rebuild`.
+   (`.wrapix/loom/state.db`). Tracks active specs, the
+   **`current_molecule(spec_label → epic_id)`** pointer that resolves
+   "the active molecule for this spec", iteration counts, and
+   companions. Reconstructable from spec files on disk, bd state, and
+   the spec-index markdown parse via `loom init --rebuild`. **The
+   `loom:active` label is not used** — the state DB pointer is the
+   sole source of truth for the active molecule.
 4. **Beads integration** — interacts with beads via the `bd` CLI (subprocess
    calls). Bead operations: create, show, close, update, list, dep add, mol
    bond, mol progress. CLI output parsed into typed Rust structs.
@@ -2437,10 +2712,24 @@ two agent-loop observers.
    rubric. Driver-detected gate failures enter a bounded recovery
    loop; agent self-reports (`LOOM_BLOCKED` / `LOOM_CLARIFY`) escalate
    directly to the human via `loom msg`.
-9. **Push gate — four-condition AND.** Push fires only when **all
-   four** of the following hold; failure on any one refuses push.
-   The driver computes each input explicitly — no implicit
-   short-circuit, no `&&` chaining that could mask a failure.
+9. **Push gate — four-condition AND, structurally enforced.** Push
+   fires only when **all four** of the following hold; failure on any
+   one refuses push. The driver computes each input explicitly — no
+   implicit short-circuit, no `&&` chaining that could mask a failure.
+   The push verdict is encoded in the typed
+   [`GateOutcome`](#run-outcome-types) variant: `Success(GateSuccess)`
+   when all four hold, `Fail(GateFail { reason, .. })` on any
+   failure. **`GateSuccess` is constructible only inside the
+   gate-invocation code and only when every condition below is
+   satisfied** — the constructor (`pub(crate)`, no struct-literal
+   path) asserts each condition before returning. There is no
+   code path that yields `GateSuccess` without the gate actually
+   firing clean. Combined with FR1's worker-queue filter (epics never
+   reach worker dispatch) and the existing close-on-Clean walk
+   (`auto_close_completed_epics` runs only inside `apply_verdict`'s
+   `ReviewVerdict::Clean` branch), this composes "epic close is
+   reachable only via a `GateSuccess`" as a structural invariant —
+   no separate enforcement code required.
 
    1. **Bead labels.** Every bead in the molecule has reached
       `[done]` — no `loom:blocked` and no `loom:clarify` outstanding.
