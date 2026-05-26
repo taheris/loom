@@ -60,6 +60,15 @@ pub const PARTIAL_COMPANIONS_CONTEXT: &str =
 /// `partial/context_pinning.md` — pin the project-overview file.
 pub const PARTIAL_CONTEXT_PINNING: &str = include_str!("../templates/partial/context_pinning.md");
 
+/// `partial/decomposition_discipline.md` — pin the audit-before-fan-out
+/// rule on `todo_new` / `todo_update`: every authored bead must
+/// correspond to evidence-confirmed missing work (read off
+/// `criterion_status` + representative implementations), or the agent
+/// emits `LOOM_CLARIFY` on the molecule epic per the *Options Format
+/// Contract* in `specs/gate.md`.
+pub const PARTIAL_DECOMPOSITION_DISCIPLINE: &str =
+    include_str!("../templates/partial/decomposition_discipline.md");
+
 /// `partial/exit_signals.md` — document the `LOOM_*` exit markers the
 /// phase accepts.
 pub const PARTIAL_EXIT_SIGNALS: &str = include_str!("../templates/partial/exit_signals.md");
