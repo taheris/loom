@@ -53,6 +53,7 @@ let
     "tests/mock-claude" = "${src}/tests/mock-claude";
     "specs" = "${src}/specs";
     "docs" = "${src}/docs";
+    "lib/prek" = "${src}/lib/prek";
   };
 
   stagedSrc = pkgs.runCommand "loom-src-with-extras" { } (
@@ -91,6 +92,7 @@ let
     // {
       src = stagedSrc;
       inherit cargoArtifacts;
+      nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.flock ];
       preCheck = ''
         export HOME=$(mktemp -d)
       '';
