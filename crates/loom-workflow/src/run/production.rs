@@ -22,18 +22,20 @@ use loom_driver::bd::{
     BdClient, Bead, CommandRunner, ListOpts, ReadyOpts, TokioRunner, UpdateOpts,
 };
 use loom_driver::config::Phase;
+use loom_driver::git::{CreatedWorktree, GitClient, MergeResult};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
 use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
 use loom_driver::scratch::resolve_scratch_key;
 use tokio::process::Command;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::context::{RunContextInputs, render_run_prompt};
 use super::error::RunError;
 use super::outcome::{AgentOutcome, SessionResult};
 use super::runner::{AgentLoopController, ExecReviewOutcome};
 use super::spawn::build_spawn_config_from_manifest;
+use super::tree_clean::dirty_paths_from_porcelain;
 use crate::review::{GateInputs, PhaseVerdict, RecoveryCause, decide};
 use crate::todo::ExitSignal;
 use loom_templates::run::PreviousFailure;
@@ -63,6 +65,7 @@ where
     label: SpecLabel,
     loom_bin: PathBuf,
     workspace: PathBuf,
+    git: GitClient,
     manifest: Arc<ProfileImageManifest>,
     cli_profile: Option<ProfileName>,
     phase_default: ProfileName,
@@ -74,6 +77,12 @@ where
     /// time via [`Self::with_style_rules`]; defaults to the built-in path
     /// so test fakes that skip the builder still render a valid prompt.
     style_rules: String,
+    /// Typed `PreviousFailure` to thread on the next attempt, set by the
+    /// verdict-gate tree-not-clean dispatcher so a dirty worktree on attempt
+    /// N renders the rich `TreeNotClean { dirty_paths }` body on attempt
+    /// N+1 instead of the opaque agent-error string returned through the
+    /// runner. Cleared on a fresh bead dispatch (`previous_failure = None`).
+    stashed_previous_failure: Option<PreviousFailure>,
 }
 
 impl<S, F, R: CommandRunner> ProductionAgentLoopController<S, F, R>
@@ -87,6 +96,7 @@ where
         label: SpecLabel,
         loom_bin: PathBuf,
         workspace: PathBuf,
+        git: GitClient,
         manifest: Arc<ProfileImageManifest>,
         cli_profile: Option<ProfileName>,
         phase_default: ProfileName,
@@ -97,12 +107,14 @@ where
             label,
             loom_bin,
             workspace,
+            git,
             manifest,
             cli_profile,
             phase_default,
             spawn,
             lock: None,
             style_rules: "docs/style-rules.md".to_string(),
+            stashed_previous_failure: None,
         }
     }
 
@@ -150,14 +162,37 @@ where
     ) -> Result<AgentOutcome, RunError> {
         let banner = format!("loom run @ {}", bead.id);
         let is_retry = previous_failure.is_some();
+        // The stash is per-retry-sequence: a fresh dispatch
+        // (`previous_failure = None`) means any leftover variant from a
+        // prior bead's retry chain is stale. Resolve typed `PreviousFailure`
+        // by preferring the stashed variant (set by the tree-not-clean
+        // dispatcher) over the opaque runner-supplied error string.
+        let typed_previous_failure = if is_retry {
+            self.stashed_previous_failure
+                .take()
+                .or_else(|| previous_failure.map(PreviousFailure::from_agent_error))
+        } else {
+            self.stashed_previous_failure = None;
+            None
+        };
+        // Per-bead worktree creation precedes scratch/prompt setup so the
+        // scratchpad and spawn workspace both live inside the worktree (the
+        // agent's view of the workspace at dispatch time).
+        let worktree = self.git.create_worktree(&self.label, &bead.id).await?;
+        info!(
+            bead = %bead.id,
+            path = %worktree.path.display(),
+            branch = %worktree.branch,
+            "worktree created",
+        );
+
         let key = resolve_scratch_key(Phase::Run, &self.label, Some(&bead.id));
         let scratchpad_path =
-            loom_driver::scratch::ScratchSession::scratchpad_path_for(&self.workspace, &key)
+            loom_driver::scratch::ScratchSession::scratchpad_path_for(&worktree.path, &key)
                 .to_string_lossy()
                 .into_owned();
-        let typed_previous_failure = previous_failure.map(PreviousFailure::from_agent_error);
         let attempt = u32::from(is_retry);
-        let initial_prompt = render_run_prompt(RunContextInputs {
+        let initial_prompt = match render_run_prompt(RunContextInputs {
             label: self.label.clone(),
             spec_path: format!("specs/{}.md", self.label.as_str()),
             pinned_context: String::new(),
@@ -171,21 +206,33 @@ where
             attempt,
             scratchpad_path,
             style_rules: self.style_rules.clone(),
-        })
-        .map_err(|e| RunError::Protocol(ProtocolError::Io(std::io::Error::other(e))))?;
-        let scratch = loom_driver::scratch::ScratchSession::open(
-            &self.workspace,
+        }) {
+            Ok(p) => p,
+            Err(e) => {
+                cleanup_worktree(&self.git, &worktree).await?;
+                return Err(RunError::Protocol(ProtocolError::Io(
+                    std::io::Error::other(e),
+                )));
+            }
+        };
+        let scratch = match loom_driver::scratch::ScratchSession::open(
+            &worktree.path,
             &key,
             &initial_prompt,
             &banner,
-        )
-        .map_err(|source| RunError::Protocol(ProtocolError::Io(source)))?;
+        ) {
+            Ok(s) => s,
+            Err(source) => {
+                cleanup_worktree(&self.git, &worktree).await?;
+                return Err(RunError::Protocol(ProtocolError::Io(source)));
+            }
+        };
         let spawn_config = match build_spawn_config_from_manifest(
             &self.manifest,
             bead,
             self.cli_profile.as_ref(),
             &self.phase_default,
-            self.workspace.clone(),
+            worktree.path.clone(),
             initial_prompt,
             scratch.path().to_path_buf(),
             vec![],
@@ -194,23 +241,76 @@ where
             Ok(cfg) => cfg,
             Err(ProfileError::UnknownProfile { name, .. }) => {
                 drop(scratch);
+                cleanup_worktree(&self.git, &worktree).await?;
                 return Ok(AgentOutcome::UnknownProfile {
                     error: format_unknown_profile_error(&name, &self.manifest),
                 });
             }
-            Err(e) => return Err(RunError::Profile(e)),
+            Err(e) => {
+                drop(scratch);
+                cleanup_worktree(&self.git, &worktree).await?;
+                return Err(RunError::Profile(e));
+            }
         };
         info!(
             bead = %bead.id,
             image_ref = %spawn_config.image_ref,
+            worktree = %worktree.path.display(),
             retry = is_retry,
             "loom run: dispatching agent",
         );
         let (session, marker) = (self.spawn)(spawn_config, bead.id.clone()).await;
-        // Drop happens here at end of scope — scratch dir cleaned up on
-        // every exit path (success, failure, panic).
         drop(scratch);
-        Ok(classify_session(session, marker))
+
+        let outcome = classify_session(session, marker);
+        if outcome == AgentOutcome::Success {
+            // Tree-clean precedes verify-fail / review-concern per
+            // `specs/harness.md` § Verdict Gate. Running verifiers against
+            // a half-staged tree would conflate the agent's intended diff
+            // with its leftover scratch.
+            let porcelain = self.git.status_porcelain_at(&worktree.path).await?;
+            let dirty = dirty_paths_from_porcelain(&porcelain);
+            if !dirty.is_empty() {
+                warn!(
+                    bead = %bead.id,
+                    dirty_count = dirty.len(),
+                    "tree-not-clean: cleaning worktree and stashing TreeNotClean for the next attempt",
+                );
+                cleanup_worktree(&self.git, &worktree).await?;
+                self.stashed_previous_failure =
+                    Some(PreviousFailure::TreeNotClean { dirty_paths: dirty });
+                return Ok(AgentOutcome::Failure {
+                    error: "tree-not-clean".to_string(),
+                });
+            }
+            match self.git.merge_branch(&worktree.branch).await? {
+                MergeResult::Ok => {
+                    cleanup_worktree(&self.git, &worktree).await?;
+                    Ok(AgentOutcome::Success)
+                }
+                MergeResult::Conflict => {
+                    // Worktree preserved for human resolution per
+                    // parallel-path semantics; only the merge-conflict
+                    // failure body is returned.
+                    warn!(
+                        bead = %bead.id,
+                        branch = %worktree.branch,
+                        path = %worktree.path.display(),
+                        "merge conflict — worktree preserved for inspection",
+                    );
+                    Ok(AgentOutcome::Failure {
+                        error: format!(
+                            "merge conflict: worktree preserved at {} on branch {} for human resolution",
+                            worktree.path.display(),
+                            worktree.branch,
+                        ),
+                    })
+                }
+            }
+        } else {
+            cleanup_worktree(&self.git, &worktree).await?;
+            Ok(outcome)
+        }
     }
 
     async fn apply_clarify(&mut self, bead: &BeadId, question: &str) -> Result<(), RunError> {
@@ -324,6 +424,16 @@ where
             review_marker: None,
         })
     }
+}
+
+/// Remove the per-bead worktree and force-delete its branch. Used by the
+/// run-phase verdict gate on every non-merged exit path (agent failure,
+/// tree-not-clean recovery, profile-resolution failure) so a stale worktree
+/// or branch never survives a bead's retry chain.
+async fn cleanup_worktree(git: &GitClient, worktree: &CreatedWorktree) -> Result<(), RunError> {
+    git.remove_worktree(&worktree.path).await?;
+    git.delete_branch(&worktree.branch).await?;
+    Ok(())
 }
 
 /// Render the operator-facing note body for the `unknown-profile`
@@ -748,6 +858,14 @@ mod tests {
         Arc::new(ProfileImageManifest::from_path(&path).expect("parse manifest"))
     }
 
+    /// Initialize a git repository at `workspace` (creating the directory if
+    /// missing) and open a [`GitClient`] rooted there. Used by every
+    /// controller-construction site so `run_bead`'s per-bead worktree
+    /// dispatch has a real repo to bind against.
+    fn git_workspace(workspace: &std::path::Path) -> loom_driver::git::GitClient {
+        loom_driver::git::init_test_repo(workspace).expect("init test repo")
+    }
+
     fn bead(id: &str) -> Bead {
         Bead {
             id: BeadId::new(id).expect("valid bead id"),
@@ -767,7 +885,7 @@ mod tests {
     async fn run_bead_invokes_dispatch_closure_with_resolved_spawn_config() {
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
-        std::fs::create_dir_all(&workspace).expect("ws dir");
+        let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
         let captured: Arc<Mutex<Option<SpawnConfig>>> = Arc::new(Mutex::new(None));
         let captured_for_closure = Arc::clone(&captured);
@@ -776,6 +894,7 @@ mod tests {
             SpecLabel::new("spec-x"),
             PathBuf::from("/loom/bin"),
             workspace,
+            git,
             manifest,
             None,
             ProfileName::new("base"),
@@ -813,7 +932,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
         let workspace = dir.path().join("ws");
-        std::fs::create_dir_all(&workspace).expect("ws dir");
+        let git = git_workspace(&workspace);
         let captured: Arc<Mutex<Option<SpawnConfig>>> = Arc::new(Mutex::new(None));
         let captured_for_closure = Arc::clone(&captured);
         let prompt_seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -823,6 +942,7 @@ mod tests {
             SpecLabel::new("harness"),
             PathBuf::from("/loom/bin"),
             workspace.clone(),
+            git,
             manifest,
             None,
             ProfileName::new("base"),
@@ -891,13 +1011,14 @@ mod tests {
     async fn run_bead_translates_nonzero_exit_code_into_failure_with_error_body() {
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
-        std::fs::create_dir_all(&workspace).expect("ws dir");
+        let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
             SpecLabel::new("spec-x"),
             PathBuf::from("/loom/bin"),
             workspace,
+            git,
             manifest,
             None,
             ProfileName::new("base"),
@@ -938,13 +1059,14 @@ mod tests {
     async fn run_bead_translates_preflight_failure_into_infra_preflight() {
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
-        std::fs::create_dir_all(&workspace).expect("ws dir");
+        let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
             SpecLabel::new("spec-x"),
             PathBuf::from("/loom/bin"),
             workspace,
+            git,
             manifest,
             None,
             ProfileName::new("base"),
@@ -979,13 +1101,14 @@ mod tests {
     async fn run_bead_translates_midsession_failure_into_infra_midsession() {
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
-        std::fs::create_dir_all(&workspace).expect("ws dir");
+        let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
             SpecLabel::new("spec-x"),
             PathBuf::from("/loom/bin"),
             workspace,
+            git,
             manifest,
             None,
             ProfileName::new("base"),
@@ -1025,7 +1148,7 @@ mod tests {
     async fn run_bead_translates_unknown_profile_into_unknown_profile_outcome() {
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
-        std::fs::create_dir_all(&workspace).expect("ws dir");
+        let git = git_workspace(&workspace);
         // Manifest declares only `base` — the bead asks for `nonexistent`.
         let manifest = write_manifest(dir.path());
         let mut controller = ProductionAgentLoopController::new(
@@ -1033,6 +1156,7 @@ mod tests {
             SpecLabel::new("spec-x"),
             PathBuf::from("/loom/bin"),
             workspace,
+            git,
             manifest,
             None,
             ProfileName::new("base"),
@@ -1100,11 +1224,13 @@ mod tests {
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let bd = BdClient::with_runner(molecule_lookup_script("alpha", "wx-mol.1", "deadbeef"));
+        let git = git_workspace(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             bd,
             label.clone(),
             stub,
             dir.path().to_path_buf(),
+            git,
             manifest,
             None,
             ProfileName::new("base"),
@@ -1159,11 +1285,13 @@ mod tests {
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let bd = BdClient::with_runner(molecule_lookup_script("alpha", "wx-mol.1", "deadbeef"));
+        let git = git_workspace(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             bd,
             label.clone(),
             stub,
             dir.path().to_path_buf(),
+            git,
             manifest,
             None,
             ProfileName::new("base"),
@@ -1226,11 +1354,13 @@ mod tests {
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let bd = BdClient::with_runner(molecule_lookup_script("beta", "wx-mol.7", "cafef00d"));
+        let git = git_workspace(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             bd,
             label.clone(),
             stub,
             dir.path().to_path_buf(),
+            git,
             manifest,
             None,
             ProfileName::new("base"),
@@ -1290,11 +1420,13 @@ mod tests {
         // `bd list` returns the JSON literal `null` when the result set
         // is empty.
         let bd = BdClient::with_runner(ScriptedBd::new([ok_stdout(b"null\n")]));
+        let git = git_workspace(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             bd,
             SpecLabel::new("orphan-spec"),
             PathBuf::from("/nonexistent/loom"),
             dir.path().to_path_buf(),
+            git,
             manifest,
             None,
             ProfileName::new("base"),
@@ -1348,11 +1480,13 @@ mod tests {
             ok_stdout(list_body),
             ok_stdout(show_body),
         ]));
+        let git = git_workspace(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             bd,
             SpecLabel::new("gamma"),
             PathBuf::from("/nonexistent/loom"),
             dir.path().to_path_buf(),
+            git,
             manifest,
             None,
             ProfileName::new("base"),
@@ -1435,11 +1569,13 @@ mod tests {
             ok_stdout(parent_show),
             ok_stdout(b""), // bd update --set-metadata (inheritance write-back)
         ]));
+        let git = git_workspace(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             bd,
             label,
             stub,
             dir.path().to_path_buf(),
+            git,
             manifest,
             None,
             ProfileName::new("base"),
@@ -1516,11 +1652,13 @@ mod tests {
             ok_stdout(child_show),
             ok_stdout(parent_show),
         ]));
+        let git = git_workspace(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             bd,
             SpecLabel::new("epsilon"),
             PathBuf::from("/nonexistent/loom"),
             dir.path().to_path_buf(),
+            git,
             manifest,
             None,
             ProfileName::new("base"),

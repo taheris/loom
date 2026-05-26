@@ -16,6 +16,30 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Initialize a real git repo at `path` with one initial commit so
+/// `loom run`'s per-bead worktree dispatch (via
+/// `GitClient::create_worktree`) succeeds. Universal worktree isolation
+/// per `specs/harness.md` requires the workspace to be a real repo even
+/// at `--parallel 1`.
+fn init_workspace_repo(path: &Path) {
+    let run = |args: &[&str]| {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .status()
+            .expect("spawn git");
+        assert!(status.success(), "git {args:?} failed");
+    };
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "Test"]);
+    run(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(path.join("README.md"), "initial\n").expect("write README");
+    run(&["add", "README.md"]);
+    run(&["commit", "-q", "-m", "initial"]);
+}
+
 fn seed_bead(state_dir: &Path, id: &str, title: &str, description: &str, labels: &[&str]) {
     let bead_dir = state_dir.join(id);
     std::fs::create_dir_all(&bead_dir).expect("mkdir bead dir");
@@ -142,6 +166,7 @@ fn driver_closed_bead(log: &str, target_id: &str) -> bool {
 fn loom_run_once_routes_blocked_marker_to_label_and_leaves_bead_open() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
+    init_workspace_repo(workspace);
     let state_dir = workspace.join("bd-state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
@@ -198,6 +223,7 @@ fn loom_run_once_routes_blocked_marker_to_label_and_leaves_bead_open() {
 fn loom_run_once_routes_clarify_marker_to_label_and_leaves_bead_open() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
+    init_workspace_repo(workspace);
     let state_dir = workspace.join("bd-state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
@@ -271,6 +297,7 @@ fn loom_run_never_invokes_bd_close_on_dispatched_bead_across_all_markers() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
+        init_workspace_repo(workspace);
         let state_dir = workspace.join("bd-state");
         std::fs::create_dir_all(&state_dir).unwrap();
 

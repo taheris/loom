@@ -18,6 +18,30 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
+/// Initialize a real git repo at `path` with one initial commit so
+/// `loom run`'s per-bead worktree dispatch succeeds. The smoke tests
+/// invoke `loom run` against a workspace tempdir; without this, the
+/// binary's [`GitClient::open`] call fails before reaching the ready-queue
+/// check this test is asserting against.
+fn init_workspace_repo(path: &Path) {
+    let run = |args: &[&str]| {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .status()
+            .expect("spawn git");
+        assert!(status.success(), "git {args:?} failed");
+    };
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "Test"]);
+    run(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(path.join("README.md"), "initial\n").expect("write README");
+    run(&["add", "README.md"]);
+    run(&["commit", "-q", "-m", "initial"]);
+}
+
 /// Write a stub `bd` shell script to `dir/bin/bd` that returns `[]` for any
 /// JSON-shaped subcommand and `0` for everything else. Returns the bin
 /// directory caller should prepend to PATH.
@@ -76,6 +100,7 @@ fn install_bd_argv_logger(dir: &Path, argv_log: &Path) -> std::path::PathBuf {
 fn loom_run_once_against_empty_bd_exits_zero() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
+    init_workspace_repo(workspace);
     std::fs::create_dir_all(workspace.join(".wrapix/loom")).unwrap();
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
 
@@ -147,6 +172,7 @@ fn loom_run_once_against_empty_bd_exits_zero() {
 fn loom_run_parallel_passes_exclude_label_to_bd_ready() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
+    init_workspace_repo(workspace);
     std::fs::create_dir_all(workspace.join(".wrapix/loom")).unwrap();
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
 

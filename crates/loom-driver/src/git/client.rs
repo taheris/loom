@@ -347,6 +347,29 @@ impl GitClient {
         Ok(parsed)
     }
 
+    /// `git -C <workdir> status --porcelain` against an arbitrary linked
+    /// worktree under this repo. Returns the raw porcelain output verbatim
+    /// so callers can route it through
+    /// [`crate::run::dirty_paths_from_porcelain`] (or equivalent) without
+    /// reopening a [`GitClient`] per worktree. Used by the run-phase
+    /// verdict-gate tree-not-clean dispatcher.
+    pub async fn status_porcelain_at(&self, workdir: &Path) -> Result<String, GitError> {
+        let output = run_git_raw(
+            workdir,
+            self.clock.as_ref(),
+            ["status", "--porcelain"],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(GitError::GitCli {
+                status: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
     /// `git rev-parse HEAD` — full SHA of the current `HEAD`.
     pub async fn head_commit_sha(&self) -> Result<String, GitError> {
         let output = run_git_raw(
@@ -400,6 +423,45 @@ impl GitClient {
             stderr,
         })
     }
+}
+
+/// Initialize a real git repository at `path` with one `initial` commit so
+/// [`GitClient::create_worktree`] succeeds against it. Exposed for
+/// cross-crate test consumption — production callers operate on the
+/// caller-supplied workspace and never need to bootstrap one. The function
+/// is the only sanctioned way for tests outside `loom-driver/src/git/` to
+/// stand up a git repo: the workspace-level
+/// `git_client_encapsulation` style lint rejects bare
+/// `Command::new("git")` calls in tests under `crates/*/src/`.
+///
+/// Returns an opened [`GitClient`] rooted at `path`.
+#[doc(hidden)]
+pub fn init_test_repo(path: &Path) -> Result<GitClient, GitError> {
+    use std::process::Command as StdCommand;
+    std::fs::create_dir_all(path)?;
+    let run = |args: &[&str]| -> Result<(), GitError> {
+        let status = StdCommand::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .status()
+            .map_err(GitError::Spawn)?;
+        if status.success() {
+            return Ok(());
+        }
+        Err(GitError::GitCli {
+            status: status.code().unwrap_or(-1),
+            stderr: format!("git {args:?} exited {status}"),
+        })
+    };
+    run(&["init", "-q", "-b", "main"])?;
+    run(&["config", "user.email", "test@example.com"])?;
+    run(&["config", "user.name", "Test"])?;
+    run(&["config", "commit.gpgsign", "false"])?;
+    std::fs::write(path.join("README.md"), "initial\n")?;
+    run(&["add", "README.md"])?;
+    run(&["commit", "-q", "-m", "initial"])?;
+    GitClient::open(path)
 }
 
 /// Result of [`GitClient::create_worktree`].

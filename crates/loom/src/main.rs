@@ -1522,6 +1522,7 @@ fn run_run(
         max_retries: config.loop_.max_retries,
     };
     let max_iterations = config.loop_.max_iterations;
+    let git = GitClient::open(workspace)?;
     let summary = runtime.block_on(async move {
         let bd = BdClient::new();
         let mut controller = ProductionAgentLoopController::new(
@@ -1529,6 +1530,7 @@ fn run_run(
             label.clone(),
             loom_bin,
             workspace_buf,
+            git,
             manifest_for_seq,
             cli_profile,
             phase_default,

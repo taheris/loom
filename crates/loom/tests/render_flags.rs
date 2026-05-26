@@ -103,11 +103,35 @@ fn run_loom_with_flag(
 }
 
 fn setup(workspace: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    init_workspace_repo(workspace);
     let state_dir = workspace.join("bd-state");
     std::fs::create_dir_all(&state_dir).expect("mkdir state");
     let bin_dir = install_bd_shim(workspace);
     let manifest = write_minimal_manifest(workspace);
     (state_dir, bin_dir, manifest)
+}
+
+/// Initialize a real git repo at `path` with one initial commit so
+/// `loom run`'s per-bead worktree dispatch succeeds. Universal worktree
+/// isolation per `specs/harness.md` requires the workspace to be a real
+/// repo even at `--parallel 1`.
+fn init_workspace_repo(path: &Path) {
+    let run = |args: &[&str]| {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .status()
+            .expect("spawn git");
+        assert!(status.success(), "git {args:?} failed");
+    };
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "Test"]);
+    run(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(path.join("README.md"), "initial\n").expect("write README");
+    run(&["add", "README.md"]);
+    run(&["commit", "-q", "-m", "initial"]);
 }
 
 fn find_bead_log(workspace: &Path, spec_label: &str, bead_id: &str) -> PathBuf {
