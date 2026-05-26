@@ -43,12 +43,17 @@ The flock implementation lives in `lib/prek/lock.sh`, sourced by both
 `pre-commit` and `pre-push` hook shims. Key properties:
 
 - **Path** — `${XDG_STATE_HOME:-$HOME/.local/state}/loom/prek/<workspace-basename>/prek.lock`.
-  `<workspace-basename>` is the basename of `git rev-parse
-  --show-toplevel`, matching harness.md's keying for per-spec locks
-  under `loom/locks/<workspace-basename>/`. The prek lock lives in a
-  sibling `prek/<workspace-basename>/` subtree rather than inside
-  harness.md's `locks/` namespace, so prek's host-side state stays
-  separate from loom-driver's per-spec advisory locks. **All paths
+  `<workspace-basename>` is the basename of the main worktree's path
+  (the first `worktree` entry in `git worktree list --porcelain`),
+  matching harness.md's keying for per-spec locks under
+  `loom/locks/<workspace-basename>/`. Deriving from the main worktree
+  rather than `git rev-parse --show-toplevel` is load-bearing: a
+  linked worktree's `--show-toplevel` returns its own path, whose
+  basename differs from the main checkout's and would split the lock
+  namespace. The prek lock lives in a sibling
+  `prek/<workspace-basename>/` subtree rather than inside harness.md's
+  `locks/` namespace, so prek's host-side state stays separate from
+  loom-driver's per-spec advisory locks. **All paths
   live on the host filesystem, outside the workspace**, per
   harness.md's lock-placement invariant — bead containers with the
   workspace bind-mounted cannot `rm` the lock out from under the
@@ -165,8 +170,8 @@ This spec owns:
 - `lib/prek/lock.sh` resolves the lock under
   `$XDG_STATE_HOME/loom/prek/<workspace-basename>/prek.lock` (with
   the `${XDG_STATE_HOME:-$HOME/.local/state}` default), where
-  `<workspace-basename>` is `basename` of `git rev-parse
-  --show-toplevel`
+  `<workspace-basename>` is `basename` of the main worktree's path
+  (the first `worktree` entry in `git worktree list --porcelain`)
   [check](grep -q 'XDG_STATE_HOME' lib/prek/lock.sh)
 - `lib/prek/lock.sh` never writes the lock under any path inside the
   workspace (no `.wrapix/`, no repo-relative path)
@@ -271,8 +276,9 @@ This spec owns:
    `_prek_acquire_lock`, which holds an exclusive flock on FD 9
    with a 600-second timeout and 1-second polling. The lock path is
    `${XDG_STATE_HOME:-$HOME/.local/state}/loom/prek/<workspace-basename>/prek.lock`,
-   where `<workspace-basename>` is `basename` of `git rev-parse
-   --show-toplevel`, mirroring harness.md's keying scheme. The lock
+   where `<workspace-basename>` is `basename` of the main worktree's
+   path (the first `worktree` entry in `git worktree list
+   --porcelain`), mirroring harness.md's keying scheme. The lock
    lives on the host filesystem, never inside the workspace, so a
    bead container with the workspace bind-mounted cannot delete or
    forge it (see [harness.md — Lock matrix](harness.md)).
@@ -336,11 +342,15 @@ This spec owns:
    `git commit` overlap on the same worktree.
 
 2. **Worktree-aware** — linked worktrees share one lock and one
-   stamp file via `<workspace-basename>`, the basename of `git
-   rev-parse --show-toplevel`. A hook running in
+   stamp file via `<workspace-basename>`, the basename of the main
+   worktree's path (the first `worktree` entry in `git worktree list
+   --porcelain`). A hook running in
    `.wrapix/worktree/<label>/<bead-id>/` serializes against a hook
    running in the main checkout because both resolve to the same
    `$XDG_STATE_HOME/loom/prek/<workspace-basename>/` directory.
+   Deriving from the main worktree rather than `git rev-parse
+   --show-toplevel` is what makes this property hold — a linked
+   worktree's own toplevel basename would key a separate directory.
 
 3. **Single-use stamp** — the `push-verified` stamp is consumed on
    hit; no stale stamp persists across a HEAD advance.
