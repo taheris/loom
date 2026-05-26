@@ -17,7 +17,6 @@ const SPEC_PREFIX: &str = "spec:";
 const PROFILE_PREFIX: &str = "profile:";
 const BLOCKED: &str = "loom:blocked";
 const CLARIFY: &str = "loom:clarify";
-const ACTIVE: &str = "loom:active";
 
 impl Label {
     pub fn new(s: impl Into<String>) -> Self {
@@ -47,11 +46,6 @@ impl Label {
     pub fn is_clarify(&self) -> bool {
         self.0 == CLARIFY
     }
-
-    /// `true` when the label is exactly `loom:active`.
-    pub fn is_active(&self) -> bool {
-        self.0 == ACTIVE
-    }
 }
 
 impl ::std::fmt::Display for Label {
@@ -72,7 +66,6 @@ mod tests {
         assert!(l.profile_name().is_none());
         assert!(!l.is_blocked());
         assert!(!l.is_clarify());
-        assert!(!l.is_active());
     }
 
     #[test]
@@ -83,16 +76,13 @@ mod tests {
     }
 
     #[test]
-    fn loom_blocked_clarify_and_active_are_exact_match() {
+    fn loom_blocked_and_clarify_are_exact_match() {
         assert!(Label::new("loom:blocked").is_blocked());
         assert!(Label::new("loom:clarify").is_clarify());
-        assert!(Label::new("loom:active").is_active());
         assert!(!Label::new("loom:blocked-cause").is_blocked());
         assert!(!Label::new("loom:clarify-soon").is_clarify());
-        assert!(!Label::new("loom:active-tomorrow").is_active());
         assert!(!Label::new("loom:blocked").is_clarify());
         assert!(!Label::new("loom:clarify").is_blocked());
-        assert!(!Label::new("loom:clarify").is_active());
     }
 
     #[test]
@@ -102,7 +92,6 @@ mod tests {
         assert!(l.profile_name().is_none());
         assert!(!l.is_blocked());
         assert!(!l.is_clarify());
-        assert!(!l.is_active());
         assert_eq!(l.as_str(), "urgent");
         assert_eq!(l.to_string(), "urgent");
     }

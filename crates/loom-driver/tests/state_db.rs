@@ -49,7 +49,13 @@ fn state_db_init_creates_tables() -> Result<()> {
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
     )?;
     let names: Vec<&str> = tables.iter().map(|r| r[0].as_str()).collect();
-    for expected in ["companions", "meta", "molecules", "specs"] {
+    for expected in [
+        "companions",
+        "current_molecule",
+        "meta",
+        "molecules",
+        "specs",
+    ] {
         assert!(
             names.contains(&expected),
             "expected table {expected}: {names:?}"
@@ -62,7 +68,7 @@ fn state_db_init_creates_tables() -> Result<()> {
     )?;
     assert_eq!(
         meta,
-        vec![vec!["schema_version".to_string(), "5".to_string()]]
+        vec![vec!["schema_version".to_string(), "6".to_string()]]
     );
     Ok(())
 }
@@ -155,6 +161,56 @@ fn state_db_rebuild_resets_counters() -> Result<()> {
         .active_molecule(&SpecLabel::new("alpha"))?
         .context("molecule still present after rebuild")?;
     assert_eq!(mol.iteration_count, 0);
+    Ok(())
+}
+
+#[test]
+fn state_current_molecule_round_trips() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let db = StateDb::open(dir.path().join("state.db"))?;
+    let label = SpecLabel::new("gate");
+    assert!(db.current_molecule(&label)?.is_none());
+
+    let epic = MoleculeId::new("wx-mol.1");
+    db.set_current_molecule(&label, &epic)?;
+    assert_eq!(db.current_molecule(&label)?, Some(epic));
+    Ok(())
+}
+
+#[test]
+fn state_current_molecule_upsert_is_idempotent() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let db = StateDb::open(dir.path().join("state.db"))?;
+    let label = SpecLabel::new("gate");
+
+    let first = MoleculeId::new("wx-mol.1");
+    db.set_current_molecule(&label, &first)?;
+    db.set_current_molecule(&label, &first)?;
+    assert_eq!(db.current_molecule(&label)?, Some(first));
+
+    let second = MoleculeId::new("wx-mol.2");
+    db.set_current_molecule(&label, &second)?;
+    assert_eq!(db.current_molecule(&label)?, Some(second));
+    Ok(())
+}
+
+#[test]
+fn state_current_molecule_cascades_on_spec_delete() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let workspace = dir.path();
+    write_spec(workspace, "gate", "# gate\n")?;
+    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    db.rebuild(workspace, &[])?;
+    let label = SpecLabel::new("gate");
+    let epic = MoleculeId::new("wx-mol.7");
+    db.set_current_molecule(&label, &epic)?;
+    assert_eq!(db.current_molecule(&label)?, Some(epic));
+
+    // A subsequent rebuild that omits the spec deletes the specs row;
+    // ON DELETE CASCADE must clear the current_molecule pointer with it.
+    std::fs::remove_file(workspace.join("specs/gate.md"))?;
+    db.rebuild(workspace, &[])?;
+    assert!(db.current_molecule(&label)?.is_none());
     Ok(())
 }
 
@@ -275,7 +331,7 @@ fn state_db_open_migrates_v1_to_v2() -> Result<()> {
         &db_path,
         "SELECT value FROM meta WHERE key='schema_version'",
     )?;
-    assert_eq!(meta, vec![vec!["5".to_string()]]);
+    assert_eq!(meta, vec![vec!["6".to_string()]]);
 
     let cols = list_table(&db_path, "PRAGMA table_info(specs)")?;
     let names: Vec<&str> = cols.iter().map(|r| r[1].as_str()).collect();
@@ -311,7 +367,7 @@ fn state_db_open_is_idempotent_after_migration() -> Result<()> {
         &db_path,
         "SELECT value FROM meta WHERE key='schema_version'",
     )?;
-    assert_eq!(meta, vec![vec!["5".to_string()]]);
+    assert_eq!(meta, vec![vec!["6".to_string()]]);
     Ok(())
 }
 
@@ -585,7 +641,7 @@ fn open_wipes_legacy_todo_cursor_meta_keys() -> Result<()> {
         &db_path,
         "SELECT value FROM meta WHERE key='schema_version'",
     )?;
-    assert_eq!(version, vec![vec!["5".to_string()]]);
+    assert_eq!(version, vec![vec!["6".to_string()]]);
 
     let legacy = list_table(
         &db_path,

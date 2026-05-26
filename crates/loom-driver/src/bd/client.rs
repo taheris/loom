@@ -171,6 +171,9 @@ impl<R: CommandRunner> BdClient<R> {
         if let Some(parent) = opts.parent {
             args.push(format!("--parent={}", parent.as_str()).into());
         }
+        if let Some(issue_type) = opts.issue_type {
+            args.push(format!("--type={issue_type}").into());
+        }
         let out = self.invoke(args).await?;
         // `bd list --json` returns `null` when the result set is empty.
         if out.stdout.iter().all(u8::is_ascii_whitespace) {
@@ -322,6 +325,10 @@ pub struct ListOpts {
     /// walk to enumerate an epic's children without parsing
     /// `bd show --json`'s nested `dependents` array.
     pub parent: Option<BeadId>,
+    /// `bd list --type=<type>` — restrict to issues of the given type
+    /// (`epic`, `task`, …). Used by `loom init --rebuild` to enumerate
+    /// the epics carried in the bd state without depending on a label.
+    pub issue_type: Option<String>,
 }
 
 /// Filters accepted by `bd ready`. `limit` caps the result count
@@ -645,7 +652,7 @@ mod tests {
                 title: "loom-harness: pending decomposition".into(),
                 description: String::new(),
                 issue_type: Some("epic".into()),
-                labels: vec!["spec:harness".into(), "loom:active".into()],
+                labels: vec!["spec:harness".into()],
                 metadata: Some(r#"{"loom.base_commit":"deadbeef"}"#.into()),
                 ..CreateOpts::default()
             })

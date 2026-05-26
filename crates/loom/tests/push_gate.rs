@@ -199,6 +199,8 @@ fn seed_active_molecule(workspace: &Path, label: &str, mol_id: &str, base_sha: &
         }],
     )
     .expect("rebuild state.db");
+    db.set_current_molecule(&SpecLabel::new(label), &MoleculeId::new(mol_id))
+        .expect("seed current_molecule");
     drop(db);
 }
 
@@ -362,7 +364,7 @@ fn push_gate_refuses_on_review_concern_via_live_path() {
         "wx-mol",
         "molecule epic",
         "Epic for push-gate review-concern test.\n",
-        &["spec:pushconcern", "loom:active"],
+        &["spec:pushconcern"],
     );
 
     seed_active_molecule(workspace, label, "wx-mol", &base_sha);
@@ -449,7 +451,7 @@ fn push_gate_refuses_on_integrity_finding_via_live_path() {
         "wx-mol",
         "molecule epic",
         "Epic for push-gate integrity test.\n",
-        &["spec:pushintegrity", "loom:active"],
+        &["spec:pushintegrity"],
     );
 
     seed_active_molecule(workspace, label, "wx-mol", &base_sha);
@@ -591,7 +593,7 @@ fn push_gate_fires_clean_when_all_conditions_pass_via_live_path() {
         "wx-mol",
         "molecule epic",
         "Epic for push-gate clean-path test.\n",
-        &["spec:pushclean", "loom:active"],
+        &["spec:pushclean"],
     );
 
     seed_active_molecule(workspace, label, "wx-mol", &base_sha);
@@ -695,7 +697,7 @@ fn concern_then_complete_live_path_resolves_to_clean_push() {
         "wx-mol",
         "molecule epic",
         "Epic for May-19 sequence relay test.\n",
-        &["spec:pushrelay", "loom:active"],
+        &["spec:pushrelay"],
     );
     seed_active_molecule(workspace, label, "wx-mol", &base_sha);
 
@@ -775,7 +777,7 @@ fn push_gate_refuses_when_verify_exit_flag_is_nonzero_via_live_path() {
         "wx-mol",
         "molecule epic",
         "Epic for push-gate verifier-failed test.\n",
-        &["spec:pushverify", "loom:active"],
+        &["spec:pushverify"],
     );
     seed_active_molecule(workspace, label, "wx-mol", &base_sha);
 
@@ -872,7 +874,7 @@ fn push_gate_fires_clean_when_verify_exit_flag_is_zero_via_live_path() {
         "wx-mol",
         "molecule epic",
         "Epic for push-gate verifier-zero test.\n",
-        &["spec:pushverifyzero", "loom:active"],
+        &["spec:pushverifyzero"],
     );
     seed_active_molecule(workspace, label, "wx-mol", &base_sha);
 

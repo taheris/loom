@@ -6,6 +6,7 @@ use loom_driver::bd::BdError;
 use loom_driver::git::GitError;
 use loom_driver::logging::LogError;
 use loom_driver::profile_manifest::ProfileError;
+use loom_driver::state::StateError;
 
 /// Errors raised by the `loom run` driver.
 #[derive(Debug, Display, Error)]
@@ -30,6 +31,9 @@ pub enum RunError {
 
     /// profile-image manifest dispatch failed
     Profile(#[from] ProfileError),
+
+    /// state.db access failure
+    State(#[from] StateError),
 
     /// no active molecule for spec `{label}`
     NoActiveMolecule { label: String },

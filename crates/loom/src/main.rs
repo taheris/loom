@@ -817,11 +817,12 @@ fn apply_default_scope(workspace: &Path, args: &mut GateScopeArgs) {
     });
 }
 
-/// Look up `loom.base_commit` for the `loom:active` epic bonded to the
-/// workspace's `current_spec`. Returns `Ok(None)` for the unconfigured
-/// cases (no state db, no current_spec, no active epic, missing
-/// metadata key) — those are expected on a fresh workspace, not
-/// errors. Subprocess and parse failures propagate.
+/// Look up `loom.base_commit` for the epic recorded as
+/// `current_molecule[<current_spec>]` in the state DB. Returns
+/// `Ok(None)` for the unconfigured cases (no state db, no current_spec,
+/// no current_molecule entry, missing metadata key) — those are expected
+/// on a fresh workspace, not errors. Subprocess and parse failures
+/// propagate.
 fn active_molecule_base_commit(workspace: &Path) -> anyhow::Result<Option<String>> {
     let db_path = workspace.join(".wrapix/loom/state.db");
     if !db_path.exists() {
@@ -831,24 +832,14 @@ fn active_molecule_base_commit(workspace: &Path) -> anyhow::Result<Option<String
     let Some(label) = db.current_spec()? else {
         return Ok(None);
     };
-    let spec_filter = format!("spec:{}", label.as_str());
+    let Some(epic) = db.current_molecule(&label)? else {
+        return Ok(None);
+    };
+    let bead_id = BeadId::new(epic.as_str())?;
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let bd = BdClient::new();
-        let candidates = bd
-            .list(ListOpts {
-                status: Some("open".into()),
-                label: Some("loom:active".into()),
-                ..ListOpts::default()
-            })
-            .await?;
-        let Some(mol) = candidates
-            .into_iter()
-            .find(|bead| bead.labels.iter().any(|l| l.as_str() == spec_filter))
-        else {
-            return Ok(None);
-        };
-        let detail = bd.show(&mol.id).await?;
+        let detail = bd.show(&bead_id).await?;
         Ok(detail
             .metadata
             .get("loom.base_commit")
@@ -1410,7 +1401,6 @@ fn run_plan(
             wrapix_bin: std::env::var_os("LOOM_WRAPIX_BIN").map(PathBuf::from),
             cli_profile: profile.map(ProfileName::new),
             manifest,
-            bootstrap_molecule: true,
         },
     )?;
     println!("loom plan: spec={}", report.spec_path.display());

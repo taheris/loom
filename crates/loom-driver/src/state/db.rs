@@ -7,9 +7,9 @@ use crate::bd::BdError;
 use crate::identifier::{MoleculeId, SpecLabel};
 
 use super::error::StateError;
-use super::migrate::MIGRATE_V4_TO_V5;
+use super::migrate::{MIGRATE_V4_TO_V5, MIGRATE_V5_TO_V6};
 
-const SCHEMA_VERSION: &str = "5";
+const SCHEMA_VERSION: &str = "6";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS specs (
@@ -36,6 +36,13 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notes_spec_kind ON notes(spec_label, kind);
+-- One row per spec, recording which epic bead is the spec's active
+-- molecule pointer. The loom:active label is no longer consulted: this
+-- table is the sole source of truth for that mapping.
+CREATE TABLE IF NOT EXISTS current_molecule (
+    spec_label TEXT PRIMARY KEY REFERENCES specs(label) ON DELETE CASCADE,
+    epic_id    TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -57,6 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_notes_spec_kind ON notes(spec_label, kind);
 const MIGRATE_V3_TO_V4: &str = "ALTER TABLE specs DROP COLUMN implementation_notes;";
 
 const DROP_AND_RECREATE: &str = "
+DROP TABLE IF EXISTS current_molecule;
 DROP TABLE IF EXISTS notes;
 DROP TABLE IF EXISTS companions;
 DROP TABLE IF EXISTS molecules;
@@ -163,6 +171,42 @@ impl StateDb {
         )
         .optional()?
         .transpose()
+    }
+
+    /// Read the `current_molecule` epic id for `label`, or `None` when
+    /// no pointer is recorded yet. Sole replacement for `bd list
+    /// --label=loom:active` lookups.
+    pub fn current_molecule(&self, label: &SpecLabel) -> Result<Option<MoleculeId>, StateError> {
+        let conn = self.lock_conn()?;
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT epic_id FROM current_molecule WHERE spec_label = ?1",
+                params![label.as_str()],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(value.map(MoleculeId::new))
+    }
+
+    /// Upsert the `current_molecule` row for `label`, recording `epic_id`
+    /// as the spec's active molecule pointer. Inserts a `specs` row if
+    /// none exists yet so the foreign key holds on a fresh workspace.
+    pub fn set_current_molecule(
+        &self,
+        label: &SpecLabel,
+        epic_id: &MoleculeId,
+    ) -> Result<(), StateError> {
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO specs(label) VALUES (?1)",
+            params![label.as_str()],
+        )?;
+        conn.execute(
+            "INSERT INTO current_molecule(spec_label, epic_id) VALUES (?1, ?2)
+             ON CONFLICT(spec_label) DO UPDATE SET epic_id = excluded.epic_id",
+            params![label.as_str(), epic_id.as_str()],
+        )?;
+        Ok(())
     }
 
     /// Read the `current_spec` meta row.
@@ -474,24 +518,32 @@ fn apply_migrations(conn: &Connection) -> Result<(), StateError> {
             conn.execute_batch(MIGRATE_V2_TO_V3)?;
             conn.execute_batch(MIGRATE_V3_TO_V4)?;
             conn.execute_batch(MIGRATE_V4_TO_V5)?;
+            conn.execute_batch(MIGRATE_V5_TO_V6)?;
             write_schema_version(conn, SCHEMA_VERSION)?;
         }
         Some("2") => {
             conn.execute_batch(MIGRATE_V2_TO_V3)?;
             conn.execute_batch(MIGRATE_V3_TO_V4)?;
             conn.execute_batch(MIGRATE_V4_TO_V5)?;
+            conn.execute_batch(MIGRATE_V5_TO_V6)?;
             write_schema_version(conn, SCHEMA_VERSION)?;
         }
         Some("3") => {
             conn.execute_batch(MIGRATE_V3_TO_V4)?;
             conn.execute_batch(MIGRATE_V4_TO_V5)?;
+            conn.execute_batch(MIGRATE_V5_TO_V6)?;
             write_schema_version(conn, SCHEMA_VERSION)?;
         }
         Some("4") => {
             conn.execute_batch(MIGRATE_V4_TO_V5)?;
+            conn.execute_batch(MIGRATE_V5_TO_V6)?;
             write_schema_version(conn, SCHEMA_VERSION)?;
         }
-        Some("5") => {}
+        Some("5") => {
+            conn.execute_batch(MIGRATE_V5_TO_V6)?;
+            write_schema_version(conn, SCHEMA_VERSION)?;
+        }
+        Some("6") => {}
         Some(other) => {
             return Err(StateError::UnknownSchemaVersion {
                 version: other.to_string(),

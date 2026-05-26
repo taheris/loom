@@ -6,10 +6,10 @@
 //! and repopulates it from `specs/*.md` plus a caller-supplied slice of
 //! active molecules.
 //!
-//! Subprocess work (calling `bd list --status=open --label=loom:active`
-//! to enumerate active molecules) is split out into
-//! [`fetch_active_molecules`] so the core init function stays sync and
-//! unit-testable without a real `bd` binary.
+//! Subprocess work (calling `bd list --status=open --type=epic` to
+//! enumerate epic beads, then filtering by `spec:<label>`) is split out
+//! into [`fetch_active_molecules`] so the core init function stays sync
+//! and unit-testable without a real `bd` binary.
 
 mod error;
 
@@ -30,8 +30,6 @@ pub use error::InitError;
 /// section of `specs/harness.md` verbatim so a fresh `loom init` writes
 /// a file that round-trips through `LoomConfig::default()`.
 pub const DEFAULT_CONFIG_TOML: &str = include_str!("default-config.toml");
-
-const ACTIVE_LABEL: &str = "loom:active";
 
 /// Options accepted by [`run`].
 #[derive(Debug, Clone, Copy, Default)]
@@ -107,7 +105,7 @@ pub fn run(
     })
 }
 
-/// Enumerate active molecules via `bd list --status=open --label=loom:active`.
+/// Enumerate active molecules via `bd list --status=open --type=epic`.
 /// Each returned bead's `spec:<label>` label resolves the [`SpecLabel`] for
 /// the rebuilt row; beads without a `spec:` label produce
 /// [`InitError::MissingSpecLabel`]. For each active bead, `bd show <id>
@@ -127,7 +125,7 @@ pub async fn fetch_active_molecules<R: CommandRunner>(
     let beads = bd
         .list(ListOpts {
             status: Some("open".into()),
-            label: Some(ACTIVE_LABEL.into()),
+            issue_type: Some("epic".into()),
             ..ListOpts::default()
         })
         .await?;
@@ -486,7 +484,7 @@ mod tests {
                 "status": "open",
                 "priority": 2,
                 "issue_type": "epic",
-                "labels": ["spec:harness", "loom:active"]
+                "labels": ["spec:harness"]
             }
         ]"#;
         let show_json = br#"[
@@ -496,7 +494,7 @@ mod tests {
                 "status": "open",
                 "priority": 2,
                 "issue_type": "epic",
-                "labels": ["spec:harness", "loom:active"],
+                "labels": ["spec:harness"],
                 "metadata": {"loom.base_commit": "7c226fef"}
             }
         ]"#;
@@ -512,7 +510,7 @@ mod tests {
         let calls = handle.calls();
         assert_eq!(calls.len(), 2, "expected list+show calls: {calls:?}");
         assert_eq!(calls[0][0], "list");
-        assert!(calls[0].contains(&"--label=loom:active".to_string()));
+        assert!(calls[0].contains(&"--type=epic".to_string()));
         assert!(calls[0].contains(&"--status=open".to_string()));
         assert_eq!(calls[1][0], "show");
         assert_eq!(calls[1][1], "wx-mol.1");
@@ -529,7 +527,7 @@ mod tests {
                 "status": "open",
                 "priority": 2,
                 "issue_type": "epic",
-                "labels": ["spec:harness", "loom:active"]
+                "labels": ["spec:harness"]
             }
         ]"#;
         let show_json = br#"[
@@ -539,7 +537,7 @@ mod tests {
                 "status": "open",
                 "priority": 2,
                 "issue_type": "epic",
-                "labels": ["spec:harness", "loom:active"]
+                "labels": ["spec:harness"]
             }
         ]"#;
         let runner = CapturingRunner::new([ok(list_json), ok(show_json)]);
@@ -562,11 +560,10 @@ mod tests {
 
     /// Spec contract `[test]` annotation
     /// (`specs/harness.md` § Success Criteria · State DB):
-    /// A `loom:active` bead created via `bd create --parent=<epic>` without
-    /// its own `loom.base_commit` metadata inherits the value from the
-    /// parent epic. `fetch_active_molecules` writes the inherited value
-    /// back via `bd update --set-metadata` so subsequent reads are
-    /// self-sufficient.
+    /// An epic created via `bd create --parent=<epic>` without its own
+    /// `loom.base_commit` metadata inherits the value from the parent
+    /// epic. `fetch_active_molecules` writes the inherited value back via
+    /// `bd update --set-metadata` so subsequent reads are self-sufficient.
     #[tokio::test]
     async fn rebuild_inherits_base_commit_from_parent_when_missing() -> Result<()> {
         let list_json = br#"[
@@ -576,7 +573,7 @@ mod tests {
                 "status": "open",
                 "priority": 2,
                 "issue_type": "bug",
-                "labels": ["spec:harness", "loom:active"]
+                "labels": ["spec:harness"]
             }
         ]"#;
         let child_show = br#"[
@@ -586,7 +583,7 @@ mod tests {
                 "status": "open",
                 "priority": 2,
                 "issue_type": "bug",
-                "labels": ["spec:harness", "loom:active"],
+                "labels": ["spec:harness"],
                 "parent": "wx-epic",
                 "metadata": {}
             }
@@ -598,7 +595,7 @@ mod tests {
                 "status": "open",
                 "priority": 2,
                 "issue_type": "epic",
-                "labels": ["spec:harness", "loom:active"],
+                "labels": ["spec:harness"],
                 "metadata": {"loom.base_commit": "40d21b79"}
             }
         ]"#;
@@ -650,7 +647,7 @@ mod tests {
                 "status": "open",
                 "priority": 2,
                 "issue_type": "bug",
-                "labels": ["spec:harness", "loom:active"]
+                "labels": ["spec:harness"]
             }
         ]"#;
         let child_show = br#"[
@@ -660,7 +657,7 @@ mod tests {
                 "status": "open",
                 "priority": 2,
                 "issue_type": "bug",
-                "labels": ["spec:harness", "loom:active"],
+                "labels": ["spec:harness"],
                 "parent": "wx-epic2",
                 "metadata": {}
             }
@@ -672,7 +669,7 @@ mod tests {
                 "status": "open",
                 "priority": 2,
                 "issue_type": "epic",
-                "labels": ["spec:harness", "loom:active"]
+                "labels": ["spec:harness"]
             }
         ]"#;
         let runner = CapturingRunner::new([ok(list_json), ok(child_show), ok(parent_show)]);

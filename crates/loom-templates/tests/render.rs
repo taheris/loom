@@ -1436,7 +1436,10 @@ fn todo_templates_render_criterion_status_rows() -> Result<()> {
     }
     .render()?;
 
-    for (name, out) in [("todo_new", &todo_new_out), ("todo_update", &todo_update_out)] {
+    for (name, out) in [
+        ("todo_new", &todo_new_out),
+        ("todo_update", &todo_update_out),
+    ] {
         for row in &rows {
             assert!(
                 out.contains(&row.annotation),
@@ -1533,7 +1536,10 @@ fn todo_templates_render_pre_decomposition_audit_clause() -> Result<()> {
     }
     .render()?;
 
-    for (name, out) in [("todo_new", &todo_new_out), ("todo_update", &todo_update_out)] {
+    for (name, out) in [
+        ("todo_new", &todo_new_out),
+        ("todo_update", &todo_update_out),
+    ] {
         assert!(
             out.contains("Decomposition Discipline"),
             "{name}: decomposition discipline section missing: {out}",

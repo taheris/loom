@@ -375,7 +375,7 @@ where
         // codes are NOT fatal to `run_loop` (they drive fix-up beads on
         // the next outer-loop pass), but spawn failures and missing
         // molecule metadata DO surface as `RunError`.
-        let base = fetch_molecule_base_commit(&self.bd, &self.label).await?;
+        let base = fetch_molecule_base_commit(&self.bd, &self.workspace, &self.label).await?;
         let diff_range = format!("{base}..HEAD");
         let verify_status = Command::new(&self.loom_bin)
             .current_dir(&self.workspace)
@@ -456,33 +456,27 @@ pub fn format_unknown_profile_error(
     format!("requested profile:{requested} not declared; {declared_part}")
 }
 
-/// Look up the spec's `loom:active` epic and return its
-/// `loom.base_commit` metadata. Used by `exec_review` to scope the
-/// molecule-completion handoff to the molecule's own diff rather than
-/// `--tree`. Mirrors the list-then-show pattern from
-/// `loom-workflow::init::fetch_active_molecules` (the rebuild path) and
-/// delegates the metadata resolution to
-/// [`crate::init::resolve_base_commit`] so the run-phase and rebuild-phase
-/// resolutions share parent inheritance + write-back behaviour verbatim.
+/// Look up the spec's epic via `current_molecule[<label>]` in the
+/// workspace state DB and return its `loom.base_commit` metadata. Used
+/// by `exec_review` to scope the molecule-completion handoff to the
+/// molecule's own diff rather than `--tree`. Delegates metadata
+/// resolution to [`crate::init::resolve_base_commit`] so the run-phase
+/// and rebuild-phase resolutions share parent inheritance + write-back
+/// behaviour verbatim.
 async fn fetch_molecule_base_commit<R: CommandRunner>(
     bd: &BdClient<R>,
+    workspace: &std::path::Path,
     label: &SpecLabel,
 ) -> Result<String, RunError> {
-    let spec_filter = format!("spec:{}", label.as_str());
-    let candidates = bd
-        .list(ListOpts {
-            status: Some("open".into()),
-            label: Some("loom:active".into()),
-            ..ListOpts::default()
-        })
-        .await?;
-    let molecule = candidates
-        .into_iter()
-        .find(|bead| bead.labels.iter().any(|l| l.as_str() == spec_filter))
+    let db = loom_driver::state::StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let mol_id = db
+        .current_molecule(label)?
         .ok_or_else(|| RunError::NoActiveMolecule {
             label: label.to_string(),
         })?;
-    let detail = bd.show(&molecule.id).await?;
+    let bead_id =
+        BeadId::new(mol_id.as_str()).map_err(loom_driver::bd::BdError::CreateInvalidId)?;
+    let detail = bd.show(&bead_id).await?;
     crate::init::resolve_base_commit(bd, &detail)
         .await
         .map_err(|e| {
@@ -668,21 +662,18 @@ mod tests {
         }
     }
 
-    /// Two-response script matching one `fetch_molecule_base_commit`
-    /// call: `bd list --status=open --label=loom:active` returns one
-    /// active molecule for `spec:<label>` and `bd show <id>` returns
-    /// the molecule with `loom.base_commit = <base>` metadata.
-    fn molecule_lookup_script(spec_label: &str, mol_id: &str, base: &str) -> ScriptedBd {
-        let list_body = format!(
-            r#"[{{
-                "id": "{mol_id}",
-                "title": "{spec_label}: pending decomposition",
-                "status": "open",
-                "priority": 2,
-                "issue_type": "epic",
-                "labels": ["spec:{spec_label}", "loom:active"]
-            }}]"#,
-        );
+    /// Seed `current_molecule[<spec_label>] = <mol_id>` in
+    /// `<workspace>/.wrapix/loom/state.db` and return a `ScriptedBd`
+    /// matching the single `bd show <mol_id>` call
+    /// `fetch_molecule_base_commit` issues against the looked-up epic
+    /// (with `loom.base_commit = <base>` metadata).
+    fn molecule_lookup_script(
+        workspace: &std::path::Path,
+        spec_label: &str,
+        mol_id: &str,
+        base: &str,
+    ) -> ScriptedBd {
+        seed_current_molecule(workspace, spec_label, mol_id);
         let show_body = format!(
             r#"[{{
                 "id": "{mol_id}",
@@ -690,14 +681,22 @@ mod tests {
                 "status": "open",
                 "priority": 2,
                 "issue_type": "epic",
-                "labels": ["spec:{spec_label}", "loom:active"],
+                "labels": ["spec:{spec_label}"],
                 "metadata": {{ "loom.base_commit": "{base}" }}
             }}]"#,
         );
-        ScriptedBd::new([
-            ok_stdout(list_body.as_bytes()),
-            ok_stdout(show_body.as_bytes()),
-        ])
+        ScriptedBd::new([ok_stdout(show_body.as_bytes())])
+    }
+
+    /// Seed `current_molecule[<spec_label>] = <mol_id>` in the
+    /// workspace state DB. Required by every test that exercises
+    /// `fetch_molecule_base_commit`'s state-DB read.
+    fn seed_current_molecule(workspace: &std::path::Path, spec_label: &str, mol_id: &str) {
+        let db = loom_driver::state::StateDb::open(workspace.join(".wrapix/loom/state.db"))
+            .expect("open state.db");
+        let label = SpecLabel::new(spec_label);
+        db.set_current_molecule(&label, &loom_driver::identifier::MoleculeId::new(mol_id))
+            .expect("seed current_molecule");
     }
 
     /// FR12 — `loom run`'s per-bead exit MUST route the agent's marker
@@ -1223,7 +1222,12 @@ mod tests {
         std::fs::write(&stub, "#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let bd = BdClient::with_runner(molecule_lookup_script("alpha", "wx-mol.1", "deadbeef"));
+        let bd = BdClient::with_runner(molecule_lookup_script(
+            dir.path(),
+            "alpha",
+            "wx-mol.1",
+            "deadbeef",
+        ));
         let git = git_workspace(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             bd,
@@ -1284,7 +1288,12 @@ mod tests {
         std::fs::write(&stub, stub_body).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let bd = BdClient::with_runner(molecule_lookup_script("alpha", "wx-mol.1", "deadbeef"));
+        let bd = BdClient::with_runner(molecule_lookup_script(
+            dir.path(),
+            "alpha",
+            "wx-mol.1",
+            "deadbeef",
+        ));
         let git = git_workspace(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             bd,
@@ -1353,7 +1362,12 @@ mod tests {
         std::fs::write(&stub, stub_body).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let bd = BdClient::with_runner(molecule_lookup_script("beta", "wx-mol.7", "cafef00d"));
+        let bd = BdClient::with_runner(molecule_lookup_script(
+            dir.path(),
+            "beta",
+            "wx-mol.7",
+            "cafef00d",
+        ));
         let git = git_workspace(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             bd,
@@ -1408,7 +1422,7 @@ mod tests {
         );
     }
 
-    /// FR1 negative: when no `loom:active` molecule exists for the
+    /// FR1 negative: when no `current_molecule` pointer exists for the
     /// spec, `exec_review` MUST surface `NoActiveMolecule` rather than
     /// silently falling back to `--tree` — the push-gate scope is
     /// load-bearing and a missing molecule means the run is
@@ -1417,9 +1431,8 @@ mod tests {
     async fn exec_review_errors_when_no_active_molecule_for_spec() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
-        // `bd list` returns the JSON literal `null` when the result set
-        // is empty.
-        let bd = BdClient::with_runner(ScriptedBd::new([ok_stdout(b"null\n")]));
+        // state.db has no current_molecule[orphan-spec] entry → NoActiveMolecule.
+        let bd = BdClient::with_runner(ScriptedBd::new([]));
         let git = git_workspace(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             bd,
@@ -1450,36 +1463,27 @@ mod tests {
         }
     }
 
-    /// FR1 negative: a `loom:active` molecule whose bead lacks
-    /// `loom.base_commit` metadata MUST surface
+    /// FR1 negative: an epic recorded in `current_molecule` whose bead
+    /// lacks `loom.base_commit` metadata MUST surface
     /// `MoleculeMissingBaseCommit` rather than fabricate a diff range.
-    /// `loom plan` writes this key unconditionally; the absence is a
-    /// state-DB corruption signal worth surfacing loudly.
+    /// The metadata key is set unconditionally on every molecule the
+    /// harness creates; the absence is a state-DB corruption signal
+    /// worth surfacing loudly.
     #[tokio::test(flavor = "multi_thread")]
     async fn exec_review_errors_when_molecule_missing_base_commit_metadata() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
-        let list_body = br#"[{
-            "id": "wx-mol.99",
-            "title": "gamma: pending decomposition",
-            "status": "open",
-            "priority": 2,
-            "issue_type": "epic",
-            "labels": ["spec:gamma", "loom:active"]
-        }]"#;
+        seed_current_molecule(dir.path(), "gamma", "wx-mol.99");
         let show_body = br#"[{
             "id": "wx-mol.99",
             "title": "gamma: pending decomposition",
             "status": "open",
             "priority": 2,
             "issue_type": "epic",
-            "labels": ["spec:gamma", "loom:active"],
+            "labels": ["spec:gamma"],
             "metadata": {}
         }]"#;
-        let bd = BdClient::with_runner(ScriptedBd::new([
-            ok_stdout(list_body),
-            ok_stdout(show_body),
-        ]));
+        let bd = BdClient::with_runner(ScriptedBd::new([ok_stdout(show_body)]));
         let git = git_workspace(dir.path());
         let mut controller = ProductionAgentLoopController::new(
             bd,
@@ -1510,15 +1514,14 @@ mod tests {
         }
     }
 
-    /// Out-of-band `loom:active` beads (created via `bd create` rather than
-    /// `loom plan`) may ship without their own `loom.base_commit` — typical
-    /// when the user files a follow-up bug parented to an existing molecule's
-    /// epic. `fetch_molecule_base_commit` MUST mirror
-    /// `init::fetch_active_molecules`'s self-heal: read the parent's
-    /// `loom.base_commit`, persist it on the child via `bd update --set-metadata`,
-    /// and continue the molecule-completion handoff using the inherited value.
-    /// Without this, `exec_review` would surface
-    /// `RunError::MoleculeMissingBaseCommit` for a state the spec calls valid.
+    /// `current_molecule` may point at an epic that lacks its own
+    /// `loom.base_commit` — typical when the pointer was seeded out-of-band.
+    /// `fetch_molecule_base_commit` MUST mirror `init::fetch_active_molecules`'s
+    /// self-heal: read the parent's `loom.base_commit`, persist it on the
+    /// child via `bd update --set-metadata`, and continue the
+    /// molecule-completion handoff using the inherited value. Without this,
+    /// `exec_review` would surface `RunError::MoleculeMissingBaseCommit` for
+    /// a state the spec calls valid.
     #[tokio::test(flavor = "multi_thread")]
     async fn exec_review_inherits_base_commit_from_parent_when_child_lacks_metadata() {
         use std::os::unix::fs::PermissionsExt;
@@ -1526,6 +1529,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
         let label = SpecLabel::new("delta");
+        seed_current_molecule(dir.path(), "delta", "wx-child.7");
 
         let argv_log = dir.path().join("argv.log");
         let stub = dir.path().join("loom-stub.sh");
@@ -1536,21 +1540,13 @@ mod tests {
         std::fs::write(&stub, stub_body).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let list_body = br#"[{
-            "id": "wx-child.7",
-            "title": "delta follow-up",
-            "status": "open",
-            "priority": 2,
-            "issue_type": "bug",
-            "labels": ["spec:delta", "loom:active"]
-        }]"#;
         let child_show = br#"[{
             "id": "wx-child.7",
             "title": "delta follow-up",
             "status": "open",
             "priority": 2,
             "issue_type": "bug",
-            "labels": ["spec:delta", "loom:active"],
+            "labels": ["spec:delta"],
             "parent": "wx-epicd",
             "metadata": {}
         }]"#;
@@ -1560,11 +1556,10 @@ mod tests {
             "status": "open",
             "priority": 2,
             "issue_type": "epic",
-            "labels": ["spec:delta", "loom:active"],
+            "labels": ["spec:delta"],
             "metadata": {"loom.base_commit": "feed0042"}
         }]"#;
         let bd = BdClient::with_runner(ScriptedBd::new([
-            ok_stdout(list_body),
             ok_stdout(child_show),
             ok_stdout(parent_show),
             ok_stdout(b""), // bd update --set-metadata (inheritance write-back)
@@ -1621,21 +1616,14 @@ mod tests {
     async fn exec_review_errors_when_parent_also_lacks_base_commit_metadata() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
-        let list_body = br#"[{
-            "id": "wx-child.8",
-            "title": "epsilon follow-up",
-            "status": "open",
-            "priority": 2,
-            "issue_type": "bug",
-            "labels": ["spec:epsilon", "loom:active"]
-        }]"#;
+        seed_current_molecule(dir.path(), "epsilon", "wx-child.8");
         let child_show = br#"[{
             "id": "wx-child.8",
             "title": "epsilon follow-up",
             "status": "open",
             "priority": 2,
             "issue_type": "bug",
-            "labels": ["spec:epsilon", "loom:active"],
+            "labels": ["spec:epsilon"],
             "parent": "wx-epice",
             "metadata": {}
         }]"#;
@@ -1645,10 +1633,9 @@ mod tests {
             "status": "open",
             "priority": 2,
             "issue_type": "epic",
-            "labels": ["spec:epsilon", "loom:active"]
+            "labels": ["spec:epsilon"]
         }]"#;
         let bd = BdClient::with_runner(ScriptedBd::new([
-            ok_stdout(list_body),
             ok_stdout(child_show),
             ok_stdout(parent_show),
         ]));

@@ -9,7 +9,7 @@ use super::companions::parse_companions;
 use super::db::{StateDb, drop_and_recreate};
 use super::error::StateError;
 
-/// One active molecule from `bd list --status=open --label=loom:active`.
+/// One active molecule from `bd list --status=open --type=epic`.
 ///
 /// `rebuild` consumes pre-fetched values rather than calling `bd` itself —
 /// the caller (e.g. `loom init --rebuild` wiring `BdClient`) is responsible

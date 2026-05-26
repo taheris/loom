@@ -204,25 +204,22 @@ where
         cmd
     }
 
-    /// Locate the molecule's epic bead — the `loom:active`-labelled bead
-    /// carrying `spec:<self.label>`. Used by the integrity-clarify path
-    /// to find the write target for `bd update --notes ... --add-label
-    /// loom:clarify`. Mirrors `run::production::fetch_molecule_base_commit`'s
-    /// list-then-filter pattern so review-time and run-time epic lookups
-    /// agree on which bead "the molecule's epic" denotes.
+    /// Locate the molecule's epic bead via `current_molecule[<self.label>]`
+    /// in state.db. Used by the integrity-clarify path to find the write
+    /// target for `bd update --notes ... --add-label loom:clarify`. Shares
+    /// the same state-db pointer that `run::production::fetch_molecule_base_commit`
+    /// reads, so review-time and run-time epic lookups agree on which bead
+    /// "the molecule's epic" denotes.
     async fn molecule_epic_bead(&self) -> Result<Option<Bead>, ReviewError> {
-        let spec_filter = self.spec_label_filter();
-        let candidates = self
-            .bd
-            .list(ListOpts {
-                status: Some("open".into()),
-                label: Some("loom:active".into()),
-                ..ListOpts::default()
-            })
-            .await?;
-        Ok(candidates
-            .into_iter()
-            .find(|b| b.labels.iter().any(|l| l.as_str() == spec_filter)))
+        let Some(mol_id) = self.state.current_molecule(&self.label)? else {
+            return Ok(None);
+        };
+        let bead_id = BeadId::new(mol_id.as_str()).map_err(BdError::CreateInvalidId)?;
+        match self.bd.show(&bead_id).await {
+            Ok(bead) => Ok(Some(bead)),
+            Err(BdError::ShowEmpty) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Walk the spec files changed between the active molecule's
