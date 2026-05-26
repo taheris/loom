@@ -6,7 +6,7 @@ _:
       config,
       pkgs,
       wrapixLib,
-      rustToolchain,
+      rustProfile,
       profileManifest,
       sandbox,
       loomBin,
@@ -17,7 +17,7 @@ _:
         shellHook = ''
           export CARGO_INCREMENTAL="''${CARGO_INCREMENTAL:-0}"
           export LOOM_PROFILES_MANIFEST=${profileManifest}
-          export PATH="${rustToolchain}/bin:$PATH"
+          export PATH="${rustProfile.toolchain}/bin:$PATH"
           export RUSTC_WRAPPER="${pkgs.sccache}/bin/sccache"
           export SCCACHE_CACHE_SIZE="''${SCCACHE_CACHE_SIZE:-50G}"
           export SCCACHE_DIR="''${SCCACHE_DIR:-$HOME/.cache/sccache}"
@@ -28,7 +28,7 @@ _:
           loomBin
           pkgs.cargo-nextest
           pkgs.sccache
-          rustToolchain
+          rustProfile.toolchain
           sandbox.package
         ];
       };
