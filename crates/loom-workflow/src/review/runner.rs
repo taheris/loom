@@ -59,8 +59,13 @@ pub trait ReviewController: Send {
         &mut self,
     ) -> impl std::future::Future<Output = Result<(), ReviewError>> + Send;
 
-    /// Add the `loom:clarify` label to a fix-up bead with the cap-reached
-    /// note in its update.
+    /// Add the `loom:clarify` label to a fix-up bead. `reason` is
+    /// informational only and is **not** persisted to `bd update --notes`
+    /// — per specs/gate.md § "Persistence boundary: agent narrates, agent
+    /// persists", the canonical `## Options — …` block lives in bead
+    /// state only when written by the reviewer agent itself before
+    /// emitting `LOOM_CLARIFY`; the runner overwriting it would leave
+    /// `loom msg`'s queue empty.
     fn apply_clarify(
         &mut self,
         bead: &BeadId,

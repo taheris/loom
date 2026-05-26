@@ -313,18 +313,18 @@ where
         }
     }
 
-    async fn apply_clarify(&mut self, bead: &BeadId, question: &str) -> Result<(), RunError> {
-        let notes = if question.is_empty() {
-            None
-        } else {
-            Some(question.to_string())
-        };
+    async fn apply_clarify(&mut self, bead: &BeadId, _question: &str) -> Result<(), RunError> {
+        // Persistence boundary (specs/gate.md § "Persistence boundary:
+        // agent narrates, agent persists"): the gate / runner only stamps
+        // the `loom:clarify` label. The canonical `## Options — …` block
+        // is written by the agent via `bd update --notes` *before* it
+        // emits `LOOM_CLARIFY`; clobbering that block with the agent's
+        // one-line stdout reason would leave `loom msg`'s queue empty.
         self.bd
             .update(
                 bead,
                 UpdateOpts {
                     add_labels: vec!["loom:clarify".to_string()],
-                    notes,
                     ..UpdateOpts::default()
                 },
             )
@@ -625,22 +625,27 @@ mod tests {
     /// `BdClient` call in order.
     struct ScriptedBd {
         responses: Mutex<VecDeque<RunOutput>>,
+        /// Capture handle shared with the test, so an `Arc::clone` snapshot
+        /// is held while the inner `ScriptedBd` is moved into `BdClient`.
+        calls: Arc<Mutex<Vec<Vec<OsString>>>>,
     }
 
     impl ScriptedBd {
         fn new(responses: impl IntoIterator<Item = RunOutput>) -> Self {
             Self {
                 responses: Mutex::new(responses.into_iter().collect()),
+                calls: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn calls_handle(&self) -> Arc<Mutex<Vec<Vec<OsString>>>> {
+            Arc::clone(&self.calls)
         }
     }
 
     impl CommandRunner for ScriptedBd {
-        async fn run(
-            &self,
-            _args: Vec<OsString>,
-            _timeout: Duration,
-        ) -> Result<RunOutput, BdError> {
+        async fn run(&self, args: Vec<OsString>, _timeout: Duration) -> Result<RunOutput, BdError> {
+            self.calls.lock().unwrap().push(args);
             Ok(self
                 .responses
                 .lock()
@@ -1675,5 +1680,70 @@ mod tests {
             }
             other => panic!("expected MoleculeMissingBaseCommitNoParentMetadata, got {other:?}"),
         }
+    }
+
+    /// specs/gate.md § "Persistence boundary: agent narrates, agent persists":
+    /// the runner's `apply_clarify` only stamps the `loom:clarify` label —
+    /// the canonical `## Options — …` block belongs to the agent, written
+    /// to bead state *before* `LOOM_CLARIFY` is emitted. If the runner
+    /// also wrote the agent's stdout reason-line via `bd update --notes`,
+    /// every re-emit would clobber the canonical block and leave
+    /// `loom msg`'s queue empty.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_clarify_does_not_write_notes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_manifest(dir.path());
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let scripted = ScriptedBd::new([ok_stdout(b"")]);
+        let calls = scripted.calls_handle();
+        let bd = BdClient::with_runner(scripted);
+        let mut controller = ProductionAgentLoopController::new(
+            bd,
+            SpecLabel::new("gate"),
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        );
+        let bead_id = BeadId::new("wx-clarify.1").expect("bead id");
+        controller
+            .apply_clarify(
+                &bead_id,
+                "agent's one-line reason that must not clobber notes",
+            )
+            .await
+            .expect("apply_clarify ok");
+        let captured = calls.lock().unwrap();
+        assert_eq!(captured.len(), 1, "exactly one bd invocation expected");
+        let argv: Vec<String> = captured[0]
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(argv[0], "update");
+        assert_eq!(argv[1], "wx-clarify.1");
+        assert!(
+            argv.iter().any(|a| a == "--add-label"),
+            "missing --add-label in argv: {argv:?}",
+        );
+        assert!(
+            argv.iter().any(|a| a == "loom:clarify"),
+            "missing loom:clarify label in argv: {argv:?}",
+        );
+        assert!(
+            !argv.iter().any(|a| a == "--notes"),
+            "apply_clarify must not forward --notes (persistence boundary): {argv:?}",
+        );
     }
 }

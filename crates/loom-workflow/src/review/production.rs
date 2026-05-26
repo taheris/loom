@@ -25,7 +25,7 @@ use askama::Template;
 use loom_driver::agent::{
     ProtocolError, RePinContent, SessionOutcome, SpawnConfig, set_loom_inside,
 };
-use loom_driver::bd::{BdClient, BdError, Bead, ListOpts, UpdateOpts};
+use loom_driver::bd::{BdClient, BdError, Bead, CommandRunner, ListOpts, TokioRunner, UpdateOpts};
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::Phase;
 use loom_driver::git::GitClient;
@@ -52,13 +52,13 @@ use super::phase_verdict::{
 use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
 use crate::todo::ExitSignal;
 
-pub struct ProductionReviewController<S, F>
+pub struct ProductionReviewController<S, F, R: CommandRunner = TokioRunner>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
     F: std::future::Future<Output = Result<(SessionOutcome, Option<ExitSignal>), ProtocolError>>
         + Send,
 {
-    bd: BdClient,
+    bd: BdClient<R>,
     label: SpecLabel,
     loom_bin: PathBuf,
     workspace: PathBuf,
@@ -102,7 +102,7 @@ where
     lane: ReviewLane,
 }
 
-impl<S, F> ProductionReviewController<S, F>
+impl<S, F, R: CommandRunner> ProductionReviewController<S, F, R>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
     F: std::future::Future<Output = Result<(SessionOutcome, Option<ExitSignal>), ProtocolError>>
@@ -110,7 +110,7 @@ where
 {
     #[expect(clippy::too_many_arguments, reason = "controller construction surface")]
     pub fn new(
-        bd: BdClient,
+        bd: BdClient<R>,
         label: SpecLabel,
         loom_bin: PathBuf,
         workspace: PathBuf,
@@ -502,7 +502,7 @@ fn classify_review_phase(marker: Option<&ExitSignal>, exit_code: i32) -> ReviewO
     }
 }
 
-impl<S, F> ReviewController for ProductionReviewController<S, F>
+impl<S, F, R: CommandRunner> ReviewController for ProductionReviewController<S, F, R>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
     F: std::future::Future<Output = Result<(SessionOutcome, Option<ExitSignal>), ProtocolError>>
@@ -588,13 +588,18 @@ where
         Ok(())
     }
 
-    async fn apply_clarify(&mut self, bead: &BeadId, reason: &str) -> Result<(), ReviewError> {
+    async fn apply_clarify(&mut self, bead: &BeadId, _reason: &str) -> Result<(), ReviewError> {
+        // Persistence boundary (specs/gate.md § "Persistence boundary:
+        // agent narrates, agent persists"): the gate / runner only stamps
+        // the `loom:clarify` label. The canonical `## Options — …` block
+        // is written by the agent via `bd update --notes` *before* it
+        // emits `LOOM_CLARIFY`; clobbering that block with the agent's
+        // one-line stdout reason would leave `loom msg`'s queue empty.
         self.bd
             .update(
                 bead,
                 UpdateOpts {
                     add_labels: vec!["loom:clarify".to_string()],
-                    notes: Some(reason.to_string()),
                     ..UpdateOpts::default()
                 },
             )
@@ -1532,7 +1537,48 @@ mod tests {
             .expect("lock must be reacquirable after exec_run");
     }
 
-    use loom_driver::bd::Label;
+    use loom_driver::bd::{Label, RunOutput};
+    use std::collections::VecDeque;
+    use std::ffi::OsString;
+    use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
+
+    /// Captures argv on every `bd` invocation while returning canned
+    /// stdout. Mirrors the runner in `run/production.rs` but kept local
+    /// because the `tests` module is private.
+    struct ScriptedBd {
+        responses: StdMutex<VecDeque<RunOutput>>,
+        calls: Arc<StdMutex<Vec<Vec<OsString>>>>,
+    }
+
+    impl ScriptedBd {
+        fn new(responses: impl IntoIterator<Item = RunOutput>) -> Self {
+            Self {
+                responses: StdMutex::new(responses.into_iter().collect()),
+                calls: Arc::new(StdMutex::new(Vec::new())),
+            }
+        }
+
+        fn calls_handle(&self) -> Arc<StdMutex<Vec<Vec<OsString>>>> {
+            Arc::clone(&self.calls)
+        }
+    }
+
+    impl CommandRunner for ScriptedBd {
+        async fn run(&self, args: Vec<OsString>, _timeout: Duration) -> Result<RunOutput, BdError> {
+            self.calls.lock().unwrap().push(args);
+            Ok(self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(RunOutput {
+                    status: 0,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                }))
+        }
+    }
 
     /// Build a `Bead` snapshot directly without going through `bd-shim` —
     /// the post-run capture tests below operate on the pre/post snapshots
@@ -1768,6 +1814,62 @@ mod tests {
         assert_eq!(
             state.current_molecule(&SpecLabel::new("alpha")).unwrap(),
             None,
+        );
+    }
+
+    /// specs/gate.md § "Persistence boundary: agent narrates, agent persists":
+    /// the review controller's `apply_clarify` only stamps the
+    /// `loom:clarify` label — the canonical `## Options — …` block belongs
+    /// to the agent, written to bead state *before* `LOOM_CLARIFY` is
+    /// emitted. If the controller also wrote the agent's reason via
+    /// `bd update --notes`, every re-emit would clobber the canonical
+    /// block and leave `loom msg`'s queue empty.
+    #[tokio::test]
+    async fn apply_clarify_does_not_write_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        let state = empty_state(&workspace);
+        let manifest = stub_manifest(&workspace);
+        let scripted = ScriptedBd::new([RunOutput {
+            status: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }]);
+        let calls = scripted.calls_handle();
+        let bd = BdClient::with_runner(scripted);
+        let mut ctrl = ProductionReviewController::new(
+            bd,
+            SpecLabel::new("gate"),
+            PathBuf::from("/usr/bin/loom"),
+            workspace,
+            state,
+            manifest,
+            ProfileName::new("base"),
+            noop_spawn,
+        );
+        let bead_id = BeadId::new("wx-clarify.2").expect("bead id");
+        ctrl.apply_clarify(&bead_id, "iteration-cap escalation reason")
+            .await
+            .expect("apply_clarify ok");
+        let captured = calls.lock().unwrap();
+        assert_eq!(captured.len(), 1, "exactly one bd invocation expected");
+        let argv: Vec<String> = captured[0]
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(argv[0], "update");
+        assert_eq!(argv[1], "wx-clarify.2");
+        assert!(
+            argv.iter().any(|a| a == "--add-label"),
+            "missing --add-label in argv: {argv:?}",
+        );
+        assert!(
+            argv.iter().any(|a| a == "loom:clarify"),
+            "missing loom:clarify label in argv: {argv:?}",
+        );
+        assert!(
+            !argv.iter().any(|a| a == "--notes"),
+            "apply_clarify must not forward --notes (persistence boundary): {argv:?}",
         );
     }
 }

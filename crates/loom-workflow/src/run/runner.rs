@@ -81,7 +81,7 @@ pub struct RunSummary {
 /// - `next_ready_bead` → `BdClient::list` filtered by ready label
 /// - `run_bead` → render template, build SpawnConfig, drive `AgentBackend`,
 ///   tee `AgentEvent` stream into `LogSink`, parse exit signal
-/// - `apply_clarify` → `BdClient::update --add-label loom:clarify --notes <q>`
+/// - `apply_clarify` → `BdClient::update --add-label loom:clarify`
 /// - `apply_blocked` → `BdClient::update --add-label loom:blocked --notes <cause>`
 /// - `exec_review` → `tokio::process::Command` invocations of
 ///   `loom gate verify --diff <molecule.base_commit>..HEAD` then
@@ -111,8 +111,12 @@ pub trait AgentLoopController: Send {
 
     /// Add the `loom:clarify` label. `question` is the agent's clarify
     /// detail (or the last retry's failure body when retries were
-    /// exhausted) — written to `bd update --notes` so the next session
-    /// can read the prior context. An empty `question` writes no notes.
+    /// exhausted); it is **not** persisted to `bd update --notes` —
+    /// per specs/gate.md § "Persistence boundary: agent narrates, agent
+    /// persists", the canonical `## Options — …` block lives in bead
+    /// state only when the agent writes it there *before* emitting
+    /// `LOOM_CLARIFY`. Overwriting that block with the agent's stdout
+    /// reason-line would leave `loom msg`'s queue empty.
     fn apply_clarify(
         &mut self,
         bead: &BeadId,
