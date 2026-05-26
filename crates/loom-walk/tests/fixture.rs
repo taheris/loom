@@ -2743,3 +2743,99 @@ fn todo_new_creates_epic_before_decomposition_fail_when_epic_create_missing() {
     );
     assert_fail(&out, "no `bd create --type=epic` invocation found");
 }
+
+// ---------------------------------------------------------------------------
+// prek_lock_path_outside_workspace (pre-commit FR2)
+// ---------------------------------------------------------------------------
+
+const PREK_LOCK_SH_REL: &str = "lib/prek/lock.sh";
+
+const PREK_LOCK_GOOD: &str = "#!/usr/bin/env bash\n\
+                              set -euo pipefail\n\
+                              _prek_acquire_lock() {\n\
+                                  local workspace_basename lock_dir lock_file\n\
+                                  workspace_basename=\"$(basename \"$(git worktree list --porcelain | awk '/^worktree / {print $2; exit}')\")\"\n\
+                                  lock_dir=\"${XDG_STATE_HOME:-$HOME/.local/state}/loom/prek/${workspace_basename}\"\n\
+                                  lock_file=\"${lock_dir}/prek.lock\"\n\
+                                  mkdir -p \"$lock_dir\"\n\
+                                  exec 9<>\"$lock_file\"\n\
+                                  flock -x 9\n\
+                              }\n";
+
+#[test]
+fn prek_lock_path_outside_workspace_pass_xdg_rooted() {
+    let ws = make_workspace();
+    seed(ws.path(), PREK_LOCK_SH_REL, PREK_LOCK_GOOD);
+    let out = invoke(&["prek_lock_path_outside_workspace"], Some(ws.path()), None);
+    assert_pass(&out);
+}
+
+#[test]
+fn prek_lock_path_outside_workspace_fail_on_wrapix_path() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        PREK_LOCK_SH_REL,
+        "#!/usr/bin/env bash\n\
+         set -euo pipefail\n\
+         _prek_acquire_lock() {\n\
+             local lock_file\n\
+             lock_file=\".wrapix/locks/prek.lock\"\n\
+             exec 9<>\"$lock_file\"\n\
+         }\n",
+    );
+    let out = invoke(&["prek_lock_path_outside_workspace"], Some(ws.path()), None);
+    assert_fail(&out, ".wrapix");
+}
+
+#[test]
+fn prek_lock_path_outside_workspace_fail_on_relative_path() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        PREK_LOCK_SH_REL,
+        "#!/usr/bin/env bash\n\
+         set -euo pipefail\n\
+         _prek_acquire_lock() {\n\
+             local lock_file\n\
+             lock_file=\"./locks/prek.lock\"\n\
+         }\n",
+    );
+    let out = invoke(&["prek_lock_path_outside_workspace"], Some(ws.path()), None);
+    assert_fail(&out, "./");
+}
+
+#[test]
+fn prek_lock_path_outside_workspace_fail_on_unrooted_path() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        PREK_LOCK_SH_REL,
+        "#!/usr/bin/env bash\n\
+         set -euo pipefail\n\
+         _prek_acquire_lock() {\n\
+             local lock_file\n\
+             lock_file=\"/var/lib/prek/prek.lock\"\n\
+         }\n",
+    );
+    let out = invoke(&["prek_lock_path_outside_workspace"], Some(ws.path()), None);
+    assert_fail(&out, "$XDG_STATE_HOME");
+}
+
+#[test]
+fn prek_lock_path_outside_workspace_chains_through_blessed_var() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        PREK_LOCK_SH_REL,
+        "#!/usr/bin/env bash\n\
+         set -euo pipefail\n\
+         _prek_acquire_lock() {\n\
+             local lock_dir lock_file\n\
+             lock_dir=\"${XDG_STATE_HOME:-$HOME/.local/state}/loom/prek/ws\"\n\
+             lock_file=\"${lock_dir}/prek.lock\"\n\
+         }\n",
+    );
+    let out = invoke(&["prek_lock_path_outside_workspace"], Some(ws.path()), None);
+    assert_pass(&out);
+}

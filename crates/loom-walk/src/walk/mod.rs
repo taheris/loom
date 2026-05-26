@@ -42,6 +42,7 @@ mod no_tokio_timeout_outside_clock;
 mod no_types_or_error_files;
 mod observers_in_loom_llm;
 mod phase_verdict_decide_called_from_production;
+mod prek_lock_path;
 mod public_contract_crates;
 mod renderer_no_insta_dependency;
 mod result_hasher_single_call_site;
@@ -242,6 +243,10 @@ pub static REGISTRY: &[Walk] = &[
         run: phase_verdict_decide_called_from_production::run,
     },
     Walk {
+        name: "prek_lock_path_outside_workspace",
+        run: prek_lock_path::run,
+    },
+    Walk {
         name: "public_contract_crates",
         run: public_contract_crates::run,
     },
@@ -352,6 +357,7 @@ mod tests {
             "no_sync_or_tune_command",
             "observers_in_loom_llm",
             "phase_verdict_decide_called_from_production",
+            "prek_lock_path_outside_workspace",
             "public_contract_crates",
             "result_hasher_single_call_site",
             "session_trait_does_not_expose_typestate",
