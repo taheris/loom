@@ -66,3 +66,18 @@ pub enum CriterionResult {
     /// on this machine.
     NoResult,
 }
+
+impl CriterionResult {
+    /// Stable label used by `todo_*` templates when rendering each
+    /// `criterion_status` row. The strings match the spec's enum
+    /// variant names so the prompt surface and the Rust type stay in
+    /// lockstep.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pass => "Pass",
+            Self::Fail => "Fail",
+            Self::Skipped => "Skipped",
+            Self::NoResult => "NoResult",
+        }
+    }
+}
