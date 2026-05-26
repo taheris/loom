@@ -35,6 +35,23 @@ the full context independent of any external state:
 </implementation-note>
 {% endfor %}
 {% endif %}
+## Criterion Status
+
+The status cache below shows the latest cached verifier verdict for each
+Success-Criteria bullet in scope. Use these signals to distinguish criteria
+already covered by a fresh-pass verifier from those that are stale, never-run,
+or failing — they are the evidence the Decomposition Discipline (next section)
+requires before you author any non-audit bead.
+
+{% if criterion_status.is_empty() %}_No cached status rows for this spec. Treat this as the empty-cache case
+described in the Decomposition Discipline below: every criterion arrives
+without evidence, so either author beads only for confirmed gaps after
+reading the relevant implementations, or emit `LOOM_CLARIFY` on the molecule
+epic when the volume is too large to inline-audit._
+{% else %}{% for row in criterion_status %}- **{{ row.criterion_anchor }}** · annotation `{{ row.annotation }}` · result `{{ row.last_result.as_str() }}` · last commit {% match row.last_commit %}{% when Some with (c) %}`{{ c }}`{% when None %}—{% endmatch %} · commits since {% match row.commits_since %}{% when Some with (n) %}{{ n }}{% when None %}—{% endmatch %} · last timestamp {% match row.last_timestamp_ms %}{% when Some with (t) %}{{ t }}{% when None %}—{% endmatch %}
+{% endfor %}{% endif %}
+{% include "partial/decomposition_discipline.md" %}
+
 ## Spec Changes
 
 If `spec_diff` is provided, use that to identify new requirements **across all

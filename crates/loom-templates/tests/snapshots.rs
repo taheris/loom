@@ -113,7 +113,40 @@ fn todo_update_snapshot() {
         existing_tasks: Some("- wx-3hhwq.1: scaffold workspace".into()),
         molecule_id: Some(MoleculeId::new("wx-3hhwq")),
         implementation_notes: vec![],
-        criterion_status: vec![],
+        criterion_status: vec![
+            CriterionStatus {
+                criterion_anchor: "engine-001".into(),
+                annotation: "[check](cargo build -p loom-templates)".into(),
+                last_result: CriterionResult::Pass,
+                last_timestamp_ms: Some(1_716_300_000_000),
+                last_commit: Some("abc1234".into()),
+                commits_since: Some(0),
+            },
+            CriterionStatus {
+                criterion_anchor: "engine-002".into(),
+                annotation: "[test](template_renders_are_byte_stable_across_runs)".into(),
+                last_result: CriterionResult::Fail,
+                last_timestamp_ms: Some(1_716_200_000_000),
+                last_commit: Some("def5678".into()),
+                commits_since: Some(7),
+            },
+            CriterionStatus {
+                criterion_anchor: "criterion-status-001".into(),
+                annotation: "[test](todo_templates_render_criterion_status_rows)".into(),
+                last_result: CriterionResult::NoResult,
+                last_timestamp_ms: None,
+                last_commit: None,
+                commits_since: None,
+            },
+            CriterionStatus {
+                criterion_anchor: "engine-003".into(),
+                annotation: "[check](cargo run -p loom-walk -- template_pinning_matrix)".into(),
+                last_result: CriterionResult::Skipped,
+                last_timestamp_ms: Some(1_716_250_000_000),
+                last_commit: Some("9abcdef".into()),
+                commits_since: Some(3),
+            },
+        ],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
