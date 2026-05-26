@@ -69,6 +69,13 @@ pub const PARTIAL_CONTEXT_PINNING: &str = include_str!("../templates/partial/con
 pub const PARTIAL_DECOMPOSITION_DISCIPLINE: &str =
     include_str!("../templates/partial/decomposition_discipline.md");
 
+/// `partial/chat_interview.md` — pin the chat discipline for planning
+/// interviews: questions and answers flow as prose, and the planning
+/// agent does not use Claude Code's structured option-picker tool
+/// (`AskUserQuestion`) or any equivalent multi-choice UI. Included only
+/// by `plan_new` and `plan_update`.
+pub const PARTIAL_CHAT_INTERVIEW: &str = include_str!("../templates/partial/chat_interview.md");
+
 /// `partial/exit_signals.md` — document the `LOOM_*` exit markers the
 /// phase accepts.
 pub const PARTIAL_EXIT_SIGNALS: &str = include_str!("../templates/partial/exit_signals.md");
