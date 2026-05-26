@@ -45,6 +45,9 @@ let
       cargo nextest --version
       loom --version
     '';
+    preCheck = ''
+      export HOME=$(mktemp -d)
+    '';
     checkPhaseCargoCommand = ''
       LOOM_VERIFY_TIERS=check,test loom gate verify
     '';
