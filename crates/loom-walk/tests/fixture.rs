@@ -2629,3 +2629,117 @@ fn todo_contexts_carry_criterion_status_finds_structs_split_across_files() {
     );
     assert_pass(&out);
 }
+
+// ---------------------------------------------------------------------------
+// todo_new_creates_epic_before_decomposition
+// ---------------------------------------------------------------------------
+
+const TODO_NEW_EPIC_FIRST_BODY: &str = "# Task Decomposition\n\
+     \n\
+     ## Criterion Status\n\
+     \n\
+     {% for row in criterion_status %}- row\n{% endfor %}\n\
+     \n\
+     ## Instructions\n\
+     \n\
+     1. **Analyze the spec** - understand requirements\n\
+     2. **Create the epic** and store its ID:\n   \
+        ```bash\n   \
+        MOLECULE_ID=$(bd create --type=epic --title=\"foo\" --silent)\n   \
+        ```\n\
+     3. **Audit before fan-out** — walk every Success-Criteria bullet in scope\n   \
+        against the **Criterion Status** section above.\n\
+     4. **Create child tasks** with --parent.\n";
+
+const TODO_NEW_EPIC_AFTER_BODY: &str = "# Task Decomposition\n\
+     \n\
+     ## Instructions\n\
+     \n\
+     1. **Analyze the spec** - understand requirements\n\
+     2. **Audit before fan-out** — walk every Success-Criteria bullet in scope\n   \
+        against the **Criterion Status** section above.\n\
+     3. **Create the epic** and store its ID:\n   \
+        ```bash\n   \
+        MOLECULE_ID=$(bd create --type=epic --title=\"foo\" --silent)\n   \
+        ```\n\
+     4. **Create child tasks** with --parent.\n";
+
+#[test]
+fn todo_new_creates_epic_before_decomposition_pass_when_epic_first() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/todo_new.md",
+        TODO_NEW_EPIC_FIRST_BODY,
+    );
+    let out = invoke(
+        &["todo_new_creates_epic_before_decomposition"],
+        Some(ws.path()),
+        None,
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn todo_new_creates_epic_before_decomposition_fail_when_gap_analysis_first() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/todo_new.md",
+        TODO_NEW_EPIC_AFTER_BODY,
+    );
+    let out = invoke(
+        &["todo_new_creates_epic_before_decomposition"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(
+        &out,
+        "epic creation appears at or after the gap-analysis step at line",
+    );
+}
+
+#[test]
+fn todo_new_creates_epic_before_decomposition_fail_when_template_missing() {
+    let ws = make_workspace();
+    let out = invoke(
+        &["todo_new_creates_epic_before_decomposition"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "template file not found");
+}
+
+#[test]
+fn todo_new_creates_epic_before_decomposition_fail_when_no_instructions_section() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/todo_new.md",
+        "# Task Decomposition\n\nNo instructions section here.\n",
+    );
+    let out = invoke(
+        &["todo_new_creates_epic_before_decomposition"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "no `## Instructions` heading found");
+}
+
+#[test]
+fn todo_new_creates_epic_before_decomposition_fail_when_epic_create_missing() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/todo_new.md",
+        "## Instructions\n\n\
+         1. **Audit** — walk Success-Criteria.\n\
+         2. **Create child tasks** with --parent.\n",
+    );
+    let out = invoke(
+        &["todo_new_creates_epic_before_decomposition"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "no `bd create --type=epic` invocation found");
+}

@@ -52,6 +52,7 @@ mod surface_conformance;
 mod template_context_structs;
 mod template_pinning_matrix;
 mod todo_contexts_carry_criterion_status;
+mod todo_new_creates_epic_before_decomposition;
 mod util;
 mod workspace_deps_pinned;
 mod workspace_edition;
@@ -281,6 +282,10 @@ pub static REGISTRY: &[Walk] = &[
         run: todo_contexts_carry_criterion_status::run,
     },
     Walk {
+        name: "todo_new_creates_epic_before_decomposition",
+        run: todo_new_creates_epic_before_decomposition::run,
+    },
+    Walk {
         name: "workspace_deps_pinned",
         run: workspace_deps_pinned::run,
     },
@@ -357,6 +362,7 @@ mod tests {
             "template_context_structs",
             "template_pinning_matrix",
             "todo_contexts_carry_criterion_status",
+            "todo_new_creates_epic_before_decomposition",
             "loom_templates_deps",
             "loom_templates_public_partial_constants",
             "loom_templates_public_types",
