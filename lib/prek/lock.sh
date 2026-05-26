@@ -15,7 +15,7 @@ _prek_acquire_lock() {
         return 1
     fi
 
-    workspace_basename="$(basename "$(git rev-parse --show-toplevel)")"
+    workspace_basename="$(basename "$(git worktree list --porcelain | awk '/^worktree / {print $2; exit}')")"
     lock_dir="${XDG_STATE_HOME:-$HOME/.local/state}/loom/prek/${workspace_basename}"
     lock_file="${lock_dir}/prek.lock"
 

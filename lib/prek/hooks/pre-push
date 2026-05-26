@@ -10,7 +10,7 @@ if ! command -v prek >/dev/null 2>&1; then
     exit 1
 fi
 
-workspace_basename="$(basename "$(git rev-parse --show-toplevel)")"
+workspace_basename="$(basename "$(git worktree list --porcelain | awk '/^worktree / {print $2; exit}')")"
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/loom/prek/${workspace_basename}"
 stamp_file="${XDG_STATE_HOME:-$HOME/.local/state}/loom/prek/${workspace_basename}/push-verified"
 head_sha="$(git rev-parse HEAD)"
