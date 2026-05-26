@@ -1,0 +1,43 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        stages: [pre-commit]
+      - id: end-of-file-fixer
+        stages: [pre-commit]
+        exclude: '^.beads/config.yaml$'
+      - id: check-merge-conflict
+        stages: [pre-commit]
+
+  - repo: local
+    hooks:
+      - id: treefmt
+        name: treefmt --fail-on-change
+        entry: treefmt --fail-on-change
+        language: system
+        stages: [pre-commit]
+        pass_filenames: false
+
+      - id: shell-reexec-explicit-interpreter
+        name: shell-reexec-explicit-interpreter
+        entry: scripts/check-shell-reexec
+        language: system
+        stages: [pre-commit]
+        types: [shell]
+
+      - id: nix-flake-check
+        name: nix flake check
+        entry: nix flake check
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false
+
+      - id: container-smoke
+        name: nix run .#test (container smoke)
+        entry: nix run .#test
+        language: system
+        stages: [pre-push]
+        files: '^crates/[^/]+/tests/properties.rs$'
+        pass_filenames: false
