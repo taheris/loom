@@ -259,7 +259,7 @@ fn loom_msg_chat_launches_container() {
     let argv = std::fs::read_to_string(&env.argv_log).expect("argv.log present");
     let lines: Vec<&str> = argv.lines().collect();
     assert!(
-        lines.iter().any(|l| *l == "run"),
+        lines.contains(&"run"),
         "argv must start with `run` subcommand: {argv:?}",
     );
     assert!(
@@ -267,19 +267,19 @@ fn loom_msg_chat_launches_container() {
         "argv must include the workspace path: {argv:?}",
     );
     assert!(
-        lines.iter().any(|l| *l == "claude"),
+        lines.contains(&"claude"),
         "argv must select the claude backend: {argv:?}",
     );
     assert!(
-        lines.iter().any(|l| *l == "--dangerously-skip-permissions"),
+        lines.contains(&"--dangerously-skip-permissions"),
         "argv must pass `--dangerously-skip-permissions`: {argv:?}",
     );
     assert!(
-        !lines.iter().any(|l| *l == "--stdio"),
+        !lines.contains(&"--stdio"),
         "msg --chat must NOT use the pi-mono `--stdio` flag: {argv:?}",
     );
     assert!(
-        !lines.iter().any(|l| *l == "--spawn-config"),
+        !lines.contains(&"--spawn-config"),
         "msg --chat must NOT use `--spawn-config`: {argv:?}",
     );
 

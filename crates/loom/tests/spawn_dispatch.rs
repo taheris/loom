@@ -374,7 +374,7 @@ fn loom_todo_writes_jsonl_log_under_workspace_logs_dir() {
 /// passed `None` for the sink and every agent event was discarded. The
 /// bd stub returns one ready bead so `RunMode::Once` exercises the full
 /// `next_ready_bead` → `run_bead` → `close_bead` path; the wrapix shim
-/// + mock-pi finish the protocol so the sink reaches `session_complete`
+/// and mock-pi finish the protocol so the sink reaches `session_complete`
 /// before being dropped.
 #[test]
 fn loom_run_once_writes_per_bead_jsonl_log() {

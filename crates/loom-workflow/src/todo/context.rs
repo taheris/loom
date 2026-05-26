@@ -112,11 +112,6 @@ fn render_fanout_block(candidates: &[DiffCandidate]) -> String {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests use panicking helpers"
-)]
 mod tests {
     use super::*;
     use std::path::PathBuf;

@@ -103,7 +103,6 @@ pub fn diff_new_bead_ids(before: &[BeadId], after: &[BeadId]) -> Vec<BeadId> {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests use panicking helpers")]
 mod tests {
     use super::*;
 

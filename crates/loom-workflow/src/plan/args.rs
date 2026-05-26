@@ -33,11 +33,6 @@ pub fn parse_mode(new: Option<String>, update: Option<String>) -> Result<PlanMod
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "tests use panicking helpers"
-)]
 mod tests {
     use super::*;
 

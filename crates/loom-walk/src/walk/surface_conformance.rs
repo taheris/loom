@@ -165,17 +165,17 @@ fn parse_spec_command_groups(body: &str) -> Result<Vec<(String, Vec<String>)>, S
     let mut current: Option<usize> = None;
     for line in fr1 {
         let trimmed = line.trim_start();
-        if let Some(name) = strip_group_header(trimmed) {
-            if SPEC_GROUP_ORDER.contains(&name) {
-                groups.push((name.to_string(), Vec::new()));
-                current = Some(groups.len() - 1);
-                continue;
-            }
+        if let Some(name) = strip_group_header(trimmed)
+            && SPEC_GROUP_ORDER.contains(&name)
+        {
+            groups.push((name.to_string(), Vec::new()));
+            current = Some(groups.len() - 1);
+            continue;
         }
-        if let Some(cmd) = extract_loom_subcommand(trimmed) {
-            if let Some(idx) = current {
-                groups[idx].1.push(cmd);
-            }
+        if let Some(cmd) = extract_loom_subcommand(trimmed)
+            && let Some(idx) = current
+        {
+            groups[idx].1.push(cmd);
         }
     }
     if groups.is_empty() {
@@ -302,13 +302,13 @@ fn parse_binary_help_groups(body: &str) -> Result<Vec<(String, Vec<String>)>, St
             }
             b')' => {
                 depth -= 1;
-                if depth == 0 {
-                    if let Some(s) = tuple_start.take() {
-                        let inner = &block[s..i];
-                        let strings = extract_quoted_strings(inner);
-                        if let Some((heading, cmds)) = strings.split_first() {
-                            groups.push((heading.clone(), cmds.to_vec()));
-                        }
+                if depth == 0
+                    && let Some(s) = tuple_start.take()
+                {
+                    let inner = &block[s..i];
+                    let strings = extract_quoted_strings(inner);
+                    if let Some((heading, cmds)) = strings.split_first() {
+                        groups.push((heading.clone(), cmds.to_vec()));
                     }
                 }
             }
@@ -408,10 +408,10 @@ fn extract_long_flags(cell: &str) -> Vec<String> {
             {
                 j += 1;
             }
-            if j > start {
-                if let Ok(name) = std::str::from_utf8(&bytes[start..j]) {
-                    out.push(name.to_string());
-                }
+            if j > start
+                && let Ok(name) = std::str::from_utf8(&bytes[start..j])
+            {
+                out.push(name.to_string());
             }
             i = j.max(i + 2);
         } else {
@@ -473,13 +473,15 @@ fn arg_long_name(attr: &syn::Attribute, field_name: &str) -> Option<String> {
             Meta::Path(p) if p.is_ident("long") => {
                 return Some(field_name.replace('_', "-"));
             }
-            Meta::NameValue(MetaNameValue { path, value, .. }) if path.is_ident("long") => {
-                if let Expr::Lit(ExprLit {
-                    lit: Lit::Str(s), ..
-                }) = value
-                {
-                    return Some(s.value());
-                }
+            Meta::NameValue(MetaNameValue {
+                path,
+                value:
+                    Expr::Lit(ExprLit {
+                        lit: Lit::Str(s), ..
+                    }),
+                ..
+            }) if path.is_ident("long") => {
+                return Some(s.value());
             }
             _ => {}
         }

@@ -159,11 +159,14 @@ fn driver_closed_bead(log: &str, target_id: &str) -> bool {
 // -------------------------------------------------------------------
 
 /// Agent emits `LOOM_BLOCKED` with a reason. Verdict gate must:
-/// - leave the bead `open`,
+/// - transition the bead to `status=blocked`,
 /// - add the `loom:blocked` label (via `bd update --add-label`),
 /// - NOT invoke `bd close` on that bead from the driver process.
+///
+/// The status transition is the dedup mechanism: `bd ready` natively
+/// excludes status=blocked so the run loop won't re-dispatch the bead.
 #[test]
-fn loom_run_once_routes_blocked_marker_to_label_and_leaves_bead_open() {
+fn loom_run_once_routes_blocked_marker_to_label_and_status_blocked() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -201,8 +204,9 @@ fn loom_run_once_routes_blocked_marker_to_label_and_leaves_bead_open() {
     let status = read_field(&state_dir, "wx-blocka", "status");
     assert_eq!(
         status.trim(),
-        "open",
-        "blocked bead must stay open. status={status:?}\nbd-shim log:\n{log}",
+        "blocked",
+        "blocked bead must transition to status=blocked so `bd ready` excludes it \
+         on the next loop iteration. status={status:?}\nbd-shim log:\n{log}",
     );
 
     let labels = read_labels(&state_dir, "wx-blocka");
@@ -218,9 +222,11 @@ fn loom_run_once_routes_blocked_marker_to_label_and_leaves_bead_open() {
 }
 
 /// Agent emits `LOOM_CLARIFY` with a question. Same shape as
-/// blocked-marker: open, `loom:clarify` label, no driver-side close.
+/// blocked-marker: `status=blocked`, `loom:clarify` label, no driver-side
+/// close. The status transition is the dedup mechanism per the paired
+/// label+status contract.
 #[test]
-fn loom_run_once_routes_clarify_marker_to_label_and_leaves_bead_open() {
+fn loom_run_once_routes_clarify_marker_to_label_and_status_blocked() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -258,8 +264,9 @@ fn loom_run_once_routes_clarify_marker_to_label_and_leaves_bead_open() {
     let status = read_field(&state_dir, "wx-clara", "status");
     assert_eq!(
         status.trim(),
-        "open",
-        "clarify bead must stay open. status={status:?}\nbd-shim log:\n{log}",
+        "blocked",
+        "clarify bead must transition to status=blocked so `bd ready` excludes it \
+         on the next loop iteration. status={status:?}\nbd-shim log:\n{log}",
     );
 
     let labels = read_labels(&state_dir, "wx-clara");

@@ -73,8 +73,11 @@ pub enum FixupOutcome {
 ///   immediately by `BdClient::mol_bond(mol, new_id)`. The combination
 ///   is the "atomic" guarantee — no caller sees the new id until both
 ///   steps have run.
-/// - `apply_blocked` → `BdClient::update(origin, add_label=loom:blocked,
-///   notes="unbonded-origin: …")`.
+/// - `apply_blocked` → `BdClient::update(origin, status=blocked,
+///   add_label=loom:blocked, notes="unbonded-origin: …")`. The
+///   `status=blocked` transition pairs with the label so `bd ready`
+///   excludes the bead via its native status filter rather than relying
+///   on `--exclude-label`.
 pub trait FixupContext: Send {
     fn show_origin(
         &mut self,
@@ -128,11 +131,6 @@ pub async fn spawn_fixup_bead<C: FixupContext>(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests use panicking helpers"
-)]
 mod tests {
     use super::*;
     use loom_driver::bd::{Bead, Label};

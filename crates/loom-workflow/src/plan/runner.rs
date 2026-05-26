@@ -213,7 +213,6 @@ fn read_pinned_context(workspace: &Path, rel: &str) -> Result<String, PlanError>
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "tests use panicking helpers")]
 mod tests {
     use super::*;
     use anyhow::Result;

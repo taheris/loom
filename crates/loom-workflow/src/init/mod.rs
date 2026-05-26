@@ -203,7 +203,6 @@ pub(crate) async fn resolve_base_commit<R: CommandRunner>(
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "tests use panicking helpers")]
 mod tests {
     use super::*;
     use anyhow::{Result, anyhow};

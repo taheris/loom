@@ -162,14 +162,16 @@ fn loom_run_once_against_empty_bd_exits_zero() {
     );
 }
 
-/// FR1: the `--parallel N` path of `loom run` must call
-/// `bd ready` with `--exclude-label=loom:clarify --exclude-label=loom:blocked`,
-/// matching the sequential path's behavior. Without these flags, beads
-/// parked for human resolution would be re-dispatched on every loop. The
-/// `BdClient` unit test pins the wire encoding once labels are passed in;
-/// this test pins the call site in `run_parallel_run` itself.
+/// FR1: the `--parallel N` path of `loom run` must call `bd ready`
+/// WITHOUT `--exclude-label=loom:clarify` / `--exclude-label=loom:blocked`.
+/// Dedup of clarify/blocked beads relies on the paired `status=blocked`
+/// transition the apply paths write alongside the label; `bd ready`
+/// natively excludes status=blocked. The historical exclude-label flags
+/// papered over a bd `--exclude-label` regression where the filter was
+/// silently dropped, causing every loop iteration to re-dispatch the same
+/// labelled bead.
 #[test]
-fn loom_run_parallel_passes_exclude_label_to_bd_ready() {
+fn loom_run_parallel_does_not_pass_exclude_label_to_bd_ready() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -225,12 +227,9 @@ fn loom_run_parallel_passes_exclude_label_to_bd_ready() {
         .unwrap_or_else(|| panic!("no `bd ready` call recorded in log:\n{log}"));
     let argv: Vec<&str> = ready_line.split('\t').collect();
     assert!(
-        argv.contains(&"--exclude-label=loom:clarify"),
-        "parallel `bd ready` must exclude loom:clarify; argv={argv:?}",
-    );
-    assert!(
-        argv.contains(&"--exclude-label=loom:blocked"),
-        "parallel `bd ready` must exclude loom:blocked; argv={argv:?}",
+        !argv.iter().any(|a| a.starts_with("--exclude-label")),
+        "parallel `bd ready` must NOT pass --exclude-label — dedup happens via \
+         the paired status=blocked transition; argv={argv:?}",
     );
 }
 

@@ -144,12 +144,16 @@ where
     F: std::future::Future<Output = (SessionResult, Option<ExitSignal>)> + Send,
 {
     async fn next_ready_bead(&mut self) -> Result<Option<Bead>, RunError> {
+        // Dedup of clarify/blocked beads relies on the paired
+        // `status=blocked` transition that `apply_clarify` / `apply_blocked`
+        // write alongside the label. `bd ready` natively excludes
+        // status=blocked, so no exclude-label flag is needed.
         let beads = self
             .bd
             .ready(ReadyOpts {
                 limit: Some(1),
                 label: Some(self.spec_label_filter()),
-                exclude_label: vec!["loom:clarify".into(), "loom:blocked".into()],
+                exclude_label: vec![],
             })
             .await?;
         Ok(beads.into_iter().next())
@@ -320,10 +324,14 @@ where
         // is written by the agent via `bd update --notes` *before* it
         // emits `LOOM_CLARIFY`; clobbering that block with the agent's
         // one-line stdout reason would leave `loom msg`'s queue empty.
+        //
+        // The status transition pairs with the label so `bd ready` excludes
+        // the bead via its native status filter — see `next_ready_bead`.
         self.bd
             .update(
                 bead,
                 UpdateOpts {
+                    status: Some("blocked".to_string()),
                     add_labels: vec!["loom:clarify".to_string()],
                     ..UpdateOpts::default()
                 },
@@ -353,6 +361,7 @@ where
             .update(
                 bead,
                 UpdateOpts {
+                    status: Some("blocked".to_string()),
                     add_labels: vec!["loom:blocked".to_string()],
                     notes: Some(notes),
                     ..UpdateOpts::default()
@@ -604,12 +613,6 @@ pub async fn list_open_for_spec(bd: &BdClient, label: &SpecLabel) -> Result<Vec<
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests use panicking helpers"
-)]
 mod tests {
     use super::*;
     use loom_driver::agent::SessionOutcome;
@@ -1744,6 +1747,119 @@ mod tests {
         assert!(
             !argv.iter().any(|a| a == "--notes"),
             "apply_clarify must not forward --notes (persistence boundary): {argv:?}",
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--status" && w[1] == "blocked"),
+            "apply_clarify must pair --status blocked with --add-label so \
+             `bd ready` excludes via its native status filter: {argv:?}",
+        );
+    }
+
+    /// Dedup contract: `apply_blocked` must set `--status blocked` in the
+    /// same `bd update` invocation as `--add-label loom:blocked`. Without
+    /// this, the run loop would re-dispatch the blocked bead every pass —
+    /// the regression that motivated lm-uzrc.
+    #[tokio::test]
+    async fn apply_blocked_pairs_status_blocked_with_add_label() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let scripted = ScriptedBd::new([RunOutput {
+            status: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }]);
+        let calls = scripted.calls_handle();
+        let bd = BdClient::with_runner(scripted);
+        let mut controller = ProductionAgentLoopController::new(
+            bd,
+            SpecLabel::new("gate"),
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        );
+        let bead_id = BeadId::new("wx-blocked.1").expect("bead id");
+        controller
+            .apply_blocked(&bead_id, "infra-preflight", "podman load failed")
+            .await
+            .expect("apply_blocked ok");
+        let captured = calls.lock().unwrap();
+        assert_eq!(captured.len(), 1, "exactly one bd invocation expected");
+        let argv: Vec<String> = captured[0]
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(argv[0], "update");
+        assert_eq!(argv[1], "wx-blocked.1");
+        assert!(
+            argv.iter().any(|a| a == "loom:blocked"),
+            "missing loom:blocked label in argv: {argv:?}",
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--status" && w[1] == "blocked"),
+            "apply_blocked must pair --status blocked with --add-label so \
+             `bd ready` excludes via its native status filter: {argv:?}",
+        );
+    }
+
+    /// Dedup contract: `next_ready_bead` must NOT forward `--exclude-label`
+    /// any more. The argv to `bd ready` carries `--label` for the spec
+    /// filter and no exclude flags — clarify/blocked dedup is now anchored
+    /// in the paired `status=blocked` transition.
+    #[tokio::test]
+    async fn next_ready_bead_does_not_forward_exclude_label() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let scripted = ScriptedBd::new([ok_stdout(b"[]\n")]);
+        let calls = scripted.calls_handle();
+        let bd = BdClient::with_runner(scripted);
+        let mut controller = ProductionAgentLoopController::new(
+            bd,
+            SpecLabel::new("gate"),
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        );
+        let _ = controller.next_ready_bead().await.expect("ready ok");
+        let captured = calls.lock().unwrap();
+        assert_eq!(captured.len(), 1, "exactly one bd invocation expected");
+        let argv: Vec<String> = captured[0]
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(argv[0], "ready");
+        assert!(
+            !argv.iter().any(|a| a.starts_with("--exclude-label")),
+            "next_ready_bead must NOT forward --exclude-label; argv={argv:?}",
         );
     }
 }

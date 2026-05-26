@@ -204,11 +204,6 @@ fn effective_base_for(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests use panicking helpers"
-)]
 mod tests {
     use super::*;
     use std::cell::RefCell;

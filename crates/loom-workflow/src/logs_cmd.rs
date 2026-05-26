@@ -14,7 +14,7 @@
 //! verbatim; `--follow` polls for additional bytes / lines after EOF.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -86,10 +86,10 @@ pub fn select_log(logs_root: &Path, opts: LogsOpts<'_>) -> Result<PathBuf, LogsE
             if path.extension().and_then(|e| e.to_str()) != Some(LOG_EXTENSION) {
                 continue;
             }
-            if let Some(prefix) = &bead_filter {
-                if !file_stem_belongs_to(&path, prefix) {
-                    continue;
-                }
+            if let Some(prefix) = &bead_filter
+                && !file_stem_belongs_to(&path, prefix)
+            {
+                continue;
             }
             let mtime = bead_entry
                 .metadata()?
@@ -251,7 +251,7 @@ async fn replay_raw(
             // Re-anchoring to the current position via `Seek::Current(0)`
             // ensures any caller-side metadata sync is observed before
             // the next `read`; the call is a no-op on most platforms.
-            let _ = file.seek(SeekFrom::Current(0))?;
+            let _ = file.stream_position()?;
             continue;
         }
         writer.write_all(&buf[..n])?;

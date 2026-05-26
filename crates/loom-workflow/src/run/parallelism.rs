@@ -55,11 +55,6 @@ impl FromStr for Parallelism {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "tests use panicking helpers"
-)]
 mod tests {
     use super::*;
 

@@ -11,7 +11,6 @@ use super::profile::resolve_profile_image;
 /// [`build_spawn_config_from_manifest`] — callers should never construct a
 /// `SpawnConfig` field-by-field, because doing so silently bypasses the
 /// profile-image resolution and the canonical claude/pi env wiring.
-#[expect(clippy::too_many_arguments, reason = "explicit dispatch surface")]
 fn build_spawn_config(
     image_ref: String,
     image_source: PathBuf,
@@ -80,11 +79,6 @@ pub fn build_spawn_config_from_manifest(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests use panicking helpers"
-)]
 mod tests {
     use super::*;
     use loom_driver::bd::Label;

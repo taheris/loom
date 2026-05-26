@@ -141,7 +141,6 @@ fn reason_for(marker: &str, line: &str, prior: &[&str]) -> Option<String> {
 }
 
 #[cfg(test)]
-#[expect(clippy::panic, reason = "tests use panicking helpers")]
 mod tests {
     use super::*;
 

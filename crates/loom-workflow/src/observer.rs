@@ -174,7 +174,6 @@ fn build_duplicate_result(config: &DriverDuplicateResultConfig) -> Option<Duplic
 }
 
 #[cfg(test)]
-#[expect(clippy::panic, reason = "tests use panicking helpers")]
 mod tests {
     use super::*;
 

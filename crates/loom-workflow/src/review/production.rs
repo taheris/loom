@@ -595,10 +595,14 @@ where
         // is written by the agent via `bd update --notes` *before* it
         // emits `LOOM_CLARIFY`; clobbering that block with the agent's
         // one-line stdout reason would leave `loom msg`'s queue empty.
+        //
+        // The status transition pairs with the label so `bd ready` excludes
+        // the bead via its native status filter.
         self.bd
             .update(
                 bead,
                 UpdateOpts {
+                    status: Some("blocked".to_string()),
                     add_labels: vec!["loom:clarify".to_string()],
                     ..UpdateOpts::default()
                 },
@@ -634,6 +638,7 @@ where
             .update(
                 &epic.id,
                 UpdateOpts {
+                    status: Some("blocked".to_string()),
                     add_labels: vec!["loom:clarify".to_string()],
                     notes: Some(notes),
                     ..UpdateOpts::default()
@@ -779,12 +784,6 @@ where
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests use panicking helpers"
-)]
 mod tests {
     use super::*;
     use crate::review::runner::ReviewController;
@@ -1870,6 +1869,94 @@ mod tests {
         assert!(
             !argv.iter().any(|a| a == "--notes"),
             "apply_clarify must not forward --notes (persistence boundary): {argv:?}",
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--status" && w[1] == "blocked"),
+            "review apply_clarify must pair --status blocked with --add-label so \
+             `bd ready` excludes via its native status filter: {argv:?}",
+        );
+    }
+
+    /// Dedup contract: `apply_integrity_clarify` (push-gate path that
+    /// promotes integrity findings into a clarify) must also pair
+    /// `--status blocked` with `--add-label loom:clarify` on the molecule
+    /// epic, so the epic falls out of `bd ready` for both the epic-owning
+    /// spec and any spec whose ready queue would otherwise pick it up.
+    #[tokio::test]
+    async fn apply_integrity_clarify_pairs_status_blocked_with_add_label() {
+        use loom_gate::IntegrityFinding;
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        seed_empty_spec(&workspace, "gate");
+        let state = seeded_state(&workspace, "gate", "wx-mol.1");
+        state
+            .set_current_molecule(&SpecLabel::new("gate"), &MoleculeId::new("wx-mol.1"))
+            .expect("seed current_molecule");
+        let manifest = stub_manifest(&workspace);
+
+        let show_body = br#"[{
+            "id": "wx-mol.1",
+            "title": "epic",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "epic",
+            "labels": ["spec:gate"]
+        }]"#;
+        let scripted = ScriptedBd::new([
+            RunOutput {
+                status: 0,
+                stdout: show_body.to_vec(),
+                stderr: Vec::new(),
+            },
+            RunOutput {
+                status: 0,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+        ]);
+        let calls = scripted.calls_handle();
+        let bd = BdClient::with_runner(scripted);
+        let mut ctrl = ProductionReviewController::new(
+            bd,
+            SpecLabel::new("gate"),
+            PathBuf::from("/usr/bin/loom"),
+            workspace,
+            state,
+            manifest,
+            ProfileName::new("base"),
+            noop_spawn,
+        );
+        let findings = vec![IntegrityFinding::UnresolvedAnnotation {
+            spec: std::path::PathBuf::from("specs/gate.md"),
+            line: 1,
+            tier: loom_gate::annotation::Tier::Check,
+            target: "nonexistent-binary".to_string(),
+        }];
+        ctrl.apply_integrity_clarify(&findings)
+            .await
+            .expect("apply_integrity_clarify ok");
+
+        let captured = calls.lock().unwrap();
+        let update = captured
+            .iter()
+            .find(|argv| {
+                argv.first().map(|s| s.to_string_lossy().into_owned()) == Some("update".into())
+            })
+            .expect("update invocation recorded");
+        let argv: Vec<String> = update
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            argv.iter().any(|a| a == "loom:clarify"),
+            "missing loom:clarify in argv: {argv:?}",
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--status" && w[1] == "blocked"),
+            "apply_integrity_clarify must pair --status blocked with --add-label: {argv:?}",
         );
     }
 }

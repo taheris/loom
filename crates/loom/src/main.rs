@@ -1146,6 +1146,18 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
 /// line tracks the currently-running verifier; on a pipe the line is
 /// omitted entirely. Each failing verdict and each dispatch error is
 /// printed to stderr as soon as the verifier returns.
+/// Function pointer matching the per-tier dispatch runner: takes the
+/// selected annotations + dispatch options, returns one result per
+/// annotation in the same order.
+type DispatchRunner = fn(
+    &[loom_gate::Annotation],
+    &loom_gate::DispatchOptions,
+) -> Vec<Result<loom_gate::DispatchOutcome, loom_gate::DispatchError>>;
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "progress-driving dispatch surface threads cache + commit + tier together"
+)]
 fn run_per_annotation_with_progress(
     selected: &[loom_gate::Annotation],
     tier: Tier,
@@ -1154,10 +1166,7 @@ fn run_per_annotation_with_progress(
     now_ms: i64,
     commit: &str,
     mut combined: i32,
-    runner: fn(
-        &[loom_gate::Annotation],
-        &loom_gate::DispatchOptions,
-    ) -> Vec<Result<loom_gate::DispatchOutcome, loom_gate::DispatchError>>,
+    runner: DispatchRunner,
 ) -> i32 {
     use std::io::{IsTerminal, Write};
     let mut stderr = std::io::stderr();
@@ -1649,7 +1658,11 @@ async fn run_parallel_run(
         .ready(loom_driver::bd::ReadyOpts {
             limit: Some(parallel_n),
             label: Some(format!("spec:{}", label.as_str())),
-            exclude_label: vec!["loom:clarify".into(), "loom:blocked".into()],
+            // Dedup of clarify/blocked beads relies on the paired
+            // `status=blocked` transition that the apply paths write
+            // alongside the label. `bd ready` natively excludes
+            // status=blocked, so no exclude-label flag is needed.
+            exclude_label: vec![],
         })
         .await?;
     if beads.is_empty() {
@@ -2399,6 +2412,7 @@ fn run_msg_inner(
             bd.update(
                 &id_clone,
                 UpdateOpts {
+                    status: Some("open".to_string()),
                     remove_labels: vec![label_to_remove],
                     notes: Some(new_notes),
                     ..UpdateOpts::default()
@@ -2424,6 +2438,7 @@ fn run_msg_inner(
             bd.update(
                 &id_clone,
                 UpdateOpts {
+                    status: Some("open".to_string()),
                     remove_labels: vec![label_to_remove],
                     notes: Some(new_notes),
                     ..UpdateOpts::default()
@@ -2447,6 +2462,7 @@ fn run_msg_inner(
             bd.update(
                 &id_clone,
                 UpdateOpts {
+                    status: Some("open".to_string()),
                     remove_labels: vec![label_to_remove],
                     notes: Some(new_notes),
                     ..UpdateOpts::default()

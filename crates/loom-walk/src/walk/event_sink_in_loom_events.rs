@@ -71,11 +71,13 @@ fn trait_defined(path: &Path, name: &str) -> bool {
     })
 }
 
-fn locate_enum(
-    root: &Path,
-    crate_root: &Path,
-    name: &str,
-) -> Option<(String, Vec<(String, String)>, usize)> {
+/// Enum descriptor returned by [`locate_enum`]: the file path that defines
+/// the enum (relative to `root`), the list of `(variant_name,
+/// signature)` pairs, and the 1-based line number of the enum's opening
+/// token.
+type EnumLocation = (String, Vec<(String, String)>, usize);
+
+fn locate_enum(root: &Path, crate_root: &Path, name: &str) -> Option<EnumLocation> {
     for path in rs_files_recursive(crate_root) {
         let Some(file) = parse_rs(&path) else {
             continue;

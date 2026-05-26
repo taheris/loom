@@ -137,7 +137,6 @@ pub fn beads_summary(beads: &[Bead]) -> Option<String> {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests use panicking helpers")]
 mod tests {
     use super::*;
     use askama::Template;

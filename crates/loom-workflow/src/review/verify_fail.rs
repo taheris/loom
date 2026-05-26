@@ -90,7 +90,7 @@ fn format_within_budget(failures: &[VerifyFailure], budget: usize) -> String {
 
     let omitted = failures.len() - included;
     if omitted > 0 {
-        let _ = write!(out, "[+{omitted} more verify failure(s) omitted]\n");
+        let _ = writeln!(out, "[+{omitted} more verify failure(s) omitted]");
     }
     out
 }
@@ -171,7 +171,6 @@ fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests use panicking helpers")]
 mod tests {
     use super::*;
     use crate::review::phase_verdict::ReviewConcern;
@@ -339,7 +338,7 @@ mod tests {
         let f = failure("tests/a.sh", 1, "boom\n");
 
         let with_concern = format_previous_failure(
-            &[f.clone()],
+            std::slice::from_ref(&f),
             Some(&flag(
                 ReviewConcern::VerifierBypass,
                 "test mocks the agent backend",

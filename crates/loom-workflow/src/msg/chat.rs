@@ -135,10 +135,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
             .await
         })
         .map_err(|e| ChatError::BdList(e.to_string()))?;
-    let kept: Vec<&Bead> = filter_msg_beads(&beads, opts.spec_filter.as_ref())
-        .iter()
-        .copied()
-        .collect();
+    let kept: Vec<&Bead> = filter_msg_beads(&beads, opts.spec_filter.as_ref()).to_vec();
     let beads_surfaced = kept.len();
     if kept.is_empty() {
         return Ok(ChatReport {
@@ -182,7 +179,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         .env(WRAPIX_DEFAULT_IMAGE_REF, &image.r#ref)
         .env(WRAPIX_DEFAULT_IMAGE_SOURCE, &image.source)
         .status()
-        .map_err(|source| ChatError::Scratch(source))?;
+        .map_err(ChatError::Scratch)?;
     drop(scratch);
 
     if !status.success() {
@@ -277,7 +274,6 @@ fn resolve_chat_profile(
 pub type _BeadId = BeadId;
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests use panicking helpers")]
 mod tests {
     use super::*;
     use std::path::PathBuf;

@@ -46,7 +46,6 @@ pub fn reconcile_companions(
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "tests use panicking helpers")]
 mod tests {
     use super::*;
     use anyhow::Result;

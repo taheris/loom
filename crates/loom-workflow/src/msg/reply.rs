@@ -125,11 +125,6 @@ pub fn compose_resolved_notes(existing_notes: Option<&str>, resolution: &str) ->
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests use panicking helpers"
-)]
 mod tests {
     use super::*;
 

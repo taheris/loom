@@ -60,7 +60,6 @@ pub fn render_prompt(inputs: PlanPromptInputs) -> Result<String, PlanError> {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests use panicking helpers")]
 mod tests {
     use super::*;
     use loom_driver::identifier::SpecLabel;

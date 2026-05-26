@@ -126,7 +126,6 @@ pub fn spec_label_of(bead: &Bead) -> Option<SpecLabel> {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests use panicking helpers")]
 mod tests {
     use super::*;
     use loom_driver::identifier::BeadId;

@@ -63,7 +63,6 @@ pub fn render_run_prompt(inputs: RunContextInputs) -> Result<String, askama::Err
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests use panicking helpers")]
 mod tests {
     use super::*;
     use askama::Template;

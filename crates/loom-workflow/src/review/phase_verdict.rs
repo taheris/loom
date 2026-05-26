@@ -319,11 +319,6 @@ pub fn parse_review_flag(output: &str) -> Option<ReviewFlag> {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::panic,
-    clippy::expect_used,
-    reason = "tests use panicking helpers"
-)]
 mod tests {
     use super::*;
 
