@@ -2478,3 +2478,154 @@ fn loom_templates_deps_fail_when_loom_driver_present() {
     let out = invoke(&["loom_templates_deps"], Some(ws.path()), None);
     assert_fail(&out, "loom-driver");
 }
+
+// ---------------------------------------------------------------------------
+// todo_contexts_carry_criterion_status
+// ---------------------------------------------------------------------------
+
+const TODO_CRITERION_STATUS_PASS_BODY: &str = "pub struct TodoNewContext { pub criterion_status: Vec<CriterionStatus> }\n\
+     pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n\
+     pub struct PlanNewContext { pub spec_path: String }\n\
+     pub struct PlanUpdateContext { pub spec_path: String }\n\
+     pub struct RunContext { pub spec_path: String }\n\
+     pub struct ReviewContext { pub spec_path: String }\n\
+     pub struct MsgContext { pub scratchpad_path: String }\n";
+
+#[test]
+fn todo_contexts_carry_criterion_status_pass_when_only_todo_contexts_have_field() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/src/lib.rs",
+        TODO_CRITERION_STATUS_PASS_BODY,
+    );
+    let out = invoke(
+        &["todo_contexts_carry_criterion_status"],
+        Some(ws.path()),
+        None,
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn todo_contexts_carry_criterion_status_fail_when_todo_new_missing_field() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/src/lib.rs",
+        "pub struct TodoNewContext { pub spec_path: String }\n\
+         pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n\
+         pub struct PlanNewContext { pub spec_path: String }\n\
+         pub struct PlanUpdateContext { pub spec_path: String }\n\
+         pub struct RunContext { pub spec_path: String }\n\
+         pub struct ReviewContext { pub spec_path: String }\n\
+         pub struct MsgContext { pub scratchpad_path: String }\n",
+    );
+    let out = invoke(
+        &["todo_contexts_carry_criterion_status"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "TodoNewContext` is missing field `criterion_status");
+}
+
+#[test]
+fn todo_contexts_carry_criterion_status_fail_when_todo_update_field_has_wrong_type() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/src/lib.rs",
+        "pub struct TodoNewContext { pub criterion_status: Vec<CriterionStatus> }\n\
+         pub struct TodoUpdateContext { pub criterion_status: String }\n\
+         pub struct PlanNewContext { pub spec_path: String }\n\
+         pub struct PlanUpdateContext { pub spec_path: String }\n\
+         pub struct RunContext { pub spec_path: String }\n\
+         pub struct ReviewContext { pub spec_path: String }\n\
+         pub struct MsgContext { pub scratchpad_path: String }\n",
+    );
+    let out = invoke(
+        &["todo_contexts_carry_criterion_status"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(
+        &out,
+        "TodoUpdateContext.criterion_status` has wrong type — expected `Vec<CriterionStatus>`",
+    );
+}
+
+#[test]
+fn todo_contexts_carry_criterion_status_fail_when_run_context_carries_field() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/src/lib.rs",
+        "pub struct TodoNewContext { pub criterion_status: Vec<CriterionStatus> }\n\
+         pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n\
+         pub struct PlanNewContext { pub spec_path: String }\n\
+         pub struct PlanUpdateContext { pub spec_path: String }\n\
+         pub struct RunContext { pub criterion_status: Vec<CriterionStatus> }\n\
+         pub struct ReviewContext { pub spec_path: String }\n\
+         pub struct MsgContext { pub scratchpad_path: String }\n",
+    );
+    let out = invoke(
+        &["todo_contexts_carry_criterion_status"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(
+        &out,
+        "RunContext` carries field `criterion_status` — only `TodoNewContext`/`TodoUpdateContext` may",
+    );
+}
+
+#[test]
+fn todo_contexts_carry_criterion_status_finds_structs_split_across_files() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/src/lib.rs",
+        "pub mod todo;\npub mod plan;\npub mod run;\npub mod review;\npub mod msg;\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/src/todo/new.rs",
+        "pub struct TodoNewContext { pub criterion_status: Vec<CriterionStatus> }\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/src/todo/update.rs",
+        "pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/src/plan/new.rs",
+        "pub struct PlanNewContext { pub spec_path: String }\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/src/plan/update.rs",
+        "pub struct PlanUpdateContext { pub spec_path: String }\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/src/run/mod.rs",
+        "pub struct RunContext { pub spec_path: String }\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/src/review/mod.rs",
+        "pub struct ReviewContext { pub spec_path: String }\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/src/msg/mod.rs",
+        "pub struct MsgContext { pub scratchpad_path: String }\n",
+    );
+    let out = invoke(
+        &["todo_contexts_carry_criterion_status"],
+        Some(ws.path()),
+        None,
+    );
+    assert_pass(&out);
+}

@@ -51,6 +51,7 @@ mod single_event_channel;
 mod surface_conformance;
 mod template_context_structs;
 mod template_pinning_matrix;
+mod todo_contexts_carry_criterion_status;
 mod util;
 mod workspace_deps_pinned;
 mod workspace_edition;
@@ -276,6 +277,10 @@ pub static REGISTRY: &[Walk] = &[
         run: template_pinning_matrix::run,
     },
     Walk {
+        name: "todo_contexts_carry_criterion_status",
+        run: todo_contexts_carry_criterion_status::run,
+    },
+    Walk {
         name: "workspace_deps_pinned",
         run: workspace_deps_pinned::run,
     },
@@ -351,6 +356,7 @@ mod tests {
             "newtype_identifiers",
             "template_context_structs",
             "template_pinning_matrix",
+            "todo_contexts_carry_criterion_status",
             "loom_templates_deps",
             "loom_templates_public_partial_constants",
             "loom_templates_public_types",
