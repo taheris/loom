@@ -1242,11 +1242,45 @@ fn current_commit(workspace: &Path) -> anyhow::Result<String> {
     Ok(runtime.block_on(async { git.head_commit_sha().await })?)
 }
 
+/// Refuse `loom gate audit --tree --spec <label>` when state.db has no
+/// `current_molecule[<label>]` pointer (per `specs/gate.md` §
+/// *Standing-safety-net checks* per-spec branch). Returns an error that
+/// names the spec and the two fix commands; the caller propagates it so
+/// the binary exits non-zero before any verify or agent spawn.
+fn refuse_tree_scope_without_current_molecule(
+    workspace: &Path,
+    args: &GateScopeArgs,
+) -> anyhow::Result<()> {
+    if !args.tree {
+        return Ok(());
+    }
+    let Some(label) = args.spec.as_deref() else {
+        return Ok(());
+    };
+    let spec = SpecLabel::new(label);
+    let db_path = workspace.join(".wrapix/loom/state.db");
+    let pointer = if db_path.exists() {
+        let db = StateDb::open(&db_path)?;
+        db.current_molecule(&spec)?
+    } else {
+        None
+    };
+    if pointer.is_some() {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(
+        "no current_molecule entry for spec '{label}'.\n  \
+         seed it with `loom use {label} --epic <id>` (re-opens the epic if closed),\n  \
+         or create a fresh recovery molecule via `loom todo --spec {label}`."
+    ))
+}
+
 fn run_gate_audit(
     workspace: &Path,
     args: GateScopeArgs,
     agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
+    refuse_tree_scope_without_current_molecule(workspace, &args)?;
     let verify_result = run_gate_verify(workspace, &args);
     // Audit fuses verify+review in one process; pass the verify subcommand's
     // exit code into the review step so the push gate's four-condition AND
