@@ -24,6 +24,9 @@ _:
           if [[ -d .git ]]; then
             git config --local core.hooksPath lib/prek/hooks
           fi
+          prek_home="''${PREK_HOME:-''${XDG_CACHE_HOME:-$HOME/.cache}/prek}"
+          mkdir -p "$prek_home/tools/uv"
+          ln -sfn "${pkgs.uv}/bin/uv" "$prek_home/tools/uv/uv"
         '';
 
         packages = [
@@ -33,6 +36,7 @@ _:
           pkgs.flock
           pkgs.prek
           pkgs.sccache
+          pkgs.uv
           rustProfile.toolchain
           sandbox.package
         ];
