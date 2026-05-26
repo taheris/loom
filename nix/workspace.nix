@@ -46,14 +46,21 @@ let
 
   cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-  # Specs, mock binaries, and any other non-Cargo inputs the tests read
-  # from the workspace root.
+  # Specs, mock binaries, and any other non-Cargo inputs the tests and
+  # `[check]`-tier verifiers read from the workspace root.
   extraSrcs = {
     "tests/mock-pi" = "${src}/tests/mock-pi";
     "tests/mock-claude" = "${src}/tests/mock-claude";
+    "tests/loom" = "${src}/tests/loom";
+    "tests/default.nix" = "${src}/tests/default.nix";
+    "tests/run-tests.sh" = "${src}/tests/run-tests.sh";
     "specs" = "${src}/specs";
     "docs" = "${src}/docs";
     "lib/prek" = "${src}/lib/prek";
+    "modules" = "${src}/modules";
+    "nix/flake" = "${src}/nix/flake";
+    "scripts" = "${src}/scripts";
+    ".pre-commit-config.yaml" = "${src}/.pre-commit-config.yaml";
   };
 
   stagedSrc = pkgs.runCommand "loom-src-with-extras" { } (
