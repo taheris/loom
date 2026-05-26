@@ -9,6 +9,7 @@
 use anyhow::Result;
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
 use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
 use loom_templates::plan::{PlanNewContext, PlanUpdateContext};
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
@@ -1350,5 +1351,209 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         },
     )?;
+    Ok(())
+}
+
+/// Representative `criterion_status` rows used by both
+/// `todo_new` and `todo_update` fixtures below. Covers every
+/// [`CriterionResult`] variant so the assertions can pin the rendered
+/// shape (annotation + last result + recency signal) for each.
+fn representative_criterion_status() -> Vec<CriterionStatus> {
+    vec![
+        CriterionStatus {
+            criterion_anchor: "engine-fresh-pass".into(),
+            annotation: "[check](cargo build -p loom-templates)".into(),
+            last_result: CriterionResult::Pass,
+            last_timestamp_ms: Some(1_716_300_000_000),
+            last_commit: Some("abc1234".into()),
+            commits_since: Some(0),
+        },
+        CriterionStatus {
+            criterion_anchor: "engine-stale-pass".into(),
+            annotation: "[check](cargo run -p loom-walk -- template_pinning_matrix)".into(),
+            last_result: CriterionResult::Pass,
+            last_timestamp_ms: Some(1_716_000_000_000),
+            last_commit: Some("9abcdef".into()),
+            commits_since: Some(42),
+        },
+        CriterionStatus {
+            criterion_anchor: "engine-fail".into(),
+            annotation: "[test](template_renders_are_byte_stable_across_runs)".into(),
+            last_result: CriterionResult::Fail,
+            last_timestamp_ms: Some(1_716_200_000_000),
+            last_commit: Some("def5678".into()),
+            commits_since: Some(7),
+        },
+        CriterionStatus {
+            criterion_anchor: "engine-skipped".into(),
+            annotation: "[check](cargo nextest run -p loom-templates --test render)".into(),
+            last_result: CriterionResult::Skipped,
+            last_timestamp_ms: Some(1_716_250_000_000),
+            last_commit: Some("11aa22bb".into()),
+            commits_since: Some(3),
+        },
+        CriterionStatus {
+            criterion_anchor: "criterion-status-never-run".into(),
+            annotation: "[test](todo_templates_render_criterion_status_rows)".into(),
+            last_result: CriterionResult::NoResult,
+            last_timestamp_ms: None,
+            last_commit: None,
+            commits_since: None,
+        },
+    ]
+}
+
+/// `todo_new` and `todo_update` must surface every `criterion_status` row's
+/// annotation, last result, and a recency signal so the decomposition agent
+/// can distinguish fresh-pass criteria from stale or never-run ones. Pins
+/// the spec's *Criterion-Status Surface* contract per
+/// `specs/templates.md` § Success Criteria.
+#[test]
+fn todo_templates_render_criterion_status_rows() -> Result<()> {
+    let rows = representative_criterion_status();
+
+    let todo_new_out = TodoNewContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        label: SpecLabel::new("harness"),
+        spec_path: "specs/harness.md".to_string(),
+        companion_paths: vec![],
+        implementation_notes: vec![],
+        criterion_status: rows.clone(),
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+    }
+    .render()?;
+    let todo_update_out = TodoUpdateContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        label: SpecLabel::new("harness"),
+        spec_path: "specs/harness.md".to_string(),
+        companion_paths: vec![],
+        spec_diff: Some("=== specs/harness.md ===\n+ added requirement".into()),
+        existing_tasks: None,
+        molecule_id: Some(MoleculeId::new("wx-mol")),
+        implementation_notes: vec![],
+        criterion_status: rows.clone(),
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+    }
+    .render()?;
+
+    for (name, out) in [("todo_new", &todo_new_out), ("todo_update", &todo_update_out)] {
+        for row in &rows {
+            assert!(
+                out.contains(&row.annotation),
+                "{name}: annotation `{}` missing from render: {out}",
+                row.annotation,
+            );
+            assert!(
+                out.contains(row.last_result.as_str()),
+                "{name}: last_result `{}` missing from render: {out}",
+                row.last_result.as_str(),
+            );
+            match (&row.last_commit, &row.commits_since, &row.last_timestamp_ms) {
+                (Some(commit), Some(n), Some(ts)) => {
+                    let recency = format!(
+                        "last commit `{commit}` · commits since {n} · last timestamp {ts}",
+                    );
+                    assert!(
+                        out.contains(&recency),
+                        "{name}: recency signal `{recency}` missing for `{}`: {out}",
+                        row.criterion_anchor,
+                    );
+                }
+                (None, None, None) => {
+                    let recency = "last commit — · commits since — · last timestamp —";
+                    assert!(
+                        out.contains(recency),
+                        "{name}: never-run recency placeholder missing for `{}`: {out}",
+                        row.criterion_anchor,
+                    );
+                }
+                other => panic!(
+                    "{name}: fixture row `{}` mixes Some/None recency fields: {other:?}",
+                    row.criterion_anchor,
+                ),
+            }
+        }
+
+        let fresh_line = "**engine-fresh-pass** · annotation `[check](cargo build -p loom-templates)` · result `Pass` · last commit `abc1234` · commits since 0 · last timestamp 1716300000000";
+        let stale_line = "**engine-stale-pass** · annotation `[check](cargo run -p loom-walk -- template_pinning_matrix)` · result `Pass` · last commit `9abcdef` · commits since 42 · last timestamp 1716000000000";
+        let never_line = "**criterion-status-never-run** · annotation `[test](todo_templates_render_criterion_status_rows)` · result `NoResult` · last commit — · commits since — · last timestamp —";
+        assert!(
+            out.contains(fresh_line),
+            "{name}: fresh-pass row layout drifted: {out}",
+        );
+        assert!(
+            out.contains(stale_line),
+            "{name}: stale-pass row (commits_since=42) layout drifted: {out}",
+        );
+        assert!(
+            out.contains(never_line),
+            "{name}: never-run row layout drifted: {out}",
+        );
+        assert_ne!(
+            fresh_line, stale_line,
+            "fresh-pass and stale-pass rows must be visually distinct",
+        );
+        assert_ne!(
+            fresh_line, never_line,
+            "fresh-pass and never-run rows must be visually distinct",
+        );
+    }
+    Ok(())
+}
+
+/// `todo_new` and `todo_update` must each render the
+/// `partial/decomposition_discipline.md` audit clause so the decomposition
+/// agent is committed to confirming missing work by inspection before
+/// authoring any non-audit bead. Pins the spec's grep tripwires
+/// (`evidence-confirmed`, `audit before`, `LOOM_CLARIFY`) per
+/// `specs/templates.md` § Decomposition discipline.
+#[test]
+fn todo_templates_render_pre_decomposition_audit_clause() -> Result<()> {
+    let todo_new_out = TodoNewContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        label: SpecLabel::new("harness"),
+        spec_path: "specs/harness.md".to_string(),
+        companion_paths: vec![],
+        implementation_notes: vec![],
+        criterion_status: vec![],
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+    }
+    .render()?;
+    let todo_update_out = TodoUpdateContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        label: SpecLabel::new("harness"),
+        spec_path: "specs/harness.md".to_string(),
+        companion_paths: vec![],
+        spec_diff: None,
+        existing_tasks: None,
+        molecule_id: Some(MoleculeId::new("wx-mol")),
+        implementation_notes: vec![],
+        criterion_status: vec![],
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+    }
+    .render()?;
+
+    for (name, out) in [("todo_new", &todo_new_out), ("todo_update", &todo_update_out)] {
+        assert!(
+            out.contains("Decomposition Discipline"),
+            "{name}: decomposition discipline section missing: {out}",
+        );
+        assert!(
+            out.contains("evidence-confirmed"),
+            "{name}: missing `evidence-confirmed` grep tripwire: {out}",
+        );
+        assert!(
+            out.contains("Audit before fan-out"),
+            "{name}: missing `Audit before fan-out` clause heading: {out}",
+        );
+        assert!(
+            out.contains("LOOM_CLARIFY"),
+            "{name}: missing `LOOM_CLARIFY` fallback citation: {out}",
+        );
+        assert!(
+            out.contains("molecule epic"),
+            "{name}: missing `molecule epic` fallback target: {out}",
+        );
+    }
     Ok(())
 }
