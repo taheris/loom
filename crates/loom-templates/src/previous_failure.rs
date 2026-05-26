@@ -48,6 +48,11 @@ pub enum PreviousFailure {
     },
     /// Pre-verifier build/compile failure (the agent's code did not compile).
     BuildFailure { stage: String, output: String },
+    /// Worker emitted `LOOM_COMPLETE` / `LOOM_NOOP` but left the working tree
+    /// dirty. `dirty_paths` is the already-capped list of dirty entries (the
+    /// driver caps at 30 entries and appends a `"+N more"` marker as the
+    /// final element when the underlying set was larger).
+    TreeNotClean { dirty_paths: Vec<String> },
 }
 
 /// Driver-procedural failure causes that map to `DriverNotice`. Mirrors the
@@ -180,7 +185,18 @@ fn render_body(failure: &PreviousFailure) -> String {
         PreviousFailure::BuildFailure { stage, output } => {
             format!("Build failed at {stage}:\n{output}")
         }
+        PreviousFailure::TreeNotClean { dirty_paths } => render_tree_not_clean(dirty_paths),
     }
+}
+
+fn render_tree_not_clean(dirty_paths: &[String]) -> String {
+    let mut out = String::from("Working tree was not clean after the bead committed:\n\n");
+    for path in dirty_paths {
+        out.push_str(path);
+        out.push('\n');
+    }
+    out.push_str("\nStage these into a follow-up commit or revert them.");
+    out
 }
 
 fn render_verify_failures(failures: &[VerifierFailure]) -> String {
@@ -259,7 +275,6 @@ fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests use panicking helpers")]
 mod tests {
     use super::*;
 
@@ -368,6 +383,66 @@ mod tests {
         }
         .to_string();
         assert!(build.starts_with("Build failed at link:\n"), "{build}");
+
+        let tree = PreviousFailure::TreeNotClean {
+            dirty_paths: vec!["src/lib.rs".into()],
+        }
+        .to_string();
+        assert!(
+            tree.starts_with("Working tree was not clean after the bead committed:\n\n"),
+            "{tree}",
+        );
+    }
+
+    #[test]
+    fn tree_not_clean_renders_path_list_one_per_line() {
+        let pf = PreviousFailure::TreeNotClean {
+            dirty_paths: vec![
+                "src/lib.rs".into(),
+                "crates/loom-templates/src/previous_failure.rs".into(),
+                "docs/style-rules.md".into(),
+            ],
+        };
+        let rendered = pf.to_string();
+        assert!(
+            rendered.starts_with("Working tree was not clean after the bead committed:\n\n"),
+            "framing prefix missing: {rendered}",
+        );
+        assert!(
+            rendered.contains(
+                "src/lib.rs\ncrates/loom-templates/src/previous_failure.rs\ndocs/style-rules.md\n"
+            ),
+            "paths not rendered one-per-line: {rendered}",
+        );
+        assert!(
+            rendered.ends_with("\nStage these into a follow-up commit or revert them."),
+            "closing instruction missing: {rendered}",
+        );
+    }
+
+    #[test]
+    fn tree_not_clean_renders_path_list_with_truncation_suffix() {
+        let pf = PreviousFailure::TreeNotClean {
+            dirty_paths: vec![
+                "src/a.rs".into(),
+                "src/b.rs".into(),
+                "src/c.rs".into(),
+                "+27 more".into(),
+            ],
+        };
+        let rendered = pf.to_string();
+        assert!(
+            rendered.contains("\n+27 more\n"),
+            "+N more suffix line missing: {rendered}",
+        );
+        let stage_idx = rendered
+            .find("Stage these into a follow-up commit")
+            .expect("closing instruction present");
+        let suffix_idx = rendered.find("+27 more").expect("suffix present");
+        assert!(
+            suffix_idx < stage_idx,
+            "+N more must precede the closing instruction: {rendered}",
+        );
     }
 
     #[test]
