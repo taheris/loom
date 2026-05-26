@@ -11,7 +11,10 @@ _:
           enable = true;
           package = rustToolchain;
         };
-        programs.shellcheck.enable = true;
+        programs.shellcheck = {
+          enable = true;
+          excludes = [ ".envrc" ];
+        };
       };
     };
 }

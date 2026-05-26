@@ -22,7 +22,7 @@ if [[ -f "$stamp_file" ]] && [[ "$(cat "$stamp_file")" == "$head_sha" ]]; then
     exit 0
 fi
 
-prek hook-impl --hook-type=pre-push --no-progress "$@" 9>&-
+prek hook-impl --hook-type=pre-push --no-progress -- "$@" 9>&-
 
 mkdir -p "$state_dir"
 printf '%s\n' "$head_sha" > "$stamp_file"
