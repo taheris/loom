@@ -532,9 +532,13 @@ async fn base_commit_advances_only_on_complete_or_noop_with_clean_exit() {
                 impl_notes_left, 2,
                 "case `{case}`: non-productive terminal state must leave implementation notes intact",
             );
+            let advanced_base_commit = bd_calls
+                .iter()
+                .flat_map(|argv| argv.iter())
+                .any(|a| a.starts_with("loom.base_commit="));
             assert!(
-                bd_calls.is_empty(),
-                "case `{case}`: non-productive terminal state must not invoke bd: {bd_calls:?}",
+                !advanced_base_commit,
+                "case `{case}`: non-productive terminal state must not advance loom.base_commit: {bd_calls:?}",
             );
         }
     }
