@@ -6,15 +6,22 @@ stash/restore race when multiple agents share a worktree.
 
 ## Problem Statement
 
-When multiple writers operate on the same worktree — `loom run --parallel
-N`, agents from `loom plan` and `loom run` overlapping, or a developer
-running `git commit` while a loom worker is mid-spawn — prek's
-stash/restore dance around unstaged changes can race and silently drop
-working-tree edits. The discipline this spec defines is: every git hook
-serializes through a workspace flock before running prek's `hook-impl`,
-so only one stash window is open at a time, and hook composition is
-staged into fast pre-commit checks (~1s) and slow pre-push checks
-(~10s) so commits stay cheap and push absorbs the integration cost.
+Prek's pre-commit hook stashes unstaged changes before running its
+checks, then restores the stash after. Two writers opening that stash
+window concurrently in the same worktree can race and silently drop
+working-tree edits. Universal worktree isolation
+([harness.md — Worktree Dispatch](harness.md)) ensures each loom worker
+bead has its own worktree, so workers don't contend with each other or
+with the developer's main checkout — but the main checkout itself
+remains a contention point: the driver's sequential merge-back step
+(which can fire pre-commit on a merge commit), a developer's manual
+`git commit`, and editor/tooling auto-commits can all open stash
+windows concurrently in the same main checkout. The discipline this
+spec defines is: every git hook serializes through a workspace flock
+before running prek's `hook-impl`, so only one stash window is open
+at a time per workspace; and hook composition is staged into fast
+pre-commit checks (~1s) and slow pre-push checks (~10s) so commits
+stay cheap and push absorbs the integration cost.
 
 ## Architecture
 
@@ -25,9 +32,10 @@ Hook scripts are versioned in `lib/prek/hooks/` and wired into git via
 when the developer enters `nix develop`. No per-user `pre-commit
 install` step is required.
 
-Other prek hook stages (`prepare-commit-msg`, `post-checkout`,
-`post-merge`) remain under `.git/hooks/` as prek-managed local hooks —
-they don't open a stash window and therefore don't need the flock.
+Other prek hook stages (`prepare-commit-msg`, `post-commit`,
+`post-checkout`, `post-merge`) remain under `.git/hooks/` as
+prek-managed local hooks — they don't open a stash window and
+therefore don't need the flock.
 
 ### Lock serialization
 
@@ -61,7 +69,12 @@ The flock implementation lives in `lib/prek/lock.sh`, sourced by both
 | Stage      | Wall-time target | Hooks                                                                                                                                                            |
 |------------|------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | pre-commit | ~1s              | builtin `trailing-whitespace`, `end-of-file-fixer` (excludes `.beads/config.yaml`), `check-merge-conflict`; `treefmt --fail-on-change`; `shell-reexec-explicit-interpreter` |
-| pre-push   | ~10s + smoke     | `nix flake check`; `nix run .#test` (container smoke) when files matching `^crates/[^/]+/tests/properties\.rs$` change                                            |
+| pre-push   | ~10s + smoke     | `nix flake check`; `nix run .#test` (container smoke) when changes touch `^crates/[^/]+/tests/properties\.rs$`                                                     |
+
+The `shell-reexec-explicit-interpreter` hook id is the
+`.pre-commit-config.yaml` entry that wraps the
+`scripts/check-shell-reexec` script (see *Source-of-truth files*
+below).
 
 ### Push short-circuit stamp
 
@@ -81,6 +94,37 @@ into a workspace path would silently bypass the pre-push gate. Keeping
 the stamp under `$XDG_STATE_HOME` closes that hole.
 
 The stamp is single-use: any HEAD advance invalidates it.
+
+### Worker-context hook invocation
+
+The hooks installed by the devshell `shellHook` MUST fire on
+`git commit` / `git push` invoked from worker contexts, not just
+from the developer's interactive shell. Two preconditions and one
+prohibition cover this:
+
+- **Worker worktrees MUST be linked, not separate clones.**
+  `loom run --parallel N` (see
+  [harness.md — Worktree Dispatch](harness.md)) creates worktrees
+  under `.wrapix/worktree/<label>/<bead-id>/` via `git worktree add`.
+  Linked worktrees share `.git/config` with the main checkout, so
+  the devshell-set `core.hooksPath = lib/prek/hooks` applies inside
+  the worktree. A separate clone would have its own `.git/config`
+  and skip the hooks entirely.
+- **Worker shells MUST expose `flock` and `prek` on PATH.** The
+  lock script aborts if `flock` is missing (see *Fail-fast on
+  missing `flock`* in Non-Functional below); pre-push aborts if
+  `prek` is missing (see *Fail-fast on missing `prek`*, ibid.).
+  The bead worker container's shell — whichever profile image
+  dispatches the bead — MUST resolve both binaries on PATH so the
+  hooks succeed rather than abort. Harness owns image composition;
+  this spec owns the contract.
+- **Workers MUST NOT pass `--no-verify` on `git commit` or
+  `git push`.** Bypassing the hooks defeats both the formatter
+  check at commit time and the `nix flake check` workspace
+  verification at push time — specifically the workspace-scope
+  style lints (e.g.
+  `crates/loom/tests/style.rs::git_client_encapsulation`) that
+  per-bead `cargo test -p <crate>` invocations don't reach.
 
 ### Source-of-truth files
 
@@ -162,6 +206,11 @@ This spec owns:
 - `lib/prek/hooks/pre-push` sources `lib/prek/lock.sh` and calls
   `_prek_acquire_lock`
   [check](grep -q '_prek_acquire_lock' lib/prek/hooks/pre-push)
+- `lib/prek/hooks/pre-push` invokes `prek hook-impl
+  --hook-type=pre-push` with `--no-progress` (the `9>&-` discipline
+  for the prek child is covered by *Subprocess discipline* in the
+  Lock implementation block above)
+  [check](grep -q -- '--no-progress' lib/prek/hooks/pre-push)
 - `lib/prek/hooks/pre-push` short-circuits on a HEAD-matching
   `$XDG_STATE_HOME/loom/prek/<workspace-basename>/push-verified`
   stamp and consumes the stamp on hit
@@ -169,9 +218,6 @@ This spec owns:
 - Stamp + lock share the same `<workspace-basename>` so linked
   worktrees see the same stamp
   [test](crates/loom-driver/tests/prek_lock.rs::stamp_shared_across_worktrees)
-- `lib/prek/hooks/pre-push` pipes git's stdin to prek and passes
-  `9>&-` so the prek child does not inherit the lock FD
-  [check](grep -q 'hook-impl' lib/prek/hooks/pre-push)
 
 ### Devshell integration
 
@@ -180,6 +226,22 @@ This spec owns:
   [check](grep -q 'core.hooksPath' nix/flake/devshell.nix)
 - The devShell exposes `flock` and `prek` on PATH
   [check](grep -q 'flock' nix/flake/devshell.nix)
+
+### Worker-context coverage
+
+- A `git commit` from inside a linked worktree under
+  `.wrapix/worktree/<label>/<bead-id>/` fires the same `lib/prek/hooks/pre-commit`
+  shim as a commit from the main checkout (worktrees inherit
+  `core.hooksPath` via shared `.git/config`)
+  [test](crates/loom-driver/tests/prek_lock.rs::worker_worktree_commit_fires_pre_commit_hook)
+- A `git push` from inside a linked worktree fires the same
+  `lib/prek/hooks/pre-push` shim and runs `nix flake check`
+  [test](crates/loom-driver/tests/prek_lock.rs::worker_worktree_push_fires_pre_push_hook)
+- `nix flake check` exercises the workspace-level style lints
+  (`crates/loom/tests/style.rs`) that per-bead `cargo test -p <crate>`
+  invocations don't reach — confirmed by deliberately introducing a
+  `git_client_encapsulation` violation and asserting pre-push fails
+  [test](crates/loom-driver/tests/prek_lock.rs::pre_push_catches_workspace_style_violation)
 
 ### Shellcheck batching
 
@@ -213,7 +275,7 @@ This spec owns:
    --show-toplevel`, mirroring harness.md's keying scheme. The lock
    lives on the host filesystem, never inside the workspace, so a
    bead container with the workspace bind-mounted cannot delete or
-   forge it (see [harness.md](harness.md)'s *Lock matrix* section).
+   forge it (see [harness.md — Lock matrix](harness.md)).
    Both hook shims source `lib/prek/lock.sh` and call
    `_prek_acquire_lock` before invoking `prek hook-impl`.
    Subprocesses spawned without `exec` close FD 9 on the child.
@@ -250,6 +312,21 @@ This spec owns:
    hook-impl` to work around a prek 0.3.x crash where the
    `indicatif` progress bar's `Drop` hits a poisoned mutex from a
    parallel worker and aborts before the hook verdict propagates.
+
+8. **Worker-context hook invocation** — hooks MUST fire on
+   `git commit` / `git push` from worker contexts, not only from
+   the developer's interactive shell. Worker worktrees MUST be
+   linked worktrees (created by `loom run --parallel N` via
+   `git worktree add`, per
+   [harness.md — Worktree Dispatch](harness.md)) so they inherit
+   `core.hooksPath` via shared `.git/config`; the worker container's
+   shell MUST expose `flock` and `prek` on PATH so the lock script
+   and pre-push shim succeed rather than abort. Workers MUST NOT
+   pass `--no-verify` on commit or push — bypassing the hooks
+   defeats both the pre-commit formatter check and the pre-push
+   `nix flake check`, the latter being the only path that runs the
+   workspace-scope style lints that per-bead
+   `cargo test -p <crate>` invocations don't reach.
 
 ### Non-Functional
 
@@ -294,10 +371,13 @@ This spec owns:
   app `nix run .#test` is owned by [tests.md](tests.md); this spec
   only specifies when the hook fires it.
 - **Hooks beyond pre-commit/pre-push** —
-  `prepare-commit-msg`, `post-checkout`, `post-merge` and similar
-  remain prek defaults under `.git/hooks/` without the flock
-  wrapper. The race the lock protects against is the stash/restore
-  window, not the cheap message-shaping hooks.
+  `prepare-commit-msg`, `post-commit`, `post-checkout`,
+  `post-merge` and similar remain prek defaults under `.git/hooks/`
+  without the flock wrapper. The race the lock protects against is
+  the stash/restore window, not the cheap message-shaping hooks.
+  `post-commit` specifically was considered for catching the
+  "agent forgot to stage" failure mode and rejected — see the
+  `tree-not-clean` bullet below for where that lives.
 - **Lock-script behavioural tests beyond acquisition / dead-PID
   recovery** — timeout-exhaustion, holder-PID printout shape, and
   partial-write recovery are valuable but not load-bearing for
@@ -306,3 +386,15 @@ This spec owns:
 - **Replacing prek with a native Rust hook runner.** prek is a
   third-party dependency pinned at the workspace level; rewriting it
   would be a separate spec.
+- **Catching "agent forgot to stage" / dirty-tree-after-completion.**
+  Pre-commit hooks' stash/restore architecture intentionally hides
+  unstaged changes from the hook (the very property the flock here
+  protects), so a `treefmt`-style check at commit time cannot observe
+  a worker that staged only its own paths and left other tracked
+  files dirty. That failure mode is owned by
+  [harness.md — Verdict Gate](harness.md) as the `tree-not-clean`
+  recovery cause: the driver runs `git status --porcelain` after the
+  worker emits `LOOM_COMPLETE` / `LOOM_NOOP` and routes a non-empty
+  result to recovery. The split is deliberate — pre-commit hooks
+  govern `index ∩ working-tree`; the driver-side check governs
+  `working-tree − index`.

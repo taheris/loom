@@ -272,6 +272,12 @@ pub enum PreviousFailure {
 
     /// Pre-verifier build/compile failure (agent's code didn't compile).
     BuildFailure { stage: String, output: String },
+
+    /// Worker emitted LOOM_COMPLETE / LOOM_NOOP but left the working
+    /// tree dirty (modified-but-not-staged, staged-but-not-committed,
+    /// or untracked outside the ignore set). Paths capped at 30
+    /// entries by the driver before construction.
+    TreeNotClean { dirty_paths: Vec<String> },
 }
 
 pub enum DriverNoticeCause {
@@ -325,6 +331,7 @@ forward-compatible when gate.md grows new flag causes.
 - `VerifyFailures` → `"Verifier failures from previous attempt:\n\n{N blocks: target + exit + stderr}"`
 - `ReviewConcern` → `"Review raised a concern ({concern}): {reason}"`
 - `BuildFailure` → `"Build failed at {stage}:\n{output}"`
+- `TreeNotClean` → `"Working tree was not clean after the bead committed:\n\n{path list, one per line}\n\nStage these into a follow-up commit or revert them."` with a `"+N more"` suffix line when the list is truncated to 30 entries
 - `review_notes` (when set, after the primary block) → heading `"Review notes:"` then content
 
 Driver maps verdict-gate causes to variants per the table in
@@ -675,9 +682,13 @@ documents in front of the agent with zero configuration.
 ### Typed `PreviousFailure`
 
 - `PreviousFailure` is a tagged enum with variants `DriverNotice`,
-  `VerifyFailures(Vec<VerifierFailure>)`, `ReviewConcern`, and
-  `BuildFailure` — not a free string
+  `VerifyFailures(Vec<VerifierFailure>)`, `ReviewConcern`,
+  `BuildFailure`, and `TreeNotClean { dirty_paths: Vec<String> }` —
+  not a free string
   [check](grep -q 'pub enum PreviousFailure' crates/loom-templates/src/previous_failure.rs)
+- `TreeNotClean` variant carries `dirty_paths: Vec<String>` capped
+  at 30 entries by the driver before construction
+  [check](grep -q 'TreeNotClean' crates/loom-templates/src/previous_failure.rs)
 - `DriverNoticeCause` enum covers `SwallowedMarker`,
   `IncompleteSignaling`, `ZeroProgress`, `ObserverAbort`,
   `RetryExhausted`
@@ -701,8 +712,13 @@ documents in front of the agent with zero configuration.
   framing prefix (`DriverNotice` → "Previous attempt:",
   `VerifyFailures` → "Verifier failures from previous attempt:",
   `ReviewConcern` → "Review raised a concern (...):", `BuildFailure` →
-  "Build failed at ...:")
+  "Build failed at ...:", `TreeNotClean` → "Working tree was not
+  clean after the bead committed:")
   [test](previous_failure_variant_framings_match_spec)
+- `TreeNotClean` renders the dirty-path list one-per-line and
+  appends a `"+N more"` suffix line when the upstream driver
+  truncated past 30 entries
+  [test](tree_not_clean_renders_path_list_with_truncation_suffix)
 
 ### Attempt counter
 

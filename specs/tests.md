@@ -594,7 +594,7 @@ in Functional #4.
 - Parallel run end-to-end: `loom run --parallel 2` with two ready
       beads dispatches two mock-agent spawns concurrently, each in its
       own worktree, then merges both branches back to driver
-  [test](parallel_creates_worktrees)
+  [test](parallel_run_two_beads_e2e)
 - `GitClient` round-trip: create worktree, list, status, merge
       (clean / non-conflicting / conflict variants), remove — all
       against a temp repo via the typed Rust API

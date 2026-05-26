@@ -90,7 +90,7 @@ sharing one agent across beads — was rejected because it conflicts
 with per-bead profile selection and with the trust-boundary split
 between host orchestrator and sandboxed agent.
 
-### Worktree Parallelism
+### Worktree Dispatch
 
 `loom run --parallel N`:
 
@@ -99,18 +99,24 @@ between host orchestrator and sandboxed agent.
    `.wrapix/worktree/<label>/<bead-id>/` on a fresh branch
    `loom/<label>/<bead-id>` based on HEAD.
 3. Spawn one `wrapix spawn --spawn-config <file> --stdio` per worktree
-   concurrently. Each container's workdir bind mount points at the worktree
-   path, not the main checkout.
-4. `tokio::join!` (or `JoinSet`) on the futures; collect per-bead results.
+   (concurrently when `N > 1`). Each container's workdir bind mount
+   points at the worktree path, not the main checkout.
+4. Await all bead futures and collect per-bead results.
 5. Merge finished bead branches back to the driver branch **sequentially**
    (single-threaded merge avoids index lock contention). On merge conflict,
    the bead is marked failed and the worktree is preserved for inspection.
 6. On agent failure, the worktree branch is cleaned up (deleted) and the
    bead is retried per the retry policy.
 
-`--parallel 1` is the default and behaves exactly as today's sequential run
-(no worktree, work happens on the driver branch). `--parallel N` for `N > 1`
-always uses worktrees, even for a single ready bead in that batch.
+**Universal isolation.** The main checkout is never the workdir for a
+bead's session — commits land in the driver branch only via the
+sequential merge-back step (step 5). The bead's worktree starts clean
+at HEAD by construction (step 2), so the verdict gate's tree-clean
+check below can trust that any post-bead working-tree dirt is
+agent-caused, and a developer's concurrent edits in the main checkout
+cannot be mis-attributed to the agent. `--parallel 1` (default) runs
+one bead at a time; `--parallel N > 1` runs N concurrently. Both modes
+use the same worktree-per-bead dispatch.
 
 **Git operations: hybrid `gix` + `git` CLI.** Worktree, branch, status,
 and merge operations go through a typed `GitClient` in `loom-driver`. The
@@ -579,28 +585,51 @@ markers, labels, and infra-failure handling.
 Driver-detected failures enter a bounded recovery loop; agent
 self-reports go straight to human resolution via `loom msg`.
 
-**Decision table.** The gate inspects four signals — the agent's exit marker,
-whether the bead was bd-closed, whether the worktree diff is empty, and the
-review verdict — and produces one of four outcomes (`done`, `blocked`,
-`clarify`, or `recovery` with a cause):
+**Decision table.** The gate inspects five signals — the agent's exit marker,
+whether the bead was bd-closed, whether the worktree diff is empty, whether
+the working tree is clean (`git status --porcelain` empty), and the review
+verdict — and produces one of four outcomes (`done`, `blocked`, `clarify`,
+or `recovery` with a cause):
 
-| Marker | bd-closed | Diff | Review | Outcome |
-|--------|-----------|------|--------|---------|
-| `LOOM_BLOCKED` | — | — | — | `blocked` |
-| `LOOM_CLARIFY` | — | — | — | `clarify` |
-| (none) | — | — | — | recovery (`swallowed-marker` OR `observer-abort`; see below) |
-| `LOOM_COMPLETE` | no | — | — | recovery (`incomplete-signaling`) |
-| `LOOM_COMPLETE` | yes | empty | — | recovery (`zero-progress`) |
-| `LOOM_COMPLETE` | yes | non-empty | verify-fail (review may also raise a concern) | recovery (`verify-fail`; review notes appended if any) |
-| `LOOM_COMPLETE` | yes | non-empty | verify-pass + review-concern | recovery (`review-concern`) |
-| `LOOM_COMPLETE` | yes | non-empty | verify-pass + review-pass | `done` |
-| `LOOM_NOOP` | yes | * | verify-fail (review may also raise a concern) | recovery (`verify-fail`; review notes appended if any) |
-| `LOOM_NOOP` | yes | * | verify-pass + review-concern | recovery (`review-concern`) |
-| `LOOM_NOOP` | yes | * | verify-pass + review-pass | `done` |
+| Marker | bd-closed | Diff | Tree clean | Review | Outcome |
+|--------|-----------|------|------------|--------|---------|
+| `LOOM_BLOCKED` | — | — | — | — | `blocked` |
+| `LOOM_CLARIFY` | — | — | — | — | `clarify` |
+| (none) | — | — | — | — | recovery (`swallowed-marker` OR `observer-abort`; see below) |
+| `LOOM_COMPLETE` | no | — | — | — | recovery (`incomplete-signaling`) |
+| `LOOM_COMPLETE` | yes | empty | — | — | recovery (`zero-progress`) |
+| `LOOM_COMPLETE` | yes | non-empty | no | — | recovery (`tree-not-clean`) |
+| `LOOM_COMPLETE` | yes | non-empty | yes | verify-fail (review may also raise a concern) | recovery (`verify-fail`; review notes appended if any) |
+| `LOOM_COMPLETE` | yes | non-empty | yes | verify-pass + review-concern | recovery (`review-concern`) |
+| `LOOM_COMPLETE` | yes | non-empty | yes | verify-pass + review-pass | `done` |
+| `LOOM_NOOP` | yes | * | no | — | recovery (`tree-not-clean`) |
+| `LOOM_NOOP` | yes | * | yes | verify-fail (review may also raise a concern) | recovery (`verify-fail`; review notes appended if any) |
+| `LOOM_NOOP` | yes | * | yes | verify-pass + review-concern | recovery (`review-concern`) |
+| `LOOM_NOOP` | yes | * | yes | verify-pass + review-pass | `done` |
 
 In the table above, `—` means the signal isn't inspected because an
 earlier signal already determined the outcome (e.g. an agent self-report
 short-circuits before review runs); `*` means any value is accepted.
+
+**Tree-clean check.** After the agent emits `LOOM_COMPLETE` or
+`LOOM_NOOP` and the bead is bd-closed, the driver runs `git status
+--porcelain` against the bead's worktree. The bead's worktree was
+created fresh at dispatch (see *Worktree Dispatch* above), so its
+starting state is necessarily empty — any non-empty porcelain output
+post-bead is unambiguously agent-caused, with no risk of misattributing
+a developer's concurrent edits in the main checkout. A non-empty
+result — tracked files modified-but-not-staged, staged-but-not-
+committed, or untracked files outside the ignore set — routes to
+`recovery` with cause `tree-not-clean`, taking precedence over the
+verify / review steps (running verifiers against a half-staged tree
+would conflate the agent's intended diff with its leftover scratch).
+The recovery detail names the dirty paths so the next iteration's
+agent can stage them into a follow-up commit or revert them. This
+catches the failure mode where a worker runs a formatter (or other
+tree-touching tool), stages only its own paths, and leaves unrelated
+tracked files dirty — pre-commit hooks structurally cannot see this
+because their stash/restore architecture hides unstaged changes (see
+[pre-commit.md — Out of Scope](pre-commit.md)).
 
 **Disambiguating "no marker"** (`observer-abort` vs
 `swallowed-marker`): when an `EventSink`'s `react()` returns
@@ -664,10 +693,11 @@ self-reports — re-running the same prompt won't recover, so the gate exits
 straight to `[blocked]` / `[clarify]` for human resolution.
 
 **Driver-detected causes flow through recovery.** Swallowed marker,
-incomplete signaling, zero-progress, verify-fail, and review-concern all
-enter the recovery loop. Each recovery iteration either retries the
-bead in place with prior failure context, or — when the failure shape
-calls for a discrete follow-up unit of work — spawns a **fix-up bead**.
+incomplete signaling, zero-progress, tree-not-clean, verify-fail, and
+review-concern all enter the recovery loop. Each recovery iteration
+either retries the bead in place with prior failure context, or — when
+the failure shape calls for a discrete follow-up unit of work — spawns
+a **fix-up bead**.
 
 **Fix-up beads bond to the originating molecule.** Every fix-up bead
 created during recovery is bonded to the failing bead's molecule via
@@ -706,6 +736,7 @@ capped, total truncated to `PREVIOUS_FAILURE_MAX_LEN = 4000` chars):
 | `swallowed-marker` | `DriverNotice` | "Last phase ended without a `LOOM_*` exit marker." |
 | `incomplete-signaling` | `DriverNotice` | "Marker `LOOM_COMPLETE` emitted but bead `<id>` was not bd-closed." |
 | `zero-progress` | `DriverNotice` | "Marker `LOOM_COMPLETE` emitted with empty diff. Use `LOOM_NOOP` if no work was needed." |
+| `tree-not-clean` | `TreeNotClean { dirty_paths: Vec<String> }` | "Working tree was not clean after the bead committed: <N> uncommitted path(s). Stage them into a follow-up commit or revert them." Path list is capped at 30 entries; the truncation suffix names the overflow count. |
 | `observer-abort` | `DriverNotice` | "Session aborted by `<observer name>`: `<reason>`." |
 | `verify-fail` | `VerifyFailures(Vec<VerifierFailure>)` | One `VerifierFailure { target, exit_code, stderr_tail }` per failing `[check]` / `[test]` / `[system]` verifier. All failing verifiers are included; the budget is split across them with later failures truncated first; each `stderr_tail` is capped at ~1500 chars before split. If `review` also raised a concern, its reasoning is set as `review_notes` (separate ~1000-char budget) rendered under a `Review notes:` heading. |
 | `review-concern` | `ReviewConcern { concern: ReviewConcernKind, reason }` | The review LLM's verbatim concern reasoning emitted in the `LOOM_CONCERN` marker payload. `ReviewConcernKind` is a typed enum with `Other(String)` fallback; concrete variants per [gate.md](gate.md) (`SpecCoherence`, `OrphanIntegration`, `VerifierBypass`, `FabricatedResult`, `WeakAssertion`, `CoincidentalPass`, `MockDiscipline`, `VerifierTooNarrow`, `ConcurrencyUntested`, `ScopeCreep`, `ScopeShortfall`, `JudgeFlag`). The in-code recovery cause is `RecoveryCause::ReviewConcern`. |
@@ -730,10 +761,11 @@ its own session log if it needs prior tool-call context.
 - `loom:clarify` is applied only by the `LOOM_CLARIFY` agent marker — the
   agent has a specific question with structured options for the human.
 - The cause of a driver-applied `loom:blocked` (`swallowed-marker`,
-  `incomplete-signaling`, `zero-progress`, `verify-fail`, `review-concern`,
-  `observer-abort`, `retry-exhausted`) is preserved in the bead's notes.
-  Per-cause sub-labels can be stacked on top later if filtering becomes
-  important; the gate's terminal label stays `loom:blocked`.
+  `incomplete-signaling`, `zero-progress`, `tree-not-clean`, `verify-fail`,
+  `review-concern`, `observer-abort`, `retry-exhausted`) is preserved in
+  the bead's notes. Per-cause sub-labels can be stacked on top later if
+  filtering becomes important; the gate's terminal label stays
+  `loom:blocked`.
 
 **Marker definitions.** The agent ends every phase by emitting exactly
 **one** marker on its own line, as the final output of the session.
@@ -1753,14 +1785,16 @@ Criteria.
 - `agent` depends on `llm` and `loom-events`; its `direct` backend wraps `loom-llm::Conversation`
   [check](cargo run -p loom-walk -- loom_agent_deps)
 
-### Worktree parallelism
+### Worktree dispatch
 
-- `loom run --parallel 1` (default) does not create a worktree and works
-      on the driver branch directly
-  [test](parallel_one_no_worktree)
-- `loom run --parallel N` (N > 1) creates one worktree per dispatched bead
-      under `.wrapix/worktree/<label>/<bead-id>/`
-  [test](parallel_creates_worktrees)
+- `loom run --parallel N` (default) creates one worktree per
+      dispatched bead under `.wrapix/worktree/<label>/<bead-id>/`,
+      regardless of `N`; the main checkout is never the bead's workdir
+  [test](bead_dispatch_creates_worktree)
+- The bead's worktree is freshly created at HEAD with an empty
+      working-tree state, so verdict-gate checks that depend on a clean
+      starting tree (notably `tree-not-clean`) are sound by construction
+  [test](bead_worktree_starts_with_empty_porcelain)
 - Each worktree spawns its own `wrapix spawn` and the spawns run
       concurrently (overlapping wall-clock)
   [test](concurrent_spawns_overlap_in_wall_clock)
@@ -1951,6 +1985,21 @@ Criteria.
 - `LOOM_NOOP` + closed + empty diff → review runs (legitimate no-op
       proceeds to semantic review rather than zero-progress)
   [test](noop_with_empty_diff_and_clean_review_is_done_not_zero_progress)
+- `LOOM_COMPLETE` + closed + non-empty diff + dirty working tree
+      (`git status --porcelain` non-empty) → recovery with cause
+      `tree-not-clean`; verify and review are NOT run (recovery
+      precedes them so verifiers don't execute against a half-staged
+      tree); `previous_failure` lists the dirty paths capped at 30
+  [test](complete_with_dirty_tree_routes_to_tree_not_clean_before_verify)
+- `LOOM_NOOP` + closed + dirty working tree → recovery with cause
+      `tree-not-clean` (NOOP claims "no work needed" but the tree
+      disagrees; surfacing the discrepancy is more useful than
+      letting the bead close on a false negative)
+  [test](noop_with_dirty_tree_routes_to_tree_not_clean)
+- `tree-not-clean` detail enumerates the dirty paths (modified,
+      staged-but-uncommitted, and untracked outside the gitignore set)
+      capped at 30 entries with a "+N more" suffix when truncated
+  [test](tree_not_clean_detail_enumerates_and_caps_dirty_paths)
 - All `[check]` / `[test]` / `[system]` verifiers on the bead's
       success criteria run; none short-circuit each other; per-verifier
       pass/fail + stderr is captured
@@ -2369,10 +2418,12 @@ two agent-loop observers.
    each label to a profile image via the
    [Profile-Image Manifest](#profile-image-manifest). Unknown labels fail
    at dispatch (no silent default). `--profile` overrides bead labels.
-6. **Worktree parallelism** — `loom run --parallel N` (alias `-p N`) dispatches
-   up to N ready beads concurrently, each in its own git worktree on a
-   per-bead branch. After workers finish, branches are merged back to the
-   driver branch sequentially. Default parallelism is 1 (sequential).
+6. **Worktree dispatch** — `loom run --parallel N` (alias `-p N`) dispatches
+   up to N ready beads, each in its own git worktree on a per-bead branch,
+   regardless of `N`. The main checkout is never the bead's workdir.
+   `--parallel 1` (default) runs one bead at a time; `--parallel N > 1`
+   runs N concurrently. After workers finish, branches are merged back
+   to the driver branch sequentially.
 7. **Retry with context** — on in-session worker failure, retries with the
    prior error output injected as the `previous_failure` template variable.
    Configurable max retries per bead (default 2). After in-session retries
