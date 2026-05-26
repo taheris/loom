@@ -510,10 +510,7 @@ mod tests {
             "# loom-harness\n\n## Companions\n\n- `lib/sandbox/`\n",
         )?;
         let db = StateDb::open(dir.path().join(".wrapix/loom/state.db"))?;
-        db.replace_companions(
-            &SpecLabel::new("harness"),
-            &["lib/sandbox/".to_string()],
-        )?;
+        db.replace_companions(&SpecLabel::new("harness"), &["lib/sandbox/".to_string()])?;
         drop(db);
 
         let bin = install_wrapix_stub(
@@ -650,11 +647,7 @@ mod tests {
         let manifest = three_profile_manifest(dir.path())?;
         let result = run_with_timeout(
             dir.path(),
-            plan_opts_update(
-                "harness",
-                PathBuf::from("/nonexistent/wrapix"),
-                manifest,
-            ),
+            plan_opts_update("harness", PathBuf::from("/nonexistent/wrapix"), manifest),
             Duration::from_millis(100),
         );
         match result {
@@ -799,9 +792,7 @@ mod tests {
 
         // Drop must have cleaned the scratch dir after exec returned.
         assert!(
-            !dir.path()
-                .join(".wrapix/loom/scratch/harness")
-                .exists(),
+            !dir.path().join(".wrapix/loom/scratch/harness").exists(),
             "scratch dir must be cleaned up after wrapix returns",
         );
         Ok(())

@@ -173,18 +173,8 @@ mod tests {
     fn filter_keeps_blocked_alongside_clarify() {
         let beads = vec![
             bead("wx-1", "no msg", "", &["spec:harness"]),
-            bead(
-                "wx-2",
-                "clarify",
-                "",
-                &["spec:harness", "loom:clarify"],
-            ),
-            bead(
-                "wx-3",
-                "blocked",
-                "",
-                &["spec:harness", "loom:blocked"],
-            ),
+            bead("wx-2", "clarify", "", &["spec:harness", "loom:clarify"]),
+            bead("wx-3", "blocked", "", &["spec:harness", "loom:blocked"]),
         ];
         let kept = filter_msg_beads(&beads, None);
         assert_eq!(kept.len(), 2);
@@ -219,12 +209,7 @@ mod tests {
 
     #[test]
     fn rows_drop_spec_column_under_filter() {
-        let beads = vec![bead(
-            "wx-2",
-            "title",
-            "",
-            &["spec:harness", "loom:clarify"],
-        )];
+        let beads = vec![bead("wx-2", "title", "", &["spec:harness", "loom:clarify"])];
         let label = SpecLabel::new("harness");
         let kept = filter_msg_beads(&beads, Some(&label));
         let rows = build_rows(&kept, Some(&label));
@@ -235,12 +220,7 @@ mod tests {
 
     #[test]
     fn rows_carry_spec_column_when_unfiltered() {
-        let beads = vec![bead(
-            "wx-2",
-            "title",
-            "",
-            &["spec:harness", "loom:clarify"],
-        )];
+        let beads = vec![bead("wx-2", "title", "", &["spec:harness", "loom:clarify"])];
         let kept = filter_msg_beads(&beads, None);
         let rows = build_rows(&kept, None);
         assert_eq!(rows[0].spec.as_deref(), Some("harness"));

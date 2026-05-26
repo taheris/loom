@@ -377,10 +377,7 @@ mod tests {
             resolve_scratch_key(Phase::Todo, &label, Some(&bead)),
             "harness",
         );
-        assert_eq!(
-            resolve_scratch_key(Phase::Plan, &label, None),
-            "harness",
-        );
+        assert_eq!(resolve_scratch_key(Phase::Plan, &label, None), "harness",);
     }
 
     #[test]
@@ -404,13 +401,7 @@ mod tests {
     #[test]
     fn resolve_scratch_key_falls_back_to_label_when_bead_missing() {
         let label = SpecLabel::new("harness");
-        assert_eq!(
-            resolve_scratch_key(Phase::Check, &label, None),
-            "harness",
-        );
-        assert_eq!(
-            resolve_scratch_key(Phase::Run, &label, None),
-            "harness",
-        );
+        assert_eq!(resolve_scratch_key(Phase::Check, &label, None), "harness",);
+        assert_eq!(resolve_scratch_key(Phase::Run, &label, None), "harness",);
     }
 }

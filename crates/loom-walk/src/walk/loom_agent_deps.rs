@@ -5,8 +5,7 @@
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str =
-    "loom_agent_deps — `loom-agent` depends on `loom-llm` and `loom-events`";
+const RULE: &str = "loom_agent_deps — `loom-agent` depends on `loom-llm` and `loom-events`";
 
 const REQUIRED: &[&str] = &["loom-llm", "loom-events"];
 

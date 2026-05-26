@@ -503,11 +503,7 @@ fn loom_gate_review_writes_phase_jsonl_log() {
     // specs/<label>.md; seed an empty Success Criteria section so the
     // loader succeeds with no bodies.
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(
-        workspace.join("specs/agent.md"),
-        "## Success Criteria\n\n",
-    )
-    .unwrap();
+    std::fs::write(workspace.join("specs/agent.md"), "## Success Criteria\n\n").unwrap();
 
     let manifest_path = workspace.join("profile-images.json");
     let image_source = workspace.join("base.tar");

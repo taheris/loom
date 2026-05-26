@@ -76,11 +76,7 @@ mod tests {
     fn use_round_trips_with_status_load() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let _seed = seed_spec(dir.path(), "harness")?;
-        run(
-            dir.path(),
-            &SpecLabel::new("harness"),
-            &db_path(dir.path()),
-        )?;
+        run(dir.path(), &SpecLabel::new("harness"), &db_path(dir.path()))?;
 
         let db = StateDb::open(db_path(dir.path()))?;
         let current = db
@@ -120,11 +116,7 @@ mod tests {
     fn use_unknown_spec_errors_with_spec_not_found() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let _seed = StateDb::open(db_path(dir.path()))?;
-        match run(
-            dir.path(),
-            &SpecLabel::new("ghost"),
-            &db_path(dir.path()),
-        ) {
+        match run(dir.path(), &SpecLabel::new("ghost"), &db_path(dir.path())) {
             Err(UseError::State(StateError::SpecNotFound { label })) => {
                 assert_eq!(label, "ghost");
             }

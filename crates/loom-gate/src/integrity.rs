@@ -2063,10 +2063,7 @@ fn delta_helper() {
         let out = format_clarify_options(&[f]);
         assert!(out.starts_with("## Options — "), "summary heading: {out}");
         assert!(out.contains("stub_me"), "test name: {out}");
-        assert!(
-            out.contains("specs/harness.md:100"),
-            "spec:line: {out}"
-        );
+        assert!(out.contains("specs/harness.md:100"), "spec:line: {out}");
         assert!(out.contains("### Option 1 —"), "option 1: {out}");
         assert!(out.contains("### Option 2 —"), "option 2: {out}");
         assert!(out.contains("### Option 3 —"), "option 3: {out}");

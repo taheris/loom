@@ -397,7 +397,11 @@ mod tests {
 
         match db.spec(&probe) {
             Err(loom_driver::state::StateError::SpecNotFound { .. }) => {}
-            other => return Err(anyhow!("expected SpecNotFound on empty specs table, got {other:?}")),
+            other => {
+                return Err(anyhow!(
+                    "expected SpecNotFound on empty specs table, got {other:?}"
+                ));
+            }
         }
         assert!(db.active_molecule(&probe)?.is_none());
         assert!(db.companions(&probe)?.is_empty());
@@ -444,7 +448,10 @@ mod tests {
             .active_molecule(&SpecLabel::new("alpha"))?
             .ok_or_else(|| anyhow!("molecule row was clobbered"))?;
         assert_eq!(row.id.as_str(), "wx-mol.1");
-        assert_eq!(row.iteration_count, 1, "iteration counter must survive a plain init");
+        assert_eq!(
+            row.iteration_count, 1,
+            "iteration counter must survive a plain init"
+        );
         assert_eq!(row.base_commit.as_deref(), Some("deadbeef"));
         Ok(())
     }
