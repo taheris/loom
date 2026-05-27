@@ -8,8 +8,6 @@
 //! One snapshot per typed context struct, named after the test function via
 //! `insta::assert_snapshot!`'s default file naming.
 
-use std::collections::BTreeMap;
-
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, SpecLabel};
 use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
@@ -325,7 +323,6 @@ fn review_snapshot() {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        current_molecule: BTreeMap::new(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
 }

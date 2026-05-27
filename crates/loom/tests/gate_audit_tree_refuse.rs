@@ -1,10 +1,9 @@
 //! Live-path test for `loom gate audit --tree --spec <X>` refusing to
-//! start when state.db has no `current_molecule[<X>]` pointer.
+//! start when no open epic exists for `<X>`.
 //!
 //! `specs/gate.md` § *Standing-safety-net checks* mandates this refusal
 //! for the per-spec branch of the standing safety net: the agent must
-//! not spawn until the user seeds the pointer via `loom use <X> --epic
-//! <id>` or creates a fresh molecule via `loom todo --spec <X>`. The
+//! not spawn until a fresh molecule is created via `loom todo`. The
 //! integrity-gate's CLI smoke tests in `gate_integrity.rs` cover the
 //! deterministic-tier refuse cases; this file pins the audit-tier
 //! refuse path.
@@ -13,9 +12,6 @@
 
 use std::path::Path;
 use std::process::Command;
-
-use loom_driver::identifier::SpecLabel;
-use loom_driver::state::StateDb;
 
 fn pinned_path() -> String {
     let path_var = std::env::var_os("PATH").expect("PATH must be set");
@@ -44,36 +40,20 @@ fn tree_scope_refuses_when_no_current_molecule_for_spec() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
 
-    let db_path = workspace.join(".wrapix/loom/state.db");
-    let db = StateDb::open(&db_path).expect("open state.db");
-    assert!(
-        db.current_molecule(&SpecLabel::new("acme"))
-            .expect("read current_molecule")
-            .is_none(),
-        "test premise: current_molecule[acme] must be unset",
-    );
-    drop(db);
-
+    // No bd shim on PATH and no open epic anywhere — the refuse path
+    // fires before any agent spawn.
     let output = run_loom_gate_audit(workspace, "acme");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         !output.status.success(),
-        "loom gate audit --tree --spec acme must exit non-zero when \
-         current_molecule[acme] is empty. status={:?}\nstderr={stderr}",
+        "loom gate audit --tree --spec acme must exit non-zero when no \
+         open epic exists for acme. status={:?}\nstderr={stderr}",
         output.status,
     );
     assert!(
         stderr.contains("acme"),
         "stderr must name the spec. stderr:\n{stderr}",
-    );
-    assert!(
-        stderr.contains("loom use acme --epic"),
-        "stderr must point at `loom use <label> --epic <id>`. stderr:\n{stderr}",
-    );
-    assert!(
-        stderr.contains("loom todo --spec acme"),
-        "stderr must point at `loom todo --spec <label>`. stderr:\n{stderr}",
     );
 
     let logs_dir = workspace.join(".wrapix/loom/logs");

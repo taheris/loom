@@ -6,8 +6,6 @@
 //! `{% include %}`, agent-supplied content is wrapped in `<agent-output>` and
 //! `previous_failure` truncates at [`PREVIOUS_FAILURE_MAX_LEN`].
 
-use std::collections::BTreeMap;
-
 use anyhow::Result;
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, SpecLabel};
@@ -516,7 +514,6 @@ fn review_renders_review_context_fields() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        current_molecule: BTreeMap::new(),
     };
     let out = ctx.render()?;
 
@@ -562,7 +559,6 @@ fn review_lane_judge_omits_rubric_walk_sections_and_keeps_judge_rubrics() -> Res
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Judge,
-        current_molecule: BTreeMap::new(),
     };
     let out = ctx.render()?;
 
@@ -616,7 +612,6 @@ fn review_lane_rubric_omits_judge_rubrics_and_keeps_rubric_walk_sections() -> Re
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Rubric,
-        current_molecule: BTreeMap::new(),
     };
     let out = ctx.render()?;
 
@@ -668,7 +663,6 @@ fn review_renders_style_rule_conformance_walkthrough() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        current_molecule: BTreeMap::new(),
     };
     let out = ctx.render()?;
 
@@ -732,7 +726,6 @@ fn review_renders_single_marker_instruction_with_concern_xor_complete() -> Resul
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        current_molecule: BTreeMap::new(),
     };
     let out = ctx.render()?;
 
@@ -775,7 +768,6 @@ fn review_renders_options_format_contract_with_universal_scope() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        current_molecule: BTreeMap::new(),
     };
     let out = ctx.render()?;
 
@@ -806,26 +798,13 @@ fn review_renders_options_format_contract_with_universal_scope() -> Result<()> {
     Ok(())
 }
 
-/// `loom gate audit --tree` reviewer prompt: the rendered template
-/// threads `current_molecule[<spec>] = <epic_id>` entries from the state
-/// DB so the agent uses each `<epic_id>` as `bd create --parent <id>`
-/// when bonding fix-ups. Pins criterion 1004 in `specs/gate.md`:
-///
-/// > [test](tree_scope_threads_current_molecule_into_reviewer_prompt)
-///
-/// The map exposed to the template is the real `BTreeMap<String,
-/// String>` shape that
-/// `ProductionReviewController::build_review_prompt` builds from
-/// `StateDb::list_current_molecule_entries`; this test renders the
-/// template with two entries (`alpha`, `beta`) and asserts each entry
-/// surfaces in a `--parent <epic>` form the agent can act on, plus the
-/// auto-create fallback block for specs not in the map.
+/// The rendered review template documents the at-most-one-open-epic-per-
+/// spec resolution: the agent runs `bd find --type=epic --label=spec:<X>
+/// --status=open` to locate the recovery epic and uses the result as
+/// `bd create --parent <epic>` for every fix-up. No state-DB pointer is
+/// threaded in; the bd query is the sole source of truth.
 #[test]
-fn tree_scope_threads_current_molecule_into_reviewer_prompt() -> Result<()> {
-    let mut current_molecule = BTreeMap::new();
-    current_molecule.insert("alpha".to_string(), "wx-alpha-epic".to_string());
-    current_molecule.insert("beta".to_string(), "wx-beta-epic".to_string());
-
+fn review_prompt_documents_bd_find_recovery_resolution() -> Result<()> {
     let ctx = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("alpha"),
@@ -839,83 +818,20 @@ fn tree_scope_threads_current_molecule_into_reviewer_prompt() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        current_molecule,
     };
     let out = ctx.render()?;
 
     assert!(
-        out.contains("## Current Molecule Mapping"),
-        "Current Molecule Mapping section missing: {out}",
-    );
-    // Each entry must reach the agent in a form it can use as
-    // `bd create --parent <id>` per the per-spec bonding contract.
-    assert!(
-        out.contains("spec:alpha") && out.contains("wx-alpha-epic"),
-        "alpha entry missing from rendered prompt: {out}",
+        out.contains("bd find --type=epic"),
+        "`bd find --type=epic` resolution must surface in the prompt: {out}",
     );
     assert!(
-        out.contains("spec:beta") && out.contains("wx-beta-epic"),
-        "beta entry missing from rendered prompt: {out}",
+        out.contains("--parent"),
+        "recovery flow must surface `--parent` bonding: {out}",
     );
     assert!(
-        out.contains("--parent wx-alpha-epic"),
-        "alpha epic must surface as `--parent <id>`: {out}",
-    );
-    assert!(
-        out.contains("--parent wx-beta-epic"),
-        "beta epic must surface as `--parent <id>`: {out}",
-    );
-    // The all-specs auto-create fallback must remain documented for
-    // any spec missing from the map: the agent runs `bd create
-    // --type=epic --title="<spec> recovery" --labels="spec:<spec>"
-    // --metadata loom.base_commit=<HEAD>` first, then `bd create
-    // --parent <new-epic>` for the fix-up.
-    assert!(
-        out.contains("bd create") && out.contains("--type=epic"),
-        "auto-create fallback `bd create --type=epic` missing: {out}",
-    );
-    assert!(
-        out.contains("recovery") && out.contains("loom.base_commit"),
-        "auto-create fallback recovery+base_commit guidance missing: {out}",
-    );
-    Ok(())
-}
-
-/// Companion to [`tree_scope_threads_current_molecule_into_reviewer_prompt`]:
-/// when the `current_molecule` map is empty (fresh workspace, no
-/// recovery epics seeded), the rendered template still documents the
-/// auto-create fallback so the agent knows the prerequisite shape for
-/// `bd create --type=epic` before any fix-up bond.
-#[test]
-fn tree_scope_empty_current_molecule_still_documents_auto_create_fallback() -> Result<()> {
-    let ctx = ReviewContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("alpha"),
-        spec_path: "specs/alpha.md".to_string(),
-        companion_paths: vec![],
-        beads_summary: None,
-        base_commit: None,
-        molecule_id: None,
-        verify_sources: vec![],
-        judge_rubrics: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        style_rules: "docs/style-rules.md".to_string(),
-        lane: ReviewLane::Both,
-        current_molecule: BTreeMap::new(),
-    };
-    let out = ctx.render()?;
-
-    assert!(
-        out.contains("## Current Molecule Mapping"),
-        "Current Molecule Mapping section heading must render even when empty: {out}",
-    );
-    assert!(
-        out.contains("No `current_molecule` entries recorded"),
-        "empty-map placeholder must surface: {out}",
-    );
-    assert!(
-        out.contains("bd create") && out.contains("--type=epic"),
-        "auto-create fallback `bd create --type=epic` missing on empty map: {out}",
+        !out.contains("Current Molecule Mapping"),
+        "obsolete `Current Molecule Mapping` section must not render: {out}",
     );
     Ok(())
 }
@@ -1199,7 +1115,6 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        current_molecule: BTreeMap::new(),
     }
     .render()?;
 
@@ -1445,7 +1360,6 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
             style_rules: "docs/style-rules.md".to_string(),
             lane: ReviewLane::Both,
-            current_molecule: BTreeMap::new(),
         },
     )?;
     assert_stable(

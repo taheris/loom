@@ -115,8 +115,35 @@ impl CommandRunner for CapturingRunner {
     }
 }
 
-fn stub_bd() -> Arc<BdClient> {
-    Arc::new(BdClient::new())
+fn stub_bd() -> Arc<BdClient<CapturingRunner>> {
+    scripted_bd([])
+}
+
+fn scripted_bd(responses: impl IntoIterator<Item = RunOutput>) -> Arc<BdClient<CapturingRunner>> {
+    Arc::new(BdClient::with_runner(CapturingRunner::new(responses)))
+}
+
+fn epic_response(mol_id: &str, label: &str, base_commit: Option<&str>) -> RunOutput {
+    let metadata = match base_commit {
+        Some(b) => format!(r#"{{ "loom.base_commit": "{b}" }}"#),
+        None => "{}".to_string(),
+    };
+    let body = format!(
+        r#"[{{
+            "id": "{mol_id}",
+            "title": "{label}: epic",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "epic",
+            "labels": ["spec:{label}"],
+            "metadata": {metadata}
+        }}]"#,
+    );
+    RunOutput {
+        status: 0,
+        stdout: body.into_bytes(),
+        stderr: Vec::new(),
+    }
 }
 
 fn seeded_state(
@@ -243,7 +270,7 @@ async fn build_spawn_config_uses_update_template_when_molecule_exists() {
         manifest,
         ProfileName::new("base"),
         git,
-        stub_bd(),
+        scripted_bd([epic_response("wx-mol", "alpha", None)]),
         None,
     );
     let session = ctrl.build_session().await.expect("build cfg");
@@ -300,7 +327,7 @@ async fn build_spawn_config_tier_1_renders_diff_from_base_commit() {
     .unwrap();
     run_git(&workspace, &["commit", "-q", "-am", "update alpha"]);
 
-    let state = seeded_state(&workspace, "alpha", "wx-mol", Some(base));
+    let state = seeded_state(&workspace, "alpha", "wx-mol", Some(base.clone()));
     let manifest = stub_manifest(&workspace);
     let mut ctrl = ProductionTodoController::new(
         SpecLabel::new("alpha"),
@@ -309,7 +336,7 @@ async fn build_spawn_config_tier_1_renders_diff_from_base_commit() {
         manifest,
         ProfileName::new("base"),
         git,
-        stub_bd(),
+        scripted_bd([epic_response("wx-mol", "alpha", Some(&base))]),
         None,
     );
     let session = ctrl.build_session().await.expect("build cfg");
@@ -456,7 +483,19 @@ async fn base_commit_advances_only_on_complete_or_noop_with_clean_exit() {
         let manifest = stub_manifest(&workspace);
         let git = init_repo(&workspace);
         let head_after_seed = capture_head(&workspace);
-        let runner = CapturingRunner::new([]);
+        // Two bd responses cover the productive-completion path: a list
+        // returning the open epic, then an empty update response. Non-
+        // productive cases hit the list once or not at all and consume a
+        // subset.
+        let runner = CapturingRunner::new([
+            epic_response("wx-alpha", "alpha", Some("old-sha")),
+            epic_response("wx-alpha", "alpha", Some("old-sha")),
+            RunOutput {
+                status: 0,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+        ]);
         let runner_handle = runner.clone();
         let bd = Arc::new(BdClient::with_runner(runner));
         let mut ctrl = ProductionTodoController::new(
@@ -481,7 +520,7 @@ async fn base_commit_advances_only_on_complete_or_noop_with_clean_exit() {
         .unwrap_or_else(|e| panic!("case `{case}`: record_outcome failed: {e}"));
 
         let mol = state
-            .active_molecule(&label)
+            .molecule_for_spec(&label)
             .unwrap()
             .expect("molecule survives");
         let impl_notes_left = state
@@ -507,21 +546,21 @@ async fn base_commit_advances_only_on_complete_or_noop_with_clean_exit() {
                 1,
                 "case `{case}`: non-implementation kinds must survive the gate",
             );
-            assert_eq!(
-                bd_calls.len(),
-                1,
-                "case `{case}`: exactly one bd call expected, got {bd_calls:?}",
-            );
-            let argv = &bd_calls[0];
-            assert_eq!(argv[0], "update");
-            assert_eq!(argv[1], "wx-alpha");
-            let pos = argv
+            let update_argv = bd_calls
+                .iter()
+                .find(|argv| argv.first().is_some_and(|a| a == "update"))
+                .unwrap_or_else(|| panic!("case `{case}`: bd update call missing: {bd_calls:?}"));
+            assert_eq!(update_argv[1], "wx-alpha");
+            let pos = update_argv
                 .iter()
                 .position(|a| a == "--set-metadata")
                 .unwrap_or_else(|| {
-                    panic!("case `{case}`: --set-metadata flag missing in argv: {argv:?}")
+                    panic!("case `{case}`: --set-metadata flag missing in argv: {update_argv:?}")
                 });
-            assert_eq!(argv[pos + 1], format!("loom.base_commit={head_after_seed}"));
+            assert_eq!(
+                update_argv[pos + 1],
+                format!("loom.base_commit={head_after_seed}"),
+            );
         } else {
             assert_eq!(
                 mol.base_commit,
@@ -561,7 +600,16 @@ async fn todo_clarify_marks_molecule_epic() {
     let git = init_repo(&workspace);
     let state = seeded_state(&workspace, label, epic_id, None);
 
-    let runner = CapturingRunner::new([]);
+    let runner = CapturingRunner::new([
+        // bd list (resolve_open_epic) → the seeded epic
+        epic_response(epic_id, label, None),
+        // bd update with loom:clarify label
+        RunOutput {
+            status: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        },
+    ]);
     let bd = Arc::new(BdClient::with_runner(runner.clone()));
     let manifest = stub_manifest(&workspace);
     let mut ctrl = ProductionTodoController::new(

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -30,11 +30,6 @@ pub struct ReviewContextInputs {
     /// Which lane(s) of the review the reviewer agent is being asked to
     /// run; gates the template sections that only one lane needs.
     pub lane: ReviewLane,
-    /// Per-spec `current_molecule[<label>] = <epic_id>` map read from the
-    /// state DB at prompt-build time. Drives the `## Current Molecule
-    /// Mapping` section so the reviewer agent uses each `<epic_id>` as
-    /// `bd create --parent <id>` for fix-ups under `--tree` scope.
-    pub current_molecule: BTreeMap<String, String>,
 }
 
 /// Render the typed [`ReviewContext`] used by the `review.md` Askama template.
@@ -52,7 +47,6 @@ pub fn build_review_context(inputs: ReviewContextInputs) -> ReviewContext {
         scratchpad_path: inputs.scratchpad_path,
         style_rules: inputs.style_rules,
         lane: inputs.lane,
-        current_molecule: inputs.current_molecule,
     }
 }
 
@@ -171,7 +165,6 @@ mod tests {
             scratchpad_path: "/workspace/.wrapix/loom/scratch/harness/scratch.md".into(),
             style_rules: "docs/style-rules.md".into(),
             lane: ReviewLane::Both,
-            current_molecule: BTreeMap::new(),
         }
     }
 

@@ -837,12 +837,11 @@ fn apply_default_scope(workspace: &Path, args: &mut GateScopeArgs) {
     });
 }
 
-/// Look up `loom.base_commit` for the epic recorded as
-/// `current_molecule[<current_spec>]` in the state DB. Returns
+/// Look up `loom.base_commit` for the open epic of `current_spec` via
+/// `bd find --type=epic --label=spec:<X> --status=open`. Returns
 /// `Ok(None)` for the unconfigured cases (no state db, no current_spec,
-/// no current_molecule entry, missing metadata key) — those are expected
-/// on a fresh workspace, not errors. Subprocess and parse failures
-/// propagate.
+/// no open epic, missing metadata key) — those are expected on a fresh
+/// workspace, not errors. Subprocess and parse failures propagate.
 fn active_molecule_base_commit(workspace: &Path) -> anyhow::Result<Option<String>> {
     let db_path = workspace.join(".wrapix/loom/state.db");
     if !db_path.exists() {
@@ -852,13 +851,13 @@ fn active_molecule_base_commit(workspace: &Path) -> anyhow::Result<Option<String
     let Some(label) = db.current_spec()? else {
         return Ok(None);
     };
-    let Some(epic) = db.current_molecule(&label)? else {
-        return Ok(None);
-    };
-    let bead_id = BeadId::new(epic.as_str())?;
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let bd = BdClient::new();
+        let Some(epic) = loom_workflow::resolve::resolve_open_epic(&bd, &label).await? else {
+            return Ok(None);
+        };
+        let bead_id = BeadId::new(epic.as_str())?;
         let detail = bd.show(&bead_id).await?;
         Ok(detail
             .metadata
@@ -1350,13 +1349,13 @@ fn current_commit(workspace: &Path) -> anyhow::Result<String> {
     Ok(runtime.block_on(async { git.head_commit_sha().await })?)
 }
 
-/// Refuse `loom gate audit --tree --spec <label>` when state.db has no
-/// `current_molecule[<label>]` pointer (per `specs/gate.md` §
-/// *Standing-safety-net checks* per-spec branch). Returns an error that
-/// names the spec and the two fix commands; the caller propagates it so
-/// the binary exits non-zero before any verify or agent spawn.
+/// Refuse `loom gate audit --tree --spec <label>` when no open epic
+/// exists for `<label>` (per `specs/gate.md` § *Standing-safety-net
+/// checks* per-spec branch). Returns an error that names the spec and
+/// the fix command; the caller propagates it so the binary exits
+/// non-zero before any verify or agent spawn.
 fn refuse_tree_scope_without_current_molecule(
-    workspace: &Path,
+    _workspace: &Path,
     args: &GateScopeArgs,
 ) -> anyhow::Result<()> {
     if !args.tree {
@@ -1366,20 +1365,23 @@ fn refuse_tree_scope_without_current_molecule(
         return Ok(());
     };
     let spec = SpecLabel::new(label);
-    let db_path = workspace.join(".wrapix/loom/state.db");
-    let pointer = if db_path.exists() {
-        let db = StateDb::open(&db_path)?;
-        db.current_molecule(&spec)?
-    } else {
-        None
-    };
-    if pointer.is_some() {
+    let runtime = tokio::runtime::Runtime::new()?;
+    // A `bd` spawn failure (e.g. missing on PATH) is structurally
+    // equivalent to "no resolvable open epic" for the standing-safety-
+    // net refusal: the audit cannot proceed without `bd` anyway, so
+    // we surface the same operator-facing message either way.
+    let open_epic = runtime
+        .block_on(async move {
+            let bd = BdClient::new();
+            loom_workflow::resolve::resolve_open_epic(&bd, &spec).await
+        })
+        .unwrap_or_default();
+    if open_epic.is_some() {
         return Ok(());
     }
     Err(anyhow::anyhow!(
-        "no current_molecule entry for spec '{label}'.\n  \
-         seed it with `loom use {label} --epic <id>` (re-opens the epic if closed),\n  \
-         or create a fresh recovery molecule via `loom todo --spec {label}`."
+        "no open epic for spec '{label}'.\n  \
+         create a fresh recovery molecule via `loom todo`."
     ))
 }
 
@@ -2334,29 +2336,8 @@ fn run_review(
         .with_style_rules(style_rules_for_review)
         .with_verify_exit(opts.verify_exit)
         .with_lane(opts.lane);
-        // `--tree` audit: snapshot recovery epics before and after the
-        // reviewer runs; re-open any closed `current_molecule` pointer
-        // so the agent's `bd create --parent <id>` doesn't fail; capture
-        // new recovery epics post-run into the state DB.
-        let pre_epics = if tree_scope {
-            for epic in controller.reopen_closed_recovery_epics().await? {
-                println!("loom gate audit --tree: re-opened recovery epic {epic}");
-            }
-            controller.snapshot_recovery_epics().await?
-        } else {
-            Vec::new()
-        };
-        let loop_result = run_review_loop(&mut controller, IterationCap::default()).await;
-        if tree_scope {
-            let post_epics = controller.snapshot_recovery_epics().await?;
-            for (spec, epic) in controller
-                .record_recovery_epics(&pre_epics, &post_epics)
-                .await?
-            {
-                println!("loom gate audit --tree: recorded current_molecule[{spec}] = {epic}");
-            }
-        }
-        loop_result
+        let _ = tree_scope;
+        run_review_loop(&mut controller, IterationCap::default()).await
     })?;
     println!("loom review: {result:?}");
     Ok(())

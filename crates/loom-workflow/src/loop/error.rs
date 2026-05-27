@@ -35,6 +35,9 @@ pub enum LoopError {
     /// state.db access failure
     State(#[from] StateError),
 
+    /// spec → molecule resolution failed
+    Resolve(#[from] crate::resolve::ResolveError),
+
     /// no active molecule for spec `{label}`
     NoActiveMolecule { label: String },
 

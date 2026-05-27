@@ -17,6 +17,7 @@ pub mod r#loop;
 pub mod msg;
 pub mod observer;
 pub mod plan;
+pub mod resolve;
 pub mod review;
 pub mod spec;
 pub mod status;

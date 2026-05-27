@@ -159,7 +159,7 @@ proptest! {
         prop_assert_eq!(report.molecules, molecules.len());
 
         for mol in &molecules {
-            let row = db.active_molecule(&mol.spec_label).unwrap()
+            let row = db.molecule_for_spec(&mol.spec_label).unwrap()
                 .expect("molecule should round-trip");
             prop_assert_eq!(row.id.as_str(), mol.id.as_str());
             prop_assert_eq!(&row.base_commit, &mol.base_commit);

@@ -204,14 +204,19 @@ where
         cmd
     }
 
-    /// Locate the molecule's epic bead via `current_molecule[<self.label>]`
-    /// in state.db. Used by the integrity-clarify path to find the write
-    /// target for `bd update --notes ... --add-label loom:clarify`. Shares
-    /// the same state-db pointer that `run::production::fetch_molecule_base_commit`
-    /// reads, so review-time and run-time epic lookups agree on which bead
-    /// "the molecule's epic" denotes.
+    /// Resolve the spec's open epic via `bd find --type=epic
+    /// --label=spec:<X> --status=open`. The at-most-one-open-epic-per-spec
+    /// invariant collapses resolution into this single query — no state
+    /// DB pointer, no tier walk.
+    async fn resolve_molecule_id(&self) -> Result<Option<MoleculeId>, ReviewError> {
+        Ok(crate::resolve::resolve_open_epic(&self.bd, &self.label).await?)
+    }
+
+    /// Locate the molecule's epic bead via the at-most-one-open-epic-per-spec
+    /// resolution. Used by the integrity-clarify path to find the write
+    /// target for `bd update --notes ... --add-label loom:clarify`.
     async fn molecule_epic_bead(&self) -> Result<Option<Bead>, ReviewError> {
-        let Some(mol_id) = self.state.current_molecule(&self.label)? else {
+        let Some(mol_id) = self.resolve_molecule_id().await? else {
             return Ok(None);
         };
         let bead_id = BeadId::new(mol_id.as_str()).map_err(BdError::CreateInvalidId)?;
@@ -231,7 +236,10 @@ where
     /// are built once per call. Returns an empty list when no molecule is
     /// active or when no spec files have changed in the molecule's range.
     async fn molecule_integrity_findings(&self) -> Result<Vec<IntegrityFinding>, ReviewError> {
-        let Some(mol) = self.state.active_molecule(&self.label)? else {
+        let Some(mol_id) = self.resolve_molecule_id().await? else {
+            return Ok(vec![]);
+        };
+        let Some(mol) = self.state.molecule(&mol_id)? else {
             return Ok(vec![]);
         };
         let Some(base) = mol.base_commit else {
@@ -276,93 +284,6 @@ where
             .collect())
     }
 
-    /// Snapshot every epic bead in the workspace whose labels carry a
-    /// `spec:<X>` entry. Drives the `--tree` audit's pre/post diff: the
-    /// orchestrator snapshots before the reviewer runs, snapshots again
-    /// after, and feeds both lists into [`Self::record_recovery_epics`]
-    /// so any new recovery epic the agent created is captured into
-    /// `current_molecule`. Returns all spec-labelled epics regardless of
-    /// `status` so a closed epic the agent re-opened still appears in
-    /// the diff.
-    pub async fn snapshot_recovery_epics(&self) -> Result<Vec<Bead>, ReviewError> {
-        let beads = self
-            .bd
-            .list(ListOpts {
-                issue_type: Some("epic".to_string()),
-                ..ListOpts::default()
-            })
-            .await?;
-        Ok(beads
-            .into_iter()
-            .filter(|b| b.labels.iter().any(|l| l.spec_label().is_some()))
-            .collect())
-    }
-
-    /// Pre-flight for the `--tree` audit: walk every `current_molecule`
-    /// entry and re-open any epic that is currently `status == "closed"`,
-    /// so the reviewer agent's `bd create --parent <id>` does not fail
-    /// when the recorded pointer references a closed epic. The agent
-    /// follows the template's instruction to use `--parent` verbatim;
-    /// re-opening is unrestricted at the recovery-flow level (per
-    /// `specs/gate.md` § Standing-safety-net checks). Returns the list
-    /// of epic ids that were re-opened so the orchestrator can surface
-    /// the action on stdout.
-    pub async fn reopen_closed_recovery_epics(&self) -> Result<Vec<MoleculeId>, ReviewError> {
-        let entries = self.state.list_current_molecule_entries()?;
-        let mut reopened = Vec::new();
-        for (_spec, epic_id) in entries {
-            let bead_id = BeadId::new(epic_id.as_str()).map_err(BdError::CreateInvalidId)?;
-            let bead = match self.bd.show(&bead_id).await {
-                Ok(b) => b,
-                Err(BdError::ShowEmpty) => continue,
-                Err(e) => return Err(e.into()),
-            };
-            if bead.status != "closed" {
-                continue;
-            }
-            self.bd
-                .update(
-                    &bead_id,
-                    UpdateOpts {
-                        status: Some("open".to_string()),
-                        ..UpdateOpts::default()
-                    },
-                )
-                .await?;
-            reopened.push(epic_id);
-        }
-        Ok(reopened)
-    }
-
-    /// Post-run capture for the `--tree` audit: walk the new beads in
-    /// the post snapshot that the reviewer agent created, find each new
-    /// epic labelled `spec:<X>` whose spec has no existing
-    /// `current_molecule` entry, and write the pointer through
-    /// `StateDb::set_current_molecule`. Returns the `(spec, epic_id)`
-    /// pairs written so the orchestrator can surface them on stdout
-    /// naming the spec and new epic id (per `specs/gate.md` §
-    /// Standing-safety-net checks). When the pointer already exists for
-    /// a spec, the pre-existing epic id wins — the agent is expected to
-    /// have bonded the fix-up under it via `--parent` rather than
-    /// creating a new epic, so a duplicate `bd create --type=epic`
-    /// surfacing here is a no-op at the state-db level.
-    pub async fn record_recovery_epics(
-        &self,
-        pre_beads: &[Bead],
-        post_beads: &[Bead],
-    ) -> Result<Vec<(SpecLabel, MoleculeId)>, ReviewError> {
-        let to_write = diff_new_recovery_epics(pre_beads, post_beads);
-        let mut written = Vec::new();
-        for (spec, epic) in to_write {
-            if self.state.current_molecule(&spec)?.is_some() {
-                continue;
-            }
-            self.state.set_current_molecule(&spec, &epic)?;
-            written.push((spec, epic));
-        }
-        Ok(written)
-    }
-
     async fn build_review_prompt(&self) -> Result<String, ReviewError> {
         let beads = self
             .bd
@@ -372,9 +293,11 @@ where
                 ..ListOpts::default()
             })
             .await?;
-        let active_mol = self.state.active_molecule(&self.label)?;
-        let molecule_id = active_mol.as_ref().map(|m| m.id.clone());
-        let base_commit = active_mol.and_then(|m| m.base_commit);
+        let molecule_id = self.resolve_molecule_id().await?;
+        let base_commit = match molecule_id.as_ref() {
+            Some(id) => self.state.molecule(id)?.and_then(|m| m.base_commit),
+            None => None,
+        };
         let spec_path = format!("specs/{}.md", self.label.as_str());
         let (verify_sources, judge_rubrics) =
             load_review_sources(&self.workspace, &self.workspace.join(&spec_path))?;
@@ -383,12 +306,6 @@ where
             loom_driver::scratch::ScratchSession::scratchpad_path_for(&self.workspace, &key)
                 .to_string_lossy()
                 .into_owned();
-        let current_molecule: std::collections::BTreeMap<String, String> = self
-            .state
-            .list_current_molecule_entries()?
-            .into_iter()
-            .map(|(label, epic)| (label.to_string(), epic.to_string()))
-            .collect();
         let ctx = ReviewContext {
             pinned_context: String::new(),
             label: self.label.clone(),
@@ -402,42 +319,9 @@ where
             scratchpad_path,
             style_rules: self.style_rules.clone(),
             lane: self.lane,
-            current_molecule,
         };
         Ok(ctx.render()?)
     }
-}
-
-/// Pure diff between the pre- and post-review bead snapshots: every bead
-/// in `post_beads` whose id is not in `pre_beads`, whose `issue_type` is
-/// `"epic"`, and whose labels carry a `spec:<X>` entry yields the pair
-/// `(SpecLabel(X), MoleculeId(bead.id))`. The output preserves the order
-/// the new epics appear in `post_beads` so the orchestrator's stdout
-/// reflects the agent's creation sequence. Multiple `spec:*` labels on
-/// one epic surface as multiple pairs — the production state.db writer
-/// then resolves duplicates via `set_current_molecule`'s upsert.
-fn diff_new_recovery_epics(
-    pre_beads: &[Bead],
-    post_beads: &[Bead],
-) -> Vec<(SpecLabel, MoleculeId)> {
-    use std::collections::HashSet;
-    let pre_ids: HashSet<&BeadId> = pre_beads.iter().map(|b| &b.id).collect();
-    let mut out = Vec::new();
-    for bead in post_beads {
-        if pre_ids.contains(&bead.id) {
-            continue;
-        }
-        if bead.issue_type != "epic" {
-            continue;
-        }
-        let epic_id = MoleculeId::new(bead.id.as_str());
-        for label in &bead.labels {
-            if let Some(spec) = label.spec_label() {
-                out.push((spec, epic_id.clone()));
-            }
-        }
-    }
-    out
 }
 
 /// Map the reviewer agent's `(marker, exit_code)` into a [`ReviewOutcome`]
@@ -565,25 +449,28 @@ where
     }
 
     async fn iteration_count(&mut self) -> Result<u32, ReviewError> {
+        let Some(mol_id) = self.resolve_molecule_id().await? else {
+            return Ok(0);
+        };
         Ok(self
             .state
-            .active_molecule(&self.label)?
+            .molecule(&mol_id)?
             .map(|m| m.iteration_count)
             .unwrap_or(0))
     }
 
     async fn set_iteration_count(&mut self, next: u32) -> Result<(), ReviewError> {
-        let mol = self
-            .state
-            .active_molecule(&self.label)?
+        let mol_id = self
+            .resolve_molecule_id()
+            .await?
             .ok_or_else(|| ReviewError::NoActiveMolecule(self.label.to_string()))?;
-        self.state.set_iteration(&mol.id, next)?;
+        self.state.set_iteration(&mol_id, next)?;
         Ok(())
     }
 
     async fn reset_iteration_count(&mut self) -> Result<(), ReviewError> {
-        if let Some(mol) = self.state.active_molecule(&self.label)? {
-            self.state.reset_iteration(&mol.id)?;
+        if let Some(mol_id) = self.resolve_molecule_id().await? {
+            self.state.reset_iteration(&mol_id)?;
         }
         Ok(())
     }
@@ -1040,18 +927,64 @@ mod tests {
         assert_eq!(ctrl.verify_exit().await.unwrap(), None);
     }
 
+    /// Replay scripted bd-list responses so iteration tests can drive
+    /// the controller without invoking the real `bd` binary on PATH.
+    /// Each entry feeds one `BdClient` call in order.
+    fn scripted_controller(
+        workspace: PathBuf,
+        label: &str,
+        state: Arc<StateDb>,
+        bd_responses: impl IntoIterator<Item = Vec<u8>>,
+    ) -> ProductionReviewController<NoopSpawn, SpawnFuture, ScriptedBd> {
+        let manifest = stub_manifest(&workspace);
+        let runner = ScriptedBd::new(bd_responses.into_iter().map(|stdout| RunOutput {
+            status: 0,
+            stdout,
+            stderr: Vec::new(),
+        }));
+        ProductionReviewController::new(
+            BdClient::with_runner(runner),
+            SpecLabel::new(label),
+            PathBuf::from("/usr/bin/loom"),
+            workspace,
+            state,
+            manifest,
+            ProfileName::new("base"),
+            noop_spawn,
+        )
+    }
+
+    fn epic_body(mol_id: &str, label: &str) -> Vec<u8> {
+        format!(
+            r#"[{{
+                "id": "{mol_id}",
+                "title": "{label}: epic",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "epic",
+                "labels": ["spec:{label}"]
+            }}]"#,
+        )
+        .into_bytes()
+    }
+
     #[tokio::test]
     async fn iteration_counter_round_trips_through_state_db() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
         let state = seeded_state(workspace, "alpha", "wx-alpha");
-        let mut ctrl = controller_with_state(workspace.to_path_buf(), "alpha", state);
+        let epic = epic_body("wx-alpha", "alpha");
+        let mut ctrl = scripted_controller(
+            workspace.to_path_buf(),
+            "alpha",
+            state,
+            // Each public method invokes one bd-find call.
+            std::iter::repeat_n(epic, 5),
+        );
 
         assert_eq!(ctrl.iteration_count().await.unwrap(), 0);
-
         ctrl.set_iteration_count(3).await.unwrap();
         assert_eq!(ctrl.iteration_count().await.unwrap(), 3);
-
         ctrl.reset_iteration_count().await.unwrap();
         assert_eq!(ctrl.iteration_count().await.unwrap(), 0);
     }
@@ -1059,25 +992,31 @@ mod tests {
     #[tokio::test]
     async fn iteration_count_is_zero_when_no_active_molecule() {
         let dir = tempfile::tempdir().unwrap();
-        let mut ctrl = controller(dir.path().to_path_buf());
+        let state = empty_state(dir.path());
+        let mut ctrl =
+            scripted_controller(dir.path().to_path_buf(), "harness", state, [b"[]".to_vec()]);
         assert_eq!(ctrl.iteration_count().await.unwrap(), 0);
     }
 
     #[tokio::test]
     async fn set_iteration_errors_when_no_active_molecule() {
         let dir = tempfile::tempdir().unwrap();
-        let mut ctrl = controller(dir.path().to_path_buf());
+        let state = empty_state(dir.path());
+        let mut ctrl =
+            scripted_controller(dir.path().to_path_buf(), "harness", state, [b"[]".to_vec()]);
         let err = ctrl.set_iteration_count(1).await.unwrap_err();
         assert!(
             matches!(err, ReviewError::NoActiveMolecule(ref s) if s == "harness"),
-            "expected NoActiveMolecule(loom-harness), got {err:?}",
+            "expected NoActiveMolecule(harness), got {err:?}",
         );
     }
 
     #[tokio::test]
     async fn reset_iteration_is_no_op_when_no_active_molecule() {
         let dir = tempfile::tempdir().unwrap();
-        let mut ctrl = controller(dir.path().to_path_buf());
+        let state = empty_state(dir.path());
+        let mut ctrl =
+            scripted_controller(dir.path().to_path_buf(), "harness", state, [b"[]".to_vec()]);
         ctrl.reset_iteration_count().await.unwrap();
     }
 
@@ -1536,7 +1475,7 @@ mod tests {
             .expect("lock must be reacquirable after exec_run");
     }
 
-    use loom_driver::bd::{Label, RunOutput};
+    use loom_driver::bd::RunOutput;
     use std::collections::VecDeque;
     use std::ffi::OsString;
     use std::sync::Mutex as StdMutex;
@@ -1584,238 +1523,6 @@ mod tests {
     /// `loom gate audit --tree` already feeds into
     /// `record_recovery_epics`. Mirroring the `runner.rs` `bead()` helper
     /// keeps the labels typed instead of as raw strings.
-    fn bead_with(id: &str, issue_type: &str, labels: &[&str]) -> Bead {
-        Bead {
-            id: BeadId::new(id).expect("valid bead id"),
-            title: format!("title for {id}"),
-            description: String::new(),
-            status: "open".into(),
-            priority: 2,
-            issue_type: issue_type.into(),
-            labels: labels.iter().map(|s| Label::new(*s)).collect(),
-            parent: None,
-            metadata: Default::default(),
-            notes: None,
-        }
-    }
-
-    /// Criterion 993 (specs/gate.md):
-    ///
-    /// > `loom gate audit --tree` (all-specs sweep) auto-creates a fresh
-    /// > recovery epic for each spec that has concerns but no
-    /// > `current_molecule` entry; bonds fix-ups to the new epic; writes
-    /// > the new pointer to state.db.
-    /// > [test](tree_scope_auto_creates_epics_for_missing_current_molecule_specs)
-    ///
-    /// The reviewer agent's contract at all-specs scope is to first
-    /// `bd create --type=epic --labels=spec:<X>` for any spec missing
-    /// from `current_molecule`, then `bd create --parent <new-epic>` for
-    /// the fix-up. The orchestrator's post-run capture snapshots epics
-    /// before and after the reviewer runs and writes each new epic
-    /// pointer through `StateDb::set_current_molecule`. This test
-    /// exercises the real state.db + the real
-    /// `ProductionReviewController::record_recovery_epics` round-trip:
-    /// pre-snapshot empty, post-snapshot carries one new `spec:alpha`
-    /// epic, the controller writes `current_molecule[alpha]` to the
-    /// state DB, and the captured pair surfaces to the orchestrator.
-    #[tokio::test]
-    async fn tree_scope_auto_creates_epics_for_missing_current_molecule_specs() {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path().to_path_buf();
-        let state = empty_state(&workspace);
-
-        // Sanity check the precondition: state.db has no entry for `alpha`.
-        assert_eq!(
-            state.current_molecule(&SpecLabel::new("alpha")).unwrap(),
-            None,
-            "test precondition: empty current_molecule for alpha",
-        );
-
-        let manifest = stub_manifest(&workspace);
-        let ctrl = ProductionReviewController::new(
-            BdClient::new(),
-            SpecLabel::new("alpha"),
-            PathBuf::from("/usr/bin/loom"),
-            workspace,
-            Arc::clone(&state),
-            manifest,
-            ProfileName::new("base"),
-            noop_spawn,
-        );
-
-        // Pre-snapshot: no recovery epics yet.
-        let pre = Vec::<Bead>::new();
-        // Post-snapshot: the reviewer agent has created one new recovery
-        // epic for spec `alpha`. The orchestrator captures it.
-        let post = vec![bead_with("wx-alphaep", "epic", &["spec:alpha"])];
-
-        let written = ctrl
-            .record_recovery_epics(&pre, &post)
-            .await
-            .expect("record_recovery_epics ok");
-
-        assert_eq!(
-            written,
-            vec![(SpecLabel::new("alpha"), MoleculeId::new("wx-alphaep"),)],
-            "orchestrator must surface the (spec, epic_id) pair so stdout can name them",
-        );
-        // The real state.db now points at the new epic — round-trip
-        // proves the writer wired through `StateDb::set_current_molecule`.
-        assert_eq!(
-            state.current_molecule(&SpecLabel::new("alpha")).unwrap(),
-            Some(MoleculeId::new("wx-alphaep")),
-            "current_molecule[alpha] must point at the new recovery epic in state.db",
-        );
-    }
-
-    /// Criterion 999 (specs/gate.md):
-    ///
-    /// > `loom gate audit --tree` (all-specs sweep) reuses existing
-    /// > `current_molecule` entries when set; bonds fix-ups to the
-    /// > recorded epic (re-opens transparently if closed); does NOT
-    /// > auto-create for specs that already have a pointer.
-    /// > [test](tree_scope_reuses_existing_current_molecule_when_set)
-    ///
-    /// When `current_molecule[X]` is already set, the reviewer agent
-    /// follows the threaded pointer via `bd create --parent <existing>`
-    /// for the fix-up — no new epic is created for X. The orchestrator's
-    /// post-run capture must NOT overwrite the existing pointer, even if
-    /// the agent happens to surface the existing epic in its actions.
-    /// This test seeds `current_molecule[alpha] = wx-existep`, has
-    /// the agent create only a fix-up bead (no new epic), and asserts
-    /// the pointer is unchanged and no auto-create surfaced.
-    #[tokio::test]
-    async fn tree_scope_reuses_existing_current_molecule_when_set() {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path().to_path_buf();
-        let state = empty_state(&workspace);
-
-        // Seed the existing recovery-epic pointer in state.db.
-        state
-            .set_current_molecule(&SpecLabel::new("alpha"), &MoleculeId::new("wx-existep"))
-            .unwrap();
-
-        let manifest = stub_manifest(&workspace);
-        let ctrl = ProductionReviewController::new(
-            BdClient::new(),
-            SpecLabel::new("alpha"),
-            PathBuf::from("/usr/bin/loom"),
-            workspace,
-            Arc::clone(&state),
-            manifest,
-            ProfileName::new("base"),
-            noop_spawn,
-        );
-
-        // Pre-snapshot already carries the existing recovery epic for
-        // alpha. The reviewer's only post-run change is a fix-up bead
-        // bonded under wx-existep — no new spec:alpha epic.
-        let pre = vec![bead_with("wx-existep", "epic", &["spec:alpha"])];
-        let post = vec![
-            bead_with("wx-existep", "epic", &["spec:alpha"]),
-            bead_with("wx-fixup.1", "bug", &["spec:alpha"]),
-        ];
-
-        let written = ctrl
-            .record_recovery_epics(&pre, &post)
-            .await
-            .expect("record_recovery_epics ok");
-
-        assert!(
-            written.is_empty(),
-            "no auto-create must surface when current_molecule is already set: {written:?}",
-        );
-        // The pointer is unchanged — the existing epic still wins.
-        assert_eq!(
-            state.current_molecule(&SpecLabel::new("alpha")).unwrap(),
-            Some(MoleculeId::new("wx-existep")),
-            "current_molecule[alpha] must still point at the existing recovery epic",
-        );
-    }
-
-    /// Edge case for the reuse path: even if the agent disregards the
-    /// template's reuse instruction and creates a fresh epic for a spec
-    /// that already has a `current_molecule` entry, the orchestrator
-    /// must NOT clobber the existing pointer. This is a defence in
-    /// depth — the template's `--parent <existing>` instruction is the
-    /// primary mechanism; the orchestrator's idempotent write is the
-    /// backstop. Pins the same behaviour as
-    /// [`tree_scope_reuses_existing_current_molecule_when_set`] but
-    /// stresses the orchestrator's behaviour when the agent
-    /// hypothetically misbehaves.
-    #[tokio::test]
-    async fn tree_scope_orchestrator_does_not_clobber_existing_current_molecule() {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path().to_path_buf();
-        let state = empty_state(&workspace);
-        state
-            .set_current_molecule(&SpecLabel::new("alpha"), &MoleculeId::new("wx-existep"))
-            .unwrap();
-
-        let manifest = stub_manifest(&workspace);
-        let ctrl = ProductionReviewController::new(
-            BdClient::new(),
-            SpecLabel::new("alpha"),
-            PathBuf::from("/usr/bin/loom"),
-            workspace,
-            Arc::clone(&state),
-            manifest,
-            ProfileName::new("base"),
-            noop_spawn,
-        );
-
-        let pre = vec![bead_with("wx-existep", "epic", &["spec:alpha"])];
-        // Agent created a *second* epic — orchestrator must skip writing
-        // since current_molecule[alpha] is already set.
-        let post = vec![
-            bead_with("wx-existep", "epic", &["spec:alpha"]),
-            bead_with("wx-renegade", "epic", &["spec:alpha"]),
-        ];
-        let written = ctrl.record_recovery_epics(&pre, &post).await.unwrap();
-        assert!(
-            written.is_empty(),
-            "must not write when pointer already set"
-        );
-        assert_eq!(
-            state.current_molecule(&SpecLabel::new("alpha")).unwrap(),
-            Some(MoleculeId::new("wx-existep")),
-        );
-    }
-
-    /// `record_recovery_epics` ignores new beads whose `issue_type` is
-    /// not `"epic"` — only recovery epics get captured into
-    /// `current_molecule`. A fix-up bug or task surfacing in the diff is
-    /// the agent's normal bonding output, not a pointer write.
-    #[tokio::test]
-    async fn record_recovery_epics_ignores_non_epic_new_beads() {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path().to_path_buf();
-        let state = empty_state(&workspace);
-        let manifest = stub_manifest(&workspace);
-        let ctrl = ProductionReviewController::new(
-            BdClient::new(),
-            SpecLabel::new("alpha"),
-            PathBuf::from("/usr/bin/loom"),
-            workspace,
-            Arc::clone(&state),
-            manifest,
-            ProfileName::new("base"),
-            noop_spawn,
-        );
-
-        let pre = Vec::<Bead>::new();
-        let post = vec![bead_with("wx-fixup.1", "bug", &["spec:alpha"])];
-        let written = ctrl.record_recovery_epics(&pre, &post).await.unwrap();
-        assert!(
-            written.is_empty(),
-            "non-epic new beads must not write pointers"
-        );
-        assert_eq!(
-            state.current_molecule(&SpecLabel::new("alpha")).unwrap(),
-            None,
-        );
-    }
-
     /// specs/gate.md § "Persistence boundary: agent narrates, agent persists":
     /// the review controller's `apply_clarify` only stamps the
     /// `loom:clarify` label — the canonical `## Options — …` block belongs
@@ -1891,9 +1598,6 @@ mod tests {
         let workspace = dir.path().to_path_buf();
         seed_empty_spec(&workspace, "gate");
         let state = seeded_state(&workspace, "gate", "wx-mol.1");
-        state
-            .set_current_molecule(&SpecLabel::new("gate"), &MoleculeId::new("wx-mol.1"))
-            .expect("seed current_molecule");
         let manifest = stub_manifest(&workspace);
 
         let show_body = br#"[{
@@ -1907,12 +1611,17 @@ mod tests {
         let scripted = ScriptedBd::new([
             RunOutput {
                 status: 0,
-                stdout: show_body.to_vec(),
+                stdout: show_body.to_vec(), // bd list (resolve_open_epic)
                 stderr: Vec::new(),
             },
             RunOutput {
                 status: 0,
-                stdout: Vec::new(),
+                stdout: show_body.to_vec(), // bd show
+                stderr: Vec::new(),
+            },
+            RunOutput {
+                status: 0,
+                stdout: Vec::new(), // bd update
                 stderr: Vec::new(),
             },
         ]);

@@ -27,27 +27,22 @@ Read: {{ spec_path }}
 - **Base commit**: {% match base_commit %}{% when Some with (commit) %}{{ commit }}{% when None %}—{% endmatch %}
 - **Molecule**: {% match molecule_id %}{% when Some with (id) %}{{ id }}{% when None %}—{% endmatch %}
 
-## Current Molecule Mapping
+## Recovery Epic Resolution
 
-The state DB's `current_molecule` table records the recovery epic each
-spec is currently bonding fix-ups to. Use the epic id as `bd create
---parent <epic_id>` for every fix-up bead you raise about that spec, so
-new beads land under the spec's active molecule instead of orphaned at
-the workspace root.
-
-{% if current_molecule.is_empty() %}_No `current_molecule` entries recorded._
-
-When this review runs at `--tree` (all-specs) scope and you raise a
-concern about a spec **not** in the map above, you MUST first create a
-fresh recovery epic for that spec, then bond the fix-up under it:
+The harness enforces "at most one open epic per spec". Resolve each
+spec's active epic on demand and bond every fix-up bead you raise under
+it via `--parent`:
 
 ```bash
-EPIC_ID=$(bd create \
-  --title="<spec> recovery" \
-  --type=epic \
-  --labels="spec:<spec>" \
-  --metadata "loom.base_commit=$(git rev-parse HEAD)" \
-  --silent)
+EPIC_ID=$(bd find --type=epic --label="spec:<spec>" --status=open --silent)
+if [ -z "$EPIC_ID" ]; then
+  EPIC_ID=$(bd create \
+    --title="<spec> recovery" \
+    --type=epic \
+    --labels="spec:<spec>" \
+    --metadata "loom.base_commit=$(git rev-parse HEAD)" \
+    --silent)
+fi
 bd create \
   --title="..." \
   --type=bug \
@@ -56,35 +51,6 @@ bd create \
   --silent
 ```
 
-The orchestrator snapshots epics labeled `spec:*` before and after this
-review; any new epic you create is captured into `current_molecule` at
-post-run so the next audit reuses it as `--parent`.
-{% else %}{% for (label, epic) in current_molecule %}- **spec:{{ label }}** → `bd create --parent {{ epic }}`
-{% endfor %}
-When this review runs at `--tree` (all-specs) scope and you raise a
-concern about a spec **not** listed above, you MUST first create a
-fresh recovery epic for that spec, then bond the fix-up under it:
-
-```bash
-EPIC_ID=$(bd create \
-  --title="<spec> recovery" \
-  --type=epic \
-  --labels="spec:<spec>" \
-  --metadata "loom.base_commit=$(git rev-parse HEAD)" \
-  --silent)
-bd create \
-  --title="..." \
-  --type=bug \
-  --labels="spec:<spec>,profile:base" \
-  --parent="$EPIC_ID" \
-  --silent
-```
-
-For specs listed above, do NOT auto-create — reuse the recorded epic
-id verbatim. The orchestrator captures any new epic you do create
-into `current_molecule` at post-run so the next audit reuses it as
-`--parent`.
-{% endif %}
 ## `[verify]` Sources
 
 The verdict gate just ran these `[verify]` scripts. Their full source is

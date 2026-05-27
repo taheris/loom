@@ -1,7 +1,5 @@
 //! `loom review` template: the LLM-judged rubric prompt.
 
-use std::collections::BTreeMap;
-
 use askama::Template;
 use loom_events::identifier::{MoleculeId, SpecLabel};
 
@@ -66,12 +64,4 @@ pub struct ReviewContext {
     /// Which lane(s) the agent is being asked to run. Drives the template's
     /// per-lane section gates.
     pub lane: ReviewLane,
-    /// Per-spec map of `current_molecule[<label>] = <epic_id>` entries
-    /// read from the state DB at prompt-build time. Rendered as the
-    /// `## Current Molecule Mapping` section so the reviewer agent can
-    /// use each `<epic_id>` as `bd create --parent <id>` when bonding
-    /// fix-ups under `--tree` scope. Empty at `--bead` / `--diff` scope
-    /// and at fresh `--tree` workspaces — the template renders an
-    /// auto-create fallback in that case.
-    pub current_molecule: BTreeMap<String, String>,
 }

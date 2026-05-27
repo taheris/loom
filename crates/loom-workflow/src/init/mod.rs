@@ -374,7 +374,7 @@ mod tests {
         // Iteration counter reset to 0 after rebuild.
         let db = StateDb::open(dir.path().join(".wrapix/loom/state.db"))?;
         let row = db
-            .active_molecule(&SpecLabel::new("alpha"))?
+            .molecule_for_spec(&SpecLabel::new("alpha"))?
             .ok_or_else(|| anyhow::anyhow!("active molecule must exist"))?;
         assert_eq!(row.iteration_count, 0);
         Ok(())
@@ -400,7 +400,7 @@ mod tests {
                 ));
             }
         }
-        assert!(db.active_molecule(&probe)?.is_none());
+        assert!(db.molecule_for_spec(&probe)?.is_none());
         assert!(db.companions(&probe)?.is_empty());
         assert!(db.current_spec()?.is_none());
         Ok(())
@@ -442,7 +442,7 @@ mod tests {
             .ok_or_else(|| anyhow!("current_spec was clobbered"))?;
         assert_eq!(current.as_str(), "alpha");
         let row = db
-            .active_molecule(&SpecLabel::new("alpha"))?
+            .molecule_for_spec(&SpecLabel::new("alpha"))?
             .ok_or_else(|| anyhow!("molecule row was clobbered"))?;
         assert_eq!(row.id.as_str(), "wx-mol.1");
         assert_eq!(

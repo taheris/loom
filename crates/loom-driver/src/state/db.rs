@@ -7,9 +7,9 @@ use crate::bd::BdError;
 use crate::identifier::{MoleculeId, SpecLabel};
 
 use super::error::StateError;
-use super::migrate::{MIGRATE_V4_TO_V5, MIGRATE_V5_TO_V6};
+use super::migrate::{MIGRATE_V4_TO_V5, MIGRATE_V5_TO_V6, MIGRATE_V6_TO_V7};
 
-const SCHEMA_VERSION: &str = "6";
+const SCHEMA_VERSION: &str = "7";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS specs (
@@ -26,8 +26,6 @@ CREATE TABLE IF NOT EXISTS companions (
     companion_path TEXT NOT NULL,
     PRIMARY KEY (spec_label, companion_path)
 );
--- `kind` lets one bead carry multiple categories of notes (default
--- `implementation`); the `loom note` CLI is the only writer.
 CREATE TABLE IF NOT EXISTS notes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     spec_label TEXT NOT NULL REFERENCES specs(label) ON DELETE CASCADE,
@@ -36,13 +34,6 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notes_spec_kind ON notes(spec_label, kind);
--- One row per spec, recording which epic bead is the spec's active
--- molecule pointer. The loom:active label is no longer consulted: this
--- table is the sole source of truth for that mapping.
-CREATE TABLE IF NOT EXISTS current_molecule (
-    spec_label TEXT PRIMARY KEY REFERENCES specs(label) ON DELETE CASCADE,
-    epic_id    TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -64,7 +55,6 @@ CREATE INDEX IF NOT EXISTS idx_notes_spec_kind ON notes(spec_label, kind);
 const MIGRATE_V3_TO_V4: &str = "ALTER TABLE specs DROP COLUMN implementation_notes;";
 
 const DROP_AND_RECREATE: &str = "
-DROP TABLE IF EXISTS current_molecule;
 DROP TABLE IF EXISTS notes;
 DROP TABLE IF EXISTS companions;
 DROP TABLE IF EXISTS molecules;
@@ -159,74 +149,37 @@ impl StateDb {
         })
     }
 
-    /// Most recent active molecule for the given spec, or `None` if there is
-    /// no active molecule. Resolves ties with `ORDER BY id ASC`.
-    pub fn active_molecule(&self, label: &SpecLabel) -> Result<Option<MoleculeRow>, StateError> {
+    /// Look up the cached `molecules` row by id, or `None` when no row
+    /// matches. The state DB caches one row per open epic at rebuild
+    /// time; hot-path resolution (`bd find --type=epic --label=spec:<X>
+    /// --status=open`) yields the id, and this accessor reads the
+    /// per-machine fields (`base_commit`, `iteration_count`) for it.
+    pub fn molecule(&self, id: &MoleculeId) -> Result<Option<MoleculeRow>, StateError> {
         let conn = self.lock_conn()?;
         conn.query_row(
             "SELECT id, spec_label, base_commit, iteration_count
-             FROM molecules WHERE spec_label = ?1 ORDER BY id ASC LIMIT 1",
-            params![label.as_str()],
+             FROM molecules WHERE id = ?1",
+            params![id.as_str()],
             row_to_molecule,
         )
         .optional()?
         .transpose()
     }
 
-    /// Read the `current_molecule` epic id for `label`, or `None` when
-    /// no pointer is recorded yet. Sole replacement for `bd list
-    /// --label=loom:active` lookups.
-    pub fn current_molecule(&self, label: &SpecLabel) -> Result<Option<MoleculeId>, StateError> {
+    /// Read the cached `molecules` row for the spec, if any. Cache-only —
+    /// the hot resolution path goes through `bd find` per the
+    /// at-most-one-open-epic-per-spec invariant. Used by read-only
+    /// listings (`loom status`) where a stale cache is acceptable.
+    pub fn molecule_for_spec(&self, label: &SpecLabel) -> Result<Option<MoleculeRow>, StateError> {
         let conn = self.lock_conn()?;
-        let value: Option<String> = conn
-            .query_row(
-                "SELECT epic_id FROM current_molecule WHERE spec_label = ?1",
-                params![label.as_str()],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?;
-        Ok(value.map(MoleculeId::new))
-    }
-
-    /// Read every `current_molecule` row as `(spec_label, epic_id)` pairs
-    /// ordered by spec_label. Drives the reviewer-template threading at
-    /// `loom gate audit --tree` scope: the template renders each pair so
-    /// the agent uses it as `bd create --parent <epic_id>` when bonding
-    /// fix-ups to the spec's recovery molecule.
-    pub fn list_current_molecule_entries(
-        &self,
-    ) -> Result<Vec<(SpecLabel, MoleculeId)>, StateError> {
-        let conn = self.lock_conn()?;
-        let mut stmt = conn
-            .prepare("SELECT spec_label, epic_id FROM current_molecule ORDER BY spec_label ASC")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (label, epic) = row?;
-            out.push((SpecLabel::new(label), MoleculeId::new(epic)));
-        }
-        Ok(out)
-    }
-
-    /// Upsert the `current_molecule` row for `label`, recording `epic_id`
-    /// as the spec's active molecule pointer. Inserts a `specs` row if
-    /// none exists yet so the foreign key holds on a fresh workspace.
-    pub fn set_current_molecule(
-        &self,
-        label: &SpecLabel,
-        epic_id: &MoleculeId,
-    ) -> Result<(), StateError> {
-        let conn = self.lock_conn()?;
-        conn.execute(
-            "INSERT OR IGNORE INTO specs(label) VALUES (?1)",
+        conn.query_row(
+            "SELECT id, spec_label, base_commit, iteration_count
+             FROM molecules WHERE spec_label = ?1",
             params![label.as_str()],
-        )?;
-        conn.execute(
-            "INSERT INTO current_molecule(spec_label, epic_id) VALUES (?1, ?2)
-             ON CONFLICT(spec_label) DO UPDATE SET epic_id = excluded.epic_id",
-            params![label.as_str(), epic_id.as_str()],
-        )?;
-        Ok(())
+            row_to_molecule,
+        )
+        .optional()?
+        .transpose()
     }
 
     /// Read the `current_spec` meta row.
@@ -539,6 +492,7 @@ fn apply_migrations(conn: &Connection) -> Result<(), StateError> {
             conn.execute_batch(MIGRATE_V3_TO_V4)?;
             conn.execute_batch(MIGRATE_V4_TO_V5)?;
             conn.execute_batch(MIGRATE_V5_TO_V6)?;
+            conn.execute_batch(MIGRATE_V6_TO_V7)?;
             write_schema_version(conn, SCHEMA_VERSION)?;
         }
         Some("2") => {
@@ -546,24 +500,32 @@ fn apply_migrations(conn: &Connection) -> Result<(), StateError> {
             conn.execute_batch(MIGRATE_V3_TO_V4)?;
             conn.execute_batch(MIGRATE_V4_TO_V5)?;
             conn.execute_batch(MIGRATE_V5_TO_V6)?;
+            conn.execute_batch(MIGRATE_V6_TO_V7)?;
             write_schema_version(conn, SCHEMA_VERSION)?;
         }
         Some("3") => {
             conn.execute_batch(MIGRATE_V3_TO_V4)?;
             conn.execute_batch(MIGRATE_V4_TO_V5)?;
             conn.execute_batch(MIGRATE_V5_TO_V6)?;
+            conn.execute_batch(MIGRATE_V6_TO_V7)?;
             write_schema_version(conn, SCHEMA_VERSION)?;
         }
         Some("4") => {
             conn.execute_batch(MIGRATE_V4_TO_V5)?;
             conn.execute_batch(MIGRATE_V5_TO_V6)?;
+            conn.execute_batch(MIGRATE_V6_TO_V7)?;
             write_schema_version(conn, SCHEMA_VERSION)?;
         }
         Some("5") => {
             conn.execute_batch(MIGRATE_V5_TO_V6)?;
+            conn.execute_batch(MIGRATE_V6_TO_V7)?;
             write_schema_version(conn, SCHEMA_VERSION)?;
         }
-        Some("6") => {}
+        Some("6") => {
+            conn.execute_batch(MIGRATE_V6_TO_V7)?;
+            write_schema_version(conn, SCHEMA_VERSION)?;
+        }
+        Some("7") => {}
         Some(other) => {
             return Err(StateError::UnknownSchemaVersion {
                 version: other.to_string(),

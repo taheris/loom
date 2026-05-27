@@ -157,6 +157,7 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
     let mut label_any: Vec<String> = Vec::new();
     let mut status_filter: Option<String> = None;
     let mut label_eq: Option<String> = None;
+    let mut type_filter: Option<String> = None;
     let mut want_json = false;
     let mut i = 0;
     while i < args.len() {
@@ -170,6 +171,9 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
         } else if let Some(v) = a.strip_prefix("--status=") {
             status_filter = Some(v.to_string());
             i += 1;
+        } else if let Some(v) = a.strip_prefix("--type=") {
+            type_filter = Some(v.to_string());
+            i += 1;
         } else if a == "--json" {
             want_json = true;
             i += 1;
@@ -181,6 +185,9 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
             i += 2;
         } else if a == "--status" {
             status_filter = Some(args.get(i + 1).cloned().unwrap_or_default());
+            i += 2;
+        } else if a == "--type" {
+            type_filter = Some(args.get(i + 1).cloned().unwrap_or_default());
             i += 2;
         } else {
             eprintln!("bd-shim: list: unsupported flag {a}");
@@ -204,6 +211,11 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
         }
         if let Some(want) = &status_filter
             && read_field(state_dir, &id, "status").trim() != want
+        {
+            continue;
+        }
+        if let Some(want) = &type_filter
+            && read_field(state_dir, &id, "issue_type").trim() != want
         {
             continue;
         }

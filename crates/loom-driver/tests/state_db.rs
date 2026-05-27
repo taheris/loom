@@ -49,18 +49,16 @@ fn state_db_init_creates_tables() -> Result<()> {
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
     )?;
     let names: Vec<&str> = tables.iter().map(|r| r[0].as_str()).collect();
-    for expected in [
-        "companions",
-        "current_molecule",
-        "meta",
-        "molecules",
-        "specs",
-    ] {
+    for expected in ["companions", "meta", "molecules", "specs"] {
         assert!(
             names.contains(&expected),
             "expected table {expected}: {names:?}"
         );
     }
+    assert!(
+        !names.contains(&"current_molecule"),
+        "current_molecule must not exist on a fresh v7 schema: {names:?}",
+    );
 
     let meta = list_table(
         &db_path,
@@ -68,7 +66,7 @@ fn state_db_init_creates_tables() -> Result<()> {
     )?;
     assert_eq!(
         meta,
-        vec![vec!["schema_version".to_string(), "6".to_string()]]
+        vec![vec!["schema_version".to_string(), "7".to_string()]]
     );
     Ok(())
 }
@@ -95,13 +93,13 @@ fn state_db_rebuild_populates_specs_and_molecules() -> Result<()> {
     assert_eq!(alpha.label.as_str(), "alpha");
 
     let mol = db
-        .active_molecule(&SpecLabel::new("alpha"))?
+        .molecule_for_spec(&SpecLabel::new("alpha"))?
         .context("molecule should be present after rebuild")?;
     assert_eq!(mol.id.as_str(), "wx-alpha");
     assert_eq!(mol.base_commit.as_deref(), Some("abc123"));
     assert_eq!(mol.iteration_count, 0);
 
-    assert!(db.active_molecule(&SpecLabel::new("beta"))?.is_none());
+    assert!(db.molecule_for_spec(&SpecLabel::new("beta"))?.is_none());
     Ok(())
 }
 
@@ -158,86 +156,122 @@ fn state_db_rebuild_resets_counters() -> Result<()> {
 
     db.rebuild(workspace, &molecules)?;
     let mol = db
-        .active_molecule(&SpecLabel::new("alpha"))?
+        .molecule_for_spec(&SpecLabel::new("alpha"))?
         .context("molecule still present after rebuild")?;
     assert_eq!(mol.iteration_count, 0);
     Ok(())
 }
 
+/// `StateDb::open` on a fresh DB must NOT carry the obsolete
+/// `current_molecule` table. The at-most-one-open-epic-per-spec
+/// invariant collapses resolution into a single `bd find` query, so
+/// the pointer table is dead code; this test pins that the schema
+/// reflects the new model.
 #[test]
-fn state_current_molecule_round_trips() -> Result<()> {
+fn current_molecule_table_does_not_exist() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db = StateDb::open(dir.path().join("state.db"))?;
-    let label = SpecLabel::new("gate");
-    assert!(db.current_molecule(&label)?.is_none());
-
-    let epic = MoleculeId::new("wx-mol.1");
-    db.set_current_molecule(&label, &epic)?;
-    assert_eq!(db.current_molecule(&label)?, Some(epic));
-    Ok(())
-}
-
-#[test]
-fn list_current_molecule_entries_returns_every_pair_sorted_by_label() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let db = StateDb::open(dir.path().join("state.db"))?;
-
-    // Empty table → empty result.
-    assert!(db.list_current_molecule_entries()?.is_empty());
-
-    // Three entries written out of order; the accessor returns them
-    // sorted by spec_label so the reviewer-template render is
-    // deterministic across runs.
-    db.set_current_molecule(&SpecLabel::new("gamma"), &MoleculeId::new("wx-gam.1"))?;
-    db.set_current_molecule(&SpecLabel::new("alpha"), &MoleculeId::new("wx-alp.1"))?;
-    db.set_current_molecule(&SpecLabel::new("beta"), &MoleculeId::new("wx-bet.1"))?;
-
-    let entries = db.list_current_molecule_entries()?;
-    assert_eq!(
-        entries,
-        vec![
-            (SpecLabel::new("alpha"), MoleculeId::new("wx-alp.1")),
-            (SpecLabel::new("beta"), MoleculeId::new("wx-bet.1")),
-            (SpecLabel::new("gamma"), MoleculeId::new("wx-gam.1")),
-        ],
+    let db_path = dir.path().join("state.db");
+    let _db = StateDb::open(&db_path)?;
+    let rows = list_table(
+        &db_path,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='current_molecule'",
+    )?;
+    assert!(
+        rows.is_empty(),
+        "current_molecule table must not exist on a v7 schema: {rows:?}",
     );
     Ok(())
 }
 
+/// Opening an existing v6 DB that still carries the `current_molecule`
+/// table must transparently drop the table and advance the schema
+/// version to `7` without losing data in the other tables.
 #[test]
-fn state_current_molecule_upsert_is_idempotent() -> Result<()> {
+fn state_db_open_migrates_v6_drops_current_molecule() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let db = StateDb::open(dir.path().join("state.db"))?;
-    let label = SpecLabel::new("gate");
+    let db_path = dir.path().join("state.db");
 
-    let first = MoleculeId::new("wx-mol.1");
-    db.set_current_molecule(&label, &first)?;
-    db.set_current_molecule(&label, &first)?;
-    assert_eq!(db.current_molecule(&label)?, Some(first));
+    // Hand-build a v6 DB whose `current_molecule` table carries one
+    // pointer, plus rows in the unrelated tables that must survive the
+    // v6→v7 migration.
+    {
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute_batch(
+            "CREATE TABLE specs (label TEXT PRIMARY KEY);
+            CREATE TABLE molecules (
+                id              TEXT PRIMARY KEY,
+                spec_label      TEXT NOT NULL REFERENCES specs(label),
+                base_commit     TEXT,
+                iteration_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE companions (
+                spec_label     TEXT NOT NULL REFERENCES specs(label),
+                companion_path TEXT NOT NULL,
+                PRIMARY KEY (spec_label, companion_path)
+            );
+            CREATE TABLE notes (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                spec_label TEXT NOT NULL REFERENCES specs(label) ON DELETE CASCADE,
+                kind       TEXT NOT NULL,
+                text       TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX idx_notes_spec_kind ON notes(spec_label, kind);
+            CREATE TABLE current_molecule (
+                spec_label TEXT PRIMARY KEY REFERENCES specs(label) ON DELETE CASCADE,
+                epic_id    TEXT NOT NULL
+            );
+            CREATE TABLE meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO meta(key, value) VALUES ('schema_version', '6');
+            INSERT INTO meta(key, value) VALUES ('current_spec', 'alpha');
+            INSERT INTO specs(label) VALUES ('alpha');
+            INSERT INTO molecules(id, spec_label, base_commit, iteration_count)
+              VALUES ('wx-alpha', 'alpha', 'deadbeef', 3);
+            INSERT INTO companions(spec_label, companion_path)
+              VALUES ('alpha', 'lib/a/');
+            INSERT INTO current_molecule(spec_label, epic_id)
+              VALUES ('alpha', 'wx-mol.1');",
+        )?;
+    }
 
-    let second = MoleculeId::new("wx-mol.2");
-    db.set_current_molecule(&label, &second)?;
-    assert_eq!(db.current_molecule(&label)?, Some(second));
-    Ok(())
-}
+    let db = StateDb::open(&db_path)?;
 
-#[test]
-fn state_current_molecule_cascades_on_spec_delete() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let workspace = dir.path();
-    write_spec(workspace, "gate", "# gate\n")?;
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
-    db.rebuild(workspace, &[])?;
-    let label = SpecLabel::new("gate");
-    let epic = MoleculeId::new("wx-mol.7");
-    db.set_current_molecule(&label, &epic)?;
-    assert_eq!(db.current_molecule(&label)?, Some(epic));
+    let version = list_table(
+        &db_path,
+        "SELECT value FROM meta WHERE key='schema_version'",
+    )?;
+    assert_eq!(
+        version,
+        vec![vec!["7".to_string()]],
+        "schema_version must advance to 7",
+    );
 
-    // A subsequent rebuild that omits the spec deletes the specs row;
-    // ON DELETE CASCADE must clear the current_molecule pointer with it.
-    std::fs::remove_file(workspace.join("specs/gate.md"))?;
-    db.rebuild(workspace, &[])?;
-    assert!(db.current_molecule(&label)?.is_none());
+    let surviving = list_table(
+        &db_path,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='current_molecule'",
+    )?;
+    assert!(
+        surviving.is_empty(),
+        "current_molecule table must be dropped after v6→v7 migration: {surviving:?}",
+    );
+
+    // Unrelated rows survive the migration.
+    let alpha = db.spec(&SpecLabel::new("alpha"))?;
+    assert_eq!(alpha.label.as_str(), "alpha");
+    let mol = db
+        .molecule_for_spec(&SpecLabel::new("alpha"))?
+        .context("molecules row must survive")?;
+    assert_eq!(mol.id.as_str(), "wx-alpha");
+    assert_eq!(mol.base_commit.as_deref(), Some("deadbeef"));
+    assert_eq!(mol.iteration_count, 3);
+    assert_eq!(db.companions(&SpecLabel::new("alpha"))?, vec!["lib/a/"]);
+    assert_eq!(
+        db.current_spec()?.map(|s| s.to_string()),
+        Some("alpha".to_string()),
+    );
     Ok(())
 }
 
@@ -293,7 +327,7 @@ fn state_set_and_reset_iteration_round_trip() -> Result<()> {
     let mol_id = MoleculeId::new("wx-alpha");
     db.set_iteration(&mol_id, 3)?;
     assert_eq!(
-        db.active_molecule(&SpecLabel::new("alpha"))?
+        db.molecule_for_spec(&SpecLabel::new("alpha"))?
             .context("molecule present")?
             .iteration_count,
         3
@@ -301,7 +335,7 @@ fn state_set_and_reset_iteration_round_trip() -> Result<()> {
 
     db.reset_iteration(&mol_id)?;
     assert_eq!(
-        db.active_molecule(&SpecLabel::new("alpha"))?
+        db.molecule_for_spec(&SpecLabel::new("alpha"))?
             .context("molecule present")?
             .iteration_count,
         0
@@ -358,7 +392,7 @@ fn state_db_open_migrates_v1_to_v2() -> Result<()> {
         &db_path,
         "SELECT value FROM meta WHERE key='schema_version'",
     )?;
-    assert_eq!(meta, vec![vec!["6".to_string()]]);
+    assert_eq!(meta, vec![vec!["7".to_string()]]);
 
     let cols = list_table(&db_path, "PRAGMA table_info(specs)")?;
     let names: Vec<&str> = cols.iter().map(|r| r[1].as_str()).collect();
@@ -394,7 +428,7 @@ fn state_db_open_is_idempotent_after_migration() -> Result<()> {
         &db_path,
         "SELECT value FROM meta WHERE key='schema_version'",
     )?;
-    assert_eq!(meta, vec![vec!["6".to_string()]]);
+    assert_eq!(meta, vec![vec!["7".to_string()]]);
     Ok(())
 }
 
@@ -668,7 +702,7 @@ fn open_wipes_legacy_todo_cursor_meta_keys() -> Result<()> {
         &db_path,
         "SELECT value FROM meta WHERE key='schema_version'",
     )?;
-    assert_eq!(version, vec![vec!["6".to_string()]]);
+    assert_eq!(version, vec![vec!["7".to_string()]]);
 
     let legacy = list_table(
         &db_path,
@@ -727,7 +761,7 @@ fn consume_notes_and_advance_base_commit_is_atomic() -> Result<()> {
         "rollback must keep the implementation notes intact",
     );
     let mol = db
-        .active_molecule(&label)?
+        .molecule_for_spec(&label)?
         .context("molecule must survive rollback")?;
     assert_eq!(
         mol.base_commit,
@@ -749,7 +783,7 @@ fn consume_notes_and_advance_base_commit_is_atomic() -> Result<()> {
         "non-implementation kinds must survive the gate",
     );
     let mol = db
-        .active_molecule(&label)?
+        .molecule_for_spec(&label)?
         .context("molecule lookup after commit")?;
     assert_eq!(
         mol.base_commit,

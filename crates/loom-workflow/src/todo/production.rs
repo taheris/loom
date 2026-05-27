@@ -66,7 +66,10 @@ impl<R: CommandRunner> ProductionTodoController<R> {
     }
 
     async fn build_prompt(&self) -> Result<String, TodoError> {
-        let active_mol = self.state.active_molecule(&self.label)?;
+        let active_mol = match crate::resolve::resolve_open_epic(&self.bd, &self.label).await? {
+            Some(id) => self.state.molecule(&id)?,
+            None => None,
+        };
         let molecule_id = active_mol.as_ref().map(|m| m.id.clone());
         // Tolerate a missing spec row — tier-4 first-touch doesn't run plan
         // before todo. Notes are sourced from the `notes` table below.
@@ -91,7 +94,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let spec_path = PathBuf::from("specs").join(format!("{}.md", self.label.as_str()));
         let sibling_base = |label: &SpecLabel| -> Option<String> {
             self.state
-                .active_molecule(label)
+                .molecule_for_spec(label)
                 .ok()
                 .flatten()
                 .and_then(|m| m.base_commit)
@@ -199,9 +202,9 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         // label + status=blocked transition so `bd ready` excludes the
         // epic until a human resolves via `loom msg`.
         if matches!(marker, Some(ExitSignal::Clarify { .. }))
-            && let Some(mol) = self.state.active_molecule(&self.label)?
+            && let Some(mol_id) = crate::resolve::resolve_open_epic(&self.bd, &self.label).await?
         {
-            let bead_id = BeadId::new(mol.id.as_str()).map_err(BdError::CreateInvalidId)?;
+            let bead_id = BeadId::new(mol_id.as_str()).map_err(BdError::CreateInvalidId)?;
             self.bd
                 .update(
                     &bead_id,
@@ -214,7 +217,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
                 .await?;
             info!(
                 label = %self.label,
-                epic = %mol.id,
+                epic = %mol_id,
                 "loom todo: LOOM_CLARIFY routed to molecule epic",
             );
         }
@@ -227,7 +230,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             );
             return Ok(());
         }
-        let Some(mol) = self.state.active_molecule(&self.label)? else {
+        let Some(mol_id) = crate::resolve::resolve_open_epic(&self.bd, &self.label).await? else {
             warn!(
                 label = %self.label,
                 "loom todo: productive completion observed but no active molecule — base_commit and notes unchanged",
@@ -262,11 +265,11 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             })
         });
         self.state
-            .consume_notes_and_refresh_base_commit(&self.label, &mol.id, &head, bd_update)?;
+            .consume_notes_and_refresh_base_commit(&self.label, &mol_id, &head, bd_update)?;
         info!(
             label = %self.label,
             head = %head,
-            mol_id = %mol.id,
+            mol_id = %mol_id,
             marker = ?marker,
             "loom todo: implementation notes consumed and base_commit refreshed atomically",
         );

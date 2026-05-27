@@ -53,4 +53,7 @@ pub enum ReviewError {
 
     /// failed to load `[verify]`/`[judge]` sources for review prompt
     Spec(#[from] SpecError),
+
+    /// spec → molecule resolution failed
+    Resolve(#[from] crate::resolve::ResolveError),
 }

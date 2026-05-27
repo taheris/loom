@@ -29,12 +29,14 @@ pub enum StatusError {
     State(#[from] StateError),
 }
 
-/// Read [`current_spec`](StateDb::current_spec) and — if present — the active
-/// molecule for that spec from `db`. Read-only.
+/// Read [`current_spec`](StateDb::current_spec) and — if present — the
+/// cached molecule row for that spec from `db`. Read-only; the
+/// per-machine cache is acceptable here because `loom status` is a
+/// non-load-bearing listing.
 pub fn load(db: &StateDb) -> Result<StatusReport, StatusError> {
     let current = db.current_spec()?;
     let molecule = match &current {
-        Some(label) => db.active_molecule(label)?,
+        Some(label) => db.molecule_for_spec(label)?,
         None => None,
     };
     Ok(StatusReport {

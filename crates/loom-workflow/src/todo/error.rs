@@ -43,4 +43,7 @@ pub enum TodoError {
 
     /// bd client failure
     Bd(#[from] BdError),
+
+    /// spec → molecule resolution failed
+    Resolve(#[from] crate::resolve::ResolveError),
 }

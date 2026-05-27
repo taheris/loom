@@ -120,7 +120,10 @@ fn commit_all(workspace: &Path, msg: &str) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-/// Seed a bd-shim bead directory at `state_dir/<id>/`.
+/// Seed a bd-shim bead directory at `state_dir/<id>/` as an `epic`.
+/// The push-gate review controller resolves the molecule via
+/// `bd find --type=epic --label=spec:<X> --status=open`, so a `task`
+/// seed would not surface as a recovery epic.
 fn seed_bead(state_dir: &Path, id: &str, title: &str, description: &str, labels: &[&str]) {
     let bead_dir = state_dir.join(id);
     std::fs::create_dir_all(&bead_dir).expect("mkdir bead dir");
@@ -128,7 +131,7 @@ fn seed_bead(state_dir: &Path, id: &str, title: &str, description: &str, labels:
     std::fs::write(bead_dir.join("description"), description).expect("write description");
     std::fs::write(bead_dir.join("status"), "open").expect("write status");
     std::fs::write(bead_dir.join("priority"), "2").expect("write priority");
-    std::fs::write(bead_dir.join("issue_type"), "task").expect("write issue_type");
+    std::fs::write(bead_dir.join("issue_type"), "epic").expect("write issue_type");
     std::fs::write(bead_dir.join("labels"), labels.join("\n")).expect("write labels");
 }
 
@@ -186,7 +189,8 @@ fn write_minimal_manifest(workspace: &Path) -> PathBuf {
 /// `base_commit` points at `base_sha`. `ProductionReviewController`'s
 /// `integrity_findings()` short-circuits to an empty list when this row
 /// is missing, so every scenario that wants to exercise the integrity
-/// branch must call this with a real seed commit.
+/// branch must call this with a real seed commit. Resolution itself
+/// goes through `bd find` against the bd-shim's epic bead seed.
 fn seed_active_molecule(workspace: &Path, label: &str, mol_id: &str, base_sha: &str) {
     std::fs::create_dir_all(workspace.join(".wrapix/loom")).expect("mkdir state dir");
     let db = StateDb::open(workspace.join(".wrapix/loom/state.db")).expect("open state.db");
@@ -199,8 +203,6 @@ fn seed_active_molecule(workspace: &Path, label: &str, mol_id: &str, base_sha: &
         }],
     )
     .expect("rebuild state.db");
-    db.set_current_molecule(&SpecLabel::new(label), &MoleculeId::new(mol_id))
-        .expect("seed current_molecule");
     drop(db);
 }
 
