@@ -19,8 +19,14 @@ const RULE: &str = "templates_no_removed_surface — templates must not name \
 const TEMPLATE_DIR: &str = "crates/loom-templates/templates";
 
 const REMOVED_TOKENS: &[(&str, &str)] = &[
-    ("loom run", "renamed to `loom loop` per specs/harness.md Removed surface"),
-    ("loom check", "renamed to `loom gate` per specs/harness.md Removed surface"),
+    (
+        "loom run",
+        "renamed to `loom loop` per specs/harness.md Removed surface",
+    ),
+    (
+        "loom check",
+        "renamed to `loom gate` per specs/harness.md Removed surface",
+    ),
 ];
 
 pub fn run(input: &WalkInput) -> Verdict {
@@ -75,4 +81,3 @@ fn has_word_boundary_match(haystack: &str, needle: &str) -> bool {
     }
     false
 }
-
