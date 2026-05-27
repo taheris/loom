@@ -95,18 +95,28 @@ between host orchestrator and sandboxed agent.
 `loom loop --parallel N`:
 
 1. Pull up to N ready beads (`bd ready --limit=N`).
-2. For each bead, create a git worktree at
-   `.wrapix/worktree/<label>/<bead-id>/` on a fresh branch
-   `loom/<label>/<bead-id>` based on HEAD.
-3. Spawn one `wrapix spawn --spawn-config <file> --stdio` per worktree
+2. For each bead, create a per-bead workspace at
+   `.wrapix/worktree/<label>/<bead-id>/` via `git clone --local
+   <main-workdir> <bead-workdir>`, then `git -C <bead-workdir>
+   checkout -b loom/<label>/<bead-id>`. The clone's `.git/` is a
+   regular directory inside the workspace (not a worktree pointer
+   file), so the wrapix container's bind-mount of `<bead-workdir>` as
+   `/workspace` carries a self-contained git repository — workers
+   inside the container can commit without external `.git/`-mount
+   wiring.
+3. Spawn one `wrapix spawn --spawn-config <file> --stdio` per workspace
    (concurrently when `N > 1`). Each container's workdir bind mount
-   points at the worktree path, not the main checkout.
+   points at the per-bead workspace, not the main checkout.
 4. Await all bead futures and collect per-bead results.
-5. Merge finished bead branches back to the driver branch **sequentially**
-   (single-threaded merge avoids index lock contention). On merge conflict,
-   the bead is marked failed and the worktree is preserved for inspection.
-6. On agent failure, the worktree branch is cleaned up (deleted) and the
-   bead is retried per the retry policy.
+5. **Sequentially**, push each successful bead branch from its clone
+   back to the main repo (`git -C <bead-workdir> push origin
+   loom/<label>/<bead-id>`), then merge it into the driver branch
+   (single-threaded merge avoids index lock contention). On merge
+   conflict, the bead is marked failed and the workspace is preserved
+   for inspection.
+6. On agent failure, the bead's workspace is removed (the bead branch
+   never reached the main repo, so there is no branch ref to delete)
+   and the bead is retried per the retry policy.
 
 **Universal isolation.** The main checkout is never the workdir for a
 bead's session — commits land in the driver branch only via the
@@ -130,8 +140,9 @@ typed Rust methods.
 | List refs / branches | `gix::Repository::references()` | mature |
 | Read commit graph / HEAD | `gix` | mature |
 | List worktrees | `gix::Repository::worktrees()` | mature (open/iter only) |
-| **Create worktree + branch** | `git worktree add -b` (CLI) | `gix` worktree create/remove unchecked in `crate-status.md` |
-| **Remove / prune worktree** | `git worktree remove` / `prune` (CLI) | same |
+| **Create per-bead workspace + branch** | `git clone --local` then `git checkout -b` (CLI) | self-contained `.git/` inside the workspace; workers in the wrapix container can resolve gitdir without an extra `.git/`-mount. `gix-clone` is unchecked in `crate-status.md` |
+| **Push bead branch to origin** | `git push origin <branch>` (CLI) | run from the bead's clone after a successful agent session so `merge_branch` can fold the bead's work into the driver branch |
+| **Remove per-bead workspace** | `std::fs::remove_dir_all` | a clone is a standalone tree (not a registered worktree), so cleanup is recursive directory removal — no `git worktree remove`/`prune` |
 | **Merge bead branch back** | `git merge` (CLI) | `gix-merge` writes a merged tree but cannot persist `MERGE_HEAD`/`MERGE_MSG` (unchecked); avoids reimplementing the index dance |
 
 `gix` 0.83+ is pinned with features `["status", "blob-diff", "revision",

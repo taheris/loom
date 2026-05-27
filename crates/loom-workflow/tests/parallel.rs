@@ -176,14 +176,14 @@ async fn parallel_run_two_beads_e2e() -> Result<()> {
         assert_eq!(slot.worktree.path, expected_path);
         assert_eq!(slot.worktree.branch, format!("loom/harness/{}", bead.id));
         assert_eq!(slot.bead.id, bead.id);
-    }
-
-    let listed = client.worktrees().await?;
-    for slot in &slots {
+        // Path A (specs/harness.md § Worktree Dispatch): each workspace is a
+        // self-contained clone — its `.git/` is a regular directory inside
+        // the bind-mounted path so the wrapix container can resolve gitdir.
         assert!(
-            listed.iter().any(|w| w.path == slot.worktree.path),
-            "gix worktrees() must list {:?}",
-            slot.worktree.path,
+            slot.worktree.path.join(".git").is_dir(),
+            ".git inside the bead workspace must be a regular directory, \
+             not a worktree pointer file: got {:?}",
+            slot.worktree.path.join(".git"),
         );
     }
     Ok(())

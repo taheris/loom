@@ -194,27 +194,18 @@ where
             self.stashed_previous_failure = None;
             None
         };
-        // Sequential dispatch runs the agent against the driver's workdir
-        // directly. Per-bead worktrees are disabled here because the wrapix
-        // container only bind-mounts the worker workspace as `/workspace`,
-        // and a linked worktree's `.git` file is a host-absolute pointer to
-        // `<main>/.git/worktrees/<name>/` which sits outside that mount —
-        // so `git` inside the container cannot resolve the gitdir. Restore
-        // worktree dispatch once the SpawnConfig grows an extra-mounts field
-        // (or workers run against a self-contained clone) and the container
-        // can reach the host gitdir.
-        //
-        // The empty `branch` is a sentinel: it signals main-workdir mode to
-        // the merge / cleanup short-circuits below, where worktree-specific
-        // git operations would otherwise self-merge or no-op-delete.
-        let worktree = CreatedWorktree {
-            path: self.workspace.clone(),
-            branch: String::new(),
-        };
+        // Dispatch each bead against its own clone-backed workspace under
+        // `.wrapix/worktree/<label>/<bead-id>/` (per `specs/harness.md`
+        // § Worktree Dispatch — Path A). The clone's `.git/` is a regular
+        // directory inside the bind-mounted path, so workers inside the
+        // wrapix container can commit and the driver can fold the work
+        // back via push + merge_branch on clean exit.
+        let worktree = self.git.create_worktree(&self.label, &bead.id).await?;
         info!(
             bead = %bead.id,
             path = %worktree.path.display(),
-            "dispatching agent against driver workdir (worktree dispatch disabled)",
+            branch = %worktree.branch,
+            "dispatching agent against per-bead workspace",
         );
 
         let key = resolve_scratch_key(Phase::Run, &self.label, Some(&bead.id));
@@ -295,43 +286,39 @@ where
 
         let outcome = classify_session(session, marker);
         if outcome == AgentOutcome::Success {
-            // Tree-clean check applies only in worktree-dispatch mode (the
-            // worktree starts empty so any dirty entry is agent leftover).
-            // When dispatching against the driver's workdir, pre-existing
-            // state would falsely flag every bead — skip the check.
-            if !worktree.branch.is_empty() {
-                // Tree-clean precedes verify-fail / review-concern per
-                // `specs/harness.md` § Verdict Gate. Running verifiers against
-                // a half-staged tree would conflate the agent's intended diff
-                // with its leftover scratch.
-                let porcelain = self.git.status_porcelain_at(&worktree.path).await?;
-                let dirty = dirty_paths_from_porcelain(&porcelain);
-                if !dirty.is_empty() {
-                    warn!(
-                        bead = %bead.id,
-                        dirty_count = dirty.len(),
-                        "tree-not-clean: cleaning worktree and stashing TreeNotClean for the next attempt",
-                    );
-                    cleanup_worktree(&self.git, &worktree).await?;
-                    self.stashed_previous_failure =
-                        Some(PreviousFailure::TreeNotClean { dirty_paths: dirty });
-                    return Ok(AgentOutcome::Failure {
-                        error: "tree-not-clean".to_string(),
-                    });
-                }
+            // Tree-clean precedes verify-fail / review-concern per
+            // `specs/harness.md` § Verdict Gate. The per-bead clone
+            // starts empty by construction (see `create_worktree`), so
+            // any dirty porcelain entry is necessarily agent leftover —
+            // running verifiers against a half-staged tree would
+            // conflate the agent's intended diff with its leftover
+            // scratch.
+            let porcelain = self.git.status_porcelain_at(&worktree.path).await?;
+            let dirty = dirty_paths_from_porcelain(&porcelain);
+            if !dirty.is_empty() {
+                warn!(
+                    bead = %bead.id,
+                    dirty_count = dirty.len(),
+                    "tree-not-clean: cleaning worktree and stashing TreeNotClean for the next attempt",
+                );
+                cleanup_worktree(&self.git, &worktree).await?;
+                self.stashed_previous_failure =
+                    Some(PreviousFailure::TreeNotClean { dirty_paths: dirty });
+                return Ok(AgentOutcome::Failure {
+                    error: "tree-not-clean".to_string(),
+                });
             }
-            // Driver-workdir dispatch: agent commits already land on the
-            // driver branch, so there is no separate bead branch to merge.
-            // Short-circuit to `MergeResult::Ok` so the success path runs
-            // unchanged.
-            let merge_result = if worktree.branch.is_empty() {
-                MergeResult::Ok
-            } else {
-                self.git.merge_branch(&worktree.branch).await?
-            };
+            // Push the bead branch from the clone back to its origin (the
+            // main repo) so `merge_branch` can fold it into the driver
+            // branch. Path A from `harness.md` § Worktree Dispatch.
+            self.git
+                .push_branch_to_origin(&worktree.path, &worktree.branch)
+                .await?;
+            let merge_result = self.git.merge_branch(&worktree.branch).await?;
             match merge_result {
                 MergeResult::Ok => {
-                    cleanup_worktree(&self.git, &worktree).await?;
+                    self.git.remove_worktree(&worktree.path).await?;
+                    self.git.delete_branch(&worktree.branch).await?;
                     Ok(AgentOutcome::Success)
                 }
                 MergeResult::Conflict => {
@@ -477,19 +464,14 @@ where
     }
 }
 
-/// Remove the per-bead worktree and force-delete its branch. Used by the
-/// run-phase verdict gate on every non-merged exit path (agent failure,
-/// tree-not-clean recovery, profile-resolution failure) so a stale worktree
-/// or branch never survives a bead's retry chain.
+/// Remove the per-bead clone directory. Used by the run-phase verdict gate
+/// on every non-merged exit path (agent failure, tree-not-clean recovery,
+/// profile-resolution failure) so a stale workspace never survives a bead's
+/// retry chain. The bead branch lives only inside the clone (it is pushed
+/// back to the main repo on the success path), so removing the clone
+/// directory is sufficient — no `git branch -D` is needed.
 async fn cleanup_worktree(git: &GitClient, worktree: &CreatedWorktree) -> Result<(), LoopError> {
-    // Driver-workdir dispatch: no separate worktree to remove and no
-    // bead branch to delete; the sentinel empty branch string signals
-    // this mode. Skip both git operations.
-    if worktree.branch.is_empty() {
-        return Ok(());
-    }
     git.remove_worktree(&worktree.path).await?;
-    git.delete_branch(&worktree.branch).await?;
     Ok(())
 }
 

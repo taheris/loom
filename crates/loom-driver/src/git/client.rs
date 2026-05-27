@@ -141,8 +141,18 @@ impl GitClient {
         .await?
     }
 
-    /// Create a new linked worktree at `.wrapix/worktree/<label>/<bead_id>/`
-    /// on a fresh branch `loom/<label>/<bead_id>` based on `HEAD`.
+    /// Create a per-bead workspace at `.wrapix/worktree/<label>/<bead_id>/`
+    /// containing a `git clone --local` of the main repo, with a fresh
+    /// branch `loom/<label>/<bead_id>` checked out.
+    ///
+    /// Path A from `specs/harness.md § Worktree Dispatch`: the per-bead
+    /// workspace is a self-contained clone — its `.git/` is a regular
+    /// directory inside the bind-mounted path, so workers running in the
+    /// wrapix container can resolve the gitdir, commit, and (driver-side)
+    /// the bead branch is pushed back to the main repo for merge-back.
+    /// Linked worktrees were rejected here because a worktree's `.git`
+    /// file points at a host-absolute path outside the container's
+    /// `/workspace` bind-mount.
     pub async fn create_worktree(
         &self,
         label: &SpecLabel,
@@ -157,18 +167,43 @@ impl GitClient {
             std::fs::create_dir_all(parent)?;
         }
 
-        let path_arg: OsString = path.clone().into();
+        let src_arg: OsString = self.workdir.clone().into();
+        let dst_arg: OsString = path.clone().into();
         run_git(
             &self.workdir,
             self.clock.as_ref(),
-            ["worktree", "add", "-b", &branch],
-            Some(&path_arg),
+            [
+                OsString::from("clone"),
+                OsString::from("--local"),
+                OsString::from("--quiet"),
+                src_arg,
+                dst_arg,
+            ],
+            None,
         )
         .await?;
 
-        // Hard-link the host's dolt socket into the worktree so bd inside
-        // the wrapix container (which only sees the worktree bind-mounted
-        // at /workspace) finds a working endpoint at the path
+        // Disable signing inside the clone so worker-side commits do not
+        // require GPG keys the bead container may not have.
+        run_git(
+            &path,
+            self.clock.as_ref(),
+            ["config", "commit.gpgsign", "false"],
+            None,
+        )
+        .await?;
+
+        run_git(
+            &path,
+            self.clock.as_ref(),
+            ["checkout", "-q", "-b", &branch],
+            None,
+        )
+        .await?;
+
+        // Hard-link the host's dolt socket into the clone so bd inside the
+        // wrapix container (which only sees the clone bind-mounted at
+        // /workspace) finds a working endpoint at the path
         // `BEADS_DOLT_SERVER_SOCKET` points at. Same-fs hard links to a
         // bound unix socket preserve the inode, so connecting via the
         // linked path reaches the same dolt server. Shim — proper fix is
@@ -185,24 +220,39 @@ impl GitClient {
         Ok(CreatedWorktree { path, branch })
     }
 
-    /// Remove a linked worktree (force-removed; pruned afterwards).
+    /// Remove a per-bead workspace directory.
+    ///
+    /// The workspace is a standalone clone (not a git-registered linked
+    /// worktree), so cleanup is a recursive directory removal. Idempotent:
+    /// a missing directory is not an error.
     pub async fn remove_worktree(&self, path: &Path) -> Result<(), GitError> {
-        let path_str = path.to_string_lossy().into_owned();
+        if !path.exists() {
+            return Ok(());
+        }
+        let path = path.to_path_buf();
+        spawn_blocking(move || -> Result<(), GitError> {
+            std::fs::remove_dir_all(&path)?;
+            Ok(())
+        })
+        .await?
+    }
+
+    /// Push `branch` from the bead's clone at `workdir` back to its origin
+    /// (the main repo this `GitClient` was opened against). Run after a
+    /// successful agent session so [`Self::merge_branch`] can fold the bead's
+    /// work into the driver branch.
+    pub async fn push_branch_to_origin(
+        &self,
+        workdir: &Path,
+        branch: &str,
+    ) -> Result<(), GitError> {
         run_git(
-            &self.workdir,
+            workdir,
             self.clock.as_ref(),
-            ["worktree", "remove", "--force", &path_str],
+            ["push", "--quiet", "origin", branch],
             None,
         )
-        .await?;
-        run_git(
-            &self.workdir,
-            self.clock.as_ref(),
-            ["worktree", "prune"],
-            None,
-        )
-        .await?;
-        Ok(())
+        .await
     }
 
     /// Force-delete the named branch. Used by the parallel batch driver to

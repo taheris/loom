@@ -719,28 +719,6 @@ const IGNORE_ALLOWLIST: &[(&str, &str)] = &[
         "crates/loom-driver/tests/lock_manager.rs",
         "crash_helper_take_lock_then_exit",
     ),
-    // Pending re-enable: documents the spec-intended worktree-dispatch
-    // behavior (per-bead worktree, merge-back, branch cleanup) that the
-    // sequential run path will use again once SpawnConfig grows an
-    // extra-mounts field — or workers run against a self-contained clone
-    // — and the wrapix container can reach the host gitdir. The current
-    // sequential dispatch runs against the driver's workdir directly to
-    // dodge the bind-mount-cannot-resolve-gitdir blocker, so the test's
-    // assertions on the per-bead worktree path do not hold today.
-    (
-        "crates/loom-workflow/tests/run_bead.rs",
-        "run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success",
-    ),
-    // Pending re-enable: same reason — tree-clean recovery is meaningful
-    // only when the bead's workspace is a fresh per-bead worktree, since
-    // anything dirty in that worktree is necessarily agent leftover. The
-    // sequential dispatch's driver-workdir mode has unrelated pre-existing
-    // state, so the tree-not-clean branch is gated off until worktree
-    // dispatch is restored.
-    (
-        "crates/loom-workflow/tests/run_bead.rs",
-        "run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry",
-    ),
 ];
 
 #[test]

@@ -55,34 +55,36 @@ async fn create_and_remove_worktree_round_trip() -> Result<()> {
 
     assert!(
         created.path.exists(),
-        "worktree path {:?} should exist on disk",
+        "workspace path {:?} should exist on disk",
         created.path
     );
     assert_eq!(created.branch, "loom/harness/wx-3hhwq.6");
     assert!(
         created.path.ends_with("harness/wx-3hhwq.6"),
-        "worktree path should end with <label>/<bead-id>: {:?}",
+        "workspace path should end with <label>/<bead-id>: {:?}",
         created.path
     );
-
-    let listed = client.worktrees().await?;
+    // Path A (specs/harness.md § Worktree Dispatch): the bead workspace is
+    // a self-contained `git clone --local`, so `.git/` is a regular
+    // directory inside the bind-mounted path (not a `.git` *file* pointing
+    // at a host-absolute gitdir, which is what `git worktree add` produces).
     assert!(
-        listed.iter().any(|w| w.path == created.path),
-        "gix worktrees() should list the new worktree: got {listed:?}",
+        created.path.join(".git").is_dir(),
+        ".git inside the bead workspace must be a regular directory \
+         (clone), not a worktree pointer file: got {:?}",
+        created.path.join(".git"),
     );
 
     client.remove_worktree(&created.path).await?;
     assert!(
         !created.path.exists(),
-        "worktree path {:?} should be cleaned up",
+        "workspace path {:?} should be cleaned up",
         created.path
     );
 
-    let after = client.worktrees().await?;
-    assert!(
-        !after.iter().any(|w| w.path == created.path),
-        "removed worktree should not appear in worktrees(): got {after:?}",
-    );
+    // remove_worktree is idempotent — a second call on a missing path is
+    // not an error (the spec calls this out for the cleanup path).
+    client.remove_worktree(&created.path).await?;
 
     Ok(())
 }
@@ -317,8 +319,10 @@ async fn bead_worktree_starts_with_empty_porcelain() -> Result<()> {
          tree-clean checks attribute every dirty path to the agent. got: {porcelain:?}",
     );
 
+    // The bead branch lives inside the clone (not the main repo) until
+    // the merge-back push, so cleanup is just removing the directory —
+    // no `git branch -D` against the main repo's refs.
     client.remove_worktree(&created.path).await?;
-    client.delete_branch(&created.branch).await?;
     Ok(())
 }
 

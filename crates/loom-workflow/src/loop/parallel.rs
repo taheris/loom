@@ -244,33 +244,41 @@ async fn merge_back_one(git: &GitClient, slot: BatchSlot) -> Result<BatchResult,
         outcome,
     } = slot;
     match outcome {
-        AgentOutcome::Success => match git.merge_branch(&worktree.branch).await? {
-            MergeResult::Ok => {
-                git.remove_worktree(&worktree.path).await?;
-                git.delete_branch(&worktree.branch).await?;
-                Ok(BatchResult::Merged { bead: bead.id })
+        AgentOutcome::Success => {
+            // Push the bead branch from the clone back to its origin so
+            // `merge_branch` can fold it into the driver branch. Path A
+            // from `specs/harness.md § Worktree Dispatch`: the bead workspace
+            // is a standalone clone, so the bead's branch lives only inside
+            // the clone until this push exposes it on the main repo.
+            git.push_branch_to_origin(&worktree.path, &worktree.branch)
+                .await?;
+            match git.merge_branch(&worktree.branch).await? {
+                MergeResult::Ok => {
+                    git.remove_worktree(&worktree.path).await?;
+                    git.delete_branch(&worktree.branch).await?;
+                    Ok(BatchResult::Merged { bead: bead.id })
+                }
+                MergeResult::Conflict => {
+                    warn!(
+                        bead = %bead.id,
+                        branch = %worktree.branch,
+                        path = %worktree.path.display(),
+                        "merge conflict — worktree preserved for inspection",
+                    );
+                    Ok(BatchResult::Conflict {
+                        bead: bead.id,
+                        worktree_path: worktree.path,
+                        branch: worktree.branch,
+                    })
+                }
             }
-            MergeResult::Conflict => {
-                warn!(
-                    bead = %bead.id,
-                    branch = %worktree.branch,
-                    path = %worktree.path.display(),
-                    "merge conflict — worktree preserved for inspection",
-                );
-                Ok(BatchResult::Conflict {
-                    bead: bead.id,
-                    worktree_path: worktree.path,
-                    branch: worktree.branch,
-                })
-            }
-        },
+        }
         AgentOutcome::Failure { error }
         | AgentOutcome::InfraPreflight { error }
         | AgentOutcome::InfraMidSession { error }
         | AgentOutcome::UnknownProfile { error } => {
             warn!(bead = %bead.id, %error, "agent failed — cleaning up worktree");
             git.remove_worktree(&worktree.path).await?;
-            git.delete_branch(&worktree.branch).await?;
             Ok(BatchResult::AgentFailed {
                 bead: bead.id,
                 error,
@@ -279,7 +287,6 @@ async fn merge_back_one(git: &GitClient, slot: BatchSlot) -> Result<BatchResult,
         AgentOutcome::Blocked { reason } => {
             warn!(bead = %bead.id, %reason, "agent emitted LOOM_BLOCKED — cleaning up worktree");
             git.remove_worktree(&worktree.path).await?;
-            git.delete_branch(&worktree.branch).await?;
             Ok(BatchResult::AgentBlocked {
                 bead: bead.id,
                 reason,
@@ -288,7 +295,6 @@ async fn merge_back_one(git: &GitClient, slot: BatchSlot) -> Result<BatchResult,
         AgentOutcome::Clarify { question } => {
             warn!(bead = %bead.id, %question, "agent emitted LOOM_CLARIFY — cleaning up worktree");
             git.remove_worktree(&worktree.path).await?;
-            git.delete_branch(&worktree.branch).await?;
             Ok(BatchResult::AgentClarify {
                 bead: bead.id,
                 question,

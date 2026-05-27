@@ -93,18 +93,14 @@ fn setup() -> (
 }
 
 /// `loom run --parallel 1` dispatches every bead through a per-bead
-/// worktree under `.wrapix/worktree/<label>/<bead-id>/` (universal
-/// worktree isolation per `harness.md` § Worktree Dispatch). On clean
-/// agent success the controller merges the bead's branch back to the
-/// driver branch and removes the worktree + branch.
-///
-/// Currently ignored: the sequential dispatch path runs against the
-/// driver's workdir directly because the wrapix container's
-/// `/workspace` bind-mount cannot reach a worktree's host gitdir.
-/// Re-enable once SpawnConfig exposes extra mounts (or workers run
-/// against a self-contained clone) and worktree dispatch is restored.
+/// workspace under `.wrapix/worktree/<label>/<bead-id>/` (universal
+/// worktree isolation per `harness.md` § Worktree Dispatch). The
+/// workspace is a `git clone --local` of the main repo — its `.git/`
+/// is a regular directory inside the bind-mounted path, so workers in
+/// the wrapix container can commit. On clean agent success the
+/// controller pushes the bead branch back to the main repo, merges it
+/// into the driver branch, and removes the workspace + branch.
 #[tokio::test]
-#[ignore = "worktree dispatch disabled for sequential path; pending container .git mount"]
 async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
@@ -175,7 +171,7 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success()
 }
 
 /// Spec gate (`harness.md` § Verdict Gate · Tree-clean check): a worker
-/// that emits `LOOM_COMPLETE` but leaves the worktree dirty
+/// that emits `LOOM_COMPLETE` but leaves the per-bead workspace dirty
 /// (uncommitted / untracked tracked-file edits) routes to `tree-not-clean`
 /// recovery. The controller must:
 ///
@@ -184,17 +180,9 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success()
 /// 2. Stash `PreviousFailure::TreeNotClean { dirty_paths }` so the next
 ///    `run_bead` call threads the typed variant into the rendered prompt
 ///    (rather than the opaque "tree-not-clean" string the runner sees).
-/// 3. Clean up the worktree + branch even though the agent claimed
-///    success — the half-staged tree would confuse the next attempt's
-///    diff.
-///
-/// Currently ignored: tree-clean recovery is meaningful only in
-/// worktree-dispatch mode (a fresh worktree starts empty so any dirty
-/// entry is agent leftover). The sequential path runs against the
-/// driver's workdir which has its own pre-existing state; gating
-/// re-enables when worktree dispatch is restored.
+/// 3. Clean up the workspace even though the agent claimed success — the
+///    half-staged tree would confuse the next attempt's diff.
 #[tokio::test]
-#[ignore = "tree-clean recovery is worktree-only; sequential dispatch runs against driver workdir"]
 async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
