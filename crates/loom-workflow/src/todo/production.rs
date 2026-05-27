@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use loom_driver::agent::{RePinContent, SessionOutcome, SpawnConfig, set_loom_inside};
-use loom_driver::bd::{BdClient, BdError, CommandRunner, TokioRunner, UpdateOpts};
+use loom_driver::bd::{BdClient, BdError, CommandRunner, CreateOpts, TokioRunner, UpdateOpts};
 use loom_driver::config::Phase;
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
@@ -26,6 +26,7 @@ use super::ExitSignal;
 use super::context::{TemplateBaseFields, TodoTemplateContext, build_template_context};
 use super::criterion_status::build_criterion_status;
 use super::error::TodoError;
+use super::fanout::{FanoutOutcome, classify_touched_set, render_collision_options};
 use super::resolve::{ResolverOutcome, resolve_molecule};
 use super::runner::{TodoController, TodoSession};
 use super::touched::touched_specs;
@@ -72,22 +73,72 @@ impl<R: CommandRunner> ProductionTodoController<R> {
     }
 
     async fn build_prompt(&self) -> Result<String, TodoError> {
-        let molecule_id = match resolve_molecule(&self.bd, &self.label).await? {
-            ResolverOutcome::Existing(id) => Some(id),
-            ResolverOutcome::None => None,
-            ResolverOutcome::InvariantViolation(ids) => {
-                let joined = ids
-                    .iter()
-                    .map(MoleculeId::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(TodoError::InvariantViolation {
-                    label: self.label.to_string(),
-                    ids: joined,
-                });
+        let spec_path = PathBuf::from("specs").join(format!("{}.md", self.label.as_str()));
+        let touched = touched_specs(self.git.as_ref()).await?;
+
+        // Multi-spec collision check runs before any prompt rendering. The
+        // touched-set classifier walks every spec whose markdown differs
+        // from HEAD; if it spans multiple molecules — or mixes
+        // has-open-epic with no-open-epic — Loom mints nothing and emits
+        // a `loom:clarify` bead per gate.md's *Options Format Contract*.
+        // The classifier and clarify mint live in [`super::fanout`].
+        //
+        // Empty touched-set is a degenerate case (working tree matches
+        // `HEAD`): the classifier returns `MintAll` vacuously, but we
+        // still need the anchor's existing molecule for template
+        // selection. Fall back to single-spec resolution against the
+        // anchor when nothing is touched.
+        let molecule_id = if touched.is_empty() {
+            match resolve_molecule(&self.bd, &self.label).await? {
+                ResolverOutcome::Existing(id) => Some(id),
+                ResolverOutcome::None => None,
+                ResolverOutcome::InvariantViolation(ids) => {
+                    let joined = ids
+                        .iter()
+                        .map(MoleculeId::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Err(TodoError::InvariantViolation {
+                        label: self.label.to_string(),
+                        ids: joined,
+                    });
+                }
+            }
+        } else {
+            match classify_touched_set(&self.bd, &touched).await? {
+                FanoutOutcome::MintAll => None,
+                FanoutOutcome::Bond(id) => Some(id),
+                FanoutOutcome::Collision { resolutions } => {
+                    let body = render_collision_options(&resolutions);
+                    let labels = resolutions
+                        .iter()
+                        .map(|r| r.label.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let title = format!("loom todo: multi-spec collision across {labels}");
+                    let clarify_id = self
+                        .bd
+                        .create(CreateOpts {
+                            title,
+                            description: body,
+                            issue_type: Some("task".to_string()),
+                            priority: Some(2),
+                            labels: vec!["loom:clarify".to_string()],
+                            ..CreateOpts::default()
+                        })
+                        .await?;
+                    info!(
+                        label = %self.label,
+                        clarify_id = %clarify_id,
+                        "loom todo: multi-spec collision → clarify bead minted",
+                    );
+                    return Err(TodoError::MultiSpecCollision {
+                        clarify_id: clarify_id.as_str().to_owned(),
+                    });
+                }
             }
         };
-        debug!(label = %self.label, ?molecule_id, "single-query resolution");
+        debug!(label = %self.label, ?molecule_id, "multi-spec fan-out classification");
 
         match self.state.spec(&self.label) {
             Ok(_) => (),
@@ -101,9 +152,6 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             .into_iter()
             .map(|row| row.text)
             .collect::<Vec<_>>();
-
-        let spec_path = PathBuf::from("specs").join(format!("{}.md", self.label.as_str()));
-        let touched = touched_specs(self.git.as_ref()).await?;
 
         let key = resolve_scratch_key(Phase::Todo, &self.label, None);
         let scratchpad_path =

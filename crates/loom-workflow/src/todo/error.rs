@@ -35,6 +35,9 @@ pub enum TodoError {
     /// io operation failed
     Io(#[from] std::io::Error),
 
+    /// multi-spec fan-out collision; `loom:clarify` bead {clarify_id} created — resolve via `loom msg`
+    MultiSpecCollision { clarify_id: String },
+
     /// agent backend protocol failure
     Protocol(#[from] ProtocolError),
 

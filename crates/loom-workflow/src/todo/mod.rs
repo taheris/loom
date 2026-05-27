@@ -14,6 +14,7 @@ mod context;
 mod criterion_status;
 mod error;
 mod exit;
+mod fanout;
 mod production;
 mod resolve;
 mod runner;
@@ -23,6 +24,7 @@ pub use context::{TemplateBaseFields, TodoTemplateContext, build_template_contex
 pub use criterion_status::build_criterion_status;
 pub use error::TodoError;
 pub use exit::{ExitSignal, parse_exit_signal};
+pub use fanout::{FanoutOutcome, SpecResolution, classify_touched_set, render_collision_options};
 pub use production::ProductionTodoController;
 pub use resolve::{ResolverOutcome, resolve_molecule};
 pub use runner::{TodoController, TodoSummary, run};

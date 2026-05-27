@@ -146,6 +146,55 @@ fn epic_response(mol_id: &str, label: &str, base_commit: Option<&str>) -> RunOut
     }
 }
 
+/// `bd list --type=epic --label=spec:<X> --status=open` response carrying
+/// the epic's `parent` field (i.e. the molecule it's bonded to via
+/// `bd mol bond`). Used by the multi-spec fan-out classifier to detect
+/// whether two touched specs share a molecule.
+fn epic_response_with_parent(epic_id: &str, label: &str, parent: Option<&str>) -> RunOutput {
+    let parent_field = match parent {
+        Some(p) => format!(r#"  "parent": "{p}","#),
+        None => String::new(),
+    };
+    let body = format!(
+        r#"[{{
+            "id": "{epic_id}",
+            "title": "{label}: epic",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "epic",
+            "labels": ["spec:{label}"],
+            {parent_field}
+            "metadata": {{}}
+        }}]"#,
+    );
+    RunOutput {
+        status: 0,
+        stdout: body.into_bytes(),
+        stderr: Vec::new(),
+    }
+}
+
+/// `bd create --silent` response — `bd` prints only the new bead's id on
+/// stdout under `--silent`. The collision-clarify path consumes this to
+/// learn the minted bead's id for the `MultiSpecCollision` error.
+fn create_silent_response(new_id: &str) -> RunOutput {
+    RunOutput {
+        status: 0,
+        stdout: format!("{new_id}\n").into_bytes(),
+        stderr: Vec::new(),
+    }
+}
+
+/// `bd list --type=epic --label=spec:<X> --status=open` returning an empty
+/// result — the spec has no open epic.
+fn empty_epic_response() -> RunOutput {
+    RunOutput {
+        status: 0,
+        stdout: b"[]".to_vec(),
+        stderr: Vec::new(),
+    }
+}
+
 fn seeded_state(
     workspace: &Path,
     label: &str,
@@ -652,5 +701,174 @@ async fn todo_clarify_marks_molecule_epic() {
         argv.windows(2)
             .any(|w| w[0] == "--status" && w[1] == "blocked"),
         "update must pair status=blocked with the label: {argv:?}",
+    );
+}
+
+/// `specs/harness.md` *Workflow commands*: `loom todo` fans out across
+/// every spec whose markdown differs from `HEAD`; touched specs that
+/// span different molecules (or mix has-open-epic with no-open-epic)
+/// produce a multi-spec collision. Loom mints nothing; it creates a
+/// `loom:clarify` bead carrying a structured `## Options — …` block
+/// per gate.md's *Options Format Contract* and exits without dispatch.
+#[tokio::test(flavor = "multi_thread")]
+async fn todo_fans_out_across_all_touched_specs_and_clarifies_on_collision() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    std::fs::create_dir_all(workspace.join("specs")).unwrap();
+    std::fs::write(workspace.join("specs/alpha.md"), "# alpha\n").unwrap();
+    std::fs::write(workspace.join("specs/beta.md"), "# beta\n").unwrap();
+    let git = init_repo(&workspace);
+    run_git(&workspace, &["add", "specs"]);
+    run_git(&workspace, &["commit", "-q", "-m", "seed specs"]);
+
+    // Touch both specs vs HEAD to populate the touched set.
+    std::fs::write(workspace.join("specs/alpha.md"), "# alpha\n\nalpha edit\n").unwrap();
+    std::fs::write(workspace.join("specs/beta.md"), "# beta\n\nbeta edit\n").unwrap();
+
+    let state = empty_state(&workspace);
+    let manifest = stub_manifest(&workspace);
+
+    // Two touched specs, two distinct molecules → collision.
+    // The order of `touched_specs` follows `git diff --name-only`'s
+    // alphabetical output, so alpha is queried first.
+    let runner = CapturingRunner::new([
+        epic_response_with_parent("wx-alphae", "alpha", Some("wx-mola")),
+        epic_response_with_parent("wx-betae", "beta", Some("wx-molb")),
+        // bd create --silent for the clarify bead.
+        create_silent_response("wx-clarify1"),
+    ]);
+    let runner_handle = runner.clone();
+    let bd = Arc::new(BdClient::with_runner(runner));
+    let mut ctrl = ProductionTodoController::new(
+        SpecLabel::new("alpha"),
+        workspace,
+        state,
+        manifest,
+        ProfileName::new("base"),
+        git,
+        bd,
+        None,
+    );
+
+    let err = match ctrl.build_session().await {
+        Ok(_) => panic!("expected MultiSpecCollision, got Ok"),
+        Err(e) => e,
+    };
+    match &err {
+        TodoError::MultiSpecCollision { clarify_id } => {
+            assert_eq!(clarify_id, "wx-clarify1");
+        }
+        other => panic!("expected MultiSpecCollision, got {other:?}"),
+    }
+
+    let calls = runner_handle.calls();
+    // Must include a `bd create` call for the clarify bead.
+    let create_argv = calls
+        .iter()
+        .find(|argv| argv.first().map(String::as_str) == Some("create"))
+        .expect("collision must trigger a `bd create` call");
+    assert!(
+        create_argv.iter().any(|a| a == "--type") && create_argv.iter().any(|a| a == "task"),
+        "clarify bead must be created as a task: {create_argv:?}",
+    );
+    assert!(
+        create_argv.iter().any(|a| a == "--labels"),
+        "clarify bead must carry labels flag: {create_argv:?}",
+    );
+    let labels_pos = create_argv
+        .iter()
+        .position(|a| a == "--labels")
+        .expect("labels flag present");
+    assert!(
+        create_argv[labels_pos + 1].contains("loom:clarify"),
+        "clarify bead must carry the loom:clarify label: {create_argv:?}",
+    );
+    // The description must carry the canonical `## Options — …` block.
+    let desc_pos = create_argv
+        .iter()
+        .position(|a| a == "--description")
+        .expect("description flag present");
+    let description = &create_argv[desc_pos + 1];
+    assert!(
+        description.starts_with("## Options — "),
+        "clarify description must lead with the Options Format Contract header: {description}",
+    );
+    assert!(
+        description.contains("### Option 1"),
+        "clarify description must enumerate options: {description}",
+    );
+    assert!(
+        description.contains("wx-mola") || description.contains("wx-molb"),
+        "clarify description must reference pre-existing molecule ids: {description}",
+    );
+}
+
+/// `specs/harness.md` *Workflow commands*: the same multi-spec fan-out
+/// classifier flags collisions when one touched spec has an open epic
+/// and another does not — even though both individual single-tier
+/// resolutions are well-formed. Loom mints nothing; clarify bead carries
+/// the options block.
+#[tokio::test(flavor = "multi_thread")]
+async fn todo_fans_across_touched_specs_and_clarifies_on_collision() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    std::fs::create_dir_all(workspace.join("specs")).unwrap();
+    std::fs::write(workspace.join("specs/gamma.md"), "# gamma\n").unwrap();
+    std::fs::write(workspace.join("specs/delta.md"), "# delta\n").unwrap();
+    let git = init_repo(&workspace);
+    run_git(&workspace, &["add", "specs"]);
+    run_git(&workspace, &["commit", "-q", "-m", "seed specs"]);
+
+    std::fs::write(workspace.join("specs/gamma.md"), "# gamma\n\ngamma edit\n").unwrap();
+    std::fs::write(workspace.join("specs/delta.md"), "# delta\n\ndelta edit\n").unwrap();
+
+    let state = empty_state(&workspace);
+    let manifest = stub_manifest(&workspace);
+
+    // Mixed has-/has-not-open-epic: delta has an existing molecule,
+    // gamma does not. The classifier flags this as a collision per
+    // FR1's "mix has/has-not open epics" rule.
+    let runner = CapturingRunner::new([
+        // touched_specs order from `git diff --name-only` is
+        // alphabetical: delta before gamma.
+        epic_response_with_parent("wx-deltae", "delta", Some("wx-mold")),
+        empty_epic_response(),
+        create_silent_response("wx-clarify2"),
+    ]);
+    let runner_handle = runner.clone();
+    let bd = Arc::new(BdClient::with_runner(runner));
+    let mut ctrl = ProductionTodoController::new(
+        SpecLabel::new("delta"),
+        workspace,
+        state,
+        manifest,
+        ProfileName::new("base"),
+        git,
+        bd,
+        None,
+    );
+
+    let err = match ctrl.build_session().await {
+        Ok(_) => panic!("expected MultiSpecCollision, got Ok"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, TodoError::MultiSpecCollision { .. }),
+        "mix has/has-not must be a collision: {err:?}",
+    );
+
+    let calls = runner_handle.calls();
+    let create_argv = calls
+        .iter()
+        .find(|argv| argv.first().map(String::as_str) == Some("create"))
+        .expect("mix-has/has-not must trigger a `bd create` clarify");
+    let desc_pos = create_argv
+        .iter()
+        .position(|a| a == "--description")
+        .expect("description present");
+    let description = &create_argv[desc_pos + 1];
+    assert!(
+        description.contains("Close existing epics and mint a fresh cross-cutting molecule"),
+        "options block must offer the fresh-mint resolution: {description}",
     );
 }

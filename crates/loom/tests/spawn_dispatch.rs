@@ -132,9 +132,11 @@ fn mock_claude_path() -> PathBuf {
     locate_mock("mock-claude/claude.sh")
 }
 
-/// Run `loom --workspace <ws> --agent pi todo -s loom-agent` against a
-/// shim wrapix and return the captured `Output`. Shared by both tests so
-/// the assertions stay focused on what they verify.
+/// Run `loom --workspace <ws> --agent pi todo` against a shim wrapix and
+/// return the captured `Output`. The active spec is set via `loom use`
+/// before dispatch (the `--spec` override was removed from `Command::Todo`
+/// per `specs/harness.md` *Removed surface*). Shared by both tests so the
+/// assertions stay focused on what they verify.
 fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::process::Output {
     // Spawn-bound subcommands (`todo` is one) read LOOM_PROFILES_MANIFEST at
     // startup. The production todo controller resolves the `base` profile
@@ -151,14 +153,13 @@ fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::pro
     );
     std::fs::write(&manifest_path, manifest_body).expect("write manifest stub");
     init_workspace_repo(workspace);
+    seed_active_spec(workspace, loom_bin, "agent");
     Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
         .arg("--agent")
         .arg("pi")
         .arg("todo")
-        .arg("-s")
-        .arg("agent")
         .env("LOOM_WRAPIX_BIN", shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
@@ -168,6 +169,29 @@ fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::pro
         .env_remove("LOOM_INSIDE")
         .output()
         .expect("spawn loom")
+}
+
+/// Initialise loom's state DB and set the active spec for the test.
+/// `loom todo` derives the active spec from `state.db.current_spec`; the
+/// `--spec` override on `Command::Todo` was removed under the at-most-
+/// one-open-epic-per-spec invariant. The spec row is seeded via
+/// [`StateDb::replace_companions`] (insert-or-ignore on `specs`), then
+/// the meta key is set via [`StateDb::set_current_spec`].
+fn seed_active_spec(workspace: &Path, _loom_bin: &str, label: &str) {
+    use loom_driver::identifier::SpecLabel;
+    use loom_driver::state::StateDb;
+    let spec_dir = workspace.join("specs");
+    std::fs::create_dir_all(&spec_dir).expect("mkdir specs");
+    std::fs::write(spec_dir.join(format!("{label}.md")), format!("# {label}\n"))
+        .expect("write spec");
+    let state_dir = workspace.join(".wrapix/loom");
+    std::fs::create_dir_all(&state_dir).expect("mkdir .wrapix/loom");
+    let db = StateDb::open(state_dir.join("state.db")).expect("open state db");
+    let spec = SpecLabel::new(label);
+    // `replace_companions` is the canonical insert-or-ignore on `specs`
+    // (no companions seeded here — we just need the row to exist).
+    db.replace_companions(&spec, &[]).expect("seed spec row");
+    db.set_current_spec(&spec).expect("set current_spec");
 }
 
 /// Seed the workspace as a real git repo. `loom todo` opens a `GitClient`
@@ -863,6 +887,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
     );
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
+    seed_active_spec(workspace, loom_bin, "agent");
     let started = std::time::Instant::now();
     let output = Command::new(loom_bin)
         .arg("--workspace")
@@ -870,8 +895,6 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
         .arg("--agent")
         .arg("claude")
         .arg("todo")
-        .arg("-s")
-        .arg("agent")
         .env("LOOM_WRAPIX_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
@@ -945,6 +968,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
     );
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
+    seed_active_spec(workspace, loom_bin, "agent");
     let started = Instant::now();
     let output = Command::new(loom_bin)
         .arg("--workspace")
@@ -952,8 +976,6 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
         .arg("--agent")
         .arg("pi")
         .arg("todo")
-        .arg("-s")
-        .arg("agent")
         .env("LOOM_WRAPIX_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
@@ -1030,14 +1052,13 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
     // tokio's `kill_on_drop` doesn't fire on the grandchild) and keep the
     // stderr pipe open, hanging `reader.join()` forever.
     let loom_bin = env!("CARGO_BIN_EXE_loom");
+    seed_active_spec(workspace, loom_bin, "agent");
     let mut child = Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
         .arg("--agent")
         .arg("pi")
         .arg("todo")
-        .arg("-s")
-        .arg("agent")
         .env("LOOM_WRAPIX_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)

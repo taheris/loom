@@ -9,7 +9,7 @@ Usage: loom [OPTIONS] <COMMAND>
 
 Workflow:
   plan    Interactive spec interview (`-n <label>` new, `-u <label>` update)
-  todo    Decompose the active spec into beads (four-tier detection)
+  todo    Decompose every touched spec into beads (multi-spec fan-out)
   loop    Per-bead execution loop. Continuous by default; `--once` exits after one bead
   gate    Quality gate — annotation-dispatched verifiers and LLM rubric
   msg     Resolve outstanding `loom:clarify` and `loom:blocked` beads

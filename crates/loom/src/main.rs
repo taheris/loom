@@ -41,7 +41,7 @@ use loom_workflow::review::{
     IterationCap, ProductionReviewController, ReviewLane, review_loop as run_review_loop,
 };
 use loom_workflow::todo::{
-    ExitSignal, ProductionTodoController, parse_exit_signal, run as run_todo_workflow,
+    ExitSignal, ProductionTodoController, TodoError, parse_exit_signal, run as run_todo_workflow,
 };
 use loom_workflow::{DefaultObserverChain, init, logs_cmd, plan, spec, status, use_spec};
 use loom_workflow::{run_agent, run_agent_classified};
@@ -356,11 +356,8 @@ enum Command {
         )]
         chat: bool,
     },
-    /// Decompose the active spec into beads (four-tier detection).
+    /// Decompose every touched spec into beads (multi-spec fan-out).
     Todo {
-        /// Spec label override (defaults to `current_spec`).
-        #[arg(long, short = 's', value_name = "LABEL")]
-        spec: Option<String>,
         /// Override the anchor's `base_commit` for tier-1 detection.
         #[arg(long, value_name = "COMMIT")]
         since: Option<String>,
@@ -627,8 +624,8 @@ fn main() -> ExitCode {
             agent_override,
         )
         .map(|()| ExitCode::SUCCESS),
-        Command::Todo { spec, since } => {
-            run_todo(&workspace, spec, since, agent_override).map(|()| ExitCode::SUCCESS)
+        Command::Todo { since } => {
+            run_todo(&workspace, since, agent_override).map(|()| ExitCode::SUCCESS)
         }
         Command::Note { action } => run_note(&workspace, action).map(|()| ExitCode::SUCCESS),
     };
@@ -1200,11 +1197,6 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
 /// entry the moment the test is written (or the annotation is removed
 /// from the spec).
 const INTEGRITY_ALLOWLIST: &[(&str, &str)] = &[
-    // lm-9ehh.6 (multi-spec fan-out + collision clarify).
-    (
-        "specs/harness.md",
-        "todo_fans_out_across_all_touched_specs_and_clarifies_on_collision",
-    ),
     // lm-9ehh.7 (GateSuccess sealed receipt + LoopOutcome typed outcomes).
     // `once_mode_fires_gate_when_molecule_closes_else_no_gate_partial` is
     // still pending — that behaviour requires Once mode to fire the gate
@@ -2574,12 +2566,11 @@ fn run_msg_inner(
 
 fn run_todo(
     workspace: &Path,
-    spec: Option<String>,
     since: Option<String>,
     agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
-    let label = resolve_spec_label(workspace, spec)?;
+    let label = resolve_spec_label(workspace, None)?;
     let lock_mgr = LockManager::new(workspace)?;
     let _guard = lock_mgr.acquire_spec(&label)?;
 
@@ -2596,7 +2587,7 @@ fn run_todo(
     let workspace_buf = workspace.to_path_buf();
     let logs_root = workspace.join(".wrapix/loom/logs");
     let label_for_sink = label.clone();
-    let summary = runtime.block_on(async move {
+    let result = runtime.block_on(async move {
         let mut controller = ProductionTodoController::new(
             label,
             workspace_buf,
@@ -2629,12 +2620,23 @@ fn run_todo(
             Ok((outcome, marker))
         })
         .await
-    })?;
-    println!(
-        "loom todo: agent exited {}, cost_usd={:?}",
-        summary.exit_code, summary.cost_usd
-    );
-    Ok(())
+    });
+    match result {
+        Ok(summary) => {
+            println!(
+                "loom todo: agent exited {}, cost_usd={:?}",
+                summary.exit_code, summary.cost_usd
+            );
+            Ok(())
+        }
+        Err(TodoError::MultiSpecCollision { clarify_id }) => {
+            println!(
+                "loom todo: multi-spec collision detected; loom:clarify bead {clarify_id} created — resolve via `loom msg`",
+            );
+            Ok(())
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn resolve_spec_label(workspace: &Path, spec: Option<String>) -> anyhow::Result<SpecLabel> {
