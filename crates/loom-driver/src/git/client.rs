@@ -377,6 +377,52 @@ impl GitClient {
             .collect())
     }
 
+    /// `git diff HEAD --name-only -- specs/` — repo-relative paths of spec
+    /// files whose working-tree contents differ from `HEAD`. Powers
+    /// `loom todo`'s touched-set discovery: any spec edit visible in the
+    /// working tree (committed or not) qualifies.
+    pub async fn workdir_changed_specs(&self) -> Result<Vec<PathBuf>, GitError> {
+        let output = run_git_raw(
+            &self.workdir,
+            self.clock.as_ref(),
+            ["diff", "HEAD", "--name-only", "--", "specs/"],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(GitError::GitCli {
+                status: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        let stdout = String::from_utf8(output.stdout)?;
+        Ok(stdout
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(PathBuf::from)
+            .collect())
+    }
+
+    /// `git diff HEAD -- <spec_path>` — working-tree diff for one spec file.
+    /// Empty string when the file matches `HEAD`.
+    pub async fn workdir_diff_spec(&self, spec_path: &Path) -> Result<String, GitError> {
+        let path_str = spec_path.to_string_lossy().into_owned();
+        let output = run_git_raw(
+            &self.workdir,
+            self.clock.as_ref(),
+            ["diff", "HEAD", "--", &path_str],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(GitError::GitCli {
+                status: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
     /// `git diff <base> HEAD -- <spec_path>` — unified diff of one spec
     /// file. Empty string when there is no diff.
     pub async fn diff_spec(&self, base: &str, spec_path: &Path) -> Result<String, GitError> {

@@ -1,32 +1,29 @@
 //! `loom todo` — spec-to-beads decomposition.
 //!
-//! Implements four-tier detection (per-spec cursor fan-out) via
-//! `compute_spec_diff`.
+//! Resolves "the active molecule for spec X" via a single
+//! `bd find --type=epic --label=spec:<X> --status=open` query (see
+//! [`resolve_molecule`]). Three outcomes — `Existing`, `None`, and
+//! `InvariantViolation` — capture every shape the loop must handle.
 //!
-//! - Tier 1 (`diff`): a molecule with `base_commit` exists → widen to
-//!   `git diff <base> HEAD -- specs/` and apply per-spec cursor fan-out.
-//! - Tier 2 (`tasks`): molecule exists without `base_commit` → fall back to
-//!   LLM comparison against existing task descriptions.
-//! - Tier 3 (`README discovery`): no molecule in state → look up molecule ID
-//!   in the pinned-context file. The caller validates via `bd show` and
-//!   threads the result back into [`compute_spec_diff`] as a synthetic
-//!   tier-2 input. Discovery itself lives outside this module.
-//! - Tier 4 (`new`): nothing → full spec decomposition.
+//! Touched-set discovery (see [`touched_specs`]) walks every spec whose
+//! markdown differs from `HEAD` in the working tree and renders each diff
+//! into the prompt, so the agent fans out across anchor + sibling specs in
+//! one decomposition pass.
 
 mod context;
 mod criterion_status;
 mod error;
 mod exit;
 mod production;
+mod resolve;
 mod runner;
-mod tier;
+mod touched;
 
 pub use context::{TemplateBaseFields, TodoTemplateContext, build_template_context};
 pub use criterion_status::build_criterion_status;
 pub use error::TodoError;
 pub use exit::{ExitSignal, parse_exit_signal};
 pub use production::ProductionTodoController;
+pub use resolve::{ResolverOutcome, resolve_molecule};
 pub use runner::{TodoController, TodoSummary, run};
-pub use tier::{
-    DiffCandidate, GitDiffSource, MoleculeState, TierDecision, TierInputs, compute_spec_diff,
-};
+pub use touched::{TouchedSpec, render_fanout_block, touched_specs};

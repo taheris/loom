@@ -13,6 +13,9 @@ pub enum TodoError {
     /// the `--since {commit}` override does not refer to a reachable commit
     InvalidSinceCommit { commit: String },
 
+    /// multiple open epics found for spec `{label}`: {ids}; close all but one before re-running
+    InvariantViolation { label: String, ids: String },
+
     /// agent supplied no exit signal — neither LOOM_COMPLETE nor LOOM_BLOCKED observed before session ended
     MissingExitSignal,
 

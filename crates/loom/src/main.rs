@@ -1200,11 +1200,6 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
 /// entry the moment the test is written (or the annotation is removed
 /// from the spec).
 const INTEGRITY_ALLOWLIST: &[(&str, &str)] = &[
-    // lm-9ehh.5 (single-query resolution).
-    (
-        "specs/harness.md",
-        "todo_single_query_resolution_with_invariant_violation_refusal",
-    ),
     // lm-9ehh.6 (multi-spec fan-out + collision clarify).
     (
         "specs/harness.md",

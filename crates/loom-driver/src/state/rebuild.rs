@@ -48,6 +48,21 @@ impl StateDb {
         let specs_dir = workspace.join("specs");
         let spec_files = collect_spec_files(&specs_dir)?;
 
+        let mut by_spec: std::collections::BTreeMap<&str, Vec<&str>> =
+            std::collections::BTreeMap::new();
+        for mol in molecules {
+            by_spec
+                .entry(mol.spec_label.as_str())
+                .or_default()
+                .push(mol.id.as_str());
+        }
+        if let Some((label, ids)) = by_spec.iter().find(|(_, ids)| ids.len() > 1) {
+            return Err(StateError::DuplicateSpecMolecules {
+                label: (*label).to_string(),
+                ids: ids.join(", "),
+            });
+        }
+
         self.with_conn(|conn| {
             drop_and_recreate(conn)?;
             let mut report = RebuildReport::default();

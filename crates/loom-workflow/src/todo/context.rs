@@ -2,16 +2,16 @@ use loom_driver::identifier::{MoleculeId, SpecLabel};
 use loom_templates::criterion_status::CriterionStatus;
 use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
 
-use super::tier::{DiffCandidate, TierDecision};
+use super::touched::{TouchedSpec, render_fanout_block};
 
 /// Tagged template context — picks the right Askama struct based on the
-/// tier. The driver renders this directly.
+/// resolver outcome. The driver renders this directly.
 pub enum TodoTemplateContext {
     New(TodoNewContext),
     Update(TodoUpdateContext),
 }
 
-/// Inputs every template needs, regardless of tier.
+/// Inputs every template needs, regardless of resolver outcome.
 pub struct TemplateBaseFields {
     pub label: SpecLabel,
     pub spec_path: String,
@@ -28,19 +28,15 @@ pub struct TemplateBaseFields {
     pub scratchpad_path: String,
 }
 
-/// Build the appropriate template context for a given [`TierDecision`].
+/// Build the template context for the resolver's outcome.
 ///
-/// - Tier 1 (Diff) → [`TodoUpdateContext`] with `spec_diff` set to the
-///   formatted fan-out (each candidate prefixed with its `=== <path> ===`
-///   marker).
-/// - Tier 2 (Tasks) → [`TodoUpdateContext`] with `existing_tasks` set; the
-///   driver supplies the task list as a pre-rendered string.
-/// - Tier 4 (New) → [`TodoNewContext`].
+/// - `Some(molecule_id)` → [`TodoUpdateContext`] with `spec_diff` set to
+///   the per-spec fan-out across every touched spec.
+/// - `None` → [`TodoNewContext`].
 pub fn build_template_context(
-    tier: &TierDecision,
-    base: TemplateBaseFields,
-    existing_tasks: Option<String>,
     molecule_id: Option<MoleculeId>,
+    touched: &[TouchedSpec],
+    base: TemplateBaseFields,
     criterion_status: Vec<CriterionStatus>,
 ) -> TodoTemplateContext {
     let TemplateBaseFields {
@@ -52,35 +48,27 @@ pub fn build_template_context(
         scratchpad_path,
     } = base;
 
-    match tier {
-        TierDecision::Diff { candidates, .. } => {
-            let spec_diff = render_fanout_block(candidates);
+    match molecule_id {
+        Some(id) => {
+            let spec_diff = if touched.is_empty() {
+                None
+            } else {
+                Some(render_fanout_block(touched))
+            };
             TodoTemplateContext::Update(TodoUpdateContext {
                 pinned_context,
                 label,
                 spec_path,
                 companion_paths,
-                spec_diff: Some(spec_diff),
+                spec_diff,
                 existing_tasks: None,
-                molecule_id,
+                molecule_id: Some(id),
                 implementation_notes,
                 criterion_status,
                 scratchpad_path,
             })
         }
-        TierDecision::Tasks { molecule } => TodoTemplateContext::Update(TodoUpdateContext {
-            pinned_context,
-            label,
-            spec_path,
-            companion_paths,
-            spec_diff: None,
-            existing_tasks,
-            molecule_id: Some(molecule.clone()),
-            implementation_notes,
-            criterion_status,
-            scratchpad_path,
-        }),
-        TierDecision::New => TodoTemplateContext::New(TodoNewContext {
+        None => TodoTemplateContext::New(TodoNewContext {
             pinned_context,
             label,
             spec_path,
@@ -90,25 +78,6 @@ pub fn build_template_context(
             scratchpad_path,
         }),
     }
-}
-
-/// Format the per-spec fan-out: `=== <spec_path> ===` header followed by
-/// the diff body, each candidate separated by a blank line.
-fn render_fanout_block(candidates: &[DiffCandidate]) -> String {
-    let mut out = String::new();
-    for (idx, cand) in candidates.iter().enumerate() {
-        if idx > 0 {
-            out.push('\n');
-        }
-        out.push_str("=== ");
-        out.push_str(&cand.spec_path.to_string_lossy());
-        out.push_str(" ===\n");
-        out.push_str(&cand.diff);
-        if !cand.diff.ends_with('\n') {
-            out.push('\n');
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -128,27 +97,18 @@ mod tests {
     }
 
     #[test]
-    fn new_tier_routes_to_todo_new_context() {
-        let ctx = build_template_context(&TierDecision::New, base_fields(), None, None, vec![]);
+    fn no_molecule_routes_to_todo_new_context() {
+        let ctx = build_template_context(None, &[], base_fields(), vec![]);
         assert!(matches!(ctx, TodoTemplateContext::New(_)));
     }
 
     #[test]
-    fn tasks_tier_routes_to_update_with_existing_tasks() {
+    fn existing_molecule_without_touched_renders_update_with_no_diff() {
         let mol = MoleculeId::new("wx-mol");
-        let ctx = build_template_context(
-            &TierDecision::Tasks {
-                molecule: mol.clone(),
-            },
-            base_fields(),
-            Some("- existing".into()),
-            Some(mol.clone()),
-            vec![],
-        );
+        let ctx = build_template_context(Some(mol.clone()), &[], base_fields(), vec![]);
         match ctx {
             TodoTemplateContext::Update(u) => {
                 assert!(u.spec_diff.is_none());
-                assert_eq!(u.existing_tasks.as_deref(), Some("- existing"));
                 assert_eq!(u.molecule_id, Some(mol));
             }
             _ => panic!("expected Update"),
@@ -159,7 +119,7 @@ mod tests {
     fn notes_thread_into_new_tier_context() {
         let mut base = base_fields();
         base.implementation_notes = vec!["note one".into(), "note two".into()];
-        let ctx = build_template_context(&TierDecision::New, base, None, None, vec![]);
+        let ctx = build_template_context(None, &[], base, vec![]);
         match ctx {
             TodoTemplateContext::New(n) => {
                 assert_eq!(n.implementation_notes, vec!["note one", "note two"]);
@@ -172,15 +132,7 @@ mod tests {
     fn notes_thread_into_update_tier_context() {
         let mut base = base_fields();
         base.implementation_notes = vec!["seeded note".into()];
-        let ctx = build_template_context(
-            &TierDecision::Tasks {
-                molecule: MoleculeId::new("wx-mol"),
-            },
-            base,
-            None,
-            Some(MoleculeId::new("wx-mol")),
-            vec![],
-        );
+        let ctx = build_template_context(Some(MoleculeId::new("wx-mol")), &[], base, vec![]);
         match ctx {
             TodoTemplateContext::Update(u) => {
                 assert_eq!(u.implementation_notes, vec!["seeded note"]);
@@ -200,7 +152,7 @@ mod tests {
             last_commit: Some("deadbeef".into()),
             commits_since: Some(0),
         }];
-        let ctx = build_template_context(&TierDecision::New, base_fields(), None, None, cs.clone());
+        let ctx = build_template_context(None, &[], base_fields(), cs.clone());
         match ctx {
             TodoTemplateContext::New(n) => assert_eq!(n.criterion_status, cs),
             _ => panic!("expected New"),
@@ -219,12 +171,9 @@ mod tests {
             commits_since: None,
         }];
         let ctx = build_template_context(
-            &TierDecision::Tasks {
-                molecule: MoleculeId::new("wx-mol"),
-            },
-            base_fields(),
-            None,
             Some(MoleculeId::new("wx-mol")),
+            &[],
+            base_fields(),
             cs.clone(),
         );
         match ctx {
@@ -234,29 +183,23 @@ mod tests {
     }
 
     #[test]
-    fn diff_tier_renders_fanout_with_path_markers() {
-        let candidates = vec![
-            DiffCandidate {
+    fn touched_specs_render_fanout_with_path_markers() {
+        let touched = vec![
+            TouchedSpec {
                 label: SpecLabel::new("alpha"),
                 spec_path: PathBuf::from("specs/alpha.md"),
-                effective_base: "base".into(),
                 diff: "alpha diff line\n".into(),
             },
-            DiffCandidate {
+            TouchedSpec {
                 label: SpecLabel::new("beta"),
                 spec_path: PathBuf::from("specs/beta.md"),
-                effective_base: "base".into(),
                 diff: "beta diff line".into(),
             },
         ];
         let ctx = build_template_context(
-            &TierDecision::Diff {
-                anchor_base: "base".into(),
-                candidates,
-            },
-            base_fields(),
-            None,
             Some(MoleculeId::new("wx-mol")),
+            &touched,
+            base_fields(),
             vec![],
         );
         match ctx {

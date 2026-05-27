@@ -834,3 +834,43 @@ fn consume_notes_and_refresh_base_commit_invokes_closure_with_args() -> Result<(
     );
     Ok(())
 }
+
+/// At the state-DB layer, `rebuild` mirrors the single-query resolver's
+/// invariant: a spec may carry at most one active molecule. When the input
+/// list pairs two molecules with the same spec_label, rebuild MUST refuse
+/// with [`StateError::DuplicateSpecMolecules`] naming every conflicting id,
+/// not silently insert both. Spec: `harness.md` *Auxiliary commands*
+/// `loom init --rebuild` aborts on this case rather than papering over the
+/// invariant break.
+#[test]
+fn todo_resolution_is_single_query_with_invariant_violation_refusal() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let workspace = dir.path();
+    write_spec(workspace, "alpha", "# alpha\n")?;
+
+    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let molecules = vec![
+        ActiveMolecule {
+            id: MoleculeId::new("wx-aaa"),
+            spec_label: SpecLabel::new("alpha"),
+            base_commit: None,
+        },
+        ActiveMolecule {
+            id: MoleculeId::new("wx-bbb"),
+            spec_label: SpecLabel::new("alpha"),
+            base_commit: None,
+        },
+    ];
+    let err = db.rebuild(workspace, &molecules).unwrap_err();
+    match err {
+        StateError::DuplicateSpecMolecules { label, ids } => {
+            assert_eq!(label, "alpha");
+            assert!(
+                ids.contains("wx-aaa") && ids.contains("wx-bbb"),
+                "expected every conflicting id in the error, got {ids:?}",
+            );
+        }
+        other => return Err(anyhow!("expected DuplicateSpecMolecules, got {other:?}")),
+    }
+    Ok(())
+}

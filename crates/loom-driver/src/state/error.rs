@@ -39,4 +39,7 @@ pub enum StateError {
 
     /// bead-metadata write inside productive-completion gate failed
     BdUpdate(#[from] BdError),
+
+    /// multiple open epics found for spec `{label}`: {ids}; close all but one before re-running rebuild
+    DuplicateSpecMolecules { label: String, ids: String },
 }

@@ -1,7 +1,8 @@
 //! Production [`TodoController`] used by the `loom todo` binary.
 //!
-//! Resolves the per-bead [`SpawnConfig`] by running the four-tier detection
-//! against a real [`GitClient`] + [`StateDb`] and rendering `todo_new.md` /
+//! Resolves the per-bead [`SpawnConfig`] by running the single-query
+//! resolver against a real [`BdClient`] + working-tree-diff touched-set
+//! discovery against a real [`GitClient`], then renders `todo_new.md` /
 //! `todo_update.md` from `templates`.
 //!
 //! Agent dispatch happens in [`super::runner::run`] via a caller-provided
@@ -15,7 +16,7 @@ use loom_driver::agent::{RePinContent, SessionOutcome, SpawnConfig, set_loom_ins
 use loom_driver::bd::{BdClient, BdError, CommandRunner, TokioRunner, UpdateOpts};
 use loom_driver::config::Phase;
 use loom_driver::git::GitClient;
-use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
+use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::{BdUpdateFn, StateDb};
@@ -25,8 +26,9 @@ use super::ExitSignal;
 use super::context::{TemplateBaseFields, TodoTemplateContext, build_template_context};
 use super::criterion_status::build_criterion_status;
 use super::error::TodoError;
+use super::resolve::{ResolverOutcome, resolve_molecule};
 use super::runner::{TodoController, TodoSession};
-use super::tier::{GitDiffSource, MoleculeState, TierInputs, compute_spec_diff};
+use super::touched::touched_specs;
 
 const BASE_COMMIT_METADATA_KEY: &str = "loom.base_commit";
 
@@ -38,6 +40,10 @@ pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
     phase_default: ProfileName,
     git: Arc<GitClient>,
     bd: Arc<BdClient<R>>,
+    #[expect(
+        dead_code,
+        reason = "CLI flag retained pending broader --since/--spec pruning; the tier-1 base override it fed has been removed"
+    )]
     since: Option<String>,
 }
 
@@ -66,13 +72,23 @@ impl<R: CommandRunner> ProductionTodoController<R> {
     }
 
     async fn build_prompt(&self) -> Result<String, TodoError> {
-        let active_mol = match crate::resolve::resolve_open_epic(&self.bd, &self.label).await? {
-            Some(id) => self.state.molecule(&id)?,
-            None => None,
+        let molecule_id = match resolve_molecule(&self.bd, &self.label).await? {
+            ResolverOutcome::Existing(id) => Some(id),
+            ResolverOutcome::None => None,
+            ResolverOutcome::InvariantViolation(ids) => {
+                let joined = ids
+                    .iter()
+                    .map(MoleculeId::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(TodoError::InvariantViolation {
+                    label: self.label.to_string(),
+                    ids: joined,
+                });
+            }
         };
-        let molecule_id = active_mol.as_ref().map(|m| m.id.clone());
-        // Tolerate a missing spec row — tier-4 first-touch doesn't run plan
-        // before todo. Notes are sourced from the `notes` table below.
+        debug!(label = %self.label, ?molecule_id, "single-query resolution");
+
         match self.state.spec(&self.label) {
             Ok(_) => (),
             Err(loom_driver::state::StateError::SpecNotFound { .. }) => (),
@@ -86,32 +102,8 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             .map(|row| row.text)
             .collect::<Vec<_>>();
 
-        let molecule = active_mol.as_ref().map(|row| MoleculeState {
-            id: row.id.clone(),
-            base_commit: row.base_commit.clone(),
-        });
-
         let spec_path = PathBuf::from("specs").join(format!("{}.md", self.label.as_str()));
-        let sibling_base = |label: &SpecLabel| -> Option<String> {
-            self.state
-                .molecule_for_spec(label)
-                .ok()
-                .flatten()
-                .and_then(|m| m.base_commit)
-        };
-
-        let tier = {
-            let inputs = TierInputs {
-                label: &self.label,
-                spec_path: &spec_path,
-                molecule,
-                since: self.since.as_deref(),
-                sibling_base: &sibling_base,
-            };
-            let live_git = LiveGitDiffSource(Arc::clone(&self.git));
-            compute_spec_diff(&live_git, &inputs)?
-        };
-        debug!(label = %self.label, ?tier, "tier decision");
+        let touched = touched_specs(self.git.as_ref()).await?;
 
         let key = resolve_scratch_key(Phase::Todo, &self.label, None);
         let scratchpad_path =
@@ -135,7 +127,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             self.git.as_ref(),
         )
         .await;
-        let ctx = build_template_context(&tier, base, None, molecule_id, criterion_status);
+        let ctx = build_template_context(molecule_id, &touched, base, criterion_status);
         let body = match ctx {
             TodoTemplateContext::New(c) => c.render()?,
             TodoTemplateContext::Update(c) => c.render()?,
@@ -283,62 +275,6 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
 /// network drops, and swallowed-marker turns must not skip the diff.
 fn base_commit_should_advance(exit_code: i32, marker: Option<&ExitSignal>) -> bool {
     exit_code == 0 && matches!(marker, Some(ExitSignal::Complete | ExitSignal::Noop))
-}
-
-/// Bridge `compute_spec_diff`'s sync [`GitDiffSource`] surface to the async
-/// [`GitClient`]. Each method runs the underlying git CLI on the current
-/// tokio runtime via `block_in_place` + `Handle::current().block_on(...)`,
-/// which is sound only on multi-thread runtimes — production wires this
-/// from `loom`'s `Runtime::new()` (multi-thread by default), and tier-1
-/// tests in this module that exercise it use
-/// `#[tokio::test(flavor = "multi_thread")]`.
-///
-/// Errors are mapped to algorithm-safe defaults (`false` / empty) so a
-/// transient git failure degrades to "no tier-1 diff" rather than aborting
-/// the run; the user still sees a tier-2/4 prompt and can retry.
-struct LiveGitDiffSource(Arc<GitClient>);
-
-impl GitDiffSource for LiveGitDiffSource {
-    fn rev_exists(&self, rev: &str) -> bool {
-        let client = Arc::clone(&self.0);
-        let rev = rev.to_string();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async move { client.rev_exists(&rev).await.unwrap_or(false) })
-        })
-    }
-
-    fn is_ancestor_of_head(&self, rev: &str) -> bool {
-        let client = Arc::clone(&self.0);
-        let rev = rev.to_string();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async move { client.is_ancestor_of_head(&rev).await.unwrap_or(false) })
-        })
-    }
-
-    fn changed_spec_files(&self, base: &str) -> Vec<std::path::PathBuf> {
-        let client = Arc::clone(&self.0);
-        let base = base.to_string();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async move { client.changed_spec_files(&base).await.unwrap_or_default() })
-        })
-    }
-
-    fn diff_spec(&self, base: &str, spec_path: &std::path::Path) -> String {
-        let client = Arc::clone(&self.0);
-        let base = base.to_string();
-        let spec_path = spec_path.to_path_buf();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                client
-                    .diff_spec(&base, &spec_path)
-                    .await
-                    .unwrap_or_default()
-            })
-        })
-    }
 }
 
 #[cfg(test)]
