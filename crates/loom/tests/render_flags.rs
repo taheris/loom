@@ -1,8 +1,8 @@
-//! `loom run` reaches the `Renderer` trait via `--json` / `--raw` /
+//! `loom loop` reaches the `Renderer` trait via `--json` / `--raw` /
 //! `--plain` CLI flags and the on-disk JSONL stays identical regardless
 //! of which mode drives the terminal.
 //!
-//! Each test spawns `loom run --once` against the mock pi agent in
+//! Each test spawns `loom loop --once` against the mock pi agent in
 //! `complete-marker` mode with one of the new flags, then parses
 //! stdout against the spec'd shape:
 //!
@@ -83,7 +83,7 @@ fn run_loom_with_flag(
         .arg(workspace)
         .arg("--agent")
         .arg("pi")
-        .arg("run")
+        .arg("loop")
         .arg("--once")
         .arg("-s")
         .arg(spec_label)
@@ -112,7 +112,7 @@ fn setup(workspace: &Path) -> (PathBuf, PathBuf, PathBuf) {
 }
 
 /// Initialize a real git repo at `path` with one initial commit so
-/// `loom run`'s per-bead worktree dispatch succeeds. Universal worktree
+/// `loom loop`'s per-bead worktree dispatch succeeds. Universal worktree
 /// isolation per `specs/harness.md` requires the workspace to be a real
 /// repo even at `--parallel 1`.
 fn init_workspace_repo(path: &Path) {
@@ -154,7 +154,7 @@ fn find_bead_log(workspace: &Path, spec_label: &str, bead_id: &str) -> PathBuf {
 }
 
 #[test]
-fn loom_run_json_flag_emits_pretty_printed_json_on_stdout() {
+fn loom_loop_json_flag_emits_pretty_printed_json_on_stdout() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     let (state_dir, bin_dir, manifest) = setup(workspace);
@@ -165,7 +165,7 @@ fn loom_run_json_flag_emits_pretty_printed_json_on_stdout() {
         &state_dir,
         bead,
         "render flag pin",
-        "Drives loom run --json against the mock agent.\n",
+        "Drives loom loop --json against the mock agent.\n",
         &[&format!("spec:{spec}"), "profile:base"],
     );
 
@@ -174,12 +174,12 @@ fn loom_run_json_flag_emits_pretty_printed_json_on_stdout() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom run --once --json must exit 0.\nstdout={stdout}\nstderr={stderr}",
+        "loom loop --once --json must exit 0.\nstdout={stdout}\nstderr={stderr}",
     );
     // Json mode emits pretty-printed objects. The presence of `"kind":`
     // (with the space between `:` and the value that pretty-print
     // inserts) is the easy positive signal. The summary line
-    // (`loom run: …`) is the only non-JSON content allowed in stdout.
+    // (`loom loop: …`) is the only non-JSON content allowed in stdout.
     assert!(
         stdout.contains("\"kind\":"),
         "expected pretty-printed event JSON on stdout — got {stdout:?}",
@@ -195,7 +195,7 @@ fn loom_run_json_flag_emits_pretty_printed_json_on_stdout() {
 }
 
 #[test]
-fn loom_run_raw_flag_emits_compact_jsonl_on_stdout() {
+fn loom_loop_raw_flag_emits_compact_jsonl_on_stdout() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     let (state_dir, bin_dir, manifest) = setup(workspace);
@@ -206,7 +206,7 @@ fn loom_run_raw_flag_emits_compact_jsonl_on_stdout() {
         &state_dir,
         bead,
         "render flag pin",
-        "Drives loom run --raw against the mock agent.\n",
+        "Drives loom loop --raw against the mock agent.\n",
         &[&format!("spec:{spec}"), "profile:base"],
     );
 
@@ -215,7 +215,7 @@ fn loom_run_raw_flag_emits_compact_jsonl_on_stdout() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom run --once --raw must exit 0.\nstdout={stdout}\nstderr={stderr}",
+        "loom loop --once --raw must exit 0.\nstdout={stdout}\nstderr={stderr}",
     );
     // Raw mode emits compact JSON. Find at least one parseable event line.
     let parsed = stdout
@@ -230,7 +230,7 @@ fn loom_run_raw_flag_emits_compact_jsonl_on_stdout() {
 }
 
 #[test]
-fn loom_run_plain_flag_emits_no_ansi_escapes_on_stdout() {
+fn loom_loop_plain_flag_emits_no_ansi_escapes_on_stdout() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     let (state_dir, bin_dir, manifest) = setup(workspace);
@@ -241,7 +241,7 @@ fn loom_run_plain_flag_emits_no_ansi_escapes_on_stdout() {
         &state_dir,
         bead,
         "render flag pin",
-        "Drives loom run --plain against the mock agent.\n",
+        "Drives loom loop --plain against the mock agent.\n",
         &[&format!("spec:{spec}"), "profile:base"],
     );
 
@@ -250,7 +250,7 @@ fn loom_run_plain_flag_emits_no_ansi_escapes_on_stdout() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom run --once --plain must exit 0.\nstdout={stdout}\nstderr={stderr}",
+        "loom loop --once --plain must exit 0.\nstdout={stdout}\nstderr={stderr}",
     );
     // Plain output must not carry ANSI escape bytes; OSC 8 wrappers and
     // color codes both start with `\x1b`.
@@ -261,10 +261,10 @@ fn loom_run_plain_flag_emits_no_ansi_escapes_on_stdout() {
 }
 
 #[test]
-fn loom_run_rejects_conflicting_render_flags() {
+fn loom_loop_rejects_conflicting_render_flags() {
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     let output = Command::new(loom_bin)
-        .arg("run")
+        .arg("loop")
         .arg("--json")
         .arg("--raw")
         .output()

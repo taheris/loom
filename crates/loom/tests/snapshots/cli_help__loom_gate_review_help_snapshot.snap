@@ -1,5 +1,6 @@
 ---
 source: crates/loom/tests/cli_help.rs
+assertion_line: 179
 expression: "loom_help(&[\"gate\", \"review\"])"
 ---
 Run the LLM rubric — criterion-attached judges plus the rubric walk over the diff. Expensive
@@ -17,5 +18,5 @@ Options:
   -b, --bead <ID>           Scope to one bead's success-criteria inputs and the bead's own diff
       --diff <RANGE>        Scope to a git diff range. Default when no scope flag is set: `<molecule.base_commit>..HEAD` for the active molecule, else `HEAD`
       --tree                Scope to every file in the workspace (nightly safety net)
-      --verify-exit <CODE>  Exit code of a prior `loom gate verify --diff <range>` run. Threaded from `loom run`'s molecule-completion handoff so the push gate's four-condition AND can refuse on a non-zero verify exit per FR9 condition 2
+      --verify-exit <CODE>  Exit code of a prior `loom gate verify --diff <range>` run. Threaded from `loom loop`'s molecule-completion handoff so the push gate's four-condition AND can refuse on a non-zero verify exit per FR9 condition 2
   -h, --help                Print help

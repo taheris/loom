@@ -16,7 +16,7 @@ use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
 use loom_templates::plan::{PlanNewContext, PlanUpdateContext};
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
 use loom_templates::run::{
-    DriverNoticeCause, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, ReviewConcernKind, RunContext,
+    DriverNoticeCause, LoopContext, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, ReviewConcernKind,
     VerifierFailure,
 };
 use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
@@ -246,7 +246,7 @@ fn todo_update_wraps_existing_tasks_in_agent_output() -> Result<()> {
 
 #[test]
 fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
@@ -282,7 +282,7 @@ fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
 
 #[test]
 fn run_template_omits_attempt_line_when_zero() -> Result<()> {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
@@ -307,7 +307,7 @@ fn run_template_omits_attempt_line_when_zero() -> Result<()> {
 
 #[test]
 fn run_template_renders_attempt_line_on_retry() -> Result<()> {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
@@ -340,7 +340,7 @@ fn run_template_renders_attempt_line_on_retry() -> Result<()> {
 /// cannot silently drop or move the reframe.
 #[test]
 fn run_template_prepends_first_instruction_reframe_on_retry() -> Result<()> {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
@@ -380,7 +380,7 @@ fn run_template_prepends_first_instruction_reframe_on_retry() -> Result<()> {
 /// 1 follows the heading directly.
 #[test]
 fn run_template_omits_first_instruction_reframe_on_fresh_dispatch() -> Result<()> {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
@@ -410,7 +410,7 @@ fn run_template_omits_first_instruction_reframe_on_fresh_dispatch() -> Result<()
 /// already gated on `attempt > 0`).
 #[test]
 fn run_template_omits_first_instruction_reframe_when_attempt_zero() -> Result<()> {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
@@ -438,7 +438,7 @@ fn run_template_omits_first_instruction_reframe_when_attempt_zero() -> Result<()
 
 #[test]
 fn run_template_renders_review_notes_block_when_set() -> Result<()> {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
@@ -1144,7 +1144,7 @@ fn every_multi_turn_template_includes_chat_marker_partial() -> Result<()> {
 /// by accident (e.g. via a copy-pasted include).
 #[test]
 fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
-    let run_out = RunContext {
+    let run_out = LoopContext {
         pinned_context: "PIN".into(),
         label: SpecLabel::new("demo"),
         spec_path: "specs/demo.md".into(),
@@ -1226,7 +1226,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
 /// inputs.
 #[test]
 fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: "PIN".into(),
         label: SpecLabel::new("demo"),
         spec_path: "specs/demo.md".into(),
@@ -1292,7 +1292,7 @@ fn contained_within_agent_output(haystack: &str, needle: &str) -> bool {
 /// rendered inside an `<agent-output>` span, not merely in the same prompt.
 #[test]
 fn agent_output_markers_wrap_each_agent_supplied_field() -> Result<()> {
-    let run = RunContext {
+    let run = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
@@ -1406,7 +1406,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
     )?;
     assert_stable(
         "run",
-        RunContext {
+        LoopContext {
             pinned_context: PINNED_CONTEXT_BODY.to_string(),
             label: SpecLabel::new("harness"),
             spec_path: "specs/harness.md".to_string(),

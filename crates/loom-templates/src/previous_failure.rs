@@ -29,7 +29,7 @@ pub const STDERR_TAIL_PER_BLOCK: usize = 1500;
 /// Marker appended to a rendered failure body when truncation drops content.
 const TRUNC_MARKER: &str = "[truncated]";
 
-/// Typed retry context threaded into `run.md` via `RunContext.previous_failure`.
+/// Typed retry context threaded into `run.md` via `LoopContext.previous_failure`.
 /// Variants carry the cause-appropriate detail so the template can render each
 /// with its documented framing (see [`Display`] impl).
 #[derive(Debug, Clone, PartialEq, Eq)]

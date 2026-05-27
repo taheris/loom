@@ -34,6 +34,16 @@ const SPEC: &str = "specs/harness.md";
 const MAIN_RS: &str = "crates/loom/src/main.rs";
 const SPEC_GROUP_ORDER: &[&str] = &["Workflow", "Inspection", "State"];
 
+/// A row in `harness.md`'s Removed-surface table. Command-level rows name
+/// a whole subcommand to be absent from `HELP_GROUPS`; flag-level rows
+/// name a `--<flag>` to be absent from the retained subcommand's
+/// `#[arg(long, …)]` declarations on `Command::<Variant>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RemovedEntry {
+    Command(String),
+    Flag { command: String, flag: String },
+}
+
 pub fn run(_input: &WalkInput) -> Verdict {
     let root = workspace_root();
     let Some(spec_body) = read_to_string(&locate_rel(&root, SPEC)) else {
@@ -58,7 +68,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
 
     let mut violations = Vec::new();
     check_groups_match(&spec_groups, &binary_groups, &mut violations);
-    check_removed_surface_absent(&spec_removed, &binary_groups, &mut violations);
+    check_removed_surface_absent(&spec_removed, &binary_groups, &main_body, &mut violations);
     check_command_flag_set(&spec_body, &main_body, "logs", "Logs", &mut violations);
     check_command_flag_set(&spec_body, &main_body, "msg", "Msg", &mut violations);
     violations.retain(|v| !SURFACE_ALLOWLIST.iter().any(|allow| v.contains(allow)));
@@ -67,18 +77,12 @@ pub fn run(_input: &WalkInput) -> Verdict {
 
 /// Allowlist of violation-substrings intentionally suppressed pending
 /// cleanup under bead **lm-hyh7**. Each entry pairs with the open
-/// rename or removal work (lm-9ehh.3) that will reconcile the spec
-/// and the binary's `HELP_GROUPS`; remove the entry once the rename
-/// reaches `HELP_GROUPS`.
+/// removal work that will reconcile the spec and the binary's
+/// `Command::*` definitions; remove the entry once the matching flag
+/// is gone from the binary.
 const SURFACE_ALLOWLIST: &[&str] = &[
-    // lm-9ehh.3: specs/harness.md FR1 was renamed to `loop` but
-    // `HELP_GROUPS` still names the pre-rename commands. Skip the
-    // four resulting mismatches until lm-9ehh.3 lands.
-    "FR1 lists `loop` under Workflow",
-    "HELP_GROUPS lists `run` under Workflow",
-    "HELP_GROUPS re-introduces `run` under Workflow",
-    "HELP_GROUPS re-introduces `use` under State",
-    "HELP_GROUPS re-introduces `todo` under Workflow",
+    "`Command::Todo` re-declares `--spec`",
+    "`Command::UseSpec` re-declares `--epic`",
 ];
 
 fn check_command_flag_set(
@@ -161,19 +165,50 @@ fn check_groups_match(
 }
 
 fn check_removed_surface_absent(
-    removed: &[String],
+    removed: &[RemovedEntry],
     binary: &[(String, Vec<String>)],
+    main_body: &str,
     violations: &mut Vec<String>,
 ) {
-    for cmd in removed {
-        for (heading, cmds) in binary {
-            if cmds.iter().any(|c| c == cmd) {
-                violations.push(format!(
-                    "{MAIN_RS} HELP_GROUPS re-introduces `{cmd}` under {heading} — listed in {SPEC} Removed surface table",
-                ));
+    for entry in removed {
+        match entry {
+            RemovedEntry::Command(cmd) => {
+                for (heading, cmds) in binary {
+                    if cmds.iter().any(|c| c == cmd) {
+                        violations.push(format!(
+                            "{MAIN_RS} HELP_GROUPS re-introduces `{cmd}` under {heading} — listed in {SPEC} Removed surface table",
+                        ));
+                    }
+                }
+            }
+            RemovedEntry::Flag { command, flag } => {
+                let variant = command_variant_ident(command);
+                let declared = match parse_binary_command_flags(main_body, &variant) {
+                    Ok(set) => set,
+                    Err(_) => continue,
+                };
+                if declared.contains(flag) {
+                    violations.push(format!(
+                        "{MAIN_RS} `Command::{variant}` re-declares `--{flag}` — listed as `loom {command} --{flag}` in {SPEC} Removed surface table",
+                    ));
+                }
             }
         }
     }
+}
+
+/// Capitalize a subcommand name into its `Command::<Variant>` ident.
+/// Hyphens collapse via title-case per word (`use-spec` → `UseSpec`).
+fn command_variant_ident(name: &str) -> String {
+    name.split('-')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(c) => c.to_ascii_uppercase().to_string() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
 }
 
 fn parse_spec_command_groups(body: &str) -> Result<Vec<(String, Vec<String>)>, String> {
@@ -201,7 +236,7 @@ fn parse_spec_command_groups(body: &str) -> Result<Vec<(String, Vec<String>)>, S
     Ok(groups)
 }
 
-fn parse_spec_removed_surface(body: &str) -> Result<Vec<String>, String> {
+fn parse_spec_removed_surface(body: &str) -> Result<Vec<RemovedEntry>, String> {
     let (fr1, _, _) = locate_fr1(body)?;
     let marker_idx = fr1
         .iter()
@@ -223,11 +258,24 @@ fn parse_spec_removed_surface(body: &str) -> Result<Vec<String>, String> {
             continue;
         }
         let first = cells[1].trim().trim_matches('`');
-        if let Some(cmd) = first.strip_prefix("loom ") {
-            let name = cmd.split_whitespace().next().unwrap_or("");
-            if !name.is_empty() {
-                out.push(name.to_string());
+        let Some(rest) = first.strip_prefix("loom ") else {
+            continue;
+        };
+        let mut tokens = rest.split_whitespace();
+        let Some(command) = tokens.next() else {
+            continue;
+        };
+        match tokens.find(|t| t.starts_with("--")) {
+            Some(flag_token) => {
+                let flag = flag_token.trim_start_matches('-');
+                if !flag.is_empty() {
+                    out.push(RemovedEntry::Flag {
+                        command: command.to_string(),
+                        flag: flag.to_string(),
+                    });
+                }
             }
+            None => out.push(RemovedEntry::Command(command.to_string())),
         }
     }
     if out.is_empty() {

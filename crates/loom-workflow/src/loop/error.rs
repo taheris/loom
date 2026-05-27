@@ -8,9 +8,9 @@ use loom_driver::logging::LogError;
 use loom_driver::profile_manifest::ProfileError;
 use loom_driver::state::StateError;
 
-/// Errors raised by the `loom run` driver.
+/// Errors raised by the `loom loop` driver.
 #[derive(Debug, Display, Error)]
-pub enum RunError {
+pub enum LoopError {
     /// agent backend protocol failure
     Protocol(#[from] ProtocolError),
 

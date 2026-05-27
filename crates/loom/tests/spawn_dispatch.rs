@@ -368,16 +368,16 @@ fn loom_todo_writes_jsonl_log_under_workspace_logs_dir() {
 }
 
 /// Spec promise (`specs/harness.md` *Run UX & Logging*): every
-/// bead processed by `loom run` writes a per-bead JSONL log under
+/// bead processed by `loom loop` writes a per-bead JSONL log under
 /// `<workspace>/.wrapix/loom/logs/<spec>/<bead-id>-<utc>.jsonl`. Guards
 /// against the regression where the production sequential controller
 /// passed `None` for the sink and every agent event was discarded. The
-/// bd stub returns one ready bead so `RunMode::Once` exercises the full
+/// bd stub returns one ready bead so `LoopMode::Once` exercises the full
 /// `next_ready_bead` → `run_bead` → `close_bead` path; the wrapix shim
 /// and mock-pi finish the protocol so the sink reaches `session_complete`
 /// before being dropped.
 #[test]
-fn loom_run_once_writes_per_bead_jsonl_log() {
+fn loom_loop_once_writes_per_bead_jsonl_log() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -421,7 +421,7 @@ fn loom_run_once_writes_per_bead_jsonl_log() {
         .arg(workspace)
         .arg("--agent")
         .arg("pi")
-        .arg("run")
+        .arg("loop")
         .arg("--once")
         .arg("-s")
         .arg("agent")
@@ -440,13 +440,13 @@ fn loom_run_once_writes_per_bead_jsonl_log() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom run --once must exit 0 against the bd + wrapix stubs. stdout={stdout} stderr={stderr}",
+        "loom loop --once must exit 0 against the bd + wrapix stubs. stdout={stdout} stderr={stderr}",
     );
 
     let logs_dir = workspace.join(".wrapix/loom/logs/agent");
     assert!(
         logs_dir.is_dir(),
-        "per-bead log directory must exist after `loom run --once`: {}\nstdout={stdout}\nstderr={stderr}",
+        "per-bead log directory must exist after `loom loop --once`: {}\nstdout={stdout}\nstderr={stderr}",
         logs_dir.display(),
     );
     let entries: Vec<_> = std::fs::read_dir(&logs_dir)
@@ -491,7 +491,7 @@ fn loom_run_once_writes_per_bead_jsonl_log() {
 /// reviewer agent's events were discarded. The bd stub returns one bead
 /// carrying `loom:clarify` so the post-snapshot diff yields
 /// `ReviewVerdict::PushBlocked` and the gate
-/// exits without touching `git push` / `beads-push` / `loom run` — keeping
+/// exits without touching `git push` / `beads-push` / `loom loop` — keeping
 /// the test environment-independent.
 #[test]
 fn loom_gate_review_writes_phase_jsonl_log() {

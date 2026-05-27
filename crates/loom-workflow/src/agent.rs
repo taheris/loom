@@ -29,8 +29,8 @@ use loom_events::{
 };
 use tracing::{info, warn};
 
+use crate::r#loop::SessionResult;
 use crate::observer::DefaultObserverChain;
-use crate::run::SessionResult;
 
 /// Drive `B` through one full session: spawn, prompt, then consume events
 /// until `SessionComplete` arrives. Returns the resulting [`SessionOutcome`]
@@ -888,7 +888,7 @@ mod tests {
         let result =
             run_agent_classified::<FailingBackend>(&cfg, Some(sink), None, None, Some(b)).await;
         match result {
-            crate::run::SessionResult::PreflightFailed { error } => {
+            crate::r#loop::SessionResult::PreflightFailed { error } => {
                 assert!(
                     error.contains("io failure"),
                     "preflight error must carry the ProtocolError display: {error}",

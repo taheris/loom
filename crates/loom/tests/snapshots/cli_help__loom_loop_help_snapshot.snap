@@ -1,7 +1,7 @@
 ---
 source: crates/loom/tests/cli_help.rs
-assertion_line: 55
-expression: "loom_help(&[])"
+assertion_line: 149
+expression: "loom_help(&[\"run\"])"
 ---
 Loom harness CLI
 

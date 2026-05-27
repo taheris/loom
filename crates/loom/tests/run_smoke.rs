@@ -1,6 +1,6 @@
-//! End-to-end smoke test for `loom run --once`.
+//! End-to-end smoke test for `loom loop --once`.
 //!
-//! Pins that `loom run --once` against a fake bd returns a meaningful
+//! Pins that `loom loop --once` against a fake bd returns a meaningful
 //! exit code (not unrecognized subcommand).
 //!
 //! The test installs a stub `bd` on PATH that prints `[]` for every `ready` /
@@ -9,7 +9,7 @@
 //! path through `run_loop`:
 //!
 //! 1. `next_ready_bead` → `bd ready --label spec:<X>` → empty slice → `None`,
-//! 2. `RunMode::Once` exits cleanly without invoking `loom review`,
+//! 2. `LoopMode::Once` exits cleanly without invoking `loom review`,
 //! 3. binary returns exit code 0.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -19,8 +19,8 @@ use std::path::Path;
 use std::process::Command;
 
 /// Initialize a real git repo at `path` with one initial commit so
-/// `loom run`'s per-bead worktree dispatch succeeds. The smoke tests
-/// invoke `loom run` against a workspace tempdir; without this, the
+/// `loom loop`'s per-bead worktree dispatch succeeds. The smoke tests
+/// invoke `loom loop` against a workspace tempdir; without this, the
 /// binary's [`GitClient::open`] call fails before reaching the ready-queue
 /// check this test is asserting against.
 fn init_workspace_repo(path: &Path) {
@@ -97,7 +97,7 @@ fn install_bd_argv_logger(dir: &Path, argv_log: &Path) -> std::path::PathBuf {
 }
 
 #[test]
-fn loom_run_once_against_empty_bd_exits_zero() {
+fn loom_loop_once_against_empty_bd_exits_zero() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -127,11 +127,11 @@ fn loom_run_once_against_empty_bd_exits_zero() {
     let output = Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
-        .arg("run")
+        .arg("loop")
         .arg("--once")
         .env("PATH", new_path)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
-        // The exec_review path is gated behind RunMode::Continuous; on the
+        // The exec_review path is gated behind LoopMode::Continuous; on the
         // empty-queue path we still set this so the binary can locate itself
         // if the loop ever changes shape.
         .env("LOOM_BIN", loom_bin)
@@ -146,10 +146,10 @@ fn loom_run_once_against_empty_bd_exits_zero() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom run --once must exit zero on empty queue. stdout={stdout} stderr={stderr}",
+        "loom loop --once must exit zero on empty queue. stdout={stdout} stderr={stderr}",
     );
     assert!(
-        stdout.contains("loom run:"),
+        stdout.contains("loom loop:"),
         "expected the run summary line. stdout={stdout}",
     );
     assert!(
@@ -162,7 +162,7 @@ fn loom_run_once_against_empty_bd_exits_zero() {
     );
 }
 
-/// FR1: the `--parallel N` path of `loom run` must call `bd ready`
+/// FR1: the `--parallel N` path of `loom loop` must call `bd ready`
 /// WITHOUT `--exclude-label=loom:clarify` / `--exclude-label=loom:blocked`.
 /// Dedup of clarify/blocked beads relies on the paired `status=blocked`
 /// transition the apply paths write alongside the label; `bd ready`
@@ -171,7 +171,7 @@ fn loom_run_once_against_empty_bd_exits_zero() {
 /// silently dropped, causing every loop iteration to re-dispatch the same
 /// labelled bead.
 #[test]
-fn loom_run_parallel_does_not_pass_exclude_label_to_bd_ready() {
+fn loom_loop_parallel_does_not_pass_exclude_label_to_bd_ready() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -197,7 +197,7 @@ fn loom_run_parallel_does_not_pass_exclude_label_to_bd_ready() {
     let output = Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
-        .arg("run")
+        .arg("loop")
         .arg("--parallel")
         .arg("2")
         .env("PATH", new_path)
@@ -212,7 +212,7 @@ fn loom_run_parallel_does_not_pass_exclude_label_to_bd_ready() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom run --parallel 2 must exit zero against an empty bd queue. \
+        "loom loop --parallel 2 must exit zero against an empty bd queue. \
          stdout={stdout} stderr={stderr}",
     );
 
@@ -234,12 +234,12 @@ fn loom_run_parallel_does_not_pass_exclude_label_to_bd_ready() {
 }
 
 #[test]
-fn loom_run_recognizes_subcommand() {
-    // Regression guard: `loom run --help` must exit cleanly. A binary
+fn loom_loop_recognizes_subcommand() {
+    // Regression guard: `loom loop --help` must exit cleanly. A binary
     // that does not expose `run` prints "unrecognized subcommand: run".
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     let output = Command::new(loom_bin)
-        .arg("run")
+        .arg("loop")
         .arg("--help")
         .output()
         .expect("spawn loom");
@@ -247,10 +247,10 @@ fn loom_run_recognizes_subcommand() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom run --help must exit zero. stdout={stdout} stderr={stderr}",
+        "loom loop --help must exit zero. stdout={stdout} stderr={stderr}",
     );
     assert!(
         stdout.contains("--once") && stdout.contains("--parallel"),
-        "loom run --help must list the spec'd flags. stdout={stdout}",
+        "loom loop --help must list the spec'd flags. stdout={stdout}",
     );
 }

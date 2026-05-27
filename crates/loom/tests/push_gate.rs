@@ -206,7 +206,7 @@ fn seed_active_molecule(workspace: &Path, label: &str, mol_id: &str, base_sha: &
 
 /// Drive `loom gate review -s <label>` against the wired stubs and
 /// return the captured `Output`. `verify_exit` adds `--verify-exit <CODE>`
-/// to the child argv when `Some`, mirroring how `loom run`'s
+/// to the child argv when `Some`, mirroring how `loom loop`'s
 /// molecule-completion handoff threads the verify exit into the push
 /// gate's four-condition AND (FR9 condition 2).
 fn run_loom_gate_review(
@@ -746,7 +746,7 @@ fn concern_then_complete_live_path_resolves_to_clean_push() {
 // Scenario 5 — verifier-failed via the threaded --verify-exit flag
 // -------------------------------------------------------------------
 
-/// FR9 condition 2 production wiring (wx-e6c8r.25): when `loom run`'s
+/// FR9 condition 2 production wiring (wx-e6c8r.25): when `loom loop`'s
 /// molecule-completion handoff captures a non-zero `loom gate verify`
 /// exit and threads it into `loom gate review --verify-exit <CODE>`,
 /// `ProductionReviewController::verify_exit()` MUST return that value
@@ -827,7 +827,7 @@ fn push_gate_refuses_when_verify_exit_flag_is_nonzero_via_live_path() {
 /// condition 2 and let the push gate reach `push_gate_clean` when every
 /// other input passes. This pins the inverse contract — the
 /// `verifier-failed` branch is reached on non-zero *only*, not on every
-/// `Some(_)` value. (`Some(0)` is the dominant case: `loom run` threads
+/// `Some(_)` value. (`Some(0)` is the dominant case: `loom loop` threads
 /// `0` on every clean verify pass.)
 #[test]
 fn push_gate_fires_clean_when_verify_exit_flag_is_zero_via_live_path() {

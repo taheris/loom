@@ -1,13 +1,13 @@
-//! `loom run` — per-bead execution loop.
+//! `loom loop` — per-bead execution loop.
 //!
-//! Implements the sequential (`--parallel 1`) shape of the run command per
-//! `specs/harness.md` "Command set" / "Process Architecture" / "Run UX
+//! Implements the sequential (`--parallel 1`) shape of the loop command per
+//! `specs/harness.md` "Command set" / "Process Architecture" / "Loop UX
 //! & Logging". The loop:
 //!
 //! 1. resolves the per-bead profile from the bead's `profile:X` label (or a
 //!    `--profile` override) and builds a typed [`SpawnConfig`](
 //!    loom_driver::agent::SpawnConfig);
-//! 2. renders the [`RunContext`](loom_templates::run::RunContext) prompt with
+//! 2. renders the [`LoopContext`](loom_templates::run::LoopContext) prompt with
 //!    the bead's id/title/description, threading the previous-failure body
 //!    (truncated to 4000 chars) on retries;
 //! 3. spawns `wrapix spawn --spawn-config <file> --stdio` via an
@@ -45,8 +45,8 @@ mod runner;
 mod spawn;
 mod tree_clean;
 
-pub use context::{RunContextInputs, build_run_context, render_run_prompt};
-pub use error::RunError;
+pub use context::{LoopContextInputs, build_loop_context, render_loop_prompt};
+pub use error::LoopError;
 pub use outcome::{AgentOutcome, BeadResult, SessionResult};
 pub use parallel::{
     BatchOutcome, BatchResult, BatchSlot, WorktreeBead, create_worktrees, merge_back,
@@ -59,7 +59,7 @@ pub use production::{
 pub use profile::{DEFAULT_PROFILE, resolve_profile, resolve_profile_image};
 pub use retry::{RetryDecision, RetryPolicy};
 pub use runner::{
-    AgentLoopController, INFRA_PREFLIGHT_CAUSE, INFRA_REPEATED_CAUSE, RunMode, RunSummary,
+    AgentLoopController, INFRA_PREFLIGHT_CAUSE, INFRA_REPEATED_CAUSE, LoopMode, LoopSummary,
     UNKNOWN_PROFILE_CAUSE, run_loop,
 };
 pub use spawn::build_spawn_config_from_manifest;

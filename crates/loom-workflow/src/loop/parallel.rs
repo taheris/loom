@@ -7,7 +7,7 @@ use loom_driver::identifier::{BeadId, SpecLabel};
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
-use super::error::RunError;
+use super::error::LoopError;
 use super::outcome::AgentOutcome;
 
 /// Pairing of a bead with the worktree that was created for it. Built by
@@ -142,7 +142,7 @@ pub async fn run_parallel_batch<S, F>(
     label: &SpecLabel,
     beads: Vec<Bead>,
     spawn: S,
-) -> Result<BatchOutcome, RunError>
+) -> Result<BatchOutcome, LoopError>
 where
     S: Fn(WorktreeBead) -> F + Send + Sync + 'static,
     F: std::future::Future<Output = AgentOutcome> + Send + 'static,
@@ -162,7 +162,7 @@ pub async fn create_worktrees(
     git: &GitClient,
     label: &SpecLabel,
     beads: Vec<Bead>,
-) -> Result<Vec<WorktreeBead>, RunError> {
+) -> Result<Vec<WorktreeBead>, LoopError> {
     let mut out = Vec::with_capacity(beads.len());
     for bead in beads {
         let wt = git.create_worktree(label, &bead.id).await?;
@@ -228,7 +228,7 @@ where
 ///   worktree, return [`BatchResult::Conflict`].
 /// - [`AgentOutcome::Failure`] → remove the worktree, delete the branch,
 ///   return [`BatchResult::AgentFailed`] (the caller owns retry accounting).
-pub async fn merge_back(git: &GitClient, slots: Vec<BatchSlot>) -> Result<BatchOutcome, RunError> {
+pub async fn merge_back(git: &GitClient, slots: Vec<BatchSlot>) -> Result<BatchOutcome, LoopError> {
     let mut results = Vec::with_capacity(slots.len());
     for slot in slots {
         let result = merge_back_one(git, slot).await?;
@@ -237,7 +237,7 @@ pub async fn merge_back(git: &GitClient, slots: Vec<BatchSlot>) -> Result<BatchO
     Ok(BatchOutcome { results })
 }
 
-async fn merge_back_one(git: &GitClient, slot: BatchSlot) -> Result<BatchResult, RunError> {
+async fn merge_back_one(git: &GitClient, slot: BatchSlot) -> Result<BatchResult, LoopError> {
     let BatchSlot {
         bead,
         worktree,

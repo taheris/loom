@@ -3,16 +3,16 @@ use loom_driver::identifier::BeadId;
 use loom_events::DriverKind;
 use tracing::info;
 
-use super::error::RunError;
+use super::error::LoopError;
 use super::outcome::{AgentOutcome, BeadResult};
 use super::retry::{RetryDecision, RetryPolicy};
 use crate::todo::ExitSignal;
 
-/// Loop-termination policy for `loom run`. `Continuous` is the default — the
+/// Loop-termination policy for `loom loop`. `Continuous` is the default — the
 /// loop pulls beads until the molecule is complete, then hands off to
 /// `loom review`. `Once` exits after the first bead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunMode {
+pub enum LoopMode {
     Once,
     Continuous,
 }
@@ -23,7 +23,7 @@ pub const INFRA_PREFLIGHT_CAUSE: &str = "infra-preflight";
 
 /// Spec-table cause string written to `bd update --notes` when the
 /// driver-memory infra-retry budget is exhausted by a second mid-session
-/// infra failure inside the same `loom run` invocation.
+/// infra failure inside the same `loom loop` invocation.
 pub const INFRA_REPEATED_CAUSE: &str = "infra-repeated";
 
 /// Spec-table cause string written to `bd update --notes` when a bead's
@@ -34,8 +34,8 @@ pub const UNKNOWN_PROFILE_CAUSE: &str = "unknown-profile";
 
 /// Driver-memory budget for mid-session infra retries. Spec
 /// (`specs/harness.md` §"Verdict Gate · Infra failures bypass the gate"):
-/// "one free retry per `loom run`". The counter is separate from
-/// `[loop] max_iterations` and resets on every fresh `loom run` invocation.
+/// "one free retry per `loom loop`". The counter is separate from
+/// `[loop] max_iterations` and resets on every fresh `loom loop` invocation.
 const INFRA_MIDSESSION_RETRY_BUDGET: u32 = 1;
 
 /// Outcome of one molecule-completion handoff. Carries the verify and
@@ -53,7 +53,7 @@ pub struct ExecReviewOutcome {
 /// Summary of one [`run_loop`] invocation. Surfaces what happened so callers
 /// can return a meaningful exit code and tests can assert on the path taken.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RunSummary {
+pub struct LoopSummary {
     /// Beads that ran to a terminal state (closed or clarified or blocked).
     pub beads_processed: u32,
     /// Beads that exhausted retries and got the `loom:clarify` label.
@@ -99,7 +99,7 @@ pub trait AgentLoopController: Send {
     /// Pull the next ready bead. Returns `None` when the molecule is done.
     fn next_ready_bead(
         &mut self,
-    ) -> impl std::future::Future<Output = Result<Option<Bead>, RunError>> + Send;
+    ) -> impl std::future::Future<Output = Result<Option<Bead>, LoopError>> + Send;
 
     /// Run one agent attempt against `bead`, threading `previous_failure` if
     /// any (the wrapped truncation lives in `templates`).
@@ -107,7 +107,7 @@ pub trait AgentLoopController: Send {
         &mut self,
         bead: &Bead,
         previous_failure: Option<String>,
-    ) -> impl std::future::Future<Output = Result<AgentOutcome, RunError>> + Send;
+    ) -> impl std::future::Future<Output = Result<AgentOutcome, LoopError>> + Send;
 
     /// Add the `loom:clarify` label. `question` is the agent's clarify
     /// detail (or the last retry's failure body when retries were
@@ -121,7 +121,7 @@ pub trait AgentLoopController: Send {
         &mut self,
         bead: &BeadId,
         question: &str,
-    ) -> impl std::future::Future<Output = Result<(), RunError>> + Send;
+    ) -> impl std::future::Future<Output = Result<(), LoopError>> + Send;
 
     /// Add the `loom:blocked` label and write `cause` (plus any error
     /// detail) to `bd update --notes`. Called when an infra failure or
@@ -132,7 +132,7 @@ pub trait AgentLoopController: Send {
         bead: &BeadId,
         cause: &str,
         error: &str,
-    ) -> impl std::future::Future<Output = Result<(), RunError>> + Send;
+    ) -> impl std::future::Future<Output = Result<(), LoopError>> + Send;
 
     /// Molecule-completion handoff (FR1). Invokes `loom gate verify
     /// --diff <molecule.base_commit>..HEAD` followed by `loom gate
@@ -147,7 +147,7 @@ pub trait AgentLoopController: Send {
     /// can consume all four conditions per FR9 (the four-condition AND).
     fn exec_review(
         &mut self,
-    ) -> impl std::future::Future<Output = Result<ExecReviewOutcome, RunError>> + Send;
+    ) -> impl std::future::Future<Output = Result<ExecReviewOutcome, LoopError>> + Send;
 
     /// Emit a driver-side event into the controller's event sink. The
     /// run loop fires `retry_dispatch` here when it re-dispatches a bead
@@ -184,15 +184,15 @@ pub const AGENT_BLOCKED_CAUSE: &str = "agent-blocked";
 ///
 /// `infra_retries_used` is driver-memory only: it lives on the stack of
 /// this single `run_loop` invocation and is **not** persisted. A new
-/// `loom run` starts with a fresh budget per spec §"Verdict Gate · Infra
+/// `loom loop` starts with a fresh budget per spec §"Verdict Gate · Infra
 /// failures bypass the gate".
 pub async fn run_loop<C: AgentLoopController>(
     controller: &mut C,
-    mode: RunMode,
+    mode: LoopMode,
     policy: RetryPolicy,
     max_iterations: u32,
-) -> Result<RunSummary, RunError> {
-    let mut summary = RunSummary::default();
+) -> Result<LoopSummary, LoopError> {
+    let mut summary = LoopSummary::default();
     let mut infra_retries_used: u32 = 0;
     'outer: loop {
         let mut beads_this_pass: u32 = 0;
@@ -227,14 +227,14 @@ pub async fn run_loop<C: AgentLoopController>(
                 }
             }
 
-            if matches!(mode, RunMode::Once) {
+            if matches!(mode, LoopMode::Once) {
                 return Ok(summary);
             }
         }
 
         summary.molecule_complete = true;
 
-        if !matches!(mode, RunMode::Continuous) {
+        if !matches!(mode, LoopMode::Continuous) {
             break 'outer;
         }
 
@@ -270,7 +270,7 @@ pub async fn run_loop<C: AgentLoopController>(
 /// [`BeadResult::Blocked`] with cause [`INFRA_PREFLIGHT_CAUSE`]; agent
 /// output is never evaluated. Mid-session infra failures consume a slot in
 /// the caller-owned `infra_retries_used` counter (capped at
-/// [`INFRA_MIDSESSION_RETRY_BUDGET`] across the entire `loom run`); a
+/// [`INFRA_MIDSESSION_RETRY_BUDGET`] across the entire `loom loop`); a
 /// second occurrence routes to [`BeadResult::Blocked`] with cause
 /// [`INFRA_REPEATED_CAUSE`]. Neither path consumes the agent-side
 /// `[loop] max_iterations` retry budget owned by [`RetryPolicy`].
@@ -279,7 +279,7 @@ async fn process_one_bead<C: AgentLoopController>(
     bead: &Bead,
     policy: RetryPolicy,
     infra_retries_used: &mut u32,
-) -> Result<BeadResult, RunError> {
+) -> Result<BeadResult, LoopError> {
     let mut retries_used: u32 = 0;
     let mut previous_failure: Option<String> = None;
     loop {
@@ -379,7 +379,7 @@ mod tests {
     }
 
     impl AgentLoopController for FakeController {
-        async fn next_ready_bead(&mut self) -> Result<Option<Bead>, RunError> {
+        async fn next_ready_bead(&mut self) -> Result<Option<Bead>, LoopError> {
             Ok(self.ready_queue.pop_front())
         }
 
@@ -387,7 +387,7 @@ mod tests {
             &mut self,
             bead: &Bead,
             previous_failure: Option<String>,
-        ) -> Result<AgentOutcome, RunError> {
+        ) -> Result<AgentOutcome, LoopError> {
             self.run_calls.push((bead.id.clone(), previous_failure));
             Ok(self
                 .agent_outcomes
@@ -395,7 +395,7 @@ mod tests {
                 .unwrap_or(AgentOutcome::Success))
         }
 
-        async fn apply_clarify(&mut self, bead: &BeadId, question: &str) -> Result<(), RunError> {
+        async fn apply_clarify(&mut self, bead: &BeadId, question: &str) -> Result<(), LoopError> {
             self.clarified.push((bead.clone(), question.to_string()));
             Ok(())
         }
@@ -405,13 +405,13 @@ mod tests {
             bead: &BeadId,
             cause: &str,
             error: &str,
-        ) -> Result<(), RunError> {
+        ) -> Result<(), LoopError> {
             self.blocked
                 .push((bead.clone(), cause.to_string(), error.to_string()));
             Ok(())
         }
 
-        async fn exec_review(&mut self) -> Result<ExecReviewOutcome, RunError> {
+        async fn exec_review(&mut self) -> Result<ExecReviewOutcome, LoopError> {
             self.review_calls += 1;
             if let Some(fixups) = self.review_injects.pop_front() {
                 for b in fixups {
@@ -448,13 +448,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn once_mode_processes_single_bead() -> Result<(), RunError> {
+    async fn once_mode_processes_single_bead() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("wx-1", &[]));
         c.ready_queue.push_back(bead("wx-2", &[]));
         c.agent_outcomes.push_back(AgentOutcome::Success);
 
-        let summary = run_loop(&mut c, RunMode::Once, RetryPolicy::default(), 10).await?;
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy::default(), 10).await?;
 
         assert_eq!(summary.beads_processed, 1);
         assert_eq!(c.run_calls.len(), 1);
@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn continuous_loops_until_molecule_complete() -> Result<(), RunError> {
+    async fn continuous_loops_until_molecule_complete() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("wx-1", &[]));
         c.ready_queue.push_back(bead("wx-2", &[]));
@@ -478,7 +478,7 @@ mod tests {
             c.agent_outcomes.push_back(AgentOutcome::Success);
         }
 
-        let summary = run_loop(&mut c, RunMode::Continuous, RetryPolicy::default(), 10).await?;
+        let summary = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
 
         assert_eq!(summary.beads_processed, 3);
         // All three reach Done; driver does not call bd close.
@@ -490,10 +490,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn continuous_execs_review_on_molecule_complete() -> Result<(), RunError> {
+    async fn continuous_execs_review_on_molecule_complete() -> Result<(), LoopError> {
         // Empty ready queue → first iteration sees None → exec review.
         let mut c = FakeController::default();
-        let summary = run_loop(&mut c, RunMode::Continuous, RetryPolicy::default(), 10).await?;
+        let summary = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
         assert_eq!(summary.beads_processed, 0);
         assert!(summary.molecule_complete);
         assert!(summary.execed_review);
@@ -502,9 +502,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn once_mode_does_not_exec_review_on_empty_queue() -> Result<(), RunError> {
+    async fn once_mode_does_not_exec_review_on_empty_queue() -> Result<(), LoopError> {
         let mut c = FakeController::default();
-        let summary = run_loop(&mut c, RunMode::Once, RetryPolicy::default(), 10).await?;
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy::default(), 10).await?;
         assert!(summary.molecule_complete);
         assert!(!summary.execed_review, "once mode never execs review");
         assert_eq!(c.review_calls, 0);
@@ -512,7 +512,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_bead_retries_with_previous_failure_then_clarifies() -> Result<(), RunError> {
+    async fn failed_bead_retries_with_previous_failure_then_clarifies() -> Result<(), LoopError> {
         // max_retries = 2 → attempts = initial + 2 retries = 3 failures triggers clarify.
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("wx-1", &[]));
@@ -522,7 +522,7 @@ mod tests {
             });
         }
 
-        let summary = run_loop(&mut c, RunMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
 
         assert_eq!(c.run_calls.len(), 3, "initial + 2 retries");
         // Attempt 1 has no previous_failure.
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_succeeds_within_budget_reaches_done() -> Result<(), RunError> {
+    async fn retry_succeeds_within_budget_reaches_done() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("wx-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::Failure {
@@ -546,7 +546,7 @@ mod tests {
         });
         c.agent_outcomes.push_back(AgentOutcome::Success);
 
-        let summary = run_loop(&mut c, RunMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
 
         assert_eq!(c.run_calls.len(), 2);
         assert_eq!(c.run_calls[1].1.as_deref(), Some("boom"));
@@ -562,7 +562,7 @@ mod tests {
     /// can show which retry round triggered the next dispatch without
     /// re-deriving it from `previous_failure` heuristics.
     #[tokio::test]
-    async fn retry_emits_retry_dispatch_driver_event() -> Result<(), RunError> {
+    async fn retry_emits_retry_dispatch_driver_event() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("wx-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::Failure {
@@ -573,7 +573,7 @@ mod tests {
         });
         c.agent_outcomes.push_back(AgentOutcome::Success);
 
-        run_loop(&mut c, RunMode::Once, RetryPolicy { max_retries: 3 }, 10).await?;
+        run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 3 }, 10).await?;
 
         let kinds: Vec<&str> = c.driver_events.iter().map(|(k, _, _)| k.as_str()).collect();
         assert_eq!(
@@ -592,7 +592,7 @@ mod tests {
     /// route the bead to `loom:blocked` cause `infra-preflight` on the
     /// first occurrence. No agent output is ever evaluated.
     #[tokio::test]
-    async fn infra_preflight_routes_to_blocked_without_retry() -> Result<(), RunError> {
+    async fn infra_preflight_routes_to_blocked_without_retry() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("wx-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::InfraPreflight {
@@ -602,7 +602,7 @@ mod tests {
         // and the assertion below would fail.
         c.agent_outcomes.push_back(AgentOutcome::Success);
 
-        let summary = run_loop(&mut c, RunMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
 
         assert_eq!(c.run_calls.len(), 1, "preflight must not retry");
         assert!(c.clarified.is_empty());
@@ -626,8 +626,8 @@ mod tests {
     /// declared set) for the operator to relabel without re-reading the
     /// manifest.
     #[tokio::test]
-    async fn unknown_profile_routes_to_blocked_without_retry_then_continues() -> Result<(), RunError>
-    {
+    async fn unknown_profile_routes_to_blocked_without_retry_then_continues()
+    -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue
             .push_back(bead("wx-bad", &["profile:nonexistent"]));
@@ -640,7 +640,7 @@ mod tests {
 
         let summary = run_loop(
             &mut c,
-            RunMode::Continuous,
+            LoopMode::Continuous,
             RetryPolicy { max_retries: 2 },
             10,
         )
@@ -684,12 +684,12 @@ mod tests {
         Ok(())
     }
 
-    /// Spec gate: the first mid-session infra failure inside a `loom run`
+    /// Spec gate: the first mid-session infra failure inside a `loom loop`
     /// gets one free retry; the second one routes to `loom:blocked`
     /// cause `infra-repeated`. Both occurrences here happen on the same
     /// bead so the per-run counter is the only thing distinguishing them.
     #[tokio::test]
-    async fn infra_midsession_one_retry_then_blocks_on_repeat() -> Result<(), RunError> {
+    async fn infra_midsession_one_retry_then_blocks_on_repeat() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("wx-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::InfraMidSession {
@@ -699,7 +699,7 @@ mod tests {
             error: "io timeout".into(),
         });
 
-        let summary = run_loop(&mut c, RunMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
 
         assert_eq!(
             c.run_calls.len(),
@@ -726,7 +726,7 @@ mod tests {
     /// the budget without touching `[loop] max_iterations`. Verifies the
     /// happy path of the one-free-retry rule.
     #[tokio::test]
-    async fn infra_midsession_retry_succeeds_within_budget() -> Result<(), RunError> {
+    async fn infra_midsession_retry_succeeds_within_budget() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("wx-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::InfraMidSession {
@@ -734,7 +734,7 @@ mod tests {
         });
         c.agent_outcomes.push_back(AgentOutcome::Success);
 
-        let summary = run_loop(&mut c, RunMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
 
         assert_eq!(c.run_calls.len(), 2);
         // Done — driver does not close, no blocked.
@@ -749,7 +749,7 @@ mod tests {
     /// mid-session infra failure, the agent-side retry policy still has
     /// its full budget for genuine `AgentOutcome::Failure` retries.
     #[tokio::test]
-    async fn infra_retry_counter_does_not_consume_max_retries() -> Result<(), RunError> {
+    async fn infra_retry_counter_does_not_consume_max_retries() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("wx-1", &[]));
         // 1 infra mid-session, then `max_retries=2` worth of agent failures
@@ -763,7 +763,7 @@ mod tests {
             });
         }
 
-        let summary = run_loop(&mut c, RunMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
 
         assert_eq!(
             c.run_calls.len(),
@@ -787,11 +787,11 @@ mod tests {
     }
 
     /// Companion to the counter-separate test: the budget is per
-    /// `loom run` invocation, not per bead. A second bead's first
+    /// `loom loop` invocation, not per bead. A second bead's first
     /// mid-session failure inside the same run hits the spent budget
     /// and routes straight to `infra-repeated`.
     #[tokio::test]
-    async fn infra_budget_is_per_run_not_per_bead() -> Result<(), RunError> {
+    async fn infra_budget_is_per_run_not_per_bead() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("wx-a", &[]));
         c.ready_queue.push_back(bead("wx-b", &[]));
@@ -806,7 +806,7 @@ mod tests {
             error: "second".into(),
         });
 
-        let summary = run_loop(&mut c, RunMode::Continuous, RetryPolicy::default(), 10).await?;
+        let summary = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
 
         assert_eq!(c.run_calls.len(), 3);
         // Bead A reaches Done (no clarify, no blocked for it).
@@ -826,7 +826,7 @@ mod tests {
     /// `[loop] max_iterations` slot.
     #[tokio::test]
     async fn continuous_outer_loop_processes_fix_up_bead_then_exits_on_stall()
-    -> Result<(), RunError> {
+    -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("wx-initial", &[]));
         c.agent_outcomes.push_back(AgentOutcome::Success);
@@ -837,7 +837,7 @@ mod tests {
         c.review_injects.push_back(vec![]);
         c.agent_outcomes.push_back(AgentOutcome::Success);
 
-        let summary = run_loop(&mut c, RunMode::Continuous, RetryPolicy::default(), 10).await?;
+        let summary = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
 
         assert_eq!(c.run_calls.len(), 2, "initial + fix-up processed");
         assert_eq!(c.run_calls[0].0, BeadId::new("wx-initial").expect("valid"),);
@@ -860,7 +860,7 @@ mod tests {
     /// rather than spinning forever — the spec calls this out as
     /// "counter exhaustion" as an exit condition.
     #[tokio::test]
-    async fn continuous_outer_loop_bounded_by_max_iterations() -> Result<(), RunError> {
+    async fn continuous_outer_loop_bounded_by_max_iterations() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("wx-0", &[]));
         // Three passes scripted: each handoff injects one more fix-up bead.
@@ -875,7 +875,7 @@ mod tests {
             c.agent_outcomes.push_back(AgentOutcome::Success);
         }
 
-        let summary = run_loop(&mut c, RunMode::Continuous, RetryPolicy::default(), 3).await?;
+        let summary = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 3).await?;
 
         // Pass 1 processes wx-0; exec_review 1 injects wx-1.
         // Pass 2 processes wx-1; exec_review 2 injects wx-2.
@@ -896,7 +896,7 @@ mod tests {
     /// `attempt` starts at zero (the production controller derives
     /// `attempt = u32::from(previous_failure.is_some())`).
     #[tokio::test]
-    async fn fix_up_bead_starts_at_attempt_zero() -> Result<(), RunError> {
+    async fn fix_up_bead_starts_at_attempt_zero() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("wx-orig", &[]));
         c.agent_outcomes.push_back(AgentOutcome::Failure {
@@ -911,7 +911,7 @@ mod tests {
         c.review_injects.push_back(vec![]);
         c.agent_outcomes.push_back(AgentOutcome::Success);
 
-        run_loop(&mut c, RunMode::Continuous, RetryPolicy::default(), 10).await?;
+        run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
 
         let fixup_id = BeadId::new("wx-fixup").expect("valid bead id");
         let fixup_calls: Vec<&(BeadId, Option<String>)> = c
@@ -940,13 +940,13 @@ mod tests {
     /// the second pass observes no new fix-ups and breaks. No spurious
     /// extra `exec_review` after the stall trigger.
     #[tokio::test]
-    async fn continuous_outer_loop_exits_on_stall_when_no_fixups_appear() -> Result<(), RunError> {
+    async fn continuous_outer_loop_exits_on_stall_when_no_fixups_appear() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         // Empty ready queue; no fix-ups scripted on either review call.
         c.review_injects.push_back(vec![]);
         c.review_injects.push_back(vec![]);
 
-        let summary = run_loop(&mut c, RunMode::Continuous, RetryPolicy::default(), 10).await?;
+        let summary = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
 
         assert_eq!(summary.beads_processed, 0);
         assert_eq!(

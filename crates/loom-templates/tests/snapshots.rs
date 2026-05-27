@@ -17,7 +17,7 @@ use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
 use loom_templates::plan::{PlanNewContext, PlanUpdateContext};
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
 use loom_templates::run::{
-    DriverNoticeCause, PreviousFailure, ReviewConcernKind, RunContext, VerifierFailure,
+    DriverNoticeCause, LoopContext, PreviousFailure, ReviewConcernKind, VerifierFailure,
 };
 use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
 
@@ -156,7 +156,7 @@ fn todo_update_snapshot() {
 
 #[test]
 fn run_snapshot() {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
@@ -182,7 +182,7 @@ fn run_snapshot() {
 /// branch.
 #[test]
 fn run_snapshot_no_failure() {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
@@ -204,7 +204,7 @@ fn run_snapshot_no_failure() {
 /// for procedural failures like `incomplete-signaling`.
 #[test]
 fn run_snapshot_driver_notice() {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
@@ -230,7 +230,7 @@ fn run_snapshot_driver_notice() {
 /// collective verifier-failures framing.
 #[test]
 fn run_snapshot_verify_failures() {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
@@ -256,7 +256,7 @@ fn run_snapshot_verify_failures() {
 /// review concern framing and its token prefix.
 #[test]
 fn run_snapshot_review_concern() {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
@@ -283,7 +283,7 @@ fn run_snapshot_review_concern() {
 /// a real stage name.
 #[test]
 fn run_snapshot_build_failure() {
-    let ctx = RunContext {
+    let ctx = LoopContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),

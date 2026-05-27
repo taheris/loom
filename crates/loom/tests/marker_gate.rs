@@ -3,12 +3,12 @@
 //! driver itself never invokes `bd close` (closure is the agent's
 //! responsibility per `specs/harness.md` § Verdict gate).
 //!
-//! Drives `loom run --once` against a Rust mock agent that emits the
+//! Drives `loom loop --once` against a Rust mock agent that emits the
 //! marker through the pi-mono protocol, with `bd-shim` standing in for
 //! the live beads socket. A prior bug collapsed every clean-exit
 //! session to `AgentOutcome::Success → bd close`, ignoring markers; the
 //! unit tests on `phase_verdict::decide` passed throughout because they
-//! never exercised `loom run`'s actual marker-routing wiring.
+//! never exercised `loom loop`'s actual marker-routing wiring.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Initialize a real git repo at `path` with one initial commit so
-/// `loom run`'s per-bead worktree dispatch (via
+/// `loom loop`'s per-bead worktree dispatch (via
 /// `GitClient::create_worktree`) succeeds. Universal worktree isolation
 /// per `specs/harness.md` requires the workspace to be a real repo even
 /// at `--parallel 1`.
@@ -69,7 +69,7 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
     bin_dir
 }
 
-/// Write a profile manifest pointing at an empty tar; `loom run`
+/// Write a profile manifest pointing at an empty tar; `loom loop`
 /// resolves it via `LOOM_PROFILES_MANIFEST` even on the empty-queue
 /// fast path. The image is never instantiated — the mock agent
 /// replaces wrapix end-to-end — so the source tar can be empty.
@@ -85,7 +85,7 @@ fn write_minimal_manifest(dir: &Path) -> PathBuf {
     manifest
 }
 
-fn run_loom_run_once(
+fn run_loom_loop_once(
     workspace: &Path,
     bin_dir: &Path,
     state_dir: &Path,
@@ -106,7 +106,7 @@ fn run_loom_run_once(
         .arg(workspace)
         .arg("--agent")
         .arg("pi")
-        .arg("run")
+        .arg("loop")
         .arg("--once")
         .arg("-s")
         .arg(spec_label)
@@ -117,10 +117,10 @@ fn run_loom_run_once(
         .env("LOOM_PROFILES_MANIFEST", manifest)
         .env("BD_STATE_DIR", state_dir)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
-        // The nested-loom guard refuses `loom run` when LOOM_INSIDE=1.
+        // The nested-loom guard refuses `loom loop` when LOOM_INSIDE=1.
         // The cargo test runner inherits LOOM_INSIDE when this suite is
         // executed inside a loom-managed container, which would block
-        // the child `loom run` invocation before it reached the marker
+        // the child `loom loop` invocation before it reached the marker
         // routing under test. Strip it so the test exercises the live
         // dispatch path the spec criterion pins.
         .env_remove("LOOM_INSIDE")
@@ -166,7 +166,7 @@ fn driver_closed_bead(log: &str, target_id: &str) -> bool {
 /// The status transition is the dedup mechanism: `bd ready` natively
 /// excludes status=blocked so the run loop won't re-dispatch the bead.
 #[test]
-fn loom_run_once_routes_blocked_marker_to_label_and_status_blocked() {
+fn loom_loop_once_routes_blocked_marker_to_label_and_status_blocked() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -184,7 +184,7 @@ fn loom_run_once_routes_blocked_marker_to_label_and_status_blocked() {
     let bin_dir = install_bd_shim(workspace);
     let manifest = write_minimal_manifest(workspace);
 
-    let output = run_loom_run_once(
+    let output = run_loom_loop_once(
         workspace,
         &bin_dir,
         &state_dir,
@@ -197,7 +197,7 @@ fn loom_run_once_routes_blocked_marker_to_label_and_status_blocked() {
     let log = read_invocation_log(&state_dir);
     assert!(
         output.status.success(),
-        "loom run --once must exit 0 on LOOM_BLOCKED.\n\
+        "loom loop --once must exit 0 on LOOM_BLOCKED.\n\
          stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
     );
 
@@ -226,7 +226,7 @@ fn loom_run_once_routes_blocked_marker_to_label_and_status_blocked() {
 /// close. The status transition is the dedup mechanism per the paired
 /// label+status contract.
 #[test]
-fn loom_run_once_routes_clarify_marker_to_label_and_status_blocked() {
+fn loom_loop_once_routes_clarify_marker_to_label_and_status_blocked() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -244,7 +244,7 @@ fn loom_run_once_routes_clarify_marker_to_label_and_status_blocked() {
     let bin_dir = install_bd_shim(workspace);
     let manifest = write_minimal_manifest(workspace);
 
-    let output = run_loom_run_once(
+    let output = run_loom_loop_once(
         workspace,
         &bin_dir,
         &state_dir,
@@ -257,7 +257,7 @@ fn loom_run_once_routes_clarify_marker_to_label_and_status_blocked() {
     let log = read_invocation_log(&state_dir);
     assert!(
         output.status.success(),
-        "loom run --once must exit 0 on LOOM_CLARIFY.\n\
+        "loom loop --once must exit 0 on LOOM_CLARIFY.\n\
          stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
     );
 
@@ -295,7 +295,7 @@ fn loom_run_once_routes_clarify_marker_to_label_and_status_blocked() {
 /// bead is expected to remain open after the run. The point of the
 /// test is the driver's restraint, not the bd-closed observable.
 #[test]
-fn loom_run_never_invokes_bd_close_on_dispatched_bead_across_all_markers() {
+fn loom_loop_never_invokes_bd_close_on_dispatched_bead_across_all_markers() {
     for (mode, id) in [
         ("blocked-marker", "wx-noclos"),
         ("clarify-marker", "wx-noclos2"),
@@ -319,7 +319,7 @@ fn loom_run_never_invokes_bd_close_on_dispatched_bead_across_all_markers() {
         let bin_dir = install_bd_shim(workspace);
         let manifest = write_minimal_manifest(workspace);
 
-        let output = run_loom_run_once(
+        let output = run_loom_loop_once(
             workspace,
             &bin_dir,
             &state_dir,

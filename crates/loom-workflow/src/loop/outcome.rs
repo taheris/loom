@@ -30,7 +30,7 @@ pub enum AgentOutcome {
     InfraPreflight { error: String },
 
     /// Mid-session infra failure (agent process exit non-zero, container
-    /// OOM, IO errors). Eligible for one driver-memory retry per `loom run`
+    /// OOM, IO errors). Eligible for one driver-memory retry per `loom loop`
     /// invocation. A second mid-session failure inside the same
     /// `run_loop` invocation routes to `loom:blocked`.
     InfraMidSession { error: String },
@@ -89,7 +89,7 @@ pub enum SessionResult {
 
     /// Spawn succeeded but the session terminated before
     /// `SessionComplete` — process EOF, IO error, OOM kill, etc. Eligible
-    /// for one driver-memory retry per `loom run`.
+    /// for one driver-memory retry per `loom loop`.
     MidSessionFailed { error: String },
 
     /// An `EventSink::react()` returned `SessionCommand::Abort` and the

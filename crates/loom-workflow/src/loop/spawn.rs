@@ -204,7 +204,7 @@ mod tests {
         assert_ne!(labelled.image_ref, overridden.image_ref);
     }
 
-    /// wx-cmzob: sequential (`loom run`) and parallel (`loom run -p N`)
+    /// wx-cmzob: sequential (`loom loop`) and parallel (`loom run -p N`)
     /// must produce identical SpawnConfigs for the same bead modulo the
     /// workspace path — sequential dispatches against the repo root,
     /// parallel against a per-bead worktree, but every other field

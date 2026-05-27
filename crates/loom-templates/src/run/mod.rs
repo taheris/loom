@@ -1,4 +1,4 @@
-//! `loom run` template: the per-bead implementation prompt with retry context.
+//! `loom loop` template: the per-bead implementation prompt with retry context.
 
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, SpecLabel};
@@ -8,10 +8,10 @@ pub use crate::previous_failure::{
     STDERR_TAIL_PER_BLOCK, VerifierFailure,
 };
 
-/// Context for `loom run` executing a single bead.
+/// Context for `loom loop` executing a single bead.
 #[derive(Template)]
 #[template(path = "run.md", escape = "none")]
-pub struct RunContext {
+pub struct LoopContext {
     pub pinned_context: String,
     pub label: SpecLabel,
     pub spec_path: String,

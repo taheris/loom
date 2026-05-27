@@ -1,4 +1,4 @@
-//! Production [`AgentLoopController`] used by the `loom run` binary.
+//! Production [`AgentLoopController`] used by the `loom loop` binary.
 //!
 //! Wires `BdClient` for bead lookup/close/clarify, a `tokio::process::Command`
 //! shell-out for `exec_review`, and a caller-provided dispatch closure for the
@@ -12,7 +12,7 @@
 //! into the controller at construction time so `run_bead` resolves the
 //! per-bead `image_ref` + `image_source` against the parsed manifest before
 //! the agent invocation. A missing manifest entry surfaces as
-//! [`RunError::Profile`] — no silent fallback.
+//! [`LoopError::Profile`] — no silent fallback.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,8 +30,8 @@ use loom_driver::scratch::resolve_scratch_key;
 use tokio::process::Command;
 use tracing::{info, warn};
 
-use super::context::{RunContextInputs, render_run_prompt};
-use super::error::RunError;
+use super::context::{LoopContextInputs, render_loop_prompt};
+use super::error::LoopError;
 use super::outcome::{AgentOutcome, SessionResult};
 use super::runner::{AgentLoopController, ExecReviewOutcome};
 use super::spawn::build_spawn_config_from_manifest;
@@ -143,7 +143,7 @@ where
     S: Fn(SpawnConfig, BeadId) -> F + Send,
     F: std::future::Future<Output = (SessionResult, Option<ExitSignal>)> + Send,
 {
-    async fn next_ready_bead(&mut self) -> Result<Option<Bead>, RunError> {
+    async fn next_ready_bead(&mut self) -> Result<Option<Bead>, LoopError> {
         // Dedup of clarify/blocked beads relies on the paired
         // `status=blocked` transition that `apply_clarify` / `apply_blocked`
         // write alongside the label. `bd ready` natively excludes
@@ -178,7 +178,7 @@ where
         &mut self,
         bead: &Bead,
         previous_failure: Option<String>,
-    ) -> Result<AgentOutcome, RunError> {
+    ) -> Result<AgentOutcome, LoopError> {
         let banner = format!("loom run @ {}", bead.id);
         let is_retry = previous_failure.is_some();
         // The stash is per-retry-sequence: a fresh dispatch
@@ -223,7 +223,7 @@ where
                 .to_string_lossy()
                 .into_owned();
         let attempt = u32::from(is_retry);
-        let initial_prompt = match render_run_prompt(RunContextInputs {
+        let initial_prompt = match render_loop_prompt(LoopContextInputs {
             label: self.label.clone(),
             spec_path: format!("specs/{}.md", self.label.as_str()),
             pinned_context: String::new(),
@@ -241,7 +241,7 @@ where
             Ok(p) => p,
             Err(e) => {
                 cleanup_worktree(&self.git, &worktree).await?;
-                return Err(RunError::Protocol(ProtocolError::Io(
+                return Err(LoopError::Protocol(ProtocolError::Io(
                     std::io::Error::other(e),
                 )));
             }
@@ -255,7 +255,7 @@ where
             Ok(s) => s,
             Err(source) => {
                 cleanup_worktree(&self.git, &worktree).await?;
-                return Err(RunError::Protocol(ProtocolError::Io(source)));
+                return Err(LoopError::Protocol(ProtocolError::Io(source)));
             }
         };
         let spawn_config = match build_spawn_config_from_manifest(
@@ -280,7 +280,7 @@ where
             Err(e) => {
                 drop(scratch);
                 cleanup_worktree(&self.git, &worktree).await?;
-                return Err(RunError::Profile(e));
+                return Err(LoopError::Profile(e));
             }
         };
         info!(
@@ -359,7 +359,7 @@ where
         }
     }
 
-    async fn apply_clarify(&mut self, bead: &BeadId, _question: &str) -> Result<(), RunError> {
+    async fn apply_clarify(&mut self, bead: &BeadId, _question: &str) -> Result<(), LoopError> {
         // Persistence boundary (specs/gate.md § "Persistence boundary:
         // agent narrates, agent persists"): the gate / runner only stamps
         // the `loom:clarify` label. The canonical `## Options — …` block
@@ -387,7 +387,7 @@ where
         bead: &BeadId,
         cause: &str,
         error: &str,
-    ) -> Result<(), RunError> {
+    ) -> Result<(), LoopError> {
         // Notes layout pins the cause string at the head so `bd show
         // --notes` greps cleanly for `infra-preflight` / `infra-repeated`
         // even when the raw error body is multi-line. Spec
@@ -413,7 +413,7 @@ where
         Ok(())
     }
 
-    async fn exec_review(&mut self) -> Result<ExecReviewOutcome, RunError> {
+    async fn exec_review(&mut self) -> Result<ExecReviewOutcome, LoopError> {
         // Release the spec lock before spawning the child — `loom gate
         // verify` and `loom gate review` acquire the same lock and would
         // otherwise time out behind us.
@@ -425,7 +425,7 @@ where
         // Deterministic verify first then LLM review; non-zero exit
         // codes are NOT fatal to `run_loop` (they drive fix-up beads on
         // the next outer-loop pass), but spawn failures and missing
-        // molecule metadata DO surface as `RunError`.
+        // molecule metadata DO surface as `LoopError`.
         let base = fetch_molecule_base_commit(&self.bd, &self.workspace, &self.label).await?;
         let diff_range = format!("{base}..HEAD");
         let verify_status = Command::new(&self.loom_bin)
@@ -481,7 +481,7 @@ where
 /// run-phase verdict gate on every non-merged exit path (agent failure,
 /// tree-not-clean recovery, profile-resolution failure) so a stale worktree
 /// or branch never survives a bead's retry chain.
-async fn cleanup_worktree(git: &GitClient, worktree: &CreatedWorktree) -> Result<(), RunError> {
+async fn cleanup_worktree(git: &GitClient, worktree: &CreatedWorktree) -> Result<(), LoopError> {
     // Driver-workdir dispatch: no separate worktree to remove and no
     // bead branch to delete; the sentinel empty branch string signals
     // this mode. Skip both git operations.
@@ -524,11 +524,11 @@ async fn fetch_molecule_base_commit<R: CommandRunner>(
     bd: &BdClient<R>,
     workspace: &std::path::Path,
     label: &SpecLabel,
-) -> Result<String, RunError> {
+) -> Result<String, LoopError> {
     let db = loom_driver::state::StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
     let mol_id = db
         .current_molecule(label)?
-        .ok_or_else(|| RunError::NoActiveMolecule {
+        .ok_or_else(|| LoopError::NoActiveMolecule {
             label: label.to_string(),
         })?;
     let bead_id =
@@ -539,14 +539,14 @@ async fn fetch_molecule_base_commit<R: CommandRunner>(
         .map_err(|e| {
             use crate::init::InitError;
             match e {
-                InitError::Bd(e) => RunError::Bd(e),
+                InitError::Bd(e) => LoopError::Bd(e),
                 InitError::MoleculeMissingBaseCommit { id } => {
-                    RunError::MoleculeMissingBaseCommit { id }
+                    LoopError::MoleculeMissingBaseCommit { id }
                 }
                 InitError::MoleculeMissingBaseCommitNoParentMetadata { id, parent } => {
-                    RunError::MoleculeMissingBaseCommitNoParentMetadata { id, parent }
+                    LoopError::MoleculeMissingBaseCommitNoParentMetadata { id, parent }
                 }
-                other => RunError::Bug {
+                other => LoopError::Bug {
                     context: format!(
                         "resolve_base_commit emits only Bd / MoleculeMissingBaseCommit / \
                          MoleculeMissingBaseCommitNoParentMetadata; got {other:?}",
@@ -649,7 +649,7 @@ fn verdict_to_outcome(verdict: PhaseVerdict, exit_code: i32) -> AgentOutcome {
 /// Helper used by `main.rs` to fetch the spec-filtered open list when the
 /// caller needs the typed [`Bead`] slice (e.g. to print a status line).
 /// Surfacing this here keeps the BdClient list-shape next to the controller.
-pub async fn list_open_for_spec(bd: &BdClient, label: &SpecLabel) -> Result<Vec<Bead>, RunError> {
+pub async fn list_open_for_spec(bd: &BdClient, label: &SpecLabel) -> Result<Vec<Bead>, LoopError> {
     let beads = bd
         .list(ListOpts {
             status: Some("open".to_string()),
@@ -755,7 +755,7 @@ mod tests {
             .expect("seed current_molecule");
     }
 
-    /// FR12 — `loom run`'s per-bead exit MUST route the agent's marker
+    /// FR12 — `loom loop`'s per-bead exit MUST route the agent's marker
     /// through the canonical [`crate::review::decide`] gate function rather
     /// than its own ad-hoc `match`. This test pins the marker → outcome
     /// mapping that `decide()` produces under neutral run-phase inputs:
@@ -977,8 +977,8 @@ mod tests {
         assert!(cfg.initial_prompt.contains("wx-1"));
     }
 
-    /// `loom run` must dispatch with the rendered
-    /// [`RunContext`] template — bead title/description, scratchpad path,
+    /// `loom loop` must dispatch with the rendered
+    /// [`LoopContext`] template — bead title/description, scratchpad path,
     /// and spec_path all reach the agent prompt — and the same body must
     /// land in `<scratch_dir>/prompt.txt` so post-compaction `repin.sh`
     /// can re-emit the actual phase prompt.
@@ -1151,7 +1151,7 @@ mod tests {
 
     /// Spec gate: a [`SessionResult::MidSessionFailed`] from the dispatch
     /// closure must surface as [`AgentOutcome::InfraMidSession`] so the
-    /// driver-memory budget can absorb one occurrence per `loom run`.
+    /// driver-memory budget can absorb one occurrence per `loom loop`.
     #[tokio::test]
     async fn run_bead_translates_midsession_failure_into_infra_midsession() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1194,7 +1194,7 @@ mod tests {
     /// Spec gate (Implementation Note 6): a bead whose `profile:X` label
     /// is missing from the manifest must surface as
     /// [`AgentOutcome::UnknownProfile`] (NOT [`AgentOutcome::Failure`])
-    /// so [`process_one_bead`](crate::run::run_loop) routes it straight to
+    /// so [`process_one_bead`](crate::r#loop::run_loop) routes it straight to
     /// `loom:blocked` cause `unknown-profile` without consuming a retry slot.
     /// The error string must name the requested profile and the manifest's
     /// declared set so the operator can relabel without re-reading the
@@ -1234,7 +1234,7 @@ mod tests {
         let outcome = controller
             .run_bead(&bad_bead, None)
             .await
-            .expect("run_bead must NOT bubble UnknownProfile up as RunError");
+            .expect("run_bead must NOT bubble UnknownProfile up as LoopError");
         match outcome {
             AgentOutcome::UnknownProfile { error } => {
                 assert!(
@@ -1250,7 +1250,7 @@ mod tests {
         }
     }
 
-    /// Regression: `loom run` used to hold the spec lock for its whole
+    /// Regression: `loom loop` used to hold the spec lock for its whole
     /// lifetime, so the `loom review` child it spawned at the molecule-complete
     /// handoff timed out trying to acquire the same lock. `exec_review` must
     /// drop the held [`LockGuard`] before spawning, leaving the kernel-level
@@ -1396,7 +1396,7 @@ mod tests {
     /// via fix-up beads on the next pass. The production controller
     /// still spawns `loom gate review --diff <base>..HEAD` after verify
     /// fails, and `exec_review` returns `Ok` so `run_loop` can re-poll
-    /// `bd ready` rather than tearing down the whole `loom run`.
+    /// `bd ready` rather than tearing down the whole `loom loop`.
     #[tokio::test(flavor = "multi_thread")]
     async fn exec_review_continues_to_review_when_verify_exits_nonzero() {
         use std::os::unix::fs::PermissionsExt;
@@ -1448,7 +1448,7 @@ mod tests {
         let handoff = controller
             .exec_review()
             .await
-            .expect("non-zero verify exit must not produce RunError");
+            .expect("non-zero verify exit must not produce LoopError");
 
         let recorded = std::fs::read_to_string(&argv_log).expect("argv log readable");
         let lines: Vec<&str> = recorded.lines().collect();
@@ -1514,7 +1514,7 @@ mod tests {
             .await
             .expect_err("exec_review must error when no active molecule");
         match err {
-            RunError::NoActiveMolecule { label } => assert_eq!(label, "orphan-spec"),
+            LoopError::NoActiveMolecule { label } => assert_eq!(label, "orphan-spec"),
             other => panic!("expected NoActiveMolecule, got {other:?}"),
         }
     }
@@ -1565,7 +1565,7 @@ mod tests {
             .await
             .expect_err("exec_review must error when molecule lacks base_commit");
         match err {
-            RunError::MoleculeMissingBaseCommit { id } => assert_eq!(id, "wx-mol.99"),
+            LoopError::MoleculeMissingBaseCommit { id } => assert_eq!(id, "wx-mol.99"),
             other => panic!("expected MoleculeMissingBaseCommit, got {other:?}"),
         }
     }
@@ -1576,7 +1576,7 @@ mod tests {
     /// self-heal: read the parent's `loom.base_commit`, persist it on the
     /// child via `bd update --set-metadata`, and continue the
     /// molecule-completion handoff using the inherited value. Without this,
-    /// `exec_review` would surface `RunError::MoleculeMissingBaseCommit` for
+    /// `exec_review` would surface `LoopError::MoleculeMissingBaseCommit` for
     /// a state the spec calls valid.
     #[tokio::test(flavor = "multi_thread")]
     async fn exec_review_inherits_base_commit_from_parent_when_child_lacks_metadata() {
@@ -1725,7 +1725,7 @@ mod tests {
             "error must surface the fix command: {msg}",
         );
         match err {
-            RunError::MoleculeMissingBaseCommitNoParentMetadata { id, parent } => {
+            LoopError::MoleculeMissingBaseCommitNoParentMetadata { id, parent } => {
                 assert_eq!(id, "wx-child.8");
                 assert_eq!(parent, "wx-epice");
             }

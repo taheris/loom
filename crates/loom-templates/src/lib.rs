@@ -13,7 +13,7 @@
 //! `templates` is a public-contract crate. External Rust consumers
 //! (e.g. RAG pipelines, domain-specific review tools) compose their own
 //! templates from the exposed typed building blocks
-//! ([`PinnedContext`], [`PreviousFailure`], [`RunContext`],
+//! ([`PinnedContext`], [`PreviousFailure`], [`LoopContext`],
 //! [`ReviewContext`]) and the `PARTIAL_*` partial-string constants
 //! below. Loom's own workflow templates (`plan_*`, `todo_*`, `run`,
 //! `review`, `msg`) are internal — consumers compose with the partials
@@ -35,7 +35,7 @@ pub use previous_failure::{
     STDERR_TAIL_PER_BLOCK, VerifierFailure,
 };
 pub use review::{ReviewContext, ReviewSource};
-pub use run::RunContext;
+pub use run::LoopContext;
 pub use todo::{TodoNewContext, TodoUpdateContext};
 
 /// Project-overview + style-rules pinning shape, exposed as a typed

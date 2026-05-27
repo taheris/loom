@@ -337,7 +337,7 @@ fn template_context_structs_pass() {
         "use askama::Template;\n\
          #[derive(Template)]\n\
          #[template(path = \"run.md\")]\n\
-         pub struct RunContext;\n",
+         pub struct LoopContext;\n",
     );
     let out = invoke(&["template_context_structs"], Some(ws.path()), None);
     assert_pass(&out);
@@ -1097,7 +1097,7 @@ fn phase_verdict_decide_called_from_production_pass() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-workflow/src/run/production.rs",
+        "crates/loom-workflow/src/loop/production.rs",
         "use crate::review::{decide};\npub fn run() { let _ = decide(&None, ()); }\n",
     );
     seed(
@@ -1122,7 +1122,7 @@ fn phase_verdict_decide_called_from_production_pass_with_multiline_import() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-workflow/src/run/production.rs",
+        "crates/loom-workflow/src/loop/production.rs",
         "use crate::review::{decide};\npub fn run() { let _ = decide(&None, ()); }\n",
     );
     seed(
@@ -1143,7 +1143,7 @@ fn phase_verdict_decide_called_from_production_fail_run_missing_call() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-workflow/src/run/production.rs",
+        "crates/loom-workflow/src/loop/production.rs",
         "pub fn run() { /* inlined classifier here, no decide call */ }\n",
     );
     seed(
@@ -1156,7 +1156,7 @@ fn phase_verdict_decide_called_from_production_fail_run_missing_call() {
         Some(ws.path()),
         None,
     );
-    assert_fail(&out, "run/production.rs");
+    assert_fail(&out, "loop/production.rs");
 }
 
 // ---------------------------------------------------------------------------
@@ -1838,7 +1838,7 @@ const TEMPLATES_PUBLIC_TYPES_BODY: &str = "pub struct PreviousFailure;\n\
      pub struct VerifierFailure;\n\
      pub enum ReviewConcernKind { Other(String) }\n\
      pub enum DriverNoticeCause { RetryExhausted }\n\
-     pub struct RunContext;\n\
+     pub struct LoopContext;\n\
      pub struct ReviewContext;\n\
      pub struct PinnedContext;\n";
 
@@ -1861,7 +1861,7 @@ fn loom_templates_public_types_pass_when_reexported_via_pub_use() {
         ws.path(),
         "crates/loom-templates/src/lib.rs",
         "pub mod inner;\n\
-         pub use inner::{PreviousFailure, VerifierFailure, ReviewConcernKind, DriverNoticeCause, RunContext, ReviewContext, PinnedContext};\n",
+         pub use inner::{PreviousFailure, VerifierFailure, ReviewConcernKind, DriverNoticeCause, LoopContext, ReviewContext, PinnedContext};\n",
     );
     seed(
         ws.path(),
@@ -1879,7 +1879,7 @@ fn loom_templates_public_types_fail_when_one_missing() {
                 pub struct VerifierFailure;\n\
                 pub enum ReviewConcernKind { Other(String) }\n\
                 pub enum DriverNoticeCause { RetryExhausted }\n\
-                pub struct RunContext;\n\
+                pub struct LoopContext;\n\
                 pub struct ReviewContext;\n";
     seed(ws.path(), "crates/loom-templates/src/lib.rs", body);
     let out = invoke(&["loom_templates_public_types"], Some(ws.path()), None);
@@ -1893,7 +1893,7 @@ fn loom_templates_public_types_fail_when_private() {
                 struct VerifierFailure;\n\
                 enum ReviewConcernKind { Other(String) }\n\
                 enum DriverNoticeCause { RetryExhausted }\n\
-                struct RunContext;\n\
+                struct LoopContext;\n\
                 struct ReviewContext;\n\
                 struct PinnedContext;\n";
     seed(ws.path(), "crates/loom-templates/src/lib.rs", body);
@@ -1996,7 +1996,7 @@ fn loom_templates_workflow_templates_not_exported_pass_when_only_derive() {
         "use askama::Template;\n\
          #[derive(Template)]\n\
          #[template(path = \"run.md\")]\n\
-         pub struct RunContext;\n",
+         pub struct LoopContext;\n",
     );
     let out = invoke(
         &["loom_templates_workflow_templates_not_exported"],
@@ -2487,7 +2487,7 @@ const TODO_CRITERION_STATUS_PASS_BODY: &str = "pub struct TodoNewContext { pub c
      pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n\
      pub struct PlanNewContext { pub spec_path: String }\n\
      pub struct PlanUpdateContext { pub spec_path: String }\n\
-     pub struct RunContext { pub spec_path: String }\n\
+     pub struct LoopContext { pub spec_path: String }\n\
      pub struct ReviewContext { pub spec_path: String }\n\
      pub struct MsgContext { pub scratchpad_path: String }\n";
 
@@ -2517,7 +2517,7 @@ fn todo_contexts_carry_criterion_status_fail_when_todo_new_missing_field() {
          pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n\
          pub struct PlanNewContext { pub spec_path: String }\n\
          pub struct PlanUpdateContext { pub spec_path: String }\n\
-         pub struct RunContext { pub spec_path: String }\n\
+         pub struct LoopContext { pub spec_path: String }\n\
          pub struct ReviewContext { pub spec_path: String }\n\
          pub struct MsgContext { pub scratchpad_path: String }\n",
     );
@@ -2539,7 +2539,7 @@ fn todo_contexts_carry_criterion_status_fail_when_todo_update_field_has_wrong_ty
          pub struct TodoUpdateContext { pub criterion_status: String }\n\
          pub struct PlanNewContext { pub spec_path: String }\n\
          pub struct PlanUpdateContext { pub spec_path: String }\n\
-         pub struct RunContext { pub spec_path: String }\n\
+         pub struct LoopContext { pub spec_path: String }\n\
          pub struct ReviewContext { pub spec_path: String }\n\
          pub struct MsgContext { pub scratchpad_path: String }\n",
     );
@@ -2564,7 +2564,7 @@ fn todo_contexts_carry_criterion_status_fail_when_run_context_carries_field() {
          pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n\
          pub struct PlanNewContext { pub spec_path: String }\n\
          pub struct PlanUpdateContext { pub spec_path: String }\n\
-         pub struct RunContext { pub criterion_status: Vec<CriterionStatus> }\n\
+         pub struct LoopContext { pub criterion_status: Vec<CriterionStatus> }\n\
          pub struct ReviewContext { pub spec_path: String }\n\
          pub struct MsgContext { pub scratchpad_path: String }\n",
     );
@@ -2575,7 +2575,7 @@ fn todo_contexts_carry_criterion_status_fail_when_run_context_carries_field() {
     );
     assert_fail(
         &out,
-        "RunContext` carries field `criterion_status` — only `TodoNewContext`/`TodoUpdateContext` may",
+        "LoopContext` carries field `criterion_status` — only `TodoNewContext`/`TodoUpdateContext` may",
     );
 }
 
@@ -2610,7 +2610,7 @@ fn todo_contexts_carry_criterion_status_finds_structs_split_across_files() {
     seed(
         ws.path(),
         "crates/loom-templates/src/run/mod.rs",
-        "pub struct RunContext { pub spec_path: String }\n",
+        "pub struct LoopContext { pub spec_path: String }\n",
     );
     seed(
         ws.path(),

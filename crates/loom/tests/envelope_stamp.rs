@@ -1,7 +1,7 @@
-//! Every `AgentEvent` emitted by `loom run` carries a per-spawn
+//! Every `AgentEvent` emitted by `loom loop` carries a per-spawn
 //! envelope (real `bead_id`, monotonic `seq`, real `ts_ms`).
 //!
-//! Drives `loom run --once` against the mock pi agent in
+//! Drives `loom loop --once` against the mock pi agent in
 //! `complete-marker` mode, locates the per-bead JSONL log, and asserts
 //! that every recorded event carries the seeded bead id and that `seq`
 //! advances by exactly one per event starting at zero. Guards against
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Initialize a real git repo at `path` with one initial commit so
-/// `loom run`'s per-bead worktree dispatch (via
+/// `loom loop`'s per-bead worktree dispatch (via
 /// `GitClient::create_worktree`) succeeds. Universal worktree isolation
 /// per `specs/harness.md` requires the workspace to be a real repo even
 /// at `--parallel 1`.
@@ -79,7 +79,7 @@ fn write_minimal_manifest(dir: &Path) -> PathBuf {
     manifest
 }
 
-fn run_loom_run_once(
+fn run_loom_loop_once(
     workspace: &Path,
     bin_dir: &Path,
     state_dir: &Path,
@@ -100,7 +100,7 @@ fn run_loom_run_once(
         .arg(workspace)
         .arg("--agent")
         .arg("pi")
-        .arg("run")
+        .arg("loop")
         .arg("--once")
         .arg("-s")
         .arg(spec_label)
@@ -143,7 +143,7 @@ fn find_bead_log(workspace: &Path, spec_label: &str, bead_id: &str) -> PathBuf {
 }
 
 #[test]
-fn loom_run_stamps_real_bead_id_and_monotonic_seq_on_every_event() {
+fn loom_loop_stamps_real_bead_id_and_monotonic_seq_on_every_event() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -163,7 +163,7 @@ fn loom_run_stamps_real_bead_id_and_monotonic_seq_on_every_event() {
     let bin_dir = install_bd_shim(workspace);
     let manifest = write_minimal_manifest(workspace);
 
-    let output = run_loom_run_once(
+    let output = run_loom_loop_once(
         workspace,
         &bin_dir,
         &state_dir,
@@ -175,7 +175,7 @@ fn loom_run_stamps_real_bead_id_and_monotonic_seq_on_every_event() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom run --once must exit 0 on complete-marker.\nstdout={stdout}\nstderr={stderr}",
+        "loom loop --once must exit 0 on complete-marker.\nstdout={stdout}\nstderr={stderr}",
     );
 
     let log_path = find_bead_log(workspace, spec, bead);

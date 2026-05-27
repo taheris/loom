@@ -174,7 +174,7 @@ pub struct GateInputs {
     /// Dirty entries reported by `git status --porcelain` on the bead's
     /// worktree, **already capped** (up to 30 entries with an extra
     /// `"+N more"` element when the underlying set was larger; see
-    /// [`crate::run::dirty_paths_from_porcelain`]). Empty when the tree
+    /// [`crate::r#loop::dirty_paths_from_porcelain`]). Empty when the tree
     /// is clean. Non-empty drives the gate to
     /// [`RecoveryCause::TreeNotClean`] BEFORE verify-fail /
     /// review-concern, so verifiers do not run against a half-staged
@@ -727,7 +727,7 @@ mod tests {
         // dirty paths capped at 30 entries with a "+N more" suffix when
         // truncated. The driver caps before construction; the variant
         // carries the already-capped list verbatim.
-        use crate::run::{TREE_NOT_CLEAN_CAP, dirty_paths_from_porcelain};
+        use crate::r#loop::{TREE_NOT_CLEAN_CAP, dirty_paths_from_porcelain};
 
         // 42 lines of porcelain → 30 cap + "+12 more" suffix == 31 entries.
         let porcelain = (0..42)

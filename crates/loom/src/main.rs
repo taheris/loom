@@ -29,15 +29,15 @@ use loom_gate::{
     self, CacheRow, DispatchOptions, EmptyScope, FsCommandResolver, RustWorkspaceStubScanner,
     RustWorkspaceTestResolver, StatusCache, Tier, Verdict, render_report, row_for,
 };
+use loom_workflow::r#loop::{
+    LoopMode, Parallelism, ProductionAgentLoopController, RetryPolicy, SessionResult, run_loop,
+};
 use loom_workflow::msg::{
     DISMISS_NOTE, build_rows, compose_option_note, compose_resolved_notes, filter_msg_beads,
     kind_of, resolve_target, spec_label_of,
 };
 use loom_workflow::review::{
     IterationCap, ProductionReviewController, ReviewLane, review_loop as run_review_loop,
-};
-use loom_workflow::run::{
-    Parallelism, ProductionAgentLoopController, RetryPolicy, RunMode, SessionResult, run_loop,
 };
 use loom_workflow::todo::{
     ExitSignal, ProductionTodoController, parse_exit_signal, run as run_todo_workflow,
@@ -109,7 +109,7 @@ enum GateSubcommand {
 
 /// `loom gate review` arg surface. Extends [`GateScopeArgs`] with the
 /// `--verify-exit` flag the molecule-completion handoff uses to thread
-/// the parent `loom run`'s `loom gate verify` exit code into the child
+/// the parent `loom loop`'s `loom gate verify` exit code into the child
 /// (FR9 production wiring requirement — the push gate's four-condition
 /// AND must consume the actual verify exit, not the default `None`).
 #[derive(Debug, clap::Args)]
@@ -117,7 +117,7 @@ struct GateReviewArgs {
     #[command(flatten)]
     scope: GateScopeArgs,
     /// Exit code of a prior `loom gate verify --diff <range>` run.
-    /// Threaded from `loom run`'s molecule-completion handoff so the
+    /// Threaded from `loom loop`'s molecule-completion handoff so the
     /// push gate's four-condition AND can refuse on a non-zero verify
     /// exit per FR9 condition 2.
     #[arg(long, value_name = "CODE")]
@@ -240,7 +240,7 @@ enum Command {
         #[arg(long, conflicts_with_all = ["verbose", "path"])]
         raw: bool,
         /// Stream assistant text deltas during render — equivalent to
-        /// `loom run -v`. Mutually exclusive with `--raw` and `--path`.
+        /// `loom loop -v`. Mutually exclusive with `--raw` and `--path`.
         #[arg(long, short = 'v', conflicts_with_all = ["raw", "path"])]
         verbose: bool,
         /// Print the resolved log file path and exit. Mutually
@@ -269,7 +269,7 @@ enum Command {
         profile: Option<String>,
     },
     /// Per-bead execution loop. Continuous by default; `--once` exits after one bead.
-    Run {
+    Loop {
         /// Process a single bead then exit (no auto-handoff to `loom gate verify` / `loom gate review`).
         #[arg(long)]
         once: bool,
@@ -401,7 +401,7 @@ impl Command {
             Command::Init { .. }
             | Command::UseSpec { .. }
             | Command::Plan { .. }
-            | Command::Run { .. }
+            | Command::Loop { .. }
             | Command::Gate { .. }
             | Command::Msg { .. }
             | Command::Note { .. }
@@ -415,7 +415,7 @@ impl Command {
 /// `next_help_heading` applies to flags, not subcommands, so the binary
 /// regroups the auto-generated `Commands:` block instead.
 const HELP_GROUPS: &[(&str, &[&str])] = &[
-    ("Workflow", &["plan", "todo", "run", "gate", "msg"]),
+    ("Workflow", &["plan", "todo", "loop", "gate", "msg"]),
     ("Inspection", &["status", "logs", "spec"]),
     ("State", &["init", "use", "note"]),
 ];
@@ -423,14 +423,14 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
 /// Returns `true` when the raw process args request help for the *top-level*
 /// command (e.g. `loom --help`, `loom -h`, `loom help` with no further
 /// subcommand). Anything that names a subcommand first — including
-/// `loom run --help` or `loom help run` — returns `false` so clap handles
+/// `loom loop --help` or `loom help loop` — returns `false` so clap handles
 /// the per-subcommand help unchanged.
 fn args_request_top_level_help(args: &[String]) -> bool {
     if args.is_empty() {
         return true;
     }
     let known_subcommands = [
-        "init", "status", "use", "logs", "spec", "plan", "run", "gate", "msg", "todo", "note",
+        "init", "status", "use", "logs", "spec", "plan", "loop", "gate", "msg", "todo", "note",
         "help",
     ];
     for (idx, arg) in args.iter().enumerate() {
@@ -578,7 +578,7 @@ fn main() -> ExitCode {
             update,
             profile,
         } => run_plan(&workspace, new, update, profile),
-        Command::Run {
+        Command::Loop {
             once,
             parallel,
             profile,
@@ -587,7 +587,7 @@ fn main() -> ExitCode {
             json,
             raw,
             verbose,
-        } => run_run(
+        } => run_loop_cmd(
             &workspace,
             once,
             parallel,
@@ -1575,7 +1575,7 @@ fn run_plan(
     Ok(())
 }
 
-/// CLI-level render mode flags for `loom run`. Resolved into a
+/// CLI-level render mode flags for `loom loop`. Resolved into a
 /// [`loom_render::RenderMode`] at sink-open time via
 /// [`loom_render::RenderMode::select`]; the latter takes a TTY bool +
 /// the spec'd flag table and decides Pretty/Plain/Json/Raw.
@@ -1587,7 +1587,7 @@ struct RenderFlags {
     verbose: bool,
 }
 
-fn run_run(
+fn run_loop_cmd(
     workspace: &Path,
     once: bool,
     parallel: Parallelism,
@@ -1629,7 +1629,7 @@ fn run_run(
         let shutdown_grace = resolve_shutdown_grace(&selection);
         let style_rules_for_async = config.style_rules.clone();
         let summary = runtime.block_on(async move {
-            run_parallel_run(
+            run_parallel_loop(
                 workspace_buf,
                 label_for_async,
                 parallel_n,
@@ -1643,16 +1643,16 @@ fn run_run(
             .await
         })?;
         println!(
-            "loom run --parallel {parallel_n}: merged {}, conflicted {}, failed {}",
+            "loom loop --parallel {parallel_n}: merged {}, conflicted {}, failed {}",
             summary.merged, summary.conflicted, summary.failed,
         );
         return Ok(());
     }
 
     let mode = if once {
-        RunMode::Once
+        LoopMode::Once
     } else {
-        RunMode::Continuous
+        LoopMode::Continuous
     };
     let manifest_for_seq = Arc::clone(&manifest);
     let kind = selection.kind;
@@ -1690,7 +1690,7 @@ fn run_run(
                     // JSONL log location is part of the workflow's
                     // pre-flight setup. Bubble it through the same
                     // `infra-preflight` path so `bd update` records the
-                    // cause instead of the error tearing down `loom run`.
+                    // cause instead of the error tearing down `loom loop`.
                     let sink = match open_bead_sink_with_renderer(
                         &logs_root,
                         &label,
@@ -1731,7 +1731,7 @@ fn run_run(
         run_loop(&mut controller, mode, retry_policy, max_iterations).await
     })?;
     println!(
-        "loom run: processed {} bead(s), clarified {}, blocked {}, molecule_complete={}, \
+        "loom loop: processed {} bead(s), clarified {}, blocked {}, molecule_complete={}, \
          execed_review={}, outer_iterations={}",
         summary.beads_processed,
         summary.beads_clarified,
@@ -1743,16 +1743,16 @@ fn run_run(
     Ok(())
 }
 
-/// Aggregate counts surfaced from `loom run --parallel N` for the human
+/// Aggregate counts surfaced from `loom loop --parallel N` for the human
 /// summary line.
-struct ParallelRunSummary {
+struct ParallelLoopSummary {
     merged: usize,
     conflicted: usize,
     failed: usize,
 }
 
 #[expect(clippy::too_many_arguments, reason = "fan-out wiring surface")]
-async fn run_parallel_run(
+async fn run_parallel_loop(
     workspace: PathBuf,
     label: SpecLabel,
     parallel_n: u32,
@@ -1762,9 +1762,9 @@ async fn run_parallel_run(
     cli_profile: Option<ProfileName>,
     phase_default: ProfileName,
     style_rules: String,
-) -> anyhow::Result<ParallelRunSummary> {
+) -> anyhow::Result<ParallelLoopSummary> {
     use loom_driver::bd::UpdateOpts;
-    use loom_workflow::run::{AgentOutcome, run_parallel_batch};
+    use loom_workflow::r#loop::{AgentOutcome, run_parallel_batch};
 
     let bd = BdClient::new();
     let beads = bd
@@ -1779,7 +1779,7 @@ async fn run_parallel_run(
         })
         .await?;
     if beads.is_empty() {
-        return Ok(ParallelRunSummary {
+        return Ok(ParallelLoopSummary {
             merged: 0,
             conflicted: 0,
             failed: 0,
@@ -1884,7 +1884,7 @@ async fn run_parallel_run(
             .await?;
     }
 
-    Ok(ParallelRunSummary {
+    Ok(ParallelLoopSummary {
         merged: outcome.merged_ids().len(),
         conflicted: outcome.conflict_ids().len(),
         failed: outcome.failure_ids().len(),
@@ -1897,7 +1897,7 @@ async fn run_parallel_run(
 /// — this used to reload `LoomConfig` and re-resolve the backend per slot,
 /// which let the sequential and parallel paths drift if the on-disk config
 /// changed mid-run. A missing manifest entry surfaces as
-/// [`ProfileError::UnknownProfile`] (via `RunError::Profile`) so the caller
+/// [`ProfileError::UnknownProfile`] (via `LoopError::Profile`) so the caller
 /// converts it to a typed [`AgentOutcome::Failure`] without falling back to
 /// a silent default.
 ///
@@ -1906,7 +1906,7 @@ async fn run_parallel_run(
 async fn dispatch_for_slot(
     kind: AgentKind,
     shutdown_grace: Option<Duration>,
-    slot: loom_workflow::run::WorktreeBead,
+    slot: loom_workflow::r#loop::WorktreeBead,
     manifest: &ProfileImageManifest,
     cli_profile: Option<&ProfileName>,
     phase_default: &ProfileName,
@@ -1915,16 +1915,16 @@ async fn dispatch_for_slot(
     style_rules: &str,
 ) -> anyhow::Result<(SessionOutcome, Option<ExitSignal>)> {
     use loom_driver::scratch::ScratchSession;
-    use loom_workflow::run::{
-        RunContextInputs, build_spawn_config_from_manifest, render_run_prompt,
+    use loom_workflow::r#loop::{
+        LoopContextInputs, build_spawn_config_from_manifest, render_loop_prompt,
     };
 
-    let banner = format!("loom run @ {}", slot.bead.id);
+    let banner = format!("loom loop @ {}", slot.bead.id);
     let key = resolve_scratch_key(Phase::Run, label, Some(&slot.bead.id));
     let scratchpad_path = ScratchSession::scratchpad_path_for(&slot.worktree.path, &key)
         .to_string_lossy()
         .into_owned();
-    let initial_prompt = render_run_prompt(RunContextInputs {
+    let initial_prompt = render_loop_prompt(LoopContextInputs {
         label: label.clone(),
         spec_path: format!("specs/{}.md", label.as_str()),
         pinned_context: String::new(),
@@ -2010,9 +2010,9 @@ async fn dispatch(
 }
 
 /// Same as [`dispatch`] but preserves the preflight-vs-mid-session split via
-/// [`SessionResult`]. The `loom run` driver consumes this so the verdict gate
+/// [`SessionResult`]. The `loom loop` driver consumes this so the verdict gate
 /// can route preflight failures to `infra-preflight` immediately and grant
-/// mid-session failures one driver-memory retry per `loom run`.
+/// mid-session failures one driver-memory retry per `loom loop`.
 ///
 /// `observer_config` is the resolved `LoomConfig::agent` block. When at
 /// least one sub-observer is `enabled = true`, a
@@ -2109,7 +2109,7 @@ fn resolve_shutdown_grace(selection: &loom_driver::config::AgentSelection) -> Op
 /// Open the per-bead JSONL sink at the path the spec promises:
 /// `<logs_root>/<spec>/<bead-id>-<utc>.jsonl`. Renderer is `None` because
 /// the sequential and parallel run dispatchers run non-interactively (the
-/// human-facing summary is written by the `loom run` outer-loop print).
+/// human-facing summary is written by the `loom loop` outer-loop print).
 fn open_bead_sink(
     logs_root: &Path,
     label: &SpecLabel,
@@ -2251,7 +2251,7 @@ struct ReviewOpts {
     bead: Option<String>,
     diff: Option<String>,
     tree: bool,
-    /// Exit code threaded from `loom run`'s molecule-completion handoff
+    /// Exit code threaded from `loom loop`'s molecule-completion handoff
     /// (via `loom gate review --verify-exit <CODE>`). `None` when the
     /// gate is invoked standalone; the push gate's other three
     /// conditions still gate the push.

@@ -1,7 +1,7 @@
-//! Integration tests for `loom_workflow::run::parallel` and the public
+//! Integration tests for `loom_workflow::r#loop::parallel` and the public
 //! `Parallelism` flag — anything that touches a real git repo lives here.
-//! Pure logic tests stay in `src/run/parallel.rs::tests` and
-//! `src/run/parallelism.rs::tests`.
+//! Pure logic tests stay in `src/loop/parallel.rs::tests` and
+//! `src/loop/parallelism.rs::tests`.
 //!
 //! These tests spawn `git` to seed and inspect real repos (spec NFR #8):
 //! parallel dispatch's contract is the on-disk shape of worktrees, the
@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use loom_driver::bd::Bead;
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, SpecLabel};
-use loom_workflow::run::{
+use loom_workflow::r#loop::{
     AgentOutcome, BatchResult, BatchSlot, Parallelism, ParallelismError, create_worktrees,
     merge_back,
 };

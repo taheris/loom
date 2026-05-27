@@ -68,7 +68,7 @@ fn render_previous_failure(cause: &RecoveryCause) -> String {
 /// - `ObserverAbort` → `DriverNotice { cause: ObserverAbort, detail }`.
 /// - `VerifyFail` → `VerifyFailures(Vec<VerifierFailure>)`. The companion
 ///   `review_notes` flag, when present, must be carried separately on
-///   `RunContext.review_notes` (this function does not embed it inline).
+///   `LoopContext.review_notes` (this function does not embed it inline).
 /// - `ReviewConcern` → `ReviewConcern { concern: ReviewConcernKind, reason }`.
 /// - `TreeNotClean` → `TreeNotClean { dirty_paths }`. The capped path list
 ///   passes through verbatim; the variant's `Display` impl emits the

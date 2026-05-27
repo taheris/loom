@@ -30,7 +30,7 @@ fn mutating_subcommands_refuse_with_loom_inside_set() {
         &["init"][..],
         &["use", "harness"],
         &["plan", "-n", "tmp"],
-        &["run", "--once"],
+        &["loop", "--once"],
         // `gate audit` triggers an LLM rubric path that spawns containers,
         // so it falls under the nested-loom guard. The deterministic
         // `gate` paths (bare status, `verify` / `check` / `test` /

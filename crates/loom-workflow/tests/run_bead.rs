@@ -4,7 +4,7 @@
 //! These tests must run against a real git repo so the controller's
 //! `create_worktree` / `merge_branch` calls observe a real refs/index
 //! state (spec gate from `harness.md` § Worktree Dispatch). The pure
-//! marker-routing logic lives in `src/run/production.rs::tests`; this
+//! marker-routing logic lives in `src/loop/production.rs::tests`; this
 //! file exercises the worktree-mutation side that needs the `git`
 //! binary.
 
@@ -20,7 +20,7 @@ use loom_driver::bd::{BdClient, Bead, Label};
 use loom_driver::git::{GitClient, init_test_repo};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::ProfileImageManifest;
-use loom_workflow::run::{
+use loom_workflow::r#loop::{
     AgentLoopController, AgentOutcome, ProductionAgentLoopController, SessionResult,
 };
 use loom_workflow::todo::ExitSignal;

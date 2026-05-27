@@ -1,4 +1,4 @@
-/// Retry policy for `loom run` — see `[loop] max_retries` in
+/// Retry policy for `loom loop` — see `[loop] max_retries` in
 /// `specs/harness.md`.
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {

@@ -1,6 +1,6 @@
 //! Architectural: `TodoNewContext` and `TodoUpdateContext` carry
 //! `criterion_status: Vec<CriterionStatus>`; the other phase context structs
-//! (`PlanNewContext`, `PlanUpdateContext`, `RunContext`, `ReviewContext`,
+//! (`PlanNewContext`, `PlanUpdateContext`, `LoopContext`, `ReviewContext`,
 //! `MsgContext`) do not. The criterion-status decomposition-evidence surface
 //! is scoped to the two `todo_*` phases per
 //! `specs/templates.md` § Criterion-Status Surface.
@@ -21,7 +21,7 @@ const REQUIRED: &[&str] = &["TodoNewContext", "TodoUpdateContext"];
 const FORBIDDEN: &[&str] = &[
     "PlanNewContext",
     "PlanUpdateContext",
-    "RunContext",
+    "LoopContext",
     "ReviewContext",
     "MsgContext",
 ];

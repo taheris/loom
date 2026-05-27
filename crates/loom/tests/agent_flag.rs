@@ -33,20 +33,20 @@ fn loom_help_lists_agent_global_flag() {
 }
 
 #[test]
-fn loom_run_help_includes_agent_flag() {
+fn loom_loop_help_includes_agent_flag() {
     // --agent is a global flag, so it must appear under every subcommand's
     // --help output. Pinning `run` covers the subcommand surface most users
     // interact with.
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     let output = Command::new(loom_bin)
-        .arg("run")
+        .arg("loop")
         .arg("--help")
         .output()
         .expect("spawn loom");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("--agent"),
-        "loom run --help must list --agent. stdout={stdout}",
+        "loom loop --help must list --agent. stdout={stdout}",
     );
 }
 
@@ -88,7 +88,7 @@ fn loom_accepts_agent_pi() {
     let output = Command::new(loom_bin)
         .arg("--agent")
         .arg("pi")
-        .arg("run")
+        .arg("loop")
         .arg("--help")
         .output()
         .expect("spawn loom");
@@ -106,7 +106,7 @@ fn loom_accepts_agent_claude() {
     let output = Command::new(loom_bin)
         .arg("--agent")
         .arg("claude")
-        .arg("run")
+        .arg("loop")
         .arg("--help")
         .output()
         .expect("spawn loom");

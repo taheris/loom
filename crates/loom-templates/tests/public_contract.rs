@@ -5,12 +5,11 @@
 //! without touching any workflow-template internals.
 
 use loom_templates::{
-    PARTIAL_CHAT_MARKER_FINAL_TURN_ONLY, PARTIAL_COMPANIONS_CONTEXT, PARTIAL_CONTEXT_PINNING,
-    PARTIAL_EXIT_SIGNALS, PARTIAL_INTERVIEW_MODES, PARTIAL_INVARIANT_CLASH,
-    PARTIAL_PLAN_STAGE_RUBRIC, PARTIAL_REVIEW_RUBRIC, PARTIAL_SCRATCHPAD,
+    LoopContext, PARTIAL_CHAT_MARKER_FINAL_TURN_ONLY, PARTIAL_COMPANIONS_CONTEXT,
+    PARTIAL_CONTEXT_PINNING, PARTIAL_EXIT_SIGNALS, PARTIAL_INTERVIEW_MODES,
+    PARTIAL_INVARIANT_CLASH, PARTIAL_PLAN_STAGE_RUBRIC, PARTIAL_REVIEW_RUBRIC, PARTIAL_SCRATCHPAD,
     PARTIAL_SIBLING_SPEC_EDITING, PARTIAL_SPEC_CONVENTIONS, PARTIAL_SPEC_HEADER,
-    PARTIAL_STYLE_RULES, PinnedContext, PreviousFailure, ReviewConcernKind, RunContext,
-    VerifierFailure,
+    PARTIAL_STYLE_RULES, PinnedContext, PreviousFailure, ReviewConcernKind, VerifierFailure,
 };
 
 #[test]
@@ -84,7 +83,7 @@ fn typed_retry_context_round_trips_through_public_re_exports() {
 fn run_context_is_publicly_constructible_from_crate_root() {
     use loom_events::identifier::{BeadId, MoleculeId, SpecLabel};
 
-    let _ctx = RunContext {
+    let _ctx = LoopContext {
         pinned_context: String::new(),
         label: SpecLabel::new("demo"),
         spec_path: String::new(),

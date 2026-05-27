@@ -1,11 +1,11 @@
 use askama::Template;
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
-use loom_templates::run::{PreviousFailure, RunContext};
+use loom_templates::run::{LoopContext, PreviousFailure};
 
-/// Inputs for [`build_run_context`]. Constructed once per bead spawn — for
+/// Inputs for [`build_loop_context`]. Constructed once per bead spawn — for
 /// retries the driver rebuilds with `previous_failure` set + `attempt`
 /// incremented.
-pub struct RunContextInputs {
+pub struct LoopContextInputs {
     pub label: SpecLabel,
     pub spec_path: String,
     pub pinned_context: String,
@@ -36,10 +36,10 @@ pub struct RunContextInputs {
     pub style_rules: String,
 }
 
-/// Build the typed [`RunContext`] for a single bead spawn from the driver's
+/// Build the typed [`LoopContext`] for a single bead spawn from the driver's
 /// per-iteration inputs.
-pub fn build_run_context(inputs: RunContextInputs) -> RunContext {
-    RunContext {
+pub fn build_loop_context(inputs: LoopContextInputs) -> LoopContext {
+    LoopContext {
         pinned_context: inputs.pinned_context,
         label: inputs.label,
         spec_path: inputs.spec_path,
@@ -56,10 +56,10 @@ pub fn build_run_context(inputs: RunContextInputs) -> RunContext {
     }
 }
 
-/// Render the run prompt for `inputs` so binaries that lack a direct askama
+/// Render the loop prompt for `inputs` so binaries that lack a direct askama
 /// dependency can build the same prompt as the workflow's own controllers.
-pub fn render_run_prompt(inputs: RunContextInputs) -> Result<String, askama::Error> {
-    build_run_context(inputs).render()
+pub fn render_loop_prompt(inputs: LoopContextInputs) -> Result<String, askama::Error> {
+    build_loop_context(inputs).render()
 }
 
 #[cfg(test)]
@@ -67,15 +67,15 @@ mod tests {
     use super::*;
     use askama::Template;
 
-    fn inputs() -> RunContextInputs {
-        RunContextInputs {
+    fn inputs() -> LoopContextInputs {
+        LoopContextInputs {
             label: SpecLabel::new("harness"),
             spec_path: "specs/harness.md".into(),
             pinned_context: "PIN".into(),
             companion_paths: vec![],
             molecule_id: Some(MoleculeId::new("wx-3hhwq")),
             issue_id: BeadId::new("wx-3hhwq.15").expect("valid bead id"),
-            title: "Implement loom run".into(),
+            title: "Implement loom loop".into(),
             description: "Per-bead loop".into(),
             previous_failure: None,
             review_notes: None,
@@ -90,7 +90,7 @@ mod tests {
         let mut i = inputs();
         i.previous_failure = Some(PreviousFailure::from_agent_error("cargo test failed"));
         i.attempt = 1;
-        let ctx = build_run_context(i);
+        let ctx = build_loop_context(i);
         let pf = ctx.previous_failure.expect("set on retry");
         let rendered = pf.to_string();
         assert!(
@@ -102,25 +102,23 @@ mod tests {
 
     #[test]
     fn fresh_dispatch_omits_previous_failure_and_attempt_is_zero() {
-        let ctx = build_run_context(inputs());
+        let ctx = build_loop_context(inputs());
         assert!(ctx.previous_failure.is_none());
         assert_eq!(ctx.attempt, 0);
     }
 
     #[test]
     fn attempt_zero_on_fresh_bead_dispatch() {
-        // Spec criterion: `RunContext` carries `attempt: u32`; field is `0`
-        // on fresh bead dispatch.
-        let ctx = build_run_context(inputs());
+        let ctx = build_loop_context(inputs());
         assert_eq!(ctx.attempt, 0);
     }
 
     #[test]
     fn rendered_prompt_includes_issue_and_title() {
-        let ctx = build_run_context(inputs());
+        let ctx = build_loop_context(inputs());
         let body = ctx.render().expect("render");
         assert!(body.contains("wx-3hhwq.15"), "{body}");
-        assert!(body.contains("Implement loom run"), "{body}");
+        assert!(body.contains("Implement loom loop"), "{body}");
     }
 
     #[test]
@@ -130,7 +128,7 @@ mod tests {
             "STDERR: cargo test failure",
         ));
         i.attempt = 1;
-        let ctx = build_run_context(i);
+        let ctx = build_loop_context(i);
         let body = ctx.render().expect("render");
         assert!(body.contains("STDERR: cargo test failure"), "{body}");
     }

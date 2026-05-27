@@ -156,7 +156,7 @@ pub async fn fetch_active_molecules<R: CommandRunner>(
 /// reads are self-sufficient, then log the inheritance.
 ///
 /// Shared between the init/rebuild path ([`fetch_active_molecules`]) and the
-/// run-phase epic lookup ([`crate::run::production::fetch_molecule_base_commit`])
+/// run-phase epic lookup ([`crate::r#loop::production::fetch_molecule_base_commit`])
 /// so both surface the same inheritance behaviour the spec mandates.
 pub(crate) async fn resolve_base_commit<R: CommandRunner>(
     bd: &BdClient<R>,

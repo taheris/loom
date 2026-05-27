@@ -1,7 +1,7 @@
 //! FR12 (verdict-gate production wiring). The pure decision function
 //! `phase_verdict::decide()` is the single source of truth for the
 //! marker → outcome classification; it must be invoked from BOTH
-//! `loom run`'s per-bead exit (`run/production.rs`) AND `loom gate
+//! `loom loop`'s per-bead exit (`loop/production.rs`) AND `loom gate
 //! review`'s phase-end (`review/production.rs`). No production site
 //! may inline ad-hoc marker classification.
 
@@ -10,16 +10,16 @@ use std::path::Path;
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "phase_verdict_decide_called_from_production — run + review production sites must call `decide(...)`";
+const RULE: &str = "phase_verdict_decide_called_from_production — loop + review production sites must call `decide(...)`";
 
-const RUN_PROD: &str = "crates/loom-workflow/src/run/production.rs";
+const LOOP_PROD: &str = "crates/loom-workflow/src/loop/production.rs";
 const REVIEW_PROD: &str = "crates/loom-workflow/src/review/production.rs";
 
 pub fn run(_input: &WalkInput) -> Verdict {
     let root = workspace_root();
     let mut violations = Vec::new();
 
-    check_decide_site(&root, RUN_PROD, "use crate::review::", &mut violations);
+    check_decide_site(&root, LOOP_PROD, "use crate::review::", &mut violations);
     check_decide_site(
         &root,
         REVIEW_PROD,
