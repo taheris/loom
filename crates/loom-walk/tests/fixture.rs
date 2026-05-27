@@ -783,11 +783,12 @@ fn loom_does_not_invoke_podman_fail_direct_command_new() {
 
 const STRUCTURE_LIB_NAMES: &[&str] = &[
     "loom-events",
+    "loom-llm",
+    "loom-templates",
     "loom-driver",
     "loom-render",
     "loom-agent",
     "loom-workflow",
-    "loom-templates",
 ];
 
 fn seed_full_crate_set(ws: &TempDir) {
@@ -812,7 +813,7 @@ fn seed_full_crate_set(ws: &TempDir) {
 }
 
 #[test]
-fn crate_structure_pass_all_seven_present() {
+fn crate_structure_pass_all_eight_present() {
     let ws = make_workspace();
     seed_full_crate_set(&ws);
     let out = invoke(&["crate_structure"], Some(ws.path()), None);
@@ -827,6 +828,15 @@ fn crate_structure_fail_missing_crate() {
     let _ = std::fs::remove_dir_all(ws.path().join("crates/loom-events"));
     let out = invoke(&["crate_structure"], Some(ws.path()), None);
     assert_fail(&out, "loom-events");
+}
+
+#[test]
+fn crate_structure_fail_missing_loom_llm() {
+    let ws = make_workspace();
+    seed_full_crate_set(&ws);
+    let _ = std::fs::remove_dir_all(ws.path().join("crates/loom-llm"));
+    let out = invoke(&["crate_structure"], Some(ws.path()), None);
+    assert_fail(&out, "loom-llm");
 }
 
 // ---------------------------------------------------------------------------
