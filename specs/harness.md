@@ -1968,6 +1968,14 @@ Criteria.
 - Successful bead branches are merged back to the driver branch after
       the batch completes
   [test](parallel_merge_back)
+- `merge_branch` produces linear history: the bead branch is rebased
+      onto the driver `HEAD` and folded in with `git merge --ff-only`, so
+      no merge commit appears in the published history
+  [test](merge_branch_uses_ff_only_and_rejects_non_ff_history)
+- Parallel dispatch's second-and-later beads merge after an earlier
+      bead has moved `HEAD`: `merge_branch` rebases the bead branch onto
+      the moved `HEAD` before fast-forwarding
+  [test](merge_branch_rebases_bead_branch_onto_head_before_ff)
 - On worker failure, the bead worktree branch is cleaned up and the bead
       is queued for retry per the retry policy
   [test](parallel_failure_cleanup)

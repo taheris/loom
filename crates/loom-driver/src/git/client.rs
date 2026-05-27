@@ -513,35 +513,73 @@ impl GitClient {
         Ok(String::from_utf8(output.stdout)?.trim().to_string())
     }
 
-    /// Merge `branch` into the current driver branch. Returns
-    /// [`MergeResult::Conflict`] when git reports merge conflicts; other
-    /// failures surface as [`GitError`].
+    /// Merge `branch` into the current driver branch. Rebases `branch` onto
+    /// the current `HEAD` first so the merge is always a fast-forward —
+    /// sequential dispatch (bead branch is a strict descendant of `HEAD`)
+    /// is a rebase no-op; parallel dispatch's second-and-later beads pick
+    /// up the moved `HEAD` from an earlier merge. True overlap surfaces as
+    /// [`MergeResult::Conflict`]; other failures surface as [`GitError`].
     pub async fn merge_branch(&self, branch: &str) -> Result<MergeResult, GitError> {
-        let output = run_git_raw(
+        let head_branch_output = run_git_raw(
             &self.workdir,
             self.clock.as_ref(),
-            ["merge", "--no-ff", "--no-edit", branch],
+            ["symbolic-ref", "--short", "HEAD"],
             None,
         )
         .await?;
-
-        if output.status.success() {
-            return Ok(MergeResult::Ok);
+        if !head_branch_output.status.success() {
+            return Err(GitError::GitCli {
+                status: head_branch_output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&head_branch_output.stderr).into_owned(),
+            });
         }
+        let head_branch = String::from_utf8(head_branch_output.stdout)?
+            .trim()
+            .to_string();
 
-        // Conflict: git exits non-zero and leaves the index dirty. Detect via
-        // `git ls-files --unmerged` rather than scraping merge stderr.
-        let unmerged = run_git_raw(
+        let rebase_output = run_git_raw(
             &self.workdir,
             self.clock.as_ref(),
-            ["ls-files", "--unmerged"],
+            ["rebase", &head_branch, branch],
             None,
         )
         .await?;
-        if unmerged.status.success() && !unmerged.stdout.is_empty() {
+        if !rebase_output.status.success() {
+            let _ = run_git_raw(
+                &self.workdir,
+                self.clock.as_ref(),
+                ["rebase", "--abort"],
+                None,
+            )
+            .await?;
+            run_git(
+                &self.workdir,
+                self.clock.as_ref(),
+                ["checkout", "-q", &head_branch],
+                None,
+            )
+            .await?;
             return Ok(MergeResult::Conflict);
         }
 
+        run_git(
+            &self.workdir,
+            self.clock.as_ref(),
+            ["checkout", "-q", &head_branch],
+            None,
+        )
+        .await?;
+
+        let output = run_git_raw(
+            &self.workdir,
+            self.clock.as_ref(),
+            ["merge", "--ff-only", branch],
+            None,
+        )
+        .await?;
+        if output.status.success() {
+            return Ok(MergeResult::Ok);
+        }
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         Err(GitError::GitCli {
             status: output.status.code().unwrap_or(-1),

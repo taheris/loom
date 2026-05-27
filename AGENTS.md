@@ -43,6 +43,13 @@ bd dolt pull
 
 ### End ("land the plane")
 
+Skip this entire block when `$LOOM_INSIDE` is set — inside a loom-managed
+bead clone, `origin` points at the local driver workdir (not GitHub), and
+`.git/beads-worktrees/beads` does not exist in the clone. The driver
+publishes `main` + `beads` itself after a Clean review verdict. Manual
+sessions in the driver workdir (where `$LOOM_INSIDE` is unset) keep the
+existing protocol:
+
 ```bash
 git add <files>
 git commit -m "..."

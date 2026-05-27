@@ -111,9 +111,9 @@ async fn merge_branch_clean_returns_ok() -> Result<()> {
 #[tokio::test]
 async fn merge_branch_non_conflicting_returns_ok() -> Result<()> {
     // Both branches diverge after a shared base — feature adds feature.txt,
-    // main adds main.txt. Neither touches the other's file, so the merge
-    // succeeds with a merge commit (forced by --no-ff) and both files land
-    // on the driver branch.
+    // main adds main.txt. Neither touches the other's file, so merge_branch
+    // rebases feature onto main's HEAD then fast-forwards. Both files land
+    // on the driver branch with linear history.
     let repo = init_repo()?;
     let path = repo.path();
 
@@ -133,6 +133,132 @@ async fn merge_branch_non_conflicting_returns_ok() -> Result<()> {
     assert_eq!(result, MergeResult::Ok);
     assert!(path.join("feature.txt").exists());
     assert!(path.join("main.txt").exists());
+
+    let on_main = String::from_utf8(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .output()?
+            .stdout,
+    )?
+    .trim()
+    .to_string();
+    assert_eq!(
+        on_main, "main",
+        "merge_branch must leave the working tree on the driver branch",
+    );
+    Ok(())
+}
+
+/// merge_branch rejects creating non-fast-forward history: when the bead
+/// branch and the driver branch have both moved beyond their shared base
+/// with non-overlapping changes, the resulting `HEAD` contains no merge
+/// commits — the rebase + `--ff-only` path replaces what `--no-ff` would
+/// have produced as a merge commit.
+#[tokio::test]
+async fn merge_branch_uses_ff_only_and_rejects_non_ff_history() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let base = capture_head(path)?;
+
+    git(path, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(path.join("feature.txt"), "feature side\n")?;
+    git(path, &["add", "feature.txt"])?;
+    git(path, &["commit", "-q", "-m", "feature commit"])?;
+
+    git(path, &["checkout", "-q", "main"])?;
+    std::fs::write(path.join("main.txt"), "main side\n")?;
+    git(path, &["add", "main.txt"])?;
+    git(path, &["commit", "-q", "-m", "main commit"])?;
+
+    let client = GitClient::open(path)?;
+    let result = client.merge_branch("feature").await?;
+
+    assert_eq!(result, MergeResult::Ok);
+
+    let merges = String::from_utf8(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["log", "--merges", "--format=%H", &format!("{base}..HEAD")])
+            .output()?
+            .stdout,
+    )?;
+    assert!(
+        merges.trim().is_empty(),
+        "merge_branch must produce linear history (no merge commits) — got: {merges:?}",
+    );
+    Ok(())
+}
+
+/// merge_branch rebases the bead branch onto `HEAD` before fast-forwarding —
+/// the parallel-dispatch case where an earlier bead has already landed on
+/// the driver branch and a second bead, forked from the original base,
+/// must land on the moved `HEAD`.
+#[tokio::test]
+async fn merge_branch_rebases_bead_branch_onto_head_before_ff() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let base = capture_head(path)?;
+
+    git(path, &["checkout", "-q", "-b", "bead-a", &base])?;
+    std::fs::write(path.join("bead-a.txt"), "bead a\n")?;
+    git(path, &["add", "bead-a.txt"])?;
+    git(path, &["commit", "-q", "-m", "bead a commit"])?;
+
+    git(path, &["checkout", "-q", "-b", "bead-b", &base])?;
+    std::fs::write(path.join("bead-b.txt"), "bead b\n")?;
+    git(path, &["add", "bead-b.txt"])?;
+    git(path, &["commit", "-q", "-m", "bead b commit"])?;
+
+    git(path, &["checkout", "-q", "main"])?;
+    let client = GitClient::open(path)?;
+    assert_eq!(client.merge_branch("bead-a").await?, MergeResult::Ok);
+
+    let bead_b_pre = String::from_utf8(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["rev-parse", "bead-b"])
+            .output()?
+            .stdout,
+    )?
+    .trim()
+    .to_string();
+
+    assert_eq!(client.merge_branch("bead-b").await?, MergeResult::Ok);
+
+    let merges = String::from_utf8(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["log", "--merges", "--format=%H", &format!("{base}..HEAD")])
+            .output()?
+            .stdout,
+    )?;
+    assert!(
+        merges.trim().is_empty(),
+        "linear history required after both merges — got: {merges:?}",
+    );
+
+    let bead_b_post = String::from_utf8(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["rev-parse", "bead-b"])
+            .output()?
+            .stdout,
+    )?
+    .trim()
+    .to_string();
+    assert_ne!(
+        bead_b_pre, bead_b_post,
+        "rebase must rewrite bead-b's commits onto the new HEAD",
+    );
+
+    assert!(path.join("bead-a.txt").exists());
+    assert!(path.join("bead-b.txt").exists());
     Ok(())
 }
 
