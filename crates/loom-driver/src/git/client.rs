@@ -193,6 +193,19 @@ impl GitClient {
         )
         .await?;
 
+        // Inherit user.email / user.name from the source's effective git
+        // config (local + global) into the clone's local config so commits
+        // inside the bead workspace work even when only the source repo
+        // has the identity set (the nix build sandbox, CI images, and
+        // bead containers all lack a global identity). `git clone --local`
+        // does not copy `.git/config`, so without this inheritance the
+        // first commit fails with "Author identity unknown".
+        for key in ["user.email", "user.name"] {
+            if let Some(value) = read_config_value(&self.workdir, self.clock.as_ref(), key).await? {
+                run_git(&path, self.clock.as_ref(), ["config", key, &value], None).await?;
+            }
+        }
+
         run_git(
             &path,
             self.clock.as_ref(),
@@ -597,6 +610,29 @@ where
     Err(GitError::GitCli {
         status: output.status.code().unwrap_or(-1),
         stderr,
+    })
+}
+
+/// `git -C <workdir> config --get <key>` — returns the resolved value or
+/// `Ok(None)` when the key is unset (git exits with code 1). Used by
+/// [`GitClient::create_worktree`] to inherit the source's user identity
+/// into the freshly-cloned bead workspace.
+async fn read_config_value(
+    workdir: &Path,
+    clock: &dyn Clock,
+    key: &str,
+) -> Result<Option<String>, GitError> {
+    let output = run_git_raw(workdir, clock, ["config", "--get", key], None).await?;
+    if output.status.success() {
+        let value = String::from_utf8(output.stdout)?.trim().to_string();
+        return Ok(Some(value));
+    }
+    if output.status.code() == Some(1) {
+        return Ok(None);
+    }
+    Err(GitError::GitCli {
+        status: output.status.code().unwrap_or(-1),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
 }
 
