@@ -114,7 +114,7 @@ spec — bond to this molecule. Sibling specs do NOT get their own molecule.
 | `--parent` | Links task to the anchor's molecule | Enables `loom status` progress tracking |
 | `bd dep add` | Sets execution order | Controls what `bd ready` returns next |
 | `spec:<s>` | Marks which spec file a task implements | Attributes tasks to anchor vs sibling under fan-out |
-| `profile:X` | Selects container profile | Determines toolchain available in `loom run` |
+| `profile:X` | Selects container profile | Determines toolchain available in `loom loop` |
 
 ## Task Breakdown Guidelines
 

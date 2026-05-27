@@ -41,7 +41,7 @@ id it is given in the document.
 
 You have a per-session scratchpad at `.wrapix/loom/scratch/<key>/scratch.md`,
 where `<key>` is your session's concurrency unit — the spec label for `loom
-plan` / `loom todo` sessions, the bead ID for `loom run` / `loom check` /
+plan` / `loom todo` sessions, the bead ID for `loom loop` / `loom gate` /
 `loom msg` sessions. The file starts empty; append to it as the session
 progresses.
 
@@ -284,11 +284,11 @@ misses.
 ## Surface Conformance (deterministic, not LLM-judged)
 
 Command / flag / grouping / removed-surface drift is **not** an LLM
-rubric dimension — `loom check surface` is the deterministic audit (see
+rubric dimension — `loom gate verify` is the deterministic audit (see
 FR13 in `specs/harness.md` and *Surface-conformance audit* in
 `specs/gate.md`). Do not duplicate it in the LLM walk.
 
-Surface-drift findings produced by `loom check surface` are still part
+Surface-drift findings produced by `loom gate verify` are still part
 of this review's input set. If a surface failure appears in the gate
 inputs alongside the diff, surface it as `surface-drift` in the flag
 emission with the offending command / flag named in the detail.
@@ -370,7 +370,7 @@ against each edited spec section:
 - A `[verify]` annotation on a claim that requires judgement (mock
   discipline, scope, prose style rule) — tier-skip → flag.
 - A criterion bullet with no annotation, or whose annotation points at
-  a missing or stubbed verifier → already a `loom check criteria` flag;
+  a missing or stubbed verifier → already a `loom gate verify` flag;
   surface it here too if the edit introduces it.
 
 When you finalize the phase, emit `LOOM_CONCERN: spec-conventions-violation
@@ -526,8 +526,8 @@ real clarify-worthy decision.
 
 > **`spec:harness` label is REQUIRED on every clarify and fix-up bead you create.**
 > `loom msg -s <label>` filters on it, and `loom msg`'s resume hint reads it to
-> emit `Resume with: loom run -s <label>`. A bead missing this label falls back
-> to bare `loom run` and is invisible to scoped listings.
+> emit `Resume with: loom loop -s <label>`. A bead missing this label falls back
+> to bare `loom loop` and is invisible to scoped listings.
 
 For every invariant clash you detect, create a bead whose description contains the
 proposed options in the format above, attach the `loom:clarify` label **and the
@@ -570,9 +570,9 @@ For actionable issues that do NOT need human judgment (straightforward bugs, mis
 tests, typos), create follow-up beads directly. **The `spec:harness` label is
 REQUIRED on every fix-up bead** — same rule as clarify beads, same reason: `loom
 msg -s <label>` filters on it, and the resume hint printed when a clarify clears
-reads it to emit `Resume with: loom run -s <label>`. Without `spec:harness` the
+reads it to emit `Resume with: loom loop -s <label>`. Without `spec:harness` the
 bead is invisible to scoped listings and the resume hint falls back to bare
-`loom run`.
+`loom loop`.
 
 Label fix-up beads with `spec:harness` and the appropriate `profile:X` so the
 right executor picks them up:
@@ -635,7 +635,7 @@ The remaining tokens cover the other rubric dimensions:
 - `style-rule` — the diff violates a rule in `docs/style-rules.md`; the
   detail names the violating rule id (e.g. `RS-12`) and the visible
   review body lists each violation with rule id + file/line range.
-- `surface-drift` — `loom check surface` found command / flag /
+- `surface-drift` — `loom gate verify` found command / flag /
   grouping / removed-surface drift between the spec and the binary;
   detail names the offending command or flag.
 - `cross-spec-clash` — at `--tree` scope, two specs under `specs/`
@@ -680,7 +680,7 @@ any earlier line are treated as `swallowed-marker`, and multiple markers on
 the final line are likewise rejected. Markers are mutually exclusive: emit
 one and only one.
 
-- `LOOM_COMPLETE` — The work succeeded. For worker phases (`loom run`), this
+- `LOOM_COMPLETE` — The work succeeded. For worker phases (`loom loop`), this
   also means the bead's acceptance criteria are met and the bead has been
   closed via `bd close`. The diff must be non-empty (real changes); see
   `LOOM_NOOP` below for the zero-diff variant.

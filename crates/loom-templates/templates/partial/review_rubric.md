@@ -118,11 +118,11 @@ misses.
 ## Surface Conformance (deterministic, not LLM-judged)
 
 Command / flag / grouping / removed-surface drift is **not** an LLM
-rubric dimension — `loom check surface` is the deterministic audit (see
+rubric dimension — `loom gate verify` is the deterministic audit (see
 FR13 in `specs/harness.md` and *Surface-conformance audit* in
 `specs/gate.md`). Do not duplicate it in the LLM walk.
 
-Surface-drift findings produced by `loom check surface` are still part
+Surface-drift findings produced by `loom gate verify` are still part
 of this review's input set. If a surface failure appears in the gate
 inputs alongside the diff, surface it as `surface-drift` in the flag
 emission with the offending command / flag named in the detail.
@@ -204,7 +204,7 @@ against each edited spec section:
 - A `[verify]` annotation on a claim that requires judgement (mock
   discipline, scope, prose style rule) — tier-skip → flag.
 - A criterion bullet with no annotation, or whose annotation points at
-  a missing or stubbed verifier → already a `loom check criteria` flag;
+  a missing or stubbed verifier → already a `loom gate verify` flag;
   surface it here too if the edit introduces it.
 
 When you finalize the phase, emit `LOOM_CONCERN: spec-conventions-violation

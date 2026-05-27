@@ -77,7 +77,7 @@ the conventions document):
 - Test paths are relative to the repo root; function names use the
   `test_` prefix and snake_case.
 - Do NOT create the test files during this interview — just write the
-  annotations. `loom run` implements them during the implementation phase.
+  annotations. `loom loop` implements them during the implementation phase.
 
 {% include "partial/plan_stage_rubric.md" %}
 

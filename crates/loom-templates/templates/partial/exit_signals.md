@@ -7,7 +7,7 @@ any earlier line are treated as `swallowed-marker`, and multiple markers on
 the final line are likewise rejected. Markers are mutually exclusive: emit
 one and only one.
 
-- `LOOM_COMPLETE` — The work succeeded. For worker phases (`loom run`), this
+- `LOOM_COMPLETE` — The work succeeded. For worker phases (`loom loop`), this
   also means the bead's acceptance criteria are met and the bead has been
   closed via `bd close`. The diff must be non-empty (real changes); see
   `LOOM_NOOP` below for the zero-diff variant.

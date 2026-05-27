@@ -51,6 +51,7 @@ mod single_event_channel;
 mod surface_conformance;
 mod template_context_structs;
 mod template_pinning_matrix;
+mod templates_no_removed_surface;
 mod todo_contexts_carry_criterion_status;
 mod todo_new_creates_epic_before_decomposition;
 mod util;
@@ -278,6 +279,10 @@ pub static REGISTRY: &[Walk] = &[
         run: template_pinning_matrix::run,
     },
     Walk {
+        name: "templates_no_removed_surface",
+        run: templates_no_removed_surface::run,
+    },
+    Walk {
         name: "todo_contexts_carry_criterion_status",
         run: todo_contexts_carry_criterion_status::run,
     },
@@ -361,6 +366,7 @@ mod tests {
             "newtype_identifiers",
             "template_context_structs",
             "template_pinning_matrix",
+            "templates_no_removed_surface",
             "todo_contexts_carry_criterion_status",
             "todo_new_creates_epic_before_decomposition",
             "loom_templates_deps",

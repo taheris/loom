@@ -41,7 +41,7 @@ The following companion directories are in scope. Read each one's `manifest.md` 
 
 You have a per-session scratchpad at `.wrapix/loom/scratch/<key>/scratch.md`,
 where `<key>` is your session's concurrency unit — the spec label for `loom
-plan` / `loom todo` sessions, the bead ID for `loom run` / `loom check` /
+plan` / `loom todo` sessions, the bead ID for `loom loop` / `loom gate` /
 `loom msg` sessions. The file starts empty; append to it as the session
 progresses.
 
@@ -251,7 +251,7 @@ spec — bond to this molecule. Sibling specs do NOT get their own molecule.
 | `--parent` | Links task to the anchor's molecule | Enables `loom status` progress tracking |
 | `bd dep add` | Sets execution order | Controls what `bd ready` returns next |
 | `spec:<s>` | Marks which spec file a task implements | Attributes tasks to anchor vs sibling under fan-out |
-| `profile:X` | Selects container profile | Determines toolchain available in `loom run` |
+| `profile:X` | Selects container profile | Determines toolchain available in `loom loop` |
 
 ## Task Breakdown Guidelines
 
@@ -284,7 +284,7 @@ any earlier line are treated as `swallowed-marker`, and multiple markers on
 the final line are likewise rejected. Markers are mutually exclusive: emit
 one and only one.
 
-- `LOOM_COMPLETE` — The work succeeded. For worker phases (`loom run`), this
+- `LOOM_COMPLETE` — The work succeeded. For worker phases (`loom loop`), this
   also means the bead's acceptance criteria are met and the bead has been
   closed via `bd close`. The diff must be non-empty (real changes); see
   `LOOM_NOOP` below for the zero-diff variant.

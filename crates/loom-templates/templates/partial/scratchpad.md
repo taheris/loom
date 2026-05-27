@@ -2,7 +2,7 @@
 
 You have a per-session scratchpad at `.wrapix/loom/scratch/<key>/scratch.md`,
 where `<key>` is your session's concurrency unit — the spec label for `loom
-plan` / `loom todo` sessions, the bead ID for `loom run` / `loom check` /
+plan` / `loom todo` sessions, the bead ID for `loom loop` / `loom gate` /
 `loom msg` sessions. The file starts empty; append to it as the session
 progresses.
 

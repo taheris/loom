@@ -601,6 +601,13 @@ documents in front of the agent with zero configuration.
 - Rendered output is stable across runs for identical inputs,
   verified by `insta` snapshots
   [test](template_renders_are_byte_stable_across_runs)
+- Template bodies must not name harness subcommands the spec marks
+  removed (`loom run`, `loom check <X>` — see *Removed surface* in
+  [harness.md](harness.md)); the rename targets are `loom loop` and
+  `loom gate <X>`. Drift breaks every plan / todo / loop / msg /
+  review session by directing the agent at non-existent dispatch
+  (Invariant 3 from [gate.md](gate.md))
+  [check](cargo run -p loom-walk -- templates_no_removed_surface)
 
 ### Pinning policy
 

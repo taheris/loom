@@ -2480,6 +2480,58 @@ fn loom_templates_deps_fail_when_loom_driver_present() {
 }
 
 // ---------------------------------------------------------------------------
+// templates_no_removed_surface
+// ---------------------------------------------------------------------------
+
+#[test]
+fn templates_no_removed_surface_pass_when_renamed_tokens_only() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/example.md",
+        "# Example\n\nRun `loom loop` and then `loom gate verify`.\n",
+    );
+    let out = invoke(&["templates_no_removed_surface"], Some(ws.path()), None);
+    assert_pass(&out);
+}
+
+#[test]
+fn templates_no_removed_surface_fail_when_loom_run_present() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/example.md",
+        "# Example\n\nRun `loom run` to start.\n",
+    );
+    let out = invoke(&["templates_no_removed_surface"], Some(ws.path()), None);
+    assert_fail(&out, "loom run");
+}
+
+#[test]
+fn templates_no_removed_surface_fail_when_loom_check_present() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/partial/example.md",
+        "# Example\n\nUse `loom check surface` to audit.\n",
+    );
+    let out = invoke(&["templates_no_removed_surface"], Some(ws.path()), None);
+    assert_fail(&out, "loom check");
+}
+
+#[test]
+fn templates_no_removed_surface_pass_on_word_extension() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/example.md",
+        "# Example\n\nThe loom runner cycles through beads.\n",
+    );
+    let out = invoke(&["templates_no_removed_surface"], Some(ws.path()), None);
+    assert_pass(&out);
+}
+
+// ---------------------------------------------------------------------------
 // todo_contexts_carry_criterion_status
 // ---------------------------------------------------------------------------
 

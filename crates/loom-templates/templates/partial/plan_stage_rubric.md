@@ -2,7 +2,7 @@
 
 Before the interview can land a commit, three checks must satisfy. Each is
 the agent's responsibility — the gate IS this rubric, there is no separate
-`loom check` to lean on at this stage. A failing check keeps the interview
+`loom gate` to lean on at this stage. A failing check keeps the interview
 open until the user resolves it.
 
 ### 1. Completeness check

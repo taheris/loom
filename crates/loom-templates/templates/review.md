@@ -226,8 +226,8 @@ real clarify-worthy decision.
 
 > **`spec:{{ label }}` label is REQUIRED on every clarify and fix-up bead you create.**
 > `loom msg -s <label>` filters on it, and `loom msg`'s resume hint reads it to
-> emit `Resume with: loom run -s <label>`. A bead missing this label falls back
-> to bare `loom run` and is invisible to scoped listings.
+> emit `Resume with: loom loop -s <label>`. A bead missing this label falls back
+> to bare `loom loop` and is invisible to scoped listings.
 
 For every invariant clash you detect, create a bead whose description contains the
 proposed options in the format above, attach the `loom:clarify` label **and the
@@ -270,9 +270,9 @@ For actionable issues that do NOT need human judgment (straightforward bugs, mis
 tests, typos), create follow-up beads directly. **The `spec:{{ label }}` label is
 REQUIRED on every fix-up bead** — same rule as clarify beads, same reason: `loom
 msg -s <label>` filters on it, and the resume hint printed when a clarify clears
-reads it to emit `Resume with: loom run -s <label>`. Without `spec:{{ label }}` the
+reads it to emit `Resume with: loom loop -s <label>`. Without `spec:{{ label }}` the
 bead is invisible to scoped listings and the resume hint falls back to bare
-`loom run`.
+`loom loop`.
 
 Label fix-up beads with `spec:{{ label }}` and the appropriate `profile:X` so the
 right executor picks them up:
@@ -335,7 +335,7 @@ The remaining tokens cover the other rubric dimensions:
 - `style-rule` — the diff violates a rule in `{{ style_rules }}`; the
   detail names the violating rule id (e.g. `RS-12`) and the visible
   review body lists each violation with rule id + file/line range.
-- `surface-drift` — `loom check surface` found command / flag /
+- `surface-drift` — `loom gate verify` found command / flag /
   grouping / removed-surface drift between the spec and the binary;
   detail names the offending command or flag.
 - `cross-spec-clash` — at `--tree` scope, two specs under `specs/`
