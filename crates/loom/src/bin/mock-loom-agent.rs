@@ -25,9 +25,14 @@
 //!   `bd close` itself, but the test asserts the *driver* doesn't.
 //! - `no-marker`       — emit a plain message and `agent_end` without
 //!   any `LOOM_*` line. Exercises the swallowed-marker recovery path.
-//! - `concern-marker`  — emit a single `LOOM_CONCERN: verifier-bypass -- …`
-//!   line and `agent_end`. Drives the review-phase concern branch of
-//!   the push gate (`PushGateRefuseCause::ReviewConcern`).
+//! - `concern-marker`  — stamp a fix-up bead directory under
+//!   `$BD_STATE_DIR` (so the post-snapshot picks up a non-empty
+//!   `new_ids` and the review-phase protocol guard passes) and emit a
+//!   single `LOOM_CONCERN: verifier-bypass -- …` line + `agent_end`.
+//!   Drives the review-phase concern branch of the push gate
+//!   (`PushGateRefuseCause::ReviewConcern`). The bead's `spec:<label>`
+//!   label is read from `$LOOM_TEST_CONCERN_SPEC` (default: `pushconcern`)
+//!   so a test driving a different spec can override.
 //! - `concern-then-complete` — emit `LOOM_CONCERN: … -- …` then
 //!   `LOOM_COMPLETE` on a later line. The final-line parser must pick
 //!   the trailing `LOOM_COMPLETE`; this is the literal May-19 sequence.
@@ -103,6 +108,7 @@ fn main() -> ExitCode {
             emit_message_delta(&mut stdout, "ran without emitting a verdict");
         }
         MODE_CONCERN => {
+            stamp_concern_fixup_bead();
             emit_message_delta(&mut stdout, CONCERN_LINE);
         }
         MODE_CONCERN_THEN_COMPLETE => {
@@ -173,4 +179,37 @@ fn extract_field(field: &str, line: &str) -> Option<String> {
     let rest = &line[start..];
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
+}
+
+/// Mirror the well-formed reviewer protocol: a `LOOM_CONCERN` emission
+/// is preceded by at least one minted fix-up / clarify bead so the
+/// concern has downstream surface. Without this, `review_loop`'s
+/// protocol guard fails the gate before any push-gate routing happens.
+/// Writes directly to bd-shim's on-disk format under `$BD_STATE_DIR`
+/// rather than spawning `bd create` because the shim currently exposes
+/// only the query subset of the bd surface.
+fn stamp_concern_fixup_bead() {
+    let Some(state_raw) = env::var_os("BD_STATE_DIR") else {
+        return;
+    };
+    let state_dir = std::path::PathBuf::from(state_raw);
+    if !state_dir.is_dir() {
+        return;
+    }
+    let spec = env::var("LOOM_TEST_CONCERN_SPEC").unwrap_or_else(|_| "pushconcern".to_string());
+    let bead_dir = state_dir.join("wx-cfix99");
+    std::fs::create_dir_all(&bead_dir).expect("mkdir fixup bead dir");
+    let fields: &[(&str, &str)] = &[
+        ("title", "concern fix-up minted by mock-loom-agent"),
+        ("description", "Fix-up bead minted before LOOM_CONCERN.\n"),
+        ("status", "open"),
+        ("priority", "2"),
+        ("issue_type", "bug"),
+        ("notes", ""),
+    ];
+    for (name, body) in fields {
+        std::fs::write(bead_dir.join(name), body).expect("write fixup bead field");
+    }
+    let labels = format!("spec:{spec}\nprofile:base\n");
+    std::fs::write(bead_dir.join("labels"), labels).expect("write fixup bead labels");
 }
