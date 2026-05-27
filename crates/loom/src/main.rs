@@ -1207,21 +1207,19 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
 /// the referenced test is currently missing.
 ///
 /// Add a new entry only when the resource the annotation points at is
-/// known to be missing, the cause is captured on a tracked bead, and
-/// the entry block carries a comment naming the bead that owns the
-/// missing test. Drop the entry the moment the test is written (or
-/// the annotation is removed from the spec).
+/// known to be missing and the entry block carries a comment naming
+/// the structural reason the test is absent. Drop the entry the
+/// moment the test is written (or the annotation is removed from the
+/// spec).
 const INTEGRITY_ALLOWLIST: &[(&str, &str)] = &[
-    // lm-9ehh.7 (GateSuccess sealed receipt + LoopOutcome typed outcomes).
-    // `once_mode_fires_gate_when_molecule_closes_else_no_gate_partial` is
-    // still pending — that behaviour requires Once mode to fire the gate
-    // when the bead it processes closes the molecule; the typed-receipt
-    // bead deferred that semantic change to keep scope contained.
+    // Test missing pending the Once-mode semantic change that fires
+    // the gate when the bead being processed closes the molecule;
+    // deferred from the typed-receipt work to keep scope contained.
     (
         "specs/harness.md",
         "once_mode_fires_gate_when_molecule_closes_else_no_gate_partial",
     ),
-    // Independent missing-test work tracked under lm-hyh7's remaining scope.
+    // Missing-test work tracked outside this allowlist's scope.
     ("specs/harness.md", "loom_use_sets_current_spec_only"),
     ("specs/harness.md", "all_specs_iterates_by_bd_updated_asc"),
     ("specs/harness.md", "all_specs_exit_code_reflects_aggregate"),
