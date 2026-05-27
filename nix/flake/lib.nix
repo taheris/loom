@@ -93,13 +93,17 @@ in
 
       sandbox = wrapixLib.mkSandbox {
         profile = rustProfile;
-        packages = [ loom.bin ];
+        packages = [
+          loom.bin
+          pkgs.cargo-nextest
+        ];
       };
 
       debugSandbox = wrapixLib.mkSandbox {
         profile = rustProfile;
         packages = [
           loom.bin
+          pkgs.cargo-nextest
           pkgs.podman
         ];
       };

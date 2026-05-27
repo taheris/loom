@@ -2,10 +2,10 @@
   description = "Loom — workflow orchestrator for spec-driven AI development";
 
   inputs = {
-    nixpkgs.url = "git+ssh://git@github.com/NixOS/nixpkgs.git?ref=nixos-unstable&shallow=1";
+    nixpkgs.url = "git+https://github.com/NixOS/nixpkgs.git?ref=nixos-unstable&shallow=1";
 
     wrapix = {
-      url = "git+ssh://git@github.com/taheris/wrapix.git?ref=main&shallow=1";
+      url = "git+https://github.com/taheris/wrapix.git?ref=main&shallow=1";
       inputs = {
         flake-parts.follows = "flake-parts";
         nixpkgs.follows = "nixpkgs";
@@ -16,7 +16,7 @@
     fenix.follows = "wrapix/fenix";
 
     flake-parts = {
-      url = "git+ssh://git@github.com/hercules-ci/flake-parts.git?ref=main&shallow=1";
+      url = "git+https://github.com/hercules-ci/flake-parts.git?ref=main&shallow=1";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
 

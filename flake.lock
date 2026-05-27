@@ -54,13 +54,13 @@
         "rev": "f7c1a2d347e4c52d5fb8d10cb4d94b5884e546fb",
         "shallow": true,
         "type": "git",
-        "url": "ssh://git@github.com/hercules-ci/flake-parts.git"
+        "url": "https://github.com/hercules-ci/flake-parts.git"
       },
       "original": {
         "ref": "main",
         "shallow": true,
         "type": "git",
-        "url": "ssh://git@github.com/hercules-ci/flake-parts.git"
+        "url": "https://github.com/hercules-ci/flake-parts.git"
       }
     },
     "loom": {
@@ -109,19 +109,19 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1779508470,
-        "narHash": "sha256-Ap9KJX+5xHIn3bPIpfNgT6MEXdAECECwo4/rmlQD74M=",
+        "lastModified": 1779560665,
+        "narHash": "sha256-tpyBcxPpcQb8ukyNF7DoCwfSY3VPsxHoYwj00Cayv5o=",
         "ref": "nixos-unstable",
-        "rev": "29916453413845e54a65b8a1cf996842300cd299",
+        "rev": "64c08a7ca051951c8eae34e3e3cb1e202fe36786",
         "shallow": true,
         "type": "git",
-        "url": "ssh://git@github.com/NixOS/nixpkgs.git"
+        "url": "https://github.com/NixOS/nixpkgs.git"
       },
       "original": {
         "ref": "nixos-unstable",
         "shallow": true,
         "type": "git",
-        "url": "ssh://git@github.com/NixOS/nixpkgs.git"
+        "url": "https://github.com/NixOS/nixpkgs.git"
       }
     },
     "root": {
@@ -222,13 +222,13 @@
         "rev": "d8efcbc5559e355ec0e1f96857cb36bc17c59748",
         "shallow": true,
         "type": "git",
-        "url": "ssh://git@github.com/taheris/wrapix.git"
+        "url": "https://github.com/taheris/wrapix.git"
       },
       "original": {
         "ref": "main",
         "shallow": true,
         "type": "git",
-        "url": "ssh://git@github.com/taheris/wrapix.git"
+        "url": "https://github.com/taheris/wrapix.git"
       }
     },
     "wrapix_2": {
