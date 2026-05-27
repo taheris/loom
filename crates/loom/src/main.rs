@@ -887,11 +887,7 @@ fn filter_annotations(
 /// pre-existing breakage caused by upstream-resource drift, every
 /// entry comments the cause, and entries leave the moment the
 /// underlying resource is reconciled.
-const CHECK_ANNOTATION_ALLOWLIST: &[(&str, &str)] = &[
-    // wrapix moved `lib/sandbox/linux/entrypoint.sh` (or split it up);
-    // specs/agent.md's three grep checks point at the old layout.
-    ("specs/agent.md", "lib/sandbox/linux/entrypoint.sh"),
-];
+const CHECK_ANNOTATION_ALLOWLIST: &[(&str, &str)] = &[];
 
 fn is_allowlisted_check_annotation(ann: &loom_gate::Annotation) -> bool {
     let spec_str = ann.source_spec.to_string_lossy();
@@ -1172,31 +1168,29 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
 /// [`loom_gate::IntegrityFinding`]s are intentionally suppressed pending
 /// cleanup under bead **lm-hyh7**. Each entry skips the matching
 /// annotation's "does not resolve" finding so the integrity tier passes
-/// even though the referenced test or judge is currently missing.
+/// even though the referenced test is currently missing.
 ///
 /// Add a new entry only when the resource the annotation points at is
 /// known to be missing, the cause is captured on lm-hyh7, and the entry
-/// has a comment naming the bead / commit that introduced the drift.
-/// Drop the entry the moment the resource is restored (or the
-/// annotation is removed from the spec).
+/// has a comment naming the bead that owns the missing test. Drop the
+/// entry the moment the test is written (or the annotation is removed
+/// from the spec).
 const INTEGRITY_ALLOWLIST: &[(&str, &str)] = &[
-    // 14ec2ea renamed `loom run` → `loom loop` and added [test]
-    // annotations whose referenced fns have not been written yet.
-    ("specs/harness.md", "loom_use_sets_current_spec_only"),
+    // lm-9ehh.5 (single-query resolution).
     (
         "specs/harness.md",
         "todo_single_query_resolution_with_invariant_violation_refusal",
     ),
+    // lm-9ehh.6 (multi-spec fan-out + collision clarify).
     (
         "specs/harness.md",
         "todo_fans_out_across_all_touched_specs_and_clarifies_on_collision",
     ),
+    // lm-9ehh.7 (GateSuccess sealed receipt + LoopOutcome typed outcomes).
     (
         "specs/harness.md",
         "once_mode_fires_gate_when_molecule_closes_else_no_gate_partial",
     ),
-    ("specs/harness.md", "all_specs_iterates_by_bd_updated_asc"),
-    ("specs/harness.md", "all_specs_exit_code_reflects_aggregate"),
     (
         "specs/harness.md",
         "loom_loop_exit_code_is_function_of_gate_outcome_variant",
@@ -1213,32 +1207,11 @@ const INTEGRITY_ALLOWLIST: &[(&str, &str)] = &[
         "specs/harness.md",
         "parallel_codepath_returns_loop_outcome_with_gate_field",
     ),
-    (
-        "specs/harness.md",
-        "loom_loop_never_invokes_bd_close_on_dispatched_bead_across_all_markers",
-    ),
-    (
-        "specs/harness.md",
-        "judges/loom.sh#judge_live_path_coverage",
-    ),
-    ("specs/harness.md", "judges/loom.sh#judge_mock_discipline"),
+    // Independent missing-test work tracked under lm-hyh7's remaining scope.
+    ("specs/harness.md", "loom_use_sets_current_spec_only"),
+    ("specs/harness.md", "all_specs_iterates_by_bd_updated_asc"),
+    ("specs/harness.md", "all_specs_exit_code_reflects_aggregate"),
     ("specs/harness.md", "plan_does_not_create_epic_or_touch_bd"),
-    (
-        "specs/harness.md",
-        "judges/loom.sh#judge_plan_update_merges_notes",
-    ),
-    (
-        "specs/harness.md",
-        "judges/loom.sh#test_scratchpad_partial_clarity",
-    ),
-    (
-        "specs/llm.md",
-        "judges/loom.sh#judge_tool_trait_ecosystem_compat",
-    ),
-    (
-        "specs/templates.md",
-        "judges/loom.sh#judge_sibling_spec_editing_documents_split",
-    ),
 ];
 
 fn is_allowlisted_integrity_finding(finding: &loom_gate::IntegrityFinding) -> bool {

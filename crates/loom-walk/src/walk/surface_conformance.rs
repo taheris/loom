@@ -81,8 +81,8 @@ pub fn run(_input: &WalkInput) -> Verdict {
 /// `Command::*` definitions; remove the entry once the matching flag
 /// is gone from the binary.
 const SURFACE_ALLOWLIST: &[&str] = &[
+    // lm-9ehh.6 owns the `--spec` removal from `Command::Todo`.
     "`Command::Todo` re-declares `--spec`",
-    "`Command::UseSpec` re-declares `--epic`",
 ];
 
 fn check_command_flag_set(
