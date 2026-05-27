@@ -79,8 +79,8 @@ in
         sha256 = rustToolchainSha256;
       };
 
-      rustProfile = wrapixLib.profiles.rust.withToolchain {
-        file = rustToolchainFile;
+      rustProfile = wrapixLib.rustProfile {
+        toolchain = rustToolchainFile;
         sha256 = rustToolchainSha256;
       };
 

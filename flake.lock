@@ -63,6 +63,50 @@
         "url": "ssh://git@github.com/hercules-ci/flake-parts.git"
       }
     },
+    "loom": {
+      "inputs": {
+        "crane": [
+          "wrapix",
+          "loom",
+          "wrapix",
+          "crane"
+        ],
+        "fenix": [
+          "wrapix",
+          "loom",
+          "wrapix",
+          "fenix"
+        ],
+        "flake-parts": [
+          "wrapix",
+          "flake-parts"
+        ],
+        "nixpkgs": [
+          "wrapix",
+          "nixpkgs"
+        ],
+        "treefmt-nix": [
+          "wrapix",
+          "treefmt-nix"
+        ],
+        "wrapix": "wrapix_2"
+      },
+      "locked": {
+        "lastModified": 1779757891,
+        "narHash": "sha256-byPdAmHtolUtinnylx3rIhfp5S+Bfc0gh/nNCnAcTio=",
+        "ref": "main",
+        "rev": "8e6d24295549e40f0edf53f62472e09a8bb64394",
+        "shallow": true,
+        "type": "git",
+        "url": "ssh://git@github.com/taheris/loom.git"
+      },
+      "original": {
+        "ref": "main",
+        "shallow": true,
+        "type": "git",
+        "url": "ssh://git@github.com/taheris/loom.git"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1779508470,
@@ -165,10 +209,50 @@
         "flake-parts": [
           "flake-parts"
         ],
+        "loom": "loom",
         "nixpkgs": [
           "nixpkgs"
         ],
         "treefmt-nix": "treefmt-nix_2"
+      },
+      "locked": {
+        "lastModified": 1779905895,
+        "narHash": "sha256-OssY4cgrafoz8j08LqKkqvYCNp820WcH33cAPc1rNPU=",
+        "ref": "main",
+        "rev": "d8efcbc5559e355ec0e1f96857cb36bc17c59748",
+        "shallow": true,
+        "type": "git",
+        "url": "ssh://git@github.com/taheris/wrapix.git"
+      },
+      "original": {
+        "ref": "main",
+        "shallow": true,
+        "type": "git",
+        "url": "ssh://git@github.com/taheris/wrapix.git"
+      }
+    },
+    "wrapix_2": {
+      "inputs": {
+        "crane": [
+          "wrapix",
+          "crane"
+        ],
+        "fenix": [
+          "wrapix",
+          "fenix"
+        ],
+        "flake-parts": [
+          "wrapix",
+          "flake-parts"
+        ],
+        "nixpkgs": [
+          "wrapix",
+          "nixpkgs"
+        ],
+        "treefmt-nix": [
+          "wrapix",
+          "treefmt-nix"
+        ]
       },
       "locked": {
         "lastModified": 1779713423,

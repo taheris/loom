@@ -703,7 +703,7 @@ mod tests {
         // Same gate fires for `LOOM_NOOP`: a NOOP claims "no work needed"
         // but a dirty tree disagrees; surfacing the discrepancy beats
         // letting the bead close on a false negative.
-        let dirty = vec![" M lib/prek/lock.sh".to_string()];
+        let dirty = vec![" M crates/loom-driver/src/git/client.rs".to_string()];
         let g = GateInputs {
             bd_closed: true,
             diff_empty: true,

@@ -1,17 +1,13 @@
 repos:
-  # Disabled 2026-05-27: these three Python hooks pull in uv via prek, which
-  # downloads a glibc-linked binary that fails ld validation on bare NixOS.
-  # Reinstate as language: system shell or treefmt rules later (lm-9ehh.2).
-  # - repo: https://github.com/pre-commit/pre-commit-hooks
-  #   rev: v5.0.0
-  #   hooks:
-  #     - id: trailing-whitespace
-  #       stages: [pre-commit]
-  #     - id: end-of-file-fixer
-  #       stages: [pre-commit]
-  #       exclude: '^.beads/config.yaml$'
-  #     - id: check-merge-conflict
-  #       stages: [pre-commit]
+  - repo: builtin
+    hooks:
+      - id: trailing-whitespace
+        stages: [pre-commit]
+      - id: end-of-file-fixer
+        stages: [pre-commit]
+        exclude: '^.beads/config.yaml$'
+      - id: check-merge-conflict
+        stages: [pre-commit]
 
   - repo: local
     hooks:
