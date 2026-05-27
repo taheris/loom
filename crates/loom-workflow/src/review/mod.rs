@@ -32,9 +32,7 @@ mod verify_fail;
 
 pub use context::{ReviewContextInputs, beads_summary, build_review_context, load_review_sources};
 pub use error::ReviewError;
-pub use fixup::{
-    FixupContext, FixupOutcome, FixupRequest, UNBONDED_ORIGIN_CAUSE, spawn_fixup_bead,
-};
+pub use fixup::{FixupContext, FixupOutcome, FixupRequest, spawn_fixup_bead};
 pub use iteration::{DEFAULT_MAX_ITERATIONS, IterationCap};
 pub use loom_templates::review::ReviewLane;
 pub use phase_verdict::{

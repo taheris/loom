@@ -64,6 +64,7 @@ pub enum DriverNoticeCause {
     ZeroProgress,
     ObserverAbort,
     RetryExhausted,
+    UnbondedOrigin,
 }
 
 impl DriverNoticeCause {
@@ -75,6 +76,7 @@ impl DriverNoticeCause {
             Self::ZeroProgress => "zero-progress",
             Self::ObserverAbort => "observer-abort",
             Self::RetryExhausted => "retry-exhausted",
+            Self::UnbondedOrigin => "unbonded-origin",
         }
     }
 }
@@ -533,6 +535,37 @@ mod tests {
         assert_eq!(
             DriverNoticeCause::RetryExhausted.as_str(),
             "retry-exhausted"
+        );
+        assert_eq!(
+            DriverNoticeCause::UnbondedOrigin.as_str(),
+            "unbonded-origin"
+        );
+    }
+
+    #[test]
+    fn driver_notice_cause_unbonded_origin_as_str_round_trips() {
+        assert_eq!(
+            DriverNoticeCause::UnbondedOrigin.as_str(),
+            "unbonded-origin",
+        );
+    }
+
+    #[test]
+    fn previous_failure_renders_unbonded_origin_context_for_next_attempt() {
+        let pf = PreviousFailure::DriverNotice {
+            cause: DriverNoticeCause::UnbondedOrigin,
+            detail: "Originating bead wx-orphan.5 has no molecule parent; \
+                     refusing to spawn fix-up bead."
+                .into(),
+        };
+        let rendered = pf.to_string();
+        assert!(
+            rendered.starts_with("Previous attempt: "),
+            "framing prefix missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("wx-orphan.5"),
+            "origin detail missing: {rendered}",
         );
     }
 

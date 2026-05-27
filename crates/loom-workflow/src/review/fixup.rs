@@ -22,15 +22,9 @@
 
 use loom_driver::bd::Bead;
 use loom_driver::identifier::{BeadId, MoleculeId};
+use loom_templates::run::DriverNoticeCause;
 
 use super::error::ReviewError;
-
-/// Cause string written to `bd update --notes` when the verdict gate
-/// refuses to spawn a fix-up bead because the originating bead is itself
-/// unbonded (no molecule parent). Mirrored from
-/// `specs/harness.md` §"Verdict gate · Fix-up beads bond to the
-/// originating molecule".
-pub const UNBONDED_ORIGIN_CAUSE: &str = "unbonded-origin";
 
 /// Inputs required to create a fix-up bead. The chokepoint adds the bond
 /// and the originating-bead `parent`; callers supply the human-readable
@@ -106,9 +100,10 @@ pub trait FixupContext: Send {
 /// - bonds: dispatches `create_and_bond` so the new bead lands with its
 ///   molecule parent set in one chokepoint turn, returning
 ///   [`FixupOutcome::Spawned`]; or
-/// - refuses: applies `loom:blocked` + [`UNBONDED_ORIGIN_CAUSE`] to the
-///   originating bead and returns [`FixupOutcome::RefusedUnbondedOrigin`]
-///   without creating anything downstream.
+/// - refuses: applies `loom:blocked` +
+///   [`DriverNoticeCause::UnbondedOrigin`] to the originating bead and
+///   returns [`FixupOutcome::RefusedUnbondedOrigin`] without creating
+///   anything downstream.
 pub async fn spawn_fixup_bead<C: FixupContext>(
     ctx: &mut C,
     origin: &BeadId,
@@ -119,7 +114,7 @@ pub async fn spawn_fixup_bead<C: FixupContext>(
         let detail = format!(
             "Originating bead {origin} has no molecule parent; refusing to spawn fix-up bead.",
         );
-        ctx.apply_blocked(origin, UNBONDED_ORIGIN_CAUSE, &detail)
+        ctx.apply_blocked(origin, DriverNoticeCause::UnbondedOrigin.as_str(), &detail)
             .await?;
         return Ok(FixupOutcome::RefusedUnbondedOrigin {
             origin: origin.clone(),
@@ -268,11 +263,37 @@ mod tests {
         assert_eq!(ctx.blocked_calls.len(), 1);
         let (bead, cause, detail) = &ctx.blocked_calls[0];
         assert_eq!(*bead, BeadId::new("wx-orphan.5").expect("valid"));
-        assert_eq!(cause, UNBONDED_ORIGIN_CAUSE);
+        assert_eq!(cause, DriverNoticeCause::UnbondedOrigin.as_str());
         assert_eq!(cause, "unbonded-origin");
         assert!(
             detail.contains("wx-orphan.5"),
             "blocked detail names the origin: {detail}",
+        );
+    }
+
+    #[tokio::test]
+    async fn fixup_unbonded_origin_routes_through_driver_notice_cause_enum() {
+        let mut ctx = FakeContext::default();
+        ctx.origins
+            .insert("wx-orphan.9".into(), bead("wx-orphan.9", None));
+
+        let origin = BeadId::new("wx-orphan.9").expect("valid");
+        let outcome = spawn_fixup_bead(&mut ctx, &origin, FixupRequest::default())
+            .await
+            .expect("refuse path returns Ok");
+
+        assert!(matches!(
+            outcome,
+            FixupOutcome::RefusedUnbondedOrigin { .. }
+        ));
+        let (_, cause, _) = ctx
+            .blocked_calls
+            .first()
+            .expect("apply_blocked recorded one call");
+        assert_eq!(
+            cause,
+            DriverNoticeCause::UnbondedOrigin.as_str(),
+            "bd notes cause string must originate from the enum, not a free literal",
         );
     }
 

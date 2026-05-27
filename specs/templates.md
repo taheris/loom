@@ -286,6 +286,7 @@ pub enum DriverNoticeCause {
     ZeroProgress,
     ObserverAbort,
     RetryExhausted,
+    UnbondedOrigin,
 }
 
 pub struct VerifierFailure {
@@ -744,8 +745,8 @@ documents in front of the agent with zero configuration.
   [check](grep -q 'TreeNotClean' crates/loom-templates/src/previous_failure.rs)
 - `DriverNoticeCause` enum covers `SwallowedMarker`,
   `IncompleteSignaling`, `ZeroProgress`, `ObserverAbort`,
-  `RetryExhausted`
-  [check](grep -q 'pub enum DriverNoticeCause' crates/loom-templates/src/previous_failure.rs)
+  `RetryExhausted`, `UnbondedOrigin`
+  [test](driver_notice_cause_labels_match_spec_strings)
 - `ReviewConcernKind` enum carries all 12 named variants from
   gate.md plus `Other(String)` fallback
   [check](grep -q 'pub enum ReviewConcernKind' crates/loom-templates/src/previous_failure.rs)
