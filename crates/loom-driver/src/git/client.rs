@@ -12,6 +12,12 @@ use crate::identifier::{BeadId, SpecLabel};
 use super::error::GitError;
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Timeout for git operations whose hooks can legitimately run for
+/// minutes — pre-push fires the workspace's pre-push CI stage (nextest +
+/// nix build), which on a warm sccache takes a few minutes. The timeout
+/// surfaces true hangs (deadlocked subprocess, runaway network); it must
+/// not abort legitimate CI.
+const GIT_HOOK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const WORKTREE_BASE: &str = ".wrapix/worktree";
 const BRANCH_PREFIX: &str = "loom";
 
@@ -262,14 +268,19 @@ impl GitClient {
     /// (the main repo this `GitClient` was opened against). Run after a
     /// successful agent session so [`Self::merge_branch`] can fold the bead's
     /// work into the driver branch.
+    ///
+    /// Uses [`GIT_HOOK_TIMEOUT`] because the destination repo's pre-push
+    /// hook runs the workspace's pre-push CI stage (nextest + nix smoke)
+    /// — legitimate backpressure that takes minutes, not seconds.
     pub async fn push_branch_to_origin(
         &self,
         workdir: &Path,
         branch: &str,
     ) -> Result<(), GitError> {
-        run_git(
+        run_git_with_timeout(
             workdir,
             self.clock.as_ref(),
+            GIT_HOOK_TIMEOUT,
             ["push", "--quiet", "origin", branch],
             None,
         )
@@ -297,8 +308,19 @@ impl GitClient {
     /// Used by the push gate (`loom gate verify`). Routed through this client so
     /// `Command::new("git")` stays inside `loom-driver/src/git/`, satisfying
     /// the encapsulation rule asserted by `crates/loom/tests/style.rs`.
+    ///
+    /// Uses [`GIT_HOOK_TIMEOUT`] because the remote's pre-push hook (or
+    /// loom's own pre-push hook on the GitHub publish) runs the workspace's
+    /// pre-push CI stage.
     pub async fn push(&self) -> Result<(), GitError> {
-        run_git(&self.workdir, self.clock.as_ref(), ["push"], None).await
+        run_git_with_timeout(
+            &self.workdir,
+            self.clock.as_ref(),
+            GIT_HOOK_TIMEOUT,
+            ["push"],
+            None,
+        )
+        .await
     }
 
     /// `git rev-parse --verify <rev>^{commit}` — true iff `rev` resolves to
@@ -723,7 +745,21 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let output = run_git_raw(workdir, clock, args, trailing).await?;
+    run_git_with_timeout(workdir, clock, GIT_TIMEOUT, args, trailing).await
+}
+
+async fn run_git_with_timeout<I, S>(
+    workdir: &Path,
+    clock: &dyn Clock,
+    timeout: Duration,
+    args: I,
+    trailing: Option<&OsString>,
+) -> Result<(), GitError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let output = run_git_raw_with_timeout(workdir, clock, timeout, args, trailing).await?;
     if output.status.success() {
         return Ok(());
     }
@@ -767,6 +803,20 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
+    run_git_raw_with_timeout(workdir, clock, GIT_TIMEOUT, args, trailing).await
+}
+
+async fn run_git_raw_with_timeout<I, S>(
+    workdir: &Path,
+    clock: &dyn Clock,
+    timeout: Duration,
+    args: I,
+    trailing: Option<&OsString>,
+) -> Result<std::process::Output, GitError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(workdir);
     let mut argv_for_log: Vec<String> = Vec::new();
@@ -780,7 +830,7 @@ where
     }
 
     let fut = cmd.output();
-    let sleep = clock.sleep(GIT_TIMEOUT);
+    let sleep = clock.sleep(timeout);
     tokio::select! {
         result = fut => match result {
             Ok(output) => Ok(output),

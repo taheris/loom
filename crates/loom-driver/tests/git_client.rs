@@ -467,6 +467,118 @@ async fn commits_since_surfaces_git_cli_error_on_unknown_commit() -> Result<()> 
     Ok(())
 }
 
+fn install_pre_push_hook(hooks_dir: &Path, body: &str) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let hook = hooks_dir.join("pre-push");
+    std::fs::write(&hook, body)?;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+fn agent_commit(worktree: &Path, filename: &str, body: &str, msg: &str) -> Result<()> {
+    std::fs::write(worktree.join(filename), body)?;
+    git(worktree, &["add", filename])?;
+    git(
+        worktree,
+        &["-c", "commit.gpgsign=false", "commit", "-q", "-m", msg],
+    )?;
+    Ok(())
+}
+
+/// `push_branch_to_origin` fires the destination's pre-push hook — that's
+/// the per-bead test backpressure (the workspace's pre-push CI stage runs
+/// here). If this stopped firing, broken commits would slip into driver
+/// `main` without the test gate.
+#[tokio::test]
+async fn push_branch_to_origin_invokes_pre_push_hook() -> Result<()> {
+    let repo = init_repo()?;
+    let hooks_dir = repo.path().join(".loom-test-hooks");
+    std::fs::create_dir_all(&hooks_dir)?;
+    let marker = repo.path().join("hook-fired");
+    let hook_log = repo.path().join("hook-log");
+    // The hook writes both a marker file (assertion target) and a log
+    // capturing its env, cwd, and any error. When the marker is missing
+    // post-push, the log tells us whether the hook ran at all and what
+    // it saw.
+    install_pre_push_hook(
+        &hooks_dir,
+        &format!(
+            "#!/usr/bin/env bash\n{{ date; pwd; echo HOOK_PATH=$0; echo HOOKS_PATH=$(git config --get core.hooksPath); }} > {:?} 2>&1\ntouch {:?}\nexit 0\n",
+            hook_log.display(),
+            marker.display()
+        ),
+    )?;
+
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("wx-pp.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+    // pre-push fires on the sending side; set core.hooksPath on the clone.
+    git(
+        &created.path,
+        &["config", "core.hooksPath", hooks_dir.to_str().unwrap()],
+    )?;
+    agent_commit(&created.path, "agent-change.txt", "agent work\n", "agent")?;
+
+    client
+        .push_branch_to_origin(&created.path, &created.branch)
+        .await?;
+    if !marker.exists() {
+        // Diagnostics for the flake: what did the hook see (if it ran)?
+        use std::os::unix::fs::PermissionsExt;
+        let log =
+            std::fs::read_to_string(&hook_log).unwrap_or_else(|e| format!("(log missing: {e})"));
+        let hook_meta = std::fs::metadata(hooks_dir.join("pre-push"))
+            .map(|m| format!("mode={:o} size={}", m.permissions().mode() & 0o777, m.len()))
+            .unwrap_or_else(|e| format!("(hook stat failed: {e})"));
+        panic!(
+            "pre-push hook must fire on bead-merge push\n\
+             marker={}\n\
+             hook script: {}\n\
+             hook log:\n{}",
+            marker.display(),
+            hook_meta,
+            log,
+        );
+    }
+
+    client.remove_worktree(&created.path).await?;
+    Ok(())
+}
+
+/// A failing pre-push hook surfaces as `GitError::GitCli`, blocking the
+/// merge. If the workspace's pre-push CI fails (test regression, lint
+/// failure), the bead's commit must not land on driver `main`.
+#[tokio::test]
+async fn push_branch_to_origin_propagates_pre_push_hook_failure() -> Result<()> {
+    let repo = init_repo()?;
+    let hooks_dir = repo.path().join(".loom-test-hooks");
+    std::fs::create_dir_all(&hooks_dir)?;
+    install_pre_push_hook(&hooks_dir, "#!/usr/bin/env bash\nexit 1\n")?;
+
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("wx-pp.2")?;
+    let created = client.create_worktree(&label, &bead).await?;
+    git(
+        &created.path,
+        &["config", "core.hooksPath", hooks_dir.to_str().unwrap()],
+    )?;
+    agent_commit(&created.path, "agent-change.txt", "agent work\n", "agent")?;
+
+    let err = client
+        .push_branch_to_origin(&created.path, &created.branch)
+        .await
+        .expect_err("failing pre-push must surface as an error");
+    assert!(
+        matches!(err, loom_driver::git::GitError::GitCli { .. }),
+        "expected GitCli error from failing hook, got {err:?}",
+    );
+
+    client.remove_worktree(&created.path).await?;
+    Ok(())
+}
+
 fn capture_head(repo: &Path) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
