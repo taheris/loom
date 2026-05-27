@@ -44,7 +44,7 @@ use loom_templates::review::{ReviewContext, ReviewLane, TreeScopeEpic};
 use tokio::process::Command;
 use tracing::{info, warn};
 
-use super::context::{beads_summary, load_review_sources};
+use super::context::{beads_summary, default_profile_for_spec, load_review_sources};
 use super::error::ReviewError;
 use super::phase_verdict::{
     GateInputs, PhaseVerdict, RecoveryCause, ReviewConcern, ReviewFlag, decide,
@@ -324,6 +324,7 @@ where
                 .into_owned();
         let ctx = ReviewContext {
             pinned_context: String::new(),
+            default_profile: default_profile_for_spec(&self.label),
             label: self.label.clone(),
             spec_path,
             companion_paths: vec![],

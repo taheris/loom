@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use loom_driver::bd::Bead;
-use loom_driver::identifier::{MoleculeId, SpecLabel};
+use loom_driver::identifier::{MoleculeId, ProfileName, SpecLabel};
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource, TreeScopeEpic};
 
 use crate::spec::{Annotation, AnnotationKind, SpecError, parse_spec_annotations};
@@ -34,6 +34,12 @@ pub struct ReviewContextInputs {
     /// IDs the orchestrator threads in as bonding targets. Empty at
     /// non-`--tree` scopes.
     pub tree_scope_epics: Vec<TreeScopeEpic>,
+    /// Default profile label applied to fix-up and clarify beads the
+    /// reviewer mints under this spec. Threaded into the rendered
+    /// `bd create --labels="…,profile:<default>"` examples so the bead's
+    /// dispatch picks up a toolchain that can actually run the spec's
+    /// verifiers (e.g. `profile:rust` for cargo-bound specs).
+    pub default_profile: ProfileName,
 }
 
 /// Render the typed [`ReviewContext`] used by the `review.md` Askama template.
@@ -52,6 +58,23 @@ pub fn build_review_context(inputs: ReviewContextInputs) -> ReviewContext {
         style_rules: inputs.style_rules,
         lane: inputs.lane,
         tree_scope_epics: inputs.tree_scope_epics,
+        default_profile: inputs.default_profile,
+    }
+}
+
+/// Default `profile:<name>` label for fix-up beads minted under `spec`.
+///
+/// Cargo-bound specs (whose `[check]` / `[test]` verifiers run cargo) need
+/// `profile:rust` so the bead's dispatch container has the Rust toolchain
+/// and the `/home/wrapix/.cargo` writable-dirs setup. The Nix-only specs
+/// (currently `pre-commit`) stay on `profile:base` so they aren't forced
+/// to pull the rust image. Unknown specs fall through to `base` — a
+/// container without cargo will fail loudly on a cargo-bound verifier
+/// rather than silently regressing into the old `profile:base` recurrence.
+pub fn default_profile_for_spec(spec: &SpecLabel) -> ProfileName {
+    match spec.as_str() {
+        "harness" | "templates" | "agent" | "gate" | "llm" | "tests" => ProfileName::new("rust"),
+        _ => ProfileName::new("base"),
     }
 }
 
@@ -171,6 +194,7 @@ mod tests {
             style_rules: "docs/style-rules.md".into(),
             lane: ReviewLane::Both,
             tree_scope_epics: Vec::new(),
+            default_profile: default_profile_for_spec(&SpecLabel::new("harness")),
         }
     }
 
@@ -310,6 +334,84 @@ mod tests {
         assert!(body.contains("VERIFY_BODY_MARKER"), "{body}");
         assert!(body.contains("tests/judges/alpha.sh"), "{body}");
         assert!(body.contains("JUDGE_BODY_MARKER"), "{body}");
+    }
+
+    #[test]
+    fn default_profile_for_spec_returns_rust_for_cargo_bound_specs() {
+        for label in ["harness", "templates", "agent", "gate", "llm", "tests"] {
+            assert_eq!(
+                default_profile_for_spec(&SpecLabel::new(label)).as_str(),
+                "rust",
+                "{label} should default to profile:rust",
+            );
+        }
+    }
+
+    #[test]
+    fn default_profile_for_spec_returns_base_for_nix_only_specs() {
+        assert_eq!(
+            default_profile_for_spec(&SpecLabel::new("pre-commit")).as_str(),
+            "base",
+        );
+        assert_eq!(
+            default_profile_for_spec(&SpecLabel::new("unknown-spec")).as_str(),
+            "base",
+        );
+    }
+
+    #[test]
+    fn rendered_template_inlines_default_profile_in_bd_create_examples() {
+        let mut i = inputs();
+        i.label = SpecLabel::new("harness");
+        i.default_profile = default_profile_for_spec(&SpecLabel::new("harness"));
+        let body = build_review_context(i).render().expect("render");
+        assert!(
+            body.contains("spec:harness,profile:rust"),
+            "harness fix-up minting block must default to profile:rust: {body}",
+        );
+        assert!(
+            body.contains("spec:harness,loom:clarify,profile:rust"),
+            "harness clarify minting block must default to profile:rust: {body}",
+        );
+        assert!(
+            !body.contains("spec:harness,profile:base")
+                && !body.contains("spec:harness,loom:clarify,profile:base"),
+            "harness review prompt must not mint fix-ups under profile:base by default: {body}",
+        );
+
+        let mut j = inputs();
+        j.label = SpecLabel::new("pre-commit");
+        j.default_profile = default_profile_for_spec(&SpecLabel::new("pre-commit"));
+        let body = build_review_context(j).render().expect("render");
+        assert!(
+            body.contains("spec:pre-commit,profile:base"),
+            "pre-commit fix-up minting block must default to profile:base: {body}",
+        );
+        assert!(
+            !body.contains("spec:pre-commit,profile:rust"),
+            "pre-commit review prompt must not mint fix-ups under profile:rust by default: {body}",
+        );
+    }
+
+    /// Once `--parent <epic>` is supplied to `bd create`, the redundant
+    /// `bd mol bond <new-id> <epic>` retraces the parent edge and trips
+    /// bd's cycle detector. The review template must not direct the
+    /// reviewer to emit that second call after `--parent`-bonded creates.
+    #[test]
+    fn rendered_template_omits_redundant_bd_mol_bond_after_bd_create_parent() {
+        let body = build_review_context(inputs()).render().expect("render");
+        for example_block in body.split("```bash").skip(1) {
+            let block = example_block
+                .split_once("```")
+                .map(|(b, _)| b)
+                .unwrap_or(example_block);
+            if block.contains("bd create") && block.contains("--parent") {
+                assert!(
+                    !block.contains("bd mol bond"),
+                    "block contains `bd create --parent` and stray `bd mol bond`: {block}",
+                );
+            }
+        }
     }
 
     #[test]

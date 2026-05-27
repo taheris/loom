@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 use askama::Template;
-use loom_events::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_events::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
 use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
 use loom_templates::plan::{PlanNewContext, PlanUpdateContext};
@@ -515,6 +515,7 @@ fn review_renders_review_context_fields() -> Result<()> {
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         tree_scope_epics: Vec::new(),
+        default_profile: ProfileName::new("base"),
     };
     let out = ctx.render()?;
 
@@ -561,6 +562,7 @@ fn review_lane_judge_omits_rubric_walk_sections_and_keeps_judge_rubrics() -> Res
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Judge,
         tree_scope_epics: Vec::new(),
+        default_profile: ProfileName::new("base"),
     };
     let out = ctx.render()?;
 
@@ -615,6 +617,7 @@ fn review_lane_rubric_omits_judge_rubrics_and_keeps_rubric_walk_sections() -> Re
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Rubric,
         tree_scope_epics: Vec::new(),
+        default_profile: ProfileName::new("base"),
     };
     let out = ctx.render()?;
 
@@ -667,6 +670,7 @@ fn review_renders_style_rule_conformance_walkthrough() -> Result<()> {
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         tree_scope_epics: Vec::new(),
+        default_profile: ProfileName::new("base"),
     };
     let out = ctx.render()?;
 
@@ -731,6 +735,7 @@ fn review_renders_single_marker_instruction_with_concern_xor_complete() -> Resul
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         tree_scope_epics: Vec::new(),
+        default_profile: ProfileName::new("base"),
     };
     let out = ctx.render()?;
 
@@ -774,6 +779,7 @@ fn review_renders_options_format_contract_with_universal_scope() -> Result<()> {
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         tree_scope_epics: Vec::new(),
+        default_profile: ProfileName::new("base"),
     };
     let out = ctx.render()?;
 
@@ -825,6 +831,7 @@ fn review_prompt_documents_bd_find_recovery_resolution() -> Result<()> {
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         tree_scope_epics: Vec::new(),
+        default_profile: ProfileName::new("base"),
     };
     let out = ctx.render()?;
 
@@ -1123,6 +1130,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         tree_scope_epics: Vec::new(),
+        default_profile: ProfileName::new("base"),
     }
     .render()?;
 
@@ -1369,6 +1377,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             style_rules: "docs/style-rules.md".to_string(),
             lane: ReviewLane::Both,
             tree_scope_epics: Vec::new(),
+            default_profile: ProfileName::new("rust"),
         },
     )?;
     assert_stable(

@@ -1,7 +1,7 @@
 //! `loom review` template: the LLM-judged rubric prompt.
 
 use askama::Template;
-use loom_events::identifier::{MoleculeId, SpecLabel};
+use loom_events::identifier::{MoleculeId, ProfileName, SpecLabel};
 
 /// One spec's pre-resolved bonding target threaded into the reviewer
 /// prompt at `--tree` scope. The orchestrator's single-query walk
@@ -80,4 +80,11 @@ pub struct ReviewContext {
     /// IDs the orchestrator threads in as bonding targets. Empty at
     /// `--diff` / `--bead` / `--files` scope.
     pub tree_scope_epics: Vec<TreeScopeEpic>,
+    /// Default profile applied to fix-up and clarify beads the reviewer
+    /// mints under this spec. Rendered into every `bd create --labels=…`
+    /// example as `profile:<default_profile>` so the bead enters the
+    /// dispatch queue under a toolchain that can actually run the spec's
+    /// `[check]` / `[test]` verifiers. Per-spec — see the wiring in the
+    /// loom binary's review dispatch.
+    pub default_profile: ProfileName,
 }

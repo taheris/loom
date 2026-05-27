@@ -506,6 +506,33 @@ Reason: the agent's default "ask before mutating shared state"
 reflex collides with the gate's mechanical persistence model
 unless the authorization is named explicitly in the prompt.
 
+### Review Default-Profile Minting
+
+`ReviewContext` carries a `default_profile: ProfileName` field
+populated per-spec from the controller at render time. The four
+`bd create --labels=…` examples in `review.md` (recovery-epic
+resolution, tree-scope resolution, clarify bead, fix-up bead) name
+that profile via `profile:{{ default_profile }}` rather than a
+hardcoded literal. The per-spec mapping is
+`default_profile_for_spec(&SpecLabel)` in
+`loom-workflow::review::context`; cargo-bound specs (`harness`,
+`templates`, `agent`, `gate`, `llm`, `tests`) default to
+`profile:rust` so the bead's dispatch container has the Rust
+toolchain its `[check]` / `[test]` verifiers need; Nix-only specs
+(currently `pre-commit`) and unknown specs stay on `profile:base`.
+The override note kept under the fix-up minting block lets the agent
+upgrade to `profile:python` / `profile:mcp` etc. when a specific
+fix-up's toolchain needs diverge from the spec's default.
+
+The same code blocks also drop the
+`bd mol bond "$NEW_ID" "<molecule>"` follow-up that previously
+trailed each `bd create --parent`. `--parent` already establishes
+the molecule edge; the second write retraces it and trips bd's
+cycle detector (`<new> → <epic> → <epic>`), aborting the review
+session before subsequent fix-ups are minted. The bd-bond call
+stays in flows where no `--parent` was supplied (e.g. bonding a
+pre-existing bead onto a molecule).
+
 ### Sibling-Spec Editing
 
 `partial/sibling_spec_editing.md` is included only in
@@ -732,6 +759,26 @@ documents in front of the agent with zero configuration.
   `LOOM_CONCERN` bullet so it appears in every prompt that
   includes the partial
   [check](grep -q 'LOOM_CONCERN. requires at least one corresponding .bd create' crates/loom-templates/templates/partial/exit_signals.md)
+
+### Review default-profile minting
+
+- `ReviewContext` carries `default_profile: ProfileName`; cargo-bound
+  specs (`harness`, `templates`, `agent`, `gate`, `llm`, `tests`)
+  resolve to `profile:rust` and Nix-only / unknown specs fall through
+  to `profile:base`
+  [check](cargo test -p loom-workflow --lib default_profile_for_spec)
+- `review.md` renders fix-up and clarify `bd create --labels=…`
+  examples with `profile:{{ default_profile }}` — never a hardcoded
+  `profile:base` literal
+  [check](! grep -nE 'profile:base' crates/loom-templates/templates/review.md)
+- For `spec:harness` the rendered prompt mints fix-ups and clarifies
+  under `profile:rust`; for `spec:pre-commit` it stays on
+  `profile:base`
+  [check](cargo test -p loom-workflow --lib review::context::tests::rendered_template_inlines_default_profile_in_bd_create_examples)
+- Code blocks that begin with `bd create --parent <epic>` do not also
+  invoke `bd mol bond <new> <epic>` — `--parent` already creates the
+  edge, and the second write trips bd's cycle detector
+  [check](cargo test -p loom-workflow --lib review::context::tests::rendered_template_omits_redundant_bd_mol_bond_after_bd_create_parent)
 
 ### Typed `PreviousFailure`
 

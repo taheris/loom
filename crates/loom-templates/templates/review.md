@@ -73,7 +73,7 @@ fi
 bd create \
   --title="..." \
   --type=bug \
-  --labels="spec:<spec>,profile:base" \
+  --labels="spec:<spec>,profile:{{ default_profile }}" \
   --parent="$EPIC_ID" \
   --silent
 ```
@@ -87,7 +87,7 @@ bd create \
 bd create \
   --title="..." \
   --type=bug \
-  --labels="spec:<spec>,profile:base" \
+  --labels="spec:<spec>,profile:{{ default_profile }}" \
   --parent="<the epic ID for that spec above>" \
   --silent
 ```
@@ -265,7 +265,7 @@ molecule:
 CLARIFY_ID=$(bd create \
   --title="Invariant clash: <short summary>" \
   --type=task \
-  --labels="spec:{{ label }},loom:clarify,profile:base" \
+  --labels="spec:{{ label }},loom:clarify,profile:{{ default_profile }}" \
   --parent="{% match molecule_id %}{% when Some with (id) %}{{ id }}{% when None %}<molecule>{% endmatch %}" \
   --description="$(cat <<'EOF'
 ## Clash
@@ -286,8 +286,13 @@ CLARIFY_ID=$(bd create \
 <body, name the cost>
 EOF
 )" --silent)
-bd mol bond "$CLARIFY_ID" "{% match molecule_id %}{% when Some with (id) %}{{ id }}{% when None %}<molecule>{% endmatch %}"
 ```
+
+The `--parent` flag above already bonds the new bead into the molecule
+rooted at the epic. Do NOT add a follow-up `bd mol bond "$CLARIFY_ID"
+"<molecule>"` call — the second write retraces the parent edge and
+trips bd's cycle detector (`<new> → <epic> → <epic>`), aborting the
+review session before subsequent fix-ups are minted.
 
 The user will answer with a free-form choice or an integer option pick via `loom msg`.
 {% endif %}
@@ -308,14 +313,20 @@ right executor picks them up:
 NEW_ID=$(bd create \
   --title="..." \
   --type=bug \
-  --labels="spec:{{ label }},profile:base" \
+  --labels="spec:{{ label }},profile:{{ default_profile }}" \
   --parent="{% match molecule_id %}{% when Some with (id) %}{{ id }}{% when None %}<molecule>{% endmatch %}" \
   --silent)
-bd mol bond "$NEW_ID" "{% match molecule_id %}{% when Some with (id) %}{{ id }}{% when None %}<molecule>{% endmatch %}"
 ```
 
-Use `profile:rust`, `profile:python`, `profile:mcp`, etc. when the fix requires a
-specific toolchain.
+The `--parent` flag above already bonds the new bead into the
+molecule. Do NOT add a follow-up `bd mol bond "$NEW_ID" "<molecule>"`
+call — the same-edge double-write trips bd's cycle detector
+(`<new> → <epic> → <epic>`) and the review session exits before
+subsequent fix-ups are minted.
+
+The spec's default profile (`profile:{{ default_profile }}`) is applied
+above. Replace it with `profile:rust`, `profile:python`, `profile:mcp`,
+etc. when the fix-up's toolchain needs diverge from the spec's default.
 
 For ambiguous items that need human judgment outside the three-paths flow:
 

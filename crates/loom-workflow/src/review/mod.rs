@@ -30,7 +30,10 @@ mod runner;
 mod verdict;
 mod verify_fail;
 
-pub use context::{ReviewContextInputs, beads_summary, build_review_context, load_review_sources};
+pub use context::{
+    ReviewContextInputs, beads_summary, build_review_context, default_profile_for_spec,
+    load_review_sources,
+};
 pub use error::ReviewError;
 pub use fixup::{FixupContext, FixupOutcome, FixupRequest, spawn_fixup_bead};
 pub use iteration::{DEFAULT_MAX_ITERATIONS, IterationCap};

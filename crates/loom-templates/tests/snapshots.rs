@@ -9,7 +9,7 @@
 //! `insta::assert_snapshot!`'s default file naming.
 
 use askama::Template;
-use loom_events::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_events::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
 use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
 use loom_templates::plan::{PlanNewContext, PlanUpdateContext};
@@ -324,6 +324,7 @@ fn review_snapshot() {
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         tree_scope_epics: Vec::new(),
+        default_profile: ProfileName::new("rust"),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
 }
