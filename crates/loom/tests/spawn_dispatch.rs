@@ -154,12 +154,14 @@ fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::pro
     std::fs::write(&manifest_path, manifest_body).expect("write manifest stub");
     init_workspace_repo(workspace);
     seed_active_spec(workspace, loom_bin, "agent");
+    let new_path = bd_stub_path(workspace, "[]");
     Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
         .arg("--agent")
         .arg("pi")
         .arg("todo")
+        .env("PATH", new_path)
         .env("LOOM_WRAPIX_BIN", shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
@@ -169,6 +171,19 @@ fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::pro
         .env_remove("LOOM_INSIDE")
         .output()
         .expect("spawn loom")
+}
+
+/// Install [`install_bd_bead_stub`] with `bead_json` and return a PATH
+/// value with the stub's bin dir prepended. `loom todo` / `loom loop`
+/// drive bd through `tokio::process::Command::new("bd")`, which is not
+/// on PATH in the nix build sandbox; without the stub every spawn-bound
+/// test aborts inside `build_prompt` at the first bd query.
+fn bd_stub_path(workspace: &Path, bead_json: &str) -> std::ffi::OsString {
+    let bd_bin_dir = install_bd_bead_stub(workspace, bead_json);
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    let mut entries = vec![bd_bin_dir];
+    entries.extend(std::env::split_paths(&path_var));
+    std::env::join_paths(entries).expect("join PATH")
 }
 
 /// Initialise loom's state DB and set the active spec for the test.
@@ -888,6 +903,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     seed_active_spec(workspace, loom_bin, "agent");
+    let new_path = bd_stub_path(workspace, "[]");
     let started = std::time::Instant::now();
     let output = Command::new(loom_bin)
         .arg("--workspace")
@@ -895,6 +911,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
         .arg("--agent")
         .arg("claude")
         .arg("todo")
+        .env("PATH", new_path)
         .env("LOOM_WRAPIX_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
@@ -969,6 +986,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     seed_active_spec(workspace, loom_bin, "agent");
+    let new_path = bd_stub_path(workspace, "[]");
     let started = Instant::now();
     let output = Command::new(loom_bin)
         .arg("--workspace")
@@ -976,6 +994,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
         .arg("--agent")
         .arg("pi")
         .arg("todo")
+        .env("PATH", new_path)
         .env("LOOM_WRAPIX_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
@@ -1053,12 +1072,14 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
     // stderr pipe open, hanging `reader.join()` forever.
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     seed_active_spec(workspace, loom_bin, "agent");
+    let new_path = bd_stub_path(workspace, "[]");
     let mut child = Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
         .arg("--agent")
         .arg("pi")
         .arg("todo")
+        .env("PATH", new_path)
         .env("LOOM_WRAPIX_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
