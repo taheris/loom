@@ -1248,11 +1248,8 @@ CREATE TABLE meta (
 -- meta rows: current_spec, schema_version
 ```
 
-**No `current_molecule` pointer table.** Earlier revisions of this
-schema carried a per-spec pointer (`current_molecule[<label>] =
-<epic_id>`) to disambiguate when bd allowed multiple open epics per
-spec. The invariant has been tightened to "at most one open epic per
-spec, ever" (see *Molecule lifecycle* below), so resolution becomes a
+**No `current_molecule` pointer table.** At most one epic per spec is
+open at any time (see *Molecule lifecycle* below), so resolution is a
 single `bd find --type=epic --label=spec:<X> --status=open` query —
 no pointer, no tiers, no README parse at resolution time.
 
@@ -1264,13 +1261,10 @@ state-DB column is a per-machine cache populated at rebuild time and
 kept in sync when `loom todo` advances the diff base. A wiped state
 DB recovers the value from Beads.
 
-**No `todo_cursor:<label>` meta key.** Earlier revisions carried a
-per-spec cursor recording the last commit at which `loom todo` had
-run for the spec. The cursor was per-machine and not rebuildable,
-which meant a state-DB wipe (or a colleague's machine) silently
-dropped fan-out scope. The molecule's `loom.base_commit` (in bead
-metadata) is now the only diff base; advancing it serves both roles
-the cursor did.
+**No `todo_cursor:<label>` meta key.** The molecule's
+`loom.base_commit` (in bead metadata) is the sole diff base for
+`loom todo` fan-out — rebuildable across machines and state-DB
+wipes — and advances atomically when fan-out completes.
 
 Typed Rust API — no raw SQL outside `loom-driver`. `loom-driver` owns a single
 `StateDb` handle that wraps the SQLite connection and exposes typed
@@ -1722,18 +1716,12 @@ display, hook integration, watch behaviour, failure-pattern handling)
 are handled in Rust code rather than exposed as user-tunable
 parameters.
 
-**Config consolidation.** Earlier revisions of loom carried a second
-config file at `.loom/config.toml` (introduced in commit
-`65fe1bd3 chore: add .loom/config.toml pointing test runner at
-loom/Cargo.toml`) for the `[runner]` block alone. That file is
-**retired**: every `[runner.<tier>.<name>]` block now lives in
-`<workspace>/config.toml` alongside the rest of `LoomConfig`.
-Consumers migrating from the old location move their `[runner]` block
-verbatim into `<workspace>/config.toml` and delete `.loom/`.
+**Single config file.** All loom configuration — including every
+`[runner.<tier>.<name>]` block — lives in `<workspace>/config.toml`.
+There is no separate `.loom/config.toml` or auxiliary config file, so
+the entire `.wrapix/` tree can be gitignored without carve-outs. Set
+`LOOM_CONFIG` to relocate.
 
-The default config location moved out of `.wrapix/loom/config.toml` to
-`<workspace>/config.toml` so the entire `.wrapix/` tree can be
-gitignored without carve-outs. Set `LOOM_CONFIG` to relocate.
 ## Success Criteria
 
 ### Crate structure
