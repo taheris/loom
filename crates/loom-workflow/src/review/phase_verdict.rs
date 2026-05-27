@@ -96,7 +96,7 @@ pub enum RecoveryCause {
     /// `LOOM_COMPLETE` with an empty worktree diff. `LOOM_NOOP` is the
     /// legitimate path for an empty diff and never produces this cause.
     ZeroProgress,
-    /// At least one `[verify]` script failed. Carries every failure so the
+    /// At least one deterministic-tier verifier failed. Carries every failure so the
     /// downstream `previous_failure` builder can format them into a single
     /// budget-bounded body — none short-circuit each other. `review_notes`
     /// holds the review LLM's flag, if any: review still runs on verify-fail
@@ -180,7 +180,7 @@ pub struct GateInputs {
     /// review-concern, so verifiers do not run against a half-staged
     /// tree (`specs/harness.md` §"Verdict Gate · Tree-clean check").
     pub tree_dirty_paths: Vec<String>,
-    /// Failure record for every `[verify]` script that exited non-zero.
+    /// Failure record for every deterministic-tier verifier that exited non-zero.
     /// Empty when every script passed; the gate routes to
     /// [`RecoveryCause::VerifyFail`] when this is non-empty and threads the
     /// list through so downstream surfaces can format `previous_failure`.

@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use displaydoc::Display;
 use thiserror::Error;
 
-/// Failures raised by [`super::annotations::parse_spec_annotations`] and
-/// [`super::deps::scan_deps`].
+/// Failures raised by [`super::list_for_label`] and
+/// [`super::deps::collect_deps`].
 #[derive(Debug, Display, Error)]
 pub enum SpecError {
     /// io failure while reading {path}
@@ -14,7 +14,4 @@ pub enum SpecError {
         #[source]
         source: io::Error,
     },
-
-    /// no `## Success Criteria` section found in {path}
-    NoSuccessCriteria { path: PathBuf },
 }

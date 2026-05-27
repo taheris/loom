@@ -315,7 +315,7 @@ where
             None => None,
         };
         let spec_path = format!("specs/{}.md", self.label.as_str());
-        let (verify_sources, judge_rubrics) =
+        let (test_sources, judge_rubrics) =
             load_review_sources(&self.workspace, &self.workspace.join(&spec_path))?;
         let key = resolve_scratch_key(Phase::Review, &self.label, None);
         let scratchpad_path =
@@ -331,7 +331,7 @@ where
             beads_summary: beads_summary(&beads),
             base_commit,
             molecule_id,
-            verify_sources,
+            test_sources,
             judge_rubrics,
             scratchpad_path,
             style_rules: self.style_rules.clone(),
@@ -1217,7 +1217,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_review_prompt_inlines_verify_and_judge_bodies() {
+    async fn build_review_prompt_inlines_test_and_judge_bodies() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
         let label = "alpha";
@@ -1226,11 +1226,11 @@ mod tests {
         std::fs::write(
             workspace.join(format!("specs/{label}.md")),
             "## Success Criteria\n\n\
-             - [ ] one\n  [verify](tests/alpha.sh#test_one)\n\
-             - [ ] two\n  [judge](tests/judges/alpha.sh#judge_two)\n",
+             - one [test](tests/alpha.sh#test_one)\n\
+             - two [judge](tests/judges/alpha.sh#judge_two)\n",
         )
         .unwrap();
-        std::fs::write(workspace.join("tests/alpha.sh"), "VERIFY_BODY_MARKER\n").unwrap();
+        std::fs::write(workspace.join("tests/alpha.sh"), "TEST_BODY_MARKER\n").unwrap();
         std::fs::write(
             workspace.join("tests/judges/alpha.sh"),
             "JUDGE_BODY_MARKER\n",
@@ -1253,7 +1253,7 @@ mod tests {
             Err(ReviewError::Bd(_)) => return,
             Err(e) => panic!("unexpected error: {e:?}"),
         };
-        assert!(prompt.contains("VERIFY_BODY_MARKER"), "{prompt}");
+        assert!(prompt.contains("TEST_BODY_MARKER"), "{prompt}");
         assert!(prompt.contains("JUDGE_BODY_MARKER"), "{prompt}");
         assert!(prompt.contains("tests/alpha.sh"), "{prompt}");
         assert!(prompt.contains("tests/judges/alpha.sh"), "{prompt}");
@@ -1275,7 +1275,7 @@ mod tests {
         std::fs::write(
             workspace.join(format!("specs/{label}.md")),
             "## Success Criteria\n\n\
-             - [ ] one\n  [judge](tests/judges/alpha.sh#judge_two)\n",
+             - one [judge](tests/judges/alpha.sh#judge_two)\n",
         )
         .unwrap();
         std::fs::write(

@@ -15,7 +15,7 @@ pub struct TreeScopeEpic {
     pub molecule_id: MoleculeId,
 }
 
-/// One file body included in the review prompt — either a `[verify]` test
+/// One file body included in the review prompt — either a `[test]`
 /// script the gate just ran, or a `[judge]` rubric the LLM must score
 /// against. `path` is the workspace-relative source location used as the
 /// rendered section title.
@@ -65,7 +65,7 @@ pub struct ReviewContext {
     pub beads_summary: Option<String>,
     pub base_commit: Option<String>,
     pub molecule_id: Option<MoleculeId>,
-    pub verify_sources: Vec<ReviewSource>,
+    pub test_sources: Vec<ReviewSource>,
     pub judge_rubrics: Vec<ReviewSource>,
     pub scratchpad_path: String,
     /// Workspace-relative path to the project's style-rules document

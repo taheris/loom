@@ -251,7 +251,7 @@ enum Command {
     },
     /// Inspect spec annotations and tooling dependencies.
     Spec {
-        /// Print the unique nixpkgs names referenced by verify/judge tests.
+        /// Print the unique nixpkgs names referenced by spec annotation targets.
         #[arg(long)]
         deps: bool,
     },
@@ -2716,22 +2716,26 @@ fn run_spec(workspace: &std::path::Path, deps: bool) -> anyhow::Result<()> {
             println!("{pkg}");
         }
     } else {
-        let rows = spec::list_for_label(workspace, &label)?;
-        for row in rows {
-            let kind = match row.kind {
-                spec::AnnotationKind::Verify => "verify",
-                spec::AnnotationKind::Judge => "judge",
-                spec::AnnotationKind::None => "none",
-            };
-            let file = row
-                .file
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
-            let function = row.function.unwrap_or_default();
+        let spec_path = workspace
+            .join("specs")
+            .join(format!("{}.md", label.as_str()));
+        let body = std::fs::read_to_string(&spec_path)?;
+        let parsed = loom_gate::annotation::parse_content(&spec_path, &body);
+        let mut annotated_lines: std::collections::BTreeSet<u32> =
+            std::collections::BTreeSet::new();
+        for ann in &parsed.annotations {
+            annotated_lines.insert(ann.criterion_line);
             println!(
-                "{kind}\t{file}\t{function}\t{criterion}",
-                criterion = row.criterion
+                "{tier}\t{line}\t{target}",
+                tier = ann.tier.as_wire(),
+                line = ann.criterion_line,
+                target = ann.target,
             );
+        }
+        for crit in &parsed.criteria {
+            if !annotated_lines.contains(&crit.line) {
+                println!("none\t{line}\t", line = crit.line);
+            }
         }
     }
     Ok(())

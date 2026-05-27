@@ -1,7 +1,8 @@
-//! `[verify]` script-failure aggregation for the verdict gate.
+//! Deterministic-tier verifier-failure aggregation for the verdict gate.
 //!
-//! After the verdict gate runs every `[verify]` script attached to the
-//! bead's success criteria (none short-circuit each other), the failures are
+//! After the verdict gate runs every deterministic-tier verifier
+//! (`[check]` / `[test]` / `[system]`) attached to the bead's success
+//! criteria (none short-circuit each other), the failures are
 //! folded into a single `previous_failure` body that the recovery prompt
 //! injects into the next agent attempt. Per `specs/harness.md` §"Recovery
 //! context (`previous_failure`)" the body has a 4000-char budget, allocated
@@ -37,8 +38,8 @@ pub const REVIEW_NOTES_BUDGET: usize = 1000;
 /// lines because they hold the actual failure output, not the test setup.
 pub const STDERR_TAIL_LINES: usize = 40;
 
-/// One failing `[verify]` script's outcome, as captured by the gate's
-/// runner. Stderr is the raw stream; the formatter tails it.
+/// One failing deterministic-tier verifier's outcome, as captured by
+/// the gate's runner. Stderr is the raw stream; the formatter tails it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyFailure {
     pub script_path: PathBuf,

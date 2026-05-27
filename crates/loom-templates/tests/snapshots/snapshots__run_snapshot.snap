@@ -1,5 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
+assertion_line: 174
 expression: ctx.render().unwrap()
 ---
 # Implementation Step
@@ -135,19 +136,32 @@ error: cargo test failed
 
 ## Spec Verifications
 
-After implementing the issue, check the spec's Success Criteria for `[verify]` and
-`[judge]` annotations that reference test files relevant to this issue's work.
+After implementing the issue, check the spec's Success Criteria for
+`[check]` / `[test]` / `[system]` / `[judge]` annotations whose targets
+are relevant to this issue's work.
 
-- **`[verify]` tests**: Create the referenced shell test file if it doesn't exist.
-  The test function should exercise the implemented feature and exit 0 on success,
-  non-zero on failure. Use `set -euo pipefail`. Exit 77 to skip (e.g. platform
-  not available).
-- **`[judge]` tests**: Create the referenced judge rubric file if it doesn't exist.
-  Each function calls `judge_files "path/to/source"` and
-  `judge_criterion "what to evaluate"`. See `tests/judges/example.sh` for format.
-- Only create tests for criteria related to the current issue — don't implement
-  all spec verifications, just the ones relevant to your work.
-- If the test file already exists, add your function to it rather than overwriting.
+- **`[check]` annotations**: The target is a shell command (e.g.
+  `cargo run -p loom-walk -- foo`) — no file to create. If the command's
+  first token doesn't yet exist on PATH or the walk it names isn't yet
+  wired, land that wiring in this issue.
+- **`[test]` annotations**: The target is a language-native path. For
+  Rust (`crate::module::test_name`), add the `#[test]` function in the
+  matching module. For shell (`tests/foo.sh#test_x`), create the
+  referenced file if it doesn't exist; the function exits 0 on success,
+  non-zero on failure, uses `set -euo pipefail`, and exits 77 to skip
+  (e.g. platform not available).
+- **`[system]` annotations**: The target is a system-level command
+  (`nix run .#test-loom`, container build). Same rules as `[check]` —
+  it's a command string, not a file to create. Make sure the system
+  invocation actually exists.
+- **`[judge]` annotations**: Create the referenced judge rubric file if
+  it doesn't exist. Each function calls `judge_files "path/to/source"`
+  and `judge_criterion "what to evaluate"`. See `tests/judges/example.sh`
+  for format.
+- Only create verifiers for criteria related to the current issue — don't
+  implement all spec verifications, just the ones relevant to your work.
+- If the test file already exists, add your function to it rather than
+  overwriting.
 
 ## Quality Gates
 

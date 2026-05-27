@@ -312,7 +312,7 @@ fn review_snapshot() {
         beads_summary: Some("- wx-3hhwq.10: closed".into()),
         base_commit: Some("abc1234".into()),
         molecule_id: Some(MoleculeId::new("wx-3hhwq")),
-        verify_sources: vec![ReviewSource {
+        test_sources: vec![ReviewSource {
             path: "tests/run-tests.sh".into(),
             body: "test_review_inputs() { :; }\n".into(),
         }],

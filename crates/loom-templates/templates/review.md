@@ -92,14 +92,16 @@ bd create \
   --silent
 ```
 {% endif %}
-## `[verify]` Sources
+## Deterministic-Verifier Sources
 
-The verdict gate just ran these `[verify]` scripts. Their full source is
-reproduced below so you can judge live-path coverage and mock discipline
-without re-reading them from disk.
+The verdict gate just ran these `[test]` scripts (the deterministic
+verifier tier whose targets resolve to a file body — `[check]` /
+`[system]` command strings have no source body to inline here). Their
+full source is reproduced below so you can judge live-path coverage and
+mock discipline without re-reading them from disk.
 
-{% if verify_sources.is_empty() %}—
-{% else %}{% for source in verify_sources %}### {{ source.path }}
+{% if test_sources.is_empty() %}—
+{% else %}{% for source in test_sources %}### {{ source.path }}
 
 ```
 {{ source.body }}
@@ -349,10 +351,11 @@ The first four are the verifier-honesty sub-checks (Verifier Honesty
 above) — one concern per failing sub-check, cited against the offending
 test path:
 
-- `verifier-bypass` — at least one `[verify]` on the bead must exercise
-  the live path; the bead's full set bypasses it (entirely mocks,
-  asserting binary existence instead of running it, `cargo build` as
-  behaviour proxy).
+- `verifier-bypass` — at least one deterministic-tier annotation
+  (`[check]`, `[test]`, or `[system]`) on the bead must exercise the
+  live path; the bead's full set bypasses it (entirely mocks, asserting
+  binary existence instead of running it, `cargo build` as behaviour
+  proxy).
 - `fabricated-result` — the verifier's pass relies on a value the test
   itself synthesized (round-trip through a mock, identity-wrapper
   assertions, stubbed-classifier replays).

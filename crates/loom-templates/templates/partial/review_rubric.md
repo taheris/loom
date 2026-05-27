@@ -1,19 +1,20 @@
 ## Verifier Honesty
 
 The verdict-gate review's primary concern is **verifier honesty**: a
-`[verify]` test is honest iff it satisfies all four sub-checks below.
-Walk each sub-check against every `[verify]` the diff adds or modifies;
-at `--tree` scope, re-walk every existing `[verify]` against current
-spec/code to catch drift. Failure on any sub-check is a hard fail with
-the matching concern token.
+deterministic-tier annotation (`[check]`, `[test]`, or `[system]`) is
+honest iff it satisfies all four sub-checks below. Walk each sub-check
+against every deterministic annotation the diff adds or modifies; at
+`--tree` scope, re-walk every existing deterministic annotation against
+current spec/code to catch drift. Failure on any sub-check is a hard
+fail with the matching concern token.
 
 **Sub-check 1 — `verifier-bypass`.** Does the verifier actually exercise
-the live path? At least one `[verify]` on the bead must hit the same
-binary, same argv shape, same env as the real invocation. Bypass shapes
-to flag:
+the live path? At least one deterministic-tier annotation on the bead
+must hit the same binary, same argv shape, same env as the real
+invocation. Bypass shapes to flag:
 
-- The bead's full `[verify]` set is entirely mocks — no script runs the
-  live path end-to-end.
+- The bead's full deterministic-tier annotation set is entirely mocks —
+  no script runs the live path end-to-end.
 - A test that asserts `result/bin/loom` exists instead of *running* the
   binary at that path.
 - A `cargo build` / `cargo check` standing in for a behavioural test on

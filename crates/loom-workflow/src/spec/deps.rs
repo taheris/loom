@@ -1,10 +1,24 @@
-//! Scan annotated test files for tool references and emit nixpkgs names.
+//! Scan annotated targets for tool references and emit nixpkgs names.
+//!
+//! Two flavours of `loom-gate` annotation feed the sweep:
+//!
+//! - `[test]` / `[judge]` carry a file-shaped target (`tests/foo.sh#fn`,
+//!   `tests/judges/x.sh#fn`, `rubrics/y.md`). The fragment is stripped, the
+//!   file body is read from disk, and the body is scanned for tool tokens.
+//! - `[check]` / `[system]` carry a shell command string as the target
+//!   (`cargo run -p w -- a`, `nix run .#x`). The command string is scanned
+//!   directly; no disk read.
+//!
+//! Targets that look like a Rust path (`crate::module::fn`) are not
+//! file-shaped and are silently skipped — the language-native runner
+//! resolves them later in dispatch.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::annotations::{Annotation, AnnotationKind};
+use loom_gate::annotation::{Annotation, Tier};
+
 use super::error::SpecError;
 
 const TOOLS: &[(&str, &str)] = &[
@@ -48,23 +62,31 @@ const TOOLS: &[(&str, &str)] = &[
     ("rustc", "rustc"),
 ];
 
-/// Walk `annotations` for `verify`/`judge` rows and return the set of nixpkgs
-/// names referenced by each linked file. Files that do not exist on disk are
-/// silently skipped so missing tests don't poison the sweep.
+/// Walk `annotations` and return the set of nixpkgs names referenced by
+/// each tier's target. File-shaped `[test]`/`[judge]` targets are read
+/// from disk; `[check]`/`[system]` command strings are scanned in-place.
+/// Files that do not exist on disk are silently skipped so missing tests
+/// don't poison the sweep.
 pub fn collect_deps(
     workspace: &Path,
     annotations: &[Annotation],
 ) -> Result<BTreeSet<String>, SpecError> {
     let mut files: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut packages = BTreeSet::new();
     for ann in annotations {
-        if !matches!(ann.kind, AnnotationKind::Verify | AnnotationKind::Judge) {
-            continue;
-        }
-        if let Some(file) = &ann.file {
-            files.insert(file.clone());
+        match ann.tier {
+            Tier::Check | Tier::System => {
+                for pkg in scan_file_body(&ann.target) {
+                    packages.insert(pkg);
+                }
+            }
+            Tier::Test | Tier::Judge => {
+                if let Some(file) = target_file_path(&ann.target) {
+                    files.insert(file);
+                }
+            }
         }
     }
-    let mut packages = BTreeSet::new();
     for rel in files {
         let abs = if rel.is_absolute() {
             rel.clone()
@@ -81,6 +103,39 @@ pub fn collect_deps(
         }
     }
     Ok(packages)
+}
+
+/// If `target` is file-shaped (contains a `/` or has a file extension on
+/// the part before any `#`/`::` fragment), return the bare path. Returns
+/// `None` for Rust-style paths (`crate::a::b`) and other non-file shapes.
+pub fn target_file_path(target: &str) -> Option<PathBuf> {
+    let head = target.split_once('#').map(|(h, _)| h).unwrap_or(target);
+    let head = match head.split_once("::") {
+        Some((h, _)) if path_shaped(h) => h,
+        Some(_) => return None,
+        None => head,
+    };
+    if !path_shaped(head) {
+        return None;
+    }
+    Some(PathBuf::from(head))
+}
+
+fn path_shaped(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    if s.contains(' ') {
+        return false;
+    }
+    if s.contains('/') {
+        return true;
+    }
+    if let Some(dot) = s.rfind('.') {
+        let ext = &s[dot + 1..];
+        return !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric());
+    }
+    false
 }
 
 /// Return the set of package names referenced by `body`. Public so the
@@ -136,7 +191,18 @@ fn is_command_boundary_after(b: u8) -> bool {
 mod tests {
     use super::*;
     use anyhow::Result;
+    use loom_gate::annotation::Tier;
     use std::path::PathBuf;
+
+    fn ann(tier: Tier, target: &str) -> Annotation {
+        Annotation {
+            tier,
+            target: target.into(),
+            source_spec: PathBuf::from("specs/x.md"),
+            line: 1,
+            criterion_line: 1,
+        }
+    }
 
     #[test]
     fn maps_known_tools_to_nix_packages() {
@@ -156,7 +222,6 @@ mod tests {
 
     #[test]
     fn ignores_substring_matches() {
-        // "curling" must not match "curl".
         let body = "echo curling\n";
         assert!(scan_file_body(body).is_empty());
     }
@@ -180,40 +245,62 @@ mod tests {
     #[test]
     fn collect_deps_ignores_missing_files() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let anns = vec![Annotation {
-            criterion: "x".into(),
-            kind: AnnotationKind::Verify,
-            file: Some(PathBuf::from("tests/missing.sh")),
-            function: None,
-        }];
+        let anns = vec![ann(Tier::Test, "tests/missing.sh#x")];
         let pkgs = collect_deps(dir.path(), &anns)?;
         assert!(pkgs.is_empty());
         Ok(())
     }
 
     #[test]
-    fn collect_deps_skips_non_test_annotations() -> Result<()> {
+    fn collect_deps_reads_test_and_judge_file_bodies() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let tests = dir.path().join("tests");
         fs::create_dir_all(&tests)?;
         fs::write(tests.join("a.sh"), "curl x\n")?;
-        // Verify annotation should be picked up; None kind ignored.
+        fs::write(tests.join("b.sh"), "jq .\n")?;
         let anns = vec![
-            Annotation {
-                criterion: "verify".into(),
-                kind: AnnotationKind::Verify,
-                file: Some(PathBuf::from("tests/a.sh")),
-                function: None,
-            },
-            Annotation {
-                criterion: "ignored".into(),
-                kind: AnnotationKind::None,
-                file: None,
-                function: None,
-            },
+            ann(Tier::Test, "tests/a.sh#test_a"),
+            ann(Tier::Judge, "tests/b.sh#test_b"),
         ];
         let pkgs = collect_deps(dir.path(), &anns)?;
         assert!(pkgs.contains("curl"));
+        assert!(pkgs.contains("jq"));
         Ok(())
+    }
+
+    #[test]
+    fn collect_deps_scans_check_and_system_command_strings_directly() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let anns = vec![
+            ann(Tier::Check, "rg pattern files"),
+            ann(Tier::System, "nix run .#smoke"),
+        ];
+        let pkgs = collect_deps(dir.path(), &anns)?;
+        assert!(pkgs.contains("ripgrep"));
+        assert!(pkgs.contains("nix"));
+        Ok(())
+    }
+
+    #[test]
+    fn collect_deps_skips_language_native_test_targets() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let anns = vec![ann(Tier::Test, "crate::module::test_fn")];
+        let pkgs = collect_deps(dir.path(), &anns)?;
+        assert!(pkgs.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn target_file_path_recognises_slashes_and_extensions() {
+        assert_eq!(
+            target_file_path("tests/foo.sh#test_x"),
+            Some(PathBuf::from("tests/foo.sh")),
+        );
+        assert_eq!(
+            target_file_path("rubrics/api.md"),
+            Some(PathBuf::from("rubrics/api.md")),
+        );
+        assert_eq!(target_file_path("crate::a::b"), None);
+        assert_eq!(target_file_path("bare_word"), None);
     }
 }

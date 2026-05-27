@@ -2183,11 +2183,13 @@ Criteria.
       clarifies labeled `spec:<label>`; without `-s`, the session sees
       every outstanding clarify regardless of `current_spec`
   [test](loom_msg_chat_scope_filters_to_spec)
-- `loom spec` queries spec annotations (verify/judge)
-  [test](returns_no_criteria_error_when_section_missing)
-- `loom spec --deps` scans verify/judge test files in the active spec
-      and prints required nixpkgs
-  [test](maps_known_tools_to_nix_packages)
+- `loom spec` queries spec annotations (`[check]` / `[test]` /
+      `[system]` / `[judge]`) parsed via `loom-gate`'s annotation parser
+  [test](list_for_label_reads_all_four_tiers)
+- `loom spec --deps` walks file-shaped `[test]`/`[judge]` targets and
+      `[check]`/`[system]` command strings in the active spec, printing
+      the required nixpkgs
+  [test](deps_for_label_walks_file_targets_and_command_strings)
 
 ### Verdict gate
 

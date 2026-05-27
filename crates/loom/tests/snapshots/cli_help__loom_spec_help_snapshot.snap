@@ -7,7 +7,7 @@ Inspect spec annotations and tooling dependencies
 Usage: loom spec [OPTIONS]
 
 Options:
-      --deps              Print the unique nixpkgs names referenced by verify/judge tests
+      --deps              Print the unique nixpkgs names referenced by spec annotation targets
   -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
   -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi]
   -h, --help              Print help

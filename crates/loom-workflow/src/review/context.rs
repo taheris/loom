@@ -4,9 +4,10 @@ use std::path::Path;
 
 use loom_driver::bd::Bead;
 use loom_driver::identifier::{MoleculeId, ProfileName, SpecLabel};
+use loom_gate::annotation::{Annotation, Tier, parse_content};
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource, TreeScopeEpic};
 
-use crate::spec::{Annotation, AnnotationKind, SpecError, parse_spec_annotations};
+use crate::spec::{SpecError, target_file_path};
 
 /// Inputs for [`build_review_context`]. Constructed once per `loom review`
 /// invocation; the reviewer only runs once per molecule per gate pass.
@@ -18,7 +19,7 @@ pub struct ReviewContextInputs {
     pub molecule_id: Option<MoleculeId>,
     pub base_commit: Option<String>,
     pub beads_summary: Option<String>,
-    pub verify_sources: Vec<ReviewSource>,
+    pub test_sources: Vec<ReviewSource>,
     pub judge_rubrics: Vec<ReviewSource>,
     /// Absolute path to `.wrapix/loom/scratch/<spec-label>/scratch.md` for
     /// this reviewer session. Embedded in the rendered prompt so the agent
@@ -52,7 +53,7 @@ pub fn build_review_context(inputs: ReviewContextInputs) -> ReviewContext {
         beads_summary: inputs.beads_summary,
         base_commit: inputs.base_commit,
         molecule_id: inputs.molecule_id,
-        verify_sources: inputs.verify_sources,
+        test_sources: inputs.test_sources,
         judge_rubrics: inputs.judge_rubrics,
         scratchpad_path: inputs.scratchpad_path,
         style_rules: inputs.style_rules,
@@ -78,12 +79,17 @@ pub fn default_profile_for_spec(spec: &SpecLabel) -> ProfileName {
     }
 }
 
-/// Read every `[verify]` script and `[judge]` rubric referenced from the
-/// spec's `## Success Criteria` section into [`ReviewSource`] bundles for
-/// the reviewer prompt. Files are de-duplicated by path so a script
-/// referenced from N criteria appears once.
+/// Read every file-shaped `[test]` and `[judge]` target referenced from
+/// the spec into [`ReviewSource`] bundles for the reviewer prompt. Files
+/// are de-duplicated by path so a script referenced from N criteria
+/// appears once.
 ///
-/// Returns `(verify_sources, judge_rubrics)` in the order the annotations
+/// `[check]` / `[system]` targets are command strings, not files, so they
+/// contribute nothing to the reviewer's source view. Rust-style `[test]`
+/// targets (`crate::module::fn`) are also skipped — they resolve via the
+/// language-native runner, not a file body.
+///
+/// Returns `(test_sources, judge_rubrics)` in the order the annotations
 /// appear in the spec. Bubbles up [`SpecError::Io`] when a referenced file
 /// is missing — the gate must fail loudly rather than review with a
 /// truncated context.
@@ -91,24 +97,28 @@ pub fn load_review_sources(
     workspace: &Path,
     spec_path: &Path,
 ) -> Result<(Vec<ReviewSource>, Vec<ReviewSource>), SpecError> {
-    let annotations = parse_spec_annotations(spec_path)?;
-    let mut verify = Vec::new();
-    let mut judge = Vec::new();
-    let mut seen_verify: BTreeSet<String> = BTreeSet::new();
+    let body = fs::read_to_string(spec_path).map_err(|source| SpecError::Io {
+        path: spec_path.to_path_buf(),
+        source,
+    })?;
+    let parsed = parse_content(spec_path, &body);
+    let mut tests = Vec::new();
+    let mut judges = Vec::new();
+    let mut seen_test: BTreeSet<String> = BTreeSet::new();
     let mut seen_judge: BTreeSet<String> = BTreeSet::new();
 
-    for annotation in annotations {
-        match annotation.kind {
-            AnnotationKind::Verify => {
-                push_unique(workspace, &annotation, &mut verify, &mut seen_verify)?;
+    for annotation in &parsed.annotations {
+        match annotation.tier {
+            Tier::Test => {
+                push_unique(workspace, annotation, &mut tests, &mut seen_test)?;
             }
-            AnnotationKind::Judge => {
-                push_unique(workspace, &annotation, &mut judge, &mut seen_judge)?;
+            Tier::Judge => {
+                push_unique(workspace, annotation, &mut judges, &mut seen_judge)?;
             }
-            AnnotationKind::None => {}
+            Tier::Check | Tier::System => {}
         }
     }
-    Ok((verify, judge))
+    Ok((tests, judges))
 }
 
 fn push_unique(
@@ -117,7 +127,7 @@ fn push_unique(
     out: &mut Vec<ReviewSource>,
     seen: &mut BTreeSet<String>,
 ) -> Result<(), SpecError> {
-    let Some(rel) = annotation.file.as_deref() else {
+    let Some(rel) = target_file_path(&annotation.target) else {
         return Ok(());
     };
     let display = rel.display().to_string();
@@ -125,9 +135,9 @@ fn push_unique(
         return Ok(());
     }
     let abs = if rel.is_absolute() {
-        rel.to_path_buf()
+        rel.clone()
     } else {
-        workspace.join(rel)
+        workspace.join(&rel)
     };
     let body = fs::read_to_string(&abs).map_err(|source| SpecError::Io { path: abs, source })?;
     out.push(ReviewSource {
@@ -188,7 +198,7 @@ mod tests {
             molecule_id: Some(MoleculeId::new("wx-3hhwq")),
             base_commit: Some("abc123".into()),
             beads_summary: Some("- wx-1: First [open]".into()),
-            verify_sources: vec![],
+            test_sources: vec![],
             judge_rubrics: vec![],
             scratchpad_path: "/workspace/.wrapix/loom/scratch/harness/scratch.md".into(),
             style_rules: "docs/style-rules.md".into(),
@@ -240,23 +250,23 @@ mod tests {
     }
 
     #[test]
-    fn load_review_sources_reads_verify_and_judge_files_from_disk() {
+    fn load_review_sources_reads_test_and_judge_files_from_disk() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ws = dir.path();
         write(
             &ws.join("specs/alpha.md"),
             "## Success Criteria\n\n\
-             - [ ] thing one\n  [verify](tests/alpha.sh#test_one)\n\
-             - [ ] thing two\n  [judge](tests/judges/alpha.sh#judge_two)\n",
+             - thing one [test](tests/alpha.sh#test_one)\n\
+             - thing two [judge](tests/judges/alpha.sh#judge_two)\n",
         );
-        write(&ws.join("tests/alpha.sh"), "VERIFY_BODY\n");
+        write(&ws.join("tests/alpha.sh"), "TEST_BODY\n");
         write(&ws.join("tests/judges/alpha.sh"), "JUDGE_BODY\n");
 
-        let (verify, judge) = load_review_sources(ws, &ws.join("specs/alpha.md")).expect("load ok");
+        let (tests, judge) = load_review_sources(ws, &ws.join("specs/alpha.md")).expect("load ok");
 
-        assert_eq!(verify.len(), 1);
-        assert_eq!(verify[0].path, "tests/alpha.sh");
-        assert_eq!(verify[0].body, "VERIFY_BODY\n");
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].path, "tests/alpha.sh");
+        assert_eq!(tests[0].body, "TEST_BODY\n");
 
         assert_eq!(judge.len(), 1);
         assert_eq!(judge[0].path, "tests/judges/alpha.sh");
@@ -270,15 +280,15 @@ mod tests {
         write(
             &ws.join("specs/alpha.md"),
             "## Success Criteria\n\n\
-             - [ ] one\n  [verify](tests/alpha.sh#test_one)\n\
-             - [ ] two\n  [verify](tests/alpha.sh#test_two)\n\
-             - [ ] three\n  [verify](tests/alpha.sh#test_three)\n",
+             - one [test](tests/alpha.sh#test_one)\n\
+             - two [test](tests/alpha.sh#test_two)\n\
+             - three [test](tests/alpha.sh#test_three)\n",
         );
         write(&ws.join("tests/alpha.sh"), "shared body\n");
 
-        let (verify, judge) = load_review_sources(ws, &ws.join("specs/alpha.md")).expect("load ok");
+        let (tests, judge) = load_review_sources(ws, &ws.join("specs/alpha.md")).expect("load ok");
 
-        assert_eq!(verify.len(), 1, "shared file collapsed to one entry");
+        assert_eq!(tests.len(), 1, "shared file collapsed to one entry");
         assert!(judge.is_empty());
     }
 
@@ -289,7 +299,7 @@ mod tests {
         write(
             &ws.join("specs/alpha.md"),
             "## Success Criteria\n\n\
-             - [ ] one\n  [verify](tests/missing.sh#test_one)\n",
+             - one [test](tests/missing.sh#test_one)\n",
         );
 
         let err = load_review_sources(ws, &ws.join("specs/alpha.md"))
@@ -307,22 +317,54 @@ mod tests {
         write(
             &ws.join("specs/alpha.md"),
             "## Success Criteria\n\n\
-             - [ ] no annotation here\n\
-             - [ ] but this one has\n  [verify](tests/a.sh#t)\n",
+             - no annotation here\n\
+             - but this one has [test](tests/a.sh#t)\n",
         );
         write(&ws.join("tests/a.sh"), "body\n");
 
-        let (verify, _) = load_review_sources(ws, &ws.join("specs/alpha.md")).expect("load ok");
-        assert_eq!(verify.len(), 1);
-        assert_eq!(verify[0].path, "tests/a.sh");
+        let (tests, _) = load_review_sources(ws, &ws.join("specs/alpha.md")).expect("load ok");
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].path, "tests/a.sh");
     }
 
     #[test]
-    fn rendered_template_includes_verify_and_judge_bodies() {
+    fn load_review_sources_skips_check_and_system_command_strings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = dir.path();
+        write(
+            &ws.join("specs/alpha.md"),
+            "## Success Criteria\n\n\
+             - cmd [check](cargo run -p w -- a)\n\
+             - sys [system](nix run .#smoke)\n\
+             - file [test](tests/a.sh#t)\n",
+        );
+        write(&ws.join("tests/a.sh"), "body\n");
+
+        let (tests, _) = load_review_sources(ws, &ws.join("specs/alpha.md")).expect("load ok");
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].path, "tests/a.sh");
+    }
+
+    #[test]
+    fn load_review_sources_skips_language_native_test_targets() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = dir.path();
+        write(
+            &ws.join("specs/alpha.md"),
+            "## Success Criteria\n\n\
+             - rust [test](crate::module::test_fn)\n",
+        );
+
+        let (tests, _) = load_review_sources(ws, &ws.join("specs/alpha.md")).expect("load ok");
+        assert!(tests.is_empty());
+    }
+
+    #[test]
+    fn rendered_template_includes_test_and_judge_bodies() {
         let mut i = inputs();
-        i.verify_sources = vec![ReviewSource {
+        i.test_sources = vec![ReviewSource {
             path: "tests/alpha.sh".into(),
-            body: "VERIFY_BODY_MARKER".into(),
+            body: "TEST_BODY_MARKER".into(),
         }];
         i.judge_rubrics = vec![ReviewSource {
             path: "tests/judges/alpha.sh".into(),
@@ -331,7 +373,7 @@ mod tests {
         let ctx = build_review_context(i);
         let body = ctx.render().expect("render");
         assert!(body.contains("tests/alpha.sh"), "{body}");
-        assert!(body.contains("VERIFY_BODY_MARKER"), "{body}");
+        assert!(body.contains("TEST_BODY_MARKER"), "{body}");
         assert!(body.contains("tests/judges/alpha.sh"), "{body}");
         assert!(body.contains("JUDGE_BODY_MARKER"), "{body}");
     }
@@ -419,8 +461,8 @@ mod tests {
         let ctx = build_review_context(inputs());
         let body = ctx.render().expect("render");
         assert!(
-            body.contains("## `[verify]` Sources"),
-            "verify section heading present: {body}",
+            body.contains("## Deterministic-Verifier Sources"),
+            "test section heading present: {body}",
         );
         assert!(
             body.contains("## `[judge]` Rubrics"),
@@ -428,7 +470,7 @@ mod tests {
         );
         assert!(
             body.contains("re-reading them from disk.\n\n—"),
-            "verify em-dash placeholder when empty: {body}",
+            "test em-dash placeholder when empty: {body}",
         );
         assert!(
             body.contains("read the per-criterion rubric.\n\n—"),

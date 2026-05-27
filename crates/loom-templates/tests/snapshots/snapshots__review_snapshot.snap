@@ -145,11 +145,13 @@ bd create \
   --silent
 ```
 
-## `[verify]` Sources
+## Deterministic-Verifier Sources
 
-The verdict gate just ran these `[verify]` scripts. Their full source is
-reproduced below so you can judge live-path coverage and mock discipline
-without re-reading them from disk.
+The verdict gate just ran these `[test]` scripts (the deterministic
+verifier tier whose targets resolve to a file body — `[check]` /
+`[system]` command strings have no source body to inline here). Their
+full source is reproduced below so you can judge live-path coverage and
+mock discipline without re-reading them from disk.
 
 ### tests/run-tests.sh
 
@@ -194,19 +196,20 @@ Assess the deliverable against these dimensions:
 ## Verifier Honesty
 
 The verdict-gate review's primary concern is **verifier honesty**: a
-`[verify]` test is honest iff it satisfies all four sub-checks below.
-Walk each sub-check against every `[verify]` the diff adds or modifies;
-at `--tree` scope, re-walk every existing `[verify]` against current
-spec/code to catch drift. Failure on any sub-check is a hard fail with
-the matching concern token.
+deterministic-tier annotation (`[check]`, `[test]`, or `[system]`) is
+honest iff it satisfies all four sub-checks below. Walk each sub-check
+against every deterministic annotation the diff adds or modifies; at
+`--tree` scope, re-walk every existing deterministic annotation against
+current spec/code to catch drift. Failure on any sub-check is a hard
+fail with the matching concern token.
 
 **Sub-check 1 — `verifier-bypass`.** Does the verifier actually exercise
-the live path? At least one `[verify]` on the bead must hit the same
-binary, same argv shape, same env as the real invocation. Bypass shapes
-to flag:
+the live path? At least one deterministic-tier annotation on the bead
+must hit the same binary, same argv shape, same env as the real
+invocation. Bypass shapes to flag:
 
-- The bead's full `[verify]` set is entirely mocks — no script runs the
-  live path end-to-end.
+- The bead's full deterministic-tier annotation set is entirely mocks —
+  no script runs the live path end-to-end.
 - A test that asserts `result/bin/loom` exists instead of *running* the
   binary at that path.
 - A `cargo build` / `cargo check` standing in for a behavioural test on
@@ -649,10 +652,11 @@ The first four are the verifier-honesty sub-checks (Verifier Honesty
 above) — one concern per failing sub-check, cited against the offending
 test path:
 
-- `verifier-bypass` — at least one `[verify]` on the bead must exercise
-  the live path; the bead's full set bypasses it (entirely mocks,
-  asserting binary existence instead of running it, `cargo build` as
-  behaviour proxy).
+- `verifier-bypass` — at least one deterministic-tier annotation
+  (`[check]`, `[test]`, or `[system]`) on the bead must exercise the
+  live path; the bead's full set bypasses it (entirely mocks, asserting
+  binary existence instead of running it, `cargo build` as behaviour
+  proxy).
 - `fabricated-result` — the verifier's pass relies on a value the test
   itself synthesized (round-trip through a mock, identity-wrapper
   assertions, stubbed-classifier replays).

@@ -490,8 +490,8 @@ fn previous_failure_renders_review_concern_with_token() {
 
 #[test]
 fn review_renders_review_context_fields() -> Result<()> {
-    let verify_path = "tests/run-tests.sh";
-    let verify_body = "test_review_inputs_include_judge_rubrics_signature() { :; }\n";
+    let test_path = "tests/run-tests.sh";
+    let test_body = "test_review_inputs_include_judge_rubrics_signature() { :; }\n";
     let judge_path = "tests/judges/loom.sh";
     let judge_body = "judge_live_path_coverage_signature() { :; }\n";
 
@@ -503,9 +503,9 @@ fn review_renders_review_context_fields() -> Result<()> {
         beads_summary: Some("- wx-3hhwq.10: closed".into()),
         base_commit: Some("abc1234".into()),
         molecule_id: Some(MoleculeId::new("wx-3hhwq")),
-        verify_sources: vec![ReviewSource {
-            path: verify_path.into(),
-            body: verify_body.into(),
+        test_sources: vec![ReviewSource {
+            path: test_path.into(),
+            body: test_body.into(),
         }],
         judge_rubrics: vec![ReviewSource {
             path: judge_path.into(),
@@ -525,12 +525,9 @@ fn review_renders_review_context_fields() -> Result<()> {
     assert!(out.contains("git diff abc1234..HEAD"));
     assert!(out.contains("- wx-3hhwq.10: closed"));
 
-    assert!(out.contains("## `[verify]` Sources"));
-    assert!(out.contains(verify_path), "verify path missing: {out}");
-    assert!(
-        out.contains(verify_body.trim()),
-        "verify body missing: {out}"
-    );
+    assert!(out.contains("## Deterministic-Verifier Sources"));
+    assert!(out.contains(test_path), "test path missing: {out}");
+    assert!(out.contains(test_body.trim()), "test body missing: {out}");
 
     assert!(out.contains("## `[judge]` Rubrics"));
     assert!(out.contains(judge_path), "judge path missing: {out}");
@@ -553,7 +550,7 @@ fn review_lane_judge_omits_rubric_walk_sections_and_keeps_judge_rubrics() -> Res
         beads_summary: None,
         base_commit: None,
         molecule_id: None,
-        verify_sources: vec![],
+        test_sources: vec![],
         judge_rubrics: vec![ReviewSource {
             path: "tests/judges/loom.sh".into(),
             body: "JUDGE_BODY_MARKER".into(),
@@ -608,7 +605,7 @@ fn review_lane_rubric_omits_judge_rubrics_and_keeps_rubric_walk_sections() -> Re
         beads_summary: None,
         base_commit: None,
         molecule_id: None,
-        verify_sources: vec![],
+        test_sources: vec![],
         judge_rubrics: vec![ReviewSource {
             path: "tests/judges/loom.sh".into(),
             body: "JUDGE_BODY_MARKER".into(),
@@ -664,7 +661,7 @@ fn review_renders_style_rule_conformance_walkthrough() -> Result<()> {
         beads_summary: None,
         base_commit: None,
         molecule_id: None,
-        verify_sources: vec![],
+        test_sources: vec![],
         judge_rubrics: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
@@ -729,7 +726,7 @@ fn review_renders_single_marker_instruction_with_concern_xor_complete() -> Resul
         beads_summary: None,
         base_commit: None,
         molecule_id: None,
-        verify_sources: vec![],
+        test_sources: vec![],
         judge_rubrics: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
@@ -773,7 +770,7 @@ fn review_renders_options_format_contract_with_universal_scope() -> Result<()> {
         beads_summary: None,
         base_commit: None,
         molecule_id: None,
-        verify_sources: vec![],
+        test_sources: vec![],
         judge_rubrics: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
@@ -825,7 +822,7 @@ fn review_prompt_documents_bd_find_recovery_resolution() -> Result<()> {
         beads_summary: None,
         base_commit: None,
         molecule_id: None,
-        verify_sources: vec![],
+        test_sources: vec![],
         judge_rubrics: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
@@ -1124,7 +1121,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
         beads_summary: None,
         base_commit: None,
         molecule_id: None,
-        verify_sources: vec![],
+        test_sources: vec![],
         judge_rubrics: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
@@ -1365,7 +1362,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             beads_summary: Some("- wx-3hhwq.10: closed".into()),
             base_commit: Some("abc1234".into()),
             molecule_id: Some(MoleculeId::new("wx-3hhwq")),
-            verify_sources: vec![ReviewSource {
+            test_sources: vec![ReviewSource {
                 path: "tests/run-tests.sh".into(),
                 body: "test_review_inputs() { :; }\n".into(),
             }],

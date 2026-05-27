@@ -54,7 +54,7 @@ pub enum ReviewError {
     /// no active molecule for spec {0} — run `loom todo` before `loom review`
     NoActiveMolecule(String),
 
-    /// failed to load `[verify]`/`[judge]` sources for review prompt
+    /// failed to load `[test]`/`[judge]` sources for review prompt
     Spec(#[from] SpecError),
 
     /// spec → molecule resolution failed
