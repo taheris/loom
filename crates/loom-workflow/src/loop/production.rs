@@ -34,6 +34,7 @@ use super::context::{LoopContextInputs, render_loop_prompt};
 use super::error::LoopError;
 use super::gate_outcome::HandoffEvidence;
 use super::outcome::{AgentOutcome, SessionResult};
+use super::post_merge_push::{default_beads_push_program, push_merged_main_then_beads};
 use super::runner::AgentLoopController;
 use super::spawn::build_spawn_config_from_manifest;
 use super::tree_clean::dirty_paths_from_porcelain;
@@ -84,6 +85,11 @@ where
     /// N+1 instead of the opaque agent-error string returned through the
     /// runner. Cleared on a fresh bead dispatch (`previous_failure = None`).
     stashed_previous_failure: Option<PreviousFailure>,
+    /// Program invoked to sync the beads remote after `git push` lands.
+    /// Defaults to `beads-push` on `PATH`; tests override with a stub
+    /// script that exits 0 (or records calls) so cargo nextest does not
+    /// shell out to the real remote.
+    beads_push_program: PathBuf,
 }
 
 impl<S, F, R: CommandRunner> ProductionAgentLoopController<S, F, R>
@@ -116,6 +122,7 @@ where
             lock: None,
             style_rules: "docs/style-rules.md".to_string(),
             stashed_previous_failure: None,
+            beads_push_program: default_beads_push_program(),
         }
     }
 
@@ -123,6 +130,15 @@ where
     /// before spawning the `loom review` child (which acquires the same lock).
     pub fn with_handoff_lock(mut self, guard: LockGuard) -> Self {
         self.lock = Some(guard);
+        self
+    }
+
+    /// Override the program used to sync the beads remote after `git push`.
+    /// Production callers rely on the `beads-push`-on-`PATH` default; tests
+    /// override with a stub script to avoid shelling out to the real remote
+    /// while still exercising the post-merge push path.
+    pub fn with_beads_push_program(mut self, program: PathBuf) -> Self {
+        self.beads_push_program = program;
         self
     }
 
@@ -318,6 +334,32 @@ where
             let merge_result = self.git.merge_branch(&worktree.branch).await?;
             match merge_result {
                 MergeResult::Ok => {
+                    // Per-bead push of the freshly-merged driver branch to
+                    // GitHub plus a beads-remote sync. Without this, beads
+                    // closed by the loop only reach `origin` at the
+                    // molecule-end review-phase push — which on long
+                    // molecules may not fire for hours. Preserve the
+                    // workspace on push failure so a transient blip is
+                    // recoverable (mirrors merge-conflict semantics) and
+                    // the local/remote divergence cannot pile up silently.
+                    if let Err(e) = push_merged_main_then_beads(
+                        &self.git,
+                        &self.workspace,
+                        &self.beads_push_program,
+                    )
+                    .await
+                    {
+                        warn!(
+                            bead = %bead.id,
+                            branch = %worktree.branch,
+                            path = %worktree.path.display(),
+                            error = %e,
+                            "push failed — worktree preserved for retry",
+                        );
+                        return Ok(AgentOutcome::Failure {
+                            error: format!("push failed: {e}"),
+                        });
+                    }
                     self.git.remove_worktree(&worktree.path).await?;
                     self.git.delete_branch(&worktree.branch).await?;
                     Ok(AgentOutcome::Success)
@@ -902,6 +944,19 @@ mod tests {
         loom_driver::git::init_test_repo(workspace).expect("init test repo")
     }
 
+    /// Write a `beads-push` stub at `dir/beads-push-stub.sh` that exits 0.
+    /// Threaded into `ProductionAgentLoopController::with_beads_push_program`
+    /// in tests that reach the post-merge push path so cargo nextest does
+    /// not shell out to the real beads remote.
+    fn beads_push_stub(dir: &std::path::Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let stub = dir.join("beads-push-stub.sh");
+        std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod stub");
+        stub
+    }
+
     fn bead(id: &str) -> Bead {
         Bead {
             id: BeadId::new(id).expect("valid bead id"),
@@ -923,6 +978,7 @@ mod tests {
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
+        let stub = beads_push_stub(dir.path());
         let captured: Arc<Mutex<Option<SpawnConfig>>> = Arc::new(Mutex::new(None));
         let captured_for_closure = Arc::clone(&captured);
         let mut controller = ProductionAgentLoopController::new(
@@ -947,7 +1003,8 @@ mod tests {
                     )
                 }
             },
-        );
+        )
+        .with_beads_push_program(stub);
         let outcome = controller
             .run_bead(&bead("wx-1"), None)
             .await
@@ -969,6 +1026,7 @@ mod tests {
         let manifest = write_manifest(dir.path());
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
+        let stub = beads_push_stub(dir.path());
         let captured: Arc<Mutex<Option<SpawnConfig>>> = Arc::new(Mutex::new(None));
         let captured_for_closure = Arc::clone(&captured);
         let prompt_seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -1001,7 +1059,8 @@ mod tests {
                     )
                 }
             },
-        );
+        )
+        .with_beads_push_program(stub);
         let bead = Bead {
             id: BeadId::new("wx-99").expect("bead id"),
             title: "Implement the harness".into(),

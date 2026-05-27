@@ -1743,7 +1743,8 @@ fn run_loop_cmd(
             },
         )
         .with_handoff_lock(guard)
-        .with_style_rules(style_rules_for_run);
+        .with_style_rules(style_rules_for_run)
+        .with_beads_push_program(resolve_beads_push_program());
         run_loop(&mut controller, mode, retry_policy, max_iterations).await
     })?;
     println!(
@@ -1760,6 +1761,17 @@ fn run_loop_cmd(
 /// One-word render of a [`GateOutcome`] for the operator-facing summary
 /// line. The structured variant lives in [`LoopOutcome::gate`] for
 /// programmatic consumers; this is the human-friendly column.
+/// Resolve the `beads-push` program path. Defaults to `beads-push` on
+/// `PATH`; `LOOM_BEADS_PUSH_PROGRAM` overrides it, letting integration
+/// tests stub the sync so they don't need a real beads remote in the
+/// tempdir.
+fn resolve_beads_push_program() -> PathBuf {
+    match std::env::var_os("LOOM_BEADS_PUSH_PROGRAM") {
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => loom_workflow::r#loop::default_beads_push_program(),
+    }
+}
+
 fn gate_label(gate: &GateOutcome) -> &'static str {
     match gate {
         GateOutcome::Success(_) => "success",
@@ -1811,7 +1823,8 @@ async fn run_parallel_loop(
     let git = GitClient::open(workspace.clone())?;
     let logs_root = workspace.join(".wrapix/loom/logs");
     let label_for_closure = label.clone();
-    let outcome = run_parallel_batch(&git, &label, beads, move |slot| {
+    let beads_push_program = resolve_beads_push_program();
+    let outcome = run_parallel_batch(&git, &label, beads, &beads_push_program, move |slot| {
         let manifest_inner = Arc::clone(&manifest);
         let cli_profile_inner = cli_profile.clone();
         let phase_default_inner = phase_default.clone();
@@ -1906,13 +1919,27 @@ async fn run_parallel_loop(
             .await?;
     }
 
+    // Per-bead push failures surface as `PushFailed` (worktree preserved
+    // for retry). Log them so the operator sees the divergence between
+    // local `main` and the GitHub mirror; a fresh `loom loop` invocation
+    // is expected to retry the push.
+    for (bead, error) in outcome.push_failed() {
+        tracing::warn!(
+            bead = %bead,
+            %error,
+            "loom loop: per-bead push failed — worktree preserved; rerun loom loop to retry the push",
+        );
+    }
+
     let merged = u32::try_from(outcome.merged_ids().len()).unwrap_or(u32::MAX);
     let clarified = u32::try_from(outcome.clarified().len()).unwrap_or(u32::MAX);
     let blocked_n = u32::try_from(outcome.blocked().len()).unwrap_or(u32::MAX);
+    let push_failed_n = u32::try_from(outcome.push_failed().len()).unwrap_or(u32::MAX);
     let processed = merged
         .saturating_add(clarified)
         .saturating_add(blocked_n)
-        .saturating_add(u32::try_from(outcome.failure_ids().len()).unwrap_or(u32::MAX));
+        .saturating_add(u32::try_from(outcome.failure_ids().len()).unwrap_or(u32::MAX))
+        .saturating_add(push_failed_n);
     Ok(LoopOutcome {
         beads_processed: processed,
         beads_clarified: clarified,

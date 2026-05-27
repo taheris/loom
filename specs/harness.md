@@ -108,12 +108,24 @@ between host orchestrator and sandboxed agent.
    (concurrently when `N > 1`). Each container's workdir bind mount
    points at the per-bead workspace, not the main checkout.
 4. Await all bead futures and collect per-bead results.
-5. **Sequentially**, push each successful bead branch from its clone
-   back to the main repo (`git -C <bead-workdir> push origin
-   loom/<label>/<bead-id>`), then merge it into the driver branch
-   (single-threaded merge avoids index lock contention). On merge
-   conflict, the bead is marked failed and the workspace is preserved
-   for inspection.
+5. **Sequentially**, fold each successful bead into the driver branch
+   under the per-step rules below. Single-threaded merge avoids index
+   lock contention.
+
+   - Push the bead branch from its clone back to the main repo
+     (`git -C <bead-workdir> push origin loom/<label>/<bead-id>`),
+     then merge it into the driver branch.
+   - After a clean merge, the driver MUST push `main` to GitHub and
+     sync the beads remote (`beads-push`) before the workspace and
+     bead branch are torn down so per-bead progress reaches the
+     published state without waiting for the molecule-end review-phase
+     push. [test](production_loop_pushes_main_after_each_successful_merge)
+   - On merge conflict OR post-merge push failure, the bead is marked
+     failed and the workspace is preserved for inspection — a
+     transient blip stays recoverable on the next iteration rather
+     than letting local/remote divergence pile up silently.
+     [test](production_loop_preserves_worktree_on_push_failure)
+
 6. On agent failure, the bead's workspace is removed (the bead branch
    never reached the main repo, so there is no branch ref to delete)
    and the bead is retried per the retry policy.

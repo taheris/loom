@@ -59,6 +59,14 @@ impl GitClient {
         })
     }
 
+    /// The repository's working-tree root. Callers outside `loom-driver` use
+    /// this to derive a workspace-relative subprocess `current_dir` without
+    /// re-opening or duplicating the path they already passed to
+    /// [`Self::open`].
+    pub fn workdir(&self) -> &Path {
+        &self.workdir
+    }
+
     /// Working tree status against HEAD.
     pub async fn status(&self) -> Result<Vec<StatusEntry>, GitError> {
         let repo = self.repo.clone();
@@ -588,12 +596,18 @@ impl GitClient {
     }
 }
 
-/// Initialize a real git repository at `path` with one `initial` commit so
-/// [`GitClient::create_worktree`] succeeds against it. Exposed for
-/// cross-crate test consumption — production callers operate on the
-/// caller-supplied workspace and never need to bootstrap one. The function
-/// is the only sanctioned way for tests outside `loom-driver/src/git/` to
-/// stand up a git repo: the workspace-level
+/// Initialize a real git repository at `path` with one `initial` commit and
+/// a bare `origin` remote alongside it so [`GitClient::create_worktree`],
+/// [`GitClient::merge_branch`], and [`GitClient::push`] all succeed against
+/// it. The bare `origin` lives at a sibling `<path>.git`; production
+/// `loom loop` pushes `main` to `origin` after every successful per-bead
+/// merge, so tests that exercise the merge-back path need a real push
+/// destination or the post-merge push gate would fail.
+///
+/// Exposed for cross-crate test consumption — production callers operate
+/// on the caller-supplied workspace and never need to bootstrap one. The
+/// function is the only sanctioned way for tests outside
+/// `loom-driver/src/git/` to stand up a git repo: the workspace-level
 /// `git_client_encapsulation` style lint rejects bare
 /// `Command::new("git")` calls in tests under `crates/*/src/`.
 ///
@@ -602,10 +616,10 @@ impl GitClient {
 pub fn init_test_repo(path: &Path) -> Result<GitClient, GitError> {
     use std::process::Command as StdCommand;
     std::fs::create_dir_all(path)?;
-    let run = |args: &[&str]| -> Result<(), GitError> {
+    let run_in = |dir: &Path, args: &[&str]| -> Result<(), GitError> {
         let status = StdCommand::new("git")
             .arg("-C")
-            .arg(path)
+            .arg(dir)
             .args(args)
             .status()
             .map_err(GitError::Spawn)?;
@@ -617,14 +631,37 @@ pub fn init_test_repo(path: &Path) -> Result<GitClient, GitError> {
             stderr: format!("git {args:?} exited {status}"),
         })
     };
-    run(&["init", "-q", "-b", "main"])?;
-    run(&["config", "user.email", "test@example.com"])?;
-    run(&["config", "user.name", "Test"])?;
-    run(&["config", "commit.gpgsign", "false"])?;
+    run_in(path, &["init", "-q", "-b", "main"])?;
+    run_in(path, &["config", "user.email", "test@example.com"])?;
+    run_in(path, &["config", "user.name", "Test"])?;
+    run_in(path, &["config", "commit.gpgsign", "false"])?;
     std::fs::write(path.join("README.md"), "initial\n")?;
-    run(&["add", "README.md"])?;
-    run(&["commit", "-q", "-m", "initial"])?;
+    run_in(path, &["add", "README.md"])?;
+    run_in(path, &["commit", "-q", "-m", "initial"])?;
+    let origin_path = bare_origin_path(path);
+    if let Some(parent) = origin_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::create_dir_all(&origin_path)?;
+    run_in(&origin_path, &["init", "-q", "--bare", "-b", "main"])?;
+    let origin_url = origin_path.to_string_lossy().into_owned();
+    run_in(path, &["remote", "add", "origin", &origin_url])?;
+    run_in(path, &["push", "-q", "-u", "origin", "main"])?;
     GitClient::open(path)
+}
+
+/// Bare origin path used by [`init_test_repo`]. Exposed so tests that need
+/// to inspect the published refs (e.g. assert that `main` advanced after a
+/// per-bead push) can locate the bare repo without re-deriving the
+/// suffix.
+#[doc(hidden)]
+pub fn bare_origin_path(workspace: &Path) -> PathBuf {
+    let parent = workspace.parent().unwrap_or(workspace);
+    let name = workspace
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "workspace".to_string());
+    parent.join(format!("{name}.git"))
 }
 
 /// Result of [`GitClient::create_worktree`].

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use loom_driver::bd::Bead;
@@ -9,6 +9,7 @@ use tracing::{info, warn};
 
 use super::error::LoopError;
 use super::outcome::AgentOutcome;
+use super::post_merge_push::push_merged_main_then_beads;
 
 /// Pairing of a bead with the worktree that was created for it. Built by
 /// [`create_worktrees`] and consumed by [`run_concurrent_spawns`].
@@ -60,6 +61,18 @@ pub enum BatchResult {
     /// Agent emitted `LOOM_CLARIFY`. Worktree + branch were deleted; the
     /// caller applies `loom:clarify` and writes `question` to notes.
     AgentClarify { bead: BeadId, question: String },
+
+    /// Merge succeeded but the post-merge push (`git push` to the GitHub
+    /// origin, then the beads-remote sync) failed. The worktree is
+    /// **preserved** so a transient failure stays recoverable on the next
+    /// iteration — mirroring [`BatchResult::Conflict`] semantics — rather
+    /// than letting the local/remote divergence pile up silently.
+    PushFailed {
+        bead: BeadId,
+        worktree_path: PathBuf,
+        branch: String,
+        error: String,
+    },
 }
 
 /// Aggregate outcome of one parallel batch.
@@ -120,6 +133,16 @@ impl BatchOutcome {
             })
             .collect()
     }
+
+    pub fn push_failed(&self) -> Vec<(BeadId, String)> {
+        self.results
+            .iter()
+            .filter_map(|r| match r {
+                BatchResult::PushFailed { bead, error, .. } => Some((bead.clone(), error.clone())),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 /// Drive one parallel batch end-to-end: create worktrees, spawn agents
@@ -141,6 +164,7 @@ pub async fn run_parallel_batch<S, F>(
     git: &GitClient,
     label: &SpecLabel,
     beads: Vec<Bead>,
+    beads_push_program: &Path,
     spawn: S,
 ) -> Result<BatchOutcome, LoopError>
 where
@@ -149,7 +173,7 @@ where
 {
     let slots = create_worktrees(git, label, beads).await?;
     let batch_slots = run_concurrent_spawns(slots, spawn).await;
-    merge_back(git, batch_slots).await
+    merge_back(git, beads_push_program, batch_slots).await
 }
 
 /// Step 1 of a parallel batch: create one worktree per bead.
@@ -228,16 +252,24 @@ where
 ///   worktree, return [`BatchResult::Conflict`].
 /// - [`AgentOutcome::Failure`] → remove the worktree, delete the branch,
 ///   return [`BatchResult::AgentFailed`] (the caller owns retry accounting).
-pub async fn merge_back(git: &GitClient, slots: Vec<BatchSlot>) -> Result<BatchOutcome, LoopError> {
+pub async fn merge_back(
+    git: &GitClient,
+    beads_push_program: &Path,
+    slots: Vec<BatchSlot>,
+) -> Result<BatchOutcome, LoopError> {
     let mut results = Vec::with_capacity(slots.len());
     for slot in slots {
-        let result = merge_back_one(git, slot).await?;
+        let result = merge_back_one(git, beads_push_program, slot).await?;
         results.push(result);
     }
     Ok(BatchOutcome { results })
 }
 
-async fn merge_back_one(git: &GitClient, slot: BatchSlot) -> Result<BatchResult, LoopError> {
+async fn merge_back_one(
+    git: &GitClient,
+    beads_push_program: &Path,
+    slot: BatchSlot,
+) -> Result<BatchResult, LoopError> {
     let BatchSlot {
         bead,
         worktree,
@@ -254,6 +286,29 @@ async fn merge_back_one(git: &GitClient, slot: BatchSlot) -> Result<BatchResult,
                 .await?;
             match git.merge_branch(&worktree.branch).await? {
                 MergeResult::Ok => {
+                    // Per-bead push of the freshly-merged driver branch to
+                    // GitHub plus a beads-remote sync. Without this, beads
+                    // closed by the parallel batch only reach `origin` at
+                    // the molecule-end review-phase push. Preserve the
+                    // workspace on push failure so a transient blip stays
+                    // recoverable (mirrors merge-conflict semantics).
+                    if let Err(error) =
+                        push_merged_main_then_beads(git, git.workdir(), beads_push_program).await
+                    {
+                        warn!(
+                            bead = %bead.id,
+                            branch = %worktree.branch,
+                            path = %worktree.path.display(),
+                            %error,
+                            "post-merge push failed — worktree preserved for retry",
+                        );
+                        return Ok(BatchResult::PushFailed {
+                            bead: bead.id,
+                            worktree_path: worktree.path,
+                            branch: worktree.branch,
+                            error: format!("push failed: {error}"),
+                        });
+                    }
                     git.remove_worktree(&worktree.path).await?;
                     git.delete_branch(&worktree.branch).await?;
                     Ok(BatchResult::Merged { bead: bead.id })

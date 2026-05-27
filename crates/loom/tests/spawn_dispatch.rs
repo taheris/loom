@@ -235,6 +235,45 @@ fn init_workspace_repo(workspace: &Path) {
         .status()
         .expect("git commit spawn");
     assert!(status.success(), "git commit failed: {status}");
+    // Bare origin so `loom loop`'s per-bead `git push` succeeds without
+    // a real remote on `cargo nextest`. Without this, the post-merge
+    // push gate would surface every clean merge as `push failed: ...`.
+    let origin = workspace.with_extension("git");
+    std::fs::create_dir_all(&origin).expect("create origin dir");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&origin)
+        .args(["init", "-q", "--bare", "-b", "main"])
+        .status()
+        .expect("bare init spawn");
+    assert!(status.success(), "bare init failed: {status}");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["remote", "add", "origin", &origin.to_string_lossy()])
+        .status()
+        .expect("git remote add spawn");
+    assert!(status.success(), "git remote add failed: {status}");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["push", "-q", "-u", "origin", "main"])
+        .status()
+        .expect("git push spawn");
+    assert!(status.success(), "git push failed: {status}");
+}
+
+/// Install a `beads-push` stub at `dir/beads-push-stub.sh` that exits 0,
+/// returning its absolute path. Threaded via the
+/// `LOOM_BEADS_PUSH_PROGRAM` env var so `loom loop`'s post-merge sync
+/// fires without a real beads remote in scope.
+fn install_beads_push_stub(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let stub = dir.join("beads-push-stub.sh");
+    std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("write beads-push stub");
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod beads-push stub");
+    stub
 }
 
 /// Loom hands the wrapper exactly `wrapix spawn --spawn-config <file>
@@ -448,6 +487,7 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
 
     let bead_json = r#"[{"id":"wx-runtest","title":"run gate bead","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","profile:base"]}]"#;
     let bd_bin_dir = install_bd_bead_stub(workspace, bead_json);
+    let beads_push_stub = install_beads_push_stub(workspace);
 
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let mut path_entries = vec![bd_bin_dir];
@@ -468,6 +508,7 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
         .env("LOOM_WRAPIX_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env("LOOM_BEADS_PUSH_PROGRAM", &beads_push_stub)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         // Bypass the nested-loom guard so cargo test inside a loom container
         // still reaches the run dispatch path under test.

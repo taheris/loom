@@ -39,6 +39,7 @@ mod gate_outcome;
 mod outcome;
 mod parallel;
 mod parallelism;
+mod post_merge_push;
 mod production;
 mod profile;
 mod retry;
@@ -57,6 +58,10 @@ pub use parallel::{
     run_concurrent_spawns, run_parallel_batch,
 };
 pub use parallelism::{Parallelism, ParallelismError};
+pub use post_merge_push::{
+    DEFAULT_BEADS_PUSH_PROGRAM, default_beads_push_program, push_merged_main_then_beads,
+    run_beads_push,
+};
 pub use production::{
     ProductionAgentLoopController, format_unknown_profile_error, list_open_for_spec,
 };

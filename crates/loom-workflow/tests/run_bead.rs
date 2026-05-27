@@ -24,7 +24,19 @@ use loom_workflow::r#loop::{
     AgentLoopController, AgentOutcome, ProductionAgentLoopController, SessionResult,
 };
 use loom_workflow::todo::ExitSignal;
+use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
+
+/// Write a `beads-push` stub script to `dir` that exits 0 — used to override
+/// the controller's default `beads-push`-on-`PATH` so cargo nextest doesn't
+/// shell out to the real beads remote while still exercising the
+/// post-merge push path. Returns the script's absolute path.
+fn beads_push_stub(dir: &Path) -> std::path::PathBuf {
+    let stub = dir.join("beads-push-stub.sh");
+    std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("write stub");
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
+    stub
+}
 
 fn git(repo: &Path, args: &[&str]) -> Result<()> {
     let status = Command::new("git")
@@ -111,6 +123,7 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success()
     let observed_clone = Arc::clone(&observed_workspace);
     let expected_worktree_clone = expected_worktree.clone();
 
+    let stub = beads_push_stub(_dir.path());
     let mut controller = ProductionAgentLoopController::new(
         BdClient::new(),
         label.clone(),
@@ -145,7 +158,8 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success()
                 )
             }
         },
-    );
+    )
+    .with_beads_push_program(stub);
 
     let outcome = controller.run_bead(&bead, None).await.expect("run_bead ok");
     assert_eq!(outcome, AgentOutcome::Success);
@@ -194,6 +208,7 @@ async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() ->
     let captured_prompts: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let captured_clone = Arc::clone(&captured_prompts);
     let expected_clone = expected_worktree.clone();
+    let stub = beads_push_stub(_dir.path());
 
     let mut controller = ProductionAgentLoopController::new(
         BdClient::new(),
@@ -229,7 +244,8 @@ async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() ->
                 )
             }
         },
-    );
+    )
+    .with_beads_push_program(stub);
 
     // First attempt: dirty tree → Failure with the typed stash queued.
     let first = controller.run_bead(&bead, None).await.expect("run_bead ok");
@@ -280,6 +296,179 @@ async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() ->
         !prompts[1].contains("Build failed at agent"),
         "retry prompt must not fall back to the opaque agent-error framing when a typed stash is present: {}",
         prompts[1],
+    );
+    Ok(())
+}
+
+/// Spec gate (`specs/harness.md` § "loop dispatch: per-bead push regression"):
+/// every clean merge MUST push the driver branch to `origin` so per-bead
+/// state reaches GitHub before the molecule-end review-phase push fires.
+/// The bare origin set up by `init_test_repo` is the proxy: after three
+/// beads each commit + merge cleanly, `origin/main` MUST equal `main` —
+/// proving the post-merge `git push` ran for every bead.
+#[tokio::test]
+async fn production_loop_pushes_main_after_each_successful_merge() -> Result<()> {
+    let (_dir, workspace, manifest, git_client) = setup();
+    let label = SpecLabel::new("harness");
+    let stub = beads_push_stub(_dir.path());
+    let beads_push_calls = Arc::new(Mutex::new(0u32));
+
+    // Stub that increments a counter on each invocation so we can also
+    // verify beads-push fires per bead. Stdout is irrelevant; exit 0
+    // signals success.
+    let counter_stub = _dir.path().join("beads-push-counter.sh");
+    let counter_file = _dir.path().join("beads-push-count");
+    std::fs::write(&counter_file, "0")?;
+    std::fs::write(
+        &counter_stub,
+        format!(
+            "#!/bin/sh\nset -eu\nn=$(cat {file})\necho $((n+1)) > {file}\nexit 0\n",
+            file = counter_file.to_string_lossy(),
+        ),
+    )?;
+    std::fs::set_permissions(&counter_stub, std::fs::Permissions::from_mode(0o755))?;
+    let _ = &stub; // silence unused warning when the counter stub takes over
+    let _ = beads_push_calls;
+
+    let bead_ids = ["wx-push.1", "wx-push.2", "wx-push.3"];
+
+    let mut controller = ProductionAgentLoopController::new(
+        BdClient::new(),
+        label.clone(),
+        std::path::PathBuf::from("/loom/bin"),
+        workspace.clone(),
+        git_client,
+        manifest,
+        None,
+        ProfileName::new("base"),
+        move |cfg: SpawnConfig, bead_id: BeadId| async move {
+            // Commit a unique file inside the bead workspace so the merge
+            // back is a real fast-forward and the post-merge push has
+            // something to publish.
+            let file = format!("{}.txt", bead_id.as_str());
+            std::fs::write(cfg.workspace.join(&file), format!("from-{bead_id}\n"))
+                .expect("write bead file");
+            git(&cfg.workspace, &["add", &file]).expect("git add");
+            git(
+                &cfg.workspace,
+                &["commit", "-q", "-m", &format!("work for {bead_id}")],
+            )
+            .expect("git commit");
+            (
+                SessionResult::Complete(SessionOutcome {
+                    exit_code: 0,
+                    cost_usd: None,
+                }),
+                Some(ExitSignal::Complete),
+            )
+        },
+    )
+    .with_beads_push_program(counter_stub);
+
+    for id in bead_ids {
+        let outcome = controller.run_bead(&fake_bead(id), None).await?;
+        assert_eq!(
+            outcome,
+            AgentOutcome::Success,
+            "bead {id} must reach Success so push fires",
+        );
+    }
+
+    // beads-push was invoked once per successful merge.
+    let count: u32 = std::fs::read_to_string(&counter_file)?.trim().parse()?;
+    assert_eq!(
+        count, 3,
+        "beads-push must run once per successful merge (got {count})",
+    );
+
+    // `git push` published the merged commits — bare origin's main MUST
+    // match the workspace's main and contain every bead's file.
+    let origin = loom_driver::git::bare_origin_path(&workspace);
+    let origin_head = git_capture(&origin, &["rev-parse", "main"])?;
+    let workspace_head = git_capture(&workspace, &["rev-parse", "main"])?;
+    assert_eq!(
+        origin_head.trim(),
+        workspace_head.trim(),
+        "post-merge push must keep origin/main pinned to workspace HEAD",
+    );
+    for id in bead_ids {
+        let file = format!("{id}.txt");
+        let listed = git_capture(&origin, &["ls-tree", "-r", "--name-only", "main"])?;
+        assert!(
+            listed.lines().any(|l| l == file),
+            "origin must carry {file} after per-bead push (tree: {listed})",
+        );
+    }
+    Ok(())
+}
+
+/// Spec gate (`specs/harness.md` § "loop dispatch: per-bead push regression"):
+/// when `git push` fails (e.g. origin unreachable / non-fast-forward), the
+/// controller MUST preserve the bead worktree so a transient blip stays
+/// recoverable on the next iteration, and surface `AgentOutcome::Failure`
+/// carrying "push failed: ...". This mirrors the merge-conflict
+/// preservation semantics: silent best-effort would let local/remote
+/// divergence pile up unseen.
+#[tokio::test]
+async fn production_loop_preserves_worktree_on_push_failure() -> Result<()> {
+    let (_dir, workspace, manifest, git_client) = setup();
+    let label = SpecLabel::new("harness");
+    let stub = beads_push_stub(_dir.path());
+    let expected_worktree = workspace.join(".wrapix/worktree/harness/wx-pushfail.1");
+
+    // Break the origin by repointing `origin` at a nonexistent path so
+    // `git push` fails. The repo started healthy (init_test_repo built a
+    // bare origin), so the failure is purely on push-time URL resolution.
+    git(
+        &workspace,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "/nonexistent/path/that/cannot/exist.git",
+        ],
+    )?;
+
+    let mut controller = ProductionAgentLoopController::new(
+        BdClient::new(),
+        label.clone(),
+        std::path::PathBuf::from("/loom/bin"),
+        workspace.clone(),
+        git_client,
+        manifest,
+        None,
+        ProfileName::new("base"),
+        move |cfg: SpawnConfig, bead_id: BeadId| async move {
+            let file = format!("{}.txt", bead_id.as_str());
+            std::fs::write(cfg.workspace.join(&file), "work\n").expect("write");
+            git(&cfg.workspace, &["add", &file]).expect("git add");
+            git(&cfg.workspace, &["commit", "-q", "-m", "bead work"]).expect("git commit");
+            (
+                SessionResult::Complete(SessionOutcome {
+                    exit_code: 0,
+                    cost_usd: None,
+                }),
+                Some(ExitSignal::Complete),
+            )
+        },
+    )
+    .with_beads_push_program(stub);
+
+    let outcome = controller
+        .run_bead(&fake_bead("wx-pushfail.1"), None)
+        .await?;
+    match outcome {
+        AgentOutcome::Failure { error } => {
+            assert!(
+                error.contains("push failed:"),
+                "failure body must signal push failure: {error}",
+            );
+        }
+        other => panic!("expected Failure on push failure, got {other:?}"),
+    }
+    assert!(
+        expected_worktree.exists(),
+        "worktree must be preserved on push failure so the next iteration can retry; got removed at {expected_worktree:?}",
     );
     Ok(())
 }
