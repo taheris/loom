@@ -29,7 +29,7 @@ Read: {{ spec_path }}
 
 ## Recovery Epic Resolution
 
-The harness enforces "at most one open epic per spec". Resolve each
+The harness enforces "at most one open epic per spec". {% if tree_scope_epics.is_empty() %}Resolve each
 spec's active epic on demand and bond every fix-up bead you raise under
 it via `--parent`:
 
@@ -50,7 +50,21 @@ bd create \
   --parent="$EPIC_ID" \
   --silent
 ```
+{% else %}The orchestrator has already resolved each spec's open epic at
+`--tree` scope. Bond every fix-up bead you raise to the spec's epic via
+`--parent`, using the pre-resolved IDs below — do NOT re-query `bd find`:
 
+{% for entry in tree_scope_epics %}- spec **{{ entry.label }}** → epic `{{ entry.molecule_id }}`
+{% endfor %}
+```bash
+bd create \
+  --title="..." \
+  --type=bug \
+  --labels="spec:<spec>,profile:base" \
+  --parent="<the epic ID for that spec above>" \
+  --silent
+```
+{% endif %}
 ## `[verify]` Sources
 
 The verdict gate just ran these `[verify]` scripts. Their full source is

@@ -40,7 +40,7 @@ use loom_gate::{
     FsCommandResolver, IntegrityFinding, RustWorkspaceStubScanner, RustWorkspaceTestResolver,
     annotation, format_clarify_options, integrity,
 };
-use loom_templates::review::{ReviewContext, ReviewLane};
+use loom_templates::review::{ReviewContext, ReviewLane, TreeScopeEpic};
 use tokio::process::Command;
 use tracing::{info, warn};
 
@@ -100,6 +100,12 @@ where
     /// `loom gate review` path; `Judge`/`Rubric` are the focused single-
     /// lane re-runs surfaced by `loom gate judge` / `loom gate rubric`.
     lane: ReviewLane,
+    /// At `--tree` scope, the per-spec bonding targets the orchestrator
+    /// resolved (or minted) before this controller ran. Threaded into the
+    /// rendered review prompt so the agent's `bd create --parent <epic>`
+    /// calls reuse those IDs instead of re-querying `bd find`. Empty at
+    /// non-`--tree` scopes.
+    tree_scope_epics: Vec<TreeScopeEpic>,
 }
 
 impl<S, F, R: CommandRunner> ProductionReviewController<S, F, R>
@@ -135,6 +141,7 @@ where
             style_rules: "docs/style-rules.md".to_string(),
             verify_exit: None,
             lane: ReviewLane::Both,
+            tree_scope_epics: Vec::new(),
         }
     }
 
@@ -171,6 +178,15 @@ where
     /// `loom gate rubric`.
     pub fn with_lane(mut self, lane: ReviewLane) -> Self {
         self.lane = lane;
+        self
+    }
+
+    /// Thread the orchestrator's pre-resolved per-spec bonding targets
+    /// into the review prompt. Used at `--tree` scope so the agent's
+    /// `bd create --parent <epic>` calls reuse the resolved IDs instead
+    /// of re-querying `bd find`. Empty input is a no-op.
+    pub fn with_tree_scope_epics(mut self, epics: Vec<TreeScopeEpic>) -> Self {
+        self.tree_scope_epics = epics;
         self
     }
 
@@ -319,6 +335,7 @@ where
             scratchpad_path,
             style_rules: self.style_rules.clone(),
             lane: self.lane,
+            tree_scope_epics: self.tree_scope_epics.clone(),
         };
         Ok(ctx.render()?)
     }
@@ -1326,6 +1343,64 @@ mod tests {
         assert!(
             rubric_prompt.contains("## Style-Rule Conformance"),
             "rubric lane keeps style-rule walk: {rubric_prompt}",
+        );
+    }
+
+    /// `loom gate audit --tree` resolves each spec's bonding target up
+    /// front (via `loom-workflow::resolve::resolve_or_mint_open_epics`)
+    /// and threads the resulting (spec → epic) mapping into the
+    /// reviewer prompt as the bonding target. The prompt must name each
+    /// resolved epic ID so the agent's `bd create --parent <epic>`
+    /// calls reuse those IDs instead of re-querying `bd find`. Pins
+    /// `specs/gate.md` § *Standing-safety-net bonding* third bullet.
+    #[tokio::test]
+    async fn tree_scope_threads_current_molecule_into_reviewer_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let label = "alpha";
+        seed_empty_spec(workspace, label);
+        let state = empty_state(workspace);
+        let manifest = stub_manifest(workspace);
+        let ctrl = ProductionReviewController::new(
+            BdClient::new(),
+            SpecLabel::new(label),
+            PathBuf::from("/usr/bin/loom"),
+            workspace.to_path_buf(),
+            state,
+            manifest,
+            ProfileName::new("base"),
+            noop_spawn,
+        )
+        .with_tree_scope_epics(vec![
+            TreeScopeEpic {
+                label: SpecLabel::new("alpha"),
+                molecule_id: MoleculeId::new("wx-alpha-epic"),
+            },
+            TreeScopeEpic {
+                label: SpecLabel::new("beta"),
+                molecule_id: MoleculeId::new("wx-beta-epic"),
+            },
+        ]);
+        let prompt = match ctrl.build_review_prompt().await {
+            Ok(p) => p,
+            Err(ReviewError::Bd(_)) => return,
+            Err(e) => panic!("unexpected error: {e:?}"),
+        };
+        assert!(
+            prompt.contains("wx-alpha-epic"),
+            "alpha's resolved epic must appear in prompt: {prompt}",
+        );
+        assert!(
+            prompt.contains("wx-beta-epic"),
+            "beta's resolved epic must appear in prompt: {prompt}",
+        );
+        assert!(
+            prompt.contains("alpha") && prompt.contains("beta"),
+            "both spec labels must appear in prompt: {prompt}",
+        );
+        assert!(
+            !prompt.contains("bd find --type=epic --label=\"spec:<spec>\" --status=open --silent"),
+            "fallback re-query block must be suppressed when bonding targets are pre-resolved: {prompt}",
         );
     }
 

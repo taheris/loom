@@ -514,6 +514,7 @@ fn review_renders_review_context_fields() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
+        tree_scope_epics: Vec::new(),
     };
     let out = ctx.render()?;
 
@@ -559,6 +560,7 @@ fn review_lane_judge_omits_rubric_walk_sections_and_keeps_judge_rubrics() -> Res
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Judge,
+        tree_scope_epics: Vec::new(),
     };
     let out = ctx.render()?;
 
@@ -612,6 +614,7 @@ fn review_lane_rubric_omits_judge_rubrics_and_keeps_rubric_walk_sections() -> Re
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Rubric,
+        tree_scope_epics: Vec::new(),
     };
     let out = ctx.render()?;
 
@@ -663,6 +666,7 @@ fn review_renders_style_rule_conformance_walkthrough() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
+        tree_scope_epics: Vec::new(),
     };
     let out = ctx.render()?;
 
@@ -726,6 +730,7 @@ fn review_renders_single_marker_instruction_with_concern_xor_complete() -> Resul
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
+        tree_scope_epics: Vec::new(),
     };
     let out = ctx.render()?;
 
@@ -768,6 +773,7 @@ fn review_renders_options_format_contract_with_universal_scope() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
+        tree_scope_epics: Vec::new(),
     };
     let out = ctx.render()?;
 
@@ -818,6 +824,7 @@ fn review_prompt_documents_bd_find_recovery_resolution() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
+        tree_scope_epics: Vec::new(),
     };
     let out = ctx.render()?;
 
@@ -1115,6 +1122,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
+        tree_scope_epics: Vec::new(),
     }
     .render()?;
 
@@ -1360,6 +1368,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
             style_rules: "docs/style-rules.md".to_string(),
             lane: ReviewLane::Both,
+            tree_scope_epics: Vec::new(),
         },
     )?;
     assert_stable(

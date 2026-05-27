@@ -4,7 +4,7 @@ use std::path::Path;
 
 use loom_driver::bd::Bead;
 use loom_driver::identifier::{MoleculeId, SpecLabel};
-use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
+use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource, TreeScopeEpic};
 
 use crate::spec::{Annotation, AnnotationKind, SpecError, parse_spec_annotations};
 
@@ -30,6 +30,10 @@ pub struct ReviewContextInputs {
     /// Which lane(s) of the review the reviewer agent is being asked to
     /// run; gates the template sections that only one lane needs.
     pub lane: ReviewLane,
+    /// At `--tree` scope, the per-spec resolved (or freshly minted) epic
+    /// IDs the orchestrator threads in as bonding targets. Empty at
+    /// non-`--tree` scopes.
+    pub tree_scope_epics: Vec<TreeScopeEpic>,
 }
 
 /// Render the typed [`ReviewContext`] used by the `review.md` Askama template.
@@ -47,6 +51,7 @@ pub fn build_review_context(inputs: ReviewContextInputs) -> ReviewContext {
         scratchpad_path: inputs.scratchpad_path,
         style_rules: inputs.style_rules,
         lane: inputs.lane,
+        tree_scope_epics: inputs.tree_scope_epics,
     }
 }
 
@@ -165,6 +170,7 @@ mod tests {
             scratchpad_path: "/workspace/.wrapix/loom/scratch/harness/scratch.md".into(),
             style_rules: "docs/style-rules.md".into(),
             lane: ReviewLane::Both,
+            tree_scope_epics: Vec::new(),
         }
     }
 

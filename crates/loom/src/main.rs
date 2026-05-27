@@ -794,15 +794,30 @@ fn run_gate(
                 args.verify_exit,
                 agent_override,
                 ReviewLane::Both,
+                Vec::new(),
             )
         }
         Some(GateSubcommand::Judge(mut args)) => {
             apply_default_scope(workspace, &mut args);
-            run_gate_review(workspace, args, None, agent_override, ReviewLane::Judge)
+            run_gate_review(
+                workspace,
+                args,
+                None,
+                agent_override,
+                ReviewLane::Judge,
+                Vec::new(),
+            )
         }
         Some(GateSubcommand::Rubric(mut args)) => {
             apply_default_scope(workspace, &mut args);
-            run_gate_review(workspace, args, None, agent_override, ReviewLane::Rubric)
+            run_gate_review(
+                workspace,
+                args,
+                None,
+                agent_override,
+                ReviewLane::Rubric,
+                Vec::new(),
+            )
         }
     }
 }
@@ -1211,23 +1226,6 @@ const INTEGRITY_ALLOWLIST: &[(&str, &str)] = &[
     ("specs/harness.md", "all_specs_iterates_by_bd_updated_asc"),
     ("specs/harness.md", "all_specs_exit_code_reflects_aggregate"),
     ("specs/harness.md", "plan_does_not_create_epic_or_touch_bd"),
-    // lm-9ehh.12 (gate audit mint-and-bond resolution for tree scope).
-    // `specs/gate.md` § Standing-safety-net bonding describes the
-    // mint-molecule-and-bond behaviour these tests cover; the current
-    // refuse-path implementation predates that spec update. The tests
-    // land alongside the production code change.
-    (
-        "specs/gate.md",
-        "tree_scope_auto_creates_epics_for_missing_current_molecule_specs",
-    ),
-    (
-        "specs/gate.md",
-        "tree_scope_orchestrator_does_not_clobber_existing_current_molecule",
-    ),
-    (
-        "specs/gate.md",
-        "tree_scope_threads_current_molecule_into_reviewer_prompt",
-    ),
 ];
 
 fn is_allowlisted_integrity_finding(finding: &loom_gate::IntegrityFinding) -> bool {
@@ -1353,40 +1351,64 @@ fn current_commit(workspace: &Path) -> anyhow::Result<String> {
     Ok(runtime.block_on(async { git.head_commit_sha().await })?)
 }
 
-/// Refuse `loom gate audit --tree --spec <label>` when no open epic
-/// exists for `<label>` (per `specs/gate.md` § *Standing-safety-net
-/// checks* per-spec branch). Returns an error that names the spec and
-/// the fix command; the caller propagates it so the binary exits
-/// non-zero before any verify or agent spawn.
-fn refuse_tree_scope_without_current_molecule(
-    _workspace: &Path,
+/// Resolve (or mint) the bonding target for each spec in scope at
+/// `--tree` audit time, per `specs/gate.md` § *Standing-safety-net
+/// bonding*: zero open epics → mint molecule + epic; one → reuse it;
+/// more than one → refuse with the conflicting IDs. Returns `Ok(empty)`
+/// when the args are not `--tree`-scoped so the non-tree audit paths
+/// stay unchanged. The single-spec form (`--tree --spec <X>`) resolves
+/// just that spec; the all-specs sweep (bare `--tree`) walks every
+/// `specs/<label>.md` markdown file in the workspace.
+fn resolve_tree_scope_bonding_targets(
+    workspace: &Path,
     args: &GateScopeArgs,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<loom_workflow::resolve::ResolvedEpic>> {
     if !args.tree {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    let Some(label) = args.spec.as_deref() else {
-        return Ok(());
+    let labels = match args.spec.as_deref() {
+        Some(label) => vec![SpecLabel::new(label)],
+        None => spec_labels_in_workspace(workspace)?,
     };
-    let spec = SpecLabel::new(label);
-    let runtime = tokio::runtime::Runtime::new()?;
-    // A `bd` spawn failure (e.g. missing on PATH) is structurally
-    // equivalent to "no resolvable open epic" for the standing-safety-
-    // net refusal: the audit cannot proceed without `bd` anyway, so
-    // we surface the same operator-facing message either way.
-    let open_epic = runtime
-        .block_on(async move {
-            let bd = BdClient::new();
-            loom_workflow::resolve::resolve_open_epic(&bd, &spec).await
-        })
-        .unwrap_or_default();
-    if open_epic.is_some() {
-        return Ok(());
+    if labels.is_empty() {
+        return Ok(Vec::new());
     }
-    Err(anyhow::anyhow!(
-        "no open epic for spec '{label}'.\n  \
-         create a fresh recovery molecule via `loom todo`."
-    ))
+    let head = current_commit(workspace).unwrap_or_default();
+    let runtime = tokio::runtime::Runtime::new()?;
+    let resolved = runtime.block_on(async move {
+        let bd = BdClient::new();
+        loom_workflow::resolve::resolve_or_mint_open_epics(&bd, &labels, &head).await
+    })?;
+    for entry in &resolved {
+        if entry.was_minted {
+            println!(
+                "loom gate audit: minted recovery epic {epic} for spec {label} (no open epic existed)",
+                epic = entry.molecule_id.as_str(),
+                label = entry.label.as_str(),
+            );
+        }
+    }
+    Ok(resolved)
+}
+
+/// Enumerate every `specs/<label>.md` in the workspace as a [`SpecLabel`].
+/// Drives the all-specs sweep of `loom gate audit --tree`.
+fn spec_labels_in_workspace(workspace: &Path) -> anyhow::Result<Vec<SpecLabel>> {
+    let specs_dir = workspace.join("specs");
+    if !specs_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut labels = Vec::new();
+    for entry in std::fs::read_dir(&specs_dir)? {
+        let path = entry?.path();
+        if path.extension().is_some_and(|e| e == "md")
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        {
+            labels.push(SpecLabel::new(stem));
+        }
+    }
+    labels.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    Ok(labels)
 }
 
 fn run_gate_audit(
@@ -1394,7 +1416,7 @@ fn run_gate_audit(
     args: GateScopeArgs,
     agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
-    refuse_tree_scope_without_current_molecule(workspace, &args)?;
+    let tree_scope_epics = resolve_tree_scope_bonding_targets(workspace, &args)?;
     let verify_result = run_gate_verify(workspace, &args);
     // Audit fuses verify+review in one process; pass the verify subcommand's
     // exit code into the review step so the push gate's four-condition AND
@@ -1409,6 +1431,7 @@ fn run_gate_audit(
         verify_exit,
         agent_override,
         ReviewLane::Both,
+        tree_scope_epics,
     );
     verify_result.and(review_result)
 }
@@ -1419,6 +1442,7 @@ fn run_gate_review(
     verify_exit: Option<i32>,
     agent_override: Option<AgentKind>,
     lane: ReviewLane,
+    tree_scope_epics: Vec<loom_workflow::resolve::ResolvedEpic>,
 ) -> anyhow::Result<()> {
     run_review(
         workspace,
@@ -1430,6 +1454,7 @@ fn run_gate_review(
             tree: args.tree,
             verify_exit,
             lane,
+            tree_scope_epics,
         },
     )
 }
@@ -2271,6 +2296,10 @@ struct ReviewOpts {
     /// `Judge`/`Rubric` for the focused single-lane re-runs surfaced by
     /// `loom gate judge` / `loom gate rubric`.
     lane: ReviewLane,
+    /// Per-spec bonding targets the audit orchestrator pre-resolved (or
+    /// minted) before this controller ran. Threaded into the reviewer
+    /// prompt at `--tree` scope; empty otherwise.
+    tree_scope_epics: Vec<loom_workflow::resolve::ResolvedEpic>,
 }
 
 fn run_review(
@@ -2303,7 +2332,12 @@ fn run_review(
     let phase_when = SystemClock::new().wall_now();
     let logs_root_for_spawn = logs_root.clone();
     let style_rules_for_review = config.style_rules.clone();
-    let tree_scope = opts.tree;
+    let tree_scope_epics = opts
+        .tree_scope_epics
+        .iter()
+        .map(loom_workflow::resolve::tree_scope_epic_from_resolved)
+        .collect::<Vec<_>>();
+    let _ = opts.tree;
     let result = runtime.block_on(async move {
         let bd = BdClient::new();
         let mut controller = ProductionReviewController::new(
@@ -2339,8 +2373,8 @@ fn run_review(
         .with_phase_log(logs_root, phase_when)
         .with_style_rules(style_rules_for_review)
         .with_verify_exit(opts.verify_exit)
-        .with_lane(opts.lane);
-        let _ = tree_scope;
+        .with_lane(opts.lane)
+        .with_tree_scope_epics(tree_scope_epics);
         run_review_loop(&mut controller, IterationCap::default()).await
     })?;
     println!("loom review: {result:?}");

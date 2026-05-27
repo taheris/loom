@@ -3,6 +3,18 @@
 use askama::Template;
 use loom_events::identifier::{MoleculeId, SpecLabel};
 
+/// One spec's pre-resolved bonding target threaded into the reviewer
+/// prompt at `--tree` scope. The orchestrator's single-query walk
+/// resolves (or mints) each spec's open epic before the agent spawn, so
+/// the prompt names the spec → epic mapping explicitly rather than
+/// asking the agent to repeat the lookup. See `specs/gate.md`
+/// § *Standing-safety-net bonding*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeScopeEpic {
+    pub label: SpecLabel,
+    pub molecule_id: MoleculeId,
+}
+
 /// One file body included in the review prompt — either a `[verify]` test
 /// script the gate just ran, or a `[judge]` rubric the LLM must score
 /// against. `path` is the workspace-relative source location used as the
@@ -64,4 +76,8 @@ pub struct ReviewContext {
     /// Which lane(s) the agent is being asked to run. Drives the template's
     /// per-lane section gates.
     pub lane: ReviewLane,
+    /// At `--tree` scope, the resolved (or freshly minted) per-spec epic
+    /// IDs the orchestrator threads in as bonding targets. Empty at
+    /// `--diff` / `--bead` / `--files` scope.
+    pub tree_scope_epics: Vec<TreeScopeEpic>,
 }
