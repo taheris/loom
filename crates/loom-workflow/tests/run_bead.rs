@@ -97,7 +97,14 @@ fn setup() -> (
 /// worktree isolation per `harness.md` § Worktree Dispatch). On clean
 /// agent success the controller merges the bead's branch back to the
 /// driver branch and removes the worktree + branch.
+///
+/// Currently ignored: the sequential dispatch path runs against the
+/// driver's workdir directly because the wrapix container's
+/// `/workspace` bind-mount cannot reach a worktree's host gitdir.
+/// Re-enable once SpawnConfig exposes extra mounts (or workers run
+/// against a self-contained clone) and worktree dispatch is restored.
 #[tokio::test]
+#[ignore = "worktree dispatch disabled for sequential path; pending container .git mount"]
 async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
@@ -180,7 +187,14 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success()
 /// 3. Clean up the worktree + branch even though the agent claimed
 ///    success — the half-staged tree would confuse the next attempt's
 ///    diff.
+///
+/// Currently ignored: tree-clean recovery is meaningful only in
+/// worktree-dispatch mode (a fresh worktree starts empty so any dirty
+/// entry is agent leftover). The sequential path runs against the
+/// driver's workdir which has its own pre-existing state; gating
+/// re-enables when worktree dispatch is restored.
 #[tokio::test]
+#[ignore = "tree-clean recovery is worktree-only; sequential dispatch runs against driver workdir"]
 async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");

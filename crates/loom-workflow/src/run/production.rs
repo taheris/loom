@@ -194,15 +194,27 @@ where
             self.stashed_previous_failure = None;
             None
         };
-        // Per-bead worktree creation precedes scratch/prompt setup so the
-        // scratchpad and spawn workspace both live inside the worktree (the
-        // agent's view of the workspace at dispatch time).
-        let worktree = self.git.create_worktree(&self.label, &bead.id).await?;
+        // Sequential dispatch runs the agent against the driver's workdir
+        // directly. Per-bead worktrees are disabled here because the wrapix
+        // container only bind-mounts the worker workspace as `/workspace`,
+        // and a linked worktree's `.git` file is a host-absolute pointer to
+        // `<main>/.git/worktrees/<name>/` which sits outside that mount —
+        // so `git` inside the container cannot resolve the gitdir. Restore
+        // worktree dispatch once the SpawnConfig grows an extra-mounts field
+        // (or workers run against a self-contained clone) and the container
+        // can reach the host gitdir.
+        //
+        // The empty `branch` is a sentinel: it signals main-workdir mode to
+        // the merge / cleanup short-circuits below, where worktree-specific
+        // git operations would otherwise self-merge or no-op-delete.
+        let worktree = CreatedWorktree {
+            path: self.workspace.clone(),
+            branch: String::new(),
+        };
         info!(
             bead = %bead.id,
             path = %worktree.path.display(),
-            branch = %worktree.branch,
-            "worktree created",
+            "dispatching agent against driver workdir (worktree dispatch disabled)",
         );
 
         let key = resolve_scratch_key(Phase::Run, &self.label, Some(&bead.id));
@@ -283,26 +295,41 @@ where
 
         let outcome = classify_session(session, marker);
         if outcome == AgentOutcome::Success {
-            // Tree-clean precedes verify-fail / review-concern per
-            // `specs/harness.md` § Verdict Gate. Running verifiers against
-            // a half-staged tree would conflate the agent's intended diff
-            // with its leftover scratch.
-            let porcelain = self.git.status_porcelain_at(&worktree.path).await?;
-            let dirty = dirty_paths_from_porcelain(&porcelain);
-            if !dirty.is_empty() {
-                warn!(
-                    bead = %bead.id,
-                    dirty_count = dirty.len(),
-                    "tree-not-clean: cleaning worktree and stashing TreeNotClean for the next attempt",
-                );
-                cleanup_worktree(&self.git, &worktree).await?;
-                self.stashed_previous_failure =
-                    Some(PreviousFailure::TreeNotClean { dirty_paths: dirty });
-                return Ok(AgentOutcome::Failure {
-                    error: "tree-not-clean".to_string(),
-                });
+            // Tree-clean check applies only in worktree-dispatch mode (the
+            // worktree starts empty so any dirty entry is agent leftover).
+            // When dispatching against the driver's workdir, pre-existing
+            // state would falsely flag every bead — skip the check.
+            if !worktree.branch.is_empty() {
+                // Tree-clean precedes verify-fail / review-concern per
+                // `specs/harness.md` § Verdict Gate. Running verifiers against
+                // a half-staged tree would conflate the agent's intended diff
+                // with its leftover scratch.
+                let porcelain = self.git.status_porcelain_at(&worktree.path).await?;
+                let dirty = dirty_paths_from_porcelain(&porcelain);
+                if !dirty.is_empty() {
+                    warn!(
+                        bead = %bead.id,
+                        dirty_count = dirty.len(),
+                        "tree-not-clean: cleaning worktree and stashing TreeNotClean for the next attempt",
+                    );
+                    cleanup_worktree(&self.git, &worktree).await?;
+                    self.stashed_previous_failure =
+                        Some(PreviousFailure::TreeNotClean { dirty_paths: dirty });
+                    return Ok(AgentOutcome::Failure {
+                        error: "tree-not-clean".to_string(),
+                    });
+                }
             }
-            match self.git.merge_branch(&worktree.branch).await? {
+            // Driver-workdir dispatch: agent commits already land on the
+            // driver branch, so there is no separate bead branch to merge.
+            // Short-circuit to `MergeResult::Ok` so the success path runs
+            // unchanged.
+            let merge_result = if worktree.branch.is_empty() {
+                MergeResult::Ok
+            } else {
+                self.git.merge_branch(&worktree.branch).await?
+            };
+            match merge_result {
                 MergeResult::Ok => {
                     cleanup_worktree(&self.git, &worktree).await?;
                     Ok(AgentOutcome::Success)
@@ -455,6 +482,12 @@ where
 /// tree-not-clean recovery, profile-resolution failure) so a stale worktree
 /// or branch never survives a bead's retry chain.
 async fn cleanup_worktree(git: &GitClient, worktree: &CreatedWorktree) -> Result<(), RunError> {
+    // Driver-workdir dispatch: no separate worktree to remove and no
+    // bead branch to delete; the sentinel empty branch string signals
+    // this mode. Skip both git operations.
+    if worktree.branch.is_empty() {
+        return Ok(());
+    }
     git.remove_worktree(&worktree.path).await?;
     git.delete_branch(&worktree.branch).await?;
     Ok(())
