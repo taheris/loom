@@ -32,8 +32,9 @@ use tracing::{info, warn};
 
 use super::context::{LoopContextInputs, render_loop_prompt};
 use super::error::LoopError;
+use super::gate_outcome::HandoffEvidence;
 use super::outcome::{AgentOutcome, SessionResult};
-use super::runner::{AgentLoopController, ExecReviewOutcome};
+use super::runner::AgentLoopController;
 use super::spawn::build_spawn_config_from_manifest;
 use super::tree_clean::dirty_paths_from_porcelain;
 use crate::review::{GateInputs, PhaseVerdict, RecoveryCause, decide};
@@ -400,7 +401,7 @@ where
         Ok(())
     }
 
-    async fn exec_review(&mut self) -> Result<ExecReviewOutcome, LoopError> {
+    async fn exec_review(&mut self) -> Result<HandoffEvidence, LoopError> {
         // Release the spec lock before spawning the child — `loom gate
         // verify` and `loom gate review` acquire the same lock and would
         // otherwise time out behind us.
@@ -456,10 +457,11 @@ where
             exit_code = review_status.code().unwrap_or(-1),
             "loom run: molecule handoff — loom gate review --diff finished",
         );
-        Ok(ExecReviewOutcome {
+        Ok(HandoffEvidence {
             verify_exit: verify_status.code(),
             review_exit: review_status.code(),
             review_marker: None,
+            review_log_path: None,
         })
     }
 }
@@ -1446,17 +1448,17 @@ mod tests {
         );
 
         // FR9 four-condition AND wiring: the verify exit must ride out
-        // through `ExecReviewOutcome` so the push-gate verdict can
-        // refuse the push on `Some(n)` with `n != 0`.
+        // through `HandoffEvidence` so the push-gate verdict can refuse
+        // the push on `Some(n)` with `n != 0`.
         assert_eq!(
             handoff.verify_exit,
             Some(1),
-            "verify child exit code threaded through ExecReviewOutcome",
+            "verify child exit code threaded through HandoffEvidence",
         );
         assert_eq!(
             handoff.review_exit,
             Some(0),
-            "review child exit code threaded through ExecReviewOutcome",
+            "review child exit code threaded through HandoffEvidence",
         );
     }
 

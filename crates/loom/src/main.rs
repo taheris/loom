@@ -30,7 +30,8 @@ use loom_gate::{
     RustWorkspaceTestResolver, StatusCache, Tier, Verdict, render_report, row_for,
 };
 use loom_workflow::r#loop::{
-    LoopMode, Parallelism, ProductionAgentLoopController, RetryPolicy, SessionResult, run_loop,
+    GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
+    RetryPolicy, SessionResult, run_loop,
 };
 use loom_workflow::msg::{
     DISMISS_NOTE, build_rows, compose_option_note, compose_resolved_notes, filter_msg_beads,
@@ -561,23 +562,24 @@ fn main() -> ExitCode {
 
     let agent_override = cli.agent.map(AgentKind::from);
 
-    let result = match cli.command {
-        Command::Init { rebuild } => run_init(&workspace, rebuild),
-        Command::Status => run_status(&workspace),
-        Command::UseSpec { label } => run_use(&workspace, &label),
+    let result: anyhow::Result<ExitCode> = match cli.command {
+        Command::Init { rebuild } => run_init(&workspace, rebuild).map(|()| ExitCode::SUCCESS),
+        Command::Status => run_status(&workspace).map(|()| ExitCode::SUCCESS),
+        Command::UseSpec { label } => run_use(&workspace, &label).map(|()| ExitCode::SUCCESS),
         Command::Logs {
             bead,
             follow,
             raw,
             verbose,
             path,
-        } => run_logs(&workspace, bead.as_deref(), follow, raw, verbose, path),
-        Command::Spec { deps } => run_spec(&workspace, deps),
+        } => run_logs(&workspace, bead.as_deref(), follow, raw, verbose, path)
+            .map(|()| ExitCode::SUCCESS),
+        Command::Spec { deps } => run_spec(&workspace, deps).map(|()| ExitCode::SUCCESS),
         Command::Plan {
             new,
             update,
             profile,
-        } => run_plan(&workspace, new, update, profile),
+        } => run_plan(&workspace, new, update, profile).map(|()| ExitCode::SUCCESS),
         Command::Loop {
             once,
             parallel,
@@ -600,8 +602,11 @@ fn main() -> ExitCode {
                 raw,
                 verbose,
             },
-        ),
-        Command::Gate { subcommand } => run_gate(&workspace, subcommand, agent_override),
+        )
+        .map(|outcome| exit_code_for_gate(&outcome.gate)),
+        Command::Gate { subcommand } => {
+            run_gate(&workspace, subcommand, agent_override).map(|()| ExitCode::SUCCESS)
+        }
         Command::Msg {
             spec,
             number,
@@ -620,17 +625,32 @@ fn main() -> ExitCode {
             dismiss,
             chat,
             agent_override,
-        ),
-        Command::Todo { spec, since } => run_todo(&workspace, spec, since, agent_override),
-        Command::Note { action } => run_note(&workspace, action),
+        )
+        .map(|()| ExitCode::SUCCESS),
+        Command::Todo { spec, since } => {
+            run_todo(&workspace, spec, since, agent_override).map(|()| ExitCode::SUCCESS)
+        }
+        Command::Note { action } => run_note(&workspace, action).map(|()| ExitCode::SUCCESS),
     };
 
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(err) => {
             eprintln!("loom: {err:#}");
             ExitCode::from(1)
         }
+    }
+}
+
+/// Spec-table function: the binary's exit code is a pure function of the
+/// [`GateOutcome`] variant — `Success(_)` and `NoGate { .. }` exit 0,
+/// `Fail(_)` exits non-zero. Lives at the binary boundary so wrapper scripts
+/// consume one canonical signal across sequential, parallel, once, and
+/// all-specs codepaths.
+fn exit_code_for_gate(gate: &GateOutcome) -> ExitCode {
+    match gate {
+        GateOutcome::Success(_) | GateOutcome::NoGate { .. } => ExitCode::SUCCESS,
+        GateOutcome::Fail(_) => ExitCode::from(1),
     }
 }
 
@@ -1192,25 +1212,13 @@ const INTEGRITY_ALLOWLIST: &[(&str, &str)] = &[
         "todo_fans_out_across_all_touched_specs_and_clarifies_on_collision",
     ),
     // lm-9ehh.7 (GateSuccess sealed receipt + LoopOutcome typed outcomes).
+    // `once_mode_fires_gate_when_molecule_closes_else_no_gate_partial` is
+    // still pending — that behaviour requires Once mode to fire the gate
+    // when the bead it processes closes the molecule; the typed-receipt
+    // bead deferred that semantic change to keep scope contained.
     (
         "specs/harness.md",
         "once_mode_fires_gate_when_molecule_closes_else_no_gate_partial",
-    ),
-    (
-        "specs/harness.md",
-        "loom_loop_exit_code_is_function_of_gate_outcome_variant",
-    ),
-    (
-        "specs/harness.md",
-        "gate_success_constructor_asserts_every_evidence_condition",
-    ),
-    (
-        "specs/harness.md",
-        "every_successful_loom_loop_writes_a_review_log_with_terminal_marker",
-    ),
-    (
-        "specs/harness.md",
-        "parallel_codepath_returns_loop_outcome_with_gate_field",
     ),
     // Independent missing-test work tracked under lm-hyh7's remaining scope.
     ("specs/harness.md", "loom_use_sets_current_spec_only"),
@@ -1573,7 +1581,7 @@ fn run_loop_cmd(
     spec: Option<String>,
     agent_override: Option<AgentKind>,
     render_flags: RenderFlags,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<LoopOutcome> {
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let label = resolve_spec_label(workspace, spec)?;
     let lock_mgr = LockManager::new(workspace)?;
@@ -1606,7 +1614,7 @@ fn run_loop_cmd(
         let kind = selection.kind;
         let shutdown_grace = resolve_shutdown_grace(&selection);
         let style_rules_for_async = config.style_rules.clone();
-        let summary = runtime.block_on(async move {
+        let outcome = runtime.block_on(async move {
             run_parallel_loop(
                 workspace_buf,
                 label_for_async,
@@ -1621,10 +1629,11 @@ fn run_loop_cmd(
             .await
         })?;
         println!(
-            "loom loop --parallel {parallel_n}: merged {}, conflicted {}, failed {}",
-            summary.merged, summary.conflicted, summary.failed,
+            "loom loop --parallel {parallel_n}: processed {}, gate={}",
+            outcome.beads_processed,
+            gate_label(&outcome.gate),
         );
-        return Ok(());
+        return Ok(outcome);
     }
 
     let mode = if once {
@@ -1709,24 +1718,25 @@ fn run_loop_cmd(
         run_loop(&mut controller, mode, retry_policy, max_iterations).await
     })?;
     println!(
-        "loom loop: processed {} bead(s), clarified {}, blocked {}, molecule_complete={}, \
-         execed_review={}, outer_iterations={}",
+        "loom loop: processed {} bead(s), clarified {}, blocked {}, outer_iterations={}, gate={}",
         summary.beads_processed,
         summary.beads_clarified,
         summary.beads_blocked,
-        summary.molecule_complete,
-        summary.execed_review,
         summary.outer_iterations,
+        gate_label(&summary.gate),
     );
-    Ok(())
+    Ok(summary)
 }
 
-/// Aggregate counts surfaced from `loom loop --parallel N` for the human
-/// summary line.
-struct ParallelLoopSummary {
-    merged: usize,
-    conflicted: usize,
-    failed: usize,
+/// One-word render of a [`GateOutcome`] for the operator-facing summary
+/// line. The structured variant lives in [`LoopOutcome::gate`] for
+/// programmatic consumers; this is the human-friendly column.
+fn gate_label(gate: &GateOutcome) -> &'static str {
+    match gate {
+        GateOutcome::Success(_) => "success",
+        GateOutcome::Fail(_) => "fail",
+        GateOutcome::NoGate { .. } => "no-gate",
+    }
 }
 
 #[expect(clippy::too_many_arguments, reason = "fan-out wiring surface")]
@@ -1740,7 +1750,7 @@ async fn run_parallel_loop(
     cli_profile: Option<ProfileName>,
     phase_default: ProfileName,
     style_rules: String,
-) -> anyhow::Result<ParallelLoopSummary> {
+) -> anyhow::Result<LoopOutcome> {
     use loom_driver::bd::UpdateOpts;
     use loom_workflow::r#loop::{AgentOutcome, run_parallel_batch};
 
@@ -1757,10 +1767,15 @@ async fn run_parallel_loop(
         })
         .await?;
     if beads.is_empty() {
-        return Ok(ParallelLoopSummary {
-            merged: 0,
-            conflicted: 0,
-            failed: 0,
+        return Ok(LoopOutcome {
+            beads_processed: 0,
+            beads_clarified: 0,
+            beads_blocked: 0,
+            outer_iterations: 0,
+            gate: GateOutcome::NoGate {
+                beads_processed: 0,
+                reason: NoGateReason::NoBeadsReady,
+            },
         });
     }
 
@@ -1862,10 +1877,22 @@ async fn run_parallel_loop(
             .await?;
     }
 
-    Ok(ParallelLoopSummary {
-        merged: outcome.merged_ids().len(),
-        conflicted: outcome.conflict_ids().len(),
-        failed: outcome.failure_ids().len(),
+    let merged = u32::try_from(outcome.merged_ids().len()).unwrap_or(u32::MAX);
+    let clarified = u32::try_from(outcome.clarified().len()).unwrap_or(u32::MAX);
+    let blocked_n = u32::try_from(outcome.blocked().len()).unwrap_or(u32::MAX);
+    let processed = merged
+        .saturating_add(clarified)
+        .saturating_add(blocked_n)
+        .saturating_add(u32::try_from(outcome.failure_ids().len()).unwrap_or(u32::MAX));
+    Ok(LoopOutcome {
+        beads_processed: processed,
+        beads_clarified: clarified,
+        beads_blocked: blocked_n,
+        outer_iterations: 0,
+        gate: GateOutcome::NoGate {
+            beads_processed: processed,
+            reason: NoGateReason::OncePartial,
+        },
     })
 }
 

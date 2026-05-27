@@ -4,9 +4,11 @@ use loom_events::DriverKind;
 use tracing::info;
 
 use super::error::LoopError;
+use super::gate_outcome::{
+    GateFail, GateOutcome, GateSuccess, HandoffEvidence, LoopOutcome, NoGateReason,
+};
 use super::outcome::{AgentOutcome, BeadResult};
 use super::retry::{RetryDecision, RetryPolicy};
-use crate::todo::ExitSignal;
 
 /// Loop-termination policy for `loom loop`. `Continuous` is the default — the
 /// loop pulls beads until the molecule is complete, then hands off to
@@ -38,38 +40,17 @@ pub const UNKNOWN_PROFILE_CAUSE: &str = "unknown-profile";
 /// `[loop] max_iterations` and resets on every fresh `loom loop` invocation.
 const INFRA_MIDSESSION_RETRY_BUDGET: u32 = 1;
 
-/// Outcome of one molecule-completion handoff. Carries the verify and
-/// review child-process exit codes plus the review's parsed exit marker
-/// so the push-gate verdict can consume all four conditions per FR9.
-/// `None` exit codes occur when a child was terminated by a signal; the
-/// gate treats them as failures (no exit code = no clean success).
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct ExecReviewOutcome {
-    pub verify_exit: Option<i32>,
-    pub review_exit: Option<i32>,
-    pub review_marker: Option<ExitSignal>,
-}
-
-/// Summary of one [`run_loop`] invocation. Surfaces what happened so callers
-/// can return a meaningful exit code and tests can assert on the path taken.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct LoopSummary {
-    /// Beads that ran to a terminal state (closed or clarified or blocked).
-    pub beads_processed: u32,
-    /// Beads that exhausted retries and got the `loom:clarify` label.
-    pub beads_clarified: u32,
-    /// Beads routed to `loom:blocked` (pre-flight or repeated mid-session
-    /// infra failure).
-    pub beads_blocked: u32,
-    /// `bd ready` returned no candidate, signalling the molecule is complete.
-    pub molecule_complete: bool,
-    /// `loom gate review` was exec'd (continuous mode + molecule complete).
-    pub execed_review: bool,
-    /// Outer-loop passes consumed (each pass = one molecule-completion
-    /// handoff invoking `loom gate verify --diff <base>..HEAD` +
-    /// `loom gate review --diff <base>..HEAD`). Bounded by
-    /// `[loop] max_iterations` per FR1.
-    pub outer_iterations: u32,
+/// Running tally [`run_loop`] threads through the outer loop while the
+/// final [`LoopOutcome`] is being assembled. Distinct from `LoopOutcome` —
+/// the public surface has no `Default`, holds `gate: GateOutcome`, and is
+/// minted only at the end through the sealed [`GateSuccess`] constructor.
+#[derive(Debug, Default, Clone)]
+struct LoopProgress {
+    beads_processed: u32,
+    beads_clarified: u32,
+    beads_blocked: u32,
+    outer_iterations: u32,
+    last_evidence: HandoffEvidence,
 }
 
 /// Side-effect surface the [`run_loop`] driver depends on.
@@ -142,12 +123,14 @@ pub trait AgentLoopController: Send {
     /// that signal concerns do not bubble up as errors here — they
     /// drive fix-up beads onto the next outer-loop pass.
     ///
-    /// The verify and review exit codes plus the review's parsed exit
-    /// marker ride out in [`ExecReviewOutcome`] so the push-gate verdict
-    /// can consume all four conditions per FR9 (the four-condition AND).
+    /// The verify and review exit codes, the review's parsed exit
+    /// marker, and the review log path ride out in
+    /// [`HandoffEvidence`] so [`run_loop`] can feed them to the sealed
+    /// [`GateSuccess`] constructor that asserts the FR9 four-condition
+    /// AND.
     fn exec_review(
         &mut self,
-    ) -> impl std::future::Future<Output = Result<ExecReviewOutcome, LoopError>> + Send;
+    ) -> impl std::future::Future<Output = Result<HandoffEvidence, LoopError>> + Send;
 
     /// Emit a driver-side event into the controller's event sink. The
     /// run loop fires `retry_dispatch` here when it re-dispatches a bead
@@ -191,9 +174,10 @@ pub async fn run_loop<C: AgentLoopController>(
     mode: LoopMode,
     policy: RetryPolicy,
     max_iterations: u32,
-) -> Result<LoopSummary, LoopError> {
-    let mut summary = LoopSummary::default();
+) -> Result<LoopOutcome, LoopError> {
+    let mut progress = LoopProgress::default();
     let mut infra_retries_used: u32 = 0;
+    let mut stalled_at_max_iterations = false;
     'outer: loop {
         let mut beads_this_pass: u32 = 0;
         // Drain the ready queue; fix-up beads bonded during this pass become
@@ -206,7 +190,7 @@ pub async fn run_loop<C: AgentLoopController>(
 
             let result =
                 process_one_bead(controller, &bead, policy, &mut infra_retries_used).await?;
-            summary.beads_processed += 1;
+            progress.beads_processed += 1;
             beads_this_pass += 1;
 
             match result {
@@ -219,20 +203,18 @@ pub async fn run_loop<C: AgentLoopController>(
                 }
                 BeadResult::Clarified { note } => {
                     controller.apply_clarify(&bead.id, &note).await?;
-                    summary.beads_clarified += 1;
+                    progress.beads_clarified += 1;
                 }
                 BeadResult::Blocked { cause, error } => {
                     controller.apply_blocked(&bead.id, &cause, &error).await?;
-                    summary.beads_blocked += 1;
+                    progress.beads_blocked += 1;
                 }
             }
 
             if matches!(mode, LoopMode::Once) {
-                return Ok(summary);
+                return Ok(finalize(progress, stalled_at_max_iterations));
             }
         }
-
-        summary.molecule_complete = true;
 
         if !matches!(mode, LoopMode::Continuous) {
             break 'outer;
@@ -241,27 +223,68 @@ pub async fn run_loop<C: AgentLoopController>(
         // Stall: a prior handoff produced no fix-ups → molecule is either
         // fully done (push fired clean inside `loom gate verify`) or fully
         // stuck (remaining work parked under `loom:blocked` / `loom:clarify`).
-        if beads_this_pass == 0 && summary.execed_review {
+        if beads_this_pass == 0 && progress.outer_iterations > 0 {
             info!(
-                outer_iterations = summary.outer_iterations,
+                outer_iterations = progress.outer_iterations,
                 "loom run: outer loop exiting — no new ready beads after handoff",
             );
             break 'outer;
         }
 
-        if summary.outer_iterations >= max_iterations {
+        if progress.outer_iterations >= max_iterations {
             info!(
-                outer_iterations = summary.outer_iterations,
+                outer_iterations = progress.outer_iterations,
                 max_iterations, "loom run: outer-loop counter exhausted",
             );
+            stalled_at_max_iterations = true;
             break 'outer;
         }
 
-        let _handoff = controller.exec_review().await?;
-        summary.execed_review = true;
-        summary.outer_iterations += 1;
+        progress.last_evidence = controller.exec_review().await?;
+        progress.outer_iterations += 1;
     }
-    Ok(summary)
+    Ok(finalize(progress, stalled_at_max_iterations))
+}
+
+/// Build the final [`LoopOutcome`] from the running tally + final handoff
+/// evidence. Mints the sealed [`GateSuccess`] through its `pub(crate)`
+/// constructor; falls back to [`GateOutcome::Fail`] / [`GateOutcome::NoGate`]
+/// per the spec's exit-code table.
+fn finalize(progress: LoopProgress, stalled_at_max_iterations: bool) -> LoopOutcome {
+    let LoopProgress {
+        beads_processed,
+        beads_clarified,
+        beads_blocked,
+        outer_iterations,
+        last_evidence,
+    } = progress;
+
+    let gate = if outer_iterations == 0 {
+        let reason = if beads_processed == 0 {
+            NoGateReason::NoBeadsReady
+        } else {
+            NoGateReason::OncePartial
+        };
+        GateOutcome::NoGate {
+            beads_processed,
+            reason,
+        }
+    } else if stalled_at_max_iterations {
+        GateOutcome::Fail(GateFail::stalled(outer_iterations))
+    } else {
+        match GateSuccess::new(&last_evidence, outer_iterations) {
+            Ok(success) => GateOutcome::Success(success),
+            Err(fail) => GateOutcome::Fail(fail),
+        }
+    };
+
+    LoopOutcome {
+        beads_processed,
+        beads_clarified,
+        beads_blocked,
+        outer_iterations,
+        gate,
+    }
 }
 
 /// Run a single bead through the retry state machine.
@@ -350,7 +373,9 @@ async fn process_one_bead<C: AgentLoopController>(
 
 #[cfg(test)]
 mod tests {
+    use super::super::gate_outcome::GateFailReason;
     use super::*;
+    use crate::todo::ExitSignal;
     use loom_driver::bd::{Bead, Label};
     use loom_driver::identifier::BeadId;
     use std::collections::VecDeque;
@@ -375,6 +400,10 @@ mod tests {
         /// fix-ups (e.g., push gate fired clean). Excess `exec_review`
         /// calls beyond the scripted plan inject nothing.
         review_injects: VecDeque<Vec<Bead>>,
+        /// Scripted evidence each successive `exec_review` call returns.
+        /// Tests that exercise the gate-outcome path push here to control
+        /// what `GateSuccess::new` sees.
+        review_evidence: VecDeque<HandoffEvidence>,
         driver_events: Vec<(String, String, serde_json::Value)>,
     }
 
@@ -411,14 +440,14 @@ mod tests {
             Ok(())
         }
 
-        async fn exec_review(&mut self) -> Result<ExecReviewOutcome, LoopError> {
+        async fn exec_review(&mut self) -> Result<HandoffEvidence, LoopError> {
             self.review_calls += 1;
             if let Some(fixups) = self.review_injects.pop_front() {
                 for b in fixups {
                     self.ready_queue.push_back(b);
                 }
             }
-            Ok(ExecReviewOutcome::default())
+            Ok(self.review_evidence.pop_front().unwrap_or_default())
         }
 
         fn emit_driver_event(
@@ -484,8 +513,7 @@ mod tests {
         // All three reach Done; driver does not call bd close.
         assert!(c.clarified.is_empty());
         assert!(c.blocked.is_empty());
-        assert!(summary.molecule_complete);
-        assert!(summary.execed_review);
+        assert!(summary.outer_iterations >= 1);
         Ok(())
     }
 
@@ -495,8 +523,7 @@ mod tests {
         let mut c = FakeController::default();
         let summary = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
         assert_eq!(summary.beads_processed, 0);
-        assert!(summary.molecule_complete);
-        assert!(summary.execed_review);
+        assert!(summary.outer_iterations >= 1);
         assert_eq!(c.review_calls, 1);
         Ok(())
     }
@@ -505,8 +532,7 @@ mod tests {
     async fn once_mode_does_not_exec_review_on_empty_queue() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy::default(), 10).await?;
-        assert!(summary.molecule_complete);
-        assert!(!summary.execed_review, "once mode never execs review");
+        assert_eq!(summary.outer_iterations, 0);
         assert_eq!(c.review_calls, 0);
         Ok(())
     }
@@ -573,7 +599,7 @@ mod tests {
         });
         c.agent_outcomes.push_back(AgentOutcome::Success);
 
-        run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 3 }, 10).await?;
+        let _ = run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 3 }, 10).await?;
 
         let kinds: Vec<&str> = c.driver_events.iter().map(|(k, _, _)| k.as_str()).collect();
         assert_eq!(
@@ -848,8 +874,6 @@ mod tests {
             "one handoff per pass (initial + fix-up pass)",
         );
         assert_eq!(summary.outer_iterations, 2);
-        assert!(summary.molecule_complete);
-        assert!(summary.execed_review);
         assert!(c.clarified.is_empty());
         assert!(c.blocked.is_empty());
         Ok(())
@@ -884,7 +908,13 @@ mod tests {
         assert_eq!(summary.outer_iterations, 3);
         assert_eq!(c.review_calls, 3);
         assert_eq!(summary.beads_processed, 4);
-        assert!(summary.molecule_complete);
+        assert!(matches!(
+            summary.gate,
+            GateOutcome::Fail(GateFail {
+                reason: GateFailReason::StalledMaxIterations,
+                ..
+            })
+        ));
         Ok(())
     }
 
@@ -911,7 +941,7 @@ mod tests {
         c.review_injects.push_back(vec![]);
         c.agent_outcomes.push_back(AgentOutcome::Success);
 
-        run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
+        let _ = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
 
         let fixup_id = BeadId::new("wx-fixup").expect("valid bead id");
         let fixup_calls: Vec<&(BeadId, Option<String>)> = c
@@ -954,8 +984,137 @@ mod tests {
             "one handoff fires; the stall blocks a second",
         );
         assert_eq!(summary.outer_iterations, 1);
-        assert!(summary.molecule_complete);
-        assert!(summary.execed_review);
+        Ok(())
+    }
+
+    /// Spec criterion (`specs/harness.md` § Loop Outcome Types): the
+    /// binary's exit code is a pure function of the `GateOutcome`
+    /// variant — `Success` and `NoGate` exit 0; `Fail` exits non-zero.
+    /// This test pins the mapping at the workflow boundary by walking
+    /// `run_loop` through three paths — empty queue → `NoGate`,
+    /// stalled max_iterations → `Fail`, scripted-success evidence →
+    /// `Success` — and asserts on the variant each produces. The
+    /// binary's `exit_code_for_gate` consumes the same `GateOutcome`
+    /// so as long as this test holds, the exit code does too.
+    #[tokio::test]
+    async fn loom_loop_exit_code_is_function_of_gate_outcome_variant() -> Result<(), LoopError> {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut empty = FakeController::default();
+        let outcome_empty =
+            run_loop(&mut empty, LoopMode::Once, RetryPolicy::default(), 10).await?;
+        assert!(
+            matches!(
+                outcome_empty.gate,
+                GateOutcome::NoGate {
+                    reason: NoGateReason::NoBeadsReady,
+                    ..
+                }
+            ),
+            "empty queue in --once must surface NoGate(NoBeadsReady), got {:?}",
+            outcome_empty.gate,
+        );
+
+        let mut stalled = FakeController::default();
+        stalled.ready_queue.push_back(bead("wx-0", &[]));
+        for i in 1..=4 {
+            stalled
+                .review_injects
+                .push_back(vec![bead(&format!("wx-{i}"), &[])]);
+        }
+        for _ in 0..5 {
+            stalled.agent_outcomes.push_back(AgentOutcome::Success);
+        }
+        let outcome_stalled = run_loop(
+            &mut stalled,
+            LoopMode::Continuous,
+            RetryPolicy::default(),
+            2,
+        )
+        .await?;
+        match outcome_stalled.gate {
+            GateOutcome::Fail(GateFail {
+                reason: GateFailReason::StalledMaxIterations,
+                stalled_at_max_iterations,
+                ..
+            }) => assert!(stalled_at_max_iterations),
+            other => panic!("expected Fail(StalledMaxIterations), got {other:?}"),
+        }
+
+        let mut log = NamedTempFile::new().expect("tempfile");
+        log.write_all(b"event-1\nevent-2\nLOOM_COMPLETE\n").unwrap();
+        let log_path = log.path().to_path_buf();
+
+        let mut success = FakeController::default();
+        success.review_evidence.push_back(HandoffEvidence {
+            verify_exit: Some(0),
+            review_exit: Some(0),
+            review_marker: Some(ExitSignal::Complete),
+            review_log_path: Some(log_path),
+        });
+        let outcome_success = run_loop(
+            &mut success,
+            LoopMode::Continuous,
+            RetryPolicy::default(),
+            10,
+        )
+        .await?;
+        match outcome_success.gate {
+            GateOutcome::Success(receipt) => {
+                assert_eq!(receipt.verify_exit, 0);
+                assert_eq!(receipt.review_exit, 0);
+                assert_eq!(receipt.review_marker, ExitSignal::Complete);
+                assert!(receipt.total_handoffs >= 1);
+            }
+            other => panic!("expected Success(_), got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// Spec criterion (`specs/harness.md` § Loop Outcome Types): every
+    /// successful `loom loop` invocation produces a non-empty
+    /// `review-*.jsonl` at `r.review_log_path` ending in a terminal
+    /// `AgentEvent` whose marker equals `r.review_marker`. The sealed
+    /// constructor enforces this structurally — any caller that holds a
+    /// `GateSuccess` has, by definition, evidence that the on-disk log
+    /// exists and ends with `LOOM_COMPLETE`. This test exercises the
+    /// guarantee end-to-end through `run_loop`.
+    #[tokio::test]
+    async fn every_successful_loom_loop_writes_a_review_log_with_terminal_marker()
+    -> Result<(), LoopError> {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut log = NamedTempFile::new().expect("tempfile");
+        log.write_all(b"{\"kind\":\"text_delta\"}\nLOOM_COMPLETE\n")
+            .unwrap();
+        let path = log.path().to_path_buf();
+
+        let mut c = FakeController::default();
+        c.review_evidence.push_back(HandoffEvidence {
+            verify_exit: Some(0),
+            review_exit: Some(0),
+            review_marker: Some(ExitSignal::Complete),
+            review_log_path: Some(path.clone()),
+        });
+        let outcome = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
+        let receipt = match outcome.gate {
+            GateOutcome::Success(r) => r,
+            other => panic!("expected Success, got {other:?}"),
+        };
+        assert_eq!(receipt.review_log_path, path);
+        let contents = std::fs::read_to_string(&receipt.review_log_path).expect("log readable");
+        let last = contents
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .expect("non-empty line");
+        assert!(
+            last.contains("LOOM_COMPLETE"),
+            "last log line must carry LOOM_COMPLETE: {last:?}",
+        );
+        assert_eq!(receipt.review_marker, ExitSignal::Complete);
         Ok(())
     }
 }

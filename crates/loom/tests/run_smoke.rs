@@ -153,12 +153,12 @@ fn loom_loop_once_against_empty_bd_exits_zero() {
         "expected the run summary line. stdout={stdout}",
     );
     assert!(
-        stdout.contains("molecule_complete=true"),
-        "empty queue must mark the molecule complete. stdout={stdout}",
+        stdout.contains("gate=no-gate"),
+        "--once on empty queue must produce GateOutcome::NoGate. stdout={stdout}",
     );
     assert!(
-        stdout.contains("execed_review=false"),
-        "--once must NOT exec review. stdout={stdout}",
+        stdout.contains("outer_iterations=0"),
+        "--once must NOT exec review (outer_iterations stays 0). stdout={stdout}",
     );
 }
 
@@ -230,6 +230,67 @@ fn loom_loop_parallel_does_not_pass_exclude_label_to_bd_ready() {
         !argv.iter().any(|a| a.starts_with("--exclude-label")),
         "parallel `bd ready` must NOT pass --exclude-label — dedup happens via \
          the paired status=blocked transition; argv={argv:?}",
+    );
+}
+
+/// Spec criterion (`specs/harness.md` § Loop Outcome Types): the parallel
+/// codepath returns the same `LoopOutcome` shape as the sequential one,
+/// with a `gate` field that the binary's exit-code mapping consumes. The
+/// summary line printed by `loom loop --parallel N` includes a `gate=...`
+/// column whenever the parallel path returns a real `LoopOutcome`; the
+/// absence of that column would mean the parallel path is still returning
+/// the old `ParallelLoopSummary` shape (no gate).
+#[test]
+fn parallel_codepath_returns_loop_outcome_with_gate_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    init_workspace_repo(workspace);
+    std::fs::create_dir_all(workspace.join(".wrapix/loom")).unwrap();
+    std::fs::create_dir_all(workspace.join("specs")).unwrap();
+
+    let db = loom_driver::state::StateDb::open(workspace.join(".wrapix/loom/state.db")).unwrap();
+    db.set_current_spec(&loom_driver::identifier::SpecLabel::new("harness"))
+        .unwrap();
+    drop(db);
+
+    let bin_dir = install_bd_stub(workspace);
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries = vec![bin_dir];
+    path_entries.extend(std::env::split_paths(&path));
+    let new_path = std::env::join_paths(path_entries).unwrap();
+
+    let manifest_path = workspace.join("profile-images.json");
+    std::fs::write(&manifest_path, "{}").unwrap();
+
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let output = Command::new(loom_bin)
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("loop")
+        .arg("--parallel")
+        .arg("2")
+        .env("PATH", new_path)
+        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env("LOOM_BIN", loom_bin)
+        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        .env_remove("LOOM_INSIDE")
+        .output()
+        .expect("spawn loom");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "loom loop --parallel 2 must exit zero. stdout={stdout} stderr={stderr}",
+    );
+    assert!(
+        stdout.contains("gate="),
+        "parallel summary must include the `gate=` column proving LoopOutcome \
+         is the return shape (not the old ParallelLoopSummary). stdout={stdout}",
+    );
+    assert!(
+        stdout.contains("gate=no-gate"),
+        "empty bd queue under --parallel must produce GateOutcome::NoGate. stdout={stdout}",
     );
 }
 

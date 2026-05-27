@@ -35,6 +35,7 @@
 
 mod context;
 mod error;
+mod gate_outcome;
 mod outcome;
 mod parallel;
 mod parallelism;
@@ -47,6 +48,9 @@ mod tree_clean;
 
 pub use context::{LoopContextInputs, build_loop_context, render_loop_prompt};
 pub use error::LoopError;
+pub use gate_outcome::{
+    GateFail, GateFailReason, GateOutcome, GateSuccess, HandoffEvidence, LoopOutcome, NoGateReason,
+};
 pub use outcome::{AgentOutcome, BeadResult, SessionResult};
 pub use parallel::{
     BatchOutcome, BatchResult, BatchSlot, WorktreeBead, create_worktrees, merge_back,
@@ -59,7 +63,7 @@ pub use production::{
 pub use profile::{DEFAULT_PROFILE, resolve_profile, resolve_profile_image};
 pub use retry::{RetryDecision, RetryPolicy};
 pub use runner::{
-    AgentLoopController, INFRA_PREFLIGHT_CAUSE, INFRA_REPEATED_CAUSE, LoopMode, LoopSummary,
+    AgentLoopController, INFRA_PREFLIGHT_CAUSE, INFRA_REPEATED_CAUSE, LoopMode,
     UNKNOWN_PROFILE_CAUSE, run_loop,
 };
 pub use spawn::build_spawn_config_from_manifest;
