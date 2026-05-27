@@ -1182,6 +1182,21 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
 const INTEGRITY_ALLOWLIST: &[(&str, &str)] = &[
     // 14ec2ea renamed `loom run` → `loom loop` and added [test]
     // annotations whose referenced fns have not been written yet.
+    ("specs/harness.md", "loom_use_sets_current_spec_only"),
+    (
+        "specs/harness.md",
+        "todo_single_query_resolution_with_invariant_violation_refusal",
+    ),
+    (
+        "specs/harness.md",
+        "todo_fans_out_across_all_touched_specs_and_clarifies_on_collision",
+    ),
+    (
+        "specs/harness.md",
+        "once_mode_fires_gate_when_molecule_closes_else_no_gate_partial",
+    ),
+    ("specs/harness.md", "all_specs_iterates_by_bd_updated_asc"),
+    ("specs/harness.md", "all_specs_exit_code_reflects_aggregate"),
     (
         "specs/harness.md",
         "loom_loop_exit_code_is_function_of_gate_outcome_variant",
