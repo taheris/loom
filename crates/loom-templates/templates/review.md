@@ -27,6 +27,33 @@ Read: {{ spec_path }}
 - **Base commit**: {% match base_commit %}{% when Some with (commit) %}{{ commit }}{% when None %}—{% endmatch %}
 - **Molecule**: {% match molecule_id %}{% when Some with (id) %}{{ id }}{% when None %}—{% endmatch %}
 
+## Authorization — Bead Mutations Are the Phase's Purpose
+
+You are **authorized and required** to invoke `bd create`, `bd update`,
+`bd mol bond`, and `bd update --add-label` during this review phase
+**without asking the user first**. These mutations are the *purpose* of
+the review phase, not a side-effect — the verdict gate consumes the beads
+you mint as its persistence layer for fix-up work and clarifies. Suppress
+the default "ask before mutating shared state" reflex here: the review
+session itself is the user's standing authorization for those `bd`
+invocations.
+
+- Refusing to mint a bead and describing the fix-up or clarify only in
+  prose is a **protocol violation**. The gate does not parse your prose
+  for `### Option N` blocks or fix-up summaries — they must land in bead
+  state via `bd create` / `bd update --notes`.
+- `LOOM_CONCERN` **without at least one corresponding `bd create`** (a
+  clarify bead or a fix-up bead bonded to the molecule via `bd mol bond`)
+  leaves the concern invisible to downstream tooling: `bd ready` shows
+  nothing new, `loom msg`'s queue is empty, and the concern silently
+  evaporates when the molecule re-enters the loop with no actionable work
+  attached.
+- The `bd create`, `bd update --notes`, `bd update --add-label`, and `bd
+  mol bond` calls below are the canonical shapes — invoke them directly.
+  Do not pause to confirm before each one.
+
+Complete the `bd` writes **before** the final marker line.
+
 ## Recovery Epic Resolution
 
 The harness enforces "at most one open epic per spec". {% if tree_scope_epics.is_empty() %}Resolve each

@@ -302,3 +302,12 @@ one and only one.
   review phase emits `LOOM_CONCERN` xor `LOOM_COMPLETE` — never both, and
   never alongside any other marker. Emitting `LOOM_CONCERN` from any
   non-review phase is a `wrong-phase-marker` error in the verdict gate.
+  **`LOOM_CONCERN` requires at least one corresponding `bd create`** —
+  either a clarify bead (with the canonical `## Options — …` block) or a
+  fix-up bead bonded to the molecule via `bd mol bond`. A `LOOM_CONCERN`
+  whose findings live only in your prose is invisible to `bd ready` and
+  `loom msg`, so the concern silently evaporates when the molecule
+  re-enters the loop. The review phase is **authorized to invoke `bd
+  create`, `bd update`, `bd mol bond`, and `bd update --add-label`
+  without asking** — these mutations are the phase's purpose, not a
+  side-effect.

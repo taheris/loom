@@ -476,6 +476,35 @@ implementations", not specific file paths or crate names.
 Downstream consumers of loom whose workspace layouts differ from
 this one inherit the same discipline against their own layouts.
 
+### Review Bead-Mutation Authorization
+
+`review.md` carries an `## Authorization — Bead Mutations Are the
+Phase's Purpose` block near the top of the body (before the first
+section that invokes `bd create` / `bd update` / `bd mol bond`).
+The block tells the reviewing agent:
+
+1. `bd create`, `bd update`, `bd mol bond`, and `bd update
+   --add-label` MAY be invoked without further user authorization —
+   the review session is itself the user's standing authorization
+   for those `bd` mutations.
+2. Refusing to mint a bead and narrating the fix-up or clarify
+   only in prose is a protocol violation. The verdict gate does
+   not parse the agent's stdout for `### Option N` blocks or
+   fix-up summaries — they must land in bead state via `bd
+   create` / `bd update --notes`.
+3. `LOOM_CONCERN` REQUIRES at least one corresponding `bd create`
+   (a clarify bead or a fix-up bead bonded to the molecule via
+   `bd mol bond`). A `LOOM_CONCERN` whose findings live only in
+   the review log is invisible to `bd ready` and `loom msg` — the
+   concern silently evaporates when the molecule re-enters the
+   loop with no actionable work attached.
+
+The same constraint is pinned in `partial/exit_signals.md` so it
+appears in every review-style prompt the partial is included in.
+Reason: the agent's default "ask before mutating shared state"
+reflex collides with the gate's mechanical persistence model
+unless the authorization is named explicitly in the prompt.
+
 ### Sibling-Spec Editing
 
 `partial/sibling_spec_editing.md` is included only in
@@ -685,6 +714,23 @@ documents in front of the agent with zero configuration.
   sibling spec is a valid planning-session outcome and names the
   bead-allocation carve-out
   [judge](../tests/judges/loom.sh#judge_sibling_spec_editing_documents_split)
+
+### Review bead-mutation authorization
+
+- `review.md` contains an `## Authorization — Bead Mutations Are
+  the Phase's Purpose` block before the first section that invokes
+  `bd create`; the block names `bd create`, `bd update`, `bd mol
+  bond`, and `bd update --add-label` as authorized-without-asking
+  during the review phase
+  [check](grep -q 'Authorization — Bead Mutations Are the Phase' crates/loom-templates/templates/review.md)
+- The block also names the protocol violation: `LOOM_CONCERN`
+  without a corresponding `bd create` leaves the concern invisible
+  to `bd ready` and `loom msg`
+  [check](grep -q 'without at least one corresponding .bd create' crates/loom-templates/templates/review.md)
+- `partial/exit_signals.md` carries the same constraint on the
+  `LOOM_CONCERN` bullet so it appears in every prompt that
+  includes the partial
+  [check](grep -q 'LOOM_CONCERN. requires at least one corresponding .bd create' crates/loom-templates/templates/partial/exit_signals.md)
 
 ### Typed `PreviousFailure`
 
