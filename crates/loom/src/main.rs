@@ -878,16 +878,21 @@ fn filter_annotations(
 }
 
 /// Allowlist of `(spec_file, target_substring)` pairs identifying
-/// `[check]`-tier annotations that are intentionally skipped pending
-/// cleanup under bead **lm-hyh7**. The annotation is still parsed and
-/// counted by the integrity gate; only the runtime execution is
-/// suppressed.
+/// `[check]`-tier annotations that are intentionally skipped at
+/// execution. The annotation is still parsed and counted by the
+/// integrity gate; only the runtime execution is suppressed.
 ///
-/// Mirrors the rules for `INTEGRITY_ALLOWLIST`: only legitimate
-/// pre-existing breakage caused by upstream-resource drift, every
-/// entry comments the cause, and entries leave the moment the
-/// underlying resource is reconciled.
-const CHECK_ANNOTATION_ALLOWLIST: &[(&str, &str)] = &[];
+/// Only legitimate cases of "the verifier cannot run in this
+/// environment" — never as a workaround for a verifier that should
+/// pass but doesn't. Every entry carries a comment naming the cause.
+const CHECK_ANNOTATION_ALLOWLIST: &[(&str, &str)] = &[
+    // The three entrypoint.sh greps shell out via
+    // `nix build .#wrapixSrc`, which cannot run inside the
+    // `nix flake check` build sandbox (no recursive nix). Skip them at
+    // execution; the same greps pass when `loom gate check` runs under
+    // `nix develop` or anywhere with a working `nix` on PATH.
+    ("specs/agent.md", "lib/sandbox/linux/entrypoint.sh"),
+];
 
 fn is_allowlisted_check_annotation(ann: &loom_gate::Annotation) -> bool {
     let spec_str = ann.source_spec.to_string_lossy();

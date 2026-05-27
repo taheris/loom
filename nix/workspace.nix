@@ -54,6 +54,7 @@ let
     "tests/loom" = "${src}/tests/loom";
     "tests/default.nix" = "${src}/tests/default.nix";
     "tests/run-tests.sh" = "${src}/tests/run-tests.sh";
+    "tests/judges" = "${src}/tests/judges";
     "specs" = "${src}/specs";
     "docs" = "${src}/docs";
     "lib/prek" = "${src}/lib/prek";
