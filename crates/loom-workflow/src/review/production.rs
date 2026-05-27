@@ -851,24 +851,6 @@ mod tests {
         )
     }
 
-    fn controller_with_state(
-        workspace: PathBuf,
-        label: &str,
-        state: Arc<StateDb>,
-    ) -> NoopController {
-        let manifest = stub_manifest(&workspace);
-        ProductionReviewController::new(
-            BdClient::new(),
-            SpecLabel::new(label),
-            PathBuf::from("/usr/bin/loom"),
-            workspace,
-            state,
-            manifest,
-            ProfileName::new("base"),
-            noop_spawn,
-        )
-    }
-
     #[test]
     fn beads_push_argv_invokes_beads_push_not_bd_dolt_push() {
         let dir = tempfile::tempdir().unwrap();
@@ -1027,7 +1009,9 @@ mod tests {
     #[tokio::test]
     async fn integrity_findings_empty_when_no_active_molecule() {
         let dir = tempfile::tempdir().unwrap();
-        let mut ctrl = controller(dir.path().to_path_buf());
+        let state = empty_state(dir.path());
+        let mut ctrl =
+            scripted_controller(dir.path().to_path_buf(), "harness", state, [b"[]".to_vec()]);
         let findings = ctrl.integrity_findings().await.unwrap();
         assert!(findings.is_empty(), "no active molecule => no findings");
     }
@@ -1041,7 +1025,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
         let state = seeded_state(workspace, "alpha", "wx-alpha");
-        let mut ctrl = controller_with_state(workspace.to_path_buf(), "alpha", state);
+        let epic = epic_body("wx-alpha", "alpha");
+        let mut ctrl = scripted_controller(workspace.to_path_buf(), "alpha", state, [epic]);
         let findings = ctrl.integrity_findings().await.unwrap();
         assert!(findings.is_empty(), "no base_commit => no findings");
     }
