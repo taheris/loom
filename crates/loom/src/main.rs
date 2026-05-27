@@ -1186,16 +1186,16 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
 }
 
 /// Allowlist of `(spec_file, target_substring)` pairs whose
-/// [`loom_gate::IntegrityFinding`]s are intentionally suppressed pending
-/// cleanup under bead **lm-hyh7**. Each entry skips the matching
-/// annotation's "does not resolve" finding so the integrity tier passes
-/// even though the referenced test is currently missing.
+/// [`loom_gate::IntegrityFinding`]s are intentionally suppressed
+/// pending follow-on work. Each entry skips the matching annotation's
+/// "does not resolve" finding so the integrity tier passes even though
+/// the referenced test is currently missing.
 ///
 /// Add a new entry only when the resource the annotation points at is
-/// known to be missing, the cause is captured on lm-hyh7, and the entry
-/// has a comment naming the bead that owns the missing test. Drop the
-/// entry the moment the test is written (or the annotation is removed
-/// from the spec).
+/// known to be missing, the cause is captured on a tracked bead, and
+/// the entry block carries a comment naming the bead that owns the
+/// missing test. Drop the entry the moment the test is written (or
+/// the annotation is removed from the spec).
 const INTEGRITY_ALLOWLIST: &[(&str, &str)] = &[
     // lm-9ehh.7 (GateSuccess sealed receipt + LoopOutcome typed outcomes).
     // `once_mode_fires_gate_when_molecule_closes_else_no_gate_partial` is
@@ -1211,6 +1211,23 @@ const INTEGRITY_ALLOWLIST: &[(&str, &str)] = &[
     ("specs/harness.md", "all_specs_iterates_by_bd_updated_asc"),
     ("specs/harness.md", "all_specs_exit_code_reflects_aggregate"),
     ("specs/harness.md", "plan_does_not_create_epic_or_touch_bd"),
+    // lm-9ehh.12 (gate audit mint-and-bond resolution for tree scope).
+    // `specs/gate.md` § Standing-safety-net bonding describes the
+    // mint-molecule-and-bond behaviour these tests cover; the current
+    // refuse-path implementation predates that spec update. The tests
+    // land alongside the production code change.
+    (
+        "specs/gate.md",
+        "tree_scope_auto_creates_epics_for_missing_current_molecule_specs",
+    ),
+    (
+        "specs/gate.md",
+        "tree_scope_orchestrator_does_not_clobber_existing_current_molecule",
+    ),
+    (
+        "specs/gate.md",
+        "tree_scope_threads_current_molecule_into_reviewer_prompt",
+    ),
 ];
 
 fn is_allowlisted_integrity_finding(finding: &loom_gate::IntegrityFinding) -> bool {
