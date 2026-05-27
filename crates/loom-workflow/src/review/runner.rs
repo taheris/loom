@@ -266,6 +266,25 @@ pub async fn review_loop<C: ReviewController>(
         .map(|b| b.id.clone())
         .collect();
 
+    if let Some(ExitSignal::Concern { token, reason }) = marker.as_ref()
+        && new_ids.is_empty()
+        && blocked_ids.is_empty()
+        && clarify_ids.is_empty()
+    {
+        controller.emit_driver_event(
+            DriverKind::Other("review_protocol_violation".to_string()),
+            "reviewer emitted LOOM_CONCERN with no bead deltas — failing closed",
+            serde_json::json!({
+                "token": token,
+                "reason": reason,
+            }),
+        );
+        return Err(ReviewError::ConcernWithoutBeadDeltas {
+            token: token.clone(),
+            reason: reason.clone(),
+        });
+    }
+
     let verify_exit = controller.verify_exit().await?;
     let integrity_findings = controller.integrity_findings().await?;
     let verdict = decide_verdict(
@@ -1094,7 +1113,10 @@ mod tests {
                 reason: "bad diff".into(),
             }),
             pre_beads: vec![bead("wx-1", &["spec:harness"])],
-            post_beads: vec![bead("wx-1", &["spec:harness"])],
+            post_beads: vec![
+                bead("wx-1", &["spec:harness"]),
+                bead("wx-fix", &["spec:harness"]),
+            ],
             ..FakeController::default()
         };
         let result = review_loop(&mut c, IterationCap::default()).await?;
@@ -1110,6 +1132,80 @@ mod tests {
         // the wire format stays stable across causes.
         assert!(refuse.2["blocked_ids"].is_array());
         assert!(refuse.2["clarify_ids"].is_array());
+        Ok(())
+    }
+
+    /// A reviewer that emits `LOOM_CONCERN` but mints no fix-up / clarify
+    /// / blocked beads has violated the review protocol — the concern has
+    /// no downstream surface. The guard fires before the four-condition
+    /// AND so a co-occurring verify failure cannot mask the protocol
+    /// violation via cause-ordering.
+    #[tokio::test]
+    async fn gate_review_fails_when_concern_has_no_bead_deltas() {
+        let mut c = FakeController {
+            review: Some(ReviewOutcome::Incomplete {
+                detail: "LOOM_CONCERN: template-spec-drift -- templates direct removed surface"
+                    .into(),
+            }),
+            review_marker: Some(ExitSignal::Concern {
+                token: "template-spec-drift".into(),
+                reason: "templates direct removed surface".into(),
+            }),
+            pre_beads: vec![bead("wx-1", &["spec:harness"])],
+            post_beads: vec![bead("wx-1", &["spec:harness"])],
+            verify_exit: Some(1),
+            ..FakeController::default()
+        };
+        let err = review_loop(&mut c, IterationCap::default())
+            .await
+            .expect_err("protocol violation must surface as an error");
+        match err {
+            ReviewError::ConcernWithoutBeadDeltas { token, reason } => {
+                assert_eq!(token, "template-spec-drift");
+                assert_eq!(reason, "templates direct removed surface");
+            }
+            other => panic!("expected ConcernWithoutBeadDeltas, got {other:?}"),
+        }
+        let violation = c
+            .driver_events
+            .iter()
+            .find(|(k, _, _)| k == "review_protocol_violation")
+            .expect("review_protocol_violation event present");
+        assert_eq!(violation.2["token"].as_str(), Some("template-spec-drift"));
+        assert_eq!(c.git_push_calls, 0);
+        assert_eq!(c.beads_push_calls, 0);
+        assert_eq!(c.exec_run_calls, 0);
+        assert!(c.apply_integrity_clarify_calls.is_empty());
+    }
+
+    /// The protocol guard is conditional on missing bead deltas; a
+    /// concern paired with at least one new / blocked / clarify bead is
+    /// the well-formed shape and flows into the verdict gate normally.
+    #[tokio::test]
+    async fn gate_review_succeeds_when_concern_has_fix_up_bead() -> Result<(), ReviewError> {
+        let mut c = FakeController {
+            review: Some(ReviewOutcome::Incomplete {
+                detail: "LOOM_CONCERN: scope -- diff strays".into(),
+            }),
+            review_marker: Some(ExitSignal::Concern {
+                token: "scope".into(),
+                reason: "diff strays".into(),
+            }),
+            pre_beads: vec![bead("wx-1", &["spec:harness"])],
+            post_beads: vec![
+                bead("wx-1", &["spec:harness"]),
+                bead("wx-fix", &["spec:harness"]),
+            ],
+            ..FakeController::default()
+        };
+        let result = review_loop(&mut c, IterationCap::default()).await?;
+        assert!(matches!(result, ReviewResult::PushBlocked { .. }));
+        assert!(
+            c.driver_events
+                .iter()
+                .all(|(k, _, _)| k != "review_protocol_violation"),
+            "guard must not fire when bead deltas exist",
+        );
         Ok(())
     }
 
@@ -1203,7 +1299,10 @@ mod tests {
                         reason: "bad".into(),
                     }),
                     pre_beads: vec![bead("wx-1", &["spec:harness"])],
-                    post_beads: vec![bead("wx-1", &["spec:harness"])],
+                    post_beads: vec![
+                        bead("wx-1", &["spec:harness"]),
+                        bead("wx-fix", &["spec:harness"]),
+                    ],
                     ..FakeController::default()
                 },
             ),
@@ -1288,7 +1387,10 @@ mod tests {
                         reason: "bad".into(),
                     }),
                     pre_beads: vec![bead("wx-1", &["spec:harness"])],
-                    post_beads: vec![bead("wx-1", &["spec:harness"])],
+                    post_beads: vec![
+                        bead("wx-1", &["spec:harness"]),
+                        bead("wx-fix", &["spec:harness"]),
+                    ],
                     ..FakeController::default()
                 },
             ),
@@ -1433,6 +1535,7 @@ mod tests {
                     token: "scope".into(),
                     reason: "nope".into(),
                 });
+                c.post_beads.push(bead("wx-fix", &["spec:harness"]));
                 c
             }),
         ];
