@@ -8,8 +8,6 @@ _:
       wrapixLib,
       rustProfile,
       profileManifest,
-      sandbox,
-      loomBin,
       ...
     }:
     {
@@ -22,9 +20,7 @@ _:
 
         packages = [
           config.treefmt.build.wrapper
-          loomBin
           pkgs.cargo-nextest
-          sandbox.package
         ];
       };
     };
