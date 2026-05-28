@@ -200,7 +200,6 @@ fn token_usage_event(record: &UsageRecord) -> DirectEvent {
         output: record.usage.output,
         cache_read: record.usage.cache_read,
         cache_write: record.usage.cache_write,
-        cost_cents: record.usage.cost_cents,
     }
 }
 
@@ -786,7 +785,6 @@ mod tests {
                 output: 120,
                 cache_read: 200,
                 cache_write: 50,
-                cost_cents: 17,
             },
             tool_calls: vec![ToolUseRequest {
                 call_id: "call-1".into(),
@@ -801,7 +799,6 @@ mod tests {
                 output: 60,
                 cache_read: 600,
                 cache_write: 0,
-                cost_cents: 9,
             },
             tool_calls: Vec::new(),
         };
@@ -841,14 +838,12 @@ mod tests {
                 output,
                 cache_read,
                 cache_write,
-                cost_cents,
             } => {
                 assert_eq!(model, "claude-sonnet-4-6");
                 assert_eq!(*input, 500);
                 assert_eq!(*output, 120);
                 assert_eq!(*cache_read, 200);
                 assert_eq!(*cache_write, 50);
-                assert_eq!(*cost_cents, 17);
             }
             other => panic!("expected TokenUsage, got {other:?}"),
         }
@@ -859,14 +854,12 @@ mod tests {
                 output,
                 cache_read,
                 cache_write,
-                cost_cents,
             } => {
                 assert_eq!(model, "claude-sonnet-4-6");
                 assert_eq!(*input, 800);
                 assert_eq!(*output, 60);
                 assert_eq!(*cache_read, 600);
                 assert_eq!(*cache_write, 0);
-                assert_eq!(*cost_cents, 9);
             }
             other => panic!("expected TokenUsage, got {other:?}"),
         }

@@ -490,13 +490,12 @@ impl AgentEvent {
                 output,
                 cache_read,
                 cache_write,
-                cost_cents,
             } => {
                 let mut env = envelope;
                 env.source = Source::Driver;
                 let summary = format!(
                     "{model} input={input} output={output} cache_read={cache_read} \
-                     cache_write={cache_write} cost_cents={cost_cents}",
+                     cache_write={cache_write}",
                 );
                 let payload = serde_json::json!({
                     "model": model,
@@ -504,7 +503,6 @@ impl AgentEvent {
                     "output": output,
                     "cache_read": cache_read,
                     "cache_write": cache_write,
-                    "cost_cents": cost_cents,
                 });
                 AgentEvent::DriverEvent {
                     envelope: env,
@@ -589,7 +587,6 @@ pub enum ParsedAgentEvent {
         output: u32,
         cache_read: u32,
         cache_write: u32,
-        cost_cents: u32,
     },
 }
 
@@ -1179,7 +1176,6 @@ mod tests {
             output: 250,
             cache_read: 600,
             cache_write: 400,
-            cost_cents: 54,
         };
         match AgentEvent::from_parsed(parsed, env) {
             AgentEvent::DriverEvent {
@@ -1195,7 +1191,10 @@ mod tests {
                 assert_eq!(payload["output"], 250);
                 assert_eq!(payload["cache_read"], 600);
                 assert_eq!(payload["cache_write"], 400);
-                assert_eq!(payload["cost_cents"], 54);
+                assert!(
+                    payload.get("cost_cents").is_none(),
+                    "payload must not carry cost_cents per spec: {payload}",
+                );
                 assert!(summary.contains("claude-sonnet-4-6"));
             }
             other => panic!("expected DriverEvent, got {other:?}"),

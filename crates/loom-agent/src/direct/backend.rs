@@ -228,7 +228,6 @@ pub enum DirectEvent {
         output: u32,
         cache_read: u32,
         cache_write: u32,
-        cost_cents: u32,
     },
 }
 
@@ -275,14 +274,12 @@ impl DirectEvent {
                 output,
                 cache_read,
                 cache_write,
-                cost_cents,
             } => ParsedAgentEvent::TokenUsage {
                 model,
                 input,
                 output,
                 cache_read,
                 cache_write,
-                cost_cents,
             },
         }
     }
@@ -460,7 +457,7 @@ mod tests {
 
     #[test]
     fn parser_decodes_token_usage_into_parsed_event() {
-        let line = r#"{"type":"token_usage","model":"claude-sonnet-4-6","input":500,"output":120,"cache_read":200,"cache_write":50,"cost_cents":17}"#;
+        let line = r#"{"type":"token_usage","model":"claude-sonnet-4-6","input":500,"output":120,"cache_read":200,"cache_write":50}"#;
         let parsed = DirectParser.parse_line(line).expect("parse");
         assert_eq!(parsed.events.len(), 1);
         match &parsed.events[0] {
@@ -470,14 +467,12 @@ mod tests {
                 output,
                 cache_read,
                 cache_write,
-                cost_cents,
             } => {
                 assert_eq!(model, "claude-sonnet-4-6");
                 assert_eq!(*input, 500);
                 assert_eq!(*output, 120);
                 assert_eq!(*cache_read, 200);
                 assert_eq!(*cache_write, 50);
-                assert_eq!(*cost_cents, 17);
             }
             other => panic!("expected TokenUsage, got {other:?}"),
         }

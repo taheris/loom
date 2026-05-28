@@ -21,7 +21,7 @@ use crate::client::{CompletionResponse, LlmClient, LlmError, ToolUseRequest};
 use crate::model_id::ModelId;
 use crate::request::{CompletionRequest, Message, Role};
 use crate::tool::ToolDef;
-use crate::usage::{TokenUsage, cost_cents_for};
+use crate::usage::TokenUsage;
 
 /// Concrete `LlmClient` over the underlying multi-provider crate. The
 /// struct carries no model — every `complete*` call routes to the
@@ -105,13 +105,12 @@ impl Client {
             envelope,
             driver_kind: DriverKind::TokenUsage,
             summary: format!(
-                "{} input={} output={} cache_read={} cache_write={} cost_cents={}",
+                "{} input={} output={} cache_read={} cache_write={}",
                 model_id_to_provider_name(model),
                 usage.input,
                 usage.output,
                 usage.cache_read,
                 usage.cache_write,
-                usage.cost_cents,
             ),
             payload: serde_json::json!({
                 "model": model_id_to_provider_name(model),
@@ -119,7 +118,6 @@ impl Client {
                 "output": usage.output,
                 "cache_read": usage.cache_read,
                 "cache_write": usage.cache_write,
-                "cost_cents": usage.cost_cents,
             }),
         };
         guard.sink.emit(&event);
@@ -138,7 +136,7 @@ impl LlmClient for Client {
             .map_err(|err| LlmError::Provider {
                 message: err.to_string(),
             })?;
-        let response = from_genai_chat_response(&model, resp);
+        let response = from_genai_chat_response(resp);
         self.emit_usage(&model, &response.usage);
         Ok(response)
     }
@@ -157,7 +155,7 @@ impl LlmClient for Client {
             .map_err(|err| LlmError::Provider {
                 message: err.to_string(),
             })?;
-        let completion = from_genai_chat_response(&model, resp);
+        let completion = from_genai_chat_response(resp);
         self.emit_usage(&model, &completion.usage);
         parse_structured_text::<T>(&completion.text)
     }
@@ -306,8 +304,8 @@ pub(crate) fn cache_control_to_genai(cache: &CacheControl) -> Option<GenAiCacheC
     }
 }
 
-pub(crate) fn from_genai_chat_response(model: &ModelId, resp: ChatResponse) -> CompletionResponse {
-    let usage = from_genai_usage(model, &resp.usage);
+pub(crate) fn from_genai_chat_response(resp: ChatResponse) -> CompletionResponse {
+    let usage = from_genai_usage(&resp.usage);
     let tool_calls: Vec<ToolUseRequest> = resp
         .tool_calls()
         .into_iter()
@@ -321,7 +319,7 @@ pub(crate) fn from_genai_chat_response(model: &ModelId, resp: ChatResponse) -> C
     }
 }
 
-fn from_genai_usage(model: &ModelId, usage: &GenAiUsage) -> TokenUsage {
+fn from_genai_usage(usage: &GenAiUsage) -> TokenUsage {
     let input = usage.prompt_tokens.unwrap_or(0).max(0) as u32;
     let output = usage.completion_tokens.unwrap_or(0).max(0) as u32;
     let (cache_read, cache_write) =
@@ -334,13 +332,11 @@ fn from_genai_usage(model: &ModelId, usage: &GenAiUsage) -> TokenUsage {
                     details.cache_creation_tokens.unwrap_or(0).max(0) as u32,
                 )
             });
-    let cost_cents = cost_cents_for(model, input, output, cache_read, cache_write);
     TokenUsage {
         input,
         output,
         cache_read,
         cache_write,
-        cost_cents,
     }
 }
 
@@ -512,23 +508,28 @@ mod tests {
     }
 
     /// `ChatResponse → CompletionResponse` carries the final text and
-    /// the full `TokenUsage` quintuple: `input`, `output`, `cache_read`,
-    /// `cache_write`, `cost_cents`. The cache fields are pulled from
-    /// the provider's prompt-tokens detail block and `cost_cents` is
-    /// computed from the per-model rate table on every call.
+    /// the four-field `TokenUsage`: `input`, `output`, `cache_read`,
+    /// `cache_write`. The cache fields are pulled from the provider's
+    /// prompt-tokens detail block. Pricing is consumer-owned (see
+    /// `specs/llm.md` § TokenUsage); the exhaustive destructure below
+    /// would fail to compile if a fifth field appeared on the struct.
     #[test]
-    fn completion_response_carries_usage_with_cache_fields() {
+    fn completion_response_carries_token_usage_without_cost() {
         let usage = make_usage(1_000, 250, 600, 400);
         let resp = make_response(usage);
 
-        let completion =
-            from_genai_chat_response(&ModelId::Anthropic(AnthropicModel::ClaudeSonnet46), resp);
+        let completion = from_genai_chat_response(resp);
         assert_eq!(completion.text, "the answer");
-        assert_eq!(completion.usage.input, 1_000);
-        assert_eq!(completion.usage.output, 250);
-        assert_eq!(completion.usage.cache_read, 600);
-        assert_eq!(completion.usage.cache_write, 400);
-        assert_eq!(completion.usage.cost_cents, 54);
+        let TokenUsage {
+            input,
+            output,
+            cache_read,
+            cache_write,
+        } = completion.usage;
+        assert_eq!(input, 1_000);
+        assert_eq!(output, 250);
+        assert_eq!(cache_read, 600);
+        assert_eq!(cache_write, 400);
     }
 
     /// `complete_structured::<T>` lowers a `CompletionRequest` into a
@@ -613,7 +614,7 @@ mod tests {
                 &model_id_to_provider_name(&model_id),
                 json_text,
             );
-            let completion = from_genai_chat_response(&model_id, resp);
+            let completion = from_genai_chat_response(resp);
             let value: AnswerShape =
                 parse_structured_text(&completion.text).expect("structured payload parses");
             assert_eq!(value, expected, "same T across providers: {adapter_kind:?}",);
@@ -666,9 +667,9 @@ mod tests {
 
     /// Every successful `complete*` call emits a
     /// `DriverKind::TokenUsage` driver event into the configured sink
-    /// chain. The event's payload carries the full `TokenUsage`
-    /// quintuple so SaaS billing pipelines see cache hits and cost
-    /// without re-parsing provider responses.
+    /// chain. The event's payload carries the four-field `TokenUsage`
+    /// plus the model identifier so SaaS billing pipelines see cache
+    /// hits and compute their own per-tenant cost from the raw counts.
     ///
     /// `complete()` itself requires a live provider, so this test
     /// invokes the private emission helper that `complete()` calls
@@ -685,7 +686,6 @@ mod tests {
             output: 250,
             cache_read: 600,
             cache_write: 400,
-            cost_cents: 54,
         };
         client.emit_usage(&ModelId::Anthropic(AnthropicModel::ClaudeSonnet46), &usage);
 
@@ -700,12 +700,19 @@ mod tests {
             } => {
                 assert_eq!(*driver_kind, DriverKind::TokenUsage);
                 assert_eq!(envelope.source, Source::Driver);
+                assert_eq!(payload["model"], "claude-sonnet-4-6");
                 assert_eq!(payload["input"], 1_000);
                 assert_eq!(payload["output"], 250);
                 assert_eq!(payload["cache_read"], 600);
                 assert_eq!(payload["cache_write"], 400);
-                assert_eq!(payload["cost_cents"], 54);
-                assert_eq!(payload["model"], "claude-sonnet-4-6");
+                let obj = payload.as_object().expect("payload is JSON object");
+                let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+                keys.sort_unstable();
+                assert_eq!(
+                    keys,
+                    vec!["cache_read", "cache_write", "input", "model", "output"],
+                    "payload pins the spec'd field set with no extras",
+                );
                 assert!(
                     summary.contains("claude-sonnet-4-6"),
                     "summary names the model: {summary}",
@@ -727,9 +734,7 @@ mod tests {
             output: 10,
             cache_read: 0,
             cache_write: 0,
-            cost_cents: 0,
         };
-        // No panic, no side effect — just a return.
         client.emit_usage(&ModelId::Anthropic(AnthropicModel::ClaudeSonnet46), &usage);
     }
 }
