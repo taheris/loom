@@ -13,16 +13,25 @@ mod multi_provider;
 
 pub use multi_provider::Client;
 
+use std::future::Future;
+use std::pin::Pin;
 use std::time::{Duration, SystemTime};
 
 use displaydoc::Display;
-use schemars::JsonSchema;
+use schemars::{JsonSchema, SchemaGenerator};
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 
 use crate::model_id::{ModelId, SchemaKind};
 use crate::request::CompletionRequest;
 use crate::usage::TokenUsage;
+
+/// Boxed future the object-safe trait methods return. Using a boxed
+/// future (rather than `impl Future`) keeps the trait dyn-compatible so
+/// `Arc<dyn LlmClient>` works for runtime polymorphism — per-tenant
+/// Client caches, mock impls, and external-crate impls compose through
+/// the same dyn surface.
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Successful completion outcome. Every call carries token usage so
 /// consumers see cache hits and cost directly; the same `TokenUsage` is
@@ -251,33 +260,280 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> Option<i64> {
         .checked_sub(719_468)
 }
 
-/// The public agent-side LLM contract. Per-call model selection;
-/// `complete_structured::<T>` hides provider-specific structured-output
-/// mechanism behind a single typed method.
+/// The public agent-side LLM contract.
+///
+/// The trait is object-safe so `Arc<dyn LlmClient>` works for runtime
+/// polymorphism — per-tenant Client caches, mock impls in tests, and
+/// external-crate `LlmClient` impls compose through the same dyn
+/// surface.
+///
+/// `complete` and the type-erased `complete_structured_raw` return
+/// boxed futures so the trait stays dyn-compatible; the typed
+/// `complete_structured::<T>` consumer surface is provided as a
+/// blanket-implemented extension method on [`LlmClientExt`] that
+/// generates `T`'s schema via `schemars` and routes through
+/// `complete_structured_raw`. Consumers reach for
+/// `complete_structured::<T>` regardless of whether they hold a
+/// concrete Client or an `Arc<dyn LlmClient>`.
 pub trait LlmClient: Send + Sync {
+    /// Wire-format discriminator this Client targets. Per-Client schema
+    /// is fixed at construction; per-call model selection varies the
+    /// `ModelId` within that schema.
+    fn schema(&self) -> SchemaKind;
+
+    /// Whether this Client can dispatch the supplied `ModelId`. Default
+    /// impl returns `model.schema() == self.schema()`; overrides are
+    /// rare and only useful for adapters that span multiple schemas.
+    fn supports(&self, model: &ModelId) -> bool {
+        model.schema() == self.schema()
+    }
+
     /// Run a completion against the request's `ModelId`. Returns the
     /// final assistant text plus token usage.
-    fn complete(
-        &self,
+    fn complete<'a>(
+        &'a self,
         req: CompletionRequest,
-    ) -> impl Future<Output = Result<CompletionResponse, LlmError>> + Send;
+    ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>>;
 
-    /// Run a completion that deserializes into `T`. Internally selects
-    /// the right provider mechanism (synthetic forced-tool for
-    /// Anthropic, `response_format` for OpenAI, `response_schema` for
-    /// Gemini) and returns the parsed value.
-    fn complete_structured<T>(
-        &self,
+    /// Schema-aware completion that returns the raw assistant-text JSON
+    /// payload. Implementers select the right provider mechanism
+    /// (synthetic forced-tool for Anthropic, `response_format` for
+    /// OpenAI, `response_schema` for Gemini) using the supplied schema
+    /// and type name, run the call, and return the raw text the model
+    /// produced. Consumers should prefer the typed
+    /// [`LlmClientExt::complete_structured`] wrapper which generates
+    /// the schema from `T` and parses the returned text.
+    fn complete_structured_raw<'a>(
+        &'a self,
         req: CompletionRequest,
-    ) -> impl Future<Output = Result<T, LlmError>> + Send
+        schema: serde_json::Value,
+        type_name: String,
+    ) -> BoxFuture<'a, Result<String, LlmError>>;
+}
+
+/// Typed consumer-facing structured-output entry point. Blanket-
+/// implemented for every [`LlmClient`] (including `dyn LlmClient`), so
+/// `Arc<dyn LlmClient>` dispatches `complete_structured::<T>` through
+/// the dyn-safe [`LlmClient::complete_structured_raw`] without the
+/// trait itself carrying a generic method (which would break
+/// object-safety).
+pub trait LlmClientExt: LlmClient {
+    /// Run a completion that deserializes into `T`. Generates `T`'s
+    /// JSON schema via `schemars`, calls
+    /// [`LlmClient::complete_structured_raw`], and parses the returned
+    /// text into `T`. Failure modes surface as typed [`LlmError`]
+    /// variants: [`LlmError::MalformedJson`] for non-JSON / parse
+    /// failures, [`LlmError::SchemaViolation`] for parsed-but-invalid
+    /// responses.
+    fn complete_structured<'a, T>(
+        &'a self,
+        req: CompletionRequest,
+    ) -> BoxFuture<'a, Result<T, LlmError>>
     where
-        T: DeserializeOwned + JsonSchema + Send;
+        T: DeserializeOwned + JsonSchema + Send + 'static;
+}
+
+impl<C: LlmClient + ?Sized> LlmClientExt for C {
+    fn complete_structured<'a, T>(
+        &'a self,
+        req: CompletionRequest,
+    ) -> BoxFuture<'a, Result<T, LlmError>>
+    where
+        T: DeserializeOwned + JsonSchema + Send + 'static,
+    {
+        let schema = SchemaGenerator::default()
+            .into_root_schema_for::<T>()
+            .to_value();
+        let type_name = sanitize_schema_name(&T::schema_name());
+        Box::pin(async move {
+            let text = self.complete_structured_raw(req, schema, type_name).await?;
+            serde_json::from_str::<T>(&text).map_err(|err| LlmError::MalformedJson(err.to_string()))
+        })
+    }
+}
+
+/// Sanitize a schemars-derived schema name for the OpenAI
+/// structured-output API, which only accepts ASCII alphanumerics plus
+/// `-` and `_`. The other adapters ignore the name, so the same
+/// sanitization is safe across providers.
+fn sanitize_schema_name(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
     use crate::model_id::AnthropicModel;
+    use crate::usage::TokenUsage;
+
+    /// `Arc<dyn LlmClient>` compiles and dispatches `complete` through
+    /// the trait object — the object-safety promise the spec pins under
+    /// Success Criteria § Public surface ("`Arc<dyn LlmClient>` compiles
+    /// and dispatches `complete` / `complete_structured` correctly").
+    /// `complete_structured::<T>` is the typed extension provided by
+    /// [`LlmClientExt`]'s blanket impl, so it also resolves on a
+    /// trait-object receiver — exercised here against the same dyn
+    /// reference.
+    #[test]
+    fn llm_client_trait_is_object_safe() {
+        #[derive(Default)]
+        struct StubClient {
+            captured: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl LlmClient for StubClient {
+            fn schema(&self) -> SchemaKind {
+                SchemaKind::Anthropic
+            }
+
+            fn complete<'a>(
+                &'a self,
+                req: CompletionRequest,
+            ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+                let captured = self.captured.clone();
+                Box::pin(async move {
+                    captured
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(req.model.as_wire());
+                    Ok(CompletionResponse {
+                        text: "ok".into(),
+                        usage: TokenUsage::default(),
+                        tool_calls: Vec::new(),
+                    })
+                })
+            }
+
+            fn complete_structured_raw<'a>(
+                &'a self,
+                _req: CompletionRequest,
+                _schema: serde_json::Value,
+                _type_name: String,
+            ) -> BoxFuture<'a, Result<String, LlmError>> {
+                Box::pin(async move { Ok(r#"{"text":"structured"}"#.to_string()) })
+            }
+        }
+
+        #[derive(serde::Deserialize, schemars::JsonSchema, PartialEq, Debug)]
+        struct Shape {
+            text: String,
+        }
+
+        let stub = StubClient::default();
+        let captured = stub.captured.clone();
+        let client: Arc<dyn LlmClient> = Arc::new(stub);
+
+        assert_eq!(client.schema(), SchemaKind::Anthropic);
+        assert!(client.supports(&ModelId::Anthropic(AnthropicModel::ClaudeSonnet46)));
+
+        let req = CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46));
+        let resp =
+            tokio_test::block_on(client.complete(req)).expect("dyn dispatch reaches stub complete");
+        assert_eq!(resp.text, "ok");
+        assert_eq!(
+            *captured.lock().unwrap_or_else(|p| p.into_inner()),
+            vec!["claude-sonnet-4-6".to_string()],
+        );
+
+        let structured_req =
+            CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46));
+        let parsed: Shape =
+            tokio_test::block_on(client.complete_structured::<Shape>(structured_req))
+                .expect("dyn dispatch reaches structured path");
+        assert_eq!(
+            parsed,
+            Shape {
+                text: "structured".into()
+            }
+        );
+    }
+
+    /// `LlmClient::supports(&model)` returns `model.schema() ==
+    /// self.schema()` for every variant pair — the default impl's
+    /// promise, exercised across all `SchemaKind` cases via stub
+    /// Clients whose `schema()` is fixed.
+    #[test]
+    fn supports_matches_schema_equality() {
+        struct Stub(SchemaKind);
+        impl LlmClient for Stub {
+            fn schema(&self) -> SchemaKind {
+                self.0
+            }
+            fn complete<'a>(
+                &'a self,
+                _req: CompletionRequest,
+            ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+                Box::pin(async move {
+                    Err(LlmError::Provider {
+                        message: "stub".into(),
+                    })
+                })
+            }
+            fn complete_structured_raw<'a>(
+                &'a self,
+                _req: CompletionRequest,
+                _schema: serde_json::Value,
+                _type_name: String,
+            ) -> BoxFuture<'a, Result<String, LlmError>> {
+                Box::pin(async move {
+                    Err(LlmError::Provider {
+                        message: "stub".into(),
+                    })
+                })
+            }
+        }
+
+        let cases: &[(SchemaKind, ModelId, bool)] = &[
+            (
+                SchemaKind::Anthropic,
+                ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
+                true,
+            ),
+            (
+                SchemaKind::Anthropic,
+                ModelId::OpenAi(crate::model_id::OpenAiModel::Gpt55),
+                false,
+            ),
+            (
+                SchemaKind::OpenAi,
+                ModelId::OpenAi(crate::model_id::OpenAiModel::Gpt55),
+                true,
+            ),
+            (
+                SchemaKind::OpenAi,
+                ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
+                false,
+            ),
+            (
+                SchemaKind::Gemini,
+                ModelId::Gemini(crate::model_id::GeminiModel::Gemini31Pro),
+                true,
+            ),
+            (
+                SchemaKind::Gemini,
+                ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
+                false,
+            ),
+        ];
+        for (client_schema, model, want) in cases {
+            let stub = Stub(*client_schema);
+            assert_eq!(
+                stub.supports(model),
+                *want,
+                "client_schema={client_schema:?} model={model:?}",
+            );
+        }
+    }
 
     /// Every variant of [`LlmError`] reports the [`RetryAdvice`] the
     /// classification table in `specs/llm.md` § LlmError pins. The

@@ -246,7 +246,7 @@ mod tests {
             "gpt-5-preview".to_string(),
         )))
         .assistant("previous reply")
-            .assistant_cached("cached reply", CacheControl::Ephemeral(CacheTtl::Minutes5));
+        .assistant_cached("cached reply", CacheControl::Ephemeral(CacheTtl::Minutes5));
         assert_eq!(req.messages.len(), 2);
         assert_eq!(req.messages[0].role, Role::Assistant);
         assert!(matches!(req.messages[0].cache, CacheControl::None));

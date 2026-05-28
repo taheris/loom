@@ -13,12 +13,14 @@ use genai::chat::{
     ToolCall as GenAiToolCall, ToolResponse as GenAiToolResponse, Usage as GenAiUsage,
 };
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, EventSink, Source};
+#[cfg(test)]
 use schemars::{JsonSchema, SchemaGenerator};
+#[cfg(test)]
 use serde::de::DeserializeOwned;
 
 use crate::cache::{CacheControl, CacheTtl};
-use crate::client::{CompletionResponse, LlmClient, LlmError, ToolUseRequest};
-use crate::model_id::ModelId;
+use crate::client::{BoxFuture, CompletionResponse, LlmClient, LlmError, ToolUseRequest};
+use crate::model_id::{ModelId, SchemaKind};
 use crate::request::{CompletionRequest, Message, Role};
 use crate::tool::ToolDef;
 use crate::usage::TokenUsage;
@@ -125,70 +127,91 @@ impl Client {
 }
 
 impl LlmClient for Client {
-    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError> {
-        let model = req.model.clone();
-        let model_name = model_id_to_provider_name(&model);
-        let (chat_req, options) = to_genai_chat_request(req);
-        let resp = self
-            .inner
-            .exec_chat(&model_name, chat_req, Some(&options))
-            .await
-            .map_err(|err| LlmError::Provider {
-                message: err.to_string(),
-            })?;
-        let response = from_genai_chat_response(resp);
-        self.emit_usage(&model, &response.usage);
-        Ok(response)
+    fn schema(&self) -> SchemaKind {
+        SchemaKind::Anthropic
     }
 
-    async fn complete_structured<T>(&self, req: CompletionRequest) -> Result<T, LlmError>
-    where
-        T: DeserializeOwned + JsonSchema + Send,
-    {
-        let model = req.model.clone();
-        let model_name = model_id_to_provider_name(&model);
-        let (chat_req, options) = to_genai_structured_chat_options::<T>(req);
-        let resp = self
-            .inner
-            .exec_chat(&model_name, chat_req, Some(&options))
-            .await
-            .map_err(|err| LlmError::Provider {
-                message: err.to_string(),
-            })?;
-        let completion = from_genai_chat_response(resp);
-        self.emit_usage(&model, &completion.usage);
-        parse_structured_text::<T>(&completion.text)
+    fn supports(&self, _model: &ModelId) -> bool {
+        true
+    }
+
+    fn complete<'a>(
+        &'a self,
+        req: CompletionRequest,
+    ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+        Box::pin(async move {
+            let model = req.model.clone();
+            let model_name = model_id_to_provider_name(&model);
+            let (chat_req, options) = to_genai_chat_request(req);
+            let resp = self
+                .inner
+                .exec_chat(&model_name, chat_req, Some(&options))
+                .await
+                .map_err(|err| LlmError::Provider {
+                    message: err.to_string(),
+                })?;
+            let response = from_genai_chat_response(resp);
+            self.emit_usage(&model, &response.usage);
+            Ok(response)
+        })
+    }
+
+    fn complete_structured_raw<'a>(
+        &'a self,
+        req: CompletionRequest,
+        schema: serde_json::Value,
+        type_name: String,
+    ) -> BoxFuture<'a, Result<String, LlmError>> {
+        Box::pin(async move {
+            let model = req.model.clone();
+            let model_name = model_id_to_provider_name(&model);
+            let (chat_req, options) = to_genai_structured_chat_options_raw(req, schema, type_name);
+            let resp = self
+                .inner
+                .exec_chat(&model_name, chat_req, Some(&options))
+                .await
+                .map_err(|err| LlmError::Provider {
+                    message: err.to_string(),
+                })?;
+            let completion = from_genai_chat_response(resp);
+            self.emit_usage(&model, &completion.usage);
+            Ok(completion.text)
+        })
     }
 }
 
-/// Lower a [`CompletionRequest`] to the genai chat request + options pair
-/// and attach `T`'s JSON schema as the structured-output spec. The same
-/// `JsonSpec` round-trips through every adapter — Anthropic's
-/// `output_config.format = json_schema`, OpenAI's `response_format =
-/// json_schema`, and Gemini's `responseMimeType = "application/json"` +
-/// `responseJsonSchema` — so the provider mechanism is hidden behind one
-/// call shape and only the `ModelId` variant decides routing.
-pub(crate) fn to_genai_structured_chat_options<T: JsonSchema>(
+/// Lower a [`CompletionRequest`] to the genai chat request + options
+/// pair and attach the supplied JSON schema as the structured-output
+/// spec. The same `JsonSpec` round-trips through every adapter —
+/// Anthropic's `output_config.format = json_schema`, OpenAI's
+/// `response_format = json_schema`, and Gemini's
+/// `responseMimeType = "application/json"` + `responseJsonSchema` — so
+/// the provider mechanism is hidden behind one call shape and only the
+/// `ModelId` variant decides routing.
+pub(crate) fn to_genai_structured_chat_options_raw(
     req: CompletionRequest,
+    schema: serde_json::Value,
+    type_name: String,
 ) -> (ChatRequest, ChatOptions) {
     let (chat_req, mut options) = to_genai_chat_request(req);
     options.response_format = Some(ChatResponseFormat::JsonSpec(JsonSpec::new(
-        json_spec_name::<T>(),
-        json_schema_value::<T>(),
+        type_name, schema,
     )));
     (chat_req, options)
 }
 
-fn json_schema_value<T: JsonSchema>() -> serde_json::Value {
-    SchemaGenerator::default()
+#[cfg(test)]
+pub(crate) fn to_genai_structured_chat_options<T: JsonSchema>(
+    req: CompletionRequest,
+) -> (ChatRequest, ChatOptions) {
+    let schema = SchemaGenerator::default()
         .into_root_schema_for::<T>()
-        .to_value()
+        .to_value();
+    let type_name = json_spec_name::<T>();
+    to_genai_structured_chat_options_raw(req, schema, type_name)
 }
 
-/// Sanitize `T::schema_name()` for the OpenAI structured-output API,
-/// which only accepts ASCII alphanumerics plus `-` and `_`. The other
-/// adapters ignore the name field, so the same sanitization is safe
-/// across providers.
+#[cfg(test)]
 fn json_spec_name<T: JsonSchema>() -> String {
     T::schema_name()
         .chars()
@@ -202,6 +225,7 @@ fn json_spec_name<T: JsonSchema>() -> String {
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn parse_structured_text<T: DeserializeOwned>(text: &str) -> Result<T, LlmError> {
     serde_json::from_str(text).map_err(|err| LlmError::MalformedJson(err.to_string()))
 }

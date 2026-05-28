@@ -1,12 +1,14 @@
 //! `llm` is a typed wrapper — not a thin re-export of the
-//! underlying multi-provider LLM crate. Each of the seven public types
-//! (`LlmClient`, `CompletionRequest`, `Message`, `ModelId`,
-//! `CacheControl`, `Tool`, `Conversation`) must be **defined** inside
-//! `crates/loom-llm/src/` (a `pub`/private `struct`, `enum`, or `trait`
-//! with that ident), not only re-exported from an external crate. This
-//! walk asserts every name has at least one in-crate definition; a
-//! pure `pub use external::Name` would leave the consumer-facing
-//! surface tied to whichever provider crate happens to underlie loom-llm.
+//! underlying multi-provider LLM crate. Each public type spec'd in
+//! `specs/llm.md` (`LlmClient`, `CompletionRequest`, `Message`,
+//! `ModelId`, `SchemaKind`, `CacheControl`, `Tool`, `Conversation`,
+//! `LlmError`, `RetryAdvice`, `ApiKey`) must be **defined** inside
+//! `crates/loom-llm/src/` (a `pub`/private `struct`, `enum`, or
+//! `trait` with that ident), not only re-exported from an external
+//! crate. This walk asserts every name has at least one in-crate
+//! definition; a pure `pub use external::Name` would leave the
+//! consumer-facing surface tied to whichever provider crate happens
+//! to underlie loom-llm.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -21,9 +23,13 @@ const REQUIRED: &[&str] = &[
     "CompletionRequest",
     "Message",
     "ModelId",
+    "SchemaKind",
     "CacheControl",
     "Tool",
     "Conversation",
+    "LlmError",
+    "RetryAdvice",
+    "ApiKey",
 ];
 
 const SRC_DIR: &str = "crates/loom-llm/src";

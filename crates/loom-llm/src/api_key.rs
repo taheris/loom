@@ -64,6 +64,9 @@ mod tests {
         let key = ApiKey::new("super-secret".to_string()).expect("non-empty");
         let rendered = format!("{key:?}");
         assert!(!rendered.contains("super-secret"), "redacted: {rendered}");
-        assert!(rendered.contains("REDACTED"), "redaction marker: {rendered}");
+        assert!(
+            rendered.contains("REDACTED"),
+            "redaction marker: {rendered}"
+        );
     }
 }

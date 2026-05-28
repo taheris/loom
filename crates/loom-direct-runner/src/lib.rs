@@ -24,14 +24,12 @@ use loom_agent::direct::tools::{Bash, Edit, Glob, Grep, Read, Write};
 use loom_driver::agent::SpawnConfig;
 use loom_events::identifier::ToolCallId;
 use loom_llm::cache::{CacheControl, CacheTtl};
-use loom_llm::client::{CompletionResponse, LlmClient, LlmError};
+use loom_llm::client::{BoxFuture, CompletionResponse, LlmClient, LlmError};
 use loom_llm::conversation::{Conversation, ConversationBuildError};
-use loom_llm::model_id::{AnthropicModel, ModelId};
+use loom_llm::model_id::{AnthropicModel, ModelId, SchemaKind};
 use loom_llm::request::{CompletionRequest, Message, Role};
 use loom_llm::tool::Tool;
 use loom_llm::usage::TokenUsage;
-use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, info, warn};
@@ -234,18 +232,33 @@ impl<C> UsageRecordingClient<C> {
 }
 
 impl<C: LlmClient + Sync> LlmClient for UsageRecordingClient<C> {
-    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError> {
-        let model = req.model.clone();
-        let resp = self.inner.complete(req).await?;
-        self.record(&model, resp.usage);
-        Ok(resp)
+    fn schema(&self) -> SchemaKind {
+        self.inner.schema()
     }
 
-    async fn complete_structured<T>(&self, req: CompletionRequest) -> Result<T, LlmError>
-    where
-        T: DeserializeOwned + JsonSchema + Send,
-    {
-        self.inner.complete_structured::<T>(req).await
+    fn supports(&self, model: &ModelId) -> bool {
+        self.inner.supports(model)
+    }
+
+    fn complete<'a>(
+        &'a self,
+        req: CompletionRequest,
+    ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+        Box::pin(async move {
+            let model = req.model.clone();
+            let resp = self.inner.complete(req).await?;
+            self.record(&model, resp.usage);
+            Ok(resp)
+        })
+    }
+
+    fn complete_structured_raw<'a>(
+        &'a self,
+        req: CompletionRequest,
+        schema: serde_json::Value,
+        type_name: String,
+    ) -> BoxFuture<'a, Result<String, LlmError>> {
+        self.inner.complete_structured_raw(req, schema, type_name)
     }
 }
 
@@ -374,26 +387,43 @@ mod tests {
     }
 
     impl LlmClient for ScriptedClient {
-        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, LlmError> {
-            let mut guard = self
-                .responses
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            if guard.is_empty() {
-                Err(LlmError::Provider {
-                    message: "scripted client exhausted".into(),
-                })
-            } else {
-                Ok(guard.remove(0))
-            }
+        fn schema(&self) -> SchemaKind {
+            SchemaKind::Anthropic
         }
 
-        async fn complete_structured<T>(&self, _req: CompletionRequest) -> Result<T, LlmError>
-        where
-            T: serde::de::DeserializeOwned + schemars::JsonSchema + Send,
-        {
-            Err(LlmError::Provider {
-                message: "structured not used in runner tests".into(),
+        fn supports(&self, _model: &ModelId) -> bool {
+            true
+        }
+
+        fn complete<'a>(
+            &'a self,
+            _req: CompletionRequest,
+        ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+            Box::pin(async move {
+                let mut guard = self
+                    .responses
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                if guard.is_empty() {
+                    Err(LlmError::Provider {
+                        message: "scripted client exhausted".into(),
+                    })
+                } else {
+                    Ok(guard.remove(0))
+                }
+            })
+        }
+
+        fn complete_structured_raw<'a>(
+            &'a self,
+            _req: CompletionRequest,
+            _schema: serde_json::Value,
+            _type_name: String,
+        ) -> BoxFuture<'a, Result<String, LlmError>> {
+            Box::pin(async move {
+                Err(LlmError::Provider {
+                    message: "structured not used in runner tests".into(),
+                })
             })
         }
     }
@@ -677,20 +707,37 @@ mod tests {
     }
 
     impl LlmClient for CapturingClient {
-        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError> {
-            self.captured
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(req);
-            Ok(self.response.clone())
+        fn schema(&self) -> SchemaKind {
+            SchemaKind::Anthropic
         }
 
-        async fn complete_structured<T>(&self, _req: CompletionRequest) -> Result<T, LlmError>
-        where
-            T: serde::de::DeserializeOwned + schemars::JsonSchema + Send,
-        {
-            Err(LlmError::Provider {
-                message: "structured not used in runner tests".into(),
+        fn supports(&self, _model: &ModelId) -> bool {
+            true
+        }
+
+        fn complete<'a>(
+            &'a self,
+            req: CompletionRequest,
+        ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+            Box::pin(async move {
+                self.captured
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(req);
+                Ok(self.response.clone())
+            })
+        }
+
+        fn complete_structured_raw<'a>(
+            &'a self,
+            _req: CompletionRequest,
+            _schema: serde_json::Value,
+            _type_name: String,
+        ) -> BoxFuture<'a, Result<String, LlmError>> {
+            Box::pin(async move {
+                Err(LlmError::Provider {
+                    message: "structured not used in runner tests".into(),
+                })
             })
         }
     }

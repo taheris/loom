@@ -23,6 +23,8 @@ use thiserror::Error;
 use crate::cache::CacheControl;
 use crate::client::{CompletionResponse, LlmClient, LlmError};
 use crate::model_id::ModelId;
+#[cfg(test)]
+use crate::model_id::SchemaKind;
 use crate::observer::{
     DoomLoopConfig, DoomLoopObserver, DuplicateResultConfig, DuplicateResultObserver,
 };
@@ -254,7 +256,7 @@ impl Conversation {
     /// messages on the next iteration; the first `SessionCommand::Abort`
     /// short-circuits the loop and returns
     /// [`ConversationError::ObserverAbort`].
-    pub async fn run<C: LlmClient + Sync>(
+    pub async fn run<C: LlmClient + Sync + ?Sized>(
         &mut self,
         client: &C,
     ) -> Result<CompletionResponse, ConversationError> {
@@ -554,24 +556,41 @@ mod tests {
     }
 
     impl LlmClient for ScriptedClient {
-        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse, LlmError> {
-            *self.calls.lock().unwrap_or_else(|p| p.into_inner()) += 1;
-            let mut guard = self.responses.lock().unwrap_or_else(|p| p.into_inner());
-            if guard.is_empty() {
-                Err(LlmError::Provider {
-                    message: "scripted client out of responses".into(),
-                })
-            } else {
-                Ok(guard.remove(0))
-            }
+        fn schema(&self) -> SchemaKind {
+            SchemaKind::Anthropic
         }
 
-        async fn complete_structured<T>(&self, _req: CompletionRequest) -> Result<T, LlmError>
-        where
-            T: serde::de::DeserializeOwned + schemars::JsonSchema + Send,
-        {
-            Err(LlmError::Provider {
-                message: "complete_structured not exercised in conversation tests".into(),
+        fn supports(&self, _model: &ModelId) -> bool {
+            true
+        }
+
+        fn complete<'a>(
+            &'a self,
+            _req: CompletionRequest,
+        ) -> crate::client::BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+            Box::pin(async move {
+                *self.calls.lock().unwrap_or_else(|p| p.into_inner()) += 1;
+                let mut guard = self.responses.lock().unwrap_or_else(|p| p.into_inner());
+                if guard.is_empty() {
+                    Err(LlmError::Provider {
+                        message: "scripted client out of responses".into(),
+                    })
+                } else {
+                    Ok(guard.remove(0))
+                }
+            })
+        }
+
+        fn complete_structured_raw<'a>(
+            &'a self,
+            _req: CompletionRequest,
+            _schema: serde_json::Value,
+            _type_name: String,
+        ) -> crate::client::BoxFuture<'a, Result<String, LlmError>> {
+            Box::pin(async move {
+                Err(LlmError::Provider {
+                    message: "complete_structured not exercised in conversation tests".into(),
+                })
             })
         }
     }

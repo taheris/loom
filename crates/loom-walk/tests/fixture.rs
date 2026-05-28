@@ -2093,9 +2093,13 @@ const LLM_PUBLIC_SURFACE_BODY: &str = "pub trait LlmClient {}\n\
      pub struct CompletionRequest;\n\
      pub enum Message { Text }\n\
      pub enum ModelId { Other(String) }\n\
+     pub enum SchemaKind { Anthropic }\n\
      pub enum CacheControl { None }\n\
      pub trait Tool {}\n\
-     pub struct Conversation;\n";
+     pub struct Conversation;\n\
+     pub enum LlmError { Timeout }\n\
+     pub enum RetryAdvice { Retryable }\n\
+     pub struct ApiKey;\n";
 
 #[test]
 fn loom_llm_public_surface_pass_when_all_exposed_directly() {
@@ -2116,7 +2120,7 @@ fn loom_llm_public_surface_pass_when_reexported_via_pub_use() {
         ws.path(),
         "crates/loom-llm/src/lib.rs",
         "pub mod inner;\n\
-         pub use inner::{LlmClient, CompletionRequest, Message, ModelId, CacheControl, Tool, Conversation};\n",
+         pub use inner::{LlmClient, CompletionRequest, Message, ModelId, SchemaKind, CacheControl, Tool, Conversation, LlmError, RetryAdvice, ApiKey};\n",
     );
     seed(
         ws.path(),
