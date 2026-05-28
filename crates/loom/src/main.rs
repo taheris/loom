@@ -106,6 +106,23 @@ enum GateSubcommand {
     /// Run only the rubric walk over the diff — skips
     /// criterion-attached judges.
     Rubric(GateScopeArgs),
+    /// Walk the rubric and mint a fix-up bead per finding (the act
+    /// surface paired with the inspection-only `audit`).
+    Mint(GateMintArgs),
+}
+
+/// `loom gate mint` arg surface. Extends [`GateScopeArgs`] with the
+/// `--dry-run` flag that suppresses `bd create` calls while still
+/// running the read-side dedup + lead-resolution queries.
+#[derive(Debug, clap::Args)]
+struct GateMintArgs {
+    #[command(flatten)]
+    scope: GateScopeArgs,
+    /// Walk the rubric and print proposed bd writes to stdout without
+    /// invoking `bd create`. Read-side queries (dedup + lead
+    /// resolution) still run.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 /// `loom gate review` arg surface. Extends [`GateScopeArgs`] with the
@@ -819,6 +836,10 @@ fn run_gate(
                 Vec::new(),
             )
         }
+        Some(GateSubcommand::Mint(mut args)) => {
+            apply_default_scope(workspace, &mut args.scope);
+            run_gate_mint(workspace, args)
+        }
     }
 }
 
@@ -1419,6 +1440,34 @@ fn spec_labels_in_workspace(workspace: &Path) -> anyhow::Result<Vec<SpecLabel>> 
     }
     labels.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     Ok(labels)
+}
+
+/// `loom gate mint` CLI arm. Owns arg parsing, scope resolution
+/// (delegated to [`apply_default_scope`] in `run_gate`), the
+/// `LOOM_INSIDE` guard (delegated to the top-level main check via
+/// [`Command::refused_inside_loom`]), filter passthrough, and exit-code
+/// mapping. The walk that produces [`loom_workflow::review::Finding`]
+/// records is built by the mint-walk-orchestration bead; this arm
+/// plumbs the surface so the orchestration can land on top without
+/// touching the CLI again.
+fn run_gate_mint(workspace: &Path, args: GateMintArgs) -> anyhow::Result<()> {
+    let head_commit = current_commit(workspace).unwrap_or_default();
+    let spec_filter = args.scope.spec.as_deref().map(SpecLabel::new);
+    let opts = loom_workflow::mint::MintOptions {
+        dry_run: args.dry_run,
+        spec_filter,
+    };
+    let findings: Vec<loom_workflow::review::Finding> = Vec::new();
+    let runtime = tokio::runtime::Runtime::new()?;
+    let summary = runtime.block_on(async move {
+        let bd = BdClient::new();
+        loom_workflow::mint::mint_findings_with_options(&bd, &findings, &head_commit, &opts).await
+    });
+    print!("{}", summary.render());
+    if summary.refused > 0 || summary.errors > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 fn run_gate_audit(
@@ -2888,5 +2937,129 @@ mod tests {
         apply_default_scope(tmp.path(), &mut args);
         assert!(args.diff.is_none());
         assert_eq!(args.files, vec![PathBuf::from("src/lib.rs")]);
+    }
+
+    /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
+    /// `mint_refuses_when_loom_inside_env_is_set`): `loom gate mint`
+    /// must refuse to run inside a loom-managed container with a
+    /// deterministic non-zero exit. The top-level main check consults
+    /// [`Command::refused_inside_loom`] against the parsed command; this
+    /// test pins the variant-to-marker mapping so a future GateSubcommand
+    /// edit can't accidentally let mint slip past the guard.
+    #[test]
+    fn mint_refuses_when_loom_inside_env_is_set() {
+        let mint_args = GateMintArgs {
+            scope: empty_scope_args(),
+            dry_run: false,
+        };
+        let cmd = Command::Gate {
+            subcommand: Some(GateSubcommand::Mint(mint_args)),
+        };
+        assert!(
+            cmd.refused_inside_loom(),
+            "loom gate mint must be refused under LOOM_INSIDE — it spawns containers and mutates bd state",
+        );
+    }
+
+    /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
+    /// `mint_bare_invocation_defaults_to_active_molecule_diff`): bare
+    /// `loom gate mint` (no scope flag) defaults to
+    /// `--diff <molecule.base_commit>..HEAD` when the active spec has
+    /// an open epic, else `--diff HEAD`. This pins the bare-invocation
+    /// branch on a fresh workspace (no state db, no current spec) →
+    /// `--diff HEAD`, mirroring `apply_default_scope`'s fallback for
+    /// the other gate subcommands.
+    #[test]
+    fn mint_bare_invocation_defaults_to_active_molecule_diff() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut args = GateMintArgs {
+            scope: empty_scope_args(),
+            dry_run: false,
+        };
+        apply_default_scope(tmp.path(), &mut args.scope);
+        assert_eq!(args.scope.diff.as_deref(), Some("HEAD"));
+        assert!(args.scope.bead.is_none());
+        assert!(!args.scope.tree);
+        assert!(args.scope.files.is_empty());
+    }
+
+    /// Spec contract `specs/gate.md` § *Standing-safety-net bonding*
+    /// (criterion `audit_tree_scope_makes_no_bd_writes`): `loom gate
+    /// audit --tree` is inspection-only. Pins the property at the
+    /// resolver layer the audit path consumes: when every scoped spec
+    /// already has exactly one open epic, [`resolve_or_mint_open_epics`]
+    /// issues only `bd list` calls — never `bd create`. The audit arm
+    /// in `run_gate_audit` calls this resolver, so locking its read-only
+    /// behavior here is the regression test for the no-bd-writes
+    /// invariant under the steady-state operator scenario.
+    #[tokio::test]
+    async fn audit_tree_scope_makes_no_bd_writes() {
+        use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
+        use std::ffi::OsString;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        struct ScriptedRunner {
+            responses: Mutex<Vec<RunOutput>>,
+            invocations: Arc<Mutex<Vec<Vec<OsString>>>>,
+        }
+        impl CommandRunner for ScriptedRunner {
+            async fn run(&self, args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
+                self.invocations.lock().expect("not poisoned").push(args);
+                let mut responses = self.responses.lock().expect("not poisoned");
+                assert!(!responses.is_empty(), "no scripted response left");
+                Ok(responses.remove(0))
+            }
+        }
+
+        let epic_row = |id: &str, label: &str| -> String {
+            format!(
+                r#"{{"id":"{id}","title":"{label}","status":"open","priority":2,"issue_type":"epic","labels":["spec:{label}"]}}"#,
+            )
+        };
+
+        let labels = vec![SpecLabel::new("alpha"), SpecLabel::new("beta")];
+        let invocations = Arc::new(Mutex::new(Vec::new()));
+        let runner = ScriptedRunner {
+            responses: Mutex::new(vec![
+                RunOutput {
+                    status: 0,
+                    stdout: format!("[{}]", epic_row("lm-alpha", "alpha")).into_bytes(),
+                    stderr: Vec::new(),
+                },
+                RunOutput {
+                    status: 0,
+                    stdout: format!("[{}]", epic_row("lm-beta", "beta")).into_bytes(),
+                    stderr: Vec::new(),
+                },
+            ]),
+            invocations: Arc::clone(&invocations),
+        };
+        let bd = BdClient::with_runner(runner);
+        let resolved = loom_workflow::resolve::resolve_or_mint_open_epics(&bd, &labels, "head-sha")
+            .await
+            .expect("resolve ok");
+        assert_eq!(resolved.len(), 2);
+        for entry in &resolved {
+            assert!(
+                !entry.was_minted,
+                "no epic should be minted when one already exists: {entry:?}",
+            );
+        }
+        let calls = invocations.lock().expect("not poisoned");
+        for argv in calls.iter() {
+            let rendered: Vec<String> = argv
+                .iter()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                !rendered.iter().any(|a| a == "create"),
+                "audit --tree bonding-target resolution must NOT invoke bd create: {rendered:?}",
+            );
+            assert!(
+                rendered.iter().any(|a| a == "list"),
+                "every recorded bd call must be a read (list): {rendered:?}",
+            );
+        }
     }
 }

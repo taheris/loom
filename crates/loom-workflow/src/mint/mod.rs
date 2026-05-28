@@ -63,11 +63,25 @@ pub enum FindingOutcome {
         bead_id: BeadId,
         lead_spec: SpecLabel,
     },
+    /// `--dry-run` mode: the pipeline resolved the bonding lead and
+    /// would have created a fix-up, but did not invoke `bd create`.
+    /// `lead_spec` names which `bonds` element supplied the parent epic.
+    WouldMint {
+        fingerprint: String,
+        lead_spec: SpecLabel,
+    },
     /// An open fix-up already exists for this fingerprint; nothing
     /// minted. `existing_bead` is the dedup query's single hit.
     SkippedDedup {
         fingerprint: String,
         existing_bead: BeadId,
+    },
+    /// `--spec <X>` filter dropped this finding because its bonding
+    /// lead resolved to a different spec.
+    SkippedFilter {
+        fingerprint: String,
+        lead_spec: SpecLabel,
+        requested: SpecLabel,
     },
     /// Structural violation — either multiple open beads share the
     /// fingerprint label, or the lead spec has more than one open epic.
@@ -88,22 +102,44 @@ impl FindingOutcome {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Minted { .. } => "minted",
+            Self::WouldMint { .. } => "would-mint",
             Self::SkippedDedup { .. } => "skipped-dedup",
+            Self::SkippedFilter { .. } => "skipped-filter",
             Self::Refused { .. } => "refused",
             Self::Errored { .. } => "errored",
         }
     }
 }
 
+/// Options that gate writes and filter scope on a [`mint_findings`] run.
+///
+/// Defaults match the production `loom gate mint` invocation with no
+/// flags: write to bd, no spec filter.
+#[derive(Debug, Clone, Default)]
+pub struct MintOptions {
+    /// When `true`, the pipeline runs every read-side query (dedup,
+    /// lead resolution) but skips `bd create`. The resulting outcome is
+    /// [`FindingOutcome::WouldMint`] instead of [`FindingOutcome::Minted`].
+    pub dry_run: bool,
+    /// When `Some(label)`, findings whose bonding lead resolves to a
+    /// different spec are reported as [`FindingOutcome::SkippedFilter`]
+    /// and no fix-up is minted. `None` admits every finding.
+    pub spec_filter: Option<SpecLabel>,
+}
+
 /// End-of-run summary printed to stdout (no bd writes).
 ///
 /// Tallies match `specs/gate.md` § *Per-finding processing* end-of-run
-/// shape: `minted M, skipped K (dedup), refused R, errors E`.
+/// shape: `minted M, skipped K (dedup), refused R, errors E`. The
+/// `--dry-run` and `--spec` filter pseudo-outcomes carry their own
+/// tallies so summaries from those modes remain self-describing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MintSummary {
     pub findings: Vec<FindingOutcome>,
     pub minted: usize,
+    pub would_mint: usize,
     pub skipped: usize,
+    pub skipped_filter: usize,
     pub refused: usize,
     pub errors: usize,
 }
@@ -112,7 +148,9 @@ impl MintSummary {
     fn record(&mut self, outcome: FindingOutcome) {
         match &outcome {
             FindingOutcome::Minted { .. } => self.minted += 1,
+            FindingOutcome::WouldMint { .. } => self.would_mint += 1,
             FindingOutcome::SkippedDedup { .. } => self.skipped += 1,
+            FindingOutcome::SkippedFilter { .. } => self.skipped_filter += 1,
             FindingOutcome::Refused { .. } => self.refused += 1,
             FindingOutcome::Errored { .. } => self.errors += 1,
         }
@@ -125,9 +163,19 @@ impl MintSummary {
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = format!(
-            "minted {}, skipped {} (dedup), refused {}, errors {}\n",
+            "minted {}, skipped {} (dedup), refused {}, errors {}",
             self.minted, self.skipped, self.refused, self.errors,
         );
+        if self.would_mint > 0 {
+            out.push_str(&format!(", would-mint {} (dry-run)", self.would_mint));
+        }
+        if self.skipped_filter > 0 {
+            out.push_str(&format!(
+                ", skipped {} (--spec filter)",
+                self.skipped_filter
+            ));
+        }
+        out.push('\n');
         for outcome in &self.findings {
             match outcome {
                 FindingOutcome::Minted {
@@ -139,12 +187,27 @@ impl MintSummary {
                         "  minted {fingerprint} → {bead_id} (spec:{lead_spec})\n",
                     ));
                 }
+                FindingOutcome::WouldMint {
+                    fingerprint,
+                    lead_spec,
+                } => {
+                    out.push_str(&format!("  would-mint {fingerprint} (spec:{lead_spec})\n",));
+                }
                 FindingOutcome::SkippedDedup {
                     fingerprint,
                     existing_bead,
                 } => {
                     out.push_str(&format!(
                         "  skipped {fingerprint} (existing {existing_bead})\n",
+                    ));
+                }
+                FindingOutcome::SkippedFilter {
+                    fingerprint,
+                    lead_spec,
+                    requested,
+                } => {
+                    out.push_str(&format!(
+                        "  skipped {fingerprint} (lead spec:{lead_spec} ≠ requested spec:{requested})\n",
                     ));
                 }
                 FindingOutcome::Refused {
@@ -165,21 +228,33 @@ impl MintSummary {
     }
 }
 
+/// Walk a sequence of findings through the mint pipeline with default
+/// options (write to bd, no spec filter). Convenience wrapper over
+/// [`mint_findings_with_options`].
+pub async fn mint_findings<R: CommandRunner>(
+    bd: &BdClient<R>,
+    findings: &[Finding],
+    head_commit: &str,
+) -> MintSummary {
+    mint_findings_with_options(bd, findings, head_commit, &MintOptions::default()).await
+}
+
 /// Walk a sequence of findings through the mint pipeline. Errors that
 /// represent per-finding structural violations
 /// ([`MintError::DuplicateMintLabel`] and
 /// [`ResolveError::InvariantViolation`]) are folded into
 /// [`FindingOutcome::Refused`] so the run keeps going; other
 /// [`MintError`] variants become [`FindingOutcome::Errored`].
-pub async fn mint_findings<R: CommandRunner>(
+pub async fn mint_findings_with_options<R: CommandRunner>(
     bd: &BdClient<R>,
     findings: &[Finding],
     head_commit: &str,
+    opts: &MintOptions,
 ) -> MintSummary {
     let mut summary = MintSummary::default();
     for finding in findings {
         let fingerprint = finding.fingerprint();
-        let outcome = match mint_finding(bd, finding, head_commit).await {
+        let outcome = match mint_finding_with_options(bd, finding, head_commit, opts).await {
             Ok(outcome) => outcome,
             Err(MintError::DuplicateMintLabel { ids, count, .. }) => FindingOutcome::Refused {
                 fingerprint,
@@ -205,11 +280,31 @@ pub async fn mint_findings<R: CommandRunner>(
     summary
 }
 
-/// Process one finding through the dedup → lead → mint pipeline.
+/// Process one finding through the dedup → lead → mint pipeline with
+/// default options. Convenience wrapper over
+/// [`mint_finding_with_options`].
 pub async fn mint_finding<R: CommandRunner>(
     bd: &BdClient<R>,
     finding: &Finding,
     head_commit: &str,
+) -> Result<FindingOutcome, MintError> {
+    mint_finding_with_options(bd, finding, head_commit, &MintOptions::default()).await
+}
+
+/// Process one finding through the dedup → lead → mint pipeline.
+///
+/// With `opts.dry_run == true`, the read-side queries still run but
+/// `bd create` is suppressed and the result is
+/// [`FindingOutcome::WouldMint`].
+///
+/// With `opts.spec_filter == Some(label)`, the lead is resolved as
+/// usual; if the resolved lead is not `label`, the finding is reported
+/// as [`FindingOutcome::SkippedFilter`] and `bd create` is suppressed.
+pub async fn mint_finding_with_options<R: CommandRunner>(
+    bd: &BdClient<R>,
+    finding: &Finding,
+    head_commit: &str,
+    opts: &MintOptions,
 ) -> Result<FindingOutcome, MintError> {
     let fingerprint = finding.fingerprint();
     let label = mint_label(&fingerprint);
@@ -244,6 +339,24 @@ pub async fn mint_finding<R: CommandRunner>(
     }
 
     let (lead_spec, lead_epic) = resolve_lead(bd, &finding.bonds, head_commit).await?;
+
+    if let Some(requested) = &opts.spec_filter
+        && &lead_spec != requested
+    {
+        return Ok(FindingOutcome::SkippedFilter {
+            fingerprint,
+            lead_spec,
+            requested: requested.clone(),
+        });
+    }
+
+    if opts.dry_run {
+        return Ok(FindingOutcome::WouldMint {
+            fingerprint,
+            lead_spec,
+        });
+    }
+
     let labels = mint_labels(finding, &label);
     let title = mint_title(finding);
     let description = mint_description(finding, &fingerprint);
@@ -921,5 +1034,103 @@ mod tests {
                 && render.contains("lm-dup.2"),
             "refuse line must name fingerprint + conflicting ids: {render}",
         );
+    }
+
+    /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
+    /// `mint_dry_run_makes_no_bd_writes`): with `--dry-run`, the
+    /// pipeline runs every read-side query and resolves the bonding
+    /// lead, but suppresses `bd create`. The outcome is `WouldMint`
+    /// instead of `Minted`, and the only argv recorded by the runner
+    /// are `list` calls — never `create`.
+    #[tokio::test]
+    async fn mint_dry_run_makes_no_bd_writes() {
+        let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
+        let fp = finding.fingerprint();
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-gateepic", "gate")),
+        ]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+        let opts = MintOptions {
+            dry_run: true,
+            spec_filter: None,
+        };
+        let summary = mint_findings_with_options(&bd, &[finding], "head-sha", &opts).await;
+        assert_eq!(summary.minted, 0, "no bead minted under dry-run");
+        assert_eq!(summary.would_mint, 1);
+        match summary.findings.first().expect("one outcome recorded") {
+            FindingOutcome::WouldMint {
+                fingerprint,
+                lead_spec,
+            } => {
+                assert_eq!(fingerprint, &fp);
+                assert_eq!(lead_spec.as_str(), "gate");
+            }
+            other => panic!("expected WouldMint, got {other:?}"),
+        }
+        let calls = rendered_calls(&invocations);
+        for call in &calls {
+            assert!(
+                !call.iter().any(|a| a == "create"),
+                "dry-run MUST NOT invoke bd create: {call:?}",
+            );
+        }
+    }
+
+    /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
+    /// `mint_spec_filter_drops_findings_routing_to_other_specs`):
+    /// `--spec <X>` filters findings to those whose bonding lead
+    /// resolves to `<X>`. Findings routing elsewhere are reported as
+    /// `SkippedFilter` and no `bd create` fires for them. The dedup
+    /// query still runs (the filter is post-lead-selection, per spec).
+    #[tokio::test]
+    async fn mint_spec_filter_drops_findings_routing_to_other_specs() {
+        let f_kept = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence-a");
+        let f_dropped = contract_finding(vec![spec("harness")], "molecule-lifecycle", "evidence-b");
+        let runner = ScriptedRunner::new(vec![
+            // kept: dedup empty, gate epic, bd create.
+            ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("lm-fix.1\n"),
+            // dropped: dedup empty, harness epic exists, filter drops before create.
+            ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-harnessepic", "harness")),
+        ]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+        let opts = MintOptions {
+            dry_run: false,
+            spec_filter: Some(spec("gate")),
+        };
+        let summary =
+            mint_findings_with_options(&bd, &[f_kept, f_dropped], "head-sha", &opts).await;
+        assert_eq!(summary.minted, 1, "kept finding mints");
+        assert_eq!(
+            summary.skipped_filter, 1,
+            "dropped finding reported as skipped-filter",
+        );
+        let dropped_outcome = summary
+            .findings
+            .iter()
+            .find(|o| matches!(o, FindingOutcome::SkippedFilter { .. }))
+            .expect("one SkippedFilter outcome recorded");
+        match dropped_outcome {
+            FindingOutcome::SkippedFilter {
+                lead_spec,
+                requested,
+                ..
+            } => {
+                assert_eq!(lead_spec.as_str(), "harness");
+                assert_eq!(requested.as_str(), "gate");
+            }
+            other => panic!("expected SkippedFilter, got {other:?}"),
+        }
+        let calls = rendered_calls(&invocations);
+        let create_calls = calls
+            .iter()
+            .filter(|c| c.iter().any(|a| a == "create"))
+            .count();
+        assert_eq!(create_calls, 1, "exactly one bd create — the kept finding");
     }
 }
