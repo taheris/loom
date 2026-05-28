@@ -609,11 +609,18 @@ the missing implementation surfaces immediately.
 test`, `nix build`, and similar shells that don't emit a JSON
 verdict line still satisfy the contract via their exit code alone:
 the dispatcher interprets exit 0 as `pass=true` (stdout surfaced as
-evidence) and any non-zero exit as `pass=false` (stderr surfaced as
-evidence). Verifiers that emit a JSON line are preferred — the
-explicit evidence string clicks straight to the violation site — but
-the exit-code fallback keeps simple presence/absence checks viable
-without wrapping each one in a Rust walk.
+evidence), exit 77 as a skip (per the GNU test-suite /
+`AM_TESTS_ENVIRONMENT` convention — the verifier reports a missing
+prerequisite rather than a real failure), and any other non-zero
+exit as `pass=false` (stderr surfaced as evidence). The third
+verdict propagates through dispatch as `skipped=true` on
+`VerifierVerdict` and persists as `Verdict::Skipped` in the status
+cache, so a verifier that legitimately cannot run does not count
+as a failure against the molecule. Verifiers that emit a JSON line
+are preferred — the explicit evidence string clicks straight to the
+violation site — but the exit-code fallback keeps simple
+presence/absence checks viable without wrapping each one in a Rust
+walk.
 
 ### `--files` scope handling
 
@@ -707,7 +714,8 @@ and the tier subcommands write to the cache as they run.
 **Cache contents per criterion:**
 - annotation target
 - last-run timestamp and commit hash
-- pass / fail / skipped (scope) verdict
+- pass / fail / skipped verdict (`skipped` covers scope-filter
+  exclusion and verifier-reported prerequisite gaps via exit 77)
 - evidence string from the verifier's JSON output
 
 **Cache schema** extends the existing state-db schema in

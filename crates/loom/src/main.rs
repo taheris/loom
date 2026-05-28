@@ -1121,7 +1121,9 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
             let template = resolve_test_runner_template(workspace)?;
             match loom_gate::run_test(&selected, &options, &template, &EmptyScope) {
                 Ok(Some(outcome)) => {
-                    let verdict = if outcome.verdict.pass {
+                    let verdict = if outcome.verdict.skipped {
+                        Verdict::Skipped
+                    } else if outcome.verdict.pass {
                         Verdict::Pass
                     } else {
                         eprintln!("loom gate [test] failed:\n{}", outcome.verdict.evidence);
@@ -1279,6 +1281,16 @@ fn run_per_annotation_with_progress(
         let results = runner(std::slice::from_ref(ann), options);
         for result in results {
             match result {
+                Ok(outcome) if outcome.verdict.skipped => {
+                    if is_tty {
+                        let _ = write!(stderr, "\x1b[2K\r");
+                    }
+                    let _ = writeln!(stderr, "loom gate [{tier}] SKIP: {}", ann.target);
+                    for line in outcome.verdict.evidence.lines().take(5) {
+                        let _ = writeln!(stderr, "  {line}");
+                    }
+                    persist_outcome(cache, &outcome, Verdict::Skipped, now_ms, commit);
+                }
                 Ok(outcome) if outcome.verdict.pass => {
                     persist_outcome(cache, &outcome, Verdict::Pass, now_ms, commit);
                 }

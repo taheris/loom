@@ -37,12 +37,23 @@ use crate::runner::{
 /// JSON-line verdict every verifier returns on stdout, per the
 /// verifier-runner contract in `specs/gate.md`. The exit code mirrors
 /// `pass` (0 for true, non-zero for false); the gate parses one line of
-/// JSON-encoded `VerifierVerdict` from each verifier's stdout.
+/// JSON-encoded `VerifierVerdict` from each verifier's stdout. A
+/// verifier may exit `77` (GNU test-suite skip convention) or emit
+/// `"skipped": true` in the JSON line to report that the prerequisite
+/// for running was not met — the dispatcher surfaces those as the
+/// third verdict alongside pass/fail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifierVerdict {
     pub pass: bool,
     pub evidence: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skipped: bool,
 }
+
+/// GNU test-suite skip exit code (`AM_TESTS_ENVIRONMENT` / TAP-13).
+/// Verifiers exit with this when a prerequisite (env var, tool, image)
+/// is missing — distinct from a real failure.
+pub const SKIP_EXIT_CODE: i32 = 77;
 
 /// Failures the dispatcher surfaces. Per RS-4 each variant carries the
 /// command string and original error so callers can route the error back
@@ -344,6 +355,7 @@ fn dispatch_group(
                     verdict: VerifierVerdict {
                         pass,
                         evidence: evidence.clone(),
+                        skipped: false,
                     },
                 })
             })
@@ -359,6 +371,7 @@ fn dispatch_group(
                 verdict: VerifierVerdict {
                     pass: verdict.pass,
                     evidence: verdict.evidence.clone(),
+                    skipped: false,
                 },
             }),
             None => Err(DispatchError::MissingFromBatchOutput {
@@ -422,6 +435,19 @@ fn run_with_fallback(
     if let Some(verdict) = parse_verdict_optional(command, &stdout)? {
         return Ok(verdict);
     }
+    let exit_code = output.status.code();
+    if exit_code == Some(SKIP_EXIT_CODE) {
+        let evidence = if stderr.trim().is_empty() {
+            stdout.into_owned()
+        } else {
+            stderr.into_owned()
+        };
+        return Ok(VerifierVerdict {
+            pass: false,
+            evidence,
+            skipped: true,
+        });
+    }
     Ok(VerifierVerdict {
         pass: output.status.success(),
         evidence: if output.status.success() {
@@ -429,6 +455,7 @@ fn run_with_fallback(
         } else {
             stderr.into_owned()
         },
+        skipped: false,
     })
 }
 
@@ -546,11 +573,33 @@ mod tests {
         let v = VerifierVerdict {
             pass: true,
             evidence: "ok".into(),
+            skipped: false,
         };
         let s = serde_json::to_string(&v).unwrap();
         assert_eq!(s, r#"{"pass":true,"evidence":"ok"}"#);
         let back: VerifierVerdict = serde_json::from_str(&s).unwrap();
         assert_eq!(back, v);
+    }
+
+    #[test]
+    fn skipped_verdict_serializes_with_skipped_flag() {
+        let v = VerifierVerdict {
+            pass: false,
+            evidence: "no image".into(),
+            skipped: true,
+        };
+        let s = serde_json::to_string(&v).unwrap();
+        assert_eq!(s, r#"{"pass":false,"evidence":"no image","skipped":true}"#);
+        let back: VerifierVerdict = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn legacy_two_field_json_deserialises_with_skipped_false() {
+        let json = r#"{"pass": true, "evidence": "ok"}"#;
+        let v: VerifierVerdict = serde_json::from_str(json).unwrap();
+        assert!(v.pass);
+        assert!(!v.skipped);
     }
 
     #[test]

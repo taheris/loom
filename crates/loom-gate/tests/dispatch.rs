@@ -166,6 +166,34 @@ fn check_tier_falls_back_to_exit_code_pass_when_verifier_omits_json() {
 }
 
 #[test]
+fn system_tier_exit_77_classifies_as_skipped_not_failed() {
+    let dir = fixture_dir();
+    let script = write_script(
+        dir.path(),
+        "skip.sh",
+        "#!/bin/sh\necho 'skip: prerequisite missing' >&2\nexit 77\n",
+    );
+
+    let inputs = vec![ann(Tier::System, &script)];
+    let opts = DispatchOptions::default();
+    let results = run_system(&inputs, &opts);
+    let outcome = results.into_iter().next().unwrap().unwrap();
+    assert!(
+        outcome.verdict.skipped,
+        "exit 77 should surface the skipped verdict"
+    );
+    assert!(
+        !outcome.verdict.pass,
+        "skipped verdict does not also report pass"
+    );
+    assert!(
+        outcome.verdict.evidence.contains("prerequisite missing"),
+        "stderr surfaced as evidence on the skip path: {}",
+        outcome.verdict.evidence,
+    );
+}
+
+#[test]
 fn check_tier_falls_back_to_exit_code_fail_when_verifier_omits_json() {
     let dir = fixture_dir();
     let script = write_script(

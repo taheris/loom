@@ -32,8 +32,8 @@ pub use cache::{
     StaleRun, StatusCache, TierSummary, Verdict, render_from_rows, render_report, row_for,
 };
 pub use dispatch::{
-    DispatchError, DispatchOptions, DispatchOutcome, EmptyScope, TestScope, TierCwds,
-    VerifierVerdict, run_check, run_judge, run_system, run_test, run_with_runners,
+    DispatchError, DispatchOptions, DispatchOutcome, EmptyScope, SKIP_EXIT_CODE, TestScope,
+    TierCwds, VerifierVerdict, run_check, run_judge, run_system, run_test, run_with_runners,
 };
 pub use inputs::{InputResolver, InputsError, VerifierInputs};
 pub use integrity::{
