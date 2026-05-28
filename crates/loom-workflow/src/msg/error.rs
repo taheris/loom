@@ -6,10 +6,10 @@ use loom_driver::bd::BdError;
 /// Errors raised by the `loom msg` command.
 #[derive(Debug, Display, Error)]
 pub enum MsgError {
-    /// bd CLI failure
+    /// bd CLI failure: {0}
     Bd(#[from] BdError),
 
-    /// rendering the msg.md template failed
+    /// rendering the msg.md template failed: {0}
     Render(#[from] askama::Error),
 
     /// invalid index '{value}' for -n (expected a positive integer)

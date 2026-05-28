@@ -25,13 +25,13 @@ pub enum InitError {
         source: io::Error,
     },
 
-    /// lock acquisition failed
+    /// lock acquisition failed: {0}
     Lock(#[from] LockError),
 
-    /// state-db operation failed
+    /// state-db operation failed: {0}
     State(#[from] StateError),
 
-    /// `bd` CLI invocation failed while gathering active molecules
+    /// `bd` CLI invocation failed while gathering active molecules: {0}
     Bd(#[from] BdError),
 
     /// active molecule {id} carries no `spec:<label>` label

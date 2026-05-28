@@ -11,34 +11,34 @@ use loom_driver::state::StateError;
 /// Errors raised by the `loom loop` driver.
 #[derive(Debug, Display, Error)]
 pub enum LoopError {
-    /// agent backend protocol failure
+    /// agent backend protocol failure: {0}
     Protocol(#[from] ProtocolError),
 
-    /// bd CLI failure
+    /// bd CLI failure: {0}
     Bd(#[from] BdError),
 
-    /// rendering the run.md template failed
+    /// rendering the run.md template failed: {0}
     Render(#[from] askama::Error),
 
-    /// log sink failure
+    /// log sink failure: {0}
     Log(#[from] LogError),
 
-    /// git operation failed (worktree, merge, branch)
+    /// git operation failed (worktree, merge, branch): {0}
     Git(#[from] GitError),
 
-    /// io operation failed
+    /// io operation failed: {0}
     Io(#[from] std::io::Error),
 
     /// `beads-push` failed after `git push` succeeded: {0}
     BeadsPushFailed(String),
 
-    /// profile-image manifest dispatch failed
+    /// profile-image manifest dispatch failed: {0}
     Profile(#[from] ProfileError),
 
-    /// state.db access failure
+    /// state.db access failure: {0}
     State(#[from] StateError),
 
-    /// spec → molecule resolution failed
+    /// spec → molecule resolution failed: {0}
     Resolve(#[from] crate::resolve::ResolveError),
 
     /// no active molecule for spec `{label}`

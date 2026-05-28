@@ -37,19 +37,19 @@ pub enum PlanError {
         source: io::Error,
     },
 
-    /// askama template render failed
+    /// askama template render failed: {0}
     Render(#[from] askama::Error),
 
-    /// lock acquisition failed
+    /// lock acquisition failed: {0}
     Lock(#[from] LockError),
 
-    /// state-db operation failed
+    /// state-db operation failed: {0}
     State(#[from] StateError),
 
-    /// profile-image manifest lookup failed
+    /// profile-image manifest lookup failed: {0}
     Profile(#[from] ProfileError),
 
-    /// agent-selection failed for `[phase.plan]`
+    /// agent-selection failed for `[phase.plan]`: {0}
     AgentSelection(#[from] loom_driver::config::AgentSelectionError),
 
     /// failed to spawn `wrapix run`
