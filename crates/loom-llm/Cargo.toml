@@ -31,5 +31,9 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tokio-test = { workspace = true }
 
+[features]
+default = []
+openai-compat = []
+
 [lints]
 workspace = true

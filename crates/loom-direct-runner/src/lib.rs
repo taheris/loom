@@ -26,7 +26,7 @@ use loom_events::identifier::ToolCallId;
 use loom_llm::cache::{CacheControl, CacheTtl};
 use loom_llm::client::{CompletionResponse, LlmClient, LlmError};
 use loom_llm::conversation::{Conversation, ConversationBuildError};
-use loom_llm::model_id::ModelId;
+use loom_llm::model_id::{AnthropicModel, ModelId};
 use loom_llm::request::{CompletionRequest, Message, Role};
 use loom_llm::tool::Tool;
 use loom_llm::usage::TokenUsage;
@@ -43,7 +43,7 @@ use tracing::{debug, info, warn};
 const PROMPT_CACHE_TTL: CacheTtl = CacheTtl::Hours1;
 
 /// Default Conversation model when the [`SpawnConfig`] omits one.
-const DEFAULT_MODEL: ModelId = ModelId::ClaudeSonnet46;
+const DEFAULT_MODEL: ModelId = ModelId::Anthropic(AnthropicModel::ClaudeSonnet46);
 
 /// Build the canonical six-tool registry the Direct backend registers
 /// with every Conversation. Order matches the spec's tool list (`Read`,
@@ -442,13 +442,16 @@ mod tests {
     fn direct_model_id_respects_phase_config() {
         let conv = build_conversation(&sample_config(Some("claude-sonnet-4-6")))
             .expect("conversation builds");
-        assert_eq!(*conv.model(), ModelId::ClaudeSonnet46);
+        assert_eq!(
+            *conv.model(),
+            ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
+        );
 
-        let conv_unknown = build_conversation(&sample_config(Some("future-model-x")))
+        let conv_unknown = build_conversation(&sample_config(Some("claude-future-x")))
             .expect("conversation builds");
         assert_eq!(
             *conv_unknown.model(),
-            ModelId::Other("future-model-x".to_string()),
+            ModelId::Anthropic(AnthropicModel::Other("claude-future-x".to_string())),
         );
 
         let conv_default = build_conversation(&sample_config(None)).expect("conversation builds");
@@ -726,7 +729,7 @@ mod tests {
         );
         assert_eq!(
             requests[0].model,
-            ModelId::ClaudeSonnet46,
+            ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
             "request targets the phase-configured Anthropic model",
         );
         let cached_blocks: Vec<&Message> = requests[0]

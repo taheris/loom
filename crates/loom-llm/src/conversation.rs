@@ -453,6 +453,7 @@ fn build_duplicate_result_observer(
 mod tests {
     use super::*;
     use crate::client::{CompletionResponse, ToolUseRequest};
+    use crate::model_id::AnthropicModel;
     use crate::request::Role;
     use crate::tool::{InvokeFuture, Tool, ToolOutput};
     use crate::usage::TokenUsage;
@@ -567,7 +568,7 @@ mod tests {
     #[test]
     fn conversation_builder_accepts_documented_knobs() {
         let (tool, _seen) = EchoTool::new();
-        let mut conv = Conversation::new(ModelId::ClaudeSonnet46)
+        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
             .system("be terse")
             .register(tool)
@@ -575,7 +576,7 @@ mod tests {
             .on_iteration_exhausted(LoopOutcome::ReturnLast);
         conv.user("ping");
 
-        assert_eq!(*conv.model(), ModelId::ClaudeSonnet46);
+        assert_eq!(*conv.model(), ModelId::Anthropic(AnthropicModel::ClaudeSonnet46));
         assert_eq!(conv.max_iterations_value(), 7);
         assert_eq!(conv.on_iteration_exhausted_value(), LoopOutcome::ReturnLast);
         assert_eq!(conv.history.len(), 1);
@@ -598,7 +599,7 @@ mod tests {
             no_calls("done"),
         ]);
 
-        let mut conv = Conversation::new(ModelId::ClaudeSonnet46)
+        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
             .register(tool);
         conv.user("do the thing");
@@ -631,7 +632,7 @@ mod tests {
                 .collect();
         let (client, calls) = ScriptedClient::new(infinite);
 
-        let mut conv = Conversation::new(ModelId::ClaudeSonnet46)
+        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
             .register(tool)
             .max_iterations(3);
@@ -655,7 +656,7 @@ mod tests {
             with_call("echo", "call-b", json!({ "text": "2" })),
         ]);
 
-        let mut conv = Conversation::new(ModelId::ClaudeSonnet46)
+        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
             .register(tool)
             .max_iterations(2)
@@ -673,9 +674,9 @@ mod tests {
     /// CLI-side config.
     #[test]
     fn duplicate_result_config_disable_path() {
-        let on = Conversation::new(ModelId::ClaudeSonnet46).expect("conversation builds");
+        let on = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46)).expect("conversation builds");
         assert!(on.duplicate_result_enabled());
-        let off = Conversation::new(ModelId::ClaudeSonnet46)
+        let off = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
             .duplicate_result_disabled();
         assert!(!off.duplicate_result_enabled());
@@ -686,9 +687,9 @@ mod tests {
     /// false` in the CLI-side config.
     #[test]
     fn doom_loop_config_disable_path() {
-        let on = Conversation::new(ModelId::ClaudeSonnet46).expect("conversation builds");
+        let on = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46)).expect("conversation builds");
         assert!(on.doom_loop_enabled());
-        let off = Conversation::new(ModelId::ClaudeSonnet46)
+        let off = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
             .doom_loop_disabled();
         assert!(!off.doom_loop_enabled());
@@ -699,7 +700,7 @@ mod tests {
     /// `Conversation` runs get the safety nets out of the box.
     #[test]
     fn conversation_new_default_constructs_observers() {
-        let conv = Conversation::new(ModelId::ClaudeSonnet46).expect("conversation builds");
+        let conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46)).expect("conversation builds");
         let doom = conv.doom_loop_observer().expect("doom loop composed");
         assert_eq!(doom.window(), 5);
         assert_eq!(doom.threshold(), 3);
@@ -718,7 +719,7 @@ mod tests {
     /// for the other observer.
     #[test]
     fn observer_builder_knobs_apply_custom_config() {
-        let conv = Conversation::new(ModelId::ClaudeSonnet46)
+        let conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
             .doom_loop(DoomLoopConfig {
                 enabled: true,
@@ -745,7 +746,7 @@ mod tests {
     /// `.doom_loop_disabled()` / `.duplicate_result_disabled()`.
     #[test]
     fn observer_config_enabled_false_drops_observer() {
-        let conv = Conversation::new(ModelId::ClaudeSonnet46)
+        let conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
             .doom_loop(DoomLoopConfig {
                 enabled: false,
@@ -768,7 +769,7 @@ mod tests {
     #[test]
     fn with_observer_configs_honours_enabled_flags() {
         let conv = Conversation::with_observer_configs(
-            ModelId::ClaudeSonnet46,
+            ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
             DoomLoopConfig {
                 enabled: false,
                 ..DoomLoopConfig::default()
@@ -806,7 +807,7 @@ mod tests {
 
         let (client, calls) = ScriptedClient::new(vec![with_call("pending", "call-1", json!({}))]);
 
-        let mut conv = Conversation::new(ModelId::ClaudeSonnet46)
+        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
             .register(PendingTool);
         conv.user("hang");
@@ -832,7 +833,7 @@ mod tests {
         let scripted = std::iter::repeat_with(identical).take(20).collect();
         let (client, calls) = ScriptedClient::new(scripted);
 
-        let mut conv = Conversation::new(ModelId::ClaudeSonnet46)
+        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
             .register(tool)
             .doom_loop(DoomLoopConfig {
@@ -870,7 +871,7 @@ mod tests {
         scripted.push(no_calls("done"));
         let (client, _calls) = ScriptedClient::new(scripted);
 
-        let mut conv = Conversation::new(ModelId::ClaudeSonnet46)
+        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
             .register(tool)
             .doom_loop(DoomLoopConfig {
@@ -909,7 +910,7 @@ mod tests {
         scripted.push(no_calls("done"));
         let (client, _calls) = ScriptedClient::new(scripted);
 
-        let mut conv = Conversation::new(ModelId::ClaudeSonnet46)
+        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
             .register(tool)
             .doom_loop_disabled()

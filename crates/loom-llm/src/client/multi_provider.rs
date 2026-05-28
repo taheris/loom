@@ -348,6 +348,7 @@ fn from_genai_usage(model: &ModelId, usage: &GenAiUsage) -> TokenUsage {
 mod tests {
     use super::*;
     use crate::cache::CacheTtl;
+    use crate::model_id::{AnthropicModel, GeminiModel, OpenAiModel};
     use genai::ModelIden;
     use genai::adapter::AdapterKind;
     use genai::chat::{PromptTokensDetails, Usage as GenAiUsage};
@@ -378,29 +379,34 @@ mod tests {
     #[test]
     fn model_id_to_provider_name_maps_known_and_other_variants() {
         assert_eq!(
-            model_id_to_provider_name(&ModelId::ClaudeOpus47),
+            model_id_to_provider_name(&ModelId::Anthropic(AnthropicModel::ClaudeOpus47)),
             "claude-opus-4-7"
         );
         assert_eq!(
-            model_id_to_provider_name(&ModelId::ClaudeSonnet46),
+            model_id_to_provider_name(&ModelId::Anthropic(AnthropicModel::ClaudeSonnet46)),
             "claude-sonnet-4-6"
         );
         assert_eq!(
-            model_id_to_provider_name(&ModelId::ClaudeHaiku45),
+            model_id_to_provider_name(&ModelId::Anthropic(AnthropicModel::ClaudeHaiku45)),
             "claude-haiku-4-5"
         );
-        assert_eq!(model_id_to_provider_name(&ModelId::Gpt55), "gpt-5.5");
         assert_eq!(
-            model_id_to_provider_name(&ModelId::Gemini31Pro),
+            model_id_to_provider_name(&ModelId::OpenAi(OpenAiModel::Gpt55)),
+            "gpt-5.5"
+        );
+        assert_eq!(
+            model_id_to_provider_name(&ModelId::Gemini(GeminiModel::Gemini31Pro)),
             "gemini-3.1-pro"
         );
         assert_eq!(
-            model_id_to_provider_name(&ModelId::Gemini35Flash),
+            model_id_to_provider_name(&ModelId::Gemini(GeminiModel::Gemini35Flash)),
             "gemini-3.5-flash"
         );
         let custom = "claude-3-7-sonnet-future";
         assert_eq!(
-            model_id_to_provider_name(&ModelId::Other(custom.to_string())),
+            model_id_to_provider_name(&ModelId::Anthropic(AnthropicModel::Other(
+                custom.to_string()
+            ))),
             custom,
         );
     }
@@ -433,7 +439,7 @@ mod tests {
     /// surface promises.
     #[test]
     fn message_text_cached_marks_per_block_in_anthropic_request() {
-        let req = CompletionRequest::new(ModelId::ClaudeSonnet46)
+        let req = CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .system("be terse")
             .user("hi")
             .user_cached("doc", CacheControl::Ephemeral(CacheTtl::Hours1))
@@ -463,7 +469,7 @@ mod tests {
     /// lives in the underlying adapter, not in this crate.
     #[test]
     fn cache_marker_no_ops_on_openai_provider() {
-        let req = CompletionRequest::new(ModelId::Gpt55)
+        let req = CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Gpt55))
             .user("hi")
             .user_cached("doc", CacheControl::Ephemeral(CacheTtl::Minutes5));
 
@@ -515,7 +521,8 @@ mod tests {
         let usage = make_usage(1_000, 250, 600, 400);
         let resp = make_response(usage);
 
-        let completion = from_genai_chat_response(&ModelId::ClaudeSonnet46, resp);
+        let completion =
+            from_genai_chat_response(&ModelId::Anthropic(AnthropicModel::ClaudeSonnet46), resp);
         assert_eq!(completion.text, "the answer");
         assert_eq!(completion.usage.input, 1_000);
         assert_eq!(completion.usage.output, 250);
@@ -544,9 +551,9 @@ mod tests {
         }
 
         let models = [
-            ModelId::ClaudeSonnet46,
-            ModelId::Gpt55,
-            ModelId::Gemini31Pro,
+            ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
+            ModelId::OpenAi(OpenAiModel::Gpt55),
+            ModelId::Gemini(GeminiModel::Gemini31Pro),
         ];
         for model in models {
             let req = CompletionRequest::new(model.clone()).user("structured please");
@@ -585,9 +592,15 @@ mod tests {
 
         let json_text = r#"{"title":"forty-two","count":42}"#;
         let providers = [
-            (ModelId::ClaudeSonnet46, AdapterKind::Anthropic),
-            (ModelId::Gpt55, AdapterKind::OpenAI),
-            (ModelId::Gemini31Pro, AdapterKind::Gemini),
+            (
+                ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
+                AdapterKind::Anthropic,
+            ),
+            (ModelId::OpenAi(OpenAiModel::Gpt55), AdapterKind::OpenAI),
+            (
+                ModelId::Gemini(GeminiModel::Gemini31Pro),
+                AdapterKind::Gemini,
+            ),
         ];
         let expected = AnswerShape {
             title: "forty-two".to_string(),
@@ -674,7 +687,7 @@ mod tests {
             cache_write: 400,
             cost_cents: 54,
         };
-        client.emit_usage(&ModelId::ClaudeSonnet46, &usage);
+        client.emit_usage(&ModelId::Anthropic(AnthropicModel::ClaudeSonnet46), &usage);
 
         let events = recorded.lock().expect("recording sink mutex");
         assert_eq!(events.len(), 1, "exactly one driver event emitted");
@@ -717,6 +730,6 @@ mod tests {
             cost_cents: 0,
         };
         // No panic, no side effect — just a return.
-        client.emit_usage(&ModelId::ClaudeSonnet46, &usage);
+        client.emit_usage(&ModelId::Anthropic(AnthropicModel::ClaudeSonnet46), &usage);
     }
 }

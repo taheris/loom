@@ -205,6 +205,7 @@ impl Message {
 mod tests {
     use super::*;
     use crate::cache::CacheTtl;
+    use crate::model_id::{AnthropicModel, OpenAiModel};
 
     /// `CompletionRequest::new` requires a `ModelId` positionally — the
     /// only public constructor takes one, the `model` field is
@@ -214,12 +215,15 @@ mod tests {
     /// model and is reachable from the builder chain).
     #[test]
     fn completion_request_requires_model_at_construction() {
-        let req = CompletionRequest::new(ModelId::ClaudeSonnet46)
+        let req = CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .system("prefix")
             .user("question")
             .user_cached("doc", CacheControl::Ephemeral(CacheTtl::Hours1))
             .max_tokens(2048);
-        assert_eq!(req.model, ModelId::ClaudeSonnet46);
+        assert_eq!(
+            req.model,
+            ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
+        );
         assert_eq!(req.system.as_deref(), Some("prefix"));
         assert_eq!(req.max_tokens, Some(2048));
         assert_eq!(req.messages.len(), 2);
@@ -238,8 +242,10 @@ mod tests {
     /// be reconstructed without dropping into raw `Message` literals.
     #[test]
     fn completion_request_builder_chains_all_roles() {
-        let req = CompletionRequest::new(ModelId::Other("gpt-5-preview".to_string()))
-            .assistant("previous reply")
+        let req = CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Other(
+            "gpt-5-preview".to_string(),
+        )))
+        .assistant("previous reply")
             .assistant_cached("cached reply", CacheControl::Ephemeral(CacheTtl::Minutes5));
         assert_eq!(req.messages.len(), 2);
         assert_eq!(req.messages[0].role, Role::Assistant);

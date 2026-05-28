@@ -2,7 +2,7 @@
 //! `CompletionResponse` and fanned out as a `DriverKind::TokenUsage`
 //! `AgentEvent` for SaaS billing pipelines.
 
-use crate::model_id::ModelId;
+use crate::model_id::{AnthropicModel, GeminiModel, ModelId, OpenAiModel};
 
 /// Token accounting for one `complete*` call. Cache fields surface
 /// prompt-cache reads and writes separately so consumers can make
@@ -38,47 +38,51 @@ struct ModelRates {
 const MILLION: u64 = 1_000_000;
 
 /// Rates for known models. Adding a model is a single-row change; the
-/// `Other` variant returns `None` so unknown models report `cost_cents
-/// = 0` rather than guessing.
-const fn rates_for(model: &ModelId) -> Option<ModelRates> {
+/// `Other` inner arms return `None` so unknown models report
+/// `cost_cents = 0` rather than guessing.
+fn rates_for(model: &ModelId) -> Option<ModelRates> {
     match model {
-        ModelId::ClaudeOpus47 => Some(ModelRates {
+        ModelId::Anthropic(AnthropicModel::ClaudeOpus47) => Some(ModelRates {
             input: 150_000,
             output: 750_000,
             cache_read: 15_000,
             cache_write: 187_500,
         }),
-        ModelId::ClaudeSonnet46 => Some(ModelRates {
+        ModelId::Anthropic(AnthropicModel::ClaudeSonnet46) => Some(ModelRates {
             input: 30_000,
             output: 150_000,
             cache_read: 3_000,
             cache_write: 37_500,
         }),
-        ModelId::ClaudeHaiku45 => Some(ModelRates {
+        ModelId::Anthropic(AnthropicModel::ClaudeHaiku45) => Some(ModelRates {
             input: 10_000,
             output: 50_000,
             cache_read: 1_000,
             cache_write: 12_500,
         }),
-        ModelId::Gpt55 => Some(ModelRates {
+        ModelId::OpenAi(OpenAiModel::Gpt55) => Some(ModelRates {
             input: 50_000,
             output: 300_000,
             cache_read: 0,
             cache_write: 0,
         }),
-        ModelId::Gemini31Pro => Some(ModelRates {
+        ModelId::Gemini(GeminiModel::Gemini31Pro) => Some(ModelRates {
             input: 12_500,
             output: 100_000,
             cache_read: 0,
             cache_write: 0,
         }),
-        ModelId::Gemini35Flash => Some(ModelRates {
+        ModelId::Gemini(GeminiModel::Gemini35Flash) => Some(ModelRates {
             input: 15_000,
             output: 90_000,
             cache_read: 1_500,
             cache_write: 0,
         }),
-        ModelId::Other(_) => None,
+        ModelId::Anthropic(AnthropicModel::Other(_))
+        | ModelId::OpenAi(OpenAiModel::Other(_))
+        | ModelId::Gemini(GeminiModel::Other(_)) => None,
+        #[cfg(feature = "openai-compat")]
+        ModelId::OpenAiCompat(_) => None,
     }
 }
 
@@ -116,16 +120,22 @@ mod tests {
     /// reaches the per-model row.
     #[test]
     fn cost_cents_non_zero_for_known_model() {
-        let cost = cost_cents_for(&ModelId::ClaudeSonnet46, 1_000_000, 0, 0, 0);
+        let cost = cost_cents_for(
+            &ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
+            1_000_000,
+            0,
+            0,
+            0,
+        );
         assert_eq!(cost, 30_000);
     }
 
-    /// `ModelId::Other` has no entry in the rates table, so cost is
+    /// `Other` inner arms have no entry in the rates table, so cost is
     /// zero rather than a guessed value.
     #[test]
     fn cost_cents_zero_for_other_model() {
         let cost = cost_cents_for(
-            &ModelId::Other("unknown-model-xyz".to_string()),
+            &ModelId::Anthropic(AnthropicModel::Other("unknown-model-xyz".to_string())),
             1_000_000,
             1_000_000,
             0,
@@ -141,7 +151,13 @@ mod tests {
     /// provider reports `input` as the inclusive total.
     #[test]
     fn cost_cents_bills_cache_lanes_at_cache_rates() {
-        let cost = cost_cents_for(&ModelId::ClaudeSonnet46, 1_000_000, 0, 1_000_000, 0);
+        let cost = cost_cents_for(
+            &ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
+            1_000_000,
+            0,
+            1_000_000,
+            0,
+        );
         assert_eq!(cost, 3_000);
     }
 
@@ -150,7 +166,13 @@ mod tests {
     /// the cache-read case: regular-input lane bills only the leftover.
     #[test]
     fn cost_cents_bills_cache_write_at_cache_write_rate() {
-        let cost = cost_cents_for(&ModelId::ClaudeSonnet46, 1_000_000, 0, 0, 1_000_000);
+        let cost = cost_cents_for(
+            &ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
+            1_000_000,
+            0,
+            0,
+            1_000_000,
+        );
         assert_eq!(cost, 37_500);
     }
 }

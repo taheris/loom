@@ -19,6 +19,7 @@
 //! multi-provider implementation is an internal change rather than a
 //! breaking change for every consumer.
 
+pub mod api_key;
 pub mod cache;
 pub mod client;
 pub mod conversation;
@@ -28,10 +29,11 @@ pub mod request;
 pub mod tool;
 pub mod usage;
 
+pub use api_key::{ApiKey, ApiKeyError};
 pub use cache::{CacheControl, CacheTtl};
 pub use client::{Client, CompletionResponse, LlmClient, LlmError, ToolUseRequest};
 pub use conversation::{Conversation, ConversationBuildError, LoopOutcome};
-pub use model_id::{ModelId, Provider};
+pub use model_id::{AnthropicModel, GeminiModel, ModelId, OpenAiModel, SchemaKind};
 pub use observer::{
     DoomLoopConfig, DoomLoopObserver, DuplicateDetection, DuplicateResultConfig,
     DuplicateResultObserver,

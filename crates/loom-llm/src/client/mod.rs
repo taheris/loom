@@ -3,8 +3,9 @@
 //! Per-call model selection (no fixed-model client construction): the
 //! same client instance accepts a different model on every request, with
 //! `ModelId` carried as a required positional field of
-//! [`crate::request::CompletionRequest`]. Provider routing is inferred
-//! from the `ModelId` variant (or `Other` prefix).
+//! [`crate::request::CompletionRequest`]. Schema routing is structural —
+//! each outer [`crate::model_id::ModelId`] variant maps 1:1 to a
+//! [`crate::model_id::SchemaKind`] via `ModelId::schema(&self)`.
 
 mod multi_provider;
 
