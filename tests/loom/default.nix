@@ -38,6 +38,7 @@ let
     nativeBuildInputs = [
       pkgs.git
       pkgs.cargo-nextest
+      pkgs.cacert
       bin
     ];
     buildPhaseCargoCommand = ''
@@ -45,8 +46,10 @@ let
       cargo nextest --version
       loom --version
     '';
+    # genai builds a reqwest TLS client eagerly; sandbox needs a CA bundle.
     preCheck = ''
       export HOME=$(mktemp -d)
+      export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
     '';
     checkPhaseCargoCommand = ''
       LOOM_VERIFY_TIERS=check,test loom gate verify

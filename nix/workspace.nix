@@ -99,9 +99,14 @@ let
     // {
       src = stagedSrc;
       inherit cargoArtifacts;
-      nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.flock ];
+      nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
+        pkgs.cacert
+        pkgs.flock
+      ];
+      # genai builds a reqwest TLS client eagerly; sandbox needs a CA bundle.
       preCheck = ''
         export HOME=$(mktemp -d)
+        export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
       '';
     }
   );

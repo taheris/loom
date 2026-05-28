@@ -770,7 +770,7 @@ documents in front of the agent with zero configuration.
 - `review.md` renders fix-up and clarify `bd create --labels=…`
   examples with `profile:{{ default_profile }}` — never a hardcoded
   `profile:base` literal
-  [check](! grep -nE 'profile:base' crates/loom-templates/templates/review.md)
+  [check](bash -c "! grep -nE 'profile:base' crates/loom-templates/templates/review.md")
 - For `spec:harness` the rendered prompt mints fix-ups and clarifies
   under `profile:rust`; for `spec:pre-commit` it stays on
   `profile:base`
