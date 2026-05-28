@@ -38,6 +38,12 @@ pub enum TodoError {
     /// multi-spec fan-out collision; `loom:clarify` bead {clarify_id} created — resolve via `loom msg`
     MultiSpecCollision { clarify_id: String },
 
+    /// agent reported productive completion for spec `{label}` but minted no implementation beads despite {notes_remaining} note(s) remaining — either re-run after `loom note clear {label}` if the notes are obsolete, or investigate why the agent skipped fan-out (see logs/{label}/todo-*.jsonl)
+    ProductiveCompletionWithoutFanout {
+        label: String,
+        notes_remaining: usize,
+    },
+
     /// agent backend protocol failure
     Protocol(#[from] ProtocolError),
 

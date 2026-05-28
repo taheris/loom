@@ -872,3 +872,379 @@ async fn todo_fans_across_touched_specs_and_clarifies_on_collision() {
         "options block must offer the fresh-mint resolution: {description}",
     );
 }
+
+fn task_list_response(ids: &[&str]) -> RunOutput {
+    let entries: Vec<String> = ids
+        .iter()
+        .map(|id| {
+            format!(
+                r#"{{
+                    "id": "{id}",
+                    "title": "task",
+                    "status": "open",
+                    "priority": 2,
+                    "issue_type": "task",
+                    "labels": [],
+                    "metadata": {{}}
+                }}"#
+            )
+        })
+        .collect();
+    RunOutput {
+        status: 0,
+        stdout: format!("[{}]", entries.join(",")).into_bytes(),
+        stderr: Vec::new(),
+    }
+}
+
+fn ok_empty() -> RunOutput {
+    RunOutput {
+        status: 0,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    }
+}
+
+/// Productive-completion fan-out guard happy path: notes non-empty, the
+/// agent mints task beads during the session, and `record_outcome` then
+/// advances `loom.base_commit` + deletes the notes as usual. Pins the
+/// guard's *positive* branch — minted beads unlock the existing
+/// persistence sequence.
+#[tokio::test(flavor = "multi_thread")]
+async fn productive_completion_with_minted_beads_advances_base_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let state = seeded_state(&workspace, "alpha", "lm-alpha", Some("old-sha".into()));
+    let label = SpecLabel::new("alpha");
+    state
+        .notes_add(&label, "implementation", "touch foo.rs", 100)
+        .unwrap();
+    state
+        .notes_add(&label, "implementation", "touch bar.rs", 200)
+        .unwrap();
+    let manifest = stub_manifest(&workspace);
+    let git = init_repo(&workspace);
+    let head_after_seed = capture_head(&workspace);
+
+    let runner = CapturingRunner::new([
+        epic_response("lm-alpha", "alpha", Some("old-sha")),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        task_list_response(&["lm-alpha.1", "lm-alpha.2", "lm-alpha.3"]),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        epic_response("lm-alpha", "alpha", Some("old-sha")),
+        ok_empty(),
+    ]);
+    let bd = Arc::new(BdClient::with_runner(runner));
+    let mut ctrl = ProductionTodoController::new(
+        label.clone(),
+        workspace,
+        Arc::clone(&state),
+        manifest,
+        ProfileName::new("base"),
+        git,
+        bd,
+        None,
+    );
+
+    let _ = ctrl.build_session().await.expect("build_session ok");
+    ctrl.record_outcome(
+        &SessionOutcome {
+            exit_code: 0,
+            cost_usd: None,
+        },
+        Some(&ExitSignal::Complete),
+    )
+    .await
+    .expect("productive completion with mints must succeed");
+
+    let mol = state
+        .molecule_for_spec(&label)
+        .unwrap()
+        .expect("molecule survives");
+    assert_eq!(
+        mol.base_commit,
+        Some(head_after_seed),
+        "happy path must advance molecules.base_commit",
+    );
+    let impl_notes_left = state
+        .notes_list(Some(&label), Some("implementation"))
+        .unwrap()
+        .len();
+    assert_eq!(impl_notes_left, 0, "happy path must delete impl notes");
+}
+
+/// Productive-completion fan-out guard refuses to advance when the
+/// agent emitted `LOOM_COMPLETE` without minting any task beads while
+/// implementation notes describe planned work: notes survive, the
+/// base_commit does not move, and the driver returns a typed error
+/// instead of warning-and-exit-0.
+#[tokio::test(flavor = "multi_thread")]
+async fn productive_completion_without_mints_returns_error_and_preserves_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let state = seeded_state(&workspace, "alpha", "lm-alpha", Some("old-sha".into()));
+    let label = SpecLabel::new("alpha");
+    state
+        .notes_add(&label, "implementation", "fan-out work pending", 100)
+        .unwrap();
+    let manifest = stub_manifest(&workspace);
+    let git = init_repo(&workspace);
+
+    let runner = CapturingRunner::new([
+        epic_response("lm-alpha", "alpha", Some("old-sha")),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        task_list_response(&[]),
+    ]);
+    let runner_handle = runner.clone();
+    let bd = Arc::new(BdClient::with_runner(runner));
+    let mut ctrl = ProductionTodoController::new(
+        label.clone(),
+        workspace,
+        Arc::clone(&state),
+        manifest,
+        ProfileName::new("base"),
+        git,
+        bd,
+        None,
+    );
+
+    let _ = ctrl.build_session().await.expect("build_session ok");
+    let err = ctrl
+        .record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
+            },
+            Some(&ExitSignal::Complete),
+        )
+        .await
+        .expect_err("guard must refuse productive completion without fan-out");
+    match err {
+        TodoError::ProductiveCompletionWithoutFanout {
+            label: l,
+            notes_remaining,
+        } => {
+            assert_eq!(l, "alpha");
+            assert_eq!(notes_remaining, 1);
+        }
+        other => panic!("expected ProductiveCompletionWithoutFanout, got {other:?}"),
+    }
+
+    let mol = state
+        .molecule_for_spec(&label)
+        .unwrap()
+        .expect("molecule survives");
+    assert_eq!(
+        mol.base_commit,
+        Some("old-sha".to_string()),
+        "guard must NOT advance molecules.base_commit",
+    );
+    let impl_notes_left = state
+        .notes_list(Some(&label), Some("implementation"))
+        .unwrap()
+        .len();
+    assert_eq!(
+        impl_notes_left, 1,
+        "guard must preserve implementation notes for re-processing",
+    );
+    let bd_calls = runner_handle.calls();
+    let advanced = bd_calls
+        .iter()
+        .flat_map(|argv| argv.iter())
+        .any(|a| a.starts_with("loom.base_commit="));
+    assert!(
+        !advanced,
+        "guard must NOT emit bd update --set-metadata loom.base_commit: {bd_calls:?}",
+    );
+}
+
+/// Productive completion + notes-non-empty + no active molecule (the
+/// agent created an epic and closed it in-session): the secondary
+/// guard refuses just like the epic-still-open variant — same
+/// persistence-boundary failure, same preservation of notes.
+#[tokio::test(flavor = "multi_thread")]
+async fn productive_completion_without_molecule_and_with_notes_returns_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let state = empty_state(&workspace);
+    let label = SpecLabel::new("alpha");
+    std::fs::create_dir_all(workspace.join("specs")).unwrap();
+    std::fs::write(workspace.join("specs/alpha.md"), "# alpha\n").unwrap();
+    state
+        .notes_add(&label, "implementation", "work pending", 100)
+        .unwrap();
+    let manifest = stub_manifest(&workspace);
+    let git = init_repo(&workspace);
+
+    let runner = CapturingRunner::new([
+        empty_epic_response(),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        task_list_response(&["lm-alpha.1"]),
+        empty_epic_response(),
+    ]);
+    let bd = Arc::new(BdClient::with_runner(runner));
+    let mut ctrl = ProductionTodoController::new(
+        label.clone(),
+        workspace,
+        Arc::clone(&state),
+        manifest,
+        ProfileName::new("base"),
+        git,
+        bd,
+        None,
+    );
+
+    let _ = ctrl.build_session().await.expect("build_session ok");
+    let err = ctrl
+        .record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
+            },
+            Some(&ExitSignal::Complete),
+        )
+        .await
+        .expect_err("no-molecule + notes must refuse");
+    assert!(
+        matches!(
+            err,
+            TodoError::ProductiveCompletionWithoutFanout { ref label, notes_remaining: 1, .. }
+                if label == "alpha"
+        ),
+        "expected ProductiveCompletionWithoutFanout, got {err:?}",
+    );
+    let impl_notes_left = state
+        .notes_list(Some(&label), Some("implementation"))
+        .unwrap()
+        .len();
+    assert_eq!(
+        impl_notes_left, 1,
+        "notes must survive the no-molecule + notes refusal",
+    );
+}
+
+/// Legitimate audit-only path: notes table empty, agent inspects the
+/// spec and emits `LOOM_NOOP`. With no notes describing planned work,
+/// the guard does not fire and the existing no-molecule warn-and-Ok
+/// behaviour is preserved — there is nothing to advance and nothing to
+/// refuse.
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_notes_audit_completion_does_not_trip_guard() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let state = empty_state(&workspace);
+    let label = SpecLabel::new("alpha");
+    std::fs::create_dir_all(workspace.join("specs")).unwrap();
+    std::fs::write(workspace.join("specs/alpha.md"), "# alpha\n").unwrap();
+    let manifest = stub_manifest(&workspace);
+    let git = init_repo(&workspace);
+
+    let runner = CapturingRunner::new([
+        empty_epic_response(),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        empty_epic_response(),
+    ]);
+    let bd = Arc::new(BdClient::with_runner(runner));
+    let mut ctrl = ProductionTodoController::new(
+        label,
+        workspace,
+        Arc::clone(&state),
+        manifest,
+        ProfileName::new("base"),
+        git,
+        bd,
+        None,
+    );
+
+    let _ = ctrl.build_session().await.expect("build_session ok");
+    ctrl.record_outcome(
+        &SessionOutcome {
+            exit_code: 0,
+            cost_usd: None,
+        },
+        Some(&ExitSignal::Noop),
+    )
+    .await
+    .expect("empty-notes audit must NOT trip the guard");
+}
+
+/// LOOM_CLARIFY emitted under non-empty notes routes through the
+/// existing clarify-on-epic path; the productive-completion fan-out
+/// guard MUST NOT fire (clarify is a non-productive marker, so
+/// `base_commit_should_advance` returns early before the guard is
+/// reached).
+#[tokio::test(flavor = "multi_thread")]
+async fn clarify_path_does_not_trip_fanout_guard() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let label = "alpha";
+    let epic_id = "lm-alpha";
+    let git = init_repo(&workspace);
+    let state = seeded_state(&workspace, label, epic_id, None);
+    state
+        .notes_add(
+            &SpecLabel::new(label),
+            "implementation",
+            "fan-out work pending",
+            100,
+        )
+        .unwrap();
+
+    let runner = CapturingRunner::new([
+        epic_response(epic_id, label, None),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        task_list_response(&[]),
+        epic_response(epic_id, label, None),
+        ok_empty(),
+    ]);
+    let runner_handle = runner.clone();
+    let bd = Arc::new(BdClient::with_runner(runner));
+    let manifest = stub_manifest(&workspace);
+    let mut ctrl = ProductionTodoController::new(
+        SpecLabel::new(label),
+        workspace,
+        state,
+        manifest,
+        ProfileName::new("base"),
+        git,
+        bd,
+        None,
+    );
+
+    let _ = ctrl.build_session().await.expect("build_session ok");
+    ctrl.record_outcome(
+        &SessionOutcome {
+            exit_code: 0,
+            cost_usd: None,
+        },
+        Some(&ExitSignal::Clarify {
+            question: "additive-only or breaking?".into(),
+        }),
+    )
+    .await
+    .expect("clarify must NOT trip productive-completion guard");
+
+    let calls = runner_handle.calls();
+    let update_argv = calls
+        .iter()
+        .find(|argv| argv.first().map(String::as_str) == Some("update"))
+        .expect("clarify path must emit a bd update on the epic");
+    assert!(
+        update_argv.iter().any(|a| a == "loom:clarify"),
+        "clarify update must carry the loom:clarify label: {update_argv:?}",
+    );
+}

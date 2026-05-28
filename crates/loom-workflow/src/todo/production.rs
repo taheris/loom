@@ -8,12 +8,13 @@
 //! Agent dispatch happens in [`super::runner::run`] via a caller-provided
 //! closure, so this controller does not own the spawn surface.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use askama::Template;
 use loom_driver::agent::{RePinContent, SessionOutcome, SpawnConfig, set_loom_inside};
-use loom_driver::bd::{BdClient, BdError, CommandRunner, CreateOpts, TokioRunner, UpdateOpts};
+use loom_driver::bd::{BdClient, BdError, CommandRunner, CreateOpts, ListOpts, TokioRunner, UpdateOpts};
 use loom_driver::config::Phase;
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
@@ -46,6 +47,10 @@ pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
         reason = "CLI flag retained pending broader --since/--spec pruning; the tier-1 base override it fed has been removed"
     )]
     since: Option<String>,
+    /// Pre-session task-bead snapshot for the productive-completion
+    /// fan-out guard. `None` means [`Self::build_session`] has not run
+    /// yet; the guard is skipped in that branch.
+    pre_snapshot: Option<HashSet<BeadId>>,
 }
 
 impl<R: CommandRunner> ProductionTodoController<R> {
@@ -69,7 +74,33 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             git,
             bd,
             since,
+            pre_snapshot: None,
         }
+    }
+
+    /// Snapshot every task bead carrying `spec:<label>` across the three
+    /// statuses an in-flight session can move beads through (open,
+    /// in_progress, closed). Used by the productive-completion guard to
+    /// detect zero fan-out under non-empty implementation notes — the
+    /// failure shape the driver must refuse to consume per
+    /// `specs/harness.md` *Productive-completion gate*.
+    async fn snapshot_task_beads(&self) -> Result<HashSet<BeadId>, TodoError> {
+        let mut snapshot = HashSet::new();
+        for status in ["open", "in_progress", "closed"] {
+            let beads = self
+                .bd
+                .list(ListOpts {
+                    issue_type: Some("task".to_string()),
+                    label: Some(format!("spec:{}", self.label.as_str())),
+                    status: Some(status.to_string()),
+                    ..Default::default()
+                })
+                .await?;
+            for bead in beads {
+                snapshot.insert(bead.id);
+            }
+        }
+        Ok(snapshot)
     }
 
     async fn build_prompt(&self) -> Result<String, TodoError> {
@@ -187,6 +218,10 @@ impl<R: CommandRunner> ProductionTodoController<R> {
 impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
     async fn build_session(&mut self) -> Result<TodoSession, TodoError> {
         let prompt = self.build_prompt().await?;
+        // Pre-session task-bead snapshot for the productive-completion
+        // fan-out guard. Captured before the agent spawns so a post-
+        // session re-snapshot in `record_outcome` can detect new mints.
+        self.pre_snapshot = Some(self.snapshot_task_beads().await?);
         let entry = self.manifest.lookup(&self.phase_default)?;
         let banner = format!("loom todo @ {}", self.label);
         let key = resolve_scratch_key(Phase::Todo, &self.label, None);
@@ -270,7 +305,49 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             );
             return Ok(());
         }
+        // Productive-completion fan-out guard per `specs/harness.md`
+        // *Productive-completion gate*: refuse to consume notes when
+        // the agent narrated success without minting any task beads.
+        if let Some(pre) = self.pre_snapshot.take() {
+            let notes_remaining = self
+                .state
+                .notes_list(Some(&self.label), Some("implementation"))?
+                .len();
+            if notes_remaining > 0 {
+                let post = self.snapshot_task_beads().await?;
+                let beads_minted: HashSet<&BeadId> = post.difference(&pre).collect();
+                if beads_minted.is_empty() {
+                    warn!(
+                        label = %self.label,
+                        notes_remaining,
+                        "loom todo: productive completion with non-empty notes minted zero task beads — refusing to advance base_commit",
+                    );
+                    return Err(TodoError::ProductiveCompletionWithoutFanout {
+                        label: self.label.to_string(),
+                        notes_remaining,
+                    });
+                }
+            }
+        }
         let Some(mol_id) = crate::resolve::resolve_open_epic(&self.bd, &self.label).await? else {
+            // No active molecule + non-empty notes is the same
+            // malformed exit the fan-out guard catches above; empty
+            // notes is the legitimate audit-only path.
+            let notes_remaining = self
+                .state
+                .notes_list(Some(&self.label), Some("implementation"))?
+                .len();
+            if notes_remaining > 0 {
+                warn!(
+                    label = %self.label,
+                    notes_remaining,
+                    "loom todo: productive completion with non-empty notes but no active molecule — refusing to advance base_commit",
+                );
+                return Err(TodoError::ProductiveCompletionWithoutFanout {
+                    label: self.label.to_string(),
+                    notes_remaining,
+                });
+            }
             warn!(
                 label = %self.label,
                 "loom todo: productive completion observed but no active molecule — base_commit and notes unchanged",
