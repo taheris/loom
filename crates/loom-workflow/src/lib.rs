@@ -14,6 +14,7 @@ pub mod agent;
 pub mod init;
 pub mod logs_cmd;
 pub mod r#loop;
+pub mod mint;
 pub mod msg;
 pub mod observer;
 pub mod plan;
