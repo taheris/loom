@@ -129,6 +129,30 @@ layout the consumer has. "Representative implementations" means the
 production code path the criterion's verifier is supposed to exercise,
 under whatever organisation that consumer's repository uses.
 
+### What the audit governs
+
+The `criterion_status` audit governs **how** the work you have been
+handed decomposes into beads — split, merge, dependency-order — **not
+whether** that work gets authored at all. The audit reflects
+**prior-molecule** coverage as of the current HEAD; the planning inputs
+to this session (the Implementation Notes section above, when present,
+and the spec diff in `todo_update`) describe **next-molecule** planned
+work that has not yet been implemented.
+
+A planning input that describes implementation work is still a bead
+even when the criteria it asserts already show as `Pass` in the
+status surface — the `Pass` row is evidence that the *prior* molecule
+landed its claim honestly, not evidence that the *next* planned
+change has already shipped. Refusing to author such a bead because
+the audit row is green is the failure mode this clause closes.
+
+The audit's role is to discipline the *shape* of the decomposition:
+which notes collapse into a single bead, which split across several,
+how the resulting beads order against each other, and whether any of
+them are made redundant by an existing fresh-pass verifier. It is
+**not** a gate on whether the session produces beads at all when
+planning inputs are present.
+
 ### Two acceptable session outcomes
 
 A decomposition session has **exactly two** acceptable outcomes:

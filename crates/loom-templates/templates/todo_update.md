@@ -24,11 +24,43 @@ Read the anchor spec at `{{ spec_path }}` for the full current contents before i
 {% if !implementation_notes.is_empty() %}
 ## Implementation Notes
 
-The following implementation notes were captured during planning. They carry
-hidden constraints, file paths, and design context that every implementation
-agent must see. **Copy every note's text verbatim into the `--description` of
-every bead you create in this session**, so each implementation agent receives
-the full context independent of any external state:
+The following implementation notes were captured during planning. **Every
+note below describes work that MUST become one or more beads in this
+session.** They are the planning inputs to fan-out — not background
+context to be appraised against the `criterion_status` surface. The
+status cache reflects what prior molecules already shipped; each note
+describes what the next molecule is supposed to land. A `Pass` row for
+a criterion a note touches is not evidence that the note's work has
+been done.
+
+When this section is present, the session has **exactly two acceptable
+exits**:
+
+- **(a) Fan the notes into beads.** Every note becomes at least one
+  bead bonded to this molecule. The `criterion_status` audit (next
+  sections) and the existing-tasks list determine *how* notes split
+  across beads, merge into a single bead, or order against existing
+  work — they do not determine whether any given note is worked. Each
+  bead receives the verbatim text of every note that informs it as
+  part of its `--description`, so the implementation agent has the
+  planning context independent of any external state.
+
+- **(b) `LOOM_CLARIFY` on the molecule epic.** If you cannot tell
+  whether the notes are still current — they predate landed work or
+  existing tasks that appear to have already shipped them, they
+  conflict with each other, or their scope is ambiguous — persist a
+  `## Options — …` block to the molecule epic's notes per the
+  *Options Format Contract* in `specs/gate.md` and emit
+  `LOOM_CLARIFY`. The block must enumerate candidate interpretations
+  (e.g. "treat note #N as already-covered by existing task lm-…" vs.
+  "fan note #N into a follow-up bead anyway"). A subsequent `loom
+  todo` run consumes the resolution before fanning out.
+
+Emitting `LOOM_COMPLETE` or `LOOM_NOOP` with this section non-empty
+and no new beads minted in this session is a **malformed exit**: the
+notes named work, the session left without authoring it, and there is
+no clarify on the molecule epic to capture the open question. The
+verdict gate treats such a session as `zero-progress`.
 
 {% for note in implementation_notes %}<implementation-note>
 {{ note }}
