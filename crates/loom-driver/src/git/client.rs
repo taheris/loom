@@ -197,16 +197,6 @@ impl GitClient {
         )
         .await?;
 
-        // Disable signing inside the clone so worker-side commits do not
-        // require GPG keys the bead container may not have.
-        run_git(
-            &path,
-            self.clock.as_ref(),
-            ["config", "commit.gpgsign", "false"],
-            None,
-        )
-        .await?;
-
         // Inherit user.email / user.name from the source's effective git
         // config (local + global) into the clone's local config so commits
         // inside the bead workspace work even when only the source repo

@@ -452,6 +452,38 @@ async fn bead_worktree_starts_with_empty_porcelain() -> Result<()> {
     Ok(())
 }
 
+/// `create_worktree` MUST NOT write `commit.gpgsign=false` into the bead
+/// clone's local config. The wrapix profile provisions a signing key and
+/// sets `commit.gpgsign=true` globally; a local `false` override silently
+/// produces unsigned agent commits that then land on driver `main`.
+#[tokio::test]
+async fn create_worktree_does_not_disable_signing() -> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("wx-sign.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&created.path)
+        .args(["config", "--local", "--get-all", "commit.gpgsign"])
+        .output()?;
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(
+        !stdout
+            .lines()
+            .any(|l| l.trim().eq_ignore_ascii_case("false")),
+        "bead clone must not carry a local commit.gpgsign=false override — \
+         that silently bypasses the signing key provisioned by the profile. \
+         got local commit.gpgsign entries: {stdout:?}",
+    );
+
+    client.remove_worktree(&created.path).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn commits_since_surfaces_git_cli_error_on_unknown_commit() -> Result<()> {
     let repo = init_repo()?;
