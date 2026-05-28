@@ -59,6 +59,18 @@ beads-push                        # bd dolt + beads-branch sync to GitHub
 
 Work is NOT complete until both `main` and `beads` are pushed.
 
+> **Known dolt-sync race.** The wrapix-shipped `beads-push` runs
+> `bd dolt commit || true` → `bd dolt pull` → `bd dolt push`. Under
+> concurrent writes, the interior `pull` can pick the remote's
+> pre-write state over a local `bd close` / `bd update` and silently
+> revert it. If you observe a local bd write disappearing after
+> `beads-push`, re-apply the write and re-run `beads-push` once the
+> remote has caught up. Upstream wrapix fix tracked as a sibling
+> bead under the harness epic; the workflow does not work around it
+> inline because `loom-workflow` may not invoke `bd dolt` directly
+> (the bind-mounted Dolt socket is the only authoritative path —
+> see `crates/loom-workflow/tests/no_bd_dolt.rs`).
+
 ## Code Style
 
 Read `docs/style-rules.md` before writing or reviewing code — it contains
