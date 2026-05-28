@@ -21,6 +21,7 @@
 
 mod context;
 mod error;
+mod finding;
 mod fixup;
 mod iteration;
 mod phase_verdict;
@@ -35,6 +36,7 @@ pub use context::{
     load_review_sources,
 };
 pub use error::ReviewError;
+pub use finding::{ConcernToken, Finding, FindingTarget};
 pub use fixup::{FixupContext, FixupOutcome, FixupRequest, spawn_fixup_bead};
 pub use iteration::{DEFAULT_MAX_ITERATIONS, IterationCap};
 pub use loom_templates::review::ReviewLane;
