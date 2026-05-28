@@ -23,6 +23,7 @@ mod loom_llm_client_constructors_use_newtypes;
 mod loom_llm_client_types_per_schema_kind;
 mod loom_llm_deps;
 mod loom_llm_error_variant_set;
+mod loom_llm_no_public_genai_types;
 mod loom_llm_no_underlying_crate_reexports;
 mod loom_llm_public_surface;
 mod loom_render_deps;
@@ -168,6 +169,10 @@ pub static REGISTRY: &[Walk] = &[
     Walk {
         name: "loom_llm_error_variant_set",
         run: loom_llm_error_variant_set::run,
+    },
+    Walk {
+        name: "loom_llm_no_public_genai_types",
+        run: loom_llm_no_public_genai_types::run,
     },
     Walk {
         name: "loom_llm_no_underlying_crate_reexports",
@@ -364,6 +369,7 @@ mod tests {
             "loom_llm_client_types_per_schema_kind",
             "loom_llm_deps",
             "loom_llm_error_variant_set",
+            "loom_llm_no_public_genai_types",
             "loom_llm_no_underlying_crate_reexports",
             "loom_llm_public_surface",
             "loom_render_deps",
