@@ -7,7 +7,7 @@
 //! attaches directly to the user's terminal as a real REPL.
 //!
 //! This deliberately bypasses the `dispatch` / pi-mono / claude
-//! stream-json surface used by `loom run` / `loom gate` / `loom todo`.
+//! stream-json surface used by `loom loop` / `loom gate` / `loom todo`.
 //! Those backends pipe stdio so the driver can read events and write
 //! the JSONL log — fine for non-interactive sessions, fatal for an
 //! interactive chat (no readline, no color, no real REPL).
@@ -294,7 +294,7 @@ mod tests {
     }
 
     /// The dispatch must NEVER include `--stdio` or `--spawn-config`
-    /// — those are the non-interactive surfaces `loom run`/`check`/
+    /// — those are the non-interactive surfaces `loom loop`/`check`/
     /// `todo` use. msg --chat is interactive (`wrapix run`, no
     /// pi-mono protocol). If this drift sneaks back in, the next
     /// real user gets a piped-stdio session instead of a REPL.

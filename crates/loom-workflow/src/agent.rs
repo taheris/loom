@@ -67,10 +67,10 @@ pub async fn run_agent<B: AgentBackend>(
 }
 
 /// Same as [`run_agent`] but preserves the preflight vs mid-session
-/// distinction in its return type. Used by the `loom run` driver so the
+/// distinction in its return type. Used by the `loom loop` driver so the
 /// verdict gate can route pre-flight failures to `loom:blocked` cause
 /// `infra-preflight` immediately and grant mid-session failures one
-/// driver-memory retry per `loom run`.
+/// driver-memory retry per `loom loop`.
 ///
 /// `observer` is an optional [`DefaultObserverChain`] the driver fans
 /// every event into alongside `sink`. After every non-streaming event

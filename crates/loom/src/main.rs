@@ -2584,7 +2584,7 @@ fn run_msg_inner(
         })?;
         println!("answered {target}: {note}");
         if let Some(label) = spec_label_of(target_bead) {
-            println!("resume: loom run -s {label}");
+            println!("resume: loom loop -s {label}");
         }
         return Ok(());
     }
@@ -2610,7 +2610,7 @@ fn run_msg_inner(
         })?;
         println!("answered {target}: {text}");
         if let Some(label) = spec_label_of(target_bead) {
-            println!("resume: loom run -s {label}");
+            println!("resume: loom loop -s {label}");
         }
         return Ok(());
     }
@@ -2634,7 +2634,7 @@ fn run_msg_inner(
         })?;
         println!("dismissed {target}: {DISMISS_NOTE}");
         if let Some(label) = spec_label_of(target_bead) {
-            println!("resume: loom run -s {label}");
+            println!("resume: loom loop -s {label}");
         }
     }
     Ok(())

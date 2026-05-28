@@ -1187,7 +1187,7 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
     ] {
         assert!(
             out.contains(shared),
-            "loom run missing shared section: {shared}"
+            "loom loop missing shared section: {shared}"
         );
     }
     Ok(())

@@ -13,10 +13,10 @@
 //!    terminal renderer + per-bead JSONL log;
 //! 3. snapshots beads again, computes new bead IDs and clarify membership;
 //! 4. branches: clean → `git push` + `beads-push`; clarify → stop;
-//!    fix-up + under cap → `exec loom run`; fix-up + at cap → escalate the
+//!    fix-up + under cap → `exec loom loop`; fix-up + at cap → escalate the
 //!    newest fix-up bead to `loom:clarify`.
 //!
-//! `loom run`'s molecule-complete handoff (`exec_review` in [`super::run`])
+//! `loom loop`'s molecule-complete handoff (`exec_review` in [`super::run`])
 //! is wired by the binary to invoke this module.
 
 mod context;

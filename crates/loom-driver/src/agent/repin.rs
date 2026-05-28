@@ -33,12 +33,12 @@ impl RePinContent {
     /// use loom_driver::agent::RePinContent;
     ///
     /// let r = RePinContent {
-    ///     orientation: "loom run @ wx-1".to_string(),
+    ///     orientation: "loom loop @ wx-1".to_string(),
     ///     pinned_context: "Spec: specs/harness.md".to_string(),
     ///     partial_bodies: vec!["partial alpha".to_string(), "partial beta".to_string()],
     /// };
     /// let prompt = r.to_prompt();
-    /// assert!(prompt.starts_with("loom run @ wx-1"));
+    /// assert!(prompt.starts_with("loom loop @ wx-1"));
     /// assert!(prompt.contains("Spec: specs/harness.md"));
     /// assert!(prompt.contains("partial alpha"));
     /// assert!(prompt.contains("partial beta"));

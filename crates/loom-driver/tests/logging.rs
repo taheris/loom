@@ -779,7 +779,7 @@ fn run_default_renders_per_tool_summary_cells() -> Result<()> {
 }
 
 //---------------------------------------------------------------------------
-// `loom run`'s default mode opens an in-place running indicator for
+// `loom loop`'s default mode opens an in-place running indicator for
 // top-level tool calls. ToolCall writes `<summary> running...` without a
 // newline; the matching ToolResult overwrites with `\r` + clear-to-EOL
 // + `<summary> ✓ Ns\n`. Pin this end-to-end through LogSink.

@@ -182,7 +182,7 @@ where
                 info!(
                     bead = %bead.id,
                     spec = %self.label,
-                    "loom run: skipping epic-typed ready bead — workers dispatch leaves only",
+                    "loom loop: skipping epic-typed ready bead — workers dispatch leaves only",
                 );
                 continue;
             }
@@ -196,7 +196,7 @@ where
         bead: &Bead,
         previous_failure: Option<String>,
     ) -> Result<AgentOutcome, LoopError> {
-        let banner = format!("loom run @ {}", bead.id);
+        let banner = format!("loom loop @ {}", bead.id);
         let is_retry = previous_failure.is_some();
         // The stash is per-retry-sequence: a fresh dispatch
         // (`previous_failure = None`) means any leftover variant from a
@@ -296,7 +296,7 @@ where
             image_ref = %spawn_config.image_ref,
             worktree = %worktree.path.display(),
             retry = is_retry,
-            "loom run: dispatching agent",
+            "loom loop: dispatching agent",
         );
         let (session, marker) = (self.spawn)(spawn_config, bead.id.clone()).await;
         drop(scratch);
@@ -472,7 +472,7 @@ where
             spec = %self.label.as_str(),
             diff = %diff_range,
             exit_code = verify_status.code().unwrap_or(-1),
-            "loom run: molecule handoff — loom gate verify --diff finished",
+            "loom loop: molecule handoff — loom gate verify --diff finished",
         );
         // Thread the verify exit into the child via `--verify-exit <CODE>`
         // so the push gate's four-condition AND (FR9 condition 2) consumes
@@ -497,7 +497,7 @@ where
             spec = %self.label.as_str(),
             diff = %diff_range,
             exit_code = review_status.code().unwrap_or(-1),
-            "loom run: molecule handoff — loom gate review --diff finished",
+            "loom loop: molecule handoff — loom gate review --diff finished",
         );
         Ok(HandoffEvidence {
             verify_exit: verify_status.code(),
@@ -1075,7 +1075,6 @@ mod tests {
         };
         controller.run_bead(&bead, None).await.expect("run_bead ok");
         let cfg = captured.lock().unwrap().take().expect("closure called");
-        // Rendered template body, not the legacy "loom run: bead <id>" stub.
         assert!(
             cfg.initial_prompt.contains("# Implementation Step"),
             "prompt missing template heading: {}",

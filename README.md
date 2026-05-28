@@ -28,7 +28,7 @@ Loom drives a five-phase pipeline per spec:
 1. `loom plan -n <label>` — interactive spec interview
 2. `loom plan -u <label>` — update an existing spec
 3. `loom todo <label>` — decompose the spec into beads
-4. `loom run <label>` — execute beads one at a time through the configured agent
+4. `loom loop <label>` — execute beads one at a time through the configured agent
 5. `loom gate verify` / `loom gate review` — deterministic checks + LLM judge
 6. `loom msg <bead>` — resolve `loom:clarify` beads with the Options Format
 

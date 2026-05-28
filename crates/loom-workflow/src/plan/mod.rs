@@ -25,7 +25,7 @@
 //!    for `## Companions` and replace the companion rows for `label` in the
 //!    state DB ([`companions::reconcile_companions`]);
 //! 6. set `current_spec = label` in the state DB so subsequent commands
-//!    (`loom todo`, `loom run`, `loom spec`) resolve the spec without a
+//!    (`loom todo`, `loom loop`, `loom spec`) resolve the spec without a
 //!    separate `loom use` call.
 //!
 //! Hidden specs are deliberately unsupported — keeping a spec out of git is

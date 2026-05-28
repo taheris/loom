@@ -81,7 +81,7 @@ pub trait ReviewController: Send {
     /// the time this runs, so the caller treats this as a separate exit.
     fn beads_push(&mut self) -> impl std::future::Future<Output = Result<(), ReviewError>> + Send;
 
-    /// `exec loom run -s <label>` for auto-iteration. Implementations
+    /// `exec loom loop -s <label>` for auto-iteration. Implementations
     /// `exec` (replace process) on success; the future resolves only on
     /// failure to launch.
     fn exec_run(&mut self) -> impl std::future::Future<Output = Result<(), ReviewError>> + Send;
@@ -109,7 +109,7 @@ pub trait ReviewController: Send {
     /// `n != 0`. The default impl returns `None` so test fakes and
     /// pre-wiring production callers compile; the production controller
     /// overrides this with the actual verify exit threaded from the
-    /// parent `loom run`.
+    /// parent `loom loop`.
     fn verify_exit(
         &mut self,
     ) -> impl std::future::Future<Output = Result<Option<i32>, ReviewError>> + Send {
@@ -219,7 +219,7 @@ pub enum ReviewResult {
         clarify_ids: Vec<BeadId>,
     },
 
-    /// Auto-iteration was triggered. The driver execs `loom run`; if the
+    /// Auto-iteration was triggered. The driver execs `loom loop`; if the
     /// `exec` future resolves at all (i.e. didn't replace this process)
     /// the caller receives this variant so it can surface the failure or
     /// continue testing under a fake.
@@ -511,7 +511,7 @@ async fn apply_verdict<C: ReviewController>(
         } => {
             controller.emit_driver_event(
                 DriverKind::PushGateWalk,
-                "verdict auto-iterate — fix-up beads detected, re-entering loom run",
+                "verdict auto-iterate — fix-up beads detected, re-entering loom loop",
                 serde_json::json!({
                     "next_iteration": next_iteration,
                     "new_bead_ids": new_bead_ids.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
@@ -958,7 +958,7 @@ mod tests {
             other => panic!("expected AutoIterated, got {other:?}"),
         }
         assert_eq!(c.set_iter_calls, vec![1], "counter incremented before exec");
-        assert_eq!(c.exec_run_calls, 1, "exec loom run on auto-iterate");
+        assert_eq!(c.exec_run_calls, 1, "exec loom loop on auto-iterate");
         assert_eq!(c.git_push_calls, 0, "auto-iterate never pushes");
         assert!(c.apply_clarify_calls.is_empty(), "no escalation under cap");
         Ok(())

@@ -5,7 +5,7 @@ priority = 2
 default_type = "task"
 
 [loop]
-# Molecule-level: bounds `loom run`'s outer loop on fix-up beads. Each
+# Molecule-level: bounds `loom loop`'s outer loop on fix-up beads. Each
 # full molecule pass — initial pass plus every verdict-gate-produced
 # fix-up pass — consumes one slot.
 max_iterations = 10
@@ -15,11 +15,11 @@ max_retries = 2
 
 [logs]
 # Delete log files under .wrapix/loom/logs/ older than this many days on
-# `loom run` startup. 0 disables sweeping (keep forever).
+# `loom loop` startup. 0 disables sweeping (keep forever).
 retention_days = 14
 
 # Per-phase config. Resolution for any field: [phase.<name>] →
-# [phase.default] → built-in. `loom run` reads its profile from the
+# [phase.default] → built-in. `loom loop` reads its profile from the
 # bead's `profile:X` label first, then [phase.run] / [phase.default];
 # the `--profile` CLI flag overrides everything.
 [phase.default]

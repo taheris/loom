@@ -287,7 +287,7 @@ mod tests {
             workspace.path(),
             "wx-test",
             "hello",
-            "loom run @ wx-test",
+            "loom loop @ wx-test",
         )
         .expect("open scratch");
         let cfg = SpawnConfig {

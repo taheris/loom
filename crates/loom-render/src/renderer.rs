@@ -22,7 +22,7 @@ pub enum BeadOutcome {
 }
 
 /// Output mode for the renderer trait. Drives the per-impl selection
-/// in [`select_renderer`] and the CLI flag wiring in `loom run` /
+/// in [`select_renderer`] and the CLI flag wiring in `loom loop` /
 /// `loom logs`. Mode is the format dimension; verbosity is orthogonal.
 ///
 /// Selection logic:
@@ -222,7 +222,7 @@ pub struct TerminalRenderer {
     /// `ToolResult` arrives. Mutually exclusive with [`running`]: each
     /// top-level call lands in one bucket or the other.
     buffered_overflow: Option<(ToolCallId, Instant, String, String)>,
-    /// `true` for `loom run` (events arrive in real time) and `false`
+    /// `true` for `loom loop` (events arrive in real time) and `false`
     /// for `loom logs` replay. Replay mode suppresses the in-place
     /// running indicator entirely — every event already has its
     /// matching `ToolResult` on disk so the spinner has nothing to
@@ -365,7 +365,7 @@ impl TerminalRenderer {
     }
 
     /// Enable OSC 8 hyperlink wrapping for path-bearing summary cells.
-    /// Production callers in `loom run` probe `TERM_PROGRAM` / `TERM`
+    /// Production callers in `loom loop` probe `TERM_PROGRAM` / `TERM`
     /// via [`crate::osc8::supports_osc8`] and pass the workspace root
     /// as `cwd`. Tests pin both branches without env mutation by
     /// passing the boolean directly. Chainable; returns the renderer.
@@ -746,7 +746,7 @@ impl Drop for TerminalRenderer {
 /// once per spawn via [`RenderMode::select`] and the chosen impl is
 /// handed to [`crate::LogSink`] as `Box<dyn Renderer>`.
 ///
-/// `loom run` and `loom logs` share these impls — the `live` /
+/// `loom loop` and `loom logs` share these impls — the `live` /
 /// replay distinction is encoded in how they feed events to the
 /// renderer, not in the renderer itself. H3-H6 add per-tool body
 /// rendering, in-place running indicators, OSC 8 hyperlinks, and
@@ -783,7 +783,7 @@ impl Renderer for TerminalRenderer {
 /// `Pretty` mode — colored, glyph-decorated output for an interactive
 /// terminal. Thin wrapper that delegates to the existing
 /// [`TerminalRenderer`] with `color = true`. `live` distinguishes
-/// `loom run` (events arrive in real time, in-place indicator spins)
+/// `loom loop` (events arrive in real time, in-place indicator spins)
 /// from `loom logs` (replay; indicator suppressed, durations from
 /// `ts_ms` deltas).
 pub struct PrettyRenderer {
@@ -904,9 +904,9 @@ impl Renderer for RawRenderer {
 }
 
 /// Construct the right [`Renderer`] for a given mode. Production
-/// callers in `loom run` / `loom logs` pass a `Box<dyn Write + Send>`
+/// callers in `loom loop` / `loom logs` pass a `Box<dyn Write + Send>`
 /// (typically `io::stdout()` or a buffered wrapper). `live` is `true`
-/// for `loom run` (in-place indicator + wall-clock fallback) and
+/// for `loom loop` (in-place indicator + wall-clock fallback) and
 /// `false` for `loom logs` replay (indicator suppressed, durations
 /// from `ts_ms` deltas).
 pub fn build_renderer(
@@ -1744,10 +1744,10 @@ mod tests {
     }
 
     /// Spec criterion `test_logs_reuses_renderer` — the `Renderer`
-    /// trait + impls are reused between `loom run` and `loom logs`. We
+    /// trait + impls are reused between `loom loop` and `loom logs`. We
     /// pin this by deserializing events from a JSONL line (the on-disk
     /// shape `loom logs` reads) and feeding them through the same
-    /// `build_renderer` path `loom run` uses. The renderer trait
+    /// `build_renderer` path `loom loop` uses. The renderer trait
     /// object is the only contract both share.
     #[test]
     fn logs_reuses_renderer_via_jsonl_round_trip() {
@@ -1771,7 +1771,7 @@ mod tests {
             .collect();
 
         // Build via `build_renderer` (the public selection function
-        // shared by `loom run` and `loom logs`) with `live=false`.
+        // shared by `loom loop` and `loom logs`) with `live=false`.
         let (buf, writer) = captured();
         let mut r = build_renderer(RenderMode::Plain, Box::new(writer), bead, false, false);
         for ev in &replayed {

@@ -17,7 +17,7 @@
 //! Every invocation appends a debug line to `$BD_STATE_DIR/.invocations.log`
 //! so failing tests can show which calls landed where.
 //!
-//! Supported subcommands (the subset `loom run` / `loom gate` /
+//! Supported subcommands (the subset `loom loop` / `loom gate` /
 //! `loom msg` actually invoke):
 //!
 //! - `bd list --json [--label-any=<L> …]`

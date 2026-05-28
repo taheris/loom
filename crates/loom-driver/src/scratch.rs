@@ -11,7 +11,7 @@
 //!   `SessionStart[matcher: "compact"]`.
 //!
 //! `<key>` is the spec label for `loom plan` / `loom todo` and the bead
-//! id for `loom run` / `loom gate`. Two parallel `loom run` workers on
+//! id for `loom loop` / `loom gate`. Two parallel `loom loop` workers on
 //! different beads of the same molecule get independent dirs.
 //!
 //! Cleanup runs on every exit path: [`Drop`] removes the directory
@@ -33,7 +33,7 @@ const SCRATCH_SUBDIR: &str = ".wrapix/loom/scratch";
 /// Resolve the per-session scratch-dir key for `phase`. Single source of
 /// truth for the spec-label-vs-bead-id choice documented in
 /// `specs/harness.md`: spec label for `loom plan` / `loom todo`,
-/// bead id for `loom run` / `loom gate` / `loom msg`. `loom gate verify`
+/// bead id for `loom loop` / `loom gate` / `loom msg`. `loom gate verify`
 /// currently runs once per molecule and has no bead at the call site —
 /// when `bead_id` is `None` for a bead-scoped phase the helper falls
 /// back to the spec label so the on-disk path stays deterministic.
@@ -69,7 +69,7 @@ impl ScratchSession {
     ///
     /// `banner` is the fixed preamble emitted by `repin.sh` ahead of the
     /// `prompt.txt` and `scratch.md` contents — typically a short
-    /// orientation string like `loom run @ <bead-id>`.
+    /// orientation string like `loom loop @ <bead-id>`.
     pub fn open(workspace: &Path, key: &str, prompt: &str, banner: &str) -> io::Result<Self> {
         if key.is_empty() || key.contains('/') || key.contains("..") {
             return Err(io::Error::new(
@@ -304,7 +304,7 @@ mod tests {
             workspace.path(),
             "wx-3",
             "the initial prompt\nwith\nlines",
-            "loom run @ wx-3",
+            "loom loop @ wx-3",
         )
         .unwrap();
         // Simulate the agent appending to the scratchpad mid-session.
@@ -328,7 +328,7 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(
-            context.contains("loom run @ wx-3"),
+            context.contains("loom loop @ wx-3"),
             "missing banner in {context}",
         );
         assert!(

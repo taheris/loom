@@ -1,5 +1,5 @@
 //! Test-only mock agent. Stands in for the wrapix → pi binary chain
-//! when an integration test wants to drive `loom run` end-to-end
+//! when an integration test wants to drive `loom loop` end-to-end
 //! against a controllable backend. Speaks the pi-mono JSONL RPC
 //! protocol — enough of it to reach the marker-emission point and
 //! exit cleanly — and chooses what marker text to emit based on the

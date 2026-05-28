@@ -42,7 +42,7 @@ pub enum ReviewError {
     /// detached HEAD — refuse to push
     DetachedHead,
 
-    /// `loom run` handoff for auto-iteration failed: {0}
+    /// `loom loop` handoff for auto-iteration failed: {0}
     RunHandoff(String),
 
     /// state-db read/write failure

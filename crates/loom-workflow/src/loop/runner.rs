@@ -226,7 +226,7 @@ pub async fn run_loop<C: AgentLoopController>(
         if beads_this_pass == 0 && progress.outer_iterations > 0 {
             info!(
                 outer_iterations = progress.outer_iterations,
-                "loom run: outer loop exiting — no new ready beads after handoff",
+                "loom loop: outer loop exiting — no new ready beads after handoff",
             );
             break 'outer;
         }
@@ -234,7 +234,7 @@ pub async fn run_loop<C: AgentLoopController>(
         if progress.outer_iterations >= max_iterations {
             info!(
                 outer_iterations = progress.outer_iterations,
-                max_iterations, "loom run: outer-loop counter exhausted",
+                max_iterations, "loom loop: outer-loop counter exhausted",
             );
             stalled_at_max_iterations = true;
             break 'outer;

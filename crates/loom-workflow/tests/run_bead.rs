@@ -104,7 +104,7 @@ fn setup() -> (
     (dir, workspace, manifest, git)
 }
 
-/// `loom run --parallel 1` dispatches every bead through a per-bead
+/// `loom loop --parallel 1` dispatches every bead through a per-bead
 /// workspace under `.wrapix/worktree/<label>/<bead-id>/` (universal
 /// worktree isolation per `harness.md` § Worktree Dispatch). The
 /// workspace is a `git clone --local` of the main repo — its `.git/`

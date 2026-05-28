@@ -8,7 +8,7 @@
 //!
 //! [`replay`] reads a selected log, parses each line into an
 //! [`AgentEvent`], and drives the same [`loom_render::Renderer`] impls
-//! `loom run` uses for live output — so the spec criterion "logs and
+//! `loom loop` uses for live output — so the spec criterion "logs and
 //! run share a single renderer" is enforced by the type, not by
 //! convention. `--raw` skips parsing and copies the file's bytes
 //! verbatim; `--follow` polls for additional bytes / lines after EOF.
@@ -133,7 +133,7 @@ fn missing(root: &Path, bead: Option<&BeadId>) -> Result<PathBuf, LogsError> {
 pub enum ReplayMode {
     /// Parse + render through a `Box<dyn Renderer>`. The wrapped
     /// [`RenderMode`] picks between Pretty/Plain/Verbose etc. — the
-    /// same enum `loom run` consumes.
+    /// same enum `loom loop` consumes.
     Render(RenderMode),
     /// Copy bytes from the file verbatim (no JSON parsing). Drives the
     /// `--raw` path; pairs with `follow=true` to tail raw JSONL.
@@ -166,7 +166,7 @@ pub struct ReplayOpts<'a> {
 ///
 /// In `Render` mode each non-empty line is deserialized to an
 /// [`AgentEvent`] and forwarded to the renderer chosen by
-/// [`loom_render::build_renderer`] — the same code path `loom run`
+/// [`loom_render::build_renderer`] — the same code path `loom loop`
 /// uses. In `Raw` mode bytes are copied verbatim without parsing.
 ///
 /// `follow=true` waits for the file to grow after the initial read.
@@ -470,10 +470,10 @@ mod tests {
     }
 
     /// `replay` builds the renderer via `loom_render::build_renderer` —
-    /// the same selection path `loom run` uses. The rendered output
+    /// the same selection path `loom loop` uses. The rendered output
     /// shows the tool summary plus a duration computed from the
     /// events' `ts_ms` deltas, which is the marker for the
-    /// `loom logs` ↔ `loom run` shared-renderer contract.
+    /// `loom logs` ↔ `loom loop` shared-renderer contract.
     #[tokio::test(start_paused = true)]
     async fn replay_renders_via_shared_renderer() -> Result<()> {
         let dir = tempfile::tempdir()?;

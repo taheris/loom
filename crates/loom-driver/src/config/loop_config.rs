@@ -3,7 +3,7 @@ use serde::Deserialize;
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct LoopConfig {
-    /// Molecule-level: bounds `loom run`'s outer loop on fix-up beads. Each
+    /// Molecule-level: bounds `loom loop`'s outer loop on fix-up beads. Each
     /// full molecule pass — initial pass plus every verdict-gate-produced
     /// fix-up pass — consumes one slot. Recorded as
     /// `molecules.iteration_count` in the state DB and surfaced in

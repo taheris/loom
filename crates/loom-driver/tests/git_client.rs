@@ -425,7 +425,7 @@ async fn commits_since_counts_revisions_added_after_a_commit() -> Result<()> {
 }
 
 /// Spec gate (`specs/harness.md` § Bead worktree dispatch): every
-/// per-bead worktree created by `loom run` MUST have an empty `git
+/// per-bead worktree created by `loom loop` MUST have an empty `git
 /// status --porcelain` immediately after creation, so the verdict gate's
 /// tree-clean check is sound by construction — anything dirty the agent
 /// leaves behind is unambiguously the agent's own write.

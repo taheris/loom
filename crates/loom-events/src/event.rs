@@ -131,7 +131,7 @@ pub struct EventEnvelope {
     /// no bead-level scope may omit it.
     pub molecule_id: Option<MoleculeId>,
     /// Iteration counter for the bead's molecule — bumped each time
-    /// `loom review` enters another `loom run` round.
+    /// `loom review` enters another `loom loop` round.
     pub iteration: u32,
     pub source: Source,
     /// Unix-epoch milliseconds when the event was produced.

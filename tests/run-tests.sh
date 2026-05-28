@@ -107,7 +107,7 @@ RC=$?
 set -e
 
 if [[ $RC -ne 0 ]]; then
-    log "loom run --once failed with exit $RC"
+    log "loom loop --once failed with exit $RC"
     exit 1
 fi
 

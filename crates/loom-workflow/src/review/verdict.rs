@@ -52,7 +52,7 @@ pub struct BeadSnapshot {
 
 /// The four post-review branches `loom review` can take. The driver computes
 /// this enum, then runs the side effects: push, set loom:clarify, exec
-/// `loom run`, etc.
+/// `loom loop`, etc.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewVerdict {
     /// No new beads + no `loom:blocked` + no `loom:clarify` → push code +
@@ -74,7 +74,7 @@ pub enum ReviewVerdict {
     },
 
     /// New fix-up beads, no blocked/clarify, iteration cap not reached → exec
-    /// `loom run` for another forward pass. The driver increments the
+    /// `loom loop` for another forward pass. The driver increments the
     /// counter before returning this variant.
     AutoIterate {
         new_bead_ids: Vec<BeadId>,

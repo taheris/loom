@@ -2,7 +2,7 @@
 //!
 //! Wires `BdClient` for spec-bead snapshots and clarify,
 //! `tokio::process::Command` shell-outs for `git push`, `beads-push`, and
-//! the auto-iterate `loom run` handoff, and a caller-provided dispatch
+//! the auto-iterate `loom loop` handoff, and a caller-provided dispatch
 //! closure for the reviewer agent invocation. The closure pattern keeps
 //! backend selection (`PiBackend` vs `ClaudeBackend`) inside the binary's
 //! `dispatch` match — `loom-workflow` never sees the concrete backend types,
@@ -66,7 +66,7 @@ where
     manifest: Arc<ProfileImageManifest>,
     phase_default: ProfileName,
     spawn: S,
-    /// Spec lock dropped before exec'ing `loom run` so the child can take it.
+    /// Spec lock dropped before exec'ing `loom loop` so the child can take it.
     lock: Option<LockGuard>,
     /// Phase log root + start timestamp. The verdict gate emits
     /// `push_gate_*` driver events into the same JSONL log file the
@@ -90,7 +90,7 @@ where
     /// test fakes that skip the builder still render a valid prompt.
     style_rules: String,
     /// Exit code of the molecule-final `loom gate verify --diff
-    /// <base>..HEAD` run, threaded from `loom run`'s handoff via the
+    /// <base>..HEAD` run, threaded from `loom loop`'s handoff via the
     /// `--verify-exit` flag on `loom gate review`. Defaults to `None`
     /// when the gate is invoked standalone; the push gate's
     /// four-condition AND treats `None` as "no verify run in scope" so
@@ -146,7 +146,7 @@ where
     }
 
     /// Hand the spec lock to the controller so `exec_run` can drop it
-    /// before spawning the `loom run` child (which acquires the same lock).
+    /// before spawning the `loom loop` child (which acquires the same lock).
     pub fn with_handoff_lock(mut self, guard: LockGuard) -> Self {
         self.lock = Some(guard);
         self
@@ -161,7 +161,7 @@ where
     }
 
     /// Wire the verify-phase exit code that the push gate's
-    /// four-condition AND consumes for FR9 condition 2. `loom run`'s
+    /// four-condition AND consumes for FR9 condition 2. `loom loop`'s
     /// molecule-completion handoff captures `loom gate verify`'s exit
     /// status and threads it through the `--verify-exit` flag on
     /// `loom gate review`; `main.rs::run_review` plumbs that value here.
@@ -598,7 +598,7 @@ where
     }
 
     async fn exec_run(&mut self) -> Result<(), ReviewError> {
-        // Release the spec lock before spawning the child — `loom run`
+        // Release the spec lock before spawning the child — `loom loop`
         // acquires the same lock and would otherwise time out behind us.
         self.lock.take();
         let status = Command::new(&self.loom_bin)
@@ -892,7 +892,7 @@ mod tests {
     /// FR9 condition 2 production wiring: `ProductionReviewController`
     /// MUST surface the threaded verify exit code so the push gate's
     /// four-condition AND can refuse on a non-zero verify. The default
-    /// trait impl returns `None`, which let `loom run`'s handoff
+    /// trait impl returns `None`, which let `loom loop`'s handoff
     /// silently push despite a failing verifier — the bug wx-e6c8r.25
     /// pinned this test against.
     #[tokio::test]
@@ -917,7 +917,7 @@ mod tests {
 
     /// Default state — no `with_verify_exit` call — preserves the
     /// historical `None` so direct human invocations of `loom gate
-    /// review` (no parent `loom run`) still work; FR9 condition 2 is
+    /// review` (no parent `loom loop`) still work; FR9 condition 2 is
     /// vacuously satisfied and the remaining three conditions gate the
     /// push.
     #[tokio::test]
@@ -1484,7 +1484,7 @@ mod tests {
     }
 
     /// Regression: `exec_run` (the review → run handoff for auto-iterate)
-    /// must release the spec lock before spawning, so the `loom run` child
+    /// must release the spec lock before spawning, so the `loom loop` child
     /// can acquire it. Mirror of the run-side test in `run/production.rs`.
     #[tokio::test(flavor = "multi_thread")]
     async fn exec_run_releases_lock_before_spawning_child() {

@@ -176,7 +176,7 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
 }
 
 /// Acceptance (`specs/tests.md` line 597 — `parallel_run_two_beads_e2e`):
-/// `loom run --parallel 2` with two ready beads creates one worktree per
+/// `loom loop --parallel 2` with two ready beads creates one worktree per
 /// bead under `.wrapix/worktree/<label>/<bead-id>/` (concurrent dispatch).
 #[tokio::test]
 async fn parallel_run_two_beads_e2e() -> Result<()> {

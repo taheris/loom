@@ -3,7 +3,7 @@
 //!
 //! Every fix-up bead spawned by the verdict gate during recovery must be
 //! bonded to its originating bead's molecule before becoming eligible for
-//! `loom run` dispatch. The bond is atomic with creation — a fix-up bead
+//! `loom loop` dispatch. The bond is atomic with creation — a fix-up bead
 //! that leaves this chokepoint unbonded is a bug. The chokepoint also
 //! refuses to spawn when the originating bead is itself unbonded, applying
 //! `loom:blocked` with cause `unbonded-origin` to surface the upstream
@@ -43,7 +43,7 @@ pub struct FixupRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FixupOutcome {
     /// Fix-up bead was created and bonded to `molecule` in one chokepoint
-    /// turn — the new id is safe to dispatch to `loom run` because no
+    /// turn — the new id is safe to dispatch to `loom loop` because no
     /// observer can see it before the bond completes.
     Spawned {
         fixup_id: BeadId,

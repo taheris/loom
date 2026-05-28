@@ -204,7 +204,7 @@ mod tests {
         assert_ne!(labelled.image_ref, overridden.image_ref);
     }
 
-    /// wx-cmzob: sequential (`loom loop`) and parallel (`loom run -p N`)
+    /// wx-cmzob: sequential (`loom loop`) and parallel (`loom loop -p N`)
     /// must produce identical SpawnConfigs for the same bead modulo the
     /// workspace path — sequential dispatches against the repo root,
     /// parallel against a per-bead worktree, but every other field
@@ -216,7 +216,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = three_profile_manifest(dir.path());
         let bead = bead_with_labels("wx-1", &["spec:harness", "profile:rust"]);
-        let prompt = format!("loom run: bead {}", bead.id);
+        let prompt = format!("loom loop: bead {}", bead.id);
 
         let seq = build_spawn_config_from_manifest(
             &manifest,
