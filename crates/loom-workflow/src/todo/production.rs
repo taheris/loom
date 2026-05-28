@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use askama::Template;
 use loom_driver::agent::{RePinContent, SessionOutcome, SpawnConfig, set_loom_inside};
-use loom_driver::bd::{BdClient, BdError, CommandRunner, CreateOpts, ListOpts, TokioRunner, UpdateOpts};
+use loom_driver::bd::{
+    BdClient, BdError, CommandRunner, CreateOpts, ListOpts, TokioRunner, UpdateOpts,
+};
 use loom_driver::config::Phase;
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};

@@ -107,13 +107,24 @@ pub fn load_review_sources(
     let mut seen_test: BTreeSet<String> = BTreeSet::new();
     let mut seen_judge: BTreeSet<String> = BTreeSet::new();
 
+    // Per `specs/gate.md`: `[test]` / `[judge]` targets resolve relative
+    // to the spec file's own directory, not the workspace root, so
+    // `../tests/judges/x.sh` from `specs/foo.md` lands at
+    // `<workspace>/tests/judges/x.sh`.
+    let spec_dir = spec_path.parent().unwrap_or(workspace);
     for annotation in &parsed.annotations {
         match annotation.tier {
             Tier::Test => {
-                push_unique(workspace, annotation, &mut tests, &mut seen_test)?;
+                push_unique(workspace, spec_dir, annotation, &mut tests, &mut seen_test)?;
             }
             Tier::Judge => {
-                push_unique(workspace, annotation, &mut judges, &mut seen_judge)?;
+                push_unique(
+                    workspace,
+                    spec_dir,
+                    annotation,
+                    &mut judges,
+                    &mut seen_judge,
+                )?;
             }
             Tier::Check | Tier::System => {}
         }
@@ -123,6 +134,7 @@ pub fn load_review_sources(
 
 fn push_unique(
     workspace: &Path,
+    spec_dir: &Path,
     annotation: &Annotation,
     out: &mut Vec<ReviewSource>,
     seen: &mut BTreeSet<String>,
@@ -130,21 +142,48 @@ fn push_unique(
     let Some(rel) = target_file_path(&annotation.target) else {
         return Ok(());
     };
-    let display = rel.display().to_string();
-    if !seen.insert(display.clone()) {
-        return Ok(());
-    }
     let abs = if rel.is_absolute() {
         rel.clone()
     } else {
-        workspace.join(&rel)
+        normalize(&spec_dir.join(&rel))
     };
+    // Display path is workspace-relative when the resolved file lives under
+    // the workspace; otherwise (file outside workspace — `[judge]` shared
+    // across repos via symlink, etc.) fall back to the absolute path.
+    let display = abs
+        .strip_prefix(workspace)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| abs.display().to_string());
+    if !seen.insert(display.clone()) {
+        return Ok(());
+    }
     let body = fs::read_to_string(&abs).map_err(|source| SpecError::Io { path: abs, source })?;
     out.push(ReviewSource {
         path: display,
         body,
     });
     Ok(())
+}
+
+/// Fold `..` and `.` components into a canonical form *without* touching
+/// the filesystem. Used in place of `Path::canonicalize` so the resolution
+/// works against constructed paths (tests build paths via `tempdir.join(...)`
+/// that haven't been created yet) and so missing files surface through the
+/// caller's own `fs::read_to_string` error rather than a separate canonicalize
+/// failure.
+fn normalize(path: &Path) -> std::path::PathBuf {
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        use std::path::Component;
+        match component {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Render `BEADS_SUMMARY` for the reviewer prompt. One line per bead in the
@@ -256,8 +295,8 @@ mod tests {
         write(
             &ws.join("specs/alpha.md"),
             "## Success Criteria\n\n\
-             - thing one [test](tests/alpha.sh#test_one)\n\
-             - thing two [judge](tests/judges/alpha.sh#judge_two)\n",
+             - thing one [test](../tests/alpha.sh#test_one)\n\
+             - thing two [judge](../tests/judges/alpha.sh#judge_two)\n",
         );
         write(&ws.join("tests/alpha.sh"), "TEST_BODY\n");
         write(&ws.join("tests/judges/alpha.sh"), "JUDGE_BODY\n");
@@ -280,9 +319,9 @@ mod tests {
         write(
             &ws.join("specs/alpha.md"),
             "## Success Criteria\n\n\
-             - one [test](tests/alpha.sh#test_one)\n\
-             - two [test](tests/alpha.sh#test_two)\n\
-             - three [test](tests/alpha.sh#test_three)\n",
+             - one [test](../tests/alpha.sh#test_one)\n\
+             - two [test](../tests/alpha.sh#test_two)\n\
+             - three [test](../tests/alpha.sh#test_three)\n",
         );
         write(&ws.join("tests/alpha.sh"), "shared body\n");
 
@@ -299,7 +338,7 @@ mod tests {
         write(
             &ws.join("specs/alpha.md"),
             "## Success Criteria\n\n\
-             - one [test](tests/missing.sh#test_one)\n",
+             - one [test](../tests/missing.sh#test_one)\n",
         );
 
         let err = load_review_sources(ws, &ws.join("specs/alpha.md"))
@@ -318,7 +357,7 @@ mod tests {
             &ws.join("specs/alpha.md"),
             "## Success Criteria\n\n\
              - no annotation here\n\
-             - but this one has [test](tests/a.sh#t)\n",
+             - but this one has [test](../tests/a.sh#t)\n",
         );
         write(&ws.join("tests/a.sh"), "body\n");
 
@@ -336,13 +375,41 @@ mod tests {
             "## Success Criteria\n\n\
              - cmd [check](cargo run -p w -- a)\n\
              - sys [system](nix run .#smoke)\n\
-             - file [test](tests/a.sh#t)\n",
+             - file [test](../tests/a.sh#t)\n",
         );
         write(&ws.join("tests/a.sh"), "body\n");
 
         let (tests, _) = load_review_sources(ws, &ws.join("specs/alpha.md")).expect("load ok");
         assert_eq!(tests.len(), 1);
         assert_eq!(tests[0].path, "tests/a.sh");
+    }
+
+    /// Regression: per `specs/gate.md`, `[test]` / `[judge]` targets
+    /// resolve relative to the **spec file's own directory**, not the
+    /// workspace root. A `[judge](../tests/judges/x.sh)` annotation in
+    /// `specs/foo.md` must read `<ws>/tests/judges/x.sh`. The earlier
+    /// implementation joined the relative target with `workspace`
+    /// directly, producing `<ws>/../tests/judges/x.sh` — outside the
+    /// workspace entirely. Observed 2026-05-28 in production
+    /// (`loom gate review` exit 1, `No such file or directory` for
+    /// `<workspace>/../tests/judges/loom.sh`).
+    #[test]
+    fn load_review_sources_resolves_dotdot_targets_against_spec_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = dir.path();
+        write(
+            &ws.join("specs/alpha.md"),
+            "## Success Criteria\n\n\
+             - thing [judge](../tests/judges/alpha.sh#judge_one)\n",
+        );
+        write(&ws.join("tests/judges/alpha.sh"), "JUDGE_BODY\n");
+
+        let (_, judges) = load_review_sources(ws, &ws.join("specs/alpha.md")).expect("load ok");
+
+        assert_eq!(judges.len(), 1);
+        // Display path is workspace-relative — the `..` is folded away.
+        assert_eq!(judges[0].path, "tests/judges/alpha.sh");
+        assert_eq!(judges[0].body, "JUDGE_BODY\n");
     }
 
     #[test]

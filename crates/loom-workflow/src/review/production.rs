@@ -1226,8 +1226,8 @@ mod tests {
         std::fs::write(
             workspace.join(format!("specs/{label}.md")),
             "## Success Criteria\n\n\
-             - one [test](tests/alpha.sh#test_one)\n\
-             - two [judge](tests/judges/alpha.sh#judge_two)\n",
+             - one [test](../tests/alpha.sh#test_one)\n\
+             - two [judge](../tests/judges/alpha.sh#judge_two)\n",
         )
         .unwrap();
         std::fs::write(workspace.join("tests/alpha.sh"), "TEST_BODY_MARKER\n").unwrap();
@@ -1275,7 +1275,7 @@ mod tests {
         std::fs::write(
             workspace.join(format!("specs/{label}.md")),
             "## Success Criteria\n\n\
-             - one [judge](tests/judges/alpha.sh#judge_two)\n",
+             - one [judge](../tests/judges/alpha.sh#judge_two)\n",
         )
         .unwrap();
         std::fs::write(

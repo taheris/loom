@@ -27,7 +27,8 @@ pub struct TodoUpdateContext {
 mod tests {
     use super::*;
 
-    const PINNED: &str = "# Project Overview\n\nLoom orchestrates the spec-to-implementation workflow.";
+    const PINNED: &str =
+        "# Project Overview\n\nLoom orchestrates the spec-to-implementation workflow.";
     const SCRATCH: &str = "/workspace/.wrapix/loom/scratch/harness/scratch.md";
 
     fn ctx_with_notes(notes: Vec<String>) -> TodoUpdateContext {

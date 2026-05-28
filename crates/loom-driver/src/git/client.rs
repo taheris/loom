@@ -355,10 +355,7 @@ impl GitClient {
         )
         .await?;
         if !output.status.success() {
-            return Err(GitError::GitCli {
-                status: output.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
+            return Err(cli_error(&output));
         }
         let stdout = String::from_utf8(output.stdout)?;
         Ok(stdout
@@ -384,10 +381,7 @@ impl GitClient {
         }
         let output = run_git_raw(&self.workdir, self.clock.as_ref(), args, None).await?;
         if !output.status.success() {
-            return Err(GitError::GitCli {
-                status: output.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
+            return Err(cli_error(&output));
         }
         let stdout = String::from_utf8(output.stdout)?;
         Ok(stdout
@@ -410,10 +404,7 @@ impl GitClient {
         )
         .await?;
         if !output.status.success() {
-            return Err(GitError::GitCli {
-                status: output.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
+            return Err(cli_error(&output));
         }
         let stdout = String::from_utf8(output.stdout)?;
         Ok(stdout
@@ -435,10 +426,7 @@ impl GitClient {
         )
         .await?;
         if !output.status.success() {
-            return Err(GitError::GitCli {
-                status: output.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
+            return Err(cli_error(&output));
         }
         Ok(String::from_utf8(output.stdout)?)
     }
@@ -455,10 +443,7 @@ impl GitClient {
         )
         .await?;
         if !output.status.success() {
-            return Err(GitError::GitCli {
-                status: output.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
+            return Err(cli_error(&output));
         }
         Ok(String::from_utf8(output.stdout)?)
     }
@@ -476,10 +461,7 @@ impl GitClient {
         )
         .await?;
         if !output.status.success() {
-            return Err(GitError::GitCli {
-                status: output.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
+            return Err(cli_error(&output));
         }
         let stdout = String::from_utf8(output.stdout)?;
         let parsed: u32 = stdout
@@ -507,10 +489,7 @@ impl GitClient {
         )
         .await?;
         if !output.status.success() {
-            return Err(GitError::GitCli {
-                status: output.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
+            return Err(cli_error(&output));
         }
         Ok(String::from_utf8(output.stdout)?)
     }
@@ -525,10 +504,7 @@ impl GitClient {
         )
         .await?;
         if !output.status.success() {
-            return Err(GitError::GitCli {
-                status: output.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
+            return Err(cli_error(&output));
         }
         Ok(String::from_utf8(output.stdout)?.trim().to_string())
     }
@@ -753,11 +729,28 @@ where
     if output.status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    Err(GitError::GitCli {
+    Err(cli_error(&output))
+}
+
+/// Construct `GitError::GitCli` from a `git` invocation's `Output`, joining
+/// multi-line stderr with ` | ` so the resulting Display sits on one log
+/// line without losing any detail. `git push` failures in particular emit
+/// multiple lines (`error:` + `hint:` + `! [rejected]`); without the
+/// collapse, the value-with-newlines breaks downstream
+/// `warn!(error = %e)` rendering and operators see only the first or last
+/// line. Trailing whitespace is stripped per-line; empty lines are dropped.
+fn cli_error(output: &std::process::Output) -> GitError {
+    let raw = String::from_utf8_lossy(&output.stderr);
+    let stderr = raw
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    GitError::GitCli {
         status: output.status.code().unwrap_or(-1),
         stderr,
-    })
+    }
 }
 
 /// `git -C <workdir> config --get <key>` — returns the resolved value or
