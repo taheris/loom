@@ -836,6 +836,10 @@ connection, network filtering, session audit logging.
   responsibility of the entrypoint per *Entrypoint Agent Selection* and
   Requirement #7 above.
   [system](nix build .#sandbox)
+- All three agent binaries (`pi`, `claude`, `loom-direct-runner`) launch
+  inside the built sandbox image and respond to `--version`; failures
+  identify which binary is missing or broken.
+  [system](nix run .#test-sandbox-smoke)
 
 ## Requirements
 
