@@ -401,56 +401,43 @@ mod tests {
         );
     }
 
+    /// The review phase is inspection-only: the rendered prompt must
+    /// not direct the reviewer to invoke bd mutations — the driver-side
+    /// mint consumes the streamed `LOOM_FINDING:` records and performs
+    /// the bd writes itself. The `default_profile` field stays on
+    /// `ReviewContext` (consumed by the driver-side mint) but the
+    /// rendered prompt no longer references `profile:<name>` strings.
     #[test]
-    fn rendered_template_inlines_default_profile_in_bd_create_examples() {
-        let mut i = inputs();
-        i.label = SpecLabel::new("harness");
-        i.default_profile = default_profile_for_spec(&SpecLabel::new("harness"));
-        let body = build_review_context(i).render().expect("render");
-        assert!(
-            body.contains("spec:harness,profile:rust"),
-            "harness fix-up minting block must default to profile:rust: {body}",
-        );
-        assert!(
-            body.contains("spec:harness,loom:clarify,profile:rust"),
-            "harness clarify minting block must default to profile:rust: {body}",
-        );
-        assert!(
-            !body.contains("spec:harness,profile:base")
-                && !body.contains("spec:harness,loom:clarify,profile:base"),
-            "harness review prompt must not mint fix-ups under profile:base by default: {body}",
-        );
-
-        let mut j = inputs();
-        j.label = SpecLabel::new("pre-commit");
-        j.default_profile = default_profile_for_spec(&SpecLabel::new("pre-commit"));
-        let body = build_review_context(j).render().expect("render");
-        assert!(
-            body.contains("spec:pre-commit,profile:base"),
-            "pre-commit fix-up minting block must default to profile:base: {body}",
-        );
-        assert!(
-            !body.contains("spec:pre-commit,profile:rust"),
-            "pre-commit review prompt must not mint fix-ups under profile:rust by default: {body}",
-        );
-    }
-
-    /// Once `--parent <epic>` is supplied to `bd create`, the redundant
-    /// `bd mol bond <new-id> <epic>` retraces the parent edge and trips
-    /// bd's cycle detector. The review template must not direct the
-    /// reviewer to emit that second call after `--parent`-bonded creates.
-    #[test]
-    fn rendered_template_omits_redundant_bd_mol_bond_after_bd_create_parent() {
-        let body = build_review_context(inputs()).render().expect("render");
-        for example_block in body.split("```bash").skip(1) {
-            let block = example_block
-                .split_once("```")
-                .map(|(b, _)| b)
-                .unwrap_or(example_block);
-            if block.contains("bd create") && block.contains("--parent") {
+    fn rendered_template_omits_bd_mutation_instructions_and_default_profile() {
+        for label in ["harness", "pre-commit"] {
+            let mut i = inputs();
+            i.label = SpecLabel::new(label);
+            i.default_profile = default_profile_for_spec(&SpecLabel::new(label));
+            let body = build_review_context(i).render().expect("render");
+            // Negative prose references like "do NOT invoke `bd create`"
+            // are fine — what must be absent is *instruction* shapes
+            // (bash code blocks, profile labels rendered from
+            // `default_profile`).
+            assert!(
+                !body.contains("```bash"),
+                "{label}: review prompt must contain no bash code blocks — every legacy bd-write example must be gone: {body}",
+            );
+            for forbidden in ["profile:rust", "profile:base"] {
                 assert!(
-                    !block.contains("bd mol bond"),
-                    "block contains `bd create --parent` and stray `bd mol bond`: {block}",
+                    !body.contains(forbidden),
+                    "{label}: review prompt must not render `{forbidden}` — default_profile is consumed by the driver, not the template body: {body}",
+                );
+            }
+            for forbidden_heading in [
+                "Authorization — Bead Mutations",
+                "Recovery Epic Resolution",
+                "Handling Each Clash",
+                "## Creating Fix-Up Beads",
+                "## Flag Emission Schema",
+            ] {
+                assert!(
+                    !body.contains(forbidden_heading),
+                    "{label}: review prompt must not contain `{forbidden_heading}` heading: {body}",
                 );
             }
         }

@@ -696,8 +696,8 @@ fn review_renders_style_rule_conformance_walkthrough() -> Result<()> {
         "style-rule concern marker not documented: {out}",
     );
     assert!(
-        out.contains("`style-rule`"),
-        "style-rule concern token missing from flag schema: {out}",
+        out.contains("`style-rule-violation`") || out.contains("`style-rule`"),
+        "style-rule-violation concern token missing from flag schema: {out}",
     );
     for forbidden in ["**SH-**", "**NX-**", "**RS-**", "**COM-**", "**CLI-**"] {
         assert!(
@@ -757,11 +757,14 @@ fn review_renders_single_marker_instruction_with_concern_xor_complete() -> Resul
     Ok(())
 }
 
-/// Pins the Options Format Contract's universal scope and explicit
-/// `bd update --notes` + `loom:clarify` flow for existing beads, so the
-/// contract cannot silently re-narrow to invariant-clash-only.
+/// Pins the Options Format Contract: the agent embeds the canonical
+/// `## Options — …` block inside the `evidence` field of an
+/// `invariant-clash` `LOOM_FINDING:` line; the driver lifts it into
+/// the minted clarify bead's description. The contract is universal
+/// (applies to every clarify-worthy decision, not just invariant
+/// clashes) and never directs the reviewer to bd-write.
 #[test]
-fn review_renders_options_format_contract_with_universal_scope() -> Result<()> {
+fn review_renders_options_format_contract_embedded_in_evidence() -> Result<()> {
     let ctx = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("harness"),
@@ -785,14 +788,12 @@ fn review_renders_options_format_contract_with_universal_scope() -> Result<()> {
         "Options Format Contract section missing: {out}",
     );
     assert!(
-        out.contains("scope is universal") || out.contains("clarify situation"),
-        "contract scope not generalised beyond invariant clashes: {out}",
+        out.contains("`evidence`") && out.contains("invariant-clash"),
+        "contract must direct the agent to embed Options block in the invariant-clash finding's evidence field: {out}",
     );
     assert!(
-        out.contains("bd update")
-            && out.contains("--notes")
-            && out.contains("--add-label=loom:clarify"),
-        "bd update --notes + loom:clarify flow for EXISTING beads not documented: {out}",
+        out.contains("clarify situation"),
+        "contract scope must remain universal across clarify-worthy decisions: {out}",
     );
     assert!(
         out.contains("gate does NOT parse your prose")
@@ -807,13 +808,14 @@ fn review_renders_options_format_contract_with_universal_scope() -> Result<()> {
     Ok(())
 }
 
-/// The rendered review template documents the at-most-one-open-epic-per-
-/// spec resolution: the agent runs `bd find --type=epic --label=spec:<X>
-/// --status=open` to locate the recovery epic and uses the result as
-/// `bd create --parent <epic>` for every fix-up. No state-DB pointer is
-/// threaded in; the bd query is the sole source of truth.
+/// The review phase is inspection-only: the rendered prompt must
+/// instruct the agent to stream `LOOM_FINDING:` JSON lines and **not**
+/// to invoke `bd find` / `bd create` / `bd update` / `bd mol bond`.
+/// Driver-side `loom gate mint` consumes the streamed findings and
+/// performs the bd writes itself (per `specs/gate.md` §
+/// *Findings and Minting*).
 #[test]
-fn review_prompt_documents_bd_find_recovery_resolution() -> Result<()> {
+fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> Result<()> {
     let ctx = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         label: SpecLabel::new("alpha"),
@@ -832,17 +834,64 @@ fn review_prompt_documents_bd_find_recovery_resolution() -> Result<()> {
     };
     let out = ctx.render()?;
 
+    for forbidden_heading in [
+        "Current Molecule Mapping",
+        "Authorization — Bead Mutations",
+        "Recovery Epic Resolution",
+        "Handling Each Clash",
+        "## Creating Fix-Up Beads",
+        "## Flag Emission Schema",
+    ] {
+        assert!(
+            !out.contains(forbidden_heading),
+            "review prompt must not contain `{forbidden_heading}` heading — phase is inspection-only: {out}",
+        );
+    }
+
+    // No bash code blocks should instruct the agent to invoke bd
+    // mutations — every `bd create` / `bd update --notes` / `bd mol bond`
+    // example block from the legacy template body must be gone. Negative
+    // references in prose ("do NOT invoke `bd create`") are fine.
     assert!(
-        out.contains("bd find --type=epic"),
-        "`bd find --type=epic` resolution must surface in the prompt: {out}",
+        !out.contains("```bash"),
+        "review prompt must contain no bash code blocks — every legacy bd-write example must be gone: {out}",
+    );
+
+    assert!(
+        out.contains("LOOM_FINDING:"),
+        "review prompt must document the LOOM_FINDING emit shape: {out}",
     );
     assert!(
-        out.contains("--parent"),
-        "recovery flow must surface `--parent` bonding: {out}",
+        out.contains("inspection-only"),
+        "review prompt must declare itself inspection-only: {out}",
     );
     assert!(
-        !out.contains("Current Molecule Mapping"),
-        "obsolete `Current Molecule Mapping` section must not render: {out}",
+        out.contains(r#""token""#)
+            && out.contains(r#""bonds""#)
+            && out.contains(r#""target""#)
+            && out.contains(r#""evidence""#),
+        "LOOM_FINDING JSON shape (token/bonds/target/evidence) must be documented: {out}",
+    );
+
+    for variant_shape in [
+        r#"{"kind":"Criterion","spec":"#,
+        r#"{"kind":"Contract","id":"#,
+        r#"{"kind":"StyleRule","rule_id":"#,
+        r#"{"kind":"Annotation","target_string":"#,
+        r#"{"kind":"TestPath","path":"#,
+        r#"{"kind":"LockSite","file":"#,
+        r#"{"kind":"Invariant","spec":"#,
+        r#"{"kind":"Template","path":"#,
+    ] {
+        assert!(
+            out.contains(variant_shape),
+            "canonical target shape `{variant_shape}` missing from prompt: {out}",
+        );
+    }
+
+    assert!(
+        out.contains("target.spec") && out.contains("MUST appear in `bonds`"),
+        "validation rule (Criterion/Invariant target.spec ∈ bonds) must be documented: {out}",
     );
     Ok(())
 }

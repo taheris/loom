@@ -1350,12 +1350,16 @@ mod tests {
     /// `loom gate audit --tree` resolves each spec's bonding target up
     /// front (via `loom-workflow::resolve::resolve_or_mint_open_epics`)
     /// and threads the resulting (spec → epic) mapping into the
-    /// reviewer prompt as the bonding target. The prompt must name each
-    /// resolved epic ID so the agent's `bd create --parent <epic>`
-    /// calls reuse those IDs instead of re-querying `bd find`. Pins
-    /// `specs/gate.md` § *Standing-safety-net bonding* third bullet.
+    /// `ReviewContext` as driver-side bonding metadata. Under the
+    /// inspection-only review contract, the rendered prompt no longer
+    /// surfaces those epic IDs — the driver-side `loom gate mint`
+    /// consumes them to bond fix-ups itself. The agent's prompt only
+    /// needs to stream `LOOM_FINDING:` lines naming the spec via
+    /// `bonds`. This test pins that the `with_tree_scope_epics` plumbing
+    /// still flows into the build, but the rendered output is free of
+    /// `bd find` / `bd create --parent` recovery shell instructions.
     #[tokio::test]
-    async fn tree_scope_threads_current_molecule_into_reviewer_prompt() {
+    async fn tree_scope_review_prompt_omits_bd_recovery_block_under_inspection_only_contract() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
         let label = "alpha";
@@ -1388,20 +1392,20 @@ mod tests {
             Err(e) => panic!("unexpected error: {e:?}"),
         };
         assert!(
-            prompt.contains("lm-alpha-epic"),
-            "alpha's resolved epic must appear in prompt: {prompt}",
+            !prompt.contains("bd find --type=epic"),
+            "review prompt must not instruct `bd find --type=epic` recovery — driver mints under the new contract: {prompt}",
         );
         assert!(
-            prompt.contains("lm-beta-epic"),
-            "beta's resolved epic must appear in prompt: {prompt}",
+            !prompt.contains("```bash"),
+            "review prompt must contain no bash code blocks under the inspection-only contract: {prompt}",
         );
         assert!(
-            prompt.contains("alpha") && prompt.contains("beta"),
-            "both spec labels must appear in prompt: {prompt}",
+            !prompt.contains("lm-alpha-epic") && !prompt.contains("lm-beta-epic"),
+            "review prompt must not render the resolved epic IDs — they are driver-side bonding metadata: {prompt}",
         );
         assert!(
-            !prompt.contains("bd find --type=epic --label=\"spec:<spec>\" --status=open --silent"),
-            "fallback re-query block must be suppressed when bonding targets are pre-resolved: {prompt}",
+            prompt.contains("LOOM_FINDING:"),
+            "review prompt must document the streaming `LOOM_FINDING:` emit shape: {prompt}",
         );
     }
 
