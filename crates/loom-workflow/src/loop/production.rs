@@ -356,8 +356,18 @@ where
                             error = %e,
                             "push failed — worktree preserved for retry",
                         );
-                        return Ok(AgentOutcome::Failure {
-                            error: format!("push failed: {e}"),
+                        // Route to Blocked, not Failure: the worktree is
+                        // intentionally preserved on disk for human
+                        // inspection, and retrying would invoke
+                        // `create_worktree` against the still-existing
+                        // directory and abort the entire `loom loop` with
+                        // a fatal `git clone` error.
+                        return Ok(AgentOutcome::Blocked {
+                            reason: format!(
+                                "push failed: {e}; worktree preserved at {} on branch {} for retry",
+                                worktree.path.display(),
+                                worktree.branch,
+                            ),
                         });
                     }
                     self.git.remove_worktree(&worktree.path).await?;
@@ -366,16 +376,21 @@ where
                 }
                 MergeResult::Conflict => {
                     // Worktree preserved for human resolution per
-                    // parallel-path semantics; only the merge-conflict
-                    // failure body is returned.
+                    // parallel-path semantics. Route to Blocked, not
+                    // Failure: a retry would invoke `create_worktree`
+                    // against the still-existing directory and abort the
+                    // entire `loom loop` with a fatal `git clone` error;
+                    // merge conflicts also aren't transient (re-running
+                    // the agent on the same base reproduces the conflict
+                    // or silently regenerates work).
                     warn!(
                         bead = %bead.id,
                         branch = %worktree.branch,
                         path = %worktree.path.display(),
                         "merge conflict — worktree preserved for inspection",
                     );
-                    Ok(AgentOutcome::Failure {
-                        error: format!(
+                    Ok(AgentOutcome::Blocked {
+                        reason: format!(
                             "merge conflict: worktree preserved at {} on branch {} for human resolution",
                             worktree.path.display(),
                             worktree.branch,

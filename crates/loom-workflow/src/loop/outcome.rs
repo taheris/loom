@@ -13,9 +13,14 @@ pub enum AgentOutcome {
     /// should inject into the next retry's prompt as `previous_failure`.
     Failure { error: String },
 
-    /// Agent emitted `LOOM_BLOCKED` — self-reported it cannot proceed.
-    /// Routes straight to `loom:blocked` without retry (re-running the same
-    /// prompt won't recover; the human resolves via `loom msg`).
+    /// Terminal block: the bead is parked under `loom:blocked` and the
+    /// loop continues with the next ready bead. Two paths reach this:
+    /// the agent self-reports `LOOM_BLOCKED`, or the driver detects a
+    /// post-session condition that retry cannot recover (merge conflict
+    /// against the driver branch, post-merge push failure). In both
+    /// cases re-running the agent is the wrong response; the human
+    /// resolves via `loom msg` (agent-side) or by inspecting the
+    /// preserved worktree (driver-side).
     Blocked { reason: String },
 
     /// Agent emitted `LOOM_CLARIFY` — self-reported it needs a human answer.

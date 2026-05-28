@@ -404,11 +404,13 @@ async fn production_loop_pushes_main_after_each_successful_merge() -> Result<()>
 
 /// Spec gate (`specs/harness.md` § "loop dispatch: per-bead push regression"):
 /// when `git push` fails (e.g. origin unreachable / non-fast-forward), the
-/// controller MUST preserve the bead worktree so a transient blip stays
-/// recoverable on the next iteration, and surface `AgentOutcome::Failure`
-/// carrying "push failed: ...". This mirrors the merge-conflict
-/// preservation semantics: silent best-effort would let local/remote
-/// divergence pile up unseen.
+/// controller MUST preserve the bead worktree so a human can investigate
+/// the transient blip, and surface `AgentOutcome::Blocked` carrying
+/// "push failed: ...". This mirrors the merge-conflict preservation
+/// semantics. Routing through `Blocked` (rather than `Failure`) is
+/// load-bearing: a retry would invoke `create_worktree` against the
+/// still-existing directory and abort the entire `loom loop` with
+/// `git clone --local: destination path already exists`.
 #[tokio::test]
 async fn production_loop_preserves_worktree_on_push_failure() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
@@ -458,17 +460,91 @@ async fn production_loop_preserves_worktree_on_push_failure() -> Result<()> {
         .run_bead(&fake_bead("lm-pushfail.1"), None)
         .await?;
     match outcome {
-        AgentOutcome::Failure { error } => {
+        AgentOutcome::Blocked { reason } => {
             assert!(
-                error.contains("push failed:"),
-                "failure body must signal push failure: {error}",
+                reason.contains("push failed:"),
+                "blocked reason must signal push failure: {reason}",
             );
         }
-        other => panic!("expected Failure on push failure, got {other:?}"),
+        other => panic!(
+            "post-merge push failure must route to Blocked (not Failure — the worktree is \
+             preserved and a retry would collide with the existing directory): got {other:?}",
+        ),
     }
     assert!(
         expected_worktree.exists(),
-        "worktree must be preserved on push failure so the next iteration can retry; got removed at {expected_worktree:?}",
+        "worktree must be preserved on push failure so a human can resolve the blip; got removed at {expected_worktree:?}",
+    );
+    Ok(())
+}
+
+/// Regression: when `merge_branch` returned `MergeResult::Conflict` the
+/// run-phase used to emit `AgentOutcome::Failure`. `process_one_bead`
+/// routed that through `policy.decide(...)` → `Retry`, and the retry
+/// called `create_worktree` against the still-preserved per-bead
+/// directory and aborted the whole `loom loop` with
+/// `git clone --local: destination path already exists`. The fix routes
+/// the conflict through `AgentOutcome::Blocked` instead so the bead is
+/// parked under `loom:blocked` and the loop keeps draining other work.
+/// The preserved worktree must remain on disk for human resolution.
+#[tokio::test]
+async fn production_loop_preserves_worktree_on_merge_conflict() -> Result<()> {
+    let (_dir, workspace, manifest, git_client) = setup();
+    let label = SpecLabel::new("harness");
+    let stub = beads_push_stub(_dir.path());
+    let expected_worktree = workspace.join(".wrapix/worktree/harness/lm-conflict.1");
+    let workspace_for_closure = workspace.clone();
+
+    let mut controller = ProductionAgentLoopController::new(
+        BdClient::new(),
+        label.clone(),
+        std::path::PathBuf::from("/loom/bin"),
+        workspace.clone(),
+        git_client,
+        manifest,
+        None,
+        ProfileName::new("base"),
+        move |cfg: SpawnConfig, _bead_id: BeadId| {
+            let main_ws = workspace_for_closure.clone();
+            async move {
+                std::fs::write(cfg.workspace.join("README.md"), "bead version\n")
+                    .expect("write bead README");
+                git(&cfg.workspace, &["commit", "-q", "-am", "bead change"])
+                    .expect("git commit in bead workspace");
+                std::fs::write(main_ws.join("README.md"), "main version\n")
+                    .expect("write main README");
+                git(&main_ws, &["commit", "-q", "-am", "main change"])
+                    .expect("git commit in main workspace");
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            }
+        },
+    )
+    .with_beads_push_program(stub);
+
+    let outcome = controller
+        .run_bead(&fake_bead("lm-conflict.1"), None)
+        .await?;
+    match outcome {
+        AgentOutcome::Blocked { reason } => {
+            assert!(
+                reason.contains("merge conflict"),
+                "blocked reason must signal merge conflict: {reason}",
+            );
+        }
+        other => panic!(
+            "merge conflict must route to Blocked (not Failure — the worktree is preserved and \
+             a retry would collide with the existing directory): got {other:?}",
+        ),
+    }
+    assert!(
+        expected_worktree.exists(),
+        "worktree must be preserved on merge conflict so a human can resolve it; got removed at {expected_worktree:?}",
     );
     Ok(())
 }
