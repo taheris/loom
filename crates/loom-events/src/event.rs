@@ -42,6 +42,35 @@ pub enum DriverKind {
     /// field: `epic_id`. Nested epics close inside-out in one pass; the
     /// driver emits one event per close, ordered child-before-parent.
     EpicAutoClosed,
+    /// Bead branch pushed from the per-bead clone back to the driver
+    /// origin so the run-phase merge-back can fold it into `main`.
+    /// Payload fields: `bead_id`, `branch`, `worktree_path`.
+    BeadBranchPushed,
+    /// Rebase + ff-only merge of a bead branch into the driver branch
+    /// succeeded. Payload fields: `bead_id`, `branch`, `main_sha`.
+    MergeOk,
+    /// Rebase aborted: the bead's branch conflicted with the driver
+    /// branch and was preserved for human resolution. Routed to
+    /// `AgentOutcome::Blocked`. Payload fields: `bead_id`, `branch`,
+    /// `worktree_path`.
+    MergeConflict,
+    /// `git push` to GitHub plus the `beads-push` sync both succeeded
+    /// after a clean merge. Payload field: `bead_id`.
+    PostMergePushOk,
+    /// Post-merge push (`git push` or `beads-push`) failed. The bead
+    /// workspace is preserved so a transient blip stays recoverable on
+    /// the next iteration. Routed to `AgentOutcome::Blocked`. Payload
+    /// fields: `bead_id`, `branch`, `worktree_path`, `error`.
+    PostMergePushFailed,
+    /// `remove_worktree` + `delete_branch` both succeeded after a clean
+    /// merge + push. Payload fields: `bead_id`, `branch`,
+    /// `worktree_path`.
+    WorktreeCleanupOk,
+    /// `git status --porcelain` against the per-bead workspace was not
+    /// empty after the agent emitted `LOOM_COMPLETE`. Routed to a
+    /// next-retry `TreeNotClean` stash. Payload fields: `bead_id`,
+    /// `dirty_paths` (capped list of paths).
+    TreeNotClean,
     /// Forward-compat fallback: any wire `driver_kind` string that does
     /// not match a known variant lands here. Known variants never fall
     /// through.
@@ -65,6 +94,13 @@ impl DriverKind {
             DriverKind::DuplicateToolResult => "duplicate_tool_result",
             DriverKind::DoomLoopTripped => "doom_loop_tripped",
             DriverKind::EpicAutoClosed => "epic_auto_closed",
+            DriverKind::BeadBranchPushed => "bead_branch_pushed",
+            DriverKind::MergeOk => "merge_ok",
+            DriverKind::MergeConflict => "merge_conflict",
+            DriverKind::PostMergePushOk => "post_merge_push_ok",
+            DriverKind::PostMergePushFailed => "post_merge_push_failed",
+            DriverKind::WorktreeCleanupOk => "worktree_cleanup_ok",
+            DriverKind::TreeNotClean => "tree_not_clean",
             DriverKind::Other(s) => s.as_str(),
         }
     }
@@ -85,6 +121,13 @@ impl DriverKind {
             "duplicate_tool_result" => DriverKind::DuplicateToolResult,
             "doom_loop_tripped" => DriverKind::DoomLoopTripped,
             "epic_auto_closed" => DriverKind::EpicAutoClosed,
+            "bead_branch_pushed" => DriverKind::BeadBranchPushed,
+            "merge_ok" => DriverKind::MergeOk,
+            "merge_conflict" => DriverKind::MergeConflict,
+            "post_merge_push_ok" => DriverKind::PostMergePushOk,
+            "post_merge_push_failed" => DriverKind::PostMergePushFailed,
+            "worktree_cleanup_ok" => DriverKind::WorktreeCleanupOk,
+            "tree_not_clean" => DriverKind::TreeNotClean,
             other => DriverKind::Other(other.to_string()),
         }
     }
@@ -582,12 +625,31 @@ impl EnvelopeBuilder {
     where
         F: FnMut() -> i64 + Send + 'static,
     {
+        Self::with_seq_start(bead_id, molecule_id, iteration, source, 0, now_ms)
+    }
+
+    /// New builder that resumes from an explicit `seq_start` rather
+    /// than restarting at zero. Used by the run-phase verdict gate
+    /// when it picks up the seq counter from the spawn closure's
+    /// last-emitted event so the per-spawn stream stays
+    /// strictly-increasing across the closure-controller boundary.
+    pub fn with_seq_start<F>(
+        bead_id: BeadId,
+        molecule_id: Option<MoleculeId>,
+        iteration: u32,
+        source: Source,
+        seq_start: u64,
+        now_ms: F,
+    ) -> Self
+    where
+        F: FnMut() -> i64 + Send + 'static,
+    {
         Self {
             bead_id,
             molecule_id,
             iteration,
             source,
-            seq: 0,
+            seq: seq_start,
             now_ms: Box::new(now_ms),
         }
     }
@@ -945,6 +1007,13 @@ mod tests {
             "duplicate_tool_result",
             "doom_loop_tripped",
             "epic_auto_closed",
+            "bead_branch_pushed",
+            "merge_ok",
+            "merge_conflict",
+            "post_merge_push_ok",
+            "post_merge_push_failed",
+            "worktree_cleanup_ok",
+            "tree_not_clean",
         ];
         for kind in kinds {
             let json = serde_json::json!({
@@ -1036,6 +1105,13 @@ mod tests {
             ("duplicate_tool_result", DriverKind::DuplicateToolResult),
             ("doom_loop_tripped", DriverKind::DoomLoopTripped),
             ("epic_auto_closed", DriverKind::EpicAutoClosed),
+            ("bead_branch_pushed", DriverKind::BeadBranchPushed),
+            ("merge_ok", DriverKind::MergeOk),
+            ("merge_conflict", DriverKind::MergeConflict),
+            ("post_merge_push_ok", DriverKind::PostMergePushOk),
+            ("post_merge_push_failed", DriverKind::PostMergePushFailed),
+            ("worktree_cleanup_ok", DriverKind::WorktreeCleanupOk),
+            ("tree_not_clean", DriverKind::TreeNotClean),
         ];
         for (wire, variant) in known {
             assert_eq!(DriverKind::from_wire(wire), variant);

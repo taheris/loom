@@ -579,7 +579,14 @@ impl TerminalRenderer {
                     | DriverKind::TokenUsage
                     | DriverKind::DuplicateToolResult
                     | DriverKind::DoomLoopTripped
-                    | DriverKind::EpicAutoClosed => driver_kind.as_wire(),
+                    | DriverKind::EpicAutoClosed
+                    | DriverKind::BeadBranchPushed
+                    | DriverKind::MergeOk
+                    | DriverKind::MergeConflict
+                    | DriverKind::PostMergePushOk
+                    | DriverKind::PostMergePushFailed
+                    | DriverKind::WorktreeCleanupOk
+                    | DriverKind::TreeNotClean => driver_kind.as_wire(),
                     DriverKind::Other(name) => name.as_str(),
                 };
                 let line = if self.parallel {

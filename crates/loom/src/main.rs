@@ -1737,6 +1737,7 @@ fn run_loop_cmd(
     let workspace_buf = workspace.to_path_buf();
     let workspace_for_renderer = workspace.to_path_buf();
     let logs_root = workspace.join(".wrapix/loom/logs");
+    let logs_root_for_controller = logs_root.clone();
     let label_for_sink = label.clone();
     let render_mode = resolve_render_mode(render_flags);
     let style_rules_for_run = config.style_rules.clone();
@@ -1805,7 +1806,8 @@ fn run_loop_cmd(
         )
         .with_handoff_lock(guard)
         .with_style_rules(style_rules_for_run)
-        .with_beads_push_program(resolve_beads_push_program());
+        .with_beads_push_program(resolve_beads_push_program())
+        .with_phase_log_root(logs_root_for_controller);
         run_loop(&mut controller, mode, retry_policy, max_iterations).await
     })?;
     println!(
@@ -1854,7 +1856,7 @@ async fn run_parallel_loop(
     style_rules: String,
 ) -> anyhow::Result<LoopOutcome> {
     use loom_driver::bd::UpdateOpts;
-    use loom_workflow::r#loop::{AgentOutcome, run_parallel_batch};
+    use loom_workflow::r#loop::AgentOutcome;
 
     let bd = BdClient::new();
     let beads = bd
@@ -1883,62 +1885,74 @@ async fn run_parallel_loop(
 
     let git = GitClient::open(workspace.clone())?;
     let logs_root = workspace.join(".wrapix/loom/logs");
+    let logs_root_for_merge = logs_root.clone();
     let label_for_closure = label.clone();
     let beads_push_program = resolve_beads_push_program();
-    let outcome = run_parallel_batch(&git, &label, beads, &beads_push_program, move |slot| {
-        let manifest_inner = Arc::clone(&manifest);
-        let cli_profile_inner = cli_profile.clone();
-        let phase_default_inner = phase_default.clone();
-        let logs_root_inner = logs_root.clone();
-        let label_inner = label_for_closure.clone();
-        let style_rules_inner = style_rules.clone();
-        async move {
-            // Marker is the primary signal here too — without it, parallel
-            // mode would swallow `LOOM_BLOCKED` / `LOOM_CLARIFY` self-reports
-            // the same way the sequential path used to.
-            match dispatch_for_slot(
-                kind,
-                shutdown_grace,
-                slot,
-                &manifest_inner,
-                cli_profile_inner.as_ref(),
-                &phase_default_inner,
-                &logs_root_inner,
-                &label_inner,
-                &style_rules_inner,
-            )
-            .await
-            {
-                Ok((session, marker)) => match (marker, session.exit_code) {
-                    (Some(ExitSignal::Blocked { reason }), _) => AgentOutcome::Blocked { reason },
-                    (Some(ExitSignal::Clarify { question }), _) => {
-                        AgentOutcome::Clarify { question }
-                    }
-                    (Some(ExitSignal::Concern { token, .. }), _) => AgentOutcome::Failure {
-                        error: format!(
-                            "wrong-phase-marker: LOOM_CONCERN ({token}) is review-phase only",
-                        ),
-                    },
-                    (Some(ExitSignal::Complete | ExitSignal::Noop), 0) => AgentOutcome::Success,
-                    (Some(ExitSignal::Complete | ExitSignal::Noop), code) => {
-                        AgentOutcome::Failure {
-                            error: format!("agent emitted COMPLETE/NOOP but exited code {code}"),
+    let outcome = loom_workflow::r#loop::run_parallel_batch_with_logs(
+        &git,
+        &label,
+        beads,
+        &beads_push_program,
+        Some(&logs_root_for_merge),
+        move |slot| {
+            let manifest_inner = Arc::clone(&manifest);
+            let cli_profile_inner = cli_profile.clone();
+            let phase_default_inner = phase_default.clone();
+            let logs_root_inner = logs_root.clone();
+            let label_inner = label_for_closure.clone();
+            let style_rules_inner = style_rules.clone();
+            async move {
+                // Marker is the primary signal here too — without it, parallel
+                // mode would swallow `LOOM_BLOCKED` / `LOOM_CLARIFY` self-reports
+                // the same way the sequential path used to.
+                match dispatch_for_slot(
+                    kind,
+                    shutdown_grace,
+                    slot,
+                    &manifest_inner,
+                    cli_profile_inner.as_ref(),
+                    &phase_default_inner,
+                    &logs_root_inner,
+                    &label_inner,
+                    &style_rules_inner,
+                )
+                .await
+                {
+                    Ok((session, marker)) => match (marker, session.exit_code) {
+                        (Some(ExitSignal::Blocked { reason }), _) => {
+                            AgentOutcome::Blocked { reason }
                         }
-                    }
-                    (None, 0) => AgentOutcome::Failure {
-                        error: "agent exited 0 without LOOM_* marker (swallowed marker)"
-                            .to_string(),
+                        (Some(ExitSignal::Clarify { question }), _) => {
+                            AgentOutcome::Clarify { question }
+                        }
+                        (Some(ExitSignal::Concern { token, .. }), _) => AgentOutcome::Failure {
+                            error: format!(
+                                "wrong-phase-marker: LOOM_CONCERN ({token}) is review-phase only",
+                            ),
+                        },
+                        (Some(ExitSignal::Complete | ExitSignal::Noop), 0) => AgentOutcome::Success,
+                        (Some(ExitSignal::Complete | ExitSignal::Noop), code) => {
+                            AgentOutcome::Failure {
+                                error: format!(
+                                    "agent emitted COMPLETE/NOOP but exited code {code}"
+                                ),
+                            }
+                        }
+                        (None, 0) => AgentOutcome::Failure {
+                            error: "agent exited 0 without LOOM_* marker (swallowed marker)"
+                                .to_string(),
+                        },
+                        (None, code) => AgentOutcome::Failure {
+                            error: format!("agent exited with code {code}"),
+                        },
                     },
-                    (None, code) => AgentOutcome::Failure {
-                        error: format!("agent exited with code {code}"),
+                    Err(e) => AgentOutcome::Failure {
+                        error: format!("{e}"),
                     },
-                },
-                Err(e) => AgentOutcome::Failure {
-                    error: format!("{e}"),
-                },
+                }
             }
-        }
-    })
+        },
+    )
     .await?;
 
     // Apply labels for marker self-reports. The bd-side cleanup mirrors the

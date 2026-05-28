@@ -247,7 +247,9 @@ fn loom_loop_stamps_real_bead_id_and_monotonic_seq_on_every_event() {
         assert_eq!(
             seq, i as u64,
             "line {i} carries seq={seq}, expected {i} — events must be stamped with a \
-             monotonic per-spawn counter starting at zero\nline={line}",
+             monotonic per-spawn counter starting at zero (the run-phase verdict gate's \
+             driver-event channel resumes the spawn closure's counter rather than \
+             restarting at zero)\nline={line}",
         );
         let ts = obj
             .get("ts_ms")

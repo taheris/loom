@@ -557,11 +557,24 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
         let _: serde_json::Value = serde_json::from_str(line)
             .unwrap_or_else(|e| panic!("line {i} is not valid JSON: {e}\nline={line}"));
     }
-    let last: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
-    assert_eq!(
-        last["kind"], "session_complete",
-        "the final event must be session_complete. lines={lines:?}",
-    );
+    let session_complete_idx = lines
+        .iter()
+        .position(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).expect("json");
+            v["kind"] == "session_complete"
+        })
+        .unwrap_or_else(|| panic!("no session_complete event in log. lines={lines:?}"));
+    // After session_complete the run-phase verdict gate appends
+    // driver events for bead_branch_pushed / merge_ok /
+    // post_merge_push_ok / worktree_cleanup_ok so operators tailing
+    // the loop see the dispatch-to-dispatch gap as named steps.
+    for line in &lines[session_complete_idx + 1..] {
+        let v: serde_json::Value = serde_json::from_str(line).expect("json");
+        assert_eq!(
+            v["kind"], "driver_event",
+            "every post-session_complete line must be a driver_event. line={line}",
+        );
+    }
 }
 
 /// `loom gate review` must write its phase log under

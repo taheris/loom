@@ -4,9 +4,11 @@ use std::sync::Arc;
 use loom_driver::bd::Bead;
 use loom_driver::git::{CreatedWorktree, GitClient, MergeResult};
 use loom_driver::identifier::{BeadId, SpecLabel};
+use loom_events::DriverKind;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
+use super::driver_emit::BeadEmit;
 use super::error::LoopError;
 use super::outcome::AgentOutcome;
 use super::post_merge_push::push_merged_main_then_beads;
@@ -171,9 +173,30 @@ where
     S: Fn(WorktreeBead) -> F + Send + Sync + 'static,
     F: std::future::Future<Output = AgentOutcome> + Send + 'static,
 {
+    run_parallel_batch_with_logs(git, label, beads, beads_push_program, None, spawn).await
+}
+
+/// Same as [`run_parallel_batch`] but threads a `logs_root` through to
+/// `merge_back_one` so each slot's merge/push/cleanup steps emit
+/// driver events into the per-bead `.jsonl` the spawn closure already
+/// wrote to. Production callers pass
+/// `Some(<workspace>/.wrapix/loom/logs)`; tests that do not exercise
+/// the driver-event channel pass `None`.
+pub async fn run_parallel_batch_with_logs<S, F>(
+    git: &GitClient,
+    label: &SpecLabel,
+    beads: Vec<Bead>,
+    beads_push_program: &Path,
+    logs_root: Option<&Path>,
+    spawn: S,
+) -> Result<BatchOutcome, LoopError>
+where
+    S: Fn(WorktreeBead) -> F + Send + Sync + 'static,
+    F: std::future::Future<Output = AgentOutcome> + Send + 'static,
+{
     let slots = create_worktrees(git, label, beads).await?;
     let batch_slots = run_concurrent_spawns(slots, spawn).await;
-    merge_back(git, beads_push_program, batch_slots).await
+    merge_back_with_logs(git, beads_push_program, batch_slots, logs_root, label).await
 }
 
 /// Step 1 of a parallel batch: create one worktree per bead.
@@ -259,7 +282,27 @@ pub async fn merge_back(
 ) -> Result<BatchOutcome, LoopError> {
     let mut results = Vec::with_capacity(slots.len());
     for slot in slots {
-        let result = merge_back_one(git, beads_push_program, slot).await?;
+        let result = merge_back_one(git, beads_push_program, slot, None, None).await?;
+        results.push(result);
+    }
+    Ok(BatchOutcome { results })
+}
+
+/// Same as [`merge_back`] but threads `logs_root` + `label` through to
+/// every slot's merge/push/cleanup so driver events surface in the
+/// per-bead `.jsonl`. Production callers pass
+/// `Some(<workspace>/.wrapix/loom/logs)`; tests that do not exercise
+/// the driver-event channel pass `None`.
+pub async fn merge_back_with_logs(
+    git: &GitClient,
+    beads_push_program: &Path,
+    slots: Vec<BatchSlot>,
+    logs_root: Option<&Path>,
+    label: &SpecLabel,
+) -> Result<BatchOutcome, LoopError> {
+    let mut results = Vec::with_capacity(slots.len());
+    for slot in slots {
+        let result = merge_back_one(git, beads_push_program, slot, logs_root, Some(label)).await?;
         results.push(result);
     }
     Ok(BatchOutcome { results })
@@ -269,12 +312,17 @@ async fn merge_back_one(
     git: &GitClient,
     beads_push_program: &Path,
     slot: BatchSlot,
+    logs_root: Option<&Path>,
+    label: Option<&SpecLabel>,
 ) -> Result<BatchResult, LoopError> {
     let BatchSlot {
         bead,
         worktree,
         outcome,
     } = slot;
+    let mut emit = logs_root
+        .zip(label)
+        .and_then(|(root, lbl)| BeadEmit::for_bead(root, lbl, &bead.id));
     match outcome {
         AgentOutcome::Success => {
             // Push the bead branch from the clone back to its origin so
@@ -284,8 +332,35 @@ async fn merge_back_one(
             // the clone until this push exposes it on the main repo.
             git.push_branch_to_origin(&worktree.path, &worktree.branch)
                 .await?;
+            if let Some(e) = emit.as_mut() {
+                e.emit(
+                    DriverKind::BeadBranchPushed,
+                    &format!("bead branch pushed to driver origin: {}", worktree.branch),
+                    serde_json::json!({
+                        "bead_id": bead.id.to_string(),
+                        "branch": worktree.branch,
+                        "worktree_path": worktree.path.to_string_lossy(),
+                    }),
+                );
+            }
             match git.merge_branch(&worktree.branch).await? {
                 MergeResult::Ok => {
+                    let main_sha = git
+                        .head_commit_sha()
+                        .await
+                        .ok()
+                        .unwrap_or_else(|| "unknown".to_string());
+                    if let Some(e) = emit.as_mut() {
+                        e.emit(
+                            DriverKind::MergeOk,
+                            &format!("merge ok: {} → main", worktree.branch),
+                            serde_json::json!({
+                                "bead_id": bead.id.to_string(),
+                                "branch": worktree.branch,
+                                "main_sha": main_sha,
+                            }),
+                        );
+                    }
                     // Per-bead push of the freshly-merged driver branch to
                     // GitHub plus a beads-remote sync. Without this, beads
                     // closed by the parallel batch only reach `origin` at
@@ -302,6 +377,18 @@ async fn merge_back_one(
                             %error,
                             "post-merge push failed — worktree preserved for retry",
                         );
+                        if let Some(e) = emit.as_mut() {
+                            e.emit(
+                                DriverKind::PostMergePushFailed,
+                                &format!("post-merge push failed: {error}"),
+                                serde_json::json!({
+                                    "bead_id": bead.id.to_string(),
+                                    "branch": worktree.branch,
+                                    "worktree_path": worktree.path.to_string_lossy(),
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
                         return Ok(BatchResult::PushFailed {
                             bead: bead.id,
                             worktree_path: worktree.path,
@@ -309,8 +396,28 @@ async fn merge_back_one(
                             error: format!("push failed: {error}"),
                         });
                     }
+                    if let Some(e) = emit.as_mut() {
+                        e.emit(
+                            DriverKind::PostMergePushOk,
+                            &format!("post-merge push ok for bead {}", bead.id),
+                            serde_json::json!({
+                                "bead_id": bead.id.to_string(),
+                            }),
+                        );
+                    }
                     git.remove_worktree(&worktree.path).await?;
                     git.delete_branch(&worktree.branch).await?;
+                    if let Some(e) = emit.as_mut() {
+                        e.emit(
+                            DriverKind::WorktreeCleanupOk,
+                            &format!("worktree + branch cleanup ok for bead {}", bead.id),
+                            serde_json::json!({
+                                "bead_id": bead.id.to_string(),
+                                "branch": worktree.branch,
+                                "worktree_path": worktree.path.to_string_lossy(),
+                            }),
+                        );
+                    }
                     Ok(BatchResult::Merged { bead: bead.id })
                 }
                 MergeResult::Conflict => {
@@ -320,6 +427,17 @@ async fn merge_back_one(
                         path = %worktree.path.display(),
                         "merge conflict — worktree preserved for inspection",
                     );
+                    if let Some(e) = emit.as_mut() {
+                        e.emit(
+                            DriverKind::MergeConflict,
+                            &format!("merge conflict: {}", worktree.branch),
+                            serde_json::json!({
+                                "bead_id": bead.id.to_string(),
+                                "branch": worktree.branch,
+                                "worktree_path": worktree.path.to_string_lossy(),
+                            }),
+                        );
+                    }
                     Ok(BatchResult::Conflict {
                         bead: bead.id,
                         worktree_path: worktree.path,

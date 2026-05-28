@@ -27,10 +27,12 @@ use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
 use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
 use loom_driver::scratch::resolve_scratch_key;
+use loom_events::DriverKind;
 use tokio::process::Command;
 use tracing::{info, warn};
 
 use super::context::{LoopContextInputs, render_loop_prompt};
+use super::driver_emit::BeadEmit;
 use super::error::LoopError;
 use super::gate_outcome::HandoffEvidence;
 use super::outcome::{AgentOutcome, SessionResult};
@@ -90,6 +92,19 @@ where
     /// script that exits 0 (or records calls) so cargo nextest does not
     /// shell out to the real remote.
     beads_push_program: PathBuf,
+    /// Per-bead JSONL log root. When set, the controller appends driver
+    /// events (`bead_branch_pushed`, `merge_ok`, `tree_not_clean`,
+    /// `retry_dispatch`, …) into the current bead's `.jsonl` so the
+    /// dispatch-to-dispatch gap surfaces in the same file as the agent's
+    /// own events. `None` is a silent no-op for tests that don't wire
+    /// the phase log.
+    logs_root: Option<PathBuf>,
+    /// State for the bead currently being processed by `run_bead`. The
+    /// envelope builder is shared across every driver event emitted
+    /// during one attempt so seq stays strictly increasing across the
+    /// post-session merge/push/cleanup window. Reset at the start of
+    /// each `run_bead` call.
+    current_emit: Option<BeadEmit>,
 }
 
 impl<S, F, R: CommandRunner> ProductionAgentLoopController<S, F, R>
@@ -123,7 +138,19 @@ where
             style_rules: "docs/style-rules.md".to_string(),
             stashed_previous_failure: None,
             beads_push_program: default_beads_push_program(),
+            logs_root: None,
+            current_emit: None,
         }
+    }
+
+    /// Pin the per-bead JSONL log root the controller appends
+    /// driver-side merge/push/cleanup events into. Production callers
+    /// thread `<workspace>/.wrapix/loom/logs`; tests that don't exercise
+    /// the driver-event channel leave it unset and the emit path is a
+    /// silent no-op.
+    pub fn with_phase_log_root(mut self, logs_root: PathBuf) -> Self {
+        self.logs_root = Some(logs_root);
+        self
     }
 
     /// Hand the spec lock to the controller so `exec_review` can drop it
@@ -152,6 +179,25 @@ where
 
     fn spec_label_filter(&self) -> String {
         format!("spec:{}", self.label.as_str())
+    }
+
+    /// Resolve the per-bead log file the spawn closure just finished
+    /// writing to and seed the driver-event emit channel so subsequent
+    /// merge/push/cleanup events land in the same JSONL. Silent no-op
+    /// when no log root is configured or the file is not resolvable.
+    fn prepare_emit_state(&mut self, bead: &BeadId) {
+        self.current_emit = self
+            .logs_root
+            .as_deref()
+            .and_then(|root| BeadEmit::for_bead(root, &self.label, bead));
+    }
+
+    /// Append a single driver event to the current bead's log file.
+    /// Silent no-op when [`Self::current_emit`] is unset.
+    fn emit_to_log(&mut self, kind: DriverKind, summary: &str, payload: serde_json::Value) {
+        if let Some(state) = self.current_emit.as_mut() {
+            state.emit(kind, summary, payload);
+        }
     }
 }
 
@@ -300,6 +346,10 @@ where
         );
         let (session, marker) = (self.spawn)(spawn_config, bead.id.clone()).await;
         drop(scratch);
+        // Resolve the per-bead log file the closure just finished writing
+        // to so subsequent driver events (tree-not-clean / merge / push /
+        // cleanup) land in the same JSONL the agent's events live in.
+        self.prepare_emit_state(&bead.id);
 
         let outcome = classify_session(session, marker);
         if outcome == AgentOutcome::Success {
@@ -318,6 +368,18 @@ where
                     dirty_count = dirty.len(),
                     "tree-not-clean: cleaning worktree and stashing TreeNotClean for the next attempt",
                 );
+                self.emit_to_log(
+                    DriverKind::TreeNotClean,
+                    &format!(
+                        "tree-not-clean: {} dirty path(s) for bead {}",
+                        dirty.len(),
+                        bead.id,
+                    ),
+                    serde_json::json!({
+                        "bead_id": bead.id.to_string(),
+                        "dirty_paths": dirty,
+                    }),
+                );
                 cleanup_worktree(&self.git, &worktree).await?;
                 self.stashed_previous_failure =
                     Some(PreviousFailure::TreeNotClean { dirty_paths: dirty });
@@ -331,9 +393,33 @@ where
             self.git
                 .push_branch_to_origin(&worktree.path, &worktree.branch)
                 .await?;
+            self.emit_to_log(
+                DriverKind::BeadBranchPushed,
+                &format!("bead branch pushed to driver origin: {}", worktree.branch),
+                serde_json::json!({
+                    "bead_id": bead.id.to_string(),
+                    "branch": worktree.branch,
+                    "worktree_path": worktree.path.to_string_lossy(),
+                }),
+            );
             let merge_result = self.git.merge_branch(&worktree.branch).await?;
             match merge_result {
                 MergeResult::Ok => {
+                    let main_sha = self
+                        .git
+                        .head_commit_sha()
+                        .await
+                        .ok()
+                        .unwrap_or_else(|| "unknown".to_string());
+                    self.emit_to_log(
+                        DriverKind::MergeOk,
+                        &format!("merge ok: {} → main", worktree.branch),
+                        serde_json::json!({
+                            "bead_id": bead.id.to_string(),
+                            "branch": worktree.branch,
+                            "main_sha": main_sha,
+                        }),
+                    );
                     // Per-bead push of the freshly-merged driver branch to
                     // GitHub plus a beads-remote sync. Without this, beads
                     // closed by the loop only reach `origin` at the
@@ -356,6 +442,16 @@ where
                             error = %e,
                             "push failed — worktree preserved for retry",
                         );
+                        self.emit_to_log(
+                            DriverKind::PostMergePushFailed,
+                            &format!("post-merge push failed: {e}"),
+                            serde_json::json!({
+                                "bead_id": bead.id.to_string(),
+                                "branch": worktree.branch,
+                                "worktree_path": worktree.path.to_string_lossy(),
+                                "error": e.to_string(),
+                            }),
+                        );
                         // Route to Blocked, not Failure: the worktree is
                         // intentionally preserved on disk for human
                         // inspection, and retrying would invoke
@@ -370,8 +466,24 @@ where
                             ),
                         });
                     }
+                    self.emit_to_log(
+                        DriverKind::PostMergePushOk,
+                        &format!("post-merge push ok for bead {}", bead.id),
+                        serde_json::json!({
+                            "bead_id": bead.id.to_string(),
+                        }),
+                    );
                     self.git.remove_worktree(&worktree.path).await?;
                     self.git.delete_branch(&worktree.branch).await?;
+                    self.emit_to_log(
+                        DriverKind::WorktreeCleanupOk,
+                        &format!("worktree + branch cleanup ok for bead {}", bead.id),
+                        serde_json::json!({
+                            "bead_id": bead.id.to_string(),
+                            "branch": worktree.branch,
+                            "worktree_path": worktree.path.to_string_lossy(),
+                        }),
+                    );
                     Ok(AgentOutcome::Success)
                 }
                 MergeResult::Conflict => {
@@ -388,6 +500,15 @@ where
                         branch = %worktree.branch,
                         path = %worktree.path.display(),
                         "merge conflict — worktree preserved for inspection",
+                    );
+                    self.emit_to_log(
+                        DriverKind::MergeConflict,
+                        &format!("merge conflict: {}", worktree.branch),
+                        serde_json::json!({
+                            "bead_id": bead.id.to_string(),
+                            "branch": worktree.branch,
+                            "worktree_path": worktree.path.to_string_lossy(),
+                        }),
                     );
                     Ok(AgentOutcome::Blocked {
                         reason: format!(
@@ -520,6 +641,10 @@ where
             review_marker: None,
             review_log_path: None,
         })
+    }
+
+    fn emit_driver_event(&mut self, kind: DriverKind, summary: &str, payload: serde_json::Value) {
+        self.emit_to_log(kind, summary, payload);
     }
 }
 

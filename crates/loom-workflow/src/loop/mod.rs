@@ -34,6 +34,7 @@
 //! finished branches sequentially.
 
 mod context;
+mod driver_emit;
 mod error;
 mod gate_outcome;
 mod outcome;
@@ -55,7 +56,7 @@ pub use gate_outcome::{
 pub use outcome::{AgentOutcome, BeadResult, SessionResult};
 pub use parallel::{
     BatchOutcome, BatchResult, BatchSlot, WorktreeBead, create_worktrees, merge_back,
-    run_concurrent_spawns, run_parallel_batch,
+    merge_back_with_logs, run_concurrent_spawns, run_parallel_batch, run_parallel_batch_with_logs,
 };
 pub use parallelism::{Parallelism, ParallelismError};
 pub use post_merge_push::{

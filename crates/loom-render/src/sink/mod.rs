@@ -85,6 +85,16 @@ impl LogSink {
         Ok(sink)
     }
 
+    /// Open an append-mode sink at an arbitrary file path. Used by the
+    /// run-phase verdict gate when it needs to land a single driver
+    /// event in the same per-bead JSONL the spawn closure already wrote
+    /// to — the path is recovered by mtime rather than reconstructed
+    /// from `(label, bead_id, when)`, so the sink-construction helper
+    /// must accept the resolved path verbatim.
+    pub fn open_at_path_append(log_path: &Path) -> Result<Self, LogError> {
+        Self::open_at_path(log_path.to_path_buf(), None)
+    }
+
     fn open_at_path(
         log_path: PathBuf,
         renderer: Option<Box<dyn Renderer>>,
