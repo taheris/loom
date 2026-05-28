@@ -1,16 +1,17 @@
 //! `loom-direct-runner` binary entry point.
 //!
 //! Parses argv (`--spawn-config <path>`), reads the JSON file into a
-//! [`SpawnConfig`], constructs a multi-provider [`Client`], and hands
-//! off to [`loom_direct_runner::run_session`].
+//! [`SpawnConfig`], constructs a per-schema LLM Client from the
+//! configured model's schema, and hands off to
+//! [`loom_direct_runner::run_session`].
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use loom_direct_runner::{RunnerError, run_session};
+use loom_direct_runner::run_session;
+use loom_direct_runner::{RunnerError, build_client_for_config};
 use loom_driver::agent::SpawnConfig;
-use loom_llm::client::Client;
 use tokio::io::{self, BufReader};
 use tracing::{error, info};
 
@@ -72,6 +73,6 @@ async fn run(cli: Cli) -> Result<(), RunnerError> {
 
     let stdin = BufReader::new(io::stdin());
     let stdout = io::stdout();
-    let client = Client::new();
+    let client = build_client_for_config(&config)?;
     run_session(client, config, stdin, stdout).await
 }

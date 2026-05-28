@@ -11,7 +11,7 @@
 
 mod multi_provider;
 
-pub use multi_provider::Client;
+pub use multi_provider::{AnthropicClient, GeminiClient, OpenAiClient};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -309,6 +309,32 @@ pub trait LlmClient: Send + Sync {
         schema: serde_json::Value,
         type_name: String,
     ) -> BoxFuture<'a, Result<String, LlmError>>;
+}
+
+impl<C: LlmClient + ?Sized> LlmClient for Box<C> {
+    fn schema(&self) -> SchemaKind {
+        (**self).schema()
+    }
+
+    fn supports(&self, model: &ModelId) -> bool {
+        (**self).supports(model)
+    }
+
+    fn complete<'a>(
+        &'a self,
+        req: CompletionRequest,
+    ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+        (**self).complete(req)
+    }
+
+    fn complete_structured_raw<'a>(
+        &'a self,
+        req: CompletionRequest,
+        schema: serde_json::Value,
+        type_name: String,
+    ) -> BoxFuture<'a, Result<String, LlmError>> {
+        (**self).complete_structured_raw(req, schema, type_name)
+    }
 }
 
 /// Typed consumer-facing structured-output entry point. Blanket-

@@ -9,8 +9,8 @@
 //!
 //! Live event observation is via the [`EventSink`] chain attached to
 //! the driving [`LlmClient`] (e.g.
-//! [`Client::with_event_sink`](crate::client::Client::with_event_sink)) —
-//! `Conversation` does not expose a separate streaming entry point.
+//! [`AnthropicClient::with_event_sink`](crate::client::AnthropicClient::with_event_sink))
+//! — `Conversation` does not expose a separate streaming entry point.
 //! Consumers that want a `Stream<Item = AgentEvent>` can wrap a
 //! short mpsc-backed `EventSink` impl.
 

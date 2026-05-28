@@ -23,8 +23,11 @@ use loom_agent::direct::backend::{DirectCommand, DirectEvent};
 use loom_agent::direct::tools::{Bash, Edit, Glob, Grep, Read, Write};
 use loom_driver::agent::SpawnConfig;
 use loom_events::identifier::ToolCallId;
+use loom_llm::api_key::ApiKey;
 use loom_llm::cache::{CacheControl, CacheTtl};
-use loom_llm::client::{BoxFuture, CompletionResponse, LlmClient, LlmError};
+use loom_llm::client::{
+    AnthropicClient, BoxFuture, CompletionResponse, GeminiClient, LlmClient, LlmError, OpenAiClient,
+};
 use loom_llm::conversation::{Conversation, ConversationBuildError};
 use loom_llm::model_id::{AnthropicModel, ModelId, SchemaKind};
 use loom_llm::request::{CompletionRequest, Message, Role};
@@ -72,6 +75,42 @@ pub fn build_conversation(config: &SpawnConfig) -> Result<Conversation, Conversa
         conv = conv.register_boxed(tool);
     }
     Ok(conv)
+}
+
+/// Resolve the configured model's schema, read the matching credential
+/// from the per-schema environment variable, and construct the typed
+/// per-schema [`LlmClient`] the runner drives. Returned boxed so the
+/// runner does not branch on schema at the call site.
+pub fn build_client_for_config(
+    config: &SpawnConfig,
+) -> Result<Box<dyn LlmClient + Send + Sync>, RunnerError> {
+    let model = config
+        .model
+        .as_ref()
+        .map_or(DEFAULT_MODEL, |sel| ModelId::from_str(&sel.model_id));
+    match model.schema() {
+        SchemaKind::Anthropic => {
+            let api_key = read_api_key("ANTHROPIC_API_KEY")?;
+            Ok(Box::new(AnthropicClient::new(api_key)))
+        }
+        SchemaKind::OpenAi => {
+            let api_key = read_api_key("OPENAI_API_KEY")?;
+            Ok(Box::new(OpenAiClient::new(api_key)))
+        }
+        SchemaKind::Gemini => {
+            let api_key = read_api_key("GEMINI_API_KEY")?;
+            Ok(Box::new(GeminiClient::new(api_key)))
+        }
+        other => Err(RunnerError::UnsupportedSchema { schema: other }),
+    }
+}
+
+fn read_api_key(var: &str) -> Result<ApiKey, RunnerError> {
+    let raw = std::env::var(var).unwrap_or_default();
+    ApiKey::new(raw).map_err(|err| RunnerError::ApiKey {
+        var: var.to_string(),
+        source: err,
+    })
 }
 
 /// Drive one Direct session against `client`. Reads JSONL commands from
@@ -332,6 +371,20 @@ pub enum RunnerError {
     Llm(String),
     /// failed to build runner Conversation: {0}
     Build(#[from] ConversationBuildError),
+    /// invalid API key sourced from {var}: {source}
+    ApiKey {
+        /// Name of the env var the runner read.
+        var: String,
+        /// Underlying [`loom_llm::api_key::ApiKeyError`] from
+        /// [`ApiKey::new`].
+        #[source]
+        source: loom_llm::api_key::ApiKeyError,
+    },
+    /// runner does not have a per-schema Client for {schema:?}
+    UnsupportedSchema {
+        /// Schema the configured model resolves to.
+        schema: SchemaKind,
+    },
 }
 
 #[cfg(test)]

@@ -19,6 +19,8 @@ mod loom_agent_deps;
 mod loom_does_not_invoke_podman;
 mod loom_events_is_leaf;
 mod loom_events_minimal_deps;
+mod loom_llm_client_constructors_use_newtypes;
+mod loom_llm_client_types_per_schema_kind;
 mod loom_llm_deps;
 mod loom_llm_error_variant_set;
 mod loom_llm_no_underlying_crate_reexports;
@@ -150,6 +152,14 @@ pub static REGISTRY: &[Walk] = &[
     Walk {
         name: "loom_events_minimal_deps",
         run: loom_events_minimal_deps::run,
+    },
+    Walk {
+        name: "loom_llm_client_constructors_use_newtypes",
+        run: loom_llm_client_constructors_use_newtypes::run,
+    },
+    Walk {
+        name: "loom_llm_client_types_per_schema_kind",
+        run: loom_llm_client_types_per_schema_kind::run,
     },
     Walk {
         name: "loom_llm_deps",
@@ -350,6 +360,8 @@ mod tests {
             "loom_does_not_invoke_podman",
             "loom_events_is_leaf",
             "loom_events_minimal_deps",
+            "loom_llm_client_constructors_use_newtypes",
+            "loom_llm_client_types_per_schema_kind",
             "loom_llm_deps",
             "loom_llm_error_variant_set",
             "loom_llm_no_underlying_crate_reexports",
