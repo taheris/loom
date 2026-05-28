@@ -72,7 +72,7 @@ in
       # The same file + hash pin the toolchain for the wrapix sandbox
       # profile, the loom workspace build, and the devshell.
       rustToolchainFile = ../../rust-toolchain.toml;
-      rustToolchainSha256 = "sha256-gh/xTkxKHL4eiRXzWv8KP7vfjSk61Iq48x47BEDFgfk=";
+      rustToolchainSha256 = "sha256-mvUGEOHYJpn3ikC5hckneuGixaC+yGrkMM/liDIDgoU=";
 
       rustToolchain = inputs'.fenix.packages.fromToolchainFile {
         file = rustToolchainFile;
