@@ -286,6 +286,7 @@ mod tests {
             source_spec: PathBuf::from("specs/a.md"),
             line: 1,
             criterion_line: 1,
+            pending: false,
         }
     }
 

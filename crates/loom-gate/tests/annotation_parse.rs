@@ -96,3 +96,56 @@ fn parse_returns_read_dir_error_for_missing_directory() {
         loom_gate::annotation::ParseError::ReadDir { .. }
     ));
 }
+
+#[test]
+fn parse_recognises_pending_modifier_for_all_four_tiers() {
+    let dir = tempdir().unwrap();
+    write(
+        dir.path(),
+        "pending.md",
+        "## Success Criteria\n\
+         \n\
+         - check tier [check?](cargo run -p loom-walk -- pending)\n\
+         - test tier [test?](crate::pending::it)\n\
+         - system tier [system?](nix run .#test-loom)\n\
+         - judge tier [judge?](rubrics/pending.md)\n",
+    );
+
+    let out = parse(dir.path()).unwrap();
+    assert_eq!(out.annotations.len(), 4);
+
+    let by_tier: std::collections::HashMap<Tier, &loom_gate::annotation::Annotation> =
+        out.annotations.iter().map(|a| (a.tier, a)).collect();
+
+    for tier in [Tier::Check, Tier::Test, Tier::System, Tier::Judge] {
+        let a = by_tier
+            .get(&tier)
+            .unwrap_or_else(|| panic!("missing annotation for tier {tier}"));
+        assert!(
+            a.pending,
+            "tier {tier} carrying `?` modifier must parse as pending"
+        );
+    }
+}
+
+#[test]
+fn parse_treats_unmarked_annotations_as_not_pending() {
+    let dir = tempdir().unwrap();
+    write(
+        dir.path(),
+        "mixed.md",
+        "## Success Criteria\n\
+         \n\
+         - pending [test?](crate::p::pending)\n\
+         - resolved [test](crate::p::resolved)\n",
+    );
+
+    let out = parse(dir.path()).unwrap();
+    let by_target: std::collections::HashMap<&str, &loom_gate::annotation::Annotation> = out
+        .annotations
+        .iter()
+        .map(|a| (a.target.as_str(), a))
+        .collect();
+    assert!(by_target["crate::p::pending"].pending);
+    assert!(!by_target["crate::p::resolved"].pending);
+}

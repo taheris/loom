@@ -79,6 +79,7 @@ fn render_report_reads_from_disk_and_summarises_per_tier() {
             source_spec: PathBuf::from("specs/gate.md"),
             line: 11,
             criterion_line: 10,
+            pending: false,
         }],
         criteria: vec![
             Criterion {
@@ -119,6 +120,7 @@ fn row_for_helper_writes_round_trip_row() {
         source_spec: PathBuf::from("specs/gate.md"),
         line: 200,
         criterion_line: 195,
+        pending: false,
     };
     let row = row_for(&ann, Verdict::Pass, "judge ok", 99, "feedbac");
     cache.upsert(&row).unwrap();

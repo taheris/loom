@@ -1006,6 +1006,7 @@ test result: ok. 3 passed; 0 failed
             source_spec: PathBuf::from("specs/a.md"),
             line: 1,
             criterion_line: 1,
+            pending: false,
         }
     }
 

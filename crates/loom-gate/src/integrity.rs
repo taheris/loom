@@ -1034,6 +1034,7 @@ mod tests {
             source_spec: PathBuf::from(spec),
             line,
             criterion_line,
+            pending: false,
         }
     }
 

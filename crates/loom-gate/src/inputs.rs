@@ -250,6 +250,7 @@ impl InputResolver {
                 source_spec: PathBuf::new(),
                 line: 0,
                 criterion_line: 0,
+                pending: false,
             };
             for path in scope.scope_for(&synthetic) {
                 push_unique(&mut out, path);
@@ -385,6 +386,7 @@ mod tests {
             source_spec: PathBuf::from(spec),
             line: 10,
             criterion_line: 9,
+            pending: false,
         }
     }
 

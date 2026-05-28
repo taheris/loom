@@ -242,6 +242,7 @@ mod tests {
             source_spec: PathBuf::from(source_spec),
             line: 1,
             criterion_line: 1,
+            pending: false,
         }
     }
 

@@ -201,6 +201,7 @@ mod tests {
             source_spec: PathBuf::from("specs/x.md"),
             line: 1,
             criterion_line: 1,
+            pending: false,
         }
     }
 

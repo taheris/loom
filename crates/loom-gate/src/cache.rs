@@ -749,6 +749,7 @@ mod tests {
                 source_spec: PathBuf::from("specs/alpha.md"),
                 line: 6,
                 criterion_line: 5,
+                pending: false,
             }],
             criteria: vec![
                 Criterion {
@@ -843,6 +844,7 @@ mod tests {
             source_spec: PathBuf::from("specs/gate.md"),
             line: 100,
             criterion_line: 95,
+            pending: false,
         };
         let r = row_for(&ann, Verdict::Pass, "ok", 42, "deadbeef");
         assert_eq!(r.spec_label, "gate");

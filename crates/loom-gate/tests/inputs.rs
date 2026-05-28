@@ -42,6 +42,7 @@ fn ann(target: &str) -> Annotation {
         source_spec: PathBuf::from("specs/gate.md"),
         line: 1,
         criterion_line: 1,
+        pending: false,
     }
 }
 

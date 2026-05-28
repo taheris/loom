@@ -86,6 +86,11 @@ impl std::fmt::Display for Tier {
 /// item, or the annotation's own line when the annotation lives in
 /// prose with no enclosing list item; the integrity gate groups by
 /// `(source_spec, criterion_line)` to enforce atomic acceptance.
+///
+/// `pending` records whether the annotation carried the `?` modifier
+/// (`[tier?](target)`); see `specs/gate.md` § Pending modifier. The
+/// parser is purely syntactic — it sets the bit and lets the integrity
+/// gate decide whether the marker is needed, stale, or absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Annotation {
     pub tier: Tier,
@@ -93,6 +98,7 @@ pub struct Annotation {
     pub source_spec: PathBuf,
     pub line: u32,
     pub criterion_line: u32,
+    pub pending: bool,
 }
 
 /// One acceptance criterion located in a spec's Success-Criteria region.
@@ -194,6 +200,7 @@ pub fn parse_content(source_spec: &Path, content: &str) -> ParsedSpecs {
             source_spec: source_spec.to_path_buf(),
             line,
             criterion_line,
+            pending: hit.pending,
         });
     }
 
@@ -217,6 +224,7 @@ struct TokenHit {
     start: usize,
     tier: Tier,
     target: String,
+    pending: bool,
 }
 
 /// Scan `content` for `[tier](target)` tokens by direct byte inspection.
@@ -227,7 +235,10 @@ struct TokenHit {
 /// `Text` events instead. Rather than coalescing those text fragments,
 /// the parser scans the raw source and uses the structural pass to mask
 /// out code-block regions. Parens inside the target are accepted as
-/// long as they balance.
+/// long as they balance. An optional `?` between the tier name and `]`
+/// marks the annotation as pending (`[tier?](target)`); the parser
+/// records it on the [`Annotation`] and lets the integrity gate decide
+/// whether the marker is needed or stale.
 fn scan_tokens(content: &str) -> Vec<TokenHit> {
     let bytes = content.as_bytes();
     let mut out = Vec::new();
@@ -242,7 +253,11 @@ fn scan_tokens(content: &str) -> Vec<TokenHit> {
             i += 1;
             continue;
         };
-        let close_bracket = after_lbracket + tier_len;
+        let after_tier = after_lbracket + tier_len;
+        let (pending, close_bracket) = match bytes.get(after_tier) {
+            Some(b'?') => (true, after_tier + 1),
+            _ => (false, after_tier),
+        };
         if close_bracket >= bytes.len() || bytes[close_bracket] != b']' {
             i += 1;
             continue;
@@ -262,6 +277,7 @@ fn scan_tokens(content: &str) -> Vec<TokenHit> {
             start: i,
             tier,
             target,
+            pending,
         });
         i = rparen + 1;
     }
@@ -467,6 +483,7 @@ mod tests {
         assert_eq!(a.source_spec, spec_path());
         assert_eq!(a.line, 6);
         assert_eq!(a.criterion_line, 5);
+        assert!(!a.pending, "no `?` modifier — pending stays false");
     }
 
     #[test]
@@ -673,6 +690,45 @@ paragraph then indented block follows:
         let parsed = parse_content(&spec_path(), md);
         assert_eq!(parsed.criteria.len(), 1);
         assert_eq!(parsed.annotations.len(), 1);
+    }
+
+    #[test]
+    fn pending_modifier_on_each_tier_sets_pending_true() {
+        let md = "\
+## Success Criteria
+
+- a [check?](cargo run -p loom-walk -- pending)
+- b [test?](crate::t::pending_it)
+- c [system?](nix run .#test-loom)
+- d [judge?](rubrics/pending.md)
+";
+        let parsed = parse_content(&spec_path(), md);
+        assert_eq!(parsed.annotations.len(), 4);
+        let tiers: Vec<Tier> = parsed.annotations.iter().map(|a| a.tier).collect();
+        assert_eq!(
+            tiers,
+            vec![Tier::Check, Tier::Test, Tier::System, Tier::Judge]
+        );
+        assert!(
+            parsed.annotations.iter().all(|a| a.pending),
+            "all four pending-marked annotations carry pending = true"
+        );
+    }
+
+    #[test]
+    fn pending_modifier_is_optional_and_omitted_is_false() {
+        let md = "\
+## Success Criteria
+
+- pending [test?](crate::t::pending_one)
+- resolved [test](crate::t::resolved_one)
+";
+        let parsed = parse_content(&spec_path(), md);
+        assert_eq!(parsed.annotations.len(), 2);
+        assert_eq!(parsed.annotations[0].target, "crate::t::pending_one");
+        assert!(parsed.annotations[0].pending);
+        assert_eq!(parsed.annotations[1].target, "crate::t::resolved_one");
+        assert!(!parsed.annotations[1].pending);
     }
 
     #[test]
