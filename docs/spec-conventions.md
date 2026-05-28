@@ -142,14 +142,70 @@ ergonomics, naming consistency).
 |------------|--------------|
 | **`[judge]`** | `[judge](path)` — a file path or criterion id whose content is the rubric the LLM evaluates against. The gate batches `[judge]` invocations to use API-level concurrency. |
 
+### Pending modifier
+
+A `?` between the tier name and the closing `]` marks an
+annotation as **pending** — its target is expected not to resolve
+yet because the verifier will be implemented in a follow-on bead.
+Grammar: `[tier?](target)`. The modifier is uniform across all
+four tiers (`[check?]`, `[test?]`, `[system?]`, `[judge?]`).
+
+```
+- The integrity gate self-checks resolution
+  [check](cargo run -p loom-gate -- integrity-check)
+
+- New behaviour X works correctly
+  [check?](loom_x_works)
+
+- Future contract test
+  [test?](crate::module::test_future_thing)
+```
+
+The modifier is modelled on Rust's `#[expect(...)]`, not
+`#[allow(...)]`: presence is silently tolerated while the target
+does not resolve; the moment the target *does* resolve, the marker
+itself becomes a finding (`UnneededPendingMarker`) and the
+implementing diff must drop the `?`. This binds *"target now
+resolves"* and *"marker now removed"* into the same commit, so the
+spec tree never carries stale markers.
+
+When to apply the modifier:
+
+- **Plan-stage authoring.** When `loom plan` writes a Success
+  Criteria bullet whose verifier implementation will land in a
+  follow-on `loom loop` bead, mark the annotation pending. Applying
+  the marker is part of the plan-stage Completeness check.
+- **Per-diff implementation.** When `loom loop` lands the verifier,
+  drop the `?` from the annotation in the same diff that adds the
+  implementation. The push gate enforces co-incidence via
+  `UnneededPendingMarker`.
+
+When not to apply it:
+
+- **Atomic-acceptance violations.** A criterion carrying two
+  annotations is wrong regardless of either's resolution state;
+  `?` does not suppress that finding.
+- **Long-term-deferred work.** The modifier is for the plan→loop
+  handoff window, not a perpetual exemption. If a criterion has no
+  near-term plan to gain a real verifier, the right move is to drop
+  the criterion (or move it to `## Out of Scope`), not to mark it
+  pending and forget.
+
+See [gate.md — Pending modifier](../specs/gate.md#pending-modifier)
+for the integrity gate's per-annotation outcome matrix and the
+`UnneededPendingMarker` finding semantics.
+
 ### Annotation flags
 
 A criterion without an annotation is a flag at `loom gate verify`
 (no resolvable verifier). A criterion whose annotation points at a
-missing or stubbed verifier is a flag at the same audit. A
+missing or stubbed verifier is a flag at the same audit — **unless**
+the annotation carries the pending modifier `?`, in which case the
+gate accepts it silently until the modifier becomes stale. A
 criterion whose annotation is satisfied by a unit-test pass but
 production diverges from that unit is a flag at `loom gate review`'s
-verifier-honesty walk.
+verifier-honesty walk; pending-marked annotations are exempt from
+that walk until the modifier is dropped.
 
 ### Deterministic ceiling
 

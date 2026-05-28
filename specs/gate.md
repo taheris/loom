@@ -261,6 +261,15 @@ commit:
    decision / contract table row, or an explicit `## Out of Scope`
    declaration. Implicit assumptions are surfaced; the agent either
    makes them testable or marks them non-testable with a reason.
+   Annotations whose targets will not resolve at commit time —
+   typically newly-authored claims whose verifier implementation
+   lands in a follow-on `loom loop` bead — carry the pending modifier
+   `?` (see [*Pending modifier*](#pending-modifier)). Applying the
+   marker is part of completeness: an unmarked annotation pointing
+   at a not-yet-existing target reads as a broken claim, where a
+   `?`-marked annotation reads as an honest declaration of the
+   surface plus an explicit acknowledgement that the implementation
+   is on the way.
 2. **Internal coherence check.** The spec under interview is scanned
    for internal contradiction — two sections saying different things,
    decision-table rows that conflict, prose claims that can't both be
@@ -333,7 +342,7 @@ tree-scope walk does not emit them.
 | **Conformance trace** — for every claim in touched spec sections, find a true code path (verifier-pass *or* LLM trace through current code). Scope includes the *full* touched spec sections — command-set tables, interface specs, decision tables, prose constraints — not only the bullets a diff line maps to. | Conformance | Hard fail | `spec-coherence-fail: <claim>` |
 | **Contract closure** — for every multi-component contract the diff touches, verify completion in this diff or in bonded sibling diffs | Conformance | Hard fail | `orphan-integration: <contract>` |
 | **Style-rule conformance** — diff complies with every rule in the consumer's pinned `{{ style_rules }}` document that linters cannot enforce mechanically. The judge discovers rule families from the document itself (no fixed prefix list — adapts to whatever convention the consuming project uses) and cites the rule id + file/line for each violation. | Style | Hard fail | `style-rule-violation: <rule-id>` |
-| **Verifier honesty** — each deterministic verifier the diff adds or modifies (`[check]`, `[test]`, `[system]`) must support the claim it cites. Decomposed into four sub-checks; a verifier is honest iff it satisfies all four. (a) **verifier-bypass** — does the verifier actually exercise the live path? (b) **fabricated-result** — does the verifier's pass rely on a value the test itself synthesized? (c) **weak-assertion** — does the assertion meaningfully constrain the result, or does it tautologically pass? (d) **coincidental-pass** — does the verifier pass for the right reason, or because of an unrelated property of the system? The standing safety net re-checks existing verifiers against current spec/code to detect drift. | Test quality | Hard fail | `verifier-bypass: <verifier>` / `fabricated-result: <verifier>` / `weak-assertion: <verifier>` / `coincidental-pass: <verifier>` |
+| **Verifier honesty** — each deterministic verifier the diff adds or modifies (`[check]`, `[test]`, `[system]`) must support the claim it cites. Decomposed into four sub-checks; a verifier is honest iff it satisfies all four. (a) **verifier-bypass** — does the verifier actually exercise the live path? (b) **fabricated-result** — does the verifier's pass rely on a value the test itself synthesized? (c) **weak-assertion** — does the assertion meaningfully constrain the result, or does it tautologically pass? (d) **coincidental-pass** — does the verifier pass for the right reason, or because of an unrelated property of the system? The standing safety net re-checks existing verifiers against current spec/code to detect drift. **Pending-marked annotations (`[tier?](target)`) are exempt** — there is no verifier yet to be honest or dishonest about; honesty is re-evaluated the moment the implementing diff drops the `?`. | Test quality | Hard fail | `verifier-bypass: <verifier>` / `fabricated-result: <verifier>` / `weak-assertion: <verifier>` / `coincidental-pass: <verifier>` |
 | **Mock discipline** — mocks have a discernible reason; mock isn't the thing under test | Test quality | Hard fail | `mock-discipline: <test>` |
 | **Cross-component verifier sufficiency** — multi-component contracts need a verifier that exercises the seam, not one side | Test quality | Hard fail | `verifier-too-narrow: <criterion>` |
 | **Concurrency coverage** — production code introducing or modifying `Mutex`/`RwLock`/`Arc<Mutex<T>>` etc. needs at least one concurrent-load test | Test quality | Hard fail | `concurrency-untested: <lock-site>` |
@@ -587,6 +596,7 @@ applies the same mint flow uniformly. The mapping:
 | Integrity gate: forward-resolution failure | `unresolved-annotation` | `[<spec owning the annotation>]` | `Annotation { target_string }` | "annotation does not resolve" with spec:line |
 | Integrity gate: stub-pointing | `stub-pointing` | same | `Annotation { target_string }` | "annotation points at stub function" |
 | Integrity gate: atomic-acceptance violation | `multiple-annotations` | same | `Criterion { spec, anchor }` | "criterion carries N annotations, expected 1" |
+| Integrity gate: stale pending modifier | `unneeded-pending-marker` | same | `Annotation { target_string }` | "annotation is now resolved — drop the ? marker" with spec:line |
 
 The owning spec for `bonds` is the spec containing the annotation
 the verifier was dispatched for — the same spec-section auto-include
@@ -767,6 +777,61 @@ Each criterion's annotation is resolved per its tier:
 | `[test]` | `[test](path)` — language-native test path (e.g. `crate::module::test_name`, `tests/test_foo.py::test_bar`) | The gate collects all `[test]` targets in a single `loom gate test` invocation and issues **one** runner subprocess (e.g. `cargo nextest run -E 'test(p1) \| test(p2) \| ...'`). One process per invocation, full internal parallelism. |
 | `[system]` | `[system](command)` — shell command | Each annotation invokes its own process. System verifiers are inherently slow and self-contained; batching doesn't help. |
 | `[judge]` | `[judge](path)` — file path or criterion id whose content is the LLM rubric | The gate collects all `[judge]` targets and issues concurrent LLM calls (API-level parallelism). |
+
+### Pending modifier
+
+A `?` between the tier name and the closing `]` marks an annotation
+as **pending** — its target is expected not to resolve yet because
+the implementation will land in a follow-on bead. Grammar:
+`[tier?](target)`. The modifier is uniform across all four tiers:
+`[check?](...)`, `[test?](...)`, `[system?](...)`, `[judge?](...)`.
+
+The pending modifier exists to let `loom plan` declare the
+checkable surface for a not-yet-implemented claim and commit/push
+that declaration without the integrity gate refusing the push.
+Without it, plan output cannot ship through its own gate; operators
+face a choice between `--no-verify` bypass and hand-curated
+external allowlists — neither acceptable.
+
+Per-annotation integrity outcome:
+
+| Modifier | Target resolves? | Outcome |
+|---|---|---|
+| absent | yes | silent pass |
+| absent | no | `UnresolvedAnnotation` finding |
+| `?` | no | silent pass (pending) |
+| `?` | yes | `UnneededPendingMarker` finding — implementation landed; the `?` must be dropped |
+
+For `[test?]`, the modifier additionally suppresses
+`StubTestFunction` findings while the function body remains
+`_pending_stub`; once the body becomes real evidence,
+`UnneededPendingMarker` fires the same way as for plain resolution.
+The two findings both express *"implementation not present yet,"*
+so a single modifier suppresses both.
+
+The modifier is **self-cleaning**. It is modelled on Rust's
+`#[expect(...)]` attribute, not `#[allow(...)]`: presence is silently
+tolerated while the underlying condition holds; the moment the
+condition resolves, the marker *itself* becomes the finding. The
+implementer who lands the verifier must drop the `?` in the same
+diff or the push gate refuses on `UnneededPendingMarker`. This
+forces co-incidence between *"target now resolves"* and
+*"marker now removed,"* so the spec tree never carries stale
+markers past the molecule's push gate.
+
+Lifecycle binding to plan → todo → loop:
+
+- `loom plan` writes `[tier?](target)` when authoring a Success
+  Criteria bullet whose verifier is not yet implemented. Applying the
+  marker is part of the plan-stage Completeness check (see
+  [*Plan-stage checks*](#plan-stage-checks) below).
+- `loom todo` fans out beads from the spec diff as usual;
+  pending-marked criteria are minted as ordinary tasks, with the
+  integrity gate's self-cleaning behaviour as the only enforcement.
+- `loom loop` implements the criterion. The implementer's diff drops
+  the `?` from the annotation at the same time it lands the verifier;
+  `UnneededPendingMarker` provides the structural enforcement that
+  forces co-incidence.
 
 **`[judge]` annotations are clickable links.** The path inside the
 parentheses is read both by the gate (to dispatch a verifier) and by
@@ -983,28 +1048,43 @@ resolve. Runs as part of `loom gate check`. Three directions:
      metadata.
    - `[judge](path)`: the path resolves to a file on disk.
 
+   The pending modifier `?` (see [*Pending modifier*](#pending-modifier)
+   above) flips the per-annotation outcome: a `[tier?](target)` whose
+   target does not resolve passes silently; one whose target *does*
+   resolve emits an `UnneededPendingMarker` finding, naming the spec,
+   line, and target so the implementer can drop the `?` in the same
+   diff that lands the verifier.
+
 2. **Stub-pointing — annotations whose verifier body invokes the
    `_pending_stub` sigil are flagged** (`StubTestFunction`). A stub
    means the criterion has no real evidence; the deterministic gate
    flags it without waiting for `loom gate review`'s
-   verifier-honesty rubric.
+   verifier-honesty rubric. The pending modifier suppresses
+   `StubTestFunction` the same way it suppresses
+   `UnresolvedAnnotation`; once the test body becomes non-stub the
+   modifier triggers `UnneededPendingMarker` for that annotation.
 
 3. **Atomic acceptance — each criterion carries exactly one
    annotation.** Two annotations on one criterion is a flag
    (ambiguous pass/fail when one passes and the other fails).
    N→1 sharing is allowed (multiple criteria pointing at the same
-   verifier).
+   verifier). Atomic acceptance is structural and **not**
+   suppressible by `?` — having two annotations on one criterion is
+   wrong regardless of either's resolution state.
 
-Failure output: `<spec>:<line>: annotation [tier](<target>) — does
-not resolve` or `<spec>:<line>: criterion carries N annotations,
-expected 1` or `<spec>:<line>: annotation [tier](<target>) points
-at stub function`.
+Failure output (one per finding):
+
+- `<spec>:<line>: annotation [tier](<target>) — does not resolve`
+- `<spec>:<line>: criterion carries N annotations, expected 1`
+- `<spec>:<line>: annotation [tier](<target>) points at stub function`
+- `<spec>:<line>: annotation [tier?](<target>) is now resolved — drop the ? marker`
 
 **Integrity findings are terminal at the push gate** (harness.md
-FR9). `UnresolvedAnnotation` and `StubTestFunction` findings within
-the molecule's diff scope refuse the push and apply `loom:clarify`
-to the molecule's epic with an auto-generated `## Options — …` block
-per the *Options Format Contract* above.
+FR9). `UnresolvedAnnotation`, `StubTestFunction`, and
+`UnneededPendingMarker` findings within the molecule's diff scope
+refuse the push and apply `loom:clarify` to the molecule's epic
+with an auto-generated `## Options — …` block per the *Options
+Format Contract* above.
 
 **Auto-generated options for `UnresolvedAnnotation`.** The gate has
 enough information (target string, tier, spec location) to draft
@@ -1014,7 +1094,11 @@ options for the human:
   system check) at the expected path.
 - *Option 2* — Retarget the annotation to an existing verifier
   (gate lists nearest matches by name).
-- *Option 3* — Remove the criterion at `<spec>:<line>` if it's
+- *Option 3* — Mark the annotation pending with `?` if the verifier
+  is intentionally deferred to a follow-on bead — the integrity gate
+  will then silently accept it until the implementing diff drops the
+  `?` and the target resolves in the same commit.
+- *Option 4* — Remove the criterion at `<spec>:<line>` if it's
   superseded or out of scope.
 
 **Auto-generated options for `StubTestFunction`.** Similar shape:
@@ -1022,7 +1106,21 @@ options for the human:
 - *Option 1* — Implement the test body, replacing the
   `_pending_stub` sigil.
 - *Option 2* — Retarget the annotation to a non-stub verifier.
-- *Option 3* — Remove the criterion if the work isn't planned.
+- *Option 3* — Mark the annotation pending with `?` if the
+  implementation is intentionally deferred (same self-cleaning
+  semantics as for unresolved targets).
+- *Option 4* — Remove the criterion if the work isn't planned.
+
+**Auto-generated options for `UnneededPendingMarker`.** The marker
+is stale; the implementation has caught up to the claim:
+
+- *Option 1* — Drop the `?` from `[tier?](<target>)` at
+  `<spec>:<line>` so the annotation reads `[tier](<target>)`. This
+  is the expected resolution and almost always the right one.
+- *Option 2* — If the resolution is incidental (the target name
+  collides with an unrelated symbol now visible in the workspace),
+  retarget the annotation to the actual intended verifier and keep
+  `?` until *that* one resolves.
 
 The integrity gate is itself a `[check]`-tier verifier (its own
 spec criterion annotates back to its implementation), so every
@@ -1337,6 +1435,42 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   `specs/gate.md` pointing at the integrity gate's own
   `src/integrity.rs` resolves
   [test](self_referential_judge_annotation_resolves_against_integrity_source_file)
+
+### Integrity gate — pending modifier
+
+- **Parser recognises `?` modifier — all tiers.** `[check?]`,
+  `[test?]`, `[system?]`, `[judge?]` all parse; the parser populates
+  a `pending: bool` on the resulting annotation
+  [test?](parser_recognises_pending_modifier_across_all_tiers)
+- **Pending — unresolved target silently passes.**
+  `[check?](missing-cmd)`, `[test?](missing::fn)`,
+  `[system?](missing-system-cmd)`, `[judge?](missing/path.md)` all
+  clear forward resolution with no finding
+  [test?](pending_marked_unresolved_target_yields_no_finding)
+- **Pending — resolved target emits `UnneededPendingMarker`.** A
+  `[check?](true)` (where `true` is on PATH) flags the stale marker,
+  naming spec + line + target
+  [test?](pending_marked_resolved_target_yields_unneeded_pending_marker)
+- **Pending `[test?]` — stub body silently passes.** The modifier
+  suppresses `StubTestFunction` the same way it suppresses
+  `UnresolvedAnnotation`
+  [test?](pending_marked_stub_test_body_yields_no_finding)
+- **Pending `[test?]` — non-stub body emits `UnneededPendingMarker`.**
+  Co-incidence with target resolution forces the implementing diff to
+  drop `?` at the same commit that lands the real body
+  [test?](pending_marked_non_stub_test_body_yields_unneeded_pending_marker)
+- **Atomic-acceptance — `?` does not suppress.** Two annotations on
+  one criterion still flag `MultipleAnnotations`, whether either,
+  both, or neither carries `?`
+  [test?](pending_modifier_does_not_suppress_atomic_acceptance_finding)
+- **`UnneededPendingMarker` — terminal at push gate.** Surfaces
+  alongside `UnresolvedAnnotation` and `StubTestFunction` per the
+  *Findings and Minting* emit-shape table
+  [test?](unneeded_pending_marker_is_terminal_at_push_gate)
+- **`unneeded-pending-marker` — auto-generated options.** `mint`
+  emits a `## Options — …` block whose Option 1 is "drop the `?`",
+  per *Integrity gate* above
+  [test?](mint_emits_drop_marker_option_for_unneeded_pending_marker)
 
 ### Standing-safety-net bonding
 

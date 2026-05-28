@@ -51,6 +51,36 @@ This spec owns:
 - `.pre-commit-config.yaml`
 - `scripts/check-shell-reexec`
 
+### Plan-only commits and the integrity gate
+
+`loom plan` sessions produce commits whose diff is `specs/**.md`
+only. These commits routinely add Success Criteria bullets whose
+`[check]` / `[test]` / `[system]` / `[judge]` annotations name
+verifiers that will be implemented by a follow-on `loom loop`
+bead, not by the plan commit itself. Naively, every such
+annotation would fail the integrity gate inside `nix flake check`
+at pre-push time, blocking the plan commit from shipping and
+forcing operators toward `--no-verify` or an external allowlist —
+neither acceptable.
+
+The mechanism that makes plan-only commits clear the pre-push gate
+is the **pending modifier** `?` on the annotation itself, owned
+and described by [gate.md — Pending modifier](gate.md#pending-modifier).
+The plan-stage rubric obligates the agent to mark every new
+annotation whose target won't resolve at commit time as
+`[tier?](target)`; the integrity gate then accepts the pending
+annotation silently and continues to refuse genuinely-broken
+unmarked annotations. The implementing diff drops the `?` at the
+same moment it lands the verifier, enforced structurally by the
+`UnneededPendingMarker` finding.
+
+This spec therefore does **not** file-scope `nix flake check` to
+skip on spec-only pushes, **nor** add a pre-commit hook for spec
+syntactic checks. The pending-modifier mechanism solves the
+failure mode at the annotation layer; both stages of the hook
+chain run unchanged, against a tree where pending claims are
+declared as such.
+
 ## Success Criteria
 
 ### Configuration
