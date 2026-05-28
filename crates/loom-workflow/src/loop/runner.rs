@@ -240,7 +240,26 @@ pub async fn run_loop<C: AgentLoopController>(
             break 'outer;
         }
 
-        progress.last_evidence = controller.exec_review().await?;
+        match controller.exec_review().await {
+            Ok(evidence) => {
+                progress.last_evidence = evidence;
+            }
+            Err(e) => {
+                let question = e.to_string();
+                match e {
+                    LoopError::MoleculeMissingBaseCommit { id }
+                    | LoopError::MoleculeMissingBaseCommitNoParentMetadata { id, .. } => {
+                        let epic_id = BeadId::new(&id).map_err(|_| LoopError::Bug {
+                            context: format!(
+                                "missing-base_commit error carries malformed bead id: {id}",
+                            ),
+                        })?;
+                        controller.apply_clarify(&epic_id, &question).await?;
+                    }
+                    other => return Err(other),
+                }
+            }
+        }
         progress.outer_iterations += 1;
     }
     Ok(finalize(progress, stalled_at_max_iterations))
@@ -404,6 +423,13 @@ mod tests {
         /// Tests that exercise the gate-outcome path push here to control
         /// what `GateSuccess::new` sees.
         review_evidence: VecDeque<HandoffEvidence>,
+        /// Scripted errors each successive `exec_review` call surfaces
+        /// before consulting `review_injects` / `review_evidence`. Tests
+        /// that exercise the run-loop's tolerance of handoff failures
+        /// (e.g. `MoleculeMissingBaseCommit`) push here so a single call
+        /// can fail while subsequent calls fall through to the
+        /// happy-path script.
+        review_errors: VecDeque<LoopError>,
         driver_events: Vec<(String, String, serde_json::Value)>,
     }
 
@@ -442,6 +468,9 @@ mod tests {
 
         async fn exec_review(&mut self) -> Result<HandoffEvidence, LoopError> {
             self.review_calls += 1;
+            if let Some(err) = self.review_errors.pop_front() {
+                return Err(err);
+            }
             if let Some(fixups) = self.review_injects.pop_front() {
                 for b in fixups {
                     self.ready_queue.push_back(b);
@@ -961,6 +990,94 @@ mod tests {
              (proving attempt=0 in the rendered prompt): {:?}",
             fixup_calls[0].1,
         );
+        Ok(())
+    }
+
+    /// Regression: a hand-authored epic missing `loom.base_commit`
+    /// surfaces `LoopError::MoleculeMissingBaseCommit` from
+    /// `exec_review`. `run_loop` MUST route the diagnostic through
+    /// `apply_clarify` on the epic so the operator can repair the
+    /// metadata via `loom msg`, rather than bubbling the error out and
+    /// killing the entire loop process. After the clarify lands the loop
+    /// re-polls `bd ready` (now skipping the parked epic via the status
+    /// filter) and exits cleanly via stall detection.
+    #[tokio::test]
+    async fn missing_molecule_base_commit_clarifies_epic_instead_of_propagating()
+    -> Result<(), LoopError> {
+        let mut c = FakeController::default();
+        c.review_errors
+            .push_back(LoopError::MoleculeMissingBaseCommit {
+                id: "lm-mol.1".to_string(),
+            });
+
+        let summary = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
+
+        assert_eq!(
+            c.review_calls, 1,
+            "exec_review fires once before clarify routes the epic out of the ready set",
+        );
+        assert_eq!(
+            c.clarified.len(),
+            1,
+            "molecule epic must be clarified, not propagated",
+        );
+        assert_eq!(c.clarified[0].0, BeadId::new("lm-mol.1").expect("valid"));
+        let question = &c.clarified[0].1;
+        assert!(
+            question.contains("bd update lm-mol.1 --set-metadata loom.base_commit="),
+            "clarify body must carry the `bd update` hint verbatim: {question:?}",
+        );
+        assert!(
+            question.contains("no parent to inherit from"),
+            "clarify body must surface the no-parent diagnostic: {question:?}",
+        );
+        assert_eq!(
+            summary.beads_processed, 0,
+            "no leaf work scripted; the loop drained the empty queue and stalled cleanly",
+        );
+        assert_eq!(
+            summary.outer_iterations, 1,
+            "the failed handoff still consumes one outer-loop slot so the stall check fires next pass",
+        );
+        Ok(())
+    }
+
+    /// Companion regression: when the molecule's epic has a parent that
+    /// also lacks `loom.base_commit`, `fetch_molecule_base_commit` surfaces
+    /// the distinct `MoleculeMissingBaseCommitNoParentMetadata` variant —
+    /// the diagnostic names the parent so the operator's first repair hop
+    /// is unambiguous. `run_loop` must route this body through
+    /// `apply_clarify` on the child epic too.
+    #[tokio::test]
+    async fn missing_molecule_base_commit_no_parent_metadata_clarifies_epic()
+    -> Result<(), LoopError> {
+        let mut c = FakeController::default();
+        c.review_errors
+            .push_back(LoopError::MoleculeMissingBaseCommitNoParentMetadata {
+                id: "lm-child.7".to_string(),
+                parent: "lm-epic.3".to_string(),
+            });
+
+        let summary = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
+
+        assert_eq!(c.review_calls, 1);
+        assert_eq!(c.clarified.len(), 1);
+        assert_eq!(
+            c.clarified[0].0,
+            BeadId::new("lm-child.7").expect("valid"),
+            "clarify lands on the molecule epic (the bead id carried by the error), not on the parent",
+        );
+        let question = &c.clarified[0].1;
+        assert!(
+            question.contains("bd update lm-child.7 --set-metadata loom.base_commit="),
+            "clarify body must carry the `bd update` hint scoped to the child: {question:?}",
+        );
+        assert!(
+            question.contains("lm-epic.3"),
+            "clarify body must name the parent so the operator can fix the epic first: {question:?}",
+        );
+        assert_eq!(summary.beads_processed, 0);
+        assert_eq!(summary.outer_iterations, 1);
         Ok(())
     }
 
