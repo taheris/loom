@@ -114,7 +114,7 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
-    let bead = fake_bead("wx-solo");
+    let bead = fake_bead("lm-solo");
 
     // Step 1: dispatching a single bead through the `create_worktrees`
     // path materialises the per-bead worktree at the spec-pinned path,
@@ -122,14 +122,14 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
     let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
     assert_eq!(slots.len(), 1, "one worktree for one bead");
     let slot = &slots[0];
-    let expected_path = repo.path().join(".wrapix/worktree/harness/wx-solo");
+    let expected_path = repo.path().join(".wrapix/worktree/harness/lm-solo");
     assert!(
         slot.worktree.path.exists(),
         "worktree path {:?} must exist after dispatch",
         slot.worktree.path,
     );
     assert_eq!(slot.worktree.path, expected_path);
-    assert_eq!(slot.worktree.branch, "loom/harness/wx-solo");
+    assert_eq!(slot.worktree.branch, "loom/harness/lm-solo");
 
     // The main checkout is never the bead's workdir — the worktree path
     // is strictly under `.wrapix/worktree/...`, not the repo root.
@@ -183,7 +183,7 @@ async fn parallel_run_two_beads_e2e() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
-    let beads = vec![fake_bead("wx-1"), fake_bead("wx-2"), fake_bead("wx-3")];
+    let beads = vec![fake_bead("lm-1"), fake_bead("lm-2"), fake_bead("lm-3")];
 
     let slots = create_worktrees(&client, &label, beads.clone()).await?;
 
@@ -220,7 +220,7 @@ async fn parallel_merge_back() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
-    let beads = vec![fake_bead("wx-mergea"), fake_bead("wx-mergeb")];
+    let beads = vec![fake_bead("lm-mergea"), fake_bead("lm-mergeb")];
 
     let slots = create_worktrees(&client, &label, beads.clone()).await?;
 
@@ -289,7 +289,7 @@ async fn parallel_failure_cleanup() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
-    let beads = vec![fake_bead("wx-faila"), fake_bead("wx-failb")];
+    let beads = vec![fake_bead("lm-faila"), fake_bead("lm-failb")];
     let slots = create_worktrees(&client, &label, beads.clone()).await?;
 
     // Make at least one commit on the bead branch so `git branch -D` has
@@ -379,7 +379,7 @@ async fn parallel_conflict_preserves_worktree() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
-    let bead = fake_bead("wx-conflict");
+    let bead = fake_bead("lm-conflict");
     let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
     let slot = slots.into_iter().next().expect("one slot");
 
@@ -442,10 +442,10 @@ async fn merge_back_preserves_input_slot_order() -> Result<()> {
     // Use bead ids that sort differently lexically and numerically so a
     // scrambling re-order would be observable on either axis.
     let beads = vec![
-        fake_bead("wx-zeta"),
-        fake_bead("wx-alpha"),
-        fake_bead("wx-mu"),
-        fake_bead("wx-beta"),
+        fake_bead("lm-zeta"),
+        fake_bead("lm-alpha"),
+        fake_bead("lm-mu"),
+        fake_bead("lm-beta"),
     ];
 
     let slots = create_worktrees(&client, &label, beads.clone()).await?;
@@ -506,9 +506,9 @@ async fn parallel_merge_back_pushes_after_each_merge() -> Result<()> {
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
     let beads = vec![
-        fake_bead("wx-mp.1"),
-        fake_bead("wx-mp.2"),
-        fake_bead("wx-mp.3"),
+        fake_bead("lm-mp.1"),
+        fake_bead("lm-mp.2"),
+        fake_bead("lm-mp.3"),
     ];
     let slots = create_worktrees(&client, &label, beads.clone()).await?;
 
@@ -584,7 +584,7 @@ async fn parallel_merge_back_preserves_worktree_on_push_failure() -> Result<()> 
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
-    let bead = fake_bead("wx-mpfail.1");
+    let bead = fake_bead("lm-mpfail.1");
     let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
     let slot = slots.into_iter().next().expect("one slot");
 

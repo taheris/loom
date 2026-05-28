@@ -236,16 +236,16 @@ mod tests {
     #[test]
     fn all_same_molecule_classifies_as_bond() {
         let outcome = classify(vec![
-            res("alpha", Some("wx-a"), Some("wx-mol")),
-            res("beta", Some("wx-b"), Some("wx-mol")),
+            res("alpha", Some("lm-a"), Some("lm-mol")),
+            res("beta", Some("lm-b"), Some("lm-mol")),
         ]);
-        assert_eq!(outcome, FanoutOutcome::Bond(MoleculeId::new("wx-mol")));
+        assert_eq!(outcome, FanoutOutcome::Bond(MoleculeId::new("lm-mol")));
     }
 
     #[test]
     fn mix_has_and_no_epic_classifies_as_collision() {
         let outcome = classify(vec![
-            res("alpha", Some("wx-a"), Some("wx-mol")),
+            res("alpha", Some("lm-a"), Some("lm-mol")),
             res("beta", None, None),
         ]);
         match outcome {
@@ -257,8 +257,8 @@ mod tests {
     #[test]
     fn different_molecules_classifies_as_collision() {
         let outcome = classify(vec![
-            res("alpha", Some("wx-a"), Some("wx-mol1")),
-            res("beta", Some("wx-b"), Some("wx-mol2")),
+            res("alpha", Some("lm-a"), Some("lm-mol1")),
+            res("beta", Some("lm-b"), Some("lm-mol2")),
         ]);
         match outcome {
             FanoutOutcome::Collision { .. } => {}
@@ -269,8 +269,8 @@ mod tests {
     #[test]
     fn unbonded_epic_classifies_as_collision_when_mixed() {
         let outcome = classify(vec![
-            res("alpha", Some("wx-a"), Some("wx-mol")),
-            res("beta", Some("wx-b"), None),
+            res("alpha", Some("lm-a"), Some("lm-mol")),
+            res("beta", Some("lm-b"), None),
         ]);
         match outcome {
             FanoutOutcome::Collision { .. } => {}
@@ -281,15 +281,15 @@ mod tests {
     #[test]
     fn render_options_enumerates_existing_molecule_and_fresh_mint() {
         let resolutions = vec![
-            res("alpha", Some("wx-a"), Some("wx-mol1")),
-            res("beta", Some("wx-b"), Some("wx-mol2")),
+            res("alpha", Some("lm-a"), Some("lm-mol1")),
+            res("beta", Some("lm-b"), Some("lm-mol2")),
         ];
         let body = render_collision_options(&resolutions);
         assert!(body.contains("## Options — "), "summary header present");
         assert!(body.contains("alpha"), "labels appear in summary");
         assert!(body.contains("beta"));
-        assert!(body.contains("### Option 1 — Bond into molecule `wx-mol1`"));
-        assert!(body.contains("### Option 2 — Bond into molecule `wx-mol2`"));
+        assert!(body.contains("### Option 1 — Bond into molecule `lm-mol1`"));
+        assert!(body.contains("### Option 2 — Bond into molecule `lm-mol2`"));
         assert!(body.contains(
             "### Option 3 — Close existing epics and mint a fresh cross-cutting molecule"
         ),);

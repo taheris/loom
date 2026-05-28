@@ -265,7 +265,7 @@ mod tests {
 
     /// `model: None` is omitted from the on-disk JSON via
     /// `#[serde(skip_serializing_if = "Option::is_none")]`. Wrappers that
-    /// pre-date the field added in wx-pkht8.* must continue to round-trip
+    /// pre-date the field added in lm-pkht8.* must continue to round-trip
     /// the serialized fixture identically — the absence of `model` proves
     /// the no-drift contract.
     #[test]
@@ -387,7 +387,7 @@ mod tests {
     }
 
     /// JSON without a `model` key still parses (treated as `None`) — this is
-    /// the contract with wrappers built before wx-pkht8.* landed.
+    /// the contract with wrappers built before lm-pkht8.* landed.
     #[test]
     fn spawn_config_legacy_fixture_without_model_key_parses() {
         let legacy = r#"{

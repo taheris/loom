@@ -485,7 +485,7 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
         "happy-path",
     );
 
-    let bead_json = r#"[{"id":"wx-runtest","title":"run gate bead","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","profile:base"]}]"#;
+    let bead_json = r#"[{"id":"lm-runtest","title":"run gate bead","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","profile:base"]}]"#;
     let bd_bin_dir = install_bd_bead_stub(workspace, bead_json);
     let beads_push_stub = install_beads_push_stub(workspace);
 
@@ -537,13 +537,13 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
         .filter(|p| {
             p.file_stem()
                 .and_then(|s| s.to_str())
-                .is_some_and(|s| s.starts_with("wx-runtest-"))
+                .is_some_and(|s| s.starts_with("lm-runtest-"))
         })
         .collect();
     assert_eq!(
         entries.len(),
         1,
-        "exactly one per-bead JSONL file must appear at `<logs>/loom-agent/wx-runtest-*.jsonl`: got {entries:?}",
+        "exactly one per-bead JSONL file must appear at `<logs>/loom-agent/lm-runtest-*.jsonl`: got {entries:?}",
     );
 
     let body = std::fs::read_to_string(&entries[0]).expect("read log");
@@ -612,7 +612,7 @@ fn loom_gate_review_writes_phase_jsonl_log() {
 
     // `loom:clarify` on the post-snapshot bead → ReviewVerdict::PushBlocked →
     // ReviewResult::PushBlocked, no push gates fire.
-    let bead_json = r#"[{"id":"wx-reviewtest","title":"review gate bead","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","loom:clarify"]}]"#;
+    let bead_json = r#"[{"id":"lm-reviewtest","title":"review gate bead","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","loom:clarify"]}]"#;
     let bd_bin_dir = install_bd_bead_stub(workspace, bead_json);
 
     let path_var = std::env::var_os("PATH").unwrap_or_default();

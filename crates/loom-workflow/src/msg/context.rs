@@ -122,13 +122,13 @@ mod tests {
     fn rendered_msg_template_lists_each_clarify() {
         let beads = [
             bead(
-                "wx-2",
+                "lm-2",
                 "Title A",
                 "## Options — sum A\n\n### Option 1 — t1\nbody1\n",
                 &["spec:harness", "loom:clarify"],
             ),
             bead(
-                "wx-3",
+                "lm-3",
                 "Title B",
                 "no options",
                 &["spec:profiles", "loom:clarify"],
@@ -142,8 +142,8 @@ mod tests {
             "/workspace/.wrapix/loom/scratch/msg/scratch.md".into(),
         );
         let body = ctx.render().expect("render");
-        assert!(body.contains("wx-2"), "{body}");
-        assert!(body.contains("wx-3"), "{body}");
+        assert!(body.contains("lm-2"), "{body}");
+        assert!(body.contains("lm-3"), "{body}");
         assert!(body.contains("spec:harness"), "{body}");
         assert!(body.contains("Title A"), "{body}");
         assert!(body.contains("sum A"), "{body}");
@@ -153,32 +153,32 @@ mod tests {
     #[test]
     fn resolve_by_index_returns_bead_id() {
         let beads = [
-            bead("wx-2", "a", "", &["loom:clarify"]),
-            bead("wx-3", "b", "", &["loom:clarify"]),
+            bead("lm-2", "a", "", &["loom:clarify"]),
+            bead("lm-3", "b", "", &["loom:clarify"]),
         ];
         let refs: Vec<&Bead> = beads.iter().collect();
         let (id, pos) = resolve_target(&refs, Some(2), None).expect("resolve");
-        assert_eq!(id, BeadId::new("wx-3").expect("valid"));
+        assert_eq!(id, BeadId::new("lm-3").expect("valid"));
         assert_eq!(pos, Some(2));
     }
 
     #[test]
     fn resolve_by_id_returns_index() {
         let beads = [
-            bead("wx-2", "a", "", &["loom:clarify"]),
-            bead("wx-3", "b", "", &["loom:clarify"]),
+            bead("lm-2", "a", "", &["loom:clarify"]),
+            bead("lm-3", "b", "", &["loom:clarify"]),
         ];
         let refs: Vec<&Bead> = beads.iter().collect();
-        let (id, pos) = resolve_target(&refs, None, Some("wx-3")).expect("resolve");
-        assert_eq!(id, BeadId::new("wx-3").expect("valid"));
+        let (id, pos) = resolve_target(&refs, None, Some("lm-3")).expect("resolve");
+        assert_eq!(id, BeadId::new("lm-3").expect("valid"));
         assert_eq!(pos, Some(2));
     }
 
     #[test]
     fn resolve_missing_id_errors() {
-        let beads = [bead("wx-2", "a", "", &["loom:clarify"])];
+        let beads = [bead("lm-2", "a", "", &["loom:clarify"])];
         let refs: Vec<&Bead> = beads.iter().collect();
-        let err = resolve_target(&refs, None, Some("wx-9")).expect_err("expected BeadNotFound");
+        let err = resolve_target(&refs, None, Some("lm-9")).expect_err("expected BeadNotFound");
         assert!(matches!(
             err,
             super::super::error::MsgError::BeadNotFound { .. }
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn resolve_zero_index_or_overflow_errors() {
-        let beads = [bead("wx-2", "a", "", &["loom:clarify"])];
+        let beads = [bead("lm-2", "a", "", &["loom:clarify"])];
         let refs: Vec<&Bead> = beads.iter().collect();
         assert!(matches!(
             resolve_target(&refs, Some(0), None).err(),
@@ -201,17 +201,17 @@ mod tests {
 
     #[test]
     fn ambiguous_target_when_both_supplied() {
-        let beads = [bead("wx-2", "a", "", &["loom:clarify"])];
+        let beads = [bead("lm-2", "a", "", &["loom:clarify"])];
         let refs: Vec<&Bead> = beads.iter().collect();
         assert!(matches!(
-            resolve_target(&refs, Some(1), Some("wx-2")).err(),
+            resolve_target(&refs, Some(1), Some("lm-2")).err(),
             Some(super::super::error::MsgError::AmbiguousTarget)
         ));
     }
 
     #[test]
     fn missing_spec_label_renders_em_dash_in_clarify_bead() {
-        let b = bead("wx-2", "t", "", &["loom:clarify"]);
+        let b = bead("lm-2", "t", "", &["loom:clarify"]);
         let cb = to_clarify_bead(&b);
         assert_eq!(cb.spec_label.as_str(), "—");
     }

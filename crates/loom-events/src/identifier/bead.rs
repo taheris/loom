@@ -81,17 +81,17 @@ mod tests {
 
     #[test]
     fn display_round_trips_with_as_str() -> Result<()> {
-        let id = BeadId::new("wx-3hhwq.2")?;
-        assert_eq!(id.as_str(), "wx-3hhwq.2");
-        assert_eq!(id.to_string(), "wx-3hhwq.2");
+        let id = BeadId::new("lm-3hhwq.2")?;
+        assert_eq!(id.as_str(), "lm-3hhwq.2");
+        assert_eq!(id.to_string(), "lm-3hhwq.2");
         Ok(())
     }
 
     #[test]
     fn serde_round_trips_as_plain_string() -> Result<()> {
-        let id = BeadId::new("wx-abc123")?;
+        let id = BeadId::new("lm-abc123")?;
         let json = serde_json::to_string(&id)?;
-        assert_eq!(json, "\"wx-abc123\"");
+        assert_eq!(json, "\"lm-abc123\"");
         let back: BeadId = serde_json::from_str(&json)?;
         assert_eq!(back, id);
         Ok(())
@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn parse_accepts_canonical_shapes() -> Result<()> {
-        for input in ["wx-abc123", "wx-3hhwq.2", "wx-3hhwq.20", "loom-a1b2c3"] {
+        for input in ["lm-abc123", "lm-3hhwq.2", "lm-3hhwq.20", "loom-a1b2c3"] {
             let id = BeadId::new(input)?;
             assert_eq!(id.as_str(), input);
         }
@@ -117,16 +117,16 @@ mod tests {
         let cases = [
             "",
             "wx",
-            "wx-",
+            "lm-",
             "-abc",
-            "wx-ABC",
-            "wx-abc.",
-            "wx-abc.x",
-            "wx-abc.1.2",
+            "lm-ABC",
+            "lm-abc.",
+            "lm-abc.x",
+            "lm-abc.1.2",
             "WX-abc",
-            "warning: foo\nwx-abc123",
-            "wx-abc 123",
-            "wx-abc-def",
+            "warning: foo\nlm-abc123",
+            "lm-abc 123",
+            "lm-abc-def",
         ];
         for input in cases {
             let err = BeadId::new(input).expect_err(input);

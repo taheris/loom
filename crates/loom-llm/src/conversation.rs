@@ -186,7 +186,7 @@ impl Conversation {
     /// hook so the synthetic `AgentEvent::ToolCall` / `AgentEvent::ToolResult`
     /// events the loop emits into composed observers carry the right
     /// per-spawn metadata. Without an override the conversation uses a
-    /// synthetic `wx-conv` bead id with a constant `ts_ms = 0`;
+    /// synthetic `lm-conv` bead id with a constant `ts_ms = 0`;
     /// observers key on `(CallKey, ResultHash)` rather than the
     /// timestamp, so the default is observationally inert.
     pub fn with_envelope_builder(mut self, envelope_builder: EnvelopeBuilder) -> Self {
@@ -423,7 +423,7 @@ impl Conversation {
 
 /// Synthetic `EnvelopeBuilder` for consumers that don't thread their own
 /// bead identity through [`Conversation::with_envelope_builder`]. Uses
-/// the constant `wx-conv` bead id (replay tools see it as a distinct
+/// the constant `lm-conv` bead id (replay tools see it as a distinct
 /// stream) and a constant `ts_ms = 0`. The composed observers key on
 /// `(CallKey, ResultHash)`, not `ts_ms`, so the constant clock is
 /// observationally inert; consumers that need wall-clock timestamps on
@@ -431,7 +431,7 @@ impl Conversation {
 /// [`Conversation::with_envelope_builder`] (the only path that draws on
 /// the dedicated `SystemClock` impls in `loom-driver` / `loom-render`).
 fn default_envelope_builder() -> Result<EnvelopeBuilder, ConversationBuildError> {
-    let bead = BeadId::new("wx-conv")?;
+    let bead = BeadId::new("lm-conv")?;
     Ok(EnvelopeBuilder::new(bead, None, 0, Source::Agent, || 0))
 }
 

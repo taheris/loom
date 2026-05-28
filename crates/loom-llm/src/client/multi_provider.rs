@@ -640,7 +640,7 @@ mod tests {
     fn test_envelope_builder() -> EnvelopeBuilder {
         let mut clock = 0_i64;
         EnvelopeBuilder::new(
-            BeadId::new("wx-test").expect("valid bead id"),
+            BeadId::new("lm-test").expect("valid bead id"),
             None,
             0,
             Source::Agent,

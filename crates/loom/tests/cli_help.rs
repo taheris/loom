@@ -220,10 +220,10 @@ fn loom_check_is_removed_from_top_level() {
 fn loom_gate_scope_flags_are_mutually_exclusive() {
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     for args in [
-        vec!["gate", "verify", "--bead", "wx-1", "--diff", "HEAD~1..HEAD"],
-        vec!["gate", "check", "--bead", "wx-1", "--tree"],
+        vec!["gate", "verify", "--bead", "lm-1", "--diff", "HEAD~1..HEAD"],
+        vec!["gate", "check", "--bead", "lm-1", "--tree"],
         vec!["gate", "test", "--diff", "HEAD~1..HEAD", "--tree"],
-        vec!["gate", "verify", "--files", "src/lib.rs", "--bead", "wx-1"],
+        vec!["gate", "verify", "--files", "src/lib.rs", "--bead", "lm-1"],
         vec![
             "gate",
             "audit",

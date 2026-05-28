@@ -99,14 +99,14 @@ mod tests {
         db.rebuild(
             dir.path(),
             &[ActiveMolecule {
-                id: MoleculeId::new("wx-3hhwq"),
+                id: MoleculeId::new("lm-3hhwq"),
                 spec_label: SpecLabel::new("harness"),
                 base_commit: None,
             }],
         )?;
         db.set_current_spec(&SpecLabel::new("harness"))?;
-        db.increment_iteration(&MoleculeId::new("wx-3hhwq"))?;
-        db.increment_iteration(&MoleculeId::new("wx-3hhwq"))?;
+        db.increment_iteration(&MoleculeId::new("lm-3hhwq"))?;
+        db.increment_iteration(&MoleculeId::new("lm-3hhwq"))?;
 
         let report = load(&db)?;
         assert_eq!(report.current_spec.as_deref(), Some("harness"));
@@ -118,7 +118,7 @@ mod tests {
 
         let body = render(&report);
         assert!(body.contains("harness"));
-        assert!(body.contains("wx-3hhwq"));
+        assert!(body.contains("lm-3hhwq"));
         assert!(body.contains("iteration: 2"));
         Ok(())
     }

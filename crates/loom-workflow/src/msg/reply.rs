@@ -141,7 +141,7 @@ Accept. Cost: debt.
 
     #[test]
     fn integer_choice_resolves_to_option_note() -> Result<(), MsgError> {
-        let bead = BeadId::new("wx-x").expect("valid bead id");
+        let bead = BeadId::new("lm-x").expect("valid bead id");
         let reply = build_fast_reply(&bead, "1", None, desc(), MsgKind::Clarify)?;
         match reply {
             FastReply::Option { n, note } => {
@@ -157,7 +157,7 @@ Accept. Cost: debt.
 
     #[test]
     fn missing_option_index_errors_with_available_list() {
-        let bead = BeadId::new("wx-x").expect("valid bead id");
+        let bead = BeadId::new("lm-x").expect("valid bead id");
         let err = build_fast_reply(&bead, "9", None, desc(), MsgKind::Clarify)
             .expect_err("expected error");
         match err {
@@ -166,7 +166,7 @@ Accept. Cost: debt.
                 option,
                 available,
             } => {
-                assert_eq!(bead, "wx-x");
+                assert_eq!(bead, "lm-x");
                 assert_eq!(option, 9);
                 assert_eq!(available, "1, 2");
             }
@@ -176,7 +176,7 @@ Accept. Cost: debt.
 
     #[test]
     fn verbatim_string_passes_through_unchanged() -> Result<(), MsgError> {
-        let bead = BeadId::new("wx-x").expect("valid bead id");
+        let bead = BeadId::new("lm-x").expect("valid bead id");
         let reply = build_fast_reply(&bead, "free-form answer", None, desc(), MsgKind::Clarify)?;
         match reply {
             FastReply::Verbatim { note } => assert_eq!(note, "free-form answer"),
@@ -187,7 +187,7 @@ Accept. Cost: debt.
 
     #[test]
     fn integer_with_no_options_section_errors() {
-        let bead = BeadId::new("wx-x").expect("valid bead id");
+        let bead = BeadId::new("lm-x").expect("valid bead id");
         let err = build_fast_reply(&bead, "1", None, "no options at all", MsgKind::Clarify)
             .expect_err("expected missing option");
         assert!(matches!(err, MsgError::OptionMissing { .. }));
@@ -195,7 +195,7 @@ Accept. Cost: debt.
 
     #[test]
     fn empty_title_or_body_renders_partial_note() -> Result<(), MsgError> {
-        let bead = BeadId::new("wx-x").expect("valid bead id");
+        let bead = BeadId::new("lm-x").expect("valid bead id");
         let no_title = "## Options\n\n### Option 1\nonly body\n";
         let reply = build_fast_reply(&bead, "1", None, no_title, MsgKind::Clarify)?;
         match reply {
@@ -210,7 +210,7 @@ Accept. Cost: debt.
 
     #[test]
     fn blocked_integer_choice_is_always_verbatim() -> Result<(), MsgError> {
-        let bead = BeadId::new("wx-x").expect("valid bead id");
+        let bead = BeadId::new("lm-x").expect("valid bead id");
         let reply = build_fast_reply(&bead, "1", None, desc(), MsgKind::Blocked)?;
         match reply {
             FastReply::Verbatim { note } => assert_eq!(note, "1"),
@@ -221,7 +221,7 @@ Accept. Cost: debt.
 
     #[test]
     fn compose_option_note_reads_options_from_notes_when_present() -> Result<(), MsgError> {
-        let bead = BeadId::new("wx-x").expect("valid bead id");
+        let bead = BeadId::new("lm-x").expect("valid bead id");
         let notes = "## Options — promoted\n\n### Option 1 — fix\nbody.\n";
         let description = "agent-blocked: no options here";
         let note = compose_option_note(&bead, 1, Some(notes), description)?;
@@ -232,7 +232,7 @@ Accept. Cost: debt.
 
     #[test]
     fn build_fast_reply_reads_options_from_notes_when_present() -> Result<(), MsgError> {
-        let bead = BeadId::new("wx-x").expect("valid bead id");
+        let bead = BeadId::new("lm-x").expect("valid bead id");
         let notes = "## Options — promoted\n\n### Option 1 — promoted-fix\nbody.\n";
         let reply = build_fast_reply(
             &bead,
@@ -350,7 +350,7 @@ body
 
     #[test]
     fn blocked_free_form_passes_through_unchanged() -> Result<(), MsgError> {
-        let bead = BeadId::new("wx-x").expect("valid bead id");
+        let bead = BeadId::new("lm-x").expect("valid bead id");
         let reply = build_fast_reply(
             &bead,
             "use the staging endpoint",

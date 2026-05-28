@@ -176,21 +176,21 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_or_mint_mints_when_zero_open_epics() {
-        let runner = ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("wx-newepic\n")]);
+        let runner = ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("lm-newepic\n")]);
         let bd = BdClient::with_runner(runner);
         let label = SpecLabel::new("acme");
         let resolved = resolve_or_mint_open_epic(&bd, &label, "deadbeef")
             .await
             .expect("resolve_or_mint ok");
         assert_eq!(resolved.label, label);
-        assert_eq!(resolved.molecule_id, MoleculeId::new("wx-newepic"));
+        assert_eq!(resolved.molecule_id, MoleculeId::new("lm-newepic"));
         assert!(resolved.was_minted);
     }
 
     #[tokio::test]
     async fn resolve_or_mint_does_not_clobber_existing_epic() {
         let existing = r#"[{
-            "id": "wx-existing",
+            "id": "lm-existing",
             "title": "acme",
             "status": "open",
             "priority": 2,
@@ -204,15 +204,15 @@ mod tests {
         let resolved = resolve_or_mint_open_epic(&bd, &label, "deadbeef")
             .await
             .expect("resolve_or_mint ok");
-        assert_eq!(resolved.molecule_id, MoleculeId::new("wx-existing"));
+        assert_eq!(resolved.molecule_id, MoleculeId::new("lm-existing"));
         assert!(!resolved.was_minted);
     }
 
     #[tokio::test]
     async fn resolve_or_mint_refuses_on_more_than_one_open_epic() {
         let conflict = r#"[
-            {"id":"wx-a","title":"acme","status":"open","priority":2,"issue_type":"epic","labels":["spec:acme"],"metadata":{}},
-            {"id":"wx-b","title":"acme","status":"open","priority":2,"issue_type":"epic","labels":["spec:acme"],"metadata":{}}
+            {"id":"lm-a","title":"acme","status":"open","priority":2,"issue_type":"epic","labels":["spec:acme"],"metadata":{}},
+            {"id":"lm-b","title":"acme","status":"open","priority":2,"issue_type":"epic","labels":["spec:acme"],"metadata":{}}
         ]"#;
         let runner = ScriptedRunner::new(vec![ok_stdout(conflict)]);
         let bd = BdClient::with_runner(runner);
@@ -223,8 +223,8 @@ mod tests {
         match err {
             ResolveError::InvariantViolation { label: l, ids } => {
                 assert_eq!(l, "acme");
-                assert!(ids.contains("wx-a"));
-                assert!(ids.contains("wx-b"));
+                assert!(ids.contains("lm-a"));
+                assert!(ids.contains("lm-b"));
             }
             other => panic!("expected InvariantViolation, got {other:?}"),
         }
@@ -242,9 +242,9 @@ mod tests {
     async fn tree_scope_auto_creates_epics_for_missing_current_molecule_specs() {
         let runner = ScriptedRunner::new(vec![
             ok_stdout("[]"),
-            ok_stdout("wx-newalpha\n"),
+            ok_stdout("lm-newalpha\n"),
             ok_stdout("[]"),
-            ok_stdout("wx-newbeta\n"),
+            ok_stdout("lm-newbeta\n"),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
@@ -255,13 +255,13 @@ mod tests {
 
         assert_eq!(resolved.len(), 2);
         assert_eq!(resolved[0].label, SpecLabel::new("alpha"));
-        assert_eq!(resolved[0].molecule_id, MoleculeId::new("wx-newalpha"));
+        assert_eq!(resolved[0].molecule_id, MoleculeId::new("lm-newalpha"));
         assert!(
             resolved[0].was_minted,
             "alpha must report was_minted=true so the binary can surface the auto-create line",
         );
         assert_eq!(resolved[1].label, SpecLabel::new("beta"));
-        assert_eq!(resolved[1].molecule_id, MoleculeId::new("wx-newbeta"));
+        assert_eq!(resolved[1].molecule_id, MoleculeId::new("lm-newbeta"));
         assert!(resolved[1].was_minted);
 
         let calls = invocations.lock().unwrap().clone();
@@ -284,7 +284,7 @@ mod tests {
     #[tokio::test]
     async fn tree_scope_orchestrator_does_not_clobber_existing_current_molecule() {
         let existing = r#"[{
-            "id": "wx-existing",
+            "id": "lm-existing",
             "title": "alpha",
             "status": "open",
             "priority": 2,
@@ -301,7 +301,7 @@ mod tests {
             .expect("resolve ok");
 
         assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].molecule_id, MoleculeId::new("wx-existing"));
+        assert_eq!(resolved[0].molecule_id, MoleculeId::new("lm-existing"));
         assert!(
             !resolved[0].was_minted,
             "existing epic must NOT be reported as minted — the audit bonds fix-ups to it",
@@ -320,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_or_mint_passes_metadata_with_head_commit() {
-        let runner = ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("wx-newepic\n")]);
+        let runner = ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("lm-newepic\n")]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
         let label = SpecLabel::new("acme");

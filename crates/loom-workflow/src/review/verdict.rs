@@ -112,24 +112,24 @@ mod tests {
 
     #[test]
     fn diff_returns_only_new_ids_in_post_order() {
-        let before = vec![b("wx-a"), b("wx-b")];
-        let after = vec![b("wx-a"), b("wx-b"), b("wx-c"), b("wx-d")];
+        let before = vec![b("lm-a"), b("lm-b")];
+        let after = vec![b("lm-a"), b("lm-b"), b("lm-c"), b("lm-d")];
         assert_eq!(
             diff_new_bead_ids(&before, &after),
-            vec![b("wx-c"), b("wx-d")]
+            vec![b("lm-c"), b("lm-d")]
         );
     }
 
     #[test]
     fn diff_empty_when_no_new() {
-        let before = vec![b("wx-a"), b("wx-b")];
-        let after = vec![b("wx-a"), b("wx-b")];
+        let before = vec![b("lm-a"), b("lm-b")];
+        let after = vec![b("lm-a"), b("lm-b")];
         assert!(diff_new_bead_ids(&before, &after).is_empty());
     }
 
     #[test]
     fn diff_handles_empty_before() {
-        let after = vec![b("wx-a")];
-        assert_eq!(diff_new_bead_ids(&[], &after), vec![b("wx-a")]);
+        let after = vec![b("lm-a")];
+        assert_eq!(diff_new_bead_ids(&[], &after), vec![b("lm-a")]);
     }
 }

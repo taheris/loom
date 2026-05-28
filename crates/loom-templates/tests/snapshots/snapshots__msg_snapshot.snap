@@ -90,7 +90,7 @@ bead marked **`[loom:blocked]`** in its kind line carries no `## Options`
 block — the worker hit a blocker without enumerating resolutions, so you
 need to walk the user through enumerating candidates first.
 
-### wx-clar.1 — [spec:harness] State storage choice
+### lm-clar.1 — [spec:harness] State storage choice
 
 **Kind:** `loom:clarify` — options below.
 

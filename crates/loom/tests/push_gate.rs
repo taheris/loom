@@ -363,13 +363,13 @@ fn push_gate_refuses_on_review_concern_via_live_path() {
     std::fs::create_dir_all(&state_dir).unwrap();
     seed_bead(
         &state_dir,
-        "wx-mol",
+        "lm-mol",
         "molecule epic",
         "Epic for push-gate review-concern test.\n",
         &["spec:pushconcern"],
     );
 
-    seed_active_molecule(workspace, label, "wx-mol", &base_sha);
+    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
 
     let bin_dir = install_path_shims(workspace, false);
     let manifest = write_minimal_manifest(workspace);
@@ -450,13 +450,13 @@ fn push_gate_refuses_on_integrity_finding_via_live_path() {
     std::fs::create_dir_all(&state_dir).unwrap();
     seed_bead(
         &state_dir,
-        "wx-mol",
+        "lm-mol",
         "molecule epic",
         "Epic for push-gate integrity test.\n",
         &["spec:pushintegrity"],
     );
 
-    seed_active_molecule(workspace, label, "wx-mol", &base_sha);
+    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
 
     let bin_dir = install_path_shims(workspace, false);
     let manifest = write_minimal_manifest(workspace);
@@ -488,18 +488,18 @@ fn push_gate_refuses_on_integrity_finding_via_live_path() {
          stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
     );
 
-    let epic_labels = read_labels(&state_dir, "wx-mol");
+    let epic_labels = read_labels(&state_dir, "lm-mol");
     assert!(
         epic_labels.iter().any(|l| l == "loom:clarify"),
         "epic must carry loom:clarify on integrity-finding refusal. \
          labels={epic_labels:?}\nbd-shim log:\n{log}",
     );
     assert!(
-        bd_applied_clarify(&log, "wx-mol"),
-        "bd update wx-mol --add-label loom:clarify must be recorded. \
+        bd_applied_clarify(&log, "lm-mol"),
+        "bd update lm-mol --add-label loom:clarify must be recorded. \
          bd-shim log:\n{log}",
     );
-    let notes = read_field(&state_dir, "wx-mol", "notes");
+    let notes = read_field(&state_dir, "lm-mol", "notes");
     assert!(
         notes.contains("## Options —"),
         "epic notes must carry the canonical Options block. notes:\n{notes}",
@@ -592,13 +592,13 @@ fn push_gate_fires_clean_when_all_conditions_pass_via_live_path() {
     std::fs::create_dir_all(&state_dir).unwrap();
     seed_bead(
         &state_dir,
-        "wx-mol",
+        "lm-mol",
         "molecule epic",
         "Epic for push-gate clean-path test.\n",
         &["spec:pushclean"],
     );
 
-    seed_active_molecule(workspace, label, "wx-mol", &base_sha);
+    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
 
     let bin_dir = install_path_shims(workspace, true);
     let manifest = write_minimal_manifest(workspace);
@@ -696,12 +696,12 @@ fn concern_then_complete_live_path_resolves_to_clean_push() {
     std::fs::create_dir_all(&state_dir).unwrap();
     seed_bead(
         &state_dir,
-        "wx-mol",
+        "lm-mol",
         "molecule epic",
         "Epic for May-19 sequence relay test.\n",
         &["spec:pushrelay"],
     );
-    seed_active_molecule(workspace, label, "wx-mol", &base_sha);
+    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
 
     let bin_dir = install_path_shims(workspace, true);
     let manifest = write_minimal_manifest(workspace);
@@ -748,7 +748,7 @@ fn concern_then_complete_live_path_resolves_to_clean_push() {
 // Scenario 5 — verifier-failed via the threaded --verify-exit flag
 // -------------------------------------------------------------------
 
-/// FR9 condition 2 production wiring (wx-e6c8r.25): when `loom loop`'s
+/// FR9 condition 2 production wiring (lm-e6c8r.25): when `loom loop`'s
 /// molecule-completion handoff captures a non-zero `loom gate verify`
 /// exit and threads it into `loom gate review --verify-exit <CODE>`,
 /// `ProductionReviewController::verify_exit()` MUST return that value
@@ -776,12 +776,12 @@ fn push_gate_refuses_when_verify_exit_flag_is_nonzero_via_live_path() {
     std::fs::create_dir_all(&state_dir).unwrap();
     seed_bead(
         &state_dir,
-        "wx-mol",
+        "lm-mol",
         "molecule epic",
         "Epic for push-gate verifier-failed test.\n",
         &["spec:pushverify"],
     );
-    seed_active_molecule(workspace, label, "wx-mol", &base_sha);
+    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
 
     let bin_dir = install_path_shims(workspace, false);
     let manifest = write_minimal_manifest(workspace);
@@ -873,12 +873,12 @@ fn push_gate_fires_clean_when_verify_exit_flag_is_zero_via_live_path() {
     std::fs::create_dir_all(&state_dir).unwrap();
     seed_bead(
         &state_dir,
-        "wx-mol",
+        "lm-mol",
         "molecule epic",
         "Epic for push-gate verifier-zero test.\n",
         &["spec:pushverifyzero"],
     );
-    seed_active_molecule(workspace, label, "wx-mol", &base_sha);
+    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
 
     let bin_dir = install_path_shims(workspace, true);
     let manifest = write_minimal_manifest(workspace);

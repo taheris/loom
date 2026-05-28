@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn existing_molecule_without_touched_renders_update_with_no_diff() {
-        let mol = MoleculeId::new("wx-mol");
+        let mol = MoleculeId::new("lm-mol");
         let ctx = build_template_context(Some(mol.clone()), &[], base_fields(), vec![]);
         match ctx {
             TodoTemplateContext::Update(u) => {
@@ -132,7 +132,7 @@ mod tests {
     fn notes_thread_into_update_tier_context() {
         let mut base = base_fields();
         base.implementation_notes = vec!["seeded note".into()];
-        let ctx = build_template_context(Some(MoleculeId::new("wx-mol")), &[], base, vec![]);
+        let ctx = build_template_context(Some(MoleculeId::new("lm-mol")), &[], base, vec![]);
         match ctx {
             TodoTemplateContext::Update(u) => {
                 assert_eq!(u.implementation_notes, vec!["seeded note"]);
@@ -171,7 +171,7 @@ mod tests {
             commits_since: None,
         }];
         let ctx = build_template_context(
-            Some(MoleculeId::new("wx-mol")),
+            Some(MoleculeId::new("lm-mol")),
             &[],
             base_fields(),
             cs.clone(),
@@ -197,7 +197,7 @@ mod tests {
             },
         ];
         let ctx = build_template_context(
-            Some(MoleculeId::new("wx-mol")),
+            Some(MoleculeId::new("lm-mol")),
             &touched,
             base_fields(),
             vec![],

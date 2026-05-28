@@ -119,14 +119,14 @@ mod tests {
 
     #[tokio::test]
     async fn one_result_resolves_to_existing() {
-        let body = epic_body(&["wx-mol"], "alpha");
+        let body = epic_body(&["lm-mol"], "alpha");
         let runner = ScriptedRunner::new(vec![ok_stdout(&body)]);
         let bd = BdClient::with_runner(runner);
         let label = SpecLabel::new("alpha");
         let outcome = resolve_molecule(&bd, &label).await.expect("resolve ok");
         assert_eq!(
             outcome,
-            ResolverOutcome::Existing(MoleculeId::new("wx-mol"))
+            ResolverOutcome::Existing(MoleculeId::new("lm-mol"))
         );
     }
 
@@ -135,7 +135,7 @@ mod tests {
     /// and surfaces every conflicting id.
     #[tokio::test]
     async fn todo_single_query_resolution_with_invariant_violation_refusal() {
-        let body = epic_body(&["wx-aaa", "wx-bbb"], "alpha");
+        let body = epic_body(&["lm-aaa", "lm-bbb"], "alpha");
         let runner = ScriptedRunner::new(vec![ok_stdout(&body)]);
         let bd = BdClient::with_runner(runner);
         let label = SpecLabel::new("alpha");
@@ -144,7 +144,7 @@ mod tests {
             ResolverOutcome::InvariantViolation(ids) => {
                 assert_eq!(
                     ids,
-                    vec![MoleculeId::new("wx-aaa"), MoleculeId::new("wx-bbb"),],
+                    vec![MoleculeId::new("lm-aaa"), MoleculeId::new("lm-bbb"),],
                 );
             }
             other => panic!("expected InvariantViolation, got {other:?}"),

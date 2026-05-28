@@ -1,7 +1,7 @@
 //! Disk-retention sweep for log files plus re-exports from `loom-render`.
 //!
 //! The renderer, log sink, and path helpers now live in `loom-render`
-//! (F3, wx-9y7cq) — keeping them out of the driver lets `loom logs`,
+//! (F3, lm-9y7cq) — keeping them out of the driver lets `loom logs`,
 //! SSE bridges, and external log analyzers depend on the renderer
 //! without pulling in the driver runtime. This module re-exports them
 //! so existing call sites (`use loom_driver::logging::LogSink`) keep

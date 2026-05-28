@@ -187,7 +187,7 @@ fn loom_loop_stamps_real_bead_id_and_monotonic_seq_on_every_event() {
     let state_dir = workspace.join("bd-state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
-    let bead = "wx-envt";
+    let bead = "lm-envt";
     let spec = "envelopetest";
     seed_bead(
         &state_dir,

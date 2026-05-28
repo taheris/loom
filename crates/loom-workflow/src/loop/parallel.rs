@@ -422,7 +422,7 @@ mod tests {
             }
         };
 
-        let slots = vec![fake_slot("wx-a"), fake_slot("wx-b"), fake_slot("wx-c")];
+        let slots = vec![fake_slot("lm-a"), fake_slot("lm-b"), fake_slot("lm-c")];
         let start = clock.now();
         let results = run_concurrent_spawns(slots, spawn).await;
         let elapsed = clock.now().saturating_duration_since(start);
@@ -445,7 +445,7 @@ mod tests {
                 let counter = Arc::clone(&counter);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
-                    if slot.bead.id.as_str() == "wx-fail" {
+                    if slot.bead.id.as_str() == "lm-fail" {
                         AgentOutcome::Failure {
                             error: "boom".into(),
                         }
@@ -456,17 +456,17 @@ mod tests {
             }
         };
 
-        let slots = vec![fake_slot("wx-a"), fake_slot("wx-fail"), fake_slot("wx-c")];
+        let slots = vec![fake_slot("lm-a"), fake_slot("lm-fail"), fake_slot("lm-c")];
         let mut out = run_concurrent_spawns(slots, spawn).await;
         out.sort_by(|a, b| a.bead.id.as_str().cmp(b.bead.id.as_str()));
-        // sorted: wx-a, wx-c, wx-fail
+        // sorted: lm-a, lm-c, lm-fail
         assert_eq!(out.len(), 3);
         assert_eq!(counter.load(Ordering::SeqCst), 3);
-        assert_eq!(out[0].bead.id.as_str(), "wx-a");
+        assert_eq!(out[0].bead.id.as_str(), "lm-a");
         assert!(matches!(out[0].outcome, AgentOutcome::Success));
-        assert_eq!(out[1].bead.id.as_str(), "wx-c");
+        assert_eq!(out[1].bead.id.as_str(), "lm-c");
         assert!(matches!(out[1].outcome, AgentOutcome::Success));
-        assert_eq!(out[2].bead.id.as_str(), "wx-fail");
+        assert_eq!(out[2].bead.id.as_str(), "lm-fail");
         assert!(matches!(out[2].outcome, AgentOutcome::Failure { .. }));
     }
 }

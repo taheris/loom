@@ -201,7 +201,7 @@ fn todo_update_renders_implementation_notes_when_present() -> Result<()> {
         companion_paths: vec![],
         spec_diff: Some("=== specs/harness.md ===\n+ change".into()),
         existing_tasks: None,
-        molecule_id: Some(MoleculeId::new("wx-mol")),
+        molecule_id: Some(MoleculeId::new("lm-mol")),
         implementation_notes: vec!["beware FK cascade ordering".into()],
         criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
@@ -221,8 +221,8 @@ fn todo_update_wraps_existing_tasks_in_agent_output() -> Result<()> {
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         spec_diff: Some("=== specs/harness.md ===\n+ new requirement".into()),
-        existing_tasks: Some("- wx-3hhwq.1: scaffold workspace".into()),
-        molecule_id: Some(MoleculeId::new("wx-3hhwq")),
+        existing_tasks: Some("- lm-3hhwq.1: scaffold workspace".into()),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
         implementation_notes: vec![],
         criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
@@ -231,14 +231,14 @@ fn todo_update_wraps_existing_tasks_in_agent_output() -> Result<()> {
 
     assert!(out.contains("# Add Tasks to Existing Molecule"));
     assert!(out.contains("=== specs/harness.md ==="));
-    assert!(out.contains("Molecule ID: wx-3hhwq"));
+    assert!(out.contains("Molecule ID: lm-3hhwq"));
     let agent_open = out.find("<agent-output>");
     let agent_close = out.find("</agent-output>");
     assert!(agent_open.is_some() && agent_close.is_some());
     let (open, close) = (agent_open.unwrap_or(0), agent_close.unwrap_or(0));
     assert!(open < close);
     let inside = &out[open..close];
-    assert!(inside.contains("wx-3hhwq.1: scaffold workspace"));
+    assert!(inside.contains("lm-3hhwq.1: scaffold workspace"));
     Ok(())
 }
 
@@ -249,8 +249,8 @@ fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("wx-3hhwq")),
-        issue_id: Some(BeadId::new("wx-3hhwq.10")?),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        issue_id: Some(BeadId::new("lm-3hhwq.10")?),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: Some(PreviousFailure::from_agent_error(
@@ -258,13 +258,13 @@ fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
         )),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
 
     assert!(out.contains("# Implementation Step"));
-    assert!(out.contains("Issue: wx-3hhwq.10"));
+    assert!(out.contains("Issue: lm-3hhwq.10"));
     assert!(out.contains("Title: <agent-output>port templates</agent-output>"));
     assert!(out.contains("Port templates to Askama."));
     assert!(out.contains("error: cargo test failed"));
@@ -286,13 +286,13 @@ fn run_template_omits_attempt_line_when_zero() -> Result<()> {
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
-        issue_id: Some(BeadId::new("wx-3hhwq.10")?),
+        issue_id: Some(BeadId::new("lm-3hhwq.10")?),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: None,
         review_notes: None,
         attempt: 0,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
@@ -311,7 +311,7 @@ fn run_template_renders_attempt_line_on_retry() -> Result<()> {
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
-        issue_id: Some(BeadId::new("wx-3hhwq.10")?),
+        issue_id: Some(BeadId::new("lm-3hhwq.10")?),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: Some(PreviousFailure::DriverNotice {
@@ -320,7 +320,7 @@ fn run_template_renders_attempt_line_on_retry() -> Result<()> {
         }),
         review_notes: None,
         attempt: 2,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
@@ -344,7 +344,7 @@ fn run_template_prepends_first_instruction_reframe_on_retry() -> Result<()> {
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
-        issue_id: Some(BeadId::new("wx-3hhwq.10")?),
+        issue_id: Some(BeadId::new("lm-3hhwq.10")?),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: Some(PreviousFailure::DriverNotice {
@@ -353,7 +353,7 @@ fn run_template_prepends_first_instruction_reframe_on_retry() -> Result<()> {
         }),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
@@ -384,13 +384,13 @@ fn run_template_omits_first_instruction_reframe_on_fresh_dispatch() -> Result<()
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
-        issue_id: Some(BeadId::new("wx-3hhwq.10")?),
+        issue_id: Some(BeadId::new("lm-3hhwq.10")?),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: None,
         review_notes: None,
         attempt: 0,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
@@ -414,7 +414,7 @@ fn run_template_omits_first_instruction_reframe_when_attempt_zero() -> Result<()
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
-        issue_id: Some(BeadId::new("wx-3hhwq.10")?),
+        issue_id: Some(BeadId::new("lm-3hhwq.10")?),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: Some(PreviousFailure::DriverNotice {
@@ -423,7 +423,7 @@ fn run_template_omits_first_instruction_reframe_when_attempt_zero() -> Result<()
         }),
         review_notes: None,
         attempt: 0,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
@@ -442,7 +442,7 @@ fn run_template_renders_review_notes_block_when_set() -> Result<()> {
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         molecule_id: None,
-        issue_id: Some(BeadId::new("wx-3hhwq.10")?),
+        issue_id: Some(BeadId::new("lm-3hhwq.10")?),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: Some(PreviousFailure::VerifyFailures(vec![VerifierFailure::new(
@@ -452,7 +452,7 @@ fn run_template_renders_review_notes_block_when_set() -> Result<()> {
         )])),
         review_notes: Some("[verifier-bypass] test mocks the agent backend".into()),
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
@@ -500,9 +500,9 @@ fn review_renders_review_context_fields() -> Result<()> {
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        beads_summary: Some("- wx-3hhwq.10: closed".into()),
+        beads_summary: Some("- lm-3hhwq.10: closed".into()),
         base_commit: Some("abc1234".into()),
-        molecule_id: Some(MoleculeId::new("wx-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
         test_sources: vec![ReviewSource {
             path: test_path.into(),
             body: test_body.into(),
@@ -521,9 +521,9 @@ fn review_renders_review_context_fields() -> Result<()> {
 
     assert!(out.contains("# Post-Epic Review"));
     assert!(out.contains("Base commit**: abc1234"));
-    assert!(out.contains("Molecule**: wx-3hhwq"));
+    assert!(out.contains("Molecule**: lm-3hhwq"));
     assert!(out.contains("git diff abc1234..HEAD"));
-    assert!(out.contains("- wx-3hhwq.10: closed"));
+    assert!(out.contains("- lm-3hhwq.10: closed"));
 
     assert!(out.contains("## Deterministic-Verifier Sources"));
     assert!(out.contains(test_path), "test path missing: {out}");
@@ -853,7 +853,7 @@ fn msg_renders_clarify_beads_with_options() -> Result<()> {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
         clarify_beads: vec![ClarifyBead {
-            id: BeadId::new("wx-clar.1")?,
+            id: BeadId::new("lm-clar.1")?,
             spec_label: SpecLabel::new("harness"),
             title: "State storage choice".into(),
             options_summary: Some("State JSON vs. dedicated table".into()),
@@ -876,7 +876,7 @@ fn msg_renders_clarify_beads_with_options() -> Result<()> {
     let out = ctx.render()?;
 
     assert!(out.contains("# Clarify Resolution — Drafter Session"));
-    assert!(out.contains("### wx-clar.1 — [spec:harness] State storage choice"));
+    assert!(out.contains("### lm-clar.1 — [spec:harness] State storage choice"));
     assert!(out.contains("## Options — State JSON vs. dedicated table"));
     assert!(out.contains("#### Option 1 — Keep state in JSON"));
     assert!(out.contains("Add a companions array."));
@@ -898,7 +898,7 @@ fn msg_renders_blocked_bead_with_enumerate_first_framing() -> Result<()> {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         companion_paths: vec![],
         clarify_beads: vec![ClarifyBead {
-            id: BeadId::new("wx-block.1")?,
+            id: BeadId::new("lm-block.1")?,
             spec_label: SpecLabel::new("harness"),
             title: "Push hook fails inside sandbox".into(),
             options_summary: None,
@@ -909,7 +909,7 @@ fn msg_renders_blocked_bead_with_enumerate_first_framing() -> Result<()> {
     };
     let out = ctx.render()?;
 
-    assert!(out.contains("### wx-block.1 — [spec:harness] Push hook fails inside sandbox"));
+    assert!(out.contains("### lm-block.1 — [spec:harness] Push hook fails inside sandbox"));
     assert!(
         out.contains("`loom:blocked`"),
         "kind line must name loom:blocked: {out}",
@@ -934,7 +934,7 @@ fn msg_renders_clarify_bead_without_enumerate_first_framing() -> Result<()> {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         companion_paths: vec![],
         clarify_beads: vec![ClarifyBead {
-            id: BeadId::new("wx-clar.2")?,
+            id: BeadId::new("lm-clar.2")?,
             spec_label: SpecLabel::new("harness"),
             title: "Adopt new API surface".into(),
             options_summary: Some("Pick API shape".into()),
@@ -967,7 +967,7 @@ fn msg_chat_template_instructs_options_block_removal_on_resolution() -> Result<(
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         companion_paths: vec![],
         clarify_beads: vec![ClarifyBead {
-            id: BeadId::new("wx-clar.3")?,
+            id: BeadId::new("lm-clar.3")?,
             spec_label: SpecLabel::new("harness"),
             title: "Pick a thing".into(),
             options_summary: Some("Pick".into()),
@@ -1003,7 +1003,7 @@ fn msg_renders_with_no_clarify_beads() -> Result<()> {
     let out = ctx.render()?;
 
     assert!(out.contains("# Clarify Resolution — Drafter Session"));
-    assert!(!out.contains("### wx-"));
+    assert!(!out.contains("### lm-"));
     Ok(())
 }
 
@@ -1013,7 +1013,7 @@ fn msg_renders_with_no_clarify_beads() -> Result<()> {
 /// disambiguate via the `chat_marker_final_turn_only.md` partial,
 /// stating that `LOOM_COMPLETE` is emitted on the final assistant turn
 /// only — never on intermediate turns. The May-21 bug reports were the
-/// chat agent (wx-lq12o) and planning agent (wx-qzdhj) appending
+/// chat agent (lm-lq12o) and planning agent (lm-qzdhj) appending
 /// `LOOM_COMPLETE` to every reply mid-conversation; this test pins the
 /// clarifying clause across the entire multi-turn template set so a
 /// future edit cannot silently regress any one of them.
@@ -1076,8 +1076,8 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
         label: SpecLabel::new("demo"),
         spec_path: "specs/demo.md".into(),
         companion_paths: vec![],
-        molecule_id: Some(MoleculeId::new("wx-mol")),
-        issue_id: Some(BeadId::new("wx-mol.1")?),
+        molecule_id: Some(MoleculeId::new("lm-mol")),
+        issue_id: Some(BeadId::new("lm-mol.1")?),
         title: Some("the title".into()),
         description: Some("the description".into()),
         previous_failure: None,
@@ -1106,7 +1106,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
         companion_paths: vec![],
         spec_diff: None,
         existing_tasks: None,
-        molecule_id: Some(MoleculeId::new("wx-mol")),
+        molecule_id: Some(MoleculeId::new("lm-mol")),
         implementation_notes: vec![],
         criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
@@ -1159,14 +1159,14 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
         label: SpecLabel::new("demo"),
         spec_path: "specs/demo.md".into(),
         companion_paths: vec!["lib/demo/".into()],
-        molecule_id: Some(MoleculeId::new("wx-mol")),
-        issue_id: Some(BeadId::new("wx-mol.1")?),
+        molecule_id: Some(MoleculeId::new("lm-mol")),
+        issue_id: Some(BeadId::new("lm-mol.1")?),
         title: Some("the title".into()),
         description: Some("the description".into()),
         previous_failure: None,
         review_notes: None,
         attempt: 0,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-mol.1/scratch.md".into(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-mol.1/scratch.md".into(),
         style_rules: "docs/style-rules.md".into(),
     };
     let out = ctx.render()?;
@@ -1176,7 +1176,7 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
         "## Current Feature",
         "## Companions",
         "## Issue Details",
-        "Issue: wx-mol.1",
+        "Issue: lm-mol.1",
         "the title",
         "the description",
         "`bd ready`",
@@ -1225,8 +1225,8 @@ fn agent_output_markers_wrap_each_agent_supplied_field() -> Result<()> {
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
-        molecule_id: Some(MoleculeId::new("wx-3hhwq")),
-        issue_id: Some(BeadId::new("wx-3hhwq.10")?),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        issue_id: Some(BeadId::new("lm-3hhwq.10")?),
         title: Some("AGENTOUT_TITLE_TOKEN".into()),
         description: Some("AGENTOUT_DESC_TOKEN".into()),
         previous_failure: Some(PreviousFailure::from_agent_error("AGENTOUT_FAILURE_TOKEN")),
@@ -1254,7 +1254,7 @@ fn agent_output_markers_wrap_each_agent_supplied_field() -> Result<()> {
         companion_paths: vec![],
         spec_diff: Some("=== specs/harness.md ===\n+ change".into()),
         existing_tasks: Some("AGENTOUT_TASKS_TOKEN".into()),
-        molecule_id: Some(MoleculeId::new("wx-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
         implementation_notes: vec![],
         criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
@@ -1325,8 +1325,8 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             spec_path: "specs/harness.md".to_string(),
             companion_paths: vec![],
             spec_diff: Some("=== specs/harness.md ===\n+ stability".into()),
-            existing_tasks: Some("- wx-3hhwq.1: scaffold".into()),
-            molecule_id: Some(MoleculeId::new("wx-3hhwq")),
+            existing_tasks: Some("- lm-3hhwq.1: scaffold".into()),
+            molecule_id: Some(MoleculeId::new("lm-3hhwq")),
             implementation_notes: vec![],
             criterion_status: vec![],
             scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
@@ -1339,8 +1339,8 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             label: SpecLabel::new("harness"),
             spec_path: "specs/harness.md".to_string(),
             companion_paths: vec!["lib/sandbox/".into()],
-            molecule_id: Some(MoleculeId::new("wx-3hhwq")),
-            issue_id: Some(BeadId::new("wx-3hhwq.10")?),
+            molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+            issue_id: Some(BeadId::new("lm-3hhwq.10")?),
             title: Some("port templates".into()),
             description: Some("Port templates to Askama.".into()),
             previous_failure: Some(PreviousFailure::from_agent_error(
@@ -1348,7 +1348,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             )),
             review_notes: None,
             attempt: 1,
-            scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+            scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
             style_rules: "docs/style-rules.md".to_string(),
         },
     )?;
@@ -1359,9 +1359,9 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             label: SpecLabel::new("harness"),
             spec_path: "specs/harness.md".to_string(),
             companion_paths: vec!["lib/sandbox/".into()],
-            beads_summary: Some("- wx-3hhwq.10: closed".into()),
+            beads_summary: Some("- lm-3hhwq.10: closed".into()),
             base_commit: Some("abc1234".into()),
-            molecule_id: Some(MoleculeId::new("wx-3hhwq")),
+            molecule_id: Some(MoleculeId::new("lm-3hhwq")),
             test_sources: vec![ReviewSource {
                 path: "tests/run-tests.sh".into(),
                 body: "test_review_inputs() { :; }\n".into(),
@@ -1383,7 +1383,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             pinned_context: PINNED_CONTEXT_BODY.to_string(),
             companion_paths: vec!["lib/sandbox/".into()],
             clarify_beads: vec![ClarifyBead {
-                id: BeadId::new("wx-clar.1")?,
+                id: BeadId::new("lm-clar.1")?,
                 spec_label: SpecLabel::new("harness"),
                 title: "State storage choice".into(),
                 options_summary: Some("State JSON vs. dedicated table".into()),
@@ -1482,7 +1482,7 @@ fn todo_templates_render_criterion_status_rows() -> Result<()> {
         companion_paths: vec![],
         spec_diff: Some("=== specs/harness.md ===\n+ added requirement".into()),
         existing_tasks: None,
-        molecule_id: Some(MoleculeId::new("wx-mol")),
+        molecule_id: Some(MoleculeId::new("lm-mol")),
         implementation_notes: vec![],
         criterion_status: rows.clone(),
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
@@ -1582,7 +1582,7 @@ fn todo_templates_render_pre_decomposition_audit_clause() -> Result<()> {
         companion_paths: vec![],
         spec_diff: None,
         existing_tasks: None,
-        molecule_id: Some(MoleculeId::new("wx-mol")),
+        molecule_id: Some(MoleculeId::new("lm-mol")),
         implementation_notes: vec![],
         criterion_status: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),

@@ -110,7 +110,7 @@ fn file_stem_belongs_to(path: &Path, bead: &str) -> bool {
         return false;
     };
     // Stems look like `<bead>-<utc>` per `bead_log_path`. Match the prefix
-    // exactly so `wx-1` does not also match `wx-10`.
+    // exactly so `lm-1` does not also match `lm-10`.
     stem == bead || stem.starts_with(&format!("{bead}-"))
 }
 
@@ -312,12 +312,12 @@ mod tests {
     use std::io;
     use std::sync::{Arc, Mutex};
 
-    /// Fixture envelope for `loom logs` replay tests. Bead id `wx-1`
+    /// Fixture envelope for `loom logs` replay tests. Bead id `lm-1`
     /// matches the path-builder fixtures so the replay code paths see
     /// the expected on-disk shape.
     fn sample_envelope() -> EventEnvelope {
         EventEnvelope {
-            bead_id: BeadId::new("wx-1").expect("valid bead id"),
+            bead_id: BeadId::new("lm-1").expect("valid bead id"),
             molecule_id: None,
             iteration: 0,
             source: Source::Agent,
@@ -358,10 +358,10 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join(".wrapix/loom/logs");
         let older = reference_now() - Duration::from_secs(120);
-        touch(&root.join("alpha/wx-1-old.jsonl"), older)?;
-        touch(&root.join("beta/wx-2-newer.jsonl"), reference_now())?;
+        touch(&root.join("alpha/lm-1-old.jsonl"), older)?;
+        touch(&root.join("beta/lm-2-newer.jsonl"), reference_now())?;
         let path = select_log(&root, LogsOpts::default())?;
-        assert!(path.ends_with("wx-2-newer.jsonl"), "{path:?}");
+        assert!(path.ends_with("lm-2-newer.jsonl"), "{path:?}");
         Ok(())
     }
 
@@ -369,20 +369,20 @@ mod tests {
     fn bead_filter_matches_prefix_exactly() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join(".wrapix/loom/logs");
-        // wx-1 and wx-10 are distinct beads — the filter must not collapse
+        // lm-1 and lm-10 are distinct beads — the filter must not collapse
         // them.
-        touch(&root.join("alpha/wx-10-newer.jsonl"), reference_now())?;
+        touch(&root.join("alpha/lm-10-newer.jsonl"), reference_now())?;
         touch(
-            &root.join("alpha/wx-1-older.jsonl"),
+            &root.join("alpha/lm-1-older.jsonl"),
             reference_now() - Duration::from_secs(60),
         )?;
         let path = select_log(
             &root,
             LogsOpts {
-                bead: Some(&BeadId::new("wx-1")?),
+                bead: Some(&BeadId::new("lm-1")?),
             },
         )?;
-        assert!(path.ends_with("wx-1-older.jsonl"), "{path:?}");
+        assert!(path.ends_with("lm-1-older.jsonl"), "{path:?}");
         Ok(())
     }
 
@@ -390,11 +390,11 @@ mod tests {
     fn missing_bead_filter_returns_typed_error() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join(".wrapix/loom/logs");
-        touch(&root.join("alpha/wx-1-x.jsonl"), reference_now())?;
+        touch(&root.join("alpha/lm-1-x.jsonl"), reference_now())?;
         let err = select_log(
             &root,
             LogsOpts {
-                bead: Some(&BeadId::new("wx-2")?),
+                bead: Some(&BeadId::new("lm-2")?),
             },
         )
         .err()
@@ -407,7 +407,7 @@ mod tests {
     fn ignores_non_jsonl_files() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let root = dir.path().join(".wrapix/loom/logs");
-        touch(&root.join("alpha/wx-1-x.txt"), reference_now())?;
+        touch(&root.join("alpha/lm-1-x.txt"), reference_now())?;
         let err = select_log(&root, LogsOpts::default())
             .err()
             .ok_or_else(|| anyhow::anyhow!("expected error"))?;
@@ -477,13 +477,13 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn replay_renders_via_shared_renderer() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("alpha/wx-1-x.jsonl");
+        let path = dir.path().join("alpha/lm-1-x.jsonl");
         write_jsonl(&path, &sample_tool_pair())?;
         let (buf, sink) = shared_buf();
         replay(
             ReplayOpts {
                 path: &path,
-                bead_id: BeadId::new("wx-1")?,
+                bead_id: BeadId::new("lm-1")?,
                 mode: ReplayMode::Render(RenderMode::Plain),
                 follow: false,
                 follow_poll: None,
@@ -505,15 +505,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn replay_raw_copies_bytes_verbatim() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("alpha/wx-1-x.jsonl");
-        let body = "{\"kind\":\"turn_end\",\"bead_id\":\"wx-1\",\"molecule_id\":null,\"iteration\":0,\"source\":\"agent\",\"ts_ms\":0,\"seq\":0}\n";
+        let path = dir.path().join("alpha/lm-1-x.jsonl");
+        let body = "{\"kind\":\"turn_end\",\"bead_id\":\"lm-1\",\"molecule_id\":null,\"iteration\":0,\"source\":\"agent\",\"ts_ms\":0,\"seq\":0}\n";
         std::fs::create_dir_all(path.parent().ok_or_else(|| anyhow::anyhow!("parent"))?)?;
         std::fs::write(&path, body.as_bytes())?;
         let (buf, sink) = shared_buf();
         replay(
             ReplayOpts {
                 path: &path,
-                bead_id: BeadId::new("wx-1")?,
+                bead_id: BeadId::new("lm-1")?,
                 mode: ReplayMode::Raw,
                 follow: false,
                 follow_poll: None,
@@ -533,7 +533,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn replay_verbose_streams_text_deltas() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("alpha/wx-1-x.jsonl");
+        let path = dir.path().join("alpha/lm-1-x.jsonl");
         let events = vec![
             AgentEvent::TextDelta {
                 envelope: sample_envelope(),
@@ -549,7 +549,7 @@ mod tests {
         replay(
             ReplayOpts {
                 path: &path,
-                bead_id: BeadId::new("wx-1")?,
+                bead_id: BeadId::new("lm-1")?,
                 mode: ReplayMode::Render(RenderMode::Verbose),
                 follow: false,
                 follow_poll: None,
@@ -572,7 +572,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn follow_blocks_past_eof_until_budget_expires() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("alpha/wx-1-x.jsonl");
+        let path = dir.path().join("alpha/lm-1-x.jsonl");
         write_jsonl(&path, &sample_tool_pair())?;
         let (_buf, sink) = shared_buf();
         let clock: Arc<dyn Clock> = Arc::new(loom_driver::clock::MockClock::new());
@@ -580,7 +580,7 @@ mod tests {
         replay(
             ReplayOpts {
                 path: &path,
-                bead_id: BeadId::new("wx-1")?,
+                bead_id: BeadId::new("lm-1")?,
                 mode: ReplayMode::Render(RenderMode::Plain),
                 follow: true,
                 follow_poll: Some(Duration::from_millis(20)),
@@ -603,7 +603,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn follow_raw_blocks_past_eof_until_budget_expires() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("alpha/wx-1-x.jsonl");
+        let path = dir.path().join("alpha/lm-1-x.jsonl");
         std::fs::create_dir_all(path.parent().ok_or_else(|| anyhow::anyhow!("parent"))?)?;
         std::fs::write(&path, b"line1\n")?;
         let (buf, sink) = shared_buf();
@@ -612,7 +612,7 @@ mod tests {
         replay(
             ReplayOpts {
                 path: &path,
-                bead_id: BeadId::new("wx-1")?,
+                bead_id: BeadId::new("lm-1")?,
                 mode: ReplayMode::Raw,
                 follow: true,
                 follow_poll: Some(Duration::from_millis(20)),

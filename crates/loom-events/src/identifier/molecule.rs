@@ -31,7 +31,7 @@ impl FromStr for MoleculeId {
     /// or more lowercase ASCII letters and `<base32>` is one or more
     /// lowercase ASCII alphanumerics. Same shape as a [`BeadId`] without
     /// the `.<digits>` sub-issue suffix, which mirrors how `bd` emits
-    /// molecule ids (`wx-3hhwq`, `wx-mol42`).
+    /// molecule ids (`lm-3hhwq`, `lm-mol42`).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (prefix, body) = s
             .split_once('-')
@@ -68,16 +68,16 @@ mod tests {
 
     #[test]
     fn display_round_trips_with_as_str() {
-        let id = MoleculeId::new("wx-3hhwq");
-        assert_eq!(id.as_str(), "wx-3hhwq");
-        assert_eq!(id.to_string(), "wx-3hhwq");
+        let id = MoleculeId::new("lm-3hhwq");
+        assert_eq!(id.as_str(), "lm-3hhwq");
+        assert_eq!(id.to_string(), "lm-3hhwq");
     }
 
     #[test]
     fn serde_round_trips_as_plain_string() -> Result<()> {
-        let id = MoleculeId::new("wx-mol42");
+        let id = MoleculeId::new("lm-mol42");
         let json = serde_json::to_string(&id)?;
-        assert_eq!(json, "\"wx-mol42\"");
+        assert_eq!(json, "\"lm-mol42\"");
         let back: MoleculeId = serde_json::from_str(&json)?;
         assert_eq!(back, id);
         Ok(())
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn parse_accepts_canonical_shapes() -> Result<()> {
-        for input in ["wx-3hhwq", "wx-mol42", "loom-a1b2c3", "x-y"] {
+        for input in ["lm-3hhwq", "lm-mol42", "loom-a1b2c3", "x-y"] {
             let id: MoleculeId = input.parse()?;
             assert_eq!(id.as_str(), input);
         }
@@ -103,11 +103,11 @@ mod tests {
         let cases = [
             "",
             "wx",
-            "wx-",
+            "lm-",
             "-mol",
             "WX-mol",
-            "wx-MOL",
-            "wx-3hhwq.1",
+            "lm-MOL",
+            "lm-3hhwq.1",
             "wx mol",
             "wx_mol",
         ];

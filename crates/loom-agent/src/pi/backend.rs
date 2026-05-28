@@ -481,7 +481,7 @@ mod tests {
 
     fn sample_repin() -> RePinContent {
         RePinContent {
-            orientation: "loom loop @ wx-test".to_string(),
+            orientation: "loom loop @ lm-test".to_string(),
             pinned_context: "Spec: specs/agent.md".to_string(),
             partial_bodies: vec!["partial alpha".to_string()],
         }

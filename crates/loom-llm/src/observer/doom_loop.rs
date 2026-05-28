@@ -347,7 +347,7 @@ mod tests {
 
     fn envelope(seq: u64) -> EventEnvelope {
         EventEnvelope {
-            bead_id: BeadId::new("wx-test").expect("valid bead id"),
+            bead_id: BeadId::new("lm-test").expect("valid bead id"),
             molecule_id: None,
             iteration: 0,
             source: Source::Agent,

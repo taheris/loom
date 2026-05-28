@@ -634,7 +634,7 @@ mod tests {
     fn builder() -> EnvelopeBuilder {
         let mut clock = 0_i64;
         EnvelopeBuilder::new(
-            BeadId::new("wx-test").expect("valid id"),
+            BeadId::new("lm-test").expect("valid id"),
             None,
             0,
             Source::Agent,
@@ -850,7 +850,7 @@ mod tests {
     fn unknown_variants_fail_with_a_loud_error() {
         let bogus = serde_json::json!({
             "kind": "this_kind_does_not_exist_yet",
-            "bead_id": "wx-test",
+            "bead_id": "lm-test",
             "molecule_id": null,
             "iteration": 0,
             "source": "agent",
@@ -902,7 +902,7 @@ mod tests {
         for kind in ["push_gate_walk", "completely_made_up_kind"] {
             let json = serde_json::json!({
                 "kind": "driver_event",
-                "bead_id": "wx-test",
+                "bead_id": "lm-test",
                 "molecule_id": null,
                 "iteration": 0,
                 "source": "driver",
@@ -949,7 +949,7 @@ mod tests {
         for kind in kinds {
             let json = serde_json::json!({
                 "kind": "driver_event",
-                "bead_id": "wx-test",
+                "bead_id": "lm-test",
                 "molecule_id": null,
                 "iteration": 0,
                 "source": "driver",

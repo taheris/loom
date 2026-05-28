@@ -252,11 +252,11 @@ mod tests {
     use serde_json::{Value, json};
 
     /// Fixture envelope shared by the sink emission tests. Bead id is
-    /// `wx-test`; ts_ms / seq stay at zero so on-disk JSONL shapes are
+    /// `lm-test`; ts_ms / seq stay at zero so on-disk JSONL shapes are
     /// trivially comparable.
     fn sample_envelope() -> EventEnvelope {
         EventEnvelope {
-            bead_id: BeadId::new("wx-test").expect("valid bead id"),
+            bead_id: BeadId::new("lm-test").expect("valid bead id"),
             molecule_id: None,
             iteration: 0,
             source: Source::Agent,
@@ -274,7 +274,7 @@ mod tests {
     fn emit_writes_jsonl_line_per_event_and_drives_renderer() {
         let dir = tempfile::tempdir().expect("tempdir");
         let label = SpecLabel::new("alpha");
-        let bead = BeadId::new("wx-1").expect("valid bead id");
+        let bead = BeadId::new("lm-1").expect("valid bead id");
         let when = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(0);
         let (mut sink, term_buf) =
             open_sink_with_sink_writer(dir.path(), &label, &bead, when).expect("open");
@@ -313,7 +313,7 @@ mod tests {
     fn emit_persists_compaction_events() {
         let dir = tempfile::tempdir().expect("tempdir");
         let label = SpecLabel::new("alpha");
-        let bead = BeadId::new("wx-1").expect("valid bead id");
+        let bead = BeadId::new("lm-1").expect("valid bead id");
         let (mut sink, _term) = open_sink_with_sink_writer(
             dir.path(),
             &label,
@@ -340,7 +340,7 @@ mod tests {
         let (sink, _term) = open_sink_with_sink_writer(
             dir.path(),
             &SpecLabel::new("alpha"),
-            &BeadId::new("wx-1").expect("valid bead id"),
+            &BeadId::new("lm-1").expect("valid bead id"),
             SystemTime::UNIX_EPOCH,
         )
         .expect("open");
@@ -355,7 +355,7 @@ mod tests {
         let (sink, _) = open_sink_with_sink_writer(
             &logs,
             &SpecLabel::new("nested"),
-            &BeadId::new("wx-1").expect("valid bead id"),
+            &BeadId::new("lm-1").expect("valid bead id"),
             SystemTime::UNIX_EPOCH,
         )
         .expect("open");
@@ -373,7 +373,7 @@ mod tests {
         let (mut sink, _term) = open_sink_with_sink_writer(
             dir.path(),
             &SpecLabel::new("alpha"),
-            &BeadId::new("wx-1").expect("valid bead id"),
+            &BeadId::new("lm-1").expect("valid bead id"),
             SystemTime::UNIX_EPOCH,
         )
         .expect("open");
@@ -430,7 +430,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let label = SpecLabel::new("alpha");
-        let bead = BeadId::new("wx-1").expect("valid bead id");
+        let bead = BeadId::new("lm-1").expect("valid bead id");
         let sink = LogSink::open_in_at(dir.path(), &label, &bead, None, SystemTime::UNIX_EPOCH)
             .expect("open");
         let path = sink.log_path().to_path_buf();

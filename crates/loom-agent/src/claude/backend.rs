@@ -285,9 +285,9 @@ mod tests {
         let workspace = tempfile::tempdir().expect("tempdir");
         let scratch = loom_driver::scratch::ScratchSession::open(
             workspace.path(),
-            "wx-test",
+            "lm-test",
             "hello",
-            "loom loop @ wx-test",
+            "loom loop @ lm-test",
         )
         .expect("open scratch");
         let cfg = SpawnConfig {

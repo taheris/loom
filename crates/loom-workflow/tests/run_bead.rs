@@ -116,8 +116,8 @@ fn setup() -> (
 async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
-    let bead = fake_bead("wx-1");
-    let expected_worktree = workspace.join(".wrapix/worktree/harness/wx-1");
+    let bead = fake_bead("lm-1");
+    let expected_worktree = workspace.join(".wrapix/worktree/harness/lm-1");
 
     let observed_workspace: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
     let observed_clone = Arc::clone(&observed_workspace);
@@ -172,7 +172,7 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success()
         !expected_worktree.exists(),
         "worktree must be removed after clean merge-back",
     );
-    let branches = git_capture(&workspace, &["branch", "--list", "loom/harness/wx-1"])?;
+    let branches = git_capture(&workspace, &["branch", "--list", "loom/harness/lm-1"])?;
     assert!(
         branches.trim().is_empty(),
         "bead's branch must be deleted after merge-back (got: {branches:?})",
@@ -200,8 +200,8 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success()
 async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
-    let bead = fake_bead("wx-dirty");
-    let expected_worktree = workspace.join(".wrapix/worktree/harness/wx-dirty");
+    let bead = fake_bead("lm-dirty");
+    let expected_worktree = workspace.join(".wrapix/worktree/harness/lm-dirty");
 
     // Capture every prompt the spawn closure sees so we can assert what
     // the controller threaded on the retry.
@@ -330,7 +330,7 @@ async fn production_loop_pushes_main_after_each_successful_merge() -> Result<()>
     let _ = &stub; // silence unused warning when the counter stub takes over
     let _ = beads_push_calls;
 
-    let bead_ids = ["wx-push.1", "wx-push.2", "wx-push.3"];
+    let bead_ids = ["lm-push.1", "lm-push.2", "lm-push.3"];
 
     let mut controller = ProductionAgentLoopController::new(
         BdClient::new(),
@@ -414,7 +414,7 @@ async fn production_loop_preserves_worktree_on_push_failure() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let stub = beads_push_stub(_dir.path());
-    let expected_worktree = workspace.join(".wrapix/worktree/harness/wx-pushfail.1");
+    let expected_worktree = workspace.join(".wrapix/worktree/harness/lm-pushfail.1");
 
     // Break the origin by repointing `origin` at a nonexistent path so
     // `git push` fails. The repo started healthy (init_test_repo built a
@@ -455,7 +455,7 @@ async fn production_loop_preserves_worktree_on_push_failure() -> Result<()> {
     .with_beads_push_program(stub);
 
     let outcome = controller
-        .run_bead(&fake_bead("wx-pushfail.1"), None)
+        .run_bead(&fake_bead("lm-pushfail.1"), None)
         .await?;
     match outcome {
         AgentOutcome::Failure { error } => {

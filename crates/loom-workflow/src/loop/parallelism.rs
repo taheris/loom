@@ -8,7 +8,7 @@ use thiserror::Error;
 ///
 /// `Parallelism::ONE` is the default — sequential mode, no worktree, work
 /// happens on the driver branch (preserves the previous `loom loop` shape
-/// from `wx-3hhwq.15`). `--parallel N` for `N > 1` always uses worktrees,
+/// from `lm-3hhwq.15`). `--parallel N` for `N > 1` always uses worktrees,
 /// even for a single ready bead in that batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Parallelism(NonZeroU32);

@@ -949,12 +949,12 @@ mod tests {
     use serde_json::json;
 
     /// Fixture envelope for renderer tests. Carries a fully-valid
-    /// `wx-test` bead id; the renderer reads `ts_ms` / `seq` / `source`
+    /// `lm-test` bead id; the renderer reads `ts_ms` / `seq` / `source`
     /// but does not dispatch on `bead_id`, so the fixture is reused
     /// across every test that does not need to vary the envelope.
     fn sample_envelope() -> EventEnvelope {
         EventEnvelope {
-            bead_id: BeadId::new("wx-test").expect("valid bead id"),
+            bead_id: BeadId::new("lm-test").expect("valid bead id"),
             molecule_id: None,
             iteration: 0,
             source: Source::Agent,
@@ -990,7 +990,7 @@ mod tests {
                 inner: cell_for_writer,
             },
             mode,
-            BeadId::new("wx-1").expect("valid bead id"),
+            BeadId::new("lm-1").expect("valid bead id"),
             parallel,
             color,
         );
@@ -1057,7 +1057,7 @@ mod tests {
             })
             .expect("render");
         });
-        assert!(out.contains("[wx-1]"), "{out:?}");
+        assert!(out.contains("[lm-1]"), "{out:?}");
         assert!(out.contains("Bash"));
     }
 
@@ -1067,7 +1067,7 @@ mod tests {
             r.header("Implement parser", &ProfileName::new("rust"))
                 .expect("header");
         });
-        assert!(out.contains("wx-1"), "{out:?}");
+        assert!(out.contains("lm-1"), "{out:?}");
         assert!(out.contains("Implement parser"));
         assert!(out.contains("[profile:rust]"));
         assert!(out.ends_with('\n'));
@@ -1203,7 +1203,7 @@ mod tests {
         );
         assert!(out.contains("more lines"), "missing recovery hint: {out:?}",);
         assert!(
-            out.contains("loom logs -b wx-1 --tool b1"),
+            out.contains("loom logs -b lm-1 --tool b1"),
             "recovery hint must reference the bead and tool call id: {out:?}",
         );
     }
@@ -1268,7 +1268,7 @@ mod tests {
         );
         assert!(out.contains("more lines"), "missing cap line: {out:?}");
         assert!(
-            out.contains("loom logs -b wx-1 --tool b1"),
+            out.contains("loom logs -b lm-1 --tool b1"),
             "cap line must reference the bead and tool call id: {out:?}",
         );
     }
@@ -1357,7 +1357,7 @@ mod tests {
                 inner: cell_for_writer,
             },
             RenderMode::Default,
-            BeadId::new("wx-1").expect("valid bead id"),
+            BeadId::new("lm-1").expect("valid bead id"),
             false,
             false,
         )
@@ -1488,7 +1488,7 @@ mod tests {
     /// dispatches to a concrete impl for each.
     #[test]
     fn renderer_modes_present() {
-        let bead = BeadId::new("wx-1").expect("valid id");
+        let bead = BeadId::new("lm-1").expect("valid id");
         for mode in [
             RenderMode::Pretty,
             RenderMode::Plain,
@@ -1700,7 +1700,7 @@ mod tests {
         // Live path: indicator appears between ToolCall and ToolResult.
         let (live_buf, live_writer) = captured();
         let mut live_pretty =
-            PrettyRenderer::new(live_writer, BeadId::new("wx-1").expect("id"), false, true);
+            PrettyRenderer::new(live_writer, BeadId::new("lm-1").expect("id"), false, true);
         let (call, result) = tool_pair_with_ts(
             "t1",
             "Bash",
@@ -1725,7 +1725,7 @@ mod tests {
         let (replay_buf, replay_writer) = captured();
         let mut replay_pretty = PrettyRenderer::new(
             replay_writer,
-            BeadId::new("wx-1").expect("id"),
+            BeadId::new("lm-1").expect("id"),
             false,
             false,
         );
@@ -1751,7 +1751,7 @@ mod tests {
     /// object is the only contract both share.
     #[test]
     fn logs_reuses_renderer_via_jsonl_round_trip() {
-        let bead = BeadId::new("wx-1").expect("id");
+        let bead = BeadId::new("lm-1").expect("id");
         let (call, result) = tool_pair_with_ts(
             "t1",
             "Bash",
@@ -1866,7 +1866,7 @@ mod tests {
             ))
             .expect("render");
         });
-        assert!(out.contains("[wx-1]"), "{out:?}");
+        assert!(out.contains("[lm-1]"), "{out:?}");
         assert!(out.contains("→"), "{out:?}");
         assert!(out.contains("push_gate_walk"), "{out:?}");
     }
@@ -1906,7 +1906,7 @@ mod tests {
             TerminalRenderer::new(
                 sink,
                 RenderMode::Default,
-                BeadId::new("wx-1").expect("id"),
+                BeadId::new("lm-1").expect("id"),
                 parallel,
                 color,
             )
@@ -1914,7 +1914,7 @@ mod tests {
             TerminalRenderer::new_replay(
                 sink,
                 RenderMode::Default,
-                BeadId::new("wx-1").expect("id"),
+                BeadId::new("lm-1").expect("id"),
                 parallel,
                 color,
             )

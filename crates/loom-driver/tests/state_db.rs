@@ -80,7 +80,7 @@ fn state_db_rebuild_populates_specs_and_molecules() -> Result<()> {
 
     let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
     let molecules = vec![ActiveMolecule {
-        id: MoleculeId::new("wx-alpha"),
+        id: MoleculeId::new("lm-alpha"),
         spec_label: SpecLabel::new("alpha"),
         base_commit: Some("abc123".to_string()),
     }];
@@ -95,7 +95,7 @@ fn state_db_rebuild_populates_specs_and_molecules() -> Result<()> {
     let mol = db
         .molecule_for_spec(&SpecLabel::new("alpha"))?
         .context("molecule should be present after rebuild")?;
-    assert_eq!(mol.id.as_str(), "wx-alpha");
+    assert_eq!(mol.id.as_str(), "lm-alpha");
     assert_eq!(mol.base_commit.as_deref(), Some("abc123"));
     assert_eq!(mol.iteration_count, 0);
 
@@ -144,13 +144,13 @@ fn state_db_rebuild_resets_counters() -> Result<()> {
     write_spec(workspace, "alpha", "# alpha\n")?;
     let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
     let molecules = vec![ActiveMolecule {
-        id: MoleculeId::new("wx-alpha"),
+        id: MoleculeId::new("lm-alpha"),
         spec_label: SpecLabel::new("alpha"),
         base_commit: None,
     }];
     db.rebuild(workspace, &molecules)?;
 
-    let mol_id = MoleculeId::new("wx-alpha");
+    let mol_id = MoleculeId::new("lm-alpha");
     assert_eq!(db.increment_iteration(&mol_id)?, 1);
     assert_eq!(db.increment_iteration(&mol_id)?, 2);
 
@@ -229,11 +229,11 @@ fn state_db_open_migrates_v6_drops_current_molecule() -> Result<()> {
             INSERT INTO meta(key, value) VALUES ('current_spec', 'alpha');
             INSERT INTO specs(label) VALUES ('alpha');
             INSERT INTO molecules(id, spec_label, base_commit, iteration_count)
-              VALUES ('wx-alpha', 'alpha', 'deadbeef', 3);
+              VALUES ('lm-alpha', 'alpha', 'deadbeef', 3);
             INSERT INTO companions(spec_label, companion_path)
               VALUES ('alpha', 'lib/a/');
             INSERT INTO current_molecule(spec_label, epic_id)
-              VALUES ('alpha', 'wx-mol.1');",
+              VALUES ('alpha', 'lm-mol.1');",
         )?;
     }
 
@@ -264,7 +264,7 @@ fn state_db_open_migrates_v6_drops_current_molecule() -> Result<()> {
     let mol = db
         .molecule_for_spec(&SpecLabel::new("alpha"))?
         .context("molecules row must survive")?;
-    assert_eq!(mol.id.as_str(), "wx-alpha");
+    assert_eq!(mol.id.as_str(), "lm-alpha");
     assert_eq!(mol.base_commit.as_deref(), Some("deadbeef"));
     assert_eq!(mol.iteration_count, 3);
     assert_eq!(db.companions(&SpecLabel::new("alpha"))?, vec!["lib/a/"]);
@@ -298,13 +298,13 @@ fn state_increment_iteration_returns_updated_count() -> Result<()> {
     write_spec(workspace, "alpha", "# alpha\n")?;
     let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
     let molecules = vec![ActiveMolecule {
-        id: MoleculeId::new("wx-alpha"),
+        id: MoleculeId::new("lm-alpha"),
         spec_label: SpecLabel::new("alpha"),
         base_commit: None,
     }];
     db.rebuild(workspace, &molecules)?;
 
-    let mol_id = MoleculeId::new("wx-alpha");
+    let mol_id = MoleculeId::new("lm-alpha");
     assert_eq!(db.increment_iteration(&mol_id)?, 1);
     assert_eq!(db.increment_iteration(&mol_id)?, 2);
     assert_eq!(db.increment_iteration(&mol_id)?, 3);
@@ -318,13 +318,13 @@ fn state_set_and_reset_iteration_round_trip() -> Result<()> {
     write_spec(workspace, "alpha", "# alpha\n")?;
     let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
     let molecules = vec![ActiveMolecule {
-        id: MoleculeId::new("wx-alpha"),
+        id: MoleculeId::new("lm-alpha"),
         spec_label: SpecLabel::new("alpha"),
         base_commit: None,
     }];
     db.rebuild(workspace, &molecules)?;
 
-    let mol_id = MoleculeId::new("wx-alpha");
+    let mol_id = MoleculeId::new("lm-alpha");
     db.set_iteration(&mol_id, 3)?;
     assert_eq!(
         db.molecule_for_spec(&SpecLabel::new("alpha"))?
@@ -341,7 +341,7 @@ fn state_set_and_reset_iteration_round_trip() -> Result<()> {
         0
     );
 
-    let unknown = MoleculeId::new("wx-missing");
+    let unknown = MoleculeId::new("lm-missing");
     assert!(db.set_iteration(&unknown, 1).is_err());
     assert!(db.reset_iteration(&unknown).is_err());
     Ok(())
@@ -439,13 +439,13 @@ fn routine_commands_never_delete_spec_row() -> Result<()> {
     write_spec(workspace, "alpha", "# alpha\n")?;
     let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
     let molecules = vec![ActiveMolecule {
-        id: MoleculeId::new("wx-alpha"),
+        id: MoleculeId::new("lm-alpha"),
         spec_label: SpecLabel::new("alpha"),
         base_commit: None,
     }];
     db.rebuild(workspace, &molecules)?;
     let label = SpecLabel::new("alpha");
-    let mol_id = MoleculeId::new("wx-alpha");
+    let mol_id = MoleculeId::new("lm-alpha");
 
     db.set_current_spec(&label)?;
     db.set_iteration(&mol_id, 2)?;
@@ -733,7 +733,7 @@ fn consume_notes_and_advance_base_commit_is_atomic() -> Result<()> {
     write_spec(workspace, "alpha", "# alpha\n")?;
     let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
     let label = SpecLabel::new("alpha");
-    let mol_id = MoleculeId::new("wx-alpha");
+    let mol_id = MoleculeId::new("lm-alpha");
     db.rebuild(
         workspace,
         &[ActiveMolecule {
@@ -804,7 +804,7 @@ fn consume_notes_and_refresh_base_commit_invokes_closure_with_args() -> Result<(
     write_spec(workspace, "alpha", "# alpha\n")?;
     let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
     let label = SpecLabel::new("alpha");
-    let mol_id = MoleculeId::new("wx-alpha");
+    let mol_id = MoleculeId::new("lm-alpha");
     db.rebuild(
         workspace,
         &[ActiveMolecule {
@@ -829,7 +829,7 @@ fn consume_notes_and_refresh_base_commit_invokes_closure_with_args() -> Result<(
     let calls = captured.lock().unwrap().clone();
     assert_eq!(
         calls,
-        vec![("wx-alpha".to_string(), "fresh-head".to_string())],
+        vec![("lm-alpha".to_string(), "fresh-head".to_string())],
         "closure must receive the molecule id and new base_commit unchanged",
     );
     Ok(())
@@ -851,12 +851,12 @@ fn todo_resolution_is_single_query_with_invariant_violation_refusal() -> Result<
     let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
     let molecules = vec![
         ActiveMolecule {
-            id: MoleculeId::new("wx-aaa"),
+            id: MoleculeId::new("lm-aaa"),
             spec_label: SpecLabel::new("alpha"),
             base_commit: None,
         },
         ActiveMolecule {
-            id: MoleculeId::new("wx-bbb"),
+            id: MoleculeId::new("lm-bbb"),
             spec_label: SpecLabel::new("alpha"),
             base_commit: None,
         },
@@ -866,7 +866,7 @@ fn todo_resolution_is_single_query_with_invariant_violation_refusal() -> Result<
         StateError::DuplicateSpecMolecules { label, ids } => {
             assert_eq!(label, "alpha");
             assert!(
-                ids.contains("wx-aaa") && ids.contains("wx-bbb"),
+                ids.contains("lm-aaa") && ids.contains("lm-bbb"),
                 "expected every conflicting id in the error, got {ids:?}",
             );
         }

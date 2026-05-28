@@ -195,9 +195,9 @@ mod tests {
             spec_path: "specs/harness.md".into(),
             pinned_context: "PIN".into(),
             companion_paths: vec![],
-            molecule_id: Some(MoleculeId::new("wx-3hhwq")),
+            molecule_id: Some(MoleculeId::new("lm-3hhwq")),
             base_commit: Some("abc123".into()),
-            beads_summary: Some("- wx-1: First [open]".into()),
+            beads_summary: Some("- lm-1: First [open]".into()),
             test_sources: vec![],
             judge_rubrics: vec![],
             scratchpad_path: "/workspace/.wrapix/loom/scratch/harness/scratch.md".into(),
@@ -215,10 +215,10 @@ mod tests {
 
     #[test]
     fn beads_summary_lines_carry_id_title_status() {
-        let beads = vec![b("wx-1", "Plan", "open"), b("wx-2", "Run", "in_progress")];
+        let beads = vec![b("lm-1", "Plan", "open"), b("lm-2", "Run", "in_progress")];
         let s = beads_summary(&beads).expect("beads present");
-        assert!(s.contains("wx-1: Plan [open]"));
-        assert!(s.contains("wx-2: Run [in_progress]"));
+        assert!(s.contains("lm-1: Plan [open]"));
+        assert!(s.contains("lm-2: Run [in_progress]"));
         assert!(!s.ends_with('\n'), "trailing newline trimmed");
     }
 
@@ -228,7 +228,7 @@ mod tests {
         let body = ctx.render().expect("render");
         assert!(body.contains("harness"), "{body}");
         assert!(body.contains("abc123"), "{body}");
-        assert!(body.contains("wx-3hhwq"), "{body}");
+        assert!(body.contains("lm-3hhwq"), "{body}");
     }
 
     #[test]

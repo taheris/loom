@@ -73,14 +73,14 @@ mod tests {
             spec_path: "specs/harness.md".into(),
             pinned_context: "PIN".into(),
             companion_paths: vec![],
-            molecule_id: Some(MoleculeId::new("wx-3hhwq")),
-            issue_id: BeadId::new("wx-3hhwq.15").expect("valid bead id"),
+            molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+            issue_id: BeadId::new("lm-3hhwq.15").expect("valid bead id"),
             title: "Implement loom loop".into(),
             description: "Per-bead loop".into(),
             previous_failure: None,
             review_notes: None,
             attempt: 0,
-            scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.15/scratch.md".into(),
+            scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.15/scratch.md".into(),
             style_rules: "docs/style-rules.md".into(),
         }
     }
@@ -117,7 +117,7 @@ mod tests {
     fn rendered_prompt_includes_issue_and_title() {
         let ctx = build_loop_context(inputs());
         let body = ctx.render().expect("render");
-        assert!(body.contains("wx-3hhwq.15"), "{body}");
+        assert!(body.contains("lm-3hhwq.15"), "{body}");
         assert!(body.contains("Implement loom loop"), "{body}");
     }
 

@@ -197,10 +197,10 @@ mod tests {
     async fn spawned_outcome_bonds_to_origins_parent_molecule() {
         let mut ctx = FakeContext::default();
         ctx.origins
-            .insert("wx-origin.1".into(), bead("wx-origin.1", Some("wx-mola")));
-        ctx.next_ids.push_back(BeadId::new("wx-fix.1").expect("id"));
+            .insert("lm-origin.1".into(), bead("lm-origin.1", Some("lm-mola")));
+        ctx.next_ids.push_back(BeadId::new("lm-fix.1").expect("id"));
 
-        let origin = BeadId::new("wx-origin.1").expect("valid");
+        let origin = BeadId::new("lm-origin.1").expect("valid");
         let request = FixupRequest {
             title: "fix the leak".into(),
             description: "verify-fail recovery follow-up".into(),
@@ -214,15 +214,15 @@ mod tests {
 
         match outcome {
             FixupOutcome::Spawned { fixup_id, molecule } => {
-                assert_eq!(fixup_id, BeadId::new("wx-fix.1").expect("id"));
-                assert_eq!(molecule, MoleculeId::new("wx-mola"));
+                assert_eq!(fixup_id, BeadId::new("lm-fix.1").expect("id"));
+                assert_eq!(molecule, MoleculeId::new("lm-mola"));
             }
             other => panic!("expected Spawned, got {other:?}"),
         }
 
         assert_eq!(ctx.create_calls.len(), 1, "create_and_bond called once");
         let (mol, req) = &ctx.create_calls[0];
-        assert_eq!(*mol, MoleculeId::new("wx-mola"));
+        assert_eq!(*mol, MoleculeId::new("lm-mola"));
         assert_eq!(req.title, "fix the leak");
         assert_eq!(req.description, "verify-fail recovery follow-up");
 
@@ -237,9 +237,9 @@ mod tests {
         let mut ctx = FakeContext::default();
         // Origin with parent=None — unbonded.
         ctx.origins
-            .insert("wx-orphan.5".into(), bead("wx-orphan.5", None));
+            .insert("lm-orphan.5".into(), bead("lm-orphan.5", None));
 
-        let origin = BeadId::new("wx-orphan.5").expect("valid");
+        let origin = BeadId::new("lm-orphan.5").expect("valid");
         let request = FixupRequest {
             title: "should not be created".into(),
             ..FixupRequest::default()
@@ -251,7 +251,7 @@ mod tests {
 
         match outcome {
             FixupOutcome::RefusedUnbondedOrigin { origin: refused } => {
-                assert_eq!(refused, BeadId::new("wx-orphan.5").expect("valid"));
+                assert_eq!(refused, BeadId::new("lm-orphan.5").expect("valid"));
             }
             other => panic!("expected RefusedUnbondedOrigin, got {other:?}"),
         }
@@ -262,11 +262,11 @@ mod tests {
         );
         assert_eq!(ctx.blocked_calls.len(), 1);
         let (bead, cause, detail) = &ctx.blocked_calls[0];
-        assert_eq!(*bead, BeadId::new("wx-orphan.5").expect("valid"));
+        assert_eq!(*bead, BeadId::new("lm-orphan.5").expect("valid"));
         assert_eq!(cause, DriverNoticeCause::UnbondedOrigin.as_str());
         assert_eq!(cause, "unbonded-origin");
         assert!(
-            detail.contains("wx-orphan.5"),
+            detail.contains("lm-orphan.5"),
             "blocked detail names the origin: {detail}",
         );
     }
@@ -275,9 +275,9 @@ mod tests {
     async fn fixup_unbonded_origin_routes_through_driver_notice_cause_enum() {
         let mut ctx = FakeContext::default();
         ctx.origins
-            .insert("wx-orphan.9".into(), bead("wx-orphan.9", None));
+            .insert("lm-orphan.9".into(), bead("lm-orphan.9", None));
 
-        let origin = BeadId::new("wx-orphan.9").expect("valid");
+        let origin = BeadId::new("lm-orphan.9").expect("valid");
         let outcome = spawn_fixup_bead(&mut ctx, &origin, FixupRequest::default())
             .await
             .expect("refuse path returns Ok");
@@ -305,11 +305,11 @@ mod tests {
         // in the outcome proves the bond ran first.
         let mut ctx = FakeContext::default();
         ctx.origins
-            .insert("wx-origin.2".into(), bead("wx-origin.2", Some("wx-molb")));
+            .insert("lm-origin.2".into(), bead("lm-origin.2", Some("lm-molb")));
         ctx.next_ids
-            .push_back(BeadId::new("wx-fix.42").expect("id"));
+            .push_back(BeadId::new("lm-fix.42").expect("id"));
 
-        let origin = BeadId::new("wx-origin.2").expect("valid");
+        let origin = BeadId::new("lm-origin.2").expect("valid");
         let outcome = spawn_fixup_bead(&mut ctx, &origin, FixupRequest::default())
             .await
             .expect("spawn ok");

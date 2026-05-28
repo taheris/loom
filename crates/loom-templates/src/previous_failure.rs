@@ -554,7 +554,7 @@ mod tests {
     fn previous_failure_renders_unbonded_origin_context_for_next_attempt() {
         let pf = PreviousFailure::DriverNotice {
             cause: DriverNoticeCause::UnbondedOrigin,
-            detail: "Originating bead wx-orphan.5 has no molecule parent; \
+            detail: "Originating bead lm-orphan.5 has no molecule parent; \
                      refusing to spawn fix-up bead."
                 .into(),
         };
@@ -564,7 +564,7 @@ mod tests {
             "framing prefix missing: {rendered}",
         );
         assert!(
-            rendered.contains("wx-orphan.5"),
+            rendered.contains("lm-orphan.5"),
             "origin detail missing: {rendered}",
         );
     }

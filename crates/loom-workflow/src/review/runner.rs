@@ -728,8 +728,8 @@ mod tests {
     async fn clean_review_pushes_and_resets_counter() -> Result<(), ReviewError> {
         let mut c = FakeController {
             iter_count: 2,
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
-            post_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
+            post_beads: vec![bead("lm-1", &["spec:harness"])],
             ..FakeController::default()
         };
 
@@ -755,11 +755,11 @@ mod tests {
     #[tokio::test]
     async fn push_blocked_emits_refuse_with_id_payload() -> Result<(), ReviewError> {
         let mut c = FakeController {
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
-                bead("wx-1", &["spec:harness"]),
-                bead("wx-2", &["spec:harness", "loom:blocked"]),
-                bead("wx-3", &["spec:harness", "loom:clarify"]),
+                bead("lm-1", &["spec:harness"]),
+                bead("lm-2", &["spec:harness", "loom:blocked"]),
+                bead("lm-3", &["spec:harness", "loom:clarify"]),
             ],
             ..FakeController::default()
         };
@@ -777,12 +777,12 @@ mod tests {
         assert!(
             refuse.2["blocked_ids"]
                 .as_array()
-                .is_some_and(|a| a.iter().any(|v| v == "wx-2")),
+                .is_some_and(|a| a.iter().any(|v| v == "lm-2")),
         );
         assert!(
             refuse.2["clarify_ids"]
                 .as_array()
-                .is_some_and(|a| a.iter().any(|v| v == "wx-3")),
+                .is_some_and(|a| a.iter().any(|v| v == "lm-3")),
         );
         Ok(())
     }
@@ -793,10 +793,10 @@ mod tests {
     async fn iteration_cap_emits_exhausted_with_cap_payload() -> Result<(), ReviewError> {
         let mut c = FakeController {
             iter_count: 3,
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
-                bead("wx-1", &["spec:harness"]),
-                bead("wx-cap", &["spec:harness"]),
+                bead("lm-1", &["spec:harness"]),
+                bead("lm-cap", &["spec:harness"]),
             ],
             ..FakeController::default()
         };
@@ -811,7 +811,7 @@ mod tests {
             .iter()
             .find(|(k, _, _)| k == "push_gate_exhausted")
             .expect("exhausted event present");
-        assert_eq!(exhausted.2["escalate_id"].as_str(), Some("wx-cap"));
+        assert_eq!(exhausted.2["escalate_id"].as_str(), Some("lm-cap"));
         assert_eq!(exhausted.2["cap"].as_u64(), Some(3));
         Ok(())
     }
@@ -819,10 +819,10 @@ mod tests {
     #[tokio::test]
     async fn clarify_present_stops_without_pushing() -> Result<(), ReviewError> {
         let mut c = FakeController {
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
-                bead("wx-1", &["spec:harness"]),
-                bead("wx-2", &["spec:harness", "loom:clarify"]),
+                bead("lm-1", &["spec:harness"]),
+                bead("lm-2", &["spec:harness", "loom:clarify"]),
             ],
             ..FakeController::default()
         };
@@ -834,7 +834,7 @@ mod tests {
                 clarify_ids,
             } => {
                 assert!(blocked_ids.is_empty(), "no blocked beads in this scenario");
-                assert_eq!(clarify_ids, vec![BeadId::new("wx-2").expect("valid")]);
+                assert_eq!(clarify_ids, vec![BeadId::new("lm-2").expect("valid")]);
             }
             other => panic!("expected PushBlocked, got {other:?}"),
         }
@@ -847,8 +847,8 @@ mod tests {
     #[tokio::test]
     async fn pre_existing_clarify_blocks_push_even_when_no_new_beads() -> Result<(), ReviewError> {
         let mut c = FakeController {
-            pre_beads: vec![bead("wx-1", &["spec:harness", "loom:clarify"])],
-            post_beads: vec![bead("wx-1", &["spec:harness", "loom:clarify"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness", "loom:clarify"])],
+            post_beads: vec![bead("lm-1", &["spec:harness", "loom:clarify"])],
             ..FakeController::default()
         };
 
@@ -861,10 +861,10 @@ mod tests {
     #[tokio::test]
     async fn blocked_present_stops_without_pushing() -> Result<(), ReviewError> {
         let mut c = FakeController {
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
-                bead("wx-1", &["spec:harness"]),
-                bead("wx-2", &["spec:harness", "loom:blocked"]),
+                bead("lm-1", &["spec:harness"]),
+                bead("lm-2", &["spec:harness", "loom:blocked"]),
             ],
             ..FakeController::default()
         };
@@ -875,7 +875,7 @@ mod tests {
                 blocked_ids,
                 clarify_ids,
             } => {
-                assert_eq!(blocked_ids, vec![BeadId::new("wx-2").expect("valid")]);
+                assert_eq!(blocked_ids, vec![BeadId::new("lm-2").expect("valid")]);
                 assert!(clarify_ids.is_empty(), "no clarify beads in this scenario");
             }
             other => panic!("expected PushBlocked, got {other:?}"),
@@ -889,8 +889,8 @@ mod tests {
     #[tokio::test]
     async fn pre_existing_blocked_blocks_push_even_when_no_new_beads() -> Result<(), ReviewError> {
         let mut c = FakeController {
-            pre_beads: vec![bead("wx-1", &["spec:harness", "loom:blocked"])],
-            post_beads: vec![bead("wx-1", &["spec:harness", "loom:blocked"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness", "loom:blocked"])],
+            post_beads: vec![bead("lm-1", &["spec:harness", "loom:blocked"])],
             ..FakeController::default()
         };
 
@@ -900,7 +900,7 @@ mod tests {
                 blocked_ids,
                 clarify_ids,
             } => {
-                assert_eq!(blocked_ids, vec![BeadId::new("wx-1").expect("valid")]);
+                assert_eq!(blocked_ids, vec![BeadId::new("lm-1").expect("valid")]);
                 assert!(clarify_ids.is_empty());
             }
             other => panic!("expected PushBlocked, got {other:?}"),
@@ -912,11 +912,11 @@ mod tests {
     #[tokio::test]
     async fn blocked_and_clarify_together_surface_both_lists() -> Result<(), ReviewError> {
         let mut c = FakeController {
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
-                bead("wx-1", &["spec:harness"]),
-                bead("wx-2", &["spec:harness", "loom:blocked"]),
-                bead("wx-3", &["spec:harness", "loom:clarify"]),
+                bead("lm-1", &["spec:harness"]),
+                bead("lm-2", &["spec:harness", "loom:blocked"]),
+                bead("lm-3", &["spec:harness", "loom:clarify"]),
             ],
             ..FakeController::default()
         };
@@ -927,8 +927,8 @@ mod tests {
                 blocked_ids,
                 clarify_ids,
             } => {
-                assert_eq!(blocked_ids, vec![BeadId::new("wx-2").expect("valid")]);
-                assert_eq!(clarify_ids, vec![BeadId::new("wx-3").expect("valid")]);
+                assert_eq!(blocked_ids, vec![BeadId::new("lm-2").expect("valid")]);
+                assert_eq!(clarify_ids, vec![BeadId::new("lm-3").expect("valid")]);
             }
             other => panic!("expected PushBlocked, got {other:?}"),
         }
@@ -942,10 +942,10 @@ mod tests {
     async fn fix_up_beads_under_cap_auto_iterate() -> Result<(), ReviewError> {
         let mut c = FakeController {
             iter_count: 0,
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
-                bead("wx-1", &["spec:harness"]),
-                bead("wx-2", &["spec:harness"]),
+                bead("lm-1", &["spec:harness"]),
+                bead("lm-2", &["spec:harness"]),
             ],
             ..FakeController::default()
         };
@@ -968,11 +968,11 @@ mod tests {
     async fn iteration_cap_escalates_newest_fix_up_to_clarify() -> Result<(), ReviewError> {
         let mut c = FakeController {
             iter_count: 3,
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
-                bead("wx-1", &["spec:harness"]),
-                bead("wx-2", &["spec:harness"]),
-                bead("wx-3", &["spec:harness"]),
+                bead("lm-1", &["spec:harness"]),
+                bead("lm-2", &["spec:harness"]),
+                bead("lm-3", &["spec:harness"]),
             ],
             ..FakeController::default()
         };
@@ -982,7 +982,7 @@ mod tests {
             ReviewResult::Escalated { escalate_id, cap } => {
                 assert_eq!(
                     escalate_id,
-                    BeadId::new("wx-3").expect("valid"),
+                    BeadId::new("lm-3").expect("valid"),
                     "newest fix-up"
                 );
                 assert_eq!(cap, 3);
@@ -992,7 +992,7 @@ mod tests {
         assert_eq!(c.apply_clarify_calls.len(), 1);
         assert_eq!(
             c.apply_clarify_calls[0].0,
-            BeadId::new("wx-3").expect("valid")
+            BeadId::new("lm-3").expect("valid")
         );
         assert!(
             c.apply_clarify_calls[0].1.contains("Iteration cap"),
@@ -1009,8 +1009,8 @@ mod tests {
             review: Some(ReviewOutcome::Incomplete {
                 detail: "no result line".into(),
             }),
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
-            post_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
+            post_beads: vec![bead("lm-1", &["spec:harness"])],
             ..FakeController::default()
         };
 
@@ -1036,8 +1036,8 @@ mod tests {
     #[tokio::test]
     async fn push_gate_refuses_when_verify_exit_is_nonzero() -> Result<(), ReviewError> {
         let mut c = FakeController {
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
-            post_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
+            post_beads: vec![bead("lm-1", &["spec:harness"])],
             verify_exit: Some(1),
             ..FakeController::default()
         };
@@ -1062,8 +1062,8 @@ mod tests {
     #[tokio::test]
     async fn push_blocked_on_verify_dispatch_error() -> Result<(), ReviewError> {
         let mut c = FakeController {
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
-            post_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
+            post_beads: vec![bead("lm-1", &["spec:harness"])],
             verify_exit: Some(2),
             ..FakeController::default()
         };
@@ -1112,10 +1112,10 @@ mod tests {
                 token: "spec-conventions-violation".into(),
                 reason: "bad diff".into(),
             }),
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
-                bead("wx-1", &["spec:harness"]),
-                bead("wx-fix", &["spec:harness"]),
+                bead("lm-1", &["spec:harness"]),
+                bead("lm-fix", &["spec:harness"]),
             ],
             ..FakeController::default()
         };
@@ -1151,8 +1151,8 @@ mod tests {
                 token: "template-spec-drift".into(),
                 reason: "templates direct removed surface".into(),
             }),
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
-            post_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
+            post_beads: vec![bead("lm-1", &["spec:harness"])],
             verify_exit: Some(1),
             ..FakeController::default()
         };
@@ -1191,10 +1191,10 @@ mod tests {
                 token: "scope".into(),
                 reason: "diff strays".into(),
             }),
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
-                bead("wx-1", &["spec:harness"]),
-                bead("wx-fix", &["spec:harness"]),
+                bead("lm-1", &["spec:harness"]),
+                bead("lm-fix", &["spec:harness"]),
             ],
             ..FakeController::default()
         };
@@ -1214,8 +1214,8 @@ mod tests {
     #[tokio::test]
     async fn push_gate_refuses_on_integrity_finding() -> Result<(), ReviewError> {
         let mut c = FakeController {
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
-            post_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
+            post_beads: vec![bead("lm-1", &["spec:harness"])],
             integrity_findings: vec![unresolved_finding()],
             ..FakeController::default()
         };
@@ -1242,8 +1242,8 @@ mod tests {
     async fn push_blocked_on_integrity_finding_applies_clarify() -> Result<(), ReviewError> {
         let findings = vec![unresolved_finding()];
         let mut c = FakeController {
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
-            post_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
+            post_beads: vec![bead("lm-1", &["spec:harness"])],
             integrity_findings: findings.clone(),
             ..FakeController::default()
         };
@@ -1274,16 +1274,16 @@ mod tests {
             (
                 "bead-not-done",
                 FakeController {
-                    pre_beads: vec![bead("wx-1", &["spec:harness"])],
-                    post_beads: vec![bead("wx-1", &["spec:harness", "loom:blocked"])],
+                    pre_beads: vec![bead("lm-1", &["spec:harness"])],
+                    post_beads: vec![bead("lm-1", &["spec:harness", "loom:blocked"])],
                     ..FakeController::default()
                 },
             ),
             (
                 "verifier-failed",
                 FakeController {
-                    pre_beads: vec![bead("wx-1", &["spec:harness"])],
-                    post_beads: vec![bead("wx-1", &["spec:harness"])],
+                    pre_beads: vec![bead("lm-1", &["spec:harness"])],
+                    post_beads: vec![bead("lm-1", &["spec:harness"])],
                     verify_exit: Some(1),
                     ..FakeController::default()
                 },
@@ -1298,10 +1298,10 @@ mod tests {
                         token: "scope".into(),
                         reason: "bad".into(),
                     }),
-                    pre_beads: vec![bead("wx-1", &["spec:harness"])],
+                    pre_beads: vec![bead("lm-1", &["spec:harness"])],
                     post_beads: vec![
-                        bead("wx-1", &["spec:harness"]),
-                        bead("wx-fix", &["spec:harness"]),
+                        bead("lm-1", &["spec:harness"]),
+                        bead("lm-fix", &["spec:harness"]),
                     ],
                     ..FakeController::default()
                 },
@@ -1324,10 +1324,10 @@ mod tests {
     async fn push_gate_refusal_for_bead_labels_tags_cause_bead_not_done() -> Result<(), ReviewError>
     {
         let mut c = FakeController {
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
-                bead("wx-1", &["spec:harness"]),
-                bead("wx-2", &["spec:harness", "loom:blocked"]),
+                bead("lm-1", &["spec:harness"]),
+                bead("lm-2", &["spec:harness", "loom:blocked"]),
             ],
             ..FakeController::default()
         };
@@ -1349,8 +1349,8 @@ mod tests {
     async fn push_gate_evaluates_all_four_conditions() -> Result<(), ReviewError> {
         // Baseline: every input passes → push fires clean.
         let mut clean = FakeController {
-            pre_beads: vec![bead("wx-1", &["spec:harness"])],
-            post_beads: vec![bead("wx-1", &["spec:harness"])],
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
+            post_beads: vec![bead("lm-1", &["spec:harness"])],
             ..FakeController::default()
         };
         assert_eq!(
@@ -1362,16 +1362,16 @@ mod tests {
             (
                 "bead-not-done",
                 FakeController {
-                    pre_beads: vec![bead("wx-1", &["spec:harness"])],
-                    post_beads: vec![bead("wx-1", &["spec:harness", "loom:blocked"])],
+                    pre_beads: vec![bead("lm-1", &["spec:harness"])],
+                    post_beads: vec![bead("lm-1", &["spec:harness", "loom:blocked"])],
                     ..FakeController::default()
                 },
             ),
             (
                 "verifier-failed",
                 FakeController {
-                    pre_beads: vec![bead("wx-1", &["spec:harness"])],
-                    post_beads: vec![bead("wx-1", &["spec:harness"])],
+                    pre_beads: vec![bead("lm-1", &["spec:harness"])],
+                    post_beads: vec![bead("lm-1", &["spec:harness"])],
                     verify_exit: Some(2),
                     ..FakeController::default()
                 },
@@ -1386,10 +1386,10 @@ mod tests {
                         token: "scope".into(),
                         reason: "bad".into(),
                     }),
-                    pre_beads: vec![bead("wx-1", &["spec:harness"])],
+                    pre_beads: vec![bead("lm-1", &["spec:harness"])],
                     post_beads: vec![
-                        bead("wx-1", &["spec:harness"]),
-                        bead("wx-fix", &["spec:harness"]),
+                        bead("lm-1", &["spec:harness"]),
+                        bead("lm-fix", &["spec:harness"]),
                     ],
                     ..FakeController::default()
                 },
@@ -1397,8 +1397,8 @@ mod tests {
             (
                 "integrity-finding",
                 FakeController {
-                    pre_beads: vec![bead("wx-1", &["spec:harness"])],
-                    post_beads: vec![bead("wx-1", &["spec:harness"])],
+                    pre_beads: vec![bead("lm-1", &["spec:harness"])],
+                    post_beads: vec![bead("lm-1", &["spec:harness"])],
                     integrity_findings: vec![unresolved_finding()],
                     ..FakeController::default()
                 },
@@ -1448,15 +1448,15 @@ mod tests {
     #[tokio::test]
     async fn epic_auto_closes_when_all_children_closed_and_review_passes() -> Result<(), ReviewError>
     {
-        let leaf = shaped_bead("wx-leaf.1", "task", "closed", Some("wx-epic"));
-        let epic = shaped_bead("wx-epic", "epic", "open", None);
+        let leaf = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
+        let epic = shaped_bead("lm-epic", "epic", "open", None);
         let mut c = controller_with_ancestry(vec![leaf], vec![epic]);
         let result = review_loop(&mut c, IterationCap::default()).await?;
         assert_eq!(result, ReviewResult::Pushed);
         assert_eq!(
             c.close_calls,
             vec![(
-                BeadId::new("wx-epic").expect("valid"),
+                BeadId::new("lm-epic").expect("valid"),
                 "all children complete; auto-closed by review gate".to_string(),
             )],
             "epic closed exactly once with the spec'd reason",
@@ -1466,7 +1466,7 @@ mod tests {
             .iter()
             .find(|(k, _, _)| k == "epic_auto_closed")
             .expect("epic_auto_closed event emitted");
-        assert_eq!(auto_closed.2["epic_id"].as_str(), Some("wx-epic"));
+        assert_eq!(auto_closed.2["epic_id"].as_str(), Some("lm-epic"));
         Ok(())
     }
 
@@ -1478,9 +1478,9 @@ mod tests {
     #[tokio::test]
     async fn epic_does_not_auto_close_when_any_child_non_closed() -> Result<(), ReviewError> {
         for status in ["open", "in_progress", "deferred"] {
-            let leaf_closed = shaped_bead("wx-leaf.1", "task", "closed", Some("wx-epic"));
-            let leaf_non_closed = shaped_bead("wx-leaf.2", "task", status, Some("wx-epic"));
-            let epic = shaped_bead("wx-epic", "epic", "open", None);
+            let leaf_closed = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
+            let leaf_non_closed = shaped_bead("lm-leaf.2", "task", status, Some("lm-epic"));
+            let epic = shaped_bead("lm-epic", "epic", "open", None);
             let mut c = controller_with_ancestry(vec![leaf_closed, leaf_non_closed], vec![epic]);
             let _ = review_loop(&mut c, IterationCap::default()).await?;
             assert!(
@@ -1507,17 +1507,17 @@ mod tests {
     #[tokio::test]
     async fn epic_does_not_auto_close_on_non_clean_review_verdict() -> Result<(), ReviewError> {
         let leaf_clarify = {
-            let mut b = shaped_bead("wx-leaf.1", "task", "closed", Some("wx-epic"));
+            let mut b = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
             b.labels = vec![Label::new("loom:clarify")];
             b
         };
         let leaf_blocked = {
-            let mut b = shaped_bead("wx-leaf.1", "task", "closed", Some("wx-epic"));
+            let mut b = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
             b.labels = vec![Label::new("loom:blocked")];
             b
         };
-        let leaf_clean = shaped_bead("wx-leaf.1", "task", "closed", Some("wx-epic"));
-        let epic = shaped_bead("wx-epic", "epic", "open", None);
+        let leaf_clean = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
+        let epic = shaped_bead("lm-epic", "epic", "open", None);
 
         let cases: Vec<(&str, FakeController)> = vec![
             ("clarify-on-leaf", {
@@ -1535,7 +1535,7 @@ mod tests {
                     token: "scope".into(),
                     reason: "nope".into(),
                 });
-                c.post_beads.push(bead("wx-fix", &["spec:harness"]));
+                c.post_beads.push(bead("lm-fix", &["spec:harness"]));
                 c
             }),
         ];
@@ -1561,16 +1561,16 @@ mod tests {
     /// the inner epic first, then the outer epic, in that order.
     #[tokio::test]
     async fn nested_epics_close_inside_out_in_one_pass() -> Result<(), ReviewError> {
-        let leaf = shaped_bead("wx-leaf.1", "task", "closed", Some("wx-inner"));
-        let inner_epic = shaped_bead("wx-inner", "epic", "open", Some("wx-outer"));
-        let outer_epic = shaped_bead("wx-outer", "epic", "open", None);
+        let leaf = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-inner"));
+        let inner_epic = shaped_bead("lm-inner", "epic", "open", Some("lm-outer"));
+        let outer_epic = shaped_bead("lm-outer", "epic", "open", None);
         let mut c = controller_with_ancestry(vec![leaf], vec![inner_epic, outer_epic]);
         let result = review_loop(&mut c, IterationCap::default()).await?;
         assert_eq!(result, ReviewResult::Pushed);
         let closed_ids: Vec<&str> = c.close_calls.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(
             closed_ids,
-            vec!["wx-inner", "wx-outer"],
+            vec!["lm-inner", "lm-outer"],
             "inner epic closes before outer in one pass",
         );
         let auto_closed_ids: Vec<&str> = c
@@ -1581,7 +1581,7 @@ mod tests {
             .collect();
         assert_eq!(
             auto_closed_ids,
-            vec!["wx-inner", "wx-outer"],
+            vec!["lm-inner", "lm-outer"],
             "one event per closed epic, inside-out order",
         );
         Ok(())
@@ -1635,8 +1635,8 @@ mod tests {
                 self.0.emit_driver_event(k, s, p);
             }
         }
-        let leaf = shaped_bead("wx-leaf.1", "task", "closed", Some("wx-epic"));
-        let epic = shaped_bead("wx-epic", "epic", "open", None);
+        let leaf = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
+        let epic = shaped_bead("lm-epic", "epic", "open", None);
         let mut c = PushFailController(controller_with_ancestry(vec![leaf], vec![epic]));
         let err = review_loop(&mut c, IterationCap::default()).await;
         assert!(matches!(err, Err(ReviewError::GitPushFailed(_))));

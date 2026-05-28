@@ -479,8 +479,8 @@ mod tests {
     #[tokio::test]
     async fn once_mode_processes_single_bead() -> Result<(), LoopError> {
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("wx-1", &[]));
-        c.ready_queue.push_back(bead("wx-2", &[]));
+        c.ready_queue.push_back(bead("lm-1", &[]));
+        c.ready_queue.push_back(bead("lm-2", &[]));
         c.agent_outcomes.push_back(AgentOutcome::Success);
 
         let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy::default(), 10).await?;
@@ -500,9 +500,9 @@ mod tests {
     #[tokio::test]
     async fn continuous_loops_until_molecule_complete() -> Result<(), LoopError> {
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("wx-1", &[]));
-        c.ready_queue.push_back(bead("wx-2", &[]));
-        c.ready_queue.push_back(bead("wx-3", &[]));
+        c.ready_queue.push_back(bead("lm-1", &[]));
+        c.ready_queue.push_back(bead("lm-2", &[]));
+        c.ready_queue.push_back(bead("lm-3", &[]));
         for _ in 0..3 {
             c.agent_outcomes.push_back(AgentOutcome::Success);
         }
@@ -541,7 +541,7 @@ mod tests {
     async fn failed_bead_retries_with_previous_failure_then_clarifies() -> Result<(), LoopError> {
         // max_retries = 2 → attempts = initial + 2 retries = 3 failures triggers clarify.
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("wx-1", &[]));
+        c.ready_queue.push_back(bead("lm-1", &[]));
         for i in 0..3 {
             c.agent_outcomes.push_back(AgentOutcome::Failure {
                 error: format!("err-{i}"),
@@ -558,7 +558,7 @@ mod tests {
         assert_eq!(c.run_calls[2].1.as_deref(), Some("err-1"));
 
         assert_eq!(c.clarified.len(), 1);
-        assert_eq!(c.clarified[0].0, BeadId::new("wx-1").expect("valid"));
+        assert_eq!(c.clarified[0].0, BeadId::new("lm-1").expect("valid"));
         assert_eq!(summary.beads_clarified, 1);
         Ok(())
     }
@@ -566,7 +566,7 @@ mod tests {
     #[tokio::test]
     async fn retry_succeeds_within_budget_reaches_done() -> Result<(), LoopError> {
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("wx-1", &[]));
+        c.ready_queue.push_back(bead("lm-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::Failure {
             error: "boom".into(),
         });
@@ -590,7 +590,7 @@ mod tests {
     #[tokio::test]
     async fn retry_emits_retry_dispatch_driver_event() -> Result<(), LoopError> {
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("wx-1", &[]));
+        c.ready_queue.push_back(bead("lm-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::Failure {
             error: "err-0".into(),
         });
@@ -608,7 +608,7 @@ mod tests {
             "two retries → two retry_dispatch events; success is not announced",
         );
         let first = &c.driver_events[0];
-        assert_eq!(first.2["bead_id"].as_str(), Some("wx-1"));
+        assert_eq!(first.2["bead_id"].as_str(), Some("lm-1"));
         assert_eq!(first.2["attempt"].as_u64(), Some(1));
         assert_eq!(first.2["max_attempts"].as_u64(), Some(3));
         Ok(())
@@ -620,7 +620,7 @@ mod tests {
     #[tokio::test]
     async fn infra_preflight_routes_to_blocked_without_retry() -> Result<(), LoopError> {
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("wx-1", &[]));
+        c.ready_queue.push_back(bead("lm-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::InfraPreflight {
             error: "image load failed".into(),
         });
@@ -633,7 +633,7 @@ mod tests {
         assert_eq!(c.run_calls.len(), 1, "preflight must not retry");
         assert!(c.clarified.is_empty());
         assert_eq!(c.blocked.len(), 1);
-        assert_eq!(c.blocked[0].0, BeadId::new("wx-1").expect("valid"));
+        assert_eq!(c.blocked[0].0, BeadId::new("lm-1").expect("valid"));
         assert_eq!(c.blocked[0].1, INFRA_PREFLIGHT_CAUSE);
         assert!(
             c.blocked[0].2.contains("image load failed"),
@@ -656,8 +656,8 @@ mod tests {
     -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue
-            .push_back(bead("wx-bad", &["profile:nonexistent"]));
-        c.ready_queue.push_back(bead("wx-ok", &["profile:base"]));
+            .push_back(bead("lm-bad", &["profile:nonexistent"]));
+        c.ready_queue.push_back(bead("lm-ok", &["profile:base"]));
         c.agent_outcomes.push_back(AgentOutcome::UnknownProfile {
             error: "requested profile:nonexistent not declared; manifest declares: profile:base"
                 .into(),
@@ -679,15 +679,15 @@ mod tests {
             2,
             "unknown-profile must not retry and must not prevent the next bead from dispatching"
         );
-        assert_eq!(c.run_calls[0].0, BeadId::new("wx-bad").expect("valid"));
-        assert_eq!(c.run_calls[1].0, BeadId::new("wx-ok").expect("valid"));
+        assert_eq!(c.run_calls[0].0, BeadId::new("lm-bad").expect("valid"));
+        assert_eq!(c.run_calls[1].0, BeadId::new("lm-ok").expect("valid"));
         assert_eq!(
             c.run_calls[0].1, None,
             "unknown-profile must not thread a previous-failure body — there is no agent output",
         );
 
         assert_eq!(c.blocked.len(), 1, "exactly one bead blocked");
-        assert_eq!(c.blocked[0].0, BeadId::new("wx-bad").expect("valid"));
+        assert_eq!(c.blocked[0].0, BeadId::new("lm-bad").expect("valid"));
         assert_eq!(c.blocked[0].1, UNKNOWN_PROFILE_CAUSE);
         // The note must contain the unknown-profile cause token, the
         // requested profile name, and at least one declared profile name
@@ -717,7 +717,7 @@ mod tests {
     #[tokio::test]
     async fn infra_midsession_one_retry_then_blocks_on_repeat() -> Result<(), LoopError> {
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("wx-1", &[]));
+        c.ready_queue.push_back(bead("lm-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::InfraMidSession {
             error: "process exit 137 (OOM)".into(),
         });
@@ -754,7 +754,7 @@ mod tests {
     #[tokio::test]
     async fn infra_midsession_retry_succeeds_within_budget() -> Result<(), LoopError> {
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("wx-1", &[]));
+        c.ready_queue.push_back(bead("lm-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::InfraMidSession {
             error: "stdout closed early".into(),
         });
@@ -777,7 +777,7 @@ mod tests {
     #[tokio::test]
     async fn infra_retry_counter_does_not_consume_max_retries() -> Result<(), LoopError> {
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("wx-1", &[]));
+        c.ready_queue.push_back(bead("lm-1", &[]));
         // 1 infra mid-session, then `max_retries=2` worth of agent failures
         // (initial attempt + 2 retries = 3 agent attempts) before clarify.
         c.agent_outcomes.push_back(AgentOutcome::InfraMidSession {
@@ -807,7 +807,7 @@ mod tests {
         // The bead exhausts agent retries and clarifies — never blocks.
         assert!(c.blocked.is_empty(), "clarify path must not block");
         assert_eq!(c.clarified.len(), 1);
-        assert_eq!(c.clarified[0].0, BeadId::new("wx-1").expect("valid"));
+        assert_eq!(c.clarified[0].0, BeadId::new("lm-1").expect("valid"));
         assert_eq!(summary.beads_clarified, 1);
         Ok(())
     }
@@ -819,8 +819,8 @@ mod tests {
     #[tokio::test]
     async fn infra_budget_is_per_run_not_per_bead() -> Result<(), LoopError> {
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("wx-a", &[]));
-        c.ready_queue.push_back(bead("wx-b", &[]));
+        c.ready_queue.push_back(bead("lm-a", &[]));
+        c.ready_queue.push_back(bead("lm-b", &[]));
         // Bead A: one infra mid-session, then succeeds (consumes budget).
         c.agent_outcomes.push_back(AgentOutcome::InfraMidSession {
             error: "first".into(),
@@ -838,7 +838,7 @@ mod tests {
         // Bead A reaches Done (no clarify, no blocked for it).
         assert!(c.clarified.is_empty());
         assert_eq!(c.blocked.len(), 1);
-        assert_eq!(c.blocked[0].0, BeadId::new("wx-b").expect("valid"));
+        assert_eq!(c.blocked[0].0, BeadId::new("lm-b").expect("valid"));
         assert_eq!(c.blocked[0].1, INFRA_REPEATED_CAUSE);
         assert_eq!(summary.beads_blocked, 1);
         Ok(())
@@ -854,20 +854,20 @@ mod tests {
     async fn continuous_outer_loop_processes_fix_up_bead_then_exits_on_stall()
     -> Result<(), LoopError> {
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("wx-initial", &[]));
+        c.ready_queue.push_back(bead("lm-initial", &[]));
         c.agent_outcomes.push_back(AgentOutcome::Success);
         // First handoff injects a fix-up bead; second handoff produces nothing
         // (push gate clean), so the outer loop stalls and exits.
         c.review_injects
-            .push_back(vec![bead("wx-fixup", &["loom:fixup"])]);
+            .push_back(vec![bead("lm-fixup", &["loom:fixup"])]);
         c.review_injects.push_back(vec![]);
         c.agent_outcomes.push_back(AgentOutcome::Success);
 
         let summary = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
 
         assert_eq!(c.run_calls.len(), 2, "initial + fix-up processed");
-        assert_eq!(c.run_calls[0].0, BeadId::new("wx-initial").expect("valid"),);
-        assert_eq!(c.run_calls[1].0, BeadId::new("wx-fixup").expect("valid"));
+        assert_eq!(c.run_calls[0].0, BeadId::new("lm-initial").expect("valid"),);
+        assert_eq!(c.run_calls[1].0, BeadId::new("lm-fixup").expect("valid"));
         assert_eq!(summary.beads_processed, 2);
         assert_eq!(
             c.review_calls, 2,
@@ -886,13 +886,13 @@ mod tests {
     #[tokio::test]
     async fn continuous_outer_loop_bounded_by_max_iterations() -> Result<(), LoopError> {
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("wx-0", &[]));
+        c.ready_queue.push_back(bead("lm-0", &[]));
         // Three passes scripted: each handoff injects one more fix-up bead.
         // With max_iterations = 3 the loop processes 3 fix-ups (passes 2-4)
         // plus the initial pass — but only 3 exec_review calls fire.
         for i in 1..=5 {
             c.review_injects
-                .push_back(vec![bead(&format!("wx-{i}"), &[])]);
+                .push_back(vec![bead(&format!("lm-{i}"), &[])]);
         }
         // Agent always succeeds.
         for _ in 0..6 {
@@ -901,10 +901,10 @@ mod tests {
 
         let summary = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 3).await?;
 
-        // Pass 1 processes wx-0; exec_review 1 injects wx-1.
-        // Pass 2 processes wx-1; exec_review 2 injects wx-2.
-        // Pass 3 processes wx-2; exec_review 3 injects wx-3.
-        // Pass 4 processes wx-3; counter (3) reached → no exec_review 4 → break.
+        // Pass 1 processes lm-0; exec_review 1 injects lm-1.
+        // Pass 2 processes lm-1; exec_review 2 injects lm-2.
+        // Pass 3 processes lm-2; exec_review 3 injects lm-3.
+        // Pass 4 processes lm-3; counter (3) reached → no exec_review 4 → break.
         assert_eq!(summary.outer_iterations, 3);
         assert_eq!(c.review_calls, 3);
         assert_eq!(summary.beads_processed, 4);
@@ -928,7 +928,7 @@ mod tests {
     #[tokio::test]
     async fn fix_up_bead_starts_at_attempt_zero() -> Result<(), LoopError> {
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("wx-orig", &[]));
+        c.ready_queue.push_back(bead("lm-orig", &[]));
         c.agent_outcomes.push_back(AgentOutcome::Failure {
             error: "first failure".into(),
         });
@@ -937,13 +937,13 @@ mod tests {
         });
         c.agent_outcomes.push_back(AgentOutcome::Success);
         c.review_injects
-            .push_back(vec![bead("wx-fixup", &["loom:fixup"])]);
+            .push_back(vec![bead("lm-fixup", &["loom:fixup"])]);
         c.review_injects.push_back(vec![]);
         c.agent_outcomes.push_back(AgentOutcome::Success);
 
         let _ = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
 
-        let fixup_id = BeadId::new("wx-fixup").expect("valid bead id");
+        let fixup_id = BeadId::new("lm-fixup").expect("valid bead id");
         let fixup_calls: Vec<&(BeadId, Option<String>)> = c
             .run_calls
             .iter()
@@ -1017,11 +1017,11 @@ mod tests {
         );
 
         let mut stalled = FakeController::default();
-        stalled.ready_queue.push_back(bead("wx-0", &[]));
+        stalled.ready_queue.push_back(bead("lm-0", &[]));
         for i in 1..=4 {
             stalled
                 .review_injects
-                .push_back(vec![bead(&format!("wx-{i}"), &[])]);
+                .push_back(vec![bead(&format!("lm-{i}"), &[])]);
         }
         for _ in 0..5 {
             stalled.agent_outcomes.push_back(AgentOutcome::Success);

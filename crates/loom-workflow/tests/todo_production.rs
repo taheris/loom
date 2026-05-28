@@ -309,7 +309,7 @@ async fn build_spawn_config_resolves_manifest_image_and_renders_new_template() {
 async fn build_spawn_config_uses_update_template_when_molecule_exists() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().to_path_buf();
-    let state = seeded_state(&workspace, "alpha", "wx-mol", None);
+    let state = seeded_state(&workspace, "alpha", "lm-mol", None);
     let manifest = stub_manifest(&workspace);
     let git = init_repo(&workspace);
     let mut ctrl = ProductionTodoController::new(
@@ -319,13 +319,13 @@ async fn build_spawn_config_uses_update_template_when_molecule_exists() {
         manifest,
         ProfileName::new("base"),
         git,
-        scripted_bd([epic_response("wx-mol", "alpha", None)]),
+        scripted_bd([epic_response("lm-mol", "alpha", None)]),
         None,
     );
     let session = ctrl.build_session().await.expect("build cfg");
     let cfg = &session.config;
     assert!(
-        cfg.initial_prompt.contains("wx-mol"),
+        cfg.initial_prompt.contains("lm-mol"),
         "molecule id must thread into update template: {}",
         cfg.initial_prompt,
     );
@@ -376,7 +376,7 @@ async fn build_spawn_config_tier_1_renders_diff_from_base_commit() {
     .unwrap();
     run_git(&workspace, &["commit", "-q", "-am", "update alpha"]);
 
-    let state = seeded_state(&workspace, "alpha", "wx-mol", Some(base.clone()));
+    let state = seeded_state(&workspace, "alpha", "lm-mol", Some(base.clone()));
     let manifest = stub_manifest(&workspace);
     let mut ctrl = ProductionTodoController::new(
         SpecLabel::new("alpha"),
@@ -385,7 +385,7 @@ async fn build_spawn_config_tier_1_renders_diff_from_base_commit() {
         manifest,
         ProfileName::new("base"),
         git,
-        scripted_bd([epic_response("wx-mol", "alpha", Some(&base))]),
+        scripted_bd([epic_response("lm-mol", "alpha", Some(&base))]),
         None,
     );
     let session = ctrl.build_session().await.expect("build cfg");
@@ -410,7 +410,7 @@ async fn build_spawn_config_tier_1_renders_diff_from_base_commit() {
 async fn build_spawn_config_renders_implementation_notes_from_db() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().to_path_buf();
-    let state = seeded_state(&workspace, "alpha", "wx-mol", None);
+    let state = seeded_state(&workspace, "alpha", "lm-mol", None);
     let label = SpecLabel::new("alpha");
     state
         .notes_add(&label, "implementation", "touch lib/foo/bar.rs", 100)
@@ -466,7 +466,7 @@ async fn build_spawn_config_renders_implementation_notes_from_db() {
 async fn build_spawn_config_omits_notes_section_when_notes_empty() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().to_path_buf();
-    let state = seeded_state(&workspace, "alpha", "wx-mol", None);
+    let state = seeded_state(&workspace, "alpha", "lm-mol", None);
     let manifest = stub_manifest(&workspace);
     let git = init_repo(&workspace);
     let mut ctrl = ProductionTodoController::new(
@@ -520,7 +520,7 @@ async fn base_commit_advances_only_on_complete_or_noop_with_clean_exit() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().to_path_buf();
-        let state = seeded_state(&workspace, "alpha", "wx-alpha", Some("old-sha".into()));
+        let state = seeded_state(&workspace, "alpha", "lm-alpha", Some("old-sha".into()));
         let label = SpecLabel::new("alpha");
         state
             .notes_add(&label, "implementation", "impl 1", 100)
@@ -537,8 +537,8 @@ async fn base_commit_advances_only_on_complete_or_noop_with_clean_exit() {
         // productive cases hit the list once or not at all and consume a
         // subset.
         let runner = CapturingRunner::new([
-            epic_response("wx-alpha", "alpha", Some("old-sha")),
-            epic_response("wx-alpha", "alpha", Some("old-sha")),
+            epic_response("lm-alpha", "alpha", Some("old-sha")),
+            epic_response("lm-alpha", "alpha", Some("old-sha")),
             RunOutput {
                 status: 0,
                 stdout: Vec::new(),
@@ -599,7 +599,7 @@ async fn base_commit_advances_only_on_complete_or_noop_with_clean_exit() {
                 .iter()
                 .find(|argv| argv.first().is_some_and(|a| a == "update"))
                 .unwrap_or_else(|| panic!("case `{case}`: bd update call missing: {bd_calls:?}"));
-            assert_eq!(update_argv[1], "wx-alpha");
+            assert_eq!(update_argv[1], "lm-alpha");
             let pos = update_argv
                 .iter()
                 .position(|a| a == "--set-metadata")
@@ -645,7 +645,7 @@ async fn todo_clarify_marks_molecule_epic() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().to_path_buf();
     let label = "alpha";
-    let epic_id = "wx-alpha";
+    let epic_id = "lm-alpha";
     let git = init_repo(&workspace);
     let state = seeded_state(&workspace, label, epic_id, None);
 
@@ -732,10 +732,10 @@ async fn todo_fans_out_across_all_touched_specs_and_clarifies_on_collision() {
     // The order of `touched_specs` follows `git diff --name-only`'s
     // alphabetical output, so alpha is queried first.
     let runner = CapturingRunner::new([
-        epic_response_with_parent("wx-alphae", "alpha", Some("wx-mola")),
-        epic_response_with_parent("wx-betae", "beta", Some("wx-molb")),
+        epic_response_with_parent("lm-alphae", "alpha", Some("lm-mola")),
+        epic_response_with_parent("lm-betae", "beta", Some("lm-molb")),
         // bd create --silent for the clarify bead.
-        create_silent_response("wx-clarify1"),
+        create_silent_response("lm-clarify1"),
     ]);
     let runner_handle = runner.clone();
     let bd = Arc::new(BdClient::with_runner(runner));
@@ -756,7 +756,7 @@ async fn todo_fans_out_across_all_touched_specs_and_clarifies_on_collision() {
     };
     match &err {
         TodoError::MultiSpecCollision { clarify_id } => {
-            assert_eq!(clarify_id, "wx-clarify1");
+            assert_eq!(clarify_id, "lm-clarify1");
         }
         other => panic!("expected MultiSpecCollision, got {other:?}"),
     }
@@ -798,7 +798,7 @@ async fn todo_fans_out_across_all_touched_specs_and_clarifies_on_collision() {
         "clarify description must enumerate options: {description}",
     );
     assert!(
-        description.contains("wx-mola") || description.contains("wx-molb"),
+        description.contains("lm-mola") || description.contains("lm-molb"),
         "clarify description must reference pre-existing molecule ids: {description}",
     );
 }
@@ -831,9 +831,9 @@ async fn todo_fans_across_touched_specs_and_clarifies_on_collision() {
     let runner = CapturingRunner::new([
         // touched_specs order from `git diff --name-only` is
         // alphabetical: delta before gamma.
-        epic_response_with_parent("wx-deltae", "delta", Some("wx-mold")),
+        epic_response_with_parent("lm-deltae", "delta", Some("lm-mold")),
         empty_epic_response(),
-        create_silent_response("wx-clarify2"),
+        create_silent_response("lm-clarify2"),
     ]);
     let runner_handle = runner.clone();
     let bd = Arc::new(BdClient::with_runner(runner));

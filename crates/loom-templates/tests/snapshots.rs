@@ -110,8 +110,8 @@ fn todo_update_snapshot() {
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec![],
         spec_diff: Some("=== specs/harness.md ===\n+ new requirement".into()),
-        existing_tasks: Some("- wx-3hhwq.1: scaffold workspace".into()),
-        molecule_id: Some(MoleculeId::new("wx-3hhwq")),
+        existing_tasks: Some("- lm-3hhwq.1: scaffold workspace".into()),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
         implementation_notes: vec![],
         criterion_status: vec![
             CriterionStatus {
@@ -159,8 +159,8 @@ fn run_snapshot() {
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("wx-3hhwq")),
-        issue_id: Some(BeadId::new("wx-3hhwq.10").unwrap()),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: Some(PreviousFailure::from_agent_error(
@@ -168,7 +168,7 @@ fn run_snapshot() {
         )),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
@@ -185,14 +185,14 @@ fn run_snapshot_no_failure() {
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("wx-3hhwq")),
-        issue_id: Some(BeadId::new("wx-3hhwq.10").unwrap()),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: None,
         review_notes: None,
         attempt: 0,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
@@ -207,18 +207,18 @@ fn run_snapshot_driver_notice() {
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("wx-3hhwq")),
-        issue_id: Some(BeadId::new("wx-3hhwq.10").unwrap()),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: Some(PreviousFailure::DriverNotice {
             cause: DriverNoticeCause::IncompleteSignaling,
-            detail: "Marker `LOOM_COMPLETE` emitted but bead `wx-3hhwq.10` was not bd-closed."
+            detail: "Marker `LOOM_COMPLETE` emitted but bead `lm-3hhwq.10` was not bd-closed."
                 .into(),
         }),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
@@ -233,8 +233,8 @@ fn run_snapshot_verify_failures() {
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("wx-3hhwq")),
-        issue_id: Some(BeadId::new("wx-3hhwq.10").unwrap()),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: Some(PreviousFailure::VerifyFailures(vec![VerifierFailure::new(
@@ -244,7 +244,7 @@ fn run_snapshot_verify_failures() {
         )])),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
@@ -259,8 +259,8 @@ fn run_snapshot_review_concern() {
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("wx-3hhwq")),
-        issue_id: Some(BeadId::new("wx-3hhwq.10").unwrap()),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: Some(PreviousFailure::ReviewConcern {
@@ -269,7 +269,7 @@ fn run_snapshot_review_concern() {
         }),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
@@ -286,8 +286,8 @@ fn run_snapshot_build_failure() {
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        molecule_id: Some(MoleculeId::new("wx-3hhwq")),
-        issue_id: Some(BeadId::new("wx-3hhwq.10").unwrap()),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: Some(PreviousFailure::BuildFailure {
@@ -296,7 +296,7 @@ fn run_snapshot_build_failure() {
         }),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/wx-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
@@ -309,9 +309,9 @@ fn review_snapshot() {
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        beads_summary: Some("- wx-3hhwq.10: closed".into()),
+        beads_summary: Some("- lm-3hhwq.10: closed".into()),
         base_commit: Some("abc1234".into()),
-        molecule_id: Some(MoleculeId::new("wx-3hhwq")),
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
         test_sources: vec![ReviewSource {
             path: "tests/run-tests.sh".into(),
             body: "test_review_inputs() { :; }\n".into(),
@@ -335,7 +335,7 @@ fn msg_snapshot() {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
         clarify_beads: vec![ClarifyBead {
-            id: BeadId::new("wx-clar.1").unwrap(),
+            id: BeadId::new("lm-clar.1").unwrap(),
             spec_label: SpecLabel::new("harness"),
             title: "State storage choice".into(),
             options_summary: Some("State JSON vs. dedicated table".into()),

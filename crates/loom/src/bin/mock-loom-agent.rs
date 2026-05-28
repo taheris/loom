@@ -197,7 +197,7 @@ fn stamp_concern_fixup_bead() {
         return;
     }
     let spec = env::var("LOOM_TEST_CONCERN_SPEC").unwrap_or_else(|_| "pushconcern".to_string());
-    let bead_dir = state_dir.join("wx-cfix99");
+    let bead_dir = state_dir.join("lm-cfix99");
     std::fs::create_dir_all(&bead_dir).expect("mkdir fixup bead dir");
     let fields: &[(&str, &str)] = &[
         ("title", "concern fix-up minted by mock-loom-agent"),

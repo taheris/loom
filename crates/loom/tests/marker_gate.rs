@@ -175,7 +175,7 @@ fn loom_loop_once_routes_blocked_marker_to_label_and_status_blocked() {
 
     seed_bead(
         &state_dir,
-        "wx-blocka",
+        "lm-blocka",
         "spec missing schema",
         "Need to land the schema section before this bead can proceed.\n",
         &["spec:markertest", "profile:base"],
@@ -201,7 +201,7 @@ fn loom_loop_once_routes_blocked_marker_to_label_and_status_blocked() {
          stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
     );
 
-    let status = read_field(&state_dir, "wx-blocka", "status");
+    let status = read_field(&state_dir, "lm-blocka", "status");
     assert_eq!(
         status.trim(),
         "blocked",
@@ -209,15 +209,15 @@ fn loom_loop_once_routes_blocked_marker_to_label_and_status_blocked() {
          on the next loop iteration. status={status:?}\nbd-shim log:\n{log}",
     );
 
-    let labels = read_labels(&state_dir, "wx-blocka");
+    let labels = read_labels(&state_dir, "lm-blocka");
     assert!(
         labels.iter().any(|l| l == "loom:blocked"),
         "blocked bead must carry loom:blocked. labels={labels:?}\nbd-shim log:\n{log}",
     );
 
     assert!(
-        !driver_closed_bead(&log, "wx-blocka"),
-        "driver must NOT call `bd close wx-blocka` on LOOM_BLOCKED.\nbd-shim log:\n{log}",
+        !driver_closed_bead(&log, "lm-blocka"),
+        "driver must NOT call `bd close lm-blocka` on LOOM_BLOCKED.\nbd-shim log:\n{log}",
     );
 }
 
@@ -235,7 +235,7 @@ fn loom_loop_once_routes_clarify_marker_to_label_and_status_blocked() {
 
     seed_bead(
         &state_dir,
-        "wx-clara",
+        "lm-clara",
         "deploy key path?",
         "Need to know which deploy-key path to mount before continuing.\n",
         &["spec:markertest", "profile:base"],
@@ -261,7 +261,7 @@ fn loom_loop_once_routes_clarify_marker_to_label_and_status_blocked() {
          stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
     );
 
-    let status = read_field(&state_dir, "wx-clara", "status");
+    let status = read_field(&state_dir, "lm-clara", "status");
     assert_eq!(
         status.trim(),
         "blocked",
@@ -269,15 +269,15 @@ fn loom_loop_once_routes_clarify_marker_to_label_and_status_blocked() {
          on the next loop iteration. status={status:?}\nbd-shim log:\n{log}",
     );
 
-    let labels = read_labels(&state_dir, "wx-clara");
+    let labels = read_labels(&state_dir, "lm-clara");
     assert!(
         labels.iter().any(|l| l == "loom:clarify"),
         "clarify bead must carry loom:clarify. labels={labels:?}\nbd-shim log:\n{log}",
     );
 
     assert!(
-        !driver_closed_bead(&log, "wx-clara"),
-        "driver must NOT call `bd close wx-clara` on LOOM_CLARIFY.\nbd-shim log:\n{log}",
+        !driver_closed_bead(&log, "lm-clara"),
+        "driver must NOT call `bd close lm-clara` on LOOM_CLARIFY.\nbd-shim log:\n{log}",
     );
 }
 
@@ -297,10 +297,10 @@ fn loom_loop_once_routes_clarify_marker_to_label_and_status_blocked() {
 #[test]
 fn loom_loop_never_invokes_bd_close_on_dispatched_bead_across_all_markers() {
     for (mode, id) in [
-        ("blocked-marker", "wx-noclos"),
-        ("clarify-marker", "wx-noclos2"),
-        ("complete-marker", "wx-noclos3"),
-        ("no-marker", "wx-noclos4"),
+        ("blocked-marker", "lm-noclos"),
+        ("clarify-marker", "lm-noclos2"),
+        ("complete-marker", "lm-noclos3"),
+        ("no-marker", "lm-noclos4"),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();

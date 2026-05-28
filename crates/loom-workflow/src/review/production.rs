@@ -77,7 +77,7 @@ where
     phase_log_root: Option<PathBuf>,
     phase_log_when: SystemTime,
     /// Per-phase envelope builder. The review phase isn't bead-scoped,
-    /// so the envelope carries the synthetic `wx-review` bead id; the
+    /// so the envelope carries the synthetic `lm-review` bead id; the
     /// builder tracks `seq` across every `emit_driver_event` call so
     /// replay code can reorder events deterministically. Wrapped in
     /// `Mutex` because `EnvelopeBuilder`'s clock closure is `Send`
@@ -633,7 +633,7 @@ where
             }
         };
         if guard.is_none() {
-            let synthetic_bead = match BeadId::new("wx-review") {
+            let synthetic_bead = match BeadId::new("lm-review") {
                 Ok(id) => id,
                 Err(e) => {
                     warn!(error = %e, "review controller: synthetic bead id invalid");
@@ -893,7 +893,7 @@ mod tests {
     /// MUST surface the threaded verify exit code so the push gate's
     /// four-condition AND can refuse on a non-zero verify. The default
     /// trait impl returns `None`, which let `loom loop`'s handoff
-    /// silently push despite a failing verifier — the bug wx-e6c8r.25
+    /// silently push despite a failing verifier — the bug lm-e6c8r.25
     /// pinned this test against.
     #[tokio::test]
     async fn verify_exit_returns_value_threaded_through_with_verify_exit() {
@@ -972,8 +972,8 @@ mod tests {
     async fn iteration_counter_round_trips_through_state_db() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
-        let state = seeded_state(workspace, "alpha", "wx-alpha");
-        let epic = epic_body("wx-alpha", "alpha");
+        let state = seeded_state(workspace, "alpha", "lm-alpha");
+        let epic = epic_body("lm-alpha", "alpha");
         let mut ctrl = scripted_controller(
             workspace.to_path_buf(),
             "alpha",
@@ -1042,8 +1042,8 @@ mod tests {
     async fn integrity_findings_empty_when_molecule_lacks_base_commit() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
-        let state = seeded_state(workspace, "alpha", "wx-alpha");
-        let epic = epic_body("wx-alpha", "alpha");
+        let state = seeded_state(workspace, "alpha", "lm-alpha");
+        let epic = epic_body("lm-alpha", "alpha");
         let mut ctrl = scripted_controller(workspace.to_path_buf(), "alpha", state, [epic]);
         let findings = ctrl.integrity_findings().await.unwrap();
         assert!(findings.is_empty(), "no base_commit => no findings");
@@ -1375,11 +1375,11 @@ mod tests {
         .with_tree_scope_epics(vec![
             TreeScopeEpic {
                 label: SpecLabel::new("alpha"),
-                molecule_id: MoleculeId::new("wx-alpha-epic"),
+                molecule_id: MoleculeId::new("lm-alpha-epic"),
             },
             TreeScopeEpic {
                 label: SpecLabel::new("beta"),
-                molecule_id: MoleculeId::new("wx-beta-epic"),
+                molecule_id: MoleculeId::new("lm-beta-epic"),
             },
         ]);
         let prompt = match ctrl.build_review_prompt().await {
@@ -1388,11 +1388,11 @@ mod tests {
             Err(e) => panic!("unexpected error: {e:?}"),
         };
         assert!(
-            prompt.contains("wx-alpha-epic"),
+            prompt.contains("lm-alpha-epic"),
             "alpha's resolved epic must appear in prompt: {prompt}",
         );
         assert!(
-            prompt.contains("wx-beta-epic"),
+            prompt.contains("lm-beta-epic"),
             "beta's resolved epic must appear in prompt: {prompt}",
         );
         assert!(
@@ -1614,7 +1614,7 @@ mod tests {
             ProfileName::new("base"),
             noop_spawn,
         );
-        let bead_id = BeadId::new("wx-clarify.2").expect("bead id");
+        let bead_id = BeadId::new("lm-clarify.2").expect("bead id");
         ctrl.apply_clarify(&bead_id, "iteration-cap escalation reason")
             .await
             .expect("apply_clarify ok");
@@ -1625,7 +1625,7 @@ mod tests {
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
         assert_eq!(argv[0], "update");
-        assert_eq!(argv[1], "wx-clarify.2");
+        assert_eq!(argv[1], "lm-clarify.2");
         assert!(
             argv.iter().any(|a| a == "--add-label"),
             "missing --add-label in argv: {argv:?}",
@@ -1658,11 +1658,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().to_path_buf();
         seed_empty_spec(&workspace, "gate");
-        let state = seeded_state(&workspace, "gate", "wx-mol.1");
+        let state = seeded_state(&workspace, "gate", "lm-mol.1");
         let manifest = stub_manifest(&workspace);
 
         let show_body = br#"[{
-            "id": "wx-mol.1",
+            "id": "lm-mol.1",
             "title": "epic",
             "status": "open",
             "priority": 2,

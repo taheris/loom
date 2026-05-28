@@ -208,14 +208,14 @@ so you can attribute every new requirement to the correct spec file.
 ### Existing Tasks
 
 <agent-output>
-- wx-3hhwq.1: scaffold workspace
+- lm-3hhwq.1: scaffold workspace
 </agent-output>
 
 ## Existing Molecule
 
-Molecule ID: wx-3hhwq
+Molecule ID: lm-3hhwq
 
-Use `bd mol show wx-3hhwq` to see the current tasks in this molecule.
+Use `bd mol show lm-3hhwq` to see the current tasks in this molecule.
 All new tasks in this session — whether they implement the anchor or a sibling
 spec — bond to this molecule. Sibling specs do NOT get their own molecule.
 
@@ -231,7 +231,7 @@ spec — bond to this molecule. Sibling specs do NOT get their own molecule.
    # <s> is the spec file the task implements, e.g. the anchor (harness) or
    # a sibling label derived from specs/<sibling>.md.
    TASK_ID=$(bd create --title="<task title>" --description="<detailed description>" \
-     --type=task --labels="spec:<s>,profile:<profile>" --parent="wx-3hhwq" --silent)
+     --type=task --labels="spec:<s>,profile:<profile>" --parent="lm-3hhwq" --silent)
    ```
 3. **Assign profile per-task** based on implementation needs:
    - Tasks touching `.rs` files or using cargo → `profile:rust`
@@ -268,7 +268,7 @@ spec — bond to this molecule. Sibling specs do NOT get their own molecule.
 After creating tasks, check if the pinned-context file (the project spec index
 shown above under "Context Pinning" — `docs/README.md` by default) has an empty
 Beads column for the **anchor** spec (`harness`). If the Beads column is
-empty, fill in the molecule ID (`wx-3hhwq`).
+empty, fill in the molecule ID (`lm-3hhwq`).
 
 Sibling specs touched in this session do **not** get their own molecule — their
 tasks bond to the anchor's molecule. Do **NOT** write the anchor's molecule ID

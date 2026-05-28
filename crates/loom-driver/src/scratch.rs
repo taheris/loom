@@ -238,11 +238,11 @@ mod tests {
     #[test]
     fn open_clears_leftover_dir_from_prior_session() {
         let workspace = tempfile::tempdir().unwrap();
-        let dir = workspace.path().join(SCRATCH_SUBDIR).join("wx-1");
+        let dir = workspace.path().join(SCRATCH_SUBDIR).join("lm-1");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("scratch.md"), "stale content").unwrap();
 
-        let session = ScratchSession::open(workspace.path(), "wx-1", "fresh", "banner").unwrap();
+        let session = ScratchSession::open(workspace.path(), "lm-1", "fresh", "banner").unwrap();
         assert_eq!(
             fs::read_to_string(session.path().join("scratch.md")).unwrap(),
             "",
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn close_removes_dir_and_is_idempotent_with_drop() {
         let workspace = tempfile::tempdir().unwrap();
-        let session = ScratchSession::open(workspace.path(), "wx-2", "p", "b").unwrap();
+        let session = ScratchSession::open(workspace.path(), "lm-2", "p", "b").unwrap();
         let path = session.path().to_path_buf();
         session.close().unwrap();
         assert!(!path.exists());
@@ -262,8 +262,8 @@ mod tests {
     #[test]
     fn parallel_keys_get_independent_dirs() {
         let workspace = tempfile::tempdir().unwrap();
-        let a = ScratchSession::open(workspace.path(), "wx-a", "prompt-a", "banner-a").unwrap();
-        let b = ScratchSession::open(workspace.path(), "wx-b", "prompt-b", "banner-b").unwrap();
+        let a = ScratchSession::open(workspace.path(), "lm-a", "prompt-a", "banner-a").unwrap();
+        let b = ScratchSession::open(workspace.path(), "lm-b", "prompt-b", "banner-b").unwrap();
         assert_ne!(a.path(), b.path());
         assert!(a.path().exists());
         assert!(b.path().exists());
@@ -302,9 +302,9 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let session = ScratchSession::open(
             workspace.path(),
-            "wx-3",
+            "lm-3",
             "the initial prompt\nwith\nlines",
-            "loom loop @ wx-3",
+            "loom loop @ lm-3",
         )
         .unwrap();
         // Simulate the agent appending to the scratchpad mid-session.
@@ -328,7 +328,7 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(
-            context.contains("loom loop @ wx-3"),
+            context.contains("loom loop @ lm-3"),
             "missing banner in {context}",
         );
         assert!(
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn claude_settings_registers_repin_under_session_start_compact() {
         let workspace = tempfile::tempdir().unwrap();
-        let session = ScratchSession::open(workspace.path(), "wx-4", "p", "b").unwrap();
+        let session = ScratchSession::open(workspace.path(), "lm-4", "p", "b").unwrap();
         let body = fs::read_to_string(session.claude_settings()).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         let hook = &parsed["hooks"]["SessionStart"][0];
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn resolve_scratch_key_picks_label_for_spec_scoped_phases() {
         let label = SpecLabel::new("harness");
-        let bead = BeadId::new("wx-3hhwq.15").unwrap();
+        let bead = BeadId::new("lm-3hhwq.15").unwrap();
         assert_eq!(
             resolve_scratch_key(Phase::Plan, &label, Some(&bead)),
             "harness",
@@ -383,18 +383,18 @@ mod tests {
     #[test]
     fn resolve_scratch_key_picks_bead_id_for_bead_scoped_phases() {
         let label = SpecLabel::new("harness");
-        let bead = BeadId::new("wx-3hhwq.15").unwrap();
+        let bead = BeadId::new("lm-3hhwq.15").unwrap();
         assert_eq!(
             resolve_scratch_key(Phase::Run, &label, Some(&bead)),
-            "wx-3hhwq.15",
+            "lm-3hhwq.15",
         );
         assert_eq!(
             resolve_scratch_key(Phase::Check, &label, Some(&bead)),
-            "wx-3hhwq.15",
+            "lm-3hhwq.15",
         );
         assert_eq!(
             resolve_scratch_key(Phase::Msg, &label, Some(&bead)),
-            "wx-3hhwq.15",
+            "lm-3hhwq.15",
         );
     }
 

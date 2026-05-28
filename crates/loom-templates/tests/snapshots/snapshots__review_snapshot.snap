@@ -87,12 +87,12 @@ Read: specs/harness.md
 
 ## Beads Summary
 
-- wx-3hhwq.10: closed
+- lm-3hhwq.10: closed
 
 ## Review Context
 
 - **Base commit**: abc1234
-- **Molecule**: wx-3hhwq
+- **Molecule**: lm-3hhwq
 
 ## Authorization — Bead Mutations Are the Phase's Purpose
 
@@ -524,7 +524,7 @@ does not scrape your reasoning for `### Option N` blocks. Two flows:
 - **Options apply to a NEW clarify bead** (e.g. a freshly-detected invariant
   clash) → `bd create` with the canonical block in `--description` (template
   below).
-- **Options apply to an EXISTING bead** (e.g. wx-tc9xs.33 is already
+- **Options apply to an EXISTING bead** (e.g. lm-tc9xs.33 is already
   `loom:blocked` and your review proposes paths to unblock it) → write the
   canonical block onto that bead with `bd update --notes` AND apply the
   `loom:clarify` label so `loom msg` finds it:
@@ -569,7 +569,7 @@ CLARIFY_ID=$(bd create \
   --title="Invariant clash: <short summary>" \
   --type=task \
   --labels="spec:harness,loom:clarify,profile:rust" \
-  --parent="wx-3hhwq" \
+  --parent="lm-3hhwq" \
   --description="$(cat <<'EOF'
 ## Clash
 <What invariant is at stake and how the change conflicts with it>
@@ -617,7 +617,7 @@ NEW_ID=$(bd create \
   --title="..." \
   --type=bug \
   --labels="spec:harness,profile:rust" \
-  --parent="wx-3hhwq" \
+  --parent="lm-3hhwq" \
   --silent)
 ```
 

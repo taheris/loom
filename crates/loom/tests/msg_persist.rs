@@ -172,7 +172,7 @@ fn msg_option_fast_reply_persists_note_via_bd_show() {
 
     seed_bead(
         &state_dir,
-        "wx-testa",
+        "lm-testa",
         "pick a path",
         CLARIFY_DESC,
         &["loom:clarify"],
@@ -186,7 +186,7 @@ fn msg_option_fast_reply_persists_note_via_bd_show() {
         &bin_dir,
         &state_dir,
         &manifest,
-        &["-o", "1", "-b", "wx-testa"],
+        &["-o", "1", "-b", "lm-testa"],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -196,7 +196,7 @@ fn msg_option_fast_reply_persists_note_via_bd_show() {
         "loom msg -a 1 must exit 0.\nstdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
     );
 
-    let bead = run_bd_show(&bin_dir, &state_dir, "wx-testa");
+    let bead = run_bd_show(&bin_dir, &state_dir, "lm-testa");
     let notes = bead
         .get("notes")
         .and_then(serde_json::Value::as_str)
@@ -232,7 +232,7 @@ fn msg_option_out_of_range_errors_and_leaves_bead_unchanged() {
 
     seed_bead(
         &state_dir,
-        "wx-testb",
+        "lm-testb",
         "pick a path",
         CLARIFY_DESC,
         &["loom:clarify"],
@@ -246,7 +246,7 @@ fn msg_option_out_of_range_errors_and_leaves_bead_unchanged() {
         &bin_dir,
         &state_dir,
         &manifest,
-        &["-o", "99", "-b", "wx-testb"],
+        &["-o", "99", "-b", "lm-testb"],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -260,7 +260,7 @@ fn msg_option_out_of_range_errors_and_leaves_bead_unchanged() {
         "stderr must explain the out-of-range index. stderr={stderr}",
     );
 
-    let bead = run_bd_show(&bin_dir, &state_dir, "wx-testb");
+    let bead = run_bd_show(&bin_dir, &state_dir, "lm-testb");
     let notes = bead
         .get("notes")
         .and_then(serde_json::Value::as_str)
@@ -300,7 +300,7 @@ fn msg_blocked_verbatim_text_persists_via_bd_show() {
 
     seed_bead(
         &state_dir,
-        "wx-blockt",
+        "lm-blockt",
         "deploy key path",
         BLOCKED_DESC,
         &["loom:blocked"],
@@ -314,7 +314,7 @@ fn msg_blocked_verbatim_text_persists_via_bd_show() {
         &bin_dir,
         &state_dir,
         &manifest,
-        &["-r", "use /run/secrets/deploy_key", "-b", "wx-blockt"],
+        &["-r", "use /run/secrets/deploy_key", "-b", "lm-blockt"],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -325,7 +325,7 @@ fn msg_blocked_verbatim_text_persists_via_bd_show() {
          stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
     );
 
-    let bead = run_bd_show(&bin_dir, &state_dir, "wx-blockt");
+    let bead = run_bd_show(&bin_dir, &state_dir, "lm-blockt");
     let notes = bead
         .get("notes")
         .and_then(serde_json::Value::as_str)
@@ -363,7 +363,7 @@ fn msg_blocked_integer_input_persists_verbatim_not_as_option() {
 
     seed_bead(
         &state_dir,
-        "wx-blocki",
+        "lm-blocki",
         "free-form blocked prompt",
         BLOCKED_DESC,
         &["loom:blocked"],
@@ -377,7 +377,7 @@ fn msg_blocked_integer_input_persists_verbatim_not_as_option() {
         &bin_dir,
         &state_dir,
         &manifest,
-        &["-r", "1", "-b", "wx-blocki"],
+        &["-r", "1", "-b", "lm-blocki"],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -388,7 +388,7 @@ fn msg_blocked_integer_input_persists_verbatim_not_as_option() {
          stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
     );
 
-    let bead = run_bd_show(&bin_dir, &state_dir, "wx-blocki");
+    let bead = run_bd_show(&bin_dir, &state_dir, "lm-blocki");
     let notes = bead
         .get("notes")
         .and_then(serde_json::Value::as_str)
@@ -423,10 +423,10 @@ fn msg_flag_exclusivity_enforced_at_parse_time() {
 
     // Each row exercises one of the mutual-exclusion rules.
     let forbidden: &[&[&str]] = &[
-        &["-o", "1", "-r", "foo", "-b", "wx-aaa"],
-        &["-o", "1", "-d", "-b", "wx-aaa"],
-        &["-r", "foo", "-d", "-b", "wx-aaa"],
-        &["-n", "1", "-b", "wx-aaa", "-r", "foo"],
+        &["-o", "1", "-r", "foo", "-b", "lm-aaa"],
+        &["-o", "1", "-d", "-b", "lm-aaa"],
+        &["-r", "foo", "-d", "-b", "lm-aaa"],
+        &["-n", "1", "-b", "lm-aaa", "-r", "foo"],
     ];
 
     for argv in forbidden {
@@ -472,7 +472,7 @@ fn msg_dismiss_writes_canonical_note_and_clears_label() {
 
     seed_bead(
         &state_dir,
-        "wx-dism",
+        "lm-dism",
         "dismiss path",
         CLARIFY_DESC,
         &["loom:clarify"],
@@ -486,7 +486,7 @@ fn msg_dismiss_writes_canonical_note_and_clears_label() {
         &bin_dir,
         &state_dir,
         &manifest,
-        &["-b", "wx-dism", "-d"],
+        &["-b", "lm-dism", "-d"],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -496,7 +496,7 @@ fn msg_dismiss_writes_canonical_note_and_clears_label() {
         "loom msg -d must exit 0.\nstdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
     );
 
-    let bead = run_bd_show(&bin_dir, &state_dir, "wx-dism");
+    let bead = run_bd_show(&bin_dir, &state_dir, "lm-dism");
     let notes = bead
         .get("notes")
         .and_then(serde_json::Value::as_str)
@@ -529,14 +529,14 @@ fn msg_spec_filter_narrows_list_to_matching_spec() {
 
     seed_bead(
         &state_dir,
-        "wx-sfa",
+        "lm-sfa",
         "alpha clarify",
         CLARIFY_DESC,
         &["loom:clarify", "spec:alpha"],
     );
     seed_bead(
         &state_dir,
-        "wx-sfb",
+        "lm-sfb",
         "beta clarify",
         CLARIFY_DESC,
         &["loom:clarify", "spec:beta"],
@@ -550,7 +550,7 @@ fn msg_spec_filter_narrows_list_to_matching_spec() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "bare loom msg must exit 0");
     assert!(
-        stdout.contains("wx-sfa") && stdout.contains("wx-sfb"),
+        stdout.contains("lm-sfa") && stdout.contains("lm-sfb"),
         "cross-spec list must show both beads. stdout={stdout}",
     );
 
@@ -563,11 +563,11 @@ fn msg_spec_filter_narrows_list_to_matching_spec() {
         "loom msg -s alpha must exit 0.\nstdout={stdout}\nstderr={stderr}",
     );
     assert!(
-        stdout.contains("wx-sfa"),
+        stdout.contains("lm-sfa"),
         "spec-filter must include alpha bead. stdout={stdout}",
     );
     assert!(
-        !stdout.contains("wx-sfb"),
+        !stdout.contains("lm-sfb"),
         "spec-filter must exclude beta bead. stdout={stdout}",
     );
 }
@@ -585,7 +585,7 @@ fn msg_view_modes_render_bead_host_side() {
 
     seed_bead(
         &state_dir,
-        "wx-viewa",
+        "lm-viewa",
         "alpha view",
         CLARIFY_DESC,
         &["loom:clarify", "spec:alpha"],
@@ -600,7 +600,7 @@ fn msg_view_modes_render_bead_host_side() {
         &bin_dir,
         &state_dir,
         &manifest,
-        &["-b", "wx-viewa"],
+        &["-b", "lm-viewa"],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -610,7 +610,7 @@ fn msg_view_modes_render_bead_host_side() {
         "loom msg -b view must exit 0.\nstdout={stdout}\nstderr={stderr}",
     );
     assert!(
-        stdout.contains("wx-viewa"),
+        stdout.contains("lm-viewa"),
         "view output must include bead id. stdout={stdout}",
     );
     assert!(
@@ -624,12 +624,12 @@ fn msg_view_modes_render_bead_host_side() {
 
     // -b view must NOT call bd update — only bd list.
     assert!(
-        !log.contains("update wx-viewa"),
+        !log.contains("update lm-viewa"),
         "view mode must not mutate the bead. log={log}",
     );
 
     // Label remains.
-    let bead = run_bd_show(&bin_dir, &state_dir, "wx-viewa");
+    let bead = run_bd_show(&bin_dir, &state_dir, "lm-viewa");
     let labels = bead
         .get("labels")
         .and_then(serde_json::Value::as_array)
@@ -648,7 +648,7 @@ fn msg_view_modes_render_bead_host_side() {
         "loom msg -n 1 view must exit 0.\nstdout={stdout}\nstderr={stderr}",
     );
     assert!(
-        stdout.contains("wx-viewa") && stdout.contains("### Option 1"),
+        stdout.contains("lm-viewa") && stdout.contains("### Option 1"),
         "view by -n must render the same bead body. stdout={stdout}",
     );
 }

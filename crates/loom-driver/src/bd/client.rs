@@ -409,7 +409,7 @@ mod tests {
 
     const SHOW_FIXTURE: &str = r#"[
       {
-        "id": "wx-3hhwq.5",
+        "id": "lm-3hhwq.5",
         "title": "BdClient",
         "description": "Implement BdClient",
         "status": "in_progress",
@@ -423,8 +423,8 @@ mod tests {
     async fn show_parses_first_row_into_bead() -> Result<()> {
         let runner = CapturingRunner::new([ok(SHOW_FIXTURE.as_bytes())]);
         let client = BdClient::with_runner(runner);
-        let bead = client.show(&BeadId::new("wx-3hhwq.5")?).await?;
-        assert_eq!(bead.id, BeadId::new("wx-3hhwq.5")?);
+        let bead = client.show(&BeadId::new("lm-3hhwq.5")?).await?;
+        assert_eq!(bead.id, BeadId::new("lm-3hhwq.5")?);
         assert_eq!(bead.title, "BdClient");
         assert_eq!(bead.status, "in_progress");
         assert_eq!(bead.priority, 2);
@@ -434,7 +434,7 @@ mod tests {
             vec![Label::new("profile:rust"), Label::new("spec:harness")]
         );
         let argv = argv_of(&client.runner, 0);
-        assert_eq!(argv, vec!["show", "wx-3hhwq.5", "--json"]);
+        assert_eq!(argv, vec!["show", "lm-3hhwq.5", "--json"]);
         Ok(())
     }
 
@@ -447,19 +447,19 @@ mod tests {
     async fn show_parses_parent_field_when_present() -> Result<()> {
         let json = br#"[
           {
-            "id": "wx-fgp9j.5",
+            "id": "lm-fgp9j.5",
             "title": "child of molecule",
             "status": "open",
             "priority": 2,
             "issue_type": "task",
-            "parent": "wx-fgp9j",
+            "parent": "lm-fgp9j",
             "labels": []
           }
         ]"#;
         let runner = CapturingRunner::new([ok(json)]);
         let client = BdClient::with_runner(runner);
-        let bead = client.show(&BeadId::new("wx-fgp9j.5")?).await?;
-        assert_eq!(bead.parent, Some(BeadId::new("wx-fgp9j")?));
+        let bead = client.show(&BeadId::new("lm-fgp9j.5")?).await?;
+        assert_eq!(bead.parent, Some(BeadId::new("lm-fgp9j")?));
         Ok(())
     }
 
@@ -471,7 +471,7 @@ mod tests {
     async fn show_parses_notes_field_when_present() -> Result<()> {
         let json = r###"[
           {
-            "id": "wx-promoted",
+            "id": "lm-promoted",
             "title": "blocked to clarify promotion",
             "status": "open",
             "priority": 2,
@@ -482,7 +482,7 @@ mod tests {
         ]"###;
         let runner = CapturingRunner::new([ok(json.as_bytes())]);
         let client = BdClient::with_runner(runner);
-        let bead = client.show(&BeadId::new("wx-promoted")?).await?;
+        let bead = client.show(&BeadId::new("lm-promoted")?).await?;
         assert_eq!(
             bead.notes.as_deref(),
             Some("## Options - pick a fix\n\n### Option 1 - revert\nundo.")
@@ -494,7 +494,7 @@ mod tests {
     async fn show_notes_field_is_none_when_absent() -> Result<()> {
         let runner = CapturingRunner::new([ok(SHOW_FIXTURE.as_bytes())]);
         let client = BdClient::with_runner(runner);
-        let bead = client.show(&BeadId::new("wx-3hhwq.5")?).await?;
+        let bead = client.show(&BeadId::new("lm-3hhwq.5")?).await?;
         assert_eq!(bead.notes, None);
         Ok(())
     }
@@ -503,7 +503,7 @@ mod tests {
     async fn show_parent_field_is_none_when_absent() -> Result<()> {
         let runner = CapturingRunner::new([ok(SHOW_FIXTURE.as_bytes())]);
         let client = BdClient::with_runner(runner);
-        let bead = client.show(&BeadId::new("wx-3hhwq.5")?).await?;
+        let bead = client.show(&BeadId::new("lm-3hhwq.5")?).await?;
         assert_eq!(bead.parent, None, "no `parent` key ⇒ unbonded");
         Ok(())
     }
@@ -513,7 +513,7 @@ mod tests {
         let runner = CapturingRunner::new([ok(b"[]")]);
         let client = BdClient::with_runner(runner);
         let err = client
-            .show(&BeadId::new("wx-missing")?)
+            .show(&BeadId::new("lm-missing")?)
             .await
             .err()
             .ok_or_else(|| anyhow!("empty array must error"))?;
@@ -574,7 +574,7 @@ mod tests {
         let client = BdClient::with_runner(runner);
         client
             .list(ListOpts {
-                parent: Some(BeadId::new("wx-sarcz")?),
+                parent: Some(BeadId::new("lm-sarcz")?),
                 ..ListOpts::default()
             })
             .await?;
@@ -584,7 +584,7 @@ mod tests {
             vec![
                 "list".to_string(),
                 "--json".into(),
-                "--parent=wx-sarcz".into(),
+                "--parent=lm-sarcz".into(),
             ]
         );
         Ok(())
@@ -602,21 +602,21 @@ mod tests {
     #[tokio::test]
     async fn list_parses_array_of_beads() -> Result<()> {
         let json = br#"[
-            {"id":"wx-a","title":"A","status":"open"},
-            {"id":"wx-b","title":"B","status":"closed"}
+            {"id":"lm-a","title":"A","status":"open"},
+            {"id":"lm-b","title":"B","status":"closed"}
         ]"#;
         let runner = CapturingRunner::new([ok(json)]);
         let client = BdClient::with_runner(runner);
         let beads = client.list(ListOpts::default()).await?;
         assert_eq!(beads.len(), 2);
-        assert_eq!(beads[0].id, BeadId::new("wx-a")?);
-        assert_eq!(beads[1].id, BeadId::new("wx-b")?);
+        assert_eq!(beads[0].id, BeadId::new("lm-a")?);
+        assert_eq!(beads[1].id, BeadId::new("lm-b")?);
         Ok(())
     }
 
     #[tokio::test]
     async fn create_returns_id_from_silent_output() -> Result<()> {
-        let runner = CapturingRunner::new([ok(b"wx-new.7\n")]);
+        let runner = CapturingRunner::new([ok(b"lm-new.7\n")]);
         let client = BdClient::with_runner(runner);
         let id = client
             .create(CreateOpts {
@@ -625,11 +625,11 @@ mod tests {
                 issue_type: Some("task".into()),
                 priority: Some(2),
                 labels: vec!["profile:rust".into()],
-                parent: Some(BeadId::new("wx-3hhwq")?),
+                parent: Some(BeadId::new("lm-3hhwq")?),
                 metadata: None,
             })
             .await?;
-        assert_eq!(id, BeadId::new("wx-new.7")?);
+        assert_eq!(id, BeadId::new("lm-new.7")?);
         let argv = argv_of(&client.runner, 0);
         assert!(argv.starts_with(&["create".to_string(), "--silent".into()]));
         assert!(argv.contains(&"--title".to_string()));
@@ -637,7 +637,7 @@ mod tests {
         assert!(argv.contains(&"--type".to_string()));
         assert!(argv.contains(&"task".to_string()));
         assert!(argv.contains(&"--parent".to_string()));
-        assert!(argv.contains(&"wx-3hhwq".to_string()));
+        assert!(argv.contains(&"lm-3hhwq".to_string()));
         assert!(argv.contains(&"--labels".to_string()));
         assert!(argv.contains(&"profile:rust".to_string()));
         Ok(())
@@ -645,7 +645,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_forwards_metadata_flag_when_set() -> Result<()> {
-        let runner = CapturingRunner::new([ok(b"wx-new.1\n")]);
+        let runner = CapturingRunner::new([ok(b"lm-new.1\n")]);
         let client = BdClient::with_runner(runner);
         client
             .create(CreateOpts {
@@ -668,7 +668,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_omits_metadata_when_unset() -> Result<()> {
-        let runner = CapturingRunner::new([ok(b"wx-new.2\n")]);
+        let runner = CapturingRunner::new([ok(b"lm-new.2\n")]);
         let client = BdClient::with_runner(runner);
         client
             .create(CreateOpts {
@@ -687,7 +687,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_rejects_malformed_silent_output() -> Result<()> {
-        let runner = CapturingRunner::new([ok(b"warning: foo\nwx-abc123\n")]);
+        let runner = CapturingRunner::new([ok(b"warning: foo\nlm-abc123\n")]);
         let client = BdClient::with_runner(runner);
         let err = client
             .create(CreateOpts {
@@ -721,10 +721,10 @@ mod tests {
 
     #[tokio::test]
     async fn cli_failure_maps_to_typed_error() -> Result<()> {
-        let runner = CapturingRunner::new([fail(1, "no issue found matching \"wx-miss\"")]);
+        let runner = CapturingRunner::new([fail(1, "no issue found matching \"lm-miss\"")]);
         let client = BdClient::with_runner(runner);
         let err = client
-            .show(&BeadId::new("wx-miss")?)
+            .show(&BeadId::new("lm-miss")?)
             .await
             .err()
             .ok_or_else(|| anyhow!("non-zero exit must surface"))?;
@@ -738,7 +738,7 @@ mod tests {
         };
         assert_eq!(status, 1);
         assert!(args.contains("show"));
-        assert!(args.contains("wx-miss"));
+        assert!(args.contains("lm-miss"));
         assert!(stderr.contains("no issue found"));
         Ok(())
     }
@@ -748,7 +748,7 @@ mod tests {
         let runner = CapturingRunner::new([ok(b"not json")]);
         let client = BdClient::with_runner(runner);
         let err = client
-            .show(&BeadId::new("wx-x")?)
+            .show(&BeadId::new("lm-x")?)
             .await
             .err()
             .ok_or_else(|| anyhow!("garbage stdout must fail"))?;
@@ -756,7 +756,7 @@ mod tests {
             return Err(anyhow!("expected BdError::Decode"));
         };
         assert!(args.contains("show"));
-        assert!(args.contains("wx-x"));
+        assert!(args.contains("lm-x"));
         Ok(())
     }
 
@@ -766,7 +766,7 @@ mod tests {
         let client = BdClient::with_runner(runner);
         client
             .update(
-                &BeadId::new("wx-3hhwq.5")?,
+                &BeadId::new("lm-3hhwq.5")?,
                 UpdateOpts {
                     claim: true,
                     status: Some("in_progress".into()),
@@ -777,7 +777,7 @@ mod tests {
             .await?;
         let argv = argv_of(&client.runner, 0);
         assert_eq!(argv[0], "update");
-        assert_eq!(argv[1], "wx-3hhwq.5");
+        assert_eq!(argv[1], "lm-3hhwq.5");
         assert!(argv.contains(&"--claim".to_string()));
         assert!(argv.contains(&"--status".to_string()));
         assert!(argv.contains(&"in_progress".to_string()));
@@ -794,7 +794,7 @@ mod tests {
         let client = BdClient::with_runner(runner);
         client
             .update(
-                &BeadId::new("wx-x")?,
+                &BeadId::new("lm-x")?,
                 UpdateOpts {
                     add_labels: vec!["loom:blocked".into()],
                     notes: Some("infra-preflight: image load failed".into()),
@@ -804,7 +804,7 @@ mod tests {
             .await?;
         let argv = argv_of(&client.runner, 0);
         assert_eq!(argv[0], "update");
-        assert_eq!(argv[1], "wx-x");
+        assert_eq!(argv[1], "lm-x");
         let notes_idx = argv
             .iter()
             .position(|a| a == "--notes")
@@ -822,7 +822,7 @@ mod tests {
         let client = BdClient::with_runner(runner);
         client
             .update(
-                &BeadId::new("wx-mol")?,
+                &BeadId::new("lm-mol")?,
                 UpdateOpts {
                     set_metadata: vec![
                         ("loom.base_commit".into(), "deadbeef".into()),
@@ -834,7 +834,7 @@ mod tests {
             .await?;
         let argv = argv_of(&client.runner, 0);
         assert_eq!(argv[0], "update");
-        assert_eq!(argv[1], "wx-mol");
+        assert_eq!(argv[1], "lm-mol");
         let pairs: Vec<&String> = argv
             .iter()
             .enumerate()
@@ -861,9 +861,9 @@ mod tests {
     async fn close_with_reason_passes_flag() -> Result<()> {
         let runner = CapturingRunner::new([ok(b"")]);
         let client = BdClient::with_runner(runner);
-        client.close(&BeadId::new("wx-x")?, Some("dup")).await?;
+        client.close(&BeadId::new("lm-x")?, Some("dup")).await?;
         let argv = argv_of(&client.runner, 0);
-        assert_eq!(argv, vec!["close", "wx-x", "--reason", "dup"]);
+        assert_eq!(argv, vec!["close", "lm-x", "--reason", "dup"]);
         Ok(())
     }
 
@@ -933,8 +933,8 @@ mod tests {
     #[tokio::test]
     async fn ready_parses_array_of_beads() -> Result<()> {
         let json = br#"[
-            {"id":"wx-a","title":"A","status":"open"},
-            {"id":"wx-b","title":"B","status":"open"}
+            {"id":"lm-a","title":"A","status":"open"},
+            {"id":"lm-b","title":"B","status":"open"}
         ]"#;
         let runner = CapturingRunner::new([ok(json)]);
         let client = BdClient::with_runner(runner);
@@ -946,8 +946,8 @@ mod tests {
             })
             .await?;
         assert_eq!(beads.len(), 2);
-        assert_eq!(beads[0].id, BeadId::new("wx-a")?);
-        assert_eq!(beads[1].id, BeadId::new("wx-b")?);
+        assert_eq!(beads[0].id, BeadId::new("lm-a")?);
+        assert_eq!(beads[1].id, BeadId::new("lm-b")?);
         Ok(())
     }
 
@@ -957,7 +957,7 @@ mod tests {
     /// it by inspecting the recorded argv.
     #[tokio::test]
     async fn argv_passes_shell_metacharacters_literally() -> Result<()> {
-        let runner = CapturingRunner::new([ok(b"wx-new.1\n")]);
+        let runner = CapturingRunner::new([ok(b"lm-new.1\n")]);
         let client = BdClient::with_runner(runner);
         let injected_title = "; rm -rf /";
         let injected_desc = "`id`";
@@ -1003,31 +1003,31 @@ mod tests {
         let runner = CapturingRunner::new([ok(b"")]);
         let client = BdClient::with_runner(runner);
         client
-            .dep_add(&BeadId::new("wx-a")?, &BeadId::new("wx-b")?)
+            .dep_add(&BeadId::new("lm-a")?, &BeadId::new("lm-b")?)
             .await?;
         let argv = argv_of(&client.runner, 0);
-        assert_eq!(argv, vec!["dep", "add", "wx-a", "wx-b"]);
+        assert_eq!(argv, vec!["dep", "add", "lm-a", "lm-b"]);
         Ok(())
     }
 
     #[tokio::test]
     async fn mol_progress_parses_progress_object() -> Result<()> {
         let json = br#"{
-          "molecule_id": "wx-3hhwq",
+          "molecule_id": "lm-3hhwq",
           "molecule_title": "Loom harness",
           "completed": 8,
           "in_progress": 1,
           "total": 19,
           "percent": 42.1,
-          "current_step_id": "wx-3hhwq.5"
+          "current_step_id": "lm-3hhwq.5"
         }"#;
         let runner = CapturingRunner::new([ok(json)]);
         let client = BdClient::with_runner(runner);
-        let progress = client.mol_progress(&MoleculeId::new("wx-3hhwq")).await?;
-        assert_eq!(progress.molecule_id, MoleculeId::new("wx-3hhwq"));
+        let progress = client.mol_progress(&MoleculeId::new("lm-3hhwq")).await?;
+        assert_eq!(progress.molecule_id, MoleculeId::new("lm-3hhwq"));
         assert_eq!(progress.completed, 8);
         assert_eq!(progress.total, 19);
-        assert_eq!(progress.current_step_id.as_deref(), Some("wx-3hhwq.5"));
+        assert_eq!(progress.current_step_id.as_deref(), Some("lm-3hhwq.5"));
         Ok(())
     }
 }

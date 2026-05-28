@@ -1509,8 +1509,8 @@ fn run_logs(
     // the stem doesn't parse — we still render successfully.
     let renderer_bead = match bead_id.clone().or_else(|| derive_bead_id_from_path(&path)) {
         Some(b) => b,
-        None => BeadId::new("wx-x")
-            .map_err(|err| anyhow::anyhow!("`wx-x` sentinel must parse as BeadId: {err}"))?,
+        None => BeadId::new("lm-x")
+            .map_err(|err| anyhow::anyhow!("`lm-x` sentinel must parse as BeadId: {err}"))?,
     };
     let mode = resolve_replay_mode(raw, verbose);
     let clock: Arc<dyn loom_driver::clock::Clock> = Arc::new(loom_driver::clock::SystemClock);
@@ -2843,10 +2843,10 @@ mod tests {
     fn apply_default_scope_is_noop_when_bead_set() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut args = empty_scope_args();
-        args.bead = Some("wx-1".into());
+        args.bead = Some("lm-1".into());
         apply_default_scope(tmp.path(), &mut args);
         assert!(args.diff.is_none());
-        assert_eq!(args.bead.as_deref(), Some("wx-1"));
+        assert_eq!(args.bead.as_deref(), Some("lm-1"));
     }
 
     #[test]

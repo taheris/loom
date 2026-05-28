@@ -83,7 +83,7 @@ Read: specs/harness.md
 
 ## Issue Details
 
-Issue: wx-3hhwq.10
+Issue: lm-3hhwq.10
 Title: <agent-output>port templates</agent-output>
 
 <agent-output>
@@ -93,7 +93,7 @@ Port templates to Askama.
 Retry attempt 1 — previous attempt failed with:
 
 <agent-output>
-Previous attempt: Marker `LOOM_COMPLETE` emitted but bead `wx-3hhwq.10` was not bd-closed.
+Previous attempt: Marker `LOOM_COMPLETE` emitted but bead `lm-3hhwq.10` was not bd-closed.
 </agent-output>
 
 ## Instructions
@@ -110,11 +110,11 @@ Previous attempt: Marker `LOOM_COMPLETE` emitted but bead `wx-3hhwq.10` was not 
    - Create the issue as a child of the molecule:
      ```bash
      NEW_ID=$(bd create --title="..." --type=task --labels="spec:harness" \
-       --parent="wx-3hhwq" --silent)
+       --parent="lm-3hhwq" --silent)
      ```
    - Set execution order if needed:
-     - **Blocks current task**: `bd dep add wx-3hhwq.10 $NEW_ID` (current waits for new)
-     - **Depends on current task**: `bd dep add $NEW_ID wx-3hhwq.10` (new waits for current)
+     - **Blocks current task**: `bd dep add lm-3hhwq.10 $NEW_ID` (current waits for new)
+     - **Depends on current task**: `bd dep add $NEW_ID lm-3hhwq.10` (new waits for current)
      - **Independent**: No dep needed—`bd ready` will surface it when unblocked
    - Do NOT implement discovered tasks in this session—stay focused
 5. **Quality Gates**: Before completing, ensure:
@@ -125,10 +125,10 @@ Previous attempt: Marker `LOOM_COMPLETE` emitted but bead `wx-3hhwq.10` was not 
    - Need user input? → write the reason on a prior line, then `LOOM_BLOCKED`
    - Need other beads done? → Add dep with `bd dep add`, output `LOOM_COMPLETE`
 7. **Already Implemented**: If the task's work is already done in the codebase,
-   verify correctness, run `bd close wx-3hhwq.10`,
+   verify correctness, run `bd close lm-3hhwq.10`,
    and emit `LOOM_NOOP` (empty diff means no-op, not zero-progress).
 8. **Closing the bead**: After committing your changes and before emitting
-   `LOOM_COMPLETE`, run `bd close wx-3hhwq.10`.
+   `LOOM_COMPLETE`, run `bd close lm-3hhwq.10`.
    The verdict gate observes `bd-closed` as the agent's responsibility — a
    `LOOM_COMPLETE` without a closed bead is treated as `incomplete-signaling`
    and enters recovery.
@@ -169,7 +169,7 @@ Before outputting LOOM_COMPLETE:
 - Lint checks pass
 - Changes staged (`git add`)
 - Spec verification test files created for relevant criteria
-- Bead closed (`bd close wx-3hhwq.10`)
+- Bead closed (`bd close lm-3hhwq.10`)
 
 Post-step hooks verify compliance automatically.
 

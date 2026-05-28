@@ -3,7 +3,7 @@
 //! Wraps `pulldown_cmark::Parser` so spec extractors share one fence-aware,
 //! AST-true view of the document instead of walking `content.lines()`. The
 //! helper exists because line-based heading scans were prone to locking onto
-//! markdown examples *inside* fenced code blocks (see issue wx-n9jsn).
+//! markdown examples *inside* fenced code blocks (see issue lm-n9jsn).
 
 use std::ops::Range;
 

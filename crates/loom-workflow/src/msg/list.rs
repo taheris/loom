@@ -148,15 +148,15 @@ mod tests {
     #[test]
     fn filter_keeps_only_clarify_labelled_beads() {
         let beads = vec![
-            bead("wx-1", "no clarify", "", &["spec:harness"]),
+            bead("lm-1", "no clarify", "", &["spec:harness"]),
             bead(
-                "wx-2",
+                "lm-2",
                 "with clarify",
                 "",
                 &["spec:harness", "loom:clarify"],
             ),
             bead(
-                "wx-3",
+                "lm-3",
                 "other spec clarify",
                 "",
                 &["spec:profiles", "loom:clarify"],
@@ -164,16 +164,16 @@ mod tests {
         ];
         let kept = filter_msg_beads(&beads, None);
         assert_eq!(kept.len(), 2);
-        assert_eq!(kept[0].id, BeadId::new("wx-2").expect("valid"));
-        assert_eq!(kept[1].id, BeadId::new("wx-3").expect("valid"));
+        assert_eq!(kept[0].id, BeadId::new("lm-2").expect("valid"));
+        assert_eq!(kept[1].id, BeadId::new("lm-3").expect("valid"));
     }
 
     #[test]
     fn filter_keeps_blocked_alongside_clarify() {
         let beads = vec![
-            bead("wx-1", "no msg", "", &["spec:harness"]),
-            bead("wx-2", "clarify", "", &["spec:harness", "loom:clarify"]),
-            bead("wx-3", "blocked", "", &["spec:harness", "loom:blocked"]),
+            bead("lm-1", "no msg", "", &["spec:harness"]),
+            bead("lm-2", "clarify", "", &["spec:harness", "loom:clarify"]),
+            bead("lm-3", "blocked", "", &["spec:harness", "loom:blocked"]),
         ];
         let kept = filter_msg_beads(&beads, None);
         assert_eq!(kept.len(), 2);
@@ -184,31 +184,31 @@ mod tests {
 
     #[test]
     fn filter_drops_epic_beads_even_when_blocked() {
-        let mut epic = bead("wx-epic", "epic bead", "", &["loom:blocked"]);
+        let mut epic = bead("lm-epic", "epic bead", "", &["loom:blocked"]);
         epic.issue_type = "epic".into();
-        let leaf = bead("wx-leaf", "leaf bead", "", &["loom:blocked"]);
+        let leaf = bead("lm-leaf", "leaf bead", "", &["loom:blocked"]);
         let beads = vec![epic, leaf];
         let kept = filter_msg_beads(&beads, None);
         assert_eq!(kept.len(), 1, "epic must be filtered out");
-        assert_eq!(kept[0].id, BeadId::new("wx-leaf").expect("valid"));
+        assert_eq!(kept[0].id, BeadId::new("lm-leaf").expect("valid"));
     }
 
     #[test]
     fn filter_with_spec_label_keeps_only_matching() {
         let beads = vec![
-            bead("wx-2", "loom", "", &["spec:harness", "loom:clarify"]),
-            bead("wx-3", "profiles", "", &["spec:profiles", "loom:clarify"]),
-            bead("wx-4", "blocked", "", &["spec:profiles", "loom:blocked"]),
+            bead("lm-2", "loom", "", &["spec:harness", "loom:clarify"]),
+            bead("lm-3", "profiles", "", &["spec:profiles", "loom:clarify"]),
+            bead("lm-4", "blocked", "", &["spec:profiles", "loom:blocked"]),
         ];
         let label = SpecLabel::new("harness");
         let kept = filter_msg_beads(&beads, Some(&label));
         assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].id, BeadId::new("wx-2").expect("valid"));
+        assert_eq!(kept[0].id, BeadId::new("lm-2").expect("valid"));
     }
 
     #[test]
     fn rows_drop_spec_column_under_filter() {
-        let beads = vec![bead("wx-2", "title", "", &["spec:harness", "loom:clarify"])];
+        let beads = vec![bead("lm-2", "title", "", &["spec:harness", "loom:clarify"])];
         let label = SpecLabel::new("harness");
         let kept = filter_msg_beads(&beads, Some(&label));
         let rows = build_rows(&kept, Some(&label));
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn rows_carry_spec_column_when_unfiltered() {
-        let beads = vec![bead("wx-2", "title", "", &["spec:harness", "loom:clarify"])];
+        let beads = vec![bead("lm-2", "title", "", &["spec:harness", "loom:clarify"])];
         let kept = filter_msg_beads(&beads, None);
         let rows = build_rows(&kept, None);
         assert_eq!(rows[0].spec.as_deref(), Some("harness"));
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn summary_prefers_options_header_over_title() {
         let desc = "## Options — chosen summary\n\n### Option 1 — t\nbody\n";
-        let beads = vec![bead("wx-2", "fallback title", desc, &["loom:clarify"])];
+        let beads = vec![bead("lm-2", "fallback title", desc, &["loom:clarify"])];
         let kept = filter_msg_beads(&beads, None);
         let rows = build_rows(&kept, None);
         assert_eq!(rows[0].summary, "chosen summary");
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn summary_falls_back_to_title_when_header_absent() {
         let beads = vec![bead(
-            "wx-2",
+            "lm-2",
             "the title",
             "no options here",
             &["loom:clarify"],
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn missing_spec_label_renders_em_dash_in_cross_spec_view() {
-        let beads = vec![bead("wx-2", "t", "", &["loom:clarify"])];
+        let beads = vec![bead("lm-2", "t", "", &["loom:clarify"])];
         let kept = filter_msg_beads(&beads, None);
         let rows = build_rows(&kept, None);
         assert_eq!(rows[0].spec.as_deref(), Some("—"));
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn kind_of_prefers_blocked_when_both_labels_present() {
-        let b = bead("wx-2", "t", "", &["loom:clarify", "loom:blocked"]);
+        let b = bead("lm-2", "t", "", &["loom:clarify", "loom:blocked"]);
         assert_eq!(kind_of(&b), Some(MsgKind::Blocked));
     }
 

@@ -50,7 +50,7 @@ async fn create_and_remove_worktree_round_trip() -> Result<()> {
     let client = GitClient::open(repo.path())?;
 
     let label = SpecLabel::new("harness");
-    let bead = BeadId::new("wx-3hhwq.6")?;
+    let bead = BeadId::new("lm-3hhwq.6")?;
     let created = client.create_worktree(&label, &bead).await?;
 
     assert!(
@@ -58,9 +58,9 @@ async fn create_and_remove_worktree_round_trip() -> Result<()> {
         "workspace path {:?} should exist on disk",
         created.path
     );
-    assert_eq!(created.branch, "loom/harness/wx-3hhwq.6");
+    assert_eq!(created.branch, "loom/harness/lm-3hhwq.6");
     assert!(
-        created.path.ends_with("harness/wx-3hhwq.6"),
+        created.path.ends_with("harness/lm-3hhwq.6"),
         "workspace path should end with <label>/<bead-id>: {:?}",
         created.path
     );
@@ -435,7 +435,7 @@ async fn bead_worktree_starts_with_empty_porcelain() -> Result<()> {
     let client = GitClient::open(repo.path())?;
 
     let label = SpecLabel::new("harness");
-    let bead = BeadId::new("wx-clean.1")?;
+    let bead = BeadId::new("lm-clean.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
     let porcelain = client.status_porcelain_at(&created.path).await?;
@@ -462,7 +462,7 @@ async fn create_worktree_does_not_disable_signing() -> Result<()> {
     let client = GitClient::open(repo.path())?;
 
     let label = SpecLabel::new("harness");
-    let bead = BeadId::new("wx-sign.1")?;
+    let bead = BeadId::new("lm-sign.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
     let output = Command::new("git")
@@ -560,7 +560,7 @@ async fn push_branch_to_origin_invokes_pre_push_hook() -> Result<()> {
 
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
-    let bead = BeadId::new("wx-pp.1")?;
+    let bead = BeadId::new("lm-pp.1")?;
     let created = client.create_worktree(&label, &bead).await?;
     // pre-push fires on the sending side; set core.hooksPath on the clone.
     git(
@@ -607,7 +607,7 @@ async fn push_branch_to_origin_propagates_pre_push_hook_failure() -> Result<()> 
 
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
-    let bead = BeadId::new("wx-pp.2")?;
+    let bead = BeadId::new("lm-pp.2")?;
     let created = client.create_worktree(&label, &bead).await?;
     git(
         &created.path,

@@ -123,15 +123,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = three_profile_manifest(dir.path());
 
-        let rust_bead = bead_with_labels("wx-1", &["spec:harness", "profile:rust"]);
-        let python_bead = bead_with_labels("wx-2", &["spec:harness", "profile:python"]);
+        let rust_bead = bead_with_labels("lm-1", &["spec:harness", "profile:rust"]);
+        let python_bead = bead_with_labels("lm-2", &["spec:harness", "profile:python"]);
 
         let cfg_rust = build_spawn_config_from_manifest(
             &manifest,
             &rust_bead,
             None,
             &base(),
-            PathBuf::from("/work/wx-1"),
+            PathBuf::from("/work/lm-1"),
             "rust prompt".into(),
             dir.path().join("scratch"),
             vec![],
@@ -143,7 +143,7 @@ mod tests {
             &python_bead,
             None,
             &base(),
-            PathBuf::from("/work/wx-2"),
+            PathBuf::from("/work/lm-2"),
             "python prompt".into(),
             dir.path().join("scratch"),
             vec![],
@@ -172,14 +172,14 @@ mod tests {
     fn cli_override_swaps_resolved_image() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = three_profile_manifest(dir.path());
-        let bead = bead_with_labels("wx-1", &["spec:harness", "profile:rust"]);
+        let bead = bead_with_labels("lm-1", &["spec:harness", "profile:rust"]);
 
         let labelled = build_spawn_config_from_manifest(
             &manifest,
             &bead,
             None,
             &base(),
-            PathBuf::from("/work/wx-1"),
+            PathBuf::from("/work/lm-1"),
             "p".into(),
             dir.path().join("scratch"),
             vec![],
@@ -191,7 +191,7 @@ mod tests {
             &bead,
             Some(&ProfileName::new("python")),
             &base(),
-            PathBuf::from("/work/wx-1"),
+            PathBuf::from("/work/lm-1"),
             "p".into(),
             dir.path().join("scratch"),
             vec![],
@@ -204,7 +204,7 @@ mod tests {
         assert_ne!(labelled.image_ref, overridden.image_ref);
     }
 
-    /// wx-cmzob: sequential (`loom loop`) and parallel (`loom loop -p N`)
+    /// lm-cmzob: sequential (`loom loop`) and parallel (`loom loop -p N`)
     /// must produce identical SpawnConfigs for the same bead modulo the
     /// workspace path — sequential dispatches against the repo root,
     /// parallel against a per-bead worktree, but every other field
@@ -215,7 +215,7 @@ mod tests {
     fn sequential_and_parallel_dispatch_produce_identical_spawn_configs() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = three_profile_manifest(dir.path());
-        let bead = bead_with_labels("wx-1", &["spec:harness", "profile:rust"]);
+        let bead = bead_with_labels("lm-1", &["spec:harness", "profile:rust"]);
         let prompt = format!("loom loop: bead {}", bead.id);
 
         let seq = build_spawn_config_from_manifest(
@@ -235,7 +235,7 @@ mod tests {
             &bead,
             None,
             &base(),
-            PathBuf::from("/repo-root/.wrapix/worktree/wx-1"),
+            PathBuf::from("/repo-root/.wrapix/worktree/lm-1"),
             prompt,
             dir.path().join("scratch"),
             vec![],
@@ -263,7 +263,7 @@ mod tests {
     fn spawn_config_env_includes_loom_inside_marker() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = three_profile_manifest(dir.path());
-        let bead = bead_with_labels("wx-1", &["profile:rust"]);
+        let bead = bead_with_labels("lm-1", &["profile:rust"]);
 
         let cfg = build_spawn_config_from_manifest(
             &manifest,
@@ -298,7 +298,7 @@ mod tests {
     fn unknown_profile_label_returns_typed_error() {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = three_profile_manifest(dir.path());
-        let bead = bead_with_labels("wx-1", &["profile:ruby"]);
+        let bead = bead_with_labels("lm-1", &["profile:ruby"]);
 
         let err = build_spawn_config_from_manifest(
             &manifest,

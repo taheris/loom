@@ -194,7 +194,7 @@ fn loom_loop_json_flag_emits_pretty_printed_json_on_stdout() {
     let workspace = dir.path();
     let (state_dir, bin_dir, manifest) = setup(workspace);
 
-    let bead = "wx-r5j";
+    let bead = "lm-r5j";
     let spec = "rendertest";
     seed_bead(
         &state_dir,
@@ -235,7 +235,7 @@ fn loom_loop_raw_flag_emits_compact_jsonl_on_stdout() {
     let workspace = dir.path();
     let (state_dir, bin_dir, manifest) = setup(workspace);
 
-    let bead = "wx-r5r";
+    let bead = "lm-r5r";
     let spec = "rendertest";
     seed_bead(
         &state_dir,
@@ -270,7 +270,7 @@ fn loom_loop_plain_flag_emits_no_ansi_escapes_on_stdout() {
     let workspace = dir.path();
     let (state_dir, bin_dir, manifest) = setup(workspace);
 
-    let bead = "wx-r5p";
+    let bead = "lm-r5p";
     let spec = "rendertest";
     seed_bead(
         &state_dir,

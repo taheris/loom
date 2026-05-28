@@ -66,7 +66,7 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
 ///    `<dir>/env.log` so the same test can verify the launcher contract.
 /// 3. Optionally dumps the prompt (argv[5]) to `$WRAPIX_STUB_PROMPT_DUMP`.
 /// 4. Branches on `$WRAPIX_STUB_MODE`:
-///    - `resolve-all` — parses the prompt for `### wx-…` lines and
+///    - `resolve-all` — parses the prompt for `### lm-…` lines and
 ///      forks `bd update <id> --notes "resolved …" --remove-label
 ///      loom:clarify` per match.
 ///    - `resolve-none` (default) — exits 0 immediately.
@@ -110,7 +110,7 @@ case "$mode" in
         # Parse the rendered msg.md prompt for `### <id> — …` lines and
         # update each bead. Same shape a real claude session would emit
         # (one `bd update` per resolved clarify).
-        ids=$(printf '%s\n' "$prompt" | awk '/^### wx-/ {{print $2}}')
+        ids=$(printf '%s\n' "$prompt" | awk '/^### lm-/ {{print $2}}')
         for id in $ids; do
             bd update "$id" --notes "resolved via msg --chat (stub $id)" --remove-label loom:clarify
         done
@@ -239,7 +239,7 @@ fn loom_msg_chat_launches_container() {
     let env = setup_chat();
     seed_bead(
         &env.state_dir,
-        "wx-c01",
+        "lm-c01",
         "container launch pin",
         "## Options — pick one\n\n### Option 1 — A\nbody\n",
         &["loom:clarify", "spec:scope-a"],
@@ -299,7 +299,7 @@ fn loom_msg_chat_launches_container() {
 #[test]
 fn loom_msg_chat_writes_notes_and_clears_labels() {
     let env = setup_chat();
-    for id in ["wx-w01", "wx-w02", "wx-w03"] {
+    for id in ["lm-w01", "lm-w02", "lm-w03"] {
         seed_bead(
             &env.state_dir,
             id,
@@ -317,7 +317,7 @@ fn loom_msg_chat_writes_notes_and_clears_labels() {
          stdout={stdout}\nstderr={stderr}",
     );
     let log = read_invocation_log(&env.state_dir);
-    for id in ["wx-w01", "wx-w02", "wx-w03"] {
+    for id in ["lm-w01", "lm-w02", "lm-w03"] {
         assert!(
             log.contains(&format!("update {id}")),
             "expected bd update call for {id}: {log}",
@@ -344,7 +344,7 @@ fn loom_msg_chat_partial_progress_leaves_unresolved_clarifies_open() {
     let env = setup_chat();
     seed_bead(
         &env.state_dir,
-        "wx-p01",
+        "lm-p01",
         "partial",
         "## Options — choose\n\n### Option 1 — only\nbody\n",
         &["loom:clarify", "spec:partial"],
@@ -357,12 +357,12 @@ fn loom_msg_chat_partial_progress_leaves_unresolved_clarifies_open() {
         "partial-progress session must exit 0 (clean per spec).\n\
          stdout={stdout}\nstderr={stderr}",
     );
-    let labels = read_labels(&env.state_dir, "wx-p01");
+    let labels = read_labels(&env.state_dir, "lm-p01");
     assert!(
         labels.iter().any(|l| l == "loom:clarify"),
         "unresolved bead must keep loom:clarify: {labels:?}",
     );
-    let notes = read_field(&env.state_dir, "wx-p01", "notes");
+    let notes = read_field(&env.state_dir, "lm-p01", "notes");
     assert!(
         notes.is_empty(),
         "unresolved bead notes should be empty: {notes:?}",
@@ -378,7 +378,7 @@ fn loom_msg_chat_rejects_non_complete_exit_signal() {
     let env = setup_chat();
     seed_bead(
         &env.state_dir,
-        "wx-x01",
+        "lm-x01",
         "exit-signal",
         "## Options — choose\n\n### Option 1 — only\nbody\n",
         &["loom:clarify", "spec:exit"],
@@ -400,14 +400,14 @@ fn loom_msg_chat_scope_filters_to_spec() {
     let env = setup_chat();
     seed_bead(
         &env.state_dir,
-        "wx-s01",
+        "lm-s01",
         "in-scope alpha",
         "## Options — choose\n\n### Option 1 — only\nbody\n",
         &["loom:clarify", "spec:alpha"],
     );
     seed_bead(
         &env.state_dir,
-        "wx-s02",
+        "lm-s02",
         "out-of-scope beta",
         "## Options — choose\n\n### Option 1 — only\nbody\n",
         &["loom:clarify", "spec:beta"],
@@ -428,11 +428,11 @@ fn loom_msg_chat_scope_filters_to_spec() {
     let dumped = std::fs::read_to_string(&prompt_dump)
         .unwrap_or_else(|e| panic!("read prompt dump {}: {e}", prompt_dump.display()));
     assert!(
-        dumped.contains("wx-s01"),
+        dumped.contains("lm-s01"),
         "in-scope bead must appear in prompt: {dumped:.500?}",
     );
     assert!(
-        !dumped.contains("wx-s02"),
+        !dumped.contains("lm-s02"),
         "out-of-scope bead must NOT appear in prompt: {dumped:.500?}",
     );
 }

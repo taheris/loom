@@ -151,8 +151,8 @@ mod tests {
         let old = now - Duration::from_secs(20 * 86_400);
         let recent = now - Duration::from_secs(2 * 86_400);
 
-        let p_old = dir.path().join("alpha/wx-1-old.jsonl");
-        let p_recent = dir.path().join("alpha/wx-2-new.jsonl");
+        let p_old = dir.path().join("alpha/lm-1-old.jsonl");
+        let p_recent = dir.path().join("alpha/lm-2-new.jsonl");
         touch(&p_old, "old");
         touch(&p_recent, "new");
         set_mtime(&p_old, old);
@@ -170,7 +170,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         let very_old = now - Duration::from_secs(365 * 86_400);
-        let p = dir.path().join("a/wx-1.jsonl");
+        let p = dir.path().join("a/lm-1.jsonl");
         touch(&p, "ancient");
         set_mtime(&p, very_old);
 
@@ -195,7 +195,7 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         let old = now - Duration::from_secs(60 * 86_400);
         for label in ["alpha", "beta", "gamma"] {
-            let p = dir.path().join(format!("{label}/wx-{label}.jsonl"));
+            let p = dir.path().join(format!("{label}/lm-{label}.jsonl"));
             touch(&p, "x");
             set_mtime(&p, old);
         }

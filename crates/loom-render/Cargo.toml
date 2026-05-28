@@ -11,7 +11,7 @@ publish.workspace = true
 # the driver runtime lets `loom logs`, SSE bridges, and external log
 # tools reuse it without pulling in rusqlite, gix, tokio, etc.
 #
-# H1 (wx-x3vg3) staged imara-diff / crossterm / owo-colors / colored_json
+# H1 (lm-x3vg3) staged imara-diff / crossterm / owo-colors / colored_json
 # at the workspace level; H2 onwards wires them through this crate.
 [dependencies]
 crossterm = { workspace = true }

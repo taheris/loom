@@ -146,7 +146,7 @@ proptest! {
             .iter()
             .enumerate()
             .map(|(i, label)| ActiveMolecule {
-                id: MoleculeId::new(format!("wx-{i}")),
+                id: MoleculeId::new(format!("lm-{i}")),
                 spec_label: SpecLabel::new(label.clone()),
                 base_commit: Some(format!("commit-{i}")),
             })

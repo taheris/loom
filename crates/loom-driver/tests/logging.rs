@@ -17,13 +17,13 @@ use loom_driver::logging::{
 use loom_events::{EventEnvelope, Source};
 use serde_json::{Value, json};
 
-/// Fixture envelope shared by every emission test. Bead id `wx-test`
+/// Fixture envelope shared by every emission test. Bead id `lm-test`
 /// is fully valid; the sink rewrites bead-keyed paths from its own
 /// constructor arg, so `bead_id` on the envelope is observed only by
 /// the JSONL writer.
 fn sample_envelope() -> EventEnvelope {
     EventEnvelope {
-        bead_id: BeadId::new("wx-test").expect("valid bead id"),
+        bead_id: BeadId::new("lm-test").expect("valid bead id"),
         molecule_id: None,
         iteration: 0,
         source: Source::Agent,
@@ -130,7 +130,7 @@ fn run_default_output_shape() -> Result<()> {
     let (mut sink, buf) = open_sink(
         dir.path(),
         "alpha",
-        "wx-1",
+        "lm-1",
         1_700_000_000,
         RenderMode::Default,
         false,
@@ -188,7 +188,7 @@ fn run_verbose_streams_text() -> Result<()> {
     let (mut sink, buf) = open_sink(
         dir.path(),
         "alpha",
-        "wx-1",
+        "lm-1",
         1_700_000_000,
         RenderMode::Verbose,
         false,
@@ -221,7 +221,7 @@ fn run_writes_per_bead_jsonl_log() -> Result<()> {
     let (mut sink, _) = open_sink(
         dir.path(),
         "alpha",
-        "wx-1",
+        "lm-1",
         1_700_000_000,
         RenderMode::Default,
         false,
@@ -373,7 +373,7 @@ fn run_logs_log_path() -> Result<()> {
     let (sink, _) = open_sink(
         dir.path(),
         "alpha",
-        "wx-1",
+        "lm-1",
         1_700_000_000,
         RenderMode::Default,
         false,
@@ -403,7 +403,7 @@ fn parallel_logs_are_per_bead() -> Result<()> {
     let (mut a, _) = open_sink(
         dir.path(),
         "alpha",
-        "wx-1",
+        "lm-1",
         1_700_000_000,
         RenderMode::Default,
         true,
@@ -411,7 +411,7 @@ fn parallel_logs_are_per_bead() -> Result<()> {
     let (mut b, _) = open_sink(
         dir.path(),
         "alpha",
-        "wx-2",
+        "lm-2",
         1_700_000_001,
         RenderMode::Default,
         true,
@@ -471,8 +471,8 @@ fn log_retention_sweep() -> Result<()> {
     let stale = now - Duration::from_secs(20 * 86_400);
     let recent = now - Duration::from_secs(2 * 86_400);
 
-    let p_stale = dir.path().join("alpha/wx-stale.jsonl");
-    let p_recent = dir.path().join("alpha/wx-recent.jsonl");
+    let p_stale = dir.path().join("alpha/lm-stale.jsonl");
+    let p_recent = dir.path().join("alpha/lm-recent.jsonl");
     touch(&p_stale, "stale");
     touch(&p_recent, "recent");
     set_mtime(&p_stale, stale);
@@ -499,7 +499,7 @@ fn log_retention_disabled() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
     let very_old = now - Duration::from_secs(365 * 86_400);
-    let p = dir.path().join("alpha/wx-1.jsonl");
+    let p = dir.path().join("alpha/lm-1.jsonl");
     touch(&p, "ancient");
     set_mtime(&p, very_old);
 
@@ -528,8 +528,8 @@ fn log_retention_failure_tolerance() -> Result<()> {
     // unlink fails for that file; the second subdir remains writable.
     let locked_dir = dir.path().join("alpha");
     let writable_dir = dir.path().join("beta");
-    let locked_file = locked_dir.join("wx-locked.jsonl");
-    let writable_file = writable_dir.join("wx-free.jsonl");
+    let locked_file = locked_dir.join("lm-locked.jsonl");
+    let writable_file = writable_dir.join("lm-free.jsonl");
     touch(&locked_file, "x");
     touch(&writable_file, "y");
     set_mtime(&locked_file, stale);
@@ -582,7 +582,7 @@ fn log_sink_per_event_flush() -> Result<()> {
     let (mut sink, _) = open_sink(
         dir.path(),
         "alpha",
-        "wx-1",
+        "lm-1",
         1_700_000_000,
         RenderMode::Default,
         false,
@@ -648,7 +648,7 @@ fn run_single_event_sink_property() -> Result<()> {
     let (mut sink, buf) = open_sink(
         dir.path(),
         "alpha",
-        "wx-1",
+        "lm-1",
         1_700_000_000,
         RenderMode::Default,
         false,
@@ -719,7 +719,7 @@ fn run_default_renders_per_tool_summary_cells() -> Result<()> {
     let (mut sink, buf) = open_sink(
         dir.path(),
         "alpha",
-        "wx-1",
+        "lm-1",
         1_700_000_000,
         RenderMode::Default,
         false,
@@ -792,7 +792,7 @@ fn run_default_indicator_emits_overwrite_pattern_on_tool_result() -> Result<()> 
     let (mut sink, buf) = open_sink_with_indicator(
         dir.path(),
         "alpha",
-        "wx-r3a",
+        "lm-r3a",
         1_700_000_000,
         RenderMode::Default,
     )?;
@@ -851,7 +851,7 @@ fn run_finish_finalizes_dangling_running_indicator() -> Result<()> {
     let (mut sink, buf) = open_sink_with_indicator(
         dir.path(),
         "alpha",
-        "wx-r3b",
+        "lm-r3b",
         1_700_000_000,
         RenderMode::Default,
     )?;
@@ -900,7 +900,7 @@ fn run_verbose_caps_tool_result_body_with_recovery_hint() -> Result<()> {
     let (mut sink, buf) = open_sink(
         dir.path(),
         "alpha",
-        "wx-2",
+        "lm-2",
         1_700_000_000,
         RenderMode::Verbose,
         false,
@@ -935,7 +935,7 @@ fn run_verbose_caps_tool_result_body_with_recovery_hint() -> Result<()> {
     if !term.contains("5 more lines") {
         return Err(anyhow!("missing `<N> more lines` recovery hint: {term:?}"));
     }
-    if !term.contains("loom logs -b wx-2 --tool b1") {
+    if !term.contains("loom logs -b lm-2 --tool b1") {
         return Err(anyhow!(
             "recovery hint must reference bead id + tool call id: {term:?}",
         ));

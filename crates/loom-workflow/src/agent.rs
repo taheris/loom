@@ -92,7 +92,7 @@ pub async fn run_agent<B: AgentBackend>(
 /// a stamped event by any other path. When `None`, the loop falls back
 /// to `phase_envelope_builder` so phase spawns (todo / plan / msg)
 /// without a bead context still produce fully-valid envelopes (bead id
-/// `wx-phase`).
+/// `lm-phase`).
 pub async fn run_agent_classified<B: AgentBackend>(
     config: &SpawnConfig,
     mut sink: Option<LogSink>,
@@ -365,14 +365,14 @@ async fn next_event_with_stall_warn(
 
 /// Fallback `EnvelopeBuilder` for phase-level spawns (todo/check/msg)
 /// that do not own a per-bead context yet. Stamps events with the
-/// synthetic but fully-valid `wx-phase` bead id; replay tools that key
+/// synthetic but fully-valid `lm-phase` bead id; replay tools that key
 /// on `bead_id` see it as a distinct stream rather than an invalid
 /// sentinel. The `ts_ms` closure samples the wall clock so events stay
 /// monotonic. Returns the parser error if BeadId rules drift to reject
-/// `wx-phase`; the [`phase_bead_id_parses`] test catches that drift
+/// `lm-phase`; the [`phase_bead_id_parses`] test catches that drift
 /// before it can reach a live session.
 fn phase_envelope_builder() -> Result<EnvelopeBuilder, loom_events::identifier::ParseBeadIdError> {
-    let bead = loom_events::identifier::BeadId::new("wx-phase")?;
+    let bead = loom_events::identifier::BeadId::new("lm-phase")?;
     let clock = SystemClock::new();
     Ok(EnvelopeBuilder::new(
         bead,
@@ -580,8 +580,8 @@ mod tests {
 
     #[test]
     fn phase_bead_id_parses() {
-        loom_events::identifier::BeadId::new("wx-phase")
-            .expect("`wx-phase` must parse as a BeadId — phase_envelope_builder depends on it");
+        loom_events::identifier::BeadId::new("lm-phase")
+            .expect("`lm-phase` must parse as a BeadId — phase_envelope_builder depends on it");
     }
 
     #[test]
@@ -608,7 +608,7 @@ mod tests {
     }
 
     fn builder() -> EnvelopeBuilder {
-        let bead = BeadId::new("wx-emit").expect("bead id");
+        let bead = BeadId::new("lm-emit").expect("bead id");
         let mut clock = 0_i64;
         EnvelopeBuilder::new(bead, None, 0, Source::Agent, move || {
             clock += 1;
@@ -625,7 +625,7 @@ mod tests {
 
     fn open_test_sink(dir: &std::path::Path) -> (LogSink, std::path::PathBuf) {
         let label = SpecLabel::new("emit-test");
-        let bead = BeadId::new("wx-emit").expect("bead id");
+        let bead = BeadId::new("lm-emit").expect("bead id");
         let sink = LogSink::open_in_at(dir, &label, &bead, None, SystemTime::UNIX_EPOCH)
             .expect("open sink");
         let path = sink.log_path().to_path_buf();
@@ -687,7 +687,7 @@ mod tests {
 
     fn sample_envelope() -> loom_events::EventEnvelope {
         loom_events::EventEnvelope {
-            bead_id: BeadId::new("wx-react").expect("bead id"),
+            bead_id: BeadId::new("lm-react").expect("bead id"),
             molecule_id: None,
             iteration: 1,
             source: Source::Agent,

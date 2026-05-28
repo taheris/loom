@@ -356,12 +356,12 @@ same shape:
 ```rust
 #[test]
 fn newtype_roundtrip() {
-    let id = BeadId::new("wx-abc123").unwrap();
-    assert_eq!(id.as_str(), "wx-abc123");
-    assert_eq!(id.to_string(), "wx-abc123");
+    let id = BeadId::new("lm-abc123").unwrap();
+    assert_eq!(id.as_str(), "lm-abc123");
+    assert_eq!(id.to_string(), "lm-abc123");
 
     let json = serde_json::to_string(&id).unwrap();
-    assert_eq!(json, r#""wx-abc123""#); // transparent, no wrapper
+    assert_eq!(json, r#""lm-abc123""#); // transparent, no wrapper
     let parsed: BeadId = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed, id);
 
@@ -443,7 +443,7 @@ fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
         pinned_context: PINNED_CONTEXT_BODY.into(),
         label: SpecLabel::new("harness"),
         spec_path: "specs/harness.md".into(),
-        issue_id: BeadId::new("wx-abc.1")?,
+        issue_id: BeadId::new("lm-abc.1")?,
         title: "Implement parser".into(),
         description: "agent-supplied body".into(),
         previous_failure: None,

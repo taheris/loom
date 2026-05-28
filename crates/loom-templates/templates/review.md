@@ -223,7 +223,7 @@ does not scrape your reasoning for `### Option N` blocks. Two flows:
 - **Options apply to a NEW clarify bead** (e.g. a freshly-detected invariant
   clash) → `bd create` with the canonical block in `--description` (template
   below).
-- **Options apply to an EXISTING bead** (e.g. wx-tc9xs.33 is already
+- **Options apply to an EXISTING bead** (e.g. lm-tc9xs.33 is already
   `loom:blocked` and your review proposes paths to unblock it) → write the
   canonical block onto that bead with `bd update --notes` AND apply the
   `loom:clarify` label so `loom msg` finds it:

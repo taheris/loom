@@ -41,9 +41,9 @@ fn install_bd_conflict_stub(dir: &Path) -> PathBuf {
              if [ \"$arg\" = '--json' ]; then\n\
                  cat <<'__BD_BEAD_JSON__'\n\
 [\
-{{\"id\":\"wx-aaa\",\"title\":\"acme\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"epic\",\"labels\":[\"spec:acme\"],\"metadata\":{{}}}}\
+{{\"id\":\"lm-aaa\",\"title\":\"acme\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"epic\",\"labels\":[\"spec:acme\"],\"metadata\":{{}}}}\
 ,\
-{{\"id\":\"wx-bbb\",\"title\":\"acme\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"epic\",\"labels\":[\"spec:acme\"],\"metadata\":{{}}}}\
+{{\"id\":\"lm-bbb\",\"title\":\"acme\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"epic\",\"labels\":[\"spec:acme\"],\"metadata\":{{}}}}\
 ]\n\
 __BD_BEAD_JSON__\n\
                  exit 0\n\
@@ -99,7 +99,7 @@ fn tree_scope_refuses_when_more_than_one_open_epic_for_spec() {
         "stderr must name the spec. stderr:\n{stderr}",
     );
     assert!(
-        stderr.contains("wx-aaa") && stderr.contains("wx-bbb"),
+        stderr.contains("lm-aaa") && stderr.contains("lm-bbb"),
         "stderr must surface both conflicting epic IDs. stderr:\n{stderr}",
     );
 

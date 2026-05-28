@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn cap_body_keeps_short_bodies_unchanged() {
         let body = "line 1\nline 2\nline 3";
-        assert_eq!(cap_body(body, "wx-1", "tc-1"), body);
+        assert_eq!(cap_body(body, "lm-1", "tc-1"), body);
     }
 
     #[test]
@@ -560,7 +560,7 @@ mod tests {
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let out = cap_body(&body, "wx-1", "tc-1");
+        let out = cap_body(&body, "lm-1", "tc-1");
         // 10 lines kept + blank + hint = 12 lines
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 12, "{out}");
@@ -568,7 +568,7 @@ mod tests {
         assert!(lines[9].starts_with("line 10"));
         assert!(lines[10].is_empty(), "{out}");
         assert!(lines[11].contains("10 more lines"), "{out}");
-        assert!(lines[11].contains("loom logs -b wx-1 --tool tc-1"), "{out}");
+        assert!(lines[11].contains("loom logs -b lm-1 --tool tc-1"), "{out}");
     }
 
     #[test]
@@ -578,7 +578,7 @@ mod tests {
             .map(|_| "x".repeat(600))
             .collect::<Vec<_>>()
             .join("\n");
-        let out = cap_body(&body, "wx-1", "tc-1");
+        let out = cap_body(&body, "lm-1", "tc-1");
         // Only ~3 lines fit before the byte cap trips.
         assert!(out.contains("more lines"), "{out}");
         assert!(out.len() < body.len(), "{out}");

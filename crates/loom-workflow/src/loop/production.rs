@@ -1006,13 +1006,13 @@ mod tests {
         )
         .with_beads_push_program(stub);
         let outcome = controller
-            .run_bead(&bead("wx-1"), None)
+            .run_bead(&bead("lm-1"), None)
             .await
             .expect("run_bead ok");
         assert_eq!(outcome, AgentOutcome::Success);
         let cfg = captured.lock().unwrap().take().expect("closure called");
         assert_eq!(cfg.image_ref, "localhost/wrapix-base:abc");
-        assert!(cfg.initial_prompt.contains("wx-1"));
+        assert!(cfg.initial_prompt.contains("lm-1"));
     }
 
     /// `loom loop` must dispatch with the rendered
@@ -1062,7 +1062,7 @@ mod tests {
         )
         .with_beads_push_program(stub);
         let bead = Bead {
-            id: BeadId::new("wx-99").expect("bead id"),
+            id: BeadId::new("lm-99").expect("bead id"),
             title: "Implement the harness".into(),
             description: "wire the per-bead loop".into(),
             status: "open".into(),
@@ -1130,7 +1130,7 @@ mod tests {
             },
         );
         let outcome = controller
-            .run_bead(&bead("wx-2"), None)
+            .run_bead(&bead("lm-2"), None)
             .await
             .expect("run_bead ok");
         match outcome {
@@ -1174,7 +1174,7 @@ mod tests {
             },
         );
         let outcome = controller
-            .run_bead(&bead("wx-3"), None)
+            .run_bead(&bead("lm-3"), None)
             .await
             .expect("run_bead ok");
         match outcome {
@@ -1216,7 +1216,7 @@ mod tests {
             },
         );
         let outcome = controller
-            .run_bead(&bead("wx-4"), None)
+            .run_bead(&bead("lm-4"), None)
             .await
             .expect("run_bead ok");
         match outcome {
@@ -1259,7 +1259,7 @@ mod tests {
             },
         );
         let bad_bead = Bead {
-            id: BeadId::new("wx-5").expect("valid bead id"),
+            id: BeadId::new("lm-5").expect("valid bead id"),
             title: "needs a profile we do not have".into(),
             description: "desc".into(),
             status: "open".into(),
@@ -1320,7 +1320,7 @@ mod tests {
         let bd = BdClient::with_runner(molecule_lookup_script(
             dir.path(),
             "alpha",
-            "wx-mol.1",
+            "lm-mol.1",
             "deadbeef",
         ));
         let git = git_workspace(dir.path());
@@ -1386,7 +1386,7 @@ mod tests {
         let bd = BdClient::with_runner(molecule_lookup_script(
             dir.path(),
             "alpha",
-            "wx-mol.1",
+            "lm-mol.1",
             "deadbeef",
         ));
         let git = git_workspace(dir.path());
@@ -1460,7 +1460,7 @@ mod tests {
         let bd = BdClient::with_runner(molecule_lookup_script(
             dir.path(),
             "beta",
-            "wx-mol.7",
+            "lm-mol.7",
             "cafef00d",
         ));
         let git = git_workspace(dir.path());
@@ -1569,7 +1569,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
         let body = br#"[{
-            "id": "wx-mol.99",
+            "id": "lm-mol.99",
             "title": "gamma: pending decomposition",
             "status": "open",
             "priority": 2,
@@ -1603,7 +1603,7 @@ mod tests {
             .await
             .expect_err("exec_review must error when molecule lacks base_commit");
         match err {
-            LoopError::MoleculeMissingBaseCommit { id } => assert_eq!(id, "wx-mol.99"),
+            LoopError::MoleculeMissingBaseCommit { id } => assert_eq!(id, "lm-mol.99"),
             other => panic!("expected MoleculeMissingBaseCommit, got {other:?}"),
         }
     }
@@ -1632,17 +1632,17 @@ mod tests {
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let epic_show = br#"[{
-            "id": "wx-child.7",
+            "id": "lm-child.7",
             "title": "delta follow-up",
             "status": "open",
             "priority": 2,
             "issue_type": "epic",
             "labels": ["spec:delta"],
-            "parent": "wx-epicd",
+            "parent": "lm-epicd",
             "metadata": {}
         }]"#;
         let parent_show = br#"[{
-            "id": "wx-epicd",
+            "id": "lm-epicd",
             "title": "delta: pending decomposition",
             "status": "open",
             "priority": 2,
@@ -1709,17 +1709,17 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = write_manifest(dir.path());
         let epic_show = br#"[{
-            "id": "wx-child.8",
+            "id": "lm-child.8",
             "title": "epsilon follow-up",
             "status": "open",
             "priority": 2,
             "issue_type": "epic",
             "labels": ["spec:epsilon"],
-            "parent": "wx-epice",
+            "parent": "lm-epice",
             "metadata": {}
         }]"#;
         let parent_show = br#"[{
-            "id": "wx-epice",
+            "id": "lm-epice",
             "title": "epsilon: pending decomposition",
             "status": "open",
             "priority": 2,
@@ -1757,13 +1757,13 @@ mod tests {
             .expect_err("exec_review must error when both child and parent lack base_commit");
         let msg = err.to_string();
         assert!(
-            msg.contains("bd update wx-child.8 --set-metadata loom.base_commit="),
+            msg.contains("bd update lm-child.8 --set-metadata loom.base_commit="),
             "error must surface the fix command: {msg}",
         );
         match err {
             LoopError::MoleculeMissingBaseCommitNoParentMetadata { id, parent } => {
-                assert_eq!(id, "wx-child.8");
-                assert_eq!(parent, "wx-epice");
+                assert_eq!(id, "lm-child.8");
+                assert_eq!(parent, "lm-epice");
             }
             other => panic!("expected MoleculeMissingBaseCommitNoParentMetadata, got {other:?}"),
         }
@@ -1804,7 +1804,7 @@ mod tests {
                 )
             },
         );
-        let bead_id = BeadId::new("wx-clarify.1").expect("bead id");
+        let bead_id = BeadId::new("lm-clarify.1").expect("bead id");
         controller
             .apply_clarify(
                 &bead_id,
@@ -1819,7 +1819,7 @@ mod tests {
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
         assert_eq!(argv[0], "update");
-        assert_eq!(argv[1], "wx-clarify.1");
+        assert_eq!(argv[1], "lm-clarify.1");
         assert!(
             argv.iter().any(|a| a == "--add-label"),
             "missing --add-label in argv: {argv:?}",
@@ -1876,7 +1876,7 @@ mod tests {
                 )
             },
         );
-        let bead_id = BeadId::new("wx-blocked.1").expect("bead id");
+        let bead_id = BeadId::new("lm-blocked.1").expect("bead id");
         controller
             .apply_blocked(&bead_id, "infra-preflight", "podman load failed")
             .await
@@ -1888,7 +1888,7 @@ mod tests {
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
         assert_eq!(argv[0], "update");
-        assert_eq!(argv[1], "wx-blocked.1");
+        assert_eq!(argv[1], "lm-blocked.1");
         assert!(
             argv.iter().any(|a| a == "loom:blocked"),
             "missing loom:blocked label in argv: {argv:?}",
@@ -1959,8 +1959,8 @@ mod tests {
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
         let body = br#"[
-            {"id":"wx-epic.1","title":"epic","description":"","status":"open","priority":2,"issue_type":"epic","labels":["spec:gate","profile:base"]},
-            {"id":"wx-leaf.2","title":"leaf","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:gate","profile:base"]}
+            {"id":"lm-epic.1","title":"epic","description":"","status":"open","priority":2,"issue_type":"epic","labels":["spec:gate","profile:base"]},
+            {"id":"lm-leaf.2","title":"leaf","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:gate","profile:base"]}
         ]"#;
         let scripted = ScriptedBd::new([ok_stdout(body)]);
         let bd = BdClient::with_runner(scripted);
@@ -1990,7 +1990,7 @@ mod tests {
             .expect("a non-epic bead must surface");
         assert_eq!(
             picked.id.as_str(),
-            "wx-leaf.2",
+            "lm-leaf.2",
             "worker queue must skip the epic and return the leaf bead",
         );
     }
