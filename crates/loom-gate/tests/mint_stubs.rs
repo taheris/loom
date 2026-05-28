@@ -9,13 +9,4 @@
 //! function under the module it tests.
 
 #[test]
-fn mint_bead_scope_walks_llm_rubric_only_not_verifiers() {}
-
-#[test]
-fn mint_tree_scope_walks_verifiers_and_rubric_emitting_findings_from_both() {}
-
-#[test]
-fn mint_idempotent_after_partial_failure_retries_only_unfinished_findings() {}
-
-#[test]
 fn mint_applies_per_spec_default_profile_label_to_created_beads() {}
