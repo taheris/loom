@@ -54,10 +54,7 @@ existing protocol:
 git add <files>
 git commit -m "..."
 git push
-bd dolt push                      # Push to local dolt-remote on beads worktree
-git -C .git/beads-worktrees/beads add -A
-git -C .git/beads-worktrees/beads commit -m "bd sync"
-git -C .git/beads-worktrees/beads push -u origin beads
+beads-push                        # bd dolt + beads-branch sync to GitHub
 ```
 
 Work is NOT complete until both `main` and `beads` are pushed.
