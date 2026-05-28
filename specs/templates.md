@@ -477,61 +477,63 @@ implementations", not specific file paths or crate names.
 Downstream consumers of loom whose workspace layouts differ from
 this one inherit the same discipline against their own layouts.
 
-### Review Bead-Mutation Authorization
+### Review Emit Shape
 
-`review.md` carries an `## Authorization — Bead Mutations Are the
-Phase's Purpose` block near the top of the body (before the first
-section that invokes `bd create` / `bd update` / `bd mol bond`).
-The block tells the reviewing agent:
+`review.md` is the LLM-rubric walk's prompt template. The reviewing
+agent emits findings as streaming `LOOM_FINDING:` lines on stdout —
+one line per finding, identified as the walk proceeds, with a JSON
+payload after the prefix:
 
-1. `bd create`, `bd update`, `bd mol bond`, and `bd update
-   --add-label` MAY be invoked without further user authorization —
-   the review session is itself the user's standing authorization
-   for those `bd` mutations.
-2. Refusing to mint a bead and narrating the fix-up or clarify
-   only in prose is a protocol violation. The verdict gate does
-   not parse the agent's stdout for `### Option N` blocks or
-   fix-up summaries — they must land in bead state via `bd
-   create` / `bd update --notes`.
-3. `LOOM_CONCERN` REQUIRES at least one corresponding `bd create`
-   (a clarify bead or a fix-up bead bonded to the molecule via
-   `bd mol bond`). A `LOOM_CONCERN` whose findings live only in
-   the review log is invisible to `bd ready` and `loom msg` — the
-   concern silently evaporates when the molecule re-enters the
-   loop with no actionable work attached.
+```
+LOOM_FINDING: {"token": "...", "bonds": ["..."], "target": {"kind": "...", ...}, "evidence": "..."}
+```
 
-The same constraint is pinned in `partial/exit_signals.md` so it
-appears in every review-style prompt the partial is included in.
-Reason: the agent's default "ask before mutating shared state"
-reflex collides with the gate's mechanical persistence model
-unless the authorization is named explicitly in the prompt.
+Followed by exactly one terminal marker
+(`LOOM_COMPLETE` / `LOOM_CONCERN: <summary>` / `LOOM_BLOCKED` /
+`LOOM_CLARIFY`). The review template's body documents this emit
+shape and the tagged-union variants of `target` per [gate.md —
+Findings and Minting](gate.md#findings-and-minting). The `bonds`
+array names the spec(s) the fix-up should bond to (bonding info);
+the `target` carries identity-bearing fields specific to the
+variant. JSON was chosen over pipe-delimited shapes because LLM
+emit is more reliable on JSON, and the tagged-union encoding of
+`target` is naturally JSON-shaped.
 
-### Review Default-Profile Minting
+**The review template makes no bd writes.** Earlier revisions of
+this spec authorized `bd create` / `bd update` / `bd mol bond` from
+inside the review prompt — those instructions are removed. The
+agent's job is to identify findings and emit them; the driver
+(`loom gate mint`) is the sole chokepoint that mints fix-up beads
+from the typed `LOOM_FINDING:` lines, applying fingerprint dedup
+and per-spec molecule resolution. A review run that mutates bd
+state from inside the prompt is a protocol violation.
 
-`ReviewContext` carries a `default_profile: ProfileName` field
-populated per-spec from the controller at render time. The four
-`bd create --labels=…` examples in `review.md` (recovery-epic
-resolution, tree-scope resolution, clarify bead, fix-up bead) name
-that profile via `profile:{{ default_profile }}` rather than a
-hardcoded literal. The per-spec mapping is
+The `invariant-clash` token carries its options block as part of
+the finding's `evidence` payload (the rubric emits the canonical
+`## Options — …` text inline); the driver lifts it into the minted
+clarify bead's description per the *Options Format Contract*.
+
+### Mint Default-Profile
+
+The per-spec default profile (`profile:rust` for cargo-bound specs;
+`profile:base` for Nix-only and unknown specs) is consumed by the
+driver-side `loom gate mint` flow when it issues `bd create
+--labels=…` for fix-up and clarify beads. The mapping is
 `default_profile_for_spec(&SpecLabel)` in
 `loom-workflow::review::context`; cargo-bound specs (`harness`,
-`templates`, `agent`, `gate`, `llm`, `tests`) default to
-`profile:rust` so the bead's dispatch container has the Rust
+`templates`, `agent`, `gate`, `llm`, `tests`) resolve to
+`profile:rust` so the fix-up bead's dispatch container has the Rust
 toolchain its `[check]` / `[test]` verifiers need; Nix-only specs
 (currently `pre-commit`) and unknown specs stay on `profile:base`.
-The override note kept under the fix-up minting block lets the agent
-upgrade to `profile:python` / `profile:mcp` etc. when a specific
+Mint applies this default to every fix-up it creates; the operator
+overrides via `bd update <id> --labels` post-mint when a specific
 fix-up's toolchain needs diverge from the spec's default.
 
-The same code blocks also drop the
-`bd mol bond "$NEW_ID" "<molecule>"` follow-up that previously
-trailed each `bd create --parent`. `--parent` already establishes
-the molecule edge; the second write retraces it and trips bd's
-cycle detector (`<new> → <epic> → <epic>`), aborting the review
-session before subsequent fix-ups are minted. The bd-bond call
-stays in flows where no `--parent` was supplied (e.g. bonding a
-pre-existing bead onto a molecule).
+This was previously a `review.md` template concern (`bd create
+--labels=…` examples were rendered with `profile:{{ default_profile }}`).
+After unification, `review.md` no longer emits `bd create` calls;
+the driver applies the default profile when minting from
+`LOOM_FINDING:` lines.
 
 ### Sibling-Spec Editing
 
@@ -743,43 +745,37 @@ documents in front of the agent with zero configuration.
   bead-allocation carve-out
   [judge](../tests/judges/loom.sh#judge_sibling_spec_editing_documents_split)
 
-### Review bead-mutation authorization
+### Review emit shape
 
-- `review.md` contains an `## Authorization — Bead Mutations Are
-  the Phase's Purpose` block before the first section that invokes
-  `bd create`; the block names `bd create`, `bd update`, `bd mol
-  bond`, and `bd update --add-label` as authorized-without-asking
-  during the review phase
-  [check](grep -q 'Authorization — Bead Mutations Are the Phase' crates/loom-templates/templates/review.md)
-- The block also names the protocol violation: `LOOM_CONCERN`
-  without a corresponding `bd create` leaves the concern invisible
-  to `bd ready` and `loom msg`
-  [check](grep -q 'without at least one corresponding .bd create' crates/loom-templates/templates/review.md)
-- `partial/exit_signals.md` carries the same constraint on the
-  `LOOM_CONCERN` bullet so it appears in every prompt that
-  includes the partial
-  [check](grep -q 'LOOM_CONCERN. requires at least one corresponding .bd create' crates/loom-templates/templates/partial/exit_signals.md)
+- `review.md` documents the `LOOM_FINDING: <json>` emit shape with
+  the `{"token","bonds","target","evidence"}` field set, tagged
+  `target` variants, and instructs the agent to produce one JSON
+  object per identified finding, streamed as the walk proceeds
+  [check](grep -q 'LOOM_FINDING:' crates/loom-templates/templates/review.md)
+- `review.md` does not contain a `bd create` invocation (the
+  driver-side `loom gate mint` is the sole bd-mutation chokepoint;
+  review is inspection-only)
+  [check](bash -c "! grep -nE 'bd create|bd mol bond|bd update --add-label' crates/loom-templates/templates/review.md")
+- `partial/exit_signals.md`'s `LOOM_CONCERN` bullet describes the
+  terminal-marker role (walk-finished-with-findings signal) without
+  the previous "requires at least one corresponding `bd create`"
+  language — findings now persist via `LOOM_FINDING:` lines
+  consumed by the driver
+  [check](bash -c "! grep -nE 'LOOM_CONCERN. requires at least one corresponding .bd create' crates/loom-templates/templates/partial/exit_signals.md")
 
-### Review default-profile minting
+### Mint default-profile
 
-- `ReviewContext` carries `default_profile: ProfileName`; cargo-bound
+- The driver-side `loom gate mint` resolves the per-spec default
+  profile via `default_profile_for_spec(&SpecLabel)`; cargo-bound
   specs (`harness`, `templates`, `agent`, `gate`, `llm`, `tests`)
   resolve to `profile:rust`
   [check](cargo test -p loom-workflow --lib default_profile_for_spec_returns_rust_for_cargo_bound_specs)
 - Nix-only / unknown specs fall through to `profile:base`
   [check](cargo test -p loom-workflow --lib default_profile_for_spec_returns_base_for_nix_only_specs)
-- `review.md` renders fix-up and clarify `bd create --labels=…`
-  examples with `profile:{{ default_profile }}` — never a hardcoded
-  `profile:base` literal
-  [check](bash -c "! grep -nE 'profile:base' crates/loom-templates/templates/review.md")
-- For `spec:harness` the rendered prompt mints fix-ups and clarifies
-  under `profile:rust`; for `spec:pre-commit` it stays on
-  `profile:base`
-  [check](cargo test -p loom-workflow --lib review::context::tests::rendered_template_inlines_default_profile_in_bd_create_examples)
-- Code blocks that begin with `bd create --parent <epic>` do not also
-  invoke `bd mol bond <new> <epic>` — `--parent` already creates the
-  edge, and the second write trips bd's cycle detector
-  [check](cargo test -p loom-workflow --lib review::context::tests::rendered_template_omits_redundant_bd_mol_bond_after_bd_create_parent)
+- Mint applies the resolved default profile as a `profile:<name>`
+  label on every fix-up and clarify bead it creates; the operator
+  overrides via `bd update <id> --labels` post-mint
+  [test](mint_applies_per_spec_default_profile_label_to_created_beads)
 
 ### Typed `PreviousFailure`
 

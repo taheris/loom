@@ -1373,7 +1373,7 @@ open_epic = bd find --type=epic --label=spec:<X> --status=open
 - **One result** → that epic's bonded molecule is the active
   molecule for X.
 - **Zero results** → no active molecule; the next operation that
-  needs one (`loom todo`, `loom gate audit --tree`) mints it.
+  needs one (`loom todo`, `loom gate mint --tree`) mints it.
 - **More than one** → structural invariant violation. Loom refuses
   to proceed and surfaces the conflicting epic IDs; the operator
   closes one before re-running.
@@ -1411,9 +1411,12 @@ path.
     (close the pre-existing epic(s), mint one cross-cutting
     molecule covering all touched specs); the operator resolves
     via `loom msg`.
-- **`loom gate audit --tree`** — for each concern about spec X,
+- **`loom gate mint --tree`** — for each finding about spec X,
   applies single-tier resolution: bonds fix-up beads to X's open
-  epic, or mints molecule + epic if none exists. See
+  epic, or mints molecule + epic if none exists. `loom gate audit
+  --tree` performs the same walk for inspection but produces no bd
+  writes. See
+  [gate.md — Findings and Minting](gate.md#findings-and-minting) and
   [gate.md — Standing-safety-net checks](gate.md#standing-safety-net-checks).
 
 **Epic close is gated structurally on `GateSuccess`** via the
@@ -1454,7 +1457,7 @@ is "done" by construction. Continuing work against the same
 molecule means **re-opening** the closed epic explicitly (`bd
 update <id> --status=open`); starting a fresh cycle means leaving
 the closed epic alone and letting the next `loom todo` /
-`loom gate audit --tree` mint a new molecule because no open epic
+`loom gate mint --tree` mint a new molecule because no open epic
 exists. Closed epics persist as a queryable history; they're never
 auto-revived.
 
@@ -2596,7 +2599,7 @@ two agent-loop observers.
      `-n <label>` for a new spec and `-u <label>` for updating an existing
      one. Plan sessions edit specs only — they do **not** create molecule
      epics or write to bd. Epic creation is owned by `loom todo` and by
-     `loom gate audit --tree`'s mint-if-missing branch (see
+     `loom gate mint --tree`'s mint-if-missing branch (see
      [gate.md](gate.md)). No hidden-spec flag: scratch / private specs
      are kept out of git via `.git/info/exclude`.
    - `loom todo` — spec-to-beads decomposition. Fans out across **every**
