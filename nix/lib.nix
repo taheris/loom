@@ -23,7 +23,15 @@ in
       profiles ? { inherit (wrapixLib.profiles) base rust python; },
     }:
     let
-      extraForProfile = name: if name == "rust" then [ pkgs.flock ] else [ ];
+      extraForProfile =
+        name:
+        if name == "rust" then
+          [
+            pkgs.flock
+            pkgs.cargo-nextest
+          ]
+        else
+          [ ];
       sandboxes = mapAttrs (
         name: profile:
         wrapixLib.mkSandbox {
