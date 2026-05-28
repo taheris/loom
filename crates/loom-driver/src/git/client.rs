@@ -732,24 +732,36 @@ where
     Err(cli_error(&output))
 }
 
-/// Construct `GitError::GitCli` from a `git` invocation's `Output`, joining
-/// multi-line stderr with ` | ` so the resulting Display sits on one log
-/// line without losing any detail. `git push` failures in particular emit
-/// multiple lines (`error:` + `hint:` + `! [rejected]`); without the
-/// collapse, the value-with-newlines breaks downstream
-/// `warn!(error = %e)` rendering and operators see only the first or last
-/// line. Trailing whitespace is stripped per-line; empty lines are dropped.
+/// Construct `GitError::GitCli` from a `git` invocation's `Output`,
+/// preserving natural newlines in stderr (and folding in stdout, under a
+/// `[stdout]` heading, when it carries content too). `git push` failures
+/// in particular emit multiple lines (`error:` + `hint:` + `! [rejected]`)
+/// AND the rejecting pre-push hook (e.g. `nix flake check`) typically
+/// writes its failure diagnostic to stdout while git itself only emits a
+/// terse "failed to push some refs" on stderr — without the stdout fold,
+/// hook-driven push failures bottom out at the one-line git wrapper and
+/// the actual cause is lost. Trailing whitespace is stripped per-line;
+/// fully-empty leading/trailing lines are dropped.
 fn cli_error(output: &std::process::Output) -> GitError {
-    let raw = String::from_utf8_lossy(&output.stderr);
-    let stderr = raw
-        .lines()
-        .map(str::trim_end)
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join(" | ");
+    fn trim_lines(buf: &[u8]) -> String {
+        let s: String = String::from_utf8_lossy(buf)
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
+        s.trim().to_string()
+    }
+    let stderr = trim_lines(&output.stderr);
+    let stdout = trim_lines(&output.stdout);
+    let combined = match (stderr.is_empty(), stdout.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stderr,
+        (true, false) => format!("[stdout]\n{stdout}"),
+        (false, false) => format!("{stderr}\n[stdout]\n{stdout}"),
+    };
     GitError::GitCli {
         status: output.status.code().unwrap_or(-1),
-        stderr,
+        stderr: combined,
     }
 }
 
