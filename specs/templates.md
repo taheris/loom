@@ -764,9 +764,10 @@ documents in front of the agent with zero configuration.
 
 - `ReviewContext` carries `default_profile: ProfileName`; cargo-bound
   specs (`harness`, `templates`, `agent`, `gate`, `llm`, `tests`)
-  resolve to `profile:rust` and Nix-only / unknown specs fall through
-  to `profile:base`
-  [check](cargo test -p loom-workflow --lib default_profile_for_spec)
+  resolve to `profile:rust`
+  [check](cargo test -p loom-workflow --lib default_profile_for_spec_returns_rust_for_cargo_bound_specs)
+- Nix-only / unknown specs fall through to `profile:base`
+  [check](cargo test -p loom-workflow --lib default_profile_for_spec_returns_base_for_nix_only_specs)
 - `review.md` renders fix-up and clarify `bd create --labels=…`
   examples with `profile:{{ default_profile }}` — never a hardcoded
   `profile:base` literal
