@@ -655,4 +655,20 @@ profile = "rust"
         );
         Ok(())
     }
+
+    /// `[phase.default] profile = "rust"` reaches `Phase::Msg` exactly
+    /// like the other phases.
+    #[test]
+    fn agent_for_msg_inherits_phase_default_profile() -> Result<()> {
+        let src = r#"
+[phase.default]
+profile = "rust"
+"#;
+        let cfg = LoomConfig::from_toml_str(src)?;
+        assert_eq!(
+            cfg.agent_for(Phase::Msg).expect("msg").profile.as_str(),
+            "rust"
+        );
+        Ok(())
+    }
 }
