@@ -7,11 +7,14 @@ external Rust consumers.
 ## Problem Statement
 
 Loom's Direct backend needs typed multi-provider LLM access with
-per-call model selection, typed prompt-cache markers, and
-structured-output deserialization. The same primitives are useful
-to external Rust crates (e.g. RAG pipelines, domain-specific
-review tools) that want typed LLM calls without taking on Loom's
-CLI / workflow / beads surface.
+per-call model selection within a schema, typed prompt-cache
+markers, structured-output deserialization, and typed
+transport-failure classification so consumers can drive their own
+retry policies. The same primitives are useful to external Rust
+crates (e.g. RAG pipelines, domain-specific review tools, on-prem
+deployments backed by customer-hosted models reached via an
+OpenAI-compatible endpoint) that want typed LLM calls without
+taking on Loom's CLI / workflow / beads surface.
 
 `llm` is the public-contract crate exposing those primitives.
 Its detailed wrapping rationale lives in [Wrapper Thickness](#wrapper-thickness);
@@ -55,7 +58,7 @@ wrapper:
   change rather than a breaking change for every consumer
 - Enables enrichment at the boundary: token-usage `AgentEvent`
   emission on every completion, default observer composition,
-  consistent error types
+  typed `LlmError` classification (see [LlmError](#llmerror))
 - Carries bus-factor mitigation for the underlying crate — a
   minimal provider client (Anthropic Messages, at minimum) can
   be vendored as a contingency seed inside `llm` without
@@ -63,20 +66,106 @@ wrapper:
 
 ### `LlmClient` Trait
 
-Per-call model selection (no fixed-model client construction):
+Object-safe trait; per-schema Client types implement it. The
+trait carries the schema-kind discriminator so the
+Client–`ModelId` compatibility check is structural rather than
+stringly-typed:
 
 ```rust
 pub trait LlmClient: Send + Sync {
-    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse>;
-    async fn complete_structured<T>(&self, req: CompletionRequest) -> Result<T>
+    fn schema(&self) -> SchemaKind;
+    fn supports(&self, model: &ModelId) -> bool {
+        model.schema() == self.schema()
+    }
+    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError>;
+    async fn complete_structured<T>(&self, req: CompletionRequest) -> Result<T, LlmError>
         where T: DeserializeOwned + JsonSchema;
 }
 ```
 
-The same client instance accepts a different model on every call.
-Model is a required positional argument on the request, not a
-client-construction parameter — the type system forbids
-constructing a request without naming the model.
+Model is required positional on the request (`CompletionRequest::new(ModelId)`);
+the type system forbids constructing a request without naming the
+model. The Client's `schema()` is fixed at construction (each
+Client type maps 1:1 to a `SchemaKind`); per-call selection
+varies the model *within* that schema. Calling `complete` with a
+`ModelId` whose schema does not match `self.schema()` returns
+`LlmError::IncompatibleModel { model, expected: SchemaKind }` —
+no network call is made. Consumers can pre-validate
+allowed-model sets via `supports(&ModelId)` without issuing a
+request.
+
+The trait is object-safe so `Arc<dyn LlmClient>` works for
+runtime polymorphism — per-tenant Client caches, mock impls in
+tests, and external-crate `LlmClient` impls compose through the
+same dyn surface.
+
+### `SchemaKind`
+
+```rust
+#[non_exhaustive]
+pub enum SchemaKind {
+    Anthropic,
+    OpenAi,
+    Gemini,
+    OpenAiCompat,
+}
+```
+
+`SchemaKind` is the wire-format discriminator: each variant
+names one HTTP message-shape family. Variants map 1:1 to
+`ModelId` outer variants and to per-schema Client types — see
+[Client Types](#client-types). `#[non_exhaustive]` so future
+adapters add variants additively (`Bedrock`, `AzureOpenAi`,
+`Vertex` — see [Out of Scope](#out-of-scope)) without breaking
+matchers.
+
+### `ModelId`
+
+Hybrid nested enum: outer variant discriminates by `SchemaKind`,
+inner enum names known models within that schema with an
+`Other(String)` fallback for forward-compat. `OpenAiCompat` is
+flat-`String` because customer-hosted models have no
+loom-knowable name set.
+
+```rust
+#[non_exhaustive]
+pub enum ModelId {
+    Anthropic(AnthropicModel),
+    OpenAi(OpenAiModel),
+    Gemini(GeminiModel),
+    #[cfg(feature = "openai-compat")]
+    OpenAiCompat(String),
+}
+
+pub enum AnthropicModel {
+    ClaudeOpus47,
+    ClaudeSonnet46,
+    ClaudeHaiku45,
+    // … other known Anthropic models
+    Other(String),
+}
+// OpenAiModel, GeminiModel: same shape — known variants + Other(String).
+// Inner enums are NOT #[non_exhaustive]: the `Other(String)` fallback
+// already absorbs unknown names, and exhaustive matching from outside
+// the crate (model-picker UIs, etc.) is a supported pattern.
+
+impl ModelId {
+    pub fn schema(&self) -> SchemaKind {
+        match self {
+            ModelId::Anthropic(_) => SchemaKind::Anthropic,
+            ModelId::OpenAi(_)    => SchemaKind::OpenAi,
+            ModelId::Gemini(_)    => SchemaKind::Gemini,
+            #[cfg(feature = "openai-compat")]
+            ModelId::OpenAiCompat(_) => SchemaKind::OpenAiCompat,
+        }
+    }
+}
+```
+
+Adding a known model is a minor version bump (new inner-enum
+variant). Adding a new schema is a minor bump (new `SchemaKind`
+variant + new `ModelId` outer variant + new Client type — all
+additive under `#[non_exhaustive]`).
 
 ### `CompletionRequest`
 
@@ -84,7 +173,7 @@ Builder shape; messages typed; cache control typed per content
 block:
 
 ```rust
-let req = CompletionRequest::new(ModelId::ClaudeSonnet46)
+let req = CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
     .system("Short instruction prefix")
     .user_cached("Long context document…", CacheControl::Ephemeral(CacheTtl::Hours1))
     .user("Question that varies per call")
@@ -95,14 +184,57 @@ Each `Message::*` and `Message::*_cached` constructor produces a
 typed content block; consumers compose blocks via the builder
 rather than handing in JSON objects.
 
-### `ModelId`
+### Client Types
 
-Typed enum with `Other(String)` fallback — same pattern as
-`DriverKind` in [loom-events](harness.md#event-schema). Known
-providers and models are variants; unknown / fine-tuned / custom
-models pass through `Other`. Provider routing inferred from
-variant; `Other` routes via prefix match on the string. Adding a
-known model is a minor version bump.
+One Client type per `SchemaKind`. Each implements `LlmClient`
+and exposes a `pub const SCHEMA: SchemaKind`. The genai-backed
+Clients share `genai::Client` internally; **`genai` does not
+appear in any public signature** — see [Wrapper Thickness](#wrapper-thickness).
+
+```rust
+pub struct AnthropicClient    { /* genai::Client inside */ }
+pub struct OpenAiClient       { /* genai::Client inside */ }
+pub struct GeminiClient       { /* genai::Client inside */ }
+pub struct OpenAiCompatClient { /* reqwest + Url + Option<ApiKey> */ }
+
+impl AnthropicClient {
+    pub const SCHEMA: SchemaKind = SchemaKind::Anthropic;
+    pub fn new(api_key: ApiKey) -> Self;
+}
+impl OpenAiClient {
+    pub const SCHEMA: SchemaKind = SchemaKind::OpenAi;
+    pub fn new(api_key: ApiKey) -> Self;
+}
+impl GeminiClient {
+    pub const SCHEMA: SchemaKind = SchemaKind::Gemini;
+    pub fn new(api_key: ApiKey) -> Self;
+}
+impl OpenAiCompatClient {
+    pub const SCHEMA: SchemaKind = SchemaKind::OpenAiCompat;
+    pub fn new(base_url: Url, api_key: Option<ApiKey>) -> Self;
+}
+```
+
+Per-tenant deployment context (credentials, endpoint URL) lives
+on the Client; per-call selection lives on `ModelId`. A
+`HashMap<OrgId, Arc<dyn LlmClient>>` cache is the canonical
+pattern. `ApiKey` is a newtype that rejects empty strings at
+construction; `base_url` is `url::Url`, requiring consumers to
+parse strings into URLs at the boundary before constructing the
+Client. Invalid configuration fails at the boundary rather than
+at first request.
+
+Each Client supports attaching an `EventSink` chain (`EventSink`
+is defined in `loom-events`; see
+[loom-harness — EventSink and SessionCommand](harness.md#eventsink-and-sessioncommand))
+via a `.with_event_sink(impl EventSink)` builder method called
+after `::new`. The chain receives `DriverKind::TokenUsage` events
+and agent-loop observer commands during `complete*` calls — see
+[Conversation and the Built-in Tool-Use Loop](#conversation-and-the-built-in-tool-use-loop).
+
+`OpenAiCompatClient` is gated behind the `openai-compat` Cargo
+feature (default-off — see [Feature Flags](#feature-flags));
+the three genai-backed Clients are unconditional.
 
 ### `CacheControl`
 
@@ -129,11 +261,18 @@ forced-tool for Anthropic, `response_format` for OpenAI,
 bound `T: DeserializeOwned + JsonSchema` means the type carries
 its own schema via `schemars`. Consumers never write
 provider-specific code or see the mechanism difference; switching
-providers is a `ModelId` variant change.
+providers swaps both the Client type and the `ModelId` variant,
+with the call shape unchanged. Failure modes surface as typed
+`LlmError` variants — `MalformedJson` for non-JSON or
+parse-failure responses, `SchemaViolation` for parsed-but-invalid
+responses (see [LlmError](#llmerror)).
 
 ### `TokenUsage`
 
-Every `CompletionResponse` carries:
+Every `CompletionResponse` carries raw token counts; pricing is
+the consumer's concern (per-tenant contracts, regional rates,
+and custom-hosted models all make a loom-shipped pricing table
+either incomplete or wrong):
 
 ```rust
 pub struct TokenUsage {
@@ -141,14 +280,76 @@ pub struct TokenUsage {
     pub output: u32,
     pub cache_read: u32,
     pub cache_write: u32,
-    pub cost_cents: u32,
 }
 ```
 
 The same surface drives SaaS billing pipelines via a
 `DriverKind::TokenUsage` `AgentEvent` emitted on every `complete*`
-call. Consumers see cache hits directly and can make cost-aware
-decisions.
+call. Consumers maintain their own `ModelId → cost` mapping (see
+[Out of Scope](#out-of-scope)) and compute cost from these
+counts.
+
+### `LlmError`
+
+Typed transport-failure classification so consumers can drive
+retry policy without parsing message strings:
+
+```rust
+#[non_exhaustive]
+pub enum LlmError {
+    // Transport / network
+    Transport(String),                            // DNS, connect, TLS, mid-stream
+    Timeout,                                      // deadline exceeded
+
+    // HTTP-level (classified)
+    RateLimited { retry_after: Duration },        // 429 + Retry-After
+    AuthFailed { reason: String },                // 401 / 403
+    ProviderHttp { status: u16, body: String },   // other non-success
+
+    // Response-content
+    MalformedJson(String),                        // expected JSON, got non-JSON / parse failure
+    SchemaViolation(String),                      // parsed JSON failed schema validation
+
+    // Client-side
+    IncompatibleModel { model: ModelId, expected: SchemaKind },
+
+    // Fallback
+    Provider { message: String },                 // genuinely unclassified
+}
+
+pub enum RetryAdvice {
+    Retryable,
+    RetryAfter(Duration),
+    NonRetryable,
+}
+
+impl LlmError {
+    pub fn retry_advice(&self) -> RetryAdvice;
+}
+```
+
+Classification is canonical and lives in `loom-llm`:
+
+| Variant | `retry_advice` |
+|---------|----------------|
+| `Transport`, `Timeout` | `Retryable` |
+| `RateLimited { retry_after }` | `RetryAfter(retry_after)` |
+| `MalformedJson`, `SchemaViolation` | `Retryable` |
+| `ProviderHttp { status, .. }` | `Retryable` iff `status >= 500`, else `NonRetryable` |
+| `AuthFailed`, `IncompatibleModel`, `Provider` | `NonRetryable` |
+
+`loom-llm` does not retry. The method returns *advice*; the
+consumer composes its own backoff, jitter, and budget policy.
+Upstream error → `LlmError` mapping is exhaustive for each
+Client family: the three genai-backed Clients classify every
+`genai::Error` variant; `OpenAiCompatClient` classifies every
+`reqwest::Error` shape plus every parsed HTTP-response status.
+`Provider { message }` is the documented fallback for cases
+that do not map cleanly.
+
+`#[non_exhaustive]` so future variants (new HTTP-status carve-outs,
+provider-specific error families) land additively without
+breaking consumer matchers.
 
 ### `Conversation` and the Built-in Tool-Use Loop
 
@@ -156,7 +357,7 @@ For multi-turn work with tool calls, consumers register tool
 handlers via a `Tool` trait and call `run`:
 
 ```rust
-let mut conv = Conversation::new(ModelId::ClaudeSonnet46)
+let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
     .system("...")
     .register(MyCustomTool::new())
     .max_iterations(50)
@@ -174,12 +375,13 @@ a custom variant). Cancellation via standard tokio primitives;
 per-iteration timeout is configurable.
 
 Live event observation during the loop is via the `EventSink`
-chain attached to the driving `LlmClient` (see
-[TokenUsage criterion](#public-surface) and `Client::with_event_sink`);
-`Conversation` does not expose a separate streaming entry point.
-Consumers that want a `Stream<Item = AgentEvent>` wrap a short
-mpsc-backed `EventSink` impl — paid by the one consumer that needs
-it, not by every consumer up-front.
+chain attached to the driving `LlmClient`. The chain is attached
+per Client via `.with_event_sink(impl EventSink)` — see
+[Client Types](#client-types). `Conversation` does not expose a
+separate streaming entry point. Consumers that want a
+`Stream<Item = AgentEvent>` wrap a short mpsc-backed `EventSink`
+impl — paid by the one consumer that needs it, not by every
+consumer up-front.
 
 ### `Tool` Trait
 
@@ -296,22 +498,86 @@ enabled = true
 min_bytes = 256
 ```
 
+## Feature Flags
+
+Optional adapters are in-crate Cargo features, default-off. The
+three genai-backed Clients (`AnthropicClient`, `OpenAiClient`,
+`GeminiClient`) are unconditional core.
+
+| Feature | Adds | Default |
+|---------|------|---------|
+| `openai-compat` | `OpenAiCompatClient`, `ModelId::OpenAiCompat`, `SchemaKind::OpenAiCompat` | off |
+
+Future regulated-provider adapters (`bedrock`, `azure`, `vertex`)
+slot into the same pattern: one Cargo feature gates one Client
+type plus its `ModelId` / `SchemaKind` additions. Heavy SDK
+dependencies (AWS, Azure, GCP) stay out of the default build;
+consumers opt in explicitly. CI exercises both `--all-features`
+and `--no-default-features` to catch feature-gating regressions.
+
 ## Success Criteria
 
 ### Public surface
 
-- `llm` exposes `LlmClient` trait with `complete(req)` and `complete_structured::<T>(req)` (no `embed` in v1)
+- `llm` exposes object-safe `LlmClient` trait with `schema(&self) -> SchemaKind`, `supports(&self, &ModelId) -> bool` (default impl), `complete(req)`, and `complete_structured::<T>(req)`; no `embed` in v1
   [check](cargo run -p loom-walk -- loom_llm_public_surface)
+- `LlmClient` is object-safe — `Arc<dyn LlmClient>` compiles and dispatches `complete` / `complete_structured` correctly
+  [test](llm_client_trait_is_object_safe)
 - `CompletionRequest::new(ModelId)` requires model as positional argument; constructing a request without a model is a compile error
   [test](completion_request_requires_model_at_construction)
-- `ModelId` is a typed enum with variants for known models plus `Other(String)` fallback; provider routing inferred from variant or `Other` prefix
-  [test](modelid_other_fallback_routes_provider_by_prefix)
+- `ModelId` is a hybrid nested enum: outer `Anthropic | OpenAi | Gemini | OpenAiCompat` carries inner per-family enum (with `Other(String)` fallback) for the three genai-backed schemas, and `String` for `OpenAiCompat`
+  [test](modelid_outer_variants_match_schema_kind_one_to_one)
+- `SchemaKind` is `#[non_exhaustive]` with one variant per `ModelId` outer variant; `ModelId::schema(&self) -> SchemaKind` returns the matching tag for every variant
+  [test](modelid_schema_method_returns_matching_schema_kind)
 - `complete_structured::<T>` hides provider mechanism: same call shape works for Anthropic (synthetic forced-tool), OpenAI (`response_format`), Gemini (`response_schema`); returned `T: DeserializeOwned + JsonSchema` is deserialized regardless of provider
   [test](complete_structured_returns_typed_t_across_providers)
-- `CompletionResponse` carries `usage: TokenUsage { input, output, cache_read, cache_write, cost_cents }` on every successful call
-  [test](completion_response_carries_usage_with_cache_fields)
-- `complete*` calls emit `DriverKind::TokenUsage` event into the active `EventSink` chain (so SaaS billing pipelines tail the same AgentEvent stream)
+- `CompletionResponse` carries `usage: TokenUsage { input, output, cache_read, cache_write }` (raw token counts only — no `cost_cents`) on every successful call
+  [test](completion_response_carries_token_usage_without_cost)
+- `complete*` calls emit `DriverKind::TokenUsage` event into the active `EventSink` chain (so SaaS billing pipelines tail the same AgentEvent stream and compute cost from token counts using their own rate tables)
   [test](complete_emits_token_usage_driver_event)
+
+### Client types
+
+- Four Client types ship in `loom-llm` mapping 1:1 to `SchemaKind`: `AnthropicClient`, `OpenAiClient`, `GeminiClient` (unconditional), `OpenAiCompatClient` (under `openai-compat` feature)
+  [check](cargo run -p loom-walk -- loom_llm_client_types_per_schema_kind)
+- Each Client exposes `pub const SCHEMA: SchemaKind` matching `LlmClient::schema(&self)` at runtime
+  [test](client_const_schema_matches_runtime_schema)
+- `AnthropicClient::new`, `OpenAiClient::new`, `GeminiClient::new` take `ApiKey` (newtype rejecting empty strings); `OpenAiCompatClient::new` takes `url::Url` + `Option<ApiKey>`; no constructor accepts `String` for credentials or base URL
+  [check](cargo run -p loom-walk -- loom_llm_client_constructors_use_newtypes)
+- `ApiKey::new` returns `Err` on empty input; construction-time validation prevents downstream call-time failures
+  [test](api_key_newtype_rejects_empty)
+- Each Client exposes a `.with_event_sink(impl EventSink)` builder method that returns `Self`; the attached sink chain receives `DriverKind::TokenUsage` events during `complete*` calls
+  [test](client_with_event_sink_attaches_chain_and_receives_usage_events)
+- Calling `LlmClient::complete` with a `ModelId` whose `schema()` does not match `self.schema()` returns `LlmError::IncompatibleModel { model, expected }` synchronously without issuing a network call
+  [test](incompatible_modelid_returns_typed_error_without_network)
+- `LlmClient::supports(&model)` returns `model.schema() == self.schema()` for every variant pair
+  [test](supports_matches_schema_equality)
+
+### OpenAI-compatible adapter
+
+- `OpenAiCompatClient::new(base_url, api_key)` builds a Client routed at `base_url`; calls send OpenAI Chat-Completions-shaped JSON over HTTP
+  [test](openai_compat_client_sends_chat_completions_shape_to_configured_url)
+- `OpenAiCompatClient` accepts `ModelId::OpenAiCompat(_)` only; rejects every other `ModelId` variant with `IncompatibleModel`
+  [test](openai_compat_client_rejects_non_compat_modelids)
+- Adapter compiles and passes its tests under `--features openai-compat`
+  [system](cargo test -p loom-llm --features openai-compat)
+- Default build (`--no-default-features`) compiles cleanly; the openai-compat adapter, `ModelId::OpenAiCompat`, and `SchemaKind::OpenAiCompat` are all gated behind `#[cfg(feature = "openai-compat")]`
+  [system](cargo check -p loom-llm --no-default-features)
+- Wiremock contract test exercises a 200 happy path, 401, 429 + Retry-After, 500, and a malformed-JSON response against `OpenAiCompatClient`; each maps to the expected `LlmError` variant and `retry_advice`
+  [test](openai_compat_wiremock_contract_covers_status_classes)
+
+### `LlmError`
+
+- `LlmError` is `#[non_exhaustive]` and carries the documented variants: `Transport`, `Timeout`, `RateLimited`, `AuthFailed`, `ProviderHttp`, `MalformedJson`, `SchemaViolation`, `IncompatibleModel`, `Provider`
+  [check](cargo run -p loom-walk -- loom_llm_error_variant_set)
+- `LlmError::retry_advice(&self)` returns the classification documented in [LlmError](#llmerror) for every variant
+  [test](llm_error_retry_advice_matches_classification_table)
+- `RateLimited { retry_after }` is populated from the `Retry-After` HTTP header (seconds or HTTP-date) when the provider returns 429; missing header falls back to a documented default
+  [test](rate_limited_parses_retry_after_header)
+- `ProviderHttp { status, body }` carries the raw status and response body for unclassified non-success responses; `retry_advice` returns `Retryable` for `status >= 500`, `NonRetryable` otherwise
+  [test](provider_http_retry_advice_threshold_at_500)
+- Upstream error → `LlmError` mapping is exhaustive for each Client family. For the genai-backed Clients (`AnthropicClient`, `OpenAiClient`, `GeminiClient`), every variant of `genai::Error` maps to a non-`Provider` `LlmError` variant where the upstream carries enough information to classify. For `OpenAiCompatClient`, every `reqwest::Error` shape (DNS, connect, TLS, timeout, body) and every parsed HTTP-response status maps to the documented `LlmError` variant per the classification table above. `Provider { message }` is the fallback only for explicitly-unclassifiable cases.
+  [judge](../tests/judges/loom.sh#judge_llm_error_mapping_honesty)
 
 ### Cache control
 
@@ -339,8 +605,10 @@ min_bytes = 256
 
 ### Wrapper boundary
 
-- `llm` is a typed wrapper, not a thin re-export: the public surface (`LlmClient`, `CompletionRequest`, `Message`, `ModelId`, `CacheControl`, `Tool`, `Conversation`) is defined in `llm`, not re-exported from the underlying multi-provider crate
+- `llm` is a typed wrapper, not a thin re-export: the public surface (`LlmClient`, `CompletionRequest`, `Message`, `ModelId`, `SchemaKind`, `CacheControl`, `Tool`, `Conversation`, `LlmError`, `RetryAdvice`, and the per-schema Client types) is defined in `llm`, not re-exported from the underlying multi-provider crate
   [check](cargo run -p loom-walk -- loom_llm_no_underlying_crate_reexports)
+- No Client constructor or public method signature references `genai::Client`, `genai::Error`, or any other `genai` type — `genai` remains an internal implementation dependency
+  [check](cargo run -p loom-walk -- loom_llm_no_public_genai_types)
 
 ### Agent-loop observers
 
@@ -389,11 +657,14 @@ min_bytes = 256
 
 ### Functional
 
-1. **Typed multi-provider LLM access.** `LlmClient` trait exposes
-   `complete(req)` and `complete_structured::<T>(req)`. Per-call
-   model selection via required positional `ModelId` on the
-   request. Provider routing inferred from `ModelId` variant or
-   `Other(String)` prefix. No `embed` in v1.
+1. **Typed multi-provider LLM access.** Object-safe `LlmClient`
+   trait exposes `schema(&self) -> SchemaKind`, `supports(&self,
+   &ModelId) -> bool` (default impl checks
+   `model.schema() == self.schema()`), `complete(req)`, and
+   `complete_structured::<T>(req)`. Per-call model selection via
+   required positional `ModelId` on the request. Schema is fixed
+   at Client construction; per-call selection varies the model
+   within that schema. No `embed` in v1.
 2. **Typed `CacheControl`.** `Ephemeral(CacheTtl)` with
    `CacheTtl::{Minutes5, Hours1, Hours24}` matching Anthropic's
    prompt-cache breakpoint API. Per-content-block granularity.
@@ -402,11 +673,16 @@ min_bytes = 256
    `complete_structured::<T: DeserializeOwned + JsonSchema>(req)`
    is one method; internally picks the right underlying mechanism
    per provider (synthetic forced-tool / `response_format` /
-   `response_schema`) and deserializes into `T`.
-4. **`TokenUsage` on every response.** `CompletionResponse.usage`
-   carries `{ input, output, cache_read, cache_write, cost_cents }`.
-   Same surface emits as `DriverKind::TokenUsage` `AgentEvent`
-   into the active sink chain for SaaS billing pipelines.
+   `response_schema`) and deserializes into `T`. Schema-violation
+   failures surface as `LlmError::SchemaViolation`; malformed
+   JSON as `LlmError::MalformedJson`.
+4. **`TokenUsage` on every response — raw counts only.**
+   `CompletionResponse.usage` carries
+   `{ input, output, cache_read, cache_write }`. No `cost_cents`;
+   pricing lives in consumer-owned `ModelId → cost` mappings (see
+   [Out of Scope](#out-of-scope)). Same surface emits as
+   `DriverKind::TokenUsage` `AgentEvent` into the active sink
+   chain for SaaS billing pipelines.
 5. **`Conversation` with built-in tool-use loop.** Consumers
    register tools via the `Tool` trait, configure
    `max_iterations` budget and `on_iteration_exhausted` behavior,
@@ -439,10 +715,65 @@ min_bytes = 256
    per-`Conversation` via the builder.
 10. **Wrapper, not re-export.** Public surface
     (`LlmClient`, `CompletionRequest`, `Message`, `ModelId`,
-    `CacheControl`, `Tool`, `Conversation`) is defined in
-    `llm`. The underlying multi-provider crate is an
+    `SchemaKind`, `CacheControl`, `Tool`, `Conversation`,
+    `LlmError`, `RetryAdvice`, per-schema Client types) is
+    defined in `llm`. The underlying multi-provider crate is an
     internal-implementation dependency, swappable without
-    consumer breaking changes.
+    consumer breaking changes. No public Client constructor or
+    method signature mentions `genai::Client` or other `genai`
+    types.
+11. **`SchemaKind` discrimination.** `#[non_exhaustive]` enum
+    with one variant per supported wire-format family
+    (`Anthropic`, `OpenAi`, `Gemini`, `OpenAiCompat`). Maps 1:1
+    to `ModelId` outer variants and to per-schema Client types.
+    `ModelId::schema(&self) -> SchemaKind` returns the matching
+    tag.
+12. **Per-schema Client types.** One Client type per
+    `SchemaKind`: `AnthropicClient`, `OpenAiClient`,
+    `GeminiClient` (unconditional core);
+    `OpenAiCompatClient` (under `openai-compat` Cargo feature).
+    Each implements `LlmClient` and exposes `pub const SCHEMA:
+    SchemaKind`. Construction takes provider-native credentials
+    parsed into typed forms at the boundary (`ApiKey` newtype,
+    `url::Url`); no construction accepts `String` for a
+    credential or base URL. Each Client supports
+    `.with_event_sink(impl EventSink)` (from `loom-events`) as a
+    builder method called after `::new`; the attached chain
+    receives `DriverKind::TokenUsage` events and observer
+    `SessionCommand`s during `complete*` calls.
+13. **OpenAI-compatible adapter.** `OpenAiCompatClient` routes
+    OpenAI Chat-Completions-shaped JSON to a configured
+    `base_url`, with an optional `ApiKey`. Targets local
+    runners (vLLM, llama.cpp, LM Studio, Ollama via its `/v1`
+    endpoint), API-shaped proxies (LiteLLM), and
+    commercial OpenAI-compatible providers. No retries, rate
+    limiting, or fallback — that is the consumer's job.
+14. **Typed `LlmError` variants.** `#[non_exhaustive]` enum
+    distinguishing transport, timeout, rate-limit (with
+    `Retry-After`), auth, classified-HTTP, malformed-JSON,
+    schema-violation, incompatible-model, and a `Provider`
+    fallback. `LlmError::retry_advice(&self) -> RetryAdvice`
+    encodes the canonical retry-class table (5xx retryable,
+    4xx non-retryable except 429-with-delay, transport/timeout
+    retryable, auth/incompatible-model non-retryable).
+    `loom-llm` classifies; consumers compose their own
+    backoff/budget on top. Upstream error → `LlmError`
+    mapping is exhaustive for each Client family
+    (`genai::Error` for the genai-backed Clients,
+    `reqwest::Error` plus parsed HTTP status for
+    `OpenAiCompatClient`).
+15. **`IncompatibleModel` check is synchronous and
+    network-free.** `LlmClient::complete` returns
+    `LlmError::IncompatibleModel { model, expected }` without
+    issuing a network call when `model.schema() != self.schema()`.
+    Consumers can pre-validate allowed-model sets via
+    `LlmClient::supports(&ModelId)`.
+16. **Feature-gated adapters.** Optional adapters are in-crate
+    Cargo features, default-off. Today: `openai-compat`. Future
+    regulated providers (`bedrock`, `azure`, `vertex`) slot into
+    the same pattern without further architectural changes. CI
+    exercises `--all-features` and `--no-default-features` at
+    minimum.
 
 ### Non-Functional
 
@@ -485,3 +816,37 @@ min_bytes = 256
   `Conversation` to preserve observer composition, typed
   `CacheControl`, and per-call `ModelId` ergonomics. Re-hosting on
   a different agent-loop crate is a tracked option, not a default.
+- **Regulated-provider adapters (Bedrock, Azure OpenAI, Vertex
+  AI).** Deferred follow-up. Each slots into the in-crate
+  feature-flag pattern established by `openai-compat`: one Cargo
+  feature gates one Client type plus its `SchemaKind` and
+  `ModelId` variants. Heavy SDK dependencies stay opt-in. The
+  pattern is established by this spec; the adapters themselves
+  land in future spec updates when a concrete integration
+  timeline appears. Until then, the GovCloud / AAD / GCP
+  service-account credential models are not designed.
+- **Per-model pricing / context-window / capability metadata
+  in `loom-llm`.** Pricing is contract-variable (regional rates,
+  enterprise contracts, customer-hosted models with private
+  rates) and turns `loom-llm` into a billing-table maintenance
+  dependency. Consumers maintain their own `ModelId → cost`
+  mappings, looking up whatever metadata (context window,
+  capability flags) they need from their own catalogue. A
+  shared catalogue may emerge later as a separate crate
+  (`loom-llm-models` or similar); it does not live in core.
+- **Built-in retry / backoff / rate-limit budget.** `loom-llm`
+  classifies failures via `LlmError::retry_advice` and stops
+  there. The consumer composes its own retry policy (backoff,
+  jitter, attempt budget, circuit-breaking) on top. Building
+  retry into `loom-llm` would force one policy on every
+  consumer.
+- **`genai::Client` as public construction input.** No
+  `from_genai`-style constructor on any Client. The
+  Wrapper Thickness invariant requires `genai` to remain an
+  internal-implementation dependency so future swaps or
+  vendoring do not break consumers. Per-tenant credential
+  injection happens through native-credential constructors
+  (`AnthropicClient::new(ApiKey)`, etc.); custom HTTP knobs
+  (proxies, middleware, transport config) are added through
+  explicit per-Client builder methods when a real consumer
+  needs them, not by leaking the underlying client.
