@@ -38,17 +38,11 @@ one and only one.
   resolution.
 - `LOOM_CONCERN: <token> -- <reason>` — **Review phase only.** The review
   found a quality issue with the molecule's work; push must not fire.
-  `<token>` is one of the concern tokens (see the Flag Emission Schema in
-  the review template) and `<reason>` is a one-sentence summary. The
-  review phase emits `LOOM_CONCERN` xor `LOOM_COMPLETE` — never both, and
-  never alongside any other marker. Emitting `LOOM_CONCERN` from any
-  non-review phase is a `wrong-phase-marker` error in the verdict gate.
-  **`LOOM_CONCERN` requires at least one corresponding `bd create`** —
-  either a clarify bead (with the canonical `## Options — …` block) or a
-  fix-up bead bonded to the molecule via `bd mol bond`. A `LOOM_CONCERN`
-  whose findings live only in your prose is invisible to `bd ready` and
-  `loom msg`, so the concern silently evaporates when the molecule
-  re-enters the loop. The review phase is **authorized to invoke `bd
-  create`, `bd update`, `bd mol bond`, and `bd update --add-label`
-  without asking** — these mutations are the phase's purpose, not a
-  side-effect.
+  `<token>` is one of the concern tokens defined in `specs/gate.md` and
+  `<reason>` is a one-sentence summary. The review phase emits
+  `LOOM_CONCERN` xor `LOOM_COMPLETE` — never both, and never alongside
+  any other marker. Emitting `LOOM_CONCERN` from any non-review phase is
+  a `wrong-phase-marker` error in the verdict gate. The actionable detail
+  reaches bead state through the `LOOM_FINDING:` lines the review streams
+  during the walk; `loom gate mint` consumes them and produces the
+  matching fix-up / clarify beads.

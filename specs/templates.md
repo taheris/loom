@@ -111,7 +111,7 @@ Each partial is included by an explicit set of templates:
 | `spec_header.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |
 | `companions_context.md` |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `scratchpad.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `exit_signals.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `exit_signals.md` | ✓ | ✓ | ✓ | ✓ | ✓ |  | ✓ |
 | `chat_marker_final_turn_only.md` | ✓ | ✓ |  |  |  |  | ✓ |
 | `interview_modes.md` | ✓ | ✓ |  |  |  |  |  |
 | `chat_interview.md` | ✓ | ✓ |  |  |  |  |  |

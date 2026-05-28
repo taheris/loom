@@ -1387,18 +1387,19 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   error naming the offending line; no silent skip
   [test](mint_malformed_loom_finding_fails_run_with_typed_error)
 - The dedup query (`bd query "label=loom:mint:<fp> AND status=open"`)
-  returning one open result causes the finding to be skipped; zero
-  results proceeds to mint; more than one is refused as a structural
-  violation
+  returning one open result causes the finding to be skipped
   [test](mint_dedup_query_one_open_result_skips_finding)
+- The dedup query returning zero results proceeds to mint
   [test](mint_dedup_query_zero_results_proceeds_to_mint)
+- The dedup query returning more than one open result is refused
+  as a structural violation
   [test](mint_dedup_query_multiple_open_results_refuses_as_structural_violation)
 - A closed bead carrying the same fingerprint label is not
-  re-minted on subsequent runs; reopening it does not force re-mint
-  (the reopened bead still carries the fingerprint and dedups);
-  only removing the `loom:mint:<fp>` label or deleting the bead
-  forces re-mint
+  re-minted on subsequent runs; only removing the `loom:mint:<fp>`
+  label or deleting the bead forces re-mint
   [test](mint_dedup_does_not_re_mint_closed_bead_with_same_fingerprint)
+- Reopening a closed bead does not force re-mint — the reopened
+  bead still carries the fingerprint and dedups against itself
   [test](mint_dedup_skips_reopened_bead_still_carrying_fingerprint_label)
 - The fingerprint hash is stable across rubric runs for the same
   finding (same `token`, same canonicalized `target` → same

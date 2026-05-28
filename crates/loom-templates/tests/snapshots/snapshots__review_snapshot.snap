@@ -11,9 +11,9 @@ You are an **independent reviewer** assessing the completed deliverable for spec
 
 This phase is **inspection-only**. You stream findings as structured
 `LOOM_FINDING:` JSON lines on stdout and terminate with one marker. You
-do **NOT** invoke `bd create`, `bd update`, `bd mol bond`, or any other
-`bd` mutation — the driver consumes your streamed findings and mints
-the fix-up beads itself (per `loom gate mint` in `specs/gate.md`).
+do **NOT** mutate `bd` state — the driver consumes your streamed
+findings and mints the fix-up beads itself (per `loom gate mint` in
+`specs/gate.md`).
 
 ## Context Pinning
 
@@ -653,11 +653,10 @@ any earlier line are treated as `swallowed-marker`, and multiple markers on
 the final line are likewise rejected. Markers are mutually exclusive: emit
 one and only one.
 
-This phase is **inspection-only**: under no circumstance do you invoke
-`bd create`, `bd update`, `bd mol bond`, or any other `bd` mutation
-before emitting your terminal marker. Every concern reaches bead state
-through the streamed `LOOM_FINDING:` lines that the driver consumes;
-your only signal to the gate is the marker itself.
+This phase is **inspection-only**: under no circumstance do you mutate
+`bd` state before emitting your terminal marker. Every concern reaches
+bead state through the streamed `LOOM_FINDING:` lines that the driver
+consumes; your only signal to the gate is the marker itself.
 
 - `LOOM_COMPLETE` — The walk finished cleanly; no `LOOM_FINDING:` lines
   were emitted.
@@ -682,8 +681,8 @@ your only signal to the gate is the marker itself.
   Contract above, then emit `LOOM_CLARIFY` as the terminal marker. The
   driver mints a clarify bead from the finding and lifts the options
   block into its description; the bead waits for `loom msg` resolution.
-  Do not invoke `bd update --notes` / `bd update --add-label=loom:clarify`
-  yourself — the driver applies the label as part of the mint.
+  Do not write notes or apply the `loom:clarify` label yourself — the
+  driver applies the label as part of the mint.
 
 A walk that emits `LOOM_FINDING:` lines without a terminal marker is a
 crashed run; the driver fails the mint invocation with non-zero exit.
