@@ -831,22 +831,11 @@ connection, network filtering, session audit logging.
 
 ### Agent runtime layer
 
-- Pi runtime layer adds Node.js and pi binary to any workspace profile
-  [system](nix build .#sandbox-pi)
-- Image builds with `profile:rust` + `WRAPIX_AGENT=pi` (composition works)
-  [system](nix build .#sandbox-rust-pi)
-- Image builds with `profile:base` + `WRAPIX_AGENT=pi`
-  [system](nix build .#sandbox-pi)
-- Pi binary is functional inside container (`pi --version` succeeds)
-  [system](nix run .#test-pi-runtime-image)
-- Claude runtime adds nothing (claude already in base image)
-  [system](nix run .#test-claude-runtime-noop)
-- Direct runtime layer adds the statically-linked `loom-direct-runner` binary
-  [system](nix build .#sandbox-direct)
-- Image builds with `profile:rust` + `WRAPIX_AGENT=direct` (composition works)
-  [system](nix build .#sandbox-rust-direct)
-- `loom-direct-runner` is functional inside container (`loom-direct-runner --version` succeeds)
-  [system](nix run .#test-direct-runtime-image)
+- Single sandbox image builds with all three agent binaries (claude, pi,
+  `loom-direct-runner`) layered in; runtime agent selection is the
+  responsibility of the entrypoint per *Entrypoint Agent Selection* and
+  Requirement #7 above.
+  [system](nix build .#sandbox)
 
 ## Requirements
 

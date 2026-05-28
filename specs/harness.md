@@ -1784,7 +1784,7 @@ Criteria.
 - `wrapix spawn` runs `podman load` from `image_source` (a Nix store
       path) before invoking podman with `image_ref` as the ref; the load is
       idempotent on the image's hash tag
-  [system](nix run .#test-wrapix-spawn-load)
+  [system](nix run .#test)
 - Per-bead profile selection: two beads with different profile labels
       result in two `wrapix spawn` invocations with different `image_ref`
       and `image_source`
