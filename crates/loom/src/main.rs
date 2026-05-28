@@ -1247,6 +1247,45 @@ const INTEGRITY_ALLOWLIST: &[(&str, &str)] = &[
     ("specs/harness.md", "all_specs_iterates_by_bd_updated_asc"),
     ("specs/harness.md", "all_specs_exit_code_reflects_aggregate"),
     ("specs/harness.md", "plan_does_not_create_epic_or_touch_bd"),
+    // Pending-modifier mechanism (`[test?]` etc) introduced by
+    // `d70b7f3 gate: pending modifier (?) for plan-declared
+    // not-yet-implemented claims`. The parser landed (8350e7e) but the
+    // spec's new `[test]` rows still reference test functions owed by
+    // molecule lm-9em4 (lm-9em4.2 integrity branching + lm-9em4.5
+    // migration to `[test?]`). Entries are removed once .2 and .5
+    // land — note 140's documented bootstrap-fallback path.
+    (
+        "specs/gate.md",
+        "parser_recognises_pending_modifier_across_all_tiers",
+    ),
+    (
+        "specs/gate.md",
+        "pending_marked_unresolved_target_yields_no_finding",
+    ),
+    (
+        "specs/gate.md",
+        "pending_marked_resolved_target_yields_unneeded_pending_marker",
+    ),
+    (
+        "specs/gate.md",
+        "pending_marked_stub_test_body_yields_no_finding",
+    ),
+    (
+        "specs/gate.md",
+        "pending_marked_non_stub_test_body_yields_unneeded_pending_marker",
+    ),
+    (
+        "specs/gate.md",
+        "pending_modifier_does_not_suppress_atomic_acceptance_finding",
+    ),
+    (
+        "specs/gate.md",
+        "unneeded_pending_marker_is_terminal_at_push_gate",
+    ),
+    (
+        "specs/gate.md",
+        "mint_emits_drop_marker_option_for_unneeded_pending_marker",
+    ),
 ];
 
 fn is_allowlisted_integrity_finding(finding: &loom_gate::IntegrityFinding) -> bool {
