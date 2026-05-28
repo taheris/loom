@@ -18,18 +18,6 @@ fn mint_tree_scope_per_spec_resolution_does_not_clobber_existing_epics() {}
 fn mint_refuses_when_loom_inside_env_is_set() {}
 
 #[test]
-fn mint_walk_emits_loom_finding_json_lines_streamed_per_finding() {}
-
-#[test]
-fn mint_walk_without_terminal_marker_fails_run() {}
-
-#[test]
-fn mint_parses_loom_finding_json_into_typed_record_with_tagged_target() {}
-
-#[test]
-fn mint_malformed_loom_finding_fails_run_with_typed_error() {}
-
-#[test]
 fn mint_dedup_query_one_open_result_skips_finding() {}
 
 #[test]
@@ -55,9 +43,6 @@ fn mint_bonding_lead_is_first_bonds_element_with_open_epic() {}
 
 #[test]
 fn mint_fingerprint_excludes_bonds_so_bonding_shifts_do_not_remint() {}
-
-#[test]
-fn mint_rejects_criterion_target_whose_spec_is_not_in_bonds() {}
 
 #[test]
 fn mint_invariant_clash_finding_creates_fixup_with_clarify_label_and_options_block() {}

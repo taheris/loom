@@ -36,7 +36,10 @@ pub use context::{
     load_review_sources,
 };
 pub use error::ReviewError;
-pub use finding::{ConcernToken, Finding, FindingTarget};
+pub use finding::{
+    ConcernToken, Finding, FindingParseError, FindingTarget, FindingValidator, LOOM_FINDING_PREFIX,
+    TargetKind, WalkOutputError, parse_walk_output,
+};
 pub use fixup::{FixupContext, FixupOutcome, FixupRequest, spawn_fixup_bead};
 pub use iteration::{DEFAULT_MAX_ITERATIONS, IterationCap};
 pub use loom_templates::review::ReviewLane;
