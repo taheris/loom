@@ -2177,10 +2177,27 @@ Criteria.
       Drafter session in a container with the base profile, using the
       `msg.md` template; bare `loom msg` stays host-side
   [test](loom_msg_chat_launches_container)
+- The chat session writes resolution notes via `bd update --notes`;
+      the driver runs the canonical unblock (`--status=open` plus the
+      matching `--remove-label`) per resolved bead after the session
+      exits, per the persistence-boundary contract — the agent narrates,
+      the driver persists the terminal state transition. The bead
+      re-enters the work queue so the next implementing session can pick
+      up the resolution
+  [test](loom_msg_chat_driver_unblocks_after_notes_only_write)
 - The chat session writes resolution notes via `bd update --notes`
       and clears the label via `bd update --remove-label=loom:clarify`
       (or `loom:blocked`) per resolved bead
   [test](loom_msg_chat_writes_notes_and_clears_labels)
+- The `msg.md` template must NOT teach the agent to close beads or
+      issue any `--status` write — the literal strings `bd close`,
+      `--status=closed`, and `bd update --status=closed` do not appear
+      in the rendered prompt
+  [test](msg_template_does_not_teach_agent_to_close_or_status_transition)
+- The driver's canonical unblock reverses an agent-applied `bd close`
+      so the bead re-opens even when the chat agent over-applies a
+      terminal status transition
+  [test](loom_msg_chat_driver_unblocks_after_agent_bd_close)
 - Clearing the `loom:clarify` label via any `loom msg` path
       (`-o`, `-r`, `-d`, chat session) removes the originating
       `## Options — …` block from the bead's notes in the same

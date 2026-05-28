@@ -73,9 +73,15 @@ need to walk the user through enumerating candidates first.
       affordances).
    4. **Draft** the final resolution note when the user lands on an answer.
    5. **Confirm** the draft with the user before writing.
-   6. **Write** the note and clear the label. The label cleared is
-      whichever the bead currently carries — `loom:clarify` for clarify
-      beads, `loom:blocked` for blocked beads.
+   6. **Write** the resolution note. Your **only** bead-state write in
+      this session is `bd update <id> --notes "..."`. The driver runs
+      the unblock transition (`--status=open` plus
+      `--remove-label=loom:clarify` / `--remove-label=loom:blocked`)
+      after the session exits — you do not need to do it yourself, and
+      you **must not** transition the bead's status from this session.
+      The bead must re-enter the work queue after your note lands so the
+      next implementing session can pick it up; transitioning it to a
+      terminal state here strands the resolution.
 
       The new `--notes` payload must **remove the originating `## Options
       — …` block** in the same `bd update` that records the resolution
@@ -91,7 +97,6 @@ need to walk the user through enumerating candidates first.
        resolution note — see Note Format below>
       EOF
       )"
-      bd update <id> --remove-label=loom:clarify   # or loom:blocked
       ```
    7. **Move on** to the next bead.
 4. **Stop** when the queue is exhausted, the user chooses to stop, or the user
@@ -128,14 +133,37 @@ You are a **Drafter with Researcher affordances**:
   ground answers in current state.
 - You write the resolution note; the user confirms it before you persist.
 
-{% include "partial/exit_signals.md" %}
+## Exit Signals
 
-**Chat-session restrictions.** Emit `LOOM_COMPLETE` only. `LOOM_NOOP` does
-not apply — chat is not a worker phase. `LOOM_BLOCKED` does not apply — the
-user is in the room with you, so block-on-human is unnecessary. `LOOM_CLARIFY`
-does not apply either — this session's purpose is *resolving* clarifies, not
-creating them; new clarifies belong to the worker or reviewer templates.
-Partial progress is clean: remaining clarifies persist for the next
-`loom msg` session.
+End your response with exactly **one** marker on its own line, as the
+final output of the session. The orchestrator parses **only the final
+non-empty line** verbatim to derive the gate's verdict — markers emitted
+on any earlier line are treated as `swallowed-marker`. Markers are
+mutually exclusive: emit one and only one.
+
+This is a **resolution-only** session. The only valid marker is:
+
+- `LOOM_COMPLETE` — the chat ran cleanly. Each resolved bead has a
+  resolution note appended via `bd update --notes`; the driver applies
+  the unblock transition (`--status=open` plus the matching
+  `--remove-label`) per resolved bead after this session exits.
+  Partial progress is clean: any bead you did not write a note for
+  stays labelled and surfaces in the next `loom msg` session.
+
+`LOOM_NOOP`, `LOOM_BLOCKED`, `LOOM_CLARIFY`, and `LOOM_CONCERN` do **not**
+apply here. `LOOM_NOOP` is worker-phase only; `LOOM_BLOCKED` is
+unnecessary because the user is in the room; `LOOM_CLARIFY` would
+create the very work this session is supposed to resolve;
+`LOOM_CONCERN` is review-phase only.
+
+**Persistence boundary — agent narrates, driver persists.** This
+session's only `bd` write is the resolution note (`bd update --notes`).
+Do **not** transition the bead's status — leave the open → terminal
+transition to the driver. Closing the bead from inside this session
+strands the resolution: the bead skips the work queue and the next
+implementing session never picks it up. If you previously claimed the
+bead with `bd update --claim` or `bd update --status=in_progress`,
+leave the unblock to the driver as well; the driver re-opens the bead
+so the implementing session can pick it up cleanly.
 
 {% include "partial/chat_marker_final_turn_only.md" %}

@@ -115,6 +115,25 @@ case "$mode" in
             bd update "$id" --notes "resolved via msg --chat (stub $id)" --remove-label loom:clarify
         done
         ;;
+    notes-only)
+        # The persistence-boundary contract per specs/harness.md: agent
+        # only writes the resolution note; the driver runs the unblock
+        # transition (--status=open + label removal) after the session.
+        ids=$(printf '%s\n' "$prompt" | awk '/^### lm-/ {{print $2}}')
+        for id in $ids; do
+            bd update "$id" --notes "resolved via msg --chat (notes-only stub $id)"
+        done
+        ;;
+    bd-close)
+        # Adversarial: the agent infers `bd close` from the worker-phase
+        # `LOOM_COMPLETE` framing and closes the bead. The driver must
+        # still issue the canonical unblock so the bead re-opens for
+        # the next implementing session.
+        ids=$(printf '%s\n' "$prompt" | awk '/^### lm-/ {{print $2}}')
+        for id in $ids; do
+            bd close "$id"
+        done
+        ;;
     resolve-none)
         :
         ;;
@@ -434,5 +453,135 @@ fn loom_msg_chat_scope_filters_to_spec() {
     assert!(
         !dumped.contains("lm-s02"),
         "out-of-scope bead must NOT appear in prompt: {dumped:.500?}",
+    );
+}
+
+/// Persistence-boundary contract: the agent's only `bd` write is the
+/// resolution note, and the driver runs the canonical unblock
+/// (`--status open` plus the matching `--remove-label`) per resolved
+/// bead after the session exits. The bead must re-enter the work queue
+/// so the next implementing session can pick up the resolution.
+#[test]
+fn loom_msg_chat_driver_unblocks_after_notes_only_write() {
+    let env = setup_chat();
+    seed_bead(
+        &env.state_dir,
+        "lm-n01",
+        "notes-only flow",
+        "## Options — choose\n\n### Option 1 — only\nbody\n",
+        &["loom:clarify", "spec:notes-only"],
+    );
+    let output = run_loom_msg_chat(&env, "notes-only", &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "notes-only chat must exit 0.\nstdout={stdout}\nstderr={stderr}",
+    );
+
+    let notes = read_field(&env.state_dir, "lm-n01", "notes");
+    assert!(
+        notes.contains("notes-only stub"),
+        "agent's resolution note must persist: {notes:?}",
+    );
+    let labels = read_labels(&env.state_dir, "lm-n01");
+    assert!(
+        !labels
+            .iter()
+            .any(|l| l == "loom:clarify" || l == "loom:blocked"),
+        "driver must remove both msg-queue labels after a notes-only resolution: {labels:?}",
+    );
+    let status = read_field(&env.state_dir, "lm-n01", "status");
+    assert_eq!(
+        status.trim(),
+        "open",
+        "driver must leave the bead open so the next implementing session can claim it",
+    );
+
+    let log = read_invocation_log(&env.state_dir);
+    let unblock_calls: Vec<&str> = log
+        .lines()
+        .filter(|line| {
+            line.starts_with("update lm-n01")
+                && line.contains("--status")
+                && line.contains("open")
+                && line.contains("--remove-label")
+                && line.contains("loom:clarify")
+                && line.contains("loom:blocked")
+        })
+        .collect();
+    assert_eq!(
+        unblock_calls.len(),
+        1,
+        "driver must issue exactly one unblock `bd update` per resolved bead; \
+         got {} matching lines in:\n{}",
+        unblock_calls.len(),
+        log,
+    );
+}
+
+/// Adversarial: even when the agent over-applies `bd close`, the
+/// driver's terminal unblock reverses the close so the bead re-opens
+/// for the next implementing session. The msg session must not be
+/// able to strand a resolution in a terminal state by closing the
+/// bead — the persistence-boundary contract is the driver's, not the
+/// agent's.
+#[test]
+fn loom_msg_chat_driver_unblocks_after_agent_bd_close() {
+    let env = setup_chat();
+    seed_bead(
+        &env.state_dir,
+        "lm-bc01",
+        "agent over-applies bd close",
+        "## Options — choose\n\n### Option 1 — only\nbody\n",
+        &["loom:clarify", "spec:close-adversarial"],
+    );
+    let output = run_loom_msg_chat(&env, "bd-close", &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "session must exit 0 even when the agent over-applies bd close.\n\
+         stdout={stdout}\nstderr={stderr}",
+    );
+
+    let log = read_invocation_log(&env.state_dir);
+    assert!(
+        log.lines().any(|line| line.starts_with("close lm-bc01")),
+        "test setup smoke check: stub must have recorded the close: {log}",
+    );
+    let unblock_calls: Vec<&str> = log
+        .lines()
+        .filter(|line| {
+            line.starts_with("update lm-bc01")
+                && line.contains("--status")
+                && line.contains("open")
+                && line.contains("--remove-label")
+                && line.contains("loom:clarify")
+                && line.contains("loom:blocked")
+        })
+        .collect();
+    assert_eq!(
+        unblock_calls.len(),
+        1,
+        "driver must issue the canonical unblock even when the agent closed \
+         the bead; got {} matching lines in:\n{}",
+        unblock_calls.len(),
+        log,
+    );
+
+    let status = read_field(&env.state_dir, "lm-bc01", "status");
+    assert_eq!(
+        status.trim(),
+        "open",
+        "agent's bd close must be reversed by the driver's unblock so the \
+         bead re-enters the work queue",
+    );
+    let labels = read_labels(&env.state_dir, "lm-bc01");
+    assert!(
+        !labels
+            .iter()
+            .any(|l| l == "loom:clarify" || l == "loom:blocked"),
+        "driver's unblock must clear both msg-queue labels: {labels:?}",
     );
 }

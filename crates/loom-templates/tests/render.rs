@@ -1041,6 +1041,44 @@ fn msg_chat_template_instructs_options_block_removal_on_resolution() -> Result<(
     Ok(())
 }
 
+/// The msg.md template is a resolution-only chat. The agent's only `bd`
+/// write is the resolution note; the driver runs the terminal state
+/// transition. A msg agent inferring `bd close` from `LOOM_COMPLETE`'s
+/// worker-phase framing transitions the bead closed before any
+/// implementing session can pick up the resolution. This test pins the
+/// absence of every literal that could teach the agent to close or
+/// status-transition a bead from the chat.
+#[test]
+fn msg_template_does_not_teach_agent_to_close_or_status_transition() -> Result<()> {
+    let ctx = MsgContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        companion_paths: vec![],
+        clarify_beads: vec![ClarifyBead {
+            id: BeadId::new("lm-clar.9")?,
+            spec_label: SpecLabel::new("harness"),
+            title: "Pick a thing".into(),
+            options_summary: Some("Pick".into()),
+            options: vec![ClarifyOption {
+                n: 1,
+                title: Some("A".into()),
+                body: Some("body".into()),
+            }],
+            kind: BeadKind::Clarify,
+        }],
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+    };
+    let out = ctx.render()?;
+    for forbidden in ["bd close", "--status=closed", "bd update --status=closed"] {
+        assert!(
+            !out.contains(forbidden),
+            "msg.md must not teach the agent the literal `{forbidden}` — \
+             closing a bead from inside the chat strands the resolution \
+             before any implementing session can pick it up",
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn msg_renders_with_no_clarify_beads() -> Result<()> {
     let ctx = MsgContext {

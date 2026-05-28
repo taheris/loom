@@ -2517,10 +2517,11 @@ fn run_msg(
 /// but `LOOM_BLOCKED`/`LOOM_CLARIFY` from inside the chat surfaces as
 /// a hard error.
 ///
-/// Resolution itself is the agent's responsibility: the rendered
-/// template tells claude to call `bd update <id> --notes "…"` and
-/// `bd update <id> --remove-label=loom:clarify` per bead. The driver
-/// only renders the prompt, dispatches the session, and reports back.
+/// The agent writes the resolution note via `bd update <id> --notes "…"`;
+/// the driver runs the canonical unblock (`--status=open` plus the
+/// matching `--remove-label`) per resolved bead after the session exits,
+/// per the persistence-boundary contract — the agent narrates, the
+/// driver persists the terminal state transition.
 fn run_msg_chat(
     workspace: &Path,
     spec_filter: Option<SpecLabel>,

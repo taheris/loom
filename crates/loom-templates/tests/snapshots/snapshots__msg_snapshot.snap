@@ -134,9 +134,15 @@ Use a SQLite table.
       affordances).
    4. **Draft** the final resolution note when the user lands on an answer.
    5. **Confirm** the draft with the user before writing.
-   6. **Write** the note and clear the label. The label cleared is
-      whichever the bead currently carries — `loom:clarify` for clarify
-      beads, `loom:blocked` for blocked beads.
+   6. **Write** the resolution note. Your **only** bead-state write in
+      this session is `bd update <id> --notes "..."`. The driver runs
+      the unblock transition (`--status=open` plus
+      `--remove-label=loom:clarify` / `--remove-label=loom:blocked`)
+      after the session exits — you do not need to do it yourself, and
+      you **must not** transition the bead's status from this session.
+      The bead must re-enter the work queue after your note lands so the
+      next implementing session can pick it up; transitioning it to a
+      terminal state here strands the resolution.
 
       The new `--notes` payload must **remove the originating `## Options
       — …` block** in the same `bd update` that records the resolution
@@ -152,7 +158,6 @@ Use a SQLite table.
        resolution note — see Note Format below>
       EOF
       )"
-      bd update <id> --remove-label=loom:clarify   # or loom:blocked
       ```
    7. **Move on** to the next bead.
 4. **Stop** when the queue is exhausted, the user chooses to stop, or the user
@@ -191,60 +196,36 @@ You are a **Drafter with Researcher affordances**:
 
 ## Exit Signals
 
-End your response with exactly **one** of these markers on its own line, as
-the final output of the session. The orchestrator parses **only the final
-non-empty line** verbatim to derive the gate's verdict — markers emitted on
-any earlier line are treated as `swallowed-marker`, and multiple markers on
-the final line are likewise rejected. Markers are mutually exclusive: emit
-one and only one.
+End your response with exactly **one** marker on its own line, as the
+final output of the session. The orchestrator parses **only the final
+non-empty line** verbatim to derive the gate's verdict — markers emitted
+on any earlier line are treated as `swallowed-marker`. Markers are
+mutually exclusive: emit one and only one.
 
-- `LOOM_COMPLETE` — The work succeeded. For worker phases (`loom loop`), this
-  also means the bead's acceptance criteria are met and the bead has been
-  closed via `bd close`. The diff must be non-empty (real changes); see
-  `LOOM_NOOP` below for the zero-diff variant.
-- `LOOM_NOOP` — The work was already done in tree and this phase
-  intentionally produced an empty diff. Close the bead with `bd close`
-  before emitting. Use `LOOM_NOOP` instead of `LOOM_COMPLETE` whenever the
-  diff is empty — an empty diff with `LOOM_COMPLETE` is treated as
-  `zero-progress` and enters recovery. Only valid in worker phases.
-- `LOOM_BLOCKED` — You cannot proceed and are self-reporting *without* a
-  menu of resolution options. Write the reason on the line immediately
-  before the marker (the gate only reads the most recent non-empty prior
-  line — multi-paragraph prose is NOT captured). The gate applies
-  `loom:blocked` to *this* bead and exits without entering recovery; other
-  beads in the molecule continue running. The labelled bead waits for
-  human resolution via `loom msg`. **If you have multiple candidate
-  resolutions, do NOT use `LOOM_BLOCKED`** — use `LOOM_CLARIFY` below so
-  the options reach bead state.
-- `LOOM_CLARIFY` — You have a specific question with structured options for
-  the human. **Persist the question and the canonical `## Options — …`
-  block to bead state before emitting the marker** — either by `bd create`
-  on a new clarify bead or by `bd update --notes` + `bd update
-  --add-label=loom:clarify` on an existing bead — per the Options Format
-  Contract in `specs/gate.md`. The gate does NOT parse your prose for
-  options; if the canonical block lives only in your stdout, `loom msg`'s
-  queue will be empty. After persisting, the gate applies `loom:clarify`
-  to *this* bead and exits without entering recovery; other beads in the
-  molecule continue running. The labelled bead waits for `loom msg`
-  resolution.
-- `LOOM_CONCERN: <token> -- <reason>` — **Review phase only.** The review
-  found a quality issue with the molecule's work; push must not fire.
-  `<token>` is one of the concern tokens defined in `specs/gate.md` and
-  `<reason>` is a one-sentence summary. The review phase emits
-  `LOOM_CONCERN` xor `LOOM_COMPLETE` — never both, and never alongside
-  any other marker. Emitting `LOOM_CONCERN` from any non-review phase is
-  a `wrong-phase-marker` error in the verdict gate. The actionable detail
-  reaches bead state through the `LOOM_FINDING:` lines the review streams
-  during the walk; `loom gate mint` consumes them and produces the
-  matching fix-up / clarify beads.
+This is a **resolution-only** session. The only valid marker is:
 
-**Chat-session restrictions.** Emit `LOOM_COMPLETE` only. `LOOM_NOOP` does
-not apply — chat is not a worker phase. `LOOM_BLOCKED` does not apply — the
-user is in the room with you, so block-on-human is unnecessary. `LOOM_CLARIFY`
-does not apply either — this session's purpose is *resolving* clarifies, not
-creating them; new clarifies belong to the worker or reviewer templates.
-Partial progress is clean: remaining clarifies persist for the next
-`loom msg` session.
+- `LOOM_COMPLETE` — the chat ran cleanly. Each resolved bead has a
+  resolution note appended via `bd update --notes`; the driver applies
+  the unblock transition (`--status=open` plus the matching
+  `--remove-label`) per resolved bead after this session exits.
+  Partial progress is clean: any bead you did not write a note for
+  stays labelled and surfaces in the next `loom msg` session.
+
+`LOOM_NOOP`, `LOOM_BLOCKED`, `LOOM_CLARIFY`, and `LOOM_CONCERN` do **not**
+apply here. `LOOM_NOOP` is worker-phase only; `LOOM_BLOCKED` is
+unnecessary because the user is in the room; `LOOM_CLARIFY` would
+create the very work this session is supposed to resolve;
+`LOOM_CONCERN` is review-phase only.
+
+**Persistence boundary — agent narrates, driver persists.** This
+session's only `bd` write is the resolution note (`bd update --notes`).
+Do **not** transition the bead's status — leave the open → terminal
+transition to the driver. Closing the bead from inside this session
+strands the resolution: the bead skips the work queue and the next
+implementing session never picks it up. If you previously claimed the
+bead with `bd update --claim` or `bd update --status=in_progress`,
+leave the unblock to the driver as well; the driver re-opens the bead
+so the implementing session can pick it up cleanly.
 
 **Emit `LOOM_COMPLETE` on the final turn only.** This is a multi-turn chat,
 not a single-shot worker phase. The "end your response with the marker"
