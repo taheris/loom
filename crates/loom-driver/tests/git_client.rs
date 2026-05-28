@@ -467,10 +467,27 @@ async fn commits_since_surfaces_git_cli_error_on_unknown_commit() -> Result<()> 
     Ok(())
 }
 
+/// Absolute path to a `bash` interpreter resolved at test time.
+///
+/// Hook scripts need a shebang the kernel can exec. `/usr/bin/env` isn't
+/// in the nix build sandbox, so `#!/usr/bin/env bash` fails with
+/// `cannot exec ...: No such file or directory` (the error is about the
+/// interpreter, not the script). Discover bash via `PATH` and embed the
+/// absolute path in the shebang instead.
+fn shebang_bash() -> Result<std::path::PathBuf> {
+    let path = std::env::var_os("PATH").context("PATH not set")?;
+    std::env::split_paths(&path)
+        .map(|d| d.join("bash"))
+        .find(|p| p.is_file())
+        .context("bash not on PATH")
+}
+
 fn install_pre_push_hook(hooks_dir: &Path, body: &str) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let hook = hooks_dir.join("pre-push");
-    std::fs::write(&hook, body)?;
+    let bash = shebang_bash()?;
+    let script = format!("#!{}\nset -euo pipefail\n{body}", bash.display());
+    std::fs::write(&hook, script)?;
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
 }
@@ -503,7 +520,7 @@ async fn push_branch_to_origin_invokes_pre_push_hook() -> Result<()> {
     install_pre_push_hook(
         &hooks_dir,
         &format!(
-            "#!/usr/bin/env bash\n{{ date; pwd; echo HOOK_PATH=$0; echo HOOKS_PATH=$(git config --get core.hooksPath); }} > {:?} 2>&1\ntouch {:?}\nexit 0\n",
+            "{{ date; pwd; echo HOOK_PATH=$0; echo HOOKS_PATH=$(git config --get core.hooksPath); }} > {:?} 2>&1\ntouch {:?}\nexit 0\n",
             hook_log.display(),
             marker.display()
         ),
@@ -554,7 +571,7 @@ async fn push_branch_to_origin_propagates_pre_push_hook_failure() -> Result<()> 
     let repo = init_repo()?;
     let hooks_dir = repo.path().join(".loom-test-hooks");
     std::fs::create_dir_all(&hooks_dir)?;
-    install_pre_push_hook(&hooks_dir, "#!/usr/bin/env bash\nexit 1\n")?;
+    install_pre_push_hook(&hooks_dir, "exit 1\n")?;
 
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
