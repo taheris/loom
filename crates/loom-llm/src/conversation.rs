@@ -33,7 +33,7 @@ use crate::tool::{Tool, ToolDef};
 /// exhausted. Default is [`LoopOutcome::Error`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LoopOutcome {
-    /// Return [`LlmError::IterationBudgetExhausted`].
+    /// Return [`ConversationError::IterationBudgetExhausted`].
     #[default]
     Error,
     /// Return the last `CompletionResponse` produced before the cap.
@@ -48,6 +48,40 @@ pub enum LoopOutcome {
 pub enum ConversationBuildError {
     /// failed to construct the synthetic default `EnvelopeBuilder`
     DefaultBead(#[from] ParseBeadIdError),
+}
+
+/// Loop-control errors [`Conversation::run`] surfaces above and beyond
+/// transport-level [`LlmError`]s. The transport surface stays purely
+/// classification-oriented; loop-budget, tool-registry, observer-abort,
+/// and tool-result-serialisation failures are loop concerns and live
+/// here. `#[non_exhaustive]` so future loop-control variants land
+/// additively.
+#[non_exhaustive]
+#[derive(Debug, Display, Error)]
+pub enum ConversationError {
+    /// underlying LLM transport failed
+    Llm(#[from] LlmError),
+    /// conversation iteration budget exhausted after {budget} iterations
+    IterationBudgetExhausted {
+        /// Cap that was hit. Mirrors
+        /// [`Conversation::max_iterations`].
+        budget: u32,
+    },
+    /// model called unregistered tool: {name}
+    ToolNotRegistered {
+        /// Name of the tool the model asked to invoke.
+        name: String,
+    },
+    /// observer requested session abort: {reason}
+    ObserverAbort {
+        /// Reason supplied by the observer that emitted
+        /// `loom_events::SessionCommand::Abort`. The
+        /// `DoomLoopObserver`'s stage-2 reason is `"doom-loop: <tool>"`;
+        /// other observers (consumer-supplied) format their own.
+        reason: String,
+    },
+    /// failed to serialise tool result to JSON
+    SerializeToolResult(#[from] serde_json::Error),
 }
 
 /// Multi-turn conversation with built-in tool-use loop.
@@ -219,11 +253,11 @@ impl Conversation {
     /// observer: `SessionCommand::Steer` payloads are queued as user
     /// messages on the next iteration; the first `SessionCommand::Abort`
     /// short-circuits the loop and returns
-    /// [`LlmError::ObserverAbort`].
+    /// [`ConversationError::ObserverAbort`].
     pub async fn run<C: LlmClient + Sync>(
         &mut self,
         client: &C,
-    ) -> Result<CompletionResponse, LlmError> {
+    ) -> Result<CompletionResponse, ConversationError> {
         let tool_defs: Vec<ToolDef> = self
             .tools
             .iter()
@@ -252,14 +286,14 @@ impl Conversation {
             for call in &response.tool_calls {
                 self.observe_tool_call(call.call_id.clone(), &call.name, &call.args);
                 if let Some(reason) = self.process_react_commands() {
-                    return Err(LlmError::ObserverAbort { reason });
+                    return Err(ConversationError::ObserverAbort { reason });
                 }
 
                 let tool = self
                     .tools
                     .iter()
                     .find(|t| t.name() == call.name)
-                    .ok_or_else(|| LlmError::ToolNotRegistered {
+                    .ok_or_else(|| ConversationError::ToolNotRegistered {
                         name: call.name.clone(),
                     })?;
                 let output = tool.invoke(call.args.clone()).await?;
@@ -272,7 +306,7 @@ impl Conversation {
 
                 self.observe_tool_result(call.call_id.clone(), &content, output.is_error);
                 if let Some(reason) = self.process_react_commands() {
-                    return Err(LlmError::ObserverAbort { reason });
+                    return Err(ConversationError::ObserverAbort { reason });
                 }
             }
 
@@ -280,12 +314,14 @@ impl Conversation {
         }
 
         match self.on_iteration_exhausted {
-            LoopOutcome::Error => Err(LlmError::IterationBudgetExhausted {
+            LoopOutcome::Error => Err(ConversationError::IterationBudgetExhausted {
                 budget: self.max_iterations,
             }),
-            LoopOutcome::ReturnLast => last_response.ok_or(LlmError::IterationBudgetExhausted {
-                budget: self.max_iterations,
-            }),
+            LoopOutcome::ReturnLast => {
+                last_response.ok_or(ConversationError::IterationBudgetExhausted {
+                    budget: self.max_iterations,
+                })
+            }
         }
     }
 
@@ -329,7 +365,7 @@ impl Conversation {
     /// Drain composed observers' `react()` queues in registration order.
     /// `Steer` payloads land in `pending_steers` for injection on the
     /// next iteration. Returns `Some(reason)` on the first `Abort`; the
-    /// caller short-circuits the loop with `LlmError::ObserverAbort`.
+    /// caller short-circuits the loop with `ConversationError::ObserverAbort`.
     /// Mirrors `loom-workflow`'s `classify_react_commands` priority rule
     /// (Abort is terminal; subsequent commands in the same batch are
     /// dropped).
@@ -576,7 +612,10 @@ mod tests {
             .on_iteration_exhausted(LoopOutcome::ReturnLast);
         conv.user("ping");
 
-        assert_eq!(*conv.model(), ModelId::Anthropic(AnthropicModel::ClaudeSonnet46));
+        assert_eq!(
+            *conv.model(),
+            ModelId::Anthropic(AnthropicModel::ClaudeSonnet46)
+        );
         assert_eq!(conv.max_iterations_value(), 7);
         assert_eq!(conv.on_iteration_exhausted_value(), LoopOutcome::ReturnLast);
         assert_eq!(conv.history.len(), 1);
@@ -640,7 +679,7 @@ mod tests {
 
         let err = tokio_test::block_on(conv.run(&client)).expect_err("loop exhausts budget");
         match err {
-            LlmError::IterationBudgetExhausted { budget } => assert_eq!(budget, 3),
+            ConversationError::IterationBudgetExhausted { budget } => assert_eq!(budget, 3),
             other => panic!("expected IterationBudgetExhausted, got {other:?}"),
         }
         assert_eq!(*calls.lock().unwrap_or_else(|p| p.into_inner()), 3);
@@ -674,7 +713,8 @@ mod tests {
     /// CLI-side config.
     #[test]
     fn duplicate_result_config_disable_path() {
-        let on = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46)).expect("conversation builds");
+        let on = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+            .expect("conversation builds");
         assert!(on.duplicate_result_enabled());
         let off = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
@@ -687,7 +727,8 @@ mod tests {
     /// false` in the CLI-side config.
     #[test]
     fn doom_loop_config_disable_path() {
-        let on = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46)).expect("conversation builds");
+        let on = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+            .expect("conversation builds");
         assert!(on.doom_loop_enabled());
         let off = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .expect("conversation builds")
@@ -700,7 +741,8 @@ mod tests {
     /// `Conversation` runs get the safety nets out of the box.
     #[test]
     fn conversation_new_default_constructs_observers() {
-        let conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46)).expect("conversation builds");
+        let conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+            .expect("conversation builds");
         let doom = conv.doom_loop_observer().expect("doom loop composed");
         assert_eq!(doom.window(), 5);
         assert_eq!(doom.threshold(), 3);
@@ -822,7 +864,7 @@ mod tests {
     }
 
     /// A doom-loop scenario driven through `run` short-circuits with
-    /// [`LlmError::ObserverAbort`] once the composed `DoomLoopObserver`
+    /// [`ConversationError::ObserverAbort`] once the composed `DoomLoopObserver`
     /// trips stage 2. This is the spec-promised behaviour for external
     /// consumers — the safety net fires automatically with no extra
     /// wiring from the caller.
@@ -847,7 +889,7 @@ mod tests {
 
         let err = tokio_test::block_on(conv.run(&client)).expect_err("observer aborts loop");
         match err {
-            LlmError::ObserverAbort { reason } => {
+            ConversationError::ObserverAbort { reason } => {
                 assert_eq!(reason, "doom-loop: echo");
             }
             other => panic!("expected ObserverAbort, got {other:?}"),

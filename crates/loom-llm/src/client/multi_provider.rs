@@ -205,7 +205,7 @@ fn json_spec_name<T: JsonSchema>() -> String {
 }
 
 pub(crate) fn parse_structured_text<T: DeserializeOwned>(text: &str) -> Result<T, LlmError> {
-    Ok(serde_json::from_str(text)?)
+    serde_json::from_str(text).map_err(|err| LlmError::MalformedJson(err.to_string()))
 }
 
 /// Map a typed [`ModelId`] to the underlying crate's model-name string.

@@ -36,9 +36,9 @@ fn schema_for<T: JsonSchema>() -> Value {
 }
 
 /// Decode the model-supplied `args` payload into the tool's typed
-/// argument struct. Returns [`LlmError::Deserialize`] on a shape
+/// argument struct. Returns [`LlmError::MalformedJson`] on a shape
 /// mismatch so the caller surfaces a typed protocol error rather than
 /// a tool-result.
 fn parse_args<T: DeserializeOwned>(args: Value) -> Result<T, LlmError> {
-    serde_json::from_value(args).map_err(LlmError::Deserialize)
+    serde_json::from_value(args).map_err(|err| LlmError::MalformedJson(err.to_string()))
 }

@@ -20,6 +20,7 @@ mod loom_does_not_invoke_podman;
 mod loom_events_is_leaf;
 mod loom_events_minimal_deps;
 mod loom_llm_deps;
+mod loom_llm_error_variant_set;
 mod loom_llm_no_underlying_crate_reexports;
 mod loom_llm_public_surface;
 mod loom_render_deps;
@@ -153,6 +154,10 @@ pub static REGISTRY: &[Walk] = &[
     Walk {
         name: "loom_llm_deps",
         run: loom_llm_deps::run,
+    },
+    Walk {
+        name: "loom_llm_error_variant_set",
+        run: loom_llm_error_variant_set::run,
     },
     Walk {
         name: "loom_llm_no_underlying_crate_reexports",
@@ -346,6 +351,7 @@ mod tests {
             "loom_events_is_leaf",
             "loom_events_minimal_deps",
             "loom_llm_deps",
+            "loom_llm_error_variant_set",
             "loom_llm_no_underlying_crate_reexports",
             "loom_llm_public_surface",
             "loom_render_deps",

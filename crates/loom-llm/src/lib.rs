@@ -31,8 +31,11 @@ pub mod usage;
 
 pub use api_key::{ApiKey, ApiKeyError};
 pub use cache::{CacheControl, CacheTtl};
-pub use client::{Client, CompletionResponse, LlmClient, LlmError, ToolUseRequest};
-pub use conversation::{Conversation, ConversationBuildError, LoopOutcome};
+pub use client::{
+    Client, CompletionResponse, DEFAULT_RETRY_AFTER, LlmClient, LlmError, RetryAdvice,
+    ToolUseRequest, parse_retry_after,
+};
+pub use conversation::{Conversation, ConversationBuildError, ConversationError, LoopOutcome};
 pub use model_id::{AnthropicModel, GeminiModel, ModelId, OpenAiModel, SchemaKind};
 pub use observer::{
     DoomLoopConfig, DoomLoopObserver, DuplicateDetection, DuplicateResultConfig,

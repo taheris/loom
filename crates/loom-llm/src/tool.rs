@@ -116,7 +116,9 @@ mod tests {
                 let text = args
                     .get("text")
                     .and_then(Value::as_str)
-                    .ok_or(LlmError::Canonicalize)?
+                    .ok_or_else(|| LlmError::Provider {
+                        message: "tool args missing required `text` field".into(),
+                    })?
                     .to_string();
                 Ok(ToolOutput {
                     content: json!({ "echo": text }),
