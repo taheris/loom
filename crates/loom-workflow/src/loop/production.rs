@@ -258,8 +258,8 @@ where
             None
         };
         // Dispatch each bead against its own clone-backed workspace under
-        // `.wrapix/worktree/<label>/<bead-id>/` (per `specs/harness.md`
-        // § Worktree Dispatch — Path A). The clone's `.git/` is a regular
+        // `.wrapix/loom/beads/<bead-id>/` (per `specs/harness.md`
+        // § Bead dispatch — Path A). The clone's `.git/` is a regular
         // directory inside the bind-mounted path, so workers inside the
         // wrapix container can commit and the driver can fold the work
         // back via push + merge_branch on clean exit.

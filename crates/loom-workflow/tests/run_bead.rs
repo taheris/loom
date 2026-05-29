@@ -107,19 +107,19 @@ fn setup() -> (
 }
 
 /// `loom loop --parallel 1` dispatches every bead through a per-bead
-/// workspace under `.wrapix/worktree/<label>/<bead-id>/` (universal
-/// worktree isolation per `harness.md` § Worktree Dispatch). The
-/// workspace is a `git clone --local` of the main repo — its `.git/`
+/// workspace under `.wrapix/loom/beads/<bead-id>/` (flat — globally-unique
+/// bead ids, no spec partition per `harness.md` § Bead dispatch). The
+/// workspace is a `git clone --local` of the loom workspace — its `.git/`
 /// is a regular directory inside the bind-mounted path, so workers in
 /// the wrapix container can commit. On clean agent success the
-/// controller pushes the bead branch back to the main repo, merges it
-/// into the driver branch, and removes the workspace + branch.
+/// controller pushes the bead branch back to the loom workspace, merges
+/// it into the integration branch, and removes the workspace + branch.
 #[tokio::test]
 async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let bead = fake_bead("lm-1");
-    let expected_worktree = workspace.join(".wrapix/worktree/harness/lm-1");
+    let expected_worktree = workspace.join(".wrapix/loom/beads/lm-1");
 
     let observed_workspace: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
     let observed_clone = Arc::clone(&observed_workspace);
@@ -174,7 +174,7 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success()
         !expected_worktree.exists(),
         "worktree must be removed after clean merge-back",
     );
-    let branches = git_capture(&workspace, &["branch", "--list", "loom/harness/lm-1"])?;
+    let branches = git_capture(&workspace, &["branch", "--list", "loom/lm-1"])?;
     assert!(
         branches.trim().is_empty(),
         "bead's branch must be deleted after merge-back (got: {branches:?})",
@@ -203,7 +203,7 @@ async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() ->
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let bead = fake_bead("lm-dirty");
-    let expected_worktree = workspace.join(".wrapix/worktree/harness/lm-dirty");
+    let expected_worktree = workspace.join(".wrapix/loom/beads/lm-dirty");
 
     // Capture every prompt the spawn closure sees so we can assert what
     // the controller threaded on the retry.
@@ -418,7 +418,7 @@ async fn production_loop_preserves_worktree_on_push_failure() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let stub = beads_push_stub(_dir.path());
-    let expected_worktree = workspace.join(".wrapix/worktree/harness/lm-pushfail.1");
+    let expected_worktree = workspace.join(".wrapix/loom/beads/lm-pushfail.1");
 
     // Break the origin by repointing `origin` at a nonexistent path so
     // `git push` fails. The repo started healthy (init_test_repo built a
@@ -494,7 +494,7 @@ async fn production_loop_preserves_worktree_on_merge_conflict() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let stub = beads_push_stub(_dir.path());
-    let expected_worktree = workspace.join(".wrapix/worktree/harness/lm-conflict.1");
+    let expected_worktree = workspace.join(".wrapix/loom/beads/lm-conflict.1");
     let workspace_for_closure = workspace.clone();
 
     let mut controller = ProductionAgentLoopController::new(
@@ -862,7 +862,7 @@ async fn run_bead_emits_tree_not_clean_when_porcelain_is_dirty() -> Result<()> {
     let logs_root = workspace.join(".wrapix/loom/logs");
     let logs_root_for_closure = logs_root.clone();
     let label_for_closure = label.clone();
-    let expected_worktree = workspace.join(".wrapix/worktree/harness/lm-emitdirty");
+    let expected_worktree = workspace.join(".wrapix/loom/beads/lm-emitdirty");
 
     let mut controller = ProductionAgentLoopController::new(
         BdClient::new(),

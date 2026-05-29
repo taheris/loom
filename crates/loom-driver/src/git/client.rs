@@ -18,7 +18,7 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// surfaces true hangs (deadlocked subprocess, runaway network); it must
 /// not abort legitimate CI.
 const GIT_HOOK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-const WORKTREE_BASE: &str = ".wrapix/worktree";
+const WORKTREE_BASE: &str = ".wrapix/loom/beads";
 const BRANCH_PREFIX: &str = "loom";
 /// Fallback integration branch when the caller opens a `GitClient` via
 /// [`GitClient::open`] / [`GitClient::open_with_clock`] without naming
@@ -190,28 +190,40 @@ impl GitClient {
         .await?
     }
 
-    /// Create a per-bead workspace at `.wrapix/worktree/<label>/<bead_id>/`
-    /// containing a `git clone --local` of the main repo, with a fresh
-    /// branch `loom/<label>/<bead_id>` checked out.
+    /// Create a per-bead workspace at `.wrapix/loom/beads/<bead_id>/`
+    /// containing a `git clone --local` of the loom workspace, with a
+    /// fresh branch `loom/<bead_id>` checked out. Bead ids are globally
+    /// unique, so the path is flat — no spec-label partition. The
+    /// `label` argument is accepted for source-compat with existing
+    /// callers and ignored by the path / branch construction.
     ///
-    /// Path A from `specs/harness.md § Worktree Dispatch`: the per-bead
+    /// Path A from `specs/harness.md § Bead dispatch`: the per-bead
     /// workspace is a self-contained clone — its `.git/` is a regular
     /// directory inside the bind-mounted path, so workers running in the
     /// wrapix container can resolve the gitdir, commit, and (driver-side)
-    /// the bead branch is pushed back to the main repo for merge-back.
-    /// Linked worktrees were rejected here because a worktree's `.git`
-    /// file points at a host-absolute path outside the container's
-    /// `/workspace` bind-mount.
+    /// the bead branch is pushed back to the loom workspace for
+    /// merge-back. Linked worktrees were rejected here because a
+    /// worktree's `.git` file points at a host-absolute path outside the
+    /// container's `/workspace` bind-mount.
+    ///
+    /// Idempotent at the directory level: if the destination already
+    /// exists, the call returns a [`CreatedWorktree`] pointing at it
+    /// without re-cloning. This shape is load-bearing for the
+    /// per-bead-close lifecycle — a bead workspace persists across
+    /// attempts and `loom loop` invocations until the bead is closed, so
+    /// a second dispatch attempt must observe the existing tree rather
+    /// than tripping `git clone --local: destination path already exists`.
     pub async fn create_worktree(
         &self,
-        label: &SpecLabel,
+        _label: &SpecLabel,
         bead_id: &BeadId,
     ) -> Result<CreatedWorktree, GitError> {
-        let branch = format!("{BRANCH_PREFIX}/{label}/{bead_id}");
-        let rel = PathBuf::from(WORKTREE_BASE)
-            .join(label.as_str())
-            .join(bead_id.as_str());
+        let branch = format!("{BRANCH_PREFIX}/{bead_id}");
+        let rel = PathBuf::from(WORKTREE_BASE).join(bead_id.as_str());
         let path = self.workdir.join(&rel);
+        if path.exists() {
+            return Ok(CreatedWorktree { path, branch });
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }

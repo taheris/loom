@@ -103,12 +103,13 @@ fn fake_bead(id: &str) -> Bead {
     }
 }
 
-/// Acceptance (`specs/harness.md` line 1793 — `bead_dispatch_creates_worktree`):
-/// dispatching a single bead — even at `--parallel 1` — materialises
-/// `.wrapix/worktree/<label>/<bead-id>/` and runs the merge-back path after
-/// the bead completes. Universal worktree isolation: the main checkout is
-/// never the bead's workdir. The merge-back step (previously a no-op when
-/// N=1 ran on the driver branch) now always runs.
+/// Acceptance (`specs/harness.md` § Bead dispatch — flat-keyed
+/// `.wrapix/loom/beads/<id>/` layout): dispatching a single bead — even
+/// at `--parallel 1` — materialises `.wrapix/loom/beads/<bead-id>/` and
+/// runs the merge-back path after the bead completes. Universal worktree
+/// isolation: the main checkout is never the bead's workdir. The
+/// merge-back step (previously a no-op when N=1 ran on the driver
+/// branch) now always runs.
 #[tokio::test]
 async fn bead_dispatch_creates_worktree() -> Result<()> {
     let repo = init_repo()?;
@@ -122,17 +123,17 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
     let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
     assert_eq!(slots.len(), 1, "one worktree for one bead");
     let slot = &slots[0];
-    let expected_path = repo.path().join(".wrapix/worktree/harness/lm-solo");
+    let expected_path = repo.path().join(".wrapix/loom/beads/lm-solo");
     assert!(
         slot.worktree.path.exists(),
         "worktree path {:?} must exist after dispatch",
         slot.worktree.path,
     );
     assert_eq!(slot.worktree.path, expected_path);
-    assert_eq!(slot.worktree.branch, "loom/harness/lm-solo");
+    assert_eq!(slot.worktree.branch, "loom/lm-solo");
 
     // The main checkout is never the bead's workdir — the worktree path
-    // is strictly under `.wrapix/worktree/...`, not the repo root.
+    // is strictly under `.wrapix/loom/beads/...`, not the repo root.
     assert_ne!(
         slot.worktree.path,
         repo.path(),
@@ -176,8 +177,8 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
 }
 
 /// Acceptance (`specs/tests.md` line 597 — `parallel_run_two_beads_e2e`):
-/// `loom loop --parallel 2` with two ready beads creates one worktree per
-/// bead under `.wrapix/worktree/<label>/<bead-id>/` (concurrent dispatch).
+/// `loom loop --parallel 2` with two ready beads creates one workspace
+/// per bead under `.wrapix/loom/beads/<bead-id>/` (concurrent dispatch).
 #[tokio::test]
 async fn parallel_run_two_beads_e2e() -> Result<()> {
     let repo = init_repo()?;
@@ -189,7 +190,7 @@ async fn parallel_run_two_beads_e2e() -> Result<()> {
 
     assert_eq!(slots.len(), 3, "one worktree per bead");
     for (bead, slot) in beads.iter().zip(slots.iter()) {
-        let expected_rel = format!(".wrapix/worktree/harness/{}", bead.id);
+        let expected_rel = format!(".wrapix/loom/beads/{}", bead.id);
         let expected_path = repo.path().join(&expected_rel);
         assert!(
             slot.worktree.path.exists(),
@@ -198,7 +199,7 @@ async fn parallel_run_two_beads_e2e() -> Result<()> {
             bead.id,
         );
         assert_eq!(slot.worktree.path, expected_path);
-        assert_eq!(slot.worktree.branch, format!("loom/harness/{}", bead.id));
+        assert_eq!(slot.worktree.branch, format!("loom/{}", bead.id));
         assert_eq!(slot.bead.id, bead.id);
         // Path A (specs/harness.md § Worktree Dispatch): each workspace is a
         // self-contained clone — its `.git/` is a regular directory inside

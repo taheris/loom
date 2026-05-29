@@ -236,7 +236,7 @@ mod tests {
             &bead,
             None,
             &base(),
-            PathBuf::from("/repo-root/.wrapix/worktree/lm-1"),
+            PathBuf::from("/repo-root/.wrapix/loom/beads/lm-1"),
             prompt,
             dir.path().join("scratch"),
             vec![],

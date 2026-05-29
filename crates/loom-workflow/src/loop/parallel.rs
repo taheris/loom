@@ -509,8 +509,8 @@ mod tests {
         WorktreeBead {
             bead: fake_bead(id),
             worktree: CreatedWorktree {
-                path: PathBuf::from(format!(".wrapix/worktree/test/{id}")),
-                branch: format!("loom/test/{id}"),
+                path: PathBuf::from(format!(".wrapix/loom/beads/{id}")),
+                branch: format!("loom/{id}"),
             },
         }
     }

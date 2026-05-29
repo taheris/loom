@@ -58,10 +58,10 @@ async fn create_and_remove_worktree_round_trip() -> Result<()> {
         "workspace path {:?} should exist on disk",
         created.path
     );
-    assert_eq!(created.branch, "loom/harness/lm-3hhwq.6");
+    assert_eq!(created.branch, "loom/lm-3hhwq.6");
     assert!(
-        created.path.ends_with("harness/lm-3hhwq.6"),
-        "workspace path should end with <label>/<bead-id>: {:?}",
+        created.path.ends_with(".wrapix/loom/beads/lm-3hhwq.6"),
+        "workspace path should end with .wrapix/loom/beads/<bead-id>: {:?}",
         created.path
     );
     // Path A (specs/harness.md § Worktree Dispatch): the bead workspace is
@@ -424,6 +424,55 @@ async fn commits_since_counts_revisions_added_after_a_commit() -> Result<()> {
     git(path, &["commit", "-q", "-m", "add b"])?;
 
     assert_eq!(client.commits_since(&base).await?, 2);
+    Ok(())
+}
+
+/// Spec gate (`specs/harness.md` § Bead dispatch — `[test?]`
+/// `bead_dispatch_creates_clone_under_loom_beads`): bead workspaces live
+/// under `.wrapix/loom/beads/<id>/` (flat — globally-unique bead ids, no
+/// spec partition) and the bead branch is `loom/<id>`. The destination
+/// is created as a `git clone --local` of the loom workspace, so its
+/// `.git/` is a regular directory inside the bind-mounted path.
+/// Idempotent at the directory level: a second call against the same
+/// bead returns the existing path rather than tripping
+/// `git clone --local: destination path already exists`.
+#[tokio::test]
+async fn bead_dispatch_creates_clone_under_loom_beads() -> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("lm-bead.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+
+    let expected_path = repo.path().join(".wrapix/loom/beads/lm-bead.1");
+    assert_eq!(
+        created.path, expected_path,
+        "bead workspace must live under .wrapix/loom/beads/<id>/ (flat — no \
+         spec partition); got {:?}",
+        created.path,
+    );
+    assert_eq!(
+        created.branch, "loom/lm-bead.1",
+        "bead branch must be loom/<id> (spec component dropped); got {:?}",
+        created.branch,
+    );
+    assert!(
+        created.path.join(".git").is_dir(),
+        ".git inside the bead workspace must be a regular directory \
+         (clone), not a worktree pointer file: got {:?}",
+        created.path.join(".git"),
+    );
+
+    // Idempotent: a second call against the same bead returns the
+    // existing path without re-cloning. Without this, the per-bead-close
+    // lifecycle would trip `git clone --local: destination path already
+    // exists` on the second dispatch attempt.
+    let again = client.create_worktree(&label, &bead).await?;
+    assert_eq!(again.path, created.path);
+    assert_eq!(again.branch, created.branch);
+
+    client.remove_worktree(&created.path).await?;
     Ok(())
 }
 
