@@ -87,7 +87,7 @@ loom/
           mod.rs              # push gate + inline tests
         ...
       tests/
-        parallel.rs           # Integration: --parallel N worktree dispatch
+        parallel.rs           # Integration: --parallel N bead-clone dispatch
     loom-templates/
       src/
         ...                   # per-template module + inline rendering tests
@@ -878,16 +878,19 @@ the rules:
      spawn `bd dolt …` subprocess calls (containers reach the authoritative
      state via the bind-mounted Dolt socket)
    - Parallel batch dispatch: given 3 ready beads and `--parallel 3`,
-     the dispatcher creates 3 worktrees, spawns 3 `wrapix spawn`
-     futures concurrently, and reports all results before merge-back
-   - Parallel batch with N=1 (the default): no worktree is created;
-     work runs on the driver branch directly
-   - Merge-back ordering: branches merge to the driver branch sequentially,
-     not in parallel (avoids index lock races)
-   - On worker failure, the bead's worktree branch is deleted and the bead
-     is queued for retry per the retry policy
-   - On merge conflict, the worktree path is preserved and the bead is
-     marked failed (does not silently overwrite or auto-resolve)
+     the dispatcher creates 3 bead clones under `.wrapix/loom/beads/`,
+     spawns 3 `wrapix spawn` futures concurrently, and reports all
+     results before integration
+   - Parallel batch with N=1 (the default): one bead clone is created
+     per bead, same shape as N>1 (no special-case sequential path)
+   - Integration ordering: branches rebase + fast-forward into the
+     integration branch sequentially, not in parallel (avoids index
+     lock races)
+   - On worker failure, the bead clone persists (per-bead-close
+     lifecycle) and the bead is queued for retry per the retry policy
+   - On merge conflict, the bead clone is preserved and the bead is
+     routed to `Blocked` per the verdict gate (does not silently
+     overwrite or auto-resolve)
 
    #### Concurrency & locking (loom-driver)
    - `flock` wrapper acquires/releases an exclusive lock on a file path;
@@ -1041,11 +1044,12 @@ the rules:
    - **Parallel run end-to-end** — `loom loop --parallel 2` with two
      ready beads dispatches two mock-agent spawns concurrently
      (overlapping spawn timestamps captured by the mock), each in its
-     own git worktree under `.wrapix/worktree/<label>/<bead-id>/`,
-     then merges both branches back to the driver branch sequentially.
-   - **`GitClient` round-trip** — create worktree, list, status,
-     merge (clean / non-conflicting / conflict variants), remove —
-     all against a temp repo via the typed Rust API.
+     own bead clone under `.wrapix/loom/beads/<id>/`, then rebases +
+     fast-forwards both branches into the integration branch
+     sequentially.
+   - **`GitClient` round-trip** — create bead clone, list, status,
+     rebase + ff (clean / non-conflicting / conflict variants),
+     remove — all against a temp repo via the typed Rust API.
    - **State DB lifecycle** — `StateDb::open` on a fresh path creates
      schema; `rebuild` populates from `specs/*.md` plus mock `bd`
      output; `recreate` recovers from a corrupted file.

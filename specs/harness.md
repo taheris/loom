@@ -90,84 +90,195 @@ sharing one agent across beads — was rejected because it conflicts
 with per-bead profile selection and with the trust-boundary split
 between host orchestrator and sandboxed agent.
 
-### Worktree Dispatch
+### Bead Dispatch
 
-`loom loop --parallel N`:
+Loom owns its own git workspace, separate from the operator's
+checkout. The operator's `/workspace` and loom's
+`.wrapix/loom/integration/` are independent clones of the same
+origin — they sync through origin, like any pair of dev workstations.
+Loom never reads, writes, or rebases the operator's working tree;
+the operator never edits loom's. Bead workspaces derive from the
+loom workspace, not from `/workspace`.
 
-1. Pull up to N ready beads (`bd ready --limit=N`).
-2. For each bead, create a per-bead workspace at
-   `.wrapix/worktree/<label>/<bead-id>/` via `git clone --local
-   <main-workdir> <bead-workdir>`, then `git -C <bead-workdir>
-   checkout -b loom/<label>/<bead-id>`. The clone's `.git/` is a
-   regular directory inside the workspace (not a worktree pointer
-   file), so the wrapix container's bind-mount of `<bead-workdir>` as
-   `/workspace` carries a self-contained git repository — workers
-   inside the container can commit without external `.git/`-mount
-   wiring.
-3. Spawn one `wrapix spawn --spawn-config <file> --stdio` per workspace
-   (concurrently when `N > 1`). Each container's workdir bind mount
-   points at the per-bead workspace, not the main checkout.
-4. Await all bead futures and collect per-bead results.
-5. **Sequentially**, fold each successful bead into the driver branch
-   under the per-step rules below. Single-threaded merge avoids index
-   lock contention.
+**Layout.**
 
-   - Push the bead branch from its clone back to the main repo
-     (`git -C <bead-workdir> push origin loom/<label>/<bead-id>`),
-     then merge it into the driver branch.
-   - After a clean merge, the driver MUST push `main` to GitHub and
-     sync the beads remote (`beads-push`) before the workspace and
-     bead branch are torn down so per-bead progress reaches the
-     published state without waiting for the molecule-end review-phase
-     push. [test](production_loop_pushes_main_after_each_successful_merge)
-   - On merge conflict OR post-merge push failure, the bead is marked
-     failed and the workspace is preserved for inspection — a
-     transient blip stays recoverable on the next iteration rather
-     than letting local/remote divergence pile up silently.
-     [test](production_loop_preserves_worktree_on_push_failure)
+```
+/workspace/                          operator's checkout, untouched by loom
+/workspace/.wrapix/loom/integration/ loom's clone, integration branch checked out
+/workspace/.wrapix/loom/beads/<id>/  bead workspaces, flat by globally-unique bead id
+```
 
-6. On agent failure, the bead's workspace is removed (the bead branch
-   never reached the main repo, so there is no branch ref to delete)
-   and the bead is retried per the retry policy.
+Each bead workspace is a `git clone --local` of the loom workspace.
+`<id>` is the bead id (`lm-9ehh.42`-style); ids are globally unique
+within the beads database so no spec partition is needed in the path.
+The integration branch name is `[loom] integration_branch` in
+`config.toml` (default `main`); the loom workspace has that branch
+checked out and never switches. `loom init` materializes the loom
+workspace via `git clone <origin> .wrapix/loom/integration` on a
+fresh install; existing operator workspaces run it once after
+upgrading to this layout. The lock-file location
+(`$XDG_STATE_HOME/loom/locks/<workspace-basename>/<spec>.lock`) is
+unchanged.
 
-**Universal isolation.** The main checkout is never the workdir for a
-bead's session — commits land in the driver branch only via the
-sequential merge-back step (step 5). The bead's worktree starts clean
-at HEAD by construction (step 2), so the verdict gate's tree-clean
-check below can trust that any post-bead working-tree dirt is
-agent-caused, and a developer's concurrent edits in the main checkout
-cannot be mis-attributed to the agent. `--parallel 1` (default) runs
-one bead at a time; `--parallel N > 1` runs N concurrently. Both modes
-use the same worktree-per-bead dispatch.
+**Why the layering.**
 
-**Git operations: hybrid `gix` + `git` CLI.** Worktree, branch, status,
-and merge operations go through a typed `GitClient` in `loom-driver`. The
-implementation is hybrid, encapsulated inside the module; callers see only
-typed Rust methods.
+- **Operator and loom as peer clones of origin.** The operator's
+  edits cannot break loom's rebases (a dirty operator working tree
+  is irrelevant to loom's machinery); loom's pushes go to origin,
+  so the operator's working tree changes only when they `git pull`.
+  Sync flows through `git push` / `git pull` against origin.
+- **Bead workspace as a child of the loom workspace.** Same fractal
+  pattern at every level: bead is to loom-workspace what
+  loom-workspace is to origin. The bead workspace has a
+  self-contained `.git/` inside the bind-mounted path so the wrapix
+  container's `/workspace` mount resolves git operations without
+  external `.git/`-mount wiring. Linked worktrees are unsuitable:
+  their `.git` pointer file references a host-absolute path
+  outside the container's bind mount, so workers inside cannot
+  resolve the gitdir.
+
+**Per-bead-close lifecycle.** A bead workspace is created on
+first dispatch and persists across attempts, recovery iterations,
+and `loom loop` invocations. It is reaped when the bead transitions
+to `closed` (via the agent's `bd close` on success, the operator's
+`loom msg`-resolve, or a direct `bd close`). Within that lifetime
+every fresh dispatch attempt sees a clean working tree: the
+dispatch path runs `git reset --hard HEAD` plus
+`git clean -fdx --exclude=target --exclude=.git --exclude=.wrapix`
+before handing off to the agent. On the first attempt this is a
+no-op against a freshly-cloned tree; on retries it discards any
+mid-session leftovers and preserves the agent's prior commits on
+the bead branch — the agent is responsible for amending or
+branch-resetting if `previous_failure` context calls for a
+different approach. `target/` survives so cargo + sccache start
+warm; `.git/` and `.wrapix/` (extra-mount staging) survive.
+`create_worktree` is idempotent at the directory level: directory
+exists → reuse; missing → clone fresh from the loom workspace.
+
+**Garbage collection.** At `loom loop` startup, under the spec
+advisory lock, loom enumerates `.wrapix/loom/beads/` and drops
+every bead workspace whose bead is `closed`. The sweep is workspace-global
+(not spec-scoped) — a closed bead cannot be in flight, so the sweep
+is safe regardless of which spec is being loop'd. In-loop, every
+bead the current loom dispatches owns its own removal: on the bead
+transitioning to `closed` the dispatch path reaps the workspace
+inline as part of post-session cleanup. The startup sweep catches
+orphans from crashed prior runs, not the happy path. No timer
+threshold; no operator-explicit GC. A `loom gc` command is an
+additive follow-up if hoarding ever materializes.
+
+**Bead branch flow.** Bead branch `loom/<id>` is created in the
+bead workspace at first dispatch. The agent commits to it. On a
+successful exit (`LOOM_COMPLETE` clearing the verdict gate), the
+bead workspace pushes the branch to the loom workspace (the bead
+workspace's `origin` remote points at the loom workspace); the
+loom workspace then rebases the bead branch onto the integration
+branch and fast-forward-merges it:
+
+```
+git push origin loom/<id>                          # from bead clone
+git rebase <integration-branch> loom/<id>          # in loom workspace
+git checkout <integration-branch>
+git merge --ff-only loom/<id>
+```
+
+Linear history, no merge commits. After integration, loom pushes
+the integration branch to `origin/<integration-branch>`. A
+non-fast-forward error at origin (operator pushed first, or another
+loom landed cross-spec work) retries by fetching + rebasing the
+integration branch onto `origin/<integration-branch>` + re-pushing.
+
+**Preserve-on-failure.** `MergeResult::Conflict` and post-integration
+push failures route the bead to `Blocked` per the verdict gate; the
+bead workspace persists on disk. Under the per-bead-close lifecycle
+"preserve" is the default — the workspace persists until `bd close`
+regardless of why it stopped progressing. The operator unblocks via
+`loom msg`-resolve; the bd-close-driven reap drops the bead workspace.
+
+**Concurrency.** Concurrent `loom loop --parallel N` and concurrent
+loops across specs share one loom workspace. Serialization points:
+
+- N concurrent `git clone --local` from the loom workspace into
+  bead workspaces: git's atomic-rename + per-ref lock semantics
+  make concurrent clone-from-loom safe.
+- Concurrent push-back from N bead workspaces: each push targets
+  a unique ref name (`loom/<bead-id>`), no ref contention.
+- Cross-spec rebase + ff into the integration branch in the loom
+  workspace: serialized by git's `index.lock`. The losing process
+  surfaces the error and retries the rebase + ff from its current
+  view of the integration branch.
+- Origin push: serialized by origin's non-fast-forward + retry-with-
+  fetch loop.
+
+The per-spec advisory lock (see [Concurrency & Locking](#concurrency--locking))
+continues to serialize plan / todo / loop / gate / msg on the same
+spec.
+
+**Mounts.** Bead containers see two mandatory bind mounts plus an
+optional sccache mount, all via `SpawnConfig`:
+
+- **Mandatory: the bead workspace** at `/workspace`.
+- **Mandatory: the host `wrapix-beads` dolt socket** at
+  `/workspace/.wrapix/dolt.sock` via `SpawnConfig.extra_mounts`
+  (see [agent.md § SpawnConfig](agent.md#spawnconfig)). This
+  replaces the historical host-side hardlink shim — single-file
+  bind-mount is Darwin-compatible (virtiofs forwards the socket
+  file directly) and survives changes to the bead-workspace path.
+- **Optional: a shared sccache directory** at the configured
+  container path (default `/sccache`; see
+  [Configuration](#configuration)), gated on `[loom] sccache_dir`
+  being set. When configured, bead and plan/todo container spawns
+  receive the directory as a bind mount with `SCCACHE_DIR` and
+  `RUSTC_WRAPPER=sccache` set in container env. Host-side cargo
+  invocations (loom's `cargo nextest` against the loom workspace
+  during gate verify; the operator's `nix develop` cargo if opted
+  in via devshell config) read the same host directory directly
+  with the same env vars exported — no bind mount, because there
+  is no container boundary to cross. One cache, all clients;
+  sccache's content-addressed scheme makes the cache safe to
+  share across workspaces whose absolute paths differ.
+
+**Darwin compatibility.** Clones on a single host filesystem
+hardlink objects within that filesystem — no VM-boundary crossing.
+Bind-mounting plain directories and the dolt socket file through
+virtiofs is the standard wrapix pattern. The clone-over-worktree
+choice eliminates the host-absolute `.git`-pointer failure mode
+that would also bite on Darwin. Outstanding Darwin work for the
+broader runtime layer is tracked in
+[agent.md § Out of Scope](agent.md#out-of-scope).
+
+**Git operations: hybrid `gix` + `git` CLI.** Workspace, branch,
+status, and integration operations go through a typed `GitClient`
+in `loom-driver`. The implementation is hybrid, encapsulated inside
+the module; callers see only typed Rust methods.
 
 | Operation | Backend | Reason |
 |-----------|---------|--------|
-| `status` (working tree vs HEAD) | [`gix`](https://docs.rs/gix) `Repository::status()` | mature (`crate-status.md`: checked) |
+| `status` (working tree vs HEAD) | [`gix`](https://docs.rs/gix) `Repository::status()` | mature |
 | `diff` (HEAD vs HEAD~) | `gix::diff` (`blob-diff` feature) | mature |
 | List refs / branches | `gix::Repository::references()` | mature |
 | Read commit graph / HEAD | `gix` | mature |
-| List worktrees | `gix::Repository::worktrees()` | mature (open/iter only) |
-| **Create per-bead workspace + branch** | `git clone --local` then `git checkout -b` (CLI) | self-contained `.git/` inside the workspace; workers in the wrapix container can resolve gitdir without an extra `.git/`-mount. `gix-clone` is unchecked in `crate-status.md` |
-| **Push bead branch to origin** | `git push origin <branch>` (CLI) | run from the bead's clone after a successful agent session so `merge_branch` can fold the bead's work into the driver branch |
-| **Remove per-bead workspace** | `std::fs::remove_dir_all` | a clone is a standalone tree (not a registered worktree), so cleanup is recursive directory removal — no `git worktree remove`/`prune` |
-| **Merge bead branch back** | `git merge` (CLI) | `gix-merge` writes a merged tree but cannot persist `MERGE_HEAD`/`MERGE_MSG` (unchecked); avoids reimplementing the index dance |
+| **Create loom workspace** (`loom init`) | `git clone <origin> .wrapix/loom/integration` (CLI) | one-shot, infrequent; `gix-clone` is unchecked |
+| **Create bead clone** | `git clone --local .wrapix/loom/integration .wrapix/loom/beads/<id>` then `git checkout -b loom/<id>` (CLI) | hardlinks loom workspace's `.git/objects`; self-contained `.git/` inside bind mount |
+| **Pre-attempt reset of bead clone** | `git reset --hard HEAD` + `git clean -fdx --exclude=target --exclude=.git --exclude=.wrapix` (CLI) | clean working tree at bead-branch HEAD while preserving `target/`, `.git/`, and `.wrapix/` |
+| **Push bead branch to loom workspace** | `git push origin loom/<id>` (CLI) | one push per successful bead |
+| **Rebase + ff into integration branch** | `git rebase` + `git merge --ff-only` (CLI) | `gix-merge` cannot persist `MERGE_HEAD`/`MERGE_MSG`; avoids index dance |
+| **Push integration to origin** | `git push origin <integration-branch>` (CLI) | with non-ff retry |
+| **Remove bead clone** | `std::fs::remove_dir_all` | standalone tree; not a registered worktree |
 
-`gix` 0.83+ is pinned with features `["status", "blob-diff", "revision",
-"parallel", "sha1"]` (the `sha1` feature is required for gix-hash to compile;
-without it the `Kind` enum has no variants). For tokio integration:
-`gix::Repository` is `!Sync`; loom holds a
+`gix` 0.83+ is pinned with features `["status", "blob-diff",
+"revision", "parallel", "sha1"]` (the `sha1` feature is required
+for gix-hash to compile; without it the `Kind` enum has no
+variants). `gix::Repository` is `!Sync`; loom holds a
 `ThreadSafeRepository` and clones a thread-local handle inside
-`spawn_blocking` per call. CLI shell-outs use `tokio::process::Command`
-with arguments passed via `.arg()` — never shell interpolation — and a
-60-second timeout matching `BdClient`.
+`spawn_blocking` per call. CLI shell-outs use
+`tokio::process::Command` with arguments passed via `.arg()` —
+never shell interpolation — and a 60-second timeout (10 minutes
+for pushes that drive pre-push CI hooks).
 
-The hybrid line is reviewed each loom release; gix operations migrate
-inward as the corresponding `crate-status.md` items become checked.
+The hybrid line is reviewed each loom release; gix operations
+migrate inward as the corresponding `crate-status.md` items become
+checked.
 
 ### Profile-Image Manifest
 
@@ -252,11 +363,13 @@ workspace root (e.g. `/workspace` → `workspace`, `~/work/myrepo` →
 this is accepted as a known limitation in exchange for human-readable,
 greppable lock paths.
 
-Lock files **must not** live inside the workspace, because the bead
-container has the workspace bind-mounted read-write and could `rm` the
-lock file out from under the host driver, silently breaking mutual
-exclusion. Putting locks under `$XDG_STATE_HOME` keeps them on the host
-filesystem only.
+Lock files **must not** live inside any bind-mounted workspace
+(operator's `/workspace`, the loom workspace, or any bead
+workspace): the bead container has its workspace bind-mounted
+read-write and could `rm` a lock file inside it out from under the
+host driver, silently breaking mutual exclusion. Putting locks
+under `$XDG_STATE_HOME` keeps them on the host filesystem only,
+outside every bind mount.
 
 All locks are POSIX advisory locks acquired via `flock(2)` through the
 `fd-lock` crate. The kernel releases them on process exit or crash, so
@@ -276,17 +389,20 @@ no silent stalls). `init` and `init --rebuild` error immediately if any
 spec lock is held.
 
 **Why git is the second-order serialization point.** Two `loom loop`
-invocations on *different* specs share the driver git branch. They will
-collide briefly at merge-back and push:
+invocations on *different* specs share the loom workspace's
+integration branch. They collide briefly at integration and at
+origin push:
 
-- Concurrent `git merge` is serialized by git's own `index.lock`; the
-  losing process surfaces a clear error and retries.
-- Concurrent `git push` from `loom gate verify` produces non-fast-forward
-  on the second push; the gate's push gate re-fetches and retries.
+- Concurrent rebase + ff into the integration branch is serialized
+  by git's own `index.lock` in the loom workspace; the losing
+  process surfaces a clear error and retries.
+- Concurrent `git push` from `loom gate verify` to
+  `origin/<integration-branch>` produces non-fast-forward on the
+  second push; the gate's push gate re-fetches and retries.
 
 These are accepted, recoverable failure modes — not silent corruption —
-which is why a workspace-wide lock is *not* required for `run` / `gate
-verify`.
+which is why a workspace-wide lock is *not* required for `loop` /
+`gate verify`.
 
 ### Nested-Loom Guard
 
@@ -609,10 +725,11 @@ Driver-detected failures enter a bounded recovery loop; agent
 self-reports go straight to human resolution via `loom msg`.
 
 **Decision table.** The gate inspects five signals — the agent's exit marker,
-whether the bead was bd-closed, whether the worktree diff is empty, whether
-the working tree is clean (`git status --porcelain` empty), and the review
-verdict — and produces one of four outcomes (`done`, `blocked`, `clarify`,
-or `recovery` with a cause):
+whether the bead was bd-closed, whether the bead-branch diff is empty
+(no commits since dispatch), whether the working tree is clean
+(`git status --porcelain` empty), and the review verdict — and
+produces one of four outcomes (`done`, `blocked`, `clarify`, or
+`recovery` with a cause):
 
 | Marker | bd-closed | Diff | Tree clean | Review | Outcome |
 |--------|-----------|------|------------|--------|---------|
@@ -636,11 +753,12 @@ short-circuits before review runs); `*` means any value is accepted.
 
 **Tree-clean check.** After the agent emits `LOOM_COMPLETE` or
 `LOOM_NOOP` and the bead is bd-closed, the driver runs `git status
---porcelain` against the bead's worktree. The bead's worktree was
-created fresh at dispatch (see *Worktree Dispatch* above), so its
-starting state is necessarily empty — any non-empty porcelain output
-post-bead is unambiguously agent-caused, with no risk of misattributing
-a developer's concurrent edits in the main checkout. A non-empty
+--porcelain` against the bead's workspace. The pre-attempt reset
+described in [Bead Dispatch](#bead-dispatch) ensures the agent
+started with a clean working tree against the bead-branch HEAD, so
+any non-empty porcelain output post-bead is unambiguously
+agent-caused; the operator's `/workspace` is a separate clone and
+cannot leak edits into a bead workspace. A non-empty
 result — tracked files modified-but-not-staged, staged-but-not-
 committed, or untracked files outside the ignore set — routes to
 `recovery` with cause `tree-not-clean`, taking precedence over the
@@ -840,9 +958,9 @@ Five markers are defined:
 - `LOOM_CONCERN: <token> -- <reason>` — review found a quality issue;
   push refused, molecule re-enters recovery.
 - `LOOM_BLOCKED` — review *itself* cannot run (logs corrupt, can't
-  access worktree, missing prerequisite). Distinct from `LOOM_CONCERN`:
-  blocked means "I couldn't review"; concern means "I reviewed and
-  found a problem."
+  access bead workspace, missing prerequisite). Distinct from
+  `LOOM_CONCERN`: blocked means "I couldn't review"; concern means
+  "I reviewed and found a problem."
 - `LOOM_CLARIFY` — rare: review surfaces a spec ambiguity that
   requires human resolution before the verdict can be rendered.
 
@@ -1624,6 +1742,26 @@ style_rules = "docs/style-rules.md"
 priority = 2
 default_type = "task"
 
+[loom]
+# Name of the branch the loom workspace (`.wrapix/loom/integration/`)
+# has checked out and into which bead branches rebase + fast-forward.
+# Loom pushes this branch to `origin/<integration_branch>` from the
+# gate. Default `main`.
+integration_branch = "main"
+# Setting `sccache_dir` enables shared sccache. For bead and
+# plan/todo container spawns, the directory is bind-mounted at
+# `sccache_container_path` and `SCCACHE_DIR` + `RUSTC_WRAPPER=sccache`
+# are set in container env. For host-side cargo invocations (loom's
+# gate-verify against the loom workspace; optionally the operator's
+# `nix develop`), the same env vars are exported and cargo reads
+# the host directory directly — no mount, because there is no
+# container boundary. Leaving `sccache_dir` unset disables the
+# feature entirely; every cargo invocation pays full cold-build
+# cost. `sccache_container_path` defaults to `/sccache` and is
+# consulted only when `sccache_dir` is set.
+# sccache_dir = "~/.cache/loom-sccache"
+# sccache_container_path = "/sccache"
+
 [loop]
 # Molecule-level: bounds `loom loop`'s outer loop on fix-up beads (each
 # full molecule pass — initial pass + every verdict-gate-produced
@@ -1967,38 +2105,71 @@ Criteria.
 - `agent` depends on `llm` and `loom-events`; its `direct` backend wraps `loom-llm::Conversation`
   [check](cargo run -p loom-walk -- loom_agent_deps)
 
-### Worktree dispatch
+### Bead dispatch
 
-- `loom loop --parallel N` (default) creates one worktree per
-      dispatched bead under `.wrapix/worktree/<label>/<bead-id>/`,
-      regardless of `N`; the main checkout is never the bead's workdir
-  [test](bead_dispatch_creates_worktree)
-- The bead's worktree is freshly created at HEAD with an empty
-      working-tree state, so verdict-gate checks that depend on a clean
-      starting tree (notably `tree-not-clean`) are sound by construction
-  [test](bead_worktree_starts_with_empty_porcelain)
-- Each worktree spawns its own `wrapix spawn` and the spawns run
-      concurrently (overlapping wall-clock)
+- Loom owns a workspace at `.wrapix/loom/integration/` separate
+      from the operator's `/workspace`; `loom init` materializes it
+      (one-shot clone from origin) and `loom loop` never touches the
+      operator's working tree
+  [test](loom_init_materializes_loom_workspace)
+  [test](loom_loop_does_not_touch_operator_workspace)
+- The integration branch is settable via `[loom] integration_branch`
+      in `config.toml` (default `main`); the loom workspace has that
+      branch checked out and never switches
+  [test](integration_branch_setting_honored_by_loop)
+- `loom loop --parallel N` creates one bead workspace per dispatched
+      bead under `.wrapix/loom/beads/<id>/`, derived from the loom
+      workspace via `git clone --local`; bead ids are globally unique
+      so no spec partition appears in the path
+  [test](bead_dispatch_creates_clone_under_loom_beads)
+- Bead workspaces persist across attempts, recovery iterations,
+      and `loom loop` invocations; they are reaped only when the bead
+      transitions to `closed`
+  [test](bead_workspace_survives_retry_until_close)
+  [test](bead_workspace_reaped_on_bd_close)
+- Every dispatch attempt sees a clean working tree against the bead
+      workspace's current HEAD; `target/`, `.git/`, and `.wrapix/`
+      survive the pre-attempt reset
+  [test](bead_workspace_reset_preserves_target_and_dotwrapix)
+- `loom loop` startup runs a workspace-global GC sweep under the
+      spec advisory lock: every bead workspace under
+      `.wrapix/loom/beads/` whose bead is `closed` is removed
+  [test](loop_startup_gc_drops_closed_bead_workspaces)
+  [test](loop_startup_gc_skips_open_bead_workspaces)
+- Each bead workspace's dispatch spawns its own `wrapix spawn`;
+      spawns overlap in wall-clock under `--parallel N > 1`
   [test](concurrent_spawns_overlap_in_wall_clock)
-- Successful bead branches are merged back to the driver branch after
-      the batch completes
-  [test](parallel_merge_back)
-- `merge_branch` produces linear history: the bead branch is rebased
-      onto the driver `HEAD` and folded in with `git merge --ff-only`, so
-      no merge commit appears in the published history
+- Successful bead branches push to the loom workspace and rebase +
+      fast-forward into the integration branch (linear history, no
+      merge commits)
   [test](merge_branch_uses_ff_only_and_rejects_non_ff_history)
-- Parallel dispatch's second-and-later beads merge after an earlier
-      bead has moved `HEAD`: `merge_branch` rebases the bead branch onto
-      the moved `HEAD` before fast-forwarding
+- Parallel dispatch's second-and-later beads rebase onto the moved
+      integration-branch HEAD before fast-forwarding
   [test](merge_branch_rebases_bead_branch_onto_head_before_ff)
-- On worker failure, the bead worktree branch is cleaned up and the bead
-      is queued for retry per the retry policy
-  [test](parallel_failure_cleanup)
-- On merge conflict, the worktree is preserved and the bead is marked
-      failed (not silently overwritten)
+- Origin push of the integration branch retries non-fast-forward
+      errors by fetching and re-rebasing onto
+      `origin/<integration-branch>`
+  [test](origin_push_retries_non_fast_forward)
+- On merge conflict or post-merge push failure, the bead workspace
+      persists (the default per-bead-close behavior) and the bead is
+      routed to `Blocked` per the verdict gate
   [test](parallel_conflict_preserves_worktree)
-- `GitClient` is the only module that imports `gix` or invokes the `git`
-      CLI; callers see typed Rust methods
+- Bead containers receive the host `wrapix-beads` dolt socket as a
+      single-file bind mount at `/workspace/.wrapix/dolt.sock` via
+      `SpawnConfig.extra_mounts`; the host-side hardlink shim is
+      removed
+  [test](bead_container_dolt_socket_via_extra_mounts)
+  [check](rg -n 'hard_link' crates/loom-driver/src/git/client.rs)
+- When `[loom] sccache_dir` is configured, the directory is
+      bind-mounted into the loom workspace and every bead container
+      at the configured container path; cache hits are observable
+      across beads in a multi-bead loop. When unset, the mount is
+      omitted entirely
+  [test](sccache_mount_present_when_configured)
+  [test](sccache_mount_omitted_when_unset)
+  [judge](sccache_hits_visible_across_beads)
+- `GitClient` is the only module that imports `gix` or invokes the
+      `git` CLI; callers see typed Rust methods
   [check](cargo run -p loom-walk -- git_client_encapsulation)
 
 ### Workflow commands
@@ -2744,12 +2915,13 @@ two agent-loop observers.
    each label to a profile image via the
    [Profile-Image Manifest](#profile-image-manifest). Unknown labels fail
    at dispatch (no silent default). `--profile` overrides bead labels.
-6. **Worktree dispatch** — `loom loop --parallel N` (alias `-p N`) dispatches
-   up to N ready beads, each in its own git worktree on a per-bead branch,
-   regardless of `N`. The main checkout is never the bead's workdir.
-   `--parallel 1` (default) runs one bead at a time; `--parallel N > 1`
-   runs N concurrently. After workers finish, branches are merged back
-   to the driver branch sequentially.
+6. **Bead dispatch** — `loom loop --parallel N` (alias `-p N`) dispatches
+   up to N ready beads, each in its own clone of the loom workspace
+   under `.wrapix/loom/beads/<id>/` on a per-bead branch. The operator's
+   `/workspace` is never the bead's workdir. `--parallel 1` (default)
+   runs one bead at a time; `--parallel N > 1` runs N concurrently.
+   After workers finish, branches push to the loom workspace and
+   rebase + fast-forward into the integration branch sequentially.
 7. **Retry with context** — on in-session worker failure, retries with the
    prior error output injected as the `previous_failure` template variable.
    Configurable max retries per bead (default 2). After in-session retries
@@ -2840,10 +3012,12 @@ two agent-loop observers.
    before the `Clean` arm runs.
 10. **Beads via shared Dolt socket** — every container has the host's
     `wrapix-beads` Dolt server bind-mounted at
-    `/workspace/.wrapix/dolt.sock`; in-container `bd` writes go straight to
-    the authoritative state. No per-bead `bd dolt push/pull` handoff. Loom
-    on the host reads the same state through the same socket. The legacy
-    `.beads/issues.jsonl` path is not used — beads no longer supports it.
+    `/workspace/.wrapix/dolt.sock` via `SpawnConfig.extra_mounts`
+    (see [Bead Dispatch](#bead-dispatch)); in-container `bd` writes
+    go straight to the authoritative state. No per-bead `bd dolt
+    push/pull` handoff. Loom on the host reads the same state
+    through the same socket. The legacy `.beads/issues.jsonl` path
+    is not used — beads no longer supports it.
 11. **Spec resolution** — `--spec <name>` flag or fallback to the
     `current_spec` key in the state database.
 12. **Verdict-gate production wiring** — the verdict-gate decision
@@ -2945,8 +3119,8 @@ two agent-loop observers.
 ## Out of Scope
 
 - **Agent backend implementations** — defined in [agent.md](agent.md).
-- **Parallelism beyond worktree-per-bead** — `loom loop --parallel N`
-  dispatches one git worktree per bead in parallel. New parallelism
+- **Parallelism beyond clone-per-bead** — `loom loop --parallel N`
+  dispatches one bead clone per bead in parallel. New parallelism
   strategies (cross-spec, distributed, scheduler-aware) are future
   work.
 - **Hidden specs (`-h` flag)** — scratch / private specs are not a

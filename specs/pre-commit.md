@@ -149,11 +149,14 @@ declared as such.
   it.
 
 - **Worker-context hook firing.** Per-bead workspaces are created via
-  `git clone --local` (see [harness.md — Worktree Dispatch](harness.md)),
-  not linked worktrees, so worker-side commits do not inherit the main
-  checkout's `core.hooksPath`. Hooks fire on the driver-side merge-back
-  in the main checkout. Whether worker contexts should also run hooks
-  is a question for harness.md.
+  `git clone --local` of the loom workspace (see
+  [harness.md — Bead Dispatch](harness.md#bead-dispatch)), not linked
+  worktrees, so worker-side commits do not inherit `core.hooksPath`.
+  The integration step in the loom workspace is `git rebase` +
+  `git merge --ff-only`, neither of which invokes `git commit`, so
+  pre-commit hooks do not fire there either; pre-push hooks fire on
+  loom's push of the integration branch to origin. Whether worker
+  contexts should also run hooks is a question for harness.md.
 
 - **Catching "agent forgot to stage" / dirty-tree-after-completion.**
   Pre-commit hooks' stash/restore architecture intentionally hides
