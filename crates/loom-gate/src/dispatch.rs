@@ -19,6 +19,14 @@
 //! additionally undergoes silent-zero-match sniffing so a filtered
 //! cargo / nextest / pytest invocation that matches no targets fails
 //! loudly instead of passing on an empty selection.
+//!
+//! Pending-marked annotations (`[tier?](target)`) are filtered out
+//! before any subprocess spawn per `specs/gate.md` § Pending modifier
+//! — *Dispatch-side skip*. The verifier doesn't run, the dispatcher
+//! emits no result for the entry, and the only enforcement on a
+//! `?`-marked annotation comes from the integrity gate's
+//! forward-resolution check (which fires `UnneededPendingMarker`
+//! once the target resolves).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -179,7 +187,7 @@ pub fn run_check(
 ) -> Vec<Result<DispatchOutcome, DispatchError>> {
     let check_only: Vec<Annotation> = annotations
         .iter()
-        .filter(|a| a.tier == Tier::Check)
+        .filter(|a| a.tier == Tier::Check && !a.pending)
         .cloned()
         .collect();
     run_with_runners(&check_only, specs, options, repo_root, tier_cwds)
@@ -207,7 +215,7 @@ pub fn run_test(
 ) -> Result<Option<DispatchOutcome>, DispatchError> {
     let candidates: Vec<&Annotation> = annotations
         .iter()
-        .filter(|a| a.tier == Tier::Test)
+        .filter(|a| a.tier == Tier::Test && !a.pending)
         .collect();
     let filtered = filter_by_files(&candidates, &options.files, scope);
     if filtered.is_empty() {
@@ -232,7 +240,7 @@ pub fn run_judge(
 ) -> Result<Option<DispatchOutcome>, DispatchError> {
     let judges: Vec<&Annotation> = annotations
         .iter()
-        .filter(|a| a.tier == Tier::Judge)
+        .filter(|a| a.tier == Tier::Judge && !a.pending)
         .collect();
     if judges.is_empty() {
         return Ok(None);
@@ -406,7 +414,7 @@ fn run_per_annotation(
 ) -> Vec<Result<DispatchOutcome, DispatchError>> {
     annotations
         .iter()
-        .filter(|a| a.tier == tier)
+        .filter(|a| a.tier == tier && !a.pending)
         .map(|a| run_single(a, options))
         .collect()
 }

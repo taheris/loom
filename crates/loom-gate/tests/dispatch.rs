@@ -32,6 +32,13 @@ fn ann(tier: Tier, target: &str) -> Annotation {
     }
 }
 
+fn pending_ann(tier: Tier, target: &str) -> Annotation {
+    Annotation {
+        pending: true,
+        ..ann(tier, target)
+    }
+}
+
 /// Write a shell-script body to `dir/name` and return an annotation
 /// target that invokes it via `sh <path>`. Routing through `sh` skips
 /// the chmod race that produces `ETXTBSY` on freshly-written
@@ -407,6 +414,103 @@ fn judge_tier_ignores_files_scope_unlike_test_tier() {
         1,
         "judges are not filtered by --files scope"
     );
+}
+
+/// Per `specs/gate.md` § Pending modifier — *Dispatch-side skip*:
+/// `[check?]` annotations are filtered out before subprocess spawn.
+/// The acceptance for bead `lm-amd3` pins this so plan sessions can
+/// author `[check?](cargo run -p not-yet-built)` without breaking
+/// their own `loom gate verify` lane. Target points at a path that
+/// would emit `DispatchError::Spawn` if dispatched; the test passes
+/// when the dispatcher returns an empty result vec.
+#[test]
+fn dispatcher_skips_check_pending_annotation() {
+    let dir = fixture_dir();
+    let inputs = vec![pending_ann(
+        Tier::Check,
+        "/no/such/binary/anywhere-pending-check",
+    )];
+    let opts = DispatchOptions::default();
+    let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
+    assert!(
+        results.is_empty(),
+        "[check?] must be skipped at dispatch — got {} result(s): {:?}",
+        results.len(),
+        results,
+    );
+}
+
+/// Same contract for `[test?]`: the batched runner subprocess is
+/// not spawned. `run_test` returns `Ok(None)` (the same shape it uses
+/// for "no test annotations" and "scope-filtered to empty"), letting
+/// the caller distinguish "skipped" from "ran-and-failed".
+#[test]
+fn dispatcher_skips_test_pending_annotation() {
+    let template = RunnerTemplate::new("/no/such/runner-pending-test {paths}");
+    let inputs = vec![pending_ann(Tier::Test, "crate::not::a::real::pending_test")];
+    let opts = DispatchOptions::default();
+    let result = run_test(&inputs, &opts, &template, &EmptyScope).unwrap();
+    assert!(
+        result.is_none(),
+        "[test?] must be skipped at dispatch — got {result:?}",
+    );
+}
+
+/// Same contract for `[system?]`. The dispatcher emits no result
+/// for the pending entry; the result vec is empty.
+#[test]
+fn dispatcher_skips_system_pending_annotation() {
+    let inputs = vec![pending_ann(
+        Tier::System,
+        "/no/such/binary/anywhere-pending-system",
+    )];
+    let opts = DispatchOptions::default();
+    let results = run_system(&inputs, &opts);
+    assert!(
+        results.is_empty(),
+        "[system?] must be skipped at dispatch — got {} result(s): {:?}",
+        results.len(),
+        results,
+    );
+}
+
+/// Same contract for `[judge?]`. The batched judge runner is not
+/// spawned; `run_judge` returns `Ok(None)`.
+#[test]
+fn dispatcher_skips_judge_pending_annotation() {
+    let template = RunnerTemplate::new("/no/such/runner-pending-judge {paths}");
+    let inputs = vec![pending_ann(Tier::Judge, "rubrics/not-yet-written.md")];
+    let opts = DispatchOptions::default();
+    let result = run_judge(&inputs, &opts, &template).unwrap();
+    assert!(
+        result.is_none(),
+        "[judge?] must be skipped at dispatch — got {result:?}",
+    );
+}
+
+/// Regression: the pending filter must not over-fire — non-`?`
+/// annotations with resolvable targets still dispatch and surface a
+/// verdict. Pairs with `dispatcher_skips_check_pending_annotation`
+/// to bound the filter in both directions.
+#[test]
+fn dispatcher_runs_non_pending_annotation_with_resolvable_target() {
+    let dir = fixture_dir();
+    let script = write_script(
+        dir.path(),
+        "non-pending.sh",
+        "#!/bin/sh\nprintf '{\"pass\": true, \"evidence\": \"ran\"}\\n'\n",
+    );
+    let inputs = vec![ann(Tier::Check, &script)];
+    let opts = DispatchOptions::default();
+    let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
+    assert_eq!(
+        results.len(),
+        1,
+        "non-pending [check] must still dispatch"
+    );
+    let outcome = results.into_iter().next().unwrap().unwrap();
+    assert!(outcome.verdict.pass);
+    assert_eq!(outcome.verdict.evidence, "ran");
 }
 
 #[test]

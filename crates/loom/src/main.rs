@@ -1381,7 +1381,7 @@ fn run_check_with_progress(
     let is_tty = stderr.is_terminal();
     let check_only: Vec<loom_gate::Annotation> = selected
         .iter()
-        .filter(|a| a.tier == Tier::Check)
+        .filter(|a| a.tier == Tier::Check && !a.pending)
         .cloned()
         .collect();
     if check_only.is_empty() {
