@@ -875,7 +875,7 @@ fn run_gate(
         }
         Some(GateSubcommand::Mint(mut args)) => {
             apply_default_scope(workspace, &mut args.scope);
-            run_gate_mint(workspace, args)
+            run_gate_mint(workspace, args, agent_override)
         }
     }
 }
@@ -1607,28 +1607,108 @@ fn spec_labels_in_workspace(workspace: &Path) -> anyhow::Result<Vec<SpecLabel>> 
 /// (delegated to [`apply_default_scope`] in `run_gate`), the
 /// `LOOM_INSIDE` guard (delegated to the top-level main check via
 /// [`Command::refused_inside_loom`]), filter passthrough, and exit-code
-/// mapping. The walk that produces [`loom_workflow::review::Finding`]
-/// records is built by the mint-walk-orchestration bead; this arm
-/// plumbs the surface so the orchestration can land on top without
-/// touching the CLI again.
-fn run_gate_mint(workspace: &Path, args: GateMintArgs) -> anyhow::Result<()> {
+/// mapping. Findings are produced by dispatching the resolved
+/// [`MintScope`] through the production [`ProductionMintWalker`] per
+/// `specs/gate.md` § *Production walker wiring*; the rubric (and, at
+/// `--tree` scope, the deterministic verifier set + integrity gate) are
+/// the only paths findings reach the mint pipeline.
+fn run_gate_mint(
+    workspace: &Path,
+    args: GateMintArgs,
+    agent_override: Option<AgentKind>,
+) -> anyhow::Result<()> {
     let head_commit = current_commit(workspace).unwrap_or_default();
     let spec_filter = args.scope.spec.as_deref().map(SpecLabel::new);
     let opts = loom_workflow::mint::MintOptions {
         dry_run: args.dry_run,
         spec_filter,
     };
-    let findings: Vec<loom_workflow::review::Finding> = Vec::new();
+    let scope = resolve_mint_scope(workspace, &args.scope)?;
+
+    let manifest = Arc::new(ProfileImageManifest::from_env()?);
+    let label = resolve_spec_label(workspace, args.scope.spec.clone())?;
+    let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
+    let selection = resolved_agent_for(&config, agent_override, Phase::Review)?;
+    let phase_default = selection.profile.clone();
+    let kind = selection.kind;
+    let shutdown_grace = resolve_shutdown_grace(&selection);
+    let state = Arc::new(StateDb::open(workspace.join(".loom/state.db"))?);
+    let style_rules = config.style_rules.clone();
+    let workspace_buf = workspace.to_path_buf();
+    let logs_root = workspace.join(".loom/logs");
+    let label_for_sink = label.clone();
+    let phase_when = phase_when_from_env().unwrap_or_else(|| SystemClock::new().wall_now());
+    let logs_root_for_spawn = logs_root.clone();
+
     let runtime = tokio::runtime::Runtime::new()?;
     let summary = runtime.block_on(async move {
         let bd = BdClient::new();
-        loom_workflow::mint::mint_findings_with_options(&bd, &findings, &head_commit, &opts).await
-    });
+        let mut walker = loom_workflow::mint::ProductionMintWalker::new(
+            BdClient::new(),
+            label.clone(),
+            workspace_buf,
+            state,
+            manifest,
+            phase_default,
+            move |spawn_cfg: SpawnConfig| {
+                let logs_root = logs_root_for_spawn.clone();
+                let label = label_for_sink.clone();
+                async move {
+                    let sink = LogSink::open_phase_at(&logs_root, &label, "mint", None, phase_when)
+                        .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))?;
+                    let mut output = String::new();
+                    let outcome = dispatch(
+                        kind,
+                        spawn_cfg,
+                        shutdown_grace,
+                        Some(sink),
+                        Some(&mut output),
+                    )
+                    .await?;
+                    let marker = parse_exit_signal(&output);
+                    Ok((outcome, marker, output))
+                }
+            },
+        )
+        .with_style_rules(style_rules);
+        let validator = loom_workflow::review::AcceptAllFindingValidator;
+        let findings = loom_workflow::mint::walk(&mut walker, &scope, &validator).await?;
+        anyhow::Ok(
+            loom_workflow::mint::mint_findings_with_options(&bd, &findings, &head_commit, &opts)
+                .await,
+        )
+    })?;
     print!("{}", summary.render());
     if summary.refused > 0 || summary.errors > 0 {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Translate the CLI's resolved [`GateScopeArgs`] into the [`MintScope`]
+/// the production walker dispatches on. Mirrors `apply_default_scope`'s
+/// scope precedence (`--bead` > `--diff` > `--files` > `--tree`); since
+/// `apply_default_scope` populates `args.diff` for bare invocations,
+/// reaching the `MintScope::Tree` fallback requires the operator to
+/// have passed `--tree` explicitly.
+fn resolve_mint_scope(
+    _workspace: &Path,
+    args: &GateScopeArgs,
+) -> anyhow::Result<loom_workflow::mint::MintScope> {
+    if let Some(bead_str) = &args.bead {
+        let bead = BeadId::new(bead_str)?;
+        return Ok(loom_workflow::mint::MintScope::Bead(bead));
+    }
+    if let Some(diff) = &args.diff {
+        return Ok(loom_workflow::mint::MintScope::Diff(diff.clone()));
+    }
+    if !args.files.is_empty() {
+        return Ok(loom_workflow::mint::MintScope::Files(args.files.clone()));
+    }
+    if args.tree {
+        return Ok(loom_workflow::mint::MintScope::Tree);
+    }
+    Ok(loom_workflow::mint::MintScope::Diff("HEAD".to_string()))
 }
 
 fn run_gate_audit(

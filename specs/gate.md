@@ -2441,13 +2441,13 @@ findings reach mint.
   deterministic verifier set + the integrity gate forward-resolution
   check and returns one `VerifierFailure` per failed dispatch
   outcome
-  [test?](production_mint_walker_exists_and_dispatches_rubric_and_verifiers)
+  [test](production_mint_walker_exists_and_dispatches_rubric_and_verifiers)
 - `run_gate_mint` in the loom CLI binary constructs the production
   walker and calls `mint::walk::walk(walker, scope, validator)` to
   obtain the `Vec<Finding>` it passes to `mint_findings_with_options`.
   No code path in `run_gate_mint` constructs `Vec::<Finding>::new()`
   unconditionally
-  [test?](run_gate_mint_dispatches_through_production_walker_not_empty_vec)
+  [test](run_gate_mint_dispatches_through_production_walker_not_empty_vec)
 - `loom loop`'s per-bead path invokes `loom gate verify --bead <id>`
   followed by `loom gate mint --bead <id>` as subprocesses after the
   run-phase agent signals Success. Fix-up beads minted at this step

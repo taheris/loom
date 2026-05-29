@@ -23,16 +23,33 @@
 //! already-minted findings on re-run, so the walk doesn't carry state
 //! across invocations.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use askama::Template;
 use displaydoc::Display;
-use loom_driver::identifier::{BeadId, SpecLabel};
-use loom_gate::Annotation;
+use loom_driver::agent::{
+    ProtocolError, RePinContent, SessionOutcome, SpawnConfig, set_loom_inside,
+};
+use loom_driver::bd::{BdClient, CommandRunner, ListOpts, TokioRunner};
+use loom_driver::config::Phase;
+use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
+use loom_driver::profile_manifest::ProfileImageManifest;
+use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
+use loom_driver::state::StateDb;
+use loom_gate::{
+    Annotation, DispatchOptions, EmptyScope, FsCommandResolver, FsPendingCommandExecutor,
+    IntegrityFinding, RustWorkspaceStubScanner, RustWorkspaceTestResolver, Tier, TierCwds,
+    annotation as gate_annotation, integrity, run_check, run_system, run_test,
+};
+use loom_templates::review::{ReviewContext, ReviewLane, TreeScopeEpic};
 use thiserror::Error;
 
 use crate::review::{
-    ConcernToken, Finding, FindingTarget, FindingValidator, WalkOutputError, parse_walk_output,
+    ConcernToken, Finding, FindingTarget, FindingValidator, WalkOutputError, beads_summary,
+    default_profile_for_spec, load_review_sources, parse_walk_output,
 };
+use crate::todo::ExitSignal;
 
 /// Resolved mint walk scope. Mirrors the `--bead` / `--diff` / `--files` /
 /// `--tree` CLI flag the operator passed to `loom gate mint`; the
@@ -224,6 +241,331 @@ fn spec_label_from_path(path: &std::path::Path) -> Result<SpecLabel, WalkError> 
         .ok_or_else(|| WalkError::SpecLabel {
             path: path.to_path_buf(),
         })
+}
+
+/// Production [`MintWalker`] used by the `loom gate mint` CLI arm.
+///
+/// `run_rubric` mirrors the [`crate::review::ProductionReviewController`]
+/// setup: it renders the review prompt via [`ReviewContext`] in the
+/// [`ReviewLane::Rubric`] lane, spawns the reviewer agent via a
+/// caller-supplied closure (so backend selection — `PiBackend` vs
+/// `ClaudeBackend` — stays in the binary), and returns the agent's
+/// combined stdout for [`parse_walk_output`] to consume.
+///
+/// `run_verifiers` (called only at [`MintScope::Tree`]) parses workspace
+/// annotations, runs the integrity gate's forward-resolution check
+/// followed by the deterministic verifier set (`[check]` / `[test]` /
+/// `[system]`), and returns one [`VerifierFailure`] per failed dispatch
+/// outcome per `specs/gate.md` § *Emit shape* mapping table.
+pub struct ProductionMintWalker<S, F, R: CommandRunner = TokioRunner>
+where
+    S: Fn(SpawnConfig) -> F + Send + Sync,
+    F: std::future::Future<
+            Output = Result<(SessionOutcome, Option<ExitSignal>, String), ProtocolError>,
+        > + Send,
+{
+    bd: BdClient<R>,
+    label: SpecLabel,
+    workspace: PathBuf,
+    state: Arc<StateDb>,
+    manifest: Arc<ProfileImageManifest>,
+    phase_default: ProfileName,
+    spawn: S,
+    style_rules: String,
+}
+
+impl<S, F, R: CommandRunner> ProductionMintWalker<S, F, R>
+where
+    S: Fn(SpawnConfig) -> F + Send + Sync,
+    F: std::future::Future<
+            Output = Result<(SessionOutcome, Option<ExitSignal>, String), ProtocolError>,
+        > + Send,
+{
+    pub fn new(
+        bd: BdClient<R>,
+        label: SpecLabel,
+        workspace: PathBuf,
+        state: Arc<StateDb>,
+        manifest: Arc<ProfileImageManifest>,
+        phase_default: ProfileName,
+        spawn: S,
+    ) -> Self {
+        Self {
+            bd,
+            label,
+            workspace,
+            state,
+            manifest,
+            phase_default,
+            spawn,
+            style_rules: "docs/style-rules.md".to_string(),
+        }
+    }
+
+    /// Override the style-rules pin used in the rendered rubric prompt.
+    /// Production callers thread `LoomConfig.style_rules`; tests rely on
+    /// the built-in default.
+    #[must_use]
+    pub fn with_style_rules(mut self, path: String) -> Self {
+        self.style_rules = path;
+        self
+    }
+
+    fn spec_label_filter(&self) -> String {
+        format!("spec:{}", self.label.as_str())
+    }
+
+    async fn resolve_molecule_id(
+        &self,
+    ) -> Result<Option<loom_driver::identifier::MoleculeId>, WalkError> {
+        crate::resolve::resolve_open_epic(&self.bd, &self.label)
+            .await
+            .map_err(|e| WalkError::Rubric(e.to_string()))
+    }
+
+    async fn build_rubric_prompt(&self) -> Result<String, WalkError> {
+        let beads = self
+            .bd
+            .list(ListOpts {
+                status: None,
+                label: Some(self.spec_label_filter()),
+                ..ListOpts::default()
+            })
+            .await
+            .map_err(|e| WalkError::Rubric(e.to_string()))?;
+        let molecule_id = self.resolve_molecule_id().await?;
+        let base_commit = match molecule_id.as_ref() {
+            Some(id) => self
+                .state
+                .molecule(id)
+                .map_err(|e| WalkError::Rubric(e.to_string()))?
+                .and_then(|m| m.base_commit),
+            None => None,
+        };
+        let spec_path_rel = format!("specs/{}.md", self.label.as_str());
+        let (test_sources, judge_rubrics) =
+            load_review_sources(&self.workspace, &self.workspace.join(&spec_path_rel))
+                .map_err(|e| WalkError::Rubric(e.to_string()))?;
+        let key = resolve_scratch_key(Phase::Review, &self.label, None);
+        let scratchpad_path = ScratchSession::scratchpad_path_for(&self.workspace, &key)
+            .to_string_lossy()
+            .into_owned();
+        let ctx = ReviewContext {
+            pinned_context: String::new(),
+            default_profile: default_profile_for_spec(&self.label),
+            label: self.label.clone(),
+            spec_path: spec_path_rel,
+            companion_paths: vec![],
+            beads_summary: beads_summary(&beads),
+            base_commit,
+            molecule_id,
+            test_sources,
+            judge_rubrics,
+            scratchpad_path,
+            style_rules: self.style_rules.clone(),
+            lane: ReviewLane::Rubric,
+            tree_scope_epics: Vec::<TreeScopeEpic>::new(),
+        };
+        ctx.render().map_err(|e| WalkError::Rubric(e.to_string()))
+    }
+}
+
+impl<S, F, R: CommandRunner> MintWalker for ProductionMintWalker<S, F, R>
+where
+    S: Fn(SpawnConfig) -> F + Send + Sync,
+    F: std::future::Future<
+            Output = Result<(SessionOutcome, Option<ExitSignal>, String), ProtocolError>,
+        > + Send,
+{
+    async fn run_rubric(&mut self, _scope: &MintScope) -> Result<String, WalkError> {
+        let prompt = self.build_rubric_prompt().await?;
+        let entry = self
+            .manifest
+            .lookup(&self.phase_default)
+            .map_err(|e| WalkError::Rubric(e.to_string()))?;
+        let banner = format!("loom gate mint @ {}", self.label);
+        let key = resolve_scratch_key(Phase::Review, &self.label, None);
+        let scratch = ScratchSession::open(&self.workspace, &key, &prompt, &banner)
+            .map_err(|e| WalkError::Rubric(format!("scratch: {e}")))?;
+        let mut env = Vec::new();
+        set_loom_inside(&mut env);
+        let spawn_config = SpawnConfig {
+            image_ref: entry.r#ref.clone(),
+            image_source: entry.source.clone(),
+            workspace: self.workspace.clone(),
+            env,
+            mounts: vec![],
+            initial_prompt: prompt,
+            agent_args: vec![],
+            repin: RePinContent {
+                orientation: String::new(),
+                pinned_context: String::new(),
+                partial_bodies: vec![],
+            },
+            scratch_dir: scratch.path().to_path_buf(),
+            model: None,
+            thinking_level: None,
+            shutdown_grace: None,
+            handshake_timeout: None,
+            stall_warn_interval: None,
+        };
+        let result = (self.spawn)(spawn_config).await;
+        drop(scratch);
+        let (_outcome, _marker, stdout) = result.map_err(|e| WalkError::Rubric(e.to_string()))?;
+        Ok(stdout)
+    }
+
+    async fn run_verifiers(
+        &mut self,
+        _scope: &MintScope,
+    ) -> Result<Vec<VerifierFailure>, WalkError> {
+        let specs_dir = self.workspace.join("specs");
+        if !specs_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let parsed =
+            gate_annotation::parse(&specs_dir).map_err(|e| WalkError::Verifiers(e.to_string()))?;
+        let annotations = parsed.annotations;
+        if annotations.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut failures = Vec::new();
+        let cmd_resolver = FsCommandResolver::new(&self.workspace);
+        let test_resolver = RustWorkspaceTestResolver::scan(&self.workspace)
+            .map_err(|e| WalkError::Verifiers(e.to_string()))?;
+        let stub_scanner = RustWorkspaceStubScanner::scan(&self.workspace)
+            .map_err(|e| WalkError::Verifiers(e.to_string()))?;
+        let pending_executor = FsPendingCommandExecutor::new(&self.workspace);
+        let integrity_findings = integrity::check(
+            &annotations,
+            &self.workspace,
+            &cmd_resolver,
+            &test_resolver,
+            &stub_scanner,
+            &pending_executor,
+        );
+        for finding in integrity_findings {
+            if let Some(failure) = integrity_to_verifier_failure(&finding, &annotations) {
+                failures.push(failure);
+            }
+        }
+        let options = DispatchOptions::default();
+        let tier_cwds = TierCwds::default();
+        for outcome in run_check(&annotations, &[], &options, &self.workspace, &tier_cwds) {
+            failures.extend(dispatch_outcome_to_failures(outcome));
+        }
+        for outcome in run_system(&annotations, &options) {
+            failures.extend(dispatch_outcome_to_failures(outcome));
+        }
+        if let Ok(template) = loom_gate::runner::discover(&self.workspace, Tier::Test) {
+            match run_test(&annotations, &options, &template, &EmptyScope) {
+                Ok(Some(outcome)) => failures.extend(dispatch_outcome_to_failures(Ok(outcome))),
+                Ok(None) => {}
+                Err(e) => return Err(WalkError::Verifiers(e.to_string())),
+            }
+        }
+        Ok(failures)
+    }
+}
+
+/// Normalise one [`IntegrityFinding`] into a [`VerifierFailure`] per
+/// the mapping at `specs/gate.md` § *Emit shape*. Returns `None` for
+/// finding variants that have no in-table mapping today
+/// ([`IntegrityFinding::UnresolvedCargoTestName`] and
+/// [`IntegrityFinding::MultipleAnnotations`]); they are emitted by the
+/// verify lane's stderr surface and do not feed the mint pipeline.
+fn integrity_to_verifier_failure(
+    finding: &IntegrityFinding,
+    annotations: &[Annotation],
+) -> Option<VerifierFailure> {
+    match finding {
+        IntegrityFinding::UnresolvedAnnotation {
+            spec, line, target, ..
+        } => match_annotation(annotations, spec, *line, target).map(|annotation| VerifierFailure {
+            annotation,
+            kind: VerifierFailureKind::UnresolvedAnnotation,
+            evidence: finding.to_string(),
+        }),
+        IntegrityFinding::StubTestFunction {
+            spec, line, target, ..
+        } => match_annotation(annotations, spec, *line, target).map(|annotation| VerifierFailure {
+            annotation,
+            kind: VerifierFailureKind::StubPointing,
+            evidence: finding.to_string(),
+        }),
+        IntegrityFinding::UnneededPendingMarker {
+            spec, line, target, ..
+        } => match_annotation(annotations, spec, *line, target).map(|annotation| VerifierFailure {
+            annotation,
+            kind: VerifierFailureKind::UnneededPendingMarker,
+            evidence: finding.to_string(),
+        }),
+        IntegrityFinding::UnresolvedCargoTestName { .. }
+        | IntegrityFinding::MultipleAnnotations { .. } => None,
+    }
+}
+
+fn match_annotation(
+    annotations: &[Annotation],
+    spec: &Path,
+    line: u32,
+    target: &str,
+) -> Option<Annotation> {
+    annotations
+        .iter()
+        .find(|a| a.source_spec == spec && a.line == line && a.target == target)
+        .cloned()
+}
+
+/// Convert one dispatcher outcome into the [`VerifierFailure`]s the mint
+/// pipeline emits. A passing verdict yields no failures; a failing or
+/// dispatcher-error outcome yields one [`VerifierFailure`] per annotation
+/// the outcome covers (batched runners cover N annotations in one
+/// outcome, so the fan-out preserves per-annotation granularity at the
+/// finding level).
+fn dispatch_outcome_to_failures(
+    outcome: Result<loom_gate::DispatchOutcome, loom_gate::DispatchError>,
+) -> Vec<VerifierFailure> {
+    match outcome {
+        Ok(out) if out.verdict.skipped || out.verdict.pass => Vec::new(),
+        Ok(out) => out
+            .annotations
+            .into_iter()
+            .map(|annotation| VerifierFailure {
+                annotation,
+                kind: VerifierFailureKind::Failed,
+                evidence: out.verdict.evidence.clone(),
+            })
+            .collect(),
+        Err(err) => vec![VerifierFailure {
+            annotation: dispatch_error_annotation(&err),
+            kind: VerifierFailureKind::DispatchError,
+            evidence: err.to_string(),
+        }],
+    }
+}
+
+/// Reconstruct a [`Annotation`] from a dispatcher [`loom_gate::DispatchError`]
+/// when the dispatcher couldn't tie the error to a concrete annotation
+/// (e.g. an empty-target failure). Falls back to a synthetic annotation
+/// pointing at `specs/gate.md` so the resulting [`VerifierFailure`]'s
+/// `source_spec`-derived bonding still resolves to a real spec.
+fn dispatch_error_annotation(err: &loom_gate::DispatchError) -> Annotation {
+    let target = match err {
+        loom_gate::DispatchError::Spawn { command, .. } => command.clone(),
+        loom_gate::DispatchError::MalformedVerdict { command, .. } => command.clone(),
+        loom_gate::DispatchError::MissingFromBatchOutput { target, .. } => target.clone(),
+        loom_gate::DispatchError::EmptyTarget { .. } => String::new(),
+        loom_gate::DispatchError::ZeroMatch { .. } => String::new(),
+    };
+    Annotation {
+        tier: Tier::Check,
+        target,
+        source_spec: PathBuf::from("specs/gate.md"),
+        line: 0,
+        criterion_line: 0,
+        pending: false,
+    }
 }
 
 #[cfg(test)]
@@ -845,5 +1187,107 @@ mod tests {
             }
             other => panic!("expected Criterion target, got {other:?}"),
         }
+    }
+
+    /// Spec contract `specs/gate.md` § *Production walker wiring*
+    /// (criterion `production_mint_walker_exists_and_dispatches_rubric_and_verifiers`,
+    /// gate.md:2436-2444): a production [`MintWalker`] implementation
+    /// exists in `loom-workflow::mint::walk` alongside the trait. Its
+    /// `run_rubric` spawns the reviewer agent subprocess against the
+    /// rendered review prompt and returns the agent's combined stdout;
+    /// its `run_verifiers` (called only at `MintScope::Tree`) dispatches
+    /// the deterministic verifier set + the integrity gate forward-
+    /// resolution check.
+    ///
+    /// Behavioral assertion: at `--tree` scope, the production walker's
+    /// spawn closure is invoked (rubric path) **and** the verifier
+    /// dispatch path runs without erroring on an empty workspace. The
+    /// compile-time function-pointer assignment at the bottom is the
+    /// load-bearing trait-bound pin — if a future refactor drops the
+    /// `MintWalker` impl, that line fails to compile.
+    #[tokio::test]
+    async fn production_mint_walker_exists_and_dispatches_rubric_and_verifiers() {
+        use loom_driver::profile_manifest::ProfileImageManifest;
+        use loom_driver::state::StateDb;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().to_path_buf();
+
+        std::fs::create_dir_all(workspace.join("specs")).expect("specs dir");
+        std::fs::write(workspace.join("specs/test-mint.md"), "# test-mint\n").expect("spec");
+        let manifest_path = workspace.join("profile-images.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{"base":{"ref":"localhost/wrapix-base:abc","source":"/nix/store/aaa"}}"#,
+        )
+        .expect("manifest");
+        let manifest =
+            Arc::new(ProfileImageManifest::from_path(&manifest_path).expect("manifest parse"));
+        let state = Arc::new(StateDb::open(workspace.join(".loom/state.db")).expect("state db"));
+
+        // bd.list calls during prompt build: (1) spec-label bead summary,
+        // (2) resolve_open_epic. Both return `[]` so the walker proceeds
+        // with no molecule_id and no beads_summary.
+        let responses = vec![ok_stdout("[]"), ok_stdout("[]")];
+        let runner = ScriptedRunner::new(responses);
+        let bd = BdClient::with_runner(runner);
+
+        let spawn_called = Arc::new(Mutex::new(0_usize));
+        let captured_scope_dir = Arc::new(Mutex::new(None::<PathBuf>));
+        let spawn_called_inner = Arc::clone(&spawn_called);
+        let captured_inner = Arc::clone(&captured_scope_dir);
+        let spawn = move |cfg: SpawnConfig| {
+            let called = Arc::clone(&spawn_called_inner);
+            let captured = Arc::clone(&captured_inner);
+            let scratch = cfg.scratch_dir.clone();
+            async move {
+                *called.lock().expect("not poisoned") += 1;
+                *captured.lock().expect("not poisoned") = Some(scratch);
+                Ok((
+                    SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    },
+                    Some(ExitSignal::Complete),
+                    "LOOM_COMPLETE\n".to_string(),
+                ))
+            }
+        };
+
+        let mut walker = ProductionMintWalker::new(
+            bd,
+            SpecLabel::new("test-mint"),
+            workspace.clone(),
+            state,
+            manifest,
+            ProfileName::new("base"),
+            spawn,
+        );
+
+        let findings = walk(&mut walker, &MintScope::Tree, &AlwaysValid)
+            .await
+            .expect("walk succeeds end-to-end");
+
+        assert_eq!(
+            *spawn_called.lock().expect("not poisoned"),
+            1,
+            "rubric agent spawn closure must fire exactly once on Tree scope",
+        );
+        assert!(
+            captured_scope_dir.lock().expect("not poisoned").is_some(),
+            "spawn closure must receive a scratch_dir from ScratchSession::open",
+        );
+        assert!(
+            findings.is_empty(),
+            "empty specs + LOOM_COMPLETE stdout yields zero findings: {findings:?}",
+        );
+
+        // Compile-time trait-bound pin: `ProductionMintWalker<...>` MUST
+        // implement [`MintWalker`]. Reading the type's trait bounds via
+        // a generic helper that requires the bound is the load-bearing
+        // assertion — if the impl block ever drifts, this fails to
+        // compile rather than at runtime.
+        fn assert_is_mint_walker<W: MintWalker>(_w: &W) {}
+        assert_is_mint_walker(&walker);
     }
 }

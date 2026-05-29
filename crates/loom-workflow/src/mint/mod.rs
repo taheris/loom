@@ -31,7 +31,10 @@ mod error;
 pub mod walk;
 
 pub use error::MintError;
-pub use walk::{MintScope, MintWalker, VerifierFailure, VerifierFailureKind, WalkError, walk};
+pub use walk::{
+    MintScope, MintWalker, ProductionMintWalker, VerifierFailure, VerifierFailureKind, WalkError,
+    walk,
+};
 
 use loom_driver::bd::{BdClient, CommandRunner, CreateOpts, ListOpts};
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
