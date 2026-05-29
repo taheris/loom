@@ -2183,7 +2183,7 @@ depends on.
   every cell in the 4 × 6 cross-product (S0..S3 stream shapes × six
   terminal shapes) has a parameterised test asserting the typed
   outcome variant and the maximum-context invariant
-  [test?](walk_output_failure_matrix_routes_every_cell_with_typed_outcome_and_preserves_max_context)
+  [test](walk_output_failure_matrix_routes_every_cell_with_typed_outcome_and_preserves_max_context)
 - Every constructible `Finding` (each `ConcernToken` × canonical
   `FindingTarget` combination) round-trips byte-equal through
   `serde_json::to_string` → embed in a `LOOM_FINDING:` line →

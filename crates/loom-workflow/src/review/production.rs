@@ -412,29 +412,7 @@ fn classify_review_phase(walk: &WalkOutput, exit_code: i32) -> ReviewOutcome {
             detail: format!("agent emitted COMPLETE/NOOP but exited code {exit_code}"),
         };
     }
-    // Any per-line `LOOM_FINDING:` parse failure routes through the
-    // typed `BadWalk::MalformedFinding { errors, terminal }` variant
-    // before the pairing-rule checks fire — well-formed terminal is
-    // preserved alongside the per-line errors so the recovery prompt
-    // sees both pieces.
-    if !walk.finding_errors.is_empty() {
-        let badwalk = loom_templates::previous_failure::BadWalk::MalformedFinding {
-            errors: walk.finding_errors.clone(),
-            terminal: walk.terminal.clone(),
-        };
-        return ReviewOutcome::Incomplete {
-            detail: PreviousFailure::BadWalk(badwalk).to_string(),
-        };
-    }
-    let inputs = GateInputs {
-        bd_closed: true,
-        diff_empty: false,
-        verify_failures: vec![],
-        review_flag: None,
-        streamed_findings: walk.findings.clone(),
-        ..GateInputs::default()
-    };
-    match decide(marker.as_ref(), inputs) {
+    match phase_verdict_from_walk(walk) {
         PhaseVerdict::Done => ReviewOutcome::Complete,
         PhaseVerdict::Blocked { reason } => ReviewOutcome::Incomplete {
             detail: format!("LOOM_BLOCKED: {reason}"),
@@ -451,22 +429,10 @@ fn classify_review_phase(walk: &WalkOutput, exit_code: i32) -> ReviewOutcome {
             }
         }
         PhaseVerdict::Recovery {
-            cause: RecoveryCause::BadWalk(mut badwalk),
-        } => {
-            // The classifier sees the well-formed terminal payload for
-            // `BadWalk::Concern`; thread it through so the recovery
-            // prompt carries the literal text.
-            if let (
-                loom_templates::previous_failure::BadWalk::Concern { payload, .. },
-                TerminalSurface::Malformed { payload: from_term },
-            ) = (&mut badwalk, &walk.terminal)
-            {
-                *payload = from_term.clone();
-            }
-            ReviewOutcome::Incomplete {
-                detail: PreviousFailure::BadWalk(badwalk).to_string(),
-            }
-        }
+            cause: RecoveryCause::BadWalk(badwalk),
+        } => ReviewOutcome::Incomplete {
+            detail: PreviousFailure::BadWalk(badwalk).to_string(),
+        },
         PhaseVerdict::Recovery {
             cause: RecoveryCause::SwallowedMarker,
         } => ReviewOutcome::Incomplete {
@@ -482,6 +448,58 @@ fn classify_review_phase(walk: &WalkOutput, exit_code: i32) -> ReviewOutcome {
             detail: format!("unexpected gate verdict: {}", cause.as_str()),
         },
     }
+}
+
+/// Apply the verdict-gate decision table to a parsed [`WalkOutput`],
+/// preserving the maximum well-formed context by struct shape per
+/// `specs/gate.md` § *Maximum-context preservation invariant*.
+///
+/// Per-line `LOOM_FINDING:` parse failures route through
+/// [`BadWalk::MalformedFinding`] alongside the typed terminal surface
+/// before the pairing-rule checks fire. Otherwise the gate's
+/// [`decide`] function is consulted with the typed marker and any
+/// well-formed findings; a malformed terminal payload paired with
+/// well-formed findings threads both into
+/// [`BadWalk::Concern { payload, parsed_findings }`].
+fn phase_verdict_from_walk(walk: &WalkOutput) -> PhaseVerdict {
+    if !walk.finding_errors.is_empty() {
+        let badwalk = loom_templates::previous_failure::BadWalk::MalformedFinding {
+            errors: walk.finding_errors.clone(),
+            terminal: walk.terminal.clone(),
+        };
+        return PhaseVerdict::Recovery {
+            cause: RecoveryCause::BadWalk(badwalk),
+        };
+    }
+    let marker = exit_signal_from_terminal(&walk.terminal);
+    let inputs = GateInputs {
+        bd_closed: true,
+        diff_empty: false,
+        verify_failures: vec![],
+        review_flag: None,
+        streamed_findings: walk.findings.clone(),
+        ..GateInputs::default()
+    };
+    let mut verdict = decide(marker.as_ref(), inputs);
+    if let PhaseVerdict::Recovery {
+        cause:
+            RecoveryCause::BadWalk(loom_templates::previous_failure::BadWalk::Concern {
+                payload,
+                parsed_findings,
+            }),
+    } = &mut verdict
+    {
+        if let TerminalSurface::Malformed {
+            payload: from_term, ..
+        } = &walk.terminal
+        {
+            *payload = from_term.clone();
+        }
+        if parsed_findings.is_empty() && !walk.findings.is_empty() {
+            *parsed_findings = walk.findings.clone();
+        }
+    }
+    verdict
 }
 
 /// Reverse [`WalkOutput::terminal`] back to the per-phase [`ExitSignal`]
@@ -941,6 +959,533 @@ mod tests {
     #[test]
     fn classify_review_phase_signature_requires_typed_walk_output() {
         let _: fn(&WalkOutput, i32) -> ReviewOutcome = classify_review_phase;
+    }
+
+    /// Behavioral matrix (D7 layer 2) per `specs/gate.md` §
+    /// *Verification surface*: the 24-cell (stream-shape ×
+    /// terminal-shape) cross-product is the load-bearing class
+    /// coverage for the wire-format pipeline. Every cell asserts
+    /// (a) the typed [`PhaseVerdict`] variant, (b) the maximum-context
+    /// preservation invariant — every parseable Finding and every
+    /// well-formed terminal surface that the variant can structurally
+    /// carry, does — and (c) the `Display for PreviousFailure`
+    /// rendering is non-empty and references both pieces when both
+    /// are structurally present.
+    #[test]
+    fn walk_output_failure_matrix_routes_every_cell_with_typed_outcome_and_preserves_max_context() {
+        use loom_templates::previous_failure::BadWalk;
+
+        for cell in matrix_cells() {
+            let walk = WalkOutput::from_stdout(&cell.stdout, &AcceptAllFindingValidator);
+            assert_eq!(
+                walk.findings.len(),
+                cell.expected_well_formed_findings,
+                "[{}] WalkOutput.findings count: stdout={:?}",
+                cell.name,
+                cell.stdout,
+            );
+            assert_eq!(
+                walk.finding_errors.len(),
+                cell.expected_malformed_findings,
+                "[{}] WalkOutput.finding_errors count: stdout={:?}",
+                cell.name,
+                cell.stdout,
+            );
+            let verdict = phase_verdict_from_walk(&walk);
+            match (&cell.expect, &verdict) {
+                (CellExpect::Done, PhaseVerdict::Done) => {}
+                (
+                    CellExpect::SwallowedMarker,
+                    PhaseVerdict::Recovery {
+                        cause: RecoveryCause::SwallowedMarker,
+                    },
+                ) => {}
+                (
+                    CellExpect::ConcernWithoutFindings { summary: expected },
+                    PhaseVerdict::Recovery {
+                        cause: RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings { summary }),
+                    },
+                ) => {
+                    assert_eq!(summary, expected, "[{}]", cell.name);
+                }
+                (
+                    CellExpect::BadWalkConcern {
+                        payload: expected_payload,
+                        parsed_findings_tokens,
+                    },
+                    PhaseVerdict::Recovery {
+                        cause:
+                            RecoveryCause::BadWalk(BadWalk::Concern {
+                                payload,
+                                parsed_findings,
+                            }),
+                    },
+                ) => {
+                    assert_eq!(payload, expected_payload, "[{}] payload", cell.name);
+                    let tokens: Vec<_> = parsed_findings.iter().map(|f| f.token).collect();
+                    assert_eq!(
+                        &tokens, parsed_findings_tokens,
+                        "[{}] parsed_findings tokens",
+                        cell.name,
+                    );
+                }
+                (
+                    CellExpect::FindingsWithoutConcern {
+                        finding_tokens: expected,
+                    },
+                    PhaseVerdict::Recovery {
+                        cause:
+                            RecoveryCause::BadWalk(BadWalk::FindingsWithoutConcern {
+                                finding_count,
+                                findings,
+                            }),
+                    },
+                ) => {
+                    assert_eq!(*finding_count, expected.len(), "[{}]", cell.name);
+                    let tokens: Vec<_> = findings.iter().map(|f| f.token).collect();
+                    assert_eq!(&tokens, expected, "[{}]", cell.name);
+                }
+                (
+                    CellExpect::MalformedFinding {
+                        error_count,
+                        terminal,
+                    },
+                    PhaseVerdict::Recovery {
+                        cause:
+                            RecoveryCause::BadWalk(BadWalk::MalformedFinding {
+                                errors,
+                                terminal: actual_terminal,
+                            }),
+                    },
+                ) => {
+                    assert_eq!(errors.len(), *error_count, "[{}] errors", cell.name);
+                    assert_eq!(actual_terminal, terminal, "[{}] terminal", cell.name);
+                }
+                (
+                    CellExpect::ReviewConcern {
+                        summary: expected_summary,
+                        finding_tokens: expected_tokens,
+                    },
+                    PhaseVerdict::Recovery {
+                        cause: RecoveryCause::ReviewConcern { summary, findings },
+                    },
+                ) => {
+                    assert_eq!(summary, expected_summary, "[{}] summary", cell.name);
+                    let tokens: Vec<_> = findings.iter().map(|f| f.token).collect();
+                    assert_eq!(&tokens, expected_tokens, "[{}] findings", cell.name);
+                }
+                (_, actual) => panic!(
+                    "[{}] verdict mismatch: expected {:?}, got {actual:?}",
+                    cell.name, cell.expect,
+                ),
+            }
+            if let Some(rendered) = render_for_display_check(&verdict) {
+                assert!(
+                    !rendered.is_empty(),
+                    "[{}] Display rendering is empty: verdict={verdict:?}",
+                    cell.name,
+                );
+                for needle in &cell.display_contains {
+                    assert!(
+                        rendered.contains(needle.as_str()),
+                        "[{}] Display rendering missing {needle:?}: rendered={rendered}",
+                        cell.name,
+                    );
+                }
+            }
+            for token in &cell.both_pieces_tokens {
+                let rendered = render_for_display_check(&verdict)
+                    .unwrap_or_else(|| panic!("[{}] expected renderable variant", cell.name));
+                assert!(
+                    rendered.contains(token.as_wire()),
+                    "[{}] Display rendering must reference finding token {} (both pieces present): \
+                     rendered={rendered}",
+                    cell.name,
+                    token.as_wire(),
+                );
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct MatrixCell {
+        name: &'static str,
+        stdout: String,
+        expected_well_formed_findings: usize,
+        expected_malformed_findings: usize,
+        expect: CellExpect,
+        display_contains: Vec<String>,
+        both_pieces_tokens: Vec<loom_templates::finding::ConcernToken>,
+    }
+
+    #[derive(Debug)]
+    enum CellExpect {
+        Done,
+        SwallowedMarker,
+        ConcernWithoutFindings {
+            summary: String,
+        },
+        BadWalkConcern {
+            payload: String,
+            parsed_findings_tokens: Vec<loom_templates::finding::ConcernToken>,
+        },
+        FindingsWithoutConcern {
+            finding_tokens: Vec<loom_templates::finding::ConcernToken>,
+        },
+        MalformedFinding {
+            error_count: usize,
+            terminal: TerminalSurface,
+        },
+        ReviewConcern {
+            summary: String,
+            finding_tokens: Vec<loom_templates::finding::ConcernToken>,
+        },
+    }
+
+    /// Render the variant through `Display for PreviousFailure` for the
+    /// matrix's check (c). `PhaseVerdict::Done` and `SwallowedMarker`
+    /// have no `PreviousFailure` mapping at this layer, so the matrix
+    /// skips Display rendering for those cells.
+    fn render_for_display_check(verdict: &PhaseVerdict) -> Option<String> {
+        match verdict {
+            PhaseVerdict::Done => None,
+            PhaseVerdict::Blocked { reason } => Some(format!("LOOM_BLOCKED: {reason}")),
+            PhaseVerdict::Clarify { question } => Some(format!("LOOM_CLARIFY: {question}")),
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::ReviewConcern { summary, findings },
+            } => Some(
+                PreviousFailure::ReviewConcern {
+                    summary: summary.clone(),
+                    findings: findings.clone(),
+                }
+                .to_string(),
+            ),
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::BadWalk(badwalk),
+            } => Some(PreviousFailure::BadWalk(badwalk.clone()).to_string()),
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::SwallowedMarker,
+            } => None,
+            PhaseVerdict::Recovery { .. } => None,
+        }
+    }
+
+    const FINDING_F1_LINE: &str = r#"LOOM_FINDING: {"token":"verifier-bypass","bonds":["gate"],"target":{"kind":"Annotation","target_string":"cargo test --lib f1"},"evidence":"first finding"}"#;
+    const FINDING_F2_LINE: &str = r#"LOOM_FINDING: {"token":"weak-assertion","bonds":["gate"],"target":{"kind":"Annotation","target_string":"cargo test --lib f2"},"evidence":"second finding"}"#;
+    const BACKTICK_BAD_FINDING_LINE_A: &str = "`LOOM_FINDING: {not valid json A}`";
+    const BACKTICK_BAD_FINDING_LINE_B: &str = "`LOOM_FINDING: {not valid json B}`";
+
+    const T_COMPLETE: &str = "LOOM_COMPLETE";
+    const T_NOOP: &str = "LOOM_NOOP";
+    const T_CONCERN_OK_PAYLOAD: &str = r#"{"summary":"valid summary text"}"#;
+    const T_CONCERN_LEGACY_PAYLOAD: &str = "verifier-bypass -- legacy free form";
+    const T_CONCERN_MALFORMED_PAYLOAD: &str = r#"{"summary":""}"#;
+    const T_MISSING_TAIL: &str = "trailing prose without a marker";
+
+    fn stream_lines(name: &str) -> (Vec<&'static str>, usize, usize) {
+        match name {
+            "S0" => (vec![], 0, 0),
+            "S1" => (vec![FINDING_F1_LINE, FINDING_F2_LINE], 2, 0),
+            "S2" => (vec![FINDING_F1_LINE, BACKTICK_BAD_FINDING_LINE_A], 1, 1),
+            "S3" => (
+                vec![BACKTICK_BAD_FINDING_LINE_A, BACKTICK_BAD_FINDING_LINE_B],
+                0,
+                2,
+            ),
+            other => panic!("unknown stream label: {other}"),
+        }
+    }
+
+    fn terminal_tail(name: &str) -> String {
+        match name {
+            "T_complete" => T_COMPLETE.to_string(),
+            "T_noop" => T_NOOP.to_string(),
+            "T_concern_ok" => format!("LOOM_CONCERN: {T_CONCERN_OK_PAYLOAD}"),
+            "T_concern_legacy" => format!("LOOM_CONCERN: {T_CONCERN_LEGACY_PAYLOAD}"),
+            "T_concern_malformed" => format!("LOOM_CONCERN: {T_CONCERN_MALFORMED_PAYLOAD}"),
+            "T_missing" => T_MISSING_TAIL.to_string(),
+            other => panic!("unknown terminal label: {other}"),
+        }
+    }
+
+    fn make_stdout(stream: &str, terminal: &str) -> String {
+        let (lines, _, _) = stream_lines(stream);
+        let mut out = String::new();
+        for l in lines {
+            out.push_str(l);
+            out.push('\n');
+        }
+        out.push_str(&terminal_tail(terminal));
+        out.push('\n');
+        out
+    }
+
+    fn matrix_cells() -> Vec<MatrixCell> {
+        use loom_templates::finding::ConcernToken;
+        let f1 = ConcernToken::VerifierBypass;
+        let f2 = ConcernToken::WeakAssertion;
+        let mut cells = Vec::with_capacity(24);
+
+        // --- S0: zero LOOM_FINDING lines. ---
+        cells.push(MatrixCell {
+            name: "S0×T_complete",
+            stdout: make_stdout("S0", "T_complete"),
+            expected_well_formed_findings: 0,
+            expected_malformed_findings: 0,
+            expect: CellExpect::Done,
+            display_contains: vec![],
+            both_pieces_tokens: vec![],
+        });
+        cells.push(MatrixCell {
+            name: "S0×T_noop",
+            stdout: make_stdout("S0", "T_noop"),
+            expected_well_formed_findings: 0,
+            expected_malformed_findings: 0,
+            expect: CellExpect::Done,
+            display_contains: vec![],
+            both_pieces_tokens: vec![],
+        });
+        cells.push(MatrixCell {
+            name: "S0×T_concern_ok",
+            stdout: make_stdout("S0", "T_concern_ok"),
+            expected_well_formed_findings: 0,
+            expected_malformed_findings: 0,
+            expect: CellExpect::ConcernWithoutFindings {
+                summary: "valid summary text".to_string(),
+            },
+            display_contains: vec!["valid summary text".to_string()],
+            both_pieces_tokens: vec![],
+        });
+        cells.push(MatrixCell {
+            name: "S0×T_concern_legacy",
+            stdout: make_stdout("S0", "T_concern_legacy"),
+            expected_well_formed_findings: 0,
+            expected_malformed_findings: 0,
+            expect: CellExpect::BadWalkConcern {
+                payload: T_CONCERN_LEGACY_PAYLOAD.to_string(),
+                parsed_findings_tokens: vec![],
+            },
+            display_contains: vec![T_CONCERN_LEGACY_PAYLOAD.to_string()],
+            both_pieces_tokens: vec![],
+        });
+        cells.push(MatrixCell {
+            name: "S0×T_concern_malformed",
+            stdout: make_stdout("S0", "T_concern_malformed"),
+            expected_well_formed_findings: 0,
+            expected_malformed_findings: 0,
+            expect: CellExpect::BadWalkConcern {
+                payload: T_CONCERN_MALFORMED_PAYLOAD.to_string(),
+                parsed_findings_tokens: vec![],
+            },
+            display_contains: vec![T_CONCERN_MALFORMED_PAYLOAD.to_string()],
+            both_pieces_tokens: vec![],
+        });
+        cells.push(MatrixCell {
+            name: "S0×T_missing",
+            stdout: make_stdout("S0", "T_missing"),
+            expected_well_formed_findings: 0,
+            expected_malformed_findings: 0,
+            expect: CellExpect::SwallowedMarker,
+            display_contains: vec![],
+            both_pieces_tokens: vec![],
+        });
+
+        // --- S1: 2 well-formed findings. ---
+        cells.push(MatrixCell {
+            name: "S1×T_complete",
+            stdout: make_stdout("S1", "T_complete"),
+            expected_well_formed_findings: 2,
+            expected_malformed_findings: 0,
+            expect: CellExpect::FindingsWithoutConcern {
+                finding_tokens: vec![f1, f2],
+            },
+            display_contains: vec!["LOOM_COMPLETE".to_string(), "LOOM_FINDING".to_string()],
+            both_pieces_tokens: vec![f1, f2],
+        });
+        // NOOP + findings is not addressed by the spec table; current
+        // pipeline reduces to Done. The matrix pins the residual.
+        cells.push(MatrixCell {
+            name: "S1×T_noop",
+            stdout: make_stdout("S1", "T_noop"),
+            expected_well_formed_findings: 2,
+            expected_malformed_findings: 0,
+            expect: CellExpect::Done,
+            display_contains: vec![],
+            both_pieces_tokens: vec![],
+        });
+        cells.push(MatrixCell {
+            name: "S1×T_concern_ok",
+            stdout: make_stdout("S1", "T_concern_ok"),
+            expected_well_formed_findings: 2,
+            expected_malformed_findings: 0,
+            expect: CellExpect::ReviewConcern {
+                summary: "valid summary text".to_string(),
+                finding_tokens: vec![f1, f2],
+            },
+            display_contains: vec!["valid summary text".to_string()],
+            both_pieces_tokens: vec![f1, f2],
+        });
+        cells.push(MatrixCell {
+            name: "S1×T_concern_legacy",
+            stdout: make_stdout("S1", "T_concern_legacy"),
+            expected_well_formed_findings: 2,
+            expected_malformed_findings: 0,
+            expect: CellExpect::BadWalkConcern {
+                payload: T_CONCERN_LEGACY_PAYLOAD.to_string(),
+                parsed_findings_tokens: vec![f1, f2],
+            },
+            display_contains: vec![
+                T_CONCERN_LEGACY_PAYLOAD.to_string(),
+                "parsed cleanly".to_string(),
+            ],
+            both_pieces_tokens: vec![f1, f2],
+        });
+        cells.push(MatrixCell {
+            name: "S1×T_concern_malformed",
+            stdout: make_stdout("S1", "T_concern_malformed"),
+            expected_well_formed_findings: 2,
+            expected_malformed_findings: 0,
+            expect: CellExpect::BadWalkConcern {
+                payload: T_CONCERN_MALFORMED_PAYLOAD.to_string(),
+                parsed_findings_tokens: vec![f1, f2],
+            },
+            display_contains: vec![
+                T_CONCERN_MALFORMED_PAYLOAD.to_string(),
+                "parsed cleanly".to_string(),
+            ],
+            both_pieces_tokens: vec![f1, f2],
+        });
+        // Missing marker always routes to SwallowedMarker per the
+        // pairing-rule table; findings are dropped by spec.
+        cells.push(MatrixCell {
+            name: "S1×T_missing",
+            stdout: make_stdout("S1", "T_missing"),
+            expected_well_formed_findings: 2,
+            expected_malformed_findings: 0,
+            expect: CellExpect::SwallowedMarker,
+            display_contains: vec![],
+            both_pieces_tokens: vec![],
+        });
+
+        // --- S2: 1 well-formed + 1 malformed. ---
+        for (tname, terminal_label, terminal_surface, display_extras) in [
+            (
+                "T_complete",
+                "LOOM_COMPLETE",
+                TerminalSurface::Complete,
+                vec!["LOOM_COMPLETE".to_string()],
+            ),
+            (
+                "T_noop",
+                "LOOM_NOOP",
+                TerminalSurface::Noop,
+                vec!["LOOM_NOOP".to_string()],
+            ),
+            (
+                "T_concern_ok",
+                "LOOM_CONCERN",
+                TerminalSurface::Concern {
+                    summary: "valid summary text".to_string(),
+                },
+                vec!["LOOM_CONCERN".to_string()],
+            ),
+            (
+                "T_concern_legacy",
+                "LOOM_CONCERN (malformed payload)",
+                TerminalSurface::Malformed {
+                    payload: T_CONCERN_LEGACY_PAYLOAD.to_string(),
+                },
+                vec![T_CONCERN_LEGACY_PAYLOAD.to_string()],
+            ),
+            (
+                "T_concern_malformed",
+                "LOOM_CONCERN (malformed payload)",
+                TerminalSurface::Malformed {
+                    payload: T_CONCERN_MALFORMED_PAYLOAD.to_string(),
+                },
+                vec![T_CONCERN_MALFORMED_PAYLOAD.to_string()],
+            ),
+            (
+                "T_missing",
+                "no terminal marker",
+                TerminalSurface::Missing,
+                vec![],
+            ),
+        ] {
+            let _ = terminal_label;
+            let mut needles = vec!["not valid json".to_string()];
+            needles.extend(display_extras.clone());
+            cells.push(MatrixCell {
+                name: leak_cell_name(&format!("S2×{tname}")),
+                stdout: make_stdout("S2", tname),
+                expected_well_formed_findings: 1,
+                expected_malformed_findings: 1,
+                expect: CellExpect::MalformedFinding {
+                    error_count: 1,
+                    terminal: terminal_surface,
+                },
+                display_contains: needles,
+                both_pieces_tokens: vec![],
+            });
+        }
+
+        // --- S3: all malformed. ---
+        for (tname, terminal_surface, display_extras) in [
+            (
+                "T_complete",
+                TerminalSurface::Complete,
+                vec!["LOOM_COMPLETE".to_string()],
+            ),
+            (
+                "T_noop",
+                TerminalSurface::Noop,
+                vec!["LOOM_NOOP".to_string()],
+            ),
+            (
+                "T_concern_ok",
+                TerminalSurface::Concern {
+                    summary: "valid summary text".to_string(),
+                },
+                vec!["LOOM_CONCERN".to_string()],
+            ),
+            (
+                "T_concern_legacy",
+                TerminalSurface::Malformed {
+                    payload: T_CONCERN_LEGACY_PAYLOAD.to_string(),
+                },
+                vec![T_CONCERN_LEGACY_PAYLOAD.to_string()],
+            ),
+            (
+                "T_concern_malformed",
+                TerminalSurface::Malformed {
+                    payload: T_CONCERN_MALFORMED_PAYLOAD.to_string(),
+                },
+                vec![T_CONCERN_MALFORMED_PAYLOAD.to_string()],
+            ),
+            ("T_missing", TerminalSurface::Missing, vec![]),
+        ] {
+            let mut needles = vec!["not valid json".to_string()];
+            needles.extend(display_extras.clone());
+            cells.push(MatrixCell {
+                name: leak_cell_name(&format!("S3×{tname}")),
+                stdout: make_stdout("S3", tname),
+                expected_well_formed_findings: 0,
+                expected_malformed_findings: 2,
+                expect: CellExpect::MalformedFinding {
+                    error_count: 2,
+                    terminal: terminal_surface,
+                },
+                display_contains: needles,
+                both_pieces_tokens: vec![],
+            });
+        }
+
+        assert_eq!(cells.len(), 24, "matrix must cover all 24 cells");
+        cells
+    }
+
+    fn leak_cell_name(s: &str) -> &'static str {
+        Box::leak(s.to_owned().into_boxed_str())
     }
 
     fn stub_manifest(dir: &std::path::Path) -> Arc<ProfileImageManifest> {
