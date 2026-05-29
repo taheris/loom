@@ -280,7 +280,10 @@ async fn merge_branch_conflict_is_reported() -> Result<()> {
     let client = GitClient::open(path)?;
     let result = client.merge_branch("feature").await?;
 
-    assert_eq!(result, MergeResult::Conflict);
+    assert!(
+        matches!(result, MergeResult::Conflict { .. }),
+        "expected Conflict, got {result:?}",
+    );
     Ok(())
 }
 

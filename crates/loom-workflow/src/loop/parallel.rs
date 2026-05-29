@@ -420,11 +420,12 @@ async fn merge_back_one(
                     }
                     Ok(BatchResult::Merged { bead: bead.id })
                 }
-                MergeResult::Conflict => {
+                MergeResult::Conflict { detail } => {
                     warn!(
                         bead = %bead.id,
                         branch = %worktree.branch,
                         path = %worktree.path.display(),
+                        detail = %detail,
                         "merge conflict — worktree preserved for inspection",
                     );
                     if let Some(e) = emit.as_mut() {
@@ -435,6 +436,7 @@ async fn merge_back_one(
                                 "bead_id": bead.id.to_string(),
                                 "branch": worktree.branch,
                                 "worktree_path": worktree.path.to_string_lossy(),
+                                "detail": detail,
                             }),
                         );
                     }

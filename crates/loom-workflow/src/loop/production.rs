@@ -486,7 +486,7 @@ where
                     );
                     Ok(AgentOutcome::Success)
                 }
-                MergeResult::Conflict => {
+                MergeResult::Conflict { detail } => {
                     // Worktree preserved for human resolution per
                     // parallel-path semantics. Route to Blocked, not
                     // Failure: a retry would invoke `create_worktree`
@@ -499,6 +499,7 @@ where
                         bead = %bead.id,
                         branch = %worktree.branch,
                         path = %worktree.path.display(),
+                        detail = %detail,
                         "merge conflict — worktree preserved for inspection",
                     );
                     self.emit_to_log(
@@ -508,13 +509,15 @@ where
                             "bead_id": bead.id.to_string(),
                             "branch": worktree.branch,
                             "worktree_path": worktree.path.to_string_lossy(),
+                            "detail": detail,
                         }),
                     );
                     Ok(AgentOutcome::Blocked {
                         reason: format!(
-                            "merge conflict: worktree preserved at {} on branch {} for human resolution",
+                            "merge conflict: worktree preserved at {} on branch {} for human resolution — {}",
                             worktree.path.display(),
                             worktree.branch,
+                            detail,
                         ),
                     })
                 }

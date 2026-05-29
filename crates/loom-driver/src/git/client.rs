@@ -541,6 +541,13 @@ impl GitClient {
         )
         .await?;
         if !rebase_output.status.success() {
+            // Capture stderr BEFORE the abort+checkout so the caller
+            // sees the actual rebase refusal (content conflict vs.
+            // "cannot rebase: You have unstaged changes" vs. anything
+            // else) rather than the cleanup commands' output.
+            let detail = String::from_utf8_lossy(&rebase_output.stderr)
+                .trim()
+                .to_string();
             let _ = run_git_raw(
                 &self.workdir,
                 self.clock.as_ref(),
@@ -555,7 +562,7 @@ impl GitClient {
                 None,
             )
             .await?;
-            return Ok(MergeResult::Conflict);
+            return Ok(MergeResult::Conflict { detail });
         }
 
         run_git(
@@ -693,10 +700,18 @@ pub enum StatusKind {
 }
 
 /// Outcome of [`GitClient::merge_branch`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeResult {
     Ok,
-    Conflict,
+    /// `git rebase` exited non-zero. `detail` carries the rebase's
+    /// stderr (newline-preserved, trailing whitespace trimmed) so the
+    /// caller can distinguish a real content conflict from a
+    /// "cannot rebase: You have unstaged changes" refusal — both used
+    /// to map to the same opaque `Conflict` and the actual cause was
+    /// lost at the warn! line. Empty string is allowed but unusual.
+    Conflict {
+        detail: String,
+    },
 }
 
 /// Run `git` with an explicit `-C <workdir>`, no shell, 60s ceiling. Returns
