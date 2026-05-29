@@ -1,3 +1,6 @@
+use loom_templates::previous_failure::BadWalk;
+use serde::Deserialize;
+
 /// Parsed exit signal from an agent session — the trailing line the agent
 /// emits to signal the gate's verdict.
 ///
@@ -25,15 +28,24 @@ pub enum ExitSignal {
     /// label and bails.
     Clarify { question: String },
 
-    /// Review-phase concern. Carries the structured payload emitted as
-    /// `LOOM_CONCERN: <token> -- <reason>`. The verdict gate maps the
-    /// token to a typed concern via [`super::super::review::ReviewConcern`]
-    /// (or future typed equivalents); unknown tokens round-trip as the
-    /// literal string so the wire-additive contract in `docs/style-rules.md`
-    /// (RS-17 `Other(String)` fallback) holds. Review-phase-only — emitting
-    /// `LOOM_CONCERN` from any other phase is a `wrong-phase-marker` error
-    /// in the verdict gate per `specs/harness.md` § Marker definitions.
-    Concern { token: String, reason: String },
+    /// Review-phase concern. Carries the parsed `summary` field from the
+    /// terminal `LOOM_CONCERN: {"summary": "..."}` marker. The summary is
+    /// for the verdict log only; per-finding routing is decided on each
+    /// streamed `LOOM_FINDING:` line's token per `specs/gate.md` §
+    /// LOOM_CONCERN payload. Review-phase-only — emitting `LOOM_CONCERN`
+    /// from any other phase is a `wrong-phase-marker` error in the verdict
+    /// gate per `specs/harness.md` § Marker definitions.
+    Concern { summary: String },
+
+    /// Review walk's terminal `LOOM_CONCERN:` payload was malformed —
+    /// invalid JSON, missing `summary`, or empty `summary`. Wraps the
+    /// typed [`BadWalk`] variant so the verdict gate routes to
+    /// `RecoveryCause::BadWalk` per `specs/gate.md` § LOOM_CONCERN payload
+    /// — JSON shape and parse discipline. Only the
+    /// [`BadWalk::Concern`] sub-variant is produced here; the
+    /// stream/terminator pairing-rule variants are owned by the verdict
+    /// gate.
+    BadWalk(BadWalk),
 }
 
 const COMPLETE: &str = "LOOM_COMPLETE";
@@ -41,7 +53,6 @@ const NOOP: &str = "LOOM_NOOP";
 const BLOCKED: &str = "LOOM_BLOCKED";
 const CLARIFY: &str = "LOOM_CLARIFY";
 const CONCERN: &str = "LOOM_CONCERN";
-const CONCERN_SEPARATOR: &str = "--";
 
 /// Scan the agent's combined output (or the `result` field of the final
 /// stream-json line) for an exit signal.
@@ -56,11 +67,13 @@ const CONCERN_SEPARATOR: &str = "--";
 /// **before** the marker on the final line, falling back to the most recent
 /// non-empty line before the final line if the same-line prefix is empty.
 ///
-/// `LOOM_CONCERN` carries a structured payload on the final line:
-/// `LOOM_CONCERN: <token> -- <reason>`. The token and reason are extracted
-/// from that line directly; the `--` separator is mandatory for a
-/// well-formed marker, and a missing separator collapses to a swallowed
-/// marker.
+/// `LOOM_CONCERN` carries a JSON payload on the final line:
+/// `LOOM_CONCERN: {"summary": "<non-empty string>"}`. A well-formed payload
+/// surfaces as [`ExitSignal::Concern`]; a malformed payload (invalid JSON,
+/// missing `summary`, or empty `summary`) surfaces as
+/// [`ExitSignal::BadWalk`] carrying [`BadWalk::Concern`] with the literal
+/// post-marker text so the verdict gate can route to recovery without
+/// silently collapsing.
 ///
 /// `None` means no signal was found on the final line and the caller
 /// should surface [`super::TodoError::MissingExitSignal`] or the
@@ -76,7 +89,7 @@ pub fn parse_exit_signal(output: &str) -> Option<ExitSignal> {
     }
 
     if let Some(idx) = final_line.find(CONCERN) {
-        return parse_concern(&final_line[idx + CONCERN.len()..]);
+        return Some(parse_concern(&final_line[idx + CONCERN.len()..]));
     }
     if let Some(reason) = reason_for(BLOCKED, final_line, prior) {
         return Some(ExitSignal::Blocked { reason });
@@ -111,18 +124,29 @@ fn has_multiple_markers(line: &str) -> bool {
     false
 }
 
-fn parse_concern(after_marker: &str) -> Option<ExitSignal> {
+#[derive(Deserialize)]
+struct ConcernPayload {
+    summary: String,
+}
+
+/// Parse the post-`LOOM_CONCERN` payload into a typed [`ExitSignal`].
+///
+/// Returns [`ExitSignal::Concern`] with the JSON-parsed `summary` when the
+/// payload is a well-formed `{"summary": "<non-empty>"}` object. Any parse
+/// failure (invalid JSON, missing field, empty summary) returns
+/// [`ExitSignal::BadWalk`] carrying [`BadWalk::Concern`] with the literal
+/// post-marker text so the verdict gate can render the recovery prompt
+/// with the original payload intact.
+fn parse_concern(after_marker: &str) -> ExitSignal {
     let payload = after_marker.trim_start_matches(':').trim();
-    let (token, reason) = payload.split_once(CONCERN_SEPARATOR)?;
-    let token = token.trim();
-    let reason = reason.trim();
-    if token.is_empty() {
-        return None;
+    match serde_json::from_str::<ConcernPayload>(payload) {
+        Ok(body) if !body.summary.is_empty() => ExitSignal::Concern {
+            summary: body.summary,
+        },
+        _ => ExitSignal::BadWalk(BadWalk::Concern {
+            payload: payload.to_string(),
+        }),
     }
-    Some(ExitSignal::Concern {
-        token: token.to_string(),
-        reason: reason.to_string(),
-    })
 }
 
 fn reason_for(marker: &str, line: &str, prior: &[&str]) -> Option<String> {
@@ -247,44 +271,61 @@ mod tests {
     }
 
     #[test]
-    fn concern_with_structured_payload_parses_token_and_reason() {
-        let out = "LOOM_CONCERN: verifier-bypass -- test mocks the agent backend";
+    fn concern_payload_parses_as_json_with_summary_field() {
+        let out = r#"LOOM_CONCERN: {"summary": "verifier-bypass on the agent backend mock"}"#;
         match parse_exit_signal(out) {
-            Some(ExitSignal::Concern { token, reason }) => {
-                assert_eq!(token, "verifier-bypass");
-                assert_eq!(reason, "test mocks the agent backend");
+            Some(ExitSignal::Concern { summary }) => {
+                assert_eq!(summary, "verifier-bypass on the agent backend mock");
             }
             other => panic!("expected Concern, got {other:?}"),
         }
     }
 
     #[test]
-    fn concern_trims_whitespace_around_payload_components() {
-        let out = "LOOM_CONCERN:   scope   --   diff edits files outside the bead\n";
+    fn concern_trims_whitespace_around_payload() {
+        let out = "LOOM_CONCERN:    {\"summary\":\"scope drift\"}   \n";
         match parse_exit_signal(out) {
-            Some(ExitSignal::Concern { token, reason }) => {
-                assert_eq!(token, "scope");
-                assert_eq!(reason, "diff edits files outside the bead");
-            }
+            Some(ExitSignal::Concern { summary }) => assert_eq!(summary, "scope drift"),
             other => panic!("expected Concern, got {other:?}"),
         }
     }
 
     #[test]
-    fn concern_without_separator_collapses_to_none() {
+    fn concern_malformed_payload_routes_to_bad_walk_concern_with_literal_payload() {
         let out = "LOOM_CONCERN: malformed payload with no separator\n";
-        assert_eq!(parse_exit_signal(out), None);
+        match parse_exit_signal(out) {
+            Some(ExitSignal::BadWalk(BadWalk::Concern { payload })) => {
+                assert_eq!(payload, "malformed payload with no separator");
+            }
+            other => panic!("expected BadWalk::Concern, got {other:?}"),
+        }
     }
 
     #[test]
-    fn concern_with_empty_token_collapses_to_none() {
-        let out = "LOOM_CONCERN: -- reason but no token\n";
-        assert_eq!(parse_exit_signal(out), None);
+    fn concern_with_empty_summary_routes_to_bad_walk_concern() {
+        let out = r#"LOOM_CONCERN: {"summary": ""}"#;
+        match parse_exit_signal(out) {
+            Some(ExitSignal::BadWalk(BadWalk::Concern { payload })) => {
+                assert_eq!(payload, r#"{"summary": ""}"#);
+            }
+            other => panic!("expected BadWalk::Concern, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn concern_with_missing_summary_field_routes_to_bad_walk_concern() {
+        let out = r#"LOOM_CONCERN: {"summery": "typo in the field name"}"#;
+        match parse_exit_signal(out) {
+            Some(ExitSignal::BadWalk(BadWalk::Concern { payload })) => {
+                assert_eq!(payload, r#"{"summery": "typo in the field name"}"#);
+            }
+            other => panic!("expected BadWalk::Concern, got {other:?}"),
+        }
     }
 
     #[test]
     fn concern_on_non_final_line_is_swallowed() {
-        let out = "LOOM_CONCERN: scope -- bad diff\nclosing prose\n";
+        let out = "LOOM_CONCERN: {\"summary\": \"scope drift\"}\nclosing prose\n";
         assert_eq!(parse_exit_signal(out), None);
     }
 
@@ -296,5 +337,21 @@ mod tests {
         let out =
             "LOOM_REVIEW_FLAG: verifier-bypass -- test mocks the agent backend\nLOOM_COMPLETE\n";
         assert_eq!(parse_exit_signal(out), Some(ExitSignal::Complete));
+    }
+
+    /// Backward-compat: existing review logs with the old
+    /// `<token> -- <reason>` payload no longer match the JSON shape, so
+    /// they surface as `BadWalk::Concern` carrying the literal payload.
+    /// One-time wire-format migration: old logs become typed observable
+    /// failures rather than silent `SwallowedMarker` collapse.
+    #[test]
+    fn legacy_token_reason_payload_routes_to_bad_walk_concern() {
+        let out = "LOOM_CONCERN: verifier-bypass -- test mocks the agent backend\n";
+        match parse_exit_signal(out) {
+            Some(ExitSignal::BadWalk(BadWalk::Concern { payload })) => {
+                assert_eq!(payload, "verifier-bypass -- test mocks the agent backend");
+            }
+            other => panic!("expected BadWalk::Concern, got {other:?}"),
+        }
     }
 }

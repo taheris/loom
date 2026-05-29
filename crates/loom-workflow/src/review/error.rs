@@ -30,8 +30,8 @@ pub enum ReviewError {
     /// reviewer agent did not emit LOOM_COMPLETE: {0}
     ReviewIncomplete(String),
 
-    /// reviewer emitted `LOOM_CONCERN: {token} -- {reason}` but minted no fix-up / clarify / blocked beads — protocol violation, see crates/loom-templates/templates/review.md § "Creating Fix-Up Beads"
-    ConcernWithoutBeadDeltas { token: String, reason: String },
+    /// reviewer emitted `LOOM_CONCERN: {summary}` but minted no fix-up / clarify / blocked beads — protocol violation, see crates/loom-templates/templates/review.md § "Creating Fix-Up Beads"
+    ConcernWithoutBeadDeltas { summary: String },
 
     /// `git push` failed: {0}
     GitPushFailed(String),

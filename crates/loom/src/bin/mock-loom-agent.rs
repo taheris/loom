@@ -28,12 +28,12 @@
 //! - `concern-marker`  — stamp a fix-up bead directory under
 //!   `$BD_STATE_DIR` (so the post-snapshot picks up a non-empty
 //!   `new_ids` and the review-phase protocol guard passes) and emit a
-//!   single `LOOM_CONCERN: verifier-bypass -- …` line + `agent_end`.
+//!   single `LOOM_CONCERN: {"summary": "…"}` line + `agent_end`.
 //!   Drives the review-phase concern branch of the push gate
 //!   (`PushGateRefuseCause::ReviewConcern`). The bead's `spec:<label>`
 //!   label is read from `$LOOM_TEST_CONCERN_SPEC` (default: `pushconcern`)
 //!   so a test driving a different spec can override.
-//! - `concern-then-complete` — emit `LOOM_CONCERN: … -- …` then
+//! - `concern-then-complete` — emit `LOOM_CONCERN: {"summary": "…"}` then
 //!   `LOOM_COMPLETE` on a later line. The final-line parser must pick
 //!   the trailing `LOOM_COMPLETE`; this is the literal May-19 sequence.
 
@@ -57,8 +57,10 @@ const MODE_CONCERN_THEN_COMPLETE: &str = "concern-then-complete";
 
 const BLOCKED_REASON: &str = "spec section is missing the schema for this bead";
 const CLARIFY_QUESTION: &str = "which deploy-key path should the runner image mount?";
-const CONCERN_LINE: &str =
-    "LOOM_CONCERN: verifier-bypass -- the only [verify] for this bead mocks the agent backend";
+const CONCERN_LINE: &str = concat!(
+    "LOOM_CONCERN: ",
+    r#"{"summary": "verifier-bypass: the only [verify] mocks the agent backend"}"#,
+);
 
 fn main() -> ExitCode {
     let mode = env::var("LOOM_TEST_AGENT_MODE").unwrap_or_else(|_| MODE_COMPLETE.to_string());

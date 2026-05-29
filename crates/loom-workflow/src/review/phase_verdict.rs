@@ -217,7 +217,10 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
         },
         Some(ExitSignal::Complete) => decide_progress_marker(false, inputs),
         Some(ExitSignal::Noop) => decide_progress_marker(true, inputs),
-        Some(ExitSignal::Concern { token, reason }) => decide_concern(token, reason, inputs),
+        Some(ExitSignal::Concern { summary }) => decide_concern(summary, inputs),
+        Some(ExitSignal::BadWalk(badwalk)) => PhaseVerdict::Recovery {
+            cause: RecoveryCause::BadWalk(badwalk.clone()),
+        },
     }
 }
 
@@ -225,16 +228,19 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
 /// definitions. The review-phase classifier normalises the marker payload
 /// into [`GateInputs::review_flag`] before invoking [`decide`]; this branch
 /// is the fallback for callers that haven't done that normalisation yet —
-/// a recognised token routes to [`RecoveryCause::ReviewConcern`] with the
-/// structured detail, an unknown token collapses to `SwallowedMarker` so
-/// downstream surfaces don't print a bogus concern.
-fn decide_concern(token: &str, reason: &str, inputs: GateInputs) -> PhaseVerdict {
+/// a recognised concern keyword in the summary routes to
+/// [`RecoveryCause::ReviewConcern`] with the structured detail; otherwise
+/// the branch collapses to `SwallowedMarker` so downstream surfaces don't
+/// print a bogus concern. The pairing-rule cross-check between streamed
+/// findings and the terminator is layered on top of this branch in a
+/// follow-on bead.
+fn decide_concern(summary: &str, inputs: GateInputs) -> PhaseVerdict {
     if let Some(flag) = inputs.review_flag {
         return PhaseVerdict::Recovery {
             cause: RecoveryCause::ReviewConcern(flag),
         };
     }
-    let Some(concern) = ReviewConcern::parse(token) else {
+    let Some(concern) = ReviewConcern::parse(summary) else {
         return PhaseVerdict::Recovery {
             cause: RecoveryCause::SwallowedMarker,
         };
@@ -242,7 +248,7 @@ fn decide_concern(token: &str, reason: &str, inputs: GateInputs) -> PhaseVerdict
     PhaseVerdict::Recovery {
         cause: RecoveryCause::ReviewConcern(ReviewFlag {
             concern,
-            detail: reason.to_string(),
+            detail: String::new(),
         }),
     }
 }
@@ -373,15 +379,14 @@ mod tests {
     #[test]
     fn concern_marker_with_known_token_routes_to_review_concern_recovery() {
         let m = ExitSignal::Concern {
-            token: "verifier-bypass".into(),
-            reason: "test mocks the agent backend".into(),
+            summary: "verifier-bypass".into(),
         };
         match decide(Some(&m), inputs(true, false, true, None)) {
             PhaseVerdict::Recovery {
                 cause: RecoveryCause::ReviewConcern(parsed),
             } => {
                 assert_eq!(parsed.concern, ReviewConcern::VerifierBypass);
-                assert_eq!(parsed.detail, "test mocks the agent backend");
+                assert!(parsed.detail.is_empty());
             }
             other => panic!("expected Recovery::ReviewConcern, got {other:?}"),
         }
@@ -390,8 +395,7 @@ mod tests {
     #[test]
     fn concern_marker_with_unknown_token_collapses_to_swallowed_marker() {
         let m = ExitSignal::Concern {
-            token: "fictional-concern".into(),
-            reason: "doesn't map to any enum".into(),
+            summary: "fictional-concern".into(),
         };
         assert_eq!(
             decide(Some(&m), inputs(true, false, true, None)),
@@ -399,6 +403,21 @@ mod tests {
                 cause: RecoveryCause::SwallowedMarker,
             },
         );
+    }
+
+    #[test]
+    fn bad_walk_concern_marker_routes_to_bad_walk_recovery_cause() {
+        let m = ExitSignal::BadWalk(BadWalk::Concern {
+            payload: "verifier-bypass -- legacy wire format".into(),
+        });
+        match decide(Some(&m), inputs(true, false, true, None)) {
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::BadWalk(BadWalk::Concern { payload }),
+            } => {
+                assert_eq!(payload, "verifier-bypass -- legacy wire format");
+            }
+            other => panic!("expected Recovery::BadWalk(Concern), got {other:?}"),
+        }
     }
 
     #[test]

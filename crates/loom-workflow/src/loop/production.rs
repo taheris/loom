@@ -752,11 +752,16 @@ pub fn classify_session(session: SessionResult, marker: Option<ExitSignal>) -> A
             0,
         ),
         SessionResult::Complete(outcome) => {
-            if let Some(ExitSignal::Concern { token, .. }) = marker.as_ref() {
+            if let Some(ExitSignal::Concern { summary }) = marker.as_ref() {
                 return AgentOutcome::Failure {
                     error: format!(
-                        "wrong-phase-marker: LOOM_CONCERN ({token}) is review-phase only",
+                        "wrong-phase-marker: LOOM_CONCERN ({summary}) is review-phase only",
                     ),
+                };
+            }
+            if matches!(marker, Some(ExitSignal::BadWalk(_))) {
+                return AgentOutcome::Failure {
+                    error: "wrong-phase-marker: LOOM_CONCERN is review-phase only".to_string(),
                 };
             }
             if matches!(marker, Some(ExitSignal::Complete | ExitSignal::Noop))
@@ -1001,8 +1006,7 @@ mod tests {
         match classify_session(
             session,
             Some(ExitSignal::Concern {
-                token: "verifier-bypass".into(),
-                reason: "test mocks the agent backend".into(),
+                summary: "verifier-bypass on the agent backend mock".into(),
             }),
         ) {
             AgentOutcome::Failure { error } => {

@@ -373,10 +373,10 @@ fn classify_review_phase(marker: Option<&ExitSignal>, exit_code: i32) -> ReviewO
         };
     }
     let review_flag = match marker {
-        Some(ExitSignal::Concern { token, reason }) => {
-            ReviewConcern::parse(token).map(|concern| ReviewFlag {
+        Some(ExitSignal::Concern { summary }) => {
+            ReviewConcern::parse(summary).map(|concern| ReviewFlag {
                 concern,
-                detail: reason.clone(),
+                detail: String::new(),
             })
         }
         _ => None,
@@ -790,16 +790,15 @@ mod tests {
         }
     }
 
-    /// `LOOM_CONCERN` with a recognised token must surface as `Incomplete`
-    /// carrying the typed concern token + the agent's reasoning. The
-    /// classifier owns the token→`ReviewConcern` parse and threads a
-    /// populated `GateInputs.review_flag` into `decide()` so downstream
-    /// surfaces consume typed data rather than re-parsing prose.
+    /// `LOOM_CONCERN` with a recognised token in the summary must surface
+    /// as `Incomplete` carrying the typed concern token. The classifier
+    /// owns the summary→`ReviewConcern` parse and threads a populated
+    /// `GateInputs.review_flag` into `decide()` so downstream surfaces
+    /// consume typed data rather than re-parsing prose.
     #[test]
     fn classify_review_phase_routes_concern_marker_into_review_concern_recovery() {
         let marker = ExitSignal::Concern {
-            token: "verifier-bypass".into(),
-            reason: "test mocks the agent backend".into(),
+            summary: "verifier-bypass".into(),
         };
         match classify_review_phase(Some(&marker), 0) {
             ReviewOutcome::Incomplete { detail } => {
@@ -811,24 +810,19 @@ mod tests {
                     detail.contains("verifier-bypass"),
                     "concern token missing from detail: {detail}",
                 );
-                assert!(
-                    detail.contains("test mocks the agent backend"),
-                    "concern reason missing from detail: {detail}",
-                );
             }
             other => panic!("expected Incomplete, got {other:?}"),
         }
     }
 
-    /// `LOOM_CONCERN` with an unknown token collapses to `swallowed-marker`
-    /// — the gate refuses to fabricate a concern variant the rubric did
-    /// not define. The detail still surfaces as `Incomplete` so the human
-    /// gets the swallowed-marker hint rather than a silent pass.
+    /// `LOOM_CONCERN` whose summary is not a recognised token collapses to
+    /// `swallowed-marker` — the gate refuses to fabricate a concern variant
+    /// the rubric did not define. The detail still surfaces as `Incomplete`
+    /// so the human gets the swallowed-marker hint rather than a silent pass.
     #[test]
     fn classify_review_phase_unknown_concern_token_collapses_to_swallowed_marker() {
         let marker = ExitSignal::Concern {
-            token: "fictional-concern".into(),
-            reason: "doesn't map to any enum".into(),
+            summary: "fictional-concern".into(),
         };
         match classify_review_phase(Some(&marker), 0) {
             ReviewOutcome::Incomplete { detail } => assert!(

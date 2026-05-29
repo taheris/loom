@@ -59,12 +59,6 @@ impl GateSuccess {
     /// `LOOM_COMPLETE`, and `total_handoffs >= 1`. Any failed condition
     /// returns `Err(GateFail)` with the matching `GateFailReason` and the
     /// evidence carried verbatim for triage.
-    #[expect(
-        clippy::result_large_err,
-        reason = "GateFail is the receipt-equivalent of GateSuccess on the failure path; \
-                  boxing it would hide the four-condition AND from `match` arms and add an \
-                  allocation on every non-success outcome — the size is the designed shape"
-    )]
     pub(crate) fn new(evidence: &HandoffEvidence, total_handoffs: u32) -> Result<Self, GateFail> {
         let fail = |reason: GateFailReason| GateFail {
             reason,
@@ -88,9 +82,8 @@ impl GateSuccess {
         let review_exit = match evidence.review_exit {
             Some(0) => 0,
             Some(_) => {
-                if let Some(ExitSignal::Concern { token, reason }) = evidence.review_marker.clone()
-                {
-                    return Err(fail(GateFailReason::ReviewConcern { token, reason }));
+                if let Some(ExitSignal::Concern { summary }) = evidence.review_marker.clone() {
+                    return Err(fail(GateFailReason::ReviewConcern { summary }));
                 }
                 return Err(fail(GateFailReason::ReviewEvidenceMissing));
             }
@@ -99,8 +92,8 @@ impl GateSuccess {
         let review_marker = match evidence.review_marker.clone() {
             Some(ExitSignal::Complete) => ExitSignal::Complete,
             Some(ExitSignal::Noop) => return Err(fail(GateFailReason::EmptyDiffNoop)),
-            Some(ExitSignal::Concern { token, reason }) => {
-                return Err(fail(GateFailReason::ReviewConcern { token, reason }));
+            Some(ExitSignal::Concern { summary }) => {
+                return Err(fail(GateFailReason::ReviewConcern { summary }));
             }
             Some(_) | None => return Err(fail(GateFailReason::ReviewEvidenceMissing)),
         };
@@ -174,7 +167,7 @@ impl GateFail {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateFailReason {
     VerifierFailed,
-    ReviewConcern { token: String, reason: String },
+    ReviewConcern { summary: String },
     EmptyDiffNoop,
     StalledMaxIterations,
     SignalKilled,
@@ -295,16 +288,14 @@ mod tests {
         let mut e = good.clone();
         e.review_exit = Some(1);
         e.review_marker = Some(ExitSignal::Concern {
-            token: "verifier-bypass".into(),
-            reason: "tests mock too hard".into(),
+            summary: "tests mock too hard".into(),
         });
         match GateSuccess::new(&e, 1) {
             Err(GateFail {
-                reason: GateFailReason::ReviewConcern { token, reason },
+                reason: GateFailReason::ReviewConcern { summary },
                 ..
             }) => {
-                assert_eq!(token, "verifier-bypass");
-                assert_eq!(reason, "tests mock too hard");
+                assert_eq!(summary, "tests mock too hard");
             }
             other => panic!("expected ReviewConcern, got {other:?}"),
         }

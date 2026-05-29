@@ -1585,13 +1585,13 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   string>"}` via the same `serde_json` pipeline that consumes
   `LOOM_FINDING:` lines; the parsed summary becomes the verdict-log
   entry for the walk
-  [test?](concern_payload_parses_as_json_with_summary_field)
+  [test](concern_payload_parses_as_json_with_summary_field)
 - Parse failures on the `LOOM_CONCERN:` payload — invalid JSON, missing
   `summary` field, empty `summary` string — surface as
   `RecoveryCause::BadWalk(BadWalk::Concern { payload })` carrying the
   literal post-marker text so the recovery prompt can quote it back
   to the agent
-  [test?](concern_malformed_payload_routes_to_badwalk_concern_with_literal_payload)
+  [test](concern_malformed_payload_routes_to_bad_walk_concern_with_literal_payload)
 - A walk that emits `LOOM_CONCERN:` with zero preceding `LOOM_FINDING:`
   lines surfaces as `RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings
   { summary })` — concern claimed without enumeration

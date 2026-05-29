@@ -266,7 +266,7 @@ pub async fn review_loop<C: ReviewController>(
         .map(|b| b.id.clone())
         .collect();
 
-    if let Some(ExitSignal::Concern { token, reason }) = marker.as_ref()
+    if let Some(ExitSignal::Concern { summary }) = marker.as_ref()
         && new_ids.is_empty()
         && blocked_ids.is_empty()
         && clarify_ids.is_empty()
@@ -275,13 +275,11 @@ pub async fn review_loop<C: ReviewController>(
             DriverKind::Other("review_protocol_violation".to_string()),
             "reviewer emitted LOOM_CONCERN with no bead deltas — failing closed",
             serde_json::json!({
-                "token": token,
-                "reason": reason,
+                "summary": summary,
             }),
         );
         return Err(ReviewError::ConcernWithoutBeadDeltas {
-            token: token.clone(),
-            reason: reason.clone(),
+            summary: summary.clone(),
         });
     }
 
@@ -1109,8 +1107,7 @@ mod tests {
                 detail: "LOOM_CONCERN: spec-conventions-violation -- bad diff".into(),
             }),
             review_marker: Some(ExitSignal::Concern {
-                token: "spec-conventions-violation".into(),
-                reason: "bad diff".into(),
+                summary: "spec-conventions-violation in the diff".into(),
             }),
             pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
@@ -1148,8 +1145,7 @@ mod tests {
                     .into(),
             }),
             review_marker: Some(ExitSignal::Concern {
-                token: "template-spec-drift".into(),
-                reason: "templates direct removed surface".into(),
+                summary: "template-spec-drift removed surface".into(),
             }),
             pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![bead("lm-1", &["spec:harness"])],
@@ -1160,9 +1156,8 @@ mod tests {
             .await
             .expect_err("protocol violation must surface as an error");
         match err {
-            ReviewError::ConcernWithoutBeadDeltas { token, reason } => {
-                assert_eq!(token, "template-spec-drift");
-                assert_eq!(reason, "templates direct removed surface");
+            ReviewError::ConcernWithoutBeadDeltas { summary } => {
+                assert_eq!(summary, "template-spec-drift removed surface");
             }
             other => panic!("expected ConcernWithoutBeadDeltas, got {other:?}"),
         }
@@ -1171,7 +1166,10 @@ mod tests {
             .iter()
             .find(|(k, _, _)| k == "review_protocol_violation")
             .expect("review_protocol_violation event present");
-        assert_eq!(violation.2["token"].as_str(), Some("template-spec-drift"));
+        assert_eq!(
+            violation.2["summary"].as_str(),
+            Some("template-spec-drift removed surface"),
+        );
         assert_eq!(c.git_push_calls, 0);
         assert_eq!(c.beads_push_calls, 0);
         assert_eq!(c.exec_run_calls, 0);
@@ -1188,8 +1186,7 @@ mod tests {
                 detail: "LOOM_CONCERN: scope -- diff strays".into(),
             }),
             review_marker: Some(ExitSignal::Concern {
-                token: "scope".into(),
-                reason: "diff strays".into(),
+                summary: "scope drift across the diff".into(),
             }),
             pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![
@@ -1295,8 +1292,7 @@ mod tests {
                         detail: "LOOM_CONCERN: scope -- bad".into(),
                     }),
                     review_marker: Some(ExitSignal::Concern {
-                        token: "scope".into(),
-                        reason: "bad".into(),
+                        summary: "scope drift in the diff".into(),
                     }),
                     pre_beads: vec![bead("lm-1", &["spec:harness"])],
                     post_beads: vec![
@@ -1383,8 +1379,7 @@ mod tests {
                         detail: "LOOM_CONCERN: scope -- bad".into(),
                     }),
                     review_marker: Some(ExitSignal::Concern {
-                        token: "scope".into(),
-                        reason: "bad".into(),
+                        summary: "scope drift in the diff".into(),
                     }),
                     pre_beads: vec![bead("lm-1", &["spec:harness"])],
                     post_beads: vec![
@@ -1532,8 +1527,7 @@ mod tests {
                     detail: "LOOM_CONCERN: scope -- nope".into(),
                 });
                 c.review_marker = Some(ExitSignal::Concern {
-                    token: "scope".into(),
-                    reason: "nope".into(),
+                    summary: "scope drift in the diff".into(),
                 });
                 c.post_beads.push(bead("lm-fix", &["spec:harness"]));
                 c

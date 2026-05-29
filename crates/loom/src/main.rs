@@ -2116,10 +2116,14 @@ async fn run_parallel_loop(
                         (Some(ExitSignal::Clarify { question }), _) => {
                             AgentOutcome::Clarify { question }
                         }
-                        (Some(ExitSignal::Concern { token, .. }), _) => AgentOutcome::Failure {
+                        (Some(ExitSignal::Concern { summary }), _) => AgentOutcome::Failure {
                             error: format!(
-                                "wrong-phase-marker: LOOM_CONCERN ({token}) is review-phase only",
+                                "wrong-phase-marker: LOOM_CONCERN ({summary}) is review-phase only",
                             ),
+                        },
+                        (Some(ExitSignal::BadWalk(_)), _) => AgentOutcome::Failure {
+                            error: "wrong-phase-marker: LOOM_CONCERN is review-phase only"
+                                .to_string(),
                         },
                         (Some(ExitSignal::Complete | ExitSignal::Noop), 0) => AgentOutcome::Success,
                         (Some(ExitSignal::Complete | ExitSignal::Noop), code) => {
