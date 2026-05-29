@@ -2168,7 +2168,7 @@ Criteria.
 - Every dispatch attempt sees a clean working tree against the bead
       workspace's current HEAD; `target/`, `.git/`, and `.wrapix/`
       survive the pre-attempt reset
-  [test?](bead_workspace_reset_preserves_target_and_dotwrapix)
+  [test](bead_workspace_reset_preserves_target_and_dotwrapix)
 - `loom loop` startup drops every bead workspace under
       `.wrapix/loom/beads/` whose bead is `closed`, under the spec
       advisory lock

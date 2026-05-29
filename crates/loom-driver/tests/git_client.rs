@@ -481,30 +481,139 @@ async fn bead_dispatch_creates_clone_under_loom_beads() -> Result<()> {
     Ok(())
 }
 
-/// Spec gate (`specs/harness.md` § Bead worktree dispatch): every
-/// per-bead worktree created by `loom loop` MUST have an empty `git
-/// status --porcelain` immediately after creation, so the verdict gate's
-/// tree-clean check is sound by construction — anything dirty the agent
-/// leaves behind is unambiguously the agent's own write.
+/// Spec gate (`specs/harness.md` § Bead dispatch — Per-bead-close
+/// lifecycle): the dispatch path runs `reset_bead_clone` before every
+/// agent attempt, so the worker observes an empty `git status
+/// --porcelain` going in. This pins the *post-reset* state — the
+/// load-bearing invariant the verdict gate's tree-clean check builds on,
+/// so anything dirty the agent leaves behind is unambiguously the
+/// agent's own write.
 #[tokio::test]
-async fn bead_worktree_starts_with_empty_porcelain() -> Result<()> {
+async fn bead_worktree_post_reset_porcelain_is_empty() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
 
     let label = SpecLabel::new("harness");
     let bead = BeadId::new("lm-clean.1")?;
     let created = client.create_worktree(&label, &bead).await?;
+    client.reset_bead_clone(&created.path).await?;
 
     let porcelain = client.status_porcelain_at(&created.path).await?;
     assert!(
         porcelain.is_empty(),
-        "fresh bead worktree must have empty `git status --porcelain` so \
-         tree-clean checks attribute every dirty path to the agent. got: {porcelain:?}",
+        "post-reset bead worktree must have empty `git status --porcelain` \
+         so tree-clean checks attribute every dirty path to the agent. got: {porcelain:?}",
     );
 
-    // The bead branch lives inside the clone (not the main repo) until
-    // the merge-back push, so cleanup is just removing the directory —
-    // no `git branch -D` against the main repo's refs.
+    client.remove_worktree(&created.path).await?;
+    Ok(())
+}
+
+/// Spec gate (`specs/harness.md` § Bead dispatch — Per-bead-close
+/// lifecycle): `reset_bead_clone` MUST drop uncommitted mid-session
+/// leftovers while preserving the bead branch's `HEAD` *and* the warm
+/// caches under `target/`, `.git/`, and `.wrapix/`. Without those
+/// excludes, every recovery iteration would burn cargo + sccache state
+/// and tear out bind-mount staging.
+#[tokio::test]
+async fn bead_workspace_reset_preserves_target_and_dotwrapix() -> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("lm-reset.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+
+    // Simulate the state the dispatch path observes between attempts:
+    //
+    // * an agent-committed file on the bead branch (must survive the reset
+    //   — `git reset --hard HEAD` keeps committed work),
+    // * an unstaged tracked-file edit (must be dropped — that's the
+    //   recovery-leftover case),
+    // * an untracked top-level file (must be dropped — `git clean -fdx`),
+    // * warm scratch dirs at `target/`, `.git/objects/loom-test`, and
+    //   `.wrapix/dolt.sock-marker` (each must survive the clean — those
+    //   are cargo/sccache state, refs, and bind-mount staging).
+    agent_commit(&created.path, "committed.txt", "agent commit\n", "agent")?;
+    std::fs::write(created.path.join("README.md"), "mid-session edit\n")?;
+    std::fs::write(created.path.join("untracked.txt"), "scratch\n")?;
+    std::fs::create_dir_all(created.path.join("target/debug"))?;
+    std::fs::write(
+        created.path.join("target/debug/sentinel"),
+        b"cargo artifact\n",
+    )?;
+    std::fs::create_dir_all(created.path.join(".wrapix"))?;
+    std::fs::write(
+        created.path.join(".wrapix/dolt.sock-marker"),
+        b"bind-mount staging\n",
+    )?;
+    let head_before = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(&created.path)
+            .args(["rev-parse", "HEAD"])
+            .output()?
+            .stdout,
+    )?
+    .trim()
+    .to_string();
+
+    client.reset_bead_clone(&created.path).await?;
+
+    // HEAD is unchanged — `git reset --hard HEAD` does not drop commits.
+    let head_after = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(&created.path)
+            .args(["rev-parse", "HEAD"])
+            .output()?
+            .stdout,
+    )?
+    .trim()
+    .to_string();
+    assert_eq!(
+        head_before, head_after,
+        "reset_bead_clone must preserve the bead branch's HEAD (agent's prior commits)",
+    );
+
+    // Committed work survives.
+    assert!(
+        created.path.join("committed.txt").exists(),
+        "agent's committed file must survive reset",
+    );
+
+    // Uncommitted leftover (tracked edit + untracked file) is gone.
+    let readme = std::fs::read_to_string(created.path.join("README.md"))?;
+    assert_eq!(
+        readme, "initial\n",
+        "tracked-file edit must be reset to HEAD content",
+    );
+    assert!(
+        !created.path.join("untracked.txt").exists(),
+        "untracked top-level file must be removed by clean -fdx",
+    );
+
+    // Preserved scratch dirs survive the clean.
+    assert!(
+        created.path.join("target/debug/sentinel").exists(),
+        "target/ must survive so cargo + sccache stay warm",
+    );
+    assert!(
+        created.path.join(".git").is_dir(),
+        ".git/ must survive (refs + bead branch)",
+    );
+    assert!(
+        created.path.join(".wrapix/dolt.sock-marker").exists(),
+        ".wrapix/ must survive so extra-mount staging persists across attempts",
+    );
+
+    // Idempotence: a second reset against the now-clean tree is a no-op —
+    // committed content + every preserved scratch dir still in place.
+    client.reset_bead_clone(&created.path).await?;
+    assert!(created.path.join("committed.txt").exists());
+    assert!(created.path.join("target/debug/sentinel").exists());
+    assert!(created.path.join(".wrapix/dolt.sock-marker").exists());
+
     client.remove_worktree(&created.path).await?;
     Ok(())
 }

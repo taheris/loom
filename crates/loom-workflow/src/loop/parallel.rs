@@ -213,6 +213,11 @@ pub async fn create_worktrees(
     let mut out = Vec::with_capacity(beads.len());
     for bead in beads {
         let wt = git.create_worktree(label, &bead.id).await?;
+        // Drop any uncommitted mid-session leftovers from a prior attempt
+        // while preserving the bead branch's HEAD (i.e. the agent's prior
+        // commits) and the warm caches under `target/` + `.wrapix/`. No-op
+        // on the first attempt against a freshly-cloned tree.
+        git.reset_bead_clone(&wt.path).await?;
         info!(bead = %bead.id, path = %wt.path.display(), branch = %wt.branch, "worktree created");
         out.push(WorktreeBead { bead, worktree: wt });
     }

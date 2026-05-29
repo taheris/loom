@@ -270,6 +270,43 @@ impl GitClient {
         Ok(CreatedWorktree { path, branch })
     }
 
+    /// Reset a per-bead workspace's working tree to its current `HEAD` and
+    /// drop everything outside the tracked content + the preserved
+    /// scratch dirs. Runs `git reset --hard HEAD` followed by
+    /// `git clean -fdx --exclude=target --exclude=.git --exclude=.wrapix`.
+    ///
+    /// Called by the dispatch path immediately before every agent session
+    /// attempt — first attempt (where it is a no-op against a freshly-cloned
+    /// tree) and every recovery iteration (where it discards mid-session
+    /// leftovers while preserving the agent's prior commits on the bead
+    /// branch). Idempotent. `target/` survives so cargo + sccache stay warm;
+    /// `.git/` survives so refs and the bead branch stay intact; `.wrapix/`
+    /// survives so extra-mount staging (e.g. dolt socket landing point)
+    /// persists across attempts.
+    pub async fn reset_bead_clone(&self, path: &Path) -> Result<(), GitError> {
+        run_git(
+            path,
+            self.clock.as_ref(),
+            ["reset", "--hard", "--quiet", "HEAD"],
+            None,
+        )
+        .await?;
+        run_git(
+            path,
+            self.clock.as_ref(),
+            [
+                "clean",
+                "-fdx",
+                "--quiet",
+                "--exclude=target",
+                "--exclude=.git",
+                "--exclude=.wrapix",
+            ],
+            None,
+        )
+        .await
+    }
+
     /// Remove a per-bead workspace directory.
     ///
     /// The workspace is a standalone clone (not a git-registered linked

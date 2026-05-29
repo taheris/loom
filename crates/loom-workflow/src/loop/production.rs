@@ -270,6 +270,11 @@ where
             branch = %worktree.branch,
             "dispatching agent against per-bead workspace",
         );
+        // Drop any uncommitted mid-session leftovers from a prior attempt
+        // while preserving the bead branch's HEAD (i.e. the agent's prior
+        // commits) and the warm caches under `target/` + `.wrapix/`. No-op
+        // on the first attempt against a freshly-cloned tree.
+        self.git.reset_bead_clone(&worktree.path).await?;
 
         let key = resolve_scratch_key(Phase::Run, &self.label, Some(&bead.id));
         let scratchpad_path =
