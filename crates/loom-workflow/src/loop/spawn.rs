@@ -27,6 +27,7 @@ fn build_spawn_config(
         image_source,
         workspace,
         env,
+        extra_mounts: vec![],
         initial_prompt,
         agent_args,
         repin: RePinContent {

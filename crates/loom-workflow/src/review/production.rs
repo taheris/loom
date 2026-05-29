@@ -425,6 +425,7 @@ where
             image_source: entry.source.clone(),
             workspace: self.workspace.clone(),
             env,
+            extra_mounts: vec![],
             initial_prompt: prompt,
             agent_args: vec![],
             repin: RePinContent {

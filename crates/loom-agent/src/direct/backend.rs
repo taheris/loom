@@ -305,6 +305,7 @@ mod tests {
             image_source: PathBuf::from("/nix/store/zzz-wrapix-test-direct.tar"),
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRAPIX_AGENT".into(), "direct".into())],
+            extra_mounts: vec![],
             initial_prompt: "hello".to_string(),
             agent_args: vec![],
             repin: sample_repin(),
