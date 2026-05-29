@@ -1595,11 +1595,11 @@ PATH, and a `[judge]` annotation pointing at the gate's own
 - A walk that emits `LOOM_CONCERN:` with zero preceding `LOOM_FINDING:`
   lines surfaces as `RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings
   { summary })` — concern claimed without enumeration
-  [test?](concern_without_streamed_findings_routes_to_badwalk_concern_without_findings)
+  [test](concern_without_streamed_findings_routes_to_badwalk_concern_without_findings)
 - A walk that streams one or more `LOOM_FINDING:` lines and terminates
   with `LOOM_COMPLETE` surfaces as `RecoveryCause::BadWalk(BadWalk::
   FindingsWithoutConcern { finding_count })`
-  [test?](findings_streamed_with_complete_terminator_routes_to_badwalk_findings_without_concern)
+  [test](findings_streamed_with_complete_terminator_routes_to_badwalk_findings_without_concern)
 - The wire-format anti-drift verifier (a `[check]`-tier audit) scans
   every file under `crates/loom-templates/templates/` for the literal
   substrings `LOOM_CONCERN:` and `LOOM_FINDING:` and fails if they

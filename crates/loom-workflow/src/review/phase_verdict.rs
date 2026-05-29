@@ -198,6 +198,13 @@ pub struct GateInputs {
     pub verify_failures: Vec<VerifyFailure>,
     /// Parsed reviewer flag, or `None` for a clean review.
     pub review_flag: Option<ReviewFlag>,
+    /// Number of `LOOM_FINDING:` lines the review walk streamed before the
+    /// terminator. Drives the *Streaming + terminator pairing rule* in
+    /// `specs/gate.md`: `LOOM_COMPLETE` with `≥1` findings routes to
+    /// [`BadWalk::FindingsWithoutConcern`], `LOOM_CONCERN` with `0`
+    /// findings routes to [`BadWalk::ConcernWithoutFindings`]. Non-review
+    /// phases (`loom loop`) have no findings stream and pass `0`.
+    pub streamed_findings_count: usize,
 }
 
 /// Apply the spec's decision table to the parsed marker plus mechanical
@@ -215,7 +222,16 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
         Some(ExitSignal::Clarify { question }) => PhaseVerdict::Clarify {
             question: question.clone(),
         },
-        Some(ExitSignal::Complete) => decide_progress_marker(false, inputs),
+        Some(ExitSignal::Complete) => {
+            if inputs.streamed_findings_count > 0 {
+                return PhaseVerdict::Recovery {
+                    cause: RecoveryCause::BadWalk(BadWalk::FindingsWithoutConcern {
+                        finding_count: inputs.streamed_findings_count,
+                    }),
+                };
+            }
+            decide_progress_marker(false, inputs)
+        }
         Some(ExitSignal::Noop) => decide_progress_marker(true, inputs),
         Some(ExitSignal::Concern { summary }) => decide_concern(summary, inputs),
         Some(ExitSignal::BadWalk(badwalk)) => PhaseVerdict::Recovery {
@@ -225,16 +241,25 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
 }
 
 /// `LOOM_CONCERN` is review-phase-only per `specs/harness.md` § Marker
-/// definitions. The review-phase classifier normalises the marker payload
-/// into [`GateInputs::review_flag`] before invoking [`decide`]; this branch
-/// is the fallback for callers that haven't done that normalisation yet —
-/// a recognised concern keyword in the summary routes to
-/// [`RecoveryCause::ReviewConcern`] with the structured detail; otherwise
-/// the branch collapses to `SwallowedMarker` so downstream surfaces don't
-/// print a bogus concern. The pairing-rule cross-check between streamed
-/// findings and the terminator is layered on top of this branch in a
-/// follow-on bead.
+/// definitions. The pairing-rule cross-check from `specs/gate.md`'s
+/// *Streaming + terminator pairing rule* fires first: a `LOOM_CONCERN`
+/// marker with zero preceding `LOOM_FINDING:` lines is a
+/// [`BadWalk::ConcernWithoutFindings`] regardless of the legacy
+/// [`GateInputs::review_flag`] normalisation. With one or more streamed
+/// findings, the verdict routes to recovery — preferring the structured
+/// [`GateInputs::review_flag`] when the review-phase classifier already
+/// normalised the payload, then falling back to parsing the summary as a
+/// `ReviewConcern` token for callers still on the legacy wire format.
+/// Malformed payloads never reach this branch: [`crate::todo::exit::parse_concern`]
+/// routes them to [`ExitSignal::BadWalk`] at the parser layer.
 fn decide_concern(summary: &str, inputs: GateInputs) -> PhaseVerdict {
+    if inputs.streamed_findings_count == 0 {
+        return PhaseVerdict::Recovery {
+            cause: RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings {
+                summary: summary.to_string(),
+            }),
+        };
+    }
     if let Some(flag) = inputs.review_flag {
         return PhaseVerdict::Recovery {
             cause: RecoveryCause::ReviewConcern(flag),
@@ -381,7 +406,11 @@ mod tests {
         let m = ExitSignal::Concern {
             summary: "verifier-bypass".into(),
         };
-        match decide(Some(&m), inputs(true, false, true, None)) {
+        let g = GateInputs {
+            streamed_findings_count: 1,
+            ..inputs(true, false, true, None)
+        };
+        match decide(Some(&m), g) {
             PhaseVerdict::Recovery {
                 cause: RecoveryCause::ReviewConcern(parsed),
             } => {
@@ -397,12 +426,57 @@ mod tests {
         let m = ExitSignal::Concern {
             summary: "fictional-concern".into(),
         };
+        let g = GateInputs {
+            streamed_findings_count: 1,
+            ..inputs(true, false, true, None)
+        };
         assert_eq!(
-            decide(Some(&m), inputs(true, false, true, None)),
+            decide(Some(&m), g),
             PhaseVerdict::Recovery {
                 cause: RecoveryCause::SwallowedMarker,
             },
         );
+    }
+
+    #[test]
+    fn concern_without_streamed_findings_routes_to_badwalk_concern_without_findings() {
+        let m = ExitSignal::Concern {
+            summary: "scope drift around the mint pipeline".into(),
+        };
+        let g = GateInputs {
+            streamed_findings_count: 0,
+            review_flag: Some(flag(
+                ReviewConcern::Scope,
+                "ignored when pairing rule fires",
+            )),
+            ..GateInputs::default()
+        };
+        match decide(Some(&m), g) {
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings { summary }),
+            } => {
+                assert_eq!(summary, "scope drift around the mint pipeline");
+            }
+            other => panic!("expected Recovery::BadWalk(ConcernWithoutFindings), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn findings_streamed_with_complete_terminator_routes_to_badwalk_findings_without_concern() {
+        let g = GateInputs {
+            bd_closed: true,
+            diff_empty: false,
+            streamed_findings_count: 3,
+            ..GateInputs::default()
+        };
+        match decide(Some(&ExitSignal::Complete), g) {
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::BadWalk(BadWalk::FindingsWithoutConcern { finding_count }),
+            } => {
+                assert_eq!(finding_count, 3);
+            }
+            other => panic!("expected Recovery::BadWalk(FindingsWithoutConcern), got {other:?}"),
+        }
     }
 
     #[test]
@@ -711,6 +785,7 @@ mod tests {
             tree_dirty_paths: dirty.clone(),
             verify_failures: vec![sample_failure()],
             review_flag: Some(flag(ReviewConcern::Scope, "out of scope")),
+            ..GateInputs::default()
         };
         match decide(Some(&ExitSignal::Complete), g) {
             PhaseVerdict::Recovery {
@@ -740,6 +815,7 @@ mod tests {
             tree_dirty_paths: dirty.clone(),
             verify_failures: vec![],
             review_flag: None,
+            ..GateInputs::default()
         };
         match decide(Some(&ExitSignal::Noop), g) {
             PhaseVerdict::Recovery {
@@ -797,6 +873,7 @@ mod tests {
             tree_dirty_paths: capped.clone(),
             verify_failures: vec![],
             review_flag: None,
+            ..GateInputs::default()
         };
         match decide(Some(&ExitSignal::Complete), g) {
             PhaseVerdict::Recovery {
