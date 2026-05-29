@@ -631,6 +631,95 @@ async fn push_branch_to_origin_propagates_pre_push_hook_failure() -> Result<()> 
     Ok(())
 }
 
+/// Spec contract `[test?]` annotation
+/// (`specs/harness.md` § Success Criteria · Bead dispatch):
+/// `[loom] integration_branch` is honored end-to-end by the
+/// loop's git plumbing — `merge_branch` rebases onto the configured
+/// branch (NOT a hard-coded `main`), and `push` targets
+/// `origin <integration_branch>`. The fixture stands up a repo whose
+/// integration branch is `trunk` (not `main`), opens a `GitClient` with
+/// `open_with_integration_branch("trunk")`, exercises both methods, and
+/// asserts the configured branch is the one that advances.
+#[tokio::test]
+async fn integration_branch_setting_honored_by_loop() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path();
+    git(path, &["init", "-q", "-b", "trunk"])?;
+    git(path, &["config", "user.email", "test@example.com"])?;
+    git(path, &["config", "user.name", "Test"])?;
+    git(path, &["config", "commit.gpgsign", "false"])?;
+    std::fs::write(path.join("README.md"), "initial\n")?;
+    git(path, &["add", "README.md"])?;
+    git(path, &["commit", "-q", "-m", "initial"])?;
+
+    let parent = path.parent().expect("tempdir parent");
+    let name = path
+        .file_name()
+        .expect("tempdir name")
+        .to_string_lossy()
+        .into_owned();
+    let origin = parent.join(format!("{name}.git"));
+    std::fs::create_dir_all(&origin)?;
+    git(&origin, &["init", "-q", "--bare", "-b", "trunk"])?;
+    git(
+        path,
+        &[
+            "remote",
+            "add",
+            "origin",
+            origin.to_str().expect("origin path utf-8"),
+        ],
+    )?;
+    git(path, &["push", "-q", "-u", "origin", "trunk"])?;
+
+    git(path, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(path.join("feature.txt"), "feature\n")?;
+    git(path, &["add", "feature.txt"])?;
+    git(path, &["commit", "-q", "-m", "feature commit"])?;
+    git(path, &["checkout", "-q", "trunk"])?;
+
+    let client = GitClient::open_with_integration_branch(path, "trunk".to_string())?;
+    assert_eq!(client.integration_branch(), "trunk");
+
+    let result = client.merge_branch("feature").await?;
+    assert_eq!(result, MergeResult::Ok, "merge into configured branch");
+
+    let on_branch = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .output()?
+            .stdout,
+    )?
+    .trim()
+    .to_string();
+    assert_eq!(
+        on_branch, "trunk",
+        "merge_branch must leave HEAD on the configured integration branch",
+    );
+
+    client.push().await?;
+
+    let origin_trunk = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(&origin)
+            .args(["rev-parse", "trunk"])
+            .output()?
+            .stdout,
+    )?
+    .trim()
+    .to_string();
+    let local_trunk = capture_head(path)?;
+    assert_eq!(
+        origin_trunk, local_trunk,
+        "push must advance origin/<integration_branch>, not origin/main",
+    );
+
+    Ok(())
+}
+
 fn capture_head(repo: &Path) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")

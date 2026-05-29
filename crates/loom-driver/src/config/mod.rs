@@ -19,6 +19,7 @@ mod beads;
 mod claude;
 mod error;
 mod logs;
+mod loom_section;
 mod loop_config;
 mod runner;
 mod security;
@@ -33,6 +34,7 @@ pub use beads::BeadsConfig;
 pub use claude::ClaudeConfig;
 pub use error::LoomConfigError;
 pub use logs::LogsConfig;
+pub use loom_section::{LoomTopConfig, default_integration_branch};
 pub use loop_config::LoopConfig;
 pub use runner::{Parser, RunnerConfig, RunnerEntry, RunnerTier};
 pub use security::SecurityConfig;
@@ -69,6 +71,9 @@ pub struct LoomConfig {
     /// § Spec-Conventions Partial).
     pub spec_conventions: String,
     pub beads: BeadsConfig,
+    /// `[loom]` block — workspace-level knobs (currently
+    /// `integration_branch`). See `specs/harness.md` § Configuration.
+    pub loom: LoomTopConfig,
     #[serde(rename = "loop")]
     pub loop_: LoopConfig,
     pub logs: LogsConfig,
@@ -96,6 +101,7 @@ impl Default for LoomConfig {
             style_rules: "docs/style-rules.md".to_string(),
             spec_conventions: "docs/spec-conventions.md".to_string(),
             beads: BeadsConfig::default(),
+            loom: LoomTopConfig::default(),
             loop_: LoopConfig::default(),
             logs: LogsConfig::default(),
             phase: BTreeMap::new(),
@@ -329,6 +335,7 @@ post_result_grace_secs = 5
         // Non-phase fields round-trip identically.
         assert_eq!(from_spec.pinned_context, empty.pinned_context);
         assert_eq!(from_spec.beads, empty.beads);
+        assert_eq!(from_spec.loom, empty.loom);
         assert_eq!(from_spec.loop_, empty.loop_);
         assert_eq!(from_spec.logs, empty.logs);
         assert_eq!(from_spec.claude, empty.claude);
@@ -361,6 +368,33 @@ min_bytes = 1024
         assert_eq!(cfg.agent.doom_loop.stage_2_after_stage_1, 2);
         assert!(!cfg.agent.duplicate_result.enabled);
         assert_eq!(cfg.agent.duplicate_result.min_bytes, 1024);
+        Ok(())
+    }
+
+    /// `[loom] integration_branch` round-trips through the parser; an
+    /// absent block defaults to `main` (per the `default_integration_branch`
+    /// fn in `loom_section`).
+    #[test]
+    fn loom_integration_branch_round_trips_and_defaults_to_main() -> Result<()> {
+        let absent = LoomConfig::from_toml_str("")?;
+        assert_eq!(absent.loom.integration_branch, "main");
+
+        let src = r#"
+[loom]
+integration_branch = "trunk"
+"#;
+        let cfg = LoomConfig::from_toml_str(src)?;
+        assert_eq!(cfg.loom.integration_branch, "trunk");
+        Ok(())
+    }
+
+    /// `[loom]` table present without `integration_branch` set still
+    /// defaults via the field-level `#[serde(default)]` on `LoomTopConfig`.
+    #[test]
+    fn loom_table_without_integration_branch_field_defaults_to_main() -> Result<()> {
+        let src = "[loom]\n";
+        let cfg = LoomConfig::from_toml_str(src)?;
+        assert_eq!(cfg.loom.integration_branch, "main");
         Ok(())
     }
 

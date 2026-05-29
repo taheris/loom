@@ -15,11 +15,14 @@ use thiserror::Error;
 
 /// Snapshot returned by [`load`]. `None` for `current_spec` means the user
 /// has not yet run `loom use <label>`. `molecule` is `None` when the active
-/// spec has no live molecule.
+/// spec has no live molecule. `integration_branch` is the configured loom
+/// integration branch (default `main`); surfaced so the operator sees
+/// which branch a fresh `loom loop` will target.
 #[derive(Debug, Clone)]
 pub struct StatusReport {
     pub current_spec: Option<String>,
     pub molecule: Option<MoleculeRow>,
+    pub integration_branch: String,
 }
 
 /// Failures raised by [`load`].
@@ -32,8 +35,11 @@ pub enum StatusError {
 /// Read [`current_spec`](StateDb::current_spec) and — if present — the
 /// cached molecule row for that spec from `db`. Read-only; the
 /// per-machine cache is acceptable here because `loom status` is a
-/// non-load-bearing listing.
-pub fn load(db: &StateDb) -> Result<StatusReport, StatusError> {
+/// non-load-bearing listing. `integration_branch` is sourced from the
+/// caller (typically `LoomConfig.loom.integration_branch`) so the
+/// status surface reflects the operator's configured target without
+/// requiring `loom-workflow` to re-parse the config.
+pub fn load(db: &StateDb, integration_branch: String) -> Result<StatusReport, StatusError> {
     let current = db.current_spec()?;
     let molecule = match &current {
         Some(label) => db.molecule_for_spec(label)?,
@@ -42,6 +48,7 @@ pub fn load(db: &StateDb) -> Result<StatusReport, StatusError> {
     Ok(StatusReport {
         current_spec: current.map(|s| s.to_string()),
         molecule,
+        integration_branch,
     })
 }
 
@@ -63,6 +70,10 @@ pub fn render(report: &StatusReport) -> String {
             out.push_str("iteration: 0\n");
         }
     }
+    out.push_str(&format!(
+        "integration branch: {}\n",
+        report.integration_branch,
+    ));
     out
 }
 
@@ -81,7 +92,7 @@ mod tests {
     fn empty_state_reports_unset_spec() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let db = fresh_db(dir.path())?;
-        let report = load(&db)?;
+        let report = load(&db, "main".to_string())?;
         assert!(report.current_spec.is_none());
         assert!(report.molecule.is_none());
         let body = render(&report);
@@ -108,7 +119,7 @@ mod tests {
         db.increment_iteration(&MoleculeId::new("lm-3hhwq"))?;
         db.increment_iteration(&MoleculeId::new("lm-3hhwq"))?;
 
-        let report = load(&db)?;
+        let report = load(&db, "main".to_string())?;
         assert_eq!(report.current_spec.as_deref(), Some("harness"));
         let mol = report
             .molecule
@@ -123,6 +134,23 @@ mod tests {
         Ok(())
     }
 
+    /// The configured integration branch is surfaced verbatim in the
+    /// rendered body — `loom status` is the operator's only on-the-fly
+    /// reflection of `[loom] integration_branch` outside re-reading
+    /// `config.toml` by hand.
+    #[test]
+    fn rendered_body_surfaces_integration_branch() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = fresh_db(dir.path())?;
+        let report = load(&db, "trunk".to_string())?;
+        let body = render(&report);
+        assert!(
+            body.contains("integration branch: trunk"),
+            "configured integration branch must appear in status body: {body}",
+        );
+        Ok(())
+    }
+
     /// `load` must be safe to call without any explicit lock; the lock-matrix
     /// row for read-only commands is "no lock acquired". This sanity check
     /// confirms the function compiles without borrowing a `LockGuard` and
@@ -133,7 +161,7 @@ mod tests {
         let mgr = loom_driver::lock::LockManager::new(dir.path())?;
         let _spec_guard = mgr.acquire_spec(&SpecLabel::new("alpha"))?;
         let db = fresh_db(dir.path())?;
-        let _ = load(&db)?;
+        let _ = load(&db, "main".to_string())?;
         Ok(())
     }
 }

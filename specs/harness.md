@@ -2117,7 +2117,7 @@ Criteria.
 - The integration branch is settable via `[loom] integration_branch`
       in `config.toml` (default `main`); the loom workspace has that
       branch checked out and never switches
-  [test?](integration_branch_setting_honored_by_loop)
+  [test](integration_branch_setting_honored_by_loop)
 - `loom loop --parallel N` creates one bead workspace per dispatched
       bead under `.wrapix/loom/beads/<id>/`, derived from the loom
       workspace via `git clone --local`; bead ids are globally unique

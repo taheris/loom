@@ -89,6 +89,11 @@ where
     /// via [`Self::with_style_rules`]; defaults to the built-in path so
     /// test fakes that skip the builder still render a valid prompt.
     style_rules: String,
+    /// Integration branch the gate's `git push` targets — threaded from
+    /// `LoomConfig.loom.integration_branch` via
+    /// [`Self::with_integration_branch`]. Defaults to `main` so tests
+    /// that skip the builder still push the conventional branch name.
+    integration_branch: String,
     /// Exit code of the molecule-final `loom gate verify --diff
     /// <base>..HEAD` run, threaded from `loom loop`'s handoff via the
     /// `--verify-exit` flag on `loom gate review`. Defaults to `None`
@@ -139,6 +144,7 @@ where
             phase_log_when: SystemClock::new().wall_now(),
             envelope_builder: Mutex::new(None),
             style_rules: "docs/style-rules.md".to_string(),
+            integration_branch: "main".to_string(),
             verify_exit: None,
             lane: ReviewLane::Both,
             tree_scope_epics: Vec::new(),
@@ -157,6 +163,14 @@ where
     /// rely on the built-in default.
     pub fn with_style_rules(mut self, path: String) -> Self {
         self.style_rules = path;
+        self
+    }
+
+    /// Override the integration branch the gate's `git push` targets.
+    /// Production callers thread `LoomConfig.loom.integration_branch`;
+    /// tests rely on the `main` default.
+    pub fn with_integration_branch(mut self, branch: String) -> Self {
+        self.integration_branch = branch;
         self
     }
 
@@ -555,8 +569,11 @@ where
     }
 
     async fn git_push(&mut self) -> Result<(), ReviewError> {
-        let client = GitClient::open(&self.workspace)
-            .map_err(|e| ReviewError::GitPushFailed(e.to_string()))?;
+        let client = GitClient::open_with_integration_branch(
+            &self.workspace,
+            self.integration_branch.clone(),
+        )
+        .map_err(|e| ReviewError::GitPushFailed(e.to_string()))?;
         client
             .push()
             .await

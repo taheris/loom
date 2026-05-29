@@ -4,6 +4,13 @@ pinned_context = "docs/README.md"
 priority = 2
 default_type = "task"
 
+[loom]
+# Name of the branch the loom workspace (`.wrapix/loom/integration/`)
+# has checked out and into which bead branches rebase + fast-forward.
+# Loom pushes this branch to `origin/<integration_branch>` from the
+# gate. Default `main`.
+integration_branch = "main"
+
 [loop]
 # Molecule-level: bounds `loom loop`'s outer loop on fix-up beads. Each
 # full molecule pass — initial pass plus every verdict-gate-produced

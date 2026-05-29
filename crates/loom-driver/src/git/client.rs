@@ -20,6 +20,12 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 const GIT_HOOK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const WORKTREE_BASE: &str = ".wrapix/worktree";
 const BRANCH_PREFIX: &str = "loom";
+/// Fallback integration branch when the caller opens a `GitClient` via
+/// [`GitClient::open`] / [`GitClient::open_with_clock`] without naming
+/// one. Production paths thread `[loom] integration_branch` from
+/// `LoomConfig`; only test fixtures and one-shot CLI utilities take the
+/// default.
+const DEFAULT_INTEGRATION_BRANCH: &str = "main";
 
 /// Single typed surface for git operations.
 ///
@@ -34,20 +40,42 @@ pub struct GitClient {
     repo: gix::ThreadSafeRepository,
     workdir: PathBuf,
     clock: Arc<dyn Clock>,
+    integration_branch: String,
 }
 
 impl GitClient {
     /// Open an existing repository at `path` using a [`SystemClock`] for
-    /// subprocess timeouts.
+    /// subprocess timeouts and the default integration branch (`main`).
     pub fn open(path: impl AsRef<Path>) -> Result<Self, GitError> {
         Self::open_with_clock(path, Arc::new(SystemClock::new()))
     }
 
     /// Open an existing repository at `path` with an explicit clock for
-    /// subprocess timeouts.
+    /// subprocess timeouts. Integration branch defaults to `main`.
     pub fn open_with_clock(
         path: impl AsRef<Path>,
         clock: Arc<dyn Clock>,
+    ) -> Result<Self, GitError> {
+        Self::open_with(path, clock, DEFAULT_INTEGRATION_BRANCH.to_string())
+    }
+
+    /// Open an existing repository at `path` and pin the integration
+    /// branch the loom workspace has checked out. Production callers
+    /// pass the value of `[loom] integration_branch` from `LoomConfig`;
+    /// the field is consulted by [`Self::merge_branch`] (rebase target)
+    /// and [`Self::push`] (origin push target) instead of querying
+    /// `HEAD` or relying on `git push`'s upstream defaulting.
+    pub fn open_with_integration_branch(
+        path: impl AsRef<Path>,
+        integration_branch: String,
+    ) -> Result<Self, GitError> {
+        Self::open_with(path, Arc::new(SystemClock::new()), integration_branch)
+    }
+
+    fn open_with(
+        path: impl AsRef<Path>,
+        clock: Arc<dyn Clock>,
+        integration_branch: String,
     ) -> Result<Self, GitError> {
         let path = path.as_ref();
         let repo = gix::ThreadSafeRepository::open(path).map_err(|source| GitError::OpenRepo {
@@ -62,7 +90,14 @@ impl GitClient {
             repo,
             workdir,
             clock,
+            integration_branch,
         })
+    }
+
+    /// Name of the integration branch this client targets (the branch
+    /// loaded from `[loom] integration_branch`).
+    pub fn integration_branch(&self) -> &str {
+        &self.integration_branch
     }
 
     /// The repository's working-tree root. Callers outside `loom-driver` use
@@ -293,11 +328,15 @@ impl GitClient {
         Ok(())
     }
 
-    /// Push the current branch to its configured remote (`git push`).
+    /// Push the configured integration branch to `origin`.
     ///
     /// Used by the push gate (`loom gate verify`). Routed through this client so
     /// `Command::new("git")` stays inside `loom-driver/src/git/`, satisfying
     /// the encapsulation rule asserted by `crates/loom/tests/style.rs`.
+    /// Pushes `origin <integration_branch>` explicitly rather than
+    /// relying on the current branch's upstream defaulting so the
+    /// pushed ref name is unambiguous regardless of how the workspace
+    /// was set up.
     ///
     /// Uses [`GIT_HOOK_TIMEOUT`] because the remote's pre-push hook (or
     /// loom's own pre-push hook on the GitHub publish) runs the workspace's
@@ -307,7 +346,7 @@ impl GitClient {
             &self.workdir,
             self.clock.as_ref(),
             GIT_HOOK_TIMEOUT,
-            ["push"],
+            ["push", "origin", &self.integration_branch],
             None,
         )
         .await
@@ -509,34 +548,25 @@ impl GitClient {
         Ok(String::from_utf8(output.stdout)?.trim().to_string())
     }
 
-    /// Merge `branch` into the current driver branch. Rebases `branch` onto
-    /// the current `HEAD` first so the merge is always a fast-forward —
-    /// sequential dispatch (bead branch is a strict descendant of `HEAD`)
-    /// is a rebase no-op; parallel dispatch's second-and-later beads pick
-    /// up the moved `HEAD` from an earlier merge. True overlap surfaces as
+    /// Merge `branch` into the configured integration branch. Rebases
+    /// `branch` onto the current integration-branch `HEAD` first so the
+    /// merge is always a fast-forward — sequential dispatch (bead branch
+    /// is a strict descendant of `HEAD`) is a rebase no-op; parallel
+    /// dispatch's second-and-later beads pick up the moved `HEAD` from
+    /// an earlier merge. True overlap surfaces as
     /// [`MergeResult::Conflict`]; other failures surface as [`GitError`].
+    ///
+    /// The integration-branch name comes from the constructor (via
+    /// `[loom] integration_branch`) — never from a `symbolic-ref HEAD`
+    /// query, so the value is unambiguously the operator's configured
+    /// target rather than whatever happens to be checked out.
     pub async fn merge_branch(&self, branch: &str) -> Result<MergeResult, GitError> {
-        let head_branch_output = run_git_raw(
-            &self.workdir,
-            self.clock.as_ref(),
-            ["symbolic-ref", "--short", "HEAD"],
-            None,
-        )
-        .await?;
-        if !head_branch_output.status.success() {
-            return Err(GitError::GitCli {
-                status: head_branch_output.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&head_branch_output.stderr).into_owned(),
-            });
-        }
-        let head_branch = String::from_utf8(head_branch_output.stdout)?
-            .trim()
-            .to_string();
+        let integration_branch = self.integration_branch.as_str();
 
         let rebase_output = run_git_raw(
             &self.workdir,
             self.clock.as_ref(),
-            ["rebase", &head_branch, branch],
+            ["rebase", integration_branch, branch],
             None,
         )
         .await?;
@@ -558,7 +588,7 @@ impl GitClient {
             run_git(
                 &self.workdir,
                 self.clock.as_ref(),
-                ["checkout", "-q", &head_branch],
+                ["checkout", "-q", integration_branch],
                 None,
             )
             .await?;
@@ -568,7 +598,7 @@ impl GitClient {
         run_git(
             &self.workdir,
             self.clock.as_ref(),
-            ["checkout", "-q", &head_branch],
+            ["checkout", "-q", integration_branch],
             None,
         )
         .await?;

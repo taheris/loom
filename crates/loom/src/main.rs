@@ -1643,7 +1643,8 @@ fn run_gate_review(
 
 fn run_status(workspace: &std::path::Path) -> anyhow::Result<()> {
     let db = loom_driver::state::StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
-    let report = status::load(&db)?;
+    let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
+    let report = status::load(&db, config.loom.integration_branch)?;
     print!("{}", status::render(&report));
     Ok(())
 }
@@ -1827,6 +1828,7 @@ fn run_loop_cmd(
         let kind = selection.kind;
         let shutdown_grace = resolve_shutdown_grace(&selection);
         let style_rules_for_async = config.style_rules.clone();
+        let integration_branch_for_async = config.loom.integration_branch.clone();
         let outcome = runtime.block_on(async move {
             run_parallel_loop(
                 workspace_buf,
@@ -1838,6 +1840,7 @@ fn run_loop_cmd(
                 cli_profile_for_async,
                 phase_default_for_async,
                 style_rules_for_async,
+                integration_branch_for_async,
             )
             .await
         })?;
@@ -1869,7 +1872,10 @@ fn run_loop_cmd(
         max_retries: config.loop_.max_retries,
     };
     let max_iterations = config.loop_.max_iterations;
-    let git = GitClient::open(workspace)?;
+    let git = GitClient::open_with_integration_branch(
+        workspace,
+        config.loom.integration_branch.clone(),
+    )?;
     let summary = runtime.block_on(async move {
         let bd = BdClient::new();
         let mut controller = ProductionAgentLoopController::new(
@@ -1977,6 +1983,7 @@ async fn run_parallel_loop(
     cli_profile: Option<ProfileName>,
     phase_default: ProfileName,
     style_rules: String,
+    integration_branch: String,
 ) -> anyhow::Result<LoopOutcome> {
     use loom_driver::bd::UpdateOpts;
     use loom_workflow::r#loop::AgentOutcome;
@@ -2006,7 +2013,7 @@ async fn run_parallel_loop(
         });
     }
 
-    let git = GitClient::open(workspace.clone())?;
+    let git = GitClient::open_with_integration_branch(workspace.clone(), integration_branch)?;
     let logs_root = workspace.join(".wrapix/loom/logs");
     let logs_root_for_merge = logs_root.clone();
     let label_for_closure = label.clone();
@@ -2555,6 +2562,7 @@ fn run_review(
     let phase_when = SystemClock::new().wall_now();
     let logs_root_for_spawn = logs_root.clone();
     let style_rules_for_review = config.style_rules.clone();
+    let integration_branch_for_review = config.loom.integration_branch.clone();
     let tree_scope_epics = opts
         .tree_scope_epics
         .iter()
@@ -2595,6 +2603,7 @@ fn run_review(
         .with_handoff_lock(guard)
         .with_phase_log(logs_root, phase_when)
         .with_style_rules(style_rules_for_review)
+        .with_integration_branch(integration_branch_for_review)
         .with_verify_exit(opts.verify_exit)
         .with_lane(opts.lane)
         .with_tree_scope_epics(tree_scope_epics);
@@ -2856,7 +2865,10 @@ fn run_todo(
     let shutdown_grace = resolve_shutdown_grace(&selection);
 
     let state = Arc::new(StateDb::open(workspace.join(".wrapix/loom/state.db"))?);
-    let git = Arc::new(GitClient::open(workspace)?);
+    let git = Arc::new(GitClient::open_with_integration_branch(
+        workspace,
+        config.loom.integration_branch.clone(),
+    )?);
     let bd = Arc::new(BdClient::new());
     let runtime = tokio::runtime::Runtime::new()?;
     let workspace_buf = workspace.to_path_buf();
