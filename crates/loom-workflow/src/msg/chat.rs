@@ -159,7 +159,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     let banner = "loom msg --chat".to_string();
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, &banner)?;
 
-    let argv = build_wrapix_argv(workspace, &prompt_body);
+    let argv = build_wrapix_argv(workspace, &profile, &prompt_body);
     let bin: PathBuf = opts
         .wrapix_bin
         .or_else(|| std::env::var_os("LOOM_WRAPIX_BIN").map(PathBuf::from))
@@ -248,11 +248,19 @@ fn labels_sorted(labels: &[Label]) -> Vec<&str> {
 /// Build the argv passed to `wrapix run` — the SAME shape `loom plan`
 /// uses so both interactive sessions share one entry point. `wrapix
 /// run` (NOT `spawn`) keeps the TTY attached and inherits the user's
-/// terminal.
-pub fn build_wrapix_argv(workspace: &Path, prompt_body: &str) -> Vec<String> {
+/// terminal. `--profile <name>` carries the resolved profile (per spec
+/// §Interactive Shell-Out) on this path; argv is the sole
+/// profile-selection contract.
+pub fn build_wrapix_argv(
+    workspace: &Path,
+    profile: &ProfileName,
+    prompt_body: &str,
+) -> Vec<String> {
     vec![
         "run".to_string(),
         workspace.to_string_lossy().into_owned(),
+        "--profile".to_string(),
+        profile.to_string(),
         "claude".to_string(),
         "--dangerously-skip-permissions".to_string(),
         prompt_body.to_string(),
@@ -318,17 +326,23 @@ mod tests {
 
     #[test]
     fn argv_starts_with_wrapix_run_and_workspace() {
-        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT");
+        let argv = build_wrapix_argv(&PathBuf::from("/work"), &ProfileName::new("base"), "PROMPT");
         assert_eq!(argv[0], "run");
         assert_eq!(argv[1], "/work");
+        assert_eq!(argv[2], "--profile");
+        assert_eq!(argv[3], "base");
     }
 
     #[test]
     fn argv_passes_prompt_to_claude_with_skip_permissions() {
-        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT BODY");
-        assert_eq!(argv[2], "claude");
-        assert_eq!(argv[3], "--dangerously-skip-permissions");
-        assert_eq!(argv[4], "PROMPT BODY");
+        let argv = build_wrapix_argv(
+            &PathBuf::from("/work"),
+            &ProfileName::new("base"),
+            "PROMPT BODY",
+        );
+        assert_eq!(argv[4], "claude");
+        assert_eq!(argv[5], "--dangerously-skip-permissions");
+        assert_eq!(argv[6], "PROMPT BODY");
     }
 
     /// The dispatch must NEVER include `--stdio` or `--spawn-config`
@@ -338,7 +352,7 @@ mod tests {
     /// real user gets a piped-stdio session instead of a REPL.
     #[test]
     fn argv_never_contains_spawn_or_stdio_or_spawn_config() {
-        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT");
+        let argv = build_wrapix_argv(&PathBuf::from("/work"), &ProfileName::new("base"), "PROMPT");
         assert!(!argv.iter().any(|a| a == "spawn"));
         assert!(!argv.iter().any(|a| a == "--stdio"));
         assert!(!argv.iter().any(|a| a == "--spawn-config"));

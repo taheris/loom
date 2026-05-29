@@ -95,10 +95,12 @@ printf 'WRAPIX_DEFAULT_IMAGE_SOURCE=%s\n' "${{WRAPIX_DEFAULT_IMAGE_SOURCE:-}}" >
 # Argv layout (per loom-workflow/src/msg/chat.rs::build_wrapix_argv):
 #   $1 = "run"
 #   $2 = <workspace>
-#   $3 = "claude"
-#   $4 = "--dangerously-skip-permissions"
-#   $5 = <prompt body>
-prompt="${{5:-}}"
+#   $3 = "--profile"
+#   $4 = <profile name>
+#   $5 = "claude"
+#   $6 = "--dangerously-skip-permissions"
+#   $7 = <prompt body>
+prompt="${{7:-}}"
 
 if [ -n "${{WRAPIX_STUB_PROMPT_DUMP:-}}" ]; then
     printf '%s' "$prompt" > "$WRAPIX_STUB_PROMPT_DUMP"
@@ -312,6 +314,51 @@ fn loom_msg_chat_launches_container() {
     assert!(
         stdout.contains("loom msg --chat"),
         "expected a session-summary line on stdout: {stdout:?}",
+    );
+}
+
+/// `wrapix run` argv carries `--profile <name>` between the workspace
+/// path and the `claude` agent token — the spec-defined contract for
+/// profile selection on the interactive shell-out path
+/// (`specs/agent.md` § Interactive Shell-Out). The resolved name comes
+/// from `LoomConfig::agent_for(Phase::Msg)`; the empty-config default
+/// is `base`.
+#[test]
+fn msg_chat_passes_resolved_profile_to_wrapix_run() {
+    let env = setup_chat();
+    seed_bead(
+        &env.state_dir,
+        "lm-pf01",
+        "profile pin",
+        "## Options — choose\n\n### Option 1 — only\nbody\n",
+        &["loom:clarify", "spec:profile"],
+    );
+    let output = run_loom_msg_chat(&env, "resolve-none", &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "loom msg --chat must exit 0 on a clean session.\nstdout={stdout}\nstderr={stderr}",
+    );
+
+    let argv = std::fs::read_to_string(&env.argv_log).expect("argv.log present");
+    let lines: Vec<&str> = argv.lines().collect();
+    let profile_idx = lines
+        .iter()
+        .position(|l| *l == "--profile")
+        .unwrap_or_else(|| panic!("argv must contain --profile flag. argv.log:\n{argv}"));
+    assert_eq!(
+        lines.get(profile_idx + 1).copied(),
+        Some("base"),
+        "argv must pair --profile with the resolved name (default `base`). argv.log:\n{argv}",
+    );
+    let claude_idx = lines
+        .iter()
+        .position(|l| *l == "claude")
+        .unwrap_or_else(|| panic!("argv must contain claude agent token. argv.log:\n{argv}"));
+    assert!(
+        profile_idx < claude_idx,
+        "--profile must precede the claude agent token. argv.log:\n{argv}",
     );
 }
 
