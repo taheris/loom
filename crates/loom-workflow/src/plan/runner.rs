@@ -141,7 +141,7 @@ pub fn run_with_timeout(
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, &banner)
         .map_err(|source| PlanError::Spawn { source })?;
 
-    let argv = build_wrapix_argv(workspace, &prompt_body);
+    let argv = build_wrapix_argv(workspace, &profile, &prompt_body);
     let bin: PathBuf = opts.wrapix_bin.unwrap_or_else(|| PathBuf::from(WRAPIX_BIN));
     info!(
         label = %label,
@@ -412,6 +412,54 @@ mod tests {
         Ok(())
     }
 
+    /// `wrapix run` argv carries `--profile <name>` between the workspace
+    /// path and the `claude` agent token — the spec-defined contract for
+    /// profile selection on the interactive shell-out path. The resolved
+    /// name is whatever `LoomConfig::agent_for(Phase::Plan)` (or the CLI
+    /// override) yields: `base` for the empty-config default, `rust` when
+    /// `cli_profile = Some(ProfileName::new("rust"))` is supplied.
+    #[test]
+    fn plan_runner_passes_resolved_profile_to_wrapix_run() -> Result<()> {
+        for (cli_profile, expected) in [(None, "base"), (Some(ProfileName::new("rust")), "rust")] {
+            let dir = workspace_with_specs()?;
+            let spec_path = dir.path().join("specs/harness.md");
+            let bin = install_wrapix_stub(
+                dir.path(),
+                Some((&spec_path, "# loom-harness\n\n## Companions\n\n")),
+            )?;
+            let manifest = three_profile_manifest(dir.path())?;
+
+            let opts = PlanOpts {
+                mode: PlanMode::New(SpecLabel::new("harness")),
+                wrapix_bin: Some(bin),
+                cli_profile,
+                manifest,
+            };
+            run_with_timeout(dir.path(), opts, Duration::from_millis(100))?;
+
+            let argv_log = std::fs::read_to_string(dir.path().join("argv.log"))?;
+            let lines: Vec<&str> = argv_log.lines().collect();
+            let idx = lines
+                .iter()
+                .position(|l| *l == "--profile")
+                .ok_or_else(|| anyhow::anyhow!("argv missing --profile. argv.log:\n{argv_log}"))?;
+            assert_eq!(
+                lines.get(idx + 1).copied(),
+                Some(expected),
+                "argv must pair --profile with the resolved name. argv.log:\n{argv_log}",
+            );
+            let claude_idx = lines
+                .iter()
+                .position(|l| *l == "claude")
+                .ok_or_else(|| anyhow::anyhow!("argv missing claude token"))?;
+            assert!(
+                idx < claude_idx,
+                "--profile must precede the claude agent token. argv.log:\n{argv_log}",
+            );
+        }
+        Ok(())
+    }
+
     /// `[phase.plan].profile` from `<workspace>/config.toml` wins when no
     /// CLI override is set — verifies the second tier of precedence.
     #[test]
@@ -506,8 +554,8 @@ mod tests {
     /// `plan -u` must read the spec's prior `kind = 'implementation'` notes
     /// from the state DB and render them into the rendered prompt body so the
     /// agent can perform the keep/drop/add merge described in the spec's
-    /// *Implementation-notes lifecycle* section. The notes appear verbatim in
-    /// argv (the prompt body is argv[4] for `wrapix run`).
+    /// *Implementation-notes lifecycle* section. The notes appear verbatim
+    /// in argv (the prompt body is the final positional for `wrapix run`).
     #[test]
     fn plan_update_threads_existing_implementation_notes_into_prompt() -> Result<()> {
         let dir = workspace_with_specs()?;
