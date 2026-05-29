@@ -115,4 +115,6 @@ Post-step hooks verify compliance automatically.
 
 Before outputting LOOM_COMPLETE, follow the **Session Protocol** in `AGENTS.md`.
 
-{% include "partial/exit_signals.md" %}
+{% include "partial/progress_markers.md" %}
+
+{% include "partial/self_report_markers.md" %}

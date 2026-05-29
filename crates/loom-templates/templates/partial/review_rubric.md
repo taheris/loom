@@ -57,13 +57,14 @@ Coincidental-pass shapes to flag:
   no longer means what it claims to mean.
 
 A test that satisfies all four sub-checks is honest. If a sub-check
-fails, name the matching concern token (`verifier-bypass`,
-`fabricated-result`, `weak-assertion`, `coincidental-pass`) in the prose
-body and cite the offending test path and the spec claim it purports to
-verify. When you finalize the phase, emit a single `LOOM_CONCERN: <token>
--- <reason>` line on the final line of the response for the strongest
-sub-check failure; per the Flag Emission Schema, only one structured
-concern reaches the verdict gate.
+fails, emit one finding line per failing sub-check (`verifier-bypass`,
+`fabricated-result`, `weak-assertion`, `coincidental-pass` in the
+`token` field), citing the offending test path in `target` and the
+spec claim it purports to verify in `evidence`. The walk's terminator
+is `LOOM_CONCERN` carrying a one-sentence summary; per-finding routing
+is decided by the driver from each finding's `token`, not by the
+terminal marker. See *Findings — Streaming Wire Format* in the prompt
+body for the full wire-format contract.
 
 ## Mock Discipline
 
@@ -181,10 +182,11 @@ At `--bead` or `--diff` scope this walk is out of scope; per-diff
 template edits are reviewed against the spec sections the diff itself
 touches, under the conformance-trace and invariant-clash walks above.
 
-When you finalize the phase, emit `LOOM_CONCERN: template-spec-drift
--- <summary>` on the final line for the strongest contradiction. The
-visible body cites the template path and the spec section it
-contradicts for every drift found.
+For each drift, emit a finding line with `token = "template-spec-drift"`,
+the offending template path in `target`, and the spec section it
+contradicts in `evidence`. Terminate the walk with `LOOM_CONCERN`
+carrying a one-sentence summary per the wire-format contract in
+*Findings — Streaming Wire Format*.
 
 ## Spec-Conventions Walk (for spec edits)
 
@@ -208,10 +210,11 @@ against each edited spec section:
   a missing or stubbed verifier → already a `loom gate verify` flag;
   surface it here too if the edit introduces it.
 
-When you finalize the phase, emit `LOOM_CONCERN: spec-conventions-violation
--- <summary>` on the final line for the strongest violation. The visible
-body cites the convention section by name and the offending spec file/line
-range for every violation found.
+For each violation, emit a finding line with
+`token = "spec-conventions-violation"`, the spec file/line range in
+`target`, and the convention section by name in `evidence`. Terminate
+the walk with `LOOM_CONCERN` carrying a one-sentence summary per the
+wire-format contract in *Findings — Streaming Wire Format*.
 
 ## Style-Rule Conformance
 
@@ -242,8 +245,11 @@ One violation per bullet; never aggregate multiple rules into one
 citation. A finding without a rule id is not actionable; a finding
 without a file/line range is not auditable.
 
-**Flag emission.** Any style-rule violation is a hard fail. The final
-line of the response must be a single `LOOM_CONCERN: style-rule --
-<summary>` per the Flag Emission Schema below. The summary should name
-the most load-bearing violation by rule id; the per-violation citations
-above carry the full list in the visible body of your response.
+**Flag emission.** Any style-rule violation is a hard fail. For each
+violation, emit a finding line with `token = "style-rule-violation"`,
+the offending file and line range in `target`, and the rule id in
+`evidence`. Terminate the walk with `LOOM_CONCERN` carrying a
+one-sentence summary that names the most load-bearing violation by
+rule id, per the wire-format contract in *Findings — Streaming Wire
+Format*; per-violation citations above carry the full list in the
+visible body of your response.

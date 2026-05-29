@@ -152,4 +152,6 @@ After creating all tasks:
 2. Show the dependency graph
 3. Confirm the molecule was created
 
-{% include "partial/exit_signals.md" %}
+{% include "partial/progress_markers.md" %}
+
+{% include "partial/self_report_markers.md" %}

@@ -170,4 +170,6 @@ tasks bond to the anchor's molecule. Do **NOT** write the anchor's molecule ID
 into any sibling's README Beads column; a sibling's row stays empty until it is
 planned as its own anchor in a future `loom plan -u <sibling>` session.
 
-{% include "partial/exit_signals.md" %}
+{% include "partial/progress_markers.md" %}
+
+{% include "partial/self_report_markers.md" %}

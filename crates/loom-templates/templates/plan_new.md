@@ -90,6 +90,8 @@ the conventions document):
 
 {% include "partial/chat_interview.md" %}
 
-{% include "partial/exit_signals.md" %}
+{% include "partial/progress_markers.md" %}
+
+{% include "partial/self_report_markers.md" %}
 
 {% include "partial/chat_marker_final_turn_only.md" %}

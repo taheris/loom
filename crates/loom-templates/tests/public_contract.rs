@@ -6,8 +6,9 @@
 
 use loom_templates::{
     LoopContext, PARTIAL_CHAT_MARKER_FINAL_TURN_ONLY, PARTIAL_COMPANIONS_CONTEXT,
-    PARTIAL_CONTEXT_PINNING, PARTIAL_EXIT_SIGNALS, PARTIAL_INTERVIEW_MODES,
-    PARTIAL_INVARIANT_CLASH, PARTIAL_PLAN_STAGE_RUBRIC, PARTIAL_REVIEW_RUBRIC, PARTIAL_SCRATCHPAD,
+    PARTIAL_CONTEXT_PINNING, PARTIAL_FINDINGS_WALK, PARTIAL_INTERVIEW_MODES,
+    PARTIAL_INVARIANT_CLASH, PARTIAL_PLAN_STAGE_RUBRIC, PARTIAL_PROGRESS_MARKERS,
+    PARTIAL_REVIEW_RUBRIC, PARTIAL_SCRATCHPAD, PARTIAL_SELF_REPORT_MARKERS,
     PARTIAL_SIBLING_SPEC_EDITING, PARTIAL_SPEC_CONVENTIONS, PARTIAL_SPEC_HEADER,
     PARTIAL_STYLE_RULES, PinnedContext, PreviousFailure, ReviewConcernKind, VerifierFailure,
 };
@@ -31,12 +32,14 @@ fn partial_constants_carry_their_source_files() {
         ),
         ("companions_context", PARTIAL_COMPANIONS_CONTEXT),
         ("context_pinning", PARTIAL_CONTEXT_PINNING),
-        ("exit_signals", PARTIAL_EXIT_SIGNALS),
+        ("findings_walk", PARTIAL_FINDINGS_WALK),
         ("interview_modes", PARTIAL_INTERVIEW_MODES),
         ("invariant_clash", PARTIAL_INVARIANT_CLASH),
         ("plan_stage_rubric", PARTIAL_PLAN_STAGE_RUBRIC),
+        ("progress_markers", PARTIAL_PROGRESS_MARKERS),
         ("review_rubric", PARTIAL_REVIEW_RUBRIC),
         ("scratchpad", PARTIAL_SCRATCHPAD),
+        ("self_report_markers", PARTIAL_SELF_REPORT_MARKERS),
         ("sibling_spec_editing", PARTIAL_SIBLING_SPEC_EDITING),
         ("spec_conventions", PARTIAL_SPEC_CONVENTIONS),
         ("spec_header", PARTIAL_SPEC_HEADER),

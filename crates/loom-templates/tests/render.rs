@@ -692,12 +692,12 @@ fn review_renders_style_rule_conformance_walkthrough() -> Result<()> {
         "citation contract (file/line range) not described: {out}",
     );
     assert!(
-        out.contains("LOOM_CONCERN: style-rule"),
-        "style-rule concern marker not documented: {out}",
-    );
-    assert!(
         out.contains("`style-rule-violation`") || out.contains("`style-rule`"),
         "style-rule-violation concern token missing from flag schema: {out}",
+    );
+    assert!(
+        out.contains("LOOM_CONCERN"),
+        "terminator marker not documented for style-rule walk: {out}",
     );
     for forbidden in ["**SH-**", "**NX-**", "**RS-**", "**COM-**", "**CLI-**"] {
         assert!(
@@ -1270,7 +1270,8 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
         "## Spec Verifications",
         "## Quality Gates",
         "## Land the Plane",
-        "## Exit Signals",
+        "## Progress Markers",
+        "## Self-Report Markers",
     ] {
         assert!(
             out.contains(shared),

@@ -63,8 +63,10 @@ Current set:
 | `spec_header.md` | Render spec label, path, active molecule |
 | `companions_context.md` | List companion paths declared on the spec |
 | `scratchpad.md` | Pin the per-session scratchpad path |
-| `exit_signals.md` | Document the `LOOM_*` exit markers the phase accepts. **Markers are mutually exclusive — exactly one per session, on the final line.** The review-phase streaming + terminator contract (`LOOM_FINDING:` / `LOOM_CONCERN:`) is a planned partial-split refinement per [gate.md § Findings and Minting](gate.md#findings-and-minting); the structural change lands in a follow-on implementation bead. |
-| `chat_marker_final_turn_only.md` | Restrict `LOOM_COMPLETE` emission to the **final** assistant turn of a multi-turn chat. Included by `msg`, `plan_new`, and `plan_update` to disambiguate `exit_signals.md`'s "end your response with the marker" language (which is correct for single-shot worker phases but misreads as "every response" in chat). One-shot worker phases (`run`, `todo_*`, `review`) deliberately omit it because every response in those phases IS the final output. |
+| `progress_markers.md` | Document the `LOOM_COMPLETE` / `LOOM_NOOP` "work is done" terminators. **Markers are mutually exclusive — exactly one per session, on the final line.** Pinned alongside `self_report_markers.md` so each phase surfaces both the success and the cannot-finish terminator sets. |
+| `self_report_markers.md` | Document the `LOOM_BLOCKED` / `LOOM_CLARIFY` cannot-finish terminators. Pinned alongside `progress_markers.md`. |
+| `findings_walk.md` | Sole carrier of the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed wire format (streaming finding lines + JSON-payload terminator + pairing rule) per [gate.md § Findings and Minting](gate.md#findings-and-minting). Pinned only by `review.md`; an anti-drift `[check]`-tier verifier fails any other template that restates the wire format. |
+| `chat_marker_final_turn_only.md` | Restrict `LOOM_COMPLETE` emission to the **final** assistant turn of a multi-turn chat. Included by `msg`, `plan_new`, and `plan_update` to disambiguate `progress_markers.md`'s "end your response with the marker" language (which is correct for single-shot worker phases but misreads as "every response" in chat). One-shot worker phases (`run`, `todo_*`, `review`) deliberately omit it because every response in those phases IS the final output. |
 | `interview_modes.md` | Describe the "one by one" / "polish the spec" interview sub-modes |
 | `chat_interview.md` | Require conversational, prose-based Q&A during planning sessions; forbid Claude Code's structured option-picker tool — see *Chat Discipline* below |
 | `decomposition_discipline.md` | Pin the audit-before-fan-out rule on `todo_new` / `todo_update`: every bead must correspond to evidence-confirmed missing work, not a spec criterion in the abstract — see *Decomposition Discipline* below |
@@ -111,7 +113,9 @@ Each partial is included by an explicit set of templates:
 | `spec_header.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |
 | `companions_context.md` |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `scratchpad.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `exit_signals.md` | ✓ | ✓ | ✓ | ✓ | ✓ |  |  |
+| `progress_markers.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |
+| `self_report_markers.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |
+| `findings_walk.md` |  |  |  |  |  | ✓ |  |
 | `chat_marker_final_turn_only.md` | ✓ | ✓ |  |  |  |  | ✓ |
 | `interview_modes.md` | ✓ | ✓ |  |  |  |  |  |
 | `chat_interview.md` | ✓ | ✓ |  |  |  |  |  |
@@ -167,7 +171,6 @@ through the parse-don't-validate boundary defined in
 | `beads_summary` | `Option<String>` | `review` |
 | `base_commit` | `Option<String>` | `review` |
 | `criterion_status` | `Vec<CriterionStatus>` | `todo_new`, `todo_update` (see *Criterion-Status Surface* below) |
-| `exit_signals` | `String` | all |
 | `scratchpad_path` | `String` | all |
 
 The newtypes (`SpecLabel`, `MoleculeId`, `BeadId`) are
@@ -789,10 +792,10 @@ documents in front of the agent with zero configuration.
   documents the `{"token","bonds","target","evidence"}` finding
   payload with tagged `target` variants, the JSON CONCERN
   terminator, and the streaming + terminator pairing rule
-  [check?](grep -q 'LOOM_FINDING:' crates/loom-templates/templates/partial/findings_walk.md)
+  [check](grep -q 'LOOM_FINDING:' crates/loom-templates/templates/partial/findings_walk.md)
 - `review.md` includes `findings_walk.md` via `{% include %}` rather
   than restating the wire format
-  [check?](grep -q 'partial/findings_walk.md' crates/loom-templates/templates/review.md)
+  [check](grep -q 'partial/findings_walk.md' crates/loom-templates/templates/review.md)
 - `review.md` does not contain a `bd create` invocation (the
   driver-side `loom gate mint` is the sole bd-mutation chokepoint;
   review is inspection-only)
@@ -802,11 +805,11 @@ documents in front of the agent with zero configuration.
   `LOOM_FINDING:` literal — those belong to `findings_walk.md`
   per the partial split documented in [gate.md § Findings and
   Minting](gate.md#findings-and-minting)
-  [check?](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/progress_markers.md")
+  [check](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/progress_markers.md")
 - `partial/self_report_markers.md` covers the self-report markers
   (`LOOM_BLOCKED`, `LOOM_CLARIFY`) and contains no `LOOM_CONCERN:`
   or `LOOM_FINDING:` literal
-  [check?](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/self_report_markers.md")
+  [check](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/self_report_markers.md")
 
 ### Mint default-profile
 

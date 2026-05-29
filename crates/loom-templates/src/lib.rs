@@ -76,19 +76,36 @@ pub const PARTIAL_DECOMPOSITION_DISCIPLINE: &str =
 /// by `plan_new` and `plan_update`.
 pub const PARTIAL_CHAT_INTERVIEW: &str = include_str!("../templates/partial/chat_interview.md");
 
-/// `partial/exit_signals.md` — document the `LOOM_*` exit markers the
-/// phase accepts.
-pub const PARTIAL_EXIT_SIGNALS: &str = include_str!("../templates/partial/exit_signals.md");
+/// `partial/findings_walk.md` — sole carrier of the `LOOM_FINDING:` /
+/// `LOOM_CONCERN:` colon-suffixed wire format. Pinned by `review.md`;
+/// the anti-drift verifier (see `specs/gate.md` § Findings and
+/// Minting) fails any other template under
+/// `crates/loom-templates/templates/` that restates the wire format.
+pub const PARTIAL_FINDINGS_WALK: &str = include_str!("../templates/partial/findings_walk.md");
+
+/// `partial/progress_markers.md` — `LOOM_COMPLETE` / `LOOM_NOOP`,
+/// the two "work is done" terminators. Pinned by every worker /
+/// planning template (`plan_new`, `plan_update`, `todo_new`,
+/// `todo_update`, `run`, `review`).
+pub const PARTIAL_PROGRESS_MARKERS: &str =
+    include_str!("../templates/partial/progress_markers.md");
+
+/// `partial/self_report_markers.md` — `LOOM_BLOCKED` / `LOOM_CLARIFY`,
+/// the two "cannot finish" terminators. Pinned alongside
+/// `progress_markers.md` so each phase template surfaces the full
+/// terminator surface.
+pub const PARTIAL_SELF_REPORT_MARKERS: &str =
+    include_str!("../templates/partial/self_report_markers.md");
 
 /// `partial/chat_marker_final_turn_only.md` — restrict `LOOM_COMPLETE`
 /// emission to the **final** assistant turn of a multi-turn chat
 /// session. Multi-turn templates (`msg`, `plan_new`, `plan_update`)
-/// include this alongside `partial/exit_signals.md` so the
-/// "end your response with the marker" instruction in the shared
-/// partial does not get read as "every response." One-shot worker
-/// templates (`run`, `todo_*`, `review`) deliberately omit this
-/// partial — every response in those phases IS the final output, so
-/// the wrap-up restriction does not apply.
+/// include this alongside the progress / self-report marker partials
+/// so the "end your response with the marker" instruction does not
+/// get read as "every response." One-shot worker templates (`run`,
+/// `todo_*`, `review`) deliberately omit this partial — every
+/// response in those phases IS the final output, so the wrap-up
+/// restriction does not apply.
 pub const PARTIAL_CHAT_MARKER_FINAL_TURN_ONLY: &str =
     include_str!("../templates/partial/chat_marker_final_turn_only.md");
 
