@@ -2277,6 +2277,112 @@ fn loom_llm_no_underlying_crate_reexports_fail_when_only_pub_use_from_external()
 }
 
 // ---------------------------------------------------------------------------
+// loom_llm_no_public_genai_types
+// ---------------------------------------------------------------------------
+
+#[test]
+fn loom_llm_no_public_genai_types_pass_when_public_surface_avoids_genai() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/client/multi_provider.rs",
+        "use std::sync::Arc;\n\
+         use genai::Client as GenAi;\n\
+         pub struct AnthropicClient { inner: Arc<GenAi> }\n\
+         impl AnthropicClient {\n\
+             pub fn new(api_key: ApiKey) -> Self { Self { inner: Arc::new(GenAi::default()) } }\n\
+             pub fn api_key(&self) -> &ApiKey { todo!() }\n\
+         }\n\
+         pub struct ApiKey(String);\n",
+    );
+    let out = invoke(&["loom_llm_no_public_genai_types"], Some(ws.path()), None);
+    assert_pass(&out);
+}
+
+#[test]
+fn loom_llm_no_public_genai_types_fail_when_pub_fn_returns_genai_type() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/client/multi_provider.rs",
+        "pub struct AnthropicClient;\n\
+         impl AnthropicClient {\n\
+             pub fn from_genai(inner: genai::Client) -> Self { Self }\n\
+         }\n",
+    );
+    let out = invoke(&["loom_llm_no_public_genai_types"], Some(ws.path()), None);
+    assert_fail(&out, "from_genai");
+}
+
+#[test]
+fn loom_llm_no_public_genai_types_fail_when_pub_use_reexports_genai() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/lib.rs",
+        "pub use genai::Client;\n",
+    );
+    let out = invoke(&["loom_llm_no_public_genai_types"], Some(ws.path()), None);
+    assert_fail(&out, "pub use");
+}
+
+#[test]
+fn loom_llm_no_public_genai_types_ignores_non_pub_use_of_genai() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/client/multi_provider.rs",
+        "use genai::chat::{ChatRequest, ChatResponse};\n\
+         pub struct Foo;\n\
+         impl Foo { pub fn new() -> Self { Self } }\n",
+    );
+    let out = invoke(&["loom_llm_no_public_genai_types"], Some(ws.path()), None);
+    assert_pass(&out);
+}
+
+#[test]
+fn loom_llm_no_public_genai_types_ignores_cfg_test_items() {
+    let ws = make_workspace();
+    let body = format!(
+        "pub struct Foo;\n\
+         {cfg_test}\n\
+         mod tests {{\n\
+             pub fn helper() -> genai::Client {{ todo!() }}\n\
+         }}\n",
+        cfg_test = concat!("#[", "cfg(test)]"),
+    );
+    seed(ws.path(), "crates/loom-llm/src/lib.rs", &body);
+    let out = invoke(&["loom_llm_no_public_genai_types"], Some(ws.path()), None);
+    assert_pass(&out);
+}
+
+#[test]
+fn loom_llm_no_public_genai_types_fail_when_pub_trait_method_mentions_genai() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/client/mod.rs",
+        "pub trait LlmClient {\n\
+             fn underlying(&self) -> &genai::Client;\n\
+         }\n",
+    );
+    let out = invoke(&["loom_llm_no_public_genai_types"], Some(ws.path()), None);
+    assert_fail(&out, "LlmClient::underlying");
+}
+
+#[test]
+fn loom_llm_no_public_genai_types_fail_when_pub_struct_pub_field_holds_genai() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/client/multi_provider.rs",
+        "pub struct AnthropicClient { pub inner: std::sync::Arc<genai::Client> }\n",
+    );
+    let out = invoke(&["loom_llm_no_public_genai_types"], Some(ws.path()), None);
+    assert_fail(&out, "AnthropicClient");
+}
+
+// ---------------------------------------------------------------------------
 // result_hasher_single_call_site
 // ---------------------------------------------------------------------------
 
