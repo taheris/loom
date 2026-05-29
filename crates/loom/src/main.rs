@@ -1854,6 +1854,30 @@ fn run_loop_cmd(
     let loom_bin = current_loom_bin()?;
     let runtime = tokio::runtime::Runtime::new()?;
 
+    // Per-bead-close GC. Under the spec advisory lock (held via `guard`),
+    // reap bead workspaces under `.wrapix/loom/beads/` whose bead is
+    // `closed`. Workspace-global — closed beads cannot be in flight, so
+    // the sweep is safe regardless of which spec is being loop'd. Errors
+    // are log-and-continue; a stuck sweep must not block dispatch.
+    let gc_git = GitClient::open(workspace)?;
+    let gc_workspace = workspace.to_path_buf();
+    runtime.block_on(async move {
+        let bd = BdClient::new();
+        match gc_git.sweep_orphan_bead_clones(&bd).await {
+            Ok(removed) if !removed.is_empty() => tracing::info!(
+                count = removed.len(),
+                workspace = %gc_workspace.display(),
+                "loom loop startup: reaped closed bead workspaces",
+            ),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(
+                %error,
+                workspace = %gc_workspace.display(),
+                "loom loop startup: orphan-clone sweep failed — continuing",
+            ),
+        }
+    });
+
     if !parallel.is_one() {
         let parallel_n = parallel.get();
         let workspace_buf = workspace.to_path_buf();

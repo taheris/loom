@@ -12,10 +12,15 @@
 //! real merge-resolution machinery. A duplex-pipe stand-in would skip the
 //! state mutations the tests exist to pin.
 
+use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
 use loom_driver::git::{GitClient, MergeResult, StatusKind};
 use loom_driver::identifier::{BeadId, SpecLabel};
 use tempfile::TempDir;
@@ -777,4 +782,171 @@ fn capture_head(repo: &Path) -> Result<String> {
         .output()?;
     anyhow::ensure!(output.status.success(), "git rev-parse failed");
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+/// Fake [`CommandRunner`] that answers `bd show <id> --json` from a fixed
+/// map of bead-id → status. Unknown ids yield a `not found`-shaped failure
+/// so the sweep exercises the `bd show failed → skip` branch.
+struct ScriptedBd {
+    by_id: Mutex<HashMap<String, String>>,
+}
+
+impl ScriptedBd {
+    fn new<const N: usize>(entries: [(&str, &str); N]) -> Self {
+        let map = entries
+            .into_iter()
+            .map(|(id, status)| (id.to_string(), status.to_string()))
+            .collect();
+        Self {
+            by_id: Mutex::new(map),
+        }
+    }
+}
+
+impl CommandRunner for ScriptedBd {
+    async fn run(&self, args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
+        let argv: Vec<String> = args
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        let id = argv.get(1).cloned().unwrap_or_default();
+        let map = self
+            .by_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match map.get(&id) {
+            Some(status) => {
+                let body = format!("[{{\"id\":\"{id}\",\"title\":\"\",\"status\":\"{status}\"}}]",);
+                Ok(RunOutput {
+                    status: 0,
+                    stdout: body.into_bytes(),
+                    stderr: Vec::new(),
+                })
+            }
+            None => Ok(RunOutput {
+                status: 1,
+                stdout: Vec::new(),
+                stderr: format!("no issue found matching \"{id}\"").into_bytes(),
+            }),
+        }
+    }
+}
+
+fn make_bead_clone_dir(workspace: &Path, name: &str) -> Result<std::path::PathBuf> {
+    let path = workspace.join(".wrapix/loom/beads").join(name);
+    std::fs::create_dir_all(&path)?;
+    std::fs::write(path.join("marker"), b"present\n")?;
+    Ok(path)
+}
+
+/// Spec gate (`specs/harness.md` § Garbage collection): `loom loop` startup
+/// MUST drop every directory under `.wrapix/loom/beads/` whose bead is
+/// `closed`. The sweep runs workspace-global (not spec-scoped) under the
+/// spec advisory lock — closed beads cannot be in flight, so the sweep is
+/// safe regardless of which spec is being loop'd.
+#[tokio::test]
+async fn loop_startup_gc_drops_closed_bead_workspaces() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let client = GitClient::open(path)?;
+    let bd = BdClient::with_runner(ScriptedBd::new([("lm-closed", "closed")]));
+
+    let dir = make_bead_clone_dir(path, "lm-closed")?;
+    assert!(dir.exists(), "precondition: workspace exists");
+
+    let removed = client.sweep_orphan_bead_clones(&bd).await?;
+
+    assert_eq!(removed, vec![dir.clone()]);
+    assert!(
+        !dir.exists(),
+        "closed-bead workspace must be removed: {dir:?}",
+    );
+    Ok(())
+}
+
+/// Spec gate (`specs/harness.md` § Garbage collection): bead workspaces
+/// whose bead is in any non-closed state (open, in_progress, blocked) MUST
+/// survive the sweep. The startup GC reaps closed orphans only.
+#[tokio::test]
+async fn loop_startup_gc_skips_open_bead_workspaces() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let client = GitClient::open(path)?;
+    let bd = BdClient::with_runner(ScriptedBd::new([
+        ("lm-open", "open"),
+        ("lm-progress", "in_progress"),
+        ("lm-blocked", "blocked"),
+    ]));
+
+    let open = make_bead_clone_dir(path, "lm-open")?;
+    let progress = make_bead_clone_dir(path, "lm-progress")?;
+    let blocked = make_bead_clone_dir(path, "lm-blocked")?;
+
+    let removed = client.sweep_orphan_bead_clones(&bd).await?;
+
+    assert!(
+        removed.is_empty(),
+        "non-closed workspaces must be preserved: removed={removed:?}",
+    );
+    assert!(open.exists(), "open bead workspace must survive: {open:?}");
+    assert!(
+        progress.exists(),
+        "in_progress bead workspace must survive: {progress:?}",
+    );
+    assert!(
+        blocked.exists(),
+        "blocked bead workspace must survive: {blocked:?}",
+    );
+    Ok(())
+}
+
+/// Spec gate (`specs/harness.md` § Garbage collection): a corrupt orphan
+/// (directory name that does not parse as a bead id, or whose `bd show`
+/// lookup fails) MUST NOT abort the sweep — log + skip so `loom loop` can
+/// still start. The sweep continues past the corrupt entry and reaps any
+/// closed orphans that follow it.
+#[tokio::test]
+async fn loop_startup_gc_logs_and_skips_corrupt_orphans() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let client = GitClient::open(path)?;
+    // `lm-closed` is closed; `lm-unknown` has no bd record (lookup fails);
+    // `not a bead id` does not parse as a `BeadId` at all.
+    let bd = BdClient::with_runner(ScriptedBd::new([("lm-closed", "closed")]));
+
+    let invalid = make_bead_clone_dir(path, "not a bead id")?;
+    let unknown = make_bead_clone_dir(path, "lm-unknown")?;
+    let closed = make_bead_clone_dir(path, "lm-closed")?;
+
+    let removed = client.sweep_orphan_bead_clones(&bd).await?;
+
+    assert_eq!(
+        removed,
+        vec![closed.clone()],
+        "only the closed orphan is reaped; corrupt entries are skipped",
+    );
+    assert!(
+        invalid.exists(),
+        "invalid-id directory must be preserved: {invalid:?}",
+    );
+    assert!(
+        unknown.exists(),
+        "bd-lookup-failed directory must be preserved: {unknown:?}",
+    );
+    assert!(!closed.exists(), "closed bead workspace must be removed");
+    Ok(())
+}
+
+/// A missing `.wrapix/loom/beads/` directory is a no-op for the sweep — the
+/// happy first-run shape where no bead has been dispatched yet.
+#[tokio::test]
+async fn loop_startup_gc_no_op_when_base_dir_missing() -> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+    let bd = BdClient::with_runner(ScriptedBd::new([]));
+
+    let removed = client.sweep_orphan_bead_clones(&bd).await?;
+
+    assert!(removed.is_empty());
+    Ok(())
 }

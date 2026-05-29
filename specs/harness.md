@@ -2172,10 +2172,10 @@ Criteria.
 - `loom loop` startup drops every bead workspace under
       `.wrapix/loom/beads/` whose bead is `closed`, under the spec
       advisory lock
-  [test?](loop_startup_gc_drops_closed_bead_workspaces)
+  [test](loop_startup_gc_drops_closed_bead_workspaces)
 - `loom loop` startup leaves bead workspaces alone whose bead is in
       any non-closed state
-  [test?](loop_startup_gc_skips_open_bead_workspaces)
+  [test](loop_startup_gc_skips_open_bead_workspaces)
 - Each bead workspace's dispatch spawns its own `wrapix spawn`;
       spawns overlap in wall-clock under `--parallel N > 1`
   [test](concurrent_spawns_overlap_in_wall_clock)

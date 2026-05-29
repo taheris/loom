@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use tokio::process::Command;
 use tokio::task::spawn_blocking;
+use tracing::{info, warn};
 
+use crate::bd::{BdClient, CommandRunner};
 use crate::clock::{Clock, SystemClock};
 use crate::identifier::{BeadId, SpecLabel};
 
@@ -283,6 +285,117 @@ impl GitClient {
             Ok(())
         })
         .await?
+    }
+
+    /// Enumerate `.wrapix/loom/beads/` and remove each bead workspace whose
+    /// bead is `closed` per `bd show`. Called at `loom loop` startup, under
+    /// the spec advisory lock, to reap orphans from crashed prior runs.
+    /// Workspace-global, not spec-scoped — a closed bead cannot be in
+    /// flight, so the sweep is safe regardless of which spec is being
+    /// loop'd.
+    ///
+    /// Failure modes are log-and-skip rather than abort, so a single
+    /// corrupt orphan (unparsable directory name, `bd` lookup error,
+    /// stuck removal) does not block `loom loop` from running:
+    ///
+    /// - directory whose name does not parse as a [`BeadId`] → skip
+    /// - `bd show` failure (record gone, network blip) → skip
+    /// - `remove_dir_all` failure → skip
+    ///
+    /// A missing `.wrapix/loom/beads/` directory is a no-op (returns the
+    /// empty vec). The returned paths are the workspaces actually
+    /// removed during this sweep.
+    pub async fn sweep_orphan_bead_clones<R: CommandRunner>(
+        &self,
+        bd: &BdClient<R>,
+    ) -> Result<Vec<PathBuf>, GitError> {
+        let base = self.workdir.join(WORKTREE_BASE);
+        let entries = match std::fs::read_dir(&base) {
+            Ok(it) => it,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(GitError::Io(e)),
+        };
+        let mut removed = Vec::new();
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(error) => {
+                    warn!(
+                        base = %base.display(),
+                        %error,
+                        "sweep_orphan_bead_clones: failed to read entry — skipping",
+                    );
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(t) => t,
+                Err(error) => {
+                    warn!(
+                        path = %path.display(),
+                        %error,
+                        "sweep_orphan_bead_clones: failed to stat entry — skipping",
+                    );
+                    continue;
+                }
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                warn!(
+                    path = %path.display(),
+                    "sweep_orphan_bead_clones: unreadable directory name — skipping",
+                );
+                continue;
+            };
+            let bead_id = match BeadId::new(name) {
+                Ok(id) => id,
+                Err(error) => {
+                    warn!(
+                        path = %path.display(),
+                        %error,
+                        "sweep_orphan_bead_clones: directory name is not a bead id — skipping",
+                    );
+                    continue;
+                }
+            };
+            let bead = match bd.show(&bead_id).await {
+                Ok(b) => b,
+                Err(error) => {
+                    warn!(
+                        bead = %bead_id,
+                        path = %path.display(),
+                        %error,
+                        "sweep_orphan_bead_clones: bd show failed — skipping",
+                    );
+                    continue;
+                }
+            };
+            if bead.status != "closed" {
+                continue;
+            }
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => {
+                    info!(
+                        bead = %bead_id,
+                        path = %path.display(),
+                        "sweep_orphan_bead_clones: removed closed bead workspace",
+                    );
+                    removed.push(path);
+                }
+                Err(error) => {
+                    warn!(
+                        bead = %bead_id,
+                        path = %path.display(),
+                        %error,
+                        "sweep_orphan_bead_clones: removal failed — skipping",
+                    );
+                }
+            }
+        }
+        Ok(removed)
     }
 
     /// Push `branch` from the bead's clone at `workdir` back to its origin
