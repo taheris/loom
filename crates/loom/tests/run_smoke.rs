@@ -18,28 +18,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
-/// Initialize a real git repo at `path` with one initial commit so
-/// `loom loop`'s per-bead worktree dispatch succeeds. The smoke tests
-/// invoke `loom loop` against a workspace tempdir; without this, the
-/// binary's [`GitClient::open`] call fails before reaching the ready-queue
-/// check this test is asserting against.
+/// Initialize a real git repo at `path` plus the loom-owned integration
+/// workspace at `.wrapix/loom/integration/` so `loom loop`'s per-bead
+/// worktree dispatch and the post-merge push gate both succeed.
 fn init_workspace_repo(path: &Path) {
-    let run = |args: &[&str]| {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(args)
-            .status()
-            .expect("spawn git");
-        assert!(status.success(), "git {args:?} failed");
-    };
-    run(&["init", "-q", "-b", "main"]);
-    run(&["config", "user.email", "test@example.com"]);
-    run(&["config", "user.name", "Test"]);
-    run(&["config", "commit.gpgsign", "false"]);
-    std::fs::write(path.join("README.md"), "initial\n").expect("write README");
-    run(&["add", "README.md"]);
-    run(&["commit", "-q", "-m", "initial"]);
+    loom_driver::git::init_test_repo_with_integration(path)
+        .expect("init test repo with loom integration");
 }
 
 /// Write a stub `bd` shell script to `dir/bin/bd` that returns `[]` for any

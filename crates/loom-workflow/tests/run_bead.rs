@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use loom_driver::agent::{SessionOutcome, SpawnConfig};
 use loom_driver::bd::{BdClient, Bead, Label};
-use loom_driver::git::{GitClient, init_test_repo};
+use loom_driver::git::{GitClient, init_test_repo_with_integration};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::logging::{BeadOutcome, LogSink};
 use loom_driver::profile_manifest::ProfileImageManifest;
@@ -102,7 +102,7 @@ fn setup() -> (
     let dir = tempfile::tempdir().expect("tempdir");
     let manifest = write_manifest(dir.path());
     let workspace = dir.path().join("ws");
-    let git = init_test_repo(&workspace).expect("init repo");
+    let git = init_test_repo_with_integration(&workspace).expect("init repo");
     (dir, workspace, manifest, git)
 }
 
@@ -174,14 +174,15 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success()
         !expected_worktree.exists(),
         "worktree must be removed after clean merge-back",
     );
-    let branches = git_capture(&workspace, &["branch", "--list", "loom/lm-1"])?;
+    let loom = workspace.join(".wrapix/loom/integration");
+    let branches = git_capture(&loom, &["branch", "--list", "loom/lm-1"])?;
     assert!(
         branches.trim().is_empty(),
         "bead's branch must be deleted after merge-back (got: {branches:?})",
     );
     assert!(
-        workspace.join("from-bead.txt").exists(),
-        "bead's work must land on the driver branch after merge-back",
+        loom.join("from-bead.txt").exists(),
+        "bead's work must land on the integration branch after merge-back",
     );
     Ok(())
 }
@@ -493,15 +494,14 @@ async fn production_loop_pushes_main_after_each_successful_merge() -> Result<()>
         "beads-push must run once per successful merge (got {count})",
     );
 
-    // `git push` published the merged commits — bare origin's main MUST
-    // match the workspace's main and contain every bead's file.
     let origin = loom_driver::git::bare_origin_path(&workspace);
+    let loom = workspace.join(".wrapix/loom/integration");
     let origin_head = git_capture(&origin, &["rev-parse", "main"])?;
-    let workspace_head = git_capture(&workspace, &["rev-parse", "main"])?;
+    let loom_head = git_capture(&loom, &["rev-parse", "main"])?;
     assert_eq!(
         origin_head.trim(),
-        workspace_head.trim(),
-        "post-merge push must keep origin/main pinned to workspace HEAD",
+        loom_head.trim(),
+        "post-merge push must keep origin/main pinned to the integration-branch HEAD",
     );
     for id in bead_ids {
         let file = format!("{id}.txt");
@@ -530,11 +530,13 @@ async fn production_loop_preserves_worktree_on_push_failure() -> Result<()> {
     let stub = beads_push_stub(_dir.path());
     let expected_worktree = workspace.join(".wrapix/loom/beads/lm-pushfail.1");
 
-    // Break the origin by repointing `origin` at a nonexistent path so
-    // `git push` fails. The repo started healthy (init_test_repo built a
-    // bare origin), so the failure is purely on push-time URL resolution.
+    // Break the integration workspace's `origin` by repointing it at a
+    // nonexistent path so `git push` fails. The repo started healthy
+    // (init_test_repo built a bare origin and cloned it into the loom
+    // workspace), so the failure is purely on push-time URL resolution.
+    let loom = workspace.join(".wrapix/loom/integration");
     git(
-        &workspace,
+        &loom,
         &[
             "remote",
             "set-url",
@@ -617,16 +619,16 @@ async fn production_loop_preserves_worktree_on_merge_conflict() -> Result<()> {
         None,
         ProfileName::new("base"),
         move |cfg: SpawnConfig, _bead_id: BeadId| {
-            let main_ws = workspace_for_closure.clone();
+            let loom_ws = workspace_for_closure.join(".wrapix/loom/integration");
             async move {
                 std::fs::write(cfg.workspace.join("README.md"), "bead version\n")
                     .expect("write bead README");
                 git(&cfg.workspace, &["commit", "-q", "-am", "bead change"])
                     .expect("git commit in bead workspace");
-                std::fs::write(main_ws.join("README.md"), "main version\n")
-                    .expect("write main README");
-                git(&main_ws, &["commit", "-q", "-am", "main change"])
-                    .expect("git commit in main workspace");
+                std::fs::write(loom_ws.join("README.md"), "integration version\n")
+                    .expect("write integration README");
+                git(&loom_ws, &["commit", "-q", "-am", "integration change"])
+                    .expect("git commit in integration workspace");
                 (
                     SessionResult::Complete(SessionOutcome {
                         exit_code: 0,
@@ -834,7 +836,7 @@ async fn run_bead_emits_merge_conflict_and_no_merge_ok() -> Result<()> {
         move |cfg: SpawnConfig, bead_id: BeadId| {
             let logs_root = logs_root_for_closure.clone();
             let label = label_for_closure.clone();
-            let main_ws = workspace_for_closure.clone();
+            let loom_ws = workspace_for_closure.join(".wrapix/loom/integration");
             async move {
                 let mut sink = open_bead_sink_for_test(&logs_root, &label, &bead_id);
                 sink.finish(BeadOutcome::Done).expect("finish sink");
@@ -842,10 +844,10 @@ async fn run_bead_emits_merge_conflict_and_no_merge_ok() -> Result<()> {
                     .expect("write bead README");
                 git(&cfg.workspace, &["commit", "-q", "-am", "bead change"])
                     .expect("git commit in bead workspace");
-                std::fs::write(main_ws.join("README.md"), "main version\n")
-                    .expect("write main README");
-                git(&main_ws, &["commit", "-q", "-am", "main change"])
-                    .expect("git commit in main workspace");
+                std::fs::write(loom_ws.join("README.md"), "integration version\n")
+                    .expect("write integration README");
+                git(&loom_ws, &["commit", "-q", "-am", "integration change"])
+                    .expect("git commit in integration workspace");
                 (
                     SessionResult::Complete(SessionOutcome {
                         exit_code: 0,
@@ -894,8 +896,9 @@ async fn run_bead_emits_post_merge_push_failed_after_merge_ok_on_push_failure() 
     let logs_root_for_closure = logs_root.clone();
     let label_for_closure = label.clone();
 
+    let loom_ws = workspace.join(".wrapix/loom/integration");
     git(
-        &workspace,
+        &loom_ws,
         &[
             "remote",
             "set-url",

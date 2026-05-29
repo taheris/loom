@@ -38,15 +38,13 @@ fn git(repo: &Path, args: &[&str]) -> Result<()> {
 
 fn init_repo() -> Result<TempDir> {
     let dir = tempfile::tempdir()?;
-    let path = dir.path();
-    git(path, &["init", "-q", "-b", "main"])?;
-    git(path, &["config", "user.email", "test@example.com"])?;
-    git(path, &["config", "user.name", "Test"])?;
-    git(path, &["config", "commit.gpgsign", "false"])?;
-    std::fs::write(path.join("README.md"), "initial\n")?;
-    git(path, &["add", "README.md"])?;
-    git(path, &["commit", "-q", "-m", "initial"])?;
+    loom_driver::git::init_test_repo_with_integration(dir.path())?;
     Ok(dir)
+}
+
+/// Loom-integration-workspace path under a repo created by [`init_repo`].
+fn loom_path(repo: &Path) -> std::path::PathBuf {
+    repo.join(".wrapix/loom/integration")
 }
 
 #[tokio::test]
@@ -97,19 +95,22 @@ async fn create_and_remove_worktree_round_trip() -> Result<()> {
 #[tokio::test]
 async fn merge_branch_clean_returns_ok() -> Result<()> {
     let repo = init_repo()?;
-    let path = repo.path();
+    let loom = loom_path(repo.path());
 
-    git(path, &["checkout", "-q", "-b", "feature"])?;
-    std::fs::write(path.join("feature.txt"), "added on feature\n")?;
-    git(path, &["add", "feature.txt"])?;
-    git(path, &["commit", "-q", "-m", "feature commit"])?;
-    git(path, &["checkout", "-q", "main"])?;
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("feature.txt"), "added on feature\n")?;
+    git(&loom, &["add", "feature.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "feature commit"])?;
+    git(&loom, &["checkout", "-q", "main"])?;
 
-    let client = GitClient::open(path)?;
+    let client = GitClient::open(repo.path())?;
     let result = client.merge_branch("feature").await?;
 
     assert_eq!(result, MergeResult::Ok);
-    assert!(path.join("feature.txt").exists());
+    assert!(
+        loom.join("feature.txt").exists(),
+        "merge_branch must land changes in the loom workspace",
+    );
     Ok(())
 }
 
@@ -118,31 +119,31 @@ async fn merge_branch_non_conflicting_returns_ok() -> Result<()> {
     // Both branches diverge after a shared base — feature adds feature.txt,
     // main adds main.txt. Neither touches the other's file, so merge_branch
     // rebases feature onto main's HEAD then fast-forwards. Both files land
-    // on the driver branch with linear history.
+    // on the integration branch with linear history.
     let repo = init_repo()?;
-    let path = repo.path();
+    let loom = loom_path(repo.path());
 
-    git(path, &["checkout", "-q", "-b", "feature"])?;
-    std::fs::write(path.join("feature.txt"), "feature side\n")?;
-    git(path, &["add", "feature.txt"])?;
-    git(path, &["commit", "-q", "-m", "feature commit"])?;
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("feature.txt"), "feature side\n")?;
+    git(&loom, &["add", "feature.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "feature commit"])?;
 
-    git(path, &["checkout", "-q", "main"])?;
-    std::fs::write(path.join("main.txt"), "main side\n")?;
-    git(path, &["add", "main.txt"])?;
-    git(path, &["commit", "-q", "-m", "main commit"])?;
+    git(&loom, &["checkout", "-q", "main"])?;
+    std::fs::write(loom.join("main.txt"), "main side\n")?;
+    git(&loom, &["add", "main.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "main commit"])?;
 
-    let client = GitClient::open(path)?;
+    let client = GitClient::open(repo.path())?;
     let result = client.merge_branch("feature").await?;
 
     assert_eq!(result, MergeResult::Ok);
-    assert!(path.join("feature.txt").exists());
-    assert!(path.join("main.txt").exists());
+    assert!(loom.join("feature.txt").exists());
+    assert!(loom.join("main.txt").exists());
 
     let on_main = String::from_utf8(
         std::process::Command::new("git")
             .arg("-C")
-            .arg(path)
+            .arg(&loom)
             .args(["symbolic-ref", "--short", "HEAD"])
             .output()?
             .stdout,
@@ -151,33 +152,33 @@ async fn merge_branch_non_conflicting_returns_ok() -> Result<()> {
     .to_string();
     assert_eq!(
         on_main, "main",
-        "merge_branch must leave the working tree on the driver branch",
+        "merge_branch must leave the loom workspace on the integration branch",
     );
     Ok(())
 }
 
 /// merge_branch rejects creating non-fast-forward history: when the bead
-/// branch and the driver branch have both moved beyond their shared base
-/// with non-overlapping changes, the resulting `HEAD` contains no merge
-/// commits — the rebase + `--ff-only` path replaces what `--no-ff` would
-/// have produced as a merge commit.
+/// branch and the integration branch have both moved beyond their shared
+/// base with non-overlapping changes, the resulting `HEAD` in the loom
+/// workspace contains no merge commits — the rebase + `--ff-only` path
+/// replaces what `--no-ff` would have produced as a merge commit.
 #[tokio::test]
 async fn merge_branch_uses_ff_only_and_rejects_non_ff_history() -> Result<()> {
     let repo = init_repo()?;
-    let path = repo.path();
-    let base = capture_head(path)?;
+    let loom = loom_path(repo.path());
+    let base = capture_head(&loom)?;
 
-    git(path, &["checkout", "-q", "-b", "feature"])?;
-    std::fs::write(path.join("feature.txt"), "feature side\n")?;
-    git(path, &["add", "feature.txt"])?;
-    git(path, &["commit", "-q", "-m", "feature commit"])?;
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("feature.txt"), "feature side\n")?;
+    git(&loom, &["add", "feature.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "feature commit"])?;
 
-    git(path, &["checkout", "-q", "main"])?;
-    std::fs::write(path.join("main.txt"), "main side\n")?;
-    git(path, &["add", "main.txt"])?;
-    git(path, &["commit", "-q", "-m", "main commit"])?;
+    git(&loom, &["checkout", "-q", "main"])?;
+    std::fs::write(loom.join("main.txt"), "main side\n")?;
+    git(&loom, &["add", "main.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "main commit"])?;
 
-    let client = GitClient::open(path)?;
+    let client = GitClient::open(repo.path())?;
     let result = client.merge_branch("feature").await?;
 
     assert_eq!(result, MergeResult::Ok);
@@ -185,7 +186,7 @@ async fn merge_branch_uses_ff_only_and_rejects_non_ff_history() -> Result<()> {
     let merges = String::from_utf8(
         std::process::Command::new("git")
             .arg("-C")
-            .arg(path)
+            .arg(&loom)
             .args(["log", "--merges", "--format=%H", &format!("{base}..HEAD")])
             .output()?
             .stdout,
@@ -199,32 +200,32 @@ async fn merge_branch_uses_ff_only_and_rejects_non_ff_history() -> Result<()> {
 
 /// merge_branch rebases the bead branch onto `HEAD` before fast-forwarding —
 /// the parallel-dispatch case where an earlier bead has already landed on
-/// the driver branch and a second bead, forked from the original base,
-/// must land on the moved `HEAD`.
+/// the integration branch and a second bead, forked from the original
+/// base, must land on the moved `HEAD` of the loom workspace.
 #[tokio::test]
 async fn merge_branch_rebases_bead_branch_onto_head_before_ff() -> Result<()> {
     let repo = init_repo()?;
-    let path = repo.path();
-    let base = capture_head(path)?;
+    let loom = loom_path(repo.path());
+    let base = capture_head(&loom)?;
 
-    git(path, &["checkout", "-q", "-b", "bead-a", &base])?;
-    std::fs::write(path.join("bead-a.txt"), "bead a\n")?;
-    git(path, &["add", "bead-a.txt"])?;
-    git(path, &["commit", "-q", "-m", "bead a commit"])?;
+    git(&loom, &["checkout", "-q", "-b", "bead-a", &base])?;
+    std::fs::write(loom.join("bead-a.txt"), "bead a\n")?;
+    git(&loom, &["add", "bead-a.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "bead a commit"])?;
 
-    git(path, &["checkout", "-q", "-b", "bead-b", &base])?;
-    std::fs::write(path.join("bead-b.txt"), "bead b\n")?;
-    git(path, &["add", "bead-b.txt"])?;
-    git(path, &["commit", "-q", "-m", "bead b commit"])?;
+    git(&loom, &["checkout", "-q", "-b", "bead-b", &base])?;
+    std::fs::write(loom.join("bead-b.txt"), "bead b\n")?;
+    git(&loom, &["add", "bead-b.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "bead b commit"])?;
 
-    git(path, &["checkout", "-q", "main"])?;
-    let client = GitClient::open(path)?;
+    git(&loom, &["checkout", "-q", "main"])?;
+    let client = GitClient::open(repo.path())?;
     assert_eq!(client.merge_branch("bead-a").await?, MergeResult::Ok);
 
     let bead_b_pre = String::from_utf8(
         std::process::Command::new("git")
             .arg("-C")
-            .arg(path)
+            .arg(&loom)
             .args(["rev-parse", "bead-b"])
             .output()?
             .stdout,
@@ -237,7 +238,7 @@ async fn merge_branch_rebases_bead_branch_onto_head_before_ff() -> Result<()> {
     let merges = String::from_utf8(
         std::process::Command::new("git")
             .arg("-C")
-            .arg(path)
+            .arg(&loom)
             .args(["log", "--merges", "--format=%H", &format!("{base}..HEAD")])
             .output()?
             .stdout,
@@ -250,7 +251,7 @@ async fn merge_branch_rebases_bead_branch_onto_head_before_ff() -> Result<()> {
     let bead_b_post = String::from_utf8(
         std::process::Command::new("git")
             .arg("-C")
-            .arg(path)
+            .arg(&loom)
             .args(["rev-parse", "bead-b"])
             .output()?
             .stdout,
@@ -262,27 +263,25 @@ async fn merge_branch_rebases_bead_branch_onto_head_before_ff() -> Result<()> {
         "rebase must rewrite bead-b's commits onto the new HEAD",
     );
 
-    assert!(path.join("bead-a.txt").exists());
-    assert!(path.join("bead-b.txt").exists());
+    assert!(loom.join("bead-a.txt").exists());
+    assert!(loom.join("bead-b.txt").exists());
     Ok(())
 }
 
 #[tokio::test]
 async fn merge_branch_conflict_is_reported() -> Result<()> {
     let repo = init_repo()?;
-    let path = repo.path();
+    let loom = loom_path(repo.path());
 
-    // Branch A: rewrite README on `feature`.
-    git(path, &["checkout", "-q", "-b", "feature"])?;
-    std::fs::write(path.join("README.md"), "feature line\n")?;
-    git(path, &["commit", "-q", "-am", "feature edit"])?;
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("README.md"), "feature line\n")?;
+    git(&loom, &["commit", "-q", "-am", "feature edit"])?;
 
-    // Branch B: rewrite same line on `main`.
-    git(path, &["checkout", "-q", "main"])?;
-    std::fs::write(path.join("README.md"), "main line\n")?;
-    git(path, &["commit", "-q", "-am", "main edit"])?;
+    git(&loom, &["checkout", "-q", "main"])?;
+    std::fs::write(loom.join("README.md"), "main line\n")?;
+    git(&loom, &["commit", "-q", "-am", "main edit"])?;
 
-    let client = GitClient::open(path)?;
+    let client = GitClient::open(repo.path())?;
     let result = client.merge_branch("feature").await?;
 
     assert!(
@@ -806,42 +805,17 @@ async fn push_branch_to_origin_propagates_pre_push_hook_failure() -> Result<()> 
 #[tokio::test]
 async fn integration_branch_setting_honored_by_loop() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let path = dir.path();
-    git(path, &["init", "-q", "-b", "trunk"])?;
-    git(path, &["config", "user.email", "test@example.com"])?;
-    git(path, &["config", "user.name", "Test"])?;
-    git(path, &["config", "commit.gpgsign", "false"])?;
-    std::fs::write(path.join("README.md"), "initial\n")?;
-    git(path, &["add", "README.md"])?;
-    git(path, &["commit", "-q", "-m", "initial"])?;
+    let path = dir.path().join("ws");
+    loom_driver::git::init_test_repo_with_integration_branch(&path, "trunk")?;
+    let loom = loom_path(&path);
 
-    let parent = path.parent().expect("tempdir parent");
-    let name = path
-        .file_name()
-        .expect("tempdir name")
-        .to_string_lossy()
-        .into_owned();
-    let origin = parent.join(format!("{name}.git"));
-    std::fs::create_dir_all(&origin)?;
-    git(&origin, &["init", "-q", "--bare", "-b", "trunk"])?;
-    git(
-        path,
-        &[
-            "remote",
-            "add",
-            "origin",
-            origin.to_str().expect("origin path utf-8"),
-        ],
-    )?;
-    git(path, &["push", "-q", "-u", "origin", "trunk"])?;
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("feature.txt"), "feature\n")?;
+    git(&loom, &["add", "feature.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "feature commit"])?;
+    git(&loom, &["checkout", "-q", "trunk"])?;
 
-    git(path, &["checkout", "-q", "-b", "feature"])?;
-    std::fs::write(path.join("feature.txt"), "feature\n")?;
-    git(path, &["add", "feature.txt"])?;
-    git(path, &["commit", "-q", "-m", "feature commit"])?;
-    git(path, &["checkout", "-q", "trunk"])?;
-
-    let client = GitClient::open_with_integration_branch(path, "trunk".to_string())?;
+    let client = GitClient::open_with_integration_branch(&path, "trunk".to_string())?;
     assert_eq!(client.integration_branch(), "trunk");
 
     let result = client.merge_branch("feature").await?;
@@ -850,7 +824,7 @@ async fn integration_branch_setting_honored_by_loop() -> Result<()> {
     let on_branch = String::from_utf8(
         Command::new("git")
             .arg("-C")
-            .arg(path)
+            .arg(&loom)
             .args(["symbolic-ref", "--short", "HEAD"])
             .output()?
             .stdout,
@@ -864,6 +838,7 @@ async fn integration_branch_setting_honored_by_loop() -> Result<()> {
 
     client.push().await?;
 
+    let origin = loom_driver::git::bare_origin_path(&path);
     let origin_trunk = String::from_utf8(
         Command::new("git")
             .arg("-C")
@@ -874,10 +849,82 @@ async fn integration_branch_setting_honored_by_loop() -> Result<()> {
     )?
     .trim()
     .to_string();
-    let local_trunk = capture_head(path)?;
+    let local_trunk = capture_head(&loom)?;
     assert_eq!(
         origin_trunk, local_trunk,
         "push must advance origin/<integration_branch>, not origin/main",
+    );
+
+    Ok(())
+}
+
+/// Spec contract (`specs/harness.md` § Success Criteria · Bead dispatch):
+/// Origin push of the integration branch retries on non-fast-forward by
+/// fetching `origin/<integration-branch>`, rebasing the loom workspace's
+/// local branch onto it, and re-pushing. After the retry succeeds,
+/// `origin` carries both the cross-spec commit and the loom workspace's
+/// own commit on linear history.
+#[tokio::test]
+async fn origin_push_retries_non_fast_forward() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let loom = loom_path(path);
+    let origin = loom_driver::git::bare_origin_path(path);
+
+    let other_root = tempfile::tempdir()?;
+    let other = other_root.path().join("other");
+    git(
+        other_root.path(),
+        &[
+            "clone",
+            "--quiet",
+            origin.to_str().expect("origin utf-8"),
+            other.to_str().expect("other utf-8"),
+        ],
+    )?;
+    git(&other, &["config", "user.email", "other@example.com"])?;
+    git(&other, &["config", "user.name", "Other"])?;
+    git(&other, &["config", "commit.gpgsign", "false"])?;
+    std::fs::write(other.join("other.txt"), "other\n")?;
+    git(&other, &["add", "other.txt"])?;
+    git(&other, &["commit", "-q", "-m", "other commit"])?;
+    git(&other, &["push", "-q", "origin", "main"])?;
+
+    std::fs::write(loom.join("loom-side.txt"), "loom\n")?;
+    git(&loom, &["add", "loom-side.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "loom commit"])?;
+
+    let client = GitClient::open(path)?;
+    client.push().await?;
+
+    let origin_tree = String::from_utf8(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&origin)
+            .args(["ls-tree", "--name-only", "main"])
+            .output()?
+            .stdout,
+    )?;
+    assert!(
+        origin_tree.contains("other.txt"),
+        "origin must retain the cross-spec commit's file after retry: {origin_tree}",
+    );
+    assert!(
+        origin_tree.contains("loom-side.txt"),
+        "origin must carry the loom workspace's commit after retry: {origin_tree}",
+    );
+
+    let merges = String::from_utf8(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&loom)
+            .args(["log", "--merges", "--format=%H"])
+            .output()?
+            .stdout,
+    )?;
+    assert!(
+        merges.trim().is_empty(),
+        "non-ff retry must rebase (linear history), not merge — got: {merges:?}",
     );
 
     Ok(())

@@ -42,11 +42,14 @@ use loom_gate::{IntegrityFinding, Tier, format_clarify_options};
 // Workspace + state setup
 // -------------------------------------------------------------------
 
-/// Initialise `workspace` as a real git repo and create one seed commit.
-/// `loom gate review`'s integrity walk opens a [`GitClient`] and queries
-/// `git diff <base>..HEAD -- specs/`; without a repo the controller's
-/// `integrity_findings()` returns an [`std::io::Error`] before the
-/// four-condition AND runs. Returns the seed commit's full SHA.
+/// Initialise `workspace` as a real git repo + bare origin + loom-owned
+/// integration workspace at `.wrapix/loom/integration/`, then commit the
+/// caller-provided seed content (any `specs/` files written before this
+/// call land in the seed commit). `loom gate review`'s integrity walk
+/// opens a [`GitClient`] and queries `git diff <base>..HEAD -- specs/`;
+/// the push gate exercises [`GitClient::push`] which operates inside the
+/// loom workspace, so both must be materialized before the gate runs.
+/// Returns the seed commit's full SHA.
 fn init_workspace_repo(workspace: &Path) -> String {
     for args in [
         &["init", "-q", "-b", "main"][..],
@@ -83,6 +86,55 @@ fn init_workspace_repo(workspace: &Path) -> String {
         .status()
         .expect("git commit spawn");
     assert!(status.success(), "git commit failed: {status}");
+
+    let origin_path = loom_driver::git::bare_origin_path(workspace);
+    if let Some(parent) = origin_path.parent() {
+        std::fs::create_dir_all(parent).expect("mkdir origin parent");
+    }
+    std::fs::create_dir_all(&origin_path).expect("mkdir origin");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(&origin_path)
+        .args(["init", "-q", "--bare", "-b", "main"])
+        .status()
+        .expect("bare init spawn");
+    assert!(status.success(), "bare init failed: {status}");
+    let origin_url = origin_path.to_string_lossy().into_owned();
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["remote", "add", "origin", &origin_url])
+        .status()
+        .expect("git remote add spawn");
+    assert!(status.success(), "git remote add failed: {status}");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["push", "-q", "-u", "origin", "main"])
+        .status()
+        .expect("initial push spawn");
+    assert!(status.success(), "initial push failed: {status}");
+
+    let loom_workspace = workspace.join(".wrapix/loom/integration");
+    if let Some(parent) = loom_workspace.parent() {
+        std::fs::create_dir_all(parent).expect("mkdir loom parent");
+    }
+    loom_driver::git::clone_loom_workspace(&origin_url, &loom_workspace, "main")
+        .expect("clone loom workspace");
+    for args in [
+        &["config", "user.email", "test@example.com"][..],
+        &["config", "user.name", "Test"][..],
+        &["config", "commit.gpgsign", "false"][..],
+    ] {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&loom_workspace)
+            .args(args)
+            .status()
+            .expect("git spawn");
+        assert!(status.success(), "loom git {args:?} failed: {status}");
+    }
+
     let out = Command::new("git")
         .arg("-C")
         .arg(workspace)
@@ -564,30 +616,6 @@ fn push_gate_fires_clean_when_all_conditions_pass_via_live_path() {
     .unwrap();
     let base_sha = init_workspace_repo(workspace);
 
-    // Bare local remote so `git push` resolves without network access.
-    let remote_dir = dir.path().join("remote.git");
-    let status = Command::new("git")
-        .args(["init", "--bare", "-q"])
-        .arg(&remote_dir)
-        .status()
-        .expect("git init --bare spawn");
-    assert!(status.success(), "git init --bare failed");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["remote", "add", "origin"])
-        .arg(&remote_dir)
-        .status()
-        .expect("git remote add spawn");
-    assert!(status.success(), "git remote add failed");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["push", "-q", "-u", "origin", "main"])
-        .status()
-        .expect("initial push spawn");
-    assert!(status.success(), "initial push failed");
-
     let state_dir = workspace.join("bd-state");
     std::fs::create_dir_all(&state_dir).unwrap();
     seed_bead(
@@ -668,29 +696,6 @@ fn concern_then_complete_live_path_resolves_to_clean_push() {
     )
     .unwrap();
     let base_sha = init_workspace_repo(workspace);
-
-    let remote_dir = dir.path().join("remote.git");
-    let status = Command::new("git")
-        .args(["init", "--bare", "-q"])
-        .arg(&remote_dir)
-        .status()
-        .expect("git init --bare spawn");
-    assert!(status.success(), "git init --bare failed");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["remote", "add", "origin"])
-        .arg(&remote_dir)
-        .status()
-        .expect("git remote add spawn");
-    assert!(status.success(), "git remote add failed");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["push", "-q", "-u", "origin", "main"])
-        .status()
-        .expect("initial push spawn");
-    assert!(status.success(), "initial push failed");
 
     let state_dir = workspace.join("bd-state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -844,30 +849,6 @@ fn push_gate_fires_clean_when_verify_exit_flag_is_zero_via_live_path() {
     )
     .unwrap();
     let base_sha = init_workspace_repo(workspace);
-
-    // Bare local remote so `git push` resolves without network access.
-    let remote_dir = dir.path().join("remote.git");
-    let status = Command::new("git")
-        .args(["init", "--bare", "-q"])
-        .arg(&remote_dir)
-        .status()
-        .expect("git init --bare spawn");
-    assert!(status.success(), "git init --bare failed");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["remote", "add", "origin"])
-        .arg(&remote_dir)
-        .status()
-        .expect("git remote add spawn");
-    assert!(status.success(), "git remote add failed");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["push", "-q", "-u", "origin", "main"])
-        .status()
-        .expect("initial push spawn");
-    assert!(status.success(), "initial push failed");
 
     let state_dir = workspace.join("bd-state");
     std::fs::create_dir_all(&state_dir).unwrap();

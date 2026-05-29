@@ -209,58 +209,16 @@ fn seed_active_spec(workspace: &Path, _loom_bin: &str, label: &str) {
     db.set_current_spec(&spec).expect("set current_spec");
 }
 
-/// Seed the workspace as a real git repo. `loom todo` opens a `GitClient`
-/// during setup so the tier-1 detection has a real ref database to
-/// query — even when the test exits before any tier-1 work happens.
+/// Seed the workspace as a real git repo plus the loom-owned integration
+/// workspace at `.wrapix/loom/integration/` and a bare `origin` so
+/// `loom loop`'s per-bead dispatch + push gate both succeed.
+///
+/// `loom todo` opens a `GitClient` during setup so the tier-1 detection
+/// has a real ref database to query even when the test exits before any
+/// tier-1 work happens.
 fn init_workspace_repo(workspace: &Path) {
-    for args in [
-        &["init", "-q", "-b", "main"][..],
-        &["config", "user.email", "test@example.com"][..],
-        &["config", "user.name", "Test"][..],
-        &["config", "commit.gpgsign", "false"][..],
-    ] {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(workspace)
-            .args(args)
-            .status()
-            .expect("git spawn");
-        assert!(status.success(), "git {args:?} failed: {status}");
-    }
-    std::fs::write(workspace.join(".gitignore"), "shim/\n*.tar\n").expect("write .gitignore");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["commit", "-q", "--allow-empty", "-m", "seed"])
-        .status()
-        .expect("git commit spawn");
-    assert!(status.success(), "git commit failed: {status}");
-    // Bare origin so `loom loop`'s per-bead `git push` succeeds without
-    // a real remote on `cargo nextest`. Without this, the post-merge
-    // push gate would surface every clean merge as `push failed: ...`.
-    let origin = workspace.with_extension("git");
-    std::fs::create_dir_all(&origin).expect("create origin dir");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(&origin)
-        .args(["init", "-q", "--bare", "-b", "main"])
-        .status()
-        .expect("bare init spawn");
-    assert!(status.success(), "bare init failed: {status}");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["remote", "add", "origin", &origin.to_string_lossy()])
-        .status()
-        .expect("git remote add spawn");
-    assert!(status.success(), "git remote add failed: {status}");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["push", "-q", "-u", "origin", "main"])
-        .status()
-        .expect("git push spawn");
-    assert!(status.success(), "git push failed: {status}");
+    loom_driver::git::init_test_repo_with_integration(workspace)
+        .expect("init test repo with loom integration");
 }
 
 /// Install a `beads-push` stub at `dir/beads-push-stub.sh` that exits 0,

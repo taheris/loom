@@ -22,6 +22,19 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 const GIT_HOOK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const WORKTREE_BASE: &str = ".wrapix/loom/beads";
 const BRANCH_PREFIX: &str = "loom";
+/// Path of the loom-owned integration workspace relative to the workspace
+/// root the `GitClient` is opened against. Materialized by `loom init` and
+/// used by [`GitClient::merge_branch`], [`GitClient::push`],
+/// [`GitClient::delete_branch`], and [`GitClient::create_worktree`] as the
+/// cwd / clone source so bead integration never touches the operator's
+/// working tree.
+const LOOM_WORKSPACE_REL: &str = ".wrapix/loom/integration";
+/// Number of times [`GitClient::push`] retries an integration-branch push
+/// to `origin` against a non-fast-forward rejection (fetch + rebase +
+/// re-push) before surfacing [`GitError::GitCli`]. Bounded so a wedged
+/// remote does not loop forever; large enough that realistic cross-spec
+/// loom contention resolves within the budget.
+const PUSH_NON_FF_RETRIES: u32 = 5;
 /// Fallback integration branch when the caller opens a `GitClient` via
 /// [`GitClient::open`] / [`GitClient::open_with_clock`] without naming
 /// one. Production paths thread `[loom] integration_branch` from
@@ -110,6 +123,15 @@ impl GitClient {
         &self.workdir
     }
 
+    /// Path of the loom-owned integration workspace —
+    /// `<workdir>/.wrapix/loom/integration`. This is where bead branches
+    /// are pushed, rebased, and fast-forward-merged into the integration
+    /// branch; the operator's `<workdir>` itself is never the target of
+    /// loom-driven merges or origin pushes.
+    pub fn loom_workspace(&self) -> PathBuf {
+        self.workdir.join(LOOM_WORKSPACE_REL)
+    }
+
     /// Working tree status against HEAD.
     pub async fn status(&self) -> Result<Vec<StatusEntry>, GitError> {
         let repo = self.repo.clone();
@@ -193,11 +215,17 @@ impl GitClient {
     }
 
     /// Create a per-bead workspace at `.wrapix/loom/beads/<bead_id>/`
-    /// containing a `git clone --local` of the loom workspace, with a
-    /// fresh branch `loom/<bead_id>` checked out. Bead ids are globally
-    /// unique, so the path is flat — no spec-label partition. The
-    /// `label` argument is accepted for source-compat with existing
-    /// callers and ignored by the path / branch construction.
+    /// containing a `git clone --local` of the loom workspace at
+    /// `.wrapix/loom/integration/`, with a fresh branch `loom/<bead_id>`
+    /// checked out. Bead ids are globally unique, so the path is flat
+    /// — no spec-label partition. The `label` argument is accepted for
+    /// source-compat with existing callers and ignored by the path /
+    /// branch construction.
+    ///
+    /// Cloning from the loom workspace (not the operator's workdir)
+    /// sets the bead clone's `origin` to the loom workspace, so
+    /// [`Self::push_branch_to_origin`] from the bead clone surfaces the
+    /// bead branch where [`Self::merge_branch`] expects to find it.
     ///
     /// Path A from `specs/harness.md § Bead dispatch`: the per-bead
     /// workspace is a self-contained clone — its `.git/` is a regular
@@ -230,7 +258,8 @@ impl GitClient {
             std::fs::create_dir_all(parent)?;
         }
 
-        let src_arg: OsString = self.workdir.clone().into();
+        let loom_workspace = self.loom_workspace();
+        let src_arg: OsString = loom_workspace.clone().into();
         let dst_arg: OsString = path.clone().into();
         run_git(
             &self.workdir,
@@ -254,7 +283,9 @@ impl GitClient {
         // does not copy `.git/config`, so without this inheritance the
         // first commit fails with "Author identity unknown".
         for key in ["user.email", "user.name"] {
-            if let Some(value) = read_config_value(&self.workdir, self.clock.as_ref(), key).await? {
+            if let Some(value) =
+                read_config_value(&loom_workspace, self.clock.as_ref(), key).await?
+            {
                 run_git(&path, self.clock.as_ref(), ["config", key, &value], None).await?;
             }
         }
@@ -458,14 +489,15 @@ impl GitClient {
         .await
     }
 
-    /// Force-delete the named branch. Used by the parallel batch driver to
-    /// reclaim the per-bead branch after agent failure (the worktree has
-    /// already been removed by [`Self::remove_worktree`]). A non-existent
-    /// branch surfaces as [`GitError::GitCli`] — call only when the branch
-    /// is known to exist.
+    /// Force-delete the named branch in the loom workspace. Used by the
+    /// parallel batch driver to reclaim the per-bead branch after agent
+    /// failure (the worktree has already been removed by
+    /// [`Self::remove_worktree`]). A non-existent branch surfaces as
+    /// [`GitError::GitCli`] — call only when the branch is known to
+    /// exist.
     pub async fn delete_branch(&self, branch: &str) -> Result<(), GitError> {
         run_git(
-            &self.workdir,
+            &self.loom_workspace(),
             self.clock.as_ref(),
             ["branch", "-D", branch],
             None,
@@ -474,7 +506,8 @@ impl GitClient {
         Ok(())
     }
 
-    /// Push the configured integration branch to `origin`.
+    /// Push the configured integration branch from the loom workspace
+    /// to `origin`.
     ///
     /// Used by the push gate (`loom gate verify`). Routed through this client so
     /// `Command::new("git")` stays inside `loom-driver/src/git/`, satisfying
@@ -484,18 +517,57 @@ impl GitClient {
     /// pushed ref name is unambiguous regardless of how the workspace
     /// was set up.
     ///
+    /// On a non-fast-forward rejection (operator pushed first, or another
+    /// loom landed cross-spec work) the push fetches
+    /// `origin/<integration_branch>`, rebases the local integration
+    /// branch onto it, and re-pushes — up to [`PUSH_NON_FF_RETRIES`]
+    /// times. Other push failures (auth, pre-push hook, network) are
+    /// surfaced as [`GitError::GitCli`] without retry.
+    ///
     /// Uses [`GIT_HOOK_TIMEOUT`] because the remote's pre-push hook (or
     /// loom's own pre-push hook on the GitHub publish) runs the workspace's
     /// pre-push CI stage.
     pub async fn push(&self) -> Result<(), GitError> {
-        run_git_with_timeout(
-            &self.workdir,
-            self.clock.as_ref(),
-            GIT_HOOK_TIMEOUT,
-            ["push", "origin", &self.integration_branch],
-            None,
-        )
-        .await
+        let workdir = self.loom_workspace();
+        let integration_branch = self.integration_branch.as_str();
+        let remote_ref = format!("origin/{integration_branch}");
+        let mut last_err: Option<GitError> = None;
+        for _ in 0..=PUSH_NON_FF_RETRIES {
+            let output = run_git_raw_with_timeout(
+                &workdir,
+                self.clock.as_ref(),
+                GIT_HOOK_TIMEOUT,
+                ["push", "origin", integration_branch],
+                None,
+            )
+            .await?;
+            if output.status.success() {
+                return Ok(());
+            }
+            let err = cli_error(&output);
+            if !is_non_fast_forward(&output) {
+                return Err(err);
+            }
+            last_err = Some(err);
+            run_git(
+                &workdir,
+                self.clock.as_ref(),
+                ["fetch", "--quiet", "origin", integration_branch],
+                None,
+            )
+            .await?;
+            let rebase_output =
+                run_git_raw(&workdir, self.clock.as_ref(), ["rebase", &remote_ref], None).await?;
+            if !rebase_output.status.success() {
+                let _ =
+                    run_git_raw(&workdir, self.clock.as_ref(), ["rebase", "--abort"], None).await?;
+                return Err(cli_error(&rebase_output));
+            }
+        }
+        Err(last_err.unwrap_or_else(|| GitError::GitCli {
+            status: -1,
+            stderr: "push retry budget exhausted with no captured error".to_string(),
+        }))
     }
 
     /// `git rev-parse --verify <rev>^{commit}` — true iff `rev` resolves to
@@ -694,10 +766,11 @@ impl GitClient {
         Ok(String::from_utf8(output.stdout)?.trim().to_string())
     }
 
-    /// Merge `branch` into the configured integration branch. Rebases
-    /// `branch` onto the current integration-branch `HEAD` first so the
-    /// merge is always a fast-forward — sequential dispatch (bead branch
-    /// is a strict descendant of `HEAD`) is a rebase no-op; parallel
+    /// Merge `branch` into the configured integration branch inside the
+    /// loom workspace ([`Self::loom_workspace`]). Rebases `branch` onto
+    /// the current integration-branch `HEAD` first so the merge is
+    /// always a fast-forward — sequential dispatch (bead branch is a
+    /// strict descendant of `HEAD`) is a rebase no-op; parallel
     /// dispatch's second-and-later beads pick up the moved `HEAD` from
     /// an earlier merge. True overlap surfaces as
     /// [`MergeResult::Conflict`]; other failures surface as [`GitError`].
@@ -707,10 +780,11 @@ impl GitClient {
     /// query, so the value is unambiguously the operator's configured
     /// target rather than whatever happens to be checked out.
     pub async fn merge_branch(&self, branch: &str) -> Result<MergeResult, GitError> {
+        let workdir = self.loom_workspace();
         let integration_branch = self.integration_branch.as_str();
 
         let rebase_output = run_git_raw(
-            &self.workdir,
+            &workdir,
             self.clock.as_ref(),
             ["rebase", integration_branch, branch],
             None,
@@ -724,15 +798,9 @@ impl GitClient {
             let detail = String::from_utf8_lossy(&rebase_output.stderr)
                 .trim()
                 .to_string();
-            let _ = run_git_raw(
-                &self.workdir,
-                self.clock.as_ref(),
-                ["rebase", "--abort"],
-                None,
-            )
-            .await?;
+            let _ = run_git_raw(&workdir, self.clock.as_ref(), ["rebase", "--abort"], None).await?;
             run_git(
-                &self.workdir,
+                &workdir,
                 self.clock.as_ref(),
                 ["checkout", "-q", integration_branch],
                 None,
@@ -742,7 +810,7 @@ impl GitClient {
         }
 
         run_git(
-            &self.workdir,
+            &workdir,
             self.clock.as_ref(),
             ["checkout", "-q", integration_branch],
             None,
@@ -750,7 +818,7 @@ impl GitClient {
         .await?;
 
         let output = run_git_raw(
-            &self.workdir,
+            &workdir,
             self.clock.as_ref(),
             ["merge", "--ff-only", branch],
             None,
@@ -767,13 +835,19 @@ impl GitClient {
     }
 }
 
-/// Initialize a real git repository at `path` with one `initial` commit and
-/// a bare `origin` remote alongside it so [`GitClient::create_worktree`],
-/// [`GitClient::merge_branch`], and [`GitClient::push`] all succeed against
-/// it. The bare `origin` lives at a sibling `<path>.git`; production
-/// `loom loop` pushes `main` to `origin` after every successful per-bead
-/// merge, so tests that exercise the merge-back path need a real push
-/// destination or the post-merge push gate would fail.
+/// Initialize a real git repository at `path` with one `initial` commit
+/// and a bare `origin` remote alongside it. The bare `origin` lives at a
+/// sibling `<path>.git`; production `loom loop` pushes the integration
+/// branch to `origin` after every successful per-bead merge, so tests
+/// that exercise the merge-back path need a real push destination or the
+/// post-merge push gate would fail.
+///
+/// Does **not** materialize the loom-owned
+/// `.wrapix/loom/integration/` workspace — `loom init` tests depend on
+/// observing a clean state, and use [`run_loom_init`-equivalent] paths
+/// to create it. Tests that need a ready-to-use loom workspace (most of
+/// the driver / workflow integration suite) call
+/// [`init_test_repo_with_integration`].
 ///
 /// Exposed for cross-crate test consumption — production callers operate
 /// on the caller-supplied workspace and never need to bootstrap one. The
@@ -785,40 +859,85 @@ impl GitClient {
 /// Returns an opened [`GitClient`] rooted at `path`.
 #[doc(hidden)]
 pub fn init_test_repo(path: &Path) -> Result<GitClient, GitError> {
-    use std::process::Command as StdCommand;
+    init_bare_test_repo(path, DEFAULT_INTEGRATION_BRANCH)
+}
+
+/// Same as [`init_test_repo`] but additionally clones the loom-owned
+/// integration workspace at `<path>/.wrapix/loom/integration/` from the
+/// bare origin so [`GitClient::create_worktree`],
+/// [`GitClient::merge_branch`], [`GitClient::push`], and
+/// [`GitClient::delete_branch`] all have their loom-workspace cwd ready.
+#[doc(hidden)]
+pub fn init_test_repo_with_integration(path: &Path) -> Result<GitClient, GitError> {
+    init_test_repo_with_integration_branch(path, DEFAULT_INTEGRATION_BRANCH)
+}
+
+/// Like [`init_test_repo_with_integration`] but takes an explicit
+/// integration-branch name — used by tests that exercise
+/// `[loom] integration_branch = "<name>"` end-to-end without a
+/// hard-coded `main`.
+#[doc(hidden)]
+pub fn init_test_repo_with_integration_branch(
+    path: &Path,
+    branch: &str,
+) -> Result<GitClient, GitError> {
+    init_bare_test_repo(path, branch)?;
+    let origin_path = bare_origin_path(path);
+    let origin_url = origin_path.to_string_lossy().into_owned();
+    let loom_workspace = path.join(LOOM_WORKSPACE_REL);
+    if let Some(parent) = loom_workspace.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    clone_loom_workspace(&origin_url, &loom_workspace, branch)?;
+    run_test_git(
+        &loom_workspace,
+        &["config", "user.email", "test@example.com"],
+    )?;
+    run_test_git(&loom_workspace, &["config", "user.name", "Test"])?;
+    run_test_git(&loom_workspace, &["config", "commit.gpgsign", "false"])?;
+    GitClient::open_with_integration_branch(path, branch.to_string())
+}
+
+fn init_bare_test_repo(path: &Path, branch: &str) -> Result<GitClient, GitError> {
     std::fs::create_dir_all(path)?;
-    let run_in = |dir: &Path, args: &[&str]| -> Result<(), GitError> {
-        let status = StdCommand::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .status()
-            .map_err(GitError::Spawn)?;
-        if status.success() {
-            return Ok(());
-        }
-        Err(GitError::GitCli {
-            status: status.code().unwrap_or(-1),
-            stderr: format!("git {args:?} exited {status}"),
-        })
-    };
-    run_in(path, &["init", "-q", "-b", "main"])?;
-    run_in(path, &["config", "user.email", "test@example.com"])?;
-    run_in(path, &["config", "user.name", "Test"])?;
-    run_in(path, &["config", "commit.gpgsign", "false"])?;
+    run_test_git(path, &["init", "-q", "-b", branch])?;
+    run_test_git(path, &["config", "user.email", "test@example.com"])?;
+    run_test_git(path, &["config", "user.name", "Test"])?;
+    run_test_git(path, &["config", "commit.gpgsign", "false"])?;
     std::fs::write(path.join("README.md"), "initial\n")?;
-    run_in(path, &["add", "README.md"])?;
-    run_in(path, &["commit", "-q", "-m", "initial"])?;
+    // Mirror the production `.gitignore` so the loom workspace at
+    // `.wrapix/loom/integration/` does not show as untracked in the
+    // operator workspace's `git status`.
+    std::fs::write(path.join(".gitignore"), ".wrapix/\ntarget/\n")?;
+    run_test_git(path, &["add", "README.md", ".gitignore"])?;
+    run_test_git(path, &["commit", "-q", "-m", "initial"])?;
     let origin_path = bare_origin_path(path);
     if let Some(parent) = origin_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::create_dir_all(&origin_path)?;
-    run_in(&origin_path, &["init", "-q", "--bare", "-b", "main"])?;
+    run_test_git(&origin_path, &["init", "-q", "--bare", "-b", branch])?;
     let origin_url = origin_path.to_string_lossy().into_owned();
-    run_in(path, &["remote", "add", "origin", &origin_url])?;
-    run_in(path, &["push", "-q", "-u", "origin", "main"])?;
+    run_test_git(path, &["remote", "add", "origin", &origin_url])?;
+    run_test_git(path, &["push", "-q", "-u", "origin", branch])?;
     GitClient::open(path)
+}
+
+fn run_test_git(dir: &Path, args: &[&str]) -> Result<(), GitError> {
+    use std::process::Command as StdCommand;
+    let status = StdCommand::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .status()
+        .map_err(GitError::Spawn)?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(GitError::GitCli {
+        status: status.code().unwrap_or(-1),
+        stderr: format!("git {args:?} exited {status}"),
+    })
 }
 
 /// Read the URL of the `origin` remote at `workdir` using
@@ -994,6 +1113,21 @@ where
 /// hook-driven push failures bottom out at the one-line git wrapper and
 /// the actual cause is lost. Trailing whitespace is stripped per-line;
 /// fully-empty leading/trailing lines are dropped.
+/// Classify a failed `git push` output as a non-fast-forward rejection.
+/// Git emits `! [rejected]` and either `non-fast-forward` or
+/// `fetch first` in `stderr` for that branch; other rejections (deny
+/// of force, pre-push hook failure, network) do not carry those
+/// markers, so the [`GitClient::push`] retry loop is bounded to the
+/// rejection the spec calls out.
+fn is_non_fast_forward(output: &std::process::Output) -> bool {
+    if output.status.success() {
+        return false;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    stderr.contains("! [rejected]")
+        && (stderr.contains("non-fast-forward") || stderr.contains("fetch first"))
+}
+
 fn cli_error(output: &std::process::Output) -> GitError {
     fn trim_lines(buf: &[u8]) -> String {
         let s: String = String::from_utf8_lossy(buf)

@@ -54,26 +54,12 @@ fn git_capture(repo: &Path, args: &[&str]) -> Result<String> {
 
 fn init_repo() -> Result<TempDir> {
     let dir = tempfile::tempdir()?;
-    let path = dir.path();
-    git(path, &["init", "-q", "-b", "main"])?;
-    git(path, &["config", "user.email", "test@example.com"])?;
-    git(path, &["config", "user.name", "Test"])?;
-    git(path, &["config", "commit.gpgsign", "false"])?;
-    std::fs::write(path.join("README.md"), "initial\n")?;
-    git(path, &["add", "README.md"])?;
-    git(path, &["commit", "-q", "-m", "initial"])?;
-    // Bare `origin` so the post-merge `git push` in `merge_back_one`
-    // succeeds — without it, the parallel-batch path would surface
-    // `BatchResult::PushFailed` on every clean merge.
-    let origin = path.with_extension("git");
-    std::fs::create_dir_all(&origin)?;
-    git(&origin, &["init", "-q", "--bare", "-b", "main"])?;
-    git(
-        path,
-        &["remote", "add", "origin", &origin.to_string_lossy()],
-    )?;
-    git(path, &["push", "-q", "-u", "origin", "main"])?;
+    loom_driver::git::init_test_repo_with_integration(dir.path())?;
     Ok(dir)
+}
+
+fn loom_path(repo: &Path) -> std::path::PathBuf {
+    repo.join(".wrapix/loom/integration")
 }
 
 /// Write a `beads-push` stub at `dir/beads-push-stub.sh` that exits 0,
@@ -160,15 +146,16 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
     let outcome = merge_back(&client, &stub, batch_slots).await?;
 
     assert_eq!(outcome.merged_ids(), vec![slot.bead.id.clone()]);
+    let loom = loom_path(repo.path());
     assert!(
-        repo.path().join(&unique_file).exists(),
-        "bead's file must land on the driver branch after merge-back",
+        loom.join(&unique_file).exists(),
+        "bead's file must land on the integration branch after merge-back",
     );
     assert!(
         !slot.worktree.path.exists(),
         "worktree must be removed after clean merge-back",
     );
-    let branches = git_capture(repo.path(), &["branch", "--list", &slot.worktree.branch])?;
+    let branches = git_capture(&loom, &["branch", "--list", &slot.worktree.branch])?;
     assert!(
         branches.trim().is_empty(),
         "bead's branch must be deleted after merge-back (got: {branches:?})",
@@ -253,23 +240,21 @@ async fn parallel_merge_back() -> Result<()> {
     assert_eq!(outcome.results.len(), 2);
     let merged = outcome.merged_ids();
     assert_eq!(merged.len(), 2, "both should merge: {:?}", outcome.results);
+    let loom = loom_path(repo.path());
     for slot in &slots {
         assert!(merged.contains(&slot.bead.id));
-        // Per-bead file landed on the driver branch.
         let file = format!("{}.txt", slot.bead.id);
         assert!(
-            repo.path().join(&file).exists(),
-            "{} should be merged into driver",
+            loom.join(&file).exists(),
+            "{} should be merged into the integration branch",
             file,
         );
-        // Worktree dir is removed after a clean merge.
         assert!(
             !slot.worktree.path.exists(),
             "worktree {:?} should be removed after merge",
             slot.worktree.path,
         );
-        // Branch is gone.
-        let branches = git_capture(repo.path(), &["branch", "--list", &slot.worktree.branch])?;
+        let branches = git_capture(&loom, &["branch", "--list", &slot.worktree.branch])?;
         assert!(
             branches.trim().is_empty(),
             "branch {} should be deleted after merge, listed: {:?}",
@@ -335,22 +320,20 @@ async fn parallel_failure_cleanup() -> Result<()> {
         outcome.results
     );
 
+    let loom = loom_path(repo.path());
     for slot in &slots {
-        // Worktree dir gone.
         assert!(
             !slot.worktree.path.exists(),
             "worktree {:?} should be cleaned up on agent failure",
             slot.worktree.path,
         );
-        // Branch deleted.
-        let branches = git_capture(repo.path(), &["branch", "--list", &slot.worktree.branch])?;
+        let branches = git_capture(&loom, &["branch", "--list", &slot.worktree.branch])?;
         assert!(
             branches.trim().is_empty(),
             "branch {} should be deleted after agent failure (got: {:?})",
             slot.worktree.branch,
             branches,
         );
-        // Error body threaded into AgentFailed for retry-with-context.
         let r = outcome
             .results
             .iter()
@@ -360,12 +343,11 @@ async fn parallel_failure_cleanup() -> Result<()> {
             assert!(error.contains(slot.bead.id.as_str()));
         }
     }
-    // Driver branch must NOT contain the partial work.
     for slot in &slots {
         let file = format!("{}.partial", slot.bead.id);
         assert!(
-            !repo.path().join(&file).exists(),
-            "{} must not appear on driver branch after agent failure",
+            !loom.join(&file).exists(),
+            "{} must not appear on the integration branch after agent failure",
             file,
         );
     }
@@ -384,12 +366,11 @@ async fn parallel_conflict_preserves_worktree() -> Result<()> {
     let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
     let slot = slots.into_iter().next().expect("one slot");
 
-    // Worktree edits README on bead branch.
+    let loom = loom_path(repo.path());
     std::fs::write(slot.worktree.path.join("README.md"), "from-bead\n")?;
     git(&slot.worktree.path, &["commit", "-q", "-am", "bead edit"])?;
-    // Driver branch edits the same line.
-    std::fs::write(repo.path().join("README.md"), "from-driver\n")?;
-    git(repo.path(), &["commit", "-q", "-am", "driver edit"])?;
+    std::fs::write(loom.join("README.md"), "from-driver\n")?;
+    git(&loom, &["commit", "-q", "-am", "driver edit"])?;
 
     let batch_slot = BatchSlot {
         bead: slot.bead.clone(),
@@ -417,8 +398,7 @@ async fn parallel_conflict_preserves_worktree() -> Result<()> {
         worktree_path,
     );
     assert_eq!(*branch, slot.worktree.branch);
-    // Branch still exists.
-    let branches = git_capture(repo.path(), &["branch", "--list", &slot.worktree.branch])?;
+    let branches = git_capture(&loom, &["branch", "--list", &slot.worktree.branch])?;
     assert!(
         !branches.trim().is_empty(),
         "branch {} should be preserved on conflict (got: {:?})",
@@ -556,14 +536,14 @@ async fn parallel_merge_back_pushes_after_each_merge() -> Result<()> {
         "beads-push must run once per successful merge in the parallel path (got {count})",
     );
 
-    // `git push` published the merged commits to the bare origin.
-    let origin = repo.path().with_extension("git");
+    let origin = loom_driver::git::bare_origin_path(repo.path());
+    let loom = loom_path(repo.path());
     let origin_head = git_capture(&origin, &["rev-parse", "main"])?;
-    let workspace_head = git_capture(repo.path(), &["rev-parse", "main"])?;
+    let loom_head = git_capture(&loom, &["rev-parse", "main"])?;
     assert_eq!(
         origin_head.trim(),
-        workspace_head.trim(),
-        "post-merge push must keep origin/main pinned to workspace HEAD",
+        loom_head.trim(),
+        "post-merge push must keep origin/main pinned to the integration-branch HEAD",
     );
     for bead in &beads {
         let file = format!("{}.txt", bead.id);
@@ -594,9 +574,9 @@ async fn parallel_merge_back_preserves_worktree_on_push_failure() -> Result<()> 
     git(&slot.worktree.path, &["add", "payload.txt"])?;
     git(&slot.worktree.path, &["commit", "-q", "-m", "work"])?;
 
-    // Break origin so `git push` fails after the merge succeeds.
+    let loom = loom_path(repo.path());
     git(
-        repo.path(),
+        &loom,
         &[
             "remote",
             "set-url",

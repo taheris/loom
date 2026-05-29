@@ -2197,7 +2197,7 @@ Criteria.
 - Origin push of the integration branch retries non-fast-forward
       errors by fetching and re-rebasing onto
       `origin/<integration-branch>`
-  [test?](origin_push_retries_non_fast_forward)
+  [test](origin_push_retries_non_fast_forward)
 - On merge conflict or post-merge push failure, the bead workspace
       persists (the default per-bead-close behavior) and the bead is
       routed to `Blocked` per the verdict gate

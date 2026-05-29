@@ -14,52 +14,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Initialize a real git repo at `path` with one initial commit so
-/// `loom loop`'s per-bead worktree dispatch (via
-/// `GitClient::create_worktree`) succeeds. Universal worktree isolation
-/// per `specs/harness.md` requires the workspace to be a real repo even
-/// at `--parallel 1`.
+/// Initialize a real git repo at `path` plus the loom-owned integration
+/// workspace at `.wrapix/loom/integration/` and a bare `origin` so
+/// `loom loop`'s per-bead worktree dispatch + post-merge push gate both
+/// succeed.
 fn init_workspace_repo(path: &Path) {
-    let run = |args: &[&str]| {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(args)
-            .status()
-            .expect("spawn git");
-        assert!(status.success(), "git {args:?} failed");
-    };
-    run(&["init", "-q", "-b", "main"]);
-    run(&["config", "user.email", "test@example.com"]);
-    run(&["config", "user.name", "Test"]);
-    run(&["config", "commit.gpgsign", "false"]);
-    std::fs::write(path.join("README.md"), "initial\n").expect("write README");
-    run(&["add", "README.md"]);
-    run(&["commit", "-q", "-m", "initial"]);
-    // Bare `origin` so `loom loop`'s post-merge `git push` succeeds.
-    let origin = path.with_extension("git");
-    std::fs::create_dir_all(&origin).expect("mkdir origin");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(&origin)
-        .args(["init", "-q", "--bare", "-b", "main"])
-        .status()
-        .expect("bare init");
-    assert!(status.success(), "bare init failed");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["remote", "add", "origin", &origin.to_string_lossy()])
-        .status()
-        .expect("remote add");
-    assert!(status.success(), "remote add failed");
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["push", "-q", "-u", "origin", "main"])
-        .status()
-        .expect("initial push");
-    assert!(status.success(), "initial push failed");
+    loom_driver::git::init_test_repo_with_integration(path)
+        .expect("init test repo with loom integration");
 }
 
 /// Write a `beads-push` stub at `dir/beads-push-stub.sh` that exits 0.

@@ -1115,7 +1115,7 @@ mod tests {
     /// controller-construction site so `run_bead`'s per-bead worktree
     /// dispatch has a real repo to bind against.
     fn git_workspace(workspace: &std::path::Path) -> loom_driver::git::GitClient {
-        loom_driver::git::init_test_repo(workspace).expect("init test repo")
+        loom_driver::git::init_test_repo_with_integration(workspace).expect("init test repo")
     }
 
     /// Write a `beads-push` stub at `dir/beads-push-stub.sh` that exits 0.
