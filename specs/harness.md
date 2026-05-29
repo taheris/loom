@@ -94,7 +94,7 @@ between host orchestrator and sandboxed agent.
 
 Loom owns its own git workspace, separate from the operator's
 checkout. The operator's `/workspace` and loom's
-`.wrapix/loom/integration/` are independent clones of the same
+`.loom/integration/` are independent clones of the same
 origin — they sync through origin, like any pair of dev workstations.
 Loom never reads, writes, or rebases the operator's working tree;
 the operator never edits loom's. Bead workspaces derive from the
@@ -103,18 +103,18 @@ loom workspace, not from `/workspace`.
 **Layout.**
 
 ```
-/workspace/                          operator's checkout, untouched by loom
-/workspace/.wrapix/loom/integration/ loom's clone, integration branch checked out
-/workspace/.wrapix/loom/beads/<id>/  bead workspaces, flat by globally-unique bead id
+/workspace/                   operator's checkout, untouched by loom
+/workspace/.loom/integration/ loom's clone, integration branch checked out
+/workspace/.loom/beads/<id>/  bead workspaces, flat by globally-unique bead id
 ```
 
 Each bead workspace is a `git clone --local` of the loom workspace.
 `<id>` is the bead id (`lm-9ehh.42`-style); ids are globally unique
 within the beads database so no spec partition is needed in the path.
 The integration branch name is `[loom] integration_branch` in
-`config.toml` (default `main`); the loom workspace has that branch
+`loom.toml` (default `main`); the loom workspace has that branch
 checked out and never switches. `loom init` materializes the loom
-workspace via `git clone <origin> .wrapix/loom/integration` on a
+workspace via `git clone <origin> .loom/integration` on a
 fresh install; existing operator workspaces run it once after
 upgrading to this layout. The lock-file location
 (`$XDG_STATE_HOME/loom/locks/<workspace-basename>/<spec>.lock`) is
@@ -156,7 +156,7 @@ warm; `.git/` and `.wrapix/` (extra-mount staging) survive.
 exists → reuse; missing → clone fresh from the loom workspace.
 
 **Garbage collection.** At `loom loop` startup, under the spec
-advisory lock, loom enumerates `.wrapix/loom/beads/` and drops
+advisory lock, loom enumerates `.loom/beads/` and drops
 every bead workspace whose bead is `closed`. The sweep is workspace-global
 (not spec-scoped) — a closed bead cannot be in flight, so the sweep
 is safe regardless of which spec is being loop'd. In-loop, every
@@ -262,8 +262,8 @@ the module; callers see only typed Rust methods.
 | `diff` (HEAD vs HEAD~) | `gix::diff` (`blob-diff` feature) | mature |
 | List refs / branches | `gix::Repository::references()` | mature |
 | Read commit graph / HEAD | `gix` | mature |
-| **Create loom workspace** (`loom init`) | `git clone <origin> .wrapix/loom/integration` (CLI) | one-shot, infrequent; `gix-clone` is unchecked |
-| **Create bead clone** | `git clone --local .wrapix/loom/integration .wrapix/loom/beads/<id>` then `git checkout -b loom/<id>` (CLI) | hardlinks loom workspace's `.git/objects`; self-contained `.git/` inside bind mount |
+| **Create loom workspace** (`loom init`) | `git clone <origin> .loom/integration` (CLI) | one-shot, infrequent; `gix-clone` is unchecked |
+| **Create bead clone** | `git clone --local .loom/integration .loom/beads/<id>` then `git checkout -b loom/<id>` (CLI) | hardlinks loom workspace's `.git/objects`; self-contained `.git/` inside bind mount |
 | **Pre-attempt reset of bead clone** | `git reset --hard HEAD` + `git clean -fdx --exclude=target --exclude=.git --exclude=.wrapix` (CLI) | clean working tree at bead-branch HEAD while preserving `target/`, `.git/`, and `.wrapix/` |
 | **Push bead branch to loom workspace** | `git push origin loom/<id>` (CLI) | one push per successful bead |
 | **Rebase + ff into integration branch** | `git rebase` + `git merge --ff-only` (CLI) | `gix-merge` cannot persist `MERGE_HEAD`/`MERGE_MSG`; avoids index dance |
@@ -482,7 +482,7 @@ stream for every bead spawn to disk via a tee-style sink,
 regardless of terminal verbosity:
 
 ```
-.wrapix/loom/logs/<spec-label>/<bead-id>-<utc-timestamp>.jsonl
+.loom/logs/<spec-label>/<bead-id>-<utc-timestamp>.jsonl
 ```
 
 One file per bead spawn — parallel batches never interleave inside
@@ -701,7 +701,7 @@ short-circuits to a path-only output before any rendering happens.
 `-b` combines with everything (it just changes which file is selected).
 
 **Empty-logs case.** Bare `loom logs` against an empty
-`.wrapix/loom/logs/` prints a one-line message
+`.loom/logs/` prints a one-line message
 (`No bead logs yet. Run 'loom loop' to generate one.`) and exits 0 —
 this is normal post-`loom init`, not an error. `--path` against an
 empty logs directory exits non-zero with a clear error so scripts
@@ -801,7 +801,7 @@ authorization mechanism.
 molecule-completion push gate's audit-pass: the gate constructs
 `GateSuccess`, calls
 `MarkerProof::from_gate_success(success, loom_workspace)`, writes
-the sealed marker atomically to `.wrapix/loom/marker.json`, then
+the sealed marker atomically to `.loom/marker.json`, then
 runs the integration push — all inside the same critical section.
 prek's pre-push hook chain fires on the push; its first hook
 (`loom gate verify-marker`) reads the just-minted marker and
@@ -1481,7 +1481,7 @@ template composition, and the snapshot-test contract all live there.
 
 ### SQLite State Store
 
-Workflow state lives in `.wrapix/loom/state.db`. The schema is owned by
+Workflow state lives in `.loom/state.db`. The schema is owned by
 `loom-driver` and migrated on open (embed migrations via `rusqlite`'s
 `execute_batch`).
 
@@ -1828,7 +1828,7 @@ conversation is lost. Recovery uses two pieces — the original phase prompt
 session — joined by a hook script that re-injects both after compaction.
 
 **Per-session scratch directory.** At session start the driver creates
-`.wrapix/loom/scratch/<key>/`:
+`.loom/scratch/<key>/`:
 
 - `prompt.txt` — the initial prompt sent to the agent at session start.
 - `scratch.md` — empty scratchpad. The agent appends decisions, open
@@ -1872,7 +1872,7 @@ respectively.
 
 ## Configuration
 
-Loom reads `<workspace>/config.toml` by default; setting the
+Loom reads `<workspace>/loom.toml` by default; setting the
 `LOOM_CONFIG` env var overrides the path (absolute or cwd-relative).
 TOML, parsed natively via the `toml` crate into a typed `LoomConfig`
 struct with `#[serde(default)]` on all fields so the file can be
@@ -1891,7 +1891,7 @@ priority = 2
 default_type = "task"
 
 [loom]
-# Name of the branch the loom workspace (`.wrapix/loom/integration/`)
+# Name of the branch the loom workspace (`.loom/integration/`)
 # has checked out and into which bead branches rebase + fast-forward.
 # Loom pushes this branch to `origin/<integration_branch>` from the
 # gate. Default `main`.
@@ -1923,7 +1923,7 @@ max_iterations = 10
 max_retries = 2
 
 [logs]
-# Delete log files under .wrapix/loom/logs/ older than this many days on
+# Delete log files under .loom/logs/ older than this many days on
 # `loom loop` startup. 0 disables sweeping (keep forever).
 retention_days = 14
 
@@ -2018,10 +2018,10 @@ are handled in Rust code rather than exposed as user-tunable
 parameters.
 
 **Single config file.** All loom configuration — including every
-`[runner.<tier>.<name>]` block — lives in `<workspace>/config.toml`.
-There is no separate `.loom/config.toml` or auxiliary config file, so
-the entire `.wrapix/` tree can be gitignored without carve-outs. Set
-`LOOM_CONFIG` to relocate.
+`[runner.<tier>.<name>]` block — lives in `<workspace>/loom.toml` at
+the workspace root. There is no auxiliary config file inside
+`.loom/`, so the entire `.loom/` state tree can be gitignored
+without carve-outs. Set `LOOM_CONFIG` to relocate.
 
 ## Success Criteria
 
@@ -2219,7 +2219,7 @@ Criteria.
 **Disk log**
 
 - Full raw JSONL event stream is written to
-      `.wrapix/loom/logs/<spec-label>/<bead-id>-<timestamp>.jsonl` for every
+      `.loom/logs/<spec-label>/<bead-id>-<timestamp>.jsonl` for every
       bead spawn, regardless of terminal verbosity
   [test](run_writes_per_bead_jsonl_log)
 - Per-event flush: every `LogSink::emit` call calls `flush()` so `tail -f` and SSE-via-file-watcher consumers see events at emit time
@@ -2256,18 +2256,18 @@ Criteria.
 ### Bead dispatch
 
 - `loom init` materializes the loom workspace at
-      `.wrapix/loom/integration/` (one-shot clone from origin) — the
+      `.loom/integration/` (one-shot clone from origin) — the
       workspace is separate from the operator's `/workspace`
   [test](loom_init_materializes_loom_workspace)
 - `loom loop` never touches the operator's working tree at
       `/workspace`; all dispatch runs against the loom workspace
   [test?](loom_loop_does_not_touch_operator_workspace)
 - The integration branch is settable via `[loom] integration_branch`
-      in `config.toml` (default `main`); the loom workspace has that
+      in `loom.toml` (default `main`); the loom workspace has that
       branch checked out and never switches
   [test](integration_branch_setting_honored_by_loop)
 - `loom loop --parallel N` creates one bead workspace per dispatched
-      bead under `.wrapix/loom/beads/<id>/`, derived from the loom
+      bead under `.loom/beads/<id>/`, derived from the loom
       workspace via `git clone --local`; bead ids are globally unique
       so no spec partition appears in the path
   [test](bead_dispatch_creates_clone_under_loom_beads)
@@ -2283,7 +2283,7 @@ Criteria.
       survive the pre-attempt reset
   [test](bead_workspace_reset_preserves_target_and_dotwrapix)
 - `loom loop` startup drops every bead workspace under
-      `.wrapix/loom/beads/` whose bead is `closed`, under the spec
+      `.loom/beads/` whose bead is `closed`, under the spec
       advisory lock
   [test](loop_startup_gc_drops_closed_bead_workspaces)
 - `loom loop` startup leaves bead workspaces alone whose bead is in
@@ -2747,8 +2747,8 @@ two agent-loop observers.
 
 ### Auxiliary commands
 
-- `loom init` creates `<workspace>/config.toml` (or `$LOOM_CONFIG` when
-      set) and `.wrapix/loom/state.db` with the default schema
+- `loom init` creates `<workspace>/loom.toml` (or `$LOOM_CONFIG` when
+      set) and `.loom/state.db` with the default schema
   [test](run_creates_config_and_state_db)
 - `loom init --rebuild` drops and repopulates the state DB from
       three sources: `specs/*.md` (one row per file), `bd list
@@ -2784,7 +2784,7 @@ two agent-loop observers.
 - `loom logs -v` (long form `--verbose`) streams assistant text
       deltas during render, matching `loom loop -v` output
   [test](replay_verbose_streams_text_deltas)
-- Bare `loom logs` against an empty `.wrapix/loom/logs/` exits 0
+- Bare `loom logs` against an empty `.loom/logs/` exits 0
       with a one-line "No bead logs yet" message; `loom logs --path`
       in the same state exits non-zero with a clear error
   [test](empty_root_returns_no_logs)
@@ -2902,7 +2902,7 @@ two agent-loop observers.
 
 ### Compaction recovery
 
-- At session start, `.wrapix/loom/scratch/<key>/` contains
+- At session start, `.loom/scratch/<key>/` contains
       `prompt.txt`, `scratch.md`, `repin.sh` for every phase command
       (plan, todo, run, check, msg)
   [test](open_creates_layout_and_drop_removes_it)
@@ -3022,14 +3022,14 @@ two agent-loop observers.
    - `loom status` — print active spec, current molecule, iteration count
      (trivial state DB query)
    - `loom logs` — pretty-render a bead's JSONL log under
-     `.wrapix/loom/logs/` via the same `AgentEvent` renderer used by
+     `.loom/logs/` via the same `AgentEvent` renderer used by
      `loom loop`. Full flag set in [Logs UX](#logs-ux).
    - `loom spec` — query spec annotations; supports `--deps` to print
      nixpkgs required by the spec's `[check]` / `[test]` / `[system]`
      / `[judge]` verifier targets
 
    **State** — workspace lifecycle and persisted state:
-   - `loom init` — create `.wrapix/loom/` config + state DB. `--rebuild`
+   - `loom init` — create `.loom/` config + state DB. `--rebuild`
      drops and repopulates the state DB from `specs/*.md`, bd state
      (one `molecules` row per open epic; finding more than one open
      epic for the same spec aborts with a structural-invariant error),
@@ -3074,7 +3074,7 @@ two agent-loop observers.
    Loom's workflow templates themselves remain compile-time Askama and
    internal — consumers do not override them.
 3. **SQLite state store** — workflow state persisted in a SQLite database
-   (`.wrapix/loom/state.db`). Tracks active specs, per-molecule
+   (`.loom/state.db`). Tracks active specs, per-molecule
    iteration counts, companions, and implementation notes.
    Reconstructable from spec files on disk and bd state via
    `loom init --rebuild`. **"Which molecule is active for spec X?"
@@ -3091,7 +3091,7 @@ two agent-loop observers.
    at dispatch (no silent default). `--profile` overrides bead labels.
 6. **Bead dispatch** — `loom loop --parallel N` (alias `-p N`) dispatches
    up to N ready beads, each in its own clone of the loom workspace
-   under `.wrapix/loom/beads/<id>/` on a per-bead branch. The operator's
+   under `.loom/beads/<id>/` on a per-bead branch. The operator's
    `/workspace` is never the bead's workdir. `--parallel 1` (default)
    runs one bead at a time; `--parallel N > 1` runs N concurrently.
    After workers finish, branches push to the loom workspace and

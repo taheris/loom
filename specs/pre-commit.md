@@ -134,7 +134,7 @@ scope:
    section.
 2. On audit-pass, the verdict gate mints `MarkerProof` from the sealed
    `GateSuccess` and atomically writes it to
-   `.wrapix/loom/marker.json` in the loom workspace.
+   `.loom/marker.json` in the loom workspace.
 3. The loom workspace runs `git push origin <integration-branch>` —
    still inside the critical section.
 4. prek's pre-push chain fires. The first hook is `loom gate

@@ -119,7 +119,7 @@ loom/
       src/                    #   status cache, integrity gate. See gate.md.
         annotation.rs         # [tier](target) parser
         dispatch.rs           # per-tier dispatch (subprocess, batched, LLM)
-        runner.rs             # toolchain detection + <workspace>/config.toml [runner.*]
+        runner.rs             # toolchain detection + <workspace>/loom.toml [runner.*]
         cache.rs              # status cache schema + reads/writes
         integrity.rs          # integrity gate (itself a [check] walk)
       tests/
@@ -878,7 +878,7 @@ the rules:
      spawn `bd dolt …` subprocess calls (containers reach the authoritative
      state via the bind-mounted Dolt socket)
    - Parallel batch dispatch: given 3 ready beads and `--parallel 3`,
-     the dispatcher creates 3 bead clones under `.wrapix/loom/beads/`,
+     the dispatcher creates 3 bead clones under `.loom/beads/`,
      spawns 3 `wrapix spawn` futures concurrently, and reports all
      results before integration
    - Parallel batch with N=1 (the default): one bead clone is created
@@ -896,9 +896,9 @@ the rules:
    - `flock` wrapper acquires/releases an exclusive lock on a file path;
      blocking variant returns when the lock is free, try-variant returns a
      typed error if held
-   - Per-spec lock path resolution: `.wrapix/loom/locks/<label>.lock` is
+   - Per-spec lock path resolution: `.loom/locks/<label>.lock` is
      created on first acquire, parent dirs created on demand
-   - Workspace lock path: `.wrapix/loom/locks/workspace.lock`
+   - Workspace lock path: `.loom/locks/workspace.lock`
    - Lock-class dispatch: `LockClass::None`, `LockClass::Spec(label)`,
      `LockClass::Workspace` are derived from the parsed CLI command before
      any side effects
@@ -908,7 +908,7 @@ the rules:
      re-acquires immediately (kernel released the flock)
 
    #### Auxiliary commands (loom-workflow)
-   - `loom init` writes a default `config.toml` and creates `state.db` with
+   - `loom init` writes a default `loom.toml` and creates `state.db` with
      the expected schema (specs, molecules, companions, meta tables)
    - `loom init` is idempotent: running twice does not clobber existing
      `current_spec` or molecule rows
@@ -923,7 +923,7 @@ the rules:
      `loom status` reflects the change
    - `loom use <unknown>` errors when the spec row is missing
    - `loom logs` (no flags) prints the path of the most recent file
-     under `.wrapix/loom/logs/` and tails it
+     under `.loom/logs/` and tails it
    - `loom logs --bead <id>` finds the most recent log for that bead;
      exits non-zero with a stderr message naming the bead id when no
      log exists
@@ -947,7 +947,7 @@ the rules:
 
    #### Loop logger (loom-workflow)
    - Every bead spawn produces a file at
-     `.wrapix/loom/logs/<spec-label>/<bead-id>-<timestamp>.jsonl` containing
+     `.loom/logs/<spec-label>/<bead-id>-<timestamp>.jsonl` containing
      the raw event stream as one JSON object per line
    - File is written for every spawn, regardless of terminal verbosity.
      The renderer and the on-disk logger both subscribe to the same
@@ -1004,7 +1004,7 @@ the rules:
      for batched invocations
    - Toolchain detection: `Cargo.toml` at root → cargo nextest runner
      template; `pyproject.toml` → pytest; `go.mod` → go test
-   - `<workspace>/config.toml` loading: `[runner.<tier>.<name>]`
+   - `<workspace>/loom.toml` loading: `[runner.<tier>.<name>]`
      tables parse into per-tier runners with `match`/`command`/
      `target`/`join`/`parse`/`cwd` fields; missing file falls back to
      detected defaults
@@ -1044,7 +1044,7 @@ the rules:
    - **Parallel run end-to-end** — `loom loop --parallel 2` with two
      ready beads dispatches two mock-agent spawns concurrently
      (overlapping spawn timestamps captured by the mock), each in its
-     own bead clone under `.wrapix/loom/beads/<id>/`, then rebases +
+     own bead clone under `.loom/beads/<id>/`, then rebases +
      fast-forwards both branches into the integration branch
      sequentially.
    - **`GitClient` round-trip** — create bead clone, list, status,
@@ -1223,13 +1223,13 @@ the rules:
   injection, hang/timeout simulation, multi-turn conversations. These
   belong in parser unit tests with inline string literals, not in mock
   scripts.
-- **`loom.toml` per-repo verifier registry** — annotations carry
-  the verifier directly (target name for `[test]` / `[judge]`,
-  command for `[check]` / `[system]`); no separate config maps names
-  to commands. Toolchain detection (`Cargo.toml` at repo root →
-  cargo nextest, etc.) supplies defaults for batched-tier runners;
-  `<workspace>/config.toml` is the override path when defaults
-  don't fit, not a per-verifier registry.
+- **Per-repo verifier registry separate from `loom.toml`** —
+  annotations carry the verifier directly (target name for `[test]`
+  / `[judge]`, command for `[check]` / `[system]`); no separate
+  config maps names to commands. Toolchain detection (`Cargo.toml`
+  at repo root → cargo nextest, etc.) supplies defaults for
+  batched-tier runners; `<workspace>/loom.toml` is the override
+  path when defaults don't fit, not a per-verifier registry.
 - **`cargo fuzz` under `nix flake check`** — exposed as `nix run .#fuzz-loom`
   for on-demand or nightly runs only. proptest covers invariants in CI.
 - **Hard CI-time NFR for the verify path** — the per-tier budgets

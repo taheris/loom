@@ -152,7 +152,7 @@ selecting the audit scope:
 | **`loom gate judge`** | LLM judge, one lane | Runs only criterion-attached `[judge]` verifiers — skips the rubric walk. Inspection-only, like `review`. |
 | **`loom gate rubric`** | LLM judge, one lane | Runs only the rubric walk over the diff — skips criterion-attached judges. Inspection-only, like `review`. |
 | **`loom gate mint`** | Act | Walks the rubric (per-`--bead`/`--diff`/`--files` scope: LLM rubric only; per-`--tree` scope: deterministic verifiers + LLM rubric) and mints fix-up beads from typed findings, bonded per-spec via the molecule lifecycle. The sole driver-side mint chokepoint and the actor in `loom loop`'s per-bead path. See [*Findings and Minting*](#findings-and-minting). |
-| **`loom gate verify-marker`** | Trust check | Reads `.wrapix/loom/marker.json` from the current workspace, deserializes a typed `MarkerProof`, computes the current workspace fingerprint (tree OID at HEAD + porcelain-clean precondition), and exits 0 iff the marker validates against the current fingerprint. Used by prek's pre-push hook chain to short-circuit redundant work on driver-loop integration pushes. See [*Marker*](#marker). |
+| **`loom gate verify-marker`** | Trust check | Reads `.loom/marker.json` from the current workspace, deserializes a typed `MarkerProof`, computes the current workspace fingerprint (tree OID at HEAD + porcelain-clean precondition), and exits 0 iff the marker validates against the current fingerprint. Used by prek's pre-push hook chain to short-circuit redundant work on driver-loop integration pushes. See [*Marker*](#marker). |
 
 ### Scope flags
 
@@ -539,7 +539,7 @@ The `MarkerProof` mint at the molecule-completion push gate (see
 `## Marker` below) is a **separate** mint surface, owned by
 `loom-gate::marker` with its own `pub(crate)` constructor — it
 writes a single content-addressed JSON file to
-`.wrapix/loom/marker.json`, never bd state. "Audit makes no bd
+`.loom/marker.json`, never bd state. "Audit makes no bd
 writes" remains true through that path; the marker is filesystem
 state, not bd state.
 
@@ -1075,7 +1075,7 @@ fingerprint is structurally derived from git's own object store.
 
 ### File location and lifecycle
 
-Marker lives at `.wrapix/loom/marker.json` in the loom workspace —
+Marker lives at `.loom/marker.json` in the loom workspace —
 a single file, overwritten on each mint. Atomic write via
 `<path>.tmp` + rename. No per-commit history (debuggable via
 `loom logs` and bd notes), no sweeping needed. The file lives in
@@ -1108,7 +1108,7 @@ state at HEAD; it does not rebase. The mint sequence is:
    `loom gate review --diff <molecule.base_commit>..HEAD`.
 3. On audit-pass, constructs `GateSuccess`; calls
    `MarkerProof::from_gate_success(success, loom_workspace)`;
-   `write_to(".wrapix/loom/marker.json")`.
+   `write_to(".loom/marker.json")`.
 4. Runs `git push origin <integration-branch>` — still inside the
    critical section.
 5. Releases `index.lock`.
@@ -1124,7 +1124,7 @@ before starting its own critical section.
 ### Consumer contract
 
 `loom gate verify-marker` is the prek-side consumer. It calls
-`MarkerProof::read_and_validate(".wrapix/loom/marker.json", ".")`
+`MarkerProof::read_and_validate(".loom/marker.json", ".")`
 and exits 0 on `Ok`, non-zero on `Err`. The exit code is the
 contract; the diagnostic on stderr names the specific
 `MarkerError` variant for human debugging but is not part of the
@@ -1154,7 +1154,7 @@ The marker is forgery-resistant against three threat shapes:
   cannot mint a `MarkerProof` because the constructor requires a
   sealed `GateSuccess`, and `GateSuccess` is `pub(crate)` to the
   driver's gate-invocation module. An agent that writes a
-  hand-crafted JSON file to `.wrapix/loom/marker.json` produces a
+  hand-crafted JSON file to `.loom/marker.json` produces a
   file that deserializes to `MarkerProof` only insofar as the JSON
   shape matches; the validation step still recomputes the
   workspace fingerprint and matches against the file's claimed
@@ -1170,7 +1170,7 @@ The marker is forgery-resistant against three threat shapes:
 The marker is workspace-local — never trusted across machines or
 across clones of the same repo. The driver's loom workspace, the
 operator's `/workspace`, and the bead workspaces are separate
-clones; each has its own `.wrapix/loom/marker.json` (or doesn't).
+clones; each has its own `.loom/marker.json` (or doesn't).
 The only writer is the driver-side verdict gate in the loom
 workspace; operator and bead workspaces never have a marker, so
 their prek pre-push falls through to the full slow tier.
@@ -1349,7 +1349,7 @@ The dispatcher's job:
    once, parse per-target verdicts from the output.
 4. For unmatched annotations, fall back to per-annotation spawn.
 
-**Schema: `[runner.<tier>.<name>]` in `<workspace>/config.toml`.**
+**Schema: `[runner.<tier>.<name>]` in `<workspace>/loom.toml`.**
 Each runner declares how to recognise its annotations, how to format
 each target, how to join into a batch, how to parse per-target
 results, and where to run from.
@@ -1396,7 +1396,7 @@ Resolution order when spawning a command:
 **Loom-the-library ships defaults** for the common toolchains —
 nextest for `[test]` if a `Cargo.toml` is detected, nix for
 `[system]` derivations, pytest if a `pyproject.toml` is detected.
-Consumers extend or override in `<workspace>/config.toml`. **Loom-
+Consumers extend or override in `<workspace>/loom.toml`. **Loom-
 the-library has no privileged knowledge of any consumer's layout** —
 the defaults are heuristics for common shapes, not assumptions.
 
@@ -1413,7 +1413,7 @@ on verifier kind:
 
 | Verifier kind | Source of inputs |
 |---|---|
-| `[test](name)` | Derived from test framework metadata. For Rust: walk `cargo metadata`, resolve the test's owning crate, declare the crate's source dirs. For pytest: pytest's collection output. For other frameworks: `<workspace>/config.toml` `[runner.<tier>] inputs_for_test = "<command>"`. |
+| `[test](name)` | Derived from test framework metadata. For Rust: walk `cargo metadata`, resolve the test's owning crate, declare the crate's source dirs. For pytest: pytest's collection output. For other frameworks: `<workspace>/loom.toml` `[runner.<tier>] inputs_for_test = "<command>"`. |
 | `[check]` / `[system]` referencing a **script** | A `# loom-inputs: <comma-separated globs>` header line in the script. Format is uniform across script languages — the line is found by literal-string search, not by interpreting shebangs. |
 | `[check]` / `[system]` referencing a **binary** that supports the input-query protocol | The binary returns inputs via `<binary> --print-inputs <remaining-argv>` printing JSON `{"inputs": ["glob1", "glob2"]}` to stdout. |
 | `[check]` / `[system]` — fallback | Heuristic path extraction from the command string. `grep -q 'X' path/to/file` → `path/to/file`. `cargo test -p mycrate --lib testname` → `mycrate`'s sources via cargo metadata. Conservative; misses are caught by the standing-stage safety-net sweep. |

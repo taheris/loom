@@ -35,5 +35,5 @@ sessions.
 | **Molecule** | A cross-cutting unit of work from one plan session: contains one epic per touched spec plus the tasks fanned out from each. At most one open epic per spec at a time. |
 | **pi** | Anthropic's stdio-RPC agent runtime (pi-mono); one backend Loom drives |
 | **Profile** | Image-manifest entry naming the sandbox image used for a given phase |
-| **Scratchpad** | Per-session note file under `.wrapix/loom/scratch/<key>/`, used for compaction recovery |
+| **Scratchpad** | Per-session note file under `.loom/scratch/<key>/`, used for compaction recovery |
 | **SpecLabel** | The kebab-case identifier matching a `specs/<label>.md` file |

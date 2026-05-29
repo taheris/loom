@@ -73,16 +73,37 @@ backend calls `set_model` after spawn if the phase config specifies a
 provider/model; the direct backend reads `agent.model_id` directly
 into its `Conversation`'s `ModelId`.
 
-`[phase.plan]` is also a valid per-phase key, but the resolution path
-differs: `loom plan` is interactive (human-in-the-loop) and shells to
-the backend's interactive entry point rather than going through the
-agent-backend abstraction. Today only claude is wired up there, via
-`wrapix run`; pi would need an interactive frontend before it could be
-selected for `plan`.
+`[phase.plan]` and `[phase.msg]` are also valid per-phase keys, but
+the interactive phases (`loom plan`, `loom msg --chat`) bypass this
+dispatch entirely — see [Interactive Shell-Out](#interactive-shell-out)
+below.
 
 Mock backends slot into the same dispatch — they are ZSTs too, so a
 test-time entry parameterized with `MockBackend` works without any
 production code change.
+
+### Interactive Shell-Out
+
+`loom plan` and `loom msg --chat` bypass the agent-backend abstraction
+and shell out to an interactive REPL with inherited stdio. Both invoke
+`wrapix run <workspace> claude --dangerously-skip-permissions <prompt>`
+and let the spawned process attach directly to the controlling terminal;
+the driver-side stream-json parser does not run on this path. Today only
+claude is wired up here; pi would need an interactive frontend before it
+could be selected.
+
+Per-phase config still resolves: each phase's `profile` key flows
+through `LoomConfig::agent_for(Phase)` exactly like the non-interactive
+phases. The resolved name is passed to `wrapix run` as an explicit
+`--profile <name>` argv flag. Argv is the sole profile-selection
+contract on this path; environment-variable hand-off is not part of
+the spec.
+
+`wrapix run --profile <name>` must resolve `<name>` against the same
+profile-image manifest used by the non-interactive `wrapix spawn` path
+(see [harness.md — Profile-Image
+Manifest](harness.md#profile-image-manifest)) — the two paths must
+select the same image for the same name.
 
 ### Agent Backend Trait
 
@@ -567,7 +588,7 @@ tool types visible in logs.
 ```
 
 **Deny-list.** A configurable `denied_tools` list under `[security]` in
-`config.toml` (e.g. `denied_tools = ["WebFetch"]`) rejects specific tool
+`loom.toml` (e.g. `denied_tools = ["WebFetch"]`) rejects specific tool
 names with `approved: false`. Empty by default — the container sandbox is
 the trust boundary and logging is the primary mitigation. The slot exists
 today so a deny rule can be added without a loom release if Claude Code
@@ -828,6 +849,13 @@ connection, network filtering, session audit logging.
 - Pi backend tolerates pi rejection of `set_thinking_level` without aborting the handshake
   [test](set_thinking_level_tolerates_pi_rejection)
 
+### Interactive shell-out
+
+- `loom plan` passes `--profile <name>` on the `wrapix run` argv, with `<name>` resolved through `LoomConfig::agent_for(Phase::Plan)`
+  [test?](plan_runner_passes_resolved_profile_to_wrapix_run)
+- `loom msg --chat` passes `--profile <name>` on the `wrapix run` argv, with `<name>` resolved through `LoomConfig::agent_for(Phase::Msg)`
+  [test?](msg_chat_passes_resolved_profile_to_wrapix_run)
+
 ### Container integration
 
 - Loom spawns containers via `wrapix spawn --spawn-config <file>
@@ -847,7 +875,7 @@ connection, network filtering, session audit logging.
 - Single sandbox image builds with all three agent binaries (claude, pi,
   `loom-direct-runner`) layered in; runtime agent selection is the
   responsibility of the entrypoint per *Entrypoint Agent Selection* and
-  Requirement #7 above.
+  Requirement #8 above.
   [system](nix build .#sandbox)
 - All three agent binaries (`pi`, `claude`, `loom-direct-runner`) launch
   inside the built sandbox image and respond to `--version`; failures
@@ -910,23 +938,31 @@ connection, network filtering, session audit logging.
    `agent.provider` and `agent.model_id`. Valid `agent.backend` values are
    `claude`, `pi`, and `direct`. `--agent` CLI flag overrides all phase
    config for the current invocation.
-7. **Agent runtime layer** — the image builder composes two orthogonal axes:
+7. **Interactive shell-out profile contract** — `loom plan` and `loom msg
+   --chat` bypass the agent-backend abstraction (so stdio can attach as a
+   REPL) and invoke `wrapix run <workspace> claude
+   --dangerously-skip-permissions <prompt>` directly. The profile resolved
+   by `LoomConfig::agent_for(Phase)` is passed to `wrapix run` as an
+   explicit `--profile <name>` argv flag. Argv is the sole profile-selection
+   contract on this path; environment-variable hand-off is not part of
+   the contract.
+8. **Agent runtime layer** — the image builder composes two orthogonal axes:
    *workspace profile* (base, rust, python) and *agent runtime* (claude, pi,
    direct). When `WRAPIX_AGENT=pi`, the pi runtime layer (Node.js + pi
    binary) is added to whichever workspace profile is configured for the
    bead. When `WRAPIX_AGENT=direct`, the direct runtime layer (statically-
    linked `loom-direct-runner` binary) is added. No standalone profile
    proliferation per runtime.
-8. **Entrypoint agent selection** — `entrypoint.sh` checks `WRAPIX_AGENT` and:
+9. **Entrypoint agent selection** — `entrypoint.sh` checks `WRAPIX_AGENT` and:
    - `claude` (default): existing behavior (Claude config merging, hooks,
      `claude --dangerously-skip-permissions`)
    - `pi`: skips Claude-specific config, starts `pi --mode rpc` listening on
      stdin/stdout
    - `direct`: skips Claude-specific config, exec's `loom-direct-runner`
      listening on stdin/stdout
-9. **Event normalization** — all three backends emit a common `AgentEvent` enum so
-   the workflow engine does not need backend-specific event handling.
-10. **JSONL framing** — all three backends' wire protocols use JSON Lines
+10. **Event normalization** — all three backends emit a common `AgentEvent` enum so
+    the workflow engine does not need backend-specific event handling.
+11. **JSONL framing** — all three backends' wire protocols use JSON Lines
     (one complete JSON object per line, separated by `\n`). The JSONL
     reader splits on `\n` only, not Unicode line separators (U+2028,
     U+2029). Each line is independently parseable.

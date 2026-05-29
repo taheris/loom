@@ -73,10 +73,10 @@ abstraction.
 
 ## State
 
-Loom's state lives under `.wrapix/loom/` in the workspace:
+Loom's state lives under `.loom/` in the workspace:
 
 ```
-.wrapix/loom/
+.loom/
 ├── state.db          # SQLite: specs, molecules, beads, notes, companions
 ├── workspace.lock    # Held by `loom init`
 ├── *.lock            # Per-spec locks, named after the SpecLabel
