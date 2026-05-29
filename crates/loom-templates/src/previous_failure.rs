@@ -186,17 +186,16 @@ fn render_body(failure: &PreviousFailure) -> String {
 }
 
 fn render_review_concern(summary: &str, findings: &[Finding]) -> String {
-    let mut out = format!(
-        "Review raised {n} concern(s) — {summary}",
-        n = findings.len(),
-    );
+    let mut out = format!("Review raised a concern: {summary}");
     for finding in findings {
-        let evidence_head = finding.evidence.lines().next().unwrap_or("").trim();
         out.push_str("\n\n");
         out.push_str(finding.token.as_wire());
-        if !evidence_head.is_empty() {
-            out.push_str(": ");
-            out.push_str(evidence_head);
+        out.push_str(" @ ");
+        out.push_str(&finding.target.canonical_form());
+        let evidence = finding.evidence.trim_end();
+        if !evidence.is_empty() {
+            out.push('\n');
+            out.push_str(evidence);
         }
     }
     out
@@ -363,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn review_concern_renders_with_summary_and_finding_count() {
+    fn review_concern_renders_with_summary_and_per_finding_block() {
         let pf = PreviousFailure::ReviewConcern {
             summary: "two findings".into(),
             findings: vec![
@@ -373,20 +372,24 @@ mod tests {
         };
         let rendered = pf.to_string();
         assert!(
-            rendered.starts_with("Review raised 2 concern(s) — two findings"),
+            rendered.starts_with("Review raised a concern: two findings"),
             "framing prefix missing: {rendered}",
         );
         assert!(
-            rendered.contains("verifier-bypass"),
-            "first token missing: {rendered}",
+            rendered.contains("verifier-bypass @ annotation:cargo test --lib sample"),
+            "first finding token+target missing: {rendered}",
         );
         assert!(
             rendered.contains("test mocks the agent backend"),
             "first finding evidence missing: {rendered}",
         );
         assert!(
-            rendered.contains("weak-assertion"),
-            "second token missing: {rendered}",
+            rendered.contains("weak-assertion @ annotation:cargo test --lib sample"),
+            "second finding token+target missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("asserts only the prefix"),
+            "second finding evidence missing: {rendered}",
         );
     }
 
@@ -429,8 +432,16 @@ mod tests {
         }
         .to_string();
         assert!(
-            review.starts_with("Review raised 1 concern(s) — one finding"),
+            review.starts_with("Review raised a concern: one finding"),
             "{review}",
+        );
+        assert!(
+            review.contains("judge-flag @ annotation:cargo test --lib sample"),
+            "review finding token+target missing: {review}",
+        );
+        assert!(
+            review.contains("judge said no"),
+            "review finding evidence missing: {review}",
         );
 
         let bad_walk_concern = PreviousFailure::BadWalk(BadWalk::Concern {

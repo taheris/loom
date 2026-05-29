@@ -93,9 +93,10 @@ Port templates to Askama.
 Retry attempt 1 — previous attempt failed with:
 
 <agent-output>
-Review raised 1 concern(s) — test mocks the agent backend instead of running the live driver
+Review raised a concern: test mocks the agent backend instead of running the live driver
 
-verifier-bypass: test mocks the agent backend instead of running the live driver
+verifier-bypass @ annotation:cargo test --lib parse_walks_all_md_files
+test mocks the agent backend instead of running the live driver
 </agent-output>
 
 ## Instructions

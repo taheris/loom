@@ -489,10 +489,13 @@ fn previous_failure_renders_review_concern_with_summary_and_findings() {
     };
     let rendered = pf.to_string();
     assert!(
-        rendered.starts_with("Review raised 1 concern(s) — mock under test"),
+        rendered.starts_with("Review raised a concern: mock under test"),
         "framing missing: {rendered}",
     );
-    assert!(rendered.contains("mock-discipline"), "{rendered}");
+    assert!(
+        rendered.contains("mock-discipline @ test:tests/example.rs"),
+        "token+target missing: {rendered}",
+    );
     assert!(
         rendered.contains("mock is the thing under test"),
         "{rendered}"

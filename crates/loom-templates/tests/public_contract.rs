@@ -89,10 +89,17 @@ fn typed_retry_context_round_trips_through_public_re_exports() {
     };
     let rendered = review.to_string();
     assert!(
-        rendered.starts_with("Review raised 1 concern(s) — spec coherence wobble"),
+        rendered.starts_with("Review raised a concern: spec coherence wobble"),
         "{rendered}",
     );
-    assert!(rendered.contains("spec-coherence-fail"), "{rendered}");
+    assert!(
+        rendered.contains("spec-coherence-fail @ criterion:gate:verifier-honesty"),
+        "{rendered}",
+    );
+    assert!(
+        rendered.contains("annotation does not exercise the contract"),
+        "{rendered}",
+    );
 
     let bad = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern { finding_count: 2 });
     assert!(bad.to_string().contains("LOOM_FINDING"));
