@@ -670,8 +670,8 @@ fn exit_code_for_gate(gate: &GateOutcome) -> ExitCode {
 }
 
 fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
     let molecules = if rebuild {
-        let runtime = tokio::runtime::Runtime::new()?;
         runtime.block_on(async {
             let bd = BdClient::new();
             init::fetch_active_molecules(&bd).await
@@ -680,6 +680,10 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
         Vec::new()
     };
     let report = init::run(workspace, init::InitOpts { rebuild }, &molecules)?;
+    let migration = runtime.block_on(async {
+        let bd = BdClient::new();
+        init::migrate_legacy_worktrees(workspace, &bd).await
+    })?;
     println!("loom init: workspace={}", workspace.display());
     println!(
         "  config: {} ({})",
@@ -702,6 +706,26 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
             },
         ),
         None => println!("  integration: skipped (workspace has no `origin` remote)"),
+    }
+    if !migration.reaped.is_empty() {
+        println!(
+            "  migrated {} stale bead worktree(s) from pre-loom-workspace layout",
+            migration.reaped.len(),
+        );
+    }
+    if !migration.warned.is_empty() {
+        println!(
+            "  {} stale bead worktree(s) still open — resolve manually:",
+            migration.warned.len(),
+        );
+        for entry in &migration.warned {
+            println!(
+                "    {} ({}) — `loom msg {id}` or `bd close {id}`",
+                entry.path.display(),
+                entry.bead_id,
+                id = entry.bead_id,
+            );
+        }
     }
     if let Some(rb) = report.rebuild {
         println!(

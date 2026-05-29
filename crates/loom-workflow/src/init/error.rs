@@ -50,4 +50,18 @@ pub enum InitError {
 
     /// active molecule {id} has no `loom.base_commit` metadata and its parent {parent} also lacks it — set it with: bd update {id} --set-metadata loom.base_commit=<sha>
     MoleculeMissingBaseCommitNoParentMetadata { id: String, parent: String },
+
+    /// failed to enumerate legacy bead worktrees at {path}
+    ReadLegacyWorktree {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    /// failed to remove legacy bead worktree at {path}
+    ReapLegacyWorktree {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
