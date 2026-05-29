@@ -545,7 +545,8 @@ fn summarise_health(
                 tier: *tier,
                 target: target.clone(),
             }),
-            IntegrityFinding::MultipleAnnotations { .. } => None,
+            IntegrityFinding::MultipleAnnotations { .. }
+            | IntegrityFinding::UnneededPendingMarker { .. } => None,
         })
         .collect();
 

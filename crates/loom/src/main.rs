@@ -1374,6 +1374,7 @@ fn is_allowlisted_integrity_finding(finding: &loom_gate::IntegrityFinding) -> bo
         loom_gate::IntegrityFinding::UnresolvedAnnotation { spec, target, .. } => (spec, target),
         loom_gate::IntegrityFinding::UnresolvedCargoTestName { spec, target, .. } => (spec, target),
         loom_gate::IntegrityFinding::StubTestFunction { spec, target, .. } => (spec, target),
+        loom_gate::IntegrityFinding::UnneededPendingMarker { spec, target, .. } => (spec, target),
         loom_gate::IntegrityFinding::MultipleAnnotations { .. } => return false,
     };
     let spec_str = spec.to_string_lossy();

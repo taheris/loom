@@ -82,18 +82,32 @@ pub enum IntegrityFinding {
         target: String,
         test_name: String,
     },
+    /// Annotation carries the `?` pending modifier but its target now
+    /// resolves (for `[test?]`, also has a non-stub body). The marker is
+    /// stale — the implementer landed the verifier but did not drop the
+    /// `?` in the same diff. Self-cleaning semantics per
+    /// `specs/gate.md` § Pending modifier: the marker itself becomes the
+    /// finding the moment the condition it suppressed resolves.
+    UnneededPendingMarker {
+        spec: PathBuf,
+        line: u32,
+        tier: Tier,
+        target: String,
+    },
 }
 
 impl IntegrityFinding {
     /// True iff this finding is terminal at the push gate per
-    /// `specs/gate.md` § Integrity gate — only
-    /// [`Self::UnresolvedAnnotation`] and [`Self::StubTestFunction`]
+    /// `specs/gate.md` § Integrity gate. [`Self::UnresolvedAnnotation`],
+    /// [`Self::StubTestFunction`], and [`Self::UnneededPendingMarker`]
     /// refuse the push and raise `loom:clarify`. The remaining variants
     /// surface as warnings elsewhere.
     pub fn is_push_gate_terminal(&self) -> bool {
         matches!(
             self,
-            Self::UnresolvedAnnotation { .. } | Self::StubTestFunction { .. }
+            Self::UnresolvedAnnotation { .. }
+                | Self::StubTestFunction { .. }
+                | Self::UnneededPendingMarker { .. }
         )
     }
 }
@@ -148,6 +162,19 @@ impl std::fmt::Display for IntegrityFinding {
                 tier,
                 target,
                 test_name
+            ),
+            Self::UnneededPendingMarker {
+                spec,
+                line,
+                tier,
+                target,
+            } => write!(
+                f,
+                "{}:{}: annotation [{}?]({}) is now resolved — drop the ? marker",
+                spec.display(),
+                line,
+                tier,
+                target
             ),
         }
     }
@@ -746,6 +773,31 @@ pub fn format_clarify_options(findings: &[IntegrityFinding]) -> String {
                     line = line,
                 );
             }
+            IntegrityFinding::UnneededPendingMarker {
+                spec,
+                line,
+                tier,
+                target,
+            } => {
+                let _ = write!(
+                    out,
+                    "## Options — Stale `?` on [{tier}?]({target}) at {spec}:{line}\n\n\
+                     ### Option 1 — Drop the `?` from the annotation\n\
+                     Change `[{tier}?]({target})` to `[{tier}]({target})` at \
+                     {spec}:{line}. The implementation has caught up to the \
+                     claim; this is the expected resolution and almost always \
+                     the right one.\n\n\
+                     ### Option 2 — Retarget to the intended verifier\n\
+                     If the resolution is incidental (the target name collides \
+                     with an unrelated symbol now visible in the workspace), \
+                     replace `{target}` with the actual intended verifier and \
+                     keep `?` until that one resolves.\n",
+                    tier = tier,
+                    target = target,
+                    spec = spec.display(),
+                    line = line,
+                );
+            }
             _ => {}
         }
     }
@@ -782,6 +834,14 @@ pub fn check(
 /// [`IntegrityFinding::StubTestFunction`] if the resolved test function
 /// is a stub. Distinct annotations on distinct criteria are independent
 /// — flagging one does not suppress findings on the others.
+///
+/// Annotations carrying the `?` pending modifier flip the outcome per
+/// `specs/gate.md` § Pending modifier: unresolved targets pass silently
+/// (the implementer is allowed to defer the verifier) and resolved
+/// targets emit [`IntegrityFinding::UnneededPendingMarker`] — the
+/// self-cleaning marker has gone stale. For `[test?]`, a `_pending_stub`
+/// body counts as "implementation not yet present" and passes silently
+/// the same way; the marker only fires once the body becomes real.
 pub fn check_forward(
     annotations: &[Annotation],
     repo_root: &Path,
@@ -796,6 +856,14 @@ pub fn check_forward(
             Tier::Test => test_resolver.resolves(&ann.target),
             Tier::Judge => resolves_judge_path(&ann.target, &ann.source_spec, repo_root),
         };
+        if ann.pending {
+            if let Some(finding) =
+                pending_forward_finding(ann, resolved, test_resolver, stub_scanner)
+            {
+                out.push(finding);
+            }
+            continue;
+        }
         if !resolved {
             out.push(IntegrityFinding::UnresolvedAnnotation {
                 spec: ann.source_spec.clone(),
@@ -840,6 +908,42 @@ pub fn check_forward(
         }
     }
     out
+}
+
+/// Outcome for a `[tier?](target)` annotation: `None` (silent pass)
+/// when the marker is still load-bearing — the target does not resolve,
+/// or `[test?]`'s body is still a `_pending_stub`, or
+/// `[check?](cargo test … name)`'s embedded test name is missing or
+/// stubbed. `Some(UnneededPendingMarker)` when every condition the
+/// marker was suppressing has resolved, so the marker itself is the
+/// finding.
+fn pending_forward_finding(
+    ann: &Annotation,
+    resolved: bool,
+    test_resolver: &dyn TestPathResolver,
+    stub_scanner: &dyn StubScanner,
+) -> Option<IntegrityFinding> {
+    if !resolved {
+        return None;
+    }
+    if ann.tier == Tier::Test
+        && let Some(leaf) = test_target_leaf(&ann.target)
+        && stub_scanner.is_stub(leaf)
+    {
+        return None;
+    }
+    if ann.tier == Tier::Check
+        && let Some(test_name) = extract_cargo_test_name(&ann.target)
+        && (!test_resolver.resolves(test_name) || stub_scanner.is_stub(test_name))
+    {
+        return None;
+    }
+    Some(IntegrityFinding::UnneededPendingMarker {
+        spec: ann.source_spec.clone(),
+        line: ann.line,
+        tier: ann.tier,
+        target: ann.target.clone(),
+    })
 }
 
 /// Atomic-acceptance direction: each criterion carries exactly one
@@ -1980,7 +2084,7 @@ fn delta_helper() {
     }
 
     #[test]
-    fn is_push_gate_terminal_holds_for_unresolved_and_stub_only() {
+    fn is_push_gate_terminal_holds_for_unresolved_stub_and_unneeded_marker() {
         let spec = PathBuf::from("specs/a.md");
         assert!(
             IntegrityFinding::UnresolvedAnnotation {
@@ -2002,6 +2106,15 @@ fn delta_helper() {
             .is_push_gate_terminal()
         );
         assert!(
+            IntegrityFinding::UnneededPendingMarker {
+                spec: spec.clone(),
+                line: 1,
+                tier: Tier::Check,
+                target: "true".into(),
+            }
+            .is_push_gate_terminal()
+        );
+        assert!(
             !IntegrityFinding::UnresolvedCargoTestName {
                 spec: spec.clone(),
                 line: 1,
@@ -2018,6 +2131,44 @@ fn delta_helper() {
             }
             .is_push_gate_terminal()
         );
+    }
+
+    #[test]
+    fn unneeded_pending_marker_renders_per_spec_format() {
+        let f = IntegrityFinding::UnneededPendingMarker {
+            spec: PathBuf::from("specs/gate.md"),
+            line: 803,
+            tier: Tier::Check,
+            target: "true".into(),
+        };
+        assert_eq!(
+            f.to_string(),
+            "specs/gate.md:803: annotation [check?](true) is now resolved — drop the ? marker"
+        );
+    }
+
+    #[test]
+    fn format_clarify_options_renders_two_options_for_unneeded_pending_marker() {
+        let f = IntegrityFinding::UnneededPendingMarker {
+            spec: PathBuf::from("specs/harness.md"),
+            line: 88,
+            tier: Tier::Test,
+            target: "crate::a::landed".into(),
+        };
+        let out = format_clarify_options(&[f]);
+        assert!(out.starts_with("## Options — "), "options heading: {out}");
+        assert!(out.contains("specs/harness.md:88"), "spec:line: {out}");
+        assert!(
+            out.contains("[test?](crate::a::landed)"),
+            "stale annotation form: {out}"
+        );
+        assert!(
+            out.contains("[test](crate::a::landed)"),
+            "post-fix annotation form: {out}"
+        );
+        assert!(out.contains("### Option 1 —"), "option 1: {out}");
+        assert!(out.contains("### Option 2 —"), "option 2: {out}");
+        assert!(out.contains("Drop the `?`"), "drop language: {out}");
     }
 
     #[test]

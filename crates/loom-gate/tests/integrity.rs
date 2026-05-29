@@ -9,6 +9,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use loom_gate::Tier;
 use loom_gate::annotation::{parse, parse_content};
 use loom_gate::integrity::{
     CommandResolver, FsCommandResolver, IntegrityFinding, RustWorkspaceStubScanner,
@@ -317,4 +318,165 @@ fn stub_pointing_test_annotation_flags_via_workspace_scanner() {
         }
         other => panic!("expected StubTestFunction, got {other:?}"),
     }
+}
+
+struct NoCommands;
+impl CommandResolver for NoCommands {
+    fn resolves(&self, _: &str) -> bool {
+        false
+    }
+}
+
+#[test]
+fn pending_marked_unresolved_target_yields_no_finding() {
+    let dir = tempdir().unwrap();
+    let md = "\
+## Success Criteria
+
+- a [check?](no-such-binary --do x)
+- b [system?](also-not-there --boot)
+- c [test?](crate::nowhere::missing)
+- d [judge?](does-not-exist.md)
+";
+    let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
+    let findings = check_forward(
+        &parsed.annotations,
+        dir.path(),
+        &NoCommands,
+        &NeverOkTests,
+        &NoStubs,
+    );
+    assert!(
+        findings.is_empty(),
+        "`?` + unresolved target must pass silently across every tier, got: {findings:?}"
+    );
+}
+
+#[test]
+fn pending_marked_resolved_target_yields_unneeded_pending_marker() {
+    let dir = tempdir().unwrap();
+    let md = "\
+## Success Criteria
+
+- a [check?](cargo run -p w -- alpha)
+- b [system?](nix run .#test-loom)
+";
+    let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
+    let findings = check_forward(
+        &parsed.annotations,
+        dir.path(),
+        &AlwaysOkCommands,
+        &NeverOkTests,
+        &NoStubs,
+    );
+    assert_eq!(
+        findings.len(),
+        2,
+        "both pending annotations whose first token resolves must flag: {findings:?}"
+    );
+    for f in &findings {
+        assert!(
+            matches!(f, IntegrityFinding::UnneededPendingMarker { .. }),
+            "every finding must be UnneededPendingMarker: {f:?}"
+        );
+        assert!(
+            f.is_push_gate_terminal(),
+            "UnneededPendingMarker must be terminal at the push gate: {f:?}"
+        );
+    }
+}
+
+#[test]
+fn pending_marked_stub_test_body_yields_no_finding() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src.rs");
+    write_stub_fixture(&src);
+
+    let md = "\
+## Success Criteria
+
+- stubbed [test?](crate::a::stub_fixture)
+";
+    let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
+    let tests = RustWorkspaceTestResolver::scan(dir.path()).unwrap();
+    let stubs = RustWorkspaceStubScanner::scan(dir.path()).unwrap();
+    let findings = check_forward(&parsed.annotations, dir.path(), &NoCommands, &tests, &stubs);
+    assert!(
+        findings.is_empty(),
+        "[test?] over a `_pending_stub` body must pass silently: {findings:?}"
+    );
+}
+
+#[test]
+fn pending_marked_non_stub_test_body_yields_unneeded_pending_marker() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("src.rs");
+    write_stub_fixture(&src);
+
+    let md = "\
+## Success Criteria
+
+- real [test?](crate::a::real_fixture)
+";
+    let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
+    let tests = RustWorkspaceTestResolver::scan(dir.path()).unwrap();
+    let stubs = RustWorkspaceStubScanner::scan(dir.path()).unwrap();
+    let findings = check_forward(&parsed.annotations, dir.path(), &NoCommands, &tests, &stubs);
+    assert_eq!(findings.len(), 1, "non-stub body must flag: {findings:?}");
+    match &findings[0] {
+        IntegrityFinding::UnneededPendingMarker {
+            spec, tier, target, ..
+        } => {
+            assert_eq!(spec, &PathBuf::from("specs/pending.md"));
+            assert_eq!(*tier, Tier::Test);
+            assert_eq!(target, "crate::a::real_fixture");
+        }
+        other => panic!("expected UnneededPendingMarker, got {other:?}"),
+    }
+}
+
+#[test]
+fn pending_modifier_does_not_suppress_atomic_acceptance_finding() {
+    let md = "\
+## Success Criteria
+
+- shared claim
+  [test?](crate::a::pending_one)
+  [check?](cargo run -p w -- pending_two)
+";
+    let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
+    let findings = check_atomic_acceptance(&parsed.annotations);
+    assert_eq!(
+        findings.len(),
+        1,
+        "atomic acceptance fires even when every annotation carries `?`: {findings:?}"
+    );
+    assert!(matches!(
+        findings[0],
+        IntegrityFinding::MultipleAnnotations { count: 2, .. }
+    ));
+}
+
+#[test]
+fn unneeded_pending_marker_is_terminal_at_push_gate() {
+    let dir = tempdir().unwrap();
+    let md = "\
+## Success Criteria
+
+- a [check?](cargo run -p w -- ok)
+";
+    let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
+    let findings = check_forward(
+        &parsed.annotations,
+        dir.path(),
+        &AlwaysOkCommands,
+        &NeverOkTests,
+        &NoStubs,
+    );
+    assert_eq!(findings.len(), 1);
+    assert!(
+        findings[0].is_push_gate_terminal(),
+        "UnneededPendingMarker must be push-gate-terminal (parity with \
+         UnresolvedAnnotation and StubTestFunction): {findings:?}"
+    );
 }
