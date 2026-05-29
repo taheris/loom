@@ -1606,16 +1606,16 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   appear in any file other than `partial/findings_walk.md`. Bare-prose
   mentions without the colon (e.g. *"the `LOOM_CONCERN` marker"*) are
   unaffected
-  [check?](loom-walk-template-wire-format-restatement)
+  [check](cargo run -p loom-walk -- template_wire_format_restatement)
 - The anti-drift verifier accepts the canonical layout: with
   `LOOM_FINDING:` / `LOOM_CONCERN:` substrings present only in
   `partial/findings_walk.md`, the walk reports zero violations
-  [test?](anti_drift_verifier_passes_canonical_partial_layout)
+  [test](anti_drift_verifier_passes_canonical_partial_layout)
 - The anti-drift verifier fails a fixture where a template restates
   the wire-format outside the canonical partial — e.g. injecting
   `LOOM_FINDING:` into `review.md` directly — naming the offending
   file and line
-  [test?](anti_drift_verifier_fails_fixture_with_restated_wire_format)
+  [test](anti_drift_verifier_fails_fixture_with_restated_wire_format)
 - The driver parses `LOOM_FINDING:` JSON payloads via `serde_json`
   into typed `Finding` records; the `target` field deserializes as
   an internally-tagged enum whose variant is selected by `kind`,

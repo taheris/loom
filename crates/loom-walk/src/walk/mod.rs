@@ -55,6 +55,7 @@ mod single_event_channel;
 mod surface_conformance;
 mod template_context_structs;
 mod template_pinning_matrix;
+mod template_wire_format_restatement;
 mod templates_no_removed_surface;
 mod todo_contexts_carry_criterion_status;
 mod todo_new_creates_epic_before_decomposition;
@@ -299,6 +300,10 @@ pub static REGISTRY: &[Walk] = &[
         run: template_pinning_matrix::run,
     },
     Walk {
+        name: "template_wire_format_restatement",
+        run: template_wire_format_restatement::run,
+    },
+    Walk {
         name: "templates_no_removed_surface",
         run: templates_no_removed_surface::run,
     },
@@ -390,6 +395,7 @@ mod tests {
             "newtype_identifiers",
             "template_context_structs",
             "template_pinning_matrix",
+            "template_wire_format_restatement",
             "templates_no_removed_surface",
             "todo_contexts_carry_criterion_status",
             "todo_new_creates_epic_before_decomposition",

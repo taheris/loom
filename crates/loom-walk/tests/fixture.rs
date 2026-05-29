@@ -2695,6 +2695,79 @@ fn loom_templates_deps_fail_when_loom_driver_present() {
 }
 
 // ---------------------------------------------------------------------------
+// template_wire_format_restatement
+// ---------------------------------------------------------------------------
+
+#[test]
+fn anti_drift_verifier_passes_canonical_partial_layout() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/partial/findings_walk.md",
+        "Emit `LOOM_FINDING:` per concern; terminate with \
+         `LOOM_CONCERN: {\"summary\":\"...\"}`.\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/review.md",
+        "Run the review. {% include \"partial/findings_walk.md\" %}\n",
+    );
+    let out = invoke(&["template_wire_format_restatement"], Some(ws.path()), None);
+    assert_pass(&out);
+}
+
+#[test]
+fn anti_drift_verifier_fails_fixture_with_restated_wire_format() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/partial/findings_walk.md",
+        "Emit `LOOM_FINDING:` per concern.\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/review.md",
+        "Run the review.\nThen emit LOOM_FINDING: {\"token\":...}.\n",
+    );
+    let out = invoke(&["template_wire_format_restatement"], Some(ws.path()), None);
+    assert_fail(&out, "crates/loom-templates/templates/review.md:2");
+}
+
+#[test]
+fn template_wire_format_restatement_passes_on_bare_prose_mentions() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/partial/findings_walk.md",
+        "Emit `LOOM_FINDING:` per concern.\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/review.md",
+        "See the `LOOM_CONCERN` marker for how the walk terminates.\n",
+    );
+    let out = invoke(&["template_wire_format_restatement"], Some(ws.path()), None);
+    assert_pass(&out);
+}
+
+#[test]
+fn template_wire_format_restatement_fails_on_loom_concern_outside_partial() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/partial/findings_walk.md",
+        "Emit `LOOM_FINDING:` per concern.\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/run.md",
+        "Run the bead.\nTerminator: LOOM_CONCERN: {\"summary\":\"oops\"}.\n",
+    );
+    let out = invoke(&["template_wire_format_restatement"], Some(ws.path()), None);
+    assert_fail(&out, "crates/loom-templates/templates/run.md:2");
+}
+
+// ---------------------------------------------------------------------------
 // templates_no_removed_surface
 // ---------------------------------------------------------------------------
 
