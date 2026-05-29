@@ -404,7 +404,7 @@ mod tests {
             image_source: PathBuf::from("/nix/store/zzz-test.tar"),
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRAPIX_AGENT".into(), "direct".into())],
-            extra_mounts: vec![],
+            mounts: vec![],
             initial_prompt: "hello".into(),
             agent_args: vec![],
             repin: RePinContent {

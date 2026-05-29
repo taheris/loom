@@ -289,16 +289,19 @@ Required fields:
   `/workspace`.
 - `env` — explicit env allowlist (table below); the host environment is
   never inherited wholesale.
-- `extra_mounts` — typed list of per-spawn bind mounts beyond
-  `workspace`. Each entry carries `host_path`, `container_path`, and
-  `read_only`. Loom uses this to project the `wrapix-beads` dolt
-  socket into every bead container at
+- `mounts` — typed list of per-spawn bind mounts beyond `workspace`,
+  additive to the resolved profile's `mounts`. Each entry carries
+  `host_path`, `container_path`, and `read_only`. Loom uses this to
+  project the `wrapix-beads` dolt socket into every bead container at
   `/workspace/.wrapix/dolt.sock` (replacing the host-side hardlink
   shim) and the shared sccache directory at the configured cache
   path; see [harness.md § Bead Dispatch](harness.md#bead-dispatch).
-  Single-file mounts (sockets) and directory mounts both pass
-  through virtiofs on Darwin, so this is the Darwin-compatible
-  mechanism for cross-container resource sharing.
+  Single-file mounts (sockets) and directory mounts both pass through
+  virtiofs on Linux. On Darwin the wrapix sandbox classifier accepts
+  directories and regular files but rejects Unix-socket `host_path`
+  entries at launch — VirtioFS does not pass socket operations across
+  the VM boundary — so dolt-over-socket on Darwin needs a TCP-routed
+  alternative or a platform gate skipping the socket entry.
 - `initial_prompt` — prompt rendered from the phase template.
 - `agent_args` — extra argv to pass to the agent binary.
 - `scratch_dir` — per-key scratch directory the agent backend reads on

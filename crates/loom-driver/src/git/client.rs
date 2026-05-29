@@ -271,7 +271,7 @@ impl GitClient {
         // `BEADS_DOLT_SERVER_SOCKET` points at. Same-fs hard links to a
         // bound unix socket preserve the inode, so connecting via the
         // linked path reaches the same dolt server. Shim — proper fix is
-        // an `extra_mounts` field on `SpawnConfig` (tracked separately).
+        // a `mounts` field on `SpawnConfig` (tracked separately).
         let src_sock = self.workdir.join(".wrapix").join("dolt.sock");
         if src_sock.exists() {
             let dest_dir = path.join(".wrapix");

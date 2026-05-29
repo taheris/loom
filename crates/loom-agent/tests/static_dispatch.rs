@@ -74,7 +74,7 @@ fn sample_config() -> SpawnConfig {
         image_source: PathBuf::new(),
         workspace: PathBuf::new(),
         env: Vec::new(),
-        extra_mounts: Vec::new(),
+        mounts: Vec::new(),
         initial_prompt: String::new(),
         agent_args: Vec::new(),
         repin: RePinContent {

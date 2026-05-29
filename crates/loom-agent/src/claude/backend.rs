@@ -295,7 +295,7 @@ mod tests {
             image_source: PathBuf::from("/nix/store/zzz-wrapix-test-claude.tar"),
             workspace: workspace.path().to_path_buf(),
             env: vec![("WRAPIX_AGENT".into(), "claude".into())],
-            extra_mounts: vec![],
+            mounts: vec![],
             initial_prompt: "hello".to_string(),
             agent_args: vec!["--print".into()],
             repin: sample_repin(),

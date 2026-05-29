@@ -219,11 +219,15 @@ optional sccache mount, all via `SpawnConfig`:
 
 - **Mandatory: the bead workspace** at `/workspace`.
 - **Mandatory: the host `wrapix-beads` dolt socket** at
-  `/workspace/.wrapix/dolt.sock` via `SpawnConfig.extra_mounts`
+  `/workspace/.wrapix/dolt.sock` via `SpawnConfig.mounts`
   (see [agent.md § SpawnConfig](agent.md#spawnconfig)). This
-  replaces the historical host-side hardlink shim — single-file
-  bind-mount is Darwin-compatible (virtiofs forwards the socket
-  file directly) and survives changes to the bead-workspace path.
+  replaces the historical host-side hardlink shim and survives
+  changes to the bead-workspace path. Linux passes the socket
+  through directly; on Darwin the wrapix sandbox rejects
+  Unix-socket `host_path` entries at launch (VirtioFS cannot
+  forward socket operations across the VM boundary), so dolt-over-
+  socket on Darwin requires a TCP fallback rather than this mount —
+  out of scope for the present Linux-only loom target.
 - **Optional: a shared sccache directory** at the configured
   container path (default `/sccache`; see
   [Configuration](#configuration)), gated on `[loom] sccache_dir`
@@ -2192,9 +2196,9 @@ Criteria.
   [test](parallel_conflict_preserves_worktree)
 - Bead containers receive the host `wrapix-beads` dolt socket as a
       single-file bind mount at `/workspace/.wrapix/dolt.sock` via
-      `SpawnConfig.extra_mounts`, replacing the host-side hardlink shim
+      `SpawnConfig.mounts`, replacing the host-side hardlink shim
       previously used in `GitClient::create_worktree`
-  [test?](bead_container_dolt_socket_via_extra_mounts)
+  [test?](bead_container_dolt_socket_via_mounts)
 - When `[loom] sccache_dir` is configured, the directory is
       bind-mounted into the loom workspace and every bead container
       at the configured container path
@@ -3049,7 +3053,7 @@ two agent-loop observers.
    before the `Clean` arm runs.
 10. **Beads via shared Dolt socket** — every container has the host's
     `wrapix-beads` Dolt server bind-mounted at
-    `/workspace/.wrapix/dolt.sock` via `SpawnConfig.extra_mounts`
+    `/workspace/.wrapix/dolt.sock` via `SpawnConfig.mounts`
     (see [Bead Dispatch](#bead-dispatch)); in-container `bd` writes
     go straight to the authoritative state. No per-bead `bd dolt
     push/pull` handoff. Loom on the host reads the same state

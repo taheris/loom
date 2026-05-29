@@ -30,16 +30,22 @@ pub struct SpawnConfig {
     /// to project the `wrapix-beads` dolt socket into every bead container at
     /// `/workspace/.wrapix/dolt.sock` (replacing the host-side hardlink shim
     /// in [`crate::git::GitClient`]) and, when configured, the shared sccache
-    /// directory at the configured container path. Single-file mounts
-    /// (sockets) and directory mounts both pass through virtiofs on Darwin.
+    /// directory at the configured container path. Additive to the resolved
+    /// profile's `mounts`; see `specs/agent.md` § SpawnConfig.
     ///
-    /// Skipped during serialization when empty so existing wrapper fixtures —
-    /// and the in-tree `wrapix spawn --spawn-config` parser, which does not
-    /// yet honor this field — round-trip identically. End-to-end exercise of
-    /// this field requires wrapix-side parser support; see `specs/agent.md`
-    /// § SpawnConfig.
+    /// Single-file mounts (sockets) and directory mounts both pass through
+    /// virtiofs on Linux. On Darwin, the wrapix sandbox classifier accepts
+    /// directories (staged + copied at launch) and regular files
+    /// (copy-from-parent-dir), but rejects Unix-socket `host_path` entries at
+    /// launch — Apple's VirtioFS does not pass socket operations across the
+    /// VM boundary. Callers that emit a socket mount on Darwin will see the
+    /// launcher exit non-zero with a clear error naming the offending
+    /// `host_path`; route the same resource over TCP for the Darwin path.
+    ///
+    /// Skipped during serialization when empty so existing wrapper fixtures
+    /// round-trip identically.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub extra_mounts: Vec<MountSpec>,
+    pub mounts: Vec<MountSpec>,
     pub initial_prompt: String,
     pub agent_args: Vec<String>,
     pub repin: RePinContent,
@@ -148,7 +154,7 @@ mod duration_secs_opt {
     }
 }
 
-/// Single bind mount entry in [`SpawnConfig::extra_mounts`].
+/// Single bind mount entry in [`SpawnConfig::mounts`].
 ///
 /// `host_path` is the absolute host-side path; `container_path` is the
 /// absolute path the container sees. `read_only = true` requests a `ro`
@@ -274,7 +280,7 @@ mod tests {
             image_source: PathBuf::from("/nix/store/zzz-wrapix-test.tar"),
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRAPIX_AGENT".into(), "pi".into())],
-            extra_mounts: Vec::new(),
+            mounts: Vec::new(),
             initial_prompt: "hello".into(),
             agent_args: vec!["--print".into()],
             repin: RePinContent {
@@ -474,7 +480,7 @@ mod tests {
         let cfg = sample_config(None);
         let json = serde_json::to_string(&cfg).expect("serialize");
         for absent in [
-            "\"extra_mounts\":",
+            "\"mounts\":",
             "\"model\":",
             "\"thinking_level\":",
             "\"shutdown_grace\":",
@@ -525,14 +531,14 @@ mod tests {
         assert_eq!(back, spec);
     }
 
-    /// A populated `extra_mounts` round-trips through JSON with both
+    /// A populated `mounts` round-trips through JSON with both
     /// single-file (socket) and directory mounts, preserving the
     /// `read_only` discipline per entry. This is the wrapix-facing contract
     /// for projecting the dolt socket and the optional sccache directory.
     #[test]
-    fn spawn_config_extra_mounts_round_trip_preserves_per_entry_fields() {
+    fn spawn_config_mounts_round_trip_preserves_per_entry_fields() {
         let mut cfg = sample_config(None);
-        cfg.extra_mounts = vec![
+        cfg.mounts = vec![
             MountSpec {
                 host_path: PathBuf::from("/run/wrapix-beads/dolt.sock"),
                 container_path: PathBuf::from("/workspace/.wrapix/dolt.sock"),
@@ -546,29 +552,29 @@ mod tests {
         ];
         let json = serde_json::to_string(&cfg).expect("serialize");
         let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back.extra_mounts, cfg.extra_mounts);
+        assert_eq!(back.mounts, cfg.mounts);
     }
 
-    /// Empty `extra_mounts` is omitted from the wire payload via
+    /// Empty `mounts` is omitted from the wire payload via
     /// `#[serde(skip_serializing_if = "Vec::is_empty")]` so wrappers and
     /// fixtures pre-dating this field round-trip identically.
     #[test]
-    fn spawn_config_with_empty_extra_mounts_omits_key() {
+    fn spawn_config_with_empty_mounts_omits_key() {
         let cfg = sample_config(None);
         let json = serde_json::to_string(&cfg).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
         let obj = v.as_object().expect("object");
         assert!(
-            !obj.contains_key("extra_mounts"),
-            "extra_mounts: empty must be omitted, got JSON: {json}",
+            !obj.contains_key("mounts"),
+            "mounts: empty must be omitted, got JSON: {json}",
         );
     }
 
-    /// Legacy fixtures without an `extra_mounts` key parse as an empty
-    /// vector — the absence-equals-empty contract that lets older wrapix
-    /// payloads round-trip into the new struct.
+    /// Legacy fixtures without a `mounts` key parse as an empty vector —
+    /// the absence-equals-empty contract that lets older wrapix payloads
+    /// round-trip into the new struct.
     #[test]
-    fn spawn_config_legacy_fixture_without_extra_mounts_defaults_to_empty() {
+    fn spawn_config_legacy_fixture_without_mounts_defaults_to_empty() {
         let legacy = r#"{
             "image_ref": "localhost/img:tag",
             "image_source": "/nix/store/zzz-img.tar",
@@ -579,6 +585,6 @@ mod tests {
             "repin": {"orientation":"o","pinned_context":"p","partial_bodies":[]}
         }"#;
         let cfg: SpawnConfig = serde_json::from_str(legacy).expect("legacy fixture parses");
-        assert!(cfg.extra_mounts.is_empty());
+        assert!(cfg.mounts.is_empty());
     }
 }

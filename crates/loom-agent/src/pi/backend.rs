@@ -497,7 +497,7 @@ mod tests {
             image_source: PathBuf::from("/nix/store/zzz-wrapix-test-pi.tar"),
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRAPIX_AGENT".into(), "pi".into())],
-            extra_mounts: vec![],
+            mounts: vec![],
             initial_prompt: "hello pi".to_string(),
             agent_args: vec![],
             repin: sample_repin(),

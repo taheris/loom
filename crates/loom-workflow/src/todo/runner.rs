@@ -125,7 +125,7 @@ mod tests {
                     image_source: PathBuf::from("/nix/store/zzz-wrapix-base.tar"),
                     workspace: self.workspace.path().to_path_buf(),
                     env: vec![],
-                    extra_mounts: vec![],
+                    mounts: vec![],
                     initial_prompt: "todo prompt".into(),
                     agent_args: vec![],
                     repin: RePinContent {

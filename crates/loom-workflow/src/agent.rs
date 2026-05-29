@@ -871,7 +871,7 @@ mod tests {
             image_source: PathBuf::from("/nix/store/none.tar"),
             workspace: PathBuf::from("/workspace"),
             env: vec![],
-            extra_mounts: vec![],
+            mounts: vec![],
             initial_prompt: String::new(),
             agent_args: vec![],
             repin: RePinContent {
