@@ -1470,7 +1470,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
 - **`unneeded-pending-marker` — auto-generated options.** `mint`
   emits a `## Options — …` block whose Option 1 is "drop the `?`",
   per *Integrity gate* above
-  [test?](mint_emits_drop_marker_option_for_unneeded_pending_marker)
+  [test](mint_emits_drop_marker_option_for_unneeded_pending_marker)
 
 ### Standing-safety-net bonding
 

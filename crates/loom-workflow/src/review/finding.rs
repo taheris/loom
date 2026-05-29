@@ -103,6 +103,8 @@ pub enum ConcernToken {
     StubPointing,
     #[serde(rename = "multiple-annotations")]
     MultipleAnnotations,
+    #[serde(rename = "unneeded-pending-marker")]
+    UnneededPendingMarker,
 }
 
 impl ConcernToken {
@@ -130,6 +132,7 @@ impl ConcernToken {
             Self::UnresolvedAnnotation => "unresolved-annotation",
             Self::StubPointing => "stub-pointing",
             Self::MultipleAnnotations => "multiple-annotations",
+            Self::UnneededPendingMarker => "unneeded-pending-marker",
         }
     }
 
@@ -153,7 +156,8 @@ impl ConcernToken {
             | Self::VerifierFailed
             | Self::DispatchError
             | Self::UnresolvedAnnotation
-            | Self::StubPointing => TargetKind::Annotation,
+            | Self::StubPointing
+            | Self::UnneededPendingMarker => TargetKind::Annotation,
             Self::MockDiscipline => TargetKind::TestPath,
             Self::ConcurrencyUntested => TargetKind::LockSite,
             Self::InvariantClash => TargetKind::Invariant,
@@ -809,6 +813,7 @@ mod tests {
             ConcernToken::UnresolvedAnnotation,
             ConcernToken::StubPointing,
             ConcernToken::MultipleAnnotations,
+            ConcernToken::UnneededPendingMarker,
         ] {
             let json = serde_json::to_string(&token).expect("serialize");
             let expected = format!("\"{}\"", token.as_wire());
@@ -1230,6 +1235,7 @@ mod tests {
             (ConcernToken::UnresolvedAnnotation, TargetKind::Annotation),
             (ConcernToken::StubPointing, TargetKind::Annotation),
             (ConcernToken::MultipleAnnotations, TargetKind::Criterion),
+            (ConcernToken::UnneededPendingMarker, TargetKind::Annotation),
         ] {
             assert_eq!(
                 token.expected_target_kind(),

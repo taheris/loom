@@ -8,5 +8,47 @@
 //! the stub is deleted in the same PR that adds the real `#[test]`
 //! function under the module it tests.
 
+use std::path::PathBuf;
+
+use loom_gate::{IntegrityFinding, Tier, format_clarify_options};
+
 #[test]
 fn mint_applies_per_spec_default_profile_label_to_created_beads() {}
+
+/// `specs/gate.md` § *Integrity gate — pending modifier* (criterion
+/// `mint_emits_drop_marker_option_for_unneeded_pending_marker`): when
+/// `UnneededPendingMarker` reaches the mint clarify-options surface,
+/// the generated `## Options — …` block leads with a "Drop the `?`"
+/// option naming spec, line, tier, and target. The block is the
+/// auto-generated payload mint embeds when the stale-marker finding
+/// raises `loom:clarify`.
+#[test]
+fn mint_emits_drop_marker_option_for_unneeded_pending_marker() {
+    let finding = IntegrityFinding::UnneededPendingMarker {
+        spec: PathBuf::from("specs/gate.md"),
+        line: 803,
+        tier: Tier::Check,
+        target: "true".into(),
+    };
+    let out = format_clarify_options(&[finding]);
+    assert!(
+        out.starts_with("## Options — "),
+        "block must start with the options summary heading: {out}",
+    );
+    assert!(
+        out.contains("specs/gate.md:803"),
+        "spec:line missing: {out}"
+    );
+    assert!(
+        out.contains("[check?](true)"),
+        "stale annotation form missing: {out}",
+    );
+    assert!(
+        out.contains("[check](true)"),
+        "post-fix annotation form missing: {out}",
+    );
+    assert!(
+        out.contains("### Option 1 —") && out.contains("Drop the `?`"),
+        "Option 1 must lead with 'Drop the `?`' language: {out}",
+    );
+}

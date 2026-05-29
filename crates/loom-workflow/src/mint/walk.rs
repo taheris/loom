@@ -89,6 +89,11 @@ pub enum VerifierFailureKind {
     /// Integrity gate stub-pointing: the annotation's verifier body
     /// invokes the `_pending_stub` sigil.
     StubPointing,
+    /// Integrity gate stale pending modifier: the annotation carries
+    /// the `?` modifier but its target now resolves (and, for `[test?]`,
+    /// has a non-stub body). The marker must be dropped in the same diff
+    /// that landed the verifier.
+    UnneededPendingMarker,
     /// Integrity gate atomic-acceptance violation: the criterion at
     /// `criterion_anchor` carries `count` annotations (expected 1).
     MultipleAnnotations {
@@ -188,6 +193,10 @@ pub fn verifier_failure_to_finding(failure: VerifierFailure) -> Result<Finding, 
         ),
         VerifierFailureKind::StubPointing => (
             ConcernToken::StubPointing,
+            FindingTarget::Annotation { target_string },
+        ),
+        VerifierFailureKind::UnneededPendingMarker => (
+            ConcernToken::UnneededPendingMarker,
             FindingTarget::Annotation { target_string },
         ),
         VerifierFailureKind::MultipleAnnotations {
@@ -800,6 +809,10 @@ mod tests {
             (
                 VerifierFailureKind::StubPointing,
                 ConcernToken::StubPointing,
+            ),
+            (
+                VerifierFailureKind::UnneededPendingMarker,
+                ConcernToken::UnneededPendingMarker,
             ),
         ];
         for (kind, expected_token) in cases {
