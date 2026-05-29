@@ -362,10 +362,13 @@ prefixes vary per consuming project; the judge must adapt to whatever
 the document uses rather than expecting a fixed set.
 
 Verdict: any hard-fail finding → reviewer emits one `LOOM_FINDING:
-<json>` line per finding + terminal `LOOM_CONCERN: <summary>` →
-driver mints fix-up beads from the findings (per [*Findings and
-Minting*](#findings-and-minting)) → verdict gate routes to recovery
-loop with cause `review-concern`. The `invariant-clash` finding is
+<json>` line per finding + terminal `LOOM_CONCERN: {"summary":
+"<one sentence>"}` → driver mints fix-up beads from the findings
+(per [*Findings and Minting*](#findings-and-minting)) → verdict
+gate routes to recovery loop with cause `review-concern`. The
+terminal marker's payload is a JSON object with a single `summary`
+field; routing is per-finding via the streamed `LOOM_FINDING:`
+tokens, never via the terminal marker. The `invariant-clash` finding is
 the exception: it produces a fix-up bead labelled `loom:clarify`
 with a structured `## Options — …` block per the Options Format
 Contract instead of a regular fix-up. The clarified bead is skipped
@@ -606,21 +609,76 @@ code 77 is a skip, not a failure; it produces no Finding. The
 typed Finding record is the in-driver representation both sources
 converge on.
 
-The walk terminates with exactly one of the existing markers
-(per [harness.md § Verdict Gate](harness.md#verdict-gate)):
+The walk terminates with exactly one terminator on the final
+non-empty line (per [harness.md § Verdict
+Gate](harness.md#verdict-gate)): `LOOM_COMPLETE`, `LOOM_CONCERN`,
+`LOOM_BLOCKED`, or `LOOM_CLARIFY`. `LOOM_BLOCKED` / `LOOM_CLARIFY`
+mean the walk could not complete; see the marker definitions for
+semantics. `LOOM_COMPLETE` and `LOOM_CONCERN` are the
+verdict-carrying terminators and are governed by the pairing rule
+below.
 
-- `LOOM_COMPLETE` — walk finished, no findings emitted, no recovery
-  needed.
-- `LOOM_CONCERN: <one-line summary>` — walk finished, findings were
-  emitted, recovery should be triggered. The summary is for the
-  verdict log; the actionable detail is in the `LOOM_FINDING:`
-  lines.
-- `LOOM_BLOCKED` / `LOOM_CLARIFY` — walk could not complete; see the
-  marker definitions for semantics.
+**`LOOM_CONCERN` payload — JSON shape and parse discipline.** The
+payload is a JSON object with a single required field, `summary`,
+whose value is a non-empty string:
+`LOOM_CONCERN: {"summary": "<one-sentence summary>"}`. The driver
+parses the payload with the same `serde_json` pipeline that
+consumes `LOOM_FINDING:` lines. Parse failures — invalid JSON,
+missing `summary`, empty `summary` — surface as the typed
+`BadWalk::Concern { payload }` recovery cause (defined in
+[harness.md](harness.md#verdict-gate)) so the recovery prompt can
+carry the literal text that failed and the agent can fix the
+shape on the next iteration. The summary is for the verdict log
+only; the actionable detail lives in the streamed `LOOM_FINDING:`
+lines, and per-finding routing is decided by `loom gate mint` on
+each finding's token, not on the terminal marker. The terminal
+token-and-reason form (`<token> -- <reason>`) is retired; the
+terminal token only ever duplicated the strongest finding's token
+at the cost of structural complexity.
 
-A walk that emits `LOOM_FINDING:` lines but no terminal marker is a
-crashed run; the driver fails the mint invocation with non-zero
-exit. The terminal marker is required.
+**Streaming + terminator pairing rule.** The walk is a streaming
+process: `LOOM_FINDING:` lines are emitted as concerns are
+identified; the terminator is the final line. The driver
+cross-checks the two — if the terminator and the stream disagree
+on the walk's verdict, the run fails with a typed `BadWalk`
+recovery cause:
+
+| Findings streamed | Terminator | Verdict |
+|---|---|---|
+| 0 | `LOOM_COMPLETE` | clean — phase done |
+| ≥1 | `LOOM_CONCERN: {"summary":"..."}` | recovery — findings minted, summary threaded into `previous_failure` |
+| 0 | `LOOM_CONCERN: {...}` | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration |
+| ≥1 | `LOOM_COMPLETE` | `BadWalk::FindingsWithoutConcern { finding_count }` — findings streamed but terminator claims clean |
+| any | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload }` — payload parse failure subsumes any finding count |
+| any | missing or duplicate marker | `SwallowedMarker` (existing) |
+
+**Agent's mental model.** Review the diff. Every time you identify
+a concern, immediately emit a `LOOM_FINDING:` line with the
+structured JSON detail and continue reviewing. When the walk is
+complete, end your response with `LOOM_COMPLETE` if you found
+nothing, or `LOOM_CONCERN: {"summary": "<one-sentence summary>"}` if you
+emitted one or more `LOOM_FINDING:` lines. The terminator must
+match the stream: `LOOM_COMPLETE` means zero findings,
+`LOOM_CONCERN` means ≥1 finding.
+
+**Single source of truth.** The wire-format definitions for both
+`LOOM_FINDING:` and `LOOM_CONCERN:` live exactly once, in
+`crates/loom-templates/templates/partial/findings_walk.md`. Other
+templates that need to talk about these markers `{% include %}`
+that partial; they never restate the format. The bare-marker
+partials (`partial/progress_markers.md` for `LOOM_COMPLETE` /
+`LOOM_NOOP`, `partial/self_report_markers.md` for `LOOM_BLOCKED` /
+`LOOM_CLARIFY`) describe those markers' generic semantics; they
+do not redefine the review-walk markers.
+
+A `[check]`-tier verifier enforces this mechanically: it scans
+every file under `crates/loom-templates/templates/` for the literal
+substrings `LOOM_CONCERN:` and `LOOM_FINDING:` (the colon-suffixed,
+wire-format forms — bare-prose mentions like *"the `LOOM_CONCERN`
+marker"* are unaffected) and fails if they appear in any file other
+than `partial/findings_walk.md`. Templates that violate this fail
+`loom gate check` via the [`check`]-tier dispatcher's non-zero
+exit code.
 
 ### Fingerprint and dedup
 
@@ -808,6 +866,19 @@ For `[test?]`, the modifier additionally suppresses
 `UnneededPendingMarker` fires the same way as for plain resolution.
 The two findings both express *"implementation not present yet,"*
 so a single modifier suppresses both.
+
+**Dispatch-side skip.** Pending-marked annotations are **skipped
+at verifier dispatch** — `loom gate verify` / `check` / `test` /
+`system` / `judge` / `mint` does not execute the verifier for a
+`[tier?](target)` annotation. Only the integrity gate's
+forward-resolution check runs (lightweight: first-token-on-PATH or
+file-exists), which is what fires `UnneededPendingMarker` when the
+target newly resolves. Without dispatch-side skip, planning
+sessions that author `[check?]` for not-yet-existing walks would
+break their own gate verify path on the next CI run — the verifier
+would execute, exit non-zero ("command not found"), and surface as
+a verify-fail; the `?` discipline would be unusable in the very
+flow it was added to support.
 
 The modifier is **self-cleaning**. It is modelled on Rust's
 `#[expect(...)]` attribute, not `#[allow(...)]`: presence is silently
@@ -1441,7 +1512,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
 - **Parser recognises `?` modifier — all tiers.** `[check?]`,
   `[test?]`, `[system?]`, `[judge?]` all parse; the parser populates
   a `pending: bool` on the resulting annotation
-  [test?](parser_recognises_pending_modifier_across_all_tiers)
+  [test](parse_recognises_pending_modifier_for_all_four_tiers)
 - **Pending — unresolved target silently passes.**
   `[check?](missing-cmd)`, `[test?](missing::fn)`,
   `[system?](missing-system-cmd)`, `[judge?](missing/path.md)` all
@@ -1506,10 +1577,45 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   "bonds": [...], "target": {"kind": ..., ...}, "evidence": ...}`
   [test](mint_walk_emits_loom_finding_json_lines_streamed_per_finding)
 - The walk terminates with exactly one of `LOOM_COMPLETE`,
-  `LOOM_CONCERN: <summary>`, `LOOM_BLOCKED`, or `LOOM_CLARIFY`; a
-  walk that emits `LOOM_FINDING:` lines without a terminal marker
+  `LOOM_CONCERN: {"summary": "..."}`, `LOOM_BLOCKED`, or `LOOM_CLARIFY`;
+  a walk that emits `LOOM_FINDING:` lines without a terminal marker
   fails the mint invocation with non-zero exit
   [test](mint_walk_without_terminal_marker_fails_run)
+- `LOOM_CONCERN:` payload parses as JSON `{"summary": "<non-empty
+  string>"}` via the same `serde_json` pipeline that consumes
+  `LOOM_FINDING:` lines; the parsed summary becomes the verdict-log
+  entry for the walk
+  [test?](concern_payload_parses_as_json_with_summary_field)
+- Parse failures on the `LOOM_CONCERN:` payload — invalid JSON, missing
+  `summary` field, empty `summary` string — surface as
+  `RecoveryCause::BadWalk(BadWalk::Concern { payload })` carrying the
+  literal post-marker text so the recovery prompt can quote it back
+  to the agent
+  [test?](concern_malformed_payload_routes_to_badwalk_concern_with_literal_payload)
+- A walk that emits `LOOM_CONCERN:` with zero preceding `LOOM_FINDING:`
+  lines surfaces as `RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings
+  { summary })` — concern claimed without enumeration
+  [test?](concern_without_streamed_findings_routes_to_badwalk_concern_without_findings)
+- A walk that streams one or more `LOOM_FINDING:` lines and terminates
+  with `LOOM_COMPLETE` surfaces as `RecoveryCause::BadWalk(BadWalk::
+  FindingsWithoutConcern { finding_count })`
+  [test?](findings_streamed_with_complete_terminator_routes_to_badwalk_findings_without_concern)
+- The wire-format anti-drift verifier (a `[check]`-tier audit) scans
+  every file under `crates/loom-templates/templates/` for the literal
+  substrings `LOOM_CONCERN:` and `LOOM_FINDING:` and fails if they
+  appear in any file other than `partial/findings_walk.md`. Bare-prose
+  mentions without the colon (e.g. *"the `LOOM_CONCERN` marker"*) are
+  unaffected
+  [check?](loom-walk-template-wire-format-restatement)
+- The anti-drift verifier accepts the canonical layout: with
+  `LOOM_FINDING:` / `LOOM_CONCERN:` substrings present only in
+  `partial/findings_walk.md`, the walk reports zero violations
+  [test?](anti_drift_verifier_passes_canonical_partial_layout)
+- The anti-drift verifier fails a fixture where a template restates
+  the wire-format outside the canonical partial — e.g. injecting
+  `LOOM_FINDING:` into `review.md` directly — naming the offending
+  file and line
+  [test?](anti_drift_verifier_fails_fixture_with_restated_wire_format)
 - The driver parses `LOOM_FINDING:` JSON payloads via `serde_json`
   into typed `Finding` records; the `target` field deserializes as
   an internally-tagged enum whose variant is selected by `kind`,

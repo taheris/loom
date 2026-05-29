@@ -63,7 +63,7 @@ Current set:
 | `spec_header.md` | Render spec label, path, active molecule |
 | `companions_context.md` | List companion paths declared on the spec |
 | `scratchpad.md` | Pin the per-session scratchpad path |
-| `exit_signals.md` | Document the `LOOM_*` exit markers the phase accepts. **Markers are mutually exclusive — exactly one per session, on the final line.** For review-phase sessions: emit `LOOM_CONCERN: <token> -- <reason>` when a concern is found (review-phase only marker per [harness.md](harness.md#verdict-gate)), or `LOOM_COMPLETE` when the review is clean — **never both**. The earlier `LOOM_REVIEW_FLAG` name is retired; consumers and templates use `LOOM_CONCERN`. |
+| `exit_signals.md` | Document the `LOOM_*` exit markers the phase accepts. **Markers are mutually exclusive — exactly one per session, on the final line.** The review-phase streaming + terminator contract (`LOOM_FINDING:` / `LOOM_CONCERN:`) is a planned partial-split refinement per [gate.md § Findings and Minting](gate.md#findings-and-minting); the structural change lands in a follow-on implementation bead. |
 | `chat_marker_final_turn_only.md` | Restrict `LOOM_COMPLETE` emission to the **final** assistant turn of a multi-turn chat. Included by `msg`, `plan_new`, and `plan_update` to disambiguate `exit_signals.md`'s "end your response with the marker" language (which is correct for single-shot worker phases but misreads as "every response" in chat). One-shot worker phases (`run`, `todo_*`, `review`) deliberately omit it because every response in those phases IS the final output. |
 | `interview_modes.md` | Describe the "one by one" / "polish the spec" interview sub-modes |
 | `chat_interview.md` | Require conversational, prose-based Q&A during planning sessions; forbid Claude Code's structured option-picker tool — see *Chat Discipline* below |
@@ -267,8 +267,18 @@ pub enum PreviousFailure {
     /// One or more [check]/[test]/[system] verifier failures.
     VerifyFailures(Vec<VerifierFailure>),
 
-    /// Review LLM flagged a semantic concern.
-    ReviewConcern { concern: ReviewConcernKind, reason: String },
+    /// Review LLM flagged one or more concerns. `summary` is the
+    /// parsed `summary` field from the terminal
+    /// `LOOM_CONCERN: {"summary": "..."}` marker; `findings` is the
+    /// buffered list of streamed `LOOM_FINDING:` records (typed
+    /// `Finding` per [gate.md § Findings and Minting](gate.md#findings-and-minting)).
+    ReviewConcern { summary: String, findings: Vec<Finding> },
+
+    /// Review walk's terminal signal was malformed or mismatched
+    /// with the streamed-findings count. Carries the typed
+    /// `BadWalk` variant; see [harness.md § Verdict Gate](harness.md#verdict-gate)
+    /// for the per-variant recovery-prompt framing.
+    BadWalk(BadWalk),
 
     /// Pre-verifier build/compile failure (agent's code didn't compile).
     BuildFailure { stage: String, output: String },
@@ -295,26 +305,32 @@ pub struct VerifierFailure {
     pub stderr_tail: String,  // ~last 40 lines, capped per-block
 }
 
-pub enum ReviewConcernKind {
-    SpecCoherence,
-    OrphanIntegration,
-    VerifierBypass,
-    FabricatedResult,
-    WeakAssertion,
-    CoincidentalPass,
-    MockDiscipline,
-    VerifierTooNarrow,
-    ConcurrencyUntested,
-    ScopeCreep,
-    ScopeShortfall,
-    JudgeFlag,
-    Other(String),  // forward-compatible fallback
+pub enum BadWalk {
+    /// `LOOM_CONCERN:` payload did not parse as
+    /// `{"summary": "<non-empty>"}` — invalid JSON, missing
+    /// `summary` field, or empty `summary`. The literal post-marker
+    /// text is preserved for the recovery prompt.
+    Concern { payload: String },
+
+    /// Terminator claimed concern but zero `LOOM_FINDING:` lines
+    /// streamed during the walk. The parsed summary is preserved
+    /// so the recovery prompt can quote it back.
+    ConcernWithoutFindings { summary: String },
+
+    /// One or more `LOOM_FINDING:` lines streamed but the
+    /// terminator was `LOOM_COMPLETE`. The count is preserved
+    /// for the recovery prompt.
+    FindingsWithoutConcern { finding_count: usize },
 }
 ```
 
-The full set of `ReviewConcernKind` variants is defined in
-[gate.md](gate.md); the `Other` arm keeps the type
-forward-compatible when gate.md grows new flag causes.
+The per-finding concern token (the enum that names which rubric
+check fired — `verifier-bypass`, `spec-coherence-fail`, etc.)
+lives on each `Finding`'s `token` field per [gate.md § Concern
+tokens and target variants](gate.md#concern-tokens-and-target-variants),
+not on the `PreviousFailure::ReviewConcern` variant itself. The
+terminal marker is verdict-log shape only; per-finding routing is
+decided by `loom gate mint`.
 
 **Caps:**
 
@@ -330,7 +346,10 @@ forward-compatible when gate.md grows new flag causes.
 
 - `DriverNotice` → `"Previous attempt: {detail}"`
 - `VerifyFailures` → `"Verifier failures from previous attempt:\n\n{N blocks: target + exit + stderr}"`
-- `ReviewConcern` → `"Review raised a concern ({concern}): {reason}"`
+- `ReviewConcern` → `"Review raised {N} concern(s) — {summary}\n\n{per-finding digest: token + evidence first line}"`
+- `BadWalk(Concern { payload })` → `"Your LOOM_CONCERN payload did not parse as {\"summary\": \"<non-empty>\"}. Literal payload: {payload}"`
+- `BadWalk(ConcernWithoutFindings { summary })` → `"You emitted LOOM_CONCERN ({summary}) but no LOOM_FINDING: lines streamed. Either emit findings before the terminator or use LOOM_COMPLETE."`
+- `BadWalk(FindingsWithoutConcern { finding_count })` → `"You streamed {finding_count} LOOM_FINDING line(s) but terminated with LOOM_COMPLETE. Use LOOM_CONCERN: {\"summary\": \"...\"} when findings are emitted."`
 - `BuildFailure` → `"Build failed at {stage}:\n{output}"`
 - `TreeNotClean` → `"Working tree was not clean after the bead committed:\n\n{path list, one per line}\n\nStage these into a follow-up commit or revert them."` with a `"+N more"` suffix line when the list is truncated to 30 entries
 - `review_notes` (when set, after the primary block) → heading `"Review notes:"` then content
@@ -488,16 +507,29 @@ payload after the prefix:
 LOOM_FINDING: {"token": "...", "bonds": ["..."], "target": {"kind": "...", ...}, "evidence": "..."}
 ```
 
-Followed by exactly one terminal marker
-(`LOOM_COMPLETE` / `LOOM_CONCERN: <summary>` / `LOOM_BLOCKED` /
-`LOOM_CLARIFY`). The review template's body documents this emit
-shape and the tagged-union variants of `target` per [gate.md —
-Findings and Minting](gate.md#findings-and-minting). The `bonds`
-array names the spec(s) the fix-up should bond to (bonding info);
-the `target` carries identity-bearing fields specific to the
-variant. JSON was chosen over pipe-delimited shapes because LLM
-emit is more reliable on JSON, and the tagged-union encoding of
-`target` is naturally JSON-shaped.
+Followed by exactly one terminal marker:
+`LOOM_COMPLETE` (zero findings emitted),
+`LOOM_CONCERN: {"summary": "<one sentence>"}` (≥1 findings emitted —
+JSON-shaped payload, parsed by the same `serde_json` pipeline
+consuming the `LOOM_FINDING:` lines), or
+`LOOM_BLOCKED` / `LOOM_CLARIFY` (the walk could not complete).
+The terminator must satisfy the **pairing rule**: `LOOM_CONCERN`
+iff ≥1 findings streamed, `LOOM_COMPLETE` iff zero — a mismatch
+routes to `RecoveryCause::BadWalk(BadWalk)` per [harness.md §
+Verdict Gate](harness.md#verdict-gate). All review-walk
+wire-format text lives in the `findings_walk.md` partial; the
+review template `{% include %}`s it rather than restating, and a
+`[check]`-tier anti-drift verifier enforces this mechanically per
+[gate.md § Findings and Minting](gate.md#findings-and-minting).
+
+The `bonds` array on each `LOOM_FINDING:` names the spec(s) the
+fix-up should bond to (bonding info); the `target` carries
+identity-bearing fields specific to the variant. JSON was chosen
+over pipe-delimited shapes because LLM emit is more reliable on
+JSON, and the tagged-union encoding of `target` is naturally
+JSON-shaped. The terminator's `summary` is a verdict-log entry
+only — per-finding routing is decided by `loom gate mint` on the
+streamed lines, not on the terminal token.
 
 **The review template makes no bd writes.** Earlier revisions of
 this spec authorized `bd create` / `bd update` / `bd mol bond` from
@@ -570,8 +602,12 @@ templates from `templates`' exposed building blocks:
 **Exposed typed context structs:**
 
 - `PinnedContext` (the project-overview + style-rules pinning shape)
-- `PreviousFailure`, `VerifierFailure`, `ReviewConcernKind`,
-  `DriverNoticeCause` (the typed retry-context surface)
+- `PreviousFailure`, `VerifierFailure`, `BadWalk`,
+  `DriverNoticeCause` (the typed retry-context surface). The
+  per-finding `Finding` record carried inside
+  `PreviousFailure::ReviewConcern` is owned by `loom-workflow`
+  (per [gate.md § Findings and Minting](gate.md#findings-and-minting))
+  and re-exported here as a typed dependency.
 - `CriterionStatus`, `CriterionResult` (the decomposition-phase
   criterion-recency surface; consumers writing decomposition-
   style tools reuse this shape against their own caches)
@@ -747,21 +783,30 @@ documents in front of the agent with zero configuration.
 
 ### Review emit shape
 
-- `review.md` documents the `LOOM_FINDING: <json>` emit shape with
-  the `{"token","bonds","target","evidence"}` field set, tagged
-  `target` variants, and instructs the agent to produce one JSON
-  object per identified finding, streamed as the walk proceeds
-  [check](grep -q 'LOOM_FINDING:' crates/loom-templates/templates/review.md)
+- `partial/findings_walk.md` is the single source of truth for the
+  `LOOM_FINDING: <json>` streaming wire format and the terminal
+  `LOOM_CONCERN: {"summary": "..."}` JSON shape. The partial
+  documents the `{"token","bonds","target","evidence"}` finding
+  payload with tagged `target` variants, the JSON CONCERN
+  terminator, and the streaming + terminator pairing rule
+  [check?](grep -q 'LOOM_FINDING:' crates/loom-templates/templates/partial/findings_walk.md)
+- `review.md` includes `findings_walk.md` via `{% include %}` rather
+  than restating the wire format
+  [check?](grep -q 'partial/findings_walk.md' crates/loom-templates/templates/review.md)
 - `review.md` does not contain a `bd create` invocation (the
   driver-side `loom gate mint` is the sole bd-mutation chokepoint;
   review is inspection-only)
   [check](bash -c "! grep -nE 'bd create|bd mol bond|bd update --add-label' crates/loom-templates/templates/review.md")
-- `partial/exit_signals.md`'s `LOOM_CONCERN` bullet describes the
-  terminal-marker role (walk-finished-with-findings signal) without
-  the previous "requires at least one corresponding `bd create`"
-  language — findings now persist via `LOOM_FINDING:` lines
-  consumed by the driver
-  [check](bash -c "! grep -nE 'LOOM_CONCERN. requires at least one corresponding .bd create' crates/loom-templates/templates/partial/exit_signals.md")
+- `partial/progress_markers.md` covers the progress markers
+  (`LOOM_COMPLETE`, `LOOM_NOOP`) and contains no `LOOM_CONCERN:` or
+  `LOOM_FINDING:` literal — those belong to `findings_walk.md`
+  per the partial split documented in [gate.md § Findings and
+  Minting](gate.md#findings-and-minting)
+  [check?](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/progress_markers.md")
+- `partial/self_report_markers.md` covers the self-report markers
+  (`LOOM_BLOCKED`, `LOOM_CLARIFY`) and contains no `LOOM_CONCERN:`
+  or `LOOM_FINDING:` literal
+  [check?](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/self_report_markers.md")
 
 ### Mint default-profile
 
@@ -780,7 +825,8 @@ documents in front of the agent with zero configuration.
 ### Typed `PreviousFailure`
 
 - `PreviousFailure` is a tagged enum with variants `DriverNotice`,
-  `VerifyFailures(Vec<VerifierFailure>)`, `ReviewConcern`,
+  `VerifyFailures(Vec<VerifierFailure>)`,
+  `ReviewConcern { summary, findings }`, `BadWalk(BadWalk)`,
   `BuildFailure`, and `TreeNotClean { dirty_paths: Vec<String> }` —
   not a free string
   [check](grep -q 'pub enum PreviousFailure' crates/loom-templates/src/previous_failure.rs)
@@ -791,9 +837,12 @@ documents in front of the agent with zero configuration.
   `IncompleteSignaling`, `ZeroProgress`, `ObserverAbort`,
   `RetryExhausted`, `UnbondedOrigin`
   [test](driver_notice_cause_labels_match_spec_strings)
-- `ReviewConcernKind` enum carries all 12 named variants from
-  gate.md plus `Other(String)` fallback
-  [check](grep -q 'pub enum ReviewConcernKind' crates/loom-templates/src/previous_failure.rs)
+- `BadWalk` enum carries `Concern { payload: String }`,
+  `ConcernWithoutFindings { summary: String }`, and
+  `FindingsWithoutConcern { finding_count: usize }`; the wrapped
+  pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)` at the
+  type level
+  [check?](grep -q 'pub enum BadWalk' crates/loom-templates/src/previous_failure.rs)
 - `VerifierFailure` carries `target: String`, `exit_code: i32`,
   `stderr_tail: String` (capped per-block at ~1500 chars)
   [test](verifier_failure_stderr_tail_capped_per_block)
@@ -809,9 +858,11 @@ documents in front of the agent with zero configuration.
 - Each `PreviousFailure` variant renders with its documented
   framing prefix (`DriverNotice` → "Previous attempt:",
   `VerifyFailures` → "Verifier failures from previous attempt:",
-  `ReviewConcern` → "Review raised a concern (...):", `BuildFailure` →
-  "Build failed at ...:", `TreeNotClean` → "Working tree was not
-  clean after the bead committed:")
+  `ReviewConcern` → "Review raised {N} concern(s) — {summary}",
+  `BadWalk` → per-variant fragment naming the specific
+  malformation, `BuildFailure` → "Build failed at ...:",
+  `TreeNotClean` → "Working tree was not clean after the bead
+  committed:")
   [test](previous_failure_variant_framings_match_spec)
 - `TreeNotClean` renders the dirty-path list one-per-line and
   appends a `"+N more"` suffix line when the upstream driver
@@ -849,7 +900,7 @@ documents in front of the agent with zero configuration.
 ### Public surface
 
 - `templates` exposes `PreviousFailure`, `VerifierFailure`,
-  `ReviewConcernKind`, `DriverNoticeCause`, `CriterionStatus`,
+  `BadWalk`, `DriverNoticeCause`, `CriterionStatus`,
   `CriterionResult`, `LoopContext`, `ReviewContext`, `PinnedContext`
   as public types consumable from external crates
   [check](cargo run -p loom-walk -- loom_templates_public_types)
@@ -939,11 +990,12 @@ documents in front of the agent with zero configuration.
 9. **Typed `PreviousFailure`** — `LoopContext.previous_failure` is
    `Option<PreviousFailure>` where `PreviousFailure` is a tagged
    enum (`DriverNotice`, `VerifyFailures`, `ReviewConcern`,
-   `BuildFailure`). The driver populates the right variant from
-   the verdict-gate cause classification. Each variant renders
-   with distinct framing per *Typed `PreviousFailure`* above.
-   Caps: `PREVIOUS_FAILURE_MAX_LEN = 4000` total; per-block stderr
-   tail ~1500 chars; `review_notes` separate ~1000-char budget.
+   `BadWalk(BadWalk)`, `BuildFailure`, `TreeNotClean`). The driver
+   populates the right variant from the verdict-gate cause
+   classification. Each variant renders with distinct framing per
+   *Typed `PreviousFailure`* above. Caps:
+   `PREVIOUS_FAILURE_MAX_LEN = 4000` total; per-block stderr tail
+   ~1500 chars; `review_notes` separate ~1000-char budget.
 10. **Attempt counter.** `LoopContext.attempt: u32` is the per-bead
     in-session retry counter, bounded by `[loop] max_retries`
     (default 2), resets to 0 on fresh bead dispatch. Fix-up beads

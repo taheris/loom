@@ -741,10 +741,12 @@ produces one of four outcomes (`done`, `blocked`, `clarify`, or
 | `LOOM_COMPLETE` | yes | non-empty | no | — | recovery (`tree-not-clean`) |
 | `LOOM_COMPLETE` | yes | non-empty | yes | verify-fail (review may also raise a concern) | recovery (`verify-fail`; review notes appended if any) |
 | `LOOM_COMPLETE` | yes | non-empty | yes | verify-pass + review-concern | recovery (`review-concern`) |
+| `LOOM_COMPLETE` | yes | non-empty | yes | verify-pass + review-bad-walk | recovery (`bad-walk`) |
 | `LOOM_COMPLETE` | yes | non-empty | yes | verify-pass + review-pass | `done` |
 | `LOOM_NOOP` | yes | * | no | — | recovery (`tree-not-clean`) |
 | `LOOM_NOOP` | yes | * | yes | verify-fail (review may also raise a concern) | recovery (`verify-fail`; review notes appended if any) |
 | `LOOM_NOOP` | yes | * | yes | verify-pass + review-concern | recovery (`review-concern`) |
+| `LOOM_NOOP` | yes | * | yes | verify-pass + review-bad-walk | recovery (`bad-walk`) |
 | `LOOM_NOOP` | yes | * | yes | verify-pass + review-pass | `done` |
 
 In the table above, `—` means the signal isn't inspected because an
@@ -823,19 +825,31 @@ trumps semantic), and review's concern reasoning, if any, is appended
 to the `previous_failure` detail under a `Review notes:` heading.
 
 A `LOOM_CONCERN` marker from the review phase produces `recovery`
-with cause `review-concern`; the detail carries the concern token
-emitted in the marker payload (see the per-diff rubric table in
-[gate.md](gate.md) for the full set of concern tokens).
-Invariant-clash concerns raise `loom:clarify` instead of entering
-the recovery loop.
+with cause `review-concern`; the detail carries the parsed
+`{"summary": "..."}` payload plus the buffered `LOOM_FINDING:`
+records the walk streamed. Per-finding routing (which spec, which
+fix-up bead, clarify vs. fix-up) is decided by `loom gate mint` on
+each `LOOM_FINDING:` line; the terminal marker carries only the
+verdict-log summary. `invariant-clash` *findings* (not a marker
+property) raise `loom:clarify` on the minted fix-up bead per
+[gate.md § Findings and Minting](gate.md#findings-and-minting).
+
+A malformed `LOOM_CONCERN` payload, or a stream/terminator
+mismatch (findings streamed with `LOOM_COMPLETE`, or `LOOM_CONCERN`
+emitted with zero findings), surfaces as `recovery` with cause
+`bad-walk`, carrying the typed `BadWalk` variant per the recovery
+table below. These are distinct from `swallowed-marker`: the agent
+*did* attempt a terminal signal but the shape was wrong, and the
+recovery prompt can quote the malformed payload back to the agent
+on the next iteration.
 
 **Self-reports skip recovery.** `LOOM_BLOCKED` and `LOOM_CLARIFY` are agent
 self-reports — re-running the same prompt won't recover, so the gate exits
 straight to `[blocked]` / `[clarify]` for human resolution.
 
 **Driver-detected causes flow through recovery.** Swallowed marker,
-incomplete signaling, zero-progress, tree-not-clean, verify-fail, and
-review-concern all enter the recovery loop. Each recovery iteration
+incomplete signaling, zero-progress, tree-not-clean, verify-fail,
+review-concern, and bad-walk all enter the recovery loop. Each recovery iteration
 either retries the bead in place with prior failure context, or — when
 the failure shape calls for a discrete follow-up unit of work — spawns
 a **fix-up bead**.
@@ -880,7 +894,10 @@ capped, total truncated to `PREVIOUS_FAILURE_MAX_LEN = 4000` chars):
 | `tree-not-clean` | `TreeNotClean { dirty_paths: Vec<String> }` | "Working tree was not clean after the bead committed: <N> uncommitted path(s). Stage them into a follow-up commit or revert them." Path list is capped at 30 entries; the truncation suffix names the overflow count. |
 | `observer-abort` | `DriverNotice` | "Session aborted by `<observer name>`: `<reason>`." |
 | `verify-fail` | `VerifyFailures(Vec<VerifierFailure>)` | One `VerifierFailure { target, exit_code, stderr_tail }` per failing `[check]` / `[test]` / `[system]` verifier. All failing verifiers are included; the budget is split across them with later failures truncated first; each `stderr_tail` is capped at ~1500 chars before split. If `review` also raised a concern, its reasoning is set as `review_notes` (separate ~1000-char budget) rendered under a `Review notes:` heading. |
-| `review-concern` | `ReviewConcern { concern: ReviewConcernKind, reason }` | The review LLM's verbatim concern reasoning emitted in the `LOOM_CONCERN` marker payload. `ReviewConcernKind` is a typed enum with `Other(String)` fallback; concrete variants per [gate.md](gate.md) (`SpecCoherence`, `OrphanIntegration`, `VerifierBypass`, `FabricatedResult`, `WeakAssertion`, `CoincidentalPass`, `MockDiscipline`, `VerifierTooNarrow`, `ConcurrencyUntested`, `ScopeCreep`, `ScopeShortfall`, `JudgeFlag`). The in-code recovery cause is `RecoveryCause::ReviewConcern`. |
+| `review-concern` | `ReviewConcern { summary: String, findings: Vec<Finding> }` | Summary is the parsed `summary` field from the terminal `LOOM_CONCERN: {"summary": "..."}` marker. `findings` is the buffered list of `LOOM_FINDING:` records the walk streamed before the terminator (per the typed `Finding` record in [gate.md § Findings and Minting](gate.md#findings-and-minting)). Per-finding tokens drive `mint`'s fix-up bead routing; the recovery prompt renders the summary plus a one-line-per-finding `evidence` digest. The in-code recovery cause is `RecoveryCause::ReviewConcern`. |
+| `bad-walk` (concern-malformed) | `BadWalk(BadWalk::Concern { payload: String })` | "Your `LOOM_CONCERN:` payload did not parse as `{"summary": "<non-empty>"}`. Literal payload after the marker: `<payload>`." Wrapped-enum pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)`. |
+| `bad-walk` (concern-without-findings) | `BadWalk(BadWalk::ConcernWithoutFindings { summary: String })` | "You emitted `LOOM_CONCERN` with summary `<summary>` but no `LOOM_FINDING:` lines streamed. Either emit findings before the terminator or terminate with `LOOM_COMPLETE`." |
+| `bad-walk` (findings-without-concern) | `BadWalk(BadWalk::FindingsWithoutConcern { finding_count: usize })` | "You streamed `<finding_count>` `LOOM_FINDING:` line(s) but terminated with `LOOM_COMPLETE`. Use `LOOM_CONCERN: {"summary": "..."}` when findings are emitted." |
 
 When `previous_failure.is_some() && attempt > 0`, the `run.md`
 template prepends a first-instruction reframe: *"Re-read the
@@ -903,7 +920,7 @@ its own session log if it needs prior tool-call context.
   agent has a specific question with structured options for the human.
 - The cause of a driver-applied `loom:blocked` (`swallowed-marker`,
   `incomplete-signaling`, `zero-progress`, `tree-not-clean`, `verify-fail`,
-  `review-concern`, `observer-abort`, `retry-exhausted`) is preserved in
+  `review-concern`, `bad-walk`, `observer-abort`, `retry-exhausted`) is preserved in
   the bead's notes. Per-cause sub-labels can be stacked on top later if
   filtering becomes important; the gate's terminal label stays
   `loom:blocked`.
@@ -940,23 +957,28 @@ Five markers are defined:
   continue running; the labelled bead waits for `loom msg`
   resolution. Valid in every phase except `msg`.
 - `LOOM_CONCERN` — the review phase found a quality issue with the
-  molecule's work; push must not fire. Carries a structured payload:
-  `LOOM_CONCERN: <concern-token> -- <one-sentence reasoning>`.
-  Concern tokens are enumerated in the rubric-checks table in
-  [gate.md § Per-diff stage checks](gate.md#per-diff-stage-checks)
-  (e.g. `verifier-bypass`, `fabricated-result`, `weak-assertion`,
-  `coincidental-pass`, `spec-coherence-fail`, `style-rule-violation`,
-  `mock-discipline`, `judge-flag`). The gate routes `LOOM_CONCERN` to
-  `Recovery { cause: ReviewConcern }`; the molecule re-enters the
-  loop with `previous_failure` carrying the typed concern.
-  **Review-phase-only** — emitting `LOOM_CONCERN` from any other
-  phase is a `wrong-phase-marker` error in the verdict gate.
+  molecule's work; push must not fire. Carries a JSON payload:
+  `LOOM_CONCERN: {"summary": "<one-sentence summary>"}`. The
+  payload is **terminator-shaped**, not routing-shaped — `summary`
+  is a verdict-log entry, nothing else. Per-finding routing
+  (concern token → fix-up bead, `invariant-clash` → clarify,
+  per-spec bonding) is decided by `loom gate mint` on each
+  `LOOM_FINDING:` line the walk streamed before the terminator.
+  The walk must satisfy the streaming + terminator **pairing
+  rule** defined in [gate.md § Findings and
+  Minting](gate.md#findings-and-minting): `LOOM_CONCERN` iff
+  ≥1 findings streamed, `LOOM_COMPLETE` iff zero findings. A
+  mismatch routes to `RecoveryCause::BadWalk(BadWalk)` with the
+  specific variant matching the malformation. **Review-phase-only**
+  — emitting `LOOM_CONCERN` from any other phase is a
+  `wrong-phase-marker` error in the verdict gate.
 
 **Choosing a marker in the review phase.** Four markers are valid:
 
 - `LOOM_COMPLETE` — clean review, no concerns.
-- `LOOM_CONCERN: <token> -- <reason>` — review found a quality issue;
-  push refused, molecule re-enters recovery.
+- `LOOM_CONCERN: {"summary": "..."}` — review found one or more
+  quality issues (each emitted as a streaming `LOOM_FINDING:` line
+  during the walk); push refused, molecule re-enters recovery.
 - `LOOM_BLOCKED` — review *itself* cannot run (logs corrupt, can't
   access bead workspace, missing prerequisite). Distinct from
   `LOOM_CONCERN`: blocked means "I couldn't review"; concern means
@@ -966,9 +988,11 @@ Five markers are defined:
 
 The four are mutually exclusive — exactly one per session. The
 common case is `LOOM_COMPLETE` xor `LOOM_CONCERN`. Multiple
-concerns → the agent picks the strongest one for the `LOOM_CONCERN`
-marker; the rest go in the prose body (visible via `loom logs` and
-captured into `previous_failure` for recovery).
+concerns are emitted as multiple `LOOM_FINDING:` lines during the
+walk — each carries its own structured detail; the terminal
+`LOOM_CONCERN` summary names the strongest only as a verdict-log
+entry. The streamed findings are buffered into `previous_failure`
+for recovery in addition to the summary.
 
 The gate distinguishes markers by parsing **the final line of the
 agent's final assistant message**. Because markers are mutually
@@ -1076,13 +1100,20 @@ pub struct GateFail {
 }
 
 pub enum GateFailReason {
-    VerifierFailed,                   // verify_exit != 0
-    ReviewConcern { token, reason },  // marker is LOOM_CONCERN
-    EmptyDiffNoop,                    // marker is LOOM_NOOP — no reviewable work
-    StalledMaxIterations,             // outer-loop counter exhausted
-    SignalKilled,                     // child terminated by signal
-    ReviewEvidenceMissing,            // log file absent / empty / mismatched marker
-    IntegrityFinding,                 // unresolved annotation / stub test
+    VerifierFailed,                          // verify_exit != 0
+    ReviewConcern { summary, finding_count },// marker is LOOM_CONCERN; per-finding detail in mint output
+    BadWalk(BadWalk),                        // review walk terminator malformed or mismatched
+    EmptyDiffNoop,                           // marker is LOOM_NOOP — no reviewable work
+    StalledMaxIterations,                    // outer-loop counter exhausted
+    SignalKilled,                            // child terminated by signal
+    ReviewEvidenceMissing,                   // log file absent / empty / mismatched marker
+    IntegrityFinding,                        // unresolved annotation / stub test
+}
+
+pub enum BadWalk {
+    Concern { payload: String },                  // LOOM_CONCERN payload didn't parse / missing-or-empty summary
+    ConcernWithoutFindings { summary: String },   // LOOM_CONCERN emitted with zero LOOM_FINDING streamed
+    FindingsWithoutConcern { finding_count: usize }, // >=1 findings streamed but LOOM_COMPLETE emitted
 }
 ```
 
