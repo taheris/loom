@@ -142,7 +142,8 @@ selecting the audit scope:
 
 | Command | Kind | Purpose |
 |---|---|---|
-| **`loom gate`** | Status | Reads cached results from the last `verify` / `review` / `audit` run (sqlite-backed) and prints a fast status report — no verifiers run. See *Status cache* for the hard latency target. |
+| **`loom gate`** | Help | Prints `loom gate --help` — the subcommand list with one-line descriptions. No verifiers run, no cache read. Discoverability surface for operators approaching the gate; the fast cached-status path is `loom gate status`. |
+| **`loom gate status`** | Status | Reads cached results from the last `verify` / `review` / `audit` run (sqlite-backed) and prints a fast status report — no verifiers run. Inherits the bare-invocation scope default (active molecule's diff if the active spec has an open epic, else `HEAD`), so `loom gate status` answers "where does my current molecule stand?" by default; `loom gate status --tree` for the full workspace. See *Status cache* for the hard latency target. |
 | **`loom gate audit`** | All, inspection | Runs everything — `verify` then `review`. Inspection composition (no bd writes); the push gate runs this for its verdict, and operators run it for ad-hoc review. The act path is `mint`. |
 | **`loom gate verify`** | Deterministic | Runs every `[check]` / `[test]` / `[system]` verifier. Cheap relative to review; expensive relative to status. Run frequently (pre-commit, on save, every CI commit). |
 | **`loom gate check`** | Deterministic, one tier | Runs only `[check]`-tier verifiers (static analysis of source). Fastest tier; suitable for tight feedback loops. |
@@ -175,13 +176,17 @@ Filters compose with any scope flag:
 - `<selector>` (positional) — run one specific verifier by its
   annotation target
 
-**Default for bare invocation.** When no scope flag is passed, the
-gate defaults to `--diff <molecule.base_commit>..HEAD` if the
-active spec has an open epic (single-query resolution; the "what
-would fail if I pushed now?" question); else `--diff HEAD`
-(working-tree dirty changes vs HEAD). Bare `loom gate audit` never
-silently expands to `--tree` — users who want the full safety-net
-sweep type `--tree` explicitly.
+**Default for bare invocation.** When a gate subcommand is invoked
+without a scope flag, the gate defaults to `--diff
+<molecule.base_commit>..HEAD` if the active spec has an open epic
+(single-query resolution; the "what would fail if I pushed now?"
+question); else `--diff HEAD` (working-tree dirty changes vs HEAD).
+This applies uniformly across subcommands that take scope flags
+(`status`, `verify`, `audit`, `review`, `mint`, the tier subcommands,
+…). Bare `loom gate audit` never silently expands to `--tree` —
+users who want the full safety-net sweep type `--tree` explicitly.
+(Bare `loom gate` with no subcommand prints subcommand help, per
+*Commands* above.)
 
 | Stage | Default invocation | Scope |
 |---|---|---|
@@ -189,7 +194,7 @@ sweep type `--tree` explicitly.
 | `loom loop` per-bead (verify) | `loom gate verify --bead <id>` | `--bead` |
 | `loom loop` per-bead (mint, runs on verify pass) | `loom gate mint --bead <id>` | `--bead` |
 | `loom loop` molecule completion (receipt construction) | `loom gate audit --diff <molecule.base_commit>..HEAD` | `--diff` |
-| Interactive bare `loom gate verify` | implicit `--diff <molecule.base_commit>..HEAD` if active spec has an open epic; else `--diff HEAD` | `--diff` |
+| Interactive bare `loom gate verify` / `loom gate status` | implicit `--diff <molecule.base_commit>..HEAD` if active spec has an open epic; else `--diff HEAD` | `--diff` |
 | Nightly CI / on-demand inspection | `loom gate audit --tree` | `--tree` |
 | Nightly CI / on-demand mint | `loom gate mint --tree` | `--tree` |
 
@@ -298,6 +303,23 @@ The per-diff stage in `loom loop` composes `loom gate verify` and
 composes `verify` + `review`) is the inspection-only alternative for
 ad-hoc human review; the loop never runs `review` directly.
 
+**Production wiring.** `loom gate mint`'s walk is dispatched via the
+[`MintWalker`](#scope-dependent-walk) trait (defined in
+`loom-workflow::mint::walk`). The trait's `run_rubric` method spawns
+the reviewer agent subprocess (same dispatch the per-bead `review`
+controller uses, against the rubric prompt rendered by the
+`loom-templates::review` context) and returns its raw stdout; its
+`run_verifiers` method dispatches the deterministic verifiers and the
+integrity gate's forward-resolution check at `--tree` scope only
+(per *Scope-dependent walk* below). The CLI arm `run_gate_mint`
+constructs the production walker, calls `mint::walk::walk(...)`, and
+feeds the resulting `Vec<Finding>` into `mint_findings_with_options`.
+The walker is the only path findings reach the mint pipeline — a
+CLI arm that constructs an empty finding vector unconditionally is
+a structural defect. The production `MintWalker` implementation
+lives alongside the trait in `loom-workflow::mint::walk` and is
+exercised by the CLI arm and by `loom loop`'s per-bead path.
+
 **`loom gate verify --bead <id>`** runs all deterministic audits.
 Marker parsing, `bd-closed` lookup, diff non-empty / empty, every
 deterministic verifier (`[check]` / `[test]` / `[system]`) attached
@@ -395,7 +417,7 @@ and every implementation file.
 `loom gate review --tree` runs the LLM rubric against the whole spec
 set × implementation. The checks from the per-diff rubric apply,
 scoped to the tree rather than a diff. Additional safety-net-only
-check:
+checks:
 
 - **Template-vs-spec drift** (Invariant 3 enforcement). Reads every
   template loom uses (embedded in the loom binary, plus any
@@ -405,6 +427,30 @@ check:
   "merge to refuse" at the standing safety net). Concern token:
   `template-spec-drift`; the rubric body lives in the review prompt's
   *Template-vs-Spec Drift Walk* partial, gated on `--tree` scope.
+
+- **Cross-spec clash.** Two sibling specs in the workspace make
+  incompatible claims about a shared surface — e.g. one spec defines a
+  contract one way, a sibling references it differently; one spec's
+  command-set table conflicts with another's prose. Concern token:
+  `cross-spec-clash`. Target is `Criterion { spec, anchor }` naming
+  the side the reviewer considers primary; `bonds` lists every spec
+  the clash spans, and the other side(s) appear verbatim in
+  `evidence` prose. Gated on `--tree` scope because per-diff scope
+  cannot see sibling-spec context.
+
+- **Spec-conventions violation.** A spec violates a rule from
+  `docs/spec-conventions.md` that the structural integrity gate
+  cannot detect deterministically — un-promoted tentative annotations
+  (annotations carrying placeholder language the spec author intended
+  to revise before commit), a testable claim authored without any
+  verifier annotation, prose that should be a success-criteria bullet
+  but lives as flat prose, or any other convention violation that
+  requires reading the spec's intent rather than walking a structural
+  check. Concern token: `spec-conventions-violation`. Target is
+  `Criterion { spec, anchor }` naming the offending location.
+  (Mechanical violations — multi-annotation criteria, unresolved
+  annotations, stub-pointing — are caught by the integrity gate at
+  every scope, not here.) Gated on `--tree` scope.
 
 `loom gate mint --tree` walks both the deterministic verifiers
 (`verify` side) and the LLM rubric (`review` side), then mints typed
@@ -470,31 +516,104 @@ what makes the rubric's concerns actionable.
 
 ### Canonical contract location
 
-The Rust contract for the typed `Finding` record is owned by
-`loom-templates::finding::Finding` (struct + `ConcernToken` closed
-enum + `FindingTarget` internally-tagged-on-`kind` enum + `TargetKind`
-+ `FindingValidator` trait + `FindingParseError`). `loom-workflow::review`
-re-exports the types via `pub use` so the mint pipeline and the
-review classifier reference one canonical location. No second
-`Finding`-shaped struct, no parallel `ConcernToken` enum, exists or
-will exist elsewhere in the workspace; the canonical-home property
-is structurally required (single serde-derived definition) and
-mechanically enforced by a `[check?]`-tier anti-duplication walker
-landing alongside the broad forward-resolution change documented
-under [*Pending modifier*](#pending-modifier) below.
+The Rust contract for the gate's wire format is owned by
+`loom-protocol::gate` — a leaf crate carrying the `Finding` record
+struct + `ConcernToken` closed enum + `FindingTarget`
+internally-tagged-on-`kind` enum + `TargetKind` + `FindingValidator`
+trait + `FindingParseError` + `BadWalk` + `TerminalSurface` +
+`WalkOutput` + `WalkOutputError` + `ExitSignal` + the
+`parse_walk_output` / `WalkOutput::from_stdout` / `parse_exit_signal`
+parsers + the `LOOM_FINDING_PREFIX` constant.
+
+**Crate scope.** `loom-protocol` is single-purpose: cross-crate wire
+protocols loom emits or consumes. Today it carries one module,
+`gate`, covering the findings/concern surface this spec defines.
+Future protocols (agent stream-json, pi-mono RPC, run-phase exit
+markers) may land as sibling modules (`loom-protocol::agent`,
+`loom-protocol::run`, …) without re-litigating crate-extraction
+overhead. Each protocol's wire-format major-bump SemVer is
+governed at the module boundary by the same anti-drift pattern
+`gate` uses (a single-source-of-truth partial paired with a
+`[check]`-tier verifier that refuses restatement elsewhere; see
+*Emit shape* below).
+
+**Dependency direction.** Leaf crate. Depends on `serde` + `serde_json`
+(JSON wire), `thiserror` / `displaydoc` (error types), and
+`loom-events` for `SpecLabel`. No Askama, no bd client, no template
+prose — those live one layer up. `loom-templates`, `loom-workflow`,
+`loom-gate`, and the loom CLI all depend on `loom-protocol`;
+`loom-templates` re-exports the `gate` module's public types via
+`pub use` so existing `PreviousFailure::ReviewConcern { findings }`
+construction works without consumers touching the dependency graph.
+
+**`pub` / `pub(crate)` boundary.** The public surface is the typed
+contract a consumer needs to construct, match on, or read from a
+parsed walk: `Finding`, `ConcernToken`, `FindingTarget`, `TargetKind`,
+`FindingValidator`, `FindingParseError`, `BadWalk`, `TerminalSurface`,
+`WalkOutput`, `WalkOutputError`, `ExitSignal`, `LOOM_FINDING_PREFIX`,
+`parse_walk_output`, `WalkOutput::from_stdout`, `parse_exit_signal`,
+and `Finding::fingerprint`. The following stay `pub(crate)` so the
+implementation can reshape without a major bump: per-layer validators
+inside `Finding::validate`, per-variant `canonical_form` fingerprint
+helpers, `Finding::parse_payload` (single-line parser — consumers go
+through `parse_walk_output` for the full pipeline), and internal
+helpers like `terminal_surface_from_stdout`. Widening later is cheap;
+narrowing is a breaking change.
+
+**The seal is field-private, not constructor-private.** The
+silent-loss failure class — production caller constructs `WalkOutput`
+with bogus fields and the typed terminal/finding pipeline is bypassed
+— is structurally unrepresentable because `WalkOutput`'s fields are
+private at the `loom-protocol` crate boundary.
+`WalkOutput::from_stdout` is `pub` so consumers can call it, and
+it's the only construction path. `Finding`'s fields stay `pub` for
+read access — consumers match on `token`, `bonds`, `target`,
+`evidence` after parsing — and any `Finding` reaching mint came
+from `parse_walk_output`, so the validator's guarantees ride
+through with it.
+
+**SemVer = wire format stability.** The crate's MAJOR version is the
+protocol version. A breaking wire change (renamed token, retyped
+target shape, removed enum variant) requires a major bump; consumers
+opt in via Cargo. Additive changes (new `ConcernToken` variant, new
+`FindingTarget` variant, new fields with `#[serde(default)]`) are
+minor bumps. No `"protocol": <n>` field appears on the wire — the
+existing typed `FindingParseError::Json` (which carries the serde
+unknown-variant error verbatim) and `FindingParseError::TokenVariantMismatch`
+give loud, structural breakage when a consumer's protocol-crate
+version doesn't match the loom binary it spawns. Cargo + Cargo.lock
+pinning coordinates the two halves of the pipeline; no per-line
+versioning needed.
+
+**Cross-repo consumers.** External consumers (e.g. wrapix) depend on
+`loom-protocol` directly. The expected consumption shape is:
+spawn `loom gate review` / `loom gate mint` as a subprocess, capture
+stdout, call `loom-protocol::gate::parse_walk_output(&stdout,
+&validator)`. The typed `WalkOutput` is the consumer's entry point
+into the parsed walk. Compile-time type safety + the leaf-crate
+dependency shape gives consumers the same guarantees loom's own
+internal pipeline has.
+
+The contract types previously defined at `loom-templates::finding`
+relocate to `loom-protocol::gate` in a single atomic migration
+diff. The `finding_no_duplicate_definitions` walker continues to
+enforce the single-definition property across the workspace:
 [check](cargo run -p loom-walk -- finding_no_duplicate_definitions)
 
-The wire format's sole textual definition lives at
-`crates/loom-templates/templates/partial/findings_walk.md`; the
-anti-drift `[check]`-tier verifier (under
-`### Single source of truth` below) refuses any template that
-restates the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed forms
-outside that partial.
+The wire format's sole textual definition for *agent-facing prose*
+lives at `crates/loom-templates/templates/partial/findings_walk.md`;
+the anti-drift `[check]`-tier verifier (defined in *Emit shape →
+Single source of truth* below) refuses any template that restates
+the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed forms outside
+that partial. The partial documents the wire format for LLM agents;
+`loom-protocol` documents it for Rust consumers. They are pinned to
+the same loom release via Cargo + the workspace's git ref; the
+existing anti-drift walker covers both surfaces.
 
 **`ConcernToken` is not `ReviewConcern`.** Two enums look similar
 and live in different crates with different purposes. `ConcernToken`
 (in
-`loom-templates::finding`) is the **wire-level identifier** on each
+`loom-protocol::gate`) is the **wire-level identifier** on each
 streamed `LOOM_FINDING:` line — the closed set of tokens
 (`spec-coherence-fail`, `orphan-integration`, `verifier-bypass`,
 …) the rubric emits and `loom gate mint` routes on. `ReviewConcern`
@@ -606,6 +725,8 @@ finding hashes the same way across rubric runs.
 | `judge-flag` | Rubric (`[judge]` criterion) | `Criterion { spec, anchor }` |
 | `invariant-clash` | Rubric (invariant-clash scan) | `Invariant { spec, section, tag }` |
 | `template-spec-drift` | Rubric (tree-scope only) | `Template { path }` |
+| `cross-spec-clash` | Rubric (tree-scope only) | `Criterion { spec, anchor }` |
+| `spec-conventions-violation` | Rubric (tree-scope only) | `Criterion { spec, anchor }` |
 | `verifier-failed` | Deterministic verifier exit ≠ 0 (tree-scope only) | `Annotation { target_string }` |
 | `dispatch-error` | Verifier exit 2 — command not found / missing prereq (tree-scope only) | `Annotation { target_string }` |
 | `unresolved-annotation` | Integrity gate forward-resolution (tree-scope only) | `Annotation { target_string }` |
@@ -807,19 +928,25 @@ The review-phase classifier signature (`classify_review_phase` in
 `loom-workflow::review::production`) consumes a typed `WalkOutput`
 product (`{ terminal: TerminalSurface, findings: Vec<Finding>,
 finding_errors: Vec<FindingParseError> }`), not raw `&str`.
-`WalkOutput`'s `pub(crate)` constructor takes the agent's combined
-stdout and a `FindingValidator` and runs the parse pipeline once.
-The classifier cannot be called with raw `&str`; that becomes a
-compile error. The silent-loss failure class — a production caller
-constructs `GateInputs` without invoking the walk parser, leaving
-`streamed_findings_count` at default `0` so every well-formed
-`LOOM_CONCERN` with streamed findings collapses to
-`BadWalk::ConcernWithoutFindings` — becomes structurally
-unrepresentable.
+`WalkOutput::from_stdout` is the only construction path: it takes the
+agent's combined stdout and a `FindingValidator`, runs the parse
+pipeline once, and returns the typed product. The classifier cannot
+be called with raw `&str`; that becomes a compile error. The
+silent-loss failure class — a production caller constructs
+`GateInputs` without invoking the walk parser, leaving the typed
+finding stream at default empty so every well-formed `LOOM_CONCERN`
+with streamed findings collapses to `BadWalk::ConcernWithoutFindings`
+— becomes structurally unrepresentable.
 
-This mirrors the sealed-`MarkerProof` pattern (`## Marker` below):
-`pub(crate)`-only mint authority through validated construction is
-the type-shape contract for trust handoff.
+The seal is **field-private**: `WalkOutput`'s fields are private at
+the crate boundary, and `WalkOutput::from_stdout` is `pub`
+(consumers depending on `loom-protocol` need to call it). Field
+privacy is what makes the silent-loss class unrepresentable —
+struct-literal construction with bogus fields cannot compile, so
+any `WalkOutput` reaching the classifier ran the typed parse
+pipeline. This mirrors the sealed-`MarkerProof` pattern
+(`## Marker` below): validated construction through a single
+entry point is the type-shape contract for trust handoff.
 
 ### Verification surface
 
@@ -858,7 +985,7 @@ combination), `serde_json::to_string(&finding)` → embed in
 `LOOM_FINDING:` line → embed in a synthetic walk output with an
 arbitrary well-formed terminator → `parse_walk_output` → assert
 byte-equal to the input `Finding` and fingerprint identical.
-Extends `loom-templates::finding::tests::fingerprint_is_stable_across_runs_for_same_finding`
+Extends `loom-protocol::gate::tests::fingerprint_is_stable_across_runs_for_same_finding`
 from "fingerprint stable" to "full struct round-trip."
 
 ### Fingerprint and dedup
@@ -956,6 +1083,40 @@ For each `LOOM_FINDING:` line the driver receives:
 End-of-run summary (printed to stdout, no bd writes): `minted M,
 skipped K (dedup), refused R, errors E`, with per-finding fingerprint
 and resulting bead id listed.
+
+### Per-bead mint summary semantics
+
+`loom gate mint --bead <id>` exits non-zero when `refused > 0` or
+`errors > 0`; otherwise exit 0 even on `minted > 0` (creating fix-up
+beads is a successful run). The driver — primarily `loom loop`'s
+per-bead path — interprets the exit code and summary together:
+
+- **Clean exit (refused == 0, errors == 0, any minted count).** The
+  bead's work is done; whatever fix-ups were minted surface on the
+  next outer-loop pass via `bd ready`. Per-bead path returns Done.
+- **`refused > 0` — structural bd violation.** Refusal means either
+  the dedup query (*Per-finding processing* step 3) returned >1 open
+  bead sharing the fingerprint label, or the lead-resolution query
+  (step 5) returned >1 open epic for the spec. Both are
+  operator-resolvable bd states, not transient failures. The per-bead
+  path routes the bead to `loom:blocked` with cause
+  `mint-structural-violation` and the conflicting bead ids in the
+  detail. Next `loom loop` pass after cleanup picks up where it left
+  off via dedup re-resolve.
+- **`errors > 0` — transient.** Unexpected failure during mint
+  itself: bd CLI fault, subprocess timeout, or a `bd create` /
+  `bd list` invocation that returned an unexpected shape. The per-
+  bead path threads the summary's error detail into `PreviousFailure`
+  and re-runs through the existing recovery loop bounded by
+  `[loop] max_retries`. After the retry budget exhausts, the bead
+  routes to `loom:clarify` with the accumulated error context — same
+  recovery path the run-phase uses.
+
+The bead's underlying work (the agent's run-phase) is unaffected by
+this routing; mint runs *after* the agent signals Success per
+*Per-diff stage checks* above. A `refused` mint outcome does not
+unwind the agent's commit — it parks the bead so the operator can
+resolve the bd-state issue without losing the work.
 
 ### Multi-spec findings
 
@@ -1609,12 +1770,13 @@ logic.
 
 ## Status cache
 
-`loom gate` (no subcommand) reads from a sqlite-backed status cache
-and prints a fast report. Every subcommand that runs verifiers or
-the LLM rubric writes to the cache as it runs — `loom gate verify`,
-`loom gate review`, `loom gate audit`, the tier subcommands
-(`check` / `test` / `system` / `judge` / `rubric`), and `loom gate
-mint` (via its embedded verify and rubric walks).
+`loom gate status` reads from a sqlite-backed status cache and prints
+a fast report. (Bare `loom gate` shows the subcommand help — see
+*Commands* above.) Every subcommand that runs verifiers or the LLM
+rubric writes to the cache as it runs — `loom gate verify`, `loom
+gate review`, `loom gate audit`, the tier subcommands (`check` /
+`test` / `system` / `judge` / `rubric`), and `loom gate mint` (via
+its embedded verify and rubric walks).
 
 **Cache contents per criterion:**
 - annotation target
@@ -1627,7 +1789,7 @@ mint` (via its embedded verify and rubric walks).
 [harness.md](harness.md). One row per criterion, indexed
 by `(spec_label, criterion_anchor)`.
 
-**Report contents** when `loom gate` runs without subcommands:
+**Report contents** when `loom gate status` runs:
 - per-spec criterion counts: total, annotated, un-annotated
 - last-run summary per tier: when, pass/fail counts, currently-failing criteria
 - annotation health: broken annotations (target doesn't resolve),
@@ -1934,7 +2096,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
 - **Pending `[test?]` — stub body silently passes.** The modifier
   suppresses `StubTestFunction` the same way it suppresses
   `UnresolvedAnnotation`
-  [test?](pending_marked_stub_test_body_yields_no_finding)
+  [test](pending_marked_stub_test_body_yields_no_finding)
 - **Pending `[test?]` — non-stub body emits `UnneededPendingMarker`.**
   Co-incidence with target resolution forces the implementing diff to
   drop `?` at the same commit that lands the real body
@@ -2125,25 +2287,25 @@ depends on.
   `crates/loom-workflow/src/review/error.rs` and the raise site at
   `review/runner.rs` is removed in the same diff; no production code
   path constructs this error variant
-  [test?](no_path_constructs_concern_without_bead_deltas_in_production)
+  [test](no_path_constructs_concern_without_bead_deltas_in_production)
 - `parse_review_flag` (the legacy `<token> -- <reason>` whole-stdout
   hunter) is removed from `crates/loom-workflow/src/review/phase_verdict.rs`;
   the function and all its callers are deleted
-  [test?](parse_review_flag_is_not_defined_or_called_in_production)
+  [test](parse_review_flag_is_not_defined_or_called_in_production)
 - `decide_concern` no longer parses the terminal `summary` field as a
   `ReviewConcern` token; the legacy fallback path
   (`ReviewConcern::parse(summary)`) is removed. An unrecognized
   summary with at least one streamed finding routes to
   `RecoveryCause::ReviewConcern { summary, findings }`, not
   `SwallowedMarker`
-  [test?](decide_concern_unrecognized_summary_with_findings_routes_to_review_concern_not_swallowed)
+  [test](decide_concern_unrecognized_summary_with_findings_routes_to_review_concern_not_swallowed)
 - The `ReviewConcern` 12-variant enum stays as a display vocabulary
   for `bd update --notes` and verdict-log human-readable cause
   labels, but `ReviewConcern::parse` has no production caller. The
   per-finding render in `PreviousFailure::ReviewConcern` derives the
   human-readable label from `findings[0].token` (or a "multiple"
   label when heterogeneous)
-  [test?](previous_failure_review_concern_renders_human_label_from_findings_not_summary)
+  [test](previous_failure_review_concern_renders_human_label_from_findings_not_summary)
 
 ### Wire-format strict validation and max-context preservation
 
@@ -2154,33 +2316,36 @@ depends on.
   `RecoveryCause::BadWalk(BadWalk::MalformedFinding { errors, terminal })`
   with the well-formed terminal preserved alongside the per-line
   parse errors
-  [test?](backtick_wrapped_loom_finding_line_routes_to_bad_walk_malformed_finding_with_terminal_preserved)
+  [test](backtick_wrapped_loom_finding_line_routes_to_bad_walk_malformed_finding_with_terminal_preserved)
 - The `LOOM_FINDING:` substring match is case-sensitive and
   colon-suffixed; bare-prose mentions without the colon do not match
-  [test?](loom_finding_substring_match_requires_uppercase_and_colon_suffix)
+  [test](loom_finding_substring_match_requires_uppercase_and_colon_suffix)
 - `BadWalk::Concern` carries `{ payload, parsed_findings: Vec<Finding> }`;
   well-formed findings streamed ahead of a malformed terminal are
   preserved in `parsed_findings`
-  [test?](bad_walk_concern_preserves_well_formed_findings_alongside_malformed_payload)
+  [test](bad_walk_concern_preserves_well_formed_findings_alongside_malformed_payload)
 - `BadWalk::FindingsWithoutConcern` carries
   `{ finding_count, findings: Vec<Finding> }`; the parsed findings
   ride through so the next iteration's prompt and `loom gate mint`
   can both consume them
-  [test?](bad_walk_findings_without_concern_carries_parsed_findings_vec)
+  [test](bad_walk_findings_without_concern_carries_parsed_findings_vec)
 - The `BadWalk::MalformedFinding { errors, terminal }` variant
   carries every per-line parse error AND the well-formed terminal
   surface (or a typed `Missing`/`Malformed` variant when the
   terminal itself failed). Construction without both pieces is a
   compile error
-  [test?](bad_walk_malformed_finding_variant_carries_errors_and_terminal_by_struct_shape)
+  [test](bad_walk_malformed_finding_variant_carries_errors_and_terminal_by_struct_shape)
 
 ### Verification surface (matrix + property)
 
 - The review-phase classifier signature consumes a typed `WalkOutput`
-  (with `pub(crate)` constructor that runs `parse_walk_output`
-  internally), not raw `&str`. Any production caller passing a `&str`
-  is a compile error
-  [test?](classify_review_phase_signature_requires_typed_walk_output)
+  (with field-private struct + `pub WalkOutput::from_stdout`
+  constructor that runs `parse_walk_output` internally), not raw
+  `&str`. Any production caller passing a `&str` is a compile error,
+  and any caller constructing `WalkOutput` with bogus fields cannot
+  compile because the fields are private at the `loom-protocol`
+  crate boundary
+  [test](classify_review_phase_signature_requires_typed_walk_output)
 - The (stream-shape × terminal-shape) failure matrix is exhaustive:
   every cell in the 4 × 6 cross-product (S0..S3 stream shapes × six
   terminal shapes) has a parameterised test asserting the typed
@@ -2192,6 +2357,135 @@ depends on.
   embed in a synthetic walk output → `parse_walk_output`, with
   stable fingerprint
   [test](every_finding_round_trips_through_wire_format_with_stable_fingerprint)
+- `ConcernToken::CrossSpecClash` round-trips through the wire format
+  with canonical target `Criterion { spec, anchor }` and is exercised
+  by the round-trip property test cell set
+  [test?](concern_token_cross_spec_clash_round_trips_with_criterion_target)
+- `ConcernToken::SpecConventionsViolation` round-trips through the
+  wire format with canonical target `Criterion { spec, anchor }` and
+  is exercised by the round-trip property test cell set
+  [test?](concern_token_spec_conventions_violation_round_trips_with_criterion_target)
+- `cross-spec-clash` and `spec-conventions-violation` are
+  tree-scope-only tokens: the rubric emits them at `--tree` scope;
+  `--bead` / `--diff` / `--files` scope rejects them. A finding
+  carrying either token parsed at non-tree scope surfaces a typed
+  `FindingParseError` variant naming the scope mismatch, alongside
+  the existing per-bead-only restriction on `scope-creep` /
+  `scope-shortfall`
+  [test?](tree_scope_only_tokens_rejected_at_non_tree_scope)
+
+### `loom-protocol` crate
+
+The Rust contract for the gate's wire format lives in
+`loom-protocol::gate` — a leaf crate carrying the typed `Finding`
+record + closed-set `ConcernToken` enum + `FindingTarget` /
+`TargetKind` / `FindingValidator` / `FindingParseError` + `BadWalk` /
+`TerminalSurface` / `WalkOutput` / `WalkOutputError` / `ExitSignal` +
+the `parse_walk_output` / `WalkOutput::from_stdout` /
+`parse_exit_signal` parsers + the `LOOM_FINDING_PREFIX` constant. Per
+*Canonical contract location*.
+
+- The `loom-protocol` crate exists as a leaf workspace member with
+  the `gate` module carrying every type listed above. The crate's
+  dependencies are limited to `serde`, `serde_json`, `thiserror` /
+  `displaydoc`, and `loom-events` (for `SpecLabel`); no transitive
+  dependency on `loom-templates`, `loom-workflow`, or `loom-gate`
+  [test?](loom_protocol_crate_has_minimal_leaf_dependency_set)
+- `loom-templates::finding` and `loom-templates::previous_failure` re-
+  export the typed contract from `loom-protocol::gate` via `pub use`
+  so existing callers (including `PreviousFailure::ReviewConcern {
+  findings }`) compile without changes. The original definitions are
+  removed from `loom-templates`
+  [test?](loom_templates_re_exports_finding_contract_from_loom_protocol)
+- `loom-workflow::review::finding` (the `WalkOutput` typed product +
+  `parse_walk_output` parser) and `loom-workflow::todo::exit::ExitSignal`
+  / `parse_exit_signal` move to `loom-protocol::gate`. Existing
+  `loom-workflow` imports either remap or re-export
+  [test?](loom_workflow_re_exports_walk_output_and_exit_signal_from_loom_protocol)
+- The `WalkOutput` struct's fields are private; `WalkOutput::from_stdout`
+  is `pub` (consumers need to call it) but is the only construction
+  path. The silent-loss failure class — production caller constructs
+  `WalkOutput` with bogus fields, bypassing the typed parse pipeline —
+  is structurally unrepresentable via field-privacy, not via
+  `pub(crate)` constructor scoping
+  [test?](walk_output_fields_private_only_constructor_is_from_stdout)
+- The crate's MAJOR version is the wire-format protocol version. A
+  breaking wire change (renamed token, retyped target shape, removed
+  enum variant) requires a major bump. Additive changes (new
+  `ConcernToken` variant, new `FindingTarget` variant, new fields with
+  `#[serde(default)]`) are minor bumps. No `"protocol": <n>` field
+  appears on `LOOM_FINDING:` / `LOOM_CONCERN:` payloads — the typed
+  parse errors give loud structural breakage on version skew
+  [test?](loom_protocol_wire_format_does_not_carry_protocol_version_field)
+- The `finding_no_duplicate_definitions` walker continues to enforce
+  one canonical definition of `Finding`, `ConcernToken`,
+  `FindingTarget`, `WalkOutput`, `BadWalk`, and `ExitSignal` across
+  the workspace; the canonical home after extraction is
+  `loom-protocol::gate`
+  [check?](cargo run -p loom-walk -- finding_no_duplicate_definitions)
+
+### Production walker wiring
+
+The seam between `loom gate mint`'s CLI arm and the underlying walker
+is the `MintWalker` trait. The CLI arm dispatches through the trait
+so findings reach the mint pipeline from a real walk. A CLI arm
+that constructs an empty finding vector unconditionally — bypassing
+the walker — is a structural defect; the walker is the only path
+findings reach mint.
+
+- A production `MintWalker` implementation exists in
+  `loom-workflow::mint::walk` (alongside the trait). Its `run_rubric`
+  spawns the reviewer agent subprocess against the rendered review
+  prompt and returns the agent's combined stdout; its
+  `run_verifiers` (called only at `MintScope::Tree`) dispatches the
+  deterministic verifier set + the integrity gate forward-resolution
+  check and returns one `VerifierFailure` per failed dispatch
+  outcome
+  [test?](production_mint_walker_exists_and_dispatches_rubric_and_verifiers)
+- `run_gate_mint` in the loom CLI binary constructs the production
+  walker and calls `mint::walk::walk(walker, scope, validator)` to
+  obtain the `Vec<Finding>` it passes to `mint_findings_with_options`.
+  No code path in `run_gate_mint` constructs `Vec::<Finding>::new()`
+  unconditionally
+  [test?](run_gate_mint_dispatches_through_production_walker_not_empty_vec)
+- `loom loop`'s per-bead path invokes `loom gate verify --bead <id>`
+  followed by `loom gate mint --bead <id>` as subprocesses after the
+  run-phase agent signals Success. Fix-up beads minted at this step
+  become ready on the next outer-loop pass via `bd ready`
+  [test?](loop_per_bead_dispatches_verify_then_mint_after_run_phase_success)
+
+### Per-bead mint summary semantics
+
+- `loom gate mint --bead <id>` exits 0 when `refused == 0 && errors
+  == 0`, regardless of `minted`/`skipped` counts. The mint summary
+  is printed to stdout unchanged
+  [test?](mint_bead_scope_exits_zero_on_clean_summary)
+- `loom gate mint --bead <id>` exits non-zero when `refused > 0` or
+  `errors > 0`, and the summary header lists the non-zero counts so
+  the loop's per-bead path can route on the typed exit
+  [test?](mint_bead_scope_exits_nonzero_on_refused_or_errors)
+
+Loop-side interpretation of these exit codes — routing `refused` to
+`loom:blocked` with cause `mint-structural-violation`, threading
+`errors` through the recovery loop — is owned by
+[harness.md § Functional](harness.md#functional).
+
+### Commands surface — bare gate and status
+
+- Bare `loom gate` (no subcommand) prints `loom gate --help` —
+  identical output to `loom gate --help`. No verifier runs, no cache
+  read, no bd writes
+  [test?](bare_loom_gate_prints_subcommand_help)
+- `loom gate status` reads the sqlite status cache and prints the
+  report per `Status cache` above; inherits the bare-invocation scope
+  default (`--diff <molecule.base_commit>..HEAD` for active spec
+  with an open epic, else `--diff HEAD`); `loom gate status --tree`
+  reads the full workspace cache
+  [test?](loom_gate_status_subcommand_reads_cache_with_default_scope)
+- `loom gate status` is `refused_inside_loom() == false`; running
+  under `LOOM_INSIDE=1` is allowed because the cache read is local
+  and read-only
+  [test?](loom_gate_status_is_allowed_under_loom_inside_env)
 
 ### Status cache
 

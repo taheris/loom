@@ -1126,6 +1126,46 @@ documents in front of the agent with zero configuration.
     the typed contexts + partial strings, not from Loom's workflow
     templates. Stability: additive type changes are minor bumps;
     removing or renaming fields / partial paths is a major bump.
+
+    **Dependency on `loom-protocol`.** The typed gate wire-format
+    contract (`Finding`, `ConcernToken`, `FindingTarget`, `BadWalk`,
+    `WalkOutput`, etc.) lives in `loom-protocol::gate` — see
+    [gate.md § Canonical contract location](gate.md#canonical-contract-location).
+    `loom-templates` depends on `loom-protocol` so
+    `PreviousFailure::ReviewConcern { findings: Vec<Finding> }` and
+    `PreviousFailure::BadWalk(BadWalk)` can carry the typed values;
+    `loom-templates` re-exports the gate contract via `pub use` so
+    existing consumers importing from `loom-templates::finding`
+    continue to compile. The intended consumption shape for a
+    consumer writing their own LLM pipeline against loom: depend on
+    `loom-protocol` (parse `loom gate ...` subprocess stdout into
+    typed `WalkOutput`), depend on `loom-templates` (compose their
+    own Askama template body that `{% include %}`s `PARTIAL_*`
+    constants and fills typed contexts), depend on `loom-llm`
+    (run the conversation loop). The three crates compose; loom CLI
+    is itself one such consumer.
+
+    **Dogfood is structural.** Loom CLI uses the same Askama
+    mechanism, the same exposed partials, and the same typed
+    contexts a consumer would use — there is no "loom's special
+    path" vs "consumer's path." Loom's CLI binary depends on
+    `loom-templates` exactly like a consumer would. The boundary
+    that keeps consumers from forking loom's workflow bodies is
+    the deliberate non-exposure of those bodies (the "Loom's
+    workflow template bodies themselves are not exposed" rule at
+    the head of this FR12), not a divergent loading mechanism.
+
+    `PARTIAL_FINDINGS_WALK` is the canonical agent-facing prose for
+    the gate wire format and is paired with `loom-protocol::gate` on
+    the parser side. Consumers using `loom-protocol::gate::parse_walk_output`
+    to parse subprocess stdout should pair it with `PARTIAL_FINDINGS_WALK`
+    in their own template body so the emitter (their LLM agent) and
+    the parser (their driver) stay coherent across loom releases. The
+    anti-drift coupling between `ConcernToken` and `PARTIAL_FINDINGS_WALK`
+    is maintained inside loom's workspace by the
+    `template_wire_format_restatement` walk; consumers get coherence
+    for free as long as they pin both crates from the same loom
+    release.
 13. **Chat discipline in planning interviews.**
     `partial/chat_interview.md`, pinned in `plan_new` and
     `plan_update` only, requires the planning agent to conduct

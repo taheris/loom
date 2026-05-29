@@ -2432,6 +2432,44 @@ Criteria.
       --diff <molecule.base_commit>..HEAD` (scope = molecule's own
       diff, proportional to its work — not `--tree`)
   [test](exec_review_invokes_gate_verify_then_gate_review_with_molecule_diff)
+- After each per-bead agent run signals Success and the bead's branch
+      is rebased onto the integration branch + ff'd at the loom
+      workspace (inside `index.lock`), the loop invokes `loom gate
+      verify --bead <id>` followed by `loom gate mint --bead <id>`.
+      The mint step's `Vec<Finding>` comes from the production
+      `MintWalker` impl (per [gate.md § Production walker
+      wiring](gate.md#production-walker-wiring)), not from a
+      `Vec::new()` shortcut
+  [test?](per_bead_path_invokes_verify_then_mint_after_run_phase_success)
+- The molecule-completion handoff's `HandoffEvidence` is populated
+      from the reviewer subprocess's actual outputs: `verify_exit` and
+      `review_exit` from the child exit codes, `review_marker` from
+      `ExitSignal` parsing the agent's stdout, `review_log_path` from
+      the LogSink. No field is left at default `None` when the child
+      process produced a parseable run; absence surfaces as a
+      `GateFail` variant per [Loop Outcome
+      Types](#loop-outcome-types)
+  [test?](handoff_evidence_populates_marker_and_log_path)
+- When the molecule-completion review produces ≥1 streamed
+      `LOOM_FINDING:` line and a `LOOM_CONCERN:` terminator, the
+      parsed `Vec<Finding>` rides through `PreviousFailure::ReviewConcern
+      { summary, findings }` into the next bead-attempt's recovery
+      prompt. Mint does NOT fire at molecule completion (per
+      [gate.md § Stages](gate.md#stages) — push is `audit`,
+      inspection-only); fix-ups are minted at the per-bead step only
+  [test?](molecule_completion_review_threads_findings_into_previous_failure_review_concern)
+- A per-bead `loom gate mint --bead <id>` exit with `refused > 0`
+      causes the loop to route the bead to `loom:blocked` with cause
+      `mint-structural-violation` and the conflicting `bd` ids in the
+      cause detail; the bead's run-phase commit is not unwound (the
+      integration is already durable)
+  [test?](loop_per_bead_routes_mint_refused_to_loom_blocked_with_structural_cause)
+- A per-bead `loom gate mint --bead <id>` exit with `errors > 0`
+      threads the mint summary's error detail into `PreviousFailure`
+      and re-runs through the existing per-bead recovery loop bounded
+      by `[loop] max_retries`. After exhaustion the bead routes to
+      `loom:clarify` with the accumulated error context
+  [test?](loop_per_bead_routes_mint_errors_through_recovery_loop_bounded_by_max_retries)
 - `loom loop`'s outer loop, after the molecule-completion handoff
       returns and the push gate has not yet fired clean, re-polls
       `bd ready` and continues processing any newly-ready fix-up
