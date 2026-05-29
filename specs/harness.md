@@ -2210,10 +2210,10 @@ Criteria.
 - When `[loom] sccache_dir` is configured, the directory is
       bind-mounted into the loom workspace and every bead container
       at the configured container path
-  [test?](sccache_mount_present_when_configured)
+  [test](sccache_mount_present_when_configured)
 - When `[loom] sccache_dir` is unset, no sccache mount appears on
       the bead container spawn args
-  [test?](sccache_mount_omitted_when_unset)
+  [test](sccache_mount_omitted_when_unset)
 - Cache hits are observable across beads in a multi-bead loop when
       `[loom] sccache_dir` is configured
   [judge?](sccache_hits_visible_across_beads)
