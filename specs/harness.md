@@ -2457,7 +2457,7 @@ Criteria.
       prompt. Mint does NOT fire at molecule completion (per
       [gate.md § Stages](gate.md#stages) — push is `audit`,
       inspection-only); fix-ups are minted at the per-bead step only
-  [test?](molecule_completion_review_threads_findings_into_previous_failure_review_concern)
+  [test](molecule_completion_review_threads_findings_into_previous_failure_review_concern)
 - A per-bead `loom gate mint --bead <id>` exit with `refused > 0`
       causes the loop to route the bead to `loom:blocked` with cause
       `mint-structural-violation` and the conflicting `bd` ids in the

@@ -47,6 +47,7 @@ pub use loom_templates::review::ReviewLane;
 pub use phase_verdict::{
     GateInputs, PhaseVerdict, RecoveryCause, ReviewConcern, ReviewFlag, decide,
 };
+pub(crate) use production::AcceptAllFindingValidator;
 pub use production::ProductionReviewController;
 pub use recovery::{
     RETRY_EXHAUSTED_CAUSE, RecoveryResolution, cause_to_previous_failure,

@@ -60,7 +60,7 @@ use crate::todo::ExitSignal;
 /// admitting every spec label and every target so the classifier
 /// preserves the maximum well-formed context for the recovery prompt.
 /// The mint pipeline runs its own workspace-backed validator.
-struct AcceptAllFindingValidator;
+pub(crate) struct AcceptAllFindingValidator;
 
 impl FindingValidator for AcceptAllFindingValidator {
     fn spec_label_is_known(&self, _label: &SpecLabel) -> bool {

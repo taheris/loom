@@ -43,8 +43,11 @@ use super::post_merge_push::{default_beads_push_program, push_merged_main_then_b
 use super::runner::AgentLoopController;
 use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 use super::tree_clean::dirty_paths_from_porcelain;
-use crate::review::{GateInputs, PhaseVerdict, RecoveryCause, decide};
+use crate::review::{
+    AcceptAllFindingValidator, GateInputs, PhaseVerdict, RecoveryCause, WalkOutput, decide,
+};
 use crate::todo::{ExitSignal, parse_exit_signal};
+use loom_templates::previous_failure::TerminalSurface;
 use loom_templates::run::PreviousFailure;
 
 /// Env var the molecule-completion handoff sets when spawning `loom gate
@@ -104,6 +107,16 @@ where
     /// N+1 instead of the opaque agent-error string returned through the
     /// runner. Cleared on a fresh bead dispatch (`previous_failure = None`).
     stashed_previous_failure: Option<PreviousFailure>,
+    /// Typed [`PreviousFailure::ReviewConcern`] (or `BadWalk`) parsed
+    /// from the molecule-completion review's stdout. Distinct from
+    /// [`Self::stashed_previous_failure`] because its scope is the
+    /// molecule, not a single bead's retry chain: the next `run_bead`
+    /// call — typically a fresh fix-up bead, not a retry — consumes it
+    /// so the parsed `Vec<Finding>` rides through into the recovery
+    /// prompt per `specs/harness.md`
+    /// § *molecule_completion_review_threads_findings_into_previous_failure_review_concern*.
+    /// Consumed once (take); cleared on first read.
+    stashed_review_concern: Option<PreviousFailure>,
     /// Program invoked to sync the beads remote after `git push` lands.
     /// Defaults to `beads-push` on `PATH`; tests override with a stub
     /// script that exits 0 (or records calls) so cargo nextest does not
@@ -159,6 +172,7 @@ where
             lock: None,
             style_rules: "docs/style-rules.md".to_string(),
             stashed_previous_failure: None,
+            stashed_review_concern: None,
             beads_push_program: default_beads_push_program(),
             logs_root: None,
             current_emit: None,
@@ -281,7 +295,16 @@ where
         // prior bead's retry chain is stale. Resolve typed `PreviousFailure`
         // by preferring the stashed variant (set by the tree-not-clean
         // dispatcher) over the opaque runner-supplied error string.
-        let typed_previous_failure = if is_retry {
+        // The molecule-scoped review-concern stash (set by `exec_review`
+        // when the review walk emits ≥1 `LOOM_FINDING:` + a
+        // `LOOM_CONCERN:` terminator per `specs/harness.md`
+        // § *molecule_completion_review_threads_findings_into_previous_failure_review_concern*)
+        // is consumed first regardless of `is_retry` — fix-up beads
+        // typically arrive as fresh dispatches, not retries, and the
+        // parsed `Vec<Finding>` must ride into the next prompt either way.
+        let typed_previous_failure = if let Some(concern) = self.stashed_review_concern.take() {
+            Some(concern)
+        } else if is_retry {
             self.stashed_previous_failure
                 .take()
                 .or_else(|| previous_failure.map(PreviousFailure::from_agent_error))
@@ -698,6 +721,25 @@ where
         );
         let review_stdout = String::from_utf8_lossy(&review_output.stdout);
         let review_marker = parse_exit_signal(&review_stdout);
+        // Parse the typed walk product once: streamed `LOOM_FINDING:`
+        // lines + the terminal marker shape. When the terminal is a
+        // well-formed `LOOM_CONCERN` AND at least one finding rode
+        // through, stash `PreviousFailure::ReviewConcern { summary,
+        // findings }` so the next `run_bead` call (typically a
+        // fix-up bead's first attempt) renders the parsed findings
+        // verbatim in the recovery prompt per `specs/harness.md`
+        // § *molecule_completion_review_threads_findings_into_previous_failure_review_concern*.
+        // The mint path is NOT fired here — push-stage is `audit`,
+        // inspection-only per `specs/gate.md` § *Stages*.
+        let walk = WalkOutput::from_stdout(&review_stdout, &AcceptAllFindingValidator);
+        if let TerminalSurface::Concern { summary } = &walk.terminal
+            && !walk.findings.is_empty()
+        {
+            self.stashed_review_concern = Some(PreviousFailure::ReviewConcern {
+                summary: summary.clone(),
+                findings: walk.findings.clone(),
+            });
+        }
         let review_log_path = self
             .logs_root
             .as_deref()
@@ -1841,6 +1883,149 @@ mod tests {
         assert!(
             body.contains("review-start"),
             "log file body must be non-empty: {body:?}",
+        );
+    }
+
+    /// `specs/harness.md`
+    /// § *molecule_completion_review_threads_findings_into_previous_failure_review_concern*:
+    /// when the molecule-completion review's stdout carries ≥1
+    /// `LOOM_FINDING:` line and a well-formed `LOOM_CONCERN:` terminator,
+    /// `exec_review` MUST parse the streamed `Vec<Finding>` via
+    /// `WalkOutput::from_stdout` and stash a typed
+    /// `PreviousFailure::ReviewConcern { summary, findings }` so the next
+    /// `run_bead` call (the fix-up bead's first attempt — a fresh
+    /// dispatch, not a retry) consumes it and the parsed findings ride
+    /// through into the rendered recovery prompt verbatim. Mint does NOT
+    /// fire here — push is `audit`, inspection-only per `specs/gate.md`
+    /// § *Stages*.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn molecule_completion_review_threads_findings_into_previous_failure_review_concern() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_manifest(dir.path());
+        let label = SpecLabel::new("alpha");
+        let workspace = dir.path().to_path_buf();
+
+        // Stub: `gate verify` is a no-op (exit 0); `gate review` emits one
+        // streamed `LOOM_FINDING:` line and a well-formed `LOOM_CONCERN:`
+        // terminator on stdout. The parent captures stdout via
+        // `Command::output` and runs `WalkOutput::from_stdout` on it.
+        let argv_log = dir.path().join("argv.log");
+        let stub = dir.path().join("loom-stub.sh");
+        let finding_payload = r#"{"token":"verifier-bypass","bonds":["alpha"],"target":{"kind":"Annotation","target_string":"cargo test --lib sample"},"evidence":"test mocks the agent backend"}"#;
+        let concern_payload = r#"{"summary":"reviewer flagged a verifier-bypass"}"#;
+        let stub_body = format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$*\" >> {argv}\n\
+             case \"$1 $2\" in\n  \
+               'gate review')\n    \
+                 printf 'LOOM_FINDING: {finding}\\nLOOM_CONCERN: {concern}\\n'\n    \
+                 ;;\n\
+             esac\n\
+             exit 0\n",
+            argv = argv_log.to_string_lossy(),
+            finding = finding_payload,
+            concern = concern_payload,
+        );
+        std::fs::write(&stub, stub_body).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let bd = BdClient::with_runner(molecule_lookup_script(
+            dir.path(),
+            "alpha",
+            "lm-mol.1",
+            "deadbeef",
+        ));
+        let git = git_workspace(&workspace);
+        // Capture the SpawnConfig the next `run_bead` synthesizes so we
+        // can assert the rendered prompt carried the ReviewConcern body.
+        let captured: Arc<Mutex<Option<SpawnConfig>>> = Arc::new(Mutex::new(None));
+        let captured_inner = Arc::clone(&captured);
+        let mut controller = ProductionAgentLoopController::new(
+            bd,
+            label.clone(),
+            stub,
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            move |cfg: SpawnConfig, _bead_id: BeadId| {
+                let captured = Arc::clone(&captured_inner);
+                async move {
+                    *captured.lock().unwrap() = Some(cfg);
+                    (
+                        SessionResult::Complete(SessionOutcome {
+                            exit_code: 0,
+                            cost_usd: None,
+                        }),
+                        Some(ExitSignal::Complete),
+                    )
+                }
+            },
+        );
+
+        // Pre-condition: nothing stashed yet.
+        assert!(controller.stashed_review_concern.is_none());
+
+        controller.exec_review().await.expect("exec_review ok");
+
+        // The streamed findings + the terminal concern summary land on
+        // the molecule-scoped stash as a typed
+        // `PreviousFailure::ReviewConcern { summary, findings }`.
+        let stashed = controller
+            .stashed_review_concern
+            .as_ref()
+            .expect("stashed_review_concern populated after concern terminator");
+        match stashed {
+            PreviousFailure::ReviewConcern { summary, findings } => {
+                assert_eq!(
+                    summary, "reviewer flagged a verifier-bypass",
+                    "terminal summary threaded verbatim",
+                );
+                assert_eq!(findings.len(), 1, "one streamed finding parsed");
+                assert_eq!(
+                    findings[0].token,
+                    crate::review::ConcernToken::VerifierBypass,
+                );
+                assert_eq!(findings[0].evidence, "test mocks the agent backend");
+            }
+            other => panic!("expected ReviewConcern, got {other:?}"),
+        }
+
+        // The next `run_bead` call (fresh dispatch — `previous_failure =
+        // None`) consumes the molecule-scoped stash; the typed
+        // `PreviousFailure::ReviewConcern` rides into the rendered
+        // prompt verbatim. The dispatch closure captures the
+        // `SpawnConfig.initial_prompt` so the assertions can scan the
+        // exact prompt body the agent would receive.
+        let fixup_bead = bead("lm-fixup");
+        let _ = controller
+            .run_bead(&fixup_bead, None)
+            .await
+            .expect("run_bead ok");
+        assert!(
+            controller.stashed_review_concern.is_none(),
+            "stash consumed by the next run_bead call",
+        );
+        let cfg = captured
+            .lock()
+            .unwrap()
+            .take()
+            .expect("dispatch closure invoked");
+        let prompt = &cfg.initial_prompt;
+        assert!(
+            prompt.contains("Review raised a concern"),
+            "rendered prompt must carry the ReviewConcern framing: {prompt}",
+        );
+        assert!(
+            prompt.contains("verifier-bypass"),
+            "rendered prompt must name the finding's token: {prompt}",
+        );
+        assert!(
+            prompt.contains("test mocks the agent backend"),
+            "rendered prompt must include the finding's evidence: {prompt}",
         );
     }
 
