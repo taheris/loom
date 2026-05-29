@@ -852,9 +852,9 @@ connection, network filtering, session audit logging.
 ### Interactive shell-out
 
 - `loom plan` passes `--profile <name>` on the `wrapix run` argv, with `<name>` resolved through `LoomConfig::agent_for(Phase::Plan)`
-  [test?](plan_runner_passes_resolved_profile_to_wrapix_run)
+  [test](plan_runner_passes_resolved_profile_to_wrapix_run)
 - `loom msg --chat` passes `--profile <name>` on the `wrapix run` argv, with `<name>` resolved through `LoomConfig::agent_for(Phase::Msg)`
-  [test?](msg_chat_passes_resolved_profile_to_wrapix_run)
+  [test](msg_chat_passes_resolved_profile_to_wrapix_run)
 
 ### Container integration
 

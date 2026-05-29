@@ -2676,7 +2676,7 @@ Criteria.
 - `LOOM_CONCERN` → recovery with cause `review-concern`; the
       detail names which concern triggered (live-path / mock / scope /
       judge / style-rule)
-  [test](complete_with_review_concern_routes_to_review_concern)
+  [test](concern_marker_with_streamed_findings_routes_to_review_concern_recovery)
 - Production wiring obligation: every production caller that
       constructs `GateInputs` for the review-phase verdict gate must
       populate `streamed_findings_count` from the parsed walk output

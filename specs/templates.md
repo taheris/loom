@@ -916,10 +916,10 @@ documents in front of the agent with zero configuration.
   `BadWalk::MalformedFinding`'s `terminal` field can carry the
   terminal state regardless of whether the terminal itself parsed
   [check](grep -q 'pub enum TerminalSurface' crates/loom-templates/src/previous_failure.rs)
-- `FindingParseError` is re-exported from `loom-workflow::review::finding`
-  and is the per-line wire-format error consumed by
-  `BadWalk::MalformedFinding.errors`
-  [check](grep -q 'pub use.*FindingParseError' crates/loom-templates/src/finding.rs)
+- `FindingParseError` is defined in `loom-templates::finding` and
+  re-exported from `loom-workflow::review::finding` as the per-line
+  wire-format error consumed by `BadWalk::MalformedFinding.errors`
+  [check](grep -q 'pub enum FindingParseError' crates/loom-templates/src/finding.rs)
 - The `Display for PreviousFailure` rendering of
   `BadWalk(Concern)` appends a per-finding digest of
   `parsed_findings` when non-empty (the agent's diagnosis from the

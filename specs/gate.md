@@ -2422,7 +2422,7 @@ the `parse_walk_output` / `WalkOutput::from_stdout` /
   `FindingTarget`, `WalkOutput`, `BadWalk`, and `ExitSignal` across
   the workspace; the canonical home after extraction is
   `loom-protocol::gate`
-  [check?](cargo run -p loom-walk -- finding_no_duplicate_definitions)
+  [check](cargo run -p loom-walk -- finding_no_duplicate_definitions)
 
 ### Production walker wiring
 

@@ -262,7 +262,7 @@ declared as such.
   files
   [check?](grep -q 'loom gate verify --files' .pre-commit-config.yaml)
 - The pre-push stage's first hook is `loom gate verify-marker`
-  [check?](awk '/stages:.*pre-push/{p=1} p && /id:/{print; exit}' .pre-commit-config.yaml | grep -q 'verify-marker')
+  [check](awk '/stages:.*pre-push/{p=1} p && /id:/{print; exit}' .pre-commit-config.yaml | grep -q 'verify-marker')
 - The pre-push stage includes a `nix flake check` hook with
   `always_run: true`
   [check](grep -q 'nix flake check' .pre-commit-config.yaml)
@@ -275,7 +275,7 @@ declared as such.
 - The `loom gate verify-marker` hook is the first pre-push entry and
   is **not** wrapped by `pre-push-checks` (wrapping the canonical
   marker check with itself would be self-referential)
-  [check?](awk '/stages:.*pre-push/{p=1} p && /entry:/{print; exit}' .pre-commit-config.yaml | grep -v 'pre-push-checks' | grep -q 'loom gate verify-marker')
+  [check](awk '/stages:.*pre-push/{p=1} p && /entry:/{print; exit}' .pre-commit-config.yaml | grep -v 'pre-push-checks' | grep -q 'loom gate verify-marker')
 - Hooks whose entry runs `nix` are wrapped with
   `skip-if-missing nix --` so they no-op in the bead container
   (which has no `nix`) while running normally on the host devShell

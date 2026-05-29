@@ -454,7 +454,7 @@ fn pending_marked_stub_test_body_yields_no_finding() {
     );
     assert!(
         findings.is_empty(),
-        "[test?] over a `_pending_stub` body must pass silently: {findings:?}"
+        "[test?] over a stub body must pass silently: {findings:?}"
     );
 }
 
