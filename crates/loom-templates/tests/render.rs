@@ -10,10 +10,10 @@ use anyhow::Result;
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
+use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
 use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
 use loom_templates::plan::{PlanNewContext, PlanUpdateContext};
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
-use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
 use loom_templates::run::{
     DriverNoticeCause, LoopContext, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, VerifierFailure,
 };

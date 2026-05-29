@@ -11,13 +11,11 @@
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
+use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
 use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
 use loom_templates::plan::{PlanNewContext, PlanUpdateContext};
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
-use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
-use loom_templates::run::{
-    DriverNoticeCause, LoopContext, PreviousFailure, VerifierFailure,
-};
+use loom_templates::run::{DriverNoticeCause, LoopContext, PreviousFailure, VerifierFailure};
 use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
 
 const PINNED_CONTEXT_BODY: &str =
@@ -272,8 +270,7 @@ fn run_snapshot_review_concern() {
                 target: FindingTarget::Annotation {
                     target_string: "cargo test --lib parse_walks_all_md_files".into(),
                 },
-                evidence: "test mocks the agent backend instead of running the live driver"
-                    .into(),
+                evidence: "test mocks the agent backend instead of running the live driver".into(),
             }],
         }),
         review_notes: None,

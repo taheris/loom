@@ -191,12 +191,7 @@ fn render_review_concern(summary: &str, findings: &[Finding]) -> String {
         n = findings.len(),
     );
     for finding in findings {
-        let evidence_head = finding
-            .evidence
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim();
+        let evidence_head = finding.evidence.lines().next().unwrap_or("").trim();
         out.push_str("\n\n");
         out.push_str(finding.token.as_wire());
         if !evidence_head.is_empty() {
@@ -456,10 +451,9 @@ mod tests {
             "{bad_walk_no_findings}",
         );
 
-        let bad_walk_no_concern = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern {
-            finding_count: 3,
-        })
-        .to_string();
+        let bad_walk_no_concern =
+            PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern { finding_count: 3 })
+                .to_string();
         assert!(
             bad_walk_no_concern.starts_with("You streamed 3 LOOM_FINDING line(s)"),
             "{bad_walk_no_concern}",

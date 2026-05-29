@@ -20,8 +20,8 @@ use displaydoc::Display;
 use thiserror::Error;
 
 pub use loom_templates::finding::{
-    ConcernToken, Finding, FindingParseError, FindingTarget, FindingValidator,
-    LOOM_FINDING_PREFIX, TargetKind,
+    ConcernToken, Finding, FindingParseError, FindingTarget, FindingValidator, LOOM_FINDING_PREFIX,
+    TargetKind,
 };
 
 use crate::todo::parse_exit_signal;
@@ -243,10 +243,7 @@ mod tests {
             matches!(parsed.target, FindingTarget::Contract { ref id } if id == "molecule-lifecycle")
         );
         assert_eq!(parsed.target.kind(), TargetKind::Contract);
-        assert_eq!(
-            parsed.token.expected_target_kind(),
-            parsed.target.kind(),
-        );
+        assert_eq!(parsed.token.expected_target_kind(), parsed.target.kind(),);
     }
 
     #[test]

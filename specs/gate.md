@@ -1645,7 +1645,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   finding (same `token`, same canonicalized `target` → same
   12-character hash, regardless of how `bonds` is ordered or which
   spec ultimately wins lead-selection)
-  [test](mint_fingerprint_is_stable_across_rubric_runs_for_same_finding)
+  [test?](mint_fingerprint_is_stable_across_rubric_runs_for_same_finding)
 - The minted fix-up bead is `--parent`-ed to the lead spec's open
   epic and carries the `loom:mint:<fingerprint>` label
   [test](mint_creates_fixup_with_parent_epic_and_fingerprint_label)
@@ -1661,7 +1661,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   finding emitted on a re-run with a different bonds-array
   ordering or a different lead-spec resolves to the same
   fingerprint and dedups against the existing fix-up bead
-  [test](mint_fingerprint_excludes_bonds_so_bonding_shifts_do_not_remint)
+  [test?](mint_fingerprint_excludes_bonds_so_bonding_shifts_do_not_remint)
 - For target variants that carry a spec field (currently only
   `Criterion`), `target.spec` MUST appear in `bonds`; a finding
   that violates this is rejected with a typed parse error

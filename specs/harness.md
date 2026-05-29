@@ -2198,7 +2198,7 @@ Criteria.
       single-file bind mount at `/workspace/.wrapix/dolt.sock` via
       `SpawnConfig.mounts`, replacing the host-side hardlink shim
       previously used in `GitClient::create_worktree`
-  [test?](bead_container_dolt_socket_via_mounts)
+  [test](bead_container_dolt_socket_via_mounts)
 - When `[loom] sccache_dir` is configured, the directory is
       bind-mounted into the loom workspace and every bead container
       at the configured container path
