@@ -760,22 +760,30 @@ short-circuits before review runs); `*` means any value is accepted.
 **Tree-clean check.** After the agent emits `LOOM_COMPLETE` or
 `LOOM_NOOP` and the bead is bd-closed, the driver runs `git status
 --porcelain` against the bead's workspace. The pre-attempt reset
-described in [Bead Dispatch](#bead-dispatch) ensures the agent
-started with a clean working tree against the bead-branch HEAD, so
-any non-empty porcelain output post-bead is unambiguously
-agent-caused; the operator's `/workspace` is a separate clone and
-cannot leak edits into a bead workspace. A non-empty
-result — tracked files modified-but-not-staged, staged-but-not-
-committed, or untracked files outside the ignore set — routes to
-`recovery` with cause `tree-not-clean`, taking precedence over the
-verify / review steps (running verifiers against a half-staged tree
-would conflate the agent's intended diff with its leftover scratch).
-The recovery detail names the dirty paths so the next iteration's
-agent can stage them into a follow-up commit or revert them. This
-catches the failure mode where a worker runs a formatter (or other
-tree-touching tool), stages only its own paths, and leaves unrelated
-tracked files dirty — pre-commit hooks structurally cannot see this
-because their stash/restore architecture hides unstaged changes (see
+described in [Bead Dispatch](#bead-dispatch) — `git reset --hard
+HEAD` plus `git clean -fdx` (with `target/`, `.git/`, `.wrapix/`
+excluded) — is the load-bearing source of the empty-starting-tree
+guarantee. The bead workspace persists across attempts under the
+per-bead-close lifecycle, so freshness from `create_worktree` is
+*not* what the gate relies on; the reset re-establishes the
+invariant on every dispatch. A non-empty porcelain output post-bead
+is therefore unambiguously either the agent's own intra-session
+leftover *or* a reset-step bug — both are surfaced as
+`tree-not-clean` so the failure mode lands in recovery rather than
+masquerading as dispatch success. The operator's `/workspace` is a
+separate clone and cannot leak edits into a bead workspace. A
+non-empty result — tracked files modified-but-not-staged,
+staged-but-not-committed, or untracked files outside the ignore
+set — routes to `recovery` with cause `tree-not-clean`, taking
+precedence over the verify / review steps (running verifiers
+against a half-staged tree would conflate the agent's intended diff
+with its leftover scratch). The recovery detail names the dirty
+paths so the next iteration's agent can stage them into a follow-up
+commit or revert them. This catches the failure mode where a worker
+runs a formatter (or other tree-touching tool), stages only its own
+paths, and leaves unrelated tracked files dirty — pre-commit hooks
+structurally cannot see this because their stash/restore
+architecture hides unstaged changes (see
 [pre-commit.md — Out of Scope](pre-commit.md)).
 
 **Disambiguating "no marker"** (`observer-abort` vs

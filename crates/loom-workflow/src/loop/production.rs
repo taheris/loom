@@ -361,12 +361,13 @@ where
         let outcome = classify_session(session, marker);
         if outcome == AgentOutcome::Success {
             // Tree-clean precedes verify-fail / review-concern per
-            // `specs/harness.md` § Verdict Gate. The per-bead clone
-            // starts empty by construction (see `create_worktree`), so
-            // any dirty porcelain entry is necessarily agent leftover —
-            // running verifiers against a half-staged tree would
-            // conflate the agent's intended diff with its leftover
-            // scratch.
+            // `specs/harness.md` § Verdict Gate. The pre-attempt
+            // `reset_bead_clone` (run before dispatch) is what
+            // guarantees the agent saw an empty starting tree, so any
+            // dirty porcelain entry is necessarily an agent leftover
+            // or a reset-step bug — running verifiers against a
+            // half-staged tree would conflate the agent's intended
+            // diff with its leftover scratch.
             let porcelain = self.git.status_porcelain_at(&worktree.path).await?;
             let dirty = dirty_paths_from_porcelain(&porcelain);
             if !dirty.is_empty() {

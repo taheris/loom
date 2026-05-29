@@ -302,6 +302,116 @@ async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() ->
     Ok(())
 }
 
+/// Spec gate (`specs/harness.md` § Verdict Gate · Tree-clean check): the
+/// empty-starting-tree invariant the verdict gate builds on comes from the
+/// pre-attempt `reset_bead_clone`, not from `create_worktree` freshness. A
+/// bead workspace that has *already* accumulated leftover scratch (e.g.
+/// uncommitted tracked-file edits and untracked top-level files from an
+/// earlier dispatch that didn't run cleanup) MUST still surface an empty
+/// `git status --porcelain` to the agent — otherwise post-bead dirt cannot
+/// be cleanly attributed to the agent vs. a reset-step bug.
+#[tokio::test]
+async fn run_bead_resets_dirty_bead_workspace_before_dispatch() -> Result<()> {
+    let (_dir, workspace, manifest, git_client) = setup();
+    let label = SpecLabel::new("harness");
+    let bead = fake_bead("lm-resetdispatch");
+    let expected_worktree = workspace.join(".wrapix/loom/beads/lm-resetdispatch");
+
+    // Pre-materialize the bead workspace + branch so we can plant dirt
+    // *before* `run_bead` is called — modelling the persistence-across-
+    // attempts shape (per `harness.md` § Bead dispatch — Per-bead-close
+    // lifecycle) without an actual prior attempt. `create_worktree` is
+    // idempotent at the directory level, so the controller's subsequent
+    // call inside `run_bead` reuses this tree rather than re-cloning.
+    let created = git_client.create_worktree(&label, &bead.id).await?;
+    assert_eq!(created.path, expected_worktree);
+
+    // Mirror the production `.gitignore` shape so `.wrapix/` doesn't
+    // leak into porcelain — production workspaces have it ignored at
+    // the repo root and so must the test workspace, otherwise the
+    // controller's scratch staging confounds the post-reset assertion.
+    std::fs::write(expected_worktree.join(".gitignore"), ".wrapix/\n")?;
+    git(&expected_worktree, &["add", ".gitignore"])?;
+    git(
+        &expected_worktree,
+        &["commit", "-q", "-m", "ignore .wrapix/"],
+    )?;
+
+    // Plant the two shapes the verdict gate must catch: a tracked-file
+    // edit (would otherwise show as ` M README.md`) and an untracked
+    // top-level file (would otherwise show as `?? leftover.txt`). If the
+    // pre-attempt reset is NOT wired into the dispatch path, the spawn
+    // closure below would see both entries in `git status --porcelain`.
+    std::fs::write(
+        expected_worktree.join("README.md"),
+        "stale mid-session edit\n",
+    )?;
+    std::fs::write(
+        expected_worktree.join("leftover.txt"),
+        "from a prior attempt\n",
+    )?;
+
+    // Sanity: porcelain is dirty *before* dispatch.
+    let pre_porcelain = git_capture(&expected_worktree, &["status", "--porcelain"])?;
+    assert!(
+        !pre_porcelain.trim().is_empty(),
+        "test precondition: workspace must be dirty before run_bead so the reset is observable",
+    );
+
+    let observed_porcelain: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let observed_clone = Arc::clone(&observed_porcelain);
+    let stub = beads_push_stub(_dir.path());
+    let mut controller = ProductionAgentLoopController::new(
+        BdClient::new(),
+        label.clone(),
+        std::path::PathBuf::from("/loom/bin"),
+        workspace.clone(),
+        git_client,
+        manifest,
+        None,
+        ProfileName::new("base"),
+        move |cfg: SpawnConfig, bead_id: BeadId| {
+            let observed = Arc::clone(&observed_clone);
+            async move {
+                let porcelain = git_capture(&cfg.workspace, &["status", "--porcelain"])
+                    .expect("git status --porcelain at dispatch");
+                *observed.lock().unwrap() = Some(porcelain);
+                let file = format!("{}.txt", bead_id.as_str());
+                std::fs::write(cfg.workspace.join(&file), "work\n").expect("write");
+                git(&cfg.workspace, &["add", &file]).expect("git add");
+                git(&cfg.workspace, &["commit", "-q", "-m", "bead work"]).expect("git commit");
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            }
+        },
+    )
+    .with_beads_push_program(stub);
+
+    let outcome = controller.run_bead(&bead, None).await?;
+    assert_eq!(
+        outcome,
+        AgentOutcome::Success,
+        "agent saw a clean tree and committed cleanly — must succeed",
+    );
+
+    let porcelain = observed_porcelain
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("spawn closure ran");
+    assert!(
+        porcelain.trim().is_empty(),
+        "post-reset dispatch porcelain MUST be empty — the pre-attempt reset is the source of \
+         the empty-starting-tree guarantee, not create_worktree freshness. got: {porcelain:?}",
+    );
+    Ok(())
+}
+
 /// Spec gate (`specs/harness.md` § "loop dispatch: per-bead push regression"):
 /// every clean merge MUST push the driver branch to `origin` so per-bead
 /// state reaches GitHub before the molecule-end review-phase push fires.
