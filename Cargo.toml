@@ -51,6 +51,10 @@ owo-colors = { version = "4", features = ["supports-colors"] }
 proptest = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
 regex = "1"
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "rustls",
+] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
@@ -65,7 +69,9 @@ tokio-test = "0.4"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
 walkdir = "2"
+wiremock = "0.6"
 
 # Internal crates
 loom-driver = { path = "crates/loom-driver" }

@@ -31,6 +31,8 @@ pub mod usage;
 
 pub use api_key::{ApiKey, ApiKeyError};
 pub use cache::{CacheControl, CacheTtl};
+#[cfg(feature = "openai-compat")]
+pub use client::OpenAiCompatClient;
 pub use client::{
     AnthropicClient, BoxFuture, CompletionResponse, DEFAULT_RETRY_AFTER, GeminiClient, LlmClient,
     LlmClientExt, LlmError, OpenAiClient, RetryAdvice, ToolUseRequest, parse_retry_after,

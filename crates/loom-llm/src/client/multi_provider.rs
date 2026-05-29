@@ -415,15 +415,18 @@ impl LlmClient for GeminiClient {
     }
 }
 
-fn push_sink(sinks: &Mutex<Vec<Box<dyn EventSink>>>, sink: Box<dyn EventSink>) {
+pub(super) fn push_sink(sinks: &Mutex<Vec<Box<dyn EventSink>>>, sink: Box<dyn EventSink>) {
     sinks.lock().unwrap_or_else(|p| p.into_inner()).push(sink);
 }
 
-fn set_envelope_builder(slot: &Mutex<Option<EnvelopeBuilder>>, envelope_builder: EnvelopeBuilder) {
+pub(super) fn set_envelope_builder(
+    slot: &Mutex<Option<EnvelopeBuilder>>,
+    envelope_builder: EnvelopeBuilder,
+) {
     *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(envelope_builder);
 }
 
-fn emit_usage_to_chain(
+pub(super) fn emit_usage_to_chain(
     envelope_builder: &Mutex<Option<EnvelopeBuilder>>,
     sinks: &Mutex<Vec<Box<dyn EventSink>>>,
     model: &ModelId,
@@ -461,7 +464,7 @@ fn emit_usage_to_chain(
     }
 }
 
-fn debug_per_schema_client(
+pub(super) fn debug_per_schema_client(
     f: &mut std::fmt::Formatter<'_>,
     name: &str,
     schema: SchemaKind,

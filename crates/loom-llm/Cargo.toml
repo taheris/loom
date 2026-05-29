@@ -21,19 +21,26 @@ displaydoc = { workspace = true }
 futures-core = { workspace = true }
 genai = { workspace = true }
 loom-events = { workspace = true }
+reqwest = { workspace = true, optional = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_jcs = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+url = { workspace = true, optional = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+tokio = { workspace = true }
 tokio-test = { workspace = true }
+wiremock = { workspace = true }
 
 [features]
 default = []
-openai-compat = []
+openai-compat = ["dep:reqwest", "dep:url"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [lints]
 workspace = true
