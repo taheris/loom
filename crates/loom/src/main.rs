@@ -26,8 +26,9 @@ use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::StateDb;
 use loom_gate::{
-    self, CacheRow, DispatchOptions, EmptyScope, FsCommandResolver, RustWorkspaceStubScanner,
-    RustWorkspaceTestResolver, StatusCache, Tier, Verdict, render_report, row_for,
+    self, BuiltinParser, CacheRow, DispatchOptions, EmptyScope, FsCommandResolver, RunnerSpec,
+    RustWorkspaceStubScanner, RustWorkspaceTestResolver, StatusCache, Tier, TierCwds, Verdict,
+    render_report, row_for,
 };
 use loom_workflow::r#loop::{
     GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
@@ -1093,6 +1094,91 @@ fn resolve_test_runner_template(workspace: &Path) -> anyhow::Result<loom_gate::R
     Ok(loom_gate::runner::discover(workspace, Tier::Test)?)
 }
 
+/// Resolve the `[check]`-tier runner specs and tier-default cwds from
+/// `<workspace>/config.toml`. Empty specs (no `[runner.check]` block,
+/// or block with only `cwd`) yields the per-annotation fallback —
+/// Returns the runner specs the `[check]`-tier dispatcher consults. A
+/// built-in loom-walk batcher is always present so consumers don't have
+/// to declare it — every annotation shaped `cargo run -p loom-walk --
+/// <name>` collapses into one subprocess (bead `lm-6k4j`). Additional
+/// or overriding runners can be layered via `[runner.check.<name>]`
+/// entries in `config.toml`. Annotations whose target matches none of
+/// the configured runners (grep, bash, misc shell-outs) fall through
+/// to per-annotation spawn via `run_with_runners`'s unmatched path.
+fn resolve_check_runner_context(workspace: &Path) -> anyhow::Result<(Vec<RunnerSpec>, TierCwds)> {
+    let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
+    let tier_cwds = TierCwds {
+        check: tier_cwd(&config, "check"),
+        test: tier_cwd(&config, "test"),
+        system: tier_cwd(&config, "system"),
+        judge: tier_cwd(&config, "judge"),
+    };
+    let mut specs = vec![builtin_loom_walk_runner()?];
+    if let Some(check_tier) = config.runner.tier("check") {
+        for (name, entry) in &check_tier.runners {
+            specs.push(compile_runner_entry(name, entry)?);
+        }
+        if let Some(default_entry) = check_tier.default_runner() {
+            specs.push(compile_runner_entry("default", &default_entry)?);
+        }
+    }
+    Ok((specs, tier_cwds))
+}
+
+/// Built-in batcher for `cargo run -p loom-walk -- <name>` `[check]`
+/// annotations. Ships in code (not `config.toml`) so the batching is
+/// the default behaviour; operators don't need to add a row to enable
+/// it and can't accidentally remove it. Consumers can still layer
+/// overrides via `[runner.check.<name>]` entries.
+fn builtin_loom_walk_runner() -> anyhow::Result<RunnerSpec> {
+    Ok(RunnerSpec::compile(
+        "builtin-loom-walk",
+        Some(r"^cargo run -p loom-walk -- (\S+)$"),
+        "cargo run -p loom-walk -- {targets}",
+        "{capture_1}",
+        " ",
+        BuiltinParser::JsonLines,
+        None,
+    )?)
+}
+
+fn tier_cwd(config: &LoomConfig, tier: &str) -> Option<PathBuf> {
+    config
+        .runner
+        .tier(tier)
+        .and_then(|t| t.cwd.clone())
+        .map(PathBuf::from)
+}
+
+fn compile_runner_entry(
+    name: &str,
+    entry: &loom_driver::config::RunnerEntry,
+) -> anyhow::Result<RunnerSpec> {
+    let command = entry
+        .command
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("runner `{name}` missing `command`"))?;
+    let target = entry.target.as_deref().unwrap_or("{name}");
+    let join = entry.join.as_deref().unwrap_or(" ");
+    let parse = match entry.parse {
+        Some(loom_driver::config::Parser::LibtestJson) => BuiltinParser::LibtestJson,
+        Some(loom_driver::config::Parser::JunitXml) => BuiltinParser::JunitXml,
+        Some(loom_driver::config::Parser::NixBuildStatus) => BuiltinParser::NixBuildStatus,
+        Some(loom_driver::config::Parser::JsonLines) | None => BuiltinParser::JsonLines,
+        Some(loom_driver::config::Parser::ExitCode) => BuiltinParser::ExitCode,
+    };
+    let cwd = entry.cwd.as_deref().map(PathBuf::from);
+    Ok(RunnerSpec::compile(
+        name,
+        entry.match_regex.as_deref(),
+        command,
+        target,
+        join,
+        parse,
+        cwd,
+    )?)
+}
+
 fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::Result<i32> {
     let specs_dir = workspace.join("specs");
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
@@ -1115,15 +1201,10 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
     match tier {
         Tier::Check => {
             combined = combined.max(run_integrity_gate(workspace, args)?);
-            combined = run_per_annotation_with_progress(
-                &selected,
-                tier,
-                &options,
-                &cache,
-                now_ms,
-                &commit,
+            let (specs, tier_cwds) = resolve_check_runner_context(workspace)?;
+            combined = run_check_with_progress(
+                &selected, &options, &specs, workspace, &tier_cwds, &cache, now_ms, &commit,
                 combined,
-                loom_gate::run_check,
             );
         }
         Tier::System => {
@@ -1301,18 +1382,102 @@ fn is_allowlisted_integrity_finding(finding: &loom_gate::IntegrityFinding) -> bo
         .any(|(s, t)| spec_str.ends_with(s) && target.contains(t))
 }
 
-/// Per-annotation dispatch loop for the Check/System tiers with
-/// fail-eager, pass-silent output. On a TTY, an overwriting status
-/// line tracks the currently-running verifier; on a pipe the line is
-/// omitted entirely. Each failing verdict and each dispatch error is
-/// printed to stderr as soon as the verifier returns.
-/// Function pointer matching the per-tier dispatch runner: takes the
-/// selected annotations + dispatch options, returns one result per
-/// annotation in the same order.
+/// Per-annotation dispatch loop for the System tier with fail-eager,
+/// pass-silent output. On a TTY, an overwriting status line tracks the
+/// currently-running verifier; on a pipe the line is omitted entirely.
+/// Each failing verdict and each dispatch error is printed to stderr
+/// as soon as the verifier returns.
+///
+/// `[check]` shares the same output shape (skip / pass-silent /
+/// fail-loud), but routes through [`run_check_with_progress`] so the
+/// matched-runner batching from `specs/gate.md` § Runners can collapse
+/// N walk shell-outs into one subprocess. Function pointer matching
+/// the per-tier dispatch runner: takes the selected annotations +
+/// dispatch options, returns one result per annotation in the same
+/// order.
 type DispatchRunner = fn(
     &[loom_gate::Annotation],
     &loom_gate::DispatchOptions,
 ) -> Vec<Result<loom_gate::DispatchOutcome, loom_gate::DispatchError>>;
+
+/// Batched-aware dispatch loop for the `[check]` tier. Delegates to
+/// [`loom_gate::run_check`], which routes matched annotations through
+/// [`loom_gate::run_with_runners`] (one subprocess per runner group,
+/// per-annotation fallback for unmatched targets) per
+/// `specs/gate.md` § Runners. Pass / fail / skip handling mirrors
+/// [`run_per_annotation_with_progress`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "progress-driving dispatch surface threads cache + commit + runner context together"
+)]
+fn run_check_with_progress(
+    selected: &[loom_gate::Annotation],
+    options: &loom_gate::DispatchOptions,
+    specs: &[RunnerSpec],
+    repo_root: &Path,
+    tier_cwds: &TierCwds,
+    cache: &StatusCache,
+    now_ms: i64,
+    commit: &str,
+    mut combined: i32,
+) -> i32 {
+    use std::io::{IsTerminal, Write};
+    let mut stderr = std::io::stderr();
+    let is_tty = stderr.is_terminal();
+    let check_only: Vec<loom_gate::Annotation> = selected
+        .iter()
+        .filter(|a| a.tier == Tier::Check)
+        .cloned()
+        .collect();
+    if check_only.is_empty() {
+        return combined;
+    }
+    if is_tty {
+        let _ = write!(
+            stderr,
+            "\x1b[2K\rrunning [check] ({} annotations)",
+            check_only.len()
+        );
+        let _ = stderr.flush();
+    }
+    let results = loom_gate::run_check(&check_only, specs, options, repo_root, tier_cwds);
+    if is_tty {
+        let _ = write!(stderr, "\x1b[2K\r");
+    }
+    for (ann, result) in check_only.iter().zip(results) {
+        match result {
+            Ok(outcome) if outcome.verdict.skipped => {
+                let _ = writeln!(stderr, "loom gate [check] SKIP: {}", ann.target);
+                for line in outcome.verdict.evidence.lines().take(5) {
+                    let _ = writeln!(stderr, "  {line}");
+                }
+                persist_outcome(cache, &outcome, Verdict::Skipped, now_ms, commit);
+            }
+            Ok(outcome) if outcome.verdict.pass => {
+                persist_outcome(cache, &outcome, Verdict::Pass, now_ms, commit);
+            }
+            Ok(outcome) => {
+                let _ = writeln!(stderr, "loom gate [check] FAIL: {}", ann.target);
+                for line in outcome.verdict.evidence.lines().take(5) {
+                    let _ = writeln!(stderr, "  {line}");
+                }
+                persist_outcome(cache, &outcome, Verdict::Fail, now_ms, commit);
+                combined = combined.max(1);
+            }
+            Err(err) => {
+                let _ = writeln!(stderr, "loom gate [check] dispatch error: {}", ann.target);
+                for line in format!("{err:#}").lines().take(5) {
+                    let _ = writeln!(stderr, "  {line}");
+                }
+                combined = combined.max(1);
+            }
+        }
+    }
+    if is_tty {
+        let _ = stderr.flush();
+    }
+    combined
+}
 
 #[expect(
     clippy::too_many_arguments,

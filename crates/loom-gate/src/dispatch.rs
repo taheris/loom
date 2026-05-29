@@ -157,15 +157,32 @@ impl TestScope for EmptyScope {
     }
 }
 
-/// Dispatch every `[check]`-tier annotation in `annotations`. One
-/// subprocess per annotation, no batching. Returns one result per
-/// annotation in input order — a `Result` per entry so a single
-/// misbehaving verifier doesn't sink the rest of the batch.
+/// Dispatch every `[check]`-tier annotation in `annotations` through
+/// the matched-runner / per-annotation fallback composition described
+/// in `specs/gate.md` § Runners. `specs` is the resolved
+/// `[runner.check]` table; an empty slice degrades to per-annotation
+/// spawn for every entry (today's behaviour with no `[runner.check]`
+/// config). Returns one result per Check-tier annotation in input
+/// order.
+///
+/// The batched path is the one that pays for itself on real specs:
+/// 62 `cargo run -p loom-walk` invocations collapse to one when the
+/// default `[runner.check]` claims them all (bead `lm-6k4j`). Targets
+/// no spec matches still spawn their own process via the
+/// [`run_with_runners`] fallback.
 pub fn run_check(
     annotations: &[Annotation],
+    specs: &[RunnerSpec],
     options: &DispatchOptions,
+    repo_root: &Path,
+    tier_cwds: &TierCwds,
 ) -> Vec<Result<DispatchOutcome, DispatchError>> {
-    run_per_annotation(annotations, Tier::Check, options)
+    let check_only: Vec<Annotation> = annotations
+        .iter()
+        .filter(|a| a.tier == Tier::Check)
+        .cloned()
+        .collect();
+    run_with_runners(&check_only, specs, options, repo_root, tier_cwds)
 }
 
 /// Dispatch every `[system]`-tier annotation in `annotations`. One
@@ -753,7 +770,8 @@ mod tests {
             ann(Tier::Check, "/no/such/script-2"),
         ];
         let opts = DispatchOptions::default();
-        let results = run_check(&inputs, &opts);
+        let dir = tempfile::tempdir().unwrap();
+        let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
         assert_eq!(results.len(), 2, "filters to Check tier only");
         for r in &results {
             assert!(matches!(r, Err(DispatchError::Spawn { .. })));
@@ -823,7 +841,7 @@ mod tests {
         let target = format!("sh {}", script.display());
         let inputs = vec![ann(Tier::Check, &target)];
         let opts = DispatchOptions::default();
-        let results = run_check(&inputs, &opts);
+        let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
         assert_eq!(results.len(), 1);
         let outcome = results.into_iter().next().unwrap().unwrap();
         assert!(outcome.verdict.pass);
@@ -846,7 +864,7 @@ mod tests {
             files: vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")],
             spec: Some("tests".into()),
         };
-        let results = run_check(&inputs, &opts);
+        let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
         let outcome = results.into_iter().next().unwrap().unwrap();
         assert_eq!(outcome.verdict.evidence, "FILES=a.rs:b.rs SPEC=tests");
     }

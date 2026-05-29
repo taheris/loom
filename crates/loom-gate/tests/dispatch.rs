@@ -90,7 +90,7 @@ fn dispatcher_spawns_one_subprocess_per_check_annotation() {
         ann(Tier::Check, &fail_script),
     ];
     let opts = DispatchOptions::default();
-    let results = run_check(&inputs, &opts);
+    let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
     assert_eq!(results.len(), 2);
 
     let first = results[0].as_ref().unwrap();
@@ -132,7 +132,7 @@ fn dispatcher_sets_loom_files_and_loom_spec_env_on_verifier_subprocess() {
         files: vec![PathBuf::from("src/lib.rs"), PathBuf::from("src/main.rs")],
         spec: Some("tests".into()),
     };
-    let results = run_check(&inputs, &opts);
+    let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
     let outcome = results.into_iter().next().unwrap().unwrap();
     assert_eq!(
         outcome.verdict.evidence,
@@ -151,7 +151,7 @@ fn check_tier_falls_back_to_exit_code_pass_when_verifier_omits_json() {
 
     let inputs = vec![ann(Tier::Check, &script)];
     let opts = DispatchOptions::default();
-    let results = run_check(&inputs, &opts);
+    let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
     let outcome = results.into_iter().next().unwrap().unwrap();
     assert!(
         outcome.verdict.pass,
@@ -205,7 +205,7 @@ fn check_tier_falls_back_to_exit_code_fail_when_verifier_omits_json() {
 
     let inputs = vec![ann(Tier::Check, &script)];
     let opts = DispatchOptions::default();
-    let results = run_check(&inputs, &opts);
+    let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
     let outcome = results.into_iter().next().unwrap().unwrap();
     assert!(!outcome.verdict.pass, "non-zero exit interprets as fail");
     assert!(
@@ -225,7 +225,7 @@ fn dispatcher_surfaces_malformed_verdict_when_pass_key_has_wrong_type() {
 
     let inputs = vec![ann(Tier::Check, &script)];
     let opts = DispatchOptions::default();
-    let results = run_check(&inputs, &opts);
+    let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
     let err = results.into_iter().next().unwrap().unwrap_err();
     assert!(matches!(err, DispatchError::MalformedVerdict { .. }));
 }
@@ -241,7 +241,7 @@ fn dispatcher_falls_through_to_exit_code_on_incidental_json() {
 
     let inputs = vec![ann(Tier::Check, &script)];
     let opts = DispatchOptions::default();
-    let results = run_check(&inputs, &opts);
+    let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
     let outcome = results.into_iter().next().unwrap().unwrap();
     assert!(outcome.verdict.pass);
 }
@@ -425,18 +425,19 @@ fn check_tier_skips_annotations_with_non_check_tier() {
         ann(Tier::Judge, "rubric"),
     ];
     let opts = DispatchOptions::default();
-    let results = run_check(&inputs, &opts);
+    let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
     assert_eq!(results.len(), 1, "only the [check] annotation dispatched");
 }
 
 #[test]
 fn dispatcher_surfaces_spawn_failure_when_command_not_found() {
+    let dir = fixture_dir();
     let inputs = vec![ann(
         Tier::Check,
         "/definitely/not/a/real/binary/anywhere-12345",
     )];
     let opts = DispatchOptions::default();
-    let results = run_check(&inputs, &opts);
+    let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
     let err = results.into_iter().next().unwrap().unwrap_err();
     assert!(matches!(err, DispatchError::Spawn { .. }));
 }
@@ -770,5 +771,127 @@ fn run_with_runners_exit_code_parser_shares_verdict_across_group() {
         let outcome = r.as_ref().unwrap();
         assert!(!outcome.verdict.pass);
         assert!(outcome.verdict.evidence.contains("something went wrong"));
+    }
+}
+
+/// `run_check` routes through the matched runner when one claims the
+/// targets: a single stub spawn covers both annotations and the
+/// `json-lines` parser maps per-target verdicts back to the original
+/// annotations. This is the contract that makes bead `lm-6k4j`
+/// payoff: 62 walks → 1 cargo invocation.
+#[test]
+fn run_check_batches_loom_walk_shaped_targets_through_one_runner_spawn() {
+    let dir = fixture_dir();
+    let runner = write_script(
+        dir.path(),
+        "walk-batch.sh",
+        "#!/bin/sh\n# Stand-in for `cargo run -p loom-walk -- {targets}`: one\n# verdict line per positional arg, with the target field set so the\n# `json-lines` parser maps each row back to its annotation.\nfor t in \"$@\"; do\n  printf '{\"target\":\"%s\",\"pass\":true,\"evidence\":\"%s-ok\"}\\n' \"$t\" \"$t\"\ndone\n",
+    );
+    let spec = RunnerSpec::compile(
+        "loom-walk",
+        Some(r"^walk -- (\S+)$"),
+        format!("{runner} {{targets}}"),
+        "{capture_1}",
+        " ",
+        BuiltinParser::JsonLines,
+        None,
+    )
+    .unwrap();
+    let inputs = vec![
+        ann(Tier::Check, "walk -- alpha"),
+        ann(Tier::Check, "walk -- beta"),
+    ];
+    let opts = DispatchOptions::default();
+    let results = run_check(&inputs, &[spec], &opts, dir.path(), &TierCwds::default());
+    assert_eq!(results.len(), 2);
+
+    let first = results[0].as_ref().unwrap();
+    assert!(first.verdict.pass);
+    assert_eq!(first.verdict.evidence, "alpha-ok");
+    assert_eq!(first.annotations[0].target, "walk -- alpha");
+
+    let second = results[1].as_ref().unwrap();
+    assert!(second.verdict.pass);
+    assert_eq!(second.verdict.evidence, "beta-ok");
+    assert_eq!(second.annotations[0].target, "walk -- beta");
+}
+
+/// Mixed batch — annotations the runner regex claims go through one
+/// batched spawn; everything else falls through to per-annotation
+/// dispatch (today's behaviour for non-walk `[check]` shapes like
+/// grep/bash). Verifies the bead's "1 batched runner + N fallback
+/// spawns" composition.
+#[test]
+fn run_check_mixes_runner_batch_with_per_annotation_fallback() {
+    let dir = fixture_dir();
+    let runner = write_script(
+        dir.path(),
+        "walk-batch-mixed.sh",
+        "#!/bin/sh\nfor t in \"$@\"; do\n  printf '{\"target\":\"%s\",\"pass\":true,\"evidence\":\"batched\"}\\n' \"$t\"\ndone\n",
+    );
+    let fallback = write_script(
+        dir.path(),
+        "fallback-grep.sh",
+        "#!/bin/sh\nprintf '{\"pass\": true, \"evidence\": \"singleton\"}\\n'\n",
+    );
+
+    let spec = RunnerSpec::compile(
+        "loom-walk",
+        Some(r"^walk -- (\S+)$"),
+        format!("{runner} {{targets}}"),
+        "{capture_1}",
+        " ",
+        BuiltinParser::JsonLines,
+        None,
+    )
+    .unwrap();
+    let inputs = vec![
+        ann(Tier::Check, "walk -- alpha"),
+        ann(Tier::Check, &fallback),
+        ann(Tier::Check, "walk -- beta"),
+    ];
+    let opts = DispatchOptions::default();
+    let results = run_check(&inputs, &[spec], &opts, dir.path(), &TierCwds::default());
+    assert_eq!(results.len(), 3);
+
+    let batched_a = results[0].as_ref().unwrap();
+    assert_eq!(batched_a.verdict.evidence, "batched");
+    assert_eq!(batched_a.annotations[0].target, "walk -- alpha");
+
+    let fallback_result = results[1].as_ref().unwrap();
+    assert_eq!(
+        fallback_result.verdict.evidence, "singleton",
+        "grep/bash-shaped [check] annotation flows through per-annotation fallback"
+    );
+
+    let batched_b = results[2].as_ref().unwrap();
+    assert_eq!(batched_b.verdict.evidence, "batched");
+    assert_eq!(batched_b.annotations[0].target, "walk -- beta");
+}
+
+/// Empty `specs` slice degrades cleanly to per-annotation spawn for
+/// every `[check]` entry — the pre-bead behaviour. Other-tier
+/// annotations in the input are filtered out before dispatch.
+#[test]
+fn run_check_with_empty_specs_falls_back_to_per_annotation_for_every_target() {
+    let dir = fixture_dir();
+    let script = write_script(
+        dir.path(),
+        "per-ann.sh",
+        "#!/bin/sh\nprintf '{\"pass\": true, \"evidence\": \"solo\"}\\n'\n",
+    );
+
+    let inputs = vec![
+        ann(Tier::Check, &script),
+        ann(Tier::System, "/ignored"),
+        ann(Tier::Check, &script),
+    ];
+    let opts = DispatchOptions::default();
+    let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
+    assert_eq!(results.len(), 2, "non-Check annotations filtered out");
+    for r in &results {
+        let outcome = r.as_ref().unwrap();
+        assert!(outcome.verdict.pass);
+        assert_eq!(outcome.verdict.evidence, "solo");
     }
 }

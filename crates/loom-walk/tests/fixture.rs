@@ -132,6 +132,101 @@ fn unknown_walk_name_exits_two_and_names_the_walk_and_available_set() {
     );
 }
 
+/// Multi-arg invocation: every positional arg gets a verdict line in
+/// argv order, with the `target` field set so the gate's `json-lines`
+/// parser can map each row back to its annotation. Bead `lm-6k4j`
+/// turns this into the dominant performance win for `[check]`: one
+/// cargo invocation covering N walks instead of N cargo invocations.
+#[test]
+fn multi_arg_invocation_emits_one_target_verdict_line_per_name_in_argv_order() {
+    let ws = make_workspace();
+    // Seed the inputs each walk needs to pass. Both walks scan crate
+    // manifests, so the harness is independent of which two walks we
+    // pick — they just need to coexist and pass on the same tree.
+    seed(
+        ws.path(),
+        "crates/loom-events/Cargo.toml",
+        "[package]\nname=\"loom-events\"\n\n[dependencies]\nfutures-core = \"0.3\"\nserde = \"1\"\nserde_json = \"1\"\nthiserror = \"2\"\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-render/Cargo.toml",
+        "[package]\nname=\"loom-render\"\n\n[dependencies]\nloom-events = { workspace = true }\nserde_json = \"1\"\n",
+    );
+    let out = invoke(
+        &["loom_events_minimal_deps", "loom_render_deps"],
+        Some(ws.path()),
+        None,
+    );
+    let code = out.status.code().unwrap();
+    assert_eq!(
+        code,
+        0,
+        "both pass → exit 0; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 2, "one verdict line per arg; stdout={stdout}");
+
+    let first: Value = serde_json::from_str(lines[0]).unwrap();
+    let second: Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(first["target"].as_str(), Some("loom_events_minimal_deps"));
+    assert!(first["pass"].as_bool().unwrap());
+    assert_eq!(second["target"].as_str(), Some("loom_render_deps"));
+    assert!(second["pass"].as_bool().unwrap());
+}
+
+/// Multi-arg invocation with one failing walk: exit code mirrors
+/// "any failed" semantics (exit 1), but every verdict line is still
+/// emitted so the gate's parser can attribute each verdict back to
+/// its annotation.
+#[test]
+fn multi_arg_invocation_exits_one_when_any_walk_fails_but_still_emits_all_lines() {
+    let ws = make_workspace();
+    // Pass for loom_events_minimal_deps.
+    seed(
+        ws.path(),
+        "crates/loom-events/Cargo.toml",
+        "[package]\nname=\"loom-events\"\n\n[dependencies]\nfutures-core = \"0.3\"\nserde = \"1\"\nserde_json = \"1\"\nthiserror = \"2\"\n",
+    );
+    // Fail for loom_render_deps — missing loom-events dep.
+    seed(
+        ws.path(),
+        "crates/loom-render/Cargo.toml",
+        "[package]\nname=\"loom-render\"\n\n[dependencies]\nserde_json = \"1\"\n",
+    );
+    let out = invoke(
+        &["loom_events_minimal_deps", "loom_render_deps"],
+        Some(ws.path()),
+        None,
+    );
+    assert_eq!(
+        out.status.code().unwrap(),
+        1,
+        "any-fail → exit 1; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "both verdict lines emitted; stdout={stdout}"
+    );
+    let pass_line: Value = serde_json::from_str(lines[0]).unwrap();
+    let fail_line: Value = serde_json::from_str(lines[1]).unwrap();
+    assert!(pass_line["pass"].as_bool().unwrap());
+    assert!(!fail_line["pass"].as_bool().unwrap());
+    assert!(
+        fail_line["evidence"]
+            .as_str()
+            .unwrap()
+            .contains("loom-events"),
+        "failing verdict carries the missing-dep evidence: {fail_line:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // no_derive_from_on_newtypes (RS-8)
 // ---------------------------------------------------------------------------
