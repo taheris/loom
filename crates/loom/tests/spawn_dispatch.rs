@@ -234,6 +234,21 @@ fn install_beads_push_stub(dir: &Path) -> PathBuf {
     stub
 }
 
+/// Install a stub `loom` shim that exits 0 for any args. Threaded via
+/// `LOOM_BIN` so the per-bead gate's `loom gate verify --bead` /
+/// `loom gate mint --bead` subprocesses (per `specs/gate.md` § *Per-diff
+/// stage checks*) are no-ops in tests that exercise only the run-phase
+/// path; without it the mint subprocess spawns a review-agent backend
+/// the test fixtures don't fully wire.
+fn install_loom_noop_stub(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let stub = dir.join("loom-noop-stub.sh");
+    std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("write loom stub");
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod loom stub");
+    stub
+}
+
 /// Loom hands the wrapper exactly `wrapix spawn --spawn-config <file>
 /// --stdio`, and the file resolves to a JSON [`SpawnConfig`] carrying
 /// the per-bead profile image. A future profile-resolution change that
@@ -446,6 +461,7 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
     let bead_json = r#"[{"id":"lm-runtest","title":"run gate bead","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","profile:base"]}]"#;
     let bd_bin_dir = install_bd_bead_stub(workspace, bead_json);
     let beads_push_stub = install_beads_push_stub(workspace);
+    let loom_noop_stub = install_loom_noop_stub(workspace);
 
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let mut path_entries = vec![bd_bin_dir];
@@ -464,7 +480,11 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
         .arg("agent")
         .env("PATH", new_path)
         .env("LOOM_WRAPIX_BIN", &shim)
-        .env("LOOM_BIN", loom_bin)
+        // Point `LOOM_BIN` at a no-op shim so the per-bead gate's
+        // `loom gate verify --bead` + `loom gate mint --bead` calls
+        // exit 0 silently — this test asserts run-phase JSONL log
+        // writes, not gate dispatch.
+        .env("LOOM_BIN", &loom_noop_stub)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("LOOM_BEADS_PUSH_PROGRAM", &beads_push_stub)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))

@@ -132,6 +132,22 @@ pub trait AgentLoopController: Send {
         &mut self,
     ) -> impl std::future::Future<Output = Result<HandoffEvidence, LoopError>> + Send;
 
+    /// Per-bead gate (per `specs/gate.md` § *Per-diff stage checks*).
+    /// Invoked after the run-phase agent signals
+    /// [`AgentOutcome::Success`]; spawns `loom gate verify --bead <id>`
+    /// then `loom gate mint --bead <id>` as subprocesses, parses the
+    /// mint summary's `refused` / `errors` counts, and returns a typed
+    /// [`PerBeadGateOutcome`] the runner routes on per Decision 7:
+    /// `Clean` → [`BeadResult::Done`]; `StructuralViolation` →
+    /// [`BeadResult::Blocked`] with cause
+    /// [`MINT_STRUCTURAL_VIOLATION_CAUSE`]; `Recovery` → recovery loop
+    /// (consumes one `RetryPolicy::max_retries` slot, threads the
+    /// gate's error detail as `previous_failure`).
+    fn exec_per_bead_gate(
+        &mut self,
+        bead: &BeadId,
+    ) -> impl std::future::Future<Output = Result<PerBeadGateOutcome, LoopError>> + Send;
+
     /// Emit a driver-side event into the controller's event sink. The
     /// run loop fires `retry_dispatch` here when it re-dispatches a bead
     /// after a recoverable failure; production controllers thread an
@@ -151,6 +167,48 @@ pub trait AgentLoopController: Send {
 /// reason from the agent follows after a `:` separator (or stands alone if
 /// the agent did not provide one).
 pub const AGENT_BLOCKED_CAUSE: &str = "agent-blocked";
+
+/// Spec-table cause string written to `bd update --notes` when a per-bead
+/// `loom gate mint --bead <id>` exits with `refused > 0` — the mint
+/// pipeline detected a structural invariant violation (e.g. more than one
+/// open epic for the bonding lead's spec, or multiple open beads sharing a
+/// mint label) that the agent cannot resolve from inside the loop. The
+/// bead's run-phase commit is NOT unwound — the integration is already
+/// durable; the structural violation surfaces as a labelled bead the
+/// operator unblocks via `loom msg`.
+pub const MINT_STRUCTURAL_VIOLATION_CAUSE: &str = "mint-structural-violation";
+
+/// Outcome of [`AgentLoopController::exec_per_bead_gate`]. Routes per
+/// `specs/gate.md` § *Per-diff stage checks* / `specs/harness.md`
+/// § *Functional* — the runner's per-bead state machine consumes this
+/// after [`AgentOutcome::Success`] to decide between Done, Blocked, or
+/// re-entering the agent retry loop with the gate's error detail as
+/// `previous_failure`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PerBeadGateOutcome {
+    /// `loom gate verify --bead <id>` exited 0 AND
+    /// `loom gate mint --bead <id>` exited 0 (`refused == 0 &&
+    /// errors == 0`). The bead is done.
+    Clean,
+    /// `loom gate mint --bead <id>` exited non-zero with `refused > 0`.
+    /// The mint pipeline saw a structural invariant violation (e.g.
+    /// duplicate mint labels, more than one open epic for a spec) that
+    /// the agent cannot resolve from inside the loop. Routes to
+    /// [`BeadResult::Blocked`] with cause
+    /// [`MINT_STRUCTURAL_VIOLATION_CAUSE`]; the bead's run-phase commit
+    /// is NOT unwound — the integration is already durable. `detail`
+    /// carries the conflicting `bd` ids surfaced by the mint summary
+    /// so `bd update --notes` greps cleanly.
+    StructuralViolation { detail: String },
+    /// `loom gate verify --bead <id>` exited non-zero, OR `loom gate
+    /// mint --bead <id>` exited non-zero with `errors > 0`. Both cases
+    /// route through the existing per-bead recovery loop bounded by
+    /// `RetryPolicy::max_retries`: `detail` is threaded as
+    /// `previous_failure` into the next agent attempt; exhaustion
+    /// routes to [`BeadResult::Clarified`] with the accumulated error
+    /// context per the existing `RetryDecision::GiveUp` path.
+    Recovery { detail: String },
+}
 
 /// Run the per-bead loop.
 ///
@@ -326,7 +384,43 @@ async fn process_one_bead<C: AgentLoopController>(
     let mut previous_failure: Option<String> = None;
     loop {
         match controller.run_bead(bead, previous_failure.clone()).await? {
-            AgentOutcome::Success => return Ok(BeadResult::Done),
+            AgentOutcome::Success => match controller.exec_per_bead_gate(&bead.id).await? {
+                PerBeadGateOutcome::Clean => return Ok(BeadResult::Done),
+                PerBeadGateOutcome::StructuralViolation { detail } => {
+                    return Ok(BeadResult::Blocked {
+                        cause: MINT_STRUCTURAL_VIOLATION_CAUSE.to_string(),
+                        error: detail,
+                    });
+                }
+                PerBeadGateOutcome::Recovery { detail } => {
+                    match policy.decide(retries_used, detail) {
+                        RetryDecision::Retry {
+                            previous_failure: pf,
+                        } => {
+                            retries_used += 1;
+                            controller.emit_driver_event(
+                                DriverKind::RetryDispatch,
+                                &format!(
+                                    "retry dispatch — attempt {retries_used}/{max} for bead {bead_id}",
+                                    max = policy.max_retries,
+                                    bead_id = bead.id,
+                                ),
+                                serde_json::json!({
+                                    "bead_id": bead.id.to_string(),
+                                    "attempt": retries_used,
+                                    "max_attempts": policy.max_retries,
+                                }),
+                            );
+                            previous_failure = Some(pf);
+                        }
+                        RetryDecision::GiveUp => {
+                            return Ok(BeadResult::Clarified {
+                                note: previous_failure.unwrap_or_default(),
+                            });
+                        }
+                    }
+                }
+            },
             AgentOutcome::Failure { error } => match policy.decide(retries_used, error) {
                 RetryDecision::Retry {
                     previous_failure: pf,
@@ -430,6 +524,16 @@ mod tests {
         /// can fail while subsequent calls fall through to the
         /// happy-path script.
         review_errors: VecDeque<LoopError>,
+        /// Per-bead gate outcomes scripted by tests that exercise the
+        /// post-Success integration step. Empty queue defaults to
+        /// `PerBeadGateOutcome::Clean` so legacy tests that don't
+        /// exercise the gate path keep their original "Success → Done"
+        /// shape.
+        per_bead_gate_outcomes: VecDeque<PerBeadGateOutcome>,
+        /// Bead ids each `exec_per_bead_gate` call was invoked against,
+        /// in dispatch order. Tests assert on this to confirm the
+        /// post-Success step actually fired for a given bead.
+        per_bead_gate_calls: Vec<BeadId>,
         driver_events: Vec<(String, String, serde_json::Value)>,
     }
 
@@ -464,6 +568,17 @@ mod tests {
             self.blocked
                 .push((bead.clone(), cause.to_string(), error.to_string()));
             Ok(())
+        }
+
+        async fn exec_per_bead_gate(
+            &mut self,
+            bead: &BeadId,
+        ) -> Result<PerBeadGateOutcome, LoopError> {
+            self.per_bead_gate_calls.push(bead.clone());
+            Ok(self
+                .per_bead_gate_outcomes
+                .pop_front()
+                .unwrap_or(PerBeadGateOutcome::Clean))
         }
 
         async fn exec_review(&mut self) -> Result<HandoffEvidence, LoopError> {
@@ -1232,6 +1347,152 @@ mod tests {
             "last log line must carry LOOM_COMPLETE: {last:?}",
         );
         assert_eq!(receipt.review_marker, ExitSignal::Complete);
+        Ok(())
+    }
+
+    /// Spec criterion (`specs/gate.md` § *Per-diff stage checks*):
+    /// after the run-phase agent signals
+    /// [`AgentOutcome::Success`], the loop's per-bead path invokes
+    /// `loom gate verify --bead <id>` followed by `loom gate mint
+    /// --bead <id>` (collapsed in the controller into one
+    /// [`AgentLoopController::exec_per_bead_gate`] call). The fake
+    /// records the bead the gate was dispatched against; a clean
+    /// outcome routes the bead to `BeadResult::Done`.
+    #[tokio::test]
+    async fn loop_per_bead_dispatches_verify_then_mint_after_run_phase_success()
+    -> Result<(), LoopError> {
+        let mut c = FakeController::default();
+        c.ready_queue.push_back(bead("lm-1", &[]));
+        c.agent_outcomes.push_back(AgentOutcome::Success);
+        // Default outcome is Clean — no scripted entry needed, but pin
+        // it explicitly so the assertion below names the routing path.
+        c.per_bead_gate_outcomes
+            .push_back(PerBeadGateOutcome::Clean);
+
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy::default(), 10).await?;
+
+        assert_eq!(
+            c.per_bead_gate_calls.len(),
+            1,
+            "exec_per_bead_gate must fire exactly once after run-phase Success: {:?}",
+            c.per_bead_gate_calls,
+        );
+        assert_eq!(
+            c.per_bead_gate_calls[0],
+            BeadId::new("lm-1").expect("valid")
+        );
+        // Clean outcome → Done (verified by exclusion: not clarified, not blocked).
+        assert!(c.clarified.is_empty());
+        assert!(c.blocked.is_empty());
+        assert_eq!(summary.beads_processed, 1);
+        Ok(())
+    }
+
+    /// Spec criterion (`specs/harness.md` § Functional): a per-bead
+    /// `loom gate mint --bead <id>` exit with `refused > 0` routes
+    /// the bead to `loom:blocked` with cause
+    /// [`MINT_STRUCTURAL_VIOLATION_CAUSE`] and the conflicting `bd`
+    /// ids in the notes detail. The bead's run-phase commit is NOT
+    /// unwound — the integration is already durable.
+    #[tokio::test]
+    async fn loop_per_bead_routes_mint_refused_to_loom_blocked_with_structural_cause()
+    -> Result<(), LoopError> {
+        let mut c = FakeController::default();
+        c.ready_queue.push_back(bead("lm-1", &[]));
+        c.agent_outcomes.push_back(AgentOutcome::Success);
+        // The conflicting bd ids the mint summary surfaced verbatim —
+        // production wires these from `MintSummary` refused lines.
+        let detail = "refused abcd1234: more than one open epic for spec `gate` — close all but one before re-running (ids: lm-mol.4, lm-mol.7)".to_string();
+        c.per_bead_gate_outcomes
+            .push_back(PerBeadGateOutcome::StructuralViolation {
+                detail: detail.clone(),
+            });
+
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy::default(), 10).await?;
+
+        assert_eq!(c.per_bead_gate_calls.len(), 1);
+        assert_eq!(c.blocked.len(), 1, "refused must route to blocked");
+        assert_eq!(c.blocked[0].0, BeadId::new("lm-1").expect("valid"));
+        assert_eq!(
+            c.blocked[0].1, MINT_STRUCTURAL_VIOLATION_CAUSE,
+            "cause must be the structural-violation token",
+        );
+        assert!(
+            c.blocked[0].2.contains("lm-mol.4") && c.blocked[0].2.contains("lm-mol.7"),
+            "blocked notes must carry the conflicting bd ids verbatim: {:?}",
+            c.blocked[0].2,
+        );
+        assert!(c.clarified.is_empty(), "refused must not route to clarify");
+        // The run-phase commit is not unwound: agent ran once, gate ran once.
+        assert_eq!(c.run_calls.len(), 1);
+        assert_eq!(summary.beads_blocked, 1);
+        Ok(())
+    }
+
+    /// Spec criterion (`specs/harness.md` § Functional): a per-bead
+    /// `loom gate mint --bead <id>` exit with `errors > 0` threads
+    /// the mint summary's error detail into `previous_failure` and
+    /// re-runs through the existing per-bead recovery loop bounded by
+    /// `RetryPolicy::max_retries`. After exhaustion the bead routes
+    /// to `loom:clarify` with the accumulated error context (the
+    /// existing `RetryDecision::GiveUp` path).
+    #[tokio::test]
+    async fn loop_per_bead_routes_mint_errors_through_recovery_loop_bounded_by_max_retries()
+    -> Result<(), LoopError> {
+        let mut c = FakeController::default();
+        c.ready_queue.push_back(bead("lm-1", &[]));
+        // max_retries = 2 → initial attempt + 2 retries = 3 Success +
+        // 3 mint-errors → clarify with the last error body.
+        for _ in 0..3 {
+            c.agent_outcomes.push_back(AgentOutcome::Success);
+        }
+        for i in 0..3 {
+            c.per_bead_gate_outcomes
+                .push_back(PerBeadGateOutcome::Recovery {
+                    detail: format!("error fp-{i}: bd create failed (transient)"),
+                });
+        }
+
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
+
+        assert_eq!(
+            c.run_calls.len(),
+            3,
+            "agent re-runs through the existing retry loop: initial + 2 retries",
+        );
+        // First attempt: no previous_failure. Subsequent attempts thread
+        // the prior mint-error detail verbatim into `previous_failure`.
+        assert_eq!(c.run_calls[0].1, None);
+        assert_eq!(
+            c.run_calls[1].1.as_deref(),
+            Some("error fp-0: bd create failed (transient)"),
+        );
+        assert_eq!(
+            c.run_calls[2].1.as_deref(),
+            Some("error fp-1: bd create failed (transient)"),
+        );
+        // The gate fired once per agent attempt.
+        assert_eq!(c.per_bead_gate_calls.len(), 3);
+        // Exhausted retries → clarify with the last failure body.
+        assert!(
+            c.blocked.is_empty(),
+            "errors must not block — only refused does"
+        );
+        assert_eq!(c.clarified.len(), 1);
+        assert_eq!(c.clarified[0].0, BeadId::new("lm-1").expect("valid"));
+        assert!(
+            c.clarified[0].1.contains("error fp-1"),
+            "clarify note must carry the accumulated error detail: {:?}",
+            c.clarified[0].1,
+        );
+        // `retry_dispatch` driver events fire on each recovery hop.
+        let kinds: Vec<&str> = c.driver_events.iter().map(|(k, _, _)| k.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["retry_dispatch", "retry_dispatch"],
+            "two recovery hops → two retry_dispatch events",
+        );
+        assert_eq!(summary.beads_clarified, 1);
         Ok(())
     }
 }

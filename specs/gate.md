@@ -2452,7 +2452,7 @@ findings reach mint.
   followed by `loom gate mint --bead <id>` as subprocesses after the
   run-phase agent signals Success. Fix-up beads minted at this step
   become ready on the next outer-loop pass via `bd ready`
-  [test?](loop_per_bead_dispatches_verify_then_mint_after_run_phase_success)
+  [test](loop_per_bead_dispatches_verify_then_mint_after_run_phase_success)
 
 ### Per-bead mint summary semantics
 

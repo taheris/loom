@@ -2463,13 +2463,13 @@ Criteria.
       `mint-structural-violation` and the conflicting `bd` ids in the
       cause detail; the bead's run-phase commit is not unwound (the
       integration is already durable)
-  [test?](loop_per_bead_routes_mint_refused_to_loom_blocked_with_structural_cause)
+  [test](loop_per_bead_routes_mint_refused_to_loom_blocked_with_structural_cause)
 - A per-bead `loom gate mint --bead <id>` exit with `errors > 0`
       threads the mint summary's error detail into `PreviousFailure`
       and re-runs through the existing per-bead recovery loop bounded
       by `[loop] max_retries`. After exhaustion the bead routes to
       `loom:clarify` with the accumulated error context
-  [test?](loop_per_bead_routes_mint_errors_through_recovery_loop_bounded_by_max_retries)
+  [test](loop_per_bead_routes_mint_errors_through_recovery_loop_bounded_by_max_retries)
 - `loom loop`'s outer loop, after the molecule-completion handoff
       returns and the push gate has not yet fired clean, re-polls
       `bd ready` and continues processing any newly-ready fix-up

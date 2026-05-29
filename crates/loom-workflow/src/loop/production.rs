@@ -40,7 +40,7 @@ use super::error::LoopError;
 use super::gate_outcome::HandoffEvidence;
 use super::outcome::{AgentOutcome, SessionResult};
 use super::post_merge_push::{default_beads_push_program, push_merged_main_then_beads};
-use super::runner::AgentLoopController;
+use super::runner::{AgentLoopController, PerBeadGateOutcome};
 use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 use super::tree_clean::dirty_paths_from_porcelain;
 use crate::review::{
@@ -753,8 +753,136 @@ where
         })
     }
 
+    async fn exec_per_bead_gate(&mut self, bead: &BeadId) -> Result<PerBeadGateOutcome, LoopError> {
+        // Per-diff stage (`specs/gate.md` § *Per-diff stage checks*): the
+        // run-phase agent's `LOOM_COMPLETE` is *necessary but not
+        // sufficient* — `loom gate verify --bead <id>` runs deterministic
+        // audits, then `loom gate mint --bead <id>` walks the LLM rubric
+        // and mints typed fix-ups. Routing per Decision 7 collapses two
+        // recovery paths (verify failure, mint errors) into one
+        // `PerBeadGateOutcome::Recovery` variant; `refused > 0` is the
+        // only path that surfaces as a structural-violation block.
+        let verify_output = Command::new(&self.loom_bin)
+            .current_dir(&self.workspace)
+            .arg("gate")
+            .arg("verify")
+            .arg("--bead")
+            .arg(bead.as_str())
+            .arg("-s")
+            .arg(self.label.as_str())
+            .output()
+            .await?;
+        let verify_exit = verify_output.status.code().unwrap_or(1);
+        info!(
+            bead = %bead,
+            spec = %self.label.as_str(),
+            exit_code = verify_exit,
+            "loom loop: per-bead gate — loom gate verify --bead finished",
+        );
+        if verify_exit != 0 {
+            let stderr_tail = String::from_utf8_lossy(&verify_output.stderr).to_string();
+            let stdout_tail = String::from_utf8_lossy(&verify_output.stdout).to_string();
+            let detail = format!(
+                "loom gate verify --bead {bead} exited {verify_exit}\n\
+                 stdout:\n{stdout_tail}\nstderr:\n{stderr_tail}",
+            );
+            return Ok(PerBeadGateOutcome::Recovery { detail });
+        }
+
+        let mint_output = Command::new(&self.loom_bin)
+            .current_dir(&self.workspace)
+            .arg("gate")
+            .arg("mint")
+            .arg("--bead")
+            .arg(bead.as_str())
+            .arg("-s")
+            .arg(self.label.as_str())
+            .output()
+            .await?;
+        let mint_exit = mint_output.status.code().unwrap_or(1);
+        let mint_stdout = String::from_utf8_lossy(&mint_output.stdout).to_string();
+        info!(
+            bead = %bead,
+            spec = %self.label.as_str(),
+            exit_code = mint_exit,
+            "loom loop: per-bead gate — loom gate mint --bead finished",
+        );
+        Ok(classify_mint_summary(mint_exit, &mint_stdout))
+    }
+
     fn emit_driver_event(&mut self, kind: DriverKind, summary: &str, payload: serde_json::Value) {
         self.emit_to_log(kind, summary, payload);
+    }
+}
+
+/// Parse the mint summary stdout printed by `run_gate_mint` and translate
+/// the `refused` / `errors` counts into a [`PerBeadGateOutcome`] per
+/// `specs/gate.md` Decision 7. Header shape:
+/// `minted M, skipped K (dedup), refused R, errors E` (see
+/// `MintSummary::render`). The conflicting `bd` ids surface in the
+/// per-finding `refused {fingerprint}: {reason}` lines and ride out in
+/// the `StructuralViolation::detail` field; the error detail similarly
+/// rides out as `Recovery::detail` so the next agent attempt sees it as
+/// `previous_failure`.
+fn classify_mint_summary(exit_code: i32, stdout: &str) -> PerBeadGateOutcome {
+    let (refused, errors) = parse_mint_counts(stdout);
+    if refused > 0 {
+        return PerBeadGateOutcome::StructuralViolation {
+            detail: extract_lines_with_prefix(stdout, "refused ").unwrap_or_else(|| stdout.into()),
+        };
+    }
+    if errors > 0 || exit_code != 0 {
+        return PerBeadGateOutcome::Recovery {
+            detail: extract_lines_with_prefix(stdout, "error ").unwrap_or_else(|| stdout.into()),
+        };
+    }
+    PerBeadGateOutcome::Clean
+}
+
+/// Extract `refused` and `errors` counts from the mint summary header
+/// line. Tolerant: a header that does not parse returns `(0, 0)`; the
+/// caller falls back on the exit code to decide between Clean and
+/// Recovery.
+fn parse_mint_counts(stdout: &str) -> (usize, usize) {
+    let header = stdout.lines().next().unwrap_or("");
+    let mut refused = 0usize;
+    let mut errors = 0usize;
+    for part in header.split(',') {
+        let part = part.trim();
+        if let Some(rest) = part.strip_prefix("refused ") {
+            refused = rest
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+        } else if let Some(rest) = part.strip_prefix("errors ") {
+            errors = rest
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+        }
+    }
+    (refused, errors)
+}
+
+/// Collect summary body lines whose first non-whitespace token starts
+/// with `prefix` (e.g. `"refused "` or `"error "`) into one
+/// newline-joined block — the conflicting `bd` ids / error reasons
+/// surface verbatim for `bd update --notes` and `previous_failure`.
+/// Returns `None` if no matching line is present so the caller can fall
+/// back on the full summary.
+fn extract_lines_with_prefix(stdout: &str, prefix: &str) -> Option<String> {
+    let mut out: Vec<&str> = Vec::new();
+    for line in stdout.lines() {
+        if line.trim_start().starts_with(prefix) {
+            out.push(line.trim_start());
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out.join("\n"))
     }
 }
 
@@ -2505,5 +2633,72 @@ mod tests {
             "lm-leaf.2",
             "worker queue must skip the epic and return the leaf bead",
         );
+    }
+
+    /// Mint summary parser routes a clean header (`refused 0, errors
+    /// 0`) to [`PerBeadGateOutcome::Clean`] regardless of `minted` /
+    /// `skipped` counts, per `specs/gate.md` § *Per-bead mint summary
+    /// semantics*.
+    #[test]
+    fn classify_mint_summary_clean_header_routes_to_clean() {
+        let stdout = "minted 2, skipped 1 (dedup), refused 0, errors 0\n\
+                      minted abcd1234 → lm-fix.7 (spec:gate)\n\
+                      skipped efgh5678 (existing lm-fix.4)\n";
+        assert_eq!(classify_mint_summary(0, stdout), PerBeadGateOutcome::Clean,);
+    }
+
+    /// Mint summary parser routes `refused > 0` to
+    /// [`PerBeadGateOutcome::StructuralViolation`] with the conflicting
+    /// `bd` ids surfaced verbatim from the summary's refused lines —
+    /// per Decision 7, this is the structural-violation path that
+    /// surfaces as a labelled bead the operator unblocks.
+    #[test]
+    fn classify_mint_summary_refused_routes_to_structural_violation_with_conflicting_ids() {
+        let stdout = "minted 0, skipped 0 (dedup), refused 1, errors 0\n\
+                      refused fp-aabb: more than one open epic for spec `gate` — \
+                      close all but one before re-running (ids: lm-mol.4, lm-mol.7)\n";
+        match classify_mint_summary(1, stdout) {
+            PerBeadGateOutcome::StructuralViolation { detail } => {
+                assert!(
+                    detail.contains("lm-mol.4") && detail.contains("lm-mol.7"),
+                    "detail must carry conflicting bd ids: {detail:?}",
+                );
+            }
+            other => panic!("expected StructuralViolation, got {other:?}"),
+        }
+    }
+
+    /// Mint summary parser routes `errors > 0` to
+    /// [`PerBeadGateOutcome::Recovery`] so the runner threads the error
+    /// detail into `previous_failure` and re-runs the agent through the
+    /// existing per-bead recovery loop.
+    #[test]
+    fn classify_mint_summary_errors_routes_to_recovery_with_error_detail() {
+        let stdout = "minted 0, skipped 0 (dedup), refused 0, errors 1\n\
+                      error fp-ccdd: bd create exited 2 (dolt socket timeout)\n";
+        match classify_mint_summary(1, stdout) {
+            PerBeadGateOutcome::Recovery { detail } => {
+                assert!(
+                    detail.contains("fp-ccdd"),
+                    "detail must carry the error fingerprint: {detail:?}",
+                );
+            }
+            other => panic!("expected Recovery, got {other:?}"),
+        }
+    }
+
+    /// `refused > 0` AND `errors > 0` simultaneously routes to
+    /// [`PerBeadGateOutcome::StructuralViolation`] — structural
+    /// violations take precedence over recoverable errors because the
+    /// agent cannot fix duplicate-epic conflicts from inside the loop.
+    #[test]
+    fn classify_mint_summary_refused_wins_over_errors() {
+        let stdout = "minted 0, skipped 0 (dedup), refused 1, errors 1\n\
+                      refused fp-aabb: duplicate mint label (ids: lm-x, lm-y)\n\
+                      error fp-ccdd: transient bd failure\n";
+        assert!(matches!(
+            classify_mint_summary(1, stdout),
+            PerBeadGateOutcome::StructuralViolation { .. },
+        ));
     }
 }
