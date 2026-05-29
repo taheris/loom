@@ -291,6 +291,19 @@ pub enum PreviousFailure {
     /// or untracked outside the ignore set). Paths capped at 30
     /// entries by the driver before construction.
     TreeNotClean { dirty_paths: Vec<String> },
+
+    /// Bead-workspace verify passed, but the loom-workspace per-bead
+    /// integration step's `loom gate verify` against the integrated
+    /// tree failed (cross-bead interaction, rebase-induced breakage,
+    /// integration-tree state no bead-workspace verify could
+    /// anticipate). The integration was rolled back via
+    /// `git reset --hard HEAD~1`. Carries the verifier-failure list
+    /// directly; the per-bead step does not run `loom gate review`,
+    /// so review concerns are not a possible cause here (they fire
+    /// at the molecule-completion push gate per
+    /// [harness.md § Verdict Gate](harness.md#verdict-gate), which
+    /// routes through `GateFailReason`, not `PreviousFailure`).
+    PostIntegrateFail { failures: Vec<VerifierFailure> },
 }
 
 pub enum DriverNoticeCause {
@@ -312,8 +325,12 @@ pub enum BadWalk {
     /// `LOOM_CONCERN:` payload did not parse as
     /// `{"summary": "<non-empty>"}` — invalid JSON, missing
     /// `summary` field, or empty `summary`. The literal post-marker
-    /// text is preserved for the recovery prompt.
-    Concern { payload: String },
+    /// text is preserved for the recovery prompt, AND any
+    /// well-formed `LOOM_FINDING:` lines that streamed ahead of
+    /// the bad terminator are preserved in `parsed_findings` so the
+    /// agent's diagnosis is not lost when only the terminal was
+    /// malformed.
+    Concern { payload: String, parsed_findings: Vec<Finding> },
 
     /// Terminator claimed concern but zero `LOOM_FINDING:` lines
     /// streamed during the walk. The parsed summary is preserved
@@ -321,11 +338,55 @@ pub enum BadWalk {
     ConcernWithoutFindings { summary: String },
 
     /// One or more `LOOM_FINDING:` lines streamed but the
-    /// terminator was `LOOM_COMPLETE`. The count is preserved
-    /// for the recovery prompt.
-    FindingsWithoutConcern { finding_count: usize },
+    /// terminator was `LOOM_COMPLETE`. The count AND the parsed
+    /// findings are preserved so the next iteration's prompt can
+    /// name them, and so `loom gate mint` can consume the same
+    /// records on the next walk rather than re-deriving them.
+    FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> },
+
+    /// One or more `LOOM_FINDING:` lines failed parse (most
+    /// common: trailing backticks from markdown fencing on an
+    /// otherwise-valid JSON payload). `errors` is one
+    /// `FindingParseError` per malformed line. `terminal` is the
+    /// well-formed terminator (or its typed
+    /// `Missing`/`Malformed` placeholder) so the agent's next
+    /// iteration sees BOTH the per-line malformation detail AND
+    /// the surrounding well-formed context that was preserved.
+    MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface },
+}
+
+/// Typed projection of the agent's terminal marker, mirroring
+/// `ExitSignal` but with explicit malformed/missing variants so
+/// `BadWalk::MalformedFinding` can carry the terminal state
+/// regardless of whether the terminal itself parsed.
+pub enum TerminalSurface {
+    Complete,
+    Noop,
+    Concern { summary: String },
+    Blocked { reason: String },
+    Clarify { question: String },
+    Malformed { payload: String },
+    Missing,
 }
 ```
+
+`FindingParseError` is re-exported from `loom-workflow::review::finding`
+(per [gate.md § Findings and Minting](gate.md#findings-and-minting)) —
+the typed wire-format error the parser produces. Carrying a
+`Vec<FindingParseError>` in `BadWalk::MalformedFinding` means each
+per-line malformation rides through with its `line_number`, the
+literal `raw` line text, and the typed reason (`Json`,
+`UnknownToken`, `TokenVariantMismatch`, `UnknownBondSpec`,
+`UnresolvedTarget`, `TargetSpecNotInBonds`).
+
+**Maximum-context preservation invariant.** Every `BadWalk`
+variant carries the maximum well-formed context by struct shape;
+construction without the parseable pieces is a compile error. The
+"lost the agent's diagnosis when one piece of the walk was
+malformed" failure mode is structurally unrepresentable. See
+[gate.md § Streaming + terminator pairing rule](gate.md#findings-and-minting)
+for the cross-product of (stream-shape × terminal-shape) cells the
+variants cover.
 
 The per-finding concern token (the enum that names which rubric
 check fired — `verifier-bypass`, `spec-coherence-fail`, etc.)
@@ -350,11 +411,13 @@ decided by `loom gate mint`.
 - `DriverNotice` → `"Previous attempt: {detail}"`
 - `VerifyFailures` → `"Verifier failures from previous attempt:\n\n{N blocks: target + exit + stderr}"`
 - `ReviewConcern` → `"Review raised {N} concern(s) — {summary}\n\n{per-finding digest: token + evidence first line}"`
-- `BadWalk(Concern { payload })` → `"Your LOOM_CONCERN payload did not parse as {\"summary\": \"<non-empty>\"}. Literal payload: {payload}"`
+- `BadWalk(Concern { payload, parsed_findings })` → `"Your LOOM_CONCERN payload did not parse as {\"summary\": \"<non-empty>\"}. Literal payload: {payload}"`, followed (when `parsed_findings` is non-empty) by `"\n\n{N} finding(s) parsed cleanly before the malformed terminator:\n{per-finding digest: token + first line of evidence}"` so the agent's diagnosis from the streamed findings is not lost when only the terminal was malformed.
 - `BadWalk(ConcernWithoutFindings { summary })` → `"You emitted LOOM_CONCERN ({summary}) but no LOOM_FINDING: lines streamed. Either emit findings before the terminator or use LOOM_COMPLETE."`
-- `BadWalk(FindingsWithoutConcern { finding_count })` → `"You streamed {finding_count} LOOM_FINDING line(s) but terminated with LOOM_COMPLETE. Use LOOM_CONCERN: {\"summary\": \"...\"} when findings are emitted."`
+- `BadWalk(FindingsWithoutConcern { finding_count, findings })` → `"You streamed {finding_count} LOOM_FINDING line(s) but terminated with LOOM_COMPLETE. Use LOOM_CONCERN: {\"summary\": \"...\"} when findings are emitted."`, followed by `"\n\nFindings streamed:\n{per-finding digest}"` so the agent's next iteration sees the diagnosis it just emitted.
+- `BadWalk(MalformedFinding { errors, terminal })` → `"One or more LOOM_FINDING: lines failed parse:\n{per-line: 'Line N: <reason> — raw: <line text>'}\n\nYour terminal was: {terminal-rendered}"`. The terminal rendering uses the typed `TerminalSurface` variant: `Complete` → `"LOOM_COMPLETE"`, `Concern { summary }` → `"LOOM_CONCERN: {summary}"`, `Malformed { payload }` → `"LOOM_CONCERN: <malformed: {payload}>"`, `Missing` → `"(no terminal on the final non-empty line)"`. Surfacing both pieces lets the agent fix the malformed lines (typically: drop the surrounding markdown fence) without losing the well-formed context.
 - `BuildFailure` → `"Build failed at {stage}:\n{output}"`
 - `TreeNotClean` → `"Working tree was not clean after the bead committed:\n\n{path list, one per line}\n\nStage these into a follow-up commit or revert them."` with a `"+N more"` suffix line when the list is truncated to 30 entries
+- `PostIntegrateFail { failures }` → `"After rebasing onto the integration branch, the post-integration verify failed:\n\n{N blocks: target + exit + stderr}\n\nReconcile the cross-bead interaction — your bead's verify passed at its own workspace; the failure is in the integrated tree."`
 - `review_notes` (when set, after the primary block) → heading `"Review notes:"` then content
 
 Driver maps verdict-gate causes to variants per the table in
@@ -833,15 +896,58 @@ documents in front of the agent with zero configuration.
   `BuildFailure`, and `TreeNotClean { dirty_paths: Vec<String> }` —
   not a free string
   [check](grep -q 'pub enum PreviousFailure' crates/loom-templates/src/previous_failure.rs)
-- `BadWalk` enum carries `Concern { payload: String }`,
-  `ConcernWithoutFindings { summary: String }`, and
-  `FindingsWithoutConcern { finding_count: usize }`; the wrapped
-  pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)` at the
+- `BadWalk` enum carries `Concern { payload: String, parsed_findings: Vec<Finding> }`,
+  `ConcernWithoutFindings { summary: String }`,
+  `FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> }`,
+  and `MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface }`;
+  the wrapped pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)` at the
   type level
   [check](grep -q 'pub enum BadWalk' crates/loom-templates/src/previous_failure.rs)
+- Maximum-context preservation invariant: `BadWalk::Concern` carries
+  `parsed_findings` (any well-formed findings streamed ahead of the
+  malformed terminator); `BadWalk::FindingsWithoutConcern` carries
+  `findings` (the parsed Vec<Finding> the agent emitted); and
+  `BadWalk::MalformedFinding` carries the well-formed `terminal`
+  alongside the per-line errors. Construction of any variant
+  without its max-context fields is a compile error
+  [test?](bad_walk_variants_preserve_max_context_invariant_by_struct_shape)
+- `TerminalSurface` enum mirrors `ExitSignal` with explicit
+  `Malformed { payload: String }` and `Missing` variants so
+  `BadWalk::MalformedFinding`'s `terminal` field can carry the
+  terminal state regardless of whether the terminal itself parsed
+  [check](grep -q 'pub enum TerminalSurface' crates/loom-templates/src/previous_failure.rs)
+- `FindingParseError` is re-exported from `loom-workflow::review::finding`
+  and is the per-line wire-format error consumed by
+  `BadWalk::MalformedFinding.errors`
+  [check](grep -q 'pub use.*FindingParseError' crates/loom-templates/src/finding.rs)
+- The `Display for PreviousFailure` rendering of
+  `BadWalk(Concern)` appends a per-finding digest of
+  `parsed_findings` when non-empty (the agent's diagnosis from the
+  streamed findings is surfaced even when the terminal was
+  malformed)
+  [test?](bad_walk_concern_display_renders_parsed_findings_digest_when_present)
+- The `Display for PreviousFailure` rendering of
+  `BadWalk(FindingsWithoutConcern)` appends a per-finding digest of
+  `findings` so the agent's next iteration sees the diagnosis it
+  just emitted
+  [test?](bad_walk_findings_without_concern_display_renders_findings_digest)
+- The `Display for PreviousFailure` rendering of
+  `BadWalk(MalformedFinding)` enumerates per-line errors AND
+  surfaces the well-formed `terminal` via its rendered form so the
+  agent fixes the fence/format without losing the surrounding
+  context
+  [test?](bad_walk_malformed_finding_display_surfaces_terminal_and_per_line_errors)
 - `TreeNotClean` variant carries `dirty_paths: Vec<String>` capped
   at 30 entries by the driver before construction
   [check](grep -q 'TreeNotClean' crates/loom-templates/src/previous_failure.rs)
+- `PostIntegrateFail` variant carries `failures: Vec<VerifierFailure>`
+  directly; populated when the loom-workspace per-bead integration
+  step's verify against the integrated tree fails after the bead's
+  own verify passed at its bead workspace. Per-bead does not run
+  `loom gate review`, so review concerns are not a possible cause —
+  they fire at the molecule-completion push gate via
+  `GateFailReason` per [harness.md § Verdict Gate](harness.md#verdict-gate)
+  [check?](grep -q 'PostIntegrateFail' crates/loom-templates/src/previous_failure.rs)
 - `DriverNoticeCause` enum covers `SwallowedMarker`,
   `IncompleteSignaling`, `ZeroProgress`, `ObserverAbort`,
   `RetryExhausted`, `UnbondedOrigin`
@@ -865,7 +971,8 @@ documents in front of the agent with zero configuration.
   `BadWalk` → per-variant fragment naming the specific
   malformation, `BuildFailure` → "Build failed at ...:",
   `TreeNotClean` → "Working tree was not clean after the bead
-  committed:")
+  committed:", `PostIntegrateFail` → "After rebasing onto the
+  integration branch, the post-integration audit failed at …")
   [test](previous_failure_variant_framings_match_spec)
 - `TreeNotClean` renders the dirty-path list one-per-line and
   appends a `"+N more"` suffix line when the upstream driver

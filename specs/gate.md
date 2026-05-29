@@ -152,6 +152,7 @@ selecting the audit scope:
 | **`loom gate judge`** | LLM judge, one lane | Runs only criterion-attached `[judge]` verifiers — skips the rubric walk. Inspection-only, like `review`. |
 | **`loom gate rubric`** | LLM judge, one lane | Runs only the rubric walk over the diff — skips criterion-attached judges. Inspection-only, like `review`. |
 | **`loom gate mint`** | Act | Walks the rubric (per-`--bead`/`--diff`/`--files` scope: LLM rubric only; per-`--tree` scope: deterministic verifiers + LLM rubric) and mints fix-up beads from typed findings, bonded per-spec via the molecule lifecycle. The sole driver-side mint chokepoint and the actor in `loom loop`'s per-bead path. See [*Findings and Minting*](#findings-and-minting). |
+| **`loom gate verify-marker`** | Trust check | Reads `.wrapix/loom/marker.json` from the current workspace, deserializes a typed `MarkerProof`, computes the current workspace fingerprint (tree OID at HEAD + porcelain-clean precondition), and exits 0 iff the marker validates against the current fingerprint. Used by prek's pre-push hook chain to short-circuit redundant work on driver-loop integration pushes. See [*Marker*](#marker). |
 
 ### Scope flags
 
@@ -467,6 +468,98 @@ one command that walks the rubric and produces fix-up beads. Every
 other gate subcommand is inspection-only (no bd writes). Mint is
 what makes the rubric's concerns actionable.
 
+### Canonical contract location
+
+The Rust contract for the typed `Finding` record is owned by
+`loom-templates::finding::Finding` (struct + `ConcernToken` closed
+enum + `FindingTarget` internally-tagged-on-`kind` enum + `TargetKind`
++ `FindingValidator` trait + `FindingParseError`). `loom-workflow::review`
+re-exports the types via `pub use` so the mint pipeline and the
+review classifier reference one canonical location. No second
+`Finding`-shaped struct, no parallel `ConcernToken` enum, exists or
+will exist elsewhere in the workspace; the canonical-home property
+is structurally required (single serde-derived definition) and
+mechanically enforced by a `[check?]`-tier anti-duplication walker
+landing alongside the broad forward-resolution change documented
+under [*Pending modifier*](#pending-modifier) below.
+
+The wire format's sole textual definition lives at
+`crates/loom-templates/templates/partial/findings_walk.md`; the
+anti-drift `[check]`-tier verifier (under
+`### Single source of truth` below) refuses any template that
+restates the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed forms
+outside that partial.
+
+**`ConcernToken` is not `ReviewConcern`.** Two enums look similar
+and live in different crates with different purposes. `ConcernToken`
+(in
+`loom-templates::finding`) is the **wire-level identifier** on each
+streamed `LOOM_FINDING:` line — the closed set of tokens
+(`spec-coherence-fail`, `orphan-integration`, `verifier-bypass`,
+…) the rubric emits and `loom gate mint` routes on. `ReviewConcern`
+(in `loom-workflow::review::phase_verdict`) is a separate 12-variant
+enum that previously named the terminal `LOOM_CONCERN` token; under
+the retired terminal-token contract (per the per-bead rubric's
+*Streaming + terminator pairing rule*), the terminal carries only
+`{"summary": "..."}` and per-finding routing is decided on each
+`LOOM_FINDING:` line's `ConcernToken`, not on the terminal.
+`ReviewConcern` survives as a **display vocabulary** for
+`bd update --notes` and verdict-log human-readable cause labels
+(derived from `findings[0].token` or a "multiple" label when
+heterogeneous); it has no routing role.
+
+### Inspection vs. act partition
+
+Every gate subcommand except `loom gate mint` is **inspection-only**
+— it walks rules and emits findings to stdout but performs no `bd`
+writes. `mint` is the sole bd-mutation chokepoint. The partition is
+structural, not advisory: no code path inside `loom gate audit` /
+`verify` / `review` / `judge` / `rubric` / `check` / `test` / `system`
+/ `verify-marker` may call into the mint pipeline's `bd` write surface
+as a side-effect. A `[check?]`-tier verifier asserts this (deferred
+to land alongside the broad forward-resolution change under
+[*Pending modifier*](#pending-modifier) below) by scanning
+production sources for `mint_findings` / `mint_finding_with_options`
+invocations outside `loom-workflow::mint` and outside `loom loop`'s
+per-bead `mint --bead` dispatch path.
+
+The driver's `loom loop` per-bead path is the **operator-level
+composition** of `verify --bead` + `mint --bead` per the *Default
+for bare invocation* table above; it is not a side-effect of any
+inspection subcommand. The molecule-completion push gate runs
+`audit` (verify + review) deliberately without minting fix-ups —
+findings ride through the review-log file and through the typed
+`PreviousFailure::ReviewConcern { summary, findings }` recovery
+surface; an operator (or a subsequent `loom gate mint` invocation)
+chooses when to consume them as bd state.
+
+The `MarkerProof` mint at the molecule-completion push gate (see
+`## Marker` below) is a **separate** mint surface, owned by
+`loom-gate::marker` with its own `pub(crate)` constructor — it
+writes a single content-addressed JSON file to
+`.wrapix/loom/marker.json`, never bd state. "Audit makes no bd
+writes" remains true through that path; the marker is filesystem
+state, not bd state.
+
+### Wire-format mixed-shape principle
+
+The wire format the rubric walk emits is shaped by one principle
+that governs every marker the driver consumes: **JSON-payload for
+markers the driver routes on, bare for markers reading adjacent
+prose.** `LOOM_FINDING:` and `LOOM_CONCERN:` carry JSON because the
+driver routes per-finding tokens and the terminal summary needs
+structured framing.
+`LOOM_COMPLETE` / `LOOM_NOOP` / `LOOM_BLOCKED` / `LOOM_CLARIFY` are
+bare because the parser reads context (reason / question) from the
+prior non-empty line; LLM agents narrate the reason in prose and emit
+the marker as a yes/no terminator without having to compose a JSON
+object in the same turn. Mixing in either direction — JSON payload
+for a bare marker, bare payload for a routed marker — is a
+wire-format violation and is rejected by the typed parser
+(`loom-workflow::todo::exit::parse_exit_signal` for terminals;
+`loom-workflow::review::finding::parse_walk_output` for the streaming
+finding lines).
+
 ### Scope-dependent walk
 
 Mint's walk varies by scope flag:
@@ -574,16 +667,30 @@ more reliable on JSON than on bespoke formats — the target's
 tagged-union shape encodes naturally, escaping is well-known, and
 field-order independence avoids one class of malformed emit.
 
-**Strict parse-time validation.** A `LOOM_FINDING:` line that
-fails to parse — malformed JSON, unknown `token`, any element of
-`bonds` that doesn't resolve to a workspace spec label, `target`
-variant mismatching `token`'s expected variant, or unresolved
-target content (criterion anchor not in spec, file path absent on
-disk) — fails the mint invocation with a typed error naming the
-offending line. No silent skip. The walk is assumed to be
-retry-friendly: a re-run typically gets the shape right; a
-persistently-malformed emit is signal that the prompt or rubric
-needs adjusting.
+**Strict parse-time validation.** The `LOOM_FINDING:` prefix is
+matched by substring search on each line of the agent's stdout, so
+backtick-wrapped, markdown-fenced, or prose-prefixed lines are still
+detected. The match is case-sensitive on the literal string
+`LOOM_FINDING:` (with the trailing colon); bare-prose mentions
+without the colon (e.g. *"the `LOOM_FINDING` marker"*) do not match
+by design.
+
+A line that matches the substring but fails the strict validation
+that follows — malformed JSON (most common: trailing backticks from
+markdown fencing), unknown `token`, any element of `bonds` that
+doesn't resolve to a workspace spec label, `target` variant
+mismatching `token`'s expected variant, or unresolved target content
+(criterion anchor not in spec, file path absent on disk) — surfaces
+as `BadWalk::MalformedFinding { errors, terminal }` per the
+pairing-rule table below, with the well-formed terminal preserved
+alongside the per-line errors. **No silent skip.** The substring-
+then-strict-validate shape catches accidentally-fenced finding
+emit while loudly typing the malformation, which is what makes the
+wire format observable rather than fragile.
+
+The walk is assumed to be retry-friendly: a re-run typically gets
+the shape right; a persistently-malformed emit is signal that the
+prompt or rubric needs adjusting.
 
 Deterministic verifiers (at tree scope only) do **not** emit
 `LOOM_FINDING:` lines — they continue to follow the existing
@@ -643,14 +750,26 @@ cross-checks the two — if the terminator and the stream disagree
 on the walk's verdict, the run fails with a typed `BadWalk`
 recovery cause:
 
-| Findings streamed | Terminator | Verdict |
+| Finding stream | Terminator | Verdict |
 |---|---|---|
 | 0 | `LOOM_COMPLETE` | clean — phase done |
-| ≥1 | `LOOM_CONCERN: {"summary":"..."}` | recovery — findings minted, summary threaded into `previous_failure` |
-| 0 | `LOOM_CONCERN: {...}` | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration |
-| ≥1 | `LOOM_COMPLETE` | `BadWalk::FindingsWithoutConcern { finding_count }` — findings streamed but terminator claims clean |
-| any | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload }` — payload parse failure subsumes any finding count |
+| ≥1 well-formed | `LOOM_CONCERN: {"summary":"..."}` | recovery — `RecoveryCause::ReviewConcern { summary, findings: Vec<Finding> }` threaded into `previous_failure` (mint consumes separately) |
+| 0 | `LOOM_CONCERN: {"summary":"..."}` | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration |
+| ≥1 well-formed | `LOOM_COMPLETE` | `BadWalk::FindingsWithoutConcern { finding_count, findings: Vec<Finding> }` — findings streamed but terminator claims clean; the parsed findings ride through so the next iteration's prompt can name them |
+| ≥1 line failed parse | any | `BadWalk::MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface }` — per-line errors are preserved alongside the typed terminal surface (well-formed terminal kept as-is; when the terminator also fails parse, the terminal is carried via `TerminalSurface::Malformed { payload }` so both failure pieces ride through the `MalformedFinding` variant) |
+| any well-formed (only) | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload, parsed_findings: Vec<Finding> }` — payload parse failure carries the literal malformed text AND any well-formed findings that streamed ahead of the bad terminator |
 | any | missing or duplicate marker | `SwallowedMarker` (existing) |
+
+**Maximum-context preservation invariant.** Every `BadWalk` variant
+carries the maximum well-formed context by struct shape. Failure
+mode "lost the agent's diagnosis when one piece of the walk was
+malformed" is structurally unrepresentable — the type cannot be
+constructed without the parseable pieces (well-formed findings
+preserved alongside a malformed terminal; well-formed terminal
+preserved alongside malformed findings). This is what
+`templates.md`'s `PreviousFailure::BadWalk(BadWalk)` rendering
+relies on to produce a useful recovery prompt regardless of which
+piece failed parsing.
 
 **Agent's mental model.** Review the diff. Every time you identify
 a concern, immediately emit a `LOOM_FINDING:` line with the
@@ -679,6 +798,66 @@ marker"* are unaffected) and fails if they appear in any file other
 than `partial/findings_walk.md`. Templates that violate this fail
 `loom gate check` via the [`check`]-tier dispatcher's non-zero
 exit code.
+
+### Structural enforcement
+
+The review-phase classifier signature (`classify_review_phase` in
+`loom-workflow::review::production`) consumes a typed `WalkOutput`
+product (`{ terminal: TerminalSurface, findings: Vec<Finding>,
+finding_errors: Vec<FindingParseError> }`), not raw `&str`.
+`WalkOutput`'s `pub(crate)` constructor takes the agent's combined
+stdout and a `FindingValidator` and runs the parse pipeline once.
+The classifier cannot be called with raw `&str`; that becomes a
+compile error. The silent-loss failure class — a production caller
+constructs `GateInputs` without invoking the walk parser, leaving
+`streamed_findings_count` at default `0` so every well-formed
+`LOOM_CONCERN` with streamed findings collapses to
+`BadWalk::ConcernWithoutFindings` — becomes structurally
+unrepresentable.
+
+This mirrors the sealed-`MarkerProof` pattern (`## Marker` below):
+`pub(crate)`-only mint authority through validated construction is
+the type-shape contract for trust handoff.
+
+### Verification surface
+
+The runtime contract is verified at two layers — a behavioral
+matrix walking every cell of the failure surface, and a property
+invariant pinning the typed Finding's round-trip identity.
+
+**Behavioral matrix (enumerable cells).** A parameterised test walks every cell of the
+(stream-shape × terminal-shape) failure surface:
+
+- **Stream-shape axis (4 cells):** zero `LOOM_FINDING:` lines; N
+  well-formed findings; N well-formed + M malformed (mixed); all-
+  malformed.
+- **Terminal-shape axis (6 cells):** `LOOM_COMPLETE`; `LOOM_NOOP`;
+  `LOOM_CONCERN:` with valid JSON; `LOOM_CONCERN:` with the legacy
+  `<token> -- <reason>` shape; `LOOM_CONCERN:` with malformed JSON
+  (missing field, empty `summary`, invalid JSON); no terminal on the
+  final non-empty line.
+
+24 cells. Each cell asserts (a) the typed outcome variant, (b) the
+maximum-context preservation invariant (every parseable piece of the
+input appears in the outcome), (c) the
+`Display for PreviousFailure` rendering is non-empty and references
+both pieces when both are present.
+
+No historical-log paste-ins; the matrix covers the general class.
+The one existing one-shot replay test
+(`legacy_token_reason_payload_routes_to_bad_walk_concern` from
+lm-448x.4) stays as one regression test for the legacy
+`<token> -- <reason>` form's `BadWalk` routing but is not the
+load-bearing class coverage.
+
+**Round-trip property invariant.** For every constructible
+`Finding` (every `ConcernToken` × `FindingTarget` canonical
+combination), `serde_json::to_string(&finding)` → embed in
+`LOOM_FINDING:` line → embed in a synthetic walk output with an
+arbitrary well-formed terminator → `parse_walk_output` → assert
+byte-equal to the input `Finding` and fingerprint identical.
+Extends `loom-templates::finding::tests::fingerprint_is_stable_across_runs_for_same_finding`
+from "fingerprint stable" to "full struct round-trip."
 
 ### Fingerprint and dedup
 
@@ -809,6 +988,195 @@ field (`Criterion` and `Invariant`), `target.spec` MUST appear in
 X while bonding only to spec Y. Validation failure rejects the
 finding with a typed parse error.
 
+## Marker
+
+`MarkerProof` is the content-addressed trust-bearing artifact the
+verdict gate mints on audit-pass and prek's pre-push hook consumes
+to short-circuit redundant work on driver-loop integration pushes.
+Its purpose is to make "the gate ran cleanly at this exact
+workspace state" a typed, forgery-resistant Rust value rather than
+an ad-hoc filesystem stamp.
+
+### Type-safe mint
+
+The mint authority lives in `loom-gate::marker`. The constructor
+`MarkerProof::from_gate_success` is `pub(crate)`, accepts a sealed
+`GateSuccess` (defined in [harness.md § Loop Outcome
+Types](harness.md#loop-outcome-types) and itself `pub(crate)`),
+computes the current workspace fingerprint, and returns a
+`MarkerProof` value. No code path outside `loom-gate::marker` can
+mint a marker; no code path outside the gate-invocation module can
+construct the `GateSuccess` that mint requires. The agent in the
+bead container cannot mint, regardless of what it writes to disk
+or emits on stdout.
+
+```rust
+pub struct MarkerProof {
+    version: u32,                    // schema version (currently 1)
+    commit_sha: GitOid,              // HEAD SHA — informational
+    tree_oid: GitOid,                // HEAD's tree OID — the fingerprint
+    minted_at: SystemTime,
+}
+
+impl MarkerProof {
+    /// Mint authority — `pub(crate)`. Takes a sealed `GateSuccess`,
+    /// computes the workspace fingerprint at mint time.
+    pub(crate) fn from_gate_success(
+        s: GateSuccess,
+        workspace: &Path,
+    ) -> Result<Self, MintError>;
+
+    /// Atomic write to disk: `<path>.tmp` + rename.
+    pub(crate) fn write_to(&self, path: &Path) -> Result<(), io::Error>;
+
+    /// The only validated read constructor. Deserializes, computes
+    /// the current workspace fingerprint, returns `Ok` iff the
+    /// marker's `tree_oid` matches the current tree OID, porcelain
+    /// is clean, and the schema version is supported.
+    pub fn read_and_validate(
+        path: &Path,
+        workspace: &Path,
+    ) -> Result<Self, MarkerError>;
+}
+```
+
+A value of type `MarkerProof` anywhere in the code corresponds to
+"the gate ran AND the workspace still matches at the moment this
+value was constructed" — by construction. The deserializer cannot
+yield a `MarkerProof` for a stale or mismatched state; it returns
+`Err`.
+
+### Fingerprint contents
+
+`WorkspaceFingerprint` is the git tree OID at HEAD, with a
+porcelain-clean precondition. Validation is:
+
+```rust
+fn validate(workspace: &Path, marker: &MarkerProof) -> Result<(), MarkerError> {
+    assert_porcelain_clean(workspace)?;          // working tree == HEAD's tree
+    let current_tree = git_tree_oid_of_head(workspace)?;
+    if current_tree != marker.tree_oid { return Err(FingerprintMismatch); }
+    if marker.version > CURRENT_VERSION { return Err(UnsupportedSchema); }
+    Ok(())
+}
+```
+
+Three checks: porcelain clean (no uncommitted edits), tree OID
+match, schema version supported. Toolchain files
+(`rust-toolchain.toml`, `flake.lock`, `Cargo.lock`) are tracked,
+so their content folds into the tree OID; toolchain bumps
+invalidate the fingerprint naturally.
+
+The tree OID is git's canonical hash of HEAD's tree state, so we
+don't walk `git ls-files` or compute a custom hash. The
+fingerprint is structurally derived from git's own object store.
+
+### File location and lifecycle
+
+Marker lives at `.wrapix/loom/marker.json` in the loom workspace —
+a single file, overwritten on each mint. Atomic write via
+`<path>.tmp` + rename. No per-commit history (debuggable via
+`loom logs` and bd notes), no sweeping needed. The file lives in
+the loom workspace only; operator and bead workspaces do not
+contain a `marker.json`.
+
+```json
+{
+  "version": 1,
+  "commit_sha": "<HEAD SHA — informational>",
+  "tree_oid": "<tree OID — the fingerprint>",
+  "minted_at_ms": 1234567890123
+}
+```
+
+### Mint trigger
+
+The driver-side molecule-completion push gate at the loom workspace
+(per [harness.md § Verdict Gate](harness.md#verdict-gate)) is the
+sole mint trigger. By the time the push gate runs, every bead in
+the molecule has already integrated via its own per-bead
+verdict-gate pass (each of which rebased + ff'd onto the
+integration branch, ran verify against the integrated tree, and
+released the lock). The push gate sees the cumulative integrated
+state at HEAD; it does not rebase. The mint sequence is:
+
+1. Push gate acquires `index.lock`.
+2. Runs full audit against the integrated tree:
+   `prek run --hook-stage pre-push --all-files` +
+   `loom gate review --diff <molecule.base_commit>..HEAD`.
+3. On audit-pass, constructs `GateSuccess`; calls
+   `MarkerProof::from_gate_success(success, loom_workspace)`;
+   `write_to(".wrapix/loom/marker.json")`.
+4. Runs `git push origin <integration-branch>` — still inside the
+   critical section.
+5. Releases `index.lock`.
+
+The critical section spans audit + mint + push so that no
+in-flight per-bead integration can mutate HEAD between mint and
+push. Per-bead integration steps acquire their own (separate) hold
+of `index.lock` for the rebase + ff + verify pass; they release
+without minting. The two stages contend for the same lock; the
+push gate waits for any in-flight per-bead integration to release
+before starting its own critical section.
+
+### Consumer contract
+
+`loom gate verify-marker` is the prek-side consumer. It calls
+`MarkerProof::read_and_validate(".wrapix/loom/marker.json", ".")`
+and exits 0 on `Ok`, non-zero on `Err`. The exit code is the
+contract; the diagnostic on stderr names the specific
+`MarkerError` variant for human debugging but is not part of the
+machine-readable contract.
+
+prek's pre-push chain positions `loom gate verify-marker` as the
+first hook. Each subsequent slow-tier hook's `entry` routes
+through a wrapper (`pre-push-checks`, owned upstream by
+`wrapix.prekHooks` — see [pre-commit.md § Marker
+integration](pre-commit.md)) that re-runs the marker check and
+short-circuits the underlying command on valid marker. On invalid
+or missing marker, the wrapper execs the underlying command and
+the slow tier runs normally.
+
+### Forgery resistance
+
+The marker is forgery-resistant against three threat shapes:
+
+- **Tree-state forgery.** Cannot claim to have verified state X and
+  ship state Y: the tree OID fingerprint binds the marker to a
+  specific tree. Mismatch → validation fails.
+- **Stale marker after edit.** Uncommitted edits invalidate via the
+  porcelain-clean precondition; new commits invalidate via the tree
+  OID change. The marker is single-bit and binds to the exact
+  HEAD's tree.
+- **Agent verifier-execution forgery.** The bead-container agent
+  cannot mint a `MarkerProof` because the constructor requires a
+  sealed `GateSuccess`, and `GateSuccess` is `pub(crate)` to the
+  driver's gate-invocation module. An agent that writes a
+  hand-crafted JSON file to `.wrapix/loom/marker.json` produces a
+  file that deserializes to `MarkerProof` only insofar as the JSON
+  shape matches; the validation step still recomputes the
+  workspace fingerprint and matches against the file's claimed
+  fingerprint. The agent can't forge the JSON's `tree_oid` to a
+  value not equal to the current HEAD's tree OID (validation would
+  catch the mismatch unless the agent first mutates HEAD's tree to
+  match — which would itself be the agent making the changes it
+  claimed to have verified, and prek's downstream hooks would
+  catch the unverified state). The chain holds.
+
+### Cross-workspace boundary
+
+The marker is workspace-local — never trusted across machines or
+across clones of the same repo. The driver's loom workspace, the
+operator's `/workspace`, and the bead workspaces are separate
+clones; each has its own `.wrapix/loom/marker.json` (or doesn't).
+The only writer is the driver-side verdict gate in the loom
+workspace; operator and bead workspaces never have a marker, so
+their prek pre-push falls through to the full slow tier.
+
+CI never reads the marker. CI's nix-pure sandbox re-derives every
+check; the marker is a within-workspace driver-loop optimization,
+not a cross-machine trust artifact.
+
 ## Mechanisms
 
 How conformance / style / test-quality are evaluated:
@@ -871,14 +1239,53 @@ so a single modifier suppresses both.
 at verifier dispatch** — `loom gate verify` / `check` / `test` /
 `system` / `judge` / `mint` does not execute the verifier for a
 `[tier?](target)` annotation. Only the integrity gate's
-forward-resolution check runs (lightweight: first-token-on-PATH or
-file-exists), which is what fires `UnneededPendingMarker` when the
-target newly resolves. Without dispatch-side skip, planning
-sessions that author `[check?]` for not-yet-existing walks would
-break their own gate verify path on the next CI run — the verifier
-would execute, exit non-zero ("command not found"), and surface as
-a verify-fail; the `?` discipline would be unusable in the very
-flow it was added to support.
+forward-resolution check runs, which is what fires
+`UnneededPendingMarker` when the target newly resolves. Without
+dispatch-side skip, planning sessions that author `[check?]` for
+not-yet-existing walks would break their own gate verify path on
+the next CI run — the verifier would execute, exit non-zero
+("command not found"), and surface as a verify-fail; the `?`
+discipline would be unusable in the very flow it was added to
+support.
+
+**Forward-resolution executes the command.** The integrity gate's
+forward-resolution check runs the annotation's command in the same
+dispatch environment as `[check]` / `[test]` / `[system]` would use
+for the non-pending form, and inspects the exit code:
+
+- Exit 0 → the assertion holds; fire `UnneededPendingMarker` (the
+  `?` is stale and must be dropped in the same diff).
+- Exit non-zero → the assertion does not hold; silent pass (still
+  pending).
+
+This broader check is what makes the `?` modifier honor the
+author's intent uniformly across binary-pending (the verifier
+executable doesn't exist yet — first-token-on-PATH fails) and
+assertion-pending (the verifier exists but the asserted condition
+isn't true yet — e.g. `[check?](grep -q 'pub enum BadWalk'
+crates/loom-templates/src/previous_failure.rs)` where `grep`
+resolves but the symbol doesn't yet appear in the file). Both
+fail-modes produce non-zero exit; both are silent-pass under the
+modifier. When the implementation lands and the assertion newly
+holds, `UnneededPendingMarker` fires uniformly.
+
+Two boundary conditions:
+
+- **Command convention is read-only.** Verifier commands are
+  read-only by convention (same convention that applies to
+  non-pending `[check]` / `[test]` / `[system]`). The integrity
+  gate executes pending-marked commands during forward-resolution,
+  so a side-effectful command would side-effect at integrity time.
+  Authors are responsible for keeping verifier commands
+  read-only — this is not a new risk class.
+- **Command-broken vs assertion-pending is indistinguishable.** A
+  command that exits non-zero because the implementation isn't ready
+  and a command that exits non-zero because the command itself is
+  malformed both produce silent pass. The integrity gate cannot
+  distinguish them. The bug surfaces when the implementer drops the
+  `?` and the verifier runs at normal `loom gate verify` — the same
+  command exits non-zero and surfaces as `verify-fail`. Delayed
+  signal during the pending window, not silent forever.
 
 The modifier is **self-cleaning**. It is modelled on Rust's
 `#[expect(...)]` attribute, not `#[allow(...)]`: presence is silently
@@ -1700,6 +2107,89 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   errored counts, with per-finding fingerprint and resulting bead
   id
   [test](mint_end_of_run_summary_reports_per_finding_outcomes)
+
+### Wire-format wiring and dead-code excision
+
+The production wiring obligation — every caller that constructs
+`GateInputs` for the review-phase verdict gate must populate
+`streamed_findings_count` from a real `parse_walk_output` invocation
+rather than leaving it at default — is owned by
+[harness.md § Verdict gate](harness.md#verdict-gate). This
+subsection covers the wire-format-side dead-code excision and the
+ReviewConcern display-vocabulary retirement that the wiring change
+depends on.
+
+- `ReviewError::ConcernWithoutBeadDeltas` is removed from
+  `crates/loom-workflow/src/review/error.rs` and the raise site at
+  `review/runner.rs` is removed in the same diff; no production code
+  path constructs this error variant
+  [test?](no_path_constructs_concern_without_bead_deltas_in_production)
+- `parse_review_flag` (the legacy `<token> -- <reason>` whole-stdout
+  hunter) is removed from `crates/loom-workflow/src/review/phase_verdict.rs`;
+  the function and all its callers are deleted
+  [test?](parse_review_flag_is_not_defined_or_called_in_production)
+- `decide_concern` no longer parses the terminal `summary` field as a
+  `ReviewConcern` token; the legacy fallback path
+  (`ReviewConcern::parse(summary)`) is removed. An unrecognized
+  summary with at least one streamed finding routes to
+  `RecoveryCause::ReviewConcern { summary, findings }`, not
+  `SwallowedMarker`
+  [test?](decide_concern_unrecognized_summary_with_findings_routes_to_review_concern_not_swallowed)
+- The `ReviewConcern` 12-variant enum stays as a display vocabulary
+  for `bd update --notes` and verdict-log human-readable cause
+  labels, but `ReviewConcern::parse` has no production caller. The
+  per-finding render in `PreviousFailure::ReviewConcern` derives the
+  human-readable label from `findings[0].token` (or a "multiple"
+  label when heterogeneous)
+  [test?](previous_failure_review_concern_renders_human_label_from_findings_not_summary)
+
+### Wire-format strict validation and max-context preservation
+
+- A `LOOM_FINDING:` line whose JSON payload fails parse — invalid
+  JSON (most common: trailing backticks from markdown fencing),
+  unknown `token`, target/token variant mismatch, unresolved spec
+  label or anchor — surfaces as
+  `RecoveryCause::BadWalk(BadWalk::MalformedFinding { errors, terminal })`
+  with the well-formed terminal preserved alongside the per-line
+  parse errors
+  [test?](backtick_wrapped_loom_finding_line_routes_to_bad_walk_malformed_finding_with_terminal_preserved)
+- The `LOOM_FINDING:` substring match is case-sensitive and
+  colon-suffixed; bare-prose mentions without the colon do not match
+  [test?](loom_finding_substring_match_requires_uppercase_and_colon_suffix)
+- `BadWalk::Concern` carries `{ payload, parsed_findings: Vec<Finding> }`;
+  well-formed findings streamed ahead of a malformed terminal are
+  preserved in `parsed_findings`
+  [test?](bad_walk_concern_preserves_well_formed_findings_alongside_malformed_payload)
+- `BadWalk::FindingsWithoutConcern` carries
+  `{ finding_count, findings: Vec<Finding> }`; the parsed findings
+  ride through so the next iteration's prompt and `loom gate mint`
+  can both consume them
+  [test?](bad_walk_findings_without_concern_carries_parsed_findings_vec)
+- The `BadWalk::MalformedFinding { errors, terminal }` variant
+  carries every per-line parse error AND the well-formed terminal
+  surface (or a typed `Missing`/`Malformed` variant when the
+  terminal itself failed). Construction without both pieces is a
+  compile error
+  [test?](bad_walk_malformed_finding_variant_carries_errors_and_terminal_by_struct_shape)
+
+### Verification surface (matrix + property)
+
+- The review-phase classifier signature consumes a typed `WalkOutput`
+  (with `pub(crate)` constructor that runs `parse_walk_output`
+  internally), not raw `&str`. Any production caller passing a `&str`
+  is a compile error
+  [test?](classify_review_phase_signature_requires_typed_walk_output)
+- The (stream-shape × terminal-shape) failure matrix is exhaustive:
+  every cell in the 4 × 6 cross-product (S0..S3 stream shapes × six
+  terminal shapes) has a parameterised test asserting the typed
+  outcome variant and the maximum-context invariant
+  [test?](walk_output_failure_matrix_routes_every_cell_with_typed_outcome_and_preserves_max_context)
+- Every constructible `Finding` (each `ConcernToken` × canonical
+  `FindingTarget` combination) round-trips byte-equal through
+  `serde_json::to_string` → embed in a `LOOM_FINDING:` line →
+  embed in a synthetic walk output → `parse_walk_output`, with
+  stable fingerprint
+  [test?](every_finding_round_trips_through_wire_format_with_stable_fingerprint)
 
 ### Status cache
 
