@@ -10,6 +10,19 @@ default_type = "task"
 # Loom pushes this branch to `origin/<integration_branch>` from the
 # gate. Default `main`.
 integration_branch = "main"
+# Setting `sccache_dir` enables shared sccache. For bead and todo
+# container spawns, the directory is bind-mounted at
+# `sccache_container_path` and `SCCACHE_DIR` + `RUSTC_WRAPPER=sccache`
+# are set in container env. For host-side cargo invocations (loom's
+# gate-verify against the loom workspace; optionally the operator's
+# `nix develop`), the same env vars are exported and cargo reads the
+# host directory directly — no mount, because there is no container
+# boundary. Leaving `sccache_dir` unset disables the feature entirely;
+# every cargo invocation pays full cold-build cost.
+# `sccache_container_path` defaults to `/sccache` and is consulted only
+# when `sccache_dir` is set.
+# sccache_dir = "~/.cache/loom-sccache"
+# sccache_container_path = "/sccache"
 
 [loop]
 # Molecule-level: bounds `loom loop`'s outer loop on fix-up beads. Each

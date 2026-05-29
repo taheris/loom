@@ -1888,7 +1888,7 @@ fn run_loop_cmd(
         let kind = selection.kind;
         let shutdown_grace = resolve_shutdown_grace(&selection);
         let style_rules_for_async = config.style_rules.clone();
-        let integration_branch_for_async = config.loom.integration_branch.clone();
+        let loom_cfg_for_async = config.loom.clone();
         let outcome = runtime.block_on(async move {
             run_parallel_loop(
                 workspace_buf,
@@ -1900,7 +1900,7 @@ fn run_loop_cmd(
                 cli_profile_for_async,
                 phase_default_for_async,
                 style_rules_for_async,
-                integration_branch_for_async,
+                loom_cfg_for_async,
             )
             .await
         })?;
@@ -1927,6 +1927,7 @@ fn run_loop_cmd(
     let label_for_sink = label.clone();
     let render_mode = resolve_render_mode(render_flags);
     let style_rules_for_run = config.style_rules.clone();
+    let loom_cfg_for_run = config.loom.clone();
     let observer_config = config.agent.clone();
     let retry_policy = RetryPolicy {
         max_retries: config.loop_.max_retries,
@@ -1993,6 +1994,7 @@ fn run_loop_cmd(
         )
         .with_handoff_lock(guard)
         .with_style_rules(style_rules_for_run)
+        .with_loom_config(loom_cfg_for_run)
         .with_beads_push_program(resolve_beads_push_program())
         .with_phase_log_root(logs_root_for_controller);
         run_loop(&mut controller, mode, retry_policy, max_iterations).await
@@ -2041,7 +2043,7 @@ async fn run_parallel_loop(
     cli_profile: Option<ProfileName>,
     phase_default: ProfileName,
     style_rules: String,
-    integration_branch: String,
+    loom_cfg: loom_driver::config::LoomTopConfig,
 ) -> anyhow::Result<LoopOutcome> {
     use loom_driver::bd::UpdateOpts;
     use loom_workflow::r#loop::AgentOutcome;
@@ -2071,7 +2073,10 @@ async fn run_parallel_loop(
         });
     }
 
-    let git = GitClient::open_with_integration_branch(workspace.clone(), integration_branch)?;
+    let git = GitClient::open_with_integration_branch(
+        workspace.clone(),
+        loom_cfg.integration_branch.clone(),
+    )?;
     let logs_root = workspace.join(".wrapix/loom/logs");
     let logs_root_for_merge = logs_root.clone();
     let label_for_closure = label.clone();
@@ -2091,6 +2096,7 @@ async fn run_parallel_loop(
             let label_inner = label_for_closure.clone();
             let style_rules_inner = style_rules.clone();
             let workspace_inner = workspace_for_closure.clone();
+            let loom_cfg_inner = loom_cfg.clone();
             async move {
                 // Marker is the primary signal here too — without it, parallel
                 // mode would swallow `LOOM_BLOCKED` / `LOOM_CLARIFY` self-reports
@@ -2106,6 +2112,7 @@ async fn run_parallel_loop(
                     &label_inner,
                     &style_rules_inner,
                     &workspace_inner,
+                    &loom_cfg_inner,
                 )
                 .await
                 {
@@ -2245,10 +2252,12 @@ async fn dispatch_for_slot(
     label: &SpecLabel,
     style_rules: &str,
     loom_workspace: &Path,
+    loom_cfg: &loom_driver::config::LoomTopConfig,
 ) -> anyhow::Result<(SessionOutcome, Option<ExitSignal>)> {
     use loom_driver::scratch::ScratchSession;
     use loom_workflow::r#loop::{
         LoopContextInputs, build_spawn_config_from_manifest, dolt_socket_mount, render_loop_prompt,
+        sccache_mount,
     };
 
     let banner = format!("loom loop @ {}", slot.bead.id);
@@ -2272,7 +2281,11 @@ async fn dispatch_for_slot(
         style_rules: style_rules.to_string(),
     })?;
     let scratch = ScratchSession::open(&slot.worktree.path, &key, &initial_prompt, &banner)?;
-    let mounts = dolt_socket_mount(loom_workspace).into_iter().collect();
+    let mut mounts: Vec<_> = dolt_socket_mount(loom_workspace).into_iter().collect();
+    if let Some(spec) = sccache_mount(loom_cfg) {
+        mounts.push(spec);
+    }
+    let extra_env = loom_cfg.container_sccache_env();
     let spawn_config = build_spawn_config_from_manifest(
         manifest,
         &slot.bead,
@@ -2281,7 +2294,7 @@ async fn dispatch_for_slot(
         slot.worktree.path.clone(),
         initial_prompt,
         scratch.path().to_path_buf(),
-        vec![],
+        extra_env,
         vec![],
         mounts,
     )?;
@@ -2942,6 +2955,7 @@ fn run_todo(
     let workspace_buf = workspace.to_path_buf();
     let logs_root = workspace.join(".wrapix/loom/logs");
     let label_for_sink = label.clone();
+    let loom_cfg_for_todo = config.loom.clone();
     let result = runtime.block_on(async move {
         let mut controller = ProductionTodoController::new(
             label,
@@ -2952,7 +2966,8 @@ fn run_todo(
             git,
             bd,
             since,
-        );
+        )
+        .with_loom_config(loom_cfg_for_todo);
         run_todo_workflow(&mut controller, |spawn_cfg: SpawnConfig| async move {
             let sink = LogSink::open_phase_at(
                 &logs_root,

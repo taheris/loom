@@ -72,5 +72,5 @@ pub use runner::{
     AgentLoopController, INFRA_PREFLIGHT_CAUSE, INFRA_REPEATED_CAUSE, LoopMode,
     UNKNOWN_PROFILE_CAUSE, run_loop,
 };
-pub use spawn::{build_spawn_config_from_manifest, dolt_socket_mount};
+pub use spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 pub use tree_clean::{TREE_NOT_CLEAN_CAP, dirty_paths_from_porcelain};

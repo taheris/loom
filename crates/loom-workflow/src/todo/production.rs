@@ -17,7 +17,7 @@ use loom_driver::agent::{RePinContent, SessionOutcome, SpawnConfig, set_loom_ins
 use loom_driver::bd::{
     BdClient, BdError, CommandRunner, CreateOpts, ListOpts, TokioRunner, UpdateOpts,
 };
-use loom_driver::config::Phase;
+use loom_driver::config::{LoomTopConfig, Phase};
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::ProfileImageManifest;
@@ -53,6 +53,12 @@ pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
     /// fan-out guard. `None` means [`Self::build_session`] has not run
     /// yet; the guard is skipped in that branch.
     pre_snapshot: Option<HashSet<BeadId>>,
+    /// `[loom]` block snapshot. Threaded onto the todo container's
+    /// `SpawnConfig.mounts` + `env` via [`crate::r#loop::sccache_mount`] +
+    /// [`LoomTopConfig::container_sccache_env`] when sccache is configured.
+    /// `LoomTopConfig::default()` is harmless — both sccache fields are
+    /// `None`/`/sccache` so no mount or env is emitted.
+    loom_cfg: LoomTopConfig,
 }
 
 impl<R: CommandRunner> ProductionTodoController<R> {
@@ -77,7 +83,15 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             bd,
             since,
             pre_snapshot: None,
+            loom_cfg: LoomTopConfig::default(),
         }
+    }
+
+    /// Snapshot the `[loom]` config block onto the controller so the todo
+    /// container picks up the shared sccache mount + env when configured.
+    pub fn with_loom_config(mut self, cfg: LoomTopConfig) -> Self {
+        self.loom_cfg = cfg;
+        self
     }
 
     /// Snapshot every task bead carrying `spec:<label>` across the three
@@ -240,15 +254,18 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             "loom todo: building spawn config",
         );
         let scratch_dir = scratch.path().to_path_buf();
-        let mut env = Vec::new();
+        let mut env = self.loom_cfg.container_sccache_env();
         set_loom_inside(&mut env);
+        let mounts = crate::r#loop::sccache_mount(&self.loom_cfg)
+            .into_iter()
+            .collect();
         Ok(TodoSession {
             config: SpawnConfig {
                 image_ref: entry.r#ref.clone(),
                 image_source: entry.source.clone(),
                 workspace: self.workspace.clone(),
                 env,
-                mounts: vec![],
+                mounts,
                 initial_prompt: prompt,
                 agent_args: vec![],
                 repin: RePinContent {

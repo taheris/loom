@@ -34,7 +34,7 @@ pub use beads::BeadsConfig;
 pub use claude::ClaudeConfig;
 pub use error::LoomConfigError;
 pub use logs::LogsConfig;
-pub use loom_section::{LoomTopConfig, default_integration_branch};
+pub use loom_section::{LoomTopConfig, default_integration_branch, default_sccache_container_path};
 pub use loop_config::LoopConfig;
 pub use runner::{Parser, RunnerConfig, RunnerEntry, RunnerTier};
 pub use security::SecurityConfig;
@@ -71,8 +71,9 @@ pub struct LoomConfig {
     /// § Spec-Conventions Partial).
     pub spec_conventions: String,
     pub beads: BeadsConfig,
-    /// `[loom]` block — workspace-level knobs (currently
-    /// `integration_branch`). See `specs/harness.md` § Configuration.
+    /// `[loom]` block — workspace-level knobs (`integration_branch`,
+    /// `sccache_dir`, `sccache_container_path`). See `specs/harness.md`
+    /// § Configuration.
     pub loom: LoomTopConfig,
     #[serde(rename = "loop")]
     pub loop_: LoopConfig,
@@ -395,6 +396,75 @@ integration_branch = "trunk"
         let src = "[loom]\n";
         let cfg = LoomConfig::from_toml_str(src)?;
         assert_eq!(cfg.loom.integration_branch, "main");
+        Ok(())
+    }
+
+    /// `[loom] sccache_dir` and `sccache_container_path` round-trip through
+    /// the parser. Defaults: `sccache_dir = None`, `sccache_container_path
+    /// = "/sccache"`. Setting `sccache_dir` enables both the container
+    /// mount and the env entries via the `container_sccache_env` /
+    /// `host_sccache_env` helpers.
+    #[test]
+    fn loom_sccache_fields_round_trip_and_default() -> Result<()> {
+        use std::path::PathBuf;
+
+        let absent = LoomConfig::from_toml_str("")?;
+        assert_eq!(absent.loom.sccache_dir, None);
+        assert_eq!(
+            absent.loom.sccache_container_path,
+            PathBuf::from("/sccache"),
+        );
+        assert!(absent.loom.container_sccache_env().is_empty());
+        assert!(absent.loom.host_sccache_env().is_empty());
+
+        let src = r#"
+[loom]
+sccache_dir = "/var/cache/loom-sccache"
+sccache_container_path = "/sccache"
+"#;
+        let cfg = LoomConfig::from_toml_str(src)?;
+        assert_eq!(
+            cfg.loom.sccache_dir,
+            Some(PathBuf::from("/var/cache/loom-sccache")),
+        );
+        assert_eq!(cfg.loom.sccache_container_path, PathBuf::from("/sccache"));
+        let cenv = cfg.loom.container_sccache_env();
+        assert!(
+            cenv.iter()
+                .any(|(k, v)| k == "SCCACHE_DIR" && v == "/sccache"),
+            "container_sccache_env missing SCCACHE_DIR: {cenv:?}",
+        );
+        assert!(
+            cenv.iter()
+                .any(|(k, v)| k == "RUSTC_WRAPPER" && v == "sccache"),
+            "container_sccache_env missing RUSTC_WRAPPER: {cenv:?}",
+        );
+        let henv = cfg.loom.host_sccache_env();
+        assert!(
+            henv.iter()
+                .any(|(k, v)| k == "SCCACHE_DIR" && v == "/var/cache/loom-sccache"),
+            "host_sccache_env must point SCCACHE_DIR at the host path: {henv:?}",
+        );
+        Ok(())
+    }
+
+    /// Setting only `sccache_dir` (no `sccache_container_path`) falls back
+    /// to the default `/sccache` container path — the operator opts into
+    /// the feature without having to spell out the container path.
+    #[test]
+    fn loom_sccache_dir_only_defaults_container_path_to_sccache() -> Result<()> {
+        use std::path::PathBuf;
+
+        let src = r#"
+[loom]
+sccache_dir = "/var/cache/loom-sccache"
+"#;
+        let cfg = LoomConfig::from_toml_str(src)?;
+        assert_eq!(
+            cfg.loom.sccache_dir,
+            Some(PathBuf::from("/var/cache/loom-sccache")),
+        );
+        assert_eq!(cfg.loom.sccache_container_path, PathBuf::from("/sccache"));
         Ok(())
     }
 

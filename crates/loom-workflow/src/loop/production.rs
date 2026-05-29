@@ -21,7 +21,7 @@ use loom_driver::agent::{ProtocolError, SpawnConfig};
 use loom_driver::bd::{
     BdClient, Bead, CommandRunner, ListOpts, ReadyOpts, TokioRunner, UpdateOpts,
 };
-use loom_driver::config::Phase;
+use loom_driver::config::{LoomTopConfig, Phase};
 use loom_driver::git::{CreatedWorktree, GitClient, MergeResult};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
@@ -38,7 +38,7 @@ use super::gate_outcome::HandoffEvidence;
 use super::outcome::{AgentOutcome, SessionResult};
 use super::post_merge_push::{default_beads_push_program, push_merged_main_then_beads};
 use super::runner::AgentLoopController;
-use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount};
+use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 use super::tree_clean::dirty_paths_from_porcelain;
 use crate::review::{GateInputs, PhaseVerdict, RecoveryCause, decide};
 use crate::todo::ExitSignal;
@@ -99,6 +99,11 @@ where
     /// own events. `None` is a silent no-op for tests that don't wire
     /// the phase log.
     logs_root: Option<PathBuf>,
+    /// `[loom]` block snapshot. The sccache fields are consulted at every
+    /// dispatch to decide whether the bead container picks up the shared
+    /// cache mount + env. `LoomTopConfig::default()` is harmless — both
+    /// sccache fields are `None`/`/sccache` so no mount is emitted.
+    loom_cfg: LoomTopConfig,
     /// State for the bead currently being processed by `run_bead`. The
     /// envelope builder is shared across every driver event emitted
     /// during one attempt so seq stays strictly increasing across the
@@ -140,7 +145,17 @@ where
             beads_push_program: default_beads_push_program(),
             logs_root: None,
             current_emit: None,
+            loom_cfg: LoomTopConfig::default(),
         }
+    }
+
+    /// Snapshot the `[loom]` config block onto the controller so the
+    /// per-bead dispatch picks up the shared sccache mount + env when
+    /// [`LoomTopConfig::sccache_dir`] is set. Defaults to
+    /// `LoomTopConfig::default()` when unset, which emits no mount.
+    pub fn with_loom_config(mut self, cfg: LoomTopConfig) -> Self {
+        self.loom_cfg = cfg;
+        self
     }
 
     /// Pin the per-bead JSONL log root the controller appends
@@ -317,7 +332,11 @@ where
                 return Err(LoopError::Protocol(ProtocolError::Io(source)));
             }
         };
-        let mounts = dolt_socket_mount(&self.workspace).into_iter().collect();
+        let mut mounts: Vec<_> = dolt_socket_mount(&self.workspace).into_iter().collect();
+        if let Some(spec) = sccache_mount(&self.loom_cfg) {
+            mounts.push(spec);
+        }
+        let extra_env = self.loom_cfg.container_sccache_env();
         let spawn_config = match build_spawn_config_from_manifest(
             &self.manifest,
             bead,
@@ -326,7 +345,7 @@ where
             worktree.path.clone(),
             initial_prompt,
             scratch.path().to_path_buf(),
-            vec![],
+            extra_env,
             vec![],
             mounts,
         ) {

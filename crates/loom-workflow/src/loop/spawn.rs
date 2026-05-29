@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use loom_driver::agent::{MountSpec, RePinContent, SpawnConfig, set_loom_inside};
 use loom_driver::bd::Bead;
+use loom_driver::config::LoomTopConfig;
 use loom_driver::identifier::ProfileName;
 use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
 
@@ -34,6 +35,24 @@ pub fn dolt_socket_mount(loom_workspace: &Path) -> Option<MountSpec> {
     Some(MountSpec {
         host_path,
         container_path: PathBuf::from(DOLT_SOCKET_CONTAINER_PATH),
+        read_only: false,
+    })
+}
+
+/// Build the optional [`MountSpec`] that projects the shared sccache
+/// directory into a container at the configured container path.
+///
+/// Returns `Some(MountSpec)` when [`LoomTopConfig::sccache_dir`] is set;
+/// `None` otherwise (the feature is disabled and every cargo invocation
+/// pays the full cold-build cost). `read_only = false` because sccache
+/// clients write through the cache. See `specs/harness.md` § Bead dispatch
+/// — `sccache_mount_present_when_configured` /
+/// `sccache_mount_omitted_when_unset`.
+pub fn sccache_mount(cfg: &LoomTopConfig) -> Option<MountSpec> {
+    let host_path = cfg.sccache_dir.clone()?;
+    Some(MountSpec {
+        host_path,
+        container_path: cfg.sccache_container_path.clone(),
         read_only: false,
     })
 }
@@ -394,6 +413,141 @@ mod tests {
     fn dolt_socket_mount_returns_none_when_socket_absent() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert!(dolt_socket_mount(dir.path()).is_none());
+    }
+
+    /// Spec gate (`specs/harness.md` § Bead dispatch —
+    /// `sccache_mount_present_when_configured`): when `[loom] sccache_dir`
+    /// is set, the per-bead [`SpawnConfig`] carries an entry projecting
+    /// the host cache into the container at `sccache_container_path`,
+    /// and `SCCACHE_DIR` + `RUSTC_WRAPPER=sccache` land in container env.
+    #[test]
+    fn sccache_mount_present_when_configured() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let host_cache = dir.path().join("loom-sccache");
+        std::fs::create_dir_all(&host_cache).expect("create cache dir");
+        let cfg = LoomTopConfig {
+            sccache_dir: Some(host_cache.clone()),
+            sccache_container_path: PathBuf::from("/sccache"),
+            ..LoomTopConfig::default()
+        };
+        let mount = sccache_mount(&cfg).expect("sccache configured → mount");
+        assert_eq!(mount.host_path, host_cache);
+        assert_eq!(mount.container_path, PathBuf::from("/sccache"));
+        assert!(
+            !mount.read_only,
+            "sccache clients write through the cache; mount must not be read-only",
+        );
+
+        let manifest = three_profile_manifest(dir.path());
+        let bead = bead_with_labels("lm-1", &["profile:rust"]);
+        let spawn = build_spawn_config_from_manifest(
+            &manifest,
+            &bead,
+            None,
+            &base(),
+            PathBuf::from("/work/lm-1"),
+            "p".into(),
+            dir.path().join("scratch"),
+            cfg.container_sccache_env(),
+            vec![],
+            vec![mount.clone()],
+        )
+        .expect("dispatch");
+        assert!(
+            spawn.mounts.contains(&mount),
+            "SpawnConfig.mounts must carry the sccache projection: {:?}",
+            spawn.mounts,
+        );
+        assert!(
+            spawn
+                .env
+                .iter()
+                .any(|(k, v)| k == "SCCACHE_DIR" && v == "/sccache"),
+            "SpawnConfig.env missing SCCACHE_DIR=/sccache: {:?}",
+            spawn.env,
+        );
+        assert!(
+            spawn
+                .env
+                .iter()
+                .any(|(k, v)| k == "RUSTC_WRAPPER" && v == "sccache"),
+            "SpawnConfig.env missing RUSTC_WRAPPER=sccache: {:?}",
+            spawn.env,
+        );
+    }
+
+    /// Honors a non-default container path: `sccache_container_path =
+    /// "/var/sccache"` lands in both the mount entry and the
+    /// `SCCACHE_DIR` env var so the container's sccache binary reads
+    /// from the right location.
+    #[test]
+    fn sccache_mount_honors_custom_container_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let host_cache = dir.path().join("loom-sccache");
+        let cfg = LoomTopConfig {
+            sccache_dir: Some(host_cache.clone()),
+            sccache_container_path: PathBuf::from("/var/sccache"),
+            ..LoomTopConfig::default()
+        };
+        let mount = sccache_mount(&cfg).expect("configured → mount");
+        assert_eq!(mount.host_path, host_cache);
+        assert_eq!(mount.container_path, PathBuf::from("/var/sccache"));
+        let env = cfg.container_sccache_env();
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "SCCACHE_DIR" && v == "/var/sccache"),
+            "container env must use the configured container path: {env:?}",
+        );
+    }
+
+    /// Spec gate (`specs/harness.md` § Bead dispatch —
+    /// `sccache_mount_omitted_when_unset`): with no `[loom] sccache_dir`
+    /// set, no sccache mount appears on the bead-container spawn args
+    /// and no sccache env entries are exported.
+    #[test]
+    fn sccache_mount_omitted_when_unset() {
+        let cfg = LoomTopConfig::default();
+        assert!(
+            sccache_mount(&cfg).is_none(),
+            "default config must not emit an sccache mount",
+        );
+        assert!(
+            cfg.container_sccache_env().is_empty(),
+            "default config must not emit sccache container env: {:?}",
+            cfg.container_sccache_env(),
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = three_profile_manifest(dir.path());
+        let bead = bead_with_labels("lm-1", &["profile:rust"]);
+        let spawn = build_spawn_config_from_manifest(
+            &manifest,
+            &bead,
+            None,
+            &base(),
+            PathBuf::from("/work/lm-1"),
+            "p".into(),
+            dir.path().join("scratch"),
+            cfg.container_sccache_env(),
+            vec![],
+            sccache_mount(&cfg).into_iter().collect(),
+        )
+        .expect("dispatch");
+        assert!(
+            spawn.mounts.is_empty(),
+            "no mounts must be emitted when sccache is unconfigured: {:?}",
+            spawn.mounts,
+        );
+        assert!(
+            !spawn.env.iter().any(|(k, _)| k == "SCCACHE_DIR"),
+            "no SCCACHE_DIR env when sccache is unconfigured: {:?}",
+            spawn.env,
+        );
+        assert!(
+            !spawn.env.iter().any(|(k, _)| k == "RUSTC_WRAPPER"),
+            "no RUSTC_WRAPPER env when sccache is unconfigured: {:?}",
+            spawn.env,
+        );
     }
 
     /// A bead with a `profile:X` not declared in the manifest fails
