@@ -482,6 +482,7 @@ is structurally required (single serde-derived definition) and
 mechanically enforced by a `[check?]`-tier anti-duplication walker
 landing alongside the broad forward-resolution change documented
 under [*Pending modifier*](#pending-modifier) below.
+[check](cargo run -p loom-walk -- finding_no_duplicate_definitions)
 
 The wire format's sole textual definition lives at
 `crates/loom-templates/templates/partial/findings_walk.md`; the
@@ -522,6 +523,7 @@ to land alongside the broad forward-resolution change under
 production sources for `mint_findings` / `mint_finding_with_options`
 invocations outside `loom-workflow::mint` and outside `loom loop`'s
 per-bead `mint --bead` dispatch path.
+[check](cargo run -p loom-walk -- audit_makes_no_bd_writes_outside_mint_module)
 
 The driver's `loom loop` per-bead path is the **operator-level
 composition** of `verify --bead` + `mint --bead` per the *Default

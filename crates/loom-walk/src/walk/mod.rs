@@ -11,9 +11,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+mod audit_makes_no_bd_writes_outside_mint_module;
 mod crate_structure;
 mod direct_tools_net_new;
 mod event_sink_in_loom_events;
+mod finding_no_duplicate_definitions;
 mod git_client_encapsulation;
 mod loom_agent_deps;
 mod loom_does_not_invoke_podman;
@@ -124,6 +126,10 @@ pub struct Walk {
 /// so the error-message enumeration reads stably.
 pub static REGISTRY: &[Walk] = &[
     Walk {
+        name: "audit_makes_no_bd_writes_outside_mint_module",
+        run: audit_makes_no_bd_writes_outside_mint_module::run,
+    },
+    Walk {
         name: "crate_structure",
         run: crate_structure::run,
     },
@@ -134,6 +140,10 @@ pub static REGISTRY: &[Walk] = &[
     Walk {
         name: "event_sink_in_loom_events",
         run: event_sink_in_loom_events::run,
+    },
+    Walk {
+        name: "finding_no_duplicate_definitions",
+        run: finding_no_duplicate_definitions::run,
     },
     Walk {
         name: "git_client_encapsulation",
@@ -362,9 +372,11 @@ mod tests {
     #[test]
     fn registry_lookup_finds_known_walks() {
         for name in [
+            "audit_makes_no_bd_writes_outside_mint_module",
             "crate_structure",
             "direct_tools_net_new",
             "event_sink_in_loom_events",
+            "finding_no_duplicate_definitions",
             "git_client_encapsulation",
             "loom_agent_deps",
             "loom_does_not_invoke_podman",

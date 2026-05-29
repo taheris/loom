@@ -3083,3 +3083,181 @@ fn todo_new_creates_epic_before_decomposition_fail_when_epic_create_missing() {
     );
     assert_fail(&out, "no `bd create --type=epic` invocation found");
 }
+
+// ---------------------------------------------------------------------------
+// finding_no_duplicate_definitions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn finding_no_duplicate_definitions_passes_when_canonical_only() {
+    let ws = make_workspace();
+    let canonical = seed(
+        ws.path(),
+        "crates/loom-templates/src/finding.rs",
+        "pub struct Finding { pub token: u32 }\n\
+         pub enum ConcernToken { Foo, Bar }\n",
+    );
+    let consumer = seed(
+        ws.path(),
+        "crates/loom-workflow/src/lib.rs",
+        "pub use loom_templates::finding::{Finding, ConcernToken};\n\
+         pub fn use_finding(_f: Finding) {}\n",
+    );
+    let scope = format!(
+        "{}:{}",
+        canonical.to_string_lossy(),
+        consumer.to_string_lossy()
+    );
+    let out = invoke(
+        &["finding_no_duplicate_definitions"],
+        Some(ws.path()),
+        Some(&scope),
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn finding_no_duplicate_definitions_fails_on_second_struct_declaration() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-templates/src/finding.rs",
+        "pub struct Finding { pub token: u32 }\n",
+    );
+    let dup = seed(
+        ws.path(),
+        "crates/loom-workflow/src/lib.rs",
+        "pub struct Finding { pub other: String }\n",
+    );
+    let out = invoke(
+        &["finding_no_duplicate_definitions"],
+        Some(ws.path()),
+        Some(&dup.to_string_lossy()),
+    );
+    assert_fail(&out, "crates/loom-workflow/src/lib.rs:1");
+}
+
+#[test]
+fn finding_no_duplicate_definitions_fails_on_second_enum_declaration() {
+    let ws = make_workspace();
+    let dup = seed(
+        ws.path(),
+        "crates/loom-workflow/src/review.rs",
+        "pub enum ConcernToken { Other }\n",
+    );
+    let out = invoke(
+        &["finding_no_duplicate_definitions"],
+        Some(ws.path()),
+        Some(&dup.to_string_lossy()),
+    );
+    assert_fail(&out, "ConcernToken");
+}
+
+#[test]
+fn finding_no_duplicate_definitions_pass_on_re_export_alone() {
+    let ws = make_workspace();
+    let consumer = seed(
+        ws.path(),
+        "crates/loom-workflow/src/review.rs",
+        "pub use loom_templates::finding::{Finding, ConcernToken};\n",
+    );
+    let out = invoke(
+        &["finding_no_duplicate_definitions"],
+        Some(ws.path()),
+        Some(&consumer.to_string_lossy()),
+    );
+    assert_pass(&out);
+}
+
+// ---------------------------------------------------------------------------
+// audit_makes_no_bd_writes_outside_mint_module
+// ---------------------------------------------------------------------------
+
+#[test]
+fn audit_makes_no_bd_writes_outside_mint_module_pass_when_only_mint_module_calls() {
+    let ws = make_workspace();
+    let mint_call = format!(
+        "pub async fn dispatch() {{ let _ = {mint_findings_call}.await; }}\n",
+        mint_findings_call = concat!("mint_findings", "(&bd, &fs, \"head\")"),
+    );
+    let inside = seed(
+        ws.path(),
+        "crates/loom-workflow/src/mint/walk.rs",
+        &mint_call,
+    );
+    let out = invoke(
+        &["audit_makes_no_bd_writes_outside_mint_module"],
+        Some(ws.path()),
+        Some(&inside.to_string_lossy()),
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn audit_makes_no_bd_writes_outside_mint_module_pass_when_called_from_main() {
+    let ws = make_workspace();
+    let body = format!(
+        "fn run_gate_mint() {{ let _ = {call}; }}\n",
+        call = concat!("mint_finding_with_options", "(&bd, &f, head, &opts)"),
+    );
+    let allowed = seed(ws.path(), "crates/loom/src/main.rs", &body);
+    let out = invoke(
+        &["audit_makes_no_bd_writes_outside_mint_module"],
+        Some(ws.path()),
+        Some(&allowed.to_string_lossy()),
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn audit_makes_no_bd_writes_outside_mint_module_fail_when_called_from_audit_path() {
+    let ws = make_workspace();
+    let body = format!(
+        "fn run_gate_audit() {{ let _ = {call}; }}\n",
+        call = concat!("mint_findings", "(&bd, &f, head)"),
+    );
+    let bad = seed(ws.path(), "crates/loom-workflow/src/audit.rs", &body);
+    let out = invoke(
+        &["audit_makes_no_bd_writes_outside_mint_module"],
+        Some(ws.path()),
+        Some(&bad.to_string_lossy()),
+    );
+    assert_fail(&out, "crates/loom-workflow/src/audit.rs:1");
+}
+
+#[test]
+fn audit_makes_no_bd_writes_outside_mint_module_fail_when_called_from_review_module() {
+    let ws = make_workspace();
+    let body = format!(
+        "pub fn dispatch() {{ let _ = {call}; }}\n",
+        call = concat!("mint_finding_with_options", "(&bd, f, head, opts)"),
+    );
+    let bad = seed(
+        ws.path(),
+        "crates/loom-workflow/src/review/runner.rs",
+        &body,
+    );
+    let out = invoke(
+        &["audit_makes_no_bd_writes_outside_mint_module"],
+        Some(ws.path()),
+        Some(&bad.to_string_lossy()),
+    );
+    assert_fail(&out, "mint_finding_with_options");
+}
+
+#[test]
+fn audit_makes_no_bd_writes_outside_mint_module_ignores_doc_mentions() {
+    let ws = make_workspace();
+    let doc = seed(
+        ws.path(),
+        "crates/loom-workflow/src/lib.rs",
+        "//! Module that documents `mint_findings(...)` and `mint_finding_with_options(...)`\n\
+         pub fn nothing() {}\n",
+    );
+    let out = invoke(
+        &["audit_makes_no_bd_writes_outside_mint_module"],
+        Some(ws.path()),
+        Some(&doc.to_string_lossy()),
+    );
+    assert_pass(&out);
+}
