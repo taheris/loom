@@ -37,8 +37,9 @@ pub use dispatch::{
 };
 pub use inputs::{InputResolver, InputsError, VerifierInputs};
 pub use integrity::{
-    CommandResolver, FsCommandResolver, IntegrityError, IntegrityFinding, RustWorkspaceStubScanner,
-    RustWorkspaceTestResolver, StubScanner, TestPathResolver, format_clarify_options,
+    CommandResolver, FsCommandResolver, FsPendingCommandExecutor, IntegrityError, IntegrityFinding,
+    PendingCommandExecutor, RustWorkspaceStubScanner, RustWorkspaceTestResolver, StubScanner,
+    TestPathResolver, format_clarify_options,
 };
 pub use runner::{
     BuiltinParser, MatchedAnnotation, ParsedVerdict, RunnerError, RunnerGroup, RunnerKind,

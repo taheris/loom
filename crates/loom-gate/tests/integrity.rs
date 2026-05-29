@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use loom_gate::Tier;
 use loom_gate::annotation::{parse, parse_content};
 use loom_gate::integrity::{
-    CommandResolver, FsCommandResolver, IntegrityFinding, RustWorkspaceStubScanner,
-    RustWorkspaceTestResolver, StubScanner, TestPathResolver, check, check_atomic_acceptance,
-    check_forward,
+    CommandResolver, FsCommandResolver, FsPendingCommandExecutor, IntegrityFinding,
+    PendingCommandExecutor, RustWorkspaceStubScanner, RustWorkspaceTestResolver, StubScanner,
+    TestPathResolver, check, check_atomic_acceptance, check_forward,
 };
 use tempfile::tempdir;
 
@@ -43,6 +43,17 @@ impl StubScanner for NoStubs {
     }
 }
 
+/// Executor whose `executes_zero` is hard-wired to the value supplied at
+/// construction time, regardless of the command. Lets pending-modifier
+/// tests pin a deterministic forward-resolution outcome without spawning
+/// real subprocesses.
+struct StubExec(bool);
+impl PendingCommandExecutor for StubExec {
+    fn executes_zero(&self, _: &str) -> bool {
+        self.0
+    }
+}
+
 #[test]
 fn parse_then_check_with_all_valid_annotations_yields_no_findings() {
     let dir = tempdir().unwrap();
@@ -65,7 +76,14 @@ fn parse_then_check_with_all_valid_annotations_yields_no_findings() {
     let parsed = parse(&specs).unwrap();
     let cmds = AlwaysOkCommands;
     let tests = RustWorkspaceTestResolver::from_leaves(["it_works"]);
-    let findings = check(&parsed.annotations, &specs, &cmds, &tests, &NoStubs);
+    let findings = check(
+        &parsed.annotations,
+        &specs,
+        &cmds,
+        &tests,
+        &NoStubs,
+        &StubExec(false),
+    );
     assert!(
         findings.is_empty(),
         "no findings expected, got {findings:?}"
@@ -96,6 +114,7 @@ fn fixture_with_broken_target_per_tier_flags_each_one() {
         &NoCommands,
         &NeverOkTests,
         &NoStubs,
+        &StubExec(false),
     );
     assert_eq!(findings.len(), 4, "all four annotations flagged");
     for finding in &findings {
@@ -151,6 +170,7 @@ fn self_referential_check_annotation_resolves_against_integrity_gate_implementat
         &resolver,
         &NeverOkTests,
         &NoStubs,
+        &StubExec(false),
     );
     assert!(
         findings.is_empty(),
@@ -184,6 +204,7 @@ fn self_referential_judge_annotation_resolves_against_integrity_source_file() {
         &NoCommands,
         &NeverOkTests,
         &NoStubs,
+        &StubExec(false),
     );
     assert!(
         findings.is_empty(),
@@ -210,7 +231,14 @@ fn check_flags_cargo_test_annotation_with_missing_test_name() {
     let parsed = parse(&specs).unwrap();
     let cmds = AlwaysOkCommands;
     let tests = RustWorkspaceTestResolver::from_leaves(["known_test"]);
-    let findings = check(&parsed.annotations, &specs, &cmds, &tests, &NoStubs);
+    let findings = check(
+        &parsed.annotations,
+        &specs,
+        &cmds,
+        &tests,
+        &NoStubs,
+        &StubExec(false),
+    );
 
     let cargo_findings: Vec<_> = findings
         .iter()
@@ -256,7 +284,14 @@ fn end_to_end_specs_dir_check_combines_both_directions() {
     let parsed = parse(&specs).unwrap();
     let cmds = AlwaysOkCommands;
     let tests = RustWorkspaceTestResolver::from_leaves(["ok"]);
-    let findings = check(&parsed.annotations, &specs, &cmds, &tests, &NoStubs);
+    let findings = check(
+        &parsed.annotations,
+        &specs,
+        &cmds,
+        &tests,
+        &NoStubs,
+        &StubExec(false),
+    );
 
     assert!(
         findings
@@ -301,7 +336,14 @@ fn stub_pointing_test_annotation_flags_via_workspace_scanner() {
     let cmds = AlwaysOkCommands;
     let tests = RustWorkspaceTestResolver::scan(dir.path()).unwrap();
     let stubs = RustWorkspaceStubScanner::scan(dir.path()).unwrap();
-    let findings = check(&parsed.annotations, &specs, &cmds, &tests, &stubs);
+    let findings = check(
+        &parsed.annotations,
+        &specs,
+        &cmds,
+        &tests,
+        &stubs,
+        &StubExec(false),
+    );
 
     let stub_findings: Vec<_> = findings
         .iter()
@@ -345,6 +387,7 @@ fn pending_marked_unresolved_target_yields_no_finding() {
         &NoCommands,
         &NeverOkTests,
         &NoStubs,
+        &StubExec(false),
     );
     assert!(
         findings.is_empty(),
@@ -368,11 +411,12 @@ fn pending_marked_resolved_target_yields_unneeded_pending_marker() {
         &AlwaysOkCommands,
         &NeverOkTests,
         &NoStubs,
+        &StubExec(true),
     );
     assert_eq!(
         findings.len(),
         2,
-        "both pending annotations whose first token resolves must flag: {findings:?}"
+        "both pending annotations whose command exits 0 must flag: {findings:?}"
     );
     for f in &findings {
         assert!(
@@ -400,7 +444,14 @@ fn pending_marked_stub_test_body_yields_no_finding() {
     let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
     let tests = RustWorkspaceTestResolver::scan(dir.path()).unwrap();
     let stubs = RustWorkspaceStubScanner::scan(dir.path()).unwrap();
-    let findings = check_forward(&parsed.annotations, dir.path(), &NoCommands, &tests, &stubs);
+    let findings = check_forward(
+        &parsed.annotations,
+        dir.path(),
+        &NoCommands,
+        &tests,
+        &stubs,
+        &StubExec(false),
+    );
     assert!(
         findings.is_empty(),
         "[test?] over a `_pending_stub` body must pass silently: {findings:?}"
@@ -421,7 +472,14 @@ fn pending_marked_non_stub_test_body_yields_unneeded_pending_marker() {
     let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
     let tests = RustWorkspaceTestResolver::scan(dir.path()).unwrap();
     let stubs = RustWorkspaceStubScanner::scan(dir.path()).unwrap();
-    let findings = check_forward(&parsed.annotations, dir.path(), &NoCommands, &tests, &stubs);
+    let findings = check_forward(
+        &parsed.annotations,
+        dir.path(),
+        &NoCommands,
+        &tests,
+        &stubs,
+        &StubExec(false),
+    );
     assert_eq!(findings.len(), 1, "non-stub body must flag: {findings:?}");
     match &findings[0] {
         IntegrityFinding::UnneededPendingMarker {
@@ -472,6 +530,7 @@ fn unneeded_pending_marker_is_terminal_at_push_gate() {
         &AlwaysOkCommands,
         &NeverOkTests,
         &NoStubs,
+        &StubExec(true),
     );
     assert_eq!(findings.len(), 1);
     assert!(
@@ -479,4 +538,139 @@ fn unneeded_pending_marker_is_terminal_at_push_gate() {
         "UnneededPendingMarker must be push-gate-terminal (parity with \
          UnresolvedAnnotation and StubTestFunction): {findings:?}"
     );
+}
+
+/// End-to-end check that the production [`FsPendingCommandExecutor`]
+/// realises the spec contract: a `[check?]` whose command actually
+/// exits 0 (here `true`) emits `UnneededPendingMarker` — the marker is
+/// stale, the implementer must drop the `?`.
+#[test]
+fn pending_check_command_exit_zero_via_subprocess_emits_unneeded_pending_marker() {
+    let dir = tempdir().unwrap();
+    let md = "\
+## Success Criteria
+
+- a [check?](true)
+";
+    let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
+    let executor = FsPendingCommandExecutor::new(dir.path());
+    let findings = check_forward(
+        &parsed.annotations,
+        dir.path(),
+        &AlwaysOkCommands,
+        &NeverOkTests,
+        &NoStubs,
+        &executor,
+    );
+    assert_eq!(
+        findings.len(),
+        1,
+        "`true` exits 0 → UnneededPendingMarker must fire: {findings:?}"
+    );
+    assert!(
+        matches!(findings[0], IntegrityFinding::UnneededPendingMarker { .. }),
+        "got {:?}",
+        findings[0]
+    );
+}
+
+/// End-to-end check covering the broadened spec contract: a `[check?]`
+/// whose first token resolves on PATH but whose full command exits
+/// non-zero (the assertion-pending case) silently passes. The narrow
+/// first-token-on-PATH check this replaced would have fired a stale
+/// `UnneededPendingMarker` here.
+#[test]
+fn pending_check_command_exit_nonzero_via_subprocess_passes_silently() {
+    let dir = tempdir().unwrap();
+    let md = "\
+## Success Criteria
+
+- a [check?](false)
+";
+    let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
+    let executor = FsPendingCommandExecutor::new(dir.path());
+    let findings = check_forward(
+        &parsed.annotations,
+        dir.path(),
+        &AlwaysOkCommands,
+        &NeverOkTests,
+        &NoStubs,
+        &executor,
+    );
+    assert!(
+        findings.is_empty(),
+        "`false` exits non-zero → silent pass (assertion still pending): {findings:?}"
+    );
+}
+
+/// End-to-end check that an assertion-pending `[check?](grep -q …)`
+/// targeting a real file whose contents do not yet contain the asserted
+/// symbol passes silently. The narrow first-token-on-PATH check would
+/// have falsely fired `UnneededPendingMarker` because `grep` resolves;
+/// the broadened subprocess-execution check sees grep's non-zero exit
+/// and honors the modifier.
+#[test]
+fn pending_check_assertion_grep_with_missing_symbol_passes_silently() {
+    let dir = tempdir().unwrap();
+    let target_file = dir.path().join("source.rs");
+    fs::write(&target_file, "fn placeholder() {}\n").unwrap();
+
+    let md = format!(
+        "## Success Criteria\n\n- a [check?](grep -q 'pub enum BadWalk' {})\n",
+        target_file.display()
+    );
+    let parsed = parse_content(&PathBuf::from("specs/pending.md"), &md);
+    let executor = FsPendingCommandExecutor::new(dir.path());
+    let findings = check_forward(
+        &parsed.annotations,
+        dir.path(),
+        &AlwaysOkCommands,
+        &NeverOkTests,
+        &NoStubs,
+        &executor,
+    );
+    assert!(
+        findings.is_empty(),
+        "grep over a file missing the asserted symbol exits non-zero → silent pass: {findings:?}"
+    );
+}
+
+/// Symmetric to the assertion-pending case above: once the asserted
+/// symbol lands in the target file, `grep -q` exits 0 and
+/// `UnneededPendingMarker` fires — co-incidence between *"target now
+/// resolves"* and *"marker now removed"* per the spec's self-cleaning
+/// contract.
+#[test]
+fn pending_check_assertion_grep_with_present_symbol_emits_unneeded_pending_marker() {
+    let dir = tempdir().unwrap();
+    let target_file = dir.path().join("source.rs");
+    fs::write(
+        &target_file,
+        "pub enum BadWalk { Concern, FindingsWithoutConcern }\n",
+    )
+    .unwrap();
+
+    let md = format!(
+        "## Success Criteria\n\n- a [check?](grep -q 'pub enum BadWalk' {})\n",
+        target_file.display()
+    );
+    let parsed = parse_content(&PathBuf::from("specs/pending.md"), &md);
+    let executor = FsPendingCommandExecutor::new(dir.path());
+    let findings = check_forward(
+        &parsed.annotations,
+        dir.path(),
+        &AlwaysOkCommands,
+        &NeverOkTests,
+        &NoStubs,
+        &executor,
+    );
+    assert_eq!(
+        findings.len(),
+        1,
+        "grep finds the asserted symbol → UnneededPendingMarker must fire: {findings:?}"
+    );
+    assert!(matches!(
+        findings[0],
+        IntegrityFinding::UnneededPendingMarker { .. }
+    ));
 }

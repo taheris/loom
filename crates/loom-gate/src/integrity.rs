@@ -227,6 +227,28 @@ pub trait StubScanner {
     fn is_stub(&self, leaf: &str) -> bool;
 }
 
+/// Forward-resolver for `[check?]` / `[system?]` pending annotations.
+///
+/// Per `specs/gate.md` § Pending modifier the integrity gate's
+/// forward-resolution check runs the annotation's command in the same
+/// dispatch environment as the non-pending form and inspects the exit
+/// code: exit 0 → assertion holds → emit
+/// [`IntegrityFinding::UnneededPendingMarker`]; non-zero exit (or any
+/// spawn failure) → silent pass (still pending). This broader check is
+/// what makes the `?` modifier honor author intent uniformly across
+/// binary-pending and assertion-pending — both fail-modes produce
+/// non-zero exit, both silent-pass under the modifier.
+///
+/// Production wires this to a subprocess spawn matching the
+/// `[check]` / `[system]` dispatch contract; tests substitute a
+/// deterministic stub.
+pub trait PendingCommandExecutor {
+    /// True iff `command` runs to completion in the dispatch
+    /// environment and exits with status 0. Spawn failures and
+    /// non-zero exits return false.
+    fn executes_zero(&self, command: &str) -> bool;
+}
+
 /// Filesystem-backed implementation of [`CommandResolver`].
 ///
 /// Resolution order matches the spec's "first token resolves on PATH or
@@ -287,6 +309,49 @@ impl CommandResolver for FsCommandResolver {
         self.path_entries
             .iter()
             .any(|dir| dir.join(first_token).exists())
+    }
+}
+
+/// Subprocess-backed implementation of [`PendingCommandExecutor`].
+///
+/// Spawns the annotation's command via `shlex::split` (matching the
+/// `[check]` / `[system]` dispatcher's tokenisation), runs it from
+/// `workspace`, and discards stdout/stderr. Exit 0 maps to `true`;
+/// every other outcome — non-zero exit, spawn failure, unbalanced
+/// quotes — maps to `false`, which the integrity gate reads as "silent
+/// pass under the modifier".
+pub struct FsPendingCommandExecutor {
+    workspace: PathBuf,
+}
+
+impl FsPendingCommandExecutor {
+    /// Construct an executor that runs commands with their cwd set to
+    /// `workspace`.
+    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+        Self {
+            workspace: workspace.into(),
+        }
+    }
+}
+
+impl PendingCommandExecutor for FsPendingCommandExecutor {
+    fn executes_zero(&self, command: &str) -> bool {
+        let Some(tokens) = shlex::split(command) else {
+            return false;
+        };
+        let mut iter = tokens.into_iter();
+        let Some(head) = iter.next() else {
+            return false;
+        };
+        let tail: Vec<String> = iter.collect();
+        std::process::Command::new(head)
+            .args(&tail)
+            .current_dir(&self.workspace)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
     }
 }
 
@@ -812,6 +877,7 @@ pub fn check(
     command_resolver: &dyn CommandResolver,
     test_resolver: &dyn TestPathResolver,
     stub_scanner: &dyn StubScanner,
+    pending_executor: &dyn PendingCommandExecutor,
 ) -> Vec<IntegrityFinding> {
     let mut findings = check_forward(
         annotations,
@@ -819,6 +885,7 @@ pub fn check(
         command_resolver,
         test_resolver,
         stub_scanner,
+        pending_executor,
     );
     findings.extend(check_atomic_acceptance(annotations));
     findings
@@ -842,21 +909,30 @@ pub fn check(
 /// self-cleaning marker has gone stale. For `[test?]`, a `_pending_stub`
 /// body counts as "implementation not yet present" and passes silently
 /// the same way; the marker only fires once the body becomes real.
+///
+/// For `[check?]` and `[system?]`, "resolved" means "the command spawns
+/// and exits with status 0" via [`PendingCommandExecutor`] — not the
+/// narrow first-token-on-PATH check used for the non-pending form. This
+/// uniformly honors author intent across binary-pending (the executable
+/// doesn't exist yet) and assertion-pending (the executable exists but
+/// the asserted condition isn't true yet); both fail-modes produce
+/// non-zero exit, both silent-pass under the modifier.
 pub fn check_forward(
     annotations: &[Annotation],
     repo_root: &Path,
     command_resolver: &dyn CommandResolver,
     test_resolver: &dyn TestPathResolver,
     stub_scanner: &dyn StubScanner,
+    pending_executor: &dyn PendingCommandExecutor,
 ) -> Vec<IntegrityFinding> {
     let mut out = Vec::new();
     for ann in annotations {
-        let resolved = match ann.tier {
-            Tier::Check | Tier::System => resolves_command(&ann.target, command_resolver),
-            Tier::Test => test_resolver.resolves(&ann.target),
-            Tier::Judge => resolves_judge_path(&ann.target, &ann.source_spec, repo_root),
-        };
         if ann.pending {
+            let resolved = match ann.tier {
+                Tier::Check | Tier::System => pending_executor.executes_zero(&ann.target),
+                Tier::Test => test_resolver.resolves(&ann.target),
+                Tier::Judge => resolves_judge_path(&ann.target, &ann.source_spec, repo_root),
+            };
             if let Some(finding) =
                 pending_forward_finding(ann, resolved, test_resolver, stub_scanner)
             {
@@ -864,6 +940,11 @@ pub fn check_forward(
             }
             continue;
         }
+        let resolved = match ann.tier {
+            Tier::Check | Tier::System => resolves_command(&ann.target, command_resolver),
+            Tier::Test => test_resolver.resolves(&ann.target),
+            Tier::Judge => resolves_judge_path(&ann.target, &ann.source_spec, repo_root),
+        };
         if !resolved {
             out.push(IntegrityFinding::UnresolvedAnnotation {
                 spec: ann.source_spec.clone(),
@@ -1201,6 +1282,24 @@ mod tests {
         }
     }
 
+    struct StubExecutor {
+        zero_exit_commands: HashSet<String>,
+    }
+
+    impl StubExecutor {
+        fn none() -> Self {
+            Self {
+                zero_exit_commands: HashSet::new(),
+            }
+        }
+    }
+
+    impl PendingCommandExecutor for StubExecutor {
+        fn executes_zero(&self, command: &str) -> bool {
+            self.zero_exit_commands.contains(command)
+        }
+    }
+
     #[test]
     fn unresolved_annotation_renders_per_spec_format() {
         let f = IntegrityFinding::UnresolvedAnnotation {
@@ -1297,7 +1396,14 @@ mod tests {
         ];
         let cmds = StubCommands::with(&["cargo", "nix"]);
         let tests = StubTests::with(&["crate::a::ok"]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert!(findings.is_empty(), "got findings: {findings:?}");
     }
 
@@ -1313,7 +1419,14 @@ mod tests {
         )];
         let cmds = StubCommands::with(&["cargo"]);
         let tests = StubTests::with(&[]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert_eq!(findings.len(), 1);
         assert_eq!(
             findings[0],
@@ -1338,7 +1451,14 @@ mod tests {
         )];
         let cmds = StubCommands::with(&[]);
         let tests = StubTests::with(&[]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert_eq!(findings.len(), 1);
         assert!(matches!(
             findings[0],
@@ -1361,7 +1481,14 @@ mod tests {
         )];
         let cmds = StubCommands::with(&[]);
         let tests = StubTests::with(&["crate::a::ok"]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert_eq!(findings.len(), 1);
         assert!(matches!(
             findings[0],
@@ -1378,7 +1505,14 @@ mod tests {
         let annotations = vec![ann(Tier::Judge, "../missing.md", "specs/a.md", 13, 13)];
         let cmds = StubCommands::with(&[]);
         let tests = StubTests::with(&[]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert_eq!(findings.len(), 1);
         assert!(matches!(
             findings[0],
@@ -1405,6 +1539,7 @@ mod tests {
             &cmds,
             &tests,
             &StubLeaves::none(),
+            &StubExecutor::none(),
         );
         assert!(findings.is_empty(), "absolute judge path resolved");
     }
@@ -1426,7 +1561,14 @@ mod tests {
         )];
         let cmds = StubCommands::with(&[]);
         let tests = StubTests::with(&[]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert!(
             findings.is_empty(),
             "judge target with ::fn selector should resolve to leading path: {findings:?}"
@@ -1450,7 +1592,14 @@ mod tests {
         )];
         let cmds = StubCommands::with(&[]);
         let tests = StubTests::with(&[]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert!(
             findings.is_empty(),
             "judge target with #fn selector should resolve to leading path: {findings:?}"
@@ -1467,7 +1616,14 @@ mod tests {
         let annotations = vec![ann(Tier::Judge, "tests/judges/x.sh#fn", "specs/a.md", 5, 5)];
         let cmds = StubCommands::with(&[]);
         let tests = StubTests::with(&[]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert_eq!(
             findings.len(),
             1,
@@ -1509,7 +1665,14 @@ mod tests {
         ];
         let cmds = FsCommandResolver::with_path(dir.path(), "");
         let tests = StubTests::with(&[]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert!(
             findings.is_empty(),
             "system target with ::attr selector should resolve to leading path: {findings:?}"
@@ -1528,7 +1691,14 @@ mod tests {
         )];
         let cmds = FsCommandResolver::with_path(dir.path(), "");
         let tests = StubTests::with(&[]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert_eq!(findings.len(), 1);
         assert!(matches!(
             findings[0],
@@ -1551,7 +1721,14 @@ mod tests {
         )];
         let cmds = StubCommands::with(&[]);
         let tests = StubTests::with(&[]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert_eq!(findings.len(), 1);
         assert!(matches!(
             findings[0],
@@ -1571,7 +1748,14 @@ mod tests {
         ];
         let cmds = StubCommands::with(&[]);
         let tests = StubTests::with(&["crate::a::t"]);
-        let findings = check(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert!(
             findings
                 .iter()
@@ -1774,7 +1958,14 @@ mod tests {
         )];
         let cmds = StubCommands::with(&["cargo"]);
         let tests = StubTests::with(&["other_name"]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert_eq!(findings.len(), 1);
         assert_eq!(
             findings[0],
@@ -1799,7 +1990,14 @@ mod tests {
         )];
         let cmds = StubCommands::with(&["cargo"]);
         let tests = StubTests::with(&["end_to_end_specs_dir_check_combines_both_directions"]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert!(findings.is_empty(), "got findings: {findings:?}");
     }
 
@@ -1815,7 +2013,14 @@ mod tests {
         )];
         let cmds = StubCommands::with(&["cargo"]);
         let tests = StubTests::with(&[]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert!(
             findings.is_empty(),
             "no positional => no name check, got: {findings:?}"
@@ -1834,7 +2039,14 @@ mod tests {
         )];
         let cmds = StubCommands::with(&["cargo"]);
         let tests = StubTests::with(&[]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &StubLeaves::none());
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
         assert!(
             findings.is_empty(),
             "system tier ignores embedded cargo-test names, got: {findings:?}"
@@ -1877,7 +2089,14 @@ mod tests {
         let cmds = StubCommands::with(&[]);
         let tests = StubTests::with(&["crate::a::stub_me"]);
         let stubs = StubLeaves::with(&["stub_me"]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &stubs);
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &stubs,
+            &StubExecutor::none(),
+        );
         assert_eq!(findings.len(), 1);
         assert_eq!(
             findings[0],
@@ -1898,7 +2117,14 @@ mod tests {
         let cmds = StubCommands::with(&[]);
         let tests = StubTests::with(&["crate::a::real"]);
         let stubs = StubLeaves::none();
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &stubs);
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &stubs,
+            &StubExecutor::none(),
+        );
         assert!(
             findings.is_empty(),
             "real test should not flag: {findings:?}"
@@ -1918,7 +2144,14 @@ mod tests {
         let cmds = StubCommands::with(&["cargo"]);
         let tests = StubTests::with(&["stub_me"]);
         let stubs = StubLeaves::with(&["stub_me"]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &stubs);
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &stubs,
+            &StubExecutor::none(),
+        );
         assert_eq!(findings.len(), 1);
         match &findings[0] {
             IntegrityFinding::StubTestFunction {
@@ -1947,7 +2180,14 @@ mod tests {
         let cmds = StubCommands::with(&["nix"]);
         let tests = StubTests::with(&[]);
         let stubs = StubLeaves::with(&["foo", "r"]);
-        let findings = check_forward(&annotations, dir.path(), &cmds, &tests, &stubs);
+        let findings = check_forward(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &stubs,
+            &StubExecutor::none(),
+        );
         assert!(
             findings.is_empty(),
             "judge/system are not test functions: {findings:?}"
@@ -2068,7 +2308,14 @@ fn delta_helper() {
         let cmds = StubCommands::with(&["cargo"]);
         let tests = StubTests::with(&["crate::a::stub_me"]);
         let stubs = StubLeaves::with(&["stub_me"]);
-        let findings = check(&annotations, dir.path(), &cmds, &tests, &stubs);
+        let findings = check(
+            &annotations,
+            dir.path(),
+            &cmds,
+            &tests,
+            &stubs,
+            &StubExecutor::none(),
+        );
         assert!(
             findings
                 .iter()

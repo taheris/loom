@@ -37,8 +37,8 @@ use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::StateDb;
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
 use loom_gate::{
-    FsCommandResolver, IntegrityFinding, RustWorkspaceStubScanner, RustWorkspaceTestResolver,
-    annotation, format_clarify_options, integrity,
+    FsCommandResolver, FsPendingCommandExecutor, IntegrityFinding, RustWorkspaceStubScanner,
+    RustWorkspaceTestResolver, annotation, format_clarify_options, integrity,
 };
 use loom_templates::previous_failure::PreviousFailure;
 use loom_templates::review::{ReviewContext, ReviewLane, TreeScopeEpic};
@@ -331,12 +331,14 @@ where
             .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
         let stub_scanner = RustWorkspaceStubScanner::scan(&self.workspace)
             .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
+        let pending_executor = FsPendingCommandExecutor::new(&self.workspace);
         let findings = integrity::check_forward(
             &annotations,
             &self.workspace,
             &cmd_resolver,
             &test_resolver,
             &stub_scanner,
+            &pending_executor,
         );
         Ok(findings
             .into_iter()

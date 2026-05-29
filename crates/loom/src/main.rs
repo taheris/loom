@@ -26,9 +26,9 @@ use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::StateDb;
 use loom_gate::{
-    self, BuiltinParser, CacheRow, DispatchOptions, EmptyScope, FsCommandResolver, RunnerSpec,
-    RustWorkspaceStubScanner, RustWorkspaceTestResolver, StatusCache, Tier, TierCwds, Verdict,
-    render_report, row_for,
+    self, BuiltinParser, CacheRow, DispatchOptions, EmptyScope, FsCommandResolver,
+    FsPendingCommandExecutor, RunnerSpec, RustWorkspaceStubScanner, RustWorkspaceTestResolver,
+    StatusCache, Tier, TierCwds, Verdict, render_report, row_for,
 };
 use loom_workflow::r#loop::{
     GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
@@ -1319,12 +1319,14 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
     let cmd_resolver = FsCommandResolver::new(workspace);
     let test_resolver = RustWorkspaceTestResolver::scan(workspace)?;
     let stub_scanner = RustWorkspaceStubScanner::scan(workspace)?;
+    let pending_executor = FsPendingCommandExecutor::new(workspace);
     let findings = loom_gate::integrity::check(
         &annotations,
         workspace,
         &cmd_resolver,
         &test_resolver,
         &stub_scanner,
+        &pending_executor,
     );
     if findings.is_empty() {
         return Ok(0);
