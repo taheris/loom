@@ -24,6 +24,23 @@ A requirement that maps to no bullet, no row, and no out-of-scope
 declaration is the failure mode this check catches. Pause and resolve
 before exiting.
 
+**Pending-modifier discipline.** Every annotation this interview adds whose
+target will not resolve at commit time — typically a newly-authored claim
+whose verifier implementation will land in a follow-on `loom loop` bead —
+must carry the pending modifier `?` between the tier name and the closing
+bracket. Grammar: `[tier?](target)`, uniform across all four tiers
+(`[check?]`, `[test?]`, `[system?]`, `[judge?]`). See the *Pending
+modifier* subsection of `{{ spec_conventions }}` for the per-annotation
+outcome matrix and the self-cleaning `UnneededPendingMarker` enforcement.
+
+Applying the marker is **part of this completeness check, not a separate
+check**. An unmarked annotation pointing at a not-yet-existing target
+reads as a broken claim and trips the integrity gate at push time; a
+`?`-marked annotation reads as an honest declaration of the surface plus
+an explicit acknowledgement that the implementation is on the way. Walk
+every annotation this session added or touched: if its target won't
+resolve until a follow-on bead lands, mark it pending before exiting.
+
 ### 2. Internal coherence check
 
 Read the spec under interview end-to-end and scan for internal
