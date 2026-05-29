@@ -298,6 +298,8 @@ impl GitClient {
         )
         .await?;
 
+        ensure_wrapix_mount_dir(&path)?;
+
         Ok(CreatedWorktree { path, branch })
     }
 
@@ -1149,6 +1151,20 @@ fn cli_error(output: &std::process::Output) -> GitError {
         status: output.status.code().unwrap_or(-1),
         stderr: combined,
     }
+}
+
+/// Create `<clone>/.wrapix/` mode 0o777 so the container's dolt-socket
+/// bind-mount target pre-exists and both the host user (post-session
+/// pre-push hook) and container-namespace processes can write to it.
+/// Without this, the container runtime mkdirs `.wrapix/` as namespace-root
+/// (host uid 100000) when materializing the mount, locking the host user
+/// out of the dir and breaking the post-session push.
+fn ensure_wrapix_mount_dir(clone_path: &Path) -> Result<(), GitError> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = clone_path.join(".wrapix");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777))?;
+    Ok(())
 }
 
 /// `git -C <workdir> config --get <key>` — returns the resolved value or
