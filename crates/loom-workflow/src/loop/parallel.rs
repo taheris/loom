@@ -180,7 +180,7 @@ where
 /// `merge_back_one` so each slot's merge/push/cleanup steps emit
 /// driver events into the per-bead `.jsonl` the spawn closure already
 /// wrote to. Production callers pass
-/// `Some(<workspace>/.wrapix/loom/logs)`; tests that do not exercise
+/// `Some(<workspace>/.loom/logs)`; tests that do not exercise
 /// the driver-event channel pass `None`.
 pub async fn run_parallel_batch_with_logs<S, F>(
     git: &GitClient,
@@ -296,7 +296,7 @@ pub async fn merge_back(
 /// Same as [`merge_back`] but threads `logs_root` + `label` through to
 /// every slot's merge/push/cleanup so driver events surface in the
 /// per-bead `.jsonl`. Production callers pass
-/// `Some(<workspace>/.wrapix/loom/logs)`; tests that do not exercise
+/// `Some(<workspace>/.loom/logs)`; tests that do not exercise
 /// the driver-event channel pass `None`.
 pub async fn merge_back_with_logs(
     git: &GitClient,
@@ -514,7 +514,7 @@ mod tests {
         WorktreeBead {
             bead: fake_bead(id),
             worktree: CreatedWorktree {
-                path: PathBuf::from(format!(".wrapix/loom/beads/{id}")),
+                path: PathBuf::from(format!(".loom/beads/{id}")),
                 branch: format!("loom/{id}"),
             },
         }

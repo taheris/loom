@@ -22,7 +22,7 @@ pub struct PlanPromptInputs {
     /// interview prompt can show the agent what's already on file for the
     /// keep/drop/add merge.
     pub implementation_notes: Vec<String>,
-    /// Absolute path to `.wrapix/loom/scratch/<key>/scratch.md` for this
+    /// Absolute path to `.loom/scratch/<key>/scratch.md` for this
     /// session. Embedded in the rendered prompt so the agent can write to
     /// the correct file under compaction recovery.
     pub scratchpad_path: String,
@@ -71,7 +71,7 @@ mod tests {
             pinned_context: "PIN".into(),
             companion_paths: vec![],
             implementation_notes: vec![],
-            scratchpad_path: "/workspace/.wrapix/loom/scratch/harness/scratch.md".into(),
+            scratchpad_path: "/workspace/.loom/scratch/harness/scratch.md".into(),
             spec_conventions: "docs/spec-conventions.md".into(),
         }
     }
@@ -83,7 +83,7 @@ mod tests {
             pinned_context: "PIN".into(),
             companion_paths: vec!["lib/sandbox/".into()],
             implementation_notes: vec![],
-            scratchpad_path: "/workspace/.wrapix/loom/scratch/harness/scratch.md".into(),
+            scratchpad_path: "/workspace/.loom/scratch/harness/scratch.md".into(),
             spec_conventions: "docs/spec-conventions.md".into(),
         }
     }
@@ -138,7 +138,7 @@ mod tests {
                 "note-alpha covers parser invariants".into(),
                 "note-beta covers retry/backoff".into(),
             ],
-            scratchpad_path: "/workspace/.wrapix/loom/scratch/harness/scratch.md".into(),
+            scratchpad_path: "/workspace/.loom/scratch/harness/scratch.md".into(),
             spec_conventions: "docs/spec-conventions.md".into(),
         };
         let body = render_prompt(inputs).expect("render");
@@ -169,7 +169,7 @@ mod tests {
             pinned_context: "PIN".into(),
             companion_paths: vec![],
             implementation_notes: vec![],
-            scratchpad_path: "/workspace/.wrapix/loom/scratch/harness/scratch.md".into(),
+            scratchpad_path: "/workspace/.loom/scratch/harness/scratch.md".into(),
             spec_conventions: "docs/spec-conventions.md".into(),
         };
         let body = render_prompt(inputs).expect("render");

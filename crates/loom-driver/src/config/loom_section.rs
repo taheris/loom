@@ -9,7 +9,7 @@ use serde::Deserialize;
 #[serde(default)]
 pub struct LoomTopConfig {
     /// Name of the branch the loom workspace
-    /// (`.wrapix/loom/integration/`) has checked out and into which bead
+    /// (`.loom/integration/`) has checked out and into which bead
     /// branches rebase + fast-forward. Pushed to
     /// `origin/<integration_branch>` from the gate. Default `main`.
     #[serde(default = "default_integration_branch")]

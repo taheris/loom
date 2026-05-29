@@ -116,7 +116,7 @@ impl RunnerTier {
     }
 }
 
-/// The full `[runner.*]` table from `<workspace>/config.toml`. Keys are
+/// The full `[runner.*]` table from `<workspace>/loom.toml`. Keys are
 /// tier names (`test`, `check`, `system`, `judge`) matching the
 /// `loom-gate::annotation::Tier` enum at the consumer end. Empty by
 /// default, so configs without a `[runner]` block parse cleanly.

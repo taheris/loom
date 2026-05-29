@@ -1,4 +1,4 @@
-//! SQLite state store backing `.wrapix/loom/state.db`.
+//! SQLite state store backing `.loom/state.db`.
 //!
 //! The schema is owned by `loom-driver` and migrated on `StateDb::open`. All
 //! raw SQL is confined to this module; callers see a typed Rust surface

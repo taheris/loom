@@ -19,7 +19,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// Initialize a real git repo at `path` plus the loom-owned integration
-/// workspace at `.wrapix/loom/integration/` so `loom loop`'s per-bead
+/// workspace at `.loom/integration/` so `loom loop`'s per-bead
 /// worktree dispatch and the post-merge push gate both succeed.
 fn init_workspace_repo(path: &Path) {
     loom_driver::git::init_test_repo_with_integration(path)
@@ -85,12 +85,12 @@ fn loom_loop_once_against_empty_bd_exits_zero() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
-    std::fs::create_dir_all(workspace.join(".wrapix/loom")).unwrap();
+    std::fs::create_dir_all(workspace.join(".loom")).unwrap();
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
 
     // Seed state DB + active spec so resolve_spec_label returns Some(label)
     // without the caller having to pass -s.
-    let db = loom_driver::state::StateDb::open(workspace.join(".wrapix/loom/state.db")).unwrap();
+    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db")).unwrap();
     db.set_current_spec(&loom_driver::identifier::SpecLabel::new("harness"))
         .unwrap();
     drop(db);
@@ -159,10 +159,10 @@ fn loom_loop_parallel_does_not_pass_exclude_label_to_bd_ready() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
-    std::fs::create_dir_all(workspace.join(".wrapix/loom")).unwrap();
+    std::fs::create_dir_all(workspace.join(".loom")).unwrap();
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
 
-    let db = loom_driver::state::StateDb::open(workspace.join(".wrapix/loom/state.db")).unwrap();
+    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db")).unwrap();
     db.set_current_spec(&loom_driver::identifier::SpecLabel::new("harness"))
         .unwrap();
     drop(db);
@@ -229,10 +229,10 @@ fn parallel_codepath_returns_loop_outcome_with_gate_field() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
-    std::fs::create_dir_all(workspace.join(".wrapix/loom")).unwrap();
+    std::fs::create_dir_all(workspace.join(".loom")).unwrap();
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
 
-    let db = loom_driver::state::StateDb::open(workspace.join(".wrapix/loom/state.db")).unwrap();
+    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db")).unwrap();
     db.set_current_spec(&loom_driver::identifier::SpecLabel::new("harness"))
         .unwrap();
     drop(db);

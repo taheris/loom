@@ -85,7 +85,7 @@ mod tests {
     use loom_driver::state::ActiveMolecule;
 
     fn fresh_db(workspace: &std::path::Path) -> Result<StateDb> {
-        Ok(StateDb::open(workspace.join(".wrapix/loom/state.db"))?)
+        Ok(StateDb::open(workspace.join(".loom/state.db"))?)
     }
 
     #[test]
@@ -137,7 +137,7 @@ mod tests {
     /// The configured integration branch is surfaced verbatim in the
     /// rendered body — `loom status` is the operator's only on-the-fly
     /// reflection of `[loom] integration_branch` outside re-reading
-    /// `config.toml` by hand.
+    /// `loom.toml` by hand.
     #[test]
     fn rendered_body_surfaces_integration_branch() -> Result<()> {
         let dir = tempfile::tempdir()?;

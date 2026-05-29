@@ -3,7 +3,7 @@ use loom_driver::identifier::ProfileName;
 use loom_driver::profile_manifest::{ImageEntry, ProfileError, ProfileImageManifest};
 
 /// Built-in profile name used when neither `[phase.run]` nor
-/// `[phase.default]` declares a profile in `<workspace>/config.toml`.
+/// `[phase.default]` declares a profile in `<workspace>/loom.toml`.
 /// Matches `lib/sandbox/profiles.nix`.
 pub const DEFAULT_PROFILE: &str = "base";
 

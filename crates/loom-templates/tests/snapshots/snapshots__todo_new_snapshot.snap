@@ -33,7 +33,7 @@ The following companion directories are in scope. Read each one's `manifest.md` 
 
 ## Scratchpad
 
-You have a per-session scratchpad at `.wrapix/loom/scratch/<key>/scratch.md`,
+You have a per-session scratchpad at `.loom/scratch/<key>/scratch.md`,
 where `<key>` is your session's concurrency unit — the spec label for `loom
 plan` / `loom todo` sessions, the bead ID for `loom loop` / `loom gate` /
 `loom msg` sessions. The file starts empty; append to it as the session
@@ -71,7 +71,7 @@ keeping past session end, write it to one of the durable destinations above
 **before** you finish.
 
 **How to append.** Append to the file directly — for example,
-`echo "..." >> .wrapix/loom/scratch/<key>/scratch.md` or via the Edit tool.
+`echo "..." >> .loom/scratch/<key>/scratch.md` or via the Edit tool.
 Do not rewrite or truncate prior contents; the recovery payload is the full
 running log.
 

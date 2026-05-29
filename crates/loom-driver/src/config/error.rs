@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use displaydoc::Display;
 use thiserror::Error;
 
-/// Errors raised while loading `<workspace>/config.toml`.
+/// Errors raised while loading `<workspace>/loom.toml`.
 #[derive(Debug, Display, Error)]
 pub enum LoomConfigError {
     /// failed to read config file at {path}

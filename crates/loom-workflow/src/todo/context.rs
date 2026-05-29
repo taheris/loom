@@ -22,7 +22,7 @@ pub struct TemplateBaseFields {
     /// Rendered into every new bead body so each implementation agent
     /// receives the full planning context independent of external state.
     pub implementation_notes: Vec<String>,
-    /// Absolute path to `.wrapix/loom/scratch/<spec-label>/scratch.md` for
+    /// Absolute path to `.loom/scratch/<spec-label>/scratch.md` for
     /// this todo session. Embedded in the rendered prompt so the agent can
     /// write to the correct file under compaction recovery.
     pub scratchpad_path: String,
@@ -92,7 +92,7 @@ mod tests {
             pinned_context: "PIN".to_string(),
             companion_paths: vec![],
             implementation_notes: vec![],
-            scratchpad_path: "/workspace/.wrapix/loom/scratch/alpha/scratch.md".to_string(),
+            scratchpad_path: "/workspace/.loom/scratch/alpha/scratch.md".to_string(),
         }
     }
 

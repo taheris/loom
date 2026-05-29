@@ -3,4 +3,5 @@
 /result-*
 .claude/
 .direnv/
+.loom/
 .wrapix/

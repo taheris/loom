@@ -160,7 +160,7 @@ where
 
     /// Pin the per-bead JSONL log root the controller appends
     /// driver-side merge/push/cleanup events into. Production callers
-    /// thread `<workspace>/.wrapix/loom/logs`; tests that don't exercise
+    /// thread `<workspace>/.loom/logs`; tests that don't exercise
     /// the driver-event channel leave it unset and the emit path is a
     /// silent no-op.
     pub fn with_phase_log_root(mut self, logs_root: PathBuf) -> Self {
@@ -273,7 +273,7 @@ where
             None
         };
         // Dispatch each bead against its own clone-backed workspace under
-        // `.wrapix/loom/beads/<bead-id>/` (per `specs/harness.md`
+        // `.loom/beads/<bead-id>/` (per `specs/harness.md`
         // § Bead dispatch — Path A). The clone's `.git/` is a regular
         // directory inside the bind-mounted path, so workers inside the
         // wrapix container can commit and the driver can fold the work

@@ -31,7 +31,7 @@ pub enum UseError {
 
 /// Acquire `<label>.lock` (waiting up to [`DEFAULT_LOCK_TIMEOUT`]) and
 /// persist `current_spec = label` in the state DB. `db_path` is typically
-/// `<workspace>/.wrapix/loom/state.db`; the caller is responsible for
+/// `<workspace>/.loom/state.db`; the caller is responsible for
 /// ensuring [`super::init::run`] has populated it.
 pub fn run(workspace: &Path, label: &SpecLabel, db_path: &Path) -> Result<(), UseError> {
     run_with_timeout(workspace, label, db_path, DEFAULT_LOCK_TIMEOUT)
@@ -60,7 +60,7 @@ mod tests {
     use loom_driver::state::{ActiveMolecule, StateError};
 
     fn db_path(workspace: &std::path::Path) -> std::path::PathBuf {
-        workspace.join(".wrapix/loom/state.db")
+        workspace.join(".loom/state.db")
     }
 
     fn seed_spec(workspace: &std::path::Path, label: &str) -> Result<StateDb> {

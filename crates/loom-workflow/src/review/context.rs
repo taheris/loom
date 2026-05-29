@@ -21,7 +21,7 @@ pub struct ReviewContextInputs {
     pub beads_summary: Option<String>,
     pub test_sources: Vec<ReviewSource>,
     pub judge_rubrics: Vec<ReviewSource>,
-    /// Absolute path to `.wrapix/loom/scratch/<spec-label>/scratch.md` for
+    /// Absolute path to `.loom/scratch/<spec-label>/scratch.md` for
     /// this reviewer session. Embedded in the rendered prompt so the agent
     /// can write to the correct file under compaction recovery.
     pub scratchpad_path: String,
@@ -239,7 +239,7 @@ mod tests {
             beads_summary: Some("- lm-1: First [open]".into()),
             test_sources: vec![],
             judge_rubrics: vec![],
-            scratchpad_path: "/workspace/.wrapix/loom/scratch/harness/scratch.md".into(),
+            scratchpad_path: "/workspace/.loom/scratch/harness/scratch.md".into(),
             style_rules: "docs/style-rules.md".into(),
             lane: ReviewLane::Both,
             tree_scope_epics: Vec::new(),

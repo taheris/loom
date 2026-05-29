@@ -1,4 +1,4 @@
-//! Per-session scratch directory at `.wrapix/loom/scratch/<key>/`.
+//! Per-session scratch directory at `.loom/scratch/<key>/`.
 //!
 //! The scratch dir is the agent's compaction-recovery surface. It holds:
 //! - `prompt.txt` — the initial prompt sent at session start.
@@ -28,7 +28,7 @@ use serde_json::json;
 use crate::config::Phase;
 use crate::identifier::{BeadId, SpecLabel};
 
-const SCRATCH_SUBDIR: &str = ".wrapix/loom/scratch";
+const SCRATCH_SUBDIR: &str = ".loom/scratch";
 
 /// Resolve the per-session scratch-dir key for `phase`. Single source of
 /// truth for the spec-label-vs-bead-id choice documented in
@@ -46,7 +46,7 @@ pub fn resolve_scratch_key(phase: Phase, label: &SpecLabel, bead_id: Option<&Bea
     }
 }
 
-/// Owns a `.wrapix/loom/scratch/<key>/` directory for the duration of an
+/// Owns a `.loom/scratch/<key>/` directory for the duration of an
 /// agent session. Drops the directory when the guard goes out of scope.
 #[derive(Debug)]
 pub struct ScratchSession {

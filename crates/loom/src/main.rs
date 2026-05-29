@@ -230,7 +230,7 @@ enum NoteAction {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Initialize the workspace (create `.wrapix/loom/` config + state DB).
+    /// Initialize the workspace (create `.loom/` config + state DB).
     Init {
         /// Drop and repopulate the state DB from `specs/*.md` and active beads.
         #[arg(long)]
@@ -283,7 +283,7 @@ enum Command {
         update: Option<String>,
         /// Override the profile resolution chain. Wins over
         /// `[phase.plan].profile` and `[phase.default].profile` in
-        /// `<workspace>/config.toml` (default `base`).
+        /// `<workspace>/loom.toml` (default `base`).
         #[arg(long, value_name = "PROFILE")]
         profile: Option<String>,
     },
@@ -737,7 +737,7 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
 }
 
 fn run_note(workspace: &std::path::Path, action: NoteAction) -> anyhow::Result<()> {
-    let db = loom_driver::state::StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db"))?;
     let clock = SystemClock::new();
     let now_ms = clock
         .wall_now()
@@ -913,7 +913,7 @@ fn apply_default_scope(workspace: &Path, args: &mut GateScopeArgs) {
 /// no open epic, missing metadata key) — those are expected on a fresh
 /// workspace, not errors. Subprocess and parse failures propagate.
 fn active_molecule_base_commit(workspace: &Path) -> anyhow::Result<Option<String>> {
-    let db_path = workspace.join(".wrapix/loom/state.db");
+    let db_path = workspace.join(".loom/state.db");
     if !db_path.exists() {
         return Ok(None);
     }
@@ -991,7 +991,7 @@ fn is_allowlisted_check_annotation(ann: &loom_gate::Annotation) -> bool {
 }
 
 fn run_gate_status(workspace: &Path) -> anyhow::Result<()> {
-    let cache_path = workspace.join(".wrapix/loom/gate-cache.sqlite");
+    let cache_path = workspace.join(".loom/gate-cache.sqlite");
     let cache = StatusCache::open(&cache_path)?;
     let parsed = loom_gate::annotation::parse(&workspace.join("specs"))?;
     let now_ms = SystemClock::new()
@@ -1117,7 +1117,7 @@ fn run_gate_single_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> a
 }
 
 /// Resolve the `[test]`-tier runner template. `[runner.test] command =
-/// "..."` from `<workspace>/config.toml` (the consolidated `LoomConfig`)
+/// "..."` from `<workspace>/loom.toml` (the consolidated `LoomConfig`)
 /// wins; absent that override, fall back to toolchain detection in
 /// `loom_gate::runner::discover`.
 fn resolve_test_runner_template(workspace: &Path) -> anyhow::Result<loom_gate::RunnerTemplate> {
@@ -1131,14 +1131,14 @@ fn resolve_test_runner_template(workspace: &Path) -> anyhow::Result<loom_gate::R
 }
 
 /// Resolve the `[check]`-tier runner specs and tier-default cwds from
-/// `<workspace>/config.toml`. Empty specs (no `[runner.check]` block,
+/// `<workspace>/loom.toml`. Empty specs (no `[runner.check]` block,
 /// or block with only `cwd`) yields the per-annotation fallback —
 /// Returns the runner specs the `[check]`-tier dispatcher consults. A
 /// built-in loom-walk batcher is always present so consumers don't have
 /// to declare it — every annotation shaped `cargo run -p loom-walk --
 /// <name>` collapses into one subprocess (bead `lm-6k4j`). Additional
 /// or overriding runners can be layered via `[runner.check.<name>]`
-/// entries in `config.toml`. Annotations whose target matches none of
+/// entries in `loom.toml`. Annotations whose target matches none of
 /// the configured runners (grep, bash, misc shell-outs) fall through
 /// to per-annotation spawn via `run_with_runners`'s unmatched path.
 fn resolve_check_runner_context(workspace: &Path) -> anyhow::Result<(Vec<RunnerSpec>, TierCwds)> {
@@ -1162,7 +1162,7 @@ fn resolve_check_runner_context(workspace: &Path) -> anyhow::Result<(Vec<RunnerS
 }
 
 /// Built-in batcher for `cargo run -p loom-walk -- <name>` `[check]`
-/// annotations. Ships in code (not `config.toml`) so the batching is
+/// annotations. Ships in code (not `loom.toml`) so the batching is
 /// the default behaviour; operators don't need to add a row to enable
 /// it and can't accidentally remove it. Consumers can still layer
 /// overrides via `[runner.check.<name>]` entries.
@@ -1224,7 +1224,7 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
         return Ok(0);
     }
     let options = gate_dispatch_options(args);
-    let cache_path = workspace.join(".wrapix/loom/gate-cache.sqlite");
+    let cache_path = workspace.join(".loom/gate-cache.sqlite");
     let cache = StatusCache::open(&cache_path)?;
     let now_ms = SystemClock::new()
         .wall_now()
@@ -1680,7 +1680,7 @@ fn run_gate_review(
 }
 
 fn run_status(workspace: &std::path::Path) -> anyhow::Result<()> {
-    let db = loom_driver::state::StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db"))?;
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     let report = status::load(&db, config.loom.integration_branch)?;
     print!("{}", status::render(&report));
@@ -1689,7 +1689,7 @@ fn run_status(workspace: &std::path::Path) -> anyhow::Result<()> {
 
 fn run_use(workspace: &std::path::Path, label: &str) -> anyhow::Result<()> {
     let label = SpecLabel::new(label);
-    let db_path = workspace.join(".wrapix/loom/state.db");
+    let db_path = workspace.join(".loom/state.db");
     use_spec::run(workspace, &label, &db_path)?;
     println!("active spec: {label}");
     Ok(())
@@ -1703,7 +1703,7 @@ fn run_logs(
     verbose: bool,
     path_only: bool,
 ) -> anyhow::Result<()> {
-    let logs_root = workspace.join(".wrapix/loom/logs");
+    let logs_root = workspace.join(".loom/logs");
     let bead_id = bead.map(BeadId::new).transpose()?;
     let path = match logs_cmd::select_log(
         &logs_root,
@@ -1841,7 +1841,7 @@ fn run_loop_cmd(
 
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     sweep_retention_at(
-        &workspace.join(".wrapix/loom/logs"),
+        &workspace.join(".loom/logs"),
         config.logs.retention_days,
         SystemClock::new().wall_now(),
     );
@@ -1857,7 +1857,7 @@ fn run_loop_cmd(
     let runtime = tokio::runtime::Runtime::new()?;
 
     // Per-bead-close GC. Under the spec advisory lock (held via `guard`),
-    // reap bead workspaces under `.wrapix/loom/beads/` whose bead is
+    // reap bead workspaces under `.loom/beads/` whose bead is
     // `closed`. Workspace-global — closed beads cannot be in flight, so
     // the sweep is safe regardless of which spec is being loop'd. Errors
     // are log-and-continue; a stuck sweep must not block dispatch.
@@ -1924,7 +1924,7 @@ fn run_loop_cmd(
     let shutdown_grace = resolve_shutdown_grace(&selection);
     let workspace_buf = workspace.to_path_buf();
     let workspace_for_renderer = workspace.to_path_buf();
-    let logs_root = workspace.join(".wrapix/loom/logs");
+    let logs_root = workspace.join(".loom/logs");
     let logs_root_for_controller = logs_root.clone();
     let label_for_sink = label.clone();
     let render_mode = resolve_render_mode(render_flags);
@@ -2079,7 +2079,7 @@ async fn run_parallel_loop(
         workspace.clone(),
         loom_cfg.integration_branch.clone(),
     )?;
-    let logs_root = workspace.join(".wrapix/loom/logs");
+    let logs_root = workspace.join(".loom/logs");
     let logs_root_for_merge = logs_root.clone();
     let label_for_closure = label.clone();
     let beads_push_program = resolve_beads_push_program();
@@ -2633,10 +2633,10 @@ fn run_review(
     let shutdown_grace = resolve_shutdown_grace(&selection);
 
     let loom_bin = current_loom_bin()?;
-    let state = std::sync::Arc::new(StateDb::open(workspace.join(".wrapix/loom/state.db"))?);
+    let state = std::sync::Arc::new(StateDb::open(workspace.join(".loom/state.db"))?);
     let runtime = tokio::runtime::Runtime::new()?;
     let workspace_buf = workspace.to_path_buf();
-    let logs_root = workspace.join(".wrapix/loom/logs");
+    let logs_root = workspace.join(".loom/logs");
     let label_for_sink = label.clone();
     // Pin one phase timestamp so the verdict gate's `push_gate_*`
     // driver events and the reviewer agent's events land in the same
@@ -2947,7 +2947,7 @@ fn run_todo(
     let kind = selection.kind;
     let shutdown_grace = resolve_shutdown_grace(&selection);
 
-    let state = Arc::new(StateDb::open(workspace.join(".wrapix/loom/state.db"))?);
+    let state = Arc::new(StateDb::open(workspace.join(".loom/state.db"))?);
     let git = Arc::new(GitClient::open_with_integration_branch(
         workspace,
         config.loom.integration_branch.clone(),
@@ -2955,7 +2955,7 @@ fn run_todo(
     let bd = Arc::new(BdClient::new());
     let runtime = tokio::runtime::Runtime::new()?;
     let workspace_buf = workspace.to_path_buf();
-    let logs_root = workspace.join(".wrapix/loom/logs");
+    let logs_root = workspace.join(".loom/logs");
     let label_for_sink = label.clone();
     let loom_cfg_for_todo = config.loom.clone();
     let result = runtime.block_on(async move {
@@ -3015,7 +3015,7 @@ fn resolve_spec_label(workspace: &Path, spec: Option<String>) -> anyhow::Result<
     if let Some(s) = spec {
         return Ok(SpecLabel::new(s));
     }
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = StateDb::open(workspace.join(".loom/state.db"))?;
     db.current_spec()?.ok_or_else(|| {
         anyhow::anyhow!("no active spec — pass -s <label> or run `loom use <label>`")
     })
@@ -3029,7 +3029,7 @@ fn current_loom_bin() -> anyhow::Result<PathBuf> {
 }
 
 fn run_spec(workspace: &std::path::Path, deps: bool) -> anyhow::Result<()> {
-    let db = loom_driver::state::StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db"))?;
     let label = db
         .current_spec()?
         .ok_or_else(|| anyhow::anyhow!("no active spec — run `loom use <label>`"))?;

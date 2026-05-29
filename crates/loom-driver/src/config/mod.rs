@@ -1,4 +1,4 @@
-//! Loom configuration loaded from `<workspace>/config.toml`.
+//! Loom configuration loaded from `<workspace>/loom.toml`.
 //!
 //! Parsed natively via the `toml` crate into a typed [`LoomConfig`]. Every
 //! field carries `#[serde(default)]` so a missing or empty file yields
@@ -11,7 +11,7 @@
 //!
 //! The on-disk path is resolved via [`LoomConfig::resolve_path`]: when
 //! `LOOM_CONFIG` is set, its value is the path (absolute or
-//! cwd-relative); otherwise the path is `<workspace>/config.toml`.
+//! cwd-relative); otherwise the path is `<workspace>/loom.toml`.
 
 mod agent;
 mod agent_observer;
@@ -46,12 +46,12 @@ use serde::Deserialize;
 
 /// Env-var name that overrides the default config-file lookup. When set,
 /// its value is taken as the config path (absolute or cwd-relative) and
-/// the `<workspace>/config.toml` default is not consulted.
+/// the `<workspace>/loom.toml` default is not consulted.
 pub const CONFIG_PATH_ENV: &str = "LOOM_CONFIG";
 
 /// Default config-file location, relative to the workspace root. Used
 /// when [`CONFIG_PATH_ENV`] is unset.
-pub const DEFAULT_CONFIG_FILENAME: &str = "config.toml";
+pub const DEFAULT_CONFIG_FILENAME: &str = "loom.toml";
 
 use crate::agent::AgentKind;
 use crate::identifier::ProfileName;
@@ -180,7 +180,7 @@ impl LoomConfig {
 
     /// Resolve the on-disk config path for `workspace`. Returns the value
     /// of [`CONFIG_PATH_ENV`] when set; otherwise returns
-    /// `<workspace>/config.toml`. The path is not required to exist —
+    /// `<workspace>/loom.toml`. The path is not required to exist —
     /// [`Self::load`] tolerates a missing file.
     pub fn resolve_path(workspace: &Path) -> PathBuf {
         if let Some(override_path) = std::env::var_os(CONFIG_PATH_ENV) {
@@ -233,7 +233,7 @@ max_iterations = 10
 max_retries = 2
 
 [logs]
-# Delete log files under .wrapix/loom/logs/ older than this many days on
+# Delete log files under .loom/logs/ older than this many days on
 # `loom loop` startup. 0 disables sweeping (keep forever).
 retention_days = 14
 
@@ -548,7 +548,7 @@ denied_tools = ["WebFetch", "DangerousTool"]
     #[test]
     fn load_reads_file_from_disk() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("config.toml");
+        let path = dir.path().join("loom.toml");
         std::fs::write(&path, "pinned_context = \"AGENTS.md\"\n")?;
         let cfg = LoomConfig::load(&path)?;
         assert_eq!(cfg.pinned_context, "AGENTS.md");

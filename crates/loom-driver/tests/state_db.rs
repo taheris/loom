@@ -78,7 +78,7 @@ fn state_db_rebuild_populates_specs_and_molecules() -> Result<()> {
     write_spec(workspace, "alpha", "# alpha\n\nbody\n")?;
     write_spec(workspace, "beta", "# beta\n\nbody\n")?;
 
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = StateDb::open(workspace.join(".loom/state.db"))?;
     let molecules = vec![ActiveMolecule {
         id: MoleculeId::new("lm-alpha"),
         spec_label: SpecLabel::new("alpha"),
@@ -118,13 +118,13 @@ fn state_db_rebuild_companions() -> Result<()> {
         "# bare spec\n\nno section here\n",
     )?;
 
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = StateDb::open(workspace.join(".loom/state.db"))?;
     let report = db.rebuild(workspace, &[])?;
     assert_eq!(report.specs, 2);
     assert_eq!(report.companions, 2);
 
     let rows = list_table(
-        &workspace.join(".wrapix/loom/state.db"),
+        &workspace.join(".loom/state.db"),
         "SELECT spec_label, companion_path FROM companions ORDER BY spec_label, companion_path",
     )?;
     assert_eq!(
@@ -142,7 +142,7 @@ fn state_db_rebuild_resets_counters() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = StateDb::open(workspace.join(".loom/state.db"))?;
     let molecules = vec![ActiveMolecule {
         id: MoleculeId::new("lm-alpha"),
         spec_label: SpecLabel::new("alpha"),
@@ -296,7 +296,7 @@ fn state_increment_iteration_returns_updated_count() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = StateDb::open(workspace.join(".loom/state.db"))?;
     let molecules = vec![ActiveMolecule {
         id: MoleculeId::new("lm-alpha"),
         spec_label: SpecLabel::new("alpha"),
@@ -316,7 +316,7 @@ fn state_set_and_reset_iteration_round_trip() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = StateDb::open(workspace.join(".loom/state.db"))?;
     let molecules = vec![ActiveMolecule {
         id: MoleculeId::new("lm-alpha"),
         spec_label: SpecLabel::new("alpha"),
@@ -437,7 +437,7 @@ fn routine_commands_never_delete_spec_row() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = StateDb::open(workspace.join(".loom/state.db"))?;
     let molecules = vec![ActiveMolecule {
         id: MoleculeId::new("lm-alpha"),
         spec_label: SpecLabel::new("alpha"),
@@ -461,7 +461,7 @@ fn routine_commands_never_delete_spec_row() -> Result<()> {
     db.notes_clear(&label, Some("implementation"))?;
 
     let row_count = list_table(
-        &workspace.join(".wrapix/loom/state.db"),
+        &workspace.join(".loom/state.db"),
         "SELECT COUNT(*) FROM specs WHERE label='alpha'",
     )?;
     assert_eq!(
@@ -588,7 +588,7 @@ fn rebuild_drops_all_notes() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = StateDb::open(workspace.join(".loom/state.db"))?;
     let label = SpecLabel::new("alpha");
     db.notes_add(&label, "implementation", "impl 1", 100)?;
     db.notes_add(&label, "implementation", "impl 2", 200)?;
@@ -604,7 +604,7 @@ fn rebuild_drops_all_notes() -> Result<()> {
     );
 
     let table_rows = list_table(
-        &workspace.join(".wrapix/loom/state.db"),
+        &workspace.join(".loom/state.db"),
         "SELECT name FROM sqlite_master WHERE type='table' AND name='notes'",
     )?;
     assert_eq!(
@@ -731,7 +731,7 @@ fn consume_notes_and_advance_base_commit_is_atomic() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = StateDb::open(workspace.join(".loom/state.db"))?;
     let label = SpecLabel::new("alpha");
     let mol_id = MoleculeId::new("lm-alpha");
     db.rebuild(
@@ -802,7 +802,7 @@ fn consume_notes_and_refresh_base_commit_invokes_closure_with_args() -> Result<(
     let dir = tempfile::tempdir()?;
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = StateDb::open(workspace.join(".loom/state.db"))?;
     let label = SpecLabel::new("alpha");
     let mol_id = MoleculeId::new("lm-alpha");
     db.rebuild(
@@ -848,7 +848,7 @@ fn todo_resolution_is_single_query_with_invariant_violation_refusal() -> Result<
     let workspace = dir.path();
     write_spec(workspace, "alpha", "# alpha\n")?;
 
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = StateDb::open(workspace.join(".loom/state.db"))?;
     let molecules = vec![
         ActiveMolecule {
             id: MoleculeId::new("lm-aaa"),

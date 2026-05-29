@@ -199,8 +199,8 @@ fn seed_active_spec(workspace: &Path, _loom_bin: &str, label: &str) {
     std::fs::create_dir_all(&spec_dir).expect("mkdir specs");
     std::fs::write(spec_dir.join(format!("{label}.md")), format!("# {label}\n"))
         .expect("write spec");
-    let state_dir = workspace.join(".wrapix/loom");
-    std::fs::create_dir_all(&state_dir).expect("mkdir .wrapix/loom");
+    let state_dir = workspace.join(".loom");
+    std::fs::create_dir_all(&state_dir).expect("mkdir .loom");
     let db = StateDb::open(state_dir.join("state.db")).expect("open state db");
     let spec = SpecLabel::new(label);
     // `replace_companions` is the canonical insert-or-ignore on `specs`
@@ -210,7 +210,7 @@ fn seed_active_spec(workspace: &Path, _loom_bin: &str, label: &str) {
 }
 
 /// Seed the workspace as a real git repo plus the loom-owned integration
-/// workspace at `.wrapix/loom/integration/` and a bare `origin` so
+/// workspace at `.loom/integration/` and a bare `origin` so
 /// `loom loop`'s per-bead dispatch + push gate both succeed.
 ///
 /// `loom todo` opens a `GitClient` during setup so the tier-1 detection
@@ -316,7 +316,7 @@ fn wrapix_spawn_invocation_records_correct_argv() {
 
 /// The run-time promise from `specs/harness.md` *Run UX & Logging*
 /// is that every `loom todo` invocation emits a per-phase JSONL file
-/// under `<workspace>/.wrapix/loom/logs/<spec-label>/todo-<utc>.jsonl`.
+/// under `<workspace>/.loom/logs/<spec-label>/todo-<utc>.jsonl`.
 /// Without this gate the workflow happily ran agents to completion while
 /// `run_agent` previously discarded every event with a `trace!` call;
 /// users saw two INFO lines and an empty `loom logs`. The test drives
@@ -354,9 +354,9 @@ fn loom_todo_writes_jsonl_log_under_workspace_logs_dir() {
         "loom todo --agent pi must exit 0 against the mock pi shim. stdout={stdout} stderr={stderr}",
     );
 
-    // The phase log path is `<workspace>/.wrapix/loom/logs/<spec>/todo-<utc>.jsonl`.
+    // The phase log path is `<workspace>/.loom/logs/<spec>/todo-<utc>.jsonl`.
     // Spec label was passed as `agent` via `drive_loom_todo_pi`.
-    let logs_dir = workspace.join(".wrapix/loom/logs/agent");
+    let logs_dir = workspace.join(".loom/logs/agent");
     assert!(
         logs_dir.is_dir(),
         "phase log directory must exist after `loom todo`: {}\nstdout={stdout}\nstderr={stderr}",
@@ -405,7 +405,7 @@ fn loom_todo_writes_jsonl_log_under_workspace_logs_dir() {
 
 /// Spec promise (`specs/harness.md` *Run UX & Logging*): every
 /// bead processed by `loom loop` writes a per-bead JSONL log under
-/// `<workspace>/.wrapix/loom/logs/<spec>/<bead-id>-<utc>.jsonl`. Guards
+/// `<workspace>/.loom/logs/<spec>/<bead-id>-<utc>.jsonl`. Guards
 /// against the regression where the production sequential controller
 /// passed `None` for the sink and every agent event was discarded. The
 /// bd stub returns one ready bead so `LoopMode::Once` exercises the full
@@ -481,7 +481,7 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
         "loom loop --once must exit 0 against the bd + wrapix stubs. stdout={stdout} stderr={stderr}",
     );
 
-    let logs_dir = workspace.join(".wrapix/loom/logs/agent");
+    let logs_dir = workspace.join(".loom/logs/agent");
     assert!(
         logs_dir.is_dir(),
         "per-bead log directory must exist after `loom loop --once`: {}\nstdout={stdout}\nstderr={stderr}",
@@ -536,7 +536,7 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
 }
 
 /// `loom gate review` must write its phase log under
-/// `<workspace>/.wrapix/loom/logs/<spec>/review-<utc>.jsonl` (same spec
+/// `<workspace>/.loom/logs/<spec>/review-<utc>.jsonl` (same spec
 /// section as the run gate). Guards against the regression where the
 /// production review controller passed `None` for the sink and the
 /// reviewer agent's events were discarded. The bd stub returns one bead
@@ -619,7 +619,7 @@ fn loom_gate_review_writes_phase_jsonl_log() {
         "loom gate review must exit 0 against the bd + wrapix stubs. stdout={stdout} stderr={stderr}",
     );
 
-    let logs_dir = workspace.join(".wrapix/loom/logs/agent");
+    let logs_dir = workspace.join(".loom/logs/agent");
     assert!(
         logs_dir.is_dir(),
         "phase log directory must exist after `loom gate review`: {}\nstdout={stdout}\nstderr={stderr}",
@@ -826,7 +826,7 @@ fn loom_todo_pi_compaction_drives_repin_steer_through_run_agent() {
     // observes the steer. The on-disk JSONL log contains every event the
     // driver consumed, so we can confirm both the compaction_start event
     // arrived and the steer reached the mock by inspecting the log.
-    let logs_dir = workspace.join(".wrapix/loom/logs/agent");
+    let logs_dir = workspace.join(".loom/logs/agent");
     let log_path = std::fs::read_dir(&logs_dir)
         .expect("read logs dir")
         .filter_map(Result::ok)
@@ -883,7 +883,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
     init_workspace_repo(workspace);
 
     std::fs::write(
-        workspace.join("config.toml"),
+        workspace.join("loom.toml"),
         "[claude]\npost_result_grace_secs = 1\n",
     )
     .unwrap();

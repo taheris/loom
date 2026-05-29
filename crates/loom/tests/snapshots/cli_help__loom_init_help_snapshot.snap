@@ -2,7 +2,7 @@
 source: crates/loom/tests/cli_help.rs
 expression: "loom_help(&[\"init\"])"
 ---
-Initialize the workspace (create `.wrapix/loom/` config + state DB)
+Initialize the workspace (create `.loom/` config + state DB)
 
 Usage: loom init [OPTIONS]
 

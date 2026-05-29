@@ -20,7 +20,7 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// surfaces true hangs (deadlocked subprocess, runaway network); it must
 /// not abort legitimate CI.
 const GIT_HOOK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-const WORKTREE_BASE: &str = ".wrapix/loom/beads";
+const WORKTREE_BASE: &str = ".loom/beads";
 const BRANCH_PREFIX: &str = "loom";
 /// Path of the loom-owned integration workspace relative to the workspace
 /// root the `GitClient` is opened against. Materialized by `loom init` and
@@ -28,7 +28,7 @@ const BRANCH_PREFIX: &str = "loom";
 /// [`GitClient::delete_branch`], and [`GitClient::create_worktree`] as the
 /// cwd / clone source so bead integration never touches the operator's
 /// working tree.
-const LOOM_WORKSPACE_REL: &str = ".wrapix/loom/integration";
+const LOOM_WORKSPACE_REL: &str = ".loom/integration";
 /// Number of times [`GitClient::push`] retries an integration-branch push
 /// to `origin` against a non-fast-forward rejection (fetch + rebase +
 /// re-push) before surfacing [`GitError::GitCli`]. Bounded so a wedged
@@ -124,7 +124,7 @@ impl GitClient {
     }
 
     /// Path of the loom-owned integration workspace —
-    /// `<workdir>/.wrapix/loom/integration`. This is where bead branches
+    /// `<workdir>/.loom/integration`. This is where bead branches
     /// are pushed, rebased, and fast-forward-merged into the integration
     /// branch; the operator's `<workdir>` itself is never the target of
     /// loom-driven merges or origin pushes.
@@ -214,9 +214,9 @@ impl GitClient {
         .await?
     }
 
-    /// Create a per-bead workspace at `.wrapix/loom/beads/<bead_id>/`
+    /// Create a per-bead workspace at `.loom/beads/<bead_id>/`
     /// containing a `git clone --local` of the loom workspace at
-    /// `.wrapix/loom/integration/`, with a fresh branch `loom/<bead_id>`
+    /// `.loom/integration/`, with a fresh branch `loom/<bead_id>`
     /// checked out. Bead ids are globally unique, so the path is flat
     /// — no spec-label partition. The `label` argument is accepted for
     /// source-compat with existing callers and ignored by the path /
@@ -355,7 +355,7 @@ impl GitClient {
         .await?
     }
 
-    /// Enumerate `.wrapix/loom/beads/` and remove each bead workspace whose
+    /// Enumerate `.loom/beads/` and remove each bead workspace whose
     /// bead is `closed` per `bd show`. Called at `loom loop` startup, under
     /// the spec advisory lock, to reap orphans from crashed prior runs.
     /// Workspace-global, not spec-scoped — a closed bead cannot be in
@@ -370,7 +370,7 @@ impl GitClient {
     /// - `bd show` failure (record gone, network blip) → skip
     /// - `remove_dir_all` failure → skip
     ///
-    /// A missing `.wrapix/loom/beads/` directory is a no-op (returns the
+    /// A missing `.loom/beads/` directory is a no-op (returns the
     /// empty vec). The returned paths are the workspaces actually
     /// removed during this sweep.
     pub async fn sweep_orphan_bead_clones<R: CommandRunner>(
@@ -843,7 +843,7 @@ impl GitClient {
 /// post-merge push gate would fail.
 ///
 /// Does **not** materialize the loom-owned
-/// `.wrapix/loom/integration/` workspace — `loom init` tests depend on
+/// `.loom/integration/` workspace — `loom init` tests depend on
 /// observing a clean state, and use [`run_loom_init`-equivalent] paths
 /// to create it. Tests that need a ready-to-use loom workspace (most of
 /// the driver / workflow integration suite) call
@@ -863,7 +863,7 @@ pub fn init_test_repo(path: &Path) -> Result<GitClient, GitError> {
 }
 
 /// Same as [`init_test_repo`] but additionally clones the loom-owned
-/// integration workspace at `<path>/.wrapix/loom/integration/` from the
+/// integration workspace at `<path>/.loom/integration/` from the
 /// bare origin so [`GitClient::create_worktree`],
 /// [`GitClient::merge_branch`], [`GitClient::push`], and
 /// [`GitClient::delete_branch`] all have their loom-workspace cwd ready.
@@ -906,9 +906,9 @@ fn init_bare_test_repo(path: &Path, branch: &str) -> Result<GitClient, GitError>
     run_test_git(path, &["config", "commit.gpgsign", "false"])?;
     std::fs::write(path.join("README.md"), "initial\n")?;
     // Mirror the production `.gitignore` so the loom workspace at
-    // `.wrapix/loom/integration/` does not show as untracked in the
+    // `.loom/integration/` does not show as untracked in the
     // operator workspace's `git status`.
-    std::fs::write(path.join(".gitignore"), ".wrapix/\ntarget/\n")?;
+    std::fs::write(path.join(".gitignore"), ".loom/\n.wrapix/\ntarget/\n")?;
     run_test_git(path, &["add", "README.md", ".gitignore"])?;
     run_test_git(path, &["commit", "-q", "-m", "initial"])?;
     let origin_path = bare_origin_path(path);
@@ -969,7 +969,7 @@ pub fn read_origin_url(workdir: &Path) -> Result<Option<String>, GitError> {
 
 /// One-shot `git clone --branch <branch> <origin_url> <dest>` used by
 /// `loom init` to materialize the loom-owned integration workspace at
-/// `<workspace>/.wrapix/loom/integration/`. Caller guarantees `dest` does
+/// `<workspace>/.loom/integration/`. Caller guarantees `dest` does
 /// not exist; the parent directory is created if missing.
 ///
 /// Synchronous: `loom init` is not async, and the spec marks the operation

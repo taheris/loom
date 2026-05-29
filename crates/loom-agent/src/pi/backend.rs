@@ -501,7 +501,7 @@ mod tests {
             initial_prompt: "hello pi".to_string(),
             agent_args: vec![],
             repin: sample_repin(),
-            scratch_dir: PathBuf::from("/workspace/.wrapix/loom/scratch/test"),
+            scratch_dir: PathBuf::from("/workspace/.loom/scratch/test"),
             model,
             thinking_level: None,
             shutdown_grace: None,

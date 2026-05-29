@@ -49,7 +49,7 @@ pub struct SpawnConfig {
     pub initial_prompt: String,
     pub agent_args: Vec<String>,
     pub repin: RePinContent,
-    /// Pre-populated `.wrapix/loom/scratch/<key>/` for this session. Owned
+    /// Pre-populated `.loom/scratch/<key>/` for this session. Owned
     /// by the workflow code through a [`ScratchSession`] guard whose
     /// lifetime spans the spawn; backends read `repin.sh` and
     /// `claude-settings.json` from here and write their own
@@ -288,7 +288,7 @@ mod tests {
                 pinned_context: "pc".into(),
                 partial_bodies: vec![],
             },
-            scratch_dir: PathBuf::from("/workspace/.wrapix/loom/scratch/test"),
+            scratch_dir: PathBuf::from("/workspace/.loom/scratch/test"),
             model,
             thinking_level: None,
             shutdown_grace: None,

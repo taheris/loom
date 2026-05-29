@@ -1,7 +1,7 @@
 //! `loom init` — workspace bootstrap and optional state-DB rebuild.
 //!
 //! Acquires the workspace lock (errors immediately if any per-spec lock is
-//! held), ensures `<workspace>/config.toml` and `.wrapix/loom/state.db`
+//! held), ensures `<workspace>/loom.toml` and `.loom/state.db`
 //! exist, and — when `--rebuild` is passed — drops/recreates the state DB
 //! and repopulates it from `specs/*.md` plus a caller-supplied slice of
 //! active molecules.
@@ -27,10 +27,10 @@ use loom_driver::state::{ActiveMolecule, RebuildReport, StateDb};
 
 pub use error::InitError;
 
-/// Default body for `<workspace>/config.toml`. Mirrors the Configuration
+/// Default body for `<workspace>/loom.toml`. Mirrors the Configuration
 /// section of `specs/harness.md` verbatim so a fresh `loom init` writes
 /// a file that round-trips through `LoomConfig::default()`.
-pub const DEFAULT_CONFIG_TOML: &str = include_str!("default-config.toml");
+pub const DEFAULT_CONFIG_TOML: &str = include_str!("default-loom.toml");
 
 /// Options accepted by [`run`].
 #[derive(Debug, Clone, Copy, Default)]
@@ -47,7 +47,7 @@ pub struct InitReport {
     pub config_created: bool,
     pub rebuild: Option<RebuildReport>,
     /// The loom-owned integration workspace at
-    /// `<workspace>/.wrapix/loom/integration/`. `None` when the operator
+    /// `<workspace>/.loom/integration/`. `None` when the operator
     /// workspace has no `origin` remote (the materialization step is
     /// silently skipped — fresh test fixtures and unconfigured workspaces
     /// can still `loom init` without acquiring an origin first).
@@ -55,7 +55,7 @@ pub struct InitReport {
 }
 
 /// Outcome of the per-init materialization of
-/// `<workspace>/.wrapix/loom/integration/`.
+/// `<workspace>/.loom/integration/`.
 #[derive(Debug, Clone)]
 pub struct MaterializedIntegration {
     pub path: PathBuf,
@@ -68,7 +68,7 @@ pub struct MaterializedIntegration {
 ///
 /// 1. Acquires the workspace lock — errors immediately with `WorkspaceBusy`
 ///    if any per-spec `<label>.lock` is held.
-/// 2. Creates `<workspace>/.wrapix/loom/` and writes `config.toml` if it
+/// 2. Creates `<workspace>/.loom/` and writes `loom.toml` if it
 ///    does not already exist (existing config files are preserved).
 /// 3. Opens `state.db` (creating the schema on first open). When
 ///    `opts.rebuild` is true, the file is dropped and recreated, and the
@@ -81,7 +81,7 @@ pub fn run(
     let lock_mgr = LockManager::new(workspace)?;
     let _guard = lock_mgr.acquire_workspace()?;
 
-    let runtime_dir = workspace.join(".wrapix/loom");
+    let runtime_dir = workspace.join(".loom");
     fs::create_dir_all(&runtime_dir).map_err(|source| InitError::CreateDir {
         path: runtime_dir.clone(),
         source,
@@ -126,8 +126,8 @@ pub fn run(
 }
 
 /// Materialize the loom-owned integration workspace at
-/// `<workspace>/.wrapix/loom/integration/` via a one-shot
-/// `git clone <origin> .wrapix/loom/integration`. Idempotent: when the
+/// `<workspace>/.loom/integration/` via a one-shot
+/// `git clone <origin> .loom/integration`. Idempotent: when the
 /// directory already exists this returns `Ok(Some { created: false })`
 /// without touching git. Returns `Ok(None)` when the operator workspace
 /// has no `origin` remote (the step is silently skipped — used by test
@@ -140,7 +140,7 @@ fn materialize_integration_workspace(
     workspace: &Path,
     config_path: &Path,
 ) -> Result<Option<MaterializedIntegration>, InitError> {
-    let dest = workspace.join(".wrapix/loom/integration");
+    let dest = workspace.join(".loom/integration");
     if dest.exists() {
         return Ok(Some(MaterializedIntegration {
             path: dest,
@@ -468,8 +468,8 @@ mod tests {
 
     /// Spec contract `[test]` annotation
     /// (`specs/harness.md` § Success Criteria · Loom Workspace):
-    /// `loom init` materializes `<workspace>/.wrapix/loom/integration/`
-    /// as a one-shot `git clone <origin> .wrapix/loom/integration`. The
+    /// `loom init` materializes `<workspace>/.loom/integration/`
+    /// as a one-shot `git clone <origin> .loom/integration`. The
     /// directory exists, contains a real `.git/`, and has the integration
     /// branch checked out (default `main`).
     #[test]
@@ -483,7 +483,7 @@ mod tests {
             .integration_workspace
             .ok_or_else(|| anyhow!("integration workspace must be materialized"))?;
         assert!(integ.created, "first init must clone the workspace");
-        assert_eq!(integ.path, workspace.join(".wrapix/loom/integration"));
+        assert_eq!(integ.path, workspace.join(".loom/integration"));
         assert!(
             integ.path.join(".git").is_dir(),
             "integration workspace must contain a real `.git/` directory",
@@ -501,7 +501,7 @@ mod tests {
     /// Spec contract `[test]` annotation
     /// (`specs/harness.md` § Success Criteria · Loom Workspace):
     /// re-running `loom init` against a workspace whose
-    /// `.wrapix/loom/integration/` already exists is a no-op — the existing
+    /// `.loom/integration/` already exists is a no-op — the existing
     /// directory is preserved verbatim (no re-clone).
     #[test]
     fn loom_init_is_idempotent_when_integration_exists() -> Result<()> {
@@ -547,7 +547,7 @@ mod tests {
             "integration workspace must be skipped when no origin remote",
         );
         assert!(
-            !dir.path().join(".wrapix/loom/integration").exists(),
+            !dir.path().join(".loom/integration").exists(),
             "integration directory must NOT be created without an origin",
         );
         Ok(())
@@ -558,10 +558,7 @@ mod tests {
         let dir = temp_workspace()?;
         let report = run(dir.path(), InitOpts::default(), &[])?;
         assert!(report.config_created, "first init must write config");
-        assert!(
-            report.config_path.exists(),
-            "config.toml must exist on disk"
-        );
+        assert!(report.config_path.exists(), "loom.toml must exist on disk");
         assert!(report.state_db_path.exists(), "state.db must exist on disk");
         // The default body must parse cleanly and resolve through `agent_for`
         // identically to the empty-default config — the file writes the
@@ -600,7 +597,7 @@ mod tests {
     fn run_preserves_existing_config_file() -> Result<()> {
         let dir = temp_workspace()?;
         let custom = "pinned_context = \"AGENTS.md\"\n";
-        std::fs::write(dir.path().join("config.toml"), custom)?;
+        std::fs::write(dir.path().join("loom.toml"), custom)?;
 
         let report = run(dir.path(), InitOpts::default(), &[])?;
         assert!(!report.config_created);
@@ -625,7 +622,7 @@ mod tests {
             spec_label: SpecLabel::new("alpha"),
             base_commit: None,
         }];
-        let db = StateDb::open(dir.path().join(".wrapix/loom/state.db"))?;
+        let db = StateDb::open(dir.path().join(".loom/state.db"))?;
         db.rebuild(dir.path(), &molecules)?;
         let post = db.increment_iteration(&MoleculeId::new("lm-mol.1"))?;
         assert_eq!(post, 1);
@@ -647,7 +644,7 @@ mod tests {
         assert_eq!(rb.molecules, 1, "one active molecule");
 
         // Iteration counter reset to 0 after rebuild.
-        let db = StateDb::open(dir.path().join(".wrapix/loom/state.db"))?;
+        let db = StateDb::open(dir.path().join(".loom/state.db"))?;
         let row = db
             .molecule_for_spec(&SpecLabel::new("alpha"))?
             .ok_or_else(|| anyhow::anyhow!("active molecule must exist"))?;
@@ -694,7 +691,7 @@ mod tests {
         std::fs::write(specs.join("alpha.md"), "# alpha\n")?;
 
         run(dir.path(), InitOpts::default(), &[])?;
-        let db_path = dir.path().join(".wrapix/loom/state.db");
+        let db_path = dir.path().join(".loom/state.db");
         let db = StateDb::open(&db_path)?;
         db.rebuild(
             dir.path(),

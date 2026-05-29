@@ -72,7 +72,7 @@ git commit -q --allow-empty -m "smoke init"
 
 bd init --prefix=smoke >/dev/null
 
-mkdir -p specs .wrapix/loom
+mkdir -p specs .loom
 cat >specs/smoke.md <<'SPEC'
 # Smoke
 

@@ -44,7 +44,7 @@ fn init_repo() -> Result<TempDir> {
 
 /// Loom-integration-workspace path under a repo created by [`init_repo`].
 fn loom_path(repo: &Path) -> std::path::PathBuf {
-    repo.join(".wrapix/loom/integration")
+    repo.join(".loom/integration")
 }
 
 #[tokio::test]
@@ -63,8 +63,8 @@ async fn create_and_remove_worktree_round_trip() -> Result<()> {
     );
     assert_eq!(created.branch, "loom/lm-3hhwq.6");
     assert!(
-        created.path.ends_with(".wrapix/loom/beads/lm-3hhwq.6"),
-        "workspace path should end with .wrapix/loom/beads/<bead-id>: {:?}",
+        created.path.ends_with(".loom/beads/lm-3hhwq.6"),
+        "workspace path should end with .loom/beads/<bead-id>: {:?}",
         created.path
     );
     // Path A (specs/harness.md § Worktree Dispatch): the bead workspace is
@@ -433,7 +433,7 @@ async fn commits_since_counts_revisions_added_after_a_commit() -> Result<()> {
 
 /// Spec gate (`specs/harness.md` § Bead dispatch — `[test?]`
 /// `bead_dispatch_creates_clone_under_loom_beads`): bead workspaces live
-/// under `.wrapix/loom/beads/<id>/` (flat — globally-unique bead ids, no
+/// under `.loom/beads/<id>/` (flat — globally-unique bead ids, no
 /// spec partition) and the bead branch is `loom/<id>`. The destination
 /// is created as a `git clone --local` of the loom workspace, so its
 /// `.git/` is a regular directory inside the bind-mounted path.
@@ -449,10 +449,10 @@ async fn bead_dispatch_creates_clone_under_loom_beads() -> Result<()> {
     let bead = BeadId::new("lm-bead.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
-    let expected_path = repo.path().join(".wrapix/loom/beads/lm-bead.1");
+    let expected_path = repo.path().join(".loom/beads/lm-bead.1");
     assert_eq!(
         created.path, expected_path,
-        "bead workspace must live under .wrapix/loom/beads/<id>/ (flat — no \
+        "bead workspace must live under .loom/beads/<id>/ (flat — no \
          spec partition); got {:?}",
         created.path,
     );
@@ -989,14 +989,14 @@ impl CommandRunner for ScriptedBd {
 }
 
 fn make_bead_clone_dir(workspace: &Path, name: &str) -> Result<std::path::PathBuf> {
-    let path = workspace.join(".wrapix/loom/beads").join(name);
+    let path = workspace.join(".loom/beads").join(name);
     std::fs::create_dir_all(&path)?;
     std::fs::write(path.join("marker"), b"present\n")?;
     Ok(path)
 }
 
 /// Spec gate (`specs/harness.md` § Garbage collection): `loom loop` startup
-/// MUST drop every directory under `.wrapix/loom/beads/` whose bead is
+/// MUST drop every directory under `.loom/beads/` whose bead is
 /// `closed`. The sweep runs workspace-global (not spec-scoped) under the
 /// spec advisory lock — closed beads cannot be in flight, so the sweep is
 /// safe regardless of which spec is being loop'd.
@@ -1093,7 +1093,7 @@ async fn loop_startup_gc_logs_and_skips_corrupt_orphans() -> Result<()> {
     Ok(())
 }
 
-/// A missing `.wrapix/loom/beads/` directory is a no-op for the sweep — the
+/// A missing `.loom/beads/` directory is a no-op for the sweep — the
 /// happy first-run shape where no bead has been dispatched yet.
 #[tokio::test]
 async fn loop_startup_gc_no_op_when_base_dir_missing() -> Result<()> {

@@ -21,7 +21,7 @@ use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
 
 const PINNED_CONTEXT_BODY: &str =
     "# Project Overview\n\nLoom orchestrates the spec-to-implementation workflow.";
-const SCRATCHPAD_PATH_BODY: &str = "/workspace/.wrapix/loom/scratch/harness/scratch.md";
+const SCRATCHPAD_PATH_BODY: &str = "/workspace/.loom/scratch/harness/scratch.md";
 
 #[test]
 fn plan_new_renders_partials_and_inputs() -> Result<()> {
@@ -258,7 +258,7 @@ fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
         )),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
@@ -292,7 +292,7 @@ fn run_template_omits_attempt_line_when_zero() -> Result<()> {
         previous_failure: None,
         review_notes: None,
         attempt: 0,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
@@ -320,7 +320,7 @@ fn run_template_renders_attempt_line_on_retry() -> Result<()> {
         }),
         review_notes: None,
         attempt: 2,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
@@ -353,7 +353,7 @@ fn run_template_prepends_first_instruction_reframe_on_retry() -> Result<()> {
         }),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
@@ -390,7 +390,7 @@ fn run_template_omits_first_instruction_reframe_on_fresh_dispatch() -> Result<()
         previous_failure: None,
         review_notes: None,
         attempt: 0,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
@@ -423,7 +423,7 @@ fn run_template_omits_first_instruction_reframe_when_attempt_zero() -> Result<()
         }),
         review_notes: None,
         attempt: 0,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
@@ -452,7 +452,7 @@ fn run_template_renders_review_notes_block_when_set() -> Result<()> {
         )])),
         review_notes: Some("[verifier-bypass] test mocks the agent backend".into()),
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     let out = ctx.render()?;
@@ -1267,7 +1267,7 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
         previous_failure: None,
         review_notes: None,
         attempt: 0,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-mol.1/scratch.md".into(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-mol.1/scratch.md".into(),
         style_rules: "docs/style-rules.md".into(),
     };
     let out = ctx.render()?;
@@ -1450,7 +1450,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             )),
             review_notes: None,
             attempt: 1,
-            scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+            scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
             style_rules: "docs/style-rules.md".to_string(),
         },
     )?;

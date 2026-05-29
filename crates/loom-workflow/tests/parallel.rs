@@ -59,7 +59,7 @@ fn init_repo() -> Result<TempDir> {
 }
 
 fn loom_path(repo: &Path) -> std::path::PathBuf {
-    repo.join(".wrapix/loom/integration")
+    repo.join(".loom/integration")
 }
 
 /// Write a `beads-push` stub at `dir/beads-push-stub.sh` that exits 0,
@@ -90,8 +90,8 @@ fn fake_bead(id: &str) -> Bead {
 }
 
 /// Acceptance (`specs/harness.md` § Bead dispatch — flat-keyed
-/// `.wrapix/loom/beads/<id>/` layout): dispatching a single bead — even
-/// at `--parallel 1` — materialises `.wrapix/loom/beads/<bead-id>/` and
+/// `.loom/beads/<id>/` layout): dispatching a single bead — even
+/// at `--parallel 1` — materialises `.loom/beads/<bead-id>/` and
 /// runs the merge-back path after the bead completes. Universal worktree
 /// isolation: the main checkout is never the bead's workdir. The
 /// merge-back step (previously a no-op when N=1 ran on the driver
@@ -109,7 +109,7 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
     let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
     assert_eq!(slots.len(), 1, "one worktree for one bead");
     let slot = &slots[0];
-    let expected_path = repo.path().join(".wrapix/loom/beads/lm-solo");
+    let expected_path = repo.path().join(".loom/beads/lm-solo");
     assert!(
         slot.worktree.path.exists(),
         "worktree path {:?} must exist after dispatch",
@@ -119,7 +119,7 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
     assert_eq!(slot.worktree.branch, "loom/lm-solo");
 
     // The main checkout is never the bead's workdir — the worktree path
-    // is strictly under `.wrapix/loom/beads/...`, not the repo root.
+    // is strictly under `.loom/beads/...`, not the repo root.
     assert_ne!(
         slot.worktree.path,
         repo.path(),
@@ -165,7 +165,7 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
 
 /// Acceptance (`specs/tests.md` line 597 — `parallel_run_two_beads_e2e`):
 /// `loom loop --parallel 2` with two ready beads creates one workspace
-/// per bead under `.wrapix/loom/beads/<bead-id>/` (concurrent dispatch).
+/// per bead under `.loom/beads/<bead-id>/` (concurrent dispatch).
 #[tokio::test]
 async fn parallel_run_two_beads_e2e() -> Result<()> {
     let repo = init_repo()?;
@@ -177,7 +177,7 @@ async fn parallel_run_two_beads_e2e() -> Result<()> {
 
     assert_eq!(slots.len(), 3, "one worktree per bead");
     for (bead, slot) in beads.iter().zip(slots.iter()) {
-        let expected_rel = format!(".wrapix/loom/beads/{}", bead.id);
+        let expected_rel = format!(".loom/beads/{}", bead.id);
         let expected_path = repo.path().join(&expected_rel);
         assert!(
             slot.worktree.path.exists(),

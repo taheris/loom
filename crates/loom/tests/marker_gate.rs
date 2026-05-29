@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Initialize a real git repo at `path` plus the loom-owned integration
-/// workspace at `.wrapix/loom/integration/` so `loom loop`'s per-bead
+/// workspace at `.loom/integration/` so `loom loop`'s per-bead
 /// worktree dispatch (via `GitClient::create_worktree`) and the
 /// post-merge push gate both succeed.
 fn init_workspace_repo(path: &Path) {

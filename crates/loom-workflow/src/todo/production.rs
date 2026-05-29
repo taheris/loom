@@ -213,7 +213,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             implementation_notes,
             scratchpad_path,
         };
-        let cache_path = self.workspace.join(".wrapix/loom/gate-cache.sqlite");
+        let cache_path = self.workspace.join(".loom/gate-cache.sqlite");
         let criterion_status = build_criterion_status(
             &self.workspace,
             &cache_path,

@@ -295,7 +295,7 @@ mod tests {
             &bead,
             None,
             &base(),
-            PathBuf::from("/repo-root/.wrapix/loom/beads/lm-1"),
+            PathBuf::from("/repo-root/.loom/beads/lm-1"),
             prompt,
             dir.path().join("scratch"),
             vec![],
@@ -384,7 +384,7 @@ mod tests {
 
         let manifest = three_profile_manifest(dir.path());
         let bead = bead_with_labels("lm-1", &["profile:rust"]);
-        let bead_workspace = loom_workspace.join(".wrapix/loom/beads/lm-1");
+        let bead_workspace = loom_workspace.join(".loom/beads/lm-1");
         let cfg = build_spawn_config_from_manifest(
             &manifest,
             &bead,

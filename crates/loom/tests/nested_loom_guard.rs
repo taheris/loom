@@ -58,10 +58,10 @@ fn mutating_subcommands_refuse_with_loom_inside_set() {
 fn readonly_subcommands_run_under_loom_inside_set() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
-    std::fs::create_dir_all(workspace.join(".wrapix/loom")).unwrap();
+    std::fs::create_dir_all(workspace.join(".loom")).unwrap();
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
     std::fs::write(workspace.join("specs/dummy.md"), "# dummy\n").unwrap();
-    let db = loom_driver::state::StateDb::open(workspace.join(".wrapix/loom/state.db")).unwrap();
+    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db")).unwrap();
     db.set_current_spec(&loom_driver::identifier::SpecLabel::new("dummy"))
         .unwrap();
     drop(db);

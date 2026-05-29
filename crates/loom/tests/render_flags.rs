@@ -114,7 +114,7 @@ fn setup(workspace: &Path) -> (PathBuf, PathBuf, PathBuf) {
 }
 
 /// Initialize a real git repo at `path` plus the loom-owned integration
-/// workspace at `.wrapix/loom/integration/` and a bare `origin` so
+/// workspace at `.loom/integration/` and a bare `origin` so
 /// `loom loop`'s per-bead worktree dispatch + post-merge push gate both
 /// succeed.
 fn init_workspace_repo(path: &Path) {
@@ -132,7 +132,7 @@ fn install_beads_push_stub(dir: &Path) -> PathBuf {
 }
 
 fn find_bead_log(workspace: &Path, spec_label: &str, bead_id: &str) -> PathBuf {
-    let dir = workspace.join(".wrapix/loom/logs").join(spec_label);
+    let dir = workspace.join(".loom/logs").join(spec_label);
     let entries =
         std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
     let prefix = format!("{bead_id}-");

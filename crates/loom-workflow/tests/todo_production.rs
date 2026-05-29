@@ -68,7 +68,7 @@ fn stub_manifest(dir: &Path) -> Arc<ProfileImageManifest> {
 }
 
 fn empty_state(workspace: &Path) -> Arc<StateDb> {
-    Arc::new(StateDb::open(workspace.join(".wrapix/loom/state.db")).unwrap())
+    Arc::new(StateDb::open(workspace.join(".loom/state.db")).unwrap())
 }
 
 #[derive(Clone, Default)]
@@ -207,7 +207,7 @@ fn seeded_state(
         format!("# {label}\n"),
     )
     .unwrap();
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db")).unwrap();
+    let db = StateDb::open(workspace.join(".loom/state.db")).unwrap();
     db.rebuild(
         workspace,
         &[ActiveMolecule {
@@ -258,7 +258,7 @@ async fn build_session_dispatches_rendered_todo_template_and_writes_prompt_txt()
         cfg.initial_prompt,
     );
     assert!(
-        cfg.initial_prompt.contains(".wrapix/loom/scratch"),
+        cfg.initial_prompt.contains(".loom/scratch"),
         "prompt missing scratchpad partial: {}",
         cfg.initial_prompt,
     );

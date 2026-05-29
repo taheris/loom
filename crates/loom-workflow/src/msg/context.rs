@@ -139,7 +139,7 @@ mod tests {
             "PIN".into(),
             vec!["lib/sandbox/".into()],
             &refs,
-            "/workspace/.wrapix/loom/scratch/msg/scratch.md".into(),
+            "/workspace/.loom/scratch/msg/scratch.md".into(),
         );
         let body = ctx.render().expect("render");
         assert!(body.contains("lm-2"), "{body}");

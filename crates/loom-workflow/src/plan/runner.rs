@@ -101,7 +101,7 @@ pub fn run_with_timeout(
 
     let pinned_context = read_pinned_context(workspace, &cfg.pinned_context)?;
 
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = StateDb::open(workspace.join(".loom/state.db"))?;
     let companion_paths = if is_new {
         Vec::new()
     } else {
@@ -284,9 +284,9 @@ mod tests {
     fn workspace_with_specs() -> Result<tempfile::TempDir> {
         let dir = tempfile::tempdir()?;
         std::fs::create_dir_all(dir.path().join("specs"))?;
-        std::fs::create_dir_all(dir.path().join(".wrapix/loom"))?;
+        std::fs::create_dir_all(dir.path().join(".loom"))?;
         // Seed the state DB so the runner can replace_companions afterwards.
-        let _seed = StateDb::open(dir.path().join(".wrapix/loom/state.db"))?;
+        let _seed = StateDb::open(dir.path().join(".loom/state.db"))?;
         Ok(dir)
     }
 
@@ -460,7 +460,7 @@ mod tests {
         Ok(())
     }
 
-    /// `[phase.plan].profile` from `<workspace>/config.toml` wins when no
+    /// `[phase.plan].profile` from `<workspace>/loom.toml` wins when no
     /// CLI override is set — verifies the second tier of precedence.
     #[test]
     fn plan_phase_config_profile_picks_manifest_entry() -> Result<()> {
@@ -471,7 +471,7 @@ mod tests {
             Some((&spec_path, "# loom-harness\n\n## Companions\n\n")),
         )?;
         std::fs::write(
-            dir.path().join("config.toml"),
+            dir.path().join("loom.toml"),
             "[phase.plan]\nprofile = \"python\"\n",
         )?;
         let manifest = three_profile_manifest(dir.path())?;
@@ -521,7 +521,7 @@ mod tests {
             &spec_path,
             "# loom-harness\n\n## Companions\n\n- `lib/sandbox/`\n",
         )?;
-        let db = StateDb::open(dir.path().join(".wrapix/loom/state.db"))?;
+        let db = StateDb::open(dir.path().join(".loom/state.db"))?;
         db.replace_companions(&SpecLabel::new("harness"), &["lib/sandbox/".to_string()])?;
         drop(db);
 
@@ -564,7 +564,7 @@ mod tests {
             &spec_path,
             "# loom-harness\n\n## Companions\n\n- `lib/sandbox/`\n",
         )?;
-        let db = StateDb::open(dir.path().join(".wrapix/loom/state.db"))?;
+        let db = StateDb::open(dir.path().join(".loom/state.db"))?;
         let label = SpecLabel::new("harness");
         db.notes_set(
             &label,
@@ -733,7 +733,7 @@ mod tests {
             Duration::from_millis(100),
         )?;
 
-        let db = StateDb::open(dir.path().join(".wrapix/loom/state.db"))?;
+        let db = StateDb::open(dir.path().join(".loom/state.db"))?;
         let current = db
             .current_spec()?
             .ok_or_else(|| anyhow::anyhow!("plan must set current_spec"))?;
@@ -759,7 +759,7 @@ mod tests {
         let bin_dir = dir.path().join("bin");
         std::fs::create_dir_all(&bin_dir)?;
         let bin = bin_dir.join("wrapix-stub");
-        let scratch_root = "$2/.wrapix/loom/scratch/harness";
+        let scratch_root = "$2/.loom/scratch/harness";
         let script = format!(
             "#!/bin/sh\nset -e\n\
              cp {scratch_root}/prompt.txt {snap_dir:?}/prompt.txt\n\
@@ -804,7 +804,7 @@ mod tests {
 
         // Drop must have cleaned the scratch dir after exec returned.
         assert!(
-            !dir.path().join(".wrapix/loom/scratch/harness").exists(),
+            !dir.path().join(".loom/scratch/harness").exists(),
             "scratch dir must be cleaned up after wrapix returns",
         );
         Ok(())
@@ -828,7 +828,7 @@ mod tests {
         let bin_dir = dir.path().join("bin");
         std::fs::create_dir_all(&bin_dir)?;
         let bin = bin_dir.join("wrapix-stub");
-        let scratch_root = "$2/.wrapix/loom/scratch/harness";
+        let scratch_root = "$2/.loom/scratch/harness";
         let script = format!(
             "#!/bin/sh\nset -e\n\
              cp {scratch_root}/prompt.txt {snap_dir:?}/prompt.txt\n\

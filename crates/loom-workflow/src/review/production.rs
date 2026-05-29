@@ -1500,7 +1500,7 @@ mod tests {
     }
 
     fn empty_state(workspace: &std::path::Path) -> Arc<StateDb> {
-        Arc::new(StateDb::open(workspace.join(".wrapix/loom/state.db")).unwrap())
+        Arc::new(StateDb::open(workspace.join(".loom/state.db")).unwrap())
     }
 
     fn seeded_state(workspace: &std::path::Path, label: &str, mol: &str) -> Arc<StateDb> {
@@ -1510,7 +1510,7 @@ mod tests {
             format!("# {label}\n"),
         )
         .unwrap();
-        let db = StateDb::open(workspace.join(".wrapix/loom/state.db")).unwrap();
+        let db = StateDb::open(workspace.join(".loom/state.db")).unwrap();
         db.rebuild(
             workspace,
             &[ActiveMolecule {
@@ -2144,7 +2144,7 @@ mod tests {
             cfg.initial_prompt,
         );
         assert!(
-            cfg.initial_prompt.contains(".wrapix/loom/scratch"),
+            cfg.initial_prompt.contains(".loom/scratch"),
             "prompt missing scratchpad partial: {}",
             cfg.initial_prompt,
         );

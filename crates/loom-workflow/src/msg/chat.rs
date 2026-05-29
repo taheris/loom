@@ -277,7 +277,7 @@ fn load_companion_paths(
     spec_filter: Option<&SpecLabel>,
     beads: &[&Bead],
 ) -> Result<Vec<String>, ChatError> {
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db"))?;
+    let db = StateDb::open(workspace.join(".loom/state.db"))?;
     let mut labels: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     if let Some(label) = spec_filter {
         labels.insert(label.as_str().to_string());

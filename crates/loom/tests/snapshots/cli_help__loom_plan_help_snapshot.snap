@@ -11,5 +11,5 @@ Options:
   -w, --workspace <PATH>   Workspace root. Defaults to the current working directory
   -A, --agent <BACKEND>    Override the agent backend for this invocation [possible values: claude, pi]
   -u <LABEL>               Update-spec interview for `<label>`
-      --profile <PROFILE>  Override the profile resolution chain. Wins over `[phase.plan].profile` and `[phase.default].profile` in `<workspace>/config.toml` (default `base`)
+      --profile <PROFILE>  Override the profile resolution chain. Wins over `[phase.plan].profile` and `[phase.default].profile` in `<workspace>/loom.toml` (default `base`)
   -h, --help               Print help

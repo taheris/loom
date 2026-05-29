@@ -5,7 +5,7 @@ priority = 2
 default_type = "task"
 
 [loom]
-# Name of the branch the loom workspace (`.wrapix/loom/integration/`)
+# Name of the branch the loom workspace (`.loom/integration/`)
 # has checked out and into which bead branches rebase + fast-forward.
 # Loom pushes this branch to `origin/<integration_branch>` from the
 # gate. Default `main`.
@@ -34,7 +34,7 @@ max_iterations = 10
 max_retries = 2
 
 [logs]
-# Delete log files under .wrapix/loom/logs/ older than this many days on
+# Delete log files under .loom/logs/ older than this many days on
 # `loom loop` startup. 0 disables sweeping (keep forever).
 retention_days = 14
 

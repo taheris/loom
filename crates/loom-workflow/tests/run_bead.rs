@@ -107,7 +107,7 @@ fn setup() -> (
 }
 
 /// `loom loop --parallel 1` dispatches every bead through a per-bead
-/// workspace under `.wrapix/loom/beads/<bead-id>/` (flat — globally-unique
+/// workspace under `.loom/beads/<bead-id>/` (flat — globally-unique
 /// bead ids, no spec partition per `harness.md` § Bead dispatch). The
 /// workspace is a `git clone --local` of the loom workspace — its `.git/`
 /// is a regular directory inside the bind-mounted path, so workers in
@@ -119,7 +119,7 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success()
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let bead = fake_bead("lm-1");
-    let expected_worktree = workspace.join(".wrapix/loom/beads/lm-1");
+    let expected_worktree = workspace.join(".loom/beads/lm-1");
 
     let observed_workspace: Arc<Mutex<Option<std::path::PathBuf>>> = Arc::new(Mutex::new(None));
     let observed_clone = Arc::clone(&observed_workspace);
@@ -174,7 +174,7 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success()
         !expected_worktree.exists(),
         "worktree must be removed after clean merge-back",
     );
-    let loom = workspace.join(".wrapix/loom/integration");
+    let loom = workspace.join(".loom/integration");
     let branches = git_capture(&loom, &["branch", "--list", "loom/lm-1"])?;
     assert!(
         branches.trim().is_empty(),
@@ -204,7 +204,7 @@ async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() ->
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let bead = fake_bead("lm-dirty");
-    let expected_worktree = workspace.join(".wrapix/loom/beads/lm-dirty");
+    let expected_worktree = workspace.join(".loom/beads/lm-dirty");
 
     // Capture every prompt the spawn closure sees so we can assert what
     // the controller threaded on the retry.
@@ -316,7 +316,7 @@ async fn run_bead_resets_dirty_bead_workspace_before_dispatch() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let bead = fake_bead("lm-resetdispatch");
-    let expected_worktree = workspace.join(".wrapix/loom/beads/lm-resetdispatch");
+    let expected_worktree = workspace.join(".loom/beads/lm-resetdispatch");
 
     // Pre-materialize the bead workspace + branch so we can plant dirt
     // *before* `run_bead` is called — modelling the persistence-across-
@@ -327,15 +327,15 @@ async fn run_bead_resets_dirty_bead_workspace_before_dispatch() -> Result<()> {
     let created = git_client.create_worktree(&label, &bead.id).await?;
     assert_eq!(created.path, expected_worktree);
 
-    // Mirror the production `.gitignore` shape so `.wrapix/` doesn't
-    // leak into porcelain — production workspaces have it ignored at
-    // the repo root and so must the test workspace, otherwise the
+    // Mirror the production `.gitignore` shape so `.loom/` and `.wrapix/`
+    // don't leak into porcelain — production workspaces have them ignored
+    // at the repo root and so must the test workspace, otherwise the
     // controller's scratch staging confounds the post-reset assertion.
-    std::fs::write(expected_worktree.join(".gitignore"), ".wrapix/\n")?;
+    std::fs::write(expected_worktree.join(".gitignore"), ".loom/\n.wrapix/\n")?;
     git(&expected_worktree, &["add", ".gitignore"])?;
     git(
         &expected_worktree,
-        &["commit", "-q", "-m", "ignore .wrapix/"],
+        &["commit", "-q", "-m", "ignore .loom/ and .wrapix/"],
     )?;
 
     // Plant the two shapes the verdict gate must catch: a tracked-file
@@ -495,7 +495,7 @@ async fn production_loop_pushes_main_after_each_successful_merge() -> Result<()>
     );
 
     let origin = loom_driver::git::bare_origin_path(&workspace);
-    let loom = workspace.join(".wrapix/loom/integration");
+    let loom = workspace.join(".loom/integration");
     let origin_head = git_capture(&origin, &["rev-parse", "main"])?;
     let loom_head = git_capture(&loom, &["rev-parse", "main"])?;
     assert_eq!(
@@ -528,13 +528,13 @@ async fn production_loop_preserves_worktree_on_push_failure() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let stub = beads_push_stub(_dir.path());
-    let expected_worktree = workspace.join(".wrapix/loom/beads/lm-pushfail.1");
+    let expected_worktree = workspace.join(".loom/beads/lm-pushfail.1");
 
     // Break the integration workspace's `origin` by repointing it at a
     // nonexistent path so `git push` fails. The repo started healthy
     // (init_test_repo built a bare origin and cloned it into the loom
     // workspace), so the failure is purely on push-time URL resolution.
-    let loom = workspace.join(".wrapix/loom/integration");
+    let loom = workspace.join(".loom/integration");
     git(
         &loom,
         &[
@@ -606,7 +606,7 @@ async fn production_loop_preserves_worktree_on_merge_conflict() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let stub = beads_push_stub(_dir.path());
-    let expected_worktree = workspace.join(".wrapix/loom/beads/lm-conflict.1");
+    let expected_worktree = workspace.join(".loom/beads/lm-conflict.1");
     let workspace_for_closure = workspace.clone();
 
     let mut controller = ProductionAgentLoopController::new(
@@ -619,7 +619,7 @@ async fn production_loop_preserves_worktree_on_merge_conflict() -> Result<()> {
         None,
         ProfileName::new("base"),
         move |cfg: SpawnConfig, _bead_id: BeadId| {
-            let loom_ws = workspace_for_closure.join(".wrapix/loom/integration");
+            let loom_ws = workspace_for_closure.join(".loom/integration");
             async move {
                 std::fs::write(cfg.workspace.join("README.md"), "bead version\n")
                     .expect("write bead README");
@@ -746,7 +746,7 @@ async fn run_bead_emits_driver_events_for_happy_path_in_seq_order() -> Result<()
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let stub = beads_push_stub(_dir.path());
-    let logs_root = workspace.join(".wrapix/loom/logs");
+    let logs_root = workspace.join(".loom/logs");
     let logs_root_for_closure = logs_root.clone();
     let label_for_closure = label.clone();
 
@@ -819,7 +819,7 @@ async fn run_bead_emits_merge_conflict_and_no_merge_ok() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let stub = beads_push_stub(_dir.path());
-    let logs_root = workspace.join(".wrapix/loom/logs");
+    let logs_root = workspace.join(".loom/logs");
     let logs_root_for_closure = logs_root.clone();
     let label_for_closure = label.clone();
     let workspace_for_closure = workspace.clone();
@@ -836,7 +836,7 @@ async fn run_bead_emits_merge_conflict_and_no_merge_ok() -> Result<()> {
         move |cfg: SpawnConfig, bead_id: BeadId| {
             let logs_root = logs_root_for_closure.clone();
             let label = label_for_closure.clone();
-            let loom_ws = workspace_for_closure.join(".wrapix/loom/integration");
+            let loom_ws = workspace_for_closure.join(".loom/integration");
             async move {
                 let mut sink = open_bead_sink_for_test(&logs_root, &label, &bead_id);
                 sink.finish(BeadOutcome::Done).expect("finish sink");
@@ -892,11 +892,11 @@ async fn run_bead_emits_post_merge_push_failed_after_merge_ok_on_push_failure() 
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let stub = beads_push_stub(_dir.path());
-    let logs_root = workspace.join(".wrapix/loom/logs");
+    let logs_root = workspace.join(".loom/logs");
     let logs_root_for_closure = logs_root.clone();
     let label_for_closure = label.clone();
 
-    let loom_ws = workspace.join(".wrapix/loom/integration");
+    let loom_ws = workspace.join(".loom/integration");
     git(
         &loom_ws,
         &[
@@ -972,10 +972,10 @@ async fn run_bead_emits_tree_not_clean_when_porcelain_is_dirty() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let stub = beads_push_stub(_dir.path());
-    let logs_root = workspace.join(".wrapix/loom/logs");
+    let logs_root = workspace.join(".loom/logs");
     let logs_root_for_closure = logs_root.clone();
     let label_for_closure = label.clone();
-    let expected_worktree = workspace.join(".wrapix/loom/beads/lm-emitdirty");
+    let expected_worktree = workspace.join(".loom/beads/lm-emitdirty");
 
     let mut controller = ProductionAgentLoopController::new(
         BdClient::new(),

@@ -103,7 +103,7 @@ fn tree_scope_refuses_when_more_than_one_open_epic_for_spec() {
         "stderr must surface both conflicting epic IDs. stderr:\n{stderr}",
     );
 
-    let logs_dir = workspace.join(".wrapix/loom/logs");
+    let logs_dir = workspace.join(".loom/logs");
     let log_entries: Vec<_> = std::fs::read_dir(&logs_dir)
         .map(|it| it.filter_map(Result::ok).collect())
         .unwrap_or_default();

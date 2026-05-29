@@ -2,7 +2,7 @@
 //!
 //! Read-only, no lock acquired (per the lock matrix in
 //! `specs/harness.md`). [`select_log`] walks
-//! `<workspace>/.wrapix/loom/logs/` for `*.jsonl` files and returns the
+//! `<workspace>/.loom/logs/` for `*.jsonl` files and returns the
 //! path with the largest mtime; with `--bead <id>` set, only files whose
 //! stem starts with `<id>-` are considered.
 //!
@@ -61,7 +61,7 @@ pub enum LogsError {
     },
 }
 
-/// Walk `logs_root` (typically `<workspace>/.wrapix/loom/logs/`) and return
+/// Walk `logs_root` (typically `<workspace>/.loom/logs/`) and return
 /// the most recent `*.jsonl` log. The traversal is two levels deep —
 /// `<root>/<spec-label>/<bead-id>-<utc>.jsonl` per the path layout in
 /// `specs/harness.md` *Run UX & Logging*.
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn empty_root_returns_no_logs() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let err = select_log(&dir.path().join(".wrapix/loom/logs"), LogsOpts::default())
+        let err = select_log(&dir.path().join(".loom/logs"), LogsOpts::default())
             .err()
             .ok_or_else(|| anyhow::anyhow!("expected error"))?;
         assert!(matches!(err, LogsError::NoLogs { .. }));
@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn returns_most_recent_log_across_specs() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let root = dir.path().join(".wrapix/loom/logs");
+        let root = dir.path().join(".loom/logs");
         let older = reference_now() - Duration::from_secs(120);
         touch(&root.join("alpha/lm-1-old.jsonl"), older)?;
         touch(&root.join("beta/lm-2-newer.jsonl"), reference_now())?;
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn bead_filter_matches_prefix_exactly() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let root = dir.path().join(".wrapix/loom/logs");
+        let root = dir.path().join(".loom/logs");
         // lm-1 and lm-10 are distinct beads — the filter must not collapse
         // them.
         touch(&root.join("alpha/lm-10-newer.jsonl"), reference_now())?;
@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn missing_bead_filter_returns_typed_error() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let root = dir.path().join(".wrapix/loom/logs");
+        let root = dir.path().join(".loom/logs");
         touch(&root.join("alpha/lm-1-x.jsonl"), reference_now())?;
         let err = select_log(
             &root,
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn ignores_non_jsonl_files() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let root = dir.path().join(".wrapix/loom/logs");
+        let root = dir.path().join(".loom/logs");
         touch(&root.join("alpha/lm-1-x.txt"), reference_now())?;
         let err = select_log(&root, LogsOpts::default())
             .err()

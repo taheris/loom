@@ -20,7 +20,7 @@ use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
 
 const PINNED_CONTEXT_BODY: &str =
     "# Project Overview\n\nLoom orchestrates the spec-to-implementation workflow.";
-const SCRATCHPAD_PATH_BODY: &str = "/workspace/.wrapix/loom/scratch/harness/scratch.md";
+const SCRATCHPAD_PATH_BODY: &str = "/workspace/.loom/scratch/harness/scratch.md";
 
 #[test]
 fn plan_new_snapshot() {
@@ -167,7 +167,7 @@ fn run_snapshot() {
         )),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
@@ -191,7 +191,7 @@ fn run_snapshot_no_failure() {
         previous_failure: None,
         review_notes: None,
         attempt: 0,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
@@ -217,7 +217,7 @@ fn run_snapshot_driver_notice() {
         }),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
@@ -243,7 +243,7 @@ fn run_snapshot_verify_failures() {
         )])),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
@@ -275,7 +275,7 @@ fn run_snapshot_review_concern() {
         }),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
@@ -302,7 +302,7 @@ fn run_snapshot_build_failure() {
         }),
         review_notes: None,
         attempt: 1,
-        scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());

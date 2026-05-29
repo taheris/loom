@@ -43,7 +43,7 @@ use loom_gate::{IntegrityFinding, Tier, format_clarify_options};
 // -------------------------------------------------------------------
 
 /// Initialise `workspace` as a real git repo + bare origin + loom-owned
-/// integration workspace at `.wrapix/loom/integration/`, then commit the
+/// integration workspace at `.loom/integration/`, then commit the
 /// caller-provided seed content (any `specs/` files written before this
 /// call land in the seed commit). `loom gate review`'s integrity walk
 /// opens a [`GitClient`] and queries `git diff <base>..HEAD -- specs/`;
@@ -69,7 +69,7 @@ fn init_workspace_repo(workspace: &Path) -> String {
     // workspace; otherwise `git diff` would surface them on every run.
     std::fs::write(
         workspace.join(".gitignore"),
-        "bd-state/\nbd-bin/\nbin/\n.loom-test-state/\n.wrapix/\n*.tar\nprofile-images.json\n",
+        "bd-state/\nbd-bin/\nbin/\n.loom-test-state/\n.loom/\n.wrapix/\n*.tar\nprofile-images.json\n",
     )
     .expect("write .gitignore");
     let status = Command::new("git")
@@ -115,7 +115,7 @@ fn init_workspace_repo(workspace: &Path) -> String {
         .expect("initial push spawn");
     assert!(status.success(), "initial push failed: {status}");
 
-    let loom_workspace = workspace.join(".wrapix/loom/integration");
+    let loom_workspace = workspace.join(".loom/integration");
     if let Some(parent) = loom_workspace.parent() {
         std::fs::create_dir_all(parent).expect("mkdir loom parent");
     }
@@ -244,8 +244,8 @@ fn write_minimal_manifest(workspace: &Path) -> PathBuf {
 /// branch must call this with a real seed commit. Resolution itself
 /// goes through `bd find` against the bd-shim's epic bead seed.
 fn seed_active_molecule(workspace: &Path, label: &str, mol_id: &str, base_sha: &str) {
-    std::fs::create_dir_all(workspace.join(".wrapix/loom")).expect("mkdir state dir");
-    let db = StateDb::open(workspace.join(".wrapix/loom/state.db")).expect("open state.db");
+    std::fs::create_dir_all(workspace.join(".loom")).expect("mkdir state dir");
+    let db = StateDb::open(workspace.join(".loom/state.db")).expect("open state.db");
     db.rebuild(
         workspace,
         &[ActiveMolecule {
@@ -329,7 +329,7 @@ fn read_labels(state_dir: &Path, id: &str) -> Vec<String> {
 /// written (e.g. the controller errored before opening the phase log
 /// or no `emit_driver_event` call landed for this phase).
 fn read_driver_events(workspace: &Path, label: &str) -> Vec<serde_json::Value> {
-    let logs_dir = workspace.join(format!(".wrapix/loom/logs/{label}"));
+    let logs_dir = workspace.join(format!(".loom/logs/{label}"));
     let entries = match std::fs::read_dir(&logs_dir) {
         Ok(e) => e,
         Err(_) => return Vec::new(),

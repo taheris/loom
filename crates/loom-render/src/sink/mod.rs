@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn parent_directory_is_created_on_open() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let logs = dir.path().join(".wrapix/loom/logs");
+        let logs = dir.path().join(".loom/logs");
         let (sink, _) = open_sink_with_sink_writer(
             &logs,
             &SpecLabel::new("nested"),
@@ -466,7 +466,7 @@ mod tests {
     #[test]
     fn phase_sink_writes_under_spec_directory_with_phase_prefix() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let logs = dir.path().join(".wrapix/loom/logs");
+        let logs = dir.path().join(".loom/logs");
         let label = SpecLabel::new("alpha");
         let mut sink = LogSink::open_phase_at(
             &logs,

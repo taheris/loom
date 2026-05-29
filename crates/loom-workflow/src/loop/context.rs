@@ -26,7 +26,7 @@ pub struct LoopContextInputs {
     /// omits the retry line when zero (see `specs/templates.md` §
     /// Attempt Counter).
     pub attempt: u32,
-    /// Absolute path to `.wrapix/loom/scratch/<bead-id>/scratch.md` for this
+    /// Absolute path to `.loom/scratch/<bead-id>/scratch.md` for this
     /// session. Embedded in the rendered prompt so the agent can write to
     /// the correct file under compaction recovery.
     pub scratchpad_path: String,
@@ -80,7 +80,7 @@ mod tests {
             previous_failure: None,
             review_notes: None,
             attempt: 0,
-            scratchpad_path: "/workspace/.wrapix/loom/scratch/lm-3hhwq.15/scratch.md".into(),
+            scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.15/scratch.md".into(),
             style_rules: "docs/style-rules.md".into(),
         }
     }

@@ -85,7 +85,7 @@ proptest! {
             std::fs::write(&path, body).unwrap();
         }
 
-        let db_path = workspace.join(".wrapix/loom/state.db");
+        let db_path = workspace.join(".loom/state.db");
         let db = StateDb::open(&db_path).unwrap();
 
         // Rebuild with no molecules — exercises the spec-walking codepath
@@ -152,7 +152,7 @@ proptest! {
             })
             .collect();
 
-        let db_path = workspace.join(".wrapix/loom/state.db");
+        let db_path = workspace.join(".loom/state.db");
         let db = StateDb::open(&db_path).unwrap();
         let report = db.rebuild(workspace, &molecules).unwrap();
         prop_assert_eq!(report.specs, unique.len());

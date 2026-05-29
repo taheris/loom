@@ -20,7 +20,7 @@ Inspection:
   spec    Inspect spec annotations and tooling dependencies
 
 State:
-  init    Initialize the workspace (create `.wrapix/loom/` config + state DB)
+  init    Initialize the workspace (create `.loom/` config + state DB)
   use     Set the active spec
   note    Manage notes for a spec
 

@@ -7,7 +7,7 @@ use thiserror::Error;
 use crate::agent::{AgentKind, ThinkingLevel};
 use crate::identifier::ProfileName;
 
-/// `[phase.<name>]` table from `<workspace>/config.toml`. Each per-phase
+/// `[phase.<name>]` table from `<workspace>/loom.toml`. Each per-phase
 /// block deserializes into one of these; `[phase.default]` is the fallback
 /// applied to any field a per-phase table does not set.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
