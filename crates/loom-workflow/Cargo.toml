@@ -13,6 +13,7 @@ loom-driver = { workspace = true }
 loom-events = { workspace = true }
 loom-gate = { workspace = true }
 loom-llm = { workspace = true }
+loom-protocol = { workspace = true }
 loom-render = { workspace = true }
 loom-templates = { workspace = true }
 pulldown-cmark = { workspace = true }

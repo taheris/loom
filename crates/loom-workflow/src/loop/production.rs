@@ -732,12 +732,12 @@ where
         // The mint path is NOT fired here — push-stage is `audit`,
         // inspection-only per `specs/gate.md` § *Stages*.
         let walk = WalkOutput::from_stdout(&review_stdout, &AcceptAllFindingValidator);
-        if let TerminalSurface::Concern { summary } = &walk.terminal
-            && !walk.findings.is_empty()
+        if let TerminalSurface::Concern { summary } = walk.terminal()
+            && !walk.findings().is_empty()
         {
             self.stashed_review_concern = Some(PreviousFailure::ReviewConcern {
                 summary: summary.clone(),
-                findings: walk.findings.clone(),
+                findings: walk.findings().to_vec(),
             });
         }
         let review_log_path = self

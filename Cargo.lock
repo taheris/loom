@@ -2660,6 +2660,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-protocol"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "displaydoc",
+ "loom-events",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "loom-render"
 version = "0.1.0"
 dependencies = [
@@ -2680,10 +2693,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "askama",
- "blake3",
  "displaydoc",
  "insta",
  "loom-events",
+ "loom-protocol",
  "serde",
  "serde_json",
  "thiserror",
@@ -2720,6 +2733,7 @@ dependencies = [
  "loom-events",
  "loom-gate",
  "loom-llm",
+ "loom-protocol",
  "loom-render",
  "loom-templates",
  "loom-test-support",

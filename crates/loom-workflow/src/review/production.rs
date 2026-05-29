@@ -408,7 +408,7 @@ where
 /// surface via the typed `BadWalk` variant on
 /// [`RecoveryCause::BadWalk`].
 fn classify_review_phase(walk: &WalkOutput, exit_code: i32) -> ReviewOutcome {
-    let marker = exit_signal_from_terminal(&walk.terminal);
+    let marker = exit_signal_from_terminal(walk.terminal());
     if matches!(marker, Some(ExitSignal::Complete | ExitSignal::Noop)) && exit_code != 0 {
         return ReviewOutcome::Incomplete {
             detail: format!("agent emitted COMPLETE/NOOP but exited code {exit_code}"),
@@ -464,22 +464,22 @@ fn classify_review_phase(walk: &WalkOutput, exit_code: i32) -> ReviewOutcome {
 /// well-formed findings threads both into
 /// [`BadWalk::Concern { payload, parsed_findings }`].
 fn phase_verdict_from_walk(walk: &WalkOutput) -> PhaseVerdict {
-    if !walk.finding_errors.is_empty() {
+    if !walk.finding_errors().is_empty() {
         let badwalk = loom_templates::previous_failure::BadWalk::MalformedFinding {
-            errors: walk.finding_errors.clone(),
-            terminal: walk.terminal.clone(),
+            errors: walk.finding_errors().to_vec(),
+            terminal: walk.terminal().clone(),
         };
         return PhaseVerdict::Recovery {
             cause: RecoveryCause::BadWalk(badwalk),
         };
     }
-    let marker = exit_signal_from_terminal(&walk.terminal);
+    let marker = exit_signal_from_terminal(walk.terminal());
     let inputs = GateInputs {
         bd_closed: true,
         diff_empty: false,
         verify_failures: vec![],
         review_flag: None,
-        streamed_findings: walk.findings.clone(),
+        streamed_findings: walk.findings().to_vec(),
         ..GateInputs::default()
     };
     let mut verdict = decide(marker.as_ref(), inputs);
@@ -493,12 +493,12 @@ fn phase_verdict_from_walk(walk: &WalkOutput) -> PhaseVerdict {
     {
         if let TerminalSurface::Malformed {
             payload: from_term, ..
-        } = &walk.terminal
+        } = walk.terminal()
         {
             *payload = from_term.clone();
         }
-        if parsed_findings.is_empty() && !walk.findings.is_empty() {
-            *parsed_findings = walk.findings.clone();
+        if parsed_findings.is_empty() && !walk.findings().is_empty() {
+            *parsed_findings = walk.findings().to_vec();
         }
     }
     verdict
@@ -863,11 +863,19 @@ mod tests {
     /// with the source-level `decide()` import in `classify_review_phase`,
     /// the two together fence the FR12 contract.
     fn walk_with_terminal(terminal: TerminalSurface) -> WalkOutput {
-        WalkOutput {
-            terminal,
-            findings: Vec::new(),
-            finding_errors: Vec::new(),
-        }
+        let stdout = match terminal {
+            TerminalSurface::Complete => "LOOM_COMPLETE\n".to_string(),
+            TerminalSurface::Noop => "LOOM_NOOP\n".to_string(),
+            TerminalSurface::Blocked { reason } => format!("{reason}\nLOOM_BLOCKED\n"),
+            TerminalSurface::Clarify { question } => format!("{question}\nLOOM_CLARIFY\n"),
+            TerminalSurface::Concern { summary } => {
+                let json = serde_json::json!({ "summary": summary }).to_string();
+                format!("LOOM_CONCERN: {json}\n")
+            }
+            TerminalSurface::Malformed { payload } => format!("LOOM_CONCERN: {payload}\n"),
+            TerminalSurface::Missing => "no terminal marker on this line\n".to_string(),
+        };
+        WalkOutput::from_stdout(&stdout, &AcceptAllFindingValidator)
     }
 
     #[test]
@@ -980,14 +988,14 @@ mod tests {
         for cell in matrix_cells() {
             let walk = WalkOutput::from_stdout(&cell.stdout, &AcceptAllFindingValidator);
             assert_eq!(
-                walk.findings.len(),
+                walk.findings().len(),
                 cell.expected_well_formed_findings,
                 "[{}] WalkOutput.findings count: stdout={:?}",
                 cell.name,
                 cell.stdout,
             );
             assert_eq!(
-                walk.finding_errors.len(),
+                walk.finding_errors().len(),
                 cell.expected_malformed_findings,
                 "[{}] WalkOutput.finding_errors count: stdout={:?}",
                 cell.name,

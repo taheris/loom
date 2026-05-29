@@ -1,0 +1,38 @@
+[package]
+name = "loom-protocol"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.loom]
+public_contract = true
+
+# PUBLIC CONTRACT LEAF — `loom-protocol` is single-purpose: cross-crate
+# wire protocols loom emits or consumes. The crate's MAJOR version is the
+# wire-format protocol version per `specs/gate.md` § *Canonical contract
+# location*. External consumers (e.g. wrapix) depend on this crate
+# directly to call `loom-protocol::gate::parse_walk_output` against
+# captured agent stdout.
+#
+# Dependency direction: leaf. The deps below are the closed set. Adding
+# a new dep here changes the dependency surface every consumer ships;
+# do not expand without a spec change. In particular: NO transitive
+# dep on `loom-templates`, `loom-workflow`, or `loom-gate`.
+[dependencies]
+blake3 = { workspace = true }
+displaydoc = { workspace = true }
+loom-events = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# dev-dependencies are NOT part of the public contract — consumers see
+# only [dependencies]. The toml parser is test-only (verifies the
+# crate's own Cargo.toml dep set in `tests/protocol_surface.rs`).
+[dev-dependencies]
+toml = { workspace = true }
+
+[lints]
+workspace = true

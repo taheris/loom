@@ -1,9 +1,9 @@
 //! Anti-duplication walker for the canonical `Finding` /
 //! `ConcernToken` contract.
 //!
-//! `loom-templates::finding` is THE Rust home for the typed wire
+//! `loom-protocol::gate` is THE Rust home for the typed wire
 //! shape — the `Finding` struct and the closed `ConcernToken` enum are
-//! declared exactly once, in `crates/loom-templates/src/finding.rs`.
+//! declared exactly once, in `crates/loom-protocol/src/gate.rs`.
 //! Other crates that need the types re-export via `pub use`; the walker
 //! flags any other declaration so a parallel definition cannot drift
 //! the wire format from the canonical one. Re-exports and trait /
@@ -21,9 +21,9 @@ use super::{Verdict, WalkInput};
 
 const RULE: &str = "finding_no_duplicate_definitions — \
                     `Finding` / `ConcernToken` are declared only in \
-                    `crates/loom-templates/src/finding.rs`";
+                    `crates/loom-protocol/src/gate.rs`";
 
-const CANONICAL: &str = "crates/loom-templates/src/finding.rs";
+const CANONICAL: &str = "crates/loom-protocol/src/gate.rs";
 
 pub fn run(input: &WalkInput) -> Verdict {
     let root = workspace_root();

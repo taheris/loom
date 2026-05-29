@@ -3093,14 +3093,14 @@ fn finding_no_duplicate_definitions_passes_when_canonical_only() {
     let ws = make_workspace();
     let canonical = seed(
         ws.path(),
-        "crates/loom-templates/src/finding.rs",
+        "crates/loom-protocol/src/gate.rs",
         "pub struct Finding { pub token: u32 }\n\
          pub enum ConcernToken { Foo, Bar }\n",
     );
     let consumer = seed(
         ws.path(),
         "crates/loom-workflow/src/lib.rs",
-        "pub use loom_templates::finding::{Finding, ConcernToken};\n\
+        "pub use loom_protocol::gate::{Finding, ConcernToken};\n\
          pub fn use_finding(_f: Finding) {}\n",
     );
     let scope = format!(
@@ -3121,7 +3121,7 @@ fn finding_no_duplicate_definitions_fails_on_second_struct_declaration() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-templates/src/finding.rs",
+        "crates/loom-protocol/src/gate.rs",
         "pub struct Finding { pub token: u32 }\n",
     );
     let dup = seed(
@@ -3159,7 +3159,7 @@ fn finding_no_duplicate_definitions_pass_on_re_export_alone() {
     let consumer = seed(
         ws.path(),
         "crates/loom-workflow/src/review.rs",
-        "pub use loom_templates::finding::{Finding, ConcernToken};\n",
+        "pub use loom_protocol::gate::{Finding, ConcernToken};\n",
     );
     let out = invoke(
         &["finding_no_duplicate_definitions"],

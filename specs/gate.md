@@ -2390,25 +2390,25 @@ the `parse_walk_output` / `WalkOutput::from_stdout` /
   dependencies are limited to `serde`, `serde_json`, `thiserror` /
   `displaydoc`, and `loom-events` (for `SpecLabel`); no transitive
   dependency on `loom-templates`, `loom-workflow`, or `loom-gate`
-  [test?](loom_protocol_crate_has_minimal_leaf_dependency_set)
+  [test](loom_protocol_crate_has_minimal_leaf_dependency_set)
 - `loom-templates::finding` and `loom-templates::previous_failure` re-
   export the typed contract from `loom-protocol::gate` via `pub use`
   so existing callers (including `PreviousFailure::ReviewConcern {
   findings }`) compile without changes. The original definitions are
   removed from `loom-templates`
-  [test?](loom_templates_re_exports_finding_contract_from_loom_protocol)
+  [test](loom_templates_re_exports_finding_contract_from_loom_protocol)
 - `loom-workflow::review::finding` (the `WalkOutput` typed product +
   `parse_walk_output` parser) and `loom-workflow::todo::exit::ExitSignal`
   / `parse_exit_signal` move to `loom-protocol::gate`. Existing
   `loom-workflow` imports either remap or re-export
-  [test?](loom_workflow_re_exports_walk_output_and_exit_signal_from_loom_protocol)
+  [test](loom_workflow_re_exports_walk_output_and_exit_signal_from_loom_protocol)
 - The `WalkOutput` struct's fields are private; `WalkOutput::from_stdout`
   is `pub` (consumers need to call it) but is the only construction
   path. The silent-loss failure class — production caller constructs
   `WalkOutput` with bogus fields, bypassing the typed parse pipeline —
   is structurally unrepresentable via field-privacy, not via
   `pub(crate)` constructor scoping
-  [test?](walk_output_fields_private_only_constructor_is_from_stdout)
+  [test](walk_output_fields_private_only_constructor_is_from_stdout)
 - The crate's MAJOR version is the wire-format protocol version. A
   breaking wire change (renamed token, retyped target shape, removed
   enum variant) requires a major bump. Additive changes (new
@@ -2416,7 +2416,7 @@ the `parse_walk_output` / `WalkOutput::from_stdout` /
   `#[serde(default)]`) are minor bumps. No `"protocol": <n>` field
   appears on `LOOM_FINDING:` / `LOOM_CONCERN:` payloads — the typed
   parse errors give loud structural breakage on version skew
-  [test?](loom_protocol_wire_format_does_not_carry_protocol_version_field)
+  [test](loom_protocol_wire_format_does_not_carry_protocol_version_field)
 - The `finding_no_duplicate_definitions` walker continues to enforce
   one canonical definition of `Finding`, `ConcernToken`,
   `FindingTarget`, `WalkOutput`, `BadWalk`, and `ExitSignal` across

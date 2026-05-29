@@ -20,7 +20,9 @@
 
 use std::fmt::{self, Display};
 
-use crate::finding::{Finding, FindingParseError};
+use crate::finding::Finding;
+
+pub use loom_protocol::gate::{BadWalk, TerminalSurface};
 
 /// Maximum length of the rendered `previous_failure` body. The render path
 /// truncates anything past this at a char boundary so multi-byte stderr does
@@ -90,106 +92,6 @@ impl DriverNoticeCause {
             Self::ObserverAbort => "observer-abort",
             Self::RetryExhausted => "retry-exhausted",
             Self::UnbondedOrigin => "unbonded-origin",
-        }
-    }
-}
-
-/// Review-walk malformation variants surfaced by the verdict gate when the
-/// terminal `LOOM_CONCERN:` payload fails to parse or the
-/// `LOOM_FINDING:` stream and terminator disagree. Mirrors the
-/// `RecoveryCause::BadWalk(BadWalk)` wrapped pattern that
-/// `RecoveryCause::ReviewConcern(ReviewFlag)` already uses at the workflow
-/// layer (per `specs/templates.md` § Typed `PreviousFailure`).
-///
-/// Each variant carries the **maximum well-formed context** by struct
-/// shape per `specs/gate.md` § *Maximum-context preservation invariant*
-/// — the failure mode "lost the agent's diagnosis when one piece of the
-/// walk was malformed" is structurally unrepresentable.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BadWalk {
-    /// `LOOM_CONCERN:` payload did not parse as
-    /// `{"summary": "<non-empty>"}` — invalid JSON, missing
-    /// `summary` field, or empty `summary`. The literal post-marker
-    /// text is preserved for the recovery prompt, alongside any
-    /// `LOOM_FINDING:` lines that streamed cleanly before the bad
-    /// terminator.
-    Concern {
-        payload: String,
-        parsed_findings: Vec<Finding>,
-    },
-
-    /// Terminator claimed concern but zero `LOOM_FINDING:` lines
-    /// streamed during the walk. The parsed summary is preserved
-    /// so the recovery prompt can quote it back.
-    ConcernWithoutFindings { summary: String },
-
-    /// One or more `LOOM_FINDING:` lines streamed but the
-    /// terminator was `LOOM_COMPLETE`. The parsed findings ride
-    /// through so the next iteration's prompt can name them
-    /// per the pairing-rule table in `specs/gate.md`.
-    FindingsWithoutConcern {
-        finding_count: usize,
-        findings: Vec<Finding>,
-    },
-
-    /// One or more `LOOM_FINDING:` lines failed strict validation.
-    /// The well-formed terminal surface rides through alongside the
-    /// per-line errors so the recovery prompt can name both pieces
-    /// (when the terminator was also malformed, it is preserved via
-    /// `TerminalSurface::Malformed { payload }`).
-    MalformedFinding {
-        errors: Vec<FindingParseError>,
-        terminal: TerminalSurface,
-    },
-}
-
-/// Typed terminal surface a review walk left behind. Mirrors
-/// [`crate::ExitSignal`]'s well-formed variants and adds
-/// [`TerminalSurface::Malformed`] for the terminal-marker parse-failure
-/// case and [`TerminalSurface::Missing`] for the absent-terminator case,
-/// so `BadWalk::MalformedFinding { terminal, .. }` can carry every
-/// possible terminal shape by struct.
-///
-/// Lives in `loom-templates` because `BadWalk::MalformedFinding`
-/// embeds it; `loom-workflow::review::WalkOutput` re-exports the type
-/// so the review classifier feeds it into the verdict gate per
-/// `specs/gate.md` § *Structural enforcement*.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TerminalSurface {
-    /// `LOOM_COMPLETE` on the final non-empty line.
-    Complete,
-    /// `LOOM_NOOP` on the final non-empty line.
-    Noop,
-    /// `LOOM_BLOCKED` on the final non-empty line; `reason` is the
-    /// adjacent prose read by the parser.
-    Blocked { reason: String },
-    /// `LOOM_CLARIFY` on the final non-empty line; `question` is the
-    /// adjacent prose read by the parser.
-    Clarify { question: String },
-    /// `LOOM_CONCERN: {"summary": "..."}` parsed cleanly.
-    Concern { summary: String },
-    /// `LOOM_CONCERN:` was present but its JSON payload failed parse
-    /// (invalid JSON, missing `summary`, or empty `summary`). The
-    /// literal post-marker text is preserved.
-    Malformed { payload: String },
-    /// No terminator on the final non-empty line.
-    Missing,
-}
-
-impl TerminalSurface {
-    /// Stable label used in `BadWalk::MalformedFinding` recovery
-    /// rendering so the agent sees what the terminal looked like
-    /// alongside the per-finding errors.
-    #[must_use]
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Complete => "LOOM_COMPLETE",
-            Self::Noop => "LOOM_NOOP",
-            Self::Blocked { .. } => "LOOM_BLOCKED",
-            Self::Clarify { .. } => "LOOM_CLARIFY",
-            Self::Concern { .. } => "LOOM_CONCERN (well-formed)",
-            Self::Malformed { .. } => "LOOM_CONCERN (malformed payload)",
-            Self::Missing => "no terminal marker on the final non-empty line",
         }
     }
 }

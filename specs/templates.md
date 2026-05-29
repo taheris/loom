@@ -902,7 +902,7 @@ documents in front of the agent with zero configuration.
   and `MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface }`;
   the wrapped pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)` at the
   type level
-  [check](grep -q 'pub enum BadWalk' crates/loom-templates/src/previous_failure.rs)
+  [check](grep -q 'pub enum BadWalk' crates/loom-protocol/src/gate.rs)
 - Maximum-context preservation invariant: `BadWalk::Concern` carries
   `parsed_findings` (any well-formed findings streamed ahead of the
   malformed terminator); `BadWalk::FindingsWithoutConcern` carries
@@ -915,11 +915,12 @@ documents in front of the agent with zero configuration.
   `Malformed { payload: String }` and `Missing` variants so
   `BadWalk::MalformedFinding`'s `terminal` field can carry the
   terminal state regardless of whether the terminal itself parsed
-  [check](grep -q 'pub enum TerminalSurface' crates/loom-templates/src/previous_failure.rs)
-- `FindingParseError` is defined in `loom-templates::finding` and
-  re-exported from `loom-workflow::review::finding` as the per-line
-  wire-format error consumed by `BadWalk::MalformedFinding.errors`
-  [check](grep -q 'pub enum FindingParseError' crates/loom-templates/src/finding.rs)
+  [check](grep -q 'pub enum TerminalSurface' crates/loom-protocol/src/gate.rs)
+- `FindingParseError` is defined in `loom-protocol::gate` and
+  re-exported from `loom-templates::finding` /
+  `loom-workflow::review::finding` as the per-line wire-format error
+  consumed by `BadWalk::MalformedFinding.errors`
+  [check](grep -q 'pub enum FindingParseError' crates/loom-protocol/src/gate.rs)
 - The `Display for PreviousFailure` rendering of
   `BadWalk(Concern)` appends a per-finding digest of
   `parsed_findings` when non-empty (the agent's diagnosis from the
