@@ -87,8 +87,7 @@ pub const PARTIAL_FINDINGS_WALK: &str = include_str!("../templates/partial/findi
 /// the two "work is done" terminators. Pinned by every worker /
 /// planning template (`plan_new`, `plan_update`, `todo_new`,
 /// `todo_update`, `run`, `review`).
-pub const PARTIAL_PROGRESS_MARKERS: &str =
-    include_str!("../templates/partial/progress_markers.md");
+pub const PARTIAL_PROGRESS_MARKERS: &str = include_str!("../templates/partial/progress_markers.md");
 
 /// `partial/self_report_markers.md` — `LOOM_BLOCKED` / `LOOM_CLARIFY`,
 /// the two "cannot finish" terminators. Pinned alongside

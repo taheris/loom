@@ -503,11 +503,7 @@ fn dispatcher_runs_non_pending_annotation_with_resolvable_target() {
     let inputs = vec![ann(Tier::Check, &script)];
     let opts = DispatchOptions::default();
     let results = run_check(&inputs, &[], &opts, dir.path(), &TierCwds::default());
-    assert_eq!(
-        results.len(),
-        1,
-        "non-pending [check] must still dispatch"
-    );
+    assert_eq!(results.len(), 1, "non-pending [check] must still dispatch");
     let outcome = results.into_iter().next().unwrap().unwrap();
     assert!(outcome.verdict.pass);
     assert_eq!(outcome.verdict.evidence, "ran");

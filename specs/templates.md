@@ -840,12 +840,6 @@ documents in front of the agent with zero configuration.
   `IncompleteSignaling`, `ZeroProgress`, `ObserverAbort`,
   `RetryExhausted`, `UnbondedOrigin`
   [test](driver_notice_cause_labels_match_spec_strings)
-- `BadWalk` enum carries `Concern { payload: String }`,
-  `ConcernWithoutFindings { summary: String }`, and
-  `FindingsWithoutConcern { finding_count: usize }`; the wrapped
-  pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)` at the
-  type level
-  [check?](grep -q 'pub enum BadWalk' crates/loom-templates/src/previous_failure.rs)
 - `VerifierFailure` carries `target: String`, `exit_code: i32`,
   `stderr_tail: String` (capped per-block at ~1500 chars)
   [test](verifier_failure_stderr_tail_capped_per_block)
