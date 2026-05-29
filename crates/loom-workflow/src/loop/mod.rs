@@ -64,7 +64,8 @@ pub use post_merge_push::{
     run_beads_push,
 };
 pub use production::{
-    ProductionAgentLoopController, format_unknown_profile_error, list_open_for_spec,
+    ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV,
+    format_unknown_profile_error, list_open_for_spec,
 };
 pub use profile::{DEFAULT_PROFILE, resolve_profile, resolve_profile_image};
 pub use retry::{RetryDecision, RetryPolicy};

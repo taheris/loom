@@ -32,7 +32,7 @@ use loom_gate::{
 };
 use loom_workflow::r#loop::{
     GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
-    RetryPolicy, SessionResult, run_loop,
+    REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV, RetryPolicy, SessionResult, run_loop,
 };
 use loom_workflow::msg::{
     DISMISS_NOTE, build_rows, compose_option_note, compose_resolved_notes, filter_msg_beads,
@@ -2641,8 +2641,12 @@ fn run_review(
     // Pin one phase timestamp so the verdict gate's `push_gate_*`
     // driver events and the reviewer agent's events land in the same
     // JSONL log file. Both writers compute the path from
-    // `(logs_root, label, "review", phase_when)`.
-    let phase_when = SystemClock::new().wall_now();
+    // `(logs_root, label, "review", phase_when)`. When invoked by
+    // `loom loop`'s molecule-completion handoff, the parent pins
+    // `phase_when` and passes it via `LOOM_REVIEW_PHASE_WHEN_MILLIS`
+    // so both sides resolve the same log path.
+    let phase_when = phase_when_from_env().unwrap_or_else(|| SystemClock::new().wall_now());
+    let emit_stdout = std::env::var_os(REVIEW_EMIT_STDOUT_ENV).is_some();
     let logs_root_for_spawn = logs_root.clone();
     let style_rules_for_review = config.style_rules.clone();
     let integration_branch_for_review = config.loom.integration_branch.clone();
@@ -2679,6 +2683,14 @@ fn run_review(
                     )
                     .await?;
                     let marker = parse_exit_signal(&output);
+                    if emit_stdout {
+                        // Surface the agent's combined output verbatim so
+                        // `loom loop`'s `exec_review` can re-run
+                        // `parse_exit_signal` and route `LOOM_FINDING:`
+                        // lines into recovery. Final non-empty line is
+                        // the agent's terminal marker.
+                        print!("{output}");
+                    }
                     Ok((outcome, marker, output))
                 }
             },
@@ -2692,8 +2704,22 @@ fn run_review(
         .with_tree_scope_epics(tree_scope_epics);
         run_review_loop(&mut controller, IterationCap::default()).await
     })?;
-    println!("loom review: {result:?}");
+    if !emit_stdout {
+        println!("loom review: {result:?}");
+    }
     Ok(())
+}
+
+/// Parse a parent-pinned `phase_when` from
+/// [`REVIEW_PHASE_WHEN_ENV`] (set by `loom loop`'s `exec_review` so the
+/// child's JSONL log lands at the same `phase_log_path` the parent
+/// threads into `HandoffEvidence`). Returns `None` when the env var is
+/// unset or unparseable so direct human callers fall through to
+/// `SystemClock::wall_now()`.
+fn phase_when_from_env() -> Option<std::time::SystemTime> {
+    let raw = std::env::var(REVIEW_PHASE_WHEN_ENV).ok()?;
+    let millis: u64 = raw.parse().ok()?;
+    Some(std::time::UNIX_EPOCH + Duration::from_millis(millis))
 }
 
 #[expect(clippy::too_many_arguments, reason = "explicit dispatch surface")]

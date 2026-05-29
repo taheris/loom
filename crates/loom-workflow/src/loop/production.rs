@@ -16,15 +16,18 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::UNIX_EPOCH;
 
 use loom_driver::agent::{ProtocolError, SpawnConfig};
 use loom_driver::bd::{
     BdClient, Bead, CommandRunner, ListOpts, ReadyOpts, TokioRunner, UpdateOpts,
 };
+use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomTopConfig, Phase};
 use loom_driver::git::{CreatedWorktree, GitClient, MergeResult};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
+use loom_driver::logging::phase_log_path;
 use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
 use loom_driver::scratch::resolve_scratch_key;
 use loom_events::DriverKind;
@@ -41,8 +44,22 @@ use super::runner::AgentLoopController;
 use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 use super::tree_clean::dirty_paths_from_porcelain;
 use crate::review::{GateInputs, PhaseVerdict, RecoveryCause, decide};
-use crate::todo::ExitSignal;
+use crate::todo::{ExitSignal, parse_exit_signal};
 use loom_templates::run::PreviousFailure;
+
+/// Env var the molecule-completion handoff sets when spawning `loom gate
+/// review` so the child re-uses the parent's pinned `phase_when`
+/// timestamp. With both sides computing the JSONL log path from the
+/// same `(logs_root, label, "review", when)` tuple, the parent can
+/// thread `review_log_path` into [`HandoffEvidence`] without scanning
+/// directories.
+pub const REVIEW_PHASE_WHEN_ENV: &str = "LOOM_REVIEW_PHASE_WHEN_MILLIS";
+
+/// Env var the molecule-completion handoff sets when spawning `loom gate
+/// review` so the child emits the agent's combined stdout to its own
+/// stdout. The parent captures it via [`Command::output`] and runs
+/// [`parse_exit_signal`] on the final non-empty line.
+pub const REVIEW_EMIT_STDOUT_ENV: &str = "LOOM_REVIEW_EMIT_STDOUT";
 
 /// Wires the [`AgentLoopController`] trait against the real `BdClient`, a
 /// caller-provided agent dispatch closure, and a child `loom review` exec for
@@ -647,8 +664,21 @@ where
         // gate routes through `verifier-failed` rather than skipping the
         // condition.
         let verify_exit_arg = verify_status.code().unwrap_or(1);
-        let review_status = Command::new(&self.loom_bin)
+        // Pin `phase_when` and pass it to the child so both sides
+        // resolve the same JSONL log path under
+        // `<logs_root>/<label>/review-<utc>.jsonl`. The child opts in to
+        // emitting the agent's combined stdout to its own stdout via
+        // `LOOM_REVIEW_EMIT_STDOUT` so the parent can `parse_exit_signal`
+        // the captured output.
+        let phase_when = SystemClock::new().wall_now();
+        let phase_when_millis = phase_when
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let review_output = Command::new(&self.loom_bin)
             .current_dir(&self.workspace)
+            .env(REVIEW_PHASE_WHEN_ENV, phase_when_millis.to_string())
+            .env(REVIEW_EMIT_STDOUT_ENV, "1")
             .arg("gate")
             .arg("review")
             .arg("--diff")
@@ -657,19 +687,27 @@ where
             .arg(self.label.as_str())
             .arg("--verify-exit")
             .arg(verify_exit_arg.to_string())
-            .status()
+            .output()
             .await?;
+        let review_status = review_output.status;
         info!(
             spec = %self.label.as_str(),
             diff = %diff_range,
             exit_code = review_status.code().unwrap_or(-1),
             "loom loop: molecule handoff — loom gate review --diff finished",
         );
+        let review_stdout = String::from_utf8_lossy(&review_output.stdout);
+        let review_marker = parse_exit_signal(&review_stdout);
+        let review_log_path = self
+            .logs_root
+            .as_deref()
+            .map(|root| phase_log_path(root, &self.label, "review", phase_when))
+            .filter(|p| p.exists());
         Ok(HandoffEvidence {
             verify_exit: verify_status.code(),
             review_exit: review_status.code(),
-            review_marker: None,
-            review_log_path: None,
+            review_marker,
+            review_log_path,
         })
     }
 
@@ -1688,6 +1726,121 @@ mod tests {
             handoff.review_exit,
             Some(0),
             "review child exit code threaded through HandoffEvidence",
+        );
+    }
+
+    /// `specs/harness.md` § *handoff_evidence_populates_marker_and_log_path*:
+    /// every `HandoffEvidence` field MUST ride out populated from the
+    /// actual reviewer subprocess outputs — `review_marker` parsed from
+    /// the agent's terminal stdout marker, `review_log_path` resolved
+    /// from the JSONL file the child wrote. A regression that hard-codes
+    /// `None` would only fail this test by surfacing as
+    /// `GateFail::ReviewEvidenceMissing` downstream, so the per-field
+    /// assertions here are load-bearing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handoff_evidence_populates_marker_and_log_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_manifest(dir.path());
+        let label = SpecLabel::new("gamma");
+        let workspace = dir.path().to_path_buf();
+        let logs_root = workspace.join(".loom/logs");
+
+        // Stub: `gate verify` is a no-op; `gate review` emits the
+        // agent's terminal marker on stdout and lands a non-empty JSONL
+        // log under `<logs_root>/<label>/review-<utc>.jsonl` keyed to
+        // the parent-pinned `LOOM_REVIEW_PHASE_WHEN_MILLIS`. The stub
+        // mirrors the production child's contract (env var threaded
+        // timestamp + emit-stdout signalling) so the test exercises the
+        // real two-process resolution path.
+        let argv_log = dir.path().join("argv.log");
+        let stub = dir.path().join("loom-stub.sh");
+        let stub_body = format!(
+            "#!/bin/sh\n\
+             set -eu\n\
+             printf '%s\\n' \"$*\" >> {argv}\n\
+             case \"$1 $2\" in\n\
+               'gate review')\n\
+                 stamp=$(date -u -d @$(($LOOM_REVIEW_PHASE_WHEN_MILLIS / 1000)) +%Y%m%dT%H%M%SZ)\n\
+                 mkdir -p {logs_root}/{label}\n\
+                 log={logs_root}/{label}/review-${{stamp}}.jsonl\n\
+                 printf '{{\"event\":\"review-start\"}}\\n' >> \"$log\"\n\
+                 printf 'LOOM_COMPLETE\\n'\n\
+                 ;;\n\
+             esac\n\
+             exit 0\n",
+            argv = argv_log.to_string_lossy(),
+            logs_root = logs_root.to_string_lossy(),
+            label = label.as_str(),
+        );
+        std::fs::write(&stub, stub_body).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let bd = BdClient::with_runner(molecule_lookup_script(
+            dir.path(),
+            "gamma",
+            "lm-mol.9",
+            "abc12345",
+        ));
+        let git = git_workspace(&workspace);
+        let mut controller = ProductionAgentLoopController::new(
+            bd,
+            label.clone(),
+            stub,
+            workspace.clone(),
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        )
+        .with_phase_log_root(logs_root.clone());
+
+        let handoff = controller
+            .exec_review()
+            .await
+            .expect("exec_review must succeed with populated evidence");
+
+        assert_eq!(
+            handoff.verify_exit,
+            Some(0),
+            "verify exit threaded through HandoffEvidence",
+        );
+        assert_eq!(
+            handoff.review_exit,
+            Some(0),
+            "review exit threaded through HandoffEvidence",
+        );
+        assert_eq!(
+            handoff.review_marker,
+            Some(ExitSignal::Complete),
+            "review_marker MUST be parsed from the child's stdout — not left at None",
+        );
+        let log_path = handoff
+            .review_log_path
+            .as_ref()
+            .expect("review_log_path MUST be populated from the JSONL file the child wrote");
+        assert!(
+            log_path.starts_with(&logs_root),
+            "log path lives under the per-spec logs root: {log_path:?}",
+        );
+        assert!(
+            log_path.exists(),
+            "review_log_path MUST point at the file the child actually wrote: {log_path:?}",
+        );
+        let body = std::fs::read_to_string(log_path).expect("log readable");
+        assert!(
+            body.contains("review-start"),
+            "log file body must be non-empty: {body:?}",
         );
     }
 

@@ -2449,7 +2449,7 @@ Criteria.
       process produced a parseable run; absence surfaces as a
       `GateFail` variant per [Loop Outcome
       Types](#loop-outcome-types)
-  [test?](handoff_evidence_populates_marker_and_log_path)
+  [test](handoff_evidence_populates_marker_and_log_path)
 - When the molecule-completion review produces ≥1 streamed
       `LOOM_FINDING:` line and a `LOOM_CONCERN:` terminator, the
       parsed `Vec<Finding>` rides through `PreviousFailure::ReviewConcern
