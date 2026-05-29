@@ -2189,7 +2189,7 @@ depends on.
   `serde_json::to_string` → embed in a `LOOM_FINDING:` line →
   embed in a synthetic walk output → `parse_walk_output`, with
   stable fingerprint
-  [test?](every_finding_round_trips_through_wire_format_with_stable_fingerprint)
+  [test](every_finding_round_trips_through_wire_format_with_stable_fingerprint)
 
 ### Status cache
 

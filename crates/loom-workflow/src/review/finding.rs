@@ -572,4 +572,169 @@ mod tests {
         // Pin sample reference so spec helper is exercised.
         let _ = spec("gate");
     }
+
+    /// Canonical [`FindingTarget`] for each [`ConcernToken`] variant —
+    /// one representative shape per token. The exhaustive match is the
+    /// closed-set guard: adding a new `ConcernToken` variant without
+    /// updating this match is a compile error, which keeps the
+    /// round-trip property test (below) honest as the enum grows.
+    fn canonical_target(token: ConcernToken, gate: &SpecLabel) -> FindingTarget {
+        match token {
+            ConcernToken::SpecCoherenceFail => FindingTarget::Criterion {
+                spec: gate.clone(),
+                anchor: "verifier-honesty".to_owned(),
+            },
+            ConcernToken::VerifierTooNarrow => FindingTarget::Criterion {
+                spec: gate.clone(),
+                anchor: "cross-component-sufficiency".to_owned(),
+            },
+            ConcernToken::JudgeFlag => FindingTarget::Criterion {
+                spec: gate.clone(),
+                anchor: "judge-rubric".to_owned(),
+            },
+            ConcernToken::MultipleAnnotations => FindingTarget::Criterion {
+                spec: gate.clone(),
+                anchor: "atomic-acceptance".to_owned(),
+            },
+            ConcernToken::OrphanIntegration => FindingTarget::Contract {
+                id: "molecule-lifecycle".to_owned(),
+            },
+            ConcernToken::StyleRuleViolation => FindingTarget::StyleRule {
+                rule_id: "RS-12".to_owned(),
+            },
+            ConcernToken::VerifierBypass => FindingTarget::Annotation {
+                target_string: "cargo test --lib verifier_bypass_case".to_owned(),
+            },
+            ConcernToken::WeakAssertion => FindingTarget::Annotation {
+                target_string: "cargo test --lib weak_assertion_case".to_owned(),
+            },
+            ConcernToken::FabricatedResult => FindingTarget::Annotation {
+                target_string: "cargo test --lib fabricated_result_case".to_owned(),
+            },
+            ConcernToken::CoincidentalPass => FindingTarget::Annotation {
+                target_string: "cargo test --lib coincidental_pass_case".to_owned(),
+            },
+            ConcernToken::VerifierFailed => FindingTarget::Annotation {
+                target_string: "cargo run -p loom-walk -- example".to_owned(),
+            },
+            ConcernToken::DispatchError => FindingTarget::Annotation {
+                target_string: "missing-command --flag".to_owned(),
+            },
+            ConcernToken::UnresolvedAnnotation => FindingTarget::Annotation {
+                target_string: "cargo run -p loom-walk -- unresolved".to_owned(),
+            },
+            ConcernToken::StubPointing => FindingTarget::Annotation {
+                target_string: "cargo test --lib stub_pointing_case".to_owned(),
+            },
+            ConcernToken::UnneededPendingMarker => FindingTarget::Annotation {
+                target_string: "cargo test --lib already_resolved".to_owned(),
+            },
+            ConcernToken::MockDiscipline => FindingTarget::TestPath {
+                path: "crates/loom-gate/src/integrity.rs::mock_disciplined".to_owned(),
+            },
+            ConcernToken::ConcurrencyUntested => FindingTarget::LockSite {
+                file: "crates/loom-workflow/src/run/runner.rs".to_owned(),
+                line: 210,
+            },
+            ConcernToken::InvariantClash => FindingTarget::Invariant {
+                spec: gate.clone(),
+                section: "Out of Scope".to_owned(),
+                tag: "loom-runs-podman".to_owned(),
+            },
+            ConcernToken::TemplateSpecDrift => FindingTarget::Template {
+                path: "crates/loom-templates/templates/review.md".to_owned(),
+            },
+        }
+    }
+
+    /// Per criterion
+    /// `every_finding_round_trips_through_wire_format_with_stable_fingerprint`:
+    /// the closed set of `ConcernToken × canonical FindingTarget`
+    /// pairings round-trips byte-equal through
+    /// `serde_json::to_string` → `LOOM_FINDING:` line → synthetic walk
+    /// output → [`parse_walk_output`], with fingerprint identical on
+    /// either side. Pins the typed wire-format boundary at every cell
+    /// of the closed token set so a future `ConcernToken` addition that
+    /// drifts the wire shape (rename, target-variant swap, evidence
+    /// reshape) breaks the cell that introduced the drift.
+    #[test]
+    fn every_finding_round_trips_through_wire_format_with_stable_fingerprint() {
+        let gate = spec("gate");
+        let tokens = [
+            ConcernToken::SpecCoherenceFail,
+            ConcernToken::OrphanIntegration,
+            ConcernToken::StyleRuleViolation,
+            ConcernToken::VerifierBypass,
+            ConcernToken::WeakAssertion,
+            ConcernToken::FabricatedResult,
+            ConcernToken::CoincidentalPass,
+            ConcernToken::MockDiscipline,
+            ConcernToken::VerifierTooNarrow,
+            ConcernToken::ConcurrencyUntested,
+            ConcernToken::JudgeFlag,
+            ConcernToken::InvariantClash,
+            ConcernToken::TemplateSpecDrift,
+            ConcernToken::VerifierFailed,
+            ConcernToken::DispatchError,
+            ConcernToken::UnresolvedAnnotation,
+            ConcernToken::StubPointing,
+            ConcernToken::MultipleAnnotations,
+            ConcernToken::UnneededPendingMarker,
+        ];
+        let terminators = [
+            "LOOM_COMPLETE",
+            "LOOM_CONCERN: {\"summary\":\"round-trip\"}",
+        ];
+
+        for token in tokens {
+            let target = canonical_target(token, &gate);
+            assert_eq!(
+                token.expected_target_kind(),
+                target.kind(),
+                "canonical pairing self-check for {}",
+                token.as_wire(),
+            );
+            let bonds = match target.spec() {
+                Some(s) => vec![s.clone()],
+                None => vec![gate.clone()],
+            };
+            let input = Finding {
+                token,
+                bonds,
+                target,
+                evidence: format!("round-trip evidence for {}", token.as_wire()),
+            };
+            let payload = serde_json::to_string(&input).expect("serialize finding");
+
+            for terminator in terminators {
+                let output = format!(
+                    "preamble\n{LOOM_FINDING_PREFIX} {payload}\nintermediate prose\n{terminator}\n",
+                );
+                let parsed = parse_walk_output(&output, &AlwaysValid).unwrap_or_else(|e| {
+                    panic!(
+                        "round-trip parse failed for {} with terminator `{terminator}`: {e}",
+                        token.as_wire(),
+                    )
+                });
+                let [round] = parsed.as_slice() else {
+                    panic!(
+                        "expected exactly one finding for {} with terminator `{terminator}`, got {parsed:?}",
+                        token.as_wire(),
+                    )
+                };
+                assert_eq!(
+                    round,
+                    &input,
+                    "byte-equal struct round-trip for {} with terminator `{terminator}`",
+                    token.as_wire(),
+                );
+                assert_eq!(
+                    round.fingerprint(),
+                    input.fingerprint(),
+                    "fingerprint stability for {} with terminator `{terminator}`",
+                    token.as_wire(),
+                );
+            }
+        }
+    }
 }
