@@ -38,18 +38,19 @@ pub use context::{
 pub use error::ReviewError;
 pub use finding::{
     ConcernToken, Finding, FindingParseError, FindingTarget, FindingValidator, LOOM_FINDING_PREFIX,
-    TargetKind, WalkOutputError, parse_walk_output,
+    TargetKind, TerminalSurface, WalkOutput, WalkOutputError, parse_walk_output,
 };
 pub use fixup::{FixupContext, FixupOutcome, FixupRequest, spawn_fixup_bead};
 pub use iteration::{DEFAULT_MAX_ITERATIONS, IterationCap};
 pub use loom_templates::previous_failure::BadWalk;
 pub use loom_templates::review::ReviewLane;
 pub use phase_verdict::{
-    GateInputs, PhaseVerdict, RecoveryCause, ReviewConcern, ReviewFlag, decide, parse_review_flag,
+    GateInputs, PhaseVerdict, RecoveryCause, ReviewConcern, ReviewFlag, decide,
 };
 pub use production::ProductionReviewController;
 pub use recovery::{
-    RETRY_EXHAUSTED_CAUSE, RecoveryResolution, cause_to_previous_failure, resolve_recovery,
+    RETRY_EXHAUSTED_CAUSE, RecoveryResolution, cause_to_previous_failure,
+    concern_label_from_findings, resolve_recovery,
 };
 pub use runner::{ReviewController, ReviewOutcome, ReviewResult, review_loop};
 pub use verdict::{BeadSnapshot, PushGateRefuseCause, ReviewVerdict, diff_new_bead_ids};

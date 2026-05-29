@@ -47,17 +47,45 @@ use tracing::{info, warn};
 
 use super::context::{beads_summary, default_profile_for_spec, load_review_sources};
 use super::error::ReviewError;
-use super::phase_verdict::{
-    GateInputs, PhaseVerdict, RecoveryCause, ReviewConcern, ReviewFlag, decide,
-};
+use super::finding::{FindingValidator, TerminalSurface, WalkOutput};
+use super::phase_verdict::{GateInputs, PhaseVerdict, RecoveryCause, decide};
 use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
 use crate::todo::ExitSignal;
+
+/// Production validator wired into [`WalkOutput::from_stdout`] when the
+/// review-phase classifier parses agent stdout. Layers 1, 2, 4 and the
+/// `target.spec ∈ bonds` rule are enforced by `Finding::parse_payload`
+/// itself; this validator opts out of the I/O-bearing layers (Layer 3
+/// — spec-label resolution; Layer 5 — target content resolution),
+/// admitting every spec label and every target so the classifier
+/// preserves the maximum well-formed context for the recovery prompt.
+/// The mint pipeline runs its own workspace-backed validator.
+struct AcceptAllFindingValidator;
+
+impl FindingValidator for AcceptAllFindingValidator {
+    fn spec_label_is_known(&self, _label: &SpecLabel) -> bool {
+        true
+    }
+    fn criterion_anchor_resolves(&self, _spec: &SpecLabel, _anchor: &str) -> bool {
+        true
+    }
+    fn annotation_resolves(&self, _target_string: &str) -> bool {
+        true
+    }
+    fn file_exists(&self, _path: &str) -> bool {
+        true
+    }
+    fn invariant_resolves(&self, _spec: &SpecLabel, _section: &str, _tag: &str) -> bool {
+        true
+    }
+}
 
 pub struct ProductionReviewController<S, F, R: CommandRunner = TokioRunner>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
-    F: std::future::Future<Output = Result<(SessionOutcome, Option<ExitSignal>), ProtocolError>>
-        + Send,
+    F: std::future::Future<
+            Output = Result<(SessionOutcome, Option<ExitSignal>, String), ProtocolError>,
+        > + Send,
 {
     bd: BdClient<R>,
     label: SpecLabel,
@@ -117,8 +145,9 @@ where
 impl<S, F, R: CommandRunner> ProductionReviewController<S, F, R>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
-    F: std::future::Future<Output = Result<(SessionOutcome, Option<ExitSignal>), ProtocolError>>
-        + Send,
+    F: std::future::Future<
+            Output = Result<(SessionOutcome, Option<ExitSignal>, String), ProtocolError>,
+        > + Send,
 {
     #[expect(clippy::too_many_arguments, reason = "controller construction surface")]
     pub fn new(
@@ -357,39 +386,55 @@ where
     }
 }
 
-/// Map the reviewer agent's `(marker, exit_code)` into a [`ReviewOutcome`]
-/// (FR12 — single source of truth). Marker → outcome routing goes through
-/// the canonical [`decide`] gate function; the review phase isn't bead-
-/// scoped, so `bd_closed` / `diff_empty` / verify-failure observables are
-/// neutral defaults that reduce the gate to marker-only routing. The
-/// `LOOM_CONCERN` marker's structured payload is normalised here into
-/// [`GateInputs::review_flag`] so downstream surfaces consume the typed
-/// concern rather than re-parsing the token. The defensive
-/// `COMPLETE`/`NOOP` + non-zero exit guard predates `decide` because the
-/// gate's decision table does not consider exit code.
-fn classify_review_phase(marker: Option<&ExitSignal>, exit_code: i32) -> ReviewOutcome {
+/// Map the parsed reviewer walk into a [`ReviewOutcome`] (FR12 — single
+/// source of truth). The signature takes `&WalkOutput` (not raw `&str`
+/// or `Option<&ExitSignal>`) so production callers cannot bypass the
+/// parse pipeline and leave the streamed-finding stream at default
+/// empty — that silent-loss failure class is structurally
+/// unrepresentable per `specs/gate.md` § *Structural enforcement*.
+///
+/// Marker → outcome routing goes through the canonical [`decide`] gate
+/// function. The review phase isn't bead-scoped, so `bd_closed` /
+/// `diff_empty` / `verify_failures` / `review_flag` reduce to neutral
+/// defaults; per-finding routing now flows through
+/// [`GateInputs::streamed_findings`]. The
+/// pairing-rule fail cases (
+/// `LOOM_COMPLETE` + streamed findings,
+/// `LOOM_CONCERN` + zero findings,
+/// `LOOM_CONCERN` + malformed payload,
+/// any walk + per-line finding errors)
+/// surface via the typed `BadWalk` variant on
+/// [`RecoveryCause::BadWalk`].
+fn classify_review_phase(walk: &WalkOutput, exit_code: i32) -> ReviewOutcome {
+    let marker = exit_signal_from_terminal(&walk.terminal);
     if matches!(marker, Some(ExitSignal::Complete | ExitSignal::Noop)) && exit_code != 0 {
         return ReviewOutcome::Incomplete {
             detail: format!("agent emitted COMPLETE/NOOP but exited code {exit_code}"),
         };
     }
-    let review_flag = match marker {
-        Some(ExitSignal::Concern { summary }) => {
-            ReviewConcern::parse(summary).map(|concern| ReviewFlag {
-                concern,
-                detail: String::new(),
-            })
-        }
-        _ => None,
-    };
+    // Any per-line `LOOM_FINDING:` parse failure routes through the
+    // typed `BadWalk::MalformedFinding { errors, terminal }` variant
+    // before the pairing-rule checks fire — well-formed terminal is
+    // preserved alongside the per-line errors so the recovery prompt
+    // sees both pieces.
+    if !walk.finding_errors.is_empty() {
+        let badwalk = loom_templates::previous_failure::BadWalk::MalformedFinding {
+            errors: walk.finding_errors.clone(),
+            terminal: walk.terminal.clone(),
+        };
+        return ReviewOutcome::Incomplete {
+            detail: PreviousFailure::BadWalk(badwalk).to_string(),
+        };
+    }
     let inputs = GateInputs {
         bd_closed: true,
         diff_empty: false,
         verify_failures: vec![],
-        review_flag,
+        review_flag: None,
+        streamed_findings: walk.findings.clone(),
         ..GateInputs::default()
     };
-    match decide(marker, inputs) {
+    match decide(marker.as_ref(), inputs) {
         PhaseVerdict::Done => ReviewOutcome::Complete,
         PhaseVerdict::Blocked { reason } => ReviewOutcome::Incomplete {
             detail: format!("LOOM_BLOCKED: {reason}"),
@@ -398,15 +443,30 @@ fn classify_review_phase(marker: Option<&ExitSignal>, exit_code: i32) -> ReviewO
             detail: format!("LOOM_CLARIFY: {question}"),
         },
         PhaseVerdict::Recovery {
-            cause: RecoveryCause::ReviewConcern(flag),
-        } => ReviewOutcome::Incomplete {
-            detail: format!("LOOM_CONCERN: {} -- {}", flag.concern.as_str(), flag.detail),
-        },
+            cause: RecoveryCause::ReviewConcern { summary, findings },
+        } => {
+            let pf = PreviousFailure::ReviewConcern { summary, findings };
+            ReviewOutcome::Incomplete {
+                detail: pf.to_string(),
+            }
+        }
         PhaseVerdict::Recovery {
-            cause: RecoveryCause::BadWalk(badwalk),
-        } => ReviewOutcome::Incomplete {
-            detail: PreviousFailure::BadWalk(badwalk).to_string(),
-        },
+            cause: RecoveryCause::BadWalk(mut badwalk),
+        } => {
+            // The classifier sees the well-formed terminal payload for
+            // `BadWalk::Concern`; thread it through so the recovery
+            // prompt carries the literal text.
+            if let (
+                loom_templates::previous_failure::BadWalk::Concern { payload, .. },
+                TerminalSurface::Malformed { payload: from_term },
+            ) = (&mut badwalk, &walk.terminal)
+            {
+                *payload = from_term.clone();
+            }
+            ReviewOutcome::Incomplete {
+                detail: PreviousFailure::BadWalk(badwalk).to_string(),
+            }
+        }
         PhaseVerdict::Recovery {
             cause: RecoveryCause::SwallowedMarker,
         } => ReviewOutcome::Incomplete {
@@ -424,11 +484,40 @@ fn classify_review_phase(marker: Option<&ExitSignal>, exit_code: i32) -> ReviewO
     }
 }
 
+/// Reverse [`WalkOutput::terminal`] back to the per-phase [`ExitSignal`]
+/// the gate's [`decide`] table consumes. A
+/// [`TerminalSurface::Malformed`] payload feeds
+/// [`ExitSignal::BadWalk`] with [`BadWalk::Concern { payload, .. }`],
+/// preserving the literal payload through the gate boundary.
+fn exit_signal_from_terminal(terminal: &TerminalSurface) -> Option<ExitSignal> {
+    match terminal {
+        TerminalSurface::Complete => Some(ExitSignal::Complete),
+        TerminalSurface::Noop => Some(ExitSignal::Noop),
+        TerminalSurface::Blocked { reason } => Some(ExitSignal::Blocked {
+            reason: reason.clone(),
+        }),
+        TerminalSurface::Clarify { question } => Some(ExitSignal::Clarify {
+            question: question.clone(),
+        }),
+        TerminalSurface::Concern { summary } => Some(ExitSignal::Concern {
+            summary: summary.clone(),
+        }),
+        TerminalSurface::Malformed { payload } => Some(ExitSignal::BadWalk(
+            loom_templates::previous_failure::BadWalk::Concern {
+                payload: payload.clone(),
+                parsed_findings: Vec::new(),
+            },
+        )),
+        TerminalSurface::Missing => None,
+    }
+}
+
 impl<S, F, R: CommandRunner> ReviewController for ProductionReviewController<S, F, R>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
-    F: std::future::Future<Output = Result<(SessionOutcome, Option<ExitSignal>), ProtocolError>>
-        + Send,
+    F: std::future::Future<
+            Output = Result<(SessionOutcome, Option<ExitSignal>, String), ProtocolError>,
+        > + Send,
 {
     async fn run_review(&mut self) -> Result<RunReviewOutput, ReviewError> {
         let prompt = self.build_review_prompt().await?;
@@ -467,8 +556,16 @@ where
         );
         let result = (self.spawn)(spawn_config).await;
         drop(scratch);
-        let (outcome, marker) = result?;
-        let typed_outcome = classify_review_phase(marker.as_ref(), outcome.exit_code);
+        let (outcome, marker, stdout) = result?;
+        // Per `specs/gate.md` § *Structural enforcement*, the classifier
+        // consumes a typed `WalkOutput` (not raw `&str`); the
+        // `pub(crate)` constructor runs `parse_walk_output` once and
+        // populates the typed terminal surface + streamed findings +
+        // per-line parse errors, so the silent-loss class (production
+        // caller passing raw `&str` and leaving `streamed_findings` at
+        // default empty) is structurally unrepresentable.
+        let walk = WalkOutput::from_stdout(&stdout, &AcceptAllFindingValidator);
+        let typed_outcome = classify_review_phase(&walk, outcome.exit_code);
         Ok(RunReviewOutput {
             outcome: typed_outcome,
             marker,
@@ -721,7 +818,7 @@ mod tests {
     use std::ffi::OsStr;
     use std::future::Ready;
 
-    type SpawnFuture = Ready<Result<(SessionOutcome, Option<ExitSignal>), ProtocolError>>;
+    type SpawnFuture = Ready<Result<(SessionOutcome, Option<ExitSignal>, String), ProtocolError>>;
     type NoopSpawn = fn(SpawnConfig) -> SpawnFuture;
     type NoopController = ProductionReviewController<NoopSpawn, SpawnFuture>;
 
@@ -732,6 +829,7 @@ mod tests {
                 cost_usd: None,
             },
             Some(ExitSignal::Complete),
+            "LOOM_COMPLETE\n".to_string(),
         )))
     }
 
@@ -744,16 +842,24 @@ mod tests {
     /// to `swallowed-marker` recovery (mapped to `Incomplete`). Combined
     /// with the source-level `decide()` import in `classify_review_phase`,
     /// the two together fence the FR12 contract.
+    fn walk_with_terminal(terminal: TerminalSurface) -> WalkOutput {
+        WalkOutput {
+            terminal,
+            findings: Vec::new(),
+            finding_errors: Vec::new(),
+        }
+    }
+
     #[test]
     fn classify_review_phase_routes_marker_through_phase_verdict_decide() {
         // `COMPLETE` + clean exit → review phase passes.
         assert_eq!(
-            classify_review_phase(Some(&ExitSignal::Complete), 0),
+            classify_review_phase(&walk_with_terminal(TerminalSurface::Complete), 0),
             ReviewOutcome::Complete,
         );
         // `BLOCKED` self-report surfaces as `Incomplete` carrying the marker.
         match classify_review_phase(
-            Some(&ExitSignal::Blocked {
+            &walk_with_terminal(TerminalSurface::Blocked {
                 reason: "missing schema".into(),
             }),
             0,
@@ -766,7 +872,7 @@ mod tests {
         }
         // `CLARIFY` self-report surfaces as `Incomplete` carrying the question.
         match classify_review_phase(
-            Some(&ExitSignal::Clarify {
+            &walk_with_terminal(TerminalSurface::Clarify {
                 question: "additive only?".into(),
             }),
             0,
@@ -777,17 +883,17 @@ mod tests {
             ),
             other => panic!("expected Incomplete, got {other:?}"),
         }
-        // None marker → `Recovery::SwallowedMarker` → `Incomplete` carrying
+        // Missing terminal → `Recovery::SwallowedMarker` → `Incomplete` carrying
         // the swallowed-marker phrasing.
-        match classify_review_phase(None, 0) {
+        match classify_review_phase(&walk_with_terminal(TerminalSurface::Missing), 0) {
             ReviewOutcome::Incomplete { detail } => assert!(
                 detail.contains("swallowed marker"),
                 "swallowed-marker text missing: {detail}",
             ),
             other => panic!("expected Incomplete, got {other:?}"),
         }
-        // None marker + non-zero exit → exit code surfaces in detail.
-        match classify_review_phase(None, 7) {
+        // Missing + non-zero exit → exit code surfaces in detail.
+        match classify_review_phase(&walk_with_terminal(TerminalSurface::Missing), 7) {
             ReviewOutcome::Incomplete { detail } => assert!(
                 detail.contains('7'),
                 "exit code missing from detail: {detail}",
@@ -804,10 +910,10 @@ mod tests {
     /// findings stream.
     #[test]
     fn classify_review_phase_concern_without_findings_routes_through_bad_walk() {
-        let marker = ExitSignal::Concern {
+        let walk = walk_with_terminal(TerminalSurface::Concern {
             summary: "scope drift around the mint pipeline".into(),
-        };
-        match classify_review_phase(Some(&marker), 0) {
+        });
+        match classify_review_phase(&walk, 0) {
             ReviewOutcome::Incomplete { detail } => {
                 assert!(
                     detail.contains("LOOM_CONCERN"),
@@ -824,6 +930,17 @@ mod tests {
             }
             other => panic!("expected Incomplete, got {other:?}"),
         }
+    }
+
+    /// Compile-time signature pin (criterion
+    /// `classify_review_phase_signature_requires_typed_walk_output`):
+    /// the classifier consumes `&WalkOutput`, not raw `&str` or
+    /// `Option<&ExitSignal>`. The function-pointer assignment below is
+    /// the load-bearing assertion — if the signature ever drifts to
+    /// accept raw stdout, this fails to compile.
+    #[test]
+    fn classify_review_phase_signature_requires_typed_walk_output() {
+        let _: fn(&WalkOutput, i32) -> ReviewOutcome = classify_review_phase;
     }
 
     fn stub_manifest(dir: &std::path::Path) -> Arc<ProfileImageManifest> {
@@ -1095,6 +1212,7 @@ mod tests {
                         cost_usd: None,
                     },
                     Some(ExitSignal::Complete),
+                    "LOOM_COMPLETE\n".to_string(),
                 ))
             },
         );
@@ -1139,6 +1257,7 @@ mod tests {
                         cost_usd: None,
                     },
                     None,
+                    String::new(),
                 ))
             },
         );
@@ -1456,6 +1575,7 @@ mod tests {
                             cost_usd: None,
                         },
                         Some(ExitSignal::Complete),
+                        "LOOM_COMPLETE\n".to_string(),
                     ))
                 }
             },
@@ -1532,6 +1652,7 @@ mod tests {
                         cost_usd: None,
                     },
                     Some(ExitSignal::Complete),
+                    "LOOM_COMPLETE\n".to_string(),
                 ))
             },
         )

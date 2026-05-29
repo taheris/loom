@@ -2677,7 +2677,7 @@ fn run_review(
                     )
                     .await?;
                     let marker = parse_exit_signal(&output);
-                    Ok((outcome, marker))
+                    Ok((outcome, marker, output))
                 }
             },
         )

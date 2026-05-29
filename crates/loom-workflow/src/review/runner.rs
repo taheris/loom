@@ -266,23 +266,6 @@ pub async fn review_loop<C: ReviewController>(
         .map(|b| b.id.clone())
         .collect();
 
-    if let Some(ExitSignal::Concern { summary }) = marker.as_ref()
-        && new_ids.is_empty()
-        && blocked_ids.is_empty()
-        && clarify_ids.is_empty()
-    {
-        controller.emit_driver_event(
-            DriverKind::Other("review_protocol_violation".to_string()),
-            "reviewer emitted LOOM_CONCERN with no bead deltas — failing closed",
-            serde_json::json!({
-                "summary": summary,
-            }),
-        );
-        return Err(ReviewError::ConcernWithoutBeadDeltas {
-            summary: summary.clone(),
-        });
-    }
-
     let verify_exit = controller.verify_exit().await?;
     let integrity_findings = controller.integrity_findings().await?;
     let verdict = decide_verdict(
@@ -1132,55 +1115,20 @@ mod tests {
         Ok(())
     }
 
-    /// A reviewer that emits `LOOM_CONCERN` but mints no fix-up / clarify
-    /// / blocked beads has violated the review protocol — the concern has
-    /// no downstream surface. The guard fires before the four-condition
-    /// AND so a co-occurring verify failure cannot mask the protocol
-    /// violation via cause-ordering.
+    /// Per criterion `no_path_constructs_concern_without_bead_deltas_in_production`:
+    /// the legacy `ConcernWithoutBeadDeltas` guard is excised. Under the
+    /// new streaming-finding contract, `LOOM_CONCERN` is a wire-format
+    /// terminal whose payload is `{"summary": "..."}`; per-finding
+    /// routing happens on streamed `LOOM_FINDING:` lines via mint, not
+    /// by counting bead deltas inside this gate. A reviewer that emits
+    /// `LOOM_CONCERN` with no streamed findings now routes to
+    /// `BadWalk::ConcernWithoutFindings` at the gate boundary
+    /// (`phase_verdict::decide_concern`); the runner here trusts the
+    /// classifier's typed verdict and does not re-derive the protocol
+    /// violation by counting beads.
     #[tokio::test]
-    async fn gate_review_fails_when_concern_has_no_bead_deltas() {
-        let mut c = FakeController {
-            review: Some(ReviewOutcome::Incomplete {
-                detail: "LOOM_CONCERN: template-spec-drift -- templates direct removed surface"
-                    .into(),
-            }),
-            review_marker: Some(ExitSignal::Concern {
-                summary: "template-spec-drift removed surface".into(),
-            }),
-            pre_beads: vec![bead("lm-1", &["spec:harness"])],
-            post_beads: vec![bead("lm-1", &["spec:harness"])],
-            verify_exit: Some(1),
-            ..FakeController::default()
-        };
-        let err = review_loop(&mut c, IterationCap::default())
-            .await
-            .expect_err("protocol violation must surface as an error");
-        match err {
-            ReviewError::ConcernWithoutBeadDeltas { summary } => {
-                assert_eq!(summary, "template-spec-drift removed surface");
-            }
-            other => panic!("expected ConcernWithoutBeadDeltas, got {other:?}"),
-        }
-        let violation = c
-            .driver_events
-            .iter()
-            .find(|(k, _, _)| k == "review_protocol_violation")
-            .expect("review_protocol_violation event present");
-        assert_eq!(
-            violation.2["summary"].as_str(),
-            Some("template-spec-drift removed surface"),
-        );
-        assert_eq!(c.git_push_calls, 0);
-        assert_eq!(c.beads_push_calls, 0);
-        assert_eq!(c.exec_run_calls, 0);
-        assert!(c.apply_integrity_clarify_calls.is_empty());
-    }
-
-    /// The protocol guard is conditional on missing bead deltas; a
-    /// concern paired with at least one new / blocked / clarify bead is
-    /// the well-formed shape and flows into the verdict gate normally.
-    #[tokio::test]
-    async fn gate_review_succeeds_when_concern_has_fix_up_bead() -> Result<(), ReviewError> {
+    async fn no_path_constructs_concern_without_bead_deltas_in_production()
+    -> Result<(), ReviewError> {
         let mut c = FakeController {
             review: Some(ReviewOutcome::Incomplete {
                 detail: "LOOM_CONCERN: scope -- diff strays".into(),

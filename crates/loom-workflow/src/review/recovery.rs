@@ -20,10 +20,35 @@
 //! to spawn a fix-up bead during a Retry pass invoke
 //! [`super::fixup::spawn_fixup_bead`] explicitly.
 
+use loom_templates::finding::Finding;
 use loom_templates::run::{DriverNoticeCause, PreviousFailure, VerifierFailure};
 
-use super::phase_verdict::RecoveryCause;
+use super::phase_verdict::{RecoveryCause, ReviewConcern};
 use super::verify_fail::{VerifyFailure, format_previous_failure};
+
+/// Derive a human-readable concern label from the streamed-findings vec.
+/// Returns the [`ReviewConcern`] enum string for the homogeneous case
+/// (every finding shares one `ConcernToken` whose wire string matches a
+/// [`ReviewConcern`] variant), `"multiple"` for the heterogeneous case,
+/// and the singleton's wire string when the token isn't in
+/// [`ReviewConcern`] (a finding-only token like `spec-coherence-fail`).
+/// Per `specs/gate.md` § *Findings and Minting* — `ReviewConcern`
+/// survives as a display vocabulary only; the human label comes from
+/// `findings`, never from the terminal `summary`. Exported so the
+/// review controller's `bd update --notes` writer and verdict-log
+/// surfaces consume one canonical derivation.
+pub fn concern_label_from_findings(findings: &[Finding]) -> String {
+    let Some(first) = findings.first() else {
+        return "review-concern".to_owned();
+    };
+    if findings.iter().any(|f| f.token != first.token) {
+        return "multiple".to_owned();
+    }
+    let wire = first.token.as_wire();
+    ReviewConcern::parse(wire)
+        .map(|c| c.as_str().to_owned())
+        .unwrap_or_else(|| wire.to_owned())
+}
 
 /// Render a [`RecoveryCause`] into a `previous_failure` body suitable for
 /// threading into the next agent attempt's prompt — or into the blocked
@@ -45,9 +70,11 @@ fn render_previous_failure(cause: &RecoveryCause) -> String {
             failures,
             review_notes,
         } => format_previous_failure(failures, review_notes.as_ref()),
-        RecoveryCause::ReviewConcern(flag) => {
-            format!("[{}] {}", flag.concern.as_str(), flag.detail)
+        RecoveryCause::ReviewConcern { summary, findings } => PreviousFailure::ReviewConcern {
+            summary: summary.clone(),
+            findings: findings.clone(),
         }
+        .to_string(),
         RecoveryCause::ObserverAbort { reason } => {
             format!("Session aborted by observer: {reason}.")
         }
@@ -104,9 +131,9 @@ pub fn cause_to_previous_failure(cause: &RecoveryCause) -> PreviousFailure {
         RecoveryCause::VerifyFail { failures, .. } => {
             PreviousFailure::VerifyFailures(failures.iter().map(verify_failure_to_typed).collect())
         }
-        RecoveryCause::ReviewConcern(flag) => PreviousFailure::ReviewConcern {
-            summary: format!("[{}] {}", flag.concern.as_str(), flag.detail),
-            findings: Vec::new(),
+        RecoveryCause::ReviewConcern { summary, findings } => PreviousFailure::ReviewConcern {
+            summary: summary.clone(),
+            findings: findings.clone(),
         },
         RecoveryCause::TreeNotClean { dirty_paths } => PreviousFailure::TreeNotClean {
             dirty_paths: dirty_paths.clone(),
@@ -168,9 +195,22 @@ pub fn resolve_recovery(cause: &RecoveryCause, iter: u32, max: u32) -> RecoveryR
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review::phase_verdict::{ReviewConcern, ReviewFlag};
+    use crate::review::phase_verdict::ReviewConcern;
     use crate::review::verify_fail::VerifyFailure;
+    use loom_events::identifier::SpecLabel;
+    use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
     use loom_templates::run::BadWalk;
+
+    fn finding_with_token(token: ConcernToken) -> Finding {
+        Finding {
+            token,
+            bonds: vec![SpecLabel::new("gate")],
+            target: FindingTarget::Annotation {
+                target_string: "cargo test --lib sample".into(),
+            },
+            evidence: "streamed via LOOM_FINDING".into(),
+        }
+    }
 
     #[test]
     fn cause_to_previous_failure_maps_driver_notices() {
@@ -258,27 +298,59 @@ mod tests {
 
     #[test]
     fn cause_to_previous_failure_maps_review_concern_to_typed_concern() {
-        let cause = RecoveryCause::ReviewConcern(ReviewFlag {
-            concern: ReviewConcern::VerifierBypass,
-            detail: "test mocks the agent backend".into(),
-        });
+        let streamed = vec![finding_with_token(ConcernToken::VerifierBypass)];
+        let cause = RecoveryCause::ReviewConcern {
+            summary: "test mocks the agent backend".into(),
+            findings: streamed.clone(),
+        };
         match cause_to_previous_failure(&cause) {
             PreviousFailure::ReviewConcern { summary, findings } => {
-                assert!(
-                    summary.contains("[verifier-bypass]"),
-                    "summary names firing concern: {summary}",
+                assert_eq!(
+                    summary, "test mocks the agent backend",
+                    "summary is the verbatim LOOM_CONCERN summary, not concat",
                 );
-                assert!(
-                    summary.contains("test mocks the agent backend"),
-                    "summary carries detail: {summary}",
-                );
-                assert!(
-                    findings.is_empty(),
-                    "no streamed findings yet on this codepath: {findings:?}",
+                assert_eq!(
+                    findings, streamed,
+                    "findings thread through verbatim into the typed prompt context",
                 );
             }
             other => panic!("expected ReviewConcern, got {other:?}"),
         }
+    }
+
+    /// Per-criterion (`previous_failure_review_concern_renders_human_label_from_findings_not_summary`):
+    /// the human-readable concern label rendered for `bd update --notes`
+    /// and verdict-log surfaces is derived from `findings[0].token` (or
+    /// `"multiple"` for heterogeneous), NOT from the terminal `summary`.
+    #[test]
+    fn previous_failure_review_concern_renders_human_label_from_findings_not_summary() {
+        let homogeneous = vec![
+            finding_with_token(ConcernToken::VerifierBypass),
+            finding_with_token(ConcernToken::VerifierBypass),
+        ];
+        assert_eq!(
+            concern_label_from_findings(&homogeneous),
+            "verifier-bypass",
+            "homogeneous → token's wire string",
+        );
+
+        let heterogeneous = vec![
+            finding_with_token(ConcernToken::VerifierBypass),
+            finding_with_token(ConcernToken::WeakAssertion),
+        ];
+        assert_eq!(
+            concern_label_from_findings(&heterogeneous),
+            "multiple",
+            "heterogeneous → `multiple`",
+        );
+
+        // Finding-only token (not in ReviewConcern) returns the wire
+        // string so the human still sees an accurate label.
+        let finding_only = vec![finding_with_token(ConcernToken::SpecCoherenceFail)];
+        assert_eq!(
+            concern_label_from_findings(&finding_only),
+            "spec-coherence-fail",
+        );
     }
 
     #[test]
@@ -433,13 +505,13 @@ mod tests {
 
     #[test]
     fn review_concern_cause_round_trips_through_notes() {
-        // The `review-concern` cause carries the concern + verbatim flag
-        // detail; both must survive into the blocked notes when the
-        // recovery loop gives up on a flag.
-        let cause = RecoveryCause::ReviewConcern(ReviewFlag {
-            concern: ReviewConcern::VerifierBypass,
-            detail: "test mocks the agent backend".into(),
-        });
+        // The `review-concern` cause carries the terminal summary +
+        // streamed findings; both must survive into the blocked notes
+        // when the recovery loop gives up.
+        let cause = RecoveryCause::ReviewConcern {
+            summary: "two findings in the diff".into(),
+            findings: vec![finding_with_token(ConcernToken::VerifierBypass)],
+        };
         match resolve_recovery(&cause, 3, 3) {
             RecoveryResolution::Blocked { cause, notes } => {
                 assert_eq!(cause, "retry-exhausted");
@@ -448,16 +520,18 @@ mod tests {
                     "notes name original cause",
                 );
                 assert!(
-                    notes.contains("[verifier-bypass]"),
-                    "concern token preserved verbatim: {notes}",
+                    notes.contains("two findings in the diff"),
+                    "terminal summary preserved verbatim: {notes}",
                 );
                 assert!(
-                    notes.contains("test mocks the agent backend"),
-                    "review reasoning is preserved verbatim: {notes}",
+                    notes.contains("verifier-bypass"),
+                    "finding token preserved verbatim: {notes}",
                 );
             }
             other => panic!("expected Blocked, got {other:?}"),
         }
+        // Silence unused-import warning in the test module.
+        let _ = ReviewConcern::VerifierBypass;
     }
 
     #[test]

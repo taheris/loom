@@ -489,8 +489,8 @@ fn previous_failure_renders_review_concern_with_summary_and_findings() {
     };
     let rendered = pf.to_string();
     assert!(
-        rendered.starts_with("Review raised a concern: mock under test"),
-        "framing missing: {rendered}",
+        rendered.starts_with("Review raised a concern (mock-discipline): mock under test"),
+        "label-prefixed framing missing: {rendered}",
     );
     assert!(
         rendered.contains("mock-discipline @ test:tests/example.rs"),

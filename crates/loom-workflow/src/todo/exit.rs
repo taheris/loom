@@ -145,6 +145,7 @@ fn parse_concern(after_marker: &str) -> ExitSignal {
         },
         _ => ExitSignal::BadWalk(BadWalk::Concern {
             payload: payload.to_string(),
+            parsed_findings: Vec::new(),
         }),
     }
 }
@@ -294,7 +295,7 @@ mod tests {
     fn concern_malformed_payload_routes_to_bad_walk_concern_with_literal_payload() {
         let out = "LOOM_CONCERN: malformed payload with no separator\n";
         match parse_exit_signal(out) {
-            Some(ExitSignal::BadWalk(BadWalk::Concern { payload })) => {
+            Some(ExitSignal::BadWalk(BadWalk::Concern { payload, .. })) => {
                 assert_eq!(payload, "malformed payload with no separator");
             }
             other => panic!("expected BadWalk::Concern, got {other:?}"),
@@ -305,7 +306,7 @@ mod tests {
     fn concern_with_empty_summary_routes_to_bad_walk_concern() {
         let out = r#"LOOM_CONCERN: {"summary": ""}"#;
         match parse_exit_signal(out) {
-            Some(ExitSignal::BadWalk(BadWalk::Concern { payload })) => {
+            Some(ExitSignal::BadWalk(BadWalk::Concern { payload, .. })) => {
                 assert_eq!(payload, r#"{"summary": ""}"#);
             }
             other => panic!("expected BadWalk::Concern, got {other:?}"),
@@ -316,7 +317,7 @@ mod tests {
     fn concern_with_missing_summary_field_routes_to_bad_walk_concern() {
         let out = r#"LOOM_CONCERN: {"summery": "typo in the field name"}"#;
         match parse_exit_signal(out) {
-            Some(ExitSignal::BadWalk(BadWalk::Concern { payload })) => {
+            Some(ExitSignal::BadWalk(BadWalk::Concern { payload, .. })) => {
                 assert_eq!(payload, r#"{"summery": "typo in the field name"}"#);
             }
             other => panic!("expected BadWalk::Concern, got {other:?}"),
@@ -348,7 +349,7 @@ mod tests {
     fn legacy_token_reason_payload_routes_to_bad_walk_concern() {
         let out = "LOOM_CONCERN: verifier-bypass -- test mocks the agent backend\n";
         match parse_exit_signal(out) {
-            Some(ExitSignal::BadWalk(BadWalk::Concern { payload })) => {
+            Some(ExitSignal::BadWalk(BadWalk::Concern { payload, .. })) => {
                 assert_eq!(payload, "verifier-bypass -- test mocks the agent backend");
             }
             other => panic!("expected BadWalk::Concern, got {other:?}"),

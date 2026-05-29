@@ -59,6 +59,11 @@ impl GateSuccess {
     /// `LOOM_COMPLETE`, and `total_handoffs >= 1`. Any failed condition
     /// returns `Err(GateFail)` with the matching `GateFailReason` and the
     /// evidence carried verbatim for triage.
+    #[expect(
+        clippy::result_large_err,
+        reason = "GateFail carries the verbatim evidence (verify_exit, review_marker, review_log_path) for triage; \
+                  wrapping in Box would obscure the failure shape at the call sites that pattern-match on the variants"
+    )]
     pub(crate) fn new(evidence: &HandoffEvidence, total_handoffs: u32) -> Result<Self, GateFail> {
         let fail = |reason: GateFailReason| GateFail {
             reason,

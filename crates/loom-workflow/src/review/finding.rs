@@ -15,6 +15,14 @@
 //! walk-level parser ([`parse_walk_output`]) plus its
 //! [`WalkOutputError`], both of which depend on
 //! [`crate::todo::parse_exit_signal`] for the terminal-marker check.
+//!
+//! [`WalkOutput`] is the typed product the review-phase classifier
+//! consumes (per `specs/gate.md` § *Structural enforcement*) — its
+//! `pub(crate)` constructor takes the agent's combined stdout plus a
+//! [`FindingValidator`] and runs the parse pipeline once, so the
+//! silent-loss failure class (production caller passing raw `&str` and
+//! leaving `streamed_findings` at default empty) becomes structurally
+//! unrepresentable.
 
 use displaydoc::Display;
 use thiserror::Error;
@@ -23,8 +31,9 @@ pub use loom_templates::finding::{
     ConcernToken, Finding, FindingParseError, FindingTarget, FindingValidator, LOOM_FINDING_PREFIX,
     TargetKind,
 };
+pub use loom_templates::previous_failure::TerminalSurface;
 
-use crate::todo::parse_exit_signal;
+use crate::todo::{ExitSignal, parse_exit_signal};
 
 /// Top-level error for [`parse_walk_output`]. Either a per-line
 /// validation failure or the terminal-marker enforcement — a walk that
@@ -36,6 +45,95 @@ pub enum WalkOutputError {
     Finding(#[from] FindingParseError),
     /// walk emitted {findings_count} LOOM_FINDING line(s) but no terminal marker (LOOM_COMPLETE / LOOM_CONCERN / LOOM_BLOCKED / LOOM_CLARIFY)
     MissingTerminalMarker { findings_count: usize },
+}
+
+/// Typed product the review-phase classifier consumes — a single
+/// pre-parsed snapshot of the agent's stdout containing the typed
+/// terminal surface, the well-formed [`Finding`] records, and any
+/// per-line parse errors.
+///
+/// `WalkOutput`'s [`Self::from_stdout`] constructor is `pub(crate)` so
+/// production callers cannot bypass parsing — the silent-loss failure
+/// class (calling `classify_review_phase` with raw `&str` and leaving
+/// `streamed_findings` at default empty) becomes structurally
+/// unrepresentable per `specs/gate.md` § *Structural enforcement*.
+/// Mirrors the sealed-`MarkerProof` pattern from `## Marker`: validated
+/// construction through a `pub(crate)`-only mint authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalkOutput {
+    /// Typed terminal surface read from the final non-empty line of
+    /// stdout — well-formed [`ExitSignal`] variants surface as the
+    /// corresponding [`TerminalSurface`] variant; a malformed
+    /// `LOOM_CONCERN:` payload surfaces as
+    /// [`TerminalSurface::Malformed`]; absence of any marker surfaces
+    /// as [`TerminalSurface::Missing`].
+    pub terminal: TerminalSurface,
+    /// Findings that passed strict per-layer validation. Order
+    /// preserves stdout emission order.
+    pub findings: Vec<Finding>,
+    /// Per-line parse failures for `LOOM_FINDING:` substring matches
+    /// that did not pass strict validation. Carries the offending
+    /// 1-based line number and verbatim line text so the recovery
+    /// prompt can quote it back.
+    pub finding_errors: Vec<FindingParseError>,
+}
+
+impl WalkOutput {
+    /// Parse the agent's combined stdout into a typed `WalkOutput`.
+    /// Runs `LOOM_FINDING:` substring search, strict per-line
+    /// validation against `validator`, and terminal-marker
+    /// classification through [`parse_exit_signal`] — once, here, so
+    /// downstream classifier code consumes the typed product and
+    /// cannot accidentally re-derive it from `&str`.
+    ///
+    /// `pub(crate)` — production callers reach `WalkOutput` only via
+    /// this constructor, never by raw struct literal. The classifier
+    /// (`classify_review_phase`) takes `&WalkOutput` so the type
+    /// signature itself rejects un-parsed input.
+    pub(crate) fn from_stdout<V: FindingValidator + ?Sized>(output: &str, validator: &V) -> Self {
+        let mut findings = Vec::new();
+        let mut finding_errors = Vec::new();
+        for (idx, line) in output.lines().enumerate() {
+            let line_number = idx + 1;
+            let Some(payload_start) = line.find(LOOM_FINDING_PREFIX) else {
+                continue;
+            };
+            let payload = line[payload_start + LOOM_FINDING_PREFIX.len()..].trim_start();
+            match Finding::parse_payload(payload, line_number, line)
+                .and_then(|f| f.validate(line_number, line, validator).map(|()| f))
+            {
+                Ok(finding) => findings.push(finding),
+                Err(e) => finding_errors.push(e),
+            }
+        }
+        let terminal = terminal_surface_from_stdout(output);
+        Self {
+            terminal,
+            findings,
+            finding_errors,
+        }
+    }
+}
+
+/// Resolve the typed [`TerminalSurface`] from the agent's combined
+/// stdout. Well-formed terminal markers route through
+/// [`parse_exit_signal`] so the parser surface is shared with the
+/// `LOOM_FINDING:` stream check; a malformed terminal surfaces as
+/// [`TerminalSurface::Malformed`]; absence surfaces as
+/// [`TerminalSurface::Missing`].
+fn terminal_surface_from_stdout(output: &str) -> TerminalSurface {
+    match parse_exit_signal(output) {
+        Some(ExitSignal::Complete) => TerminalSurface::Complete,
+        Some(ExitSignal::Noop) => TerminalSurface::Noop,
+        Some(ExitSignal::Blocked { reason }) => TerminalSurface::Blocked { reason },
+        Some(ExitSignal::Clarify { question }) => TerminalSurface::Clarify { question },
+        Some(ExitSignal::Concern { summary }) => TerminalSurface::Concern { summary },
+        Some(ExitSignal::BadWalk(loom_templates::previous_failure::BadWalk::Concern {
+            payload,
+            ..
+        })) => TerminalSurface::Malformed { payload },
+        Some(ExitSignal::BadWalk(_)) | None => TerminalSurface::Missing,
+    }
 }
 
 /// Scan `output` for `LOOM_FINDING:` lines, parse and fully-validate
@@ -159,6 +257,81 @@ mod tests {
             LOOM_FINDING_PREFIX,
             payload(token, bonds, target_json, evidence)
         )
+    }
+
+    /// Per criterion
+    /// `backtick_wrapped_loom_finding_line_routes_to_bad_walk_malformed_finding_with_terminal_preserved`:
+    /// a `LOOM_FINDING:` line wrapped in markdown backticks (a common
+    /// LLM-emit failure) is detected by the substring search but fails
+    /// strict JSON validation; [`WalkOutput::from_stdout`] surfaces the
+    /// failure on `WalkOutput.finding_errors`, and the well-formed
+    /// terminator on `WalkOutput.terminal` rides through alongside it.
+    /// The classifier feeds both into `BadWalk::MalformedFinding` so
+    /// the recovery prompt names the failing line + preserved
+    /// terminal.
+    #[test]
+    fn backtick_wrapped_loom_finding_line_routes_to_bad_walk_malformed_finding_with_terminal_preserved()
+     {
+        let good_line = finding_line(
+            "spec-coherence-fail",
+            &["gate"],
+            r#"{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"}"#,
+            "well-formed",
+        );
+        // Wrap the second LOOM_FINDING: in backticks (markdown fence-style).
+        let bad_line = format!("`{LOOM_FINDING_PREFIX} {{not valid json — fenced in backticks}}`");
+        let output = format!("{good_line}\n{bad_line}\nLOOM_COMPLETE\n");
+        let walk = WalkOutput::from_stdout(&output, &AlwaysValid);
+        assert_eq!(walk.findings.len(), 1, "well-formed line still parses");
+        assert_eq!(walk.findings[0].token, ConcernToken::SpecCoherenceFail);
+        assert_eq!(
+            walk.finding_errors.len(),
+            1,
+            "backtick-wrapped line errored"
+        );
+        match &walk.finding_errors[0] {
+            FindingParseError::Json { raw, .. } => {
+                assert!(
+                    raw.contains("not valid json"),
+                    "raw payload preserved: {raw}",
+                );
+                assert!(
+                    raw.starts_with('`'),
+                    "raw line preserves the surrounding backticks: {raw}",
+                );
+            }
+            other => panic!("expected Json error, got {other:?}"),
+        }
+        assert_eq!(
+            walk.terminal,
+            TerminalSurface::Complete,
+            "well-formed terminator survives the per-line error",
+        );
+    }
+
+    /// Per criterion
+    /// `loom_finding_substring_match_requires_uppercase_and_colon_suffix`:
+    /// the `LOOM_FINDING:` substring match is case-sensitive on the
+    /// literal token plus the trailing colon. A bare-prose mention
+    /// like `the LOOM_FINDING marker` (no colon) or `loom_finding:`
+    /// (lowercase) does NOT trigger parsing. Pins the wire-format
+    /// boundary from `specs/gate.md` § *Strict parse-time validation*.
+    #[test]
+    fn loom_finding_substring_match_requires_uppercase_and_colon_suffix() {
+        let no_colon = "the LOOM_FINDING marker is mentioned in prose";
+        let lowercase = format!("loom_finding: {}", "{\"token\":\"x\"}");
+        let output = format!("{no_colon}\n{lowercase}\nLOOM_COMPLETE\n",);
+        let walk = WalkOutput::from_stdout(&output, &AlwaysValid);
+        assert!(
+            walk.findings.is_empty(),
+            "no findings parsed from bare-prose or lowercase mention: {:?}",
+            walk.findings,
+        );
+        assert!(
+            walk.finding_errors.is_empty(),
+            "no errors either — those lines did not match the prefix",
+        );
+        assert_eq!(walk.terminal, TerminalSurface::Complete);
     }
 
     #[test]

@@ -89,8 +89,12 @@ fn typed_retry_context_round_trips_through_public_re_exports() {
     };
     let rendered = review.to_string();
     assert!(
-        rendered.starts_with("Review raised a concern: spec coherence wobble"),
-        "{rendered}",
+        rendered.starts_with("Review raised a concern ("),
+        "label-prefixed framing missing: {rendered}",
+    );
+    assert!(
+        rendered.contains("spec coherence wobble"),
+        "summary in framing: {rendered}",
     );
     assert!(
         rendered.contains("spec-coherence-fail @ criterion:gate:verifier-honesty"),
@@ -101,7 +105,10 @@ fn typed_retry_context_round_trips_through_public_re_exports() {
         "{rendered}",
     );
 
-    let bad = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern { finding_count: 2 });
+    let bad = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern {
+        finding_count: 2,
+        findings: vec![],
+    });
     assert!(bad.to_string().contains("LOOM_FINDING"));
 }
 

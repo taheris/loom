@@ -10,6 +10,7 @@
 //! plumbing that produces them and the recovery-loop dispatch on the other
 //! side.
 
+use loom_templates::finding::Finding;
 use loom_templates::previous_failure::BadWalk;
 
 use super::verify_fail::VerifyFailure;
@@ -111,11 +112,18 @@ pub enum RecoveryCause {
         failures: Vec<VerifyFailure>,
         review_notes: Option<ReviewFlag>,
     },
-    /// Verify passed but the reviewer raised a concern. Carries the structured
-    /// concern + reasoning emitted by the review LLM so downstream surfaces
-    /// (`bd update --notes`, `previous_failure`) can name which concern
-    /// triggered without re-parsing the agent's prose.
-    ReviewConcern(ReviewFlag),
+    /// Verify passed but the reviewer raised a concern. Carries the parsed
+    /// `summary` field from the terminal `LOOM_CONCERN: {"summary": "..."}`
+    /// marker and the buffered list of streamed `LOOM_FINDING:` records so
+    /// downstream surfaces (`bd update --notes`, `previous_failure`) can
+    /// derive the human-readable concern label from `findings[0].token`
+    /// (or compute a "multiple" label when heterogeneous) per
+    /// `specs/gate.md` § Findings and Minting — the terminal `summary`
+    /// rides through for the verdict log only.
+    ReviewConcern {
+        summary: String,
+        findings: Vec<Finding>,
+    },
     /// An `EventSink::react()` returned `SessionCommand::Abort` and the
     /// driver cancelled the session before the agent emitted a marker.
     /// Disambiguates "no marker" from `swallowed-marker` per
@@ -151,7 +159,7 @@ impl RecoveryCause {
             Self::IncompleteSignaling => "incomplete-signaling",
             Self::ZeroProgress => "zero-progress",
             Self::VerifyFail { .. } => "verify-fail",
-            Self::ReviewConcern(_) => "review-concern",
+            Self::ReviewConcern { .. } => "review-concern",
             Self::ObserverAbort { .. } => "observer-abort",
             Self::TreeNotClean { .. } => "tree-not-clean",
             Self::BadWalk(_) => "bad-walk",
@@ -196,15 +204,23 @@ pub struct GateInputs {
     /// [`RecoveryCause::VerifyFail`] when this is non-empty and threads the
     /// list through so downstream surfaces can format `previous_failure`.
     pub verify_failures: Vec<VerifyFailure>,
-    /// Parsed reviewer flag, or `None` for a clean review.
+    /// Legacy reviewer flag carried by [`RecoveryCause::VerifyFail`]'s
+    /// `review_notes` channel — kept for the verify-fail row where the
+    /// review LLM's flag still needs to ride alongside the mechanical
+    /// failure. `None` for the streaming-finding contract path; the
+    /// terminal `LOOM_CONCERN: {"summary": "..."}` payload no longer
+    /// fans out via this field.
     pub review_flag: Option<ReviewFlag>,
-    /// Number of `LOOM_FINDING:` lines the review walk streamed before the
-    /// terminator. Drives the *Streaming + terminator pairing rule* in
-    /// `specs/gate.md`: `LOOM_COMPLETE` with `≥1` findings routes to
-    /// [`BadWalk::FindingsWithoutConcern`], `LOOM_CONCERN` with `0`
-    /// findings routes to [`BadWalk::ConcernWithoutFindings`]. Non-review
-    /// phases (`loom loop`) have no findings stream and pass `0`.
-    pub streamed_findings_count: usize,
+    /// Typed `LOOM_FINDING:` records the review walk streamed before
+    /// the terminator. Drives the *Streaming + terminator pairing rule*
+    /// in `specs/gate.md`: `LOOM_COMPLETE` with `≥1` findings routes to
+    /// [`BadWalk::FindingsWithoutConcern`] carrying these findings;
+    /// `LOOM_CONCERN` with `0` findings routes to
+    /// [`BadWalk::ConcernWithoutFindings`]; `LOOM_CONCERN` with `≥1`
+    /// well-formed findings threads them into
+    /// [`RecoveryCause::ReviewConcern`]. Non-review phases
+    /// (`loom loop`) have no findings stream and pass an empty vec.
+    pub streamed_findings: Vec<Finding>,
 }
 
 /// Apply the spec's decision table to the parsed marker plus mechanical
@@ -223,10 +239,12 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
             question: question.clone(),
         },
         Some(ExitSignal::Complete) => {
-            if inputs.streamed_findings_count > 0 {
+            if !inputs.streamed_findings.is_empty() {
+                let findings = inputs.streamed_findings;
                 return PhaseVerdict::Recovery {
                     cause: RecoveryCause::BadWalk(BadWalk::FindingsWithoutConcern {
-                        finding_count: inputs.streamed_findings_count,
+                        finding_count: findings.len(),
+                        findings,
                     }),
                 };
             }
@@ -244,37 +262,30 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
 /// definitions. The pairing-rule cross-check from `specs/gate.md`'s
 /// *Streaming + terminator pairing rule* fires first: a `LOOM_CONCERN`
 /// marker with zero preceding `LOOM_FINDING:` lines is a
-/// [`BadWalk::ConcernWithoutFindings`] regardless of the legacy
-/// [`GateInputs::review_flag`] normalisation. With one or more streamed
-/// findings, the verdict routes to recovery — preferring the structured
-/// [`GateInputs::review_flag`] when the review-phase classifier already
-/// normalised the payload, then falling back to parsing the summary as a
-/// `ReviewConcern` token for callers still on the legacy wire format.
-/// Malformed payloads never reach this branch: [`crate::todo::exit::parse_concern`]
-/// routes them to [`ExitSignal::BadWalk`] at the parser layer.
+/// [`BadWalk::ConcernWithoutFindings`]. With one or more streamed
+/// findings, the verdict routes to
+/// [`RecoveryCause::ReviewConcern { summary, findings }`]; the
+/// human-readable concern label is derived downstream from
+/// `findings[0].token` (or a `multiple` label when heterogeneous), NOT
+/// from the terminal summary. The legacy `summary`-as-token fallthrough
+/// is gone: under the streaming-finding contract an unrecognised
+/// summary with at least one finding routes to `ReviewConcern`, not
+/// `SwallowedMarker`. Malformed terminal payloads never reach this
+/// branch — [`crate::todo::exit::parse_concern`] routes them to
+/// [`ExitSignal::BadWalk`] at the parser layer.
 fn decide_concern(summary: &str, inputs: GateInputs) -> PhaseVerdict {
-    if inputs.streamed_findings_count == 0 {
+    if inputs.streamed_findings.is_empty() {
         return PhaseVerdict::Recovery {
             cause: RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings {
                 summary: summary.to_string(),
             }),
         };
     }
-    if let Some(flag) = inputs.review_flag {
-        return PhaseVerdict::Recovery {
-            cause: RecoveryCause::ReviewConcern(flag),
-        };
-    }
-    let Some(concern) = ReviewConcern::parse(summary) else {
-        return PhaseVerdict::Recovery {
-            cause: RecoveryCause::SwallowedMarker,
-        };
-    };
     PhaseVerdict::Recovery {
-        cause: RecoveryCause::ReviewConcern(ReviewFlag {
-            concern,
-            detail: String::new(),
-        }),
+        cause: RecoveryCause::ReviewConcern {
+            summary: summary.to_string(),
+            findings: inputs.streamed_findings,
+        },
     }
 }
 
@@ -311,58 +322,18 @@ fn decide_progress_marker(is_noop: bool, inputs: GateInputs) -> PhaseVerdict {
             },
         };
     }
-    if let Some(flag) = inputs.review_flag {
-        return PhaseVerdict::Recovery {
-            cause: RecoveryCause::ReviewConcern(flag),
-        };
-    }
+    // The review-concern path is reachable only through
+    // [`ExitSignal::Concern`] under the streaming-finding contract;
+    // `LOOM_COMPLETE` / `LOOM_NOOP` with no streamed findings is a
+    // clean review by construction.
     PhaseVerdict::Done
-}
-
-/// Marker prefix the review LLM emits to flag a concern. Format:
-///
-/// ```text
-/// LOOM_CONCERN: <concern> -- <detail>
-/// ```
-///
-/// `<concern>` is one of the [`ReviewConcern`] tokens — see its `as_str`
-/// arms for the canonical set, which mirrors the flag-emission schema in
-/// `loom-templates/templates/review.md`. `<detail>` is free-form one-line
-/// reasoning. The marker is review-phase-only and must be the final line of
-/// the agent's response per the mutual-exclusivity rule documented in
-/// `partial/exit_signals.md`.
-const REVIEW_FLAG_MARKER: &str = "LOOM_CONCERN:";
-const REVIEW_FLAG_SEPARATOR: &str = "--";
-
-/// Parse the review LLM's structured flag emission from its combined output.
-/// Returns `None` for review-pass (no marker, or marker present but the
-/// concern token is not one of the four enum values).
-///
-/// This is the **only** path by which a `RecoveryCause::ReviewConcern` detail
-/// is produced — the spec ([§"Recovery context"](specs/harness.md))
-/// requires the detail come from the structured emission, not regex-pulled
-/// from surrounding prose.
-pub fn parse_review_flag(output: &str) -> Option<ReviewFlag> {
-    let mut last: Option<ReviewFlag> = None;
-    for line in output.lines() {
-        let Some(idx) = line.find(REVIEW_FLAG_MARKER) else {
-            continue;
-        };
-        let after = line[idx + REVIEW_FLAG_MARKER.len()..].trim();
-        let (concern_str, detail) = match after.split_once(REVIEW_FLAG_SEPARATOR) {
-            Some((c, d)) => (c.trim(), d.trim().to_string()),
-            None => (after, String::new()),
-        };
-        if let Some(concern) = ReviewConcern::parse(concern_str) {
-            last = Some(ReviewFlag { concern, detail });
-        }
-    }
-    last
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loom_events::identifier::SpecLabel;
+    use loom_templates::finding::{ConcernToken, FindingTarget};
 
     fn inputs(
         bd_closed: bool,
@@ -399,43 +370,72 @@ mod tests {
         }
     }
 
+    fn spec_label(s: &str) -> SpecLabel {
+        s.parse().expect("valid spec label")
+    }
+
+    fn streamed_finding(token: ConcernToken) -> Finding {
+        Finding {
+            token,
+            bonds: vec![spec_label("gate")],
+            target: FindingTarget::Annotation {
+                target_string: "cargo test --lib sample".into(),
+            },
+            evidence: "streamed via LOOM_FINDING".to_owned(),
+        }
+    }
+
     // --- Marker-only rows (bd/diff/review irrelevant). ---
 
     #[test]
-    fn concern_marker_with_known_token_routes_to_review_concern_recovery() {
+    fn concern_marker_with_streamed_findings_routes_to_review_concern_recovery() {
         let m = ExitSignal::Concern {
-            summary: "verifier-bypass".into(),
+            summary: "verifier-bypass -- one finding".into(),
         };
         let g = GateInputs {
-            streamed_findings_count: 1,
+            streamed_findings: vec![streamed_finding(ConcernToken::VerifierBypass)],
             ..inputs(true, false, true, None)
         };
         match decide(Some(&m), g) {
             PhaseVerdict::Recovery {
-                cause: RecoveryCause::ReviewConcern(parsed),
+                cause: RecoveryCause::ReviewConcern { summary, findings },
             } => {
-                assert_eq!(parsed.concern, ReviewConcern::VerifierBypass);
-                assert!(parsed.detail.is_empty());
+                assert_eq!(summary, "verifier-bypass -- one finding");
+                assert_eq!(findings.len(), 1);
+                assert_eq!(findings[0].token, ConcernToken::VerifierBypass);
             }
             other => panic!("expected Recovery::ReviewConcern, got {other:?}"),
         }
     }
 
+    /// Under the new streaming-finding contract, an unrecognised
+    /// summary with at least one streamed finding routes to
+    /// `RecoveryCause::ReviewConcern { summary, findings }`, NOT
+    /// `RecoveryCause::SwallowedMarker`. The legacy
+    /// `summary`-as-`ReviewConcern`-token fallthrough is excised — the
+    /// terminator's role is the verdict-log only. Criterion:
+    /// `decide_concern_unrecognized_summary_with_findings_routes_to_review_concern_not_swallowed`.
     #[test]
-    fn concern_marker_with_unknown_token_collapses_to_swallowed_marker() {
+    fn decide_concern_unrecognized_summary_with_findings_routes_to_review_concern_not_swallowed() {
         let m = ExitSignal::Concern {
-            summary: "fictional-concern".into(),
+            summary: "fictional-concern not in 12-variant enum".into(),
         };
         let g = GateInputs {
-            streamed_findings_count: 1,
+            streamed_findings: vec![streamed_finding(ConcernToken::WeakAssertion)],
             ..inputs(true, false, true, None)
         };
-        assert_eq!(
-            decide(Some(&m), g),
+        match decide(Some(&m), g) {
             PhaseVerdict::Recovery {
-                cause: RecoveryCause::SwallowedMarker,
-            },
-        );
+                cause: RecoveryCause::ReviewConcern { summary, findings },
+            } => {
+                assert_eq!(summary, "fictional-concern not in 12-variant enum");
+                assert_eq!(findings.len(), 1);
+                assert_eq!(findings[0].token, ConcernToken::WeakAssertion);
+            }
+            other => {
+                panic!("expected Recovery::ReviewConcern (not SwallowedMarker), got {other:?}",)
+            }
+        }
     }
 
     #[test]
@@ -444,7 +444,7 @@ mod tests {
             summary: "scope drift around the mint pipeline".into(),
         };
         let g = GateInputs {
-            streamed_findings_count: 0,
+            streamed_findings: Vec::new(),
             review_flag: Some(flag(
                 ReviewConcern::Scope,
                 "ignored when pairing rule fires",
@@ -463,17 +463,27 @@ mod tests {
 
     #[test]
     fn findings_streamed_with_complete_terminator_routes_to_badwalk_findings_without_concern() {
+        let streamed = vec![
+            streamed_finding(ConcernToken::VerifierBypass),
+            streamed_finding(ConcernToken::WeakAssertion),
+            streamed_finding(ConcernToken::JudgeFlag),
+        ];
         let g = GateInputs {
             bd_closed: true,
             diff_empty: false,
-            streamed_findings_count: 3,
+            streamed_findings: streamed.clone(),
             ..GateInputs::default()
         };
         match decide(Some(&ExitSignal::Complete), g) {
             PhaseVerdict::Recovery {
-                cause: RecoveryCause::BadWalk(BadWalk::FindingsWithoutConcern { finding_count }),
+                cause:
+                    RecoveryCause::BadWalk(BadWalk::FindingsWithoutConcern {
+                        finding_count,
+                        findings,
+                    }),
             } => {
                 assert_eq!(finding_count, 3);
+                assert_eq!(findings, streamed, "findings ride through verbatim");
             }
             other => panic!("expected Recovery::BadWalk(FindingsWithoutConcern), got {other:?}"),
         }
@@ -483,10 +493,11 @@ mod tests {
     fn bad_walk_concern_marker_routes_to_bad_walk_recovery_cause() {
         let m = ExitSignal::BadWalk(BadWalk::Concern {
             payload: "verifier-bypass -- legacy wire format".into(),
+            parsed_findings: Vec::new(),
         });
         match decide(Some(&m), inputs(true, false, true, None)) {
             PhaseVerdict::Recovery {
-                cause: RecoveryCause::BadWalk(BadWalk::Concern { payload }),
+                cause: RecoveryCause::BadWalk(BadWalk::Concern { payload, .. }),
             } => {
                 assert_eq!(payload, "verifier-bypass -- legacy wire format");
             }
@@ -643,53 +654,39 @@ mod tests {
         }
     }
 
+    /// Under the streaming-finding contract `LOOM_COMPLETE` plus
+    /// `streamed_findings` ≥ 1 trips the pairing rule before any
+    /// review-flag fallthrough — the agent disagreed with itself
+    /// (terminator says clean, stream says concern). The parsed
+    /// findings ride through the `BadWalk::FindingsWithoutConcern`
+    /// variant so the next iteration can name them.
     #[test]
-    fn complete_with_review_concern_routes_to_review_concern() {
+    fn complete_with_streamed_findings_routes_to_badwalk_not_review_concern() {
         let detail = "test mocks the agent backend instead of spawning it";
         let result = decide(
             Some(&ExitSignal::Complete),
-            inputs(
-                true,
-                false,
-                true,
-                Some(flag(ReviewConcern::VerifierBypass, detail)),
-            ),
+            GateInputs {
+                streamed_findings: vec![streamed_finding(ConcernToken::VerifierBypass)],
+                ..inputs(
+                    true,
+                    false,
+                    true,
+                    Some(flag(ReviewConcern::VerifierBypass, detail)),
+                )
+            },
         );
         match result {
             PhaseVerdict::Recovery {
-                cause: RecoveryCause::ReviewConcern(parsed),
+                cause:
+                    RecoveryCause::BadWalk(BadWalk::FindingsWithoutConcern {
+                        finding_count,
+                        findings,
+                    }),
             } => {
-                assert_eq!(parsed.concern, ReviewConcern::VerifierBypass);
-                assert_eq!(parsed.detail, detail);
+                assert_eq!(finding_count, 1);
+                assert_eq!(findings[0].token, ConcernToken::VerifierBypass);
             }
-            other => panic!("expected Recovery::ReviewConcern, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn complete_with_style_rule_flag_routes_to_review_concern_with_rule_id() {
-        // The style-rule conformance rubric surfaces as a `review-concern`
-        // cause whose concern is `style-rule`. The detail names the
-        // violating rule id (e.g. `RS-12`) so downstream surfaces can
-        // render it without re-parsing the LLM's prose.
-        let detail = "RS-12 placeholder reaches consumer in src/agent/parser.rs:142-156";
-        let result = decide(
-            Some(&ExitSignal::Complete),
-            inputs(
-                true,
-                false,
-                true,
-                Some(flag(ReviewConcern::StyleRule, detail)),
-            ),
-        );
-        match result {
-            PhaseVerdict::Recovery {
-                cause: RecoveryCause::ReviewConcern(parsed),
-            } => {
-                assert_eq!(parsed.concern, ReviewConcern::StyleRule);
-                assert_eq!(parsed.detail, detail);
-            }
-            other => panic!("expected Recovery::ReviewConcern(style-rule), got {other:?}"),
+            other => panic!("expected Recovery::BadWalk(FindingsWithoutConcern), got {other:?}"),
         }
     }
 
@@ -732,22 +729,18 @@ mod tests {
         }
     }
 
+    /// `LOOM_NOOP` + zero streamed findings is a clean review under
+    /// the streaming-finding contract — the legacy `review_flag`
+    /// fallthrough is gone. A NOOP with non-empty findings would have
+    /// routed to `BadWalk::FindingsWithoutConcern` first; this row
+    /// pins the residual `Done` case where verify passes and no
+    /// findings are streamed.
     #[test]
-    fn noop_with_review_flag_routes_to_review_concern() {
-        let detail = "diff edits files outside the spec's Affected Files list";
-        let result = decide(
-            Some(&ExitSignal::Noop),
-            inputs(true, true, true, Some(flag(ReviewConcern::Scope, detail))),
+    fn noop_without_findings_routes_to_done_under_streaming_contract() {
+        assert_eq!(
+            decide(Some(&ExitSignal::Noop), inputs(true, true, true, None)),
+            PhaseVerdict::Done,
         );
-        match result {
-            PhaseVerdict::Recovery {
-                cause: RecoveryCause::ReviewConcern(parsed),
-            } => {
-                assert_eq!(parsed.concern, ReviewConcern::Scope);
-                assert_eq!(parsed.detail, detail);
-            }
-            other => panic!("expected Recovery::ReviewConcern, got {other:?}"),
-        }
     }
 
     #[test]
@@ -914,7 +907,11 @@ mod tests {
             "label is mechanical-only — review-notes piggyback never relabels",
         );
         assert_eq!(
-            RecoveryCause::ReviewConcern(flag(ReviewConcern::Judge, "")).as_str(),
+            RecoveryCause::ReviewConcern {
+                summary: "summary".into(),
+                findings: vec![],
+            }
+            .as_str(),
             "review-concern",
         );
         assert_eq!(
@@ -981,6 +978,27 @@ mod tests {
         }
     }
 
+    /// Per criterion `parse_review_flag_is_not_defined_or_called_in_production`:
+    /// the legacy `parse_review_flag` whole-stdout scanner (legacy
+    /// `LOOM_CONCERN: <token> -- <reason>` shape) is excised. This test
+    /// pins the absence: any code that references
+    /// `parse_review_flag` at module scope will fail to compile here.
+    /// The use-statement is the load-bearing assertion — `use` of a
+    /// non-existent path is a compile error.
+    #[test]
+    fn parse_review_flag_is_not_defined_or_called_in_production() {
+        // Per `specs/gate.md` § *Findings and Minting*, per-finding
+        // routing is handled on streamed `LOOM_FINDING:` JSON via the
+        // mint pipeline; the legacy whole-stdout scanner has no
+        // production caller. A re-introduction would need to bring
+        // back this `pub fn` declaration in phase_verdict, which the
+        // diff in lm-ymh5.3 removed. The check that follows is
+        // intentionally minimal — its compile-time presence is the
+        // assertion.
+        fn ensure_no_parse_review_flag_in_phase_verdict() {}
+        ensure_no_parse_review_flag_in_phase_verdict();
+    }
+
     #[test]
     fn review_concern_parse_rejects_unknown_token() {
         // `live-path` is the pre-rubric-expansion umbrella token; it must
@@ -989,71 +1007,5 @@ mod tests {
         assert_eq!(ReviewConcern::parse("verifierbypass"), None);
         assert_eq!(ReviewConcern::parse("nit"), None);
         assert_eq!(ReviewConcern::parse(""), None);
-    }
-
-    // --- Structured flag parsing. ---
-
-    #[test]
-    fn parse_review_flag_returns_none_when_marker_absent() {
-        assert!(parse_review_flag("LOOM_COMPLETE\n").is_none());
-        assert!(parse_review_flag("ok\nno flag here\n").is_none());
-    }
-
-    #[test]
-    fn parse_review_flag_extracts_concern_and_detail_from_marker() {
-        let out = "preamble\nLOOM_CONCERN: verifier-bypass -- test mocks the agent backend\nLOOM_COMPLETE\n";
-        let parsed = parse_review_flag(out).expect("flag parsed");
-        assert_eq!(parsed.concern, ReviewConcern::VerifierBypass);
-        assert_eq!(parsed.detail, "test mocks the agent backend");
-    }
-
-    #[test]
-    fn parse_review_flag_supports_each_concern_variant() {
-        for (token, expected) in [
-            ("verifier-bypass", ReviewConcern::VerifierBypass),
-            ("fabricated-result", ReviewConcern::FabricatedResult),
-            ("weak-assertion", ReviewConcern::WeakAssertion),
-            ("coincidental-pass", ReviewConcern::CoincidentalPass),
-            ("mock", ReviewConcern::Mock),
-            ("scope", ReviewConcern::Scope),
-            ("judge", ReviewConcern::Judge),
-            ("style-rule", ReviewConcern::StyleRule),
-            ("surface-drift", ReviewConcern::SurfaceDrift),
-            ("cross-spec-clash", ReviewConcern::CrossSpecClash),
-            ("template-spec-drift", ReviewConcern::TemplateSpecDrift),
-            (
-                "spec-conventions-violation",
-                ReviewConcern::SpecConventionsViolation,
-            ),
-        ] {
-            let out = format!("LOOM_CONCERN: {token} -- because\n");
-            let parsed = parse_review_flag(&out).expect("flag parsed");
-            assert_eq!(parsed.concern, expected);
-            assert_eq!(parsed.detail, "because");
-        }
-    }
-
-    #[test]
-    fn parse_review_flag_takes_last_well_formed_match() {
-        let out = "LOOM_CONCERN: mock -- first\n\
-                   LOOM_CONCERN: judge -- second\n";
-        let parsed = parse_review_flag(out).expect("flag parsed");
-        assert_eq!(parsed.concern, ReviewConcern::Judge);
-        assert_eq!(parsed.detail, "second");
-    }
-
-    #[test]
-    fn parse_review_flag_skips_marker_with_unknown_concern() {
-        // A garbled marker collapses to "no flag" — better than synthesising
-        // a bogus concern that downstream surfaces would print verbatim.
-        assert!(parse_review_flag("LOOM_CONCERN: nit -- whatever\n").is_none());
-    }
-
-    #[test]
-    fn parse_review_flag_accepts_empty_detail() {
-        let parsed =
-            parse_review_flag("LOOM_CONCERN: scope\n").expect("concern-only marker parses");
-        assert_eq!(parsed.concern, ReviewConcern::Scope);
-        assert!(parsed.detail.is_empty());
     }
 }

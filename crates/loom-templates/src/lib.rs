@@ -37,7 +37,7 @@ pub use msg::{ClarifyBead, ClarifyOption, MsgContext};
 pub use plan::{PlanNewContext, PlanUpdateContext};
 pub use previous_failure::{
     BadWalk, DriverNoticeCause, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, STDERR_TAIL_PER_BLOCK,
-    VerifierFailure,
+    TerminalSurface, VerifierFailure,
 };
 pub use review::{ReviewContext, ReviewSource};
 pub use run::LoopContext;

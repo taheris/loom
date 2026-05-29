@@ -20,7 +20,7 @@
 
 use std::fmt::{self, Display};
 
-use crate::finding::Finding;
+use crate::finding::{Finding, FindingParseError};
 
 /// Maximum length of the rendered `previous_failure` body. The render path
 /// truncates anything past this at a char boundary so multi-byte stderr does
@@ -100,13 +100,23 @@ impl DriverNoticeCause {
 /// `RecoveryCause::BadWalk(BadWalk)` wrapped pattern that
 /// `RecoveryCause::ReviewConcern(ReviewFlag)` already uses at the workflow
 /// layer (per `specs/templates.md` § Typed `PreviousFailure`).
+///
+/// Each variant carries the **maximum well-formed context** by struct
+/// shape per `specs/gate.md` § *Maximum-context preservation invariant*
+/// — the failure mode "lost the agent's diagnosis when one piece of the
+/// walk was malformed" is structurally unrepresentable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BadWalk {
     /// `LOOM_CONCERN:` payload did not parse as
     /// `{"summary": "<non-empty>"}` — invalid JSON, missing
     /// `summary` field, or empty `summary`. The literal post-marker
-    /// text is preserved for the recovery prompt.
-    Concern { payload: String },
+    /// text is preserved for the recovery prompt, alongside any
+    /// `LOOM_FINDING:` lines that streamed cleanly before the bad
+    /// terminator.
+    Concern {
+        payload: String,
+        parsed_findings: Vec<Finding>,
+    },
 
     /// Terminator claimed concern but zero `LOOM_FINDING:` lines
     /// streamed during the walk. The parsed summary is preserved
@@ -114,9 +124,74 @@ pub enum BadWalk {
     ConcernWithoutFindings { summary: String },
 
     /// One or more `LOOM_FINDING:` lines streamed but the
-    /// terminator was `LOOM_COMPLETE`. The count is preserved
-    /// for the recovery prompt.
-    FindingsWithoutConcern { finding_count: usize },
+    /// terminator was `LOOM_COMPLETE`. The parsed findings ride
+    /// through so the next iteration's prompt can name them
+    /// per the pairing-rule table in `specs/gate.md`.
+    FindingsWithoutConcern {
+        finding_count: usize,
+        findings: Vec<Finding>,
+    },
+
+    /// One or more `LOOM_FINDING:` lines failed strict validation.
+    /// The well-formed terminal surface rides through alongside the
+    /// per-line errors so the recovery prompt can name both pieces
+    /// (when the terminator was also malformed, it is preserved via
+    /// `TerminalSurface::Malformed { payload }`).
+    MalformedFinding {
+        errors: Vec<FindingParseError>,
+        terminal: TerminalSurface,
+    },
+}
+
+/// Typed terminal surface a review walk left behind. Mirrors
+/// [`crate::ExitSignal`]'s well-formed variants and adds
+/// [`TerminalSurface::Malformed`] for the terminal-marker parse-failure
+/// case and [`TerminalSurface::Missing`] for the absent-terminator case,
+/// so `BadWalk::MalformedFinding { terminal, .. }` can carry every
+/// possible terminal shape by struct.
+///
+/// Lives in `loom-templates` because `BadWalk::MalformedFinding`
+/// embeds it; `loom-workflow::review::WalkOutput` re-exports the type
+/// so the review classifier feeds it into the verdict gate per
+/// `specs/gate.md` § *Structural enforcement*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalSurface {
+    /// `LOOM_COMPLETE` on the final non-empty line.
+    Complete,
+    /// `LOOM_NOOP` on the final non-empty line.
+    Noop,
+    /// `LOOM_BLOCKED` on the final non-empty line; `reason` is the
+    /// adjacent prose read by the parser.
+    Blocked { reason: String },
+    /// `LOOM_CLARIFY` on the final non-empty line; `question` is the
+    /// adjacent prose read by the parser.
+    Clarify { question: String },
+    /// `LOOM_CONCERN: {"summary": "..."}` parsed cleanly.
+    Concern { summary: String },
+    /// `LOOM_CONCERN:` was present but its JSON payload failed parse
+    /// (invalid JSON, missing `summary`, or empty `summary`). The
+    /// literal post-marker text is preserved.
+    Malformed { payload: String },
+    /// No terminator on the final non-empty line.
+    Missing,
+}
+
+impl TerminalSurface {
+    /// Stable label used in `BadWalk::MalformedFinding` recovery
+    /// rendering so the agent sees what the terminal looked like
+    /// alongside the per-finding errors.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Complete => "LOOM_COMPLETE",
+            Self::Noop => "LOOM_NOOP",
+            Self::Blocked { .. } => "LOOM_BLOCKED",
+            Self::Clarify { .. } => "LOOM_CLARIFY",
+            Self::Concern { .. } => "LOOM_CONCERN (well-formed)",
+            Self::Malformed { .. } => "LOOM_CONCERN (malformed payload)",
+            Self::Missing => "no terminal marker on the final non-empty line",
+        }
+    }
 }
 
 /// One failing verifier captured by the gate. `stderr_tail` is the tail of
@@ -186,7 +261,13 @@ fn render_body(failure: &PreviousFailure) -> String {
 }
 
 fn render_review_concern(summary: &str, findings: &[Finding]) -> String {
-    let mut out = format!("Review raised a concern: {summary}");
+    // Per `specs/gate.md` § *Findings and Minting*, the human-readable
+    // concern label is derived from `findings[0].token` (or a
+    // `multiple` label when the streamed tokens are heterogeneous), NOT
+    // from the terminal `summary` payload. The summary still rides
+    // through for the verdict log only.
+    let label = concern_label_from_findings(findings);
+    let mut out = format!("Review raised a concern ({label}): {summary}");
     for finding in findings {
         out.push_str("\n\n");
         out.push_str(finding.token.as_wire());
@@ -201,20 +282,92 @@ fn render_review_concern(summary: &str, findings: &[Finding]) -> String {
     out
 }
 
+/// Derive a human-readable concern label from the streamed-findings
+/// vec for `Display` of [`PreviousFailure::ReviewConcern`]. Returns the
+/// finding token's wire string for the homogeneous case, `"multiple"`
+/// for the heterogeneous case, and `"review-concern"` when no findings
+/// streamed (the BadWalk path normally handles that, but the default is
+/// safe). Per `specs/gate.md` § *Findings and Minting* — the human
+/// label comes from `findings`, never from `summary`.
+fn concern_label_from_findings(findings: &[Finding]) -> String {
+    let Some(first) = findings.first() else {
+        return "review-concern".to_owned();
+    };
+    if findings.iter().any(|f| f.token != first.token) {
+        return "multiple".to_owned();
+    }
+    first.token.as_wire().to_owned()
+}
+
 fn render_bad_walk(badwalk: &BadWalk) -> String {
     match badwalk {
-        BadWalk::Concern { payload } => format!(
-            "Your LOOM_CONCERN payload did not parse as {{\"summary\": \"<non-empty>\"}}. \
-             Literal payload: {payload}",
-        ),
+        BadWalk::Concern {
+            payload,
+            parsed_findings,
+        } => {
+            let mut out = format!(
+                "Your LOOM_CONCERN payload did not parse as {{\"summary\": \"<non-empty>\"}}. \
+                 Literal payload: {payload}",
+            );
+            let count = parsed_findings.len();
+            if count > 0 {
+                out.push_str(&format!(
+                    "\n\n{count} finding(s) parsed cleanly before the malformed terminator:",
+                ));
+                for finding in parsed_findings {
+                    append_finding_digest(&mut out, finding);
+                }
+            }
+            out
+        }
         BadWalk::ConcernWithoutFindings { summary } => format!(
             "You emitted LOOM_CONCERN ({summary}) but no LOOM_FINDING: lines streamed. \
              Either emit findings before the terminator or use LOOM_COMPLETE.",
         ),
-        BadWalk::FindingsWithoutConcern { finding_count } => format!(
-            "You streamed {finding_count} LOOM_FINDING line(s) but terminated with \
-             LOOM_COMPLETE. Use LOOM_CONCERN: {{\"summary\": \"...\"}} when findings are emitted.",
-        ),
+        BadWalk::FindingsWithoutConcern {
+            finding_count,
+            findings,
+        } => {
+            let mut out = format!(
+                "You streamed {finding_count} LOOM_FINDING line(s) but terminated with \
+                 LOOM_COMPLETE. Use LOOM_CONCERN: {{\"summary\": \"...\"}} when findings are emitted.",
+            );
+            if !findings.is_empty() {
+                out.push_str("\n\nParsed findings:");
+                for finding in findings {
+                    append_finding_digest(&mut out, finding);
+                }
+            }
+            out
+        }
+        BadWalk::MalformedFinding { errors, terminal } => {
+            let mut out = String::from(
+                "One or more LOOM_FINDING: lines failed strict validation. \
+                 Re-emit each finding as a single line: \
+                 `LOOM_FINDING: {\"token\":\"...\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}`.",
+            );
+            for err in errors {
+                out.push_str("\n\n");
+                out.push_str(&err.to_string());
+            }
+            out.push_str(&format!("\n\nYour terminal was: {}", terminal.label()));
+            if let TerminalSurface::Malformed { payload } = terminal {
+                out.push_str(&format!(" — literal payload: {payload}"));
+            }
+            out
+        }
+    }
+}
+
+fn append_finding_digest(out: &mut String, finding: &Finding) {
+    out.push_str("\n- ");
+    out.push_str(finding.token.as_wire());
+    out.push_str(" @ ");
+    out.push_str(&finding.target.canonical_form());
+    let evidence = finding.evidence.trim_end();
+    if !evidence.is_empty() {
+        out.push_str(" — ");
+        out.push_str(evidence);
     }
 }
 
@@ -306,7 +459,7 @@ fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::finding::{ConcernToken, FindingTarget};
+    use crate::finding::{ConcernToken, FindingParseError, FindingTarget};
     use loom_events::identifier::SpecLabel;
 
     fn spec_label(s: &str) -> SpecLabel {
@@ -371,9 +524,13 @@ mod tests {
             ],
         };
         let rendered = pf.to_string();
+        // Per `specs/gate.md` § *Findings and Minting*, the human label
+        // comes from `findings` (here heterogeneous → `multiple`), NOT
+        // from `summary` — the summary still rides through for the
+        // verdict-log surface.
         assert!(
-            rendered.starts_with("Review raised a concern: two findings"),
-            "framing prefix missing: {rendered}",
+            rendered.starts_with("Review raised a concern (multiple): two findings"),
+            "label-prefixed framing missing: {rendered}",
         );
         assert!(
             rendered.contains("verifier-bypass @ annotation:cargo test --lib sample"),
@@ -432,8 +589,8 @@ mod tests {
         }
         .to_string();
         assert!(
-            review.starts_with("Review raised a concern: one finding"),
-            "{review}",
+            review.starts_with("Review raised a concern (judge-flag): one finding"),
+            "label-prefixed framing missing: {review}",
         );
         assert!(
             review.contains("judge-flag @ annotation:cargo test --lib sample"),
@@ -446,6 +603,7 @@ mod tests {
 
         let bad_walk_concern = PreviousFailure::BadWalk(BadWalk::Concern {
             payload: "{not json".into(),
+            parsed_findings: vec![],
         })
         .to_string();
         assert!(
@@ -462,9 +620,11 @@ mod tests {
             "{bad_walk_no_findings}",
         );
 
-        let bad_walk_no_concern =
-            PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern { finding_count: 3 })
-                .to_string();
+        let bad_walk_no_concern = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern {
+            finding_count: 3,
+            findings: vec![],
+        })
+        .to_string();
         assert!(
             bad_walk_no_concern.starts_with("You streamed 3 LOOM_FINDING line(s)"),
             "{bad_walk_no_concern}",
@@ -491,11 +651,145 @@ mod tests {
     fn bad_walk_concern_renders_with_literal_payload() {
         let pf = PreviousFailure::BadWalk(BadWalk::Concern {
             payload: "{\"summery\": \"typo\"}".into(),
+            parsed_findings: vec![],
         });
         let rendered = pf.to_string();
         assert!(
             rendered.contains("{\"summery\": \"typo\"}"),
             "literal payload missing: {rendered}",
+        );
+    }
+
+    /// `BadWalk::Concern { parsed_findings, .. }` carries any findings
+    /// that streamed cleanly before the malformed terminator — per
+    /// `specs/gate.md` § *Maximum-context preservation invariant* —
+    /// and `Display` surfaces them in the recovery prompt so the agent
+    /// keeps the work even though the terminator was malformed.
+    /// Criterion: `bad_walk_concern_preserves_well_formed_findings_alongside_malformed_payload`.
+    #[test]
+    fn bad_walk_concern_preserves_well_formed_findings_alongside_malformed_payload() {
+        let findings = vec![
+            sample_finding(ConcernToken::VerifierBypass, "test mocks the backend"),
+            sample_finding(ConcernToken::WeakAssertion, "asserts only prefix"),
+        ];
+        let pf = PreviousFailure::BadWalk(BadWalk::Concern {
+            payload: "{not json".into(),
+            parsed_findings: findings,
+        });
+        let rendered = pf.to_string();
+        assert!(
+            rendered.contains("2 finding(s) parsed cleanly"),
+            "digest preamble missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("verifier-bypass @ annotation:cargo test --lib sample"),
+            "first finding digest missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("weak-assertion @ annotation:cargo test --lib sample"),
+            "second finding digest missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("test mocks the backend"),
+            "first finding evidence missing: {rendered}",
+        );
+    }
+
+    /// `BadWalk::FindingsWithoutConcern { findings, .. }` carries the
+    /// parsed Findings vec — per `specs/gate.md` § *Maximum-context
+    /// preservation invariant* — so the next iteration's prompt names
+    /// each finding even though the terminator was `LOOM_COMPLETE`.
+    /// Criterion: `bad_walk_findings_without_concern_carries_parsed_findings_vec`.
+    #[test]
+    fn bad_walk_findings_without_concern_carries_parsed_findings_vec() {
+        let findings = vec![sample_finding(ConcernToken::JudgeFlag, "judge said no")];
+        let pf = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern {
+            finding_count: findings.len(),
+            findings,
+        });
+        let rendered = pf.to_string();
+        assert!(
+            rendered.contains("1 LOOM_FINDING line(s)"),
+            "count missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("judge-flag @ annotation:cargo test --lib sample"),
+            "per-finding digest missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("judge said no"),
+            "evidence missing: {rendered}",
+        );
+    }
+
+    /// `BadWalk::MalformedFinding { errors, terminal }` carries the
+    /// per-line errors *and* the typed terminal surface so the recovery
+    /// prompt can name both pieces — per `specs/gate.md` § *Maximum-
+    /// context preservation invariant*. Criteria:
+    /// `bad_walk_malformed_finding_variant_carries_errors_and_terminal_by_struct_shape`
+    /// and `backtick_wrapped_loom_finding_line_routes_to_bad_walk_malformed_finding_with_terminal_preserved`.
+    #[test]
+    fn bad_walk_malformed_finding_variant_carries_errors_and_terminal_by_struct_shape() {
+        let errors = vec![FindingParseError::Json {
+            line_number: 3,
+            raw: "`LOOM_FINDING: {not json}`".into(),
+            message: "expected value at line 1 column 1".into(),
+        }];
+        let terminal = TerminalSurface::Complete;
+        let pf = PreviousFailure::BadWalk(BadWalk::MalformedFinding {
+            errors: errors.clone(),
+            terminal: terminal.clone(),
+        });
+        let rendered = pf.to_string();
+        assert!(
+            rendered.contains("LOOM_COMPLETE"),
+            "terminal label missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("line 3"),
+            "error line-number missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("not valid JSON"),
+            "error detail missing: {rendered}",
+        );
+        // Struct-shape pin: the variant exists with these fields.
+        match pf {
+            PreviousFailure::BadWalk(BadWalk::MalformedFinding {
+                errors: e,
+                terminal: t,
+            }) => {
+                assert_eq!(e, errors);
+                assert_eq!(t, terminal);
+            }
+            other => panic!("expected BadWalk::MalformedFinding, got {other:?}"),
+        }
+    }
+
+    /// When the terminator itself failed to parse alongside the
+    /// findings, `BadWalk::MalformedFinding` carries the literal
+    /// terminal payload via `TerminalSurface::Malformed { payload }`.
+    /// The Display surfaces both the per-finding errors and the
+    /// malformed payload so the agent can fix both on retry.
+    #[test]
+    fn bad_walk_malformed_finding_with_malformed_terminal_renders_payload() {
+        let errors = vec![FindingParseError::Json {
+            line_number: 2,
+            raw: "LOOM_FINDING: garbage".into(),
+            message: "expected value".into(),
+        }];
+        let terminal = TerminalSurface::Malformed {
+            payload: "{\"summery\": \"typo\"}".into(),
+        };
+        let pf = PreviousFailure::BadWalk(BadWalk::MalformedFinding { errors, terminal });
+        let rendered = pf.to_string();
+        assert!(
+            rendered.contains("LOOM_CONCERN (malformed payload)"),
+            "malformed terminal label missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("{\"summery\": \"typo\"}"),
+            "literal malformed payload missing: {rendered}",
         );
     }
 
@@ -517,7 +811,10 @@ mod tests {
 
     #[test]
     fn bad_walk_findings_without_concern_renders_with_count() {
-        let pf = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern { finding_count: 5 });
+        let pf = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern {
+            finding_count: 5,
+            findings: vec![],
+        });
         let rendered = pf.to_string();
         assert!(
             rendered.contains("5 LOOM_FINDING"),

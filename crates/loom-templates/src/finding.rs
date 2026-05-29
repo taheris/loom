@@ -342,14 +342,20 @@ pub trait FindingValidator {
 /// offending line's 1-based number and verbatim text so a re-run prompt
 /// has the evidence it needs (per `specs/gate.md` § *Strict
 /// parse-time validation*).
-#[derive(Debug, Display, Error)]
+///
+/// Clone / PartialEq / Eq are required so this error type can ride
+/// inside `BadWalk::MalformedFinding { errors: Vec<FindingParseError>,
+/// .. }` (and through `ExitSignal::BadWalk`); for the `Json` variant the
+/// `source` field is the rendered `serde_json::Error` message rather
+/// than the typed error, so the chain via `std::error::Error::source`
+/// is the rendered string.
+#[derive(Debug, Display, Error, Clone, PartialEq, Eq)]
 pub enum FindingParseError {
-    /// line {line_number}: LOOM_FINDING payload is not valid JSON ({source}) — `{raw}`
+    /// line {line_number}: LOOM_FINDING payload is not valid JSON ({message}) — `{raw}`
     Json {
         line_number: usize,
         raw: String,
-        #[source]
-        source: serde_json::Error,
+        message: String,
     },
     /// line {line_number}: bonds element `{spec}` does not resolve to a workspace spec — `{raw}`
     UnknownBondSpec {
@@ -400,7 +406,7 @@ impl Finding {
             serde_json::from_str(payload).map_err(|source| FindingParseError::Json {
                 line_number,
                 raw: raw_line.to_owned(),
-                source,
+                message: source.to_string(),
             })?;
 
         let expected_kind = finding.token.expected_target_kind();
