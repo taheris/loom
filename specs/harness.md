@@ -2122,7 +2122,7 @@ Criteria.
       bead under `.wrapix/loom/beads/<id>/`, derived from the loom
       workspace via `git clone --local`; bead ids are globally unique
       so no spec partition appears in the path
-  [test?](bead_dispatch_creates_clone_under_loom_beads)
+  [test](bead_dispatch_creates_clone_under_loom_beads)
 - Bead workspaces persist across attempts, recovery iterations,
       and `loom loop` invocations until the bead's first attempt
       after `bd close`
