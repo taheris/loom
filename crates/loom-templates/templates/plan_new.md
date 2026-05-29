@@ -70,10 +70,15 @@ to record notes; the markdown holds the durable design only.
 A few interview-flow specifics this template owns (everything else lives in
 the conventions document):
 
-- Each success criterion gets a verifier annotation on the line below it.
+- Each success criterion gets **exactly one** verifier annotation on the
+  line below it — see *Atomic-acceptance discipline* in the Plan-Stage
+  Rubric. A bullet that needs two annotations is two criteria; split it.
   `[verify](tests/<label>-test.sh::test_function_name)` for criteria
   testable with a shell script; `[judge](tests/judges/<label>.sh::test_function_name)`
-  for criteria requiring LLM evaluation of source code.
+  for criteria requiring LLM evaluation of source code. When the
+  verifier's target won't resolve until a follow-on `loom loop` bead
+  lands, carry the pending modifier — `[verify?]` / `[judge?]` — per
+  the *Pending-modifier discipline* clause.
 - Test paths are relative to the repo root; function names use the
   `test_` prefix and snake_case.
 - Do NOT create the test files during this interview — just write the

@@ -2107,35 +2107,40 @@ Criteria.
 
 ### Bead dispatch
 
-- Loom owns a workspace at `.wrapix/loom/integration/` separate
-      from the operator's `/workspace`; `loom init` materializes it
-      (one-shot clone from origin) and `loom loop` never touches the
-      operator's working tree
-  [test](loom_init_materializes_loom_workspace)
-  [test](loom_loop_does_not_touch_operator_workspace)
+- `loom init` materializes the loom workspace at
+      `.wrapix/loom/integration/` (one-shot clone from origin) — the
+      workspace is separate from the operator's `/workspace`
+  [test?](loom_init_materializes_loom_workspace)
+- `loom loop` never touches the operator's working tree at
+      `/workspace`; all dispatch runs against the loom workspace
+  [test?](loom_loop_does_not_touch_operator_workspace)
 - The integration branch is settable via `[loom] integration_branch`
       in `config.toml` (default `main`); the loom workspace has that
       branch checked out and never switches
-  [test](integration_branch_setting_honored_by_loop)
+  [test?](integration_branch_setting_honored_by_loop)
 - `loom loop --parallel N` creates one bead workspace per dispatched
       bead under `.wrapix/loom/beads/<id>/`, derived from the loom
       workspace via `git clone --local`; bead ids are globally unique
       so no spec partition appears in the path
-  [test](bead_dispatch_creates_clone_under_loom_beads)
+  [test?](bead_dispatch_creates_clone_under_loom_beads)
 - Bead workspaces persist across attempts, recovery iterations,
-      and `loom loop` invocations; they are reaped only when the bead
-      transitions to `closed`
-  [test](bead_workspace_survives_retry_until_close)
-  [test](bead_workspace_reaped_on_bd_close)
+      and `loom loop` invocations until the bead's first attempt
+      after `bd close`
+  [test?](bead_workspace_survives_retry_until_close)
+- A bead workspace is reaped on the first `loom loop` iteration that
+      observes the bead in `closed` status
+  [test?](bead_workspace_reaped_on_bd_close)
 - Every dispatch attempt sees a clean working tree against the bead
       workspace's current HEAD; `target/`, `.git/`, and `.wrapix/`
       survive the pre-attempt reset
-  [test](bead_workspace_reset_preserves_target_and_dotwrapix)
-- `loom loop` startup runs a workspace-global GC sweep under the
-      spec advisory lock: every bead workspace under
-      `.wrapix/loom/beads/` whose bead is `closed` is removed
-  [test](loop_startup_gc_drops_closed_bead_workspaces)
-  [test](loop_startup_gc_skips_open_bead_workspaces)
+  [test?](bead_workspace_reset_preserves_target_and_dotwrapix)
+- `loom loop` startup drops every bead workspace under
+      `.wrapix/loom/beads/` whose bead is `closed`, under the spec
+      advisory lock
+  [test?](loop_startup_gc_drops_closed_bead_workspaces)
+- `loom loop` startup leaves bead workspaces alone whose bead is in
+      any non-closed state
+  [test?](loop_startup_gc_skips_open_bead_workspaces)
 - Each bead workspace's dispatch spawns its own `wrapix spawn`;
       spawns overlap in wall-clock under `--parallel N > 1`
   [test](concurrent_spawns_overlap_in_wall_clock)
@@ -2149,25 +2154,26 @@ Criteria.
 - Origin push of the integration branch retries non-fast-forward
       errors by fetching and re-rebasing onto
       `origin/<integration-branch>`
-  [test](origin_push_retries_non_fast_forward)
+  [test?](origin_push_retries_non_fast_forward)
 - On merge conflict or post-merge push failure, the bead workspace
       persists (the default per-bead-close behavior) and the bead is
       routed to `Blocked` per the verdict gate
   [test](parallel_conflict_preserves_worktree)
 - Bead containers receive the host `wrapix-beads` dolt socket as a
       single-file bind mount at `/workspace/.wrapix/dolt.sock` via
-      `SpawnConfig.extra_mounts`; the host-side hardlink shim is
-      removed
-  [test](bead_container_dolt_socket_via_extra_mounts)
-  [check](rg -n 'hard_link' crates/loom-driver/src/git/client.rs)
+      `SpawnConfig.extra_mounts`, replacing the host-side hardlink shim
+      previously used in `GitClient::create_worktree`
+  [test?](bead_container_dolt_socket_via_extra_mounts)
 - When `[loom] sccache_dir` is configured, the directory is
       bind-mounted into the loom workspace and every bead container
-      at the configured container path; cache hits are observable
-      across beads in a multi-bead loop. When unset, the mount is
-      omitted entirely
-  [test](sccache_mount_present_when_configured)
-  [test](sccache_mount_omitted_when_unset)
-  [judge](sccache_hits_visible_across_beads)
+      at the configured container path
+  [test?](sccache_mount_present_when_configured)
+- When `[loom] sccache_dir` is unset, no sccache mount appears on
+      the bead container spawn args
+  [test?](sccache_mount_omitted_when_unset)
+- Cache hits are observable across beads in a multi-bead loop when
+      `[loom] sccache_dir` is configured
+  [judge?](sccache_hits_visible_across_beads)
 - `GitClient` is the only module that imports `gix` or invokes the
       `git` CLI; callers see typed Rust methods
   [check](cargo run -p loom-walk -- git_client_encapsulation)

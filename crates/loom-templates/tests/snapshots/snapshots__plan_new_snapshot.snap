@@ -1,5 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
+assertion_line: 35
 expression: ctx.render().unwrap()
 ---
 # Specification Interview
@@ -132,10 +133,15 @@ template does not re-describe it.
 A few interview-flow specifics this template owns (everything else lives in
 the conventions document):
 
-- Each success criterion gets a verifier annotation on the line below it.
+- Each success criterion gets **exactly one** verifier annotation on the
+  line below it — see *Atomic-acceptance discipline* in the Plan-Stage
+  Rubric. A bullet that needs two annotations is two criteria; split it.
   `[verify](tests/<label>-test.sh::test_function_name)` for criteria
   testable with a shell script; `[judge](tests/judges/<label>.sh::test_function_name)`
-  for criteria requiring LLM evaluation of source code.
+  for criteria requiring LLM evaluation of source code. When the
+  verifier's target won't resolve until a follow-on `loom loop` bead
+  lands, carry the pending modifier — `[verify?]` / `[judge?]` — per
+  the *Pending-modifier discipline* clause.
 - Test paths are relative to the repo root; function names use the
   `test_` prefix and snake_case.
 - Do NOT create the test files during this interview — just write the
@@ -183,6 +189,12 @@ reads as a broken claim and trips the integrity gate at push time; a
 an explicit acknowledgement that the implementation is on the way. Walk
 every annotation this session added or touched: if its target won't
 resolve until a follow-on bead lands, mark it pending before exiting.
+
+**Atomic-acceptance discipline.** Each Success Criteria bullet carries
+**exactly one** verifier annotation. A bullet that needs two is two
+criteria — split. The integrity gate flags multi-annotation criteria
+with the `MultipleAnnotations` finding, so silent fan-out becomes a
+loud push-time failure.
 
 ### 2. Internal coherence check
 

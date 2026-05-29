@@ -56,6 +56,16 @@ dropped and no new note belongs).
 1. **Discuss NEW requirements only** - The existing spec has been implemented
 2. **Ask clarifying questions** to understand the additional work needed
 3. **Capture scope clearly** - What new functionality is being added?
+4. **Annotation discipline.** Each new success criterion gets **exactly
+   one** verifier annotation on the line below it — see *Atomic-acceptance
+   discipline* in the Plan-Stage Rubric. A bullet that needs two
+   annotations is two criteria; split it. When the verifier's target
+   won't resolve until a follow-on `loom loop` bead lands, carry the
+   pending modifier — `[verify?]` / `[judge?]` — per the
+   *Pending-modifier discipline* clause. Both rules apply to every
+   annotation this session adds *or modifies*; touching the surrounding
+   text of a criterion that already carries a pending or multi-
+   annotation pattern is the right moment to fix it.
 
 {% include "partial/sibling_spec_editing.md" %}
 

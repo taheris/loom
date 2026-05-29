@@ -41,6 +41,12 @@ an explicit acknowledgement that the implementation is on the way. Walk
 every annotation this session added or touched: if its target won't
 resolve until a follow-on bead lands, mark it pending before exiting.
 
+**Atomic-acceptance discipline.** Each Success Criteria bullet carries
+**exactly one** verifier annotation. A bullet that needs two is two
+criteria — split. The integrity gate flags multi-annotation criteria
+with the `MultipleAnnotations` finding, so silent fan-out becomes a
+loud push-time failure.
+
 ### 2. Internal coherence check
 
 Read the spec under interview end-to-end and scan for internal
