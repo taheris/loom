@@ -4,8 +4,8 @@ use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, SpecLabel};
 
 pub use crate::previous_failure::{
-    DriverNoticeCause, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, ReviewConcernKind,
-    STDERR_TAIL_PER_BLOCK, VerifierFailure,
+    BadWalk, DriverNoticeCause, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, STDERR_TAIL_PER_BLOCK,
+    VerifierFailure,
 };
 
 /// Context for `loom loop` executing a single bead.

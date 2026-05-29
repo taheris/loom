@@ -3,8 +3,12 @@
 //! `PreviousFailure` is the tagged-enum surface that the driver populates from
 //! the verdict-gate cause classification and that `run.md` renders into the
 //! next agent attempt's prompt. The enum + its sub-types (`DriverNoticeCause`,
-//! `ReviewConcernKind`, `VerifierFailure`) are part of the `templates`
-//! public contract — consumers compose them into their own retry prompts.
+//! `BadWalk`, `VerifierFailure`) are part of the `templates` public contract —
+//! consumers compose them into their own retry prompts. The per-finding
+//! `Finding` record carried inside [`PreviousFailure::ReviewConcern`] is
+//! spec-owned by `loom-workflow` (per `specs/gate.md` § Findings and Minting)
+//! and re-exported from this crate to thread it through the typed
+//! retry-context surface.
 //!
 //! Caps follow `specs/templates.md` § Typed `PreviousFailure`:
 //!
@@ -15,6 +19,8 @@
 //!   exceeds budget.
 
 use std::fmt::{self, Display};
+
+use crate::finding::Finding;
 
 /// Maximum length of the rendered `previous_failure` body. The render path
 /// truncates anything past this at a char boundary so multi-byte stderr does
@@ -41,11 +47,18 @@ pub enum PreviousFailure {
     },
     /// One or more `[check]` / `[test]` / `[system]` verifier failures.
     VerifyFailures(Vec<VerifierFailure>),
-    /// Review LLM flagged a semantic concern.
+    /// Review LLM flagged one or more concerns. `summary` is the parsed
+    /// `summary` field from the terminal `LOOM_CONCERN: {"summary": "..."}`
+    /// marker; `findings` is the buffered list of streamed `LOOM_FINDING:`
+    /// records (typed [`Finding`] per `specs/gate.md` § Findings and Minting).
     ReviewConcern {
-        concern: ReviewConcernKind,
-        reason: String,
+        summary: String,
+        findings: Vec<Finding>,
     },
+    /// Review walk's terminal signal was malformed or mismatched with the
+    /// streamed-findings count. Per-variant recovery-prompt framing lives on
+    /// [`Display`].
+    BadWalk(BadWalk),
     /// Pre-verifier build/compile failure (the agent's code did not compile).
     BuildFailure { stage: String, output: String },
     /// Worker emitted `LOOM_COMPLETE` / `LOOM_NOOP` but left the working tree
@@ -81,46 +94,29 @@ impl DriverNoticeCause {
     }
 }
 
-/// Concrete review-rubric concerns the reviewer can flag. Defined in
-/// `specs/gate.md` § Per-diff stage checks; the `Other` arm keeps the
-/// type forward-compatible when gate.md grows new flag causes.
+/// Review-walk malformation variants surfaced by the verdict gate when the
+/// terminal `LOOM_CONCERN:` payload fails to parse or the
+/// `LOOM_FINDING:` stream and terminator disagree. Mirrors the
+/// `RecoveryCause::BadWalk(BadWalk)` wrapped pattern that
+/// `RecoveryCause::ReviewConcern(ReviewFlag)` already uses at the workflow
+/// layer (per `specs/templates.md` § Typed `PreviousFailure`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReviewConcernKind {
-    SpecCoherence,
-    OrphanIntegration,
-    VerifierBypass,
-    FabricatedResult,
-    WeakAssertion,
-    CoincidentalPass,
-    MockDiscipline,
-    VerifierTooNarrow,
-    ConcurrencyUntested,
-    ScopeCreep,
-    ScopeShortfall,
-    JudgeFlag,
-    Other(String),
-}
+pub enum BadWalk {
+    /// `LOOM_CONCERN:` payload did not parse as
+    /// `{"summary": "<non-empty>"}` — invalid JSON, missing
+    /// `summary` field, or empty `summary`. The literal post-marker
+    /// text is preserved for the recovery prompt.
+    Concern { payload: String },
 
-impl ReviewConcernKind {
-    /// Token form used in `LOOM_CONCERN:` payloads, `bd update --notes`, and
-    /// the rendered framing prefix.
-    pub fn as_token(&self) -> &str {
-        match self {
-            Self::SpecCoherence => "spec-coherence",
-            Self::OrphanIntegration => "orphan-integration",
-            Self::VerifierBypass => "verifier-bypass",
-            Self::FabricatedResult => "fabricated-result",
-            Self::WeakAssertion => "weak-assertion",
-            Self::CoincidentalPass => "coincidental-pass",
-            Self::MockDiscipline => "mock-discipline",
-            Self::VerifierTooNarrow => "verifier-too-narrow",
-            Self::ConcurrencyUntested => "concurrency-untested",
-            Self::ScopeCreep => "scope-creep",
-            Self::ScopeShortfall => "scope-shortfall",
-            Self::JudgeFlag => "judge-flag",
-            Self::Other(s) => s.as_str(),
-        }
-    }
+    /// Terminator claimed concern but zero `LOOM_FINDING:` lines
+    /// streamed during the walk. The parsed summary is preserved
+    /// so the recovery prompt can quote it back.
+    ConcernWithoutFindings { summary: String },
+
+    /// One or more `LOOM_FINDING:` lines streamed but the
+    /// terminator was `LOOM_COMPLETE`. The count is preserved
+    /// for the recovery prompt.
+    FindingsWithoutConcern { finding_count: usize },
 }
 
 /// One failing verifier captured by the gate. `stderr_tail` is the tail of
@@ -178,16 +174,53 @@ fn render_body(failure: &PreviousFailure) -> String {
             format!("Previous attempt: {detail}")
         }
         PreviousFailure::VerifyFailures(failures) => render_verify_failures(failures),
-        PreviousFailure::ReviewConcern { concern, reason } => {
-            format!(
-                "Review raised a concern ({token}): {reason}",
-                token = concern.as_token(),
-            )
+        PreviousFailure::ReviewConcern { summary, findings } => {
+            render_review_concern(summary, findings)
         }
+        PreviousFailure::BadWalk(badwalk) => render_bad_walk(badwalk),
         PreviousFailure::BuildFailure { stage, output } => {
             format!("Build failed at {stage}:\n{output}")
         }
         PreviousFailure::TreeNotClean { dirty_paths } => render_tree_not_clean(dirty_paths),
+    }
+}
+
+fn render_review_concern(summary: &str, findings: &[Finding]) -> String {
+    let mut out = format!(
+        "Review raised {n} concern(s) — {summary}",
+        n = findings.len(),
+    );
+    for finding in findings {
+        let evidence_head = finding
+            .evidence
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim();
+        out.push_str("\n\n");
+        out.push_str(finding.token.as_wire());
+        if !evidence_head.is_empty() {
+            out.push_str(": ");
+            out.push_str(evidence_head);
+        }
+    }
+    out
+}
+
+fn render_bad_walk(badwalk: &BadWalk) -> String {
+    match badwalk {
+        BadWalk::Concern { payload } => format!(
+            "Your LOOM_CONCERN payload did not parse as {{\"summary\": \"<non-empty>\"}}. \
+             Literal payload: {payload}",
+        ),
+        BadWalk::ConcernWithoutFindings { summary } => format!(
+            "You emitted LOOM_CONCERN ({summary}) but no LOOM_FINDING: lines streamed. \
+             Either emit findings before the terminator or use LOOM_COMPLETE.",
+        ),
+        BadWalk::FindingsWithoutConcern { finding_count } => format!(
+            "You streamed {finding_count} LOOM_FINDING line(s) but terminated with \
+             LOOM_COMPLETE. Use LOOM_CONCERN: {{\"summary\": \"...\"}} when findings are emitted.",
+        ),
     }
 }
 
@@ -279,6 +312,23 @@ fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::finding::{ConcernToken, FindingTarget};
+    use loom_events::identifier::SpecLabel;
+
+    fn spec_label(s: &str) -> SpecLabel {
+        s.parse().expect("valid spec label")
+    }
+
+    fn sample_finding(token: ConcernToken, evidence: &str) -> Finding {
+        Finding {
+            token,
+            bonds: vec![spec_label("gate")],
+            target: FindingTarget::Annotation {
+                target_string: "cargo test --lib sample".into(),
+            },
+            evidence: evidence.to_owned(),
+        }
+    }
 
     #[test]
     fn driver_notice_renders_with_previous_attempt_prefix() {
@@ -318,19 +368,30 @@ mod tests {
     }
 
     #[test]
-    fn review_concern_renders_with_concern_token_in_parens() {
+    fn review_concern_renders_with_summary_and_finding_count() {
         let pf = PreviousFailure::ReviewConcern {
-            concern: ReviewConcernKind::VerifierBypass,
-            reason: "test mocks the agent backend".into(),
+            summary: "two findings".into(),
+            findings: vec![
+                sample_finding(ConcernToken::VerifierBypass, "test mocks the agent backend"),
+                sample_finding(ConcernToken::WeakAssertion, "asserts only the prefix"),
+            ],
         };
         let rendered = pf.to_string();
         assert!(
-            rendered.starts_with("Review raised a concern (verifier-bypass):"),
-            "framing prefix missing token: {rendered}",
+            rendered.starts_with("Review raised 2 concern(s) — two findings"),
+            "framing prefix missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("verifier-bypass"),
+            "first token missing: {rendered}",
         );
         assert!(
             rendered.contains("test mocks the agent backend"),
-            "reason missing: {rendered}",
+            "first finding evidence missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("weak-assertion"),
+            "second token missing: {rendered}",
         );
     }
 
@@ -353,8 +414,6 @@ mod tests {
 
     #[test]
     fn previous_failure_variant_framings_match_spec() {
-        // Pin every variant's framing string in one shot so a future refactor
-        // cannot silently shift a prefix.
         let driver = PreviousFailure::DriverNotice {
             cause: DriverNoticeCause::IncompleteSignaling,
             detail: "x".into(),
@@ -370,13 +429,40 @@ mod tests {
         );
 
         let review = PreviousFailure::ReviewConcern {
-            concern: ReviewConcernKind::JudgeFlag,
-            reason: "z".into(),
+            summary: "one finding".into(),
+            findings: vec![sample_finding(ConcernToken::JudgeFlag, "judge said no")],
         }
         .to_string();
         assert!(
-            review.starts_with("Review raised a concern (judge-flag): "),
+            review.starts_with("Review raised 1 concern(s) — one finding"),
             "{review}",
+        );
+
+        let bad_walk_concern = PreviousFailure::BadWalk(BadWalk::Concern {
+            payload: "{not json".into(),
+        })
+        .to_string();
+        assert!(
+            bad_walk_concern.starts_with("Your LOOM_CONCERN payload did not parse"),
+            "{bad_walk_concern}",
+        );
+
+        let bad_walk_no_findings = PreviousFailure::BadWalk(BadWalk::ConcernWithoutFindings {
+            summary: "claimed two".into(),
+        })
+        .to_string();
+        assert!(
+            bad_walk_no_findings.starts_with("You emitted LOOM_CONCERN (claimed two)"),
+            "{bad_walk_no_findings}",
+        );
+
+        let bad_walk_no_concern = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern {
+            finding_count: 3,
+        })
+        .to_string();
+        assert!(
+            bad_walk_no_concern.starts_with("You streamed 3 LOOM_FINDING line(s)"),
+            "{bad_walk_no_concern}",
         );
 
         let build = PreviousFailure::BuildFailure {
@@ -393,6 +479,48 @@ mod tests {
         assert!(
             tree.starts_with("Working tree was not clean after the bead committed:\n\n"),
             "{tree}",
+        );
+    }
+
+    #[test]
+    fn bad_walk_concern_renders_with_literal_payload() {
+        let pf = PreviousFailure::BadWalk(BadWalk::Concern {
+            payload: "{\"summery\": \"typo\"}".into(),
+        });
+        let rendered = pf.to_string();
+        assert!(
+            rendered.contains("{\"summery\": \"typo\"}"),
+            "literal payload missing: {rendered}",
+        );
+    }
+
+    #[test]
+    fn bad_walk_concern_without_findings_renders_with_summary() {
+        let pf = PreviousFailure::BadWalk(BadWalk::ConcernWithoutFindings {
+            summary: "drift across the rubric".into(),
+        });
+        let rendered = pf.to_string();
+        assert!(
+            rendered.contains("drift across the rubric"),
+            "summary missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("LOOM_FINDING"),
+            "guidance missing: {rendered}",
+        );
+    }
+
+    #[test]
+    fn bad_walk_findings_without_concern_renders_with_count() {
+        let pf = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern { finding_count: 5 });
+        let rendered = pf.to_string();
+        assert!(
+            rendered.contains("5 LOOM_FINDING"),
+            "count missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("LOOM_COMPLETE"),
+            "guidance missing: {rendered}",
         );
     }
 
@@ -464,7 +592,6 @@ mod tests {
 
     #[test]
     fn rendered_body_truncation_does_not_split_multibyte_codepoints() {
-        // Build an output whose truncation point lands inside a multi-byte char.
         let detail = format!(
             "{}🦀{}",
             "x".repeat(PREVIOUS_FAILURE_MAX_LEN),
@@ -474,7 +601,7 @@ mod tests {
             stage: "cargo".into(),
             output: detail,
         };
-        let _ = pf.to_string(); // must not panic
+        let _ = pf.to_string();
     }
 
     #[test]
@@ -490,8 +617,6 @@ mod tests {
 
     #[test]
     fn verify_failures_split_budget_truncates_later_first() {
-        // Each block is ~STDERR_TAIL_PER_BLOCK + framing overhead ~ 1530 chars;
-        // three of them blow PREVIOUS_FAILURE_MAX_LEN (4000) by ~600 chars.
         let big = "x".repeat(STDERR_TAIL_PER_BLOCK);
         let failures = vec![
             VerifierFailure::new("tests/a.sh", 1, big.clone()),
@@ -509,7 +634,6 @@ mod tests {
             body.contains("tests/a.sh"),
             "first block fully included: {body}",
         );
-        // Later failures must signal cut (either inline truncation or omitted count).
         assert!(
             body.contains(TRUNC_MARKER) || body.contains("omitted"),
             "later failures must signal truncation: tail=…{tail}",
@@ -543,14 +667,6 @@ mod tests {
     }
 
     #[test]
-    fn driver_notice_cause_unbonded_origin_as_str_round_trips() {
-        assert_eq!(
-            DriverNoticeCause::UnbondedOrigin.as_str(),
-            "unbonded-origin",
-        );
-    }
-
-    #[test]
     fn previous_failure_renders_unbonded_origin_context_for_next_attempt() {
         let pf = PreviousFailure::DriverNotice {
             cause: DriverNoticeCause::UnbondedOrigin,
@@ -567,54 +683,6 @@ mod tests {
             rendered.contains("lm-orphan.5"),
             "origin detail missing: {rendered}",
         );
-    }
-
-    #[test]
-    fn review_concern_kind_tokens_match_spec_vocabulary() {
-        assert_eq!(
-            ReviewConcernKind::SpecCoherence.as_token(),
-            "spec-coherence"
-        );
-        assert_eq!(
-            ReviewConcernKind::OrphanIntegration.as_token(),
-            "orphan-integration",
-        );
-        assert_eq!(
-            ReviewConcernKind::VerifierBypass.as_token(),
-            "verifier-bypass",
-        );
-        assert_eq!(
-            ReviewConcernKind::FabricatedResult.as_token(),
-            "fabricated-result",
-        );
-        assert_eq!(
-            ReviewConcernKind::WeakAssertion.as_token(),
-            "weak-assertion"
-        );
-        assert_eq!(
-            ReviewConcernKind::CoincidentalPass.as_token(),
-            "coincidental-pass",
-        );
-        assert_eq!(
-            ReviewConcernKind::MockDiscipline.as_token(),
-            "mock-discipline",
-        );
-        assert_eq!(
-            ReviewConcernKind::VerifierTooNarrow.as_token(),
-            "verifier-too-narrow",
-        );
-        assert_eq!(
-            ReviewConcernKind::ConcurrencyUntested.as_token(),
-            "concurrency-untested",
-        );
-        assert_eq!(ReviewConcernKind::ScopeCreep.as_token(), "scope-creep");
-        assert_eq!(
-            ReviewConcernKind::ScopeShortfall.as_token(),
-            "scope-shortfall",
-        );
-        assert_eq!(ReviewConcernKind::JudgeFlag.as_token(), "judge-flag");
-        let other = ReviewConcernKind::Other("brand-new-rule".into());
-        assert_eq!(other.as_token(), "brand-new-rule");
     }
 
     #[test]

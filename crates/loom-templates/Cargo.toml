@@ -11,8 +11,10 @@ public_contract = true
 
 [dependencies]
 askama = { workspace = true }
+blake3 = { workspace = true }
 loom-events = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 displaydoc = { workspace = true }
 

@@ -10,6 +10,8 @@
 //! plumbing that produces them and the recovery-loop dispatch on the other
 //! side.
 
+use loom_templates::previous_failure::BadWalk;
+
 use super::verify_fail::VerifyFailure;
 use crate::todo::ExitSignal;
 
@@ -129,6 +131,14 @@ pub enum RecoveryCause {
     /// the underlying set was larger). Driver caps before construction;
     /// the variant carries already-capped paths.
     TreeNotClean { dirty_paths: Vec<String> },
+    /// Review walk's terminal signal was malformed or mismatched with
+    /// the streamed-findings count. Wraps the typed
+    /// [`BadWalk`](loom_templates::previous_failure::BadWalk) variant from
+    /// `loom-templates` so the recovery prompt can render per-variant
+    /// framing (per `specs/templates.md` § Typed `PreviousFailure`).
+    /// Mirrors [`RecoveryCause::ReviewConcern`]'s wrapped pattern at the
+    /// type level.
+    BadWalk(BadWalk),
 }
 
 impl RecoveryCause {
@@ -144,6 +154,7 @@ impl RecoveryCause {
             Self::ReviewConcern(_) => "review-concern",
             Self::ObserverAbort { .. } => "observer-abort",
             Self::TreeNotClean { .. } => "tree-not-clean",
+            Self::BadWalk(_) => "bad-walk",
         }
     }
 }

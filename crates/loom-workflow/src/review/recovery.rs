@@ -20,9 +20,9 @@
 //! to spawn a fix-up bead during a Retry pass invoke
 //! [`super::fixup::spawn_fixup_bead`] explicitly.
 
-use loom_templates::run::{DriverNoticeCause, PreviousFailure, ReviewConcernKind, VerifierFailure};
+use loom_templates::run::{DriverNoticeCause, PreviousFailure, VerifierFailure};
 
-use super::phase_verdict::{RecoveryCause, ReviewConcern};
+use super::phase_verdict::RecoveryCause;
 use super::verify_fail::{VerifyFailure, format_previous_failure};
 
 /// Render a [`RecoveryCause`] into a `previous_failure` body suitable for
@@ -55,6 +55,7 @@ fn render_previous_failure(cause: &RecoveryCause) -> String {
             dirty_paths: dirty_paths.clone(),
         }
         .to_string(),
+        RecoveryCause::BadWalk(badwalk) => PreviousFailure::BadWalk(badwalk.clone()).to_string(),
     }
 }
 
@@ -69,10 +70,17 @@ fn render_previous_failure(cause: &RecoveryCause) -> String {
 /// - `VerifyFail` → `VerifyFailures(Vec<VerifierFailure>)`. The companion
 ///   `review_notes` flag, when present, must be carried separately on
 ///   `LoopContext.review_notes` (this function does not embed it inline).
-/// - `ReviewConcern` → `ReviewConcern { concern: ReviewConcernKind, reason }`.
+/// - `ReviewConcern` → `ReviewConcern { summary, findings }`. The structured
+///   `LOOM_FINDING:` stream is not yet wired through this codepath, so a
+///   degenerate empty `findings` vector is produced; `summary` carries the
+///   `[token] detail` formatted form so the rendered prompt still names
+///   the firing concern.
 /// - `TreeNotClean` → `TreeNotClean { dirty_paths }`. The capped path list
 ///   passes through verbatim; the variant's `Display` impl emits the
 ///   spec-pinned framing + per-path enumeration + `"+N more"` suffix.
+/// - `BadWalk` → `BadWalk(BadWalk)`. The typed `BadWalk` variant rides
+///   through unchanged so the per-variant recovery framing in
+///   `PreviousFailure::Display` fires.
 pub fn cause_to_previous_failure(cause: &RecoveryCause) -> PreviousFailure {
     match cause {
         RecoveryCause::SwallowedMarker => PreviousFailure::DriverNotice {
@@ -97,12 +105,13 @@ pub fn cause_to_previous_failure(cause: &RecoveryCause) -> PreviousFailure {
             PreviousFailure::VerifyFailures(failures.iter().map(verify_failure_to_typed).collect())
         }
         RecoveryCause::ReviewConcern(flag) => PreviousFailure::ReviewConcern {
-            concern: concern_to_kind(flag.concern),
-            reason: flag.detail.clone(),
+            summary: format!("[{}] {}", flag.concern.as_str(), flag.detail),
+            findings: Vec::new(),
         },
         RecoveryCause::TreeNotClean { dirty_paths } => PreviousFailure::TreeNotClean {
             dirty_paths: dirty_paths.clone(),
         },
+        RecoveryCause::BadWalk(badwalk) => PreviousFailure::BadWalk(badwalk.clone()),
     }
 }
 
@@ -112,25 +121,6 @@ fn verify_failure_to_typed(failure: &VerifyFailure) -> VerifierFailure {
         failure.exit_code,
         failure.stderr.clone(),
     )
-}
-
-fn concern_to_kind(concern: ReviewConcern) -> ReviewConcernKind {
-    match concern {
-        ReviewConcern::VerifierBypass => ReviewConcernKind::VerifierBypass,
-        ReviewConcern::FabricatedResult => ReviewConcernKind::FabricatedResult,
-        ReviewConcern::WeakAssertion => ReviewConcernKind::WeakAssertion,
-        ReviewConcern::CoincidentalPass => ReviewConcernKind::CoincidentalPass,
-        ReviewConcern::Mock => ReviewConcernKind::MockDiscipline,
-        ReviewConcern::Scope => ReviewConcernKind::ScopeCreep,
-        ReviewConcern::Judge => ReviewConcernKind::JudgeFlag,
-        ReviewConcern::StyleRule => ReviewConcernKind::Other("style-rule".into()),
-        ReviewConcern::SurfaceDrift => ReviewConcernKind::Other("surface-drift".into()),
-        ReviewConcern::CrossSpecClash => ReviewConcernKind::Other("cross-spec-clash".into()),
-        ReviewConcern::TemplateSpecDrift => ReviewConcernKind::Other("template-spec-drift".into()),
-        ReviewConcern::SpecConventionsViolation => {
-            ReviewConcernKind::Other("spec-conventions-violation".into())
-        }
-    }
 }
 
 /// Cause string written to `bd update --notes` when the recovery loop
@@ -180,6 +170,7 @@ mod tests {
     use super::*;
     use crate::review::phase_verdict::{ReviewConcern, ReviewFlag};
     use crate::review::verify_fail::VerifyFailure;
+    use loom_templates::run::BadWalk;
 
     #[test]
     fn cause_to_previous_failure_maps_driver_notices() {
@@ -272,11 +263,35 @@ mod tests {
             detail: "test mocks the agent backend".into(),
         });
         match cause_to_previous_failure(&cause) {
-            PreviousFailure::ReviewConcern { concern, reason } => {
-                assert_eq!(concern, ReviewConcernKind::VerifierBypass);
-                assert_eq!(reason, "test mocks the agent backend");
+            PreviousFailure::ReviewConcern { summary, findings } => {
+                assert!(
+                    summary.contains("[verifier-bypass]"),
+                    "summary names firing concern: {summary}",
+                );
+                assert!(
+                    summary.contains("test mocks the agent backend"),
+                    "summary carries detail: {summary}",
+                );
+                assert!(
+                    findings.is_empty(),
+                    "no streamed findings yet on this codepath: {findings:?}",
+                );
             }
             other => panic!("expected ReviewConcern, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cause_to_previous_failure_maps_bad_walk_passes_variant_through() {
+        let badwalk = BadWalk::ConcernWithoutFindings {
+            summary: "rubric concern with no enumerated findings".into(),
+        };
+        let cause = RecoveryCause::BadWalk(badwalk.clone());
+        match cause_to_previous_failure(&cause) {
+            PreviousFailure::BadWalk(carried) => {
+                assert_eq!(carried, badwalk);
+            }
+            other => panic!("expected BadWalk, got {other:?}"),
         }
     }
 

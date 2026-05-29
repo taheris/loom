@@ -1941,7 +1941,7 @@ fn public_contract_crates_fail_when_manifest_missing() {
 
 const TEMPLATES_PUBLIC_TYPES_BODY: &str = "pub struct PreviousFailure;\n\
      pub struct VerifierFailure;\n\
-     pub enum ReviewConcernKind { Other(String) }\n\
+     pub enum BadWalk { Concern { payload: String } }\n\
      pub enum DriverNoticeCause { RetryExhausted }\n\
      pub struct LoopContext;\n\
      pub struct ReviewContext;\n\
@@ -1966,7 +1966,7 @@ fn loom_templates_public_types_pass_when_reexported_via_pub_use() {
         ws.path(),
         "crates/loom-templates/src/lib.rs",
         "pub mod inner;\n\
-         pub use inner::{PreviousFailure, VerifierFailure, ReviewConcernKind, DriverNoticeCause, LoopContext, ReviewContext, PinnedContext};\n",
+         pub use inner::{PreviousFailure, VerifierFailure, BadWalk, DriverNoticeCause, LoopContext, ReviewContext, PinnedContext};\n",
     );
     seed(
         ws.path(),
@@ -1982,7 +1982,7 @@ fn loom_templates_public_types_fail_when_one_missing() {
     let ws = make_workspace();
     let body = "pub struct PreviousFailure;\n\
                 pub struct VerifierFailure;\n\
-                pub enum ReviewConcernKind { Other(String) }\n\
+                pub enum BadWalk { Concern { payload: String } }\n\
                 pub enum DriverNoticeCause { RetryExhausted }\n\
                 pub struct LoopContext;\n\
                 pub struct ReviewContext;\n";
@@ -1996,7 +1996,7 @@ fn loom_templates_public_types_fail_when_private() {
     let ws = make_workspace();
     let body = "struct PreviousFailure;\n\
                 struct VerifierFailure;\n\
-                enum ReviewConcernKind { Other(String) }\n\
+                enum BadWalk { Concern { payload: String } }\n\
                 enum DriverNoticeCause { RetryExhausted }\n\
                 struct LoopContext;\n\
                 struct ReviewContext;\n\

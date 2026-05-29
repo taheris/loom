@@ -20,6 +20,7 @@
 //! and typed contexts, not with the workflow shells.
 
 pub mod criterion_status;
+pub mod finding;
 pub mod msg;
 pub mod plan;
 pub mod previous_failure;
@@ -28,11 +29,15 @@ pub mod run;
 pub mod todo;
 
 pub use criterion_status::{CriterionResult, CriterionStatus};
+pub use finding::{
+    ConcernToken, Finding, FindingParseError, FindingTarget, FindingValidator,
+    LOOM_FINDING_PREFIX, TargetKind,
+};
 pub use msg::{ClarifyBead, ClarifyOption, MsgContext};
 pub use plan::{PlanNewContext, PlanUpdateContext};
 pub use previous_failure::{
-    DriverNoticeCause, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, ReviewConcernKind,
-    STDERR_TAIL_PER_BLOCK, VerifierFailure,
+    BadWalk, DriverNoticeCause, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, STDERR_TAIL_PER_BLOCK,
+    VerifierFailure,
 };
 pub use review::{ReviewContext, ReviewSource};
 pub use run::LoopContext;

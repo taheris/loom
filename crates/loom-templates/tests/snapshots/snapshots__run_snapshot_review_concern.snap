@@ -1,5 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
+assertion_line: 284
 expression: ctx.render().unwrap()
 ---
 # Implementation Step
@@ -92,7 +93,9 @@ Port templates to Askama.
 Retry attempt 1 — previous attempt failed with:
 
 <agent-output>
-Review raised a concern (verifier-bypass): test mocks the agent backend instead of running the live driver
+Review raised 1 concern(s) — test mocks the agent backend instead of running the live driver
+
+verifier-bypass: test mocks the agent backend instead of running the live driver
 </agent-output>
 
 ## Instructions

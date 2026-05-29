@@ -13,9 +13,9 @@ use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
 use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
 use loom_templates::plan::{PlanNewContext, PlanUpdateContext};
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
+use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
 use loom_templates::run::{
-    DriverNoticeCause, LoopContext, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, ReviewConcernKind,
-    VerifierFailure,
+    DriverNoticeCause, LoopContext, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, VerifierFailure,
 };
 use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
 
@@ -475,13 +475,24 @@ fn previous_failure_truncates_at_max_len() {
 }
 
 #[test]
-fn previous_failure_renders_review_concern_with_token() {
+fn previous_failure_renders_review_concern_with_summary_and_findings() {
     let pf = PreviousFailure::ReviewConcern {
-        concern: ReviewConcernKind::MockDiscipline,
-        reason: "mock is the thing under test".into(),
+        summary: "mock under test".into(),
+        findings: vec![Finding {
+            token: ConcernToken::MockDiscipline,
+            bonds: vec![SpecLabel::new("harness")],
+            target: FindingTarget::TestPath {
+                path: "tests/example.rs".into(),
+            },
+            evidence: "mock is the thing under test".into(),
+        }],
     };
     let rendered = pf.to_string();
-    assert!(rendered.contains("(mock-discipline)"), "{rendered}");
+    assert!(
+        rendered.starts_with("Review raised 1 concern(s) — mock under test"),
+        "framing missing: {rendered}",
+    );
+    assert!(rendered.contains("mock-discipline"), "{rendered}");
     assert!(
         rendered.contains("mock is the thing under test"),
         "{rendered}"

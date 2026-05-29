@@ -5,12 +5,12 @@
 //! without touching any workflow-template internals.
 
 use loom_templates::{
-    LoopContext, PARTIAL_CHAT_MARKER_FINAL_TURN_ONLY, PARTIAL_COMPANIONS_CONTEXT,
-    PARTIAL_CONTEXT_PINNING, PARTIAL_FINDINGS_WALK, PARTIAL_INTERVIEW_MODES,
-    PARTIAL_INVARIANT_CLASH, PARTIAL_PLAN_STAGE_RUBRIC, PARTIAL_PROGRESS_MARKERS,
-    PARTIAL_REVIEW_RUBRIC, PARTIAL_SCRATCHPAD, PARTIAL_SELF_REPORT_MARKERS,
-    PARTIAL_SIBLING_SPEC_EDITING, PARTIAL_SPEC_CONVENTIONS, PARTIAL_SPEC_HEADER,
-    PARTIAL_STYLE_RULES, PinnedContext, PreviousFailure, ReviewConcernKind, VerifierFailure,
+    BadWalk, ConcernToken, Finding, FindingTarget, LoopContext, PARTIAL_CHAT_MARKER_FINAL_TURN_ONLY,
+    PARTIAL_COMPANIONS_CONTEXT, PARTIAL_CONTEXT_PINNING, PARTIAL_FINDINGS_WALK,
+    PARTIAL_INTERVIEW_MODES, PARTIAL_INVARIANT_CLASH, PARTIAL_PLAN_STAGE_RUBRIC,
+    PARTIAL_PROGRESS_MARKERS, PARTIAL_REVIEW_RUBRIC, PARTIAL_SCRATCHPAD,
+    PARTIAL_SELF_REPORT_MARKERS, PARTIAL_SIBLING_SPEC_EDITING, PARTIAL_SPEC_CONVENTIONS,
+    PARTIAL_SPEC_HEADER, PARTIAL_STYLE_RULES, PinnedContext, PreviousFailure, VerifierFailure,
 };
 
 #[test]
@@ -76,10 +76,26 @@ fn typed_retry_context_round_trips_through_public_re_exports() {
     assert!(rendered.contains("tests/sample.sh"));
 
     let review = PreviousFailure::ReviewConcern {
-        concern: ReviewConcernKind::SpecCoherence,
-        reason: "scope creep".into(),
+        summary: "spec coherence wobble".into(),
+        findings: vec![Finding {
+            token: ConcernToken::SpecCoherenceFail,
+            bonds: vec![loom_events::identifier::SpecLabel::new("gate")],
+            target: FindingTarget::Criterion {
+                spec: loom_events::identifier::SpecLabel::new("gate"),
+                anchor: "verifier-honesty".into(),
+            },
+            evidence: "annotation does not exercise the contract".into(),
+        }],
     };
-    assert!(review.to_string().contains("(spec-coherence)"));
+    let rendered = review.to_string();
+    assert!(
+        rendered.starts_with("Review raised 1 concern(s) — spec coherence wobble"),
+        "{rendered}",
+    );
+    assert!(rendered.contains("spec-coherence-fail"), "{rendered}");
+
+    let bad = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern { finding_count: 2 });
+    assert!(bad.to_string().contains("LOOM_FINDING"));
 }
 
 #[test]

@@ -833,6 +833,12 @@ documents in front of the agent with zero configuration.
   `BuildFailure`, and `TreeNotClean { dirty_paths: Vec<String> }` —
   not a free string
   [check](grep -q 'pub enum PreviousFailure' crates/loom-templates/src/previous_failure.rs)
+- `BadWalk` enum carries `Concern { payload: String }`,
+  `ConcernWithoutFindings { summary: String }`, and
+  `FindingsWithoutConcern { finding_count: usize }`; the wrapped
+  pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)` at the
+  type level
+  [check](grep -q 'pub enum BadWalk' crates/loom-templates/src/previous_failure.rs)
 - `TreeNotClean` variant carries `dirty_paths: Vec<String>` capped
   at 30 entries by the driver before construction
   [check](grep -q 'TreeNotClean' crates/loom-templates/src/previous_failure.rs)

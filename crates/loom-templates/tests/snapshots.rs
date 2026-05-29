@@ -14,8 +14,9 @@ use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
 use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
 use loom_templates::plan::{PlanNewContext, PlanUpdateContext};
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
+use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
 use loom_templates::run::{
-    DriverNoticeCause, LoopContext, PreviousFailure, ReviewConcernKind, VerifierFailure,
+    DriverNoticeCause, LoopContext, PreviousFailure, VerifierFailure,
 };
 use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
 
@@ -264,8 +265,16 @@ fn run_snapshot_review_concern() {
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: Some(PreviousFailure::ReviewConcern {
-            concern: ReviewConcernKind::VerifierBypass,
-            reason: "test mocks the agent backend instead of running the live driver".into(),
+            summary: "test mocks the agent backend instead of running the live driver".into(),
+            findings: vec![Finding {
+                token: ConcernToken::VerifierBypass,
+                bonds: vec![SpecLabel::new("harness")],
+                target: FindingTarget::Annotation {
+                    target_string: "cargo test --lib parse_walks_all_md_files".into(),
+                },
+                evidence: "test mocks the agent backend instead of running the live driver"
+                    .into(),
+            }],
         }),
         review_notes: None,
         attempt: 1,

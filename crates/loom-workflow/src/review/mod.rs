@@ -43,6 +43,7 @@ pub use finding::{
 pub use fixup::{FixupContext, FixupOutcome, FixupRequest, spawn_fixup_bead};
 pub use iteration::{DEFAULT_MAX_ITERATIONS, IterationCap};
 pub use loom_templates::review::ReviewLane;
+pub use loom_templates::previous_failure::BadWalk;
 pub use phase_verdict::{
     GateInputs, PhaseVerdict, RecoveryCause, ReviewConcern, ReviewFlag, decide, parse_review_flag,
 };
