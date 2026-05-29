@@ -1,16 +1,48 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use loom_driver::agent::{RePinContent, SpawnConfig, set_loom_inside};
+use loom_driver::agent::{MountSpec, RePinContent, SpawnConfig, set_loom_inside};
 use loom_driver::bd::Bead;
 use loom_driver::identifier::ProfileName;
 use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
 
 use super::profile::resolve_profile_image;
 
+/// Workspace-relative host path of the `wrapix-beads` dolt socket. Held as a
+/// constant so the bead-container mount and any future host-side consumer of
+/// the same socket stay in lockstep.
+const DOLT_SOCKET_REL_PATH: &str = ".wrapix/dolt.sock";
+
+/// Container-side path the dolt socket is projected to. Matches
+/// `BEADS_DOLT_SERVER_SOCKET` set in the bead container env.
+const DOLT_SOCKET_CONTAINER_PATH: &str = "/workspace/.wrapix/dolt.sock";
+
+/// Build the [`MountSpec`] that projects the loom workspace's `wrapix-beads`
+/// dolt socket into a bead container at [`DOLT_SOCKET_CONTAINER_PATH`].
+///
+/// Returns `None` when the host socket is absent (e.g. test fixtures that do
+/// not stand up the wrapix-beads server), so the resulting spawn config has
+/// no socket mount in that environment. Production callers running under a
+/// real loom workspace always observe `Some`. Linux passes the socket file
+/// through virtiofs directly; on Darwin the wrapix sandbox classifier
+/// rejects Unix-socket `host_path` entries at launch — see
+/// `specs/harness.md` § Bead dispatch / Darwin compatibility.
+pub fn dolt_socket_mount(loom_workspace: &Path) -> Option<MountSpec> {
+    let host_path = loom_workspace.join(DOLT_SOCKET_REL_PATH);
+    if !host_path.exists() {
+        return None;
+    }
+    Some(MountSpec {
+        host_path,
+        container_path: PathBuf::from(DOLT_SOCKET_CONTAINER_PATH),
+        read_only: false,
+    })
+}
+
 /// Internal helper. The public dispatch surface is
 /// [`build_spawn_config_from_manifest`] — callers should never construct a
 /// `SpawnConfig` field-by-field, because doing so silently bypasses the
 /// profile-image resolution and the canonical claude/pi env wiring.
+#[expect(clippy::too_many_arguments, reason = "internal helper")]
 fn build_spawn_config(
     image_ref: String,
     image_source: PathBuf,
@@ -19,6 +51,7 @@ fn build_spawn_config(
     scratch_dir: PathBuf,
     extra_env: Vec<(String, String)>,
     agent_args: Vec<String>,
+    mounts: Vec<MountSpec>,
 ) -> SpawnConfig {
     let mut env = extra_env;
     set_loom_inside(&mut env);
@@ -27,7 +60,7 @@ fn build_spawn_config(
         image_source,
         workspace,
         env,
-        mounts: vec![],
+        mounts,
         initial_prompt,
         agent_args,
         repin: RePinContent {
@@ -66,6 +99,7 @@ pub fn build_spawn_config_from_manifest(
     scratch_dir: PathBuf,
     extra_env: Vec<(String, String)>,
     agent_args: Vec<String>,
+    mounts: Vec<MountSpec>,
 ) -> Result<SpawnConfig, ProfileError> {
     let entry = resolve_profile_image(manifest, &bead.labels, override_, phase_default)?;
     Ok(build_spawn_config(
@@ -76,6 +110,7 @@ pub fn build_spawn_config_from_manifest(
         scratch_dir,
         extra_env,
         agent_args,
+        mounts,
     ))
 }
 
@@ -137,6 +172,7 @@ mod tests {
             dir.path().join("scratch"),
             vec![],
             vec![],
+            vec![],
         )
         .expect("rust dispatch");
         let cfg_python = build_spawn_config_from_manifest(
@@ -147,6 +183,7 @@ mod tests {
             PathBuf::from("/work/lm-2"),
             "python prompt".into(),
             dir.path().join("scratch"),
+            vec![],
             vec![],
             vec![],
         )
@@ -185,6 +222,7 @@ mod tests {
             dir.path().join("scratch"),
             vec![],
             vec![],
+            vec![],
         )
         .expect("rust dispatch");
         let overridden = build_spawn_config_from_manifest(
@@ -195,6 +233,7 @@ mod tests {
             PathBuf::from("/work/lm-1"),
             "p".into(),
             dir.path().join("scratch"),
+            vec![],
             vec![],
             vec![],
         )
@@ -229,6 +268,7 @@ mod tests {
             dir.path().join("scratch"),
             vec![],
             vec![],
+            vec![],
         )
         .expect("sequential dispatch");
         let par = build_spawn_config_from_manifest(
@@ -239,6 +279,7 @@ mod tests {
             PathBuf::from("/repo-root/.wrapix/loom/beads/lm-1"),
             prompt,
             dir.path().join("scratch"),
+            vec![],
             vec![],
             vec![],
         )
@@ -276,6 +317,7 @@ mod tests {
             dir.path().join("scratch"),
             vec![("WRAPIX_AGENT".into(), "claude".into())],
             vec![],
+            vec![],
         )
         .expect("dispatch");
         assert!(
@@ -291,6 +333,67 @@ mod tests {
             "SpawnConfig.env dropped caller env: {:?}",
             cfg.env,
         );
+    }
+
+    /// Spec gate (`specs/harness.md` § Bead dispatch —
+    /// `bead_container_dolt_socket_via_mounts`): the host
+    /// `wrapix-beads` dolt socket is projected into bead containers via a
+    /// `SpawnConfig.mounts` entry at `/workspace/.wrapix/dolt.sock`,
+    /// replacing the historical hardlink shim that lived in
+    /// `GitClient::create_worktree`. The `host_path` resolves against the
+    /// loom workspace's `.wrapix/dolt.sock`; `read_only = false` because
+    /// dolt clients write through the socket.
+    #[test]
+    fn bead_container_dolt_socket_via_mounts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let loom_workspace = dir.path().join("loom-workspace");
+        let socket_path = loom_workspace.join(DOLT_SOCKET_REL_PATH);
+        std::fs::create_dir_all(socket_path.parent().expect("socket parent"))
+            .expect("create wrapix dir");
+        std::fs::write(&socket_path, b"").expect("touch socket");
+
+        let mount = dolt_socket_mount(&loom_workspace).expect("socket present → mount");
+        assert_eq!(mount.host_path, socket_path);
+        assert_eq!(
+            mount.container_path,
+            PathBuf::from("/workspace/.wrapix/dolt.sock"),
+        );
+        assert!(
+            !mount.read_only,
+            "dolt clients write through the socket; mount must not be read-only",
+        );
+
+        let manifest = three_profile_manifest(dir.path());
+        let bead = bead_with_labels("lm-1", &["profile:rust"]);
+        let bead_workspace = loom_workspace.join(".wrapix/loom/beads/lm-1");
+        let cfg = build_spawn_config_from_manifest(
+            &manifest,
+            &bead,
+            None,
+            &base(),
+            bead_workspace,
+            "p".into(),
+            dir.path().join("scratch"),
+            vec![],
+            vec![],
+            vec![mount.clone()],
+        )
+        .expect("dispatch");
+        assert_eq!(
+            cfg.mounts,
+            vec![mount],
+            "SpawnConfig.mounts must carry the dolt-socket projection verbatim",
+        );
+    }
+
+    /// When the loom workspace has no `wrapix-beads` dolt socket on disk
+    /// (test fixtures, CI sandboxes), [`dolt_socket_mount`] returns `None`
+    /// rather than projecting a missing host path the wrapix launcher
+    /// would reject at startup.
+    #[test]
+    fn dolt_socket_mount_returns_none_when_socket_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(dolt_socket_mount(dir.path()).is_none());
     }
 
     /// A bead with a `profile:X` not declared in the manifest fails
@@ -309,6 +412,7 @@ mod tests {
             PathBuf::from("/work"),
             "p".into(),
             dir.path().join("scratch"),
+            vec![],
             vec![],
             vec![],
         )

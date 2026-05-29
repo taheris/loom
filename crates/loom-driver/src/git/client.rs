@@ -265,22 +265,6 @@ impl GitClient {
         )
         .await?;
 
-        // Hard-link the host's dolt socket into the clone so bd inside the
-        // wrapix container (which only sees the clone bind-mounted at
-        // /workspace) finds a working endpoint at the path
-        // `BEADS_DOLT_SERVER_SOCKET` points at. Same-fs hard links to a
-        // bound unix socket preserve the inode, so connecting via the
-        // linked path reaches the same dolt server. Shim — proper fix is
-        // a `mounts` field on `SpawnConfig` (tracked separately).
-        let src_sock = self.workdir.join(".wrapix").join("dolt.sock");
-        if src_sock.exists() {
-            let dest_dir = path.join(".wrapix");
-            std::fs::create_dir_all(&dest_dir)?;
-            let dest_sock = dest_dir.join("dolt.sock");
-            let _ = std::fs::remove_file(&dest_sock);
-            std::fs::hard_link(&src_sock, &dest_sock)?;
-        }
-
         Ok(CreatedWorktree { path, branch })
     }
 

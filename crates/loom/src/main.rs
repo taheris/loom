@@ -2052,6 +2052,7 @@ async fn run_parallel_loop(
     let logs_root_for_merge = logs_root.clone();
     let label_for_closure = label.clone();
     let beads_push_program = resolve_beads_push_program();
+    let workspace_for_closure = workspace.clone();
     let outcome = loom_workflow::r#loop::run_parallel_batch_with_logs(
         &git,
         &label,
@@ -2065,6 +2066,7 @@ async fn run_parallel_loop(
             let logs_root_inner = logs_root.clone();
             let label_inner = label_for_closure.clone();
             let style_rules_inner = style_rules.clone();
+            let workspace_inner = workspace_for_closure.clone();
             async move {
                 // Marker is the primary signal here too — without it, parallel
                 // mode would swallow `LOOM_BLOCKED` / `LOOM_CLARIFY` self-reports
@@ -2079,6 +2081,7 @@ async fn run_parallel_loop(
                     &logs_root_inner,
                     &label_inner,
                     &style_rules_inner,
+                    &workspace_inner,
                 )
                 .await
                 {
@@ -2213,10 +2216,11 @@ async fn dispatch_for_slot(
     logs_root: &Path,
     label: &SpecLabel,
     style_rules: &str,
+    loom_workspace: &Path,
 ) -> anyhow::Result<(SessionOutcome, Option<ExitSignal>)> {
     use loom_driver::scratch::ScratchSession;
     use loom_workflow::r#loop::{
-        LoopContextInputs, build_spawn_config_from_manifest, render_loop_prompt,
+        LoopContextInputs, build_spawn_config_from_manifest, dolt_socket_mount, render_loop_prompt,
     };
 
     let banner = format!("loom loop @ {}", slot.bead.id);
@@ -2240,6 +2244,7 @@ async fn dispatch_for_slot(
         style_rules: style_rules.to_string(),
     })?;
     let scratch = ScratchSession::open(&slot.worktree.path, &key, &initial_prompt, &banner)?;
+    let mounts = dolt_socket_mount(loom_workspace).into_iter().collect();
     let spawn_config = build_spawn_config_from_manifest(
         manifest,
         &slot.bead,
@@ -2250,6 +2255,7 @@ async fn dispatch_for_slot(
         scratch.path().to_path_buf(),
         vec![],
         vec![],
+        mounts,
     )?;
 
     let sink = open_bead_sink(logs_root, label, &slot.bead.id)?;

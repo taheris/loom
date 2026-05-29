@@ -38,7 +38,7 @@ use super::gate_outcome::HandoffEvidence;
 use super::outcome::{AgentOutcome, SessionResult};
 use super::post_merge_push::{default_beads_push_program, push_merged_main_then_beads};
 use super::runner::AgentLoopController;
-use super::spawn::build_spawn_config_from_manifest;
+use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount};
 use super::tree_clean::dirty_paths_from_porcelain;
 use crate::review::{GateInputs, PhaseVerdict, RecoveryCause, decide};
 use crate::todo::ExitSignal;
@@ -312,6 +312,7 @@ where
                 return Err(LoopError::Protocol(ProtocolError::Io(source)));
             }
         };
+        let mounts = dolt_socket_mount(&self.workspace).into_iter().collect();
         let spawn_config = match build_spawn_config_from_manifest(
             &self.manifest,
             bead,
@@ -322,6 +323,7 @@ where
             scratch.path().to_path_buf(),
             vec![],
             vec![],
+            mounts,
         ) {
             Ok(cfg) => cfg,
             Err(ProfileError::UnknownProfile { name, .. }) => {
