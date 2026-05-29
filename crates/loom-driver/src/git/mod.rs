@@ -15,6 +15,6 @@ mod error;
 
 pub use client::{
     CreatedWorktree, GitClient, MergeResult, StatusEntry, StatusKind, WorktreeInfo,
-    bare_origin_path, init_test_repo,
+    bare_origin_path, clone_loom_workspace, init_test_repo, read_origin_url,
 };
 pub use error::GitError;

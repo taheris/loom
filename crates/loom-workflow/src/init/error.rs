@@ -5,6 +5,8 @@ use displaydoc::Display;
 use thiserror::Error;
 
 use loom_driver::bd::BdError;
+use loom_driver::config::LoomConfigError;
+use loom_driver::git::GitError;
 use loom_driver::lock::LockError;
 use loom_driver::state::StateError;
 
@@ -33,6 +35,12 @@ pub enum InitError {
 
     /// `bd` CLI invocation failed while gathering active molecules: {0}
     Bd(#[from] BdError),
+
+    /// git operation failed while materializing the loom workspace: {0}
+    Git(#[from] GitError),
+
+    /// failed to load `<workspace>/config.toml` while resolving the integration branch: {0}
+    Config(#[from] LoomConfigError),
 
     /// active molecule {id} carries no `spec:<label>` label
     MissingSpecLabel { id: String },

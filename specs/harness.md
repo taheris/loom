@@ -2110,7 +2110,7 @@ Criteria.
 - `loom init` materializes the loom workspace at
       `.wrapix/loom/integration/` (one-shot clone from origin) — the
       workspace is separate from the operator's `/workspace`
-  [test?](loom_init_materializes_loom_workspace)
+  [test](loom_init_materializes_loom_workspace)
 - `loom loop` never touches the operator's working tree at
       `/workspace`; all dispatch runs against the loom workspace
   [test?](loom_loop_does_not_touch_operator_workspace)

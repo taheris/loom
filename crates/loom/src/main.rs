@@ -691,6 +691,18 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
         }
     );
     println!("  state.db: {}", report.state_db_path.display());
+    match &report.integration_workspace {
+        Some(integ) => println!(
+            "  integration: {} ({})",
+            integ.path.display(),
+            if integ.created {
+                "cloned from origin"
+            } else {
+                "kept existing"
+            },
+        ),
+        None => println!("  integration: skipped (workspace has no `origin` remote)"),
+    }
     if let Some(rb) = report.rebuild {
         println!(
             "  rebuilt {} spec(s), {} molecule(s), {} companion(s)",
@@ -1872,10 +1884,8 @@ fn run_loop_cmd(
         max_retries: config.loop_.max_retries,
     };
     let max_iterations = config.loop_.max_iterations;
-    let git = GitClient::open_with_integration_branch(
-        workspace,
-        config.loom.integration_branch.clone(),
-    )?;
+    let git =
+        GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?;
     let summary = runtime.block_on(async move {
         let bd = BdClient::new();
         let mut controller = ProductionAgentLoopController::new(

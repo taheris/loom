@@ -675,6 +675,67 @@ pub fn init_test_repo(path: &Path) -> Result<GitClient, GitError> {
     GitClient::open(path)
 }
 
+/// Read the URL of the `origin` remote at `workdir` using
+/// `git config --get remote.origin.url`. Returns `Ok(None)` when `workdir`
+/// is not a git repository (exit 128) or has no `origin` remote (exit 1).
+///
+/// Synchronous — used by `loom init`, which is a one-shot workspace
+/// bootstrap and not driven by tokio.
+pub fn read_origin_url(workdir: &Path) -> Result<Option<String>, GitError> {
+    use std::process::Command as StdCommand;
+    let output = StdCommand::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+        .map_err(GitError::Spawn)?;
+    if output.status.success() {
+        let url = String::from_utf8(output.stdout)?.trim().to_string();
+        return Ok((!url.is_empty()).then_some(url));
+    }
+    if matches!(output.status.code(), Some(1) | Some(128)) {
+        return Ok(None);
+    }
+    Err(GitError::GitCli {
+        status: output.status.code().unwrap_or(-1),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
+/// One-shot `git clone --branch <branch> <origin_url> <dest>` used by
+/// `loom init` to materialize the loom-owned integration workspace at
+/// `<workspace>/.wrapix/loom/integration/`. Caller guarantees `dest` does
+/// not exist; the parent directory is created if missing.
+///
+/// Synchronous: `loom init` is not async, and the spec marks the operation
+/// as one-shot + infrequent (see § Git operations table).
+pub fn clone_loom_workspace(origin_url: &str, dest: &Path, branch: &str) -> Result<(), GitError> {
+    use std::process::Command as StdCommand;
+    let parent = dest.parent().ok_or_else(|| GitError::GitCli {
+        status: -1,
+        stderr: format!(
+            "clone destination {} has no parent directory",
+            dest.display()
+        ),
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let output = StdCommand::new("git")
+        .arg("-C")
+        .arg(parent)
+        .args(["clone", "--quiet", "--branch", branch])
+        .arg(origin_url)
+        .arg(dest)
+        .output()
+        .map_err(GitError::Spawn)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(GitError::GitCli {
+        status: output.status.code().unwrap_or(-1),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
 /// Bare origin path used by [`init_test_repo`]. Exposed so tests that need
 /// to inspect the published refs (e.g. assert that `main` advanced after a
 /// per-bead push) can locate the bare repo without re-deriving the

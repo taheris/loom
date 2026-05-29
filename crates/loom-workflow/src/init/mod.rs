@@ -20,6 +20,7 @@ use tracing::info;
 
 use loom_driver::bd::{BdClient, CommandRunner, ListOpts, UpdateOpts};
 use loom_driver::config::LoomConfig;
+use loom_driver::git::{clone_loom_workspace, read_origin_url};
 use loom_driver::identifier::MoleculeId;
 use loom_driver::lock::LockManager;
 use loom_driver::state::{ActiveMolecule, RebuildReport, StateDb};
@@ -45,6 +46,22 @@ pub struct InitReport {
     pub state_db_path: PathBuf,
     pub config_created: bool,
     pub rebuild: Option<RebuildReport>,
+    /// The loom-owned integration workspace at
+    /// `<workspace>/.wrapix/loom/integration/`. `None` when the operator
+    /// workspace has no `origin` remote (the materialization step is
+    /// silently skipped — fresh test fixtures and unconfigured workspaces
+    /// can still `loom init` without acquiring an origin first).
+    pub integration_workspace: Option<MaterializedIntegration>,
+}
+
+/// Outcome of the per-init materialization of
+/// `<workspace>/.wrapix/loom/integration/`.
+#[derive(Debug, Clone)]
+pub struct MaterializedIntegration {
+    pub path: PathBuf,
+    /// `true` when this invocation cloned the integration workspace; `false`
+    /// when the directory already existed (idempotent re-init).
+    pub created: bool,
 }
 
 /// Run `loom init` against `workspace`.
@@ -97,12 +114,48 @@ pub fn run(
         None
     };
 
+    let integration_workspace = materialize_integration_workspace(workspace, &config_path)?;
+
     Ok(InitReport {
         config_path,
         state_db_path,
         config_created,
         rebuild: rebuild_report,
+        integration_workspace,
     })
+}
+
+/// Materialize the loom-owned integration workspace at
+/// `<workspace>/.wrapix/loom/integration/` via a one-shot
+/// `git clone <origin> .wrapix/loom/integration`. Idempotent: when the
+/// directory already exists this returns `Ok(Some { created: false })`
+/// without touching git. Returns `Ok(None)` when the operator workspace
+/// has no `origin` remote (the step is silently skipped — used by test
+/// fixtures whose tempdirs aren't bound to a remote).
+///
+/// The integration branch comes from `[loom] integration_branch` in
+/// `<config_path>` (default `main`). The cloned workspace has that branch
+/// checked out and never switches — per `specs/harness.md § Bead Dispatch`.
+fn materialize_integration_workspace(
+    workspace: &Path,
+    config_path: &Path,
+) -> Result<Option<MaterializedIntegration>, InitError> {
+    let dest = workspace.join(".wrapix/loom/integration");
+    if dest.exists() {
+        return Ok(Some(MaterializedIntegration {
+            path: dest,
+            created: false,
+        }));
+    }
+    let Some(origin_url) = read_origin_url(workspace)? else {
+        return Ok(None);
+    };
+    let config = LoomConfig::load(config_path)?;
+    clone_loom_workspace(&origin_url, &dest, &config.loom.integration_branch)?;
+    Ok(Some(MaterializedIntegration {
+        path: dest,
+        created: true,
+    }))
 }
 
 /// Enumerate active molecules via `bd list --status=open --type=epic`.
@@ -276,6 +329,93 @@ mod tests {
         // Sanity: the workspace must contain a `specs/` for rebuild to work,
         // but `run()` itself does not require it — empty rebuild is valid.
         Ok(dir)
+    }
+
+    /// Spec contract `[test]` annotation
+    /// (`specs/harness.md` § Success Criteria · Loom Workspace):
+    /// `loom init` materializes `<workspace>/.wrapix/loom/integration/`
+    /// as a one-shot `git clone <origin> .wrapix/loom/integration`. The
+    /// directory exists, contains a real `.git/`, and has the integration
+    /// branch checked out (default `main`).
+    #[test]
+    fn loom_init_materializes_loom_workspace() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let workspace = tmp.path().join("loom-init-materialize-ws");
+        loom_driver::git::init_test_repo(&workspace)?;
+
+        let report = run(&workspace, InitOpts::default(), &[])?;
+        let integ = report
+            .integration_workspace
+            .ok_or_else(|| anyhow!("integration workspace must be materialized"))?;
+        assert!(integ.created, "first init must clone the workspace");
+        assert_eq!(integ.path, workspace.join(".wrapix/loom/integration"));
+        assert!(
+            integ.path.join(".git").is_dir(),
+            "integration workspace must contain a real `.git/` directory",
+        );
+        // The clone checks out the integration branch (default `main`,
+        // matching what `init_test_repo` pushes to origin).
+        let head = std::fs::read_to_string(integ.path.join(".git/HEAD"))?;
+        assert!(
+            head.contains("refs/heads/main"),
+            "integration workspace HEAD must point at the integration branch; got: {head:?}",
+        );
+        Ok(())
+    }
+
+    /// Spec contract `[test]` annotation
+    /// (`specs/harness.md` § Success Criteria · Loom Workspace):
+    /// re-running `loom init` against a workspace whose
+    /// `.wrapix/loom/integration/` already exists is a no-op — the existing
+    /// directory is preserved verbatim (no re-clone).
+    #[test]
+    fn loom_init_is_idempotent_when_integration_exists() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let workspace = tmp.path().join("loom-init-idempotent-ws");
+        loom_driver::git::init_test_repo(&workspace)?;
+
+        let first = run(&workspace, InitOpts::default(), &[])?
+            .integration_workspace
+            .ok_or_else(|| anyhow!("first init must materialize integration workspace"))?;
+        assert!(first.created, "first init must clone");
+
+        // Sentinel inside the clone proves a second init does not blow it
+        // away and re-clone.
+        let sentinel = first.path.join("loom-sentinel.txt");
+        std::fs::write(&sentinel, b"keep me")?;
+
+        let second = run(&workspace, InitOpts::default(), &[])?
+            .integration_workspace
+            .ok_or_else(|| anyhow!("second init must report the existing workspace"))?;
+        assert!(
+            !second.created,
+            "second init must NOT clone — directory exists",
+        );
+        assert_eq!(second.path, first.path);
+        assert!(
+            sentinel.exists(),
+            "sentinel file must survive — proves no re-clone",
+        );
+        Ok(())
+    }
+
+    /// Workspaces without an `origin` remote (typical for fresh test
+    /// fixtures) silently skip the materialization step rather than
+    /// failing `loom init` — the spec mandates materialization only when
+    /// an origin is bound.
+    #[test]
+    fn loom_init_skips_integration_when_workspace_has_no_origin() -> Result<()> {
+        let dir = temp_workspace()?;
+        let report = run(dir.path(), InitOpts::default(), &[])?;
+        assert!(
+            report.integration_workspace.is_none(),
+            "integration workspace must be skipped when no origin remote",
+        );
+        assert!(
+            !dir.path().join(".wrapix/loom/integration").exists(),
+            "integration directory must NOT be created without an origin",
+        );
+        Ok(())
     }
 
     #[test]
