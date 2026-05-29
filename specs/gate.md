@@ -1446,11 +1446,11 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   `[check?](missing-cmd)`, `[test?](missing::fn)`,
   `[system?](missing-system-cmd)`, `[judge?](missing/path.md)` all
   clear forward resolution with no finding
-  [test?](pending_marked_unresolved_target_yields_no_finding)
+  [test](pending_marked_unresolved_target_yields_no_finding)
 - **Pending — resolved target emits `UnneededPendingMarker`.** A
   `[check?](true)` (where `true` is on PATH) flags the stale marker,
   naming spec + line + target
-  [test?](pending_marked_resolved_target_yields_unneeded_pending_marker)
+  [test](pending_marked_resolved_target_yields_unneeded_pending_marker)
 - **Pending `[test?]` — stub body silently passes.** The modifier
   suppresses `StubTestFunction` the same way it suppresses
   `UnresolvedAnnotation`
@@ -1458,15 +1458,15 @@ PATH, and a `[judge]` annotation pointing at the gate's own
 - **Pending `[test?]` — non-stub body emits `UnneededPendingMarker`.**
   Co-incidence with target resolution forces the implementing diff to
   drop `?` at the same commit that lands the real body
-  [test?](pending_marked_non_stub_test_body_yields_unneeded_pending_marker)
+  [test](pending_marked_non_stub_test_body_yields_unneeded_pending_marker)
 - **Atomic-acceptance — `?` does not suppress.** Two annotations on
   one criterion still flag `MultipleAnnotations`, whether either,
   both, or neither carries `?`
-  [test?](pending_modifier_does_not_suppress_atomic_acceptance_finding)
+  [test](pending_modifier_does_not_suppress_atomic_acceptance_finding)
 - **`UnneededPendingMarker` — terminal at push gate.** Surfaces
   alongside `UnresolvedAnnotation` and `StubTestFunction` per the
   *Findings and Minting* emit-shape table
-  [test?](unneeded_pending_marker_is_terminal_at_push_gate)
+  [test](unneeded_pending_marker_is_terminal_at_push_gate)
 - **`unneeded-pending-marker` — auto-generated options.** `mint`
   emits a `## Options — …` block whose Option 1 is "drop the `?`",
   per *Integrity gate* above

@@ -1283,16 +1283,13 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
     let cmd_resolver = FsCommandResolver::new(workspace);
     let test_resolver = RustWorkspaceTestResolver::scan(workspace)?;
     let stub_scanner = RustWorkspaceStubScanner::scan(workspace)?;
-    let findings: Vec<_> = loom_gate::integrity::check(
+    let findings = loom_gate::integrity::check(
         &annotations,
         workspace,
         &cmd_resolver,
         &test_resolver,
         &stub_scanner,
-    )
-    .into_iter()
-    .filter(|f| !is_allowlisted_integrity_finding(f))
-    .collect();
+    );
     if findings.is_empty() {
         return Ok(0);
     }
@@ -1302,85 +1299,6 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
         let _ = writeln!(stderr, "loom gate [integrity]: {finding}");
     }
     Ok(1)
-}
-
-/// Allowlist of `(spec_file, target_substring)` pairs whose
-/// [`loom_gate::IntegrityFinding`]s are intentionally suppressed
-/// pending follow-on work. Each entry skips the matching annotation's
-/// "does not resolve" finding so the integrity tier passes even though
-/// the referenced test is currently missing.
-///
-/// Add a new entry only when the resource the annotation points at is
-/// known to be missing and the entry block carries a comment naming
-/// the structural reason the test is absent. Drop the entry the
-/// moment the test is written (or the annotation is removed from the
-/// spec).
-const INTEGRITY_ALLOWLIST: &[(&str, &str)] = &[
-    // Test missing pending the Once-mode semantic change that fires
-    // the gate when the bead being processed closes the molecule;
-    // deferred from the typed-receipt work to keep scope contained.
-    (
-        "specs/harness.md",
-        "once_mode_fires_gate_when_molecule_closes_else_no_gate_partial",
-    ),
-    // Missing-test work tracked outside this allowlist's scope.
-    ("specs/harness.md", "loom_use_sets_current_spec_only"),
-    ("specs/harness.md", "all_specs_iterates_by_bd_updated_asc"),
-    ("specs/harness.md", "all_specs_exit_code_reflects_aggregate"),
-    ("specs/harness.md", "plan_does_not_create_epic_or_touch_bd"),
-    // Pending-modifier mechanism (`[test?]` etc) introduced by
-    // `d70b7f3 gate: pending modifier (?) for plan-declared
-    // not-yet-implemented claims`. The parser landed (8350e7e) but the
-    // spec's new `[test]` rows still reference test functions owed by
-    // molecule lm-9em4 (lm-9em4.2 integrity branching + lm-9em4.5
-    // migration to `[test?]`). Entries are removed once .2 and .5
-    // land — note 140's documented bootstrap-fallback path.
-    (
-        "specs/gate.md",
-        "parser_recognises_pending_modifier_across_all_tiers",
-    ),
-    (
-        "specs/gate.md",
-        "pending_marked_unresolved_target_yields_no_finding",
-    ),
-    (
-        "specs/gate.md",
-        "pending_marked_resolved_target_yields_unneeded_pending_marker",
-    ),
-    (
-        "specs/gate.md",
-        "pending_marked_stub_test_body_yields_no_finding",
-    ),
-    (
-        "specs/gate.md",
-        "pending_marked_non_stub_test_body_yields_unneeded_pending_marker",
-    ),
-    (
-        "specs/gate.md",
-        "pending_modifier_does_not_suppress_atomic_acceptance_finding",
-    ),
-    (
-        "specs/gate.md",
-        "unneeded_pending_marker_is_terminal_at_push_gate",
-    ),
-    (
-        "specs/gate.md",
-        "mint_emits_drop_marker_option_for_unneeded_pending_marker",
-    ),
-];
-
-fn is_allowlisted_integrity_finding(finding: &loom_gate::IntegrityFinding) -> bool {
-    let (spec, target) = match finding {
-        loom_gate::IntegrityFinding::UnresolvedAnnotation { spec, target, .. } => (spec, target),
-        loom_gate::IntegrityFinding::UnresolvedCargoTestName { spec, target, .. } => (spec, target),
-        loom_gate::IntegrityFinding::StubTestFunction { spec, target, .. } => (spec, target),
-        loom_gate::IntegrityFinding::UnneededPendingMarker { spec, target, .. } => (spec, target),
-        loom_gate::IntegrityFinding::MultipleAnnotations { .. } => return false,
-    };
-    let spec_str = spec.to_string_lossy();
-    INTEGRITY_ALLOWLIST
-        .iter()
-        .any(|(s, t)| spec_str.ends_with(s) && target.contains(t))
 }
 
 /// Per-annotation dispatch loop for the System tier with fail-eager,

@@ -2015,7 +2015,7 @@ Criteria.
 - `loom use <label>` sets the `current_spec` meta key only. There
       is no `--epic` flag (the prior pointer-write surface is
       removed under the "at most one open epic per spec" invariant)
-  [test](loom_use_sets_current_spec_only)
+  [test?](loom_use_sets_current_spec_only)
 - `loom todo` resolves "the active molecule for spec X" via a
       single `bd find --type=epic --label=spec:<X> --status=open`
       query — no tier walk, no pointer table, no README parse at
@@ -2054,7 +2054,7 @@ Criteria.
       the bead did NOT close the molecule, exits with
       `GateOutcome::NoGate { reason: OncePartial }`. `--once` never
       silently skips the gate when the molecule is complete
-  [test](once_mode_fires_gate_when_molecule_closes_else_no_gate_partial)
+  [test?](once_mode_fires_gate_when_molecule_closes_else_no_gate_partial)
 - `loom loop --parallel N` (alias `-p N`) accepts a positive integer; non-
       positive or non-integer values fail with a clear error
   [test](default_is_one)
@@ -2063,11 +2063,11 @@ Criteria.
       by bd's `Updated` timestamp ascending (oldest first), running
       the per-spec outer loop to completion for each; per-spec
       `GateOutcome::Fail` does not stop the iteration
-  [test](all_specs_iterates_by_bd_updated_asc)
+  [test?](all_specs_iterates_by_bd_updated_asc)
 - `loom loop --all-specs` aggregate exit code is non-zero iff any
       spec ended in `GateOutcome::Fail`; `Success` and `NoGate`
       across all specs → exit 0
-  [test](all_specs_exit_code_reflects_aggregate)
+  [test?](all_specs_exit_code_reflects_aggregate)
 - `loom loop`'s worker queue resolution skips any bead with
       `issue_type == "epic"`, emitting an info-level log line naming
       the skipped epic. Sequential and parallel codepaths share the
@@ -2476,7 +2476,7 @@ two agent-loop observers.
   [test](state_corruption_recovery)
 - `loom plan -n/-u` does NOT create a molecule epic and does NOT
       write to bd; plan sessions edit specs only
-  [test](plan_does_not_create_epic_or_touch_bd)
+  [test?](plan_does_not_create_epic_or_touch_bd)
 - `loom init --rebuild` populates `molecules.base_commit` from
       `bd show <id> --json` reading `loom.base_commit` metadata for
       every open `type=epic` bead carrying `spec:<label>` (with the
