@@ -101,6 +101,10 @@ pub enum ConcernToken {
     InvariantClash,
     #[serde(rename = "template-spec-drift")]
     TemplateSpecDrift,
+    #[serde(rename = "cross-spec-clash")]
+    CrossSpecClash,
+    #[serde(rename = "spec-conventions-violation")]
+    SpecConventionsViolation,
     #[serde(rename = "verifier-failed")]
     VerifierFailed,
     #[serde(rename = "dispatch-error")]
@@ -139,6 +143,8 @@ impl ConcernToken {
             Self::JudgeFlag => "judge-flag",
             Self::InvariantClash => "invariant-clash",
             Self::TemplateSpecDrift => "template-spec-drift",
+            Self::CrossSpecClash => "cross-spec-clash",
+            Self::SpecConventionsViolation => "spec-conventions-violation",
             Self::VerifierFailed => "verifier-failed",
             Self::DispatchError => "dispatch-error",
             Self::UnresolvedAnnotation => "unresolved-annotation",
@@ -161,6 +167,8 @@ impl ConcernToken {
             | Self::VerifierTooNarrow
             | Self::JudgeFlag
             | Self::MultipleAnnotations
+            | Self::CrossSpecClash
+            | Self::SpecConventionsViolation
             | Self::ScopeCreep
             | Self::ScopeShortfall => TargetKind::Criterion,
             Self::OrphanIntegration => TargetKind::Contract,
@@ -197,6 +205,8 @@ impl ConcernToken {
     pub fn scope_kind(self) -> ScopeKind {
         match self {
             Self::TemplateSpecDrift
+            | Self::CrossSpecClash
+            | Self::SpecConventionsViolation
             | Self::VerifierFailed
             | Self::DispatchError
             | Self::UnresolvedAnnotation
@@ -1229,6 +1239,11 @@ mod tests {
             (ConcernToken::JudgeFlag, TargetKind::Criterion),
             (ConcernToken::InvariantClash, TargetKind::Invariant),
             (ConcernToken::TemplateSpecDrift, TargetKind::Template),
+            (ConcernToken::CrossSpecClash, TargetKind::Criterion),
+            (
+                ConcernToken::SpecConventionsViolation,
+                TargetKind::Criterion,
+            ),
             (ConcernToken::VerifierFailed, TargetKind::Annotation),
             (ConcernToken::DispatchError, TargetKind::Annotation),
             (ConcernToken::UnresolvedAnnotation, TargetKind::Annotation),
@@ -1888,6 +1903,14 @@ mod tests {
             ConcernToken::TemplateSpecDrift => FindingTarget::Template {
                 path: "crates/loom-templates/templates/review.md".to_owned(),
             },
+            ConcernToken::CrossSpecClash => FindingTarget::Criterion {
+                spec: gate.clone(),
+                anchor: "cross-spec-clash".to_owned(),
+            },
+            ConcernToken::SpecConventionsViolation => FindingTarget::Criterion {
+                spec: gate.clone(),
+                anchor: "spec-conventions-violation".to_owned(),
+            },
             ConcernToken::ScopeCreep => FindingTarget::Criterion {
                 spec: gate.clone(),
                 anchor: "scope-appropriateness".to_owned(),
@@ -1916,6 +1939,8 @@ mod tests {
             ConcernToken::JudgeFlag,
             ConcernToken::InvariantClash,
             ConcernToken::TemplateSpecDrift,
+            ConcernToken::CrossSpecClash,
+            ConcernToken::SpecConventionsViolation,
             ConcernToken::VerifierFailed,
             ConcernToken::DispatchError,
             ConcernToken::UnresolvedAnnotation,
@@ -2003,6 +2028,8 @@ mod tests {
 
         let tree_only = [
             ConcernToken::TemplateSpecDrift,
+            ConcernToken::CrossSpecClash,
+            ConcernToken::SpecConventionsViolation,
             ConcernToken::VerifierFailed,
             ConcernToken::DispatchError,
             ConcernToken::UnresolvedAnnotation,
@@ -2101,5 +2128,61 @@ mod tests {
                 panic!("AnyScope token must parse at {} scope: {e}", scope.label())
             });
         }
+    }
+
+    /// Spec contract `specs/gate.md` § *`loom-protocol` crate* — the
+    /// `cross-spec-clash` rubric token round-trips byte-equal through
+    /// `serde_json` and `parse_walk_output` with canonical target
+    /// `Criterion { spec, anchor }`, and is a tree-scope-only token.
+    #[test]
+    fn concern_token_cross_spec_clash_round_trips_with_criterion_target() {
+        let token = ConcernToken::CrossSpecClash;
+        assert_eq!(token.as_wire(), "cross-spec-clash");
+        assert_eq!(token.expected_target_kind(), TargetKind::Criterion);
+        assert_eq!(token.scope_kind(), ScopeKind::TreeOnly);
+
+        let gate = spec("gate");
+        let target = canonical_target(token, &gate);
+        assert!(matches!(target, FindingTarget::Criterion { .. }));
+
+        let finding = Finding {
+            token,
+            bonds: vec![gate.clone()],
+            target,
+            evidence: "cross-spec-clash round-trip".to_owned(),
+        };
+        let payload = serde_json::to_string(&finding).expect("serialize");
+        let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_COMPLETE\n");
+        let parsed = parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid)
+            .expect("round-trip parse");
+        assert_eq!(parsed, vec![finding]);
+    }
+
+    /// Spec contract `specs/gate.md` § *`loom-protocol` crate* — the
+    /// `spec-conventions-violation` rubric token round-trips byte-equal
+    /// through `serde_json` and `parse_walk_output` with canonical target
+    /// `Criterion { spec, anchor }`, and is a tree-scope-only token.
+    #[test]
+    fn concern_token_spec_conventions_violation_round_trips_with_criterion_target() {
+        let token = ConcernToken::SpecConventionsViolation;
+        assert_eq!(token.as_wire(), "spec-conventions-violation");
+        assert_eq!(token.expected_target_kind(), TargetKind::Criterion);
+        assert_eq!(token.scope_kind(), ScopeKind::TreeOnly);
+
+        let gate = spec("gate");
+        let target = canonical_target(token, &gate);
+        assert!(matches!(target, FindingTarget::Criterion { .. }));
+
+        let finding = Finding {
+            token,
+            bonds: vec![gate.clone()],
+            target,
+            evidence: "spec-conventions-violation round-trip".to_owned(),
+        };
+        let payload = serde_json::to_string(&finding).expect("serialize");
+        let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_COMPLETE\n");
+        let parsed = parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid)
+            .expect("round-trip parse");
+        assert_eq!(parsed, vec![finding]);
     }
 }

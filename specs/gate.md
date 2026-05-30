@@ -2360,11 +2360,11 @@ depends on.
 - `ConcernToken::CrossSpecClash` round-trips through the wire format
   with canonical target `Criterion { spec, anchor }` and is exercised
   by the round-trip property test cell set
-  [test?](concern_token_cross_spec_clash_round_trips_with_criterion_target)
+  [test](concern_token_cross_spec_clash_round_trips_with_criterion_target)
 - `ConcernToken::SpecConventionsViolation` round-trips through the
   wire format with canonical target `Criterion { spec, anchor }` and
   is exercised by the round-trip property test cell set
-  [test?](concern_token_spec_conventions_violation_round_trips_with_criterion_target)
+  [test](concern_token_spec_conventions_violation_round_trips_with_criterion_target)
 - `cross-spec-clash` and `spec-conventions-violation` are
   tree-scope-only tokens: the rubric emits them at `--tree` scope;
   `--bead` / `--diff` / `--files` scope rejects them. A finding
