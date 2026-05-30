@@ -2701,4 +2701,74 @@ mod tests {
             PerBeadGateOutcome::StructuralViolation { .. },
         ));
     }
+
+    /// Spec criterion (`specs/gate.md` § *Production walker wiring*):
+    /// the production `exec_per_bead_gate` invokes `loom gate verify
+    /// --bead <id> -s <spec>` then `loom gate mint --bead <id> -s
+    /// <spec>` as real subprocesses against `loom_bin`. The
+    /// mock-controller test in `runner.rs` covers the runner-side
+    /// routing on `PerBeadGateOutcome`; this pins the subprocess
+    /// shape the mock bypasses by pointing `loom_bin` at a stub
+    /// that records each invocation's argv and emits a clean mint
+    /// summary so the real `classify_mint_summary` parser
+    /// roundtrips to `Clean`.
+    #[tokio::test]
+    async fn exec_per_bead_gate_invokes_loom_gate_verify_then_mint_subprocesses() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let stub = dir.path().join("loom-stub.sh");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\n\
+             set -euo pipefail\n\
+             echo \"$*\" >> \"$PWD/argv.log\"\n\
+             case \"$2\" in\n\
+                 mint) echo 'minted 0, skipped 0 (dedup), refused 0, errors 0' ;;\n\
+             esac\n\
+             exit 0\n",
+        )
+        .expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod stub");
+
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            SpecLabel::new("gate"),
+            stub.clone(),
+            workspace.clone(),
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                panic!("spawn closure must not fire during exec_per_bead_gate");
+            },
+        );
+
+        let bead_id = BeadId::new("lm-1").expect("valid bead id");
+        let outcome = controller
+            .exec_per_bead_gate(&bead_id)
+            .await
+            .expect("exec_per_bead_gate ok");
+        assert_eq!(outcome, PerBeadGateOutcome::Clean);
+
+        let log = std::fs::read_to_string(workspace.join("argv.log")).expect("argv.log readable");
+        let calls: Vec<&str> = log.lines().collect();
+        assert_eq!(
+            calls.len(),
+            2,
+            "exec_per_bead_gate must spawn exactly two subprocesses: {calls:?}",
+        );
+        assert_eq!(
+            calls[0], "gate verify --bead lm-1 -s gate",
+            "first subprocess argv must be `loom gate verify --bead <id> -s <spec>`",
+        );
+        assert_eq!(
+            calls[1], "gate mint --bead lm-1 -s gate",
+            "second subprocess argv must be `loom gate mint --bead <id> -s <spec>` after verify",
+        );
+    }
 }

@@ -2453,6 +2453,15 @@ findings reach mint.
   run-phase agent signals Success. Fix-up beads minted at this step
   become ready on the next outer-loop pass via `bd ready`
   [test](loop_per_bead_dispatches_verify_then_mint_after_run_phase_success)
+- The production `exec_per_bead_gate` implementation actually spawns
+  those subprocesses against `loom_bin` — argv shape `gate verify
+  --bead <id> -s <spec>` then (only on verify exit 0) `gate mint
+  --bead <id> -s <spec>`. The bullet above covers the runner-side
+  routing on the typed `PerBeadGateOutcome`; this pins the
+  subprocess seam itself so a regression that hard-codes an empty
+  argv, reorders verify/mint, or drops the bead/spec flags is caught
+  at the production controller, not just at the mock boundary
+  [test](exec_per_bead_gate_invokes_loom_gate_verify_then_mint_subprocesses)
 
 ### Per-bead mint summary semantics
 
