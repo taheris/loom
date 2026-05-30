@@ -2624,6 +2624,7 @@ name = "loom-gate"
 version = "0.1.0"
 dependencies = [
  "displaydoc",
+ "loom-driver",
  "loom-events",
  "pulldown-cmark",
  "regex",

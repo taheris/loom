@@ -1003,6 +1003,37 @@ pub fn clone_loom_workspace(origin_url: &str, dest: &Path, branch: &str) -> Resu
     })
 }
 
+/// Synchronous `git -C <workspace> rev-parse HEAD^{tree}`. Used by
+/// `loom gate verify-marker`, which is a one-shot CLI helper that
+/// does not justify the cost of standing up a tokio runtime for two
+/// git invocations.
+pub fn head_tree_oid_sync(workspace: &Path) -> Result<String, GitError> {
+    sync_git_capture(workspace, &["rev-parse", "HEAD^{tree}"]).map(|s| s.trim().to_string())
+}
+
+/// Synchronous `git -C <workspace> status --porcelain`. Paired with
+/// [`head_tree_oid_sync`] for the marker fingerprint check.
+pub fn status_porcelain_sync(workspace: &Path) -> Result<String, GitError> {
+    sync_git_capture(workspace, &["status", "--porcelain"])
+}
+
+fn sync_git_capture(workspace: &Path, args: &[&str]) -> Result<String, GitError> {
+    use std::process::Command as StdCommand;
+    let output = StdCommand::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(args)
+        .output()
+        .map_err(GitError::Spawn)?;
+    if !output.status.success() {
+        return Err(GitError::GitCli {
+            status: output.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
+    }
+    Ok(String::from_utf8(output.stdout)?)
+}
+
 /// Bare origin path used by [`init_test_repo`]. Exposed so tests that need
 /// to inspect the published refs (e.g. assert that `main` advanced after a
 /// per-bead push) can locate the bare repo without re-deriving the

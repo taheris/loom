@@ -110,6 +110,9 @@ enum GateSubcommand {
     /// Walk the rubric and mint a fix-up bead per finding (the act
     /// surface paired with the inspection-only `audit`).
     Mint(GateMintArgs),
+    /// Validate `.loom/marker.json` against the workspace's HEAD tree
+    /// and porcelain — prek's pre-push short-circuit.
+    VerifyMarker,
 }
 
 /// `loom gate mint` arg surface. Extends [`GateScopeArgs`] with the
@@ -413,6 +416,9 @@ impl Command {
             }
             | Command::Gate {
                 subcommand: Some(GateSubcommand::System(_)),
+            }
+            | Command::Gate {
+                subcommand: Some(GateSubcommand::VerifyMarker),
             } => false,
             Command::Init { .. }
             | Command::UseSpec { .. }
@@ -877,6 +883,14 @@ fn run_gate(
             apply_default_scope(workspace, &mut args.scope);
             run_gate_mint(workspace, args, agent_override)
         }
+        Some(GateSubcommand::VerifyMarker) => run_gate_verify_marker(workspace),
+    }
+}
+
+fn run_gate_verify_marker(workspace: &Path) -> anyhow::Result<()> {
+    match loom_gate::verify_marker(workspace) {
+        Ok(_) => Ok(()),
+        Err(err) => Err(anyhow::anyhow!("{err}")),
     }
 }
 

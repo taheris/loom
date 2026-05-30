@@ -12,6 +12,7 @@ publish.workspace = true
 # a spec change.
 [dependencies]
 displaydoc = { workspace = true }
+loom-driver = { workspace = true }
 loom-events = { workspace = true }
 pulldown-cmark = { workspace = true }
 regex = { workspace = true }

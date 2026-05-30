@@ -23,6 +23,7 @@ pub mod cache;
 pub mod dispatch;
 pub mod inputs;
 pub mod integrity;
+pub mod marker;
 pub mod runner;
 pub mod scope;
 
@@ -41,6 +42,7 @@ pub use integrity::{
     PendingCommandExecutor, RustWorkspaceStubScanner, RustWorkspaceTestResolver, StubScanner,
     TestPathResolver, format_clarify_options,
 };
+pub use marker::{MARKER_PATH, MarkerError, MarkerProof, verify_marker};
 pub use runner::{
     BuiltinParser, MatchedAnnotation, ParsedVerdict, RunnerError, RunnerGroup, RunnerKind,
     RunnerSpec, RunnerTemplate, check_zero_match, group_by_runner, parse_runner_output,
