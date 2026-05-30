@@ -323,22 +323,22 @@ declared as such.
 
 - `loom gate verify-marker` exits 0 when the marker's tree OID matches
   HEAD's tree OID and porcelain is clean
-  [test](loom_gate::marker::tests::verify_marker_exits_zero_on_match)
+  [test](marker::tests::verify_marker_exits_zero_on_match)
 - `loom gate verify-marker` exits non-zero when the marker file is
   absent
-  [test](loom_gate::marker::tests::verify_marker_exits_nonzero_on_missing)
+  [test](marker::tests::verify_marker_exits_nonzero_on_missing)
 - `loom gate verify-marker` exits non-zero when the marker's tree OID
   does not match HEAD's tree OID
-  [test](loom_gate::marker::tests::verify_marker_exits_nonzero_on_tree_mismatch)
+  [test](marker::tests::verify_marker_exits_nonzero_on_tree_mismatch)
 - `loom gate verify-marker` exits non-zero when porcelain is non-empty
   even if the tree OID matches
-  [test](loom_gate::marker::tests::verify_marker_exits_nonzero_on_dirty_tree)
+  [test](marker::tests::verify_marker_exits_nonzero_on_dirty_tree)
 - The `pre-push-checks` wrapper exits 0 without execing its argument
   command when `loom gate verify-marker` exits 0
-  [test](loom_gate::marker::tests::pre_push_checks_short_circuits_on_valid_marker)
+  [test](marker::tests::pre_push_checks_short_circuits_on_valid_marker)
 - The `pre-push-checks` wrapper execs its argument command when
   `loom gate verify-marker` exits non-zero
-  [test](loom_gate::marker::tests::pre_push_checks_falls_through_on_invalid_marker)
+  [test](marker::tests::pre_push_checks_falls_through_on_invalid_marker)
 
 ## Requirements
 
