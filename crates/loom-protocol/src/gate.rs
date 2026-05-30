@@ -70,8 +70,9 @@ const FINGERPRINT_HEX_LEN: usize = 12;
 /// The wire string (e.g. `spec-coherence-fail`) is the canonical name
 /// across the `LOOM_FINDING:` JSON, bd labels, and log surfaces; the
 /// Rust variant name is the same with kebab-case lowered to
-/// PascalCase. `scope-creep` and `scope-shortfall` are deliberately
-/// absent — they are per-bead tokens the tree-scope walk never emits.
+/// PascalCase. Tokens carry a [`ScopeKind`] discoverable via
+/// [`Self::scope_kind`]; the parse pipeline rejects a finding whose
+/// token does not admit the active [`DispatchScope`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConcernToken {
     #[serde(rename = "spec-coherence-fail")]
@@ -112,6 +113,10 @@ pub enum ConcernToken {
     MultipleAnnotations,
     #[serde(rename = "unneeded-pending-marker")]
     UnneededPendingMarker,
+    #[serde(rename = "scope-creep")]
+    ScopeCreep,
+    #[serde(rename = "scope-shortfall")]
+    ScopeShortfall,
 }
 
 impl ConcernToken {
@@ -140,6 +145,8 @@ impl ConcernToken {
             Self::StubPointing => "stub-pointing",
             Self::MultipleAnnotations => "multiple-annotations",
             Self::UnneededPendingMarker => "unneeded-pending-marker",
+            Self::ScopeCreep => "scope-creep",
+            Self::ScopeShortfall => "scope-shortfall",
         }
     }
 
@@ -153,7 +160,9 @@ impl ConcernToken {
             Self::SpecCoherenceFail
             | Self::VerifierTooNarrow
             | Self::JudgeFlag
-            | Self::MultipleAnnotations => TargetKind::Criterion,
+            | Self::MultipleAnnotations
+            | Self::ScopeCreep
+            | Self::ScopeShortfall => TargetKind::Criterion,
             Self::OrphanIntegration => TargetKind::Contract,
             Self::StyleRuleViolation => TargetKind::StyleRule,
             Self::VerifierBypass
@@ -169,6 +178,113 @@ impl ConcernToken {
             Self::ConcurrencyUntested => TargetKind::LockSite,
             Self::InvariantClash => TargetKind::Invariant,
             Self::TemplateSpecDrift => TargetKind::Template,
+        }
+    }
+
+    /// Scope class for the token — which dispatch scopes the parse
+    /// pipeline admits the token from. Per `specs/gate.md` § *Concern
+    /// tokens and target variants* and § *Scope-dependent walk*:
+    ///
+    /// - `template-spec-drift` / `verifier-failed` / `dispatch-error` /
+    ///   `unresolved-annotation` / `stub-pointing` /
+    ///   `multiple-annotations` / `unneeded-pending-marker` are emitted
+    ///   only at `--tree` scope (deterministic verifier dispatch and
+    ///   integrity-gate sources run only there).
+    /// - `scope-creep` / `scope-shortfall` are per-bead-only — the
+    ///   tree-scope walk never emits them.
+    /// - Everything else is admissible at any scope.
+    #[must_use]
+    pub fn scope_kind(self) -> ScopeKind {
+        match self {
+            Self::TemplateSpecDrift
+            | Self::VerifierFailed
+            | Self::DispatchError
+            | Self::UnresolvedAnnotation
+            | Self::StubPointing
+            | Self::MultipleAnnotations
+            | Self::UnneededPendingMarker => ScopeKind::TreeOnly,
+            Self::ScopeCreep | Self::ScopeShortfall => ScopeKind::PerBead,
+            Self::SpecCoherenceFail
+            | Self::OrphanIntegration
+            | Self::StyleRuleViolation
+            | Self::VerifierBypass
+            | Self::WeakAssertion
+            | Self::FabricatedResult
+            | Self::CoincidentalPass
+            | Self::MockDiscipline
+            | Self::VerifierTooNarrow
+            | Self::ConcurrencyUntested
+            | Self::JudgeFlag
+            | Self::InvariantClash => ScopeKind::AnyScope,
+        }
+    }
+}
+
+/// Dispatch scope the parse pipeline ran under — `--bead` / `--diff` /
+/// `--files` collapse to [`Self::PerBead`]; `--tree` is [`Self::Tree`].
+/// Threaded into [`Finding::parse_payload`], [`WalkOutput::from_stdout`],
+/// and [`parse_walk_output`] so token-scope alignment is enforced at the
+/// wire boundary per `specs/gate.md` § *Concern tokens and target
+/// variants* (criterion `tree_scope_only_tokens_rejected_at_non_tree_scope`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchScope {
+    /// `--bead <id>` / `--diff <range>` / `--files <paths>` — the
+    /// per-bead walks. Tree-scope-only tokens (verifier / integrity
+    /// surfaces, template-spec-drift, etc.) are rejected.
+    PerBead,
+    /// `--tree` — the standing-safety-net walk. Per-bead-only tokens
+    /// (`scope-creep`, `scope-shortfall`) are rejected.
+    Tree,
+}
+
+impl DispatchScope {
+    /// Stable label for error messages and log surfaces.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PerBead => "per-bead",
+            Self::Tree => "tree",
+        }
+    }
+}
+
+/// Per-token scope class. Compared against the active [`DispatchScope`]
+/// at parse time via [`Self::admits`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeKind {
+    /// Emitted only at per-bead dispatch scope (`--bead` / `--diff` /
+    /// `--files`); rejected at `--tree`.
+    PerBead,
+    /// Emitted only at `--tree` dispatch scope (deterministic verifier
+    /// dispatch, integrity-gate surfaces, tree-only rubric checks);
+    /// rejected at per-bead scopes.
+    TreeOnly,
+    /// Admissible at any dispatch scope.
+    AnyScope,
+}
+
+impl ScopeKind {
+    /// True iff the token (with this scope class) may be parsed under
+    /// the active dispatch scope.
+    #[must_use]
+    pub fn admits(self, scope: DispatchScope) -> bool {
+        match (self, scope) {
+            (Self::AnyScope, _)
+            | (Self::PerBead, DispatchScope::PerBead)
+            | (Self::TreeOnly, DispatchScope::Tree) => true,
+            (Self::PerBead, DispatchScope::Tree) | (Self::TreeOnly, DispatchScope::PerBead) => {
+                false
+            }
+        }
+    }
+
+    /// Stable label for error messages.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PerBead => "per-bead-only",
+            Self::TreeOnly => "tree-only",
+            Self::AnyScope => "any-scope",
         }
     }
 }
@@ -394,23 +510,37 @@ pub enum FindingParseError {
         detail: String,
         raw: String,
     },
+    /// line {line_number}: token `{token}` is {scope_kind} but the walk runs at {dispatch_scope} scope — `{raw}`
+    TokenScopeMismatch {
+        line_number: usize,
+        token: &'static str,
+        scope_kind: &'static str,
+        dispatch_scope: &'static str,
+        raw: String,
+    },
 }
 
 impl Finding {
     /// Pure parse for a single `LOOM_FINDING:` payload: JSON syntax
     /// (Layer 1), token/kind closed-set membership (Layer 2; enforced
     /// by `serde` deserialization since both are `#[serde(rename = ...)]`
-    /// enums), token/variant alignment (Layer 4), and the
-    /// "target.spec ∈ bonds" rule. Layers 3 and 5 are deferred to
-    /// [`Finding::validate`] because they require I/O context.
+    /// enums), token/variant alignment (Layer 4), token-scope
+    /// admissibility against `scope`, and the "target.spec ∈ bonds"
+    /// rule. Layers 3 and 5 are deferred to [`Finding::validate`]
+    /// because they require I/O context.
     ///
     /// `line_number` is the 1-based line offset in the agent's stdout
     /// buffer; included in every error variant so the caller can quote
-    /// the offending line back to the agent on a re-run.
+    /// the offending line back to the agent on a re-run. `scope` is
+    /// the active dispatch scope per `specs/gate.md` § *Concern tokens
+    /// and target variants* — tokens whose [`ConcernToken::scope_kind`]
+    /// does not [`ScopeKind::admits`] this scope surface a typed
+    /// [`FindingParseError::TokenScopeMismatch`].
     pub fn parse_payload(
         payload: &str,
         line_number: usize,
         raw_line: &str,
+        scope: DispatchScope,
     ) -> Result<Self, FindingParseError> {
         let finding: Finding =
             serde_json::from_str(payload).map_err(|source| FindingParseError::Json {
@@ -427,6 +557,17 @@ impl Finding {
                 token: finding.token.as_wire(),
                 expected: expected_kind,
                 actual: actual_kind,
+                raw: raw_line.to_owned(),
+            });
+        }
+
+        let scope_kind = finding.token.scope_kind();
+        if !scope_kind.admits(scope) {
+            return Err(FindingParseError::TokenScopeMismatch {
+                line_number,
+                token: finding.token.as_wire(),
+                scope_kind: scope_kind.label(),
+                dispatch_scope: scope.label(),
                 raw: raw_line.to_owned(),
             });
         }
@@ -832,7 +973,11 @@ impl WalkOutput {
     /// the only construction path. Consumers read state through the
     /// [`Self::terminal`] / [`Self::findings`] / [`Self::finding_errors`]
     /// accessors.
-    pub fn from_stdout<V: FindingValidator + ?Sized>(output: &str, validator: &V) -> Self {
+    pub fn from_stdout<V: FindingValidator + ?Sized>(
+        output: &str,
+        scope: DispatchScope,
+        validator: &V,
+    ) -> Self {
         let mut findings = Vec::new();
         let mut finding_errors = Vec::new();
         for (idx, line) in output.lines().enumerate() {
@@ -841,7 +986,7 @@ impl WalkOutput {
                 continue;
             };
             let payload = line[payload_start + LOOM_FINDING_PREFIX.len()..].trim_start();
-            match Finding::parse_payload(payload, line_number, line)
+            match Finding::parse_payload(payload, line_number, line, scope)
                 .and_then(|f| f.validate(line_number, line, validator).map(|()| f))
             {
                 Ok(finding) => findings.push(finding),
@@ -911,6 +1056,7 @@ fn terminal_surface_from_stdout(output: &str) -> TerminalSurface {
 /// (no separate channel).
 pub fn parse_walk_output<V: FindingValidator + ?Sized>(
     output: &str,
+    scope: DispatchScope,
     validator: &V,
 ) -> Result<Vec<Finding>, WalkOutputError> {
     let mut findings = Vec::new();
@@ -920,7 +1066,7 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
             continue;
         };
         let payload = line[payload_start + LOOM_FINDING_PREFIX.len()..].trim_start();
-        let finding = Finding::parse_payload(payload, line_number, line)?;
+        let finding = Finding::parse_payload(payload, line_number, line, scope)?;
         finding.validate(line_number, line, validator)?;
         findings.push(finding);
     }
@@ -1089,6 +1235,8 @@ mod tests {
             (ConcernToken::StubPointing, TargetKind::Annotation),
             (ConcernToken::MultipleAnnotations, TargetKind::Criterion),
             (ConcernToken::UnneededPendingMarker, TargetKind::Annotation),
+            (ConcernToken::ScopeCreep, TargetKind::Criterion),
+            (ConcernToken::ScopeShortfall, TargetKind::Criterion),
         ] {
             assert_eq!(token.expected_target_kind(), expected, "{token:?}");
         }
@@ -1120,7 +1268,7 @@ mod tests {
                 true
             }
         }
-        let walk = WalkOutput::from_stdout("LOOM_COMPLETE\n", &AlwaysValid);
+        let walk = WalkOutput::from_stdout("LOOM_COMPLETE\n", DispatchScope::Tree, &AlwaysValid);
         assert_eq!(walk.terminal(), &TerminalSurface::Complete);
         assert!(walk.findings().is_empty());
         assert!(walk.finding_errors().is_empty());
@@ -1386,7 +1534,7 @@ mod tests {
         );
         let bad_line = format!("`{LOOM_FINDING_PREFIX} {{not valid json — fenced in backticks}}`");
         let output = format!("{good_line}\n{bad_line}\nLOOM_COMPLETE\n");
-        let walk = WalkOutput::from_stdout(&output, &AlwaysValid);
+        let walk = WalkOutput::from_stdout(&output, DispatchScope::Tree, &AlwaysValid);
         assert_eq!(walk.findings().len(), 1, "well-formed line still parses");
         assert_eq!(walk.findings()[0].token, ConcernToken::SpecCoherenceFail);
         assert_eq!(
@@ -1419,7 +1567,7 @@ mod tests {
         let no_colon = "the LOOM_FINDING marker is mentioned in prose";
         let lowercase = format!("loom_finding: {}", "{\"token\":\"x\"}");
         let output = format!("{no_colon}\n{lowercase}\nLOOM_COMPLETE\n",);
-        let walk = WalkOutput::from_stdout(&output, &AlwaysValid);
+        let walk = WalkOutput::from_stdout(&output, DispatchScope::Tree, &AlwaysValid);
         assert!(
             walk.findings().is_empty(),
             "no findings parsed from bare-prose or lowercase mention: {:?}",
@@ -1449,7 +1597,8 @@ mod tests {
         let output = format!(
             "preamble\n{line_a}\nintermediate prose\n{line_b}\nLOOM_CONCERN: verifier-bypass -- two findings"
         );
-        let findings = parse_walk_output(&output, &AlwaysValid).expect("parses cleanly");
+        let findings =
+            parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid).expect("parses cleanly");
         assert_eq!(findings.len(), 2);
         assert_eq!(findings[0].token, ConcernToken::SpecCoherenceFail);
         assert_eq!(findings[0].evidence, "first finding");
@@ -1466,7 +1615,7 @@ mod tests {
             "no terminal marker follows",
         );
         let output = format!("preamble\n{line}\ntrailing prose without a marker\n");
-        match parse_walk_output(&output, &AlwaysValid) {
+        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
             Err(WalkOutputError::MissingTerminalMarker { findings_count }) => {
                 assert_eq!(findings_count, 1);
             }
@@ -1477,7 +1626,8 @@ mod tests {
     #[test]
     fn mint_walk_without_findings_does_not_require_terminal_marker() {
         let output = "preamble with no findings and no markers\n";
-        let findings = parse_walk_output(output, &AlwaysValid).expect("vacuous case");
+        let findings =
+            parse_walk_output(output, DispatchScope::Tree, &AlwaysValid).expect("vacuous case");
         assert!(findings.is_empty());
     }
 
@@ -1491,7 +1641,7 @@ mod tests {
         );
         for terminal in ["LOOM_COMPLETE", "LOOM_BLOCKED", "LOOM_CLARIFY"] {
             let output = format!("{line}\nreason for {terminal}\n{terminal}\n");
-            parse_walk_output(&output, &AlwaysValid)
+            parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid)
                 .unwrap_or_else(|e| panic!("{terminal} should accept: {e}"));
         }
     }
@@ -1505,7 +1655,8 @@ mod tests {
             "contract is dangling",
         );
         let output = format!("{line}\nLOOM_CONCERN: orphan-integration -- found one\n");
-        let findings = parse_walk_output(&output, &AlwaysValid).expect("parses cleanly");
+        let findings =
+            parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid).expect("parses cleanly");
         let [parsed] = findings.as_slice() else {
             panic!("expected exactly one finding, got {findings:?}")
         };
@@ -1523,7 +1674,7 @@ mod tests {
 
         let line = format!("{LOOM_FINDING_PREFIX} {{not valid json");
         let output = format!("{line}\n{valid_terminal}\n");
-        match parse_walk_output(&output, &AlwaysValid) {
+        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
             Err(WalkOutputError::Finding(FindingParseError::Json {
                 line_number, raw, ..
             })) => {
@@ -1540,7 +1691,7 @@ mod tests {
             "",
         );
         let output = format!("{line}\n{valid_terminal}\n");
-        match parse_walk_output(&output, &AlwaysValid) {
+        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
             Err(WalkOutputError::Finding(FindingParseError::Json {
                 line_number, raw, ..
             })) => {
@@ -1558,7 +1709,7 @@ mod tests {
         );
         let output = format!("{line}\n{valid_terminal}\n");
         let known = KnownSpecs(&["gate", "harness"]);
-        match parse_walk_output(&output, &known) {
+        match parse_walk_output(&output, DispatchScope::Tree, &known) {
             Err(WalkOutputError::Finding(FindingParseError::UnknownBondSpec {
                 line_number,
                 spec: bad,
@@ -1578,7 +1729,7 @@ mod tests {
             "",
         );
         let output = format!("{line}\n{valid_terminal}\n");
-        match parse_walk_output(&output, &AlwaysValid) {
+        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
             Err(WalkOutputError::Finding(FindingParseError::TokenVariantMismatch {
                 line_number,
                 token,
@@ -1602,7 +1753,7 @@ mod tests {
             "",
         );
         let output = format!("{line}\n{valid_terminal}\n");
-        match parse_walk_output(&output, &NothingResolves) {
+        match parse_walk_output(&output, DispatchScope::Tree, &NothingResolves) {
             Err(WalkOutputError::Finding(FindingParseError::UnresolvedTarget {
                 line_number,
                 detail,
@@ -1625,7 +1776,7 @@ mod tests {
             "criterion belongs to gate but bonds names harness only",
         );
         let output = format!("{line}\nLOOM_CONCERN: spec-coherence-fail -- bad bonds\n");
-        match parse_walk_output(&output, &AlwaysValid) {
+        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
             Err(WalkOutputError::Finding(FindingParseError::TargetSpecNotInBonds {
                 line_number,
                 spec: missing,
@@ -1647,7 +1798,7 @@ mod tests {
             "invariant target spec missing from bonds",
         );
         let output = format!("{line}\nLOOM_CONCERN: invariant-clash -- bad bonds\n");
-        match parse_walk_output(&output, &AlwaysValid) {
+        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
             Err(WalkOutputError::Finding(FindingParseError::TargetSpecNotInBonds {
                 spec: missing,
                 ..
@@ -1664,7 +1815,8 @@ mod tests {
             "criterion belongs to gate, bonds names both",
         );
         let output = format!("{line}\nLOOM_CONCERN: spec-coherence-fail -- ok\n");
-        let findings = parse_walk_output(&output, &AlwaysValid).expect("should parse");
+        let findings =
+            parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid).expect("should parse");
         assert_eq!(findings.len(), 1);
 
         let _ = spec("gate");
@@ -1736,6 +1888,14 @@ mod tests {
             ConcernToken::TemplateSpecDrift => FindingTarget::Template {
                 path: "crates/loom-templates/templates/review.md".to_owned(),
             },
+            ConcernToken::ScopeCreep => FindingTarget::Criterion {
+                spec: gate.clone(),
+                anchor: "scope-appropriateness".to_owned(),
+            },
+            ConcernToken::ScopeShortfall => FindingTarget::Criterion {
+                spec: gate.clone(),
+                anchor: "scope-appropriateness".to_owned(),
+            },
         }
     }
 
@@ -1762,6 +1922,8 @@ mod tests {
             ConcernToken::StubPointing,
             ConcernToken::MultipleAnnotations,
             ConcernToken::UnneededPendingMarker,
+            ConcernToken::ScopeCreep,
+            ConcernToken::ScopeShortfall,
         ];
         let terminators = [
             "LOOM_COMPLETE",
@@ -1788,16 +1950,21 @@ mod tests {
             };
             let payload = serde_json::to_string(&input).expect("serialize finding");
 
+            let dispatch_scope = match token.scope_kind() {
+                ScopeKind::PerBead => DispatchScope::PerBead,
+                ScopeKind::TreeOnly | ScopeKind::AnyScope => DispatchScope::Tree,
+            };
             for terminator in terminators {
                 let output = format!(
                     "preamble\n{LOOM_FINDING_PREFIX} {payload}\nintermediate prose\n{terminator}\n",
                 );
-                let parsed = parse_walk_output(&output, &AlwaysValid).unwrap_or_else(|e| {
-                    panic!(
-                        "round-trip parse failed for {} with terminator `{terminator}`: {e}",
-                        token.as_wire(),
-                    )
-                });
+                let parsed = parse_walk_output(&output, dispatch_scope, &AlwaysValid)
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "round-trip parse failed for {} with terminator `{terminator}`: {e}",
+                            token.as_wire(),
+                        )
+                    });
                 let [round] = parsed.as_slice() else {
                     panic!(
                         "expected exactly one finding for {} with terminator `{terminator}`, got {parsed:?}",
@@ -1817,6 +1984,122 @@ mod tests {
                     token.as_wire(),
                 );
             }
+        }
+    }
+
+    /// Spec contract `specs/gate.md` § *Concern tokens and target
+    /// variants* (criterion `tree_scope_only_tokens_rejected_at_non_tree_scope`):
+    /// tokens whose [`ConcernToken::scope_kind`] is
+    /// [`ScopeKind::TreeOnly`] surface a typed
+    /// [`FindingParseError::TokenScopeMismatch`] when parsed at
+    /// per-bead dispatch scope, and per-bead-only tokens
+    /// (`scope-creep` / `scope-shortfall`) surface the same error at
+    /// tree dispatch scope. Anywhere-admissible tokens pass at both
+    /// scopes.
+    #[test]
+    fn tree_scope_only_tokens_rejected_at_non_tree_scope() {
+        let gate = spec("gate");
+        let terminator = "LOOM_CONCERN: {\"summary\":\"scope mismatch\"}";
+
+        let tree_only = [
+            ConcernToken::TemplateSpecDrift,
+            ConcernToken::VerifierFailed,
+            ConcernToken::DispatchError,
+            ConcernToken::UnresolvedAnnotation,
+            ConcernToken::StubPointing,
+            ConcernToken::MultipleAnnotations,
+            ConcernToken::UnneededPendingMarker,
+        ];
+        for token in tree_only {
+            assert_eq!(token.scope_kind(), ScopeKind::TreeOnly, "{token:?}");
+
+            let finding = Finding {
+                token,
+                bonds: vec![gate.clone()],
+                target: canonical_target(token, &gate),
+                evidence: "scope mismatch fixture".to_owned(),
+            };
+            let payload = serde_json::to_string(&finding).expect("serialize");
+            let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\n{terminator}\n");
+
+            match parse_walk_output(&output, DispatchScope::PerBead, &AlwaysValid) {
+                Err(WalkOutputError::Finding(FindingParseError::TokenScopeMismatch {
+                    token: bad_token,
+                    scope_kind,
+                    dispatch_scope,
+                    ..
+                })) => {
+                    assert_eq!(bad_token, token.as_wire());
+                    assert_eq!(scope_kind, "tree-only");
+                    assert_eq!(dispatch_scope, "per-bead");
+                }
+                other => panic!(
+                    "expected TokenScopeMismatch for tree-only token `{}` at per-bead scope, got {other:?}",
+                    token.as_wire(),
+                ),
+            }
+
+            parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid).unwrap_or_else(|e| {
+                panic!(
+                    "tree-only token `{}` must parse cleanly at tree scope: {e}",
+                    token.as_wire(),
+                )
+            });
+        }
+
+        let per_bead_only = [ConcernToken::ScopeCreep, ConcernToken::ScopeShortfall];
+        for token in per_bead_only {
+            assert_eq!(token.scope_kind(), ScopeKind::PerBead, "{token:?}");
+
+            let finding = Finding {
+                token,
+                bonds: vec![gate.clone()],
+                target: canonical_target(token, &gate),
+                evidence: "scope mismatch fixture".to_owned(),
+            };
+            let payload = serde_json::to_string(&finding).expect("serialize");
+            let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\n{terminator}\n");
+
+            match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
+                Err(WalkOutputError::Finding(FindingParseError::TokenScopeMismatch {
+                    token: bad_token,
+                    scope_kind,
+                    dispatch_scope,
+                    ..
+                })) => {
+                    assert_eq!(bad_token, token.as_wire());
+                    assert_eq!(scope_kind, "per-bead-only");
+                    assert_eq!(dispatch_scope, "tree");
+                }
+                other => panic!(
+                    "expected TokenScopeMismatch for per-bead-only token `{}` at tree scope, got {other:?}",
+                    token.as_wire(),
+                ),
+            }
+
+            parse_walk_output(&output, DispatchScope::PerBead, &AlwaysValid).unwrap_or_else(|e| {
+                panic!(
+                    "per-bead-only token `{}` must parse cleanly at per-bead scope: {e}",
+                    token.as_wire(),
+                )
+            });
+        }
+
+        let any_scope_finding = Finding {
+            token: ConcernToken::SpecCoherenceFail,
+            bonds: vec![gate.clone()],
+            target: FindingTarget::Criterion {
+                spec: gate.clone(),
+                anchor: "verifier-honesty".to_owned(),
+            },
+            evidence: "any-scope token".to_owned(),
+        };
+        let payload = serde_json::to_string(&any_scope_finding).expect("serialize");
+        let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\n{terminator}\n");
+        for scope in [DispatchScope::PerBead, DispatchScope::Tree] {
+            parse_walk_output(&output, scope, &AlwaysValid).unwrap_or_else(|e| {
+                panic!("AnyScope token must parse at {} scope: {e}", scope.label())
+            });
         }
     }
 }

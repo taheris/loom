@@ -10,7 +10,8 @@ use std::path::PathBuf;
 
 use loom_events::identifier::SpecLabel;
 use loom_protocol::gate::{
-    ConcernToken, Finding, FindingTarget, FindingValidator, TerminalSurface, WalkOutput,
+    ConcernToken, DispatchScope, Finding, FindingTarget, FindingValidator, TerminalSurface,
+    WalkOutput,
 };
 
 fn workspace_root() -> PathBuf {
@@ -101,9 +102,9 @@ fn walk_output_fields_private_only_constructor_is_from_stdout() {
         }
     }
 
-    let _: fn(&str, &AcceptAll) -> WalkOutput = WalkOutput::from_stdout;
+    let _: fn(&str, DispatchScope, &AcceptAll) -> WalkOutput = WalkOutput::from_stdout;
 
-    let walk = WalkOutput::from_stdout("LOOM_COMPLETE\n", &AcceptAll);
+    let walk = WalkOutput::from_stdout("LOOM_COMPLETE\n", DispatchScope::Tree, &AcceptAll);
     assert_eq!(walk.terminal(), &TerminalSurface::Complete);
     assert!(walk.findings().is_empty());
     assert!(walk.finding_errors().is_empty());

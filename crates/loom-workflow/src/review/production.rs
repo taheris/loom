@@ -47,7 +47,7 @@ use tracing::{info, warn};
 
 use super::context::{beads_summary, default_profile_for_spec, load_review_sources};
 use super::error::ReviewError;
-use super::finding::{FindingValidator, TerminalSurface, WalkOutput};
+use super::finding::{DispatchScope, FindingValidator, TerminalSurface, WalkOutput};
 use super::phase_verdict::{GateInputs, PhaseVerdict, RecoveryCause, decide};
 use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
 use crate::todo::ExitSignal;
@@ -584,7 +584,8 @@ where
         // per-line parse errors, so the silent-loss class (production
         // caller passing raw `&str` and leaving `streamed_findings` at
         // default empty) is structurally unrepresentable.
-        let walk = WalkOutput::from_stdout(&stdout, &AcceptAllFindingValidator);
+        let walk =
+            WalkOutput::from_stdout(&stdout, DispatchScope::PerBead, &AcceptAllFindingValidator);
         let typed_outcome = classify_review_phase(&walk, outcome.exit_code);
         Ok(RunReviewOutput {
             outcome: typed_outcome,
@@ -875,7 +876,7 @@ mod tests {
             TerminalSurface::Malformed { payload } => format!("LOOM_CONCERN: {payload}\n"),
             TerminalSurface::Missing => "no terminal marker on this line\n".to_string(),
         };
-        WalkOutput::from_stdout(&stdout, &AcceptAllFindingValidator)
+        WalkOutput::from_stdout(&stdout, DispatchScope::PerBead, &AcceptAllFindingValidator)
     }
 
     #[test]
@@ -986,7 +987,11 @@ mod tests {
         use loom_templates::previous_failure::BadWalk;
 
         for cell in matrix_cells() {
-            let walk = WalkOutput::from_stdout(&cell.stdout, &AcceptAllFindingValidator);
+            let walk = WalkOutput::from_stdout(
+                &cell.stdout,
+                DispatchScope::PerBead,
+                &AcceptAllFindingValidator,
+            );
             assert_eq!(
                 walk.findings().len(),
                 cell.expected_well_formed_findings,

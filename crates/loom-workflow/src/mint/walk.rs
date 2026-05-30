@@ -46,8 +46,8 @@ use loom_templates::review::{ReviewContext, ReviewLane, TreeScopeEpic};
 use thiserror::Error;
 
 use crate::review::{
-    ConcernToken, Finding, FindingTarget, FindingValidator, WalkOutputError, beads_summary,
-    default_profile_for_spec, load_review_sources, parse_walk_output,
+    ConcernToken, DispatchScope, Finding, FindingTarget, FindingValidator, WalkOutputError,
+    beads_summary, default_profile_for_spec, load_review_sources, parse_walk_output,
 };
 use crate::todo::ExitSignal;
 
@@ -71,6 +71,18 @@ impl MintScope {
     #[must_use]
     pub fn runs_verifiers(&self) -> bool {
         matches!(self, Self::Tree)
+    }
+
+    /// Project to the wire-level [`DispatchScope`] the parse pipeline
+    /// uses for token-scope enforcement. `--bead` / `--diff` / `--files`
+    /// collapse to [`DispatchScope::PerBead`]; `--tree` is
+    /// [`DispatchScope::Tree`].
+    #[must_use]
+    pub fn dispatch_scope(&self) -> DispatchScope {
+        match self {
+            Self::Tree => DispatchScope::Tree,
+            Self::Bead(_) | Self::Diff(_) | Self::Files(_) => DispatchScope::PerBead,
+        }
     }
 }
 
@@ -182,7 +194,7 @@ pub async fn walk<W: MintWalker, V: FindingValidator + ?Sized>(
         }
     }
     let rubric_stdout = walker.run_rubric(scope).await?;
-    let parsed = parse_walk_output(&rubric_stdout, validator)?;
+    let parsed = parse_walk_output(&rubric_stdout, scope.dispatch_scope(), validator)?;
     findings.extend(parsed);
     Ok(findings)
 }

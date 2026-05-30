@@ -2372,7 +2372,7 @@ depends on.
   `FindingParseError` variant naming the scope mismatch, alongside
   the existing per-bead-only restriction on `scope-creep` /
   `scope-shortfall`
-  [test?](tree_scope_only_tokens_rejected_at_non_tree_scope)
+  [test](tree_scope_only_tokens_rejected_at_non_tree_scope)
 
 ### `loom-protocol` crate
 

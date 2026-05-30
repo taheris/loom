@@ -44,7 +44,8 @@ use super::runner::{AgentLoopController, PerBeadGateOutcome};
 use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 use super::tree_clean::dirty_paths_from_porcelain;
 use crate::review::{
-    AcceptAllFindingValidator, GateInputs, PhaseVerdict, RecoveryCause, WalkOutput, decide,
+    AcceptAllFindingValidator, DispatchScope, GateInputs, PhaseVerdict, RecoveryCause, WalkOutput,
+    decide,
 };
 use crate::todo::{ExitSignal, parse_exit_signal};
 use loom_templates::previous_failure::TerminalSurface;
@@ -731,7 +732,11 @@ where
         // § *molecule_completion_review_threads_findings_into_previous_failure_review_concern*.
         // The mint path is NOT fired here — push-stage is `audit`,
         // inspection-only per `specs/gate.md` § *Stages*.
-        let walk = WalkOutput::from_stdout(&review_stdout, &AcceptAllFindingValidator);
+        let walk = WalkOutput::from_stdout(
+            &review_stdout,
+            DispatchScope::PerBead,
+            &AcceptAllFindingValidator,
+        );
         if let TerminalSurface::Concern { summary } = walk.terminal()
             && !walk.findings().is_empty()
         {

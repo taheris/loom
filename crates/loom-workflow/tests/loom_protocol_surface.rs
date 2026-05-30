@@ -64,7 +64,11 @@ fn loom_workflow_re_exports_walk_output_and_exit_signal_from_loom_protocol() {
             true
         }
     }
-    let proto_walk = loom_protocol::gate::WalkOutput::from_stdout("LOOM_COMPLETE\n", &AcceptAll);
+    let proto_walk = loom_protocol::gate::WalkOutput::from_stdout(
+        "LOOM_COMPLETE\n",
+        loom_protocol::gate::DispatchScope::Tree,
+        &AcceptAll,
+    );
     let _: loom_workflow::review::WalkOutput = identity(proto_walk);
 
     // The error type rides through unchanged.
@@ -82,9 +86,9 @@ fn loom_workflow_re_exports_walk_output_and_exit_signal_from_loom_protocol() {
 
     // Function-pointer identity pin for parse_walk_output: same signature
     // on both sides means the re-export resolves to the canonical fn.
-    let proto_fn: fn(&str, &AcceptAll) -> Result<Vec<_>, _> =
+    let proto_fn: fn(&str, loom_protocol::gate::DispatchScope, &AcceptAll) -> Result<Vec<_>, _> =
         loom_protocol::gate::parse_walk_output::<AcceptAll>;
-    let workflow_fn: fn(&str, &AcceptAll) -> Result<Vec<_>, _> =
+    let workflow_fn: fn(&str, loom_protocol::gate::DispatchScope, &AcceptAll) -> Result<Vec<_>, _> =
         loom_workflow::review::parse_walk_output::<AcceptAll>;
     assert_eq!(
         proto_fn as usize, workflow_fn as usize,
