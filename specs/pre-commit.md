@@ -262,7 +262,7 @@ declared as such.
   files
   [check?](grep -q 'loom gate verify --files' .pre-commit-config.yaml)
 - The pre-push stage's first hook is `loom gate verify-marker`
-  [check](awk '/stages:.*pre-push/{p=1} p && /id:/{print; exit}' .pre-commit-config.yaml | grep -q 'verify-marker')
+  [check](awk '/^      - id:/{last=$0} /stages:.*pre-push/{print last; exit}' .pre-commit-config.yaml | grep -q 'verify-marker')
 - The pre-push stage includes a `nix flake check` hook with
   `always_run: true`
   [check](grep -q 'nix flake check' .pre-commit-config.yaml)
