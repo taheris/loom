@@ -224,7 +224,7 @@ underlying check is the same.
 |---|---|---|---|---|
 | **Plan** | `loom plan -n` / `loom plan -u` | Spec under interview | Lowest — no code yet | Missing claims, weak claims, missing verifier surfaces, invariant clashes in proposed spec changes |
 | **Per-diff** | In `loom loop`: `loom gate verify --bead <id>` then `loom gate mint --bead <id>`. For ad-hoc inspection: `loom gate audit --bead <id>` (verify + review, no minting) | Spec sections the diff touches; the diff itself; tests in the diff | Medium — one bead's worth | Conformance gaps in diff, lint violations, weak verifiers, contract gaps inside one diff's reach, invariant clashes in proposed code changes |
-| **Push** | `loom gate audit --diff <molecule.base_commit>..HEAD` (unconditionally on `loom loop` molecule completion — see [harness.md FR1 + FR9](harness.md#functional)) | The molecule's own diff (files it touched) × every verifier whose declared inputs intersect that diff | Highest — **blocks push**, gate verdict encoded in [`GateOutcome`](harness.md#loop-outcome-types) (`Success`/`Fail`/`NoGate`). `GateSuccess` is constructible only when all four FR9 conditions hold *and* on-disk review-log evidence is present; the type's `pub(crate)` constructor asserts each condition. Silent gate-skip is structurally unrepresentable | Conformance gaps in the molecule, integrity-gate findings (unresolved annotations, stub tests) within the molecule's diff, review concerns, dispatch errors |
+| **Push** | `loom gate audit --diff <molecule.base_commit>..HEAD` (unconditionally on `loom loop` molecule completion — see [harness.md FR1 + FR9](harness.md#functional)) | The molecule's own diff (files it touched) × every verifier whose declared inputs intersect that diff | Highest — **blocks push**, gate verdict encoded in [`GateOutcome`](harness.md#loop-outcome-types) (`Success`/`Fail`/`NoGate`). `GateSuccess` is constructible only when all four FR9 conditions hold *and* on-disk review-log evidence is present; the struct's private `_private: ()` field seals struct-literal construction so `GateSuccess::new` is the sole minting path and asserts each condition. Silent gate-skip is structurally unrepresentable | Conformance gaps in the molecule, integrity-gate findings (unresolved annotations, stub tests) within the molecule's diff, review concerns, dispatch errors |
 | **Standing safety net** | `loom gate audit --tree` for inspection; `loom gate mint --tree` to act (on-demand, nightly CI, scheduled). The mint path is the only one that creates fix-up beads — see [*Findings and Minting*](#findings-and-minting) | Entire spec tree × entire implementation | Catches **verifier-input-declaration drift** — any verifier the push-gate's `--diff` scope would have skipped on the same diff is surfaced here. Findings (including drift) surface as regular fix-up beads via mint; `invariant-clash` findings additionally carry `loom:clarify` for human resolution | Cross-file incoherence the molecule's diff didn't surface, contracts orphaned across PRs, accumulated style/test regressions, template-vs-spec drift (Invariant 3), surface drift, verifier-input declarations that are too narrow |
 
 The plan stage has no separate command invocation — the agent runs
@@ -247,9 +247,11 @@ when all four conditions hold *and* the review wrote a non-empty
 `review-*.jsonl` ending in a terminal `LOOM_COMPLETE` marker; `Fail`
 on any failure with the reason explicit; `NoGate` only for legitimate
 "no work to gate" terminals (`NoBeadsReady`, `OncePartial`). The
-`GateSuccess` constructor is `pub(crate)` in the gate-invocation
-module — no code path outside that module can mint one, so a clean
-`loom loop` exit without the gate actually firing is unrepresentable.
+`GateSuccess` struct is `pub` but sealed via a private `_private: ()`
+field, so [`GateSuccess::new`] in the gate-invocation module is the
+only minting path — no code path outside that module can fabricate
+one, so a clean `loom loop` exit without the gate actually firing is
+unrepresentable.
 The standing safety net is **scheduled, not load-bearing for any
 individual push** — its job is to catch verifier-input-declaration
 drift over time, not to gate per-molecule pushes.
@@ -1167,7 +1169,9 @@ an ad-hoc filesystem stamp.
 The mint authority lives in `loom-gate::marker`. The constructor
 `MarkerProof::from_gate_success` is `pub(crate)`, accepts a sealed
 `GateSuccess` (defined in [harness.md § Loop Outcome
-Types](harness.md#loop-outcome-types) and itself `pub(crate)`),
+Types](harness.md#loop-outcome-types); a `pub struct` whose
+struct-literal construction is sealed by a private `_private: ()`
+field so [`GateSuccess::new`] is the only minting path),
 computes the current workspace fingerprint, and returns a
 `MarkerProof` value. No code path outside `loom-gate::marker` can
 mint a marker; no code path outside the gate-invocation module can
@@ -1177,18 +1181,20 @@ or emits on stdout.
 
 ```rust
 pub struct MarkerProof {
-    version: u32,                    // schema version (currently 1)
-    commit_sha: GitOid,              // HEAD SHA — informational
-    tree_oid: GitOid,                // HEAD's tree OID — the fingerprint
-    minted_at: SystemTime,
+    version: u32,        // schema version (currently 1)
+    commit_sha: String,  // HEAD SHA — informational
+    tree_oid: String,    // HEAD's tree OID — the fingerprint
+    minted_at_ms: u128,  // milliseconds since UNIX epoch (wall clock)
 }
 
 impl MarkerProof {
     /// Mint authority — `pub(crate)`. Takes a sealed `GateSuccess`,
-    /// computes the workspace fingerprint at mint time.
+    /// computes the workspace fingerprint at mint time. The wall
+    /// clock is injected so tests can pin `minted_at_ms`.
     pub(crate) fn from_gate_success(
         s: GateSuccess,
         workspace: &Path,
+        clock: &dyn Clock,
     ) -> Result<Self, MintError>;
 
     /// Atomic write to disk: `<path>.tmp` + rename.
@@ -1204,6 +1210,14 @@ impl MarkerProof {
     ) -> Result<Self, MarkerError>;
 }
 ```
+
+The `commit_sha` and `tree_oid` fields are bare `String` in the
+current shape rather than a `GitOid` newtype: the workspace does
+not define `GitOid` today, and tightening these to a newtype is
+tracked as a follow-up under the same molecule (RS-7 — *Newtypes
+for identifiers*). Validation still flows through git's own
+`HEAD` tree-OID lookup at `read_and_validate` time, so the
+fingerprint guarantee is unaffected by the string carrier.
 
 A value of type `MarkerProof` anywhere in the code corresponds to
 "the gate ran AND the workspace still matches at the moment this
@@ -1315,8 +1329,10 @@ The marker is forgery-resistant against three threat shapes:
   HEAD's tree.
 - **Agent verifier-execution forgery.** The bead-container agent
   cannot mint a `MarkerProof` because the constructor requires a
-  sealed `GateSuccess`, and `GateSuccess` is `pub(crate)` to the
-  driver's gate-invocation module. An agent that writes a
+  sealed `GateSuccess`, and `GateSuccess` is structurally sealed by
+  a private `_private: ()` field so [`GateSuccess::new`] in the
+  driver's gate-invocation module is the only construction path. An
+  agent that writes a
   hand-crafted JSON file to `.loom/marker.json` produces a
   file that deserializes to `MarkerProof` only insofar as the JSON
   shape matches; the validation step still recomputes the
