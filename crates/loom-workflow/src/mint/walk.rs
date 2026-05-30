@@ -1270,10 +1270,14 @@ mod tests {
     ///
     /// Behavioral assertion: at `--tree` scope, the production walker's
     /// spawn closure is invoked (rubric path) **and** the verifier
-    /// dispatch path runs without erroring on an empty workspace. The
-    /// compile-time function-pointer assignment at the bottom is the
-    /// load-bearing trait-bound pin — if a future refactor drops the
-    /// `MintWalker` impl, that line fails to compile.
+    /// dispatch path actually runs against the spec's annotation set —
+    /// an unresolved `[check]` annotation flows through `integrity::check`
+    /// and emits a [`ConcernToken::UnresolvedAnnotation`] finding tagged
+    /// with the fixture target. Without exercising a non-empty annotation
+    /// set the dispatch path's early-return makes the test indistinguishable
+    /// from a no-op. The compile-time function-pointer assignment at the
+    /// bottom is the load-bearing trait-bound pin — if a future refactor
+    /// drops the `MintWalker` impl, that line fails to compile.
     #[tokio::test]
     async fn production_mint_walker_exists_and_dispatches_rubric_and_verifiers() {
         use loom_driver::profile_manifest::ProfileImageManifest;
@@ -1282,8 +1286,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().to_path_buf();
 
+        const UNRESOLVED_TARGET: &str = "loom-verifier-bypass-fixture-9b8d-does-not-exist";
+
         std::fs::create_dir_all(workspace.join("specs")).expect("specs dir");
-        std::fs::write(workspace.join("specs/test-mint.md"), "# test-mint\n").expect("spec");
+        std::fs::write(
+            workspace.join("specs/test-mint.md"),
+            format!("# test-mint\n\n- exercise verifier dispatch [check]({UNRESOLVED_TARGET})\n"),
+        )
+        .expect("spec");
         let manifest_path = workspace.join("profile-images.json");
         std::fs::write(
             &manifest_path,
@@ -1346,9 +1356,26 @@ mod tests {
             captured_scope_dir.lock().expect("not poisoned").is_some(),
             "spawn closure must receive a scratch_dir from ScratchSession::open",
         );
-        assert!(
-            findings.is_empty(),
-            "empty specs + LOOM_COMPLETE stdout yields zero findings: {findings:?}",
+        let unresolved: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| {
+                f.token == ConcernToken::UnresolvedAnnotation
+                    && matches!(
+                        &f.target,
+                        FindingTarget::Annotation { target_string }
+                            if target_string == UNRESOLVED_TARGET
+                    )
+            })
+            .collect();
+        assert_eq!(
+            unresolved.len(),
+            1,
+            "integrity dispatch must emit one UnresolvedAnnotation finding for the fixture target; got findings={findings:?}",
+        );
+        assert_eq!(
+            unresolved[0].bonds,
+            vec![spec("test-mint")],
+            "unresolved-annotation finding must bond to its owning spec",
         );
 
         // Compile-time trait-bound pin: `ProductionMintWalker<...>` MUST
