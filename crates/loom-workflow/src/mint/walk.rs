@@ -656,8 +656,8 @@ mod tests {
     }
 
     /// Spec contract `specs/gate.md` § *Scope-dependent walk*
-    /// (criterion `mint_bead_scope_walks_llm_rubric_only_not_verifiers`,
-    /// gate.md:1433-1437): at `--bead <id>` / `--diff <range>` /
+    /// (criterion `mint_bead_scope_walks_llm_rubric_only_not_verifiers`):
+    /// at `--bead <id>` / `--diff <range>` /
     /// `--files <paths>` scope, the walk runs ONLY the LLM rubric agent;
     /// the deterministic verifier dispatcher MUST NOT fire because the
     /// loop's preceding `verify --bead <id>` step has already handled
@@ -726,13 +726,13 @@ mod tests {
     }
 
     /// Spec contract `specs/gate.md` § *Scope-dependent walk* (criterion
-    /// `mint_tree_scope_walks_verifiers_and_rubric_emitting_findings_from_both`,
-    /// gate.md:1437-1441): at `--tree` scope, the walk invokes BOTH the
+    /// `mint_tree_scope_walks_verifiers_and_rubric_emitting_findings_from_both`):
+    /// at `--tree` scope, the walk invokes BOTH the
     /// deterministic verifier dispatcher and the LLM rubric. Both
     /// sources feed into the same per-Finding loop; the verifier failures
     /// are normalised in-driver into typed Finding records (no
     /// shell-level `LOOM_FINDING:` line for them) per the mapping table
-    /// at gate.md:583-590.
+    /// in *Concern tokens and target variants*.
     #[tokio::test]
     async fn mint_tree_scope_walks_verifiers_and_rubric_emitting_findings_from_both() {
         let rubric = format!(
@@ -797,8 +797,8 @@ mod tests {
     }
 
     /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
-    /// `mint_walk_emits_loom_finding_json_lines_streamed_per_finding`,
-    /// gate.md:1369-1373): the walk's stdout emits `LOOM_FINDING: <json>`
+    /// `mint_walk_emits_loom_finding_json_lines_streamed_per_finding`):
+    /// the walk's stdout emits `LOOM_FINDING: <json>`
     /// lines one-per-finding as findings are identified (not batched at
     /// end-of-walk). The parser side is unit-tested in
     /// [`crate::review::finding::tests`]; this is the integration side
@@ -916,8 +916,8 @@ mod tests {
     }
 
     /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
-    /// `mint_idempotent_after_partial_failure_retries_only_unfinished_findings`,
-    /// gate.md:1441-1446): a crash mid-run leaves successfully-minted
+    /// `mint_idempotent_after_partial_failure_retries_only_unfinished_findings`):
+    /// a crash mid-run leaves successfully-minted
     /// beads with their fingerprint labels; the next mint invocation's
     /// dedup query (`bd list --label=loom:mint:<fp> --status=open`)
     /// matches the surviving bead and skips it, retrying only the
@@ -1128,9 +1128,9 @@ mod tests {
     }
 
     /// `verifier_failure_to_finding` covers every spec-mandated mapping
-    /// row at gate.md:583-590. Pinned per-row so adding a new
-    /// `VerifierFailureKind` variant without updating the mapping fails
-    /// here rather than in a downstream consumer.
+    /// row in *Concern tokens and target variants*. Pinned per-row so
+    /// adding a new `VerifierFailureKind` variant without updating the
+    /// mapping fails here rather than in a downstream consumer.
     #[test]
     fn verifier_failure_mapping_per_spec_table() {
         let ann = annotation(
@@ -1190,8 +1190,8 @@ mod tests {
     }
 
     /// Spec contract `specs/gate.md` § *Production walker wiring*
-    /// (criterion `production_mint_walker_exists_and_dispatches_rubric_and_verifiers`,
-    /// gate.md:2436-2444): a production [`MintWalker`] implementation
+    /// (criterion `production_mint_walker_exists_and_dispatches_rubric_and_verifiers`):
+    /// a production [`MintWalker`] implementation
     /// exists in `loom-workflow::mint::walk` alongside the trait. Its
     /// `run_rubric` spawns the reviewer agent subprocess against the
     /// rendered review prompt and returns the agent's combined stdout;
