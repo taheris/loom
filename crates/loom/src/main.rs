@@ -3437,21 +3437,15 @@ mod tests {
         }
     }
 
-    /// Spec contract `specs/gate.md` § *Production walker wiring*
-    /// (criterion `run_gate_mint_dispatches_through_production_walker_not_empty_vec`):
-    /// `run_gate_mint` MUST construct the production walker and obtain
-    /// its `Vec<Finding>` via `mint::walk::walk(walker, scope, validator)` —
-    /// a CLI arm that unconditionally constructs `Vec::<Finding>::new()`
-    /// is the structural defect this guard pins.
-    ///
-    /// `run_gate_mint` delegates the walk-then-mint dispatch to
-    /// [`mint_via_walker`]; this test drives that seam with a recording
-    /// [`MintWalker`] and asserts the walker is the source of findings.
-    /// Were the shortcut to reappear, `run_gate_mint` would bypass
-    /// `mint_via_walker` entirely and the recording walker would never
-    /// observe a `run_rubric` call from any caller.
+    /// [`mint_via_walker`] must obtain its `Vec<Finding>` from
+    /// `walk(walker, scope, validator)` and feed it into
+    /// `mint_findings_with_options`. Drives the helper seam with a
+    /// recording [`MintWalker`]; the live-path subprocess verifier
+    /// under `specs/gate.md` § *Production walker wiring* pins that
+    /// `run_gate_mint` actually reaches the helper, closing off the
+    /// `Vec::<Finding>::new()` shortcut.
     #[tokio::test]
-    async fn run_gate_mint_dispatches_through_production_walker_not_empty_vec() {
+    async fn mint_via_walker_obtains_findings_from_walker_run_rubric() {
         use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
         use loom_workflow::mint::{MintOptions, MintScope, MintWalker, VerifierFailure, WalkError};
         use loom_workflow::review::AcceptAllFindingValidator;
