@@ -393,14 +393,18 @@ Verdict: any hard-fail finding → reviewer emits one `LOOM_FINDING:
 gate routes to recovery loop with cause `review-concern`. The
 terminal marker's payload is a JSON object with a single `summary`
 field; routing is per-finding via the streamed `LOOM_FINDING:`
-tokens, never via the terminal marker. The `invariant-clash` finding is
-the exception: it produces a fix-up bead labelled `loom:clarify`
-with a structured `## Options — …` block per the Options Format
-Contract instead of a regular fix-up. The clarified bead is skipped
-by `bd ready` on subsequent ticks; non-dependent beads in the
-molecule continue running. Push is held until the clarify is
-resolved via `loom msg` (see push-gate semantics in
-[harness.md](harness.md#functional)).
+tokens, never via the terminal marker. **Clarify-bound findings**
+— `invariant-clash` and any future clarify-bound token enumerated
+in *Concern tokens and target variants* — produce a fix-up bead
+labelled `loom:clarify` whose description embeds the `## Options
+— …` block from the finding's `evidence` per the Options Format
+Contract. A clarify-bound finding whose evidence lacks a
+well-formed options block falls back to a fix-up bead carrying
+`loom:blocked` with cause `clarify-without-options` rather than a
+stranded clarify. The clarified bead is skipped by `bd ready` on
+subsequent ticks; non-dependent beads in the molecule continue
+running. Push is held until the clarify is resolved via `loom msg`
+(see push-gate semantics in [harness.md](harness.md#functional)).
 
 ### Standing-safety-net checks
 
@@ -530,7 +534,7 @@ parsers + the `LOOM_FINDING_PREFIX` constant.
 **Crate scope.** `loom-protocol` is single-purpose: cross-crate wire
 protocols loom emits or consumes. Today it carries one module,
 `gate`, covering the findings/concern surface this spec defines.
-Future protocols (agent stream-json, pi-mono RPC, run-phase exit
+Future protocols (agent stream-json, pi-mono RPC, loop-phase exit
 markers) may land as sibling modules (`loom-protocol::agent`,
 `loom-protocol::run`, …) without re-litigating crate-extraction
 overhead. Each protocol's wire-format major-bump SemVer is
@@ -674,11 +678,11 @@ markers the driver routes on, bare for markers reading adjacent
 prose.** `LOOM_FINDING:` and `LOOM_CONCERN:` carry JSON because the
 driver routes per-finding tokens and the terminal summary needs
 structured framing.
-`LOOM_COMPLETE` / `LOOM_NOOP` / `LOOM_BLOCKED` / `LOOM_CLARIFY` are
-bare because the parser reads context (reason / question) from the
-prior non-empty line; LLM agents narrate the reason in prose and emit
-the marker as a yes/no terminator without having to compose a JSON
-object in the same turn. Mixing in either direction — JSON payload
+`LOOM_COMPLETE` / `LOOM_NOOP` / `LOOM_RETRY` / `LOOM_BLOCKED` /
+`LOOM_CLARIFY` are bare because the parser reads context (reason /
+question) from the prior non-empty line; LLM agents narrate the
+reason in prose and emit the marker as a yes/no terminator without
+having to compose a JSON object in the same turn. Mixing in either direction — JSON payload
 for a bare marker, bare payload for a routed marker — is a
 wire-format violation and is rejected by the typed parser
 (`loom-workflow::todo::exit::parse_exit_signal` for terminals;
@@ -717,25 +721,33 @@ by the `token`. The driver canonicalizes the variant when computing
 the fingerprint (under *Fingerprint and dedup* below) so the same
 finding hashes the same way across rubric runs.
 
-| Token | Source | Target variant |
-|---|---|---|
-| `spec-coherence-fail` | Rubric (conformance trace) | `Criterion { spec, anchor }` |
-| `orphan-integration` | Rubric (contract closure) | `Contract { id }` |
-| `style-rule-violation` | Rubric (style-rule walk) | `StyleRule { rule_id }` |
-| `verifier-bypass` / `weak-assertion` / `fabricated-result` / `coincidental-pass` | Rubric (verifier-honesty walk) | `Annotation { target_string }` |
-| `mock-discipline` | Rubric | `TestPath { path }` |
-| `verifier-too-narrow` | Rubric | `Criterion { spec, anchor }` |
-| `concurrency-untested` | Rubric | `LockSite { file, line }` |
-| `judge-flag` | Rubric (`[judge]` criterion) | `Criterion { spec, anchor }` |
-| `invariant-clash` | Rubric (invariant-clash scan) | `Invariant { spec, section, tag }` |
-| `template-spec-drift` | Rubric (tree-scope only) | `Template { path }` |
-| `cross-spec-clash` | Rubric (tree-scope only) | `Criterion { spec, anchor }` |
-| `spec-conventions-violation` | Rubric (tree-scope only) | `Criterion { spec, anchor }` |
-| `verifier-failed` | Deterministic verifier exit ≠ 0 (tree-scope only) | `Annotation { target_string }` |
-| `dispatch-error` | Verifier exit 2 — command not found / missing prereq (tree-scope only) | `Annotation { target_string }` |
-| `unresolved-annotation` | Integrity gate forward-resolution (tree-scope only) | `Annotation { target_string }` |
-| `stub-pointing` | Integrity gate stub-pointing (tree-scope only) | `Annotation { target_string }` |
-| `multiple-annotations` | Integrity gate atomic-acceptance (tree-scope only) | `Criterion { spec, anchor }` |
+| Token | Source | Target variant | Routes to |
+|---|---|---|---|
+| `spec-coherence-fail` | Rubric (conformance trace) | `Criterion { spec, anchor }` | fix-up |
+| `orphan-integration` | Rubric (contract closure) | `Contract { id }` | fix-up |
+| `style-rule-violation` | Rubric (style-rule walk) | `StyleRule { rule_id }` | fix-up |
+| `verifier-bypass` / `weak-assertion` / `fabricated-result` / `coincidental-pass` | Rubric (verifier-honesty walk) | `Annotation { target_string }` | fix-up |
+| `mock-discipline` | Rubric | `TestPath { path }` | fix-up |
+| `verifier-too-narrow` | Rubric | `Criterion { spec, anchor }` | fix-up |
+| `concurrency-untested` | Rubric | `LockSite { file, line }` | fix-up |
+| `judge-flag` | Rubric (`[judge]` criterion) | `Criterion { spec, anchor }` | fix-up |
+| `invariant-clash` | Rubric (invariant-clash scan) | `Invariant { spec, section, tag }` | **clarify** (evidence MUST embed `## Options — …`; mint falls back to blocked otherwise — see *Per-finding processing* step 2) |
+| `template-spec-drift` | Rubric (tree-scope only) | `Template { path }` | fix-up |
+| `cross-spec-clash` | Rubric (tree-scope only) | `Criterion { spec, anchor }` | fix-up |
+| `spec-conventions-violation` | Rubric (tree-scope only) | `Criterion { spec, anchor }` | fix-up |
+| `verifier-failed` | Deterministic verifier exit ≠ 0 (tree-scope only) | `Annotation { target_string }` | fix-up |
+| `dispatch-error` | Verifier exit 2 — command not found / missing prereq (tree-scope only) | `Annotation { target_string }` | fix-up |
+| `unresolved-annotation` | Integrity gate forward-resolution (tree-scope only) | `Annotation { target_string }` | fix-up |
+| `stub-pointing` | Integrity gate stub-pointing (tree-scope only) | `Annotation { target_string }` | fix-up |
+| `multiple-annotations` | Integrity gate atomic-acceptance (tree-scope only) | `Criterion { spec, anchor }` | fix-up |
+
+**Clarify-bound subset.** Today only `invariant-clash` routes to
+`loom:clarify`; the rest mint as plain fix-up beads. The "Routes
+to" column is the canonical enumeration mint consults when
+deciding whether to apply the evidence-must-have-options check at
+step 2 — adding a future clarify-bound token is a one-row table
+edit + the new token's enum entry; no per-token carve-out in the
+mint pipeline.
 
 `scope-creep` and `scope-shortfall` are per-bead tokens; the
 tree-scope walk does not emit them, and mint never receives them
@@ -765,7 +777,14 @@ LOOM_FINDING: {"token":"<token>","bonds":["<spec>",...],"target":<target>,"evide
   selects the variant per the table above; carries
   identity-bearing fields specific to the variant.
 - **`evidence`** — the rubric's reasoning, stored verbatim on the
-  minted fix-up bead's description.
+  minted fix-up bead's description. For **clarify-bound findings**
+  (any token whose mint routes to `loom:clarify` — `invariant-clash`
+  today, plus any future clarify-bound tokens enumerated in
+  *Concern tokens and target variants*), the evidence MUST embed
+  the canonical `## Options — …` block per the *Options Format
+  Contract*. Mint validates this at parse time and falls back to
+  `loom:blocked` with cause `clarify-without-options` when the
+  options block is absent — see *Per-finding processing* below.
 
 `bonds` is *bonding* metadata; `target` is *identity* metadata. The
 two are kept separate so the driver can shift bonding (e.g., as
@@ -846,11 +865,18 @@ converge on.
 The walk terminates with exactly one terminator on the final
 non-empty line (per [harness.md § Verdict
 Gate](harness.md#verdict-gate)): `LOOM_COMPLETE`, `LOOM_CONCERN`,
-`LOOM_BLOCKED`, or `LOOM_CLARIFY`. `LOOM_BLOCKED` / `LOOM_CLARIFY`
-mean the walk could not complete; see the marker definitions for
-semantics. `LOOM_COMPLETE` and `LOOM_CONCERN` are the
-verdict-carrying terminators and are governed by the pairing rule
-below.
+`LOOM_RETRY`, `LOOM_BLOCKED`, or `LOOM_CLARIFY`. `LOOM_RETRY`
+indicates the walk could not complete for environmental reasons
+(logs corrupt, workspace inaccessible, transient IO) and a fresh
+dispatch should retry the walk — preferred over `LOOM_BLOCKED` for
+the "I couldn't review" failure mode unless the reviewer also has
+no candidate resolution to enumerate. `LOOM_BLOCKED` / `LOOM_CLARIFY`
+mean the walk could not complete and the reviewer either has no
+candidate resolution (blocked) or has a structured `## Options — …`
+to surface for human resolution (clarify); see the marker
+definitions for semantics. `LOOM_COMPLETE` and `LOOM_CONCERN` are
+the verdict-carrying terminators and are governed by the pairing
+rule below.
 
 **`LOOM_CONCERN` payload — JSON shape and parse discipline.** The
 payload is a JSON object with a single required field, `summary`,
@@ -913,9 +939,9 @@ match the stream: `LOOM_COMPLETE` means zero findings,
 templates that need to talk about these markers `{% include %}`
 that partial; they never restate the format. The bare-marker
 partials (`partial/progress_markers.md` for `LOOM_COMPLETE` /
-`LOOM_NOOP`, `partial/self_report_markers.md` for `LOOM_BLOCKED` /
-`LOOM_CLARIFY`) describe those markers' generic semantics; they
-do not redefine the review-walk markers.
+`LOOM_NOOP`, `partial/self_report_markers.md` for `LOOM_RETRY` /
+`LOOM_BLOCKED` / `LOOM_CLARIFY`) describe those markers' generic
+semantics; they do not redefine the review-walk markers.
 
 A `[check]`-tier verifier enforces this mechanically: it scans
 every file under `crates/loom-templates/templates/` for the literal
@@ -1006,9 +1032,11 @@ the target's canonical form. `bonds` is deliberately excluded
 because bonding can shift across runs (a multi-spec finding's lead
 shifts when its previously-lead spec's epic closes and lead-selection
 falls to the next `bonds` element with an open epic; a single-spec
-finding could pick a different `bonds[0]` on re-walk). Without this
-exclusion, a stable finding would re-mint every time its bonding
-context drifted.
+finding could pick a different `bonds[0]` on re-walk). `evidence`
+is also excluded so prose changes (tightened reasoning, refined
+`## Options — …` text) do not re-mint a stable finding. Without
+these exclusions, the same underlying concern would re-mint every
+time its bonding or prose context drifted.
 
 `canonical_form` is variant-aware so `Criterion { spec: "gate",
 anchor: "verifier-honesty" }` always serializes the same string
@@ -1052,15 +1080,29 @@ skips them and retries only the ones that failed.
 For each `LOOM_FINDING:` line the driver receives:
 
 1. **Parse** into typed fields: `{ token, bonds, target, evidence }`.
-2. **Compute fingerprint** per the previous subsection
-   (`hash(token || canonical_form(target))`; `bonds` is excluded).
-3. **Dedup query** by `loom:mint:<fingerprint>` label. Zero results
+2. **Validate clarify-bound coupling.** If `token` is clarify-bound
+   per the `Routes to` column of *Concern tokens and target variants*
+   above, scan `evidence` for the canonical `## Options — <summary>`
+   heading followed by at least one `### Option <N> — <title>`
+   subsection (per the Options Format Contract). If absent or
+   malformed, fall back: route the finding through steps 3–6 below
+   as a regular fix-up, but apply `loom:blocked` (with cause
+   `clarify-without-options`) instead of `loom:clarify` at step 7.
+   A stranded clarify bead the chat-drafter cannot resolve is worse
+   than a blocked bead the human can re-classify via `msg -c`; the
+   agent should have emitted `LOOM_BLOCKED` directly when it could
+   not articulate options.
+3. **Compute fingerprint** per the previous subsection
+   (`hash(token || canonical_form(target))`; `bonds` and `evidence`
+   are excluded — fingerprinting on evidence would re-mint on any
+   prose tweak).
+4. **Dedup query** by `loom:mint:<fingerprint>` label. Zero results
    → continue; one open result → skip; more than one → refuse.
-4. **Pick the bonding lead** from `bonds` per *Multi-spec findings*
+5. **Pick the bonding lead** from `bonds` per *Multi-spec findings*
    below — first element of `bonds` whose spec has an open epic; if
    none of the bonds have open epics, the lead is `bonds[0]` and
-   step 5 mints a molecule + epic for it.
-5. **Resolve the lead's molecule** via the single-tier query from
+   step 6 mints a molecule + epic for it.
+6. **Resolve the lead's molecule** via the single-tier query from
    [harness.md — Molecule lifecycle](harness.md#molecule-lifecycle):
    ```
    bd query "type=epic AND label=spec:<lead> AND status=open"
@@ -1070,7 +1112,7 @@ For each `LOOM_FINDING:` line the driver receives:
      --type=epic --title="<lead>" --labels="spec:<lead>"
      --metadata "loom.base_commit=<HEAD>"`.
    - More than one → structural violation, refuse.
-6. **Mint the fix-up bead** with `bd create --type=task
+7. **Mint the fix-up bead** with `bd create --type=task
    --parent=<epic-id> --labels="loom:mint:<fingerprint>,<spec-labels>"`,
    where `<spec-labels>` expands to one `spec:<X>` label per entry
    in `bonds` so cross-spec searches surface the bead from every
@@ -1078,11 +1120,13 @@ For each `LOOM_FINDING:` line the driver receives:
    implementer's choice; the description must include the evidence
    string and the fingerprint, and the title must be stable across
    runs for the same finding (deterministic from token + target).
-7. **`invariant-clash` carve-out** — instead of a regular fix-up
-   bead, the minted bead also carries `loom:clarify` and its
-   description embeds the canonical `## Options — …` block per the
-   *Options Format Contract*. The rubric is responsible for emitting
-   the options block as part of the finding's `evidence` payload.
+   **Clarify-bound findings whose evidence contains a well-formed
+   `## Options — …` block** additionally carry `loom:clarify`; the
+   evidence's options block is the canonical Options-Format-Contract
+   text the bead surfaces to `msg`. The `invariant-clash` token is
+   one such clarify-bound token; new clarify-bound tokens follow the
+   same path automatically — there is no per-token carve-out, only
+   the evidence-validation check at step 2.
 
 End-of-run summary (printed to stdout, no bd writes): `minted M,
 skipped K (dedup), refused R, errors E`, with per-finding fingerprint
@@ -1113,10 +1157,15 @@ per-bead path — interprets the exit code and summary together:
   bead path threads the summary's error detail into `PreviousFailure`
   and re-runs through the existing recovery loop bounded by
   `[loop] max_retries`. After the retry budget exhausts, the bead
-  routes to `loom:clarify` with the accumulated error context — same
-  recovery path the run-phase uses.
+  routes to `loom:blocked` with cause `retry-exhausted` and the
+  accumulated error context in notes — same recovery-exhaustion path
+  the loop-phase uses. (Previously this routed to `loom:clarify`, but
+  the driver cannot synthesize the `## Options — …` block from raw
+  mint errors, so per the Options Format Contract the correct
+  terminal label is `loom:blocked`; `msg -c` walks the human through
+  candidate resolutions in-session.)
 
-The bead's underlying work (the agent's run-phase) is unaffected by
+The bead's underlying work (the agent's loop-phase) is unaffected by
 this routing; mint runs *after* the agent signals Success per
 *Per-diff stage checks* above. A `refused` mint outcome does not
 unwind the agent's commit — it parks the bead so the operator can
@@ -1855,38 +1904,43 @@ A clarify bead can present fewer or differently-framed options when
 the decision warrants — the format is `### Option <integer> —
 <title>` for any integer ≥ 1. The summary line is always required.
 
-**Persistence boundary: agent narrates, agent persists.** The gate
-does not parse the reviewer's stdout for `## Options` / `### Option
-N` blocks — neither `loom gate verify`/`review` nor the verdict-gate
-phase classifier (`phase_verdict::decide`) scrapes prose for
-options. The reviewing agent is the only mechanism that puts the
-canonical block into bead state, via one of:
+**Three application paths, one shape requirement.** Three distinct
+paths apply `loom:clarify` to a bead. All three require a
+well-formed `## Options — <summary>` heading with at least one
+`### Option <N> — <title>` subsection somewhere readable by `loom
+msg` (bead notes ∪ description). Each path has its own writer and
+validator, but the *shape* of the options block and the *failure
+mode* on absence are uniform:
 
-- `bd create … --description "<options block>"` when the clarify is
-  a new bead, OR
-- `bd update <id> --notes "<options block>" && bd update <id>
-  --add-label=loom:clarify` when the options apply to an already-
-  existing bead (e.g. promoting a previously `loom:blocked` bead to
-  `loom:clarify` once the reviewer enumerates unblock paths).
+| Path | Writer of the options block | Where the block lives | Validator | Failure mode |
+|---|---|---|---|---|
+| **Mint-from-finding** (worker phase emits `LOOM_FINDING` with a clarify-bound token) | Rubric agent — embeds the block inside `evidence` | Mint extracts from `evidence` into the minted bead's description | `loom gate mint` (per *Per-finding processing* step 2) | Fall back to `loom:blocked` cause `clarify-without-options` |
+| **Direct-emit `LOOM_CLARIFY`** (worker phase emits the marker; target bead is the bead under dispatch for `loop` / `review`, the molecule epic for `todo_*` per [templates.md — Decomposition Discipline](templates.md#decomposition-discipline)) | The worker agent itself, via `bd update --notes` / `bd update --description` against the target bead before emitting the marker | The target bead's notes or description | Verdict gate (per [harness.md § Verdict Gate](harness.md#verdict-gate) marker definitions) | Fall back to `loom:blocked` cause `clarify-without-options` |
+| **Existing-bead promotion** (chat agent in `msg -c` upgrades a `loom:blocked` bead) | The chat agent, with human authorization | The bead's notes (added via `bd update --notes` before `bd update --add-label=loom:clarify`) | None — the chat agent has bd-write authority and the human authorizes each turn (per [harness.md § Msg Modes](harness.md#msg-modes)) | n/a (no automatic validation; if the chat agent skips the options write, the human catches it next turn) |
 
-The agent must complete the `bd` write **before** emitting
-`LOOM_COMPLETE` / `LOOM_CONCERN`. Reviewer prose that names
-options without a corresponding `bd` write leaves the canonical
-block in the review log file only — `loom msg`'s queue stays empty
-and the downstream user cannot fast-reply. The reviewer template
-in `loom-templates/templates/review.md` documents the required
-`bd` invocations.
+The structural enforcement at the chokepoint is what makes
+"stranded clarify bead the chat-drafter cannot resolve"
+unrepresentable for the two worker-phase paths — the agent either
+provides a well-formed options block (clarify applied) or emits
+`LOOM_BLOCKED` directly (no clarify ever applied). The
+existing-bead promotion path is not subject to the chokepoint
+because chat is human-authoritative.
+
+**The gate does not scrape free-form stdout for `## Options` /
+`### Option N` blocks.** Only the structured locations above carry
+the canonical contract — `evidence` for mint-from-finding, bead
+notes/description for direct-emit and existing-bead paths.
 
 ### Resolution lifecycle
 
-The `## Options — <summary>` block lives in the target bead's
-notes only from emit to resolution. When `loom:clarify` is
-cleared — via `loom msg -o`, `-r`, `-d`, or the chat session's
-`bd update --remove-label=loom:clarify` — the originating
-options block is removed from notes in the same transaction that
-records the resolution note (chosen option body, verbatim reply,
-or dismissal note). The resolution replaces the question on the
-bead's notes record.
+The `## Options — <summary>` block lives on the target bead (in
+notes or description, per the path table above) only from emit to
+resolution. When `loom:clarify` is cleared — via `loom msg -o`,
+`-r`, `-d`, or the chat session's
+`bd update --remove-label=loom:clarify` — the originating options
+block is removed from wherever it lives (notes or description) in
+the same transaction that records the resolution note (chosen
+option body, verbatim reply, or dismissal note).
 
 A single bead can receive multiple clarifications across its
 lifetime — notably the molecule epic, which hosts
@@ -1895,13 +1949,12 @@ invocations as well as push-gate clarifies. Without removal,
 options blocks accumulate and `loom msg` lists become ambiguous
 about which block belongs to the currently active label.
 
-For clarifies hosted on a **dedicated clarify bead** (created
-via `bd create` per the Persistence boundary above, closed on
-fast-reply per `loom msg`'s consumption shape above), the
-removal is moot — the whole bead is closed and the notes pass
-out of scope with it. The lifecycle contract is load-bearing
-for the **existing-bead** path (`bd update --notes` +
-`--add-label=loom:clarify`) where the bead survives the
+For clarifies hosted on a **dedicated clarify bead** (created via
+the mint-from-finding path above, closed on fast-reply per
+`loom msg`'s consumption shape above), the removal is moot — the
+whole bead is closed and the notes/description pass out of scope
+with it. The lifecycle contract is load-bearing for the
+**existing-bead promotion** path where the bead survives the
 resolution.
 
 ## Output
@@ -1917,9 +1970,14 @@ and git commits already provide the durable record:
   **deterministic + rubric findings** (tree scope via `mint --tree`)
   are minted into fix-up beads, bonded per-spec via the molecule
   lifecycle (see [*Findings and Minting*](#findings-and-minting)).
-- **`invariant-clash` findings** additionally carry `loom:clarify`
-  on the minted bead, with a canonical `## Options — …` block per
-  the Options Format Contract.
+- **Clarify-bound findings** (currently `invariant-clash`; future
+  clarify-bound tokens follow the same path automatically) carry
+  `loom:clarify` on the minted bead, with the `## Options — …`
+  block from the finding's `evidence` rendered into the bead's
+  description per the Options Format Contract. Clarify-bound
+  findings whose evidence lacks a well-formed options block fall
+  back to `loom:blocked` with cause `clarify-without-options`
+  rather than minting a stranded clarify bead.
 
 Past gate runs are not persisted; *past passes don't grant immunity
 from re-evaluation*. Conformance is a property of the current
@@ -2164,10 +2222,16 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   "bonds": [...], "target": {"kind": ..., ...}, "evidence": ...}`
   [test](mint_walk_emits_loom_finding_json_lines_streamed_per_finding)
 - The walk terminates with exactly one of `LOOM_COMPLETE`,
-  `LOOM_CONCERN: {"summary": "..."}`, `LOOM_BLOCKED`, or `LOOM_CLARIFY`;
-  a walk that emits `LOOM_FINDING:` lines without a terminal marker
-  fails the mint invocation with non-zero exit
-  [test](mint_walk_without_terminal_marker_fails_run)
+  `LOOM_CONCERN: {"summary": "..."}`, `LOOM_RETRY`, `LOOM_BLOCKED`,
+  or `LOOM_CLARIFY`; a walk that emits `LOOM_FINDING:` lines without
+  a terminal marker fails the mint invocation with non-zero exit
+  [test?](mint_walk_without_terminal_marker_fails_run)
+- A walk that terminates with `LOOM_RETRY` (review itself could not
+  run for environmental reasons) routes to recovery cause
+  `agent-retry` per [harness.md § Verdict Gate](harness.md#verdict-gate);
+  consumes one `[loop] max_retries` slot; exhaustion escalates to
+  `loom:blocked` with cause `retry-exhausted`
+  [test?](mint_walk_loom_retry_terminator_routes_to_agent_retry_recovery)
 - `LOOM_CONCERN:` payload parses as JSON `{"summary": "<non-empty
   string>"}` via the same `serde_json` pipeline that consumes
   `LOOM_FINDING:` lines; the parsed summary becomes the verdict-log
@@ -2255,9 +2319,28 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   [test](mint_rejects_criterion_target_whose_spec_is_not_in_bonds)
 - `invariant-clash` findings mint a fix-up bead carrying both
   `loom:mint:<fp>` and `loom:clarify` labels, with the description
-  embedding a canonical `## Options — …` block per the *Options
-  Format Contract*
-  [test](mint_invariant_clash_finding_creates_fixup_with_clarify_label_and_options_block)
+  embedding the `## Options — …` block extracted from the finding's
+  `evidence` per the *Options Format Contract*
+  [test?](mint_invariant_clash_finding_creates_fixup_with_clarify_label_and_options_block)
+- Any clarify-bound finding (token whose mint would label the
+  resulting bead `loom:clarify`) whose `evidence` lacks a
+  well-formed `## Options — <summary>` heading with at least one
+  `### Option <N> — <title>` subsection is refused at mint and
+  falls back to a fix-up bead carrying `loom:blocked` with cause
+  `clarify-without-options` — never a stranded clarify bead the
+  chat-drafter cannot resolve
+  [test?](mint_clarify_bound_finding_without_options_falls_back_to_blocked)
+- A clarify-bound finding whose evidence carries a well-formed
+  options block mints a fix-up bead carrying `loom:clarify` — the
+  same path `invariant-clash` uses today; new clarify-bound tokens
+  added in future inherit it automatically via the evidence-
+  validation check at *Per-finding processing* step 2
+  [test?](mint_any_clarify_bound_finding_with_options_mints_clarify_bead)
+- The fingerprint hash excludes `evidence` — the same finding
+  emitted on a re-run with tweaked evidence prose resolves to the
+  same fingerprint and dedups against the existing fix-up bead (so
+  an options-text edit does not re-mint)
+  [test?](mint_fingerprint_excludes_evidence_so_prose_changes_do_not_remint)
 - `mint --bead <id>` walks the LLM rubric only, not the deterministic
   verifiers; verify-side findings have already been handled by the
   preceding `verify --bead <id>` step in the loop
@@ -2466,7 +2549,7 @@ findings reach mint.
   No code path in `run_gate_mint` constructs `Vec::<Finding>::new()`
   unconditionally
   [test](run_gate_mint_dispatches_through_production_walker_not_empty_vec)
-- `loom loop`'s per-bead path routes a run-phase `Success` outcome
+- `loom loop`'s per-bead path routes a loop-phase `Success` outcome
   through exactly one `exec_per_bead_gate` call per bead on the typed
   `PerBeadGateOutcome`; a `Clean` outcome routes the bead to `Done`
   (neither clarified nor blocked). The bullet below pins the

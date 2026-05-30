@@ -931,7 +931,7 @@ the rules:
      / `[system]` / `[judge]` annotations, opens each referenced
      verifier source, and prints the deduplicated set of nixpkgs needed
    - CLI surface: `loom --help` lists every v1 command (`plan`,
-     `todo`, `run`, `gate`, `msg`, `spec`, `init`, `status`, `use`,
+     `todo`, `loop`, `gate`, `msg`, `spec`, `init`, `status`, `use`,
      `logs`, `note`)
 
    #### Loop UX renderer (loom-workflow)

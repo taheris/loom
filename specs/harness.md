@@ -7,11 +7,11 @@ state store, and command-set platform for the Loom agent driver.
 
 Loom is a Rust binary that owns a complete spec-driven workflow:
 spec interview (plan), spec-to-beads decomposition (todo), per-bead
-agent dispatch (run), deterministic and LLM-judged review (check +
-review), and human clarification (msg). The binary holds the
-workflow's state in typed domain objects, parses agent protocols
-against typed schemas, and renders templates with compile-time
-variable validation.
+agent dispatch (loop), deterministic and LLM-judged review (gate),
+and human clarification (msg). The binary holds the workflow's
+state in typed domain objects, parses agent protocols against typed
+schemas, and renders templates with compile-time variable
+validation.
 
 This spec covers the platform: crate structure, Rust conventions,
 Nix integration, SQLite state store, beads CLI wrapper, process
@@ -820,17 +820,57 @@ warm-driver-loop case without trusting an unverified stamp.
 Driver-detected failures enter a bounded recovery loop; agent
 self-reports go straight to human resolution via `loom msg`.
 
-**Decision table.** The gate inspects five signals — the agent's exit marker,
-whether the bead was bd-closed, whether the bead-branch diff is empty
-(no commits since dispatch), whether the working tree is clean
-(`git status --porcelain` empty), and the review verdict — and
-produces one of four outcomes (`done`, `blocked`, `clarify`, or
-`recovery` with a cause):
+**Interactive vs worker sessions.** The verdict gate's reconciliation
+applies to **worker sessions only** — single-shot agent dispatches
+against a bead or molecule (`loom loop`'s per-bead worker,
+`loom todo_new` / `loom todo_update`, `loom gate review`).
+**Interactive sessions** —
+multi-turn chats with a human in the loop (`loom plan -n` /
+`loom plan -u`, `loom msg -c`; identifiable in the template layer
+by inclusion of `chat_marker_final_turn_only.md`) — are
+agent-and-human authoritative:
+the driver does **not** mutate bd state as a consequence of an
+interactive session. Whatever bd state exists at session end IS the
+state. The chat agent has full bd-write authority on the beads it
+operates against (close, status change, label add/remove, notes
+write); the human authorizes each turn, so the chokepoint reasoning
+that justifies driver-side mint for worker sessions (replay-safety,
+cross-finding dedup, deterministic per-spec routing) does not apply.
+
+Concretely, the driver's only post-session action after an
+interactive session is parsing the terminal marker for log +
+exit-code. Interactive sessions emit `LOOM_COMPLETE` only —
+`LOOM_RETRY` / `LOOM_BLOCKED` / `LOOM_CLARIFY` / `LOOM_CONCERN`
+are wrong-phase-marker errors and exit non-zero.
+
+The driver-side reconciliation paths that fire for worker sessions
+are uniformly suppressed: no `loom:blocked` / `loom:clarify` label
+application, no bead-status changes, no `loom gate verify` /
+`loom gate review` against the session's effects, no fix-up bead
+minting. On mid-session failure (container OOM, observer abort,
+marker swallowed) the driver exits non-zero with a diagnostic
+without auto-retry — the one-free-retry infra-failure path applies
+to expensive worker dispatches; an interactive session re-invocation
+is cheap and the user is right there to redispatch.
+
+The decision table below therefore documents **worker-session**
+outcomes only. Interactive sessions short-circuit before the table
+is consulted.
+
+**Decision table** (worker sessions only — interactive sessions
+short-circuit before this table is consulted, per *Interactive vs
+worker sessions* above). The gate inspects five signals — the
+agent's exit marker, whether the bead was bd-closed, whether the
+bead-branch diff is empty (no commits since dispatch), whether the
+working tree is clean (`git status --porcelain` empty), and the
+review verdict — and produces one of four outcomes (`done`,
+`blocked`, `clarify`, or `recovery` with a cause):
 
 | Marker | bd-closed | Diff | Tree clean | Review | Outcome |
 |--------|-----------|------|------------|--------|---------|
 | `LOOM_BLOCKED` | — | — | — | — | `blocked` |
 | `LOOM_CLARIFY` | — | — | — | — | `clarify` |
+| `LOOM_RETRY` | — | — | — | — | recovery (`agent-retry`) |
 | (none) | — | — | — | — | recovery (`swallowed-marker` OR `observer-abort`; see below) |
 | `LOOM_COMPLETE` | no | — | — | — | recovery (`incomplete-signaling`) |
 | `LOOM_COMPLETE` | yes | empty | — | — | recovery (`zero-progress`) |
@@ -906,7 +946,7 @@ sloppiness instead of legitimate driver-detected failure.
 
 **Closure is the agent's responsibility.** The driver never calls
 `bd close` on a bead it dispatched. The `bd-closed` column is an
-*observable* — the agent invokes `bd close <id>` itself per the run-phase
+*observable* — the agent invokes `bd close <id>` itself per the loop-phase
 prompt contract — not a driver action. A driver that auto-closes on
 `exit_code == 0` collapses every marker into `done` and silently masks
 `LOOM_BLOCKED` / `LOOM_CLARIFY` self-reports, which is why marker
@@ -948,11 +988,16 @@ A `LOOM_CONCERN` marker from the review phase produces `recovery`
 with cause `review-concern`; the detail carries the parsed
 `{"summary": "..."}` payload plus the buffered `LOOM_FINDING:`
 records the walk streamed. Per-finding routing (which spec, which
-fix-up bead, clarify vs. fix-up) is decided by `loom gate mint` on
-each `LOOM_FINDING:` line; the terminal marker carries only the
-verdict-log summary. `invariant-clash` *findings* (not a marker
-property) raise `loom:clarify` on the minted fix-up bead per
-[gate.md § Findings and Minting](gate.md#findings-and-minting).
+fix-up bead, clarify vs. fix-up vs. blocked) is decided by `loom
+gate mint` on each `LOOM_FINDING:` line; the terminal marker carries
+only the verdict-log summary. **Clarify-bound findings** (any token
+routing to `loom:clarify`, currently `invariant-clash`) raise
+`loom:clarify` on the minted fix-up bead with the `## Options — …`
+block extracted from the finding's `evidence` payload, per
+[gate.md § Findings and Minting](gate.md#findings-and-minting). A
+clarify-bound finding whose evidence lacks a well-formed options
+block falls back to `loom:blocked` with cause
+`clarify-without-options` so no stranded clarify bead is created.
 
 A malformed `LOOM_CONCERN` payload, or a stream/terminator
 mismatch (findings streamed with `LOOM_COMPLETE`, or `LOOM_CONCERN`
@@ -963,9 +1008,26 @@ table below. These are distinct from `swallowed-marker`: the agent
 recovery prompt can quote the malformed payload back to the agent
 on the next iteration.
 
-**Self-reports skip recovery.** `LOOM_BLOCKED` and `LOOM_CLARIFY` are agent
-self-reports — re-running the same prompt won't recover, so the gate exits
-straight to `[blocked]` / `[clarify]` for human resolution.
+**Self-reports route by intent.** The three worker-phase self-report
+markers route distinctly:
+
+- `LOOM_BLOCKED` and `LOOM_CLARIFY` are agent self-reports that re-
+  running the same prompt cannot resolve — the agent has already
+  judged that the obstacle is human-resolvable, not retry-resolvable.
+  The gate exits straight to `[blocked]` / `[clarify]` for human
+  resolution, skipping the recovery loop. (For `LOOM_CLARIFY`, the
+  gate first validates the bead's options block per the marker
+  definition above; a missing or malformed block downgrades to
+  `[blocked]` with cause `clarify-without-options` rather than
+  stranding a clarify the chat-drafter cannot resolve.)
+- `LOOM_RETRY` is an agent self-report that re-running *can* resolve
+  — the obstacle is environmental or approach-specific, not
+  judgment-requiring. The gate enters the recovery loop with cause
+  `agent-retry`, consuming one `[loop] max_retries` slot. Exhaustion
+  routes to `loom:blocked` with cause `retry-exhausted`; the agent
+  is instructed in the recovery prompt to escalate to `LOOM_BLOCKED`
+  / `LOOM_CLARIFY` directly if the same problem persists rather than
+  re-emitting `LOOM_RETRY`.
 
 **Driver-detected causes flow through recovery.** Swallowed marker,
 incomplete signaling, zero-progress, tree-not-clean, verify-fail,
@@ -1020,8 +1082,9 @@ capped, total truncated to `PREVIOUS_FAILURE_MAX_LEN = 4000` chars):
 | `bad-walk` (findings-without-concern) | `BadWalk(BadWalk::FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> })` | "You streamed `<finding_count>` `LOOM_FINDING:` line(s) but terminated with `LOOM_COMPLETE`. Use `LOOM_CONCERN: {"summary": "..."}` when findings are emitted." Per-finding digest of `findings` is appended so the agent's next iteration sees the diagnosis it just emitted. |
 | `bad-walk` (malformed-finding) | `BadWalk(BadWalk::MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface })` | "One or more `LOOM_FINDING:` lines failed parse." Per-line errors are enumerated; the well-formed terminal is rendered alongside so the agent fixes the malformation (typically: drop the surrounding markdown fence) without losing the surrounding well-formed context. This is the variant that fires on backtick-wrapped finding lines whose JSON otherwise would have parsed. |
 | `post-integrate-fail` | `PostIntegrateFail { failures: Vec<VerifierFailure> }` | "After your bead was rebased onto the integration branch and ff'd, the post-integration verify failed at the loom workspace. The integration was rolled back. Specific failure: <verifier-failure blocks>." Used for cross-bead interaction breakage where the bead-workspace verify passed but the integrated tree's verify failed. Per-bead does not run `loom gate review` (per the per-bead step composition described above), so review-style concerns are not a `post-integrate-fail` cause — they fire at the molecule-completion push gate via `GateFailReason`. Capped at the shared `PREVIOUS_FAILURE_MAX_LEN` budget. |
+| `agent-retry` | `AgentRetry { reason: String }` | "Previous attempt requested retry: <reason>. A fresh dispatch was scheduled." `reason` is the verbatim prose the agent wrote on the line preceding `LOOM_RETRY` (environmental detail or stuck-on-approach summary). Consumes one `[loop] max_retries` slot; on exhaustion the molecule escalates to `loom:blocked` with cause `retry-exhausted`. The recovery prompt instructs the retry attempt to escalate to `LOOM_BLOCKED` (no candidate resolutions) or `LOOM_CLARIFY` (with `## Options — …`) if the same problem persists rather than emitting `LOOM_RETRY` again. |
 
-When `previous_failure.is_some() && attempt > 0`, the `run.md`
+When `previous_failure.is_some() && attempt > 0`, the `loop.md`
 template prepends a first-instruction reframe: *"Re-read the
 previous failure block above and address its specific concern
 before re-implementing."* The `attempt` counter is per-bead
@@ -1035,22 +1098,36 @@ its own session log if it needs prior tool-call context.
 **Labels.**
 
 - `loom:blocked` is applied by either: (a) the `LOOM_BLOCKED` agent marker, or
-  (b) driver-detected gate failure with recovery exhausted. Both meanings are
-  uniform from the human's perspective — the bead is blocked and `loom msg`
-  is the resolution channel.
-- `loom:clarify` is applied only by the `LOOM_CLARIFY` agent marker — the
-  agent has a specific question with structured options for the human.
+  (b) driver-detected gate failure with recovery exhausted, or (c)
+  `loom gate mint` refusing to apply `loom:clarify` to a
+  clarify-bound finding whose `evidence` lacks a well-formed
+  `## Options — …` block (cause `clarify-without-options` — the
+  agent should have emitted `LOOM_BLOCKED` directly, but the driver
+  falls back to blocked rather than minting a stranded clarify bead
+  the chat-drafter cannot resolve). All meanings are uniform from
+  the human's perspective — the bead is blocked and `loom msg` is
+  the resolution channel.
+- `loom:clarify` is applied only by the `LOOM_CLARIFY` agent marker
+  or by `loom gate mint` lifting a clarify-bound finding whose
+  `evidence` carries a well-formed `## Options — …` block — the
+  agent has a specific question with structured options for the
+  human, persisted to bead state per the Options Format Contract.
+- `LOOM_RETRY` does NOT apply a terminal label; it routes the bead
+  into the recovery loop with cause `agent-retry`. On recovery
+  exhaustion the cause becomes `retry-exhausted` and `loom:blocked`
+  is applied at that point.
 - The cause of a driver-applied `loom:blocked` (`swallowed-marker`,
   `incomplete-signaling`, `zero-progress`, `tree-not-clean`, `verify-fail`,
   `review-concern`, `bad-walk`, `observer-abort`, `retry-exhausted`,
-  `post-integrate-fail`) is preserved in the bead's notes. Per-cause
-  sub-labels can be stacked on top later if filtering becomes important;
-  the gate's terminal label stays `loom:blocked`.
+  `post-integrate-fail`, `clarify-without-options`) is preserved in
+  the bead's notes. Per-cause sub-labels can be stacked on top later
+  if filtering becomes important; the gate's terminal label stays
+  `loom:blocked`.
 
 **Marker definitions.** The agent ends every phase by emitting exactly
 **one** marker on its own line, as the final output of the session.
 Markers are **mutually exclusive** — a session emits one and only one.
-Five markers are defined:
+Six markers are defined:
 
 - `LOOM_COMPLETE` — the work succeeded. The agent has implemented the
   bead's criteria and `bd close`d the bead. The diff is non-empty
@@ -1060,24 +1137,65 @@ Five markers are defined:
   intentionally produced an empty diff. Without `LOOM_NOOP`, an empty
   diff is treated as `zero-progress` (a recovery cause). The agent
   emits `LOOM_NOOP` to distinguish "no work needed" from "work
-  attempted but produced no diff." Valid in worker phases (`run`,
+  attempted but produced no diff." Valid in worker phases (`loop`,
   `todo`); not valid in the review phase.
-- `LOOM_BLOCKED` — the agent cannot proceed and is self-reporting,
-  *without* a structured set of options for the human. Write the
-  reason on prior lines before the marker; the gate applies
-  `loom:blocked` to *this bead* and exits the verdict evaluation
-  without entering recovery. Other beads in the molecule continue
-  running; the labelled bead waits for human resolution via
-  `loom msg`. Valid in every phase except `msg` (msg is itself the
-  resolution channel).
+- `LOOM_RETRY` — the agent self-reports that this attempt cannot
+  finish but a fresh dispatch is likely to succeed. Two failure
+  shapes warrant `LOOM_RETRY`:
+  - **Environmental.** Tools failing mid-session (cwd unlinked,
+    sandbox/IO errors, dependency missing), where the failure is
+    bound to this attempt's container/process and not to the work
+    itself.
+  - **Agent self-reset.** Prompt-context exhausted, the agent is
+    stuck-but-not-blocked on its current approach and judges a
+    fresh dispatch with prior-failure context will fare better.
+
+  Write the reason on the line preceding the marker; the gate
+  routes to recovery with cause `agent-retry`, populating
+  `PreviousFailure::AgentRetry { reason }` (per [templates.md § Typed
+  `PreviousFailure`](templates.md#typed-previousfailure)) for the
+  next attempt. Consumes one `[loop] max_retries` slot; exhaustion
+  routes to `loom:blocked` with cause `retry-exhausted` (same as the
+  existing retry-exhaustion path). Valid in worker phases only
+  (`loop`, `todo_*`, `review`); invalid in interactive sessions
+  (`plan_*`, `msg`).
+- `LOOM_BLOCKED` — the agent cannot proceed and is self-reporting a
+  **genuine dead end** — no candidate resolutions to enumerate, no
+  retry path the agent expects to succeed. Use `LOOM_RETRY` for
+  environmental failures or stuck-on-this-approach cases; use
+  `LOOM_CLARIFY` when the agent can frame the decision-point as a
+  structured `## Options — …` block. Write the reason on prior lines
+  before the marker; the gate applies `loom:blocked` to *this bead*
+  and exits the verdict evaluation without entering recovery. Other
+  beads in the molecule continue running; the labelled bead waits
+  for human resolution via `loom msg` (where `msg -c` walks the
+  human through candidate enumeration in-session). Valid in worker
+  phases only — invalid in interactive sessions (`plan_*`, `msg`).
 - `LOOM_CLARIFY` — the agent has a specific question with structured
   options for the human (per the [Options Format
-  Contract](gate.md#options-format-contract)). Write the
-  question / option block to bead state before the marker; the gate
-  applies `loom:clarify` to *this bead* and exits the verdict
-  evaluation without entering recovery. Other beads in the molecule
-  continue running; the labelled bead waits for `loom msg`
-  resolution. Valid in every phase except `msg`.
+  Contract](gate.md#options-format-contract)). The discriminator
+  against `LOOM_BLOCKED`: clarify means *I can enumerate the
+  candidate resolutions*; blocked means *I cannot*. The target bead
+  is **the bead under dispatch** for `loop` / `review`, and
+  **the molecule epic** for `todo_*` (per [templates.md —
+  Decomposition Discipline](templates.md#decomposition-discipline)).
+  Write the question + options block to the target bead's state
+  (notes or description) before emitting the marker. **The gate
+  validates the options block before applying the label**: it
+  inspects the target bead's notes ∪ description for a well-formed
+  `## Options — <summary>` heading with at least one
+  `### Option <N> — <title>` subsection (same shape mint validates
+  on a finding's `evidence`). If absent or malformed, the gate
+  falls back to `loom:blocked` with cause `clarify-without-options`
+  rather than applying `loom:clarify` — symmetric with the mint
+  path's enforcement for finding-routed clarifies, so a forgetful
+  agent cannot produce a stranded clarify bead the chat-drafter
+  cannot resolve. On a well-formed options block the gate applies
+  `loom:clarify` to the target bead and exits the verdict evaluation
+  without entering recovery. Other beads in the molecule continue
+  running; the labelled bead waits for `loom msg` resolution. Valid
+  in worker phases only — invalid in interactive sessions (`plan_*`,
+  `msg`).
 - `LOOM_CONCERN` — the review phase found a quality issue with the
   molecule's work; push must not fire. Carries a JSON payload:
   `LOOM_CONCERN: {"summary": "<one-sentence summary>"}`. The
@@ -1095,20 +1213,27 @@ Five markers are defined:
   — emitting `LOOM_CONCERN` from any other phase is a
   `wrong-phase-marker` error in the verdict gate.
 
-**Choosing a marker in the review phase.** Four markers are valid:
+**Choosing a marker in the review phase.** Five markers are valid:
 
 - `LOOM_COMPLETE` — clean review, no concerns.
 - `LOOM_CONCERN: {"summary": "..."}` — review found one or more
   quality issues (each emitted as a streaming `LOOM_FINDING:` line
   during the walk); push refused, molecule re-enters recovery.
-- `LOOM_BLOCKED` — review *itself* cannot run (logs corrupt, can't
-  access bead workspace, missing prerequisite). Distinct from
-  `LOOM_CONCERN`: blocked means "I couldn't review"; concern means
-  "I reviewed and found a problem."
-- `LOOM_CLARIFY` — rare: review surfaces a spec ambiguity that
-  requires human resolution before the verdict can be rendered.
+- `LOOM_RETRY` — review *itself* cannot run for an environmental
+  reason (logs corrupt, workspace inaccessible, transient IO,
+  missing prerequisite that should be present); a fresh dispatch
+  should retry the walk. Consumes one `[loop] max_retries` slot.
+  This is the appropriate marker for "I couldn't review for
+  environmental reasons" — distinct from `LOOM_BLOCKED` (genuine
+  dead end) and from `LOOM_CONCERN` (I reviewed and found a problem).
+- `LOOM_BLOCKED` — review cannot run and the reviewer has no
+  candidate resolution to enumerate. Reserve for genuine dead ends;
+  prefer `LOOM_RETRY` for transient infrastructure failures.
+- `LOOM_CLARIFY` — rare: review surfaces a spec ambiguity the
+  reviewer can frame as a `## Options — …` block, requiring human
+  resolution before the verdict can be rendered.
 
-The four are mutually exclusive — exactly one per session. The
+The five are mutually exclusive — exactly one per session. The
 common case is `LOOM_COMPLETE` xor `LOOM_CONCERN`. Multiple
 concerns are emitted as multiple `LOOM_FINDING:` lines during the
 walk — each carries its own structured detail; the terminal
@@ -1305,14 +1430,28 @@ The `current_spec` is not consulted for any msg mode.
 **Chat session shape.** `loom msg -c` (optionally with `-s <label>`)
 launches the base profile via `wrapix spawn`, runs Claude with the
 `msg.md` template, and walks the user through outstanding beads
-interactively. The session writes resolution notes via
-`bd update --notes` and clears the label via `bd update
---remove-label=loom:clarify` (or `loom:blocked`) per resolved bead.
-Mid-walk exit is a clean `LOOM_COMPLETE`; unresolved beads remain
-visible in the next `loom msg` session. The chat session emits
-`LOOM_COMPLETE` only — `LOOM_BLOCKED` and `LOOM_CLARIFY` are not valid
-exit signals for `msg` (the session itself is the resolution channel,
-not a producer of new clarifies).
+interactively. The session has **full bd-write authority** on the
+beads in its queue: notes via `bd update --notes`, label add/remove
+via `bd update --add-label` / `--remove-label`, status changes, and
+bead closure via `bd close`. The chokepoint reasoning that gates
+worker-session bd writes (replay-safety, cross-finding dedup,
+deterministic per-spec routing) does not apply to chat because the
+human is present and authorizes each turn.
+
+Per [Verdict Gate § Interactive vs worker
+sessions](#verdict-gate), the driver does **not** mutate bd state as
+a consequence of an interactive session. Whatever bd state the chat
+agent (with human authorization) established at session end IS the
+state — the driver does not reconcile, revert, or re-classify.
+Unresolved beads remain visible in the next `loom msg` list; mis-
+applied label changes are corrected in the next chat session by the
+human, not by driver auto-fixup.
+
+Mid-walk exit is a clean `LOOM_COMPLETE`; the chat session emits
+`LOOM_COMPLETE` only — `LOOM_RETRY`, `LOOM_BLOCKED`, `LOOM_CLARIFY`,
+and `LOOM_CONCERN` are wrong-phase-marker errors from `msg` (the
+session itself is the resolution channel, not a producer of new
+clarifies; the human is present to resolve friction in-turn).
 
 **Chat queue — clarify vs blocked framing.** The chat session queue
 includes both `loom:clarify` and `loom:blocked` beads, but the two
@@ -2128,7 +2267,7 @@ Criteria.
 - Driver sets `LOOM_INSIDE=1` in every bead container's env via the
       `SpawnConfig.env` allowlist
   [test](spawn_config_env_includes_loom_inside_marker)
-- With `LOOM_INSIDE=1`, mutating subcommands (`run`, `init`, `plan`,
+- With `LOOM_INSIDE=1`, mutating subcommands (`loop`, `init`, `plan`,
       `check`, `todo`, `msg`, `use`) refuse with a clear error
   [test](mutating_subcommands_refuse_with_loom_inside_set)
 - With `LOOM_INSIDE=1`, read-only subcommands (`status`, `logs`,
@@ -2470,14 +2609,18 @@ Criteria.
 - A per-bead `loom gate mint --bead <id>` exit with `refused > 0`
       causes the loop to route the bead to `loom:blocked` with cause
       `mint-structural-violation` and the conflicting `bd` ids in the
-      cause detail; the bead's run-phase commit is not unwound (the
+      cause detail; the bead's loop-phase commit is not unwound (the
       integration is already durable)
   [test](loop_per_bead_routes_mint_refused_to_loom_blocked_with_structural_cause)
 - A per-bead `loom gate mint --bead <id>` exit with `errors > 0`
       threads the mint summary's error detail into `PreviousFailure`
       and re-runs through the existing per-bead recovery loop bounded
       by `[loop] max_retries`. After exhaustion the bead routes to
-      `loom:clarify` with the accumulated error context
+      `loom:blocked` with cause `retry-exhausted` and the accumulated
+      error context in notes (mint errors are not options-shaped, so
+      per the Options Format Contract the correct terminal label is
+      `loom:blocked`; `loom msg -c` walks the human through candidate
+      resolutions)
   [test](loop_per_bead_routes_mint_errors_through_recovery_loop_bounded_by_max_retries)
 - `loom loop`'s outer loop, after the molecule-completion handoff
       returns and the push gate has not yet fired clean, re-polls
@@ -2549,27 +2692,26 @@ Criteria.
       Drafter session in a container with the base profile, using the
       `msg.md` template; bare `loom msg` stays host-side
   [test](loom_msg_chat_launches_container)
-- The chat session writes resolution notes via `bd update --notes`;
-      the driver runs the canonical unblock (`--status=open` plus the
-      matching `--remove-label`) per resolved bead after the session
-      exits, per the persistence-boundary contract — the agent narrates,
-      the driver persists the terminal state transition. The bead
-      re-enters the work queue so the next implementing session can pick
-      up the resolution
-  [test](loom_msg_chat_driver_unblocks_after_notes_only_write)
-- The chat session writes resolution notes via `bd update --notes`
-      and clears the label via `bd update --remove-label=loom:clarify`
-      (or `loom:blocked`) per resolved bead
-  [test](loom_msg_chat_writes_notes_and_clears_labels)
-- The `msg.md` template must NOT teach the agent to close beads or
-      issue any `--status` write — the literal strings `bd close`,
-      `--status=closed`, and `bd update --status=closed` do not appear
-      in the rendered prompt
-  [test](msg_template_does_not_teach_agent_to_close_or_status_transition)
-- The driver's canonical unblock reverses an agent-applied `bd close`
-      so the bead re-opens even when the chat agent over-applies a
-      terminal status transition
-  [test](loom_msg_chat_driver_unblocks_after_agent_bd_close)
+- The chat session has full bd-write authority on the beads in its
+      queue: notes via `bd update --notes`, label add/remove via
+      `bd update --add-label` / `--remove-label`, status changes via
+      `bd update --status`, and bead closure via `bd close`. The
+      `msg.md` template instructs the agent on when to use each
+      (resolved → close; needs further work → unblock without close;
+      misclassified → re-label) and lets the human authorize each turn
+  [test?](msg_template_documents_full_bd_write_authority_for_chat_agent)
+- The driver does **not** reconcile bd state after an interactive
+      session — no canonical unblock, no status reversion, no label
+      re-application. Whatever bd state the chat agent (with human
+      authorization) established at session end IS the state. The
+      previously-mandated "driver reverses agent-applied bd close"
+      behavior is removed
+  [test?](msg_chat_driver_does_not_reconcile_bd_state_after_session)
+- The bd state the chat session leaves in place persists across
+      `loom msg` invocations: a bead the chat closed stays closed; a
+      bead the chat unblocked stays unblocked; a bead the chat
+      relabelled stays relabelled
+  [test?](msg_chat_bd_state_persists_across_invocations)
 - Clearing the `loom:clarify` label via any `loom msg` path
       (`-o`, `-r`, `-d`, chat session) removes the originating
       `## Options — …` block from the bead's notes in the same
@@ -2581,8 +2723,16 @@ Criteria.
       unresolved clarifies remain visible in the next session
   [test](loom_msg_chat_partial_progress_leaves_unresolved_clarifies_open)
 - The chat session's only valid exit signal is `LOOM_COMPLETE`
-      (no `LOOM_BLOCKED`, no `LOOM_CLARIFY`, no `LOOM_NOOP`)
+      (no `LOOM_RETRY`, `LOOM_BLOCKED`, `LOOM_CLARIFY`, `LOOM_NOOP`,
+      or `LOOM_CONCERN` — interactive sessions don't self-report
+      failures because the human is present)
   [test](loom_msg_chat_rejects_non_complete_exit_signal)
+- Interactive-session crashes (container OOM, observer abort,
+      swallowed marker) exit non-zero with a diagnostic; the driver
+      does NOT auto-retry (the one-free-retry infra-failure path is
+      worker-session only — interactive sessions are cheap to re-
+      invoke and the user is present to redispatch)
+  [test?](msg_chat_crash_exits_nonzero_without_auto_retry)
 - `loom msg -c` with `-s <label>` scopes the chat session to
       clarifies labeled `spec:<label>`; without `-s`, the session sees
       every outstanding clarify regardless of `current_spec`
@@ -2617,6 +2767,28 @@ Criteria.
 - `LOOM_CLARIFY` agent marker → bead transitions to `[clarify]`,
       recovery loop is skipped
   [test](clarify_marker_routes_to_clarify_with_question)
+- Direct-emit `LOOM_CLARIFY`: the gate validates the target bead's
+      notes ∪ description for a well-formed `## Options — <summary>`
+      heading with at least one `### Option <N> — <title>`
+      subsection before applying `loom:clarify`. Same shape mint
+      validates on a clarify-bound finding's evidence. Forgetful-
+      agent case (marker emitted, options block absent or malformed)
+      falls back to `loom:blocked` with cause `clarify-without-options`
+      — no stranded clarify bead reaches `loom msg`
+  [test?](direct_emit_clarify_without_options_block_falls_back_to_blocked)
+- `LOOM_RETRY` agent marker → recovery with cause `agent-retry`,
+      `previous_failure` populated with `AgentRetry { reason }` from
+      the prose preceding the marker; one `[loop] max_retries` slot
+      consumed
+  [test?](retry_marker_routes_to_agent_retry_recovery_with_reason_carried)
+- `LOOM_RETRY` recovery exhaustion → `loom:blocked` with cause
+      `retry-exhausted` (the same exhaustion path as other
+      driver-detected recoveries)
+  [test?](retry_marker_exhaustion_routes_to_retry_exhausted_blocked)
+- `LOOM_RETRY` from an interactive session (`plan_*`, `msg`) is a
+      wrong-phase-marker error; the driver exits non-zero with a
+      diagnostic and does not apply any label
+  [test?](retry_marker_from_interactive_session_is_wrong_phase_error)
 - `LOOM_CLARIFY` from a `loom todo_new` / `loom todo_update` session
       targets the **molecule epic** (rationale per
       [templates.md — Decomposition Discipline](templates.md));
@@ -3143,19 +3315,26 @@ two agent-loop observers.
    runs one bead at a time; `--parallel N > 1` runs N concurrently.
    After workers finish, branches push to the loom workspace and
    rebase + fast-forward into the integration branch sequentially.
-7. **Retry with context** — on in-session worker failure, retries with the
-   prior error output injected as the `previous_failure` template variable.
-   Configurable max retries per bead (default 2). After in-session retries
-   exhaust, the phase ends; the verdict is delegated to the
-   [Verdict Gate](#verdict-gate).
+7. **Retry with context** — on in-session worker failure (or explicit
+   agent self-report via `LOOM_RETRY`), retries with the prior error
+   output injected as the `previous_failure` template variable.
+   Configurable max retries per bead (default 2; `LOOM_RETRY` consumes
+   one slot per emission). After in-session retries exhaust, the phase
+   ends; the verdict is delegated to the [Verdict Gate](#verdict-gate).
 8. **Verdict gate per phase** — `loom gate verify` (deterministic)
    followed by `loom gate review` (LLM) evaluates each phase's result
    before the bead's state can advance. See [Verdict Gate](#verdict-gate)
    for the execution layer (decision table, recovery mechanics,
    markers, labels) and [gate.md](gate.md) for the review
-   rubric. Driver-detected gate failures enter a bounded recovery
-   loop; agent self-reports (`LOOM_BLOCKED` / `LOOM_CLARIFY`) escalate
-   directly to the human via `loom msg`.
+   rubric. Driver-detected gate failures and `LOOM_RETRY` self-reports
+   enter a bounded recovery loop; agent self-reports `LOOM_BLOCKED` /
+   `LOOM_CLARIFY` escalate directly to the human via `loom msg`. The
+   verdict gate applies to **worker sessions only** (`loop`, `todo_*`,
+   `review`); interactive sessions (`plan_*`, `msg`) are agent-
+   and-human authoritative — the driver does not mutate bd state as
+   a consequence of an interactive session. See [Verdict Gate §
+   Interactive vs worker sessions](#verdict-gate) for the full
+   no-reconciliation contract.
 9. **Push gate — four-condition AND, structurally enforced.** Push
    fires only when **all four** of the following hold; failure on any
    one refuses push. The driver computes each input explicitly — no
@@ -3347,11 +3526,11 @@ two agent-loop observers.
 - **Hidden specs (`-h` flag)** — scratch / private specs are not a
   first-class concept. The use case — keeping a spec out of git — is
   covered by `.git/info/exclude` on `specs/<label>.md`. Eliminating
-  the flag keeps `plan` / `todo` / `run` path-resolution
+  the flag keeps `plan` / `todo` / `loop` path-resolution
   single-shaped. Reintroducing it later is a non-breaking additive
   change if the workflow asks for it.
 - **Override of Loom's workflow templates** — Loom's `plan` / `todo`
-  / `run` / `gate review` / `msg` templates are Askama, compiled
+  / `loop` / `review` / `msg` templates are Askama, compiled
   into the binary. There is no per-project template-fetch /
   template-tune mechanism for overriding *Loom's own* templates;
   template updates ship via a new loom release. Project-specific

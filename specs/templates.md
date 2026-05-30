@@ -6,7 +6,7 @@ blocks consumers compose into their own templates.
 
 ## Problem Statement
 
-Loom's agent-bearing workflow phase prompts (`plan`, `todo`, `run`,
+Loom's agent-bearing workflow phase prompts (`plan`, `todo`, `loop`,
 `review`, `msg`) are rendered from Askama templates compiled into
 the binary. `loom gate verify` is deterministic and renders no
 template. The template surface is its own concern: which partials
@@ -34,12 +34,12 @@ One template per phase, plus per-mode variants:
 
 - `plan_new.md`, `plan_update.md`
 - `todo_new.md`, `todo_update.md`
-- `run.md`, `review.md`, `msg.md`
+- `loop.md`, `review.md`, `msg.md`
 
 `loom gate verify` is deterministic — it runs verifiers, audits,
 and linters without rendering any agent prompt — so it has no
 template. `loom gate review` is the LLM-judged counterpart and
-has its own template, distinct from `run.md` because the review
+has its own template, distinct from `loop.md` because the review
 session has different inputs (diff, bead intent, sibling diffs,
 prior `loom gate verify` results) and a rubric-walk objective
 rather than an implement-the-bead objective.
@@ -63,12 +63,12 @@ Current set:
 | `spec_header.md` | Render spec label, path, active molecule |
 | `companions_context.md` | List companion paths declared on the spec |
 | `scratchpad.md` | Pin the per-session scratchpad path |
-| `progress_markers.md` | Document the `LOOM_COMPLETE` / `LOOM_NOOP` "work is done" terminators. **Markers are mutually exclusive — exactly one per session, on the final line.** Pinned alongside `self_report_markers.md` so each phase surfaces both the success and the cannot-finish terminator sets. |
-| `self_report_markers.md` | Document the `LOOM_BLOCKED` / `LOOM_CLARIFY` cannot-finish terminators. Pinned alongside `progress_markers.md`. |
-| `findings_walk.md` | Sole carrier of the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed wire format (streaming finding lines + JSON-payload terminator + pairing rule) per [gate.md § Findings and Minting](gate.md#findings-and-minting). Pinned only by `review.md`; an anti-drift `[check]`-tier verifier fails any other template that restates the wire format. |
-| `chat_marker_final_turn_only.md` | Restrict `LOOM_COMPLETE` emission to the **final** assistant turn of a multi-turn chat. Included by `msg`, `plan_new`, and `plan_update` to disambiguate `progress_markers.md`'s "end your response with the marker" language (which is correct for single-shot worker phases but misreads as "every response" in chat). One-shot worker phases (`run`, `todo_*`, `review`) deliberately omit it because every response in those phases IS the final output. |
+| `progress_markers.md` | Document the `LOOM_COMPLETE` / `LOOM_NOOP` "work is done" terminators. **Markers are mutually exclusive — exactly one per session, on the final line.** Pinned in every phase (interactive sessions emit `LOOM_COMPLETE`; worker phases emit either `LOOM_COMPLETE` or `LOOM_NOOP`); paired with `self_report_markers.md` in worker phases so each worker phase surfaces both the success and the cannot-finish terminator sets. |
+| `self_report_markers.md` | Document the worker-phase cannot-finish terminators `LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`. Each routes a distinct outcome: retry on transient failure (environmental or agent self-reset), clarify on a decision the agent can frame as `## Options — …`, blocked on a genuine dead end with no candidate resolutions. **Pinned in worker phases only** (`todo_*`, `loop`, `review`) — interactive templates (`plan_*`, `msg`) emit `LOOM_COMPLETE` only because the human is present and resolves friction in-turn, so the cannot-finish markers are out of scope for those templates. The `chat_marker_final_turn_only.md` partial reinforces the COMPLETE-only restriction for interactive sessions. |
+| `findings_walk.md` | Sole carrier of the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed wire format (streaming finding lines + JSON-payload terminator + pairing rule) per [gate.md § Findings and Minting](gate.md#findings-and-minting). Documents the **Options-block requirement**: every clarify-bound finding (any finding whose mint would apply `loom:clarify` to the resulting bead, not only `invariant-clash`) MUST embed a canonical `## Options — …` block inside its `evidence` payload. The driver-side mint validates the evidence at parse time and falls back to `loom:blocked` with cause `clarify-without-options` when the block is absent or malformed, per [gate.md § Options Format Contract](gate.md#options-format-contract). Pinned only by `review.md`; an anti-drift `[check]`-tier verifier fails any other template that restates the wire format. |
+| `chat_marker_final_turn_only.md` | Restrict `LOOM_COMPLETE` emission to the **final** assistant turn of an interactive session. Included by `msg`, `plan_new`, and `plan_update` to disambiguate `progress_markers.md`'s "end your response with the marker" language (which is correct for single-shot worker phases but misreads as "every response" in chat). One-shot worker phases (`loop`, `todo_*`, `review`) deliberately omit it because every response in those phases IS the final output. |
 | `interview_modes.md` | Describe the "one by one" / "polish the spec" interview sub-modes |
-| `chat_interview.md` | Require conversational, prose-based Q&A during planning sessions; forbid Claude Code's structured option-picker tool — see *Chat Discipline* below |
+| `chat_interview.md` | Interactive-session discipline pinned by every interactive-session template (`plan_new`, `plan_update`, `msg`): conversational prose Q&A only, no Claude Code option-picker / `AskUserQuestion` widget, and bd is the durable persistence destination for anything that needs to outlive the session — see *Chat Discipline* below |
 | `decomposition_discipline.md` | Pin the audit-before-fan-out rule on `todo_new` / `todo_update`: every bead must correspond to evidence-confirmed missing work, not a spec criterion in the abstract — see *Decomposition Discipline* below |
 | `plan_stage_rubric.md` | Gate the planning interview on completeness / coherence / invariant-clash before any commit |
 | `invariant_clash.md` | Describe the invariant-clash awareness scan (included transitively via `plan_stage_rubric.md`) |
@@ -105,7 +105,7 @@ narrative from drifting back into spec markdown.
 
 Each partial is included by an explicit set of templates:
 
-| Partial | `plan_new` | `plan_update` | `todo_new` | `todo_update` | `run` | `review` | `msg` |
+| Partial | `plan_new` | `plan_update` | `todo_new` | `todo_update` | `loop` | `review` | `msg` |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
 | `context_pinning.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `style_rules.md` |  |  |  |  | ✓ | ✓ |  |
@@ -114,19 +114,19 @@ Each partial is included by an explicit set of templates:
 | `companions_context.md` |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `scratchpad.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `progress_markers.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |
-| `self_report_markers.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |
+| `self_report_markers.md` |  |  | ✓ | ✓ | ✓ | ✓ |  |
 | `findings_walk.md` |  |  |  |  |  | ✓ |  |
 | `chat_marker_final_turn_only.md` | ✓ | ✓ |  |  |  |  | ✓ |
 | `interview_modes.md` | ✓ | ✓ |  |  |  |  |  |
-| `chat_interview.md` | ✓ | ✓ |  |  |  |  |  |
+| `chat_interview.md` | ✓ | ✓ |  |  |  |  | ✓ |
 | `decomposition_discipline.md` |  |  | ✓ | ✓ |  |  |  |
 | `plan_stage_rubric.md` | ✓ | ✓ |  |  |  |  |  |
 | `invariant_clash.md` | ✓ | ✓ |  |  |  |  |  |
 | `review_rubric.md` |  |  |  |  |  | ✓ |  |
 | `sibling_spec_editing.md` |  | ✓ |  |  |  |  |  |
 
-**`style_rules.md` is pinned only in `run` and `review`** — the two
-phases that write or evaluate code (`run` produces it, `review`
+**`style_rules.md` is pinned only in `loop` and `review`** — the two
+phases that write or evaluate code (`loop` produces it, `review`
 judges it). Other phases (planning, decomposition, clarify
 resolution) don't write or evaluate code, so pinning the rules
 there would inflate prompt size without buying enforcement.
@@ -153,21 +153,21 @@ through the parse-don't-validate boundary defined in
 | Variable | Type | Used By |
 |----------|------|---------|
 | `pinned_context` | `String` | all |
-| `style_rules` | `String` | `run`, `review` |
+| `style_rules` | `String` | `loop`, `review` |
 | `spec_conventions` | `String` | `plan_new`, `plan_update` |
 | `label` | `SpecLabel` | all |
 | `spec_diff` | `Option<String>` | `todo_update` |
 | `existing_tasks` | `Option<String>` | `todo_update` |
-| `companion_paths` | `Vec<String>` | `plan_update`, `todo_*`, `run`, `review`, `msg` |
+| `companion_paths` | `Vec<String>` | `plan_update`, `todo_*`, `loop`, `review`, `msg` |
 | `clarify_beads` | `Vec<ClarifyBead>` | `msg` |
 | `implementation_notes` | `Vec<String>` | `todo_new`, `todo_update` |
-| `molecule_id` | `Option<MoleculeId>` | `todo_update`, `run` |
-| `issue_id` | `Option<BeadId>` | `run` |
-| `title` | `Option<String>` | `run` |
-| `description` | `Option<String>` | `run` |
-| `previous_failure` | `Option<PreviousFailure>` | `run` (retry only; typed enum — see *Typed `PreviousFailure`* below) |
-| `review_notes` | `Option<String>` | `run` (set only when `previous_failure` is `VerifyFailures` and review also raised a concern) |
-| `attempt` | `u32` | `run` (in-session per-bead retry counter — see *Attempt Counter* below) |
+| `molecule_id` | `Option<MoleculeId>` | `todo_update`, `loop` |
+| `issue_id` | `Option<BeadId>` | `loop` |
+| `title` | `Option<String>` | `loop` |
+| `description` | `Option<String>` | `loop` |
+| `previous_failure` | `Option<PreviousFailure>` | `loop` (retry only; typed enum — see *Typed `PreviousFailure`* below) |
+| `review_notes` | `Option<String>` | `loop` (set only when `previous_failure` is `VerifyFailures` and review also raised a concern) |
+| `attempt` | `u32` | `loop` (in-session per-bead retry counter — see *Attempt Counter* below) |
 | `beads_summary` | `Option<String>` | `review` |
 | `base_commit` | `Option<String>` | `review` |
 | `criterion_status` | `Vec<CriterionStatus>` | `todo_new`, `todo_update` (see *Criterion-Status Surface* below) |
@@ -304,6 +304,20 @@ pub enum PreviousFailure {
     /// [harness.md § Verdict Gate](harness.md#verdict-gate), which
     /// routes through `GateFailReason`, not `PreviousFailure`).
     PostIntegrateFail { failures: Vec<VerifierFailure> },
+
+    /// Worker phase emitted `LOOM_RETRY` — the agent self-reported
+    /// that this attempt could not finish but a fresh dispatch is
+    /// likely to succeed (environmental failure: tools failing
+    /// mid-session, sandbox/cwd unlinked, transient IO; or agent
+    /// self-reset: stuck-but-not-blocked, prompt-context exhausted,
+    /// approach abandoned). `reason` is the prose the agent wrote on
+    /// the line before the marker, captured verbatim. Distinct from
+    /// `DriverNotice::ObserverAbort` and from `BuildFailure` because
+    /// the agent itself acknowledged the failure rather than the
+    /// driver inferring it. Consumes one slot in
+    /// `[loop] max_retries`; exhaustion escalates to `loom:blocked`
+    /// with cause `retry-exhausted`.
+    AgentRetry { reason: String },
 }
 
 pub enum DriverNoticeCause {
@@ -363,6 +377,7 @@ pub enum TerminalSurface {
     Complete,
     Noop,
     Concern { summary: String },
+    Retry { reason: String },
     Blocked { reason: String },
     Clarify { question: String },
     Malformed { payload: String },
@@ -418,6 +433,7 @@ decided by `loom gate mint`.
 - `BuildFailure` → `"Build failed at {stage}:\n{output}"`
 - `TreeNotClean` → `"Working tree was not clean after the bead committed:\n\n{path list, one per line}\n\nStage these into a follow-up commit or revert them."` with a `"+N more"` suffix line when the list is truncated to 30 entries
 - `PostIntegrateFail { failures }` → `"After rebasing onto the integration branch, the post-integration verify failed:\n\n{N blocks: target + exit + stderr}\n\nReconcile the cross-bead interaction — your bead's verify passed at its own workspace; the failure is in the integrated tree."`
+- `AgentRetry { reason }` → `"Previous attempt requested retry — reason: {reason}\n\nIf the same problem persists after this attempt, escalate to LOOM_BLOCKED (no candidate resolutions) or LOOM_CLARIFY (with a structured Options block) rather than emitting LOOM_RETRY again."`
 - `review_notes` (when set, after the primary block) → heading `"Review notes:"` then content
 
 Driver maps verdict-gate causes to variants per the table in
@@ -426,7 +442,7 @@ Driver maps verdict-gate causes to variants per the table in
 ### Attempt Counter
 
 `attempt` is the per-bead in-session retry counter, populated by
-the driver and rendered by `run.md`:
+the driver and rendered by `loop.md`:
 
 - `attempt == 0` on fresh bead dispatch — no retry context, no
   attempt line in the template
@@ -438,14 +454,14 @@ the driver and rendered by `run.md`:
   beads are different prompt contexts, and a counter that spans
   them would be misleading
 
-When `attempt > 0 && previous_failure.is_some()`, `run.md`
+When `attempt > 0 && previous_failure.is_some()`, `loop.md`
 prepends a counter line: `"Retry attempt {attempt} — previous
 attempt failed with: …"` followed by the typed
 `previous_failure` block.
 
 ### First-instruction reframe
 
-When `previous_failure.is_some()`, `run.md` prepends to its first
+When `previous_failure.is_some()`, `loop.md` prepends to its first
 user instruction:
 
 > "Re-read the previous failure block above and address its
@@ -467,30 +483,37 @@ the real trust boundary is the container.
 
 ### Chat Discipline
 
-`partial/chat_interview.md` is included by `plan_new.md` and
-`plan_update.md`. It tells the planning agent the interview is a
-back-and-forth chat, not a structured questionnaire:
+`partial/chat_interview.md` is included by every interactive-session
+template: `plan_new.md`, `plan_update.md`, and `msg.md`. It carries
+the discipline shared across every interactive session the loom
+binary runs with a human in the loop:
 
 - Questions go out in prose, in the assistant's normal reply.
   Answers come back as user prose.
 - The agent does **not** use Claude Code's structured option-picker
-  tool (or any equivalent multi-choice UI) for planning interviews.
-  The picker forces premature commitment to N enumerated options
-  when the user's real answer may be a hybrid, a redirection, or
-  none-of-the-above; it also adds friction to the short text
-  replies that are the natural shape of planning discussion.
+  tool (`AskUserQuestion` or any equivalent multi-choice widget) for
+  interactive sessions. The picker forces premature commitment to N
+  enumerated options when the user's real answer may be a hybrid, a
+  redirection, or none-of-the-above; it also adds friction to the
+  short text replies that are the natural shape of conversational
+  discussion.
 - When the agent wants to propose alternatives, it lists them
   inline in prose ("option A does X; option B does Y"). The user
   replies "B" or "B with a tweak" or "neither, do Z" — natural
   prose, no picker UI.
-- The "one by one" sub-mode (see *Interview Modes*) still applies:
-  it means one question per chat turn, not one picker per turn.
+- **Persistence destinations.** Session-bridging memory — decisions,
+  context, follow-ups, anything future sessions need — goes into bd
+  (`bd update <id> --notes …`, bead descriptions, or new beads via
+  `bd create`) or spec files. bd persists across machines and after
+  containers exit. Claude Code's `MEMORY.md` / auto-memory system is
+  container-local and disappears with the container; treat it as
+  working notes for the current session only, not as durable storage.
+- The "one by one" sub-mode (see *Interview Modes*) is planning-
+  specific and lives in a separate partial; the chat-discipline rules
+  above apply to every interactive session, including msg-chat.
 
-The discipline is planning-specific. Worker phases (`run`, `todo_*`,
-`review`) are single-shot and do not interview the user, so the
-partial is not pinned there. `msg` resolves `loom:clarify` beads via
-the canonical *Options Format Contract* in [gate.md](gate.md), so
-the picker concern doesn't apply there either.
+Worker phases (`loop`, `todo_*`, `review`) are single-shot and do not
+interview the user, so the partial is not pinned there.
 
 ### Decomposition Discipline
 
@@ -577,8 +600,15 @@ Followed by exactly one terminal marker:
 `LOOM_COMPLETE` (zero findings emitted),
 `LOOM_CONCERN: {"summary": "<one sentence>"}` (≥1 findings emitted —
 JSON-shaped payload, parsed by the same `serde_json` pipeline
-consuming the `LOOM_FINDING:` lines), or
-`LOOM_BLOCKED` / `LOOM_CLARIFY` (the walk could not complete).
+consuming the `LOOM_FINDING:` lines),
+`LOOM_RETRY` (the walk could not complete for environmental reasons
+— logs corrupt, workspace inaccessible, transient IO — and a fresh
+dispatch should retry it; per [harness.md § Verdict
+Gate](harness.md#verdict-gate) this consumes one
+`[loop] max_retries` slot), `LOOM_BLOCKED` (the walk cannot complete
+and the reviewer has no candidate resolution to enumerate), or
+`LOOM_CLARIFY` (the walk surfaces a spec ambiguity the reviewer can
+frame as `## Options — …` for human resolution).
 The terminator must satisfy the **pairing rule**: `LOOM_CONCERN`
 iff ≥1 findings streamed, `LOOM_COMPLETE` iff zero — a mismatch
 routes to `RecoveryCause::BadWalk(BadWalk)` per [harness.md §
@@ -606,10 +636,20 @@ from the typed `LOOM_FINDING:` lines, applying fingerprint dedup
 and per-spec molecule resolution. A review run that mutates bd
 state from inside the prompt is a protocol violation.
 
-The `invariant-clash` token carries its options block as part of
-the finding's `evidence` payload (the rubric emits the canonical
-`## Options — …` text inline); the driver lifts it into the minted
-clarify bead's description per the *Options Format Contract*.
+**Clarify-bound findings embed Options in evidence.** Any finding
+whose mint would label the resulting bead `loom:clarify` —
+`invariant-clash` and any other clarify-bound token enumerated by
+[gate.md § Concern tokens and target variants](gate.md#concern-tokens-and-target-variants)
+— MUST embed the canonical `## Options — <summary>` block inside
+its `evidence` payload (with at least one `### Option <N> — <title>`
+subsection). The driver-side `loom gate mint` parses the evidence,
+extracts the block, and renders it into the minted clarify bead's
+description per the *Options Format Contract*. A clarify-bound
+finding whose evidence lacks a well-formed options block is refused
+at mint time and falls back to `loom:blocked` with cause
+`clarify-without-options`; the agent should emit `LOOM_BLOCKED`
+directly when it cannot articulate options rather than emitting a
+clarify-bound finding without them.
 
 ### Mint Default-Profile
 
@@ -708,7 +748,7 @@ pub const CONTEXT_PINNING_PARTIAL: &str = include_str!("templates/partial/contex
 - The compiled Askama machinery itself — consumers bring their
   own template engine (Askama, minijinja, raw `format!`, etc.)
   for their own templates
-- Loom's workflow templates (`plan.md`, `todo.md`, `run.md`,
+- Loom's workflow templates (`plan.md`, `todo.md`, `loop.md`,
   etc.) — consumers cannot override these; Loom's workflow
   shape is opinionated and ships with the binary
 
@@ -730,7 +770,7 @@ Three pinning-related fields on `LoomConfig`, all loaded from
 # Project overview — pinned in every phase
 pinned_context = "docs/README.md"
 
-# Style rules — pinned in run and check
+# Style rules — pinned in loop and review
 style_rules = "docs/style-rules.md"
 
 # Spec-authoring conventions — pinned in plan_new and plan_update
@@ -758,7 +798,7 @@ documents in front of the agent with zero configuration.
   errors, not runtime errors
   [test](template_renders_are_byte_stable_across_runs)
 - Partials are included via Askama's `{% include %}` mechanism
-  [check](grep -q 'partial/context_pinning' crates/loom-templates/templates/run.md)
+  [check](grep -q 'partial/context_pinning' crates/loom-templates/templates/loop.md)
 - Rendered output is stable across runs for identical inputs,
   verified by `insta` snapshots
   [test](template_renders_are_byte_stable_across_runs)
@@ -774,7 +814,7 @@ documents in front of the agent with zero configuration.
 
 - `style_rules.md` partial renders the `style_rules` variable
   [check](grep -q '{{ style_rules' crates/loom-templates/templates/partial/style_rules.md)
-- `run.md` and `review.md` include `style_rules.md`; no other
+- `loop.md` and `review.md` include `style_rules.md`; no other
   phase template does
   [check](cargo run -p loom-walk -- template_pinning_matrix)
 - `spec_conventions.md` partial renders the `spec_conventions`
@@ -806,24 +846,35 @@ documents in front of the agent with zero configuration.
   include with no `✓` — fails the audit
   [check](cargo run -p loom-walk -- template_pinning_matrix)
 - The `chat_marker_final_turn_only.md` partial is included by
-  every multi-turn template (`msg`, `plan_new`, `plan_update`),
-  pinning the "emit `LOOM_COMPLETE` on the final turn only" rule
-  that disambiguates `exit_signals.md`'s single-shot wording
+  every interactive-session template (`msg`, `plan_new`,
+  `plan_update`), pinning the "emit `LOOM_COMPLETE` on the final
+  turn only" rule that disambiguates `progress_markers.md`'s
+  single-shot "end your response with the marker" wording
   [test](every_multi_turn_template_includes_chat_marker_partial)
-- One-shot worker templates (`run`, `todo_new`, `todo_update`,
+- One-shot worker templates (`loop`, `todo_new`, `todo_update`,
   `review`) deliberately **omit** `chat_marker_final_turn_only.md`
   because every response in those phases is the session's final
   output; including the chat-only clause would mislead the agent
   into withholding the marker
   [test](worker_templates_omit_chat_final_turn_clause)
-- `partial/chat_interview.md` exists and is included by
-  `plan_new.md` and `plan_update.md` only; the body forbids
-  Claude Code's structured option-picker tool for planning Q&A
+- `partial/chat_interview.md` exists and is included by every
+  interactive-session template — `plan_new.md`, `plan_update.md`,
+  and `msg.md` — and by no worker template; the body forbids
+  Claude Code's structured option-picker tool for interactive Q&A
   and requires conversational prose instead
   [check](cargo run -p loom-walk -- template_pinning_matrix)
 - The partial body names the picker prohibition explicitly so a
   grep for the rule succeeds (no rule-by-implication)
   [check](grep -qi 'option-picker\|AskUserQuestion' crates/loom-templates/templates/partial/chat_interview.md)
+- The partial body names the bd-persistence clause distinctively so
+  a grep for the rule succeeds: interactive sessions persist
+  cross-session memory via bd (notes, descriptions, new beads), not
+  via Claude Code's `MEMORY.md` system which is container-local
+  [check](grep -qi 'MEMORY.md\|bd update.*--notes' crates/loom-templates/templates/partial/chat_interview.md)
+- `msg.md` rendered prompt contains the chat-interview discipline
+  clauses (picker prohibition + bd-persistence) sourced from the
+  pinned partial
+  [test?](msg_template_renders_chat_interview_discipline)
 
 ### Agent-output markers
 
@@ -869,10 +920,34 @@ documents in front of the agent with zero configuration.
   per the partial split documented in [gate.md § Findings and
   Minting](gate.md#findings-and-minting)
   [check](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/progress_markers.md")
-- `partial/self_report_markers.md` covers the self-report markers
-  (`LOOM_BLOCKED`, `LOOM_CLARIFY`) and contains no `LOOM_CONCERN:`
-  or `LOOM_FINDING:` literal
+- `partial/self_report_markers.md` covers the worker-phase self-report
+  markers (`LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`) and contains
+  no `LOOM_CONCERN:` or `LOOM_FINDING:` literal
   [check](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/self_report_markers.md")
+- Interactive-session templates (`plan_new.md`, `plan_update.md`,
+  `msg.md`) deliberately **omit** `self_report_markers.md` because
+  the worker-phase cannot-finish markers are not valid emit options
+  for interactive sessions — the human resolves friction in-turn.
+  Including the partial would teach interactive agents about markers
+  they cannot emit
+  [check?](cargo run -p loom-walk -- template_pinning_matrix)
+- The partial body names `LOOM_RETRY` semantics distinctively
+  (transient / environmental / agent-self-reset, consumes a
+  `[loop] max_retries` slot, escalates to `loom:blocked` cause
+  `retry-exhausted` on exhaustion) so a grep for the rule succeeds
+  [check?](grep -qi 'LOOM_RETRY' crates/loom-templates/templates/partial/self_report_markers.md)
+- The partial body distinguishes `LOOM_BLOCKED` from `LOOM_CLARIFY`:
+  blocked = genuine dead end, no candidate resolutions; clarify =
+  decision the agent can frame as a structured `## Options — …`
+  block. The discriminator (can the agent enumerate options?) is
+  named explicitly
+  [check?](grep -qi 'candidate resolution\|enumerate options' crates/loom-templates/templates/partial/self_report_markers.md)
+- The partial body identifies the worker-phase scoping: `LOOM_RETRY`,
+  `LOOM_CLARIFY`, `LOOM_BLOCKED` are valid in worker phases (`loop`,
+  `todo_*`, `review`) only; interactive sessions (`plan_*`,
+  `msg`) emit `LOOM_COMPLETE` only because the human resolves
+  friction in-turn
+  [check?](grep -qi 'worker.*phase\|interactive.*session' crates/loom-templates/templates/partial/self_report_markers.md)
 
 ### Mint default-profile
 
@@ -893,9 +968,21 @@ documents in front of the agent with zero configuration.
 - `PreviousFailure` is a tagged enum with variants `DriverNotice`,
   `VerifyFailures(Vec<VerifierFailure>)`,
   `ReviewConcern { summary, findings }`, `BadWalk(BadWalk)`,
-  `BuildFailure`, and `TreeNotClean { dirty_paths: Vec<String> }` —
-  not a free string
+  `BuildFailure`, `TreeNotClean { dirty_paths: Vec<String> }`,
+  `PostIntegrateFail { failures }`, and
+  `AgentRetry { reason: String }` — not a free string
   [check](grep -q 'pub enum PreviousFailure' crates/loom-templates/src/previous_failure.rs)
+- `PreviousFailure::AgentRetry { reason }` variant exists and
+  carries the verbatim prose the agent wrote on the line preceding
+  the `LOOM_RETRY` marker; populated by the driver when a worker
+  phase exits with `LOOM_RETRY` per
+  [harness.md § Verdict Gate](harness.md#verdict-gate)
+  [check?](grep -q 'AgentRetry' crates/loom-templates/src/previous_failure.rs)
+- The `Display for PreviousFailure` rendering of `AgentRetry`
+  surfaces the agent's prior `reason` and instructs the retry
+  attempt to escalate to `LOOM_BLOCKED` or `LOOM_CLARIFY` if the
+  same problem persists after retry
+  [test?](agent_retry_display_renders_reason_and_escalation_guidance)
 - `BadWalk` enum carries `Concern { payload: String, parsed_findings: Vec<Finding> }`,
   `ConcernWithoutFindings { summary: String }`,
   `FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> }`,
@@ -985,9 +1072,9 @@ documents in front of the agent with zero configuration.
 - `LoopContext` carries `attempt: u32`; field is `0` on fresh
   bead dispatch
   [test](attempt_zero_on_fresh_bead_dispatch)
-- `run.md` omits the attempt line when `attempt == 0`
+- `loop.md` omits the attempt line when `attempt == 0`
   [test](run_template_omits_attempt_line_when_zero)
-- `run.md` renders "Retry attempt {N} — previous attempt failed
+- `loop.md` renders "Retry attempt {N} — previous attempt failed
   with: …" when `attempt > 0 && previous_failure.is_some()`
   [test](run_template_renders_attempt_line_on_retry)
 - Attempt counter is per-bead in-session: fix-up beads start at
@@ -998,7 +1085,7 @@ documents in front of the agent with zero configuration.
 
 ### First-instruction reframe
 
-- `run.md` prepends "Re-read the previous failure block above and
+- `loop.md` prepends "Re-read the previous failure block above and
   address its specific concern before re-implementing." when
   `previous_failure.is_some()`
   [test](run_template_prepends_first_instruction_reframe_on_retry)
@@ -1006,7 +1093,7 @@ documents in front of the agent with zero configuration.
   [test](run_template_omits_first_instruction_reframe_on_fresh_dispatch)
 - Reframe wording is generic (one form regardless of variant);
   per-variant detail lives inside the previous-failure block itself
-  [check](grep -q 'Re-read the previous failure block above' crates/loom-templates/templates/run.md)
+  [check](grep -q 'Re-read the previous failure block above' crates/loom-templates/templates/loop.md)
 
 ### Public surface
 
@@ -1020,7 +1107,7 @@ documents in front of the agent with zero configuration.
   `CONTEXT_PINNING_PARTIAL`, etc.) for consumer template composition
   [check](cargo run -p loom-walk -- loom_templates_public_partial_constants)
 - Loom's workflow template bodies themselves (`plan.md`, `todo.md`,
-  `run.md`, `review.md`, `msg.md`) are NOT publicly exported —
+  `loop.md`, `review.md`, `msg.md`) are NOT publicly exported —
   only the typed contexts and partial strings
   [check](cargo run -p loom-walk -- loom_templates_workflow_templates_not_exported)
 
@@ -1069,7 +1156,7 @@ documents in front of the agent with zero configuration.
 ### Functional
 
 1. **Compiled workflow templates.** Every Loom-workflow phase
-   prompt (`plan`, `todo`, `run`, `gate review`, `msg`) is an
+   prompt (`plan`, `todo`, `loop`, `review`, `msg`) is an
    Askama template compiled into the binary. Template correctness
    is verified at compile time. No per-project mechanism for
    *overriding Loom's workflow templates*; updates ship via a new
@@ -1086,7 +1173,7 @@ documents in front of the agent with zero configuration.
    `#[derive(Template)]` struct with one field per variable. The
    variable set is enumerated in *Template Variables*.
 5. **Per-phase pinning.** Partial inclusion follows *Pinning
-   Policy*; `style_rules.md` is pinned in `run` and `review` only;
+   Policy*; `style_rules.md` is pinned in `loop` and `review` only;
    `spec_conventions.md` is pinned in `plan_new` and `plan_update`
    only.
 6. **Rule-family agnosticism.** The `style_rules.md` and
@@ -1101,20 +1188,22 @@ documents in front of the agent with zero configuration.
 9. **Typed `PreviousFailure`** — `LoopContext.previous_failure` is
    `Option<PreviousFailure>` where `PreviousFailure` is a tagged
    enum (`DriverNotice`, `VerifyFailures`, `ReviewConcern`,
-   `BadWalk(BadWalk)`, `BuildFailure`, `TreeNotClean`). The driver
+   `BadWalk(BadWalk)`, `BuildFailure`, `TreeNotClean`,
+   `PostIntegrateFail`, `AgentRetry { reason: String }`). The driver
    populates the right variant from the verdict-gate cause
    classification. Each variant renders with distinct framing per
    *Typed `PreviousFailure`* above. Caps:
    `PREVIOUS_FAILURE_MAX_LEN = 4000` total; per-block stderr tail
    ~1500 chars; `review_notes` separate ~1000-char budget.
+   `AgentRetry.reason` shares the per-block budget cap.
 10. **Attempt counter.** `LoopContext.attempt: u32` is the per-bead
     in-session retry counter, bounded by `[loop] max_retries`
     (default 2), resets to 0 on fresh bead dispatch. Fix-up beads
     start at `attempt = 0`; molecule-level iteration is opaque to
-    the agent. `run.md` renders the attempt line when `attempt > 0
+    the agent. `loop.md` renders the attempt line when `attempt > 0
     && previous_failure.is_some()`, omits it otherwise.
 11. **First-instruction reframe.** When
-    `previous_failure.is_some()`, `run.md` prepends "Re-read the
+    `previous_failure.is_some()`, `loop.md` prepends "Re-read the
     previous failure block above and address its specific concern
     before re-implementing." Single generic form — per-variant
     detail lives in the previous-failure block itself.
@@ -1167,14 +1256,21 @@ documents in front of the agent with zero configuration.
     `template_wire_format_restatement` walk; consumers get coherence
     for free as long as they pin both crates from the same loom
     release.
-13. **Chat discipline in planning interviews.**
-    `partial/chat_interview.md`, pinned in `plan_new` and
-    `plan_update` only, requires the planning agent to conduct
-    interviews as back-and-forth conversational prose and forbids
-    Claude Code's structured option-picker tool (or any equivalent
-    multi-choice UI). Options are listed inline in prose; the user
-    replies in prose. The "one by one" sub-mode is preserved —
-    one question per chat turn, not one picker per turn.
+13. **Chat discipline in interactive sessions.**
+    `partial/chat_interview.md`, pinned in every interactive-session
+    template (`plan_new`, `plan_update`, `msg`), requires the
+    interactive agent to conduct conversations as back-and-forth
+    prose and forbids Claude Code's structured option-picker tool
+    (`AskUserQuestion` or any equivalent multi-choice widget).
+    Options are listed inline in prose; the user replies in prose.
+    The partial also carries the **persistence-destination clause**:
+    session-bridging memory (decisions, context, follow-ups) goes
+    into bd (notes, descriptions, new beads) or spec files, not
+    Claude Code's `MEMORY.md` system which is container-local and
+    disappears with the container. The "one by one" sub-mode is
+    planning-specific and lives in a separate partial; the chat-
+    discipline rules above apply to every interactive session,
+    including msg-chat.
 14. **Criterion-status surface for decomposition.** `todo_new` and
     `todo_update` contexts carry `criterion_status:
     Vec<CriterionStatus>` where each `CriterionStatus` exposes
@@ -1198,6 +1294,51 @@ documents in front of the agent with zero configuration.
     `todo_new.md` creates the molecule epic before the
     gap-analysis pass — without an existing epic the
     clarify-on-epic fallback has no target.
+16. **Self-report marker taxonomy.** The worker-phase self-report
+    markers form a three-way taxonomy carried by
+    `partial/self_report_markers.md`:
+    - `LOOM_RETRY` — this attempt cannot finish but a fresh dispatch
+      is likely to succeed (environmental failure: tools failing
+      mid-session, sandbox/cwd unlinked, transient IO; or agent
+      self-reset: stuck-but-not-blocked, prompt-context exhausted).
+      Consumes one slot in `[loop] max_retries`; exhaustion escalates
+      to `loom:blocked` with cause `retry-exhausted` per
+      [harness.md § Verdict Gate](harness.md#verdict-gate). The
+      driver populates `PreviousFailure::AgentRetry { reason }`
+      with the prose the agent wrote on the line preceding the
+      marker.
+    - `LOOM_CLARIFY` — the agent has framed a decision the human
+      must resolve and can enumerate the candidate paths as a
+      structured `## Options — …` block per
+      [gate.md § Options Format Contract](gate.md#options-format-contract).
+      Routes to `loom:clarify` for human resolution via `loom msg`.
+    - `LOOM_BLOCKED` — genuine dead end: the agent cannot proceed
+      and has no candidate resolutions to enumerate. Routes to
+      `loom:blocked`; `loom msg -c` walks the human through
+      candidate enumeration in-session.
+
+    The semantic discriminator between the three is explicit and
+    grep-able in the partial body: "expect retry to succeed? →
+    RETRY. can you enumerate options? → CLARIFY. dead end? → BLOCKED."
+    The taxonomy applies to worker phases only (`loop`, `todo_*`,
+    `review`); interactive sessions (`plan_*`, `msg`) emit
+    `LOOM_COMPLETE` only — the human resolves friction in-turn.
+17. **Options-block requirement on clarify-bound findings.**
+    `partial/findings_walk.md` requires every clarify-bound finding
+    (any token whose mint would label the resulting bead
+    `loom:clarify`, not only `invariant-clash`) to embed the
+    canonical `## Options — <summary>` block (with at least one
+    `### Option <N> — <title>` subsection) inside its `evidence`
+    payload. The driver-side `loom gate mint` validates the evidence
+    at parse time; clarify-bound findings whose evidence lacks a
+    well-formed options block fall back to `loom:blocked` with
+    cause `clarify-without-options` per
+    [gate.md § Options Format Contract](gate.md#options-format-contract).
+    No wire-format extension to the `LOOM_FINDING:` JSON payload —
+    the contract lives in the `evidence` field's content, with the
+    enforcement at the mint chokepoint. The agent should emit
+    `LOOM_BLOCKED` directly when it cannot articulate options
+    rather than emitting a clarify-bound finding without them.
 
 ### Non-Functional
 
@@ -1215,7 +1356,7 @@ documents in front of the agent with zero configuration.
   beads reassign, and which cross-refs rewrite. The CLI exposes
   no dedicated split / merge / rename / supersede commands.
 - **Override of Loom's workflow templates.** Loom's `plan` /
-  `todo` / `run` / `gate review` / `msg` templates are Askama,
+  `todo` / `loop` / `review` / `msg` templates are Askama,
   compiled into the binary. There is no per-project template-fetch
   or template-tune mechanism for overriding *Loom's own* templates;
   template updates ship via a new loom release. Project-specific
