@@ -94,16 +94,20 @@ could be selected.
 
 Per-phase config still resolves: each phase's `profile` key flows
 through `LoomConfig::agent_for(Phase)` exactly like the non-interactive
-phases. The resolved name is passed to `wrapix run` as an explicit
-`--profile <name>` argv flag. Argv is the sole profile-selection
-contract on this path; environment-variable hand-off is not part of
-the spec.
+phases. The resolved name is looked up in the profile-image manifest
+and the resulting `ImageEntry` is exported to `wrapix run` via the
+`WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` env vars
+documented in [harness.md — Profile-Image
+Manifest](harness.md#profile-image-manifest). The env-var hand-off is
+the sole profile-selection contract on this path: `wrapix run` has no
+`--profile` parser, and any extra tokens between the workspace
+positional and `claude` would be forwarded into the container as the
+command vector (the entrypoint would exec them literally and exit 127).
 
-`wrapix run --profile <name>` must resolve `<name>` against the same
-profile-image manifest used by the non-interactive `wrapix spawn` path
-(see [harness.md — Profile-Image
-Manifest](harness.md#profile-image-manifest)) — the two paths must
-select the same image for the same name.
+`wrapix run` reads those env vars (when no `--spawn-config` is supplied)
+to pick the same per-profile image the non-interactive `wrapix spawn`
+path selects — the two paths must select the same image for the same
+profile name.
 
 ### Agent Backend Trait
 
@@ -851,10 +855,12 @@ connection, network filtering, session audit logging.
 
 ### Interactive shell-out
 
-- `loom plan` passes `--profile <name>` on the `wrapix run` argv, with `<name>` resolved through `LoomConfig::agent_for(Phase::Plan)`
+- `loom plan` exports `WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` to `wrapix run` (no `--profile` argv flag — `wrapix run` has no parser for it), with the profile resolved through `LoomConfig::agent_for(Phase::Plan)`
   [test](plan_runner_passes_resolved_profile_to_wrapix_run)
-- `loom msg --chat` passes `--profile <name>` on the `wrapix run` argv, with `<name>` resolved through `LoomConfig::agent_for(Phase::Msg)`
+- `loom msg --chat` exports `WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` to `wrapix run` (no `--profile` argv flag), with the profile resolved through `LoomConfig::agent_for(Phase::Msg)`
   [test](msg_chat_passes_resolved_profile_to_wrapix_run)
+- `[phase.default].profile` alone (no per-phase override, no CLI override) reaches `Phase::Plan` via the env-var hand-off
+  [test](plan_phase_default_profile_alone_picks_manifest_entry)
 
 ### Container integration
 
@@ -942,10 +948,13 @@ connection, network filtering, session audit logging.
    --chat` bypass the agent-backend abstraction (so stdio can attach as a
    REPL) and invoke `wrapix run <workspace> claude
    --dangerously-skip-permissions <prompt>` directly. The profile resolved
-   by `LoomConfig::agent_for(Phase)` is passed to `wrapix run` as an
-   explicit `--profile <name>` argv flag. Argv is the sole profile-selection
-   contract on this path; environment-variable hand-off is not part of
-   the contract.
+   by `LoomConfig::agent_for(Phase)` is looked up in the profile-image
+   manifest and the matching `ImageEntry` is exported to `wrapix run` via
+   the `WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` env
+   vars. The env-var hand-off is the sole profile-selection contract on
+   this path; `wrapix run` has no `--profile` parser, and extra argv
+   tokens between the workspace positional and `claude` would be
+   forwarded into the container as the command vector (exit 127).
 8. **Agent runtime layer** — the image builder composes two orthogonal axes:
    *workspace profile* (base, rust, python) and *agent runtime* (claude, pi,
    direct). When `WRAPIX_AGENT=pi`, the pi runtime layer (Node.js + pi

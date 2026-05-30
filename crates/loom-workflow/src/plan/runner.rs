@@ -141,7 +141,7 @@ pub fn run_with_timeout(
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, &banner)
         .map_err(|source| PlanError::Spawn { source })?;
 
-    let argv = build_wrapix_argv(workspace, &profile, &prompt_body);
+    let argv = build_wrapix_argv(workspace, &prompt_body);
     let bin: PathBuf = opts.wrapix_bin.unwrap_or_else(|| PathBuf::from(WRAPIX_BIN));
     info!(
         label = %label,
@@ -412,15 +412,24 @@ mod tests {
         Ok(())
     }
 
-    /// `wrapix run` argv carries `--profile <name>` between the workspace
-    /// path and the `claude` agent token — the spec-defined contract for
-    /// profile selection on the interactive shell-out path. The resolved
-    /// name is whatever `LoomConfig::agent_for(Phase::Plan)` (or the CLI
-    /// override) yields: `base` for the empty-config default, `rust` when
-    /// `cli_profile = Some(ProfileName::new("rust"))` is supplied.
+    /// The resolved profile (from `LoomConfig::agent_for(Phase::Plan)` or
+    /// the CLI override) flows to `wrapix run` via the
+    /// `WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` env vars
+    /// — not via argv. `wrapix run` has no `--profile` parser; any
+    /// trailing tokens are forwarded into the container as the command
+    /// vector, so passing `--profile <name>` made the entrypoint exec
+    /// `--profile` and exit 127. The env-var contract documented in
+    /// `specs/harness.md` § Profile-Image Manifest is the sole hand-off.
     #[test]
     fn plan_runner_passes_resolved_profile_to_wrapix_run() -> Result<()> {
-        for (cli_profile, expected) in [(None, "base"), (Some(ProfileName::new("rust")), "rust")] {
+        for (cli_profile, expected_ref, expected_source_name) in [
+            (None, "localhost/wrapix-base:abc", "base.tar"),
+            (
+                Some(ProfileName::new("rust")),
+                "localhost/wrapix-rust:def",
+                "rust.tar",
+            ),
+        ] {
             let dir = workspace_with_specs()?;
             let spec_path = dir.path().join("specs/harness.md");
             let bin = install_wrapix_stub(
@@ -438,23 +447,21 @@ mod tests {
             run_with_timeout(dir.path(), opts, Duration::from_millis(100))?;
 
             let argv_log = std::fs::read_to_string(dir.path().join("argv.log"))?;
-            let lines: Vec<&str> = argv_log.lines().collect();
-            let idx = lines
-                .iter()
-                .position(|l| *l == "--profile")
-                .ok_or_else(|| anyhow::anyhow!("argv missing --profile. argv.log:\n{argv_log}"))?;
-            assert_eq!(
-                lines.get(idx + 1).copied(),
-                Some(expected),
-                "argv must pair --profile with the resolved name. argv.log:\n{argv_log}",
-            );
-            let claude_idx = lines
-                .iter()
-                .position(|l| *l == "claude")
-                .ok_or_else(|| anyhow::anyhow!("argv missing claude token"))?;
             assert!(
-                idx < claude_idx,
-                "--profile must precede the claude agent token. argv.log:\n{argv_log}",
+                !argv_log.lines().any(|l| l == "--profile"),
+                "wrapix run has no --profile parser; the flag must not appear in argv. \
+                 argv.log:\n{argv_log}",
+            );
+
+            let env_log = std::fs::read_to_string(dir.path().join("env.log"))?;
+            assert!(
+                env_log.contains(&format!("WRAPIX_DEFAULT_IMAGE_REF={expected_ref}")),
+                "resolved profile must select image ref via env var. env.log:\n{env_log}",
+            );
+            let expected_source = dir.path().join(expected_source_name).display().to_string();
+            assert!(
+                env_log.contains(&format!("WRAPIX_DEFAULT_IMAGE_SOURCE={expected_source}")),
+                "resolved profile must select image source via env var. env.log:\n{env_log}",
             );
         }
         Ok(())
@@ -486,6 +493,46 @@ mod tests {
         assert!(
             env_log.contains("WRAPIX_DEFAULT_IMAGE_REF=localhost/wrapix-python:ghi"),
             "phase config must select python. env.log:\n{env_log}",
+        );
+        Ok(())
+    }
+
+    /// Regression: `[phase.default].profile` alone (no `[phase.plan]`
+    /// override) must propagate to the image-env vars `wrapix run`
+    /// reads. Was masked while the bogus argv `--profile <name>` made
+    /// the entrypoint exit 127 before the env vars could pick the
+    /// image — the user's bug report ("kept getting a base profile").
+    #[test]
+    fn plan_phase_default_profile_alone_picks_manifest_entry() -> Result<()> {
+        let dir = workspace_with_specs()?;
+        let spec_path = dir.path().join("specs/harness.md");
+        let bin = install_wrapix_stub(
+            dir.path(),
+            Some((&spec_path, "# loom-harness\n\n## Companions\n\n")),
+        )?;
+        std::fs::write(
+            dir.path().join("loom.toml"),
+            "[phase.default]\nprofile = \"rust\"\n",
+        )?;
+        let manifest = three_profile_manifest(dir.path())?;
+
+        run_with_timeout(
+            dir.path(),
+            plan_opts_new("harness", bin, manifest),
+            Duration::from_millis(100),
+        )?;
+
+        let env_log = std::fs::read_to_string(dir.path().join("env.log"))?;
+        assert!(
+            env_log.contains("WRAPIX_DEFAULT_IMAGE_REF=localhost/wrapix-rust:def"),
+            "phase.default profile must reach Phase::Plan via the env-var \
+             hand-off. env.log:\n{env_log}",
+        );
+        let expected_source = dir.path().join("rust.tar").display().to_string();
+        assert!(
+            env_log.contains(&format!("WRAPIX_DEFAULT_IMAGE_SOURCE={expected_source}")),
+            "phase.default profile must reach Phase::Plan via the env-var \
+             hand-off. env.log:\n{env_log}",
         );
         Ok(())
     }

@@ -95,12 +95,14 @@ printf 'WRAPIX_DEFAULT_IMAGE_SOURCE=%s\n' "${{WRAPIX_DEFAULT_IMAGE_SOURCE:-}}" >
 # Argv layout (per loom-workflow/src/msg/chat.rs::build_wrapix_argv):
 #   $1 = "run"
 #   $2 = <workspace>
-#   $3 = "--profile"
-#   $4 = <profile name>
-#   $5 = "claude"
-#   $6 = "--dangerously-skip-permissions"
-#   $7 = <prompt body>
-prompt="${{7:-}}"
+#   $3 = "claude"
+#   $4 = "--dangerously-skip-permissions"
+#   $5 = <prompt body>
+# Profile selection rides the WRAPIX_DEFAULT_IMAGE_* env vars, NOT argv —
+# `wrapix run` has no --profile parser; any extra tokens between the
+# workspace and `claude` would be forwarded into the container as a
+# command and exit 127.
+prompt="${{5:-}}"
 
 if [ -n "${{WRAPIX_STUB_PROMPT_DUMP:-}}" ]; then
     printf '%s' "$prompt" > "$WRAPIX_STUB_PROMPT_DUMP"
@@ -317,12 +319,13 @@ fn loom_msg_chat_launches_container() {
     );
 }
 
-/// `wrapix run` argv carries `--profile <name>` between the workspace
-/// path and the `claude` agent token — the spec-defined contract for
-/// profile selection on the interactive shell-out path
-/// (`specs/agent.md` § Interactive Shell-Out). The resolved name comes
-/// from `LoomConfig::agent_for(Phase::Msg)`; the empty-config default
-/// is `base`.
+/// The resolved profile (from `LoomConfig::agent_for(Phase::Msg)` or
+/// the CLI override) flows to `wrapix run` via the
+/// `WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` env vars
+/// — not via argv. `wrapix run` has no `--profile` parser; any
+/// extra tokens between the workspace and `claude` would be forwarded
+/// into the container as a command and exit 127. The empty-config
+/// default profile is `base`.
 #[test]
 fn msg_chat_passes_resolved_profile_to_wrapix_run() {
     let env = setup_chat();
@@ -342,23 +345,17 @@ fn msg_chat_passes_resolved_profile_to_wrapix_run() {
     );
 
     let argv = std::fs::read_to_string(&env.argv_log).expect("argv.log present");
-    let lines: Vec<&str> = argv.lines().collect();
-    let profile_idx = lines
-        .iter()
-        .position(|l| *l == "--profile")
-        .unwrap_or_else(|| panic!("argv must contain --profile flag. argv.log:\n{argv}"));
-    assert_eq!(
-        lines.get(profile_idx + 1).copied(),
-        Some("base"),
-        "argv must pair --profile with the resolved name (default `base`). argv.log:\n{argv}",
-    );
-    let claude_idx = lines
-        .iter()
-        .position(|l| *l == "claude")
-        .unwrap_or_else(|| panic!("argv must contain claude agent token. argv.log:\n{argv}"));
     assert!(
-        profile_idx < claude_idx,
-        "--profile must precede the claude agent token. argv.log:\n{argv}",
+        !argv.lines().any(|l| l == "--profile"),
+        "wrapix run has no --profile parser; the flag must not appear in argv. \
+         argv.log:\n{argv}",
+    );
+
+    let env_log = std::fs::read_to_string(env.workspace.join("env.log")).expect("env.log present");
+    assert!(
+        env_log.contains("WRAPIX_DEFAULT_IMAGE_REF=localhost/wrapix-base:test"),
+        "empty-config default profile (base) must select the matching image ref \
+         via env var. env.log:\n{env_log}",
     );
 }
 

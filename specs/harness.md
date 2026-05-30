@@ -338,14 +338,20 @@ The manifest stays one-dimensional; each per-profile image carries both
 runtimes, and `mkSandbox` no longer takes an `agent` parameter at Nix-eval
 time.
 
-`loom plan` is interactive, so it shells out to `wrapix run` (TTY-attached)
-rather than `wrapix spawn`. To keep one resolution path, plan looks up its
-profile (per [Configuration](#configuration); default `base`) in the
-manifest and exports `WRAPIX_DEFAULT_IMAGE_REF=<entry.ref>` plus
+`loom plan` and `loom msg --chat` are interactive, so they shell out to
+`wrapix run` (TTY-attached) rather than `wrapix spawn`. To keep one
+resolution path, both commands look up their profile (per
+[Configuration](#configuration); default `base`) in the manifest and
+export `WRAPIX_DEFAULT_IMAGE_REF=<entry.ref>` plus
 `WRAPIX_DEFAULT_IMAGE_SOURCE=<entry.source>` into the child environment
 before exec'ing `wrapix run`. The launcher reads those env vars when no
 `--spawn-config` is supplied — see
 [sandbox.md — Launcher Subcommands](sandbox.md#launcher-subcommands).
+`wrapix run` has no `--profile` argv parser; any extra tokens between
+the workspace positional and the in-container command (`claude
+--dangerously-skip-permissions …`) are forwarded into the container as
+the command vector, so the env-var hand-off is the sole
+profile-selection contract on this path.
 
 ### Concurrency & Locking
 
