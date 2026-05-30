@@ -36,7 +36,6 @@
 mod context;
 mod driver_emit;
 mod error;
-mod gate_outcome;
 mod outcome;
 mod parallel;
 mod parallelism;
@@ -50,7 +49,7 @@ mod tree_clean;
 
 pub use context::{LoopContextInputs, build_loop_context, render_loop_prompt};
 pub use error::LoopError;
-pub use gate_outcome::{
+pub use loom_gate::{
     GateFail, GateFailReason, GateOutcome, GateSuccess, HandoffEvidence, LoopOutcome, NoGateReason,
 };
 pub use outcome::{AgentOutcome, BeadResult, SessionResult};

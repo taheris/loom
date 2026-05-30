@@ -2050,6 +2050,7 @@ fn run_loop_cmd(
     let max_iterations = config.loop_.max_iterations;
     let git =
         GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?;
+    let label_for_mint = label.clone();
     let summary = runtime.block_on(async move {
         let bd = BdClient::new();
         let mut controller = ProductionAgentLoopController::new(
@@ -2114,6 +2115,9 @@ fn run_loop_cmd(
         .with_phase_log_root(logs_root_for_controller);
         run_loop(&mut controller, mode, retry_policy, max_iterations).await
     })?;
+    if let GateOutcome::Success(ref success) = summary.gate {
+        mint_marker_under_spec_lock(&lock_mgr, &label_for_mint, workspace, success.clone());
+    }
     println!(
         "loom loop: processed {} bead(s), clarified {}, blocked {}, outer_iterations={}, gate={}",
         summary.beads_processed,
@@ -2123,6 +2127,51 @@ fn run_loop_cmd(
         gate_label(&summary.gate),
     );
     Ok(summary)
+}
+
+/// Mint `.loom/marker.json` inside the spec lock's critical section per
+/// `specs/gate.md` § *Mint trigger*.
+///
+/// Mint failures (porcelain dirty mid-loop, git error, IO error) are
+/// logged and continue: the prek pre-push consumer treats a missing or
+/// invalid marker as "fall through to the slow tier", so a failed mint
+/// degrades performance but never invariant safety.
+fn mint_marker_under_spec_lock(
+    lock_mgr: &LockManager,
+    label: &SpecLabel,
+    workspace: &Path,
+    success: loom_workflow::r#loop::GateSuccess,
+) {
+    let guard = match lock_mgr.acquire_spec(label) {
+        Ok(g) => g,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                spec = %label.as_str(),
+                "marker mint skipped: could not re-acquire spec lock after run_loop",
+            );
+            return;
+        }
+    };
+    let clock = SystemClock::new();
+    match loom_gate::MarkerProof::mint(success, workspace, &clock) {
+        Ok(_) => {
+            tracing::info!(
+                spec = %label.as_str(),
+                workspace = %workspace.display(),
+                "marker minted: .loom/marker.json",
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                spec = %label.as_str(),
+                workspace = %workspace.display(),
+                "marker mint failed — prek pre-push falls through to slow tier",
+            );
+        }
+    }
+    drop(guard);
 }
 
 /// One-word render of a [`GateOutcome`] for the operator-facing summary

@@ -1180,9 +1180,12 @@ pub enum NoGateReason {
 every condition the FR9 four-condition AND covers *plus* on-disk
 evidence that the gate's child processes actually ran. Field shapes
 are non-`Option`: absence of any value is a failure path that
-constructs `GateFail` instead. The `pub(crate)` constructor lives
-in the same module as `exec_review` — outside the workflow crate,
-`GateSuccess` cannot be minted.
+constructs `GateFail` instead. The constructor lives in `loom-gate`
+(alongside `MarkerProof::from_gate_success`, the mint authority that
+consumes a sealed `GateSuccess`); the `_private: ()` field is the
+structural seal that prevents struct-literal construction outside the
+crate, so `GateSuccess::new` is the sole minting path regardless of
+its `pub` visibility.
 
 ```rust
 pub struct GateSuccess {
@@ -1201,7 +1204,7 @@ impl GateSuccess {
     /// file size > 0, last line parses as a terminal AgentEvent whose
     /// marker matches review_marker, total_handoffs >= 1.
     /// Any failure returns Err(GateFail::new(...)).
-    pub(crate) fn new(...) -> Result<Self, GateFail> { ... }
+    pub fn new(...) -> Result<Self, GateFail> { ... }
 }
 ```
 

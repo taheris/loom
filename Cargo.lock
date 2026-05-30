@@ -2626,6 +2626,7 @@ dependencies = [
  "displaydoc",
  "loom-driver",
  "loom-events",
+ "loom-protocol",
  "pulldown-cmark",
  "regex",
  "rusqlite",

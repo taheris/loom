@@ -1011,6 +1011,13 @@ pub fn head_tree_oid_sync(workspace: &Path) -> Result<String, GitError> {
     sync_git_capture(workspace, &["rev-parse", "HEAD^{tree}"]).map(|s| s.trim().to_string())
 }
 
+/// Synchronous `git -C <workspace> rev-parse HEAD`. The informational
+/// commit SHA stamped onto a freshly minted [`crate::marker`] proof
+/// (the load-bearing fingerprint is the tree OID, not the commit SHA).
+pub fn sync_head_commit_sha(workspace: &Path) -> Result<String, GitError> {
+    sync_git_capture(workspace, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string())
+}
+
 /// Synchronous `git -C <workspace> status --porcelain`. Paired with
 /// [`head_tree_oid_sync`] for the marker fingerprint check.
 pub fn status_porcelain_sync(workspace: &Path) -> Result<String, GitError> {

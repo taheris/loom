@@ -3,10 +3,9 @@ use loom_driver::identifier::BeadId;
 use loom_events::DriverKind;
 use tracing::info;
 
+use loom_gate::{GateFail, GateOutcome, GateSuccess, HandoffEvidence, LoopOutcome, NoGateReason};
+
 use super::error::LoopError;
-use super::gate_outcome::{
-    GateFail, GateOutcome, GateSuccess, HandoffEvidence, LoopOutcome, NoGateReason,
-};
 use super::outcome::{AgentOutcome, BeadResult};
 use super::retry::{RetryDecision, RetryPolicy};
 
@@ -486,11 +485,11 @@ async fn process_one_bead<C: AgentLoopController>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::gate_outcome::GateFailReason;
     use super::*;
     use crate::todo::ExitSignal;
     use loom_driver::bd::{Bead, Label};
     use loom_driver::identifier::BeadId;
+    use loom_gate::GateFailReason;
     use std::collections::VecDeque;
 
     /// Capturing fake controller. Drives [`run_loop`] without touching real

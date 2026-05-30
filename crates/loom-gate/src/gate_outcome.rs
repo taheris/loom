@@ -3,20 +3,25 @@
 //! `LoopOutcome` is the typed return of every successful `loom loop`. The
 //! `gate` field carries `GateOutcome`, a three-variant enum whose `Success`
 //! arm wraps the sealed [`GateSuccess`] receipt. Construction of
-//! [`GateSuccess`] is `pub(crate)`-only and asserts the FR9 four-condition
-//! AND plus on-disk evidence — so a clean `loom loop` exit that did NOT
-//! actually invoke the gate cannot compile against this type.
+//! [`GateSuccess`] routes exclusively through [`GateSuccess::new`], whose
+//! evidence-asserting checks plus the `_private: ()` field-literal seal
+//! make "a code path yielded `Ok(GateSuccess)` without the FR9
+//! four-condition AND" structurally unrepresentable.
+//!
+//! The crate home is `loom-gate` so that `MarkerProof::from_gate_success`
+//! (the sole marker mint authority — see [`crate::marker`]) can accept a
+//! sealed `GateSuccess` by value without forming a `loom-gate ↔
+//! loom-workflow` cycle.
 
 use std::path::PathBuf;
 
-use crate::todo::ExitSignal;
+use loom_protocol::gate::ExitSignal;
 
 /// Raw evidence collected from one molecule-completion handoff.
 ///
-/// Produced by the `exec_review` trait method; the runner feeds the final
-/// handoff's evidence (plus the running `total_handoffs` counter) into
-/// [`GateSuccess::new`] to mint the typed receipt. Absence of any field
-/// surfaces as a [`GateFail`] variant in the constructor, not a panic.
+/// Threaded into [`GateSuccess::new`] to mint the typed receipt. Absence
+/// of any field surfaces as a [`GateFail`] variant in the constructor,
+/// not a panic.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HandoffEvidence {
     pub verify_exit: Option<i32>,
@@ -31,13 +36,13 @@ pub struct HandoffEvidence {
 /// *plus* on-disk evidence that the gate's child processes actually ran.
 /// Field shapes are non-`Option`: absence of any value is a failure path
 /// that constructs [`GateFail`] instead. The `_private` zero-sized field
-/// makes struct-literal construction unrepresentable outside the workflow
-/// crate — [`GateSuccess::new`] is the sole minting path.
+/// makes struct-literal construction unrepresentable outside `loom-gate`
+/// — [`GateSuccess::new`] is the sole minting path.
 #[expect(
     clippy::manual_non_exhaustive,
     reason = "spec mandates a structural seal stricter than #[non_exhaustive]: \
               GateSuccess must be unconstructable via struct literal even from \
-              within the workflow crate, so callers cannot bypass the \
+              within loom-gate, so callers cannot bypass the \
               evidence-asserting constructor"
 )]
 #[derive(Debug, Clone)]
@@ -64,7 +69,7 @@ impl GateSuccess {
         reason = "GateFail carries the verbatim evidence (verify_exit, review_marker, review_log_path) for triage; \
                   wrapping in Box would obscure the failure shape at the call sites that pattern-match on the variants"
     )]
-    pub(crate) fn new(evidence: &HandoffEvidence, total_handoffs: u32) -> Result<Self, GateFail> {
+    pub fn new(evidence: &HandoffEvidence, total_handoffs: u32) -> Result<Self, GateFail> {
         let fail = |reason: GateFailReason| GateFail {
             reason,
             verify_exit: evidence.verify_exit,
@@ -155,7 +160,7 @@ pub struct GateFail {
 
 impl GateFail {
     /// Mint a `GateFail` whose `reason` is `StalledMaxIterations`.
-    pub(crate) fn stalled(total_handoffs: u32) -> Self {
+    pub fn stalled(total_handoffs: u32) -> Self {
         GateFail {
             reason: GateFailReason::StalledMaxIterations,
             verify_exit: None,
@@ -243,11 +248,9 @@ mod tests {
     #[test]
     fn gate_success_constructor_asserts_every_evidence_condition() {
         let log = write_log("event-1\nevent-2\nLOOM_COMPLETE\n");
-        // Sanity: all-good evidence + at least one handoff mints Success.
         let good = complete_evidence(&log);
         assert!(GateSuccess::new(&good, 1).is_ok());
 
-        // total_handoffs = 0 → ReviewEvidenceMissing (no handoff ran).
         match GateSuccess::new(&good, 0) {
             Err(GateFail {
                 reason: GateFailReason::ReviewEvidenceMissing,
@@ -256,7 +259,6 @@ mod tests {
             other => panic!("expected ReviewEvidenceMissing, got {other:?}"),
         }
 
-        // verify_exit non-zero → VerifierFailed.
         let mut e = good.clone();
         e.verify_exit = Some(1);
         match GateSuccess::new(&e, 1) {
@@ -267,7 +269,6 @@ mod tests {
             other => panic!("expected VerifierFailed, got {other:?}"),
         }
 
-        // verify_exit None (signal-killed) → SignalKilled.
         let mut e = good.clone();
         e.verify_exit = None;
         match GateSuccess::new(&e, 1) {
@@ -278,7 +279,6 @@ mod tests {
             other => panic!("expected SignalKilled, got {other:?}"),
         }
 
-        // review_exit non-zero without a Concern marker → ReviewEvidenceMissing.
         let mut e = good.clone();
         e.review_exit = Some(1);
         match GateSuccess::new(&e, 1) {
@@ -289,7 +289,6 @@ mod tests {
             other => panic!("expected ReviewEvidenceMissing, got {other:?}"),
         }
 
-        // review_exit non-zero + Concern marker → ReviewConcern with payload.
         let mut e = good.clone();
         e.review_exit = Some(1);
         e.review_marker = Some(ExitSignal::Concern {
@@ -305,7 +304,6 @@ mod tests {
             other => panic!("expected ReviewConcern, got {other:?}"),
         }
 
-        // review_marker = Noop → EmptyDiffNoop.
         let mut e = good.clone();
         e.review_marker = Some(ExitSignal::Noop);
         match GateSuccess::new(&e, 1) {
@@ -316,7 +314,6 @@ mod tests {
             other => panic!("expected EmptyDiffNoop, got {other:?}"),
         }
 
-        // review_marker missing → ReviewEvidenceMissing.
         let mut e = good.clone();
         e.review_marker = None;
         match GateSuccess::new(&e, 1) {
@@ -327,7 +324,6 @@ mod tests {
             other => panic!("expected ReviewEvidenceMissing, got {other:?}"),
         }
 
-        // review_log_path missing → ReviewEvidenceMissing.
         let mut e = good.clone();
         e.review_log_path = None;
         match GateSuccess::new(&e, 1) {
@@ -338,7 +334,6 @@ mod tests {
             other => panic!("expected ReviewEvidenceMissing, got {other:?}"),
         }
 
-        // review_log_path points at a non-existent file → ReviewEvidenceMissing.
         let mut e = good.clone();
         e.review_log_path = Some(PathBuf::from("/nonexistent/path/that/cannot/exist/asdf"));
         match GateSuccess::new(&e, 1) {
@@ -349,7 +344,6 @@ mod tests {
             other => panic!("expected ReviewEvidenceMissing for missing file, got {other:?}"),
         }
 
-        // review_log empty file → ReviewEvidenceMissing.
         let empty = NamedTempFile::new().expect("tempfile");
         let mut e = good.clone();
         e.review_log_path = Some(empty.path().to_path_buf());
@@ -361,7 +355,6 @@ mod tests {
             other => panic!("expected ReviewEvidenceMissing for empty file, got {other:?}"),
         }
 
-        // review_log last line lacks LOOM_COMPLETE → ReviewEvidenceMissing.
         let bad_marker = write_log("event-1\nevent-2\nno marker here\n");
         let mut e = good.clone();
         e.review_log_path = Some(bad_marker.path().to_path_buf());

@@ -34,10 +34,11 @@ use loom_events::DriverKind;
 use tokio::process::Command;
 use tracing::{info, warn};
 
+use loom_gate::HandoffEvidence;
+
 use super::context::{LoopContextInputs, render_loop_prompt};
 use super::driver_emit::BeadEmit;
 use super::error::LoopError;
-use super::gate_outcome::HandoffEvidence;
 use super::outcome::{AgentOutcome, SessionResult};
 use super::post_merge_push::{default_beads_push_program, push_merged_main_then_beads};
 use super::runner::{AgentLoopController, PerBeadGateOutcome};

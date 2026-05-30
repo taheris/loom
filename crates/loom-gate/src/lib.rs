@@ -21,6 +21,7 @@ use thiserror::Error;
 pub mod annotation;
 pub mod cache;
 pub mod dispatch;
+pub mod gate_outcome;
 pub mod inputs;
 pub mod integrity;
 pub mod marker;
@@ -36,13 +37,16 @@ pub use dispatch::{
     DispatchError, DispatchOptions, DispatchOutcome, EmptyScope, SKIP_EXIT_CODE, TestScope,
     TierCwds, VerifierVerdict, run_check, run_judge, run_system, run_test, run_with_runners,
 };
+pub use gate_outcome::{
+    GateFail, GateFailReason, GateOutcome, GateSuccess, HandoffEvidence, LoopOutcome, NoGateReason,
+};
 pub use inputs::{InputResolver, InputsError, VerifierInputs};
 pub use integrity::{
     CommandResolver, FsCommandResolver, FsPendingCommandExecutor, IntegrityError, IntegrityFinding,
     PendingCommandExecutor, RustWorkspaceStubScanner, RustWorkspaceTestResolver, StubScanner,
     TestPathResolver, format_clarify_options,
 };
-pub use marker::{MARKER_PATH, MarkerError, MarkerProof, verify_marker};
+pub use marker::{MARKER_PATH, MarkerError, MarkerProof, MintError, verify_marker};
 pub use runner::{
     BuiltinParser, MatchedAnnotation, ParsedVerdict, RunnerError, RunnerGroup, RunnerKind,
     RunnerSpec, RunnerTemplate, check_zero_match, group_by_runner, parse_runner_output,
