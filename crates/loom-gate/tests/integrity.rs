@@ -12,10 +12,11 @@ use std::path::{Path, PathBuf};
 use loom_gate::Tier;
 use loom_gate::annotation::{parse, parse_content};
 use loom_gate::integrity::{
-    CommandResolver, FsCommandResolver, FsPendingCommandExecutor, IntegrityFinding,
+    CommandResolver, DispatchPendingExecutor, FsCommandResolver, IntegrityFinding,
     PendingCommandExecutor, RustWorkspaceStubScanner, RustWorkspaceTestResolver, StubScanner,
     TestPathResolver, check, check_atomic_acceptance, check_forward,
 };
+use loom_gate::{Annotation, DispatchOptions, TierCwds};
 use tempfile::tempdir;
 
 fn write(dir: &Path, name: &str, content: &str) {
@@ -49,7 +50,7 @@ impl StubScanner for NoStubs {
 /// real subprocesses.
 struct StubExec(bool);
 impl PendingCommandExecutor for StubExec {
-    fn executes_zero(&self, _: &str) -> bool {
+    fn executes_zero(&self, _: &Annotation) -> bool {
         self.0
     }
 }
@@ -540,7 +541,7 @@ fn unneeded_pending_marker_is_terminal_at_push_gate() {
     );
 }
 
-/// End-to-end check that the production [`FsPendingCommandExecutor`]
+/// End-to-end check that the production [`DispatchPendingExecutor`]
 /// realises the spec contract: a `[check?]` whose command actually
 /// exits 0 (here `true`) emits `UnneededPendingMarker` — the marker is
 /// stale, the implementer must drop the `?`.
@@ -553,7 +554,12 @@ fn pending_check_command_exit_zero_via_subprocess_emits_unneeded_pending_marker(
 - a [check?](true)
 ";
     let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
-    let executor = FsPendingCommandExecutor::new(dir.path());
+    let executor = DispatchPendingExecutor::new(
+        &[],
+        DispatchOptions::default(),
+        dir.path(),
+        TierCwds::default(),
+    );
     let findings = check_forward(
         &parsed.annotations,
         dir.path(),
@@ -588,7 +594,12 @@ fn pending_check_command_exit_nonzero_via_subprocess_passes_silently() {
 - a [check?](false)
 ";
     let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
-    let executor = FsPendingCommandExecutor::new(dir.path());
+    let executor = DispatchPendingExecutor::new(
+        &[],
+        DispatchOptions::default(),
+        dir.path(),
+        TierCwds::default(),
+    );
     let findings = check_forward(
         &parsed.annotations,
         dir.path(),
@@ -620,7 +631,12 @@ fn pending_check_assertion_grep_with_missing_symbol_passes_silently() {
         target_file.display()
     );
     let parsed = parse_content(&PathBuf::from("specs/pending.md"), &md);
-    let executor = FsPendingCommandExecutor::new(dir.path());
+    let executor = DispatchPendingExecutor::new(
+        &[],
+        DispatchOptions::default(),
+        dir.path(),
+        TierCwds::default(),
+    );
     let findings = check_forward(
         &parsed.annotations,
         dir.path(),
@@ -655,7 +671,12 @@ fn pending_check_assertion_grep_with_present_symbol_emits_unneeded_pending_marke
         target_file.display()
     );
     let parsed = parse_content(&PathBuf::from("specs/pending.md"), &md);
-    let executor = FsPendingCommandExecutor::new(dir.path());
+    let executor = DispatchPendingExecutor::new(
+        &[],
+        DispatchOptions::default(),
+        dir.path(),
+        TierCwds::default(),
+    );
     let findings = check_forward(
         &parsed.annotations,
         dir.path(),

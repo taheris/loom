@@ -38,7 +38,7 @@ use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
 use loom_driver::state::StateDb;
 use loom_gate::{
-    Annotation, DispatchOptions, EmptyScope, FsCommandResolver, FsPendingCommandExecutor,
+    Annotation, DispatchOptions, DispatchPendingExecutor, EmptyScope, FsCommandResolver,
     IntegrityFinding, RustWorkspaceStubScanner, RustWorkspaceTestResolver, Tier, TierCwds,
     annotation as gate_annotation, integrity, run_check, run_system, run_test,
 };
@@ -447,7 +447,10 @@ where
             .map_err(|e| WalkError::Verifiers(e.to_string()))?;
         let stub_scanner = RustWorkspaceStubScanner::scan(&self.workspace)
             .map_err(|e| WalkError::Verifiers(e.to_string()))?;
-        let pending_executor = FsPendingCommandExecutor::new(&self.workspace);
+        let options = DispatchOptions::default();
+        let tier_cwds = TierCwds::default();
+        let pending_executor =
+            DispatchPendingExecutor::new(&[], options.clone(), &self.workspace, tier_cwds.clone());
         let integrity_findings = integrity::check(
             &annotations,
             &self.workspace,
@@ -461,8 +464,6 @@ where
                 failures.push(failure);
             }
         }
-        let options = DispatchOptions::default();
-        let tier_cwds = TierCwds::default();
         for outcome in run_check(&annotations, &[], &options, &self.workspace, &tier_cwds) {
             failures.extend(dispatch_outcome_to_failures(outcome));
         }

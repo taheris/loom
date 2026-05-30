@@ -35,6 +35,8 @@ use thiserror::Error;
 use walkdir::WalkDir;
 
 use crate::annotation::{Annotation, Tier};
+use crate::dispatch::{DispatchOptions, TierCwds, run_with_runners};
+use crate::runner::RunnerSpec;
 
 /// One finding surfaced by the integrity gate.
 ///
@@ -239,14 +241,20 @@ pub trait StubScanner {
 /// binary-pending and assertion-pending — both fail-modes produce
 /// non-zero exit, both silent-pass under the modifier.
 ///
-/// Production wires this to a subprocess spawn matching the
-/// `[check]` / `[system]` dispatch contract; tests substitute a
-/// deterministic stub.
+/// Production wires this through the same dispatcher path the
+/// non-pending `[check]` / `[system]` form uses ([`DispatchPendingExecutor`]),
+/// so the integrity gate can never advise "drop the `?`" on an
+/// annotation that the verify-lane `[check]` would reject. Tests
+/// substitute a deterministic stub.
+///
+/// The full [`Annotation`] is passed rather than just the command
+/// string so impls can route per tier (Check uses the runner-spec
+/// dispatcher; System falls back to per-annotation spawn).
 pub trait PendingCommandExecutor {
-    /// True iff `command` runs to completion in the dispatch
+    /// True iff `annotation.target` runs to completion in the dispatch
     /// environment and exits with status 0. Spawn failures and
     /// non-zero exits return false.
-    fn executes_zero(&self, command: &str) -> bool;
+    fn executes_zero(&self, annotation: &Annotation) -> bool;
 }
 
 /// Filesystem-backed implementation of [`CommandResolver`].
@@ -312,46 +320,60 @@ impl CommandResolver for FsCommandResolver {
     }
 }
 
-/// Subprocess-backed implementation of [`PendingCommandExecutor`].
+/// Dispatcher-backed implementation of [`PendingCommandExecutor`].
 ///
-/// Spawns the annotation's command via `shlex::split` (matching the
-/// `[check]` / `[system]` dispatcher's tokenisation), runs it from
-/// `workspace`, and discards stdout/stderr. Exit 0 maps to `true`;
-/// every other outcome — non-zero exit, spawn failure, unbalanced
-/// quotes — maps to `false`, which the integrity gate reads as "silent
-/// pass under the modifier".
-pub struct FsPendingCommandExecutor {
-    workspace: PathBuf,
+/// Routes the pending annotation through the same code path the
+/// non-pending tier would use at runtime: [`run_with_runners`] for
+/// `[check?]`, which honours runner-spec batching and `tier_cwds`;
+/// `[system?]` flows through the same call (system annotations
+/// fall through to per-annotation spawn since the runner-spec
+/// matcher targets the check tier). Using one dispatcher path
+/// eliminates the failure mode where the integrity gate's verdict
+/// disagrees with what the verify lane would compute on the same
+/// predicate.
+///
+/// Exit 0 → `UnneededPendingMarker`; non-zero exit, spawn failure,
+/// or dispatch error → silent pass (still pending).
+pub struct DispatchPendingExecutor<'a> {
+    specs: &'a [RunnerSpec],
+    options: DispatchOptions,
+    repo_root: PathBuf,
+    tier_cwds: TierCwds,
 }
 
-impl FsPendingCommandExecutor {
-    /// Construct an executor that runs commands with their cwd set to
-    /// `workspace`.
-    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+impl<'a> DispatchPendingExecutor<'a> {
+    /// Construct an executor that mirrors the dispatcher context
+    /// `run_check` / `run_system` would receive at verify time.
+    pub fn new(
+        specs: &'a [RunnerSpec],
+        options: DispatchOptions,
+        repo_root: impl Into<PathBuf>,
+        tier_cwds: TierCwds,
+    ) -> Self {
         Self {
-            workspace: workspace.into(),
+            specs,
+            options,
+            repo_root: repo_root.into(),
+            tier_cwds,
         }
     }
 }
 
-impl PendingCommandExecutor for FsPendingCommandExecutor {
-    fn executes_zero(&self, command: &str) -> bool {
-        let Some(tokens) = shlex::split(command) else {
-            return false;
-        };
-        let mut iter = tokens.into_iter();
-        let Some(head) = iter.next() else {
-            return false;
-        };
-        let tail: Vec<String> = iter.collect();
-        std::process::Command::new(head)
-            .args(&tail)
-            .current_dir(&self.workspace)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .stdin(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+impl PendingCommandExecutor for DispatchPendingExecutor<'_> {
+    fn executes_zero(&self, annotation: &Annotation) -> bool {
+        let mut ann = annotation.clone();
+        ann.pending = false;
+        let results = run_with_runners(
+            std::slice::from_ref(&ann),
+            self.specs,
+            &self.options,
+            &self.repo_root,
+            &self.tier_cwds,
+        );
+        matches!(
+            results.into_iter().next(),
+            Some(Ok(outcome)) if outcome.verdict.pass
+        )
     }
 }
 
@@ -935,7 +957,7 @@ pub fn check_forward(
     for ann in annotations {
         if ann.pending {
             let resolved = match ann.tier {
-                Tier::Check | Tier::System => pending_executor.executes_zero(&ann.target),
+                Tier::Check | Tier::System => pending_executor.executes_zero(ann),
                 Tier::Test => test_resolver.resolves(&ann.target),
                 Tier::Judge => resolves_judge_path(&ann.target, &ann.source_spec, repo_root),
             };
@@ -1301,8 +1323,8 @@ mod tests {
     }
 
     impl PendingCommandExecutor for StubExecutor {
-        fn executes_zero(&self, command: &str) -> bool {
-            self.zero_exit_commands.contains(command)
+        fn executes_zero(&self, annotation: &Annotation) -> bool {
+            self.zero_exit_commands.contains(&annotation.target)
         }
     }
 

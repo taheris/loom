@@ -42,7 +42,7 @@ pub use gate_outcome::{
 };
 pub use inputs::{InputResolver, InputsError, VerifierInputs};
 pub use integrity::{
-    CommandResolver, FsCommandResolver, FsPendingCommandExecutor, IntegrityError, IntegrityFinding,
+    CommandResolver, DispatchPendingExecutor, FsCommandResolver, IntegrityError, IntegrityFinding,
     PendingCommandExecutor, RustWorkspaceStubScanner, RustWorkspaceTestResolver, StubScanner,
     TestPathResolver, format_clarify_options,
 };
