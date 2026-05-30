@@ -8,6 +8,7 @@ Quality gate — annotation-dispatched verifiers and LLM rubric
 Usage: loom gate [OPTIONS] [COMMAND]
 
 Commands:
+  status         Read the cached results from the last `verify` / `review` / `audit` run and print a fast status report — no verifiers run
   audit          Run every deterministic verifier followed by the LLM rubric (`verify` then `review`). The full PR-gate path
   verify         Run every `[check]` / `[test]` / `[system]` verifier — cheap relative to review, expensive relative to status
   check          Run only `[check]`-tier verifiers (static analysis). Fastest tier

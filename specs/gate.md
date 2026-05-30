@@ -2505,17 +2505,17 @@ Loop-side interpretation of these exit codes — routing `refused` to
 - Bare `loom gate` (no subcommand) prints `loom gate --help` —
   identical output to `loom gate --help`. No verifier runs, no cache
   read, no bd writes
-  [test?](bare_loom_gate_prints_subcommand_help)
+  [test](bare_loom_gate_prints_subcommand_help)
 - `loom gate status` reads the sqlite status cache and prints the
   report per `Status cache` above; inherits the bare-invocation scope
   default (`--diff <molecule.base_commit>..HEAD` for active spec
   with an open epic, else `--diff HEAD`); `loom gate status --tree`
   reads the full workspace cache
-  [test?](loom_gate_status_subcommand_reads_cache_with_default_scope)
+  [test](loom_gate_status_subcommand_reads_cache_with_default_scope)
 - `loom gate status` is `refused_inside_loom() == false`; running
   under `LOOM_INSIDE=1` is allowed because the cache read is local
   and read-only
-  [test?](loom_gate_status_is_allowed_under_loom_inside_env)
+  [test](loom_gate_status_is_allowed_under_loom_inside_env)
 
 ### Status cache
 

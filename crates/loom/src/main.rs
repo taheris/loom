@@ -85,6 +85,9 @@ impl From<AgentBackendArg> for AgentKind {
 
 #[derive(Debug, Subcommand)]
 enum GateSubcommand {
+    /// Read the cached results from the last `verify` / `review` /
+    /// `audit` run and print a fast status report — no verifiers run.
+    Status(GateScopeArgs),
     /// Run every deterministic verifier followed by the LLM rubric
     /// (`verify` then `review`). The full PR-gate path.
     Audit(GateScopeArgs),
@@ -400,13 +403,17 @@ impl Command {
     fn refused_inside_loom(&self) -> bool {
         match self {
             Command::Status | Command::Logs { .. } | Command::Spec { .. } => false,
-            // Bare `loom gate` (status read) and the deterministic tier
-            // subcommands are read-only relative to workspace state —
-            // they parse spec files, run verifiers, and write the local
-            // status cache. The LLM-driven `review` / `judge` / `rubric`
-            // / `audit` paths spawn agent containers, so they're refused.
+            // Bare `loom gate` (help print), `gate status` (cache read),
+            // and the deterministic tier subcommands are read-only
+            // relative to workspace state — they parse spec files, run
+            // verifiers, and write the local status cache. The
+            // LLM-driven `review` / `judge` / `rubric` / `audit` paths
+            // spawn agent containers, so they're refused.
             Command::Gate { subcommand: None } => false,
             Command::Gate {
+                subcommand: Some(GateSubcommand::Status(_)),
+            }
+            | Command::Gate {
                 subcommand: Some(GateSubcommand::Verify(_)),
             }
             | Command::Gate {
@@ -826,7 +833,25 @@ fn run_gate(
     agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
     match subcommand {
-        None => run_gate_status(workspace),
+        None => {
+            // Bare `loom gate` prints identical output to
+            // `loom gate --help` per spec § Commands. Triggering clap's
+            // own help renderer via `try_parse_from` keeps the two
+            // surfaces byte-identical without duplicating help text.
+            // `--help` always returns `Err(DisplayHelp)`; the `Ok`
+            // branch is unreachable but we map it to a bug error rather
+            // than `unreachable!` per RS-9.
+            match Cli::try_parse_from(["loom", "gate", "--help"]) {
+                Ok(_) => Err(anyhow::anyhow!(
+                    "clap returned Ok for `--help`; expected DisplayHelp error",
+                )),
+                Err(err) => {
+                    err.print()?;
+                    Ok(())
+                }
+            }
+        }
+        Some(GateSubcommand::Status(_args)) => run_gate_status(workspace),
         Some(GateSubcommand::Verify(mut args)) => {
             apply_default_scope(workspace, &mut args);
             run_gate_verify(workspace, &args)
