@@ -1686,17 +1686,36 @@ fn run_gate_mint(
         )
         .with_style_rules(style_rules);
         let validator = loom_workflow::review::AcceptAllFindingValidator;
-        let findings = loom_workflow::mint::walk(&mut walker, &scope, &validator).await?;
-        anyhow::Ok(
-            loom_workflow::mint::mint_findings_with_options(&bd, &findings, &head_commit, &opts)
-                .await,
-        )
+        mint_via_walker(&mut walker, &scope, &validator, &bd, &head_commit, &opts).await
     })?;
     print!("{}", summary.render());
     if summary.refused > 0 || summary.errors > 0 {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Walk-then-mint pipeline seam. `run_gate_mint` constructs the
+/// production walker and delegates here so the dispatch path is
+/// exercisable under a recording [`MintWalker`] in tests. Per
+/// `specs/gate.md` § *Production walker wiring*: findings reach
+/// `mint_findings_with_options` only via `mint::walk::walk(walker, …)`;
+/// no `Vec::<Finding>::new()` shortcut.
+async fn mint_via_walker<W, V, R>(
+    walker: &mut W,
+    scope: &loom_workflow::mint::MintScope,
+    validator: &V,
+    bd: &BdClient<R>,
+    head_commit: &str,
+    opts: &loom_workflow::mint::MintOptions,
+) -> anyhow::Result<loom_workflow::mint::MintSummary>
+where
+    W: loom_workflow::mint::MintWalker,
+    V: loom_workflow::review::FindingValidator + ?Sized,
+    R: loom_driver::bd::CommandRunner,
+{
+    let findings = loom_workflow::mint::walk(walker, scope, validator).await?;
+    Ok(loom_workflow::mint::mint_findings_with_options(bd, &findings, head_commit, opts).await)
 }
 
 /// Translate the CLI's resolved [`GateScopeArgs`] into the [`MintScope`]
@@ -3416,5 +3435,102 @@ mod tests {
                 "every recorded bd call must be a read (list): {rendered:?}",
             );
         }
+    }
+
+    /// Spec contract `specs/gate.md` § *Production walker wiring*
+    /// (criterion `run_gate_mint_dispatches_through_production_walker_not_empty_vec`):
+    /// `run_gate_mint` MUST construct the production walker and obtain
+    /// its `Vec<Finding>` via `mint::walk::walk(walker, scope, validator)` —
+    /// a CLI arm that unconditionally constructs `Vec::<Finding>::new()`
+    /// is the structural defect this guard pins.
+    ///
+    /// `run_gate_mint` delegates the walk-then-mint dispatch to
+    /// [`mint_via_walker`]; this test drives that seam with a recording
+    /// [`MintWalker`] and asserts the walker is the source of findings.
+    /// Were the shortcut to reappear, `run_gate_mint` would bypass
+    /// `mint_via_walker` entirely and the recording walker would never
+    /// observe a `run_rubric` call from any caller.
+    #[tokio::test]
+    async fn run_gate_mint_dispatches_through_production_walker_not_empty_vec() {
+        use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
+        use loom_workflow::mint::{MintOptions, MintScope, MintWalker, VerifierFailure, WalkError};
+        use loom_workflow::review::AcceptAllFindingValidator;
+        use std::ffi::OsString;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        struct RecordingMintWalker {
+            rubric_calls: Arc<Mutex<usize>>,
+            verifier_calls: Arc<Mutex<usize>>,
+            scopes_seen: Arc<Mutex<Vec<MintScope>>>,
+            rubric_stdout: String,
+        }
+
+        impl MintWalker for RecordingMintWalker {
+            async fn run_rubric(&mut self, scope: &MintScope) -> Result<String, WalkError> {
+                *self.rubric_calls.lock().expect("not poisoned") += 1;
+                self.scopes_seen
+                    .lock()
+                    .expect("not poisoned")
+                    .push(scope.clone());
+                Ok(self.rubric_stdout.clone())
+            }
+
+            async fn run_verifiers(
+                &mut self,
+                _scope: &MintScope,
+            ) -> Result<Vec<VerifierFailure>, WalkError> {
+                *self.verifier_calls.lock().expect("not poisoned") += 1;
+                Ok(Vec::new())
+            }
+        }
+
+        struct PanicOnBdCall;
+        impl CommandRunner for PanicOnBdCall {
+            async fn run(&self, args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
+                panic!("bd must not be invoked when no findings are produced: {args:?}");
+            }
+        }
+
+        let rubric_calls = Arc::new(Mutex::new(0_usize));
+        let verifier_calls = Arc::new(Mutex::new(0_usize));
+        let scopes_seen = Arc::new(Mutex::new(Vec::new()));
+        let mut walker = RecordingMintWalker {
+            rubric_calls: Arc::clone(&rubric_calls),
+            verifier_calls: Arc::clone(&verifier_calls),
+            scopes_seen: Arc::clone(&scopes_seen),
+            rubric_stdout: "LOOM_COMPLETE\n".to_string(),
+        };
+        let scope = MintScope::Diff("HEAD".to_string());
+        let validator = AcceptAllFindingValidator;
+        let bd = BdClient::with_runner(PanicOnBdCall);
+        let opts = MintOptions::default();
+
+        let summary = mint_via_walker(&mut walker, &scope, &validator, &bd, "abc123", &opts)
+            .await
+            .expect("mint_via_walker succeeds with an empty rubric");
+
+        assert_eq!(
+            *rubric_calls.lock().expect("not poisoned"),
+            1,
+            "walker.run_rubric must be invoked exactly once — a \
+             Vec::<Finding>::new() shortcut bypassing the walker would \
+             leave rubric_calls=0",
+        );
+        let seen = scopes_seen.lock().expect("not poisoned").clone();
+        assert_eq!(
+            seen,
+            vec![scope.clone()],
+            "the walker must receive the same scope the caller passed",
+        );
+        assert_eq!(
+            *verifier_calls.lock().expect("not poisoned"),
+            0,
+            "non-Tree scope must not dispatch verifiers",
+        );
+        assert!(
+            summary.findings.is_empty(),
+            "no LOOM_FINDING lines in rubric → empty summary: {summary:?}",
+        );
     }
 }
