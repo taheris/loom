@@ -26,9 +26,10 @@ use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::StateDb;
 use loom_gate::{
-    self, BuiltinParser, CacheRow, DispatchOptions, DispatchPendingExecutor, EmptyScope,
-    FsCommandResolver, RunnerSpec, RustWorkspaceStubScanner, RustWorkspaceTestResolver,
-    StatusCache, Tier, TierCwds, Verdict, render_report, row_for,
+    self, BuiltinParser, CacheRow, CargoMetadataScope, DispatchOptions, DispatchPendingExecutor,
+    EmptyScope, FsCommandResolver, InputResolver, RunnerSpec, RustWorkspaceStubScanner,
+    RustWorkspaceTestResolver, StatusCache, Tier, TierCwds, Verdict, filter_by_files,
+    is_missing_binary_target, render_report, row_for,
 };
 use loom_workflow::r#loop::{
     GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
@@ -958,6 +959,26 @@ fn gate_dispatch_options(args: &GateScopeArgs) -> DispatchOptions {
     }
 }
 
+/// Construct an [`InputResolver`] rooted at `workspace`, wiring up the
+/// `cargo metadata`-backed [`CargoMetadataScope`] when the workspace
+/// manifest is reachable and `cargo` is available. Graceful degradation
+/// matters here: the bead container has no `cargo`, so
+/// `CargoMetadataScope::from_manifest` returns `Err` and we proceed
+/// with a resolver that has no `TestScope` attached — the spec-section
+/// auto-include keeps `[test]` annotations scoped to their owning spec
+/// even without the cargo graph.
+fn build_input_resolver(workspace: &Path) -> InputResolver {
+    let resolver = InputResolver::new(workspace.to_path_buf());
+    let manifest = workspace.join("Cargo.toml");
+    if !manifest.exists() {
+        return resolver;
+    }
+    match CargoMetadataScope::from_manifest(&manifest) {
+        Ok(scope) => resolver.with_test_scope(Box::new(scope)),
+        Err(_) => resolver,
+    }
+}
+
 fn filter_annotations(
     annotations: &[loom_gate::Annotation],
     tier: Tier,
@@ -1232,7 +1253,16 @@ fn compile_runner_entry(
 fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::Result<i32> {
     let specs_dir = workspace.join("specs");
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
-    let selected = filter_annotations(&parsed.annotations, tier, args);
+    let mut selected = filter_annotations(&parsed.annotations, tier, args);
+    if !args.files.is_empty() {
+        let mut input_resolver = build_input_resolver(workspace);
+        selected = filter_by_files(&selected, &args.files, &mut input_resolver);
+        if matches!(tier, Tier::Check | Tier::System) {
+            let cmd_resolver = FsCommandResolver::new(workspace);
+            selected
+                .retain(|ann| ann.pending || !is_missing_binary_target(&ann.target, &cmd_resolver));
+        }
+    }
     if selected.is_empty() {
         eprintln!("loom gate [{tier}]: no annotations matched");
         return Ok(0);
@@ -1299,9 +1329,12 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
 /// Run the annotation integrity gate. The gate is itself a `[check]`-tier
 /// verifier per `specs/gate.md` § Integrity gate — its findings
 /// surface alongside every `loom gate check` (and therefore every `loom
-/// gate verify`) run. Honours the `--spec <label>` filter; the integrity
-/// pass is workspace-scoped and does not narrow by `--diff` / `--files` /
-/// `--bead` / `--tree`.
+/// gate verify`) run. Honours the `--spec <label>` filter; when
+/// `--files` is non-empty (e.g. the pre-commit hook), annotations are
+/// further narrowed to those whose declared inputs intersect the file
+/// set per `specs/pre-commit.md`, and bare-binary-missing annotations
+/// silently skip so the bead-container's feedback-only commit flow is
+/// not broken by absent tooling.
 ///
 /// Findings print to stderr in the spec-prescribed form and are
 /// **terminal**: this function returns a non-zero exit code when any
@@ -1315,7 +1348,7 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
         return Ok(0);
     }
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
-    let annotations: Vec<loom_gate::Annotation> = parsed
+    let mut annotations: Vec<loom_gate::Annotation> = parsed
         .annotations
         .into_iter()
         .filter(|a| {
@@ -1331,6 +1364,15 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
         return Ok(0);
     }
     let cmd_resolver = FsCommandResolver::new(workspace);
+    if !args.files.is_empty() {
+        let mut input_resolver = build_input_resolver(workspace);
+        annotations = filter_by_files(&annotations, &args.files, &mut input_resolver);
+        annotations
+            .retain(|ann| !is_missing_binary_target(&ann.target, &cmd_resolver) || ann.pending);
+        if annotations.is_empty() {
+            return Ok(0);
+        }
+    }
     let test_resolver = RustWorkspaceTestResolver::scan(workspace)?;
     let stub_scanner = RustWorkspaceStubScanner::scan(workspace)?;
     let (specs, tier_cwds) = resolve_check_runner_context(workspace)?;

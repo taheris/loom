@@ -26,7 +26,7 @@
 //! (or a no-op verifier) — [`InputResolver::resolve`] emits a `warn!`
 //! event so the standing safety-net sweep can surface it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -260,6 +260,31 @@ impl InputResolver {
     }
 }
 
+/// Retain only annotations whose declared inputs (per [`InputResolver`])
+/// intersect `files`. An empty `files` slice short-circuits to the
+/// caller's input unchanged — "no `--files` filter requested." Matches
+/// the `loom gate verify --files` contract in `specs/pre-commit.md`: the
+/// integrity gate and `[check]`-tier dispatch narrow to verifiers whose
+/// declared inputs intersect staged files.
+pub fn filter_by_files(
+    annotations: &[Annotation],
+    files: &[PathBuf],
+    resolver: &mut InputResolver,
+) -> Vec<Annotation> {
+    if files.is_empty() {
+        return annotations.to_vec();
+    }
+    let file_set: HashSet<&Path> = files.iter().map(PathBuf::as_path).collect();
+    annotations
+        .iter()
+        .filter(|ann| {
+            let inputs = resolver.resolve(ann);
+            inputs.paths.iter().any(|p| file_set.contains(p.as_path()))
+        })
+        .cloned()
+        .collect()
+}
+
 fn push_unique(buf: &mut Vec<PathBuf>, path: PathBuf) {
     if !buf.contains(&path) {
         buf.push(path);
@@ -356,7 +381,10 @@ fn heuristic_paths(tokens: &[String], repo_root: &Path) -> Vec<PathBuf> {
 }
 
 fn looks_like_path(tok: &str) -> bool {
-    tok.contains('/') || tok.ends_with(".rs") || tok.ends_with(".sh") || tok.ends_with(".md")
+    if tok.contains('/') {
+        return true;
+    }
+    tok.contains('.') && tok.len() >= 4
 }
 
 /// Identifier used in the empty-inputs `warn!` message. Includes the
@@ -680,5 +708,61 @@ mod tests {
         assert!(!looks_like_path("happy_name"));
         assert!(!looks_like_path("X"));
         assert!(!looks_like_path("--lib"));
+    }
+
+    #[test]
+    fn filter_by_files_empty_files_returns_all_annotations_unchanged() {
+        let mut resolver = InputResolver::new(PathBuf::from("/repo"));
+        let annotations = vec![
+            ann(Tier::Check, "cargo run -p w", "specs/a.md"),
+            ann(Tier::Test, "crate::a::ok", "specs/b.md"),
+        ];
+        let got = filter_by_files(&annotations, &[], &mut resolver);
+        assert_eq!(got.len(), 2, "empty --files keeps every annotation");
+    }
+
+    #[test]
+    fn filter_by_files_keeps_annotation_whose_spec_file_is_staged() {
+        let mut resolver = InputResolver::new(PathBuf::from("/repo"));
+        let annotations = vec![ann(Tier::Check, "cargo run -p w", "specs/pre-commit.md")];
+        let files = vec![PathBuf::from("specs/pre-commit.md")];
+        let got = filter_by_files(&annotations, &files, &mut resolver);
+        assert_eq!(
+            got.len(),
+            1,
+            "spec-section auto-include means the annotation's own spec staged keeps it"
+        );
+    }
+
+    #[test]
+    fn filter_by_files_drops_annotation_when_inputs_disjoint_from_files() {
+        let mut resolver = InputResolver::new(PathBuf::from("/repo"));
+        let annotations = vec![ann(Tier::Check, "cargo run -p w", "specs/gate.md")];
+        let files = vec![PathBuf::from(".pre-commit-config.yaml")];
+        let got = filter_by_files(&annotations, &files, &mut resolver);
+        assert!(
+            got.is_empty(),
+            "annotation in specs/gate.md should not match staged .pre-commit-config.yaml"
+        );
+    }
+
+    #[test]
+    fn filter_by_files_keeps_annotation_when_heuristic_finds_staged_file_as_command_arg() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join(".pre-commit-config.yaml");
+        fs::write(&cfg, "").unwrap();
+        let mut resolver = InputResolver::new(dir.path().to_path_buf());
+        let annotations = vec![ann(
+            Tier::Check,
+            "grep -q 'verify-marker' .pre-commit-config.yaml",
+            "specs/gate.md",
+        )];
+        let files = vec![PathBuf::from(".pre-commit-config.yaml")];
+        let got = filter_by_files(&annotations, &files, &mut resolver);
+        assert_eq!(
+            got.len(),
+            1,
+            "heuristic should pull .pre-commit-config.yaml out of the grep command tokens",
+        );
     }
 }

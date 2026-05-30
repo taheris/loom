@@ -40,11 +40,11 @@ pub use dispatch::{
 pub use gate_outcome::{
     GateFail, GateFailReason, GateOutcome, GateSuccess, HandoffEvidence, LoopOutcome, NoGateReason,
 };
-pub use inputs::{InputResolver, InputsError, VerifierInputs};
+pub use inputs::{InputResolver, InputsError, VerifierInputs, filter_by_files};
 pub use integrity::{
     CommandResolver, DispatchPendingExecutor, FsCommandResolver, IntegrityError, IntegrityFinding,
     PendingCommandExecutor, RustWorkspaceStubScanner, RustWorkspaceTestResolver, StubScanner,
-    TestPathResolver, format_clarify_options,
+    TestPathResolver, format_clarify_options, is_missing_binary_target,
 };
 pub use marker::{MARKER_PATH, MarkerError, MarkerProof, MintError, verify_marker};
 pub use runner::{

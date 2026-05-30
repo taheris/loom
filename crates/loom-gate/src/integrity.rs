@@ -1090,6 +1090,31 @@ fn resolves_command(target: &str, command_resolver: &dyn CommandResolver) -> boo
     command_resolver.resolves(path_part)
 }
 
+/// True iff `target`'s first token is a bare binary name (no path
+/// separators) that does not resolve via `command_resolver`. Path-shaped
+/// first tokens (containing `/` or absolute) never qualify: those name
+/// a concrete file in the repo and a missing file is a real finding.
+///
+/// Mirrors the `skip-if-missing` wrapper used by pre-commit hooks for
+/// `nix` / `cargo`: in environments where the binary is absent (notably
+/// the bead container), the annotation silently no-ops rather than
+/// failing the gate. Used by `loom gate verify --files` to keep the
+/// agent's feedback-only commit flow green when host binaries are
+/// unavailable.
+pub fn is_missing_binary_target(target: &str, command_resolver: &dyn CommandResolver) -> bool {
+    let Some(first) = first_token(target) else {
+        return false;
+    };
+    let path_part = first.split_once("::").map_or(first, |(p, _)| p);
+    if path_part.is_empty() {
+        return false;
+    }
+    if path_part.contains('/') || Path::new(path_part).is_absolute() {
+        return false;
+    }
+    !command_resolver.resolves(path_part)
+}
+
 fn first_token(command: &str) -> Option<&str> {
     command.split_whitespace().next()
 }
@@ -2534,5 +2559,43 @@ fn delta_helper() {
             out.is_empty(),
             "non-terminal variants produce no options block: {out:?}"
         );
+    }
+
+    #[test]
+    fn is_missing_binary_target_flags_bare_binary_not_on_path() {
+        let cmds = StubCommands::with(&["cargo"]);
+        assert!(
+            is_missing_binary_target("cargooo run -p foo", &cmds),
+            "bare binary name missing from PATH counts as skip-if-missing"
+        );
+    }
+
+    #[test]
+    fn is_missing_binary_target_passes_when_bare_binary_resolves() {
+        let cmds = StubCommands::with(&["cargo"]);
+        assert!(
+            !is_missing_binary_target("cargo run -p foo", &cmds),
+            "resolved bare binary is not missing"
+        );
+    }
+
+    #[test]
+    fn is_missing_binary_target_rejects_path_shaped_first_token() {
+        let cmds = StubCommands::with(&[]);
+        assert!(
+            !is_missing_binary_target("scripts/walk.sh foo", &cmds),
+            "first token with `/` names a file; missing path is a real finding"
+        );
+        assert!(
+            !is_missing_binary_target("/usr/local/bin/foo", &cmds),
+            "absolute path is not a skip-if-missing candidate"
+        );
+    }
+
+    #[test]
+    fn is_missing_binary_target_rejects_empty_target() {
+        let cmds = StubCommands::with(&[]);
+        assert!(!is_missing_binary_target("", &cmds));
+        assert!(!is_missing_binary_target("   ", &cmds));
     }
 }

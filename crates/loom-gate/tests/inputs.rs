@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use loom_gate::annotation::{Annotation, Tier};
-use loom_gate::inputs::InputResolver;
+use loom_gate::inputs::{InputResolver, filter_by_files};
 use loom_gate::scope::CargoMetadataScope;
 
 fn workspace_manifest() -> PathBuf {
@@ -76,5 +76,50 @@ fn test_tier_resolution_uses_cargo_metadata_plus_spec_autoinclude() {
         pulls_loom_events,
         "transitive dep source must appear in declared inputs: {:?}",
         inputs.paths,
+    );
+}
+
+/// Scope-by-files end-to-end: a staged `.pre-commit-config.yaml` only
+/// keeps annotations whose declared inputs intersect that file. The
+/// spec-section auto-include keeps in-spec annotations from being
+/// dropped when their owning spec is staged, but spec-only annotations
+/// (no command-token reference to the staged file) drop out when only
+/// `.pre-commit-config.yaml` is staged.
+#[test]
+fn filter_by_files_drops_unrelated_check_annotations_against_a_yaml_staged_file() {
+    if !cargo_available() {
+        return;
+    }
+    let scope = CargoMetadataScope::from_manifest(&workspace_manifest()).unwrap();
+    let mut resolver = InputResolver::new(workspace_root()).with_test_scope(Box::new(scope));
+
+    let annotations = vec![
+        Annotation {
+            tier: Tier::Check,
+            target: "cargo run -p loom-walk -- happy_walk".into(),
+            source_spec: PathBuf::from("specs/gate.md"),
+            line: 10,
+            criterion_line: 10,
+            pending: false,
+        },
+        Annotation {
+            tier: Tier::Check,
+            target: "grep -q 'verify-marker' .pre-commit-config.yaml".into(),
+            source_spec: PathBuf::from("specs/pre-commit.md"),
+            line: 20,
+            criterion_line: 20,
+            pending: false,
+        },
+    ];
+    let files = vec![PathBuf::from(".pre-commit-config.yaml")];
+    let got = filter_by_files(&annotations, &files, &mut resolver);
+    assert_eq!(
+        got.len(),
+        1,
+        "only the annotation whose command references the staged file should remain: {got:?}"
+    );
+    assert_eq!(
+        got[0].target,
+        "grep -q 'verify-marker' .pre-commit-config.yaml"
     );
 }
