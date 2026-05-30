@@ -470,10 +470,8 @@ where
 
 /// Normalise one [`IntegrityFinding`] into a [`VerifierFailure`] per
 /// the mapping at `specs/gate.md` § *Emit shape*. Returns `None` for
-/// finding variants that have no in-table mapping today
-/// ([`IntegrityFinding::UnresolvedCargoTestName`] and
-/// [`IntegrityFinding::MultipleAnnotations`]); they are emitted by the
-/// verify lane's stderr surface and do not feed the mint pipeline.
+/// [`IntegrityFinding::UnresolvedCargoTestName`], which has no in-table
+/// mapping (it is emitted by the verify lane's stderr surface only).
 fn integrity_to_verifier_failure(
     finding: &IntegrityFinding,
     annotations: &[Annotation],
@@ -500,8 +498,19 @@ fn integrity_to_verifier_failure(
             kind: VerifierFailureKind::UnneededPendingMarker,
             evidence: finding.to_string(),
         }),
-        IntegrityFinding::UnresolvedCargoTestName { .. }
-        | IntegrityFinding::MultipleAnnotations { .. } => None,
+        IntegrityFinding::MultipleAnnotations { spec, line, count } => annotations
+            .iter()
+            .find(|a| a.source_spec == *spec && a.criterion_line == *line)
+            .cloned()
+            .map(|annotation| VerifierFailure {
+                annotation,
+                kind: VerifierFailureKind::MultipleAnnotations {
+                    count: *count,
+                    criterion_anchor: line.to_string(),
+                },
+                evidence: finding.to_string(),
+            }),
+        IntegrityFinding::UnresolvedCargoTestName { .. } => None,
     }
 }
 
@@ -1184,6 +1193,66 @@ mod tests {
             FindingTarget::Criterion { spec: s, anchor } => {
                 assert_eq!(s, &spec("gate"));
                 assert_eq!(anchor, "some-anchor");
+            }
+            other => panic!("expected Criterion target, got {other:?}"),
+        }
+    }
+
+    /// Spec contract `specs/gate.md` § *Emit shape* (table row "Integrity
+    /// gate: atomic-acceptance violation"): an
+    /// [`IntegrityFinding::MultipleAnnotations`] normalises into a
+    /// [`VerifierFailure`] carrying [`VerifierFailureKind::MultipleAnnotations`]
+    /// with the criterion's line as the anchor and the integrity
+    /// finding's `Display` text as the evidence. Without this row's
+    /// wiring, atomic-acceptance violations detected at tree scope
+    /// silently drop instead of minting fix-ups, even though the spec
+    /// table mandates the mapping.
+    #[test]
+    fn integrity_multiple_annotations_maps_to_verifier_failure() {
+        let ann_a = Annotation {
+            tier: Tier::Check,
+            target: "cargo run -p a".into(),
+            source_spec: PathBuf::from("specs/gate.md"),
+            line: 101,
+            criterion_line: 100,
+            pending: false,
+        };
+        let ann_b = Annotation {
+            tier: Tier::Test,
+            target: "crate::t::b".into(),
+            source_spec: PathBuf::from("specs/gate.md"),
+            line: 102,
+            criterion_line: 100,
+            pending: false,
+        };
+        let finding = IntegrityFinding::MultipleAnnotations {
+            spec: PathBuf::from("specs/gate.md"),
+            line: 100,
+            count: 2,
+        };
+
+        let failure = integrity_to_verifier_failure(&finding, &[ann_a.clone(), ann_b])
+            .expect("MultipleAnnotations integrity finding produces a VerifierFailure");
+        match &failure.kind {
+            VerifierFailureKind::MultipleAnnotations {
+                count,
+                criterion_anchor,
+            } => {
+                assert_eq!(*count, 2);
+                assert_eq!(criterion_anchor, "100");
+            }
+            other => panic!("expected MultipleAnnotations kind, got {other:?}"),
+        }
+        assert_eq!(failure.annotation.source_spec, ann_a.source_spec);
+        assert!(failure.evidence.contains("criterion carries 2 annotations"));
+
+        let typed = verifier_failure_to_finding(failure).expect("normalises into Finding");
+        assert_eq!(typed.token, ConcernToken::MultipleAnnotations);
+        assert_eq!(typed.bonds, vec![spec("gate")]);
+        match &typed.target {
+            FindingTarget::Criterion { spec: s, anchor } => {
+                assert_eq!(s, &spec("gate"));
+                assert_eq!(anchor, "100");
             }
             other => panic!("expected Criterion target, got {other:?}"),
         }
