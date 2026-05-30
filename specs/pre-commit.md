@@ -275,7 +275,7 @@ declared as such.
 - The `loom gate verify-marker` hook is the first pre-push entry and
   is **not** wrapped by `pre-push-checks` (wrapping the canonical
   marker check with itself would be self-referential)
-  [check](awk '/stages:.*pre-push/{p=1} p && /entry:/{print; exit}' .pre-commit-config.yaml | grep -v 'pre-push-checks' | grep -q 'loom gate verify-marker')
+  [check](awk '/^        entry:/{last=$0} /stages:.*pre-push/{print last; exit}' .pre-commit-config.yaml | grep -v 'pre-push-checks' | grep -q 'loom gate verify-marker')
 - Hooks whose entry runs `nix` are wrapped with
   `skip-if-missing nix --` so they no-op in the bead container
   (which has no `nix`) while running normally on the host devShell
