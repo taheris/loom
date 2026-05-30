@@ -538,9 +538,11 @@ governed at the module boundary by the same anti-drift pattern
 *Emit shape* below).
 
 **Dependency direction.** Leaf crate. Depends on `serde` + `serde_json`
-(JSON wire), `thiserror` / `displaydoc` (error types), and
-`loom-events` for `SpecLabel`. No Askama, no bd client, no template
-prose — those live one layer up. `loom-templates`, `loom-workflow`,
+(JSON wire), `thiserror` / `displaydoc` (error types), `blake3` (the
+fingerprint hash crate; see *Fingerprint and dedup* — algorithm is
+implementer's choice, but the dep set is closed), and `loom-events`
+for `SpecLabel`. No Askama, no bd client, no template prose — those
+live one layer up. `loom-templates`, `loom-workflow`,
 `loom-gate`, and the loom CLI all depend on `loom-protocol`;
 `loom-templates` re-exports the `gate` module's public types via
 `pub use` so existing `PreviousFailure::ReviewConcern { findings }`
@@ -2388,7 +2390,9 @@ the `parse_walk_output` / `WalkOutput::from_stdout` /
 - The `loom-protocol` crate exists as a leaf workspace member with
   the `gate` module carrying every type listed above. The crate's
   dependencies are limited to `serde`, `serde_json`, `thiserror` /
-  `displaydoc`, and `loom-events` (for `SpecLabel`); no transitive
+  `displaydoc`, `blake3` (fingerprint hash crate — algorithm is
+  implementer's choice per *Fingerprint and dedup*, but the dep set
+  is closed), and `loom-events` (for `SpecLabel`); no transitive
   dependency on `loom-templates`, `loom-workflow`, or `loom-gate`
   [test](loom_protocol_crate_has_minimal_leaf_dependency_set)
 - `loom-templates::finding` and `loom-templates::previous_failure` re-
