@@ -384,16 +384,63 @@ mod tests {
             .expect("spawn pre-push-checks")
     }
 
-    #[test]
-    fn pre_push_checks_short_circuits_on_valid_marker() {
+    /// Probe whether the `pre-push-checks` wrapper on `PATH` honors the
+    /// canonical marker location at [`MARKER_PATH`]. Pre-rename
+    /// wrappers check `.wrapix/loom/marker.json` and miss `mint`'s
+    /// output entirely; until a host devshell rebuilt from a
+    /// `flake.lock` that includes the upstream rename appears on
+    /// `PATH`, the wrapper sees a different file from the one
+    /// [`MarkerProof::mint`] writes and the assertions below have
+    /// nothing meaningful to pin. The probe seeds the canonical path
+    /// only and stubs `loom` to short-circuit; a wrapper still wired
+    /// to the old path falls through to the sentinel and reports
+    /// false.
+    fn pre_push_checks_honors_canonical_marker_path() -> bool {
+        let Ok(dir) = tempfile::tempdir() else {
+            return false;
+        };
+        let workspace = dir.path();
+        if std::fs::create_dir_all(workspace.join(".loom")).is_err()
+            || std::fs::write(workspace.join(MARKER_PATH), "{}").is_err()
+        {
+            return false;
+        }
+        let bin_dir = workspace.join("bin");
+        install_executable(&bin_dir, "loom", "#!/bin/sh\nexit 0\n");
+        let probe_flag = workspace.join("probe-sentinel.flag");
+        install_executable(
+            &bin_dir,
+            "sentinel",
+            &format!("#!/bin/sh\ntouch {}\nexit 0\n", probe_flag.display()),
+        );
+        let output = run_pre_push_checks(workspace, &bin_dir);
+        output.status.success() && !probe_flag.exists()
+    }
+
+    fn skip_unless_canonical_path() -> bool {
         if !pre_push_checks_available() {
             eprintln!("pre-push-checks not on PATH; skipping");
+            return true;
+        }
+        if !pre_push_checks_honors_canonical_marker_path() {
+            eprintln!(
+                "pre-push-checks on PATH does not honor {MARKER_PATH}; \
+                 host devshell predates the upstream rename — skipping"
+            );
+            return true;
+        }
+        false
+    }
+
+    #[test]
+    fn pre_push_checks_short_circuits_on_valid_marker() {
+        if skip_unless_canonical_path() {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path();
-        std::fs::create_dir_all(workspace.join(".wrapix/loom")).expect("mkdir .wrapix/loom");
-        std::fs::write(workspace.join(".wrapix/loom/marker.json"), "{}").expect("write marker");
+        std::fs::create_dir_all(workspace.join(".loom")).expect("mkdir .loom");
+        std::fs::write(workspace.join(MARKER_PATH), "{}").expect("write marker");
 
         let bin_dir = workspace.join("bin");
         install_executable(&bin_dir, "loom", "#!/bin/sh\nexit 0\n");
@@ -419,14 +466,13 @@ mod tests {
 
     #[test]
     fn pre_push_checks_falls_through_on_invalid_marker() {
-        if !pre_push_checks_available() {
-            eprintln!("pre-push-checks not on PATH; skipping");
+        if skip_unless_canonical_path() {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path();
-        std::fs::create_dir_all(workspace.join(".wrapix/loom")).expect("mkdir .wrapix/loom");
-        std::fs::write(workspace.join(".wrapix/loom/marker.json"), "{}").expect("write marker");
+        std::fs::create_dir_all(workspace.join(".loom")).expect("mkdir .loom");
+        std::fs::write(workspace.join(MARKER_PATH), "{}").expect("write marker");
 
         let bin_dir = workspace.join("bin");
         install_executable(&bin_dir, "loom", "#!/bin/sh\nexit 1\n");
@@ -447,6 +493,51 @@ mod tests {
         assert!(
             sentinel_marker.exists(),
             "sentinel must execute when marker absent or invalid"
+        );
+    }
+
+    /// Joint-path closure: [`MarkerProof::mint`] writes to a path the
+    /// `pre-push-checks` wrapper actually reads. Hand-seeded fixtures
+    /// in the two tests above pin wrapper behaviour in isolation —
+    /// they don't pin that mint's output is what the wrapper observes.
+    /// Drives the end-to-end chain (mint → wrapper short-circuit) the
+    /// `specs/pre-commit.md` § *Marker integration* contract commits
+    /// to, against a real git workspace and the real mint code path.
+    #[test]
+    fn mint_and_pre_push_checks_short_circuit_joint_path() {
+        if skip_unless_canonical_path() {
+            return;
+        }
+        let dir = init_test_workspace();
+        let workspace = dir.path();
+        let (_log, success) = good_gate_success();
+        let clock = loom_driver::clock::SystemClock::new();
+        MarkerProof::mint(success, workspace, &clock).expect("mint succeeds");
+        assert!(
+            workspace.join(MARKER_PATH).exists(),
+            "mint must write to the canonical {MARKER_PATH}",
+        );
+
+        let bin_dir = workspace.join("bin");
+        install_executable(&bin_dir, "loom", "#!/bin/sh\nexit 0\n");
+        let sentinel_marker = workspace.join("sentinel.flag");
+        install_executable(
+            &bin_dir,
+            "sentinel",
+            &format!("#!/bin/sh\ntouch {}\nexit 0\n", sentinel_marker.display()),
+        );
+
+        let output = run_pre_push_checks(workspace, &bin_dir);
+        assert!(
+            output.status.success(),
+            "wrapper must exit 0 after MarkerProof::mint. stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(
+            !sentinel_marker.exists(),
+            "mint's write path must match the wrapper's read path: \
+             sentinel must NOT execute",
         );
     }
 
