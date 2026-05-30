@@ -2448,11 +2448,14 @@ findings reach mint.
   No code path in `run_gate_mint` constructs `Vec::<Finding>::new()`
   unconditionally
   [test](run_gate_mint_dispatches_through_production_walker_not_empty_vec)
-- `loom loop`'s per-bead path invokes `loom gate verify --bead <id>`
-  followed by `loom gate mint --bead <id>` as subprocesses after the
-  run-phase agent signals Success. Fix-up beads minted at this step
-  become ready on the next outer-loop pass via `bd ready`
-  [test](loop_per_bead_dispatches_verify_then_mint_after_run_phase_success)
+- `loom loop`'s per-bead path routes a run-phase `Success` outcome
+  through exactly one `exec_per_bead_gate` call per bead on the typed
+  `PerBeadGateOutcome`; a `Clean` outcome routes the bead to `Done`
+  (neither clarified nor blocked). The bullet below pins the
+  subprocess shape `exec_per_bead_gate` resolves to; fix-up beads
+  minted by that subprocess pair become ready on the next outer-loop
+  pass via `bd ready` per *Per-bead mint summary semantics* above
+  [test](loop_per_bead_routes_run_phase_success_through_exec_per_bead_gate)
 - The production `exec_per_bead_gate` implementation actually spawns
   those subprocesses against `loom_bin` — argv shape `gate verify
   --bead <id> -s <spec>` then (only on verify exit 0) `gate mint

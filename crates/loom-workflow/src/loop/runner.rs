@@ -1349,16 +1349,18 @@ mod tests {
         Ok(())
     }
 
-    /// Spec criterion (`specs/gate.md` § *Per-diff stage checks*):
+    /// Spec criterion (`specs/gate.md` § *Production walker wiring*):
     /// after the run-phase agent signals
-    /// [`AgentOutcome::Success`], the loop's per-bead path invokes
-    /// `loom gate verify --bead <id>` followed by `loom gate mint
-    /// --bead <id>` (collapsed in the controller into one
-    /// [`AgentLoopController::exec_per_bead_gate`] call). The fake
-    /// records the bead the gate was dispatched against; a clean
-    /// outcome routes the bead to `BeadResult::Done`.
+    /// [`AgentOutcome::Success`], the loop's per-bead path routes the
+    /// bead through exactly one
+    /// [`AgentLoopController::exec_per_bead_gate`] call on the typed
+    /// [`PerBeadGateOutcome`]; a [`PerBeadGateOutcome::Clean`] result
+    /// resolves the bead to `BeadResult::Done` (neither clarified nor
+    /// blocked). The subprocess shape `exec_per_bead_gate` resolves to
+    /// is pinned by the production test
+    /// `exec_per_bead_gate_invokes_loom_gate_verify_then_mint_subprocesses`.
     #[tokio::test]
-    async fn loop_per_bead_dispatches_verify_then_mint_after_run_phase_success()
+    async fn loop_per_bead_routes_run_phase_success_through_exec_per_bead_gate()
     -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("lm-1", &[]));
