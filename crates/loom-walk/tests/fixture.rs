@@ -3169,6 +3169,70 @@ fn finding_no_duplicate_definitions_pass_on_re_export_alone() {
     assert_pass(&out);
 }
 
+#[test]
+fn finding_no_duplicate_definitions_fails_on_duplicate_finding_target_enum() {
+    let ws = make_workspace();
+    let dup = seed(
+        ws.path(),
+        "crates/loom-workflow/src/review.rs",
+        "pub enum FindingTarget { Criterion }\n",
+    );
+    let out = invoke(
+        &["finding_no_duplicate_definitions"],
+        Some(ws.path()),
+        Some(&dup.to_string_lossy()),
+    );
+    assert_fail(&out, "FindingTarget");
+}
+
+#[test]
+fn finding_no_duplicate_definitions_fails_on_duplicate_walk_output_struct() {
+    let ws = make_workspace();
+    let dup = seed(
+        ws.path(),
+        "crates/loom-workflow/src/review.rs",
+        "pub struct WalkOutput { findings: Vec<u32> }\n",
+    );
+    let out = invoke(
+        &["finding_no_duplicate_definitions"],
+        Some(ws.path()),
+        Some(&dup.to_string_lossy()),
+    );
+    assert_fail(&out, "WalkOutput");
+}
+
+#[test]
+fn finding_no_duplicate_definitions_fails_on_duplicate_bad_walk_enum() {
+    let ws = make_workspace();
+    let dup = seed(
+        ws.path(),
+        "crates/loom-workflow/src/review.rs",
+        "pub enum BadWalk { Other }\n",
+    );
+    let out = invoke(
+        &["finding_no_duplicate_definitions"],
+        Some(ws.path()),
+        Some(&dup.to_string_lossy()),
+    );
+    assert_fail(&out, "BadWalk");
+}
+
+#[test]
+fn finding_no_duplicate_definitions_fails_on_duplicate_exit_signal_enum() {
+    let ws = make_workspace();
+    let dup = seed(
+        ws.path(),
+        "crates/loom-todo/src/exit.rs",
+        "pub enum ExitSignal { Done }\n",
+    );
+    let out = invoke(
+        &["finding_no_duplicate_definitions"],
+        Some(ws.path()),
+        Some(&dup.to_string_lossy()),
+    );
+    assert_fail(&out, "ExitSignal");
+}
+
 // ---------------------------------------------------------------------------
 // audit_makes_no_bd_writes_outside_mint_module
 // ---------------------------------------------------------------------------

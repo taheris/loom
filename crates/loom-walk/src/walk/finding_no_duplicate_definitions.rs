@@ -1,15 +1,15 @@
-//! Anti-duplication walker for the canonical `Finding` /
-//! `ConcernToken` contract.
+//! Anti-duplication walker for the canonical `loom-protocol::gate`
+//! wire-shape contract.
 //!
-//! `loom-protocol::gate` is THE Rust home for the typed wire
-//! shape — the `Finding` struct and the closed `ConcernToken` enum are
-//! declared exactly once, in `crates/loom-protocol/src/gate.rs`.
-//! Other crates that need the types re-export via `pub use`; the walker
-//! flags any other declaration so a parallel definition cannot drift
-//! the wire format from the canonical one. Re-exports and trait /
-//! struct fields whose type IS `Finding` are unaffected — the walk
-//! inspects only top-level `struct Finding` / `enum ConcernToken`
-//! declarations.
+//! `loom-protocol::gate` is THE Rust home for the typed wire shape: the
+//! `Finding` and `WalkOutput` structs and the `ConcernToken`,
+//! `FindingTarget`, `BadWalk`, and `ExitSignal` enums are declared
+//! exactly once, in `crates/loom-protocol/src/gate.rs`. Other crates
+//! that need the types re-export via `pub use`; the walker flags any
+//! other declaration so a parallel definition cannot drift the wire
+//! format from the canonical one. Re-exports and trait / struct fields
+//! whose type IS one of the canonical names are unaffected — the walk
+//! inspects only top-level `struct <name>` / `enum <name>` declarations.
 
 use syn::visit::Visit;
 use syn::{ItemEnum, ItemStruct};
@@ -20,10 +20,14 @@ use super::util::{
 use super::{Verdict, WalkInput};
 
 const RULE: &str = "finding_no_duplicate_definitions — \
-                    `Finding` / `ConcernToken` are declared only in \
-                    `crates/loom-protocol/src/gate.rs`";
+                    `Finding`, `ConcernToken`, `FindingTarget`, \
+                    `WalkOutput`, `BadWalk`, and `ExitSignal` are \
+                    declared only in `crates/loom-protocol/src/gate.rs`";
 
 const CANONICAL: &str = "crates/loom-protocol/src/gate.rs";
+
+const CANONICAL_STRUCTS: &[&str] = &["Finding", "WalkOutput"];
+const CANONICAL_ENUMS: &[&str] = &["ConcernToken", "FindingTarget", "BadWalk", "ExitSignal"];
 
 pub fn run(input: &WalkInput) -> Verdict {
     let root = workspace_root();
@@ -53,22 +57,24 @@ struct Visitor<'a> {
 
 impl<'ast> Visit<'ast> for Visitor<'_> {
     fn visit_item_struct(&mut self, node: &'ast ItemStruct) {
-        if node.ident == "Finding" {
+        if CANONICAL_STRUCTS.iter().any(|n| node.ident == n) {
             self.violations.push(format!(
-                "{}:{} struct `Finding` — canonical declaration lives in `{}`",
+                "{}:{} struct `{}` — canonical declaration lives in `{}`",
                 self.rel_path,
                 line_of(node),
+                node.ident,
                 CANONICAL,
             ));
         }
     }
 
     fn visit_item_enum(&mut self, node: &'ast ItemEnum) {
-        if node.ident == "ConcernToken" {
+        if CANONICAL_ENUMS.iter().any(|n| node.ident == n) {
             self.violations.push(format!(
-                "{}:{} enum `ConcernToken` — canonical declaration lives in `{}`",
+                "{}:{} enum `{}` — canonical declaration lives in `{}`",
                 self.rel_path,
                 line_of(node),
+                node.ident,
                 CANONICAL,
             ));
         }
