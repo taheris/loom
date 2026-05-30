@@ -402,9 +402,9 @@ async fn head_commit_sha_round_trips_through_git() -> Result<()> {
     let client = GitClient::open(path)?;
     let sha = client.head_commit_sha().await?;
     let expected = capture_head(path)?;
-    assert_eq!(sha, expected);
+    assert_eq!(sha.as_str(), expected);
     assert_eq!(
-        sha.len(),
+        sha.as_str().len(),
         40,
         "git rev-parse HEAD returns a 40-char SHA: {sha}"
     );

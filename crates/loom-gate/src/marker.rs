@@ -27,7 +27,7 @@ use std::time::UNIX_EPOCH;
 
 use displaydoc::Display;
 use loom_driver::clock::Clock;
-use loom_driver::git::{self, GitError as DriverGitError};
+use loom_driver::git::{self, GitError as DriverGitError, GitOid};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -50,8 +50,8 @@ pub const MARKER_PATH: &str = ".loom/marker.json";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarkerProof {
     version: u32,
-    commit_sha: String,
-    tree_oid: String,
+    commit_sha: GitOid,
+    tree_oid: GitOid,
     minted_at_ms: u128,
 }
 
@@ -167,12 +167,12 @@ impl MarkerProof {
 
     /// `HEAD` commit SHA recorded at mint time — informational only;
     /// the trust-bearing field is `tree_oid`.
-    pub fn commit_sha(&self) -> &str {
+    pub fn commit_sha(&self) -> &GitOid {
         &self.commit_sha
     }
 
     /// Tree OID the marker binds to — the load-bearing fingerprint.
-    pub fn tree_oid(&self) -> &str {
+    pub fn tree_oid(&self) -> &GitOid {
         &self.tree_oid
     }
 }
@@ -242,8 +242,8 @@ pub enum MarkerError {
     PorcelainDirty,
     /// workspace tree OID `{head_tree}` does not match marker's `{marker_tree}`
     FingerprintMismatch {
-        marker_tree: String,
-        head_tree: String,
+        marker_tree: GitOid,
+        head_tree: GitOid,
     },
     /// failed to read workspace git state: {0}
     Git(#[from] DriverGitError),
@@ -257,7 +257,7 @@ fn assert_porcelain_clean(workspace: &Path) -> Result<(), MarkerError> {
     Ok(())
 }
 
-fn git_tree_oid_of_head(workspace: &Path) -> Result<String, DriverGitError> {
+fn git_tree_oid_of_head(workspace: &Path) -> Result<GitOid, DriverGitError> {
     git::head_tree_oid_sync(workspace)
 }
 
@@ -274,12 +274,12 @@ mod tests {
         dir
     }
 
-    fn head_tree(dir: &Path) -> String {
+    fn head_tree(dir: &Path) -> GitOid {
         git_tree_oid_of_head(dir).expect("tree oid")
     }
 
-    fn head_sha(_dir: &Path) -> String {
-        "0000000000000000000000000000000000000000".to_string()
+    fn head_sha(_dir: &Path) -> GitOid {
+        GitOid::new("0000000000000000000000000000000000000000").expect("placeholder sha")
     }
 
     fn write_marker_at(workspace: &Path, marker: &MarkerProof) {
@@ -325,7 +325,7 @@ mod tests {
         let marker = MarkerProof {
             version: 1,
             commit_sha: head_sha(workspace),
-            tree_oid: "deadbeefcafe1234567890abcdef0123456789ab".to_string(),
+            tree_oid: GitOid::new("deadbeefcafe1234567890abcdef0123456789ab").expect("tree oid"),
             minted_at_ms: 0,
         };
         write_marker_at(workspace, &marker);

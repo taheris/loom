@@ -378,7 +378,8 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             .git
             .head_commit_sha()
             .await
-            .map_err(|e| TodoError::Io(std::io::Error::other(e.to_string())))?;
+            .map_err(|e| TodoError::Io(std::io::Error::other(e.to_string())))?
+            .to_string();
         let bd = Arc::clone(&self.bd);
         let bd_update: BdUpdateFn = Box::new(move |mol_id, new_base_commit| {
             let bd = Arc::clone(&bd);

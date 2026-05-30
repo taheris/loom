@@ -1182,8 +1182,8 @@ or emits on stdout.
 ```rust
 pub struct MarkerProof {
     version: u32,        // schema version (currently 1)
-    commit_sha: String,  // HEAD SHA — informational
-    tree_oid: String,    // HEAD's tree OID — the fingerprint
+    commit_sha: GitOid,  // HEAD SHA — informational
+    tree_oid: GitOid,    // HEAD's tree OID — the fingerprint
     minted_at_ms: u128,  // milliseconds since UNIX epoch (wall clock)
 }
 
@@ -1211,13 +1211,11 @@ impl MarkerProof {
 }
 ```
 
-The `commit_sha` and `tree_oid` fields are bare `String` in the
-current shape rather than a `GitOid` newtype: the workspace does
-not define `GitOid` today, and tightening these to a newtype is
-tracked as a follow-up under the same molecule (RS-7 — *Newtypes
-for identifiers*). Validation still flows through git's own
-`HEAD` tree-OID lookup at `read_and_validate` time, so the
-fingerprint guarantee is unaffected by the string carrier.
+The `commit_sha` and `tree_oid` fields carry the `GitOid` newtype
+defined in `loom-driver::git`, which parses the lowercase-hex shape
+(40 or 64 characters) at construction. Malformed OIDs are rejected
+at deserialise time as a typed parse error rather than reaching the
+fingerprint check — per RS-7 (*Newtypes for identifiers*).
 
 A value of type `MarkerProof` anywhere in the code corresponds to
 "the gate ran AND the workspace still matches at the moment this

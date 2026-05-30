@@ -478,8 +478,8 @@ where
                         .git
                         .head_commit_sha()
                         .await
-                        .ok()
-                        .unwrap_or_else(|| "unknown".to_string());
+                        .map(|oid| oid.to_string())
+                        .unwrap_or_else(|_| "unknown".to_string());
                     self.emit_to_log(
                         DriverKind::MergeOk,
                         &format!("merge ok: {} → main", worktree.branch),

@@ -12,6 +12,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::identifier::{BeadId, SpecLabel};
 
 use super::error::GitError;
+use super::oid::GitOid;
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Timeout for git operations whose hooks can legitimately run for
@@ -754,7 +755,7 @@ impl GitClient {
     }
 
     /// `git rev-parse HEAD` — full SHA of the current `HEAD`.
-    pub async fn head_commit_sha(&self) -> Result<String, GitError> {
+    pub async fn head_commit_sha(&self) -> Result<GitOid, GitError> {
         let output = run_git_raw(
             &self.workdir,
             self.clock.as_ref(),
@@ -765,7 +766,8 @@ impl GitClient {
         if !output.status.success() {
             return Err(cli_error(&output));
         }
-        Ok(String::from_utf8(output.stdout)?.trim().to_string())
+        let raw = String::from_utf8(output.stdout)?;
+        Ok(GitOid::new(raw.trim())?)
     }
 
     /// Merge `branch` into the configured integration branch inside the
@@ -1007,15 +1009,17 @@ pub fn clone_loom_workspace(origin_url: &str, dest: &Path, branch: &str) -> Resu
 /// `loom gate verify-marker`, which is a one-shot CLI helper that
 /// does not justify the cost of standing up a tokio runtime for two
 /// git invocations.
-pub fn head_tree_oid_sync(workspace: &Path) -> Result<String, GitError> {
-    sync_git_capture(workspace, &["rev-parse", "HEAD^{tree}"]).map(|s| s.trim().to_string())
+pub fn head_tree_oid_sync(workspace: &Path) -> Result<GitOid, GitError> {
+    let raw = sync_git_capture(workspace, &["rev-parse", "HEAD^{tree}"])?;
+    Ok(GitOid::new(raw.trim())?)
 }
 
 /// Synchronous `git -C <workspace> rev-parse HEAD`. The informational
 /// commit SHA stamped onto a freshly minted [`crate::marker`] proof
 /// (the load-bearing fingerprint is the tree OID, not the commit SHA).
-pub fn sync_head_commit_sha(workspace: &Path) -> Result<String, GitError> {
-    sync_git_capture(workspace, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string())
+pub fn sync_head_commit_sha(workspace: &Path) -> Result<GitOid, GitError> {
+    let raw = sync_git_capture(workspace, &["rev-parse", "HEAD"])?;
+    Ok(GitOid::new(raw.trim())?)
 }
 
 /// Synchronous `git -C <workspace> status --porcelain`. Paired with

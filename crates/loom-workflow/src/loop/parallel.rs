@@ -353,8 +353,8 @@ async fn merge_back_one(
                     let main_sha = git
                         .head_commit_sha()
                         .await
-                        .ok()
-                        .unwrap_or_else(|| "unknown".to_string());
+                        .map(|oid| oid.to_string())
+                        .unwrap_or_else(|_| "unknown".to_string());
                     if let Some(e) = emit.as_mut() {
                         e.emit(
                             DriverKind::MergeOk,

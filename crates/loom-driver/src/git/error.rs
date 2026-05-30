@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use displaydoc::Display;
 use thiserror::Error;
 
+use super::oid::ParseGitOidError;
+
 #[derive(Debug, Display, Error)]
 pub enum GitError {
     /// failed to open repository at {path}
@@ -36,4 +38,7 @@ pub enum GitError {
 
     /// invalid utf-8 in git CLI output
     Utf8(#[from] std::string::FromUtf8Error),
+
+    /// git CLI returned a malformed OID: {0}
+    ParseOid(#[from] ParseGitOidError),
 }

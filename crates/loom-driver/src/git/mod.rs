@@ -12,6 +12,7 @@
 
 mod client;
 mod error;
+mod oid;
 
 pub use client::{
     CreatedWorktree, GitClient, MergeResult, StatusEntry, StatusKind, WorktreeInfo,
@@ -20,3 +21,4 @@ pub use client::{
     status_porcelain_sync, sync_head_commit_sha,
 };
 pub use error::GitError;
+pub use oid::{GitOid, ParseGitOidError};

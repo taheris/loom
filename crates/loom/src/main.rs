@@ -1601,7 +1601,8 @@ fn persist_outcome(
 fn current_commit(workspace: &Path) -> anyhow::Result<String> {
     let git = GitClient::open(workspace)?;
     let runtime = tokio::runtime::Runtime::new()?;
-    Ok(runtime.block_on(async { git.head_commit_sha().await })?)
+    let oid = runtime.block_on(async { git.head_commit_sha().await })?;
+    Ok(oid.to_string())
 }
 
 /// Resolve (or mint) the bonding target for each spec in scope at
