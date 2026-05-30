@@ -371,6 +371,21 @@ mod tests {
             .is_ok()
     }
 
+    /// Legacy marker path the pre-rename `pre-push-checks` wrapper
+    /// reads; superseded by [`MARKER_PATH`] in the upstream wrapix
+    /// rename. Bridged in wrapper-behaviour tests so the assertions
+    /// exercise the contract on either wrapper version present on PATH.
+    const LEGACY_MARKER_PATH: &str = ".wrapix/loom/marker.json";
+
+    fn seed_marker_for_either_wrapper(workspace: &Path) {
+        for relative in [MARKER_PATH, LEGACY_MARKER_PATH] {
+            let path = workspace.join(relative);
+            std::fs::create_dir_all(path.parent().expect("marker parent"))
+                .expect("mkdir marker dir");
+            std::fs::write(&path, "{}").expect("write marker");
+        }
+    }
+
     fn run_pre_push_checks(workspace: &Path, bin_dir: &Path) -> std::process::Output {
         let path_var = std::env::var_os("PATH").unwrap_or_default();
         let mut entries = vec![bin_dir.to_path_buf()];
@@ -434,13 +449,13 @@ mod tests {
 
     #[test]
     fn pre_push_checks_short_circuits_on_valid_marker() {
-        if skip_unless_canonical_path() {
+        if !pre_push_checks_available() {
+            eprintln!("pre-push-checks not on PATH; skipping");
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path();
-        std::fs::create_dir_all(workspace.join(".loom")).expect("mkdir .loom");
-        std::fs::write(workspace.join(MARKER_PATH), "{}").expect("write marker");
+        seed_marker_for_either_wrapper(workspace);
 
         let bin_dir = workspace.join("bin");
         install_executable(&bin_dir, "loom", "#!/bin/sh\nexit 0\n");
@@ -466,13 +481,13 @@ mod tests {
 
     #[test]
     fn pre_push_checks_falls_through_on_invalid_marker() {
-        if skip_unless_canonical_path() {
+        if !pre_push_checks_available() {
+            eprintln!("pre-push-checks not on PATH; skipping");
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path();
-        std::fs::create_dir_all(workspace.join(".loom")).expect("mkdir .loom");
-        std::fs::write(workspace.join(MARKER_PATH), "{}").expect("write marker");
+        seed_marker_for_either_wrapper(workspace);
 
         let bin_dir = workspace.join("bin");
         install_executable(&bin_dir, "loom", "#!/bin/sh\nexit 1\n");
