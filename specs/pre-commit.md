@@ -299,10 +299,10 @@ declared as such.
   under test (the loom-deps / loom-0.1.0 / clippy / nextest derivations
   are excluded from `flake check`; their work moves to dedicated
   pre-push hooks against the host cache)
-  [check?](cargo run -p loom-walk -- nix_flake_check_excludes_workspace_compile)
+  [check](cargo run -p loom-walk -- nix_flake_check_excludes_workspace_compile)
 - `loom gate check` is exposed as a flake-check derivation distinct
   from the slow-tier hooks
-  [check?](cargo run -p loom-walk -- loom_gate_check_derivation_exists)
+  [check](cargo run -p loom-walk -- loom_gate_check_derivation_exists)
 
 ### Agent self-verify
 

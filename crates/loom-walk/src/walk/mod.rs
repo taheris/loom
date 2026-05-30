@@ -21,6 +21,7 @@ mod loom_agent_deps;
 mod loom_does_not_invoke_podman;
 mod loom_events_is_leaf;
 mod loom_events_minimal_deps;
+mod loom_gate_check_derivation_exists;
 mod loom_llm_client_constructors_use_newtypes;
 mod loom_llm_client_types_per_schema_kind;
 mod loom_llm_deps;
@@ -35,6 +36,7 @@ mod loom_templates_public_types;
 mod loom_templates_snapshots_no_crate_root_allow;
 mod loom_templates_workflow_templates_not_exported;
 mod newtype_identifiers;
+mod nix_flake_check_excludes_workspace_compile;
 mod no_allow_dead_code;
 mod no_derive_from_on_newtypes;
 mod no_hardcoded_tmp_paths;
@@ -166,6 +168,10 @@ pub static REGISTRY: &[Walk] = &[
         run: loom_events_minimal_deps::run,
     },
     Walk {
+        name: "loom_gate_check_derivation_exists",
+        run: loom_gate_check_derivation_exists::run,
+    },
+    Walk {
         name: "loom_llm_client_constructors_use_newtypes",
         run: loom_llm_client_constructors_use_newtypes::run,
     },
@@ -220,6 +226,10 @@ pub static REGISTRY: &[Walk] = &[
     Walk {
         name: "newtype_identifiers",
         run: newtype_identifiers::run,
+    },
+    Walk {
+        name: "nix_flake_check_excludes_workspace_compile",
+        run: nix_flake_check_excludes_workspace_compile::run,
     },
     Walk {
         name: "no_allow_dead_code",
@@ -382,6 +392,7 @@ mod tests {
             "loom_does_not_invoke_podman",
             "loom_events_is_leaf",
             "loom_events_minimal_deps",
+            "loom_gate_check_derivation_exists",
             "loom_llm_client_constructors_use_newtypes",
             "loom_llm_client_types_per_schema_kind",
             "loom_llm_deps",
@@ -405,6 +416,7 @@ mod tests {
             "single_event_channel",
             "surface_conformance",
             "newtype_identifiers",
+            "nix_flake_check_excludes_workspace_compile",
             "template_context_structs",
             "template_pinning_matrix",
             "template_wire_format_restatement",

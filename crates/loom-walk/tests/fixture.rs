@@ -3325,3 +3325,91 @@ fn audit_makes_no_bd_writes_outside_mint_module_ignores_doc_mentions() {
     );
     assert_pass(&out);
 }
+
+// ---------------------------------------------------------------------------
+// nix_flake_check_excludes_workspace_compile (pre-commit.md § Fast tier)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn nix_flake_check_excludes_workspace_compile_pass() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "nix/flake/checks.nix",
+        "_:\n{\n  perSystem = { loom-gate-check, ... }: {\n    checks = { inherit loom-gate-check; };\n  };\n}\n",
+    );
+    let out = invoke(
+        &["nix_flake_check_excludes_workspace_compile"],
+        Some(ws.path()),
+        None,
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn nix_flake_check_excludes_workspace_compile_fail_on_inherit() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "nix/flake/checks.nix",
+        "_:\n{\n  perSystem = { loom, ... }: {\n    checks = { inherit (loom) bin clippy nextest; };\n  };\n}\n",
+    );
+    let out = invoke(
+        &["nix_flake_check_excludes_workspace_compile"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "nix/flake/checks.nix");
+}
+
+#[test]
+fn nix_flake_check_excludes_workspace_compile_fail_on_dotted_access() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "nix/flake/checks.nix",
+        "_:\n{\n  perSystem = { loom, ... }: {\n    checks.bin = loom.bin;\n  };\n}\n",
+    );
+    let out = invoke(
+        &["nix_flake_check_excludes_workspace_compile"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "loom.bin");
+}
+
+// ---------------------------------------------------------------------------
+// loom_gate_check_derivation_exists (pre-commit.md § Fast tier)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn loom_gate_check_derivation_exists_pass() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "nix/flake/checks.nix",
+        "_:\n{\n  perSystem = { pkgs, ... }: {\n    checks.loom-gate-check = pkgs.runCommand \"loom-gate-check\" {} ''loom gate check''; \n  };\n}\n",
+    );
+    let out = invoke(
+        &["loom_gate_check_derivation_exists"],
+        Some(ws.path()),
+        None,
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn loom_gate_check_derivation_exists_fail_when_absent() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "nix/flake/checks.nix",
+        "_:\n{\n  perSystem = _: {\n    checks = { };\n  };\n}\n",
+    );
+    let out = invoke(
+        &["loom_gate_check_derivation_exists"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "no derivation runs `loom gate check`");
+}
