@@ -425,6 +425,8 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path();
+        std::fs::create_dir_all(workspace.join(".wrapix/loom")).expect("mkdir .wrapix/loom");
+        std::fs::write(workspace.join(".wrapix/loom/marker.json"), "{}").expect("write marker");
 
         let bin_dir = workspace.join("bin");
         install_executable(&bin_dir, "loom", "#!/bin/sh\nexit 1\n");
