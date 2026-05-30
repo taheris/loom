@@ -385,7 +385,10 @@ impl RustWorkspaceTestResolver {
             if path.extension().is_none_or(|e| e != "rs") {
                 continue;
             }
-            if path.components().any(|c| c.as_os_str() == "target") {
+            if path
+                .components()
+                .any(|c| matches!(c.as_os_str().to_str(), Some("target" | ".loom")))
+            {
                 continue;
             }
             let Ok(body) = fs::read_to_string(path) else {
@@ -449,7 +452,10 @@ impl RustWorkspaceStubScanner {
             if path.extension().is_none_or(|e| e != "rs") {
                 continue;
             }
-            if path.components().any(|c| c.as_os_str() == "target") {
+            if path
+                .components()
+                .any(|c| matches!(c.as_os_str().to_str(), Some("target" | ".loom")))
+            {
                 continue;
             }
             let Ok(body) = fs::read_to_string(path) else {
