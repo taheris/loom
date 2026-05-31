@@ -2558,10 +2558,10 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   returning one open result causes the batch to be skipped
   [test?](mint_dedup_query_one_open_result_skips_batch)
 - The dedup query returning zero results proceeds to mint
-  [test?](mint_dedup_query_zero_results_proceeds_to_mint)
+  [test](mint_dedup_query_zero_results_proceeds_to_mint)
 - The dedup query returning more than one open result is refused
   as a structural violation
-  [test?](mint_dedup_query_multiple_open_results_refuses_as_structural_violation)
+  [test](mint_dedup_query_multiple_open_results_refuses_as_structural_violation)
 - A closed batch bead carrying the same fingerprint label is not
   re-minted on subsequent runs; only removing the `loom:fixup:<fp>`
   label or deleting the bead forces re-mint
@@ -2596,7 +2596,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   `Criterion` and `Invariant`), `target.spec` MUST appear in that
   finding's `bonds`; a finding that violates this is rejected with
   a typed parse error and the containing mint run is refused
-  [test?](mint_rejects_criterion_target_whose_spec_is_not_in_bonds)
+  [test](mint_rejects_criterion_target_whose_spec_is_not_in_bonds)
 - Clarify-bound findings mint as single-finding beads (one bead
   per clarify-bound finding, not bundled into the spec's fix-up
   batch) carrying both `loom:fixup:<fp>` and `loom:clarify` labels,
