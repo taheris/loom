@@ -1,6 +1,5 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
-assertion_line: 34
 expression: ctx.render().unwrap()
 ---
 # Specification Interview

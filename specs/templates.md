@@ -1079,7 +1079,7 @@ documents in front of the agent with zero configuration.
   (transient / environmental / agent-self-reset, consumes a
   `[loop] max_retries` slot, escalates to `loom:blocked` cause
   `retry-exhausted` on exhaustion) so a grep for the rule succeeds
-  [check?](grep -qi 'LOOM_RETRY' crates/loom-templates/templates/partial/self_report_markers.md)
+  [check](grep -qi 'LOOM_RETRY' crates/loom-templates/templates/partial/self_report_markers.md)
 - The partial body distinguishes `LOOM_BLOCKED` from `LOOM_CLARIFY`:
   blocked = genuine dead end, no candidate resolutions; clarify =
   decision the agent can frame as a structured `## Options — …`
@@ -1091,7 +1091,7 @@ documents in front of the agent with zero configuration.
   `todo_*`, `review`) only; interactive sessions (`plan_*`,
   `msg`) emit `LOOM_COMPLETE` only because the human resolves
   friction in-turn
-  [check?](grep -qi 'worker.*phase\|interactive.*session' crates/loom-templates/templates/partial/self_report_markers.md)
+  [check](grep -qi 'worker.*phase\|interactive.*session' crates/loom-templates/templates/partial/self_report_markers.md)
 
 ### Mint default-profile
 
