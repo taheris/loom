@@ -21,6 +21,8 @@
 //! read state through [`WalkOutput::terminal`] / [`WalkOutput::findings`]
 //! / [`WalkOutput::finding_errors`] accessors.
 
+pub mod options;
+
 use displaydoc::Display;
 use loom_events::identifier::SpecLabel;
 use serde::{Deserialize, Serialize};

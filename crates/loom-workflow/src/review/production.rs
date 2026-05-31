@@ -639,25 +639,12 @@ where
     }
 
     async fn apply_clarify(&mut self, bead: &BeadId, _reason: &str) -> Result<(), ReviewError> {
-        // Persistence boundary (specs/gate.md § "Persistence boundary:
-        // agent narrates, agent persists"): the gate / runner only stamps
-        // the `loom:clarify` label. The canonical `## Options — …` block
-        // is written by the agent via `bd update --notes` *before* it
-        // emits `LOOM_CLARIFY`; clobbering that block with the agent's
-        // one-line stdout reason would leave `loom msg`'s queue empty.
-        //
-        // The status transition pairs with the label so `bd ready` excludes
-        // the bead via its native status filter.
-        self.bd
-            .update(
-                bead,
-                UpdateOpts {
-                    status: Some("blocked".to_string()),
-                    add_labels: vec!["loom:clarify".to_string()],
-                    ..UpdateOpts::default()
-                },
-            )
-            .await?;
+        // Verdict-gate direct-emit LOOM_CLARIFY check (specs/gate.md §
+        // Options Format Contract): the bead under dispatch must carry a
+        // well-formed `## Options — …` block in notes ∪ description.
+        // Well-formed → loom:clarify; malformed / absent → loom:blocked
+        // with cause `clarify-without-options`.
+        crate::gate_clarify::apply_clarify_or_blocked(&self.bd, bead).await?;
         Ok(())
     }
 
@@ -2281,23 +2268,35 @@ mod tests {
     /// `record_recovery_epics`. Mirroring the `runner.rs` `bead()` helper
     /// keeps the labels typed instead of as raw strings.
     /// specs/gate.md § "Persistence boundary: agent narrates, agent persists":
-    /// the review controller's `apply_clarify` only stamps the
-    /// `loom:clarify` label — the canonical `## Options — …` block belongs
-    /// to the agent, written to bead state *before* `LOOM_CLARIFY` is
-    /// emitted. If the controller also wrote the agent's reason via
-    /// `bd update --notes`, every re-emit would clobber the canonical
-    /// block and leave `loom msg`'s queue empty.
+    /// when the bead under dispatch carries a well-formed `## Options — …`
+    /// block, the review controller's `apply_clarify` only stamps the
+    /// `loom:clarify` label — the canonical block belongs to the agent,
+    /// written to bead state *before* `LOOM_CLARIFY` is emitted. If the
+    /// controller also wrote the agent's reason via `bd update --notes`,
+    /// every re-emit would clobber the canonical block and leave `loom
+    /// msg`'s queue empty.
     #[tokio::test]
     async fn apply_clarify_does_not_write_notes() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().to_path_buf();
         let state = empty_state(&workspace);
         let manifest = stub_manifest(&workspace);
-        let scripted = ScriptedBd::new([RunOutput {
-            status: 0,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        }]);
+        let well_formed = "## Options — pick a path\\n\\n### Option 1 — first\\nbody";
+        let show_row = format!(
+            r#"[{{"id":"lm-clarify.2","title":"t","status":"open","priority":2,"issue_type":"task","description":"{well_formed}"}}]"#,
+        );
+        let scripted = ScriptedBd::new([
+            RunOutput {
+                status: 0,
+                stdout: show_row.into_bytes(),
+                stderr: Vec::new(),
+            },
+            RunOutput {
+                status: 0,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+        ]);
         let calls = scripted.calls_handle();
         let bd = BdClient::with_runner(scripted);
         let mut ctrl = ProductionReviewController::new(
@@ -2315,30 +2314,36 @@ mod tests {
             .await
             .expect("apply_clarify ok");
         let captured = calls.lock().unwrap();
-        assert_eq!(captured.len(), 1, "exactly one bd invocation expected");
-        let argv: Vec<String> = captured[0]
+        assert_eq!(
+            captured.len(),
+            2,
+            "expected one bd show + one bd update invocation",
+        );
+        let update_argv: Vec<String> = captured[1]
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(argv[0], "update");
-        assert_eq!(argv[1], "lm-clarify.2");
+        assert_eq!(update_argv[0], "update");
+        assert_eq!(update_argv[1], "lm-clarify.2");
         assert!(
-            argv.iter().any(|a| a == "--add-label"),
-            "missing --add-label in argv: {argv:?}",
+            update_argv.iter().any(|a| a == "--add-label"),
+            "missing --add-label in argv: {update_argv:?}",
         );
         assert!(
-            argv.iter().any(|a| a == "loom:clarify"),
-            "missing loom:clarify label in argv: {argv:?}",
+            update_argv.iter().any(|a| a == "loom:clarify"),
+            "missing loom:clarify label in argv: {update_argv:?}",
         );
         assert!(
-            !argv.iter().any(|a| a == "--notes"),
-            "apply_clarify must not forward --notes (persistence boundary): {argv:?}",
+            !update_argv.iter().any(|a| a == "--notes"),
+            "apply_clarify must not forward --notes when options block is \
+             well-formed (persistence boundary): {update_argv:?}",
         );
         assert!(
-            argv.windows(2)
+            update_argv
+                .windows(2)
                 .any(|w| w[0] == "--status" && w[1] == "blocked"),
             "review apply_clarify must pair --status blocked with --add-label so \
-             `bd ready` excludes via its native status filter: {argv:?}",
+             `bd ready` excludes via its native status filter: {update_argv:?}",
         );
     }
 

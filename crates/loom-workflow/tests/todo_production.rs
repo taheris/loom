@@ -146,6 +146,29 @@ fn epic_response(mol_id: &str, label: &str, base_commit: Option<&str>) -> RunOut
     }
 }
 
+fn well_formed_options_block() -> &'static str {
+    "## Options — pick one\\n\\n### Option 1 — additive\\nbody\\n\\n### Option 2 — breaking\\nbody\\n"
+}
+
+fn epic_response_with_description(mol_id: &str, label: &str, description: &str) -> RunOutput {
+    let body = format!(
+        r#"[{{
+            "id": "{mol_id}",
+            "title": "{label}: epic",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "epic",
+            "labels": ["spec:{label}"],
+            "description": "{description}"
+        }}]"#,
+    );
+    RunOutput {
+        status: 0,
+        stdout: body.into_bytes(),
+        stderr: Vec::new(),
+    }
+}
+
 /// `bd list --type=epic --label=spec:<X> --status=open` response carrying
 /// the epic's `parent` field (i.e. the molecule it's bonded to via
 /// `bd mol bond`). Used by the multi-spec fan-out classifier to detect
@@ -649,9 +672,13 @@ async fn todo_clarify_marks_molecule_epic() {
     let git = init_repo(&workspace);
     let state = seeded_state(&workspace, label, epic_id, None);
 
+    let well_formed_epic =
+        epic_response_with_description(epic_id, label, well_formed_options_block());
     let runner = CapturingRunner::new([
         // bd list (resolve_open_epic) → the seeded epic
         epic_response(epic_id, label, None),
+        // bd show (verdict-gate Options-block validation)
+        well_formed_epic,
         // bd update with loom:clarify label
         RunOutput {
             status: 0,
@@ -701,6 +728,75 @@ async fn todo_clarify_marks_molecule_epic() {
         argv.windows(2)
             .any(|w| w[0] == "--status" && w[1] == "blocked"),
         "update must pair status=blocked with the label: {argv:?}",
+    );
+}
+
+/// Spec gate (`specs/gate.md` § *Options Format Contract*): when a
+/// `loom todo` session emits `LOOM_CLARIFY` but the molecule epic does
+/// NOT carry a well-formed `## Options — …` block in notes ∪
+/// description, the verdict gate downgrades to `loom:blocked` with cause
+/// `clarify-without-options` instead of `loom:clarify`. This keeps
+/// `loom msg`'s queue from being populated with an empty options block.
+#[tokio::test]
+async fn todo_clarify_without_options_block_downgrades_to_blocked() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let label = "alpha";
+    let epic_id = "lm-alpha";
+    let git = init_repo(&workspace);
+    let state = seeded_state(&workspace, label, epic_id, None);
+
+    let malformed_epic = epic_response_with_description(epic_id, label, "no options block here");
+    let runner = CapturingRunner::new([
+        epic_response(epic_id, label, None),
+        malformed_epic,
+        RunOutput {
+            status: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        },
+    ]);
+    let bd = Arc::new(BdClient::with_runner(runner.clone()));
+    let manifest = stub_manifest(&workspace);
+    let mut ctrl = ProductionTodoController::new(
+        SpecLabel::new(label),
+        workspace,
+        state,
+        manifest,
+        ProfileName::new("base"),
+        git,
+        bd,
+        None,
+    );
+
+    let outcome = SessionOutcome {
+        exit_code: 0,
+        cost_usd: None,
+    };
+    let marker = ExitSignal::Clarify {
+        question: "additive-only or breaking?".into(),
+    };
+    ctrl.record_outcome(&outcome, Some(&marker))
+        .await
+        .expect("record_outcome ok");
+
+    let calls = runner.calls();
+    let argv = calls
+        .iter()
+        .find(|argv| argv.first().map(String::as_str) == Some("update"))
+        .expect("a `bd update` call must target the epic");
+    assert_eq!(argv[1], epic_id, "update must target the molecule epic id");
+    assert!(
+        argv.iter().any(|a| a == "loom:blocked"),
+        "malformed options must downgrade to loom:blocked: {argv:?}",
+    );
+    assert!(
+        !argv.iter().any(|a| a == "loom:clarify"),
+        "loom:clarify MUST NOT be applied without a well-formed options block: {argv:?}",
+    );
+    assert!(
+        argv.iter().any(|a| a.contains("clarify-without-options")),
+        "notes must cite the cause: {argv:?}",
     );
 }
 
@@ -1209,6 +1305,7 @@ async fn clarify_path_does_not_trip_fanout_guard() {
         task_list_response(&[]),
         task_list_response(&[]),
         epic_response(epic_id, label, None),
+        epic_response_with_description(epic_id, label, well_formed_options_block()),
         ok_empty(),
     ]);
     let runner_handle = runner.clone();

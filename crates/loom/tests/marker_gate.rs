@@ -222,7 +222,12 @@ fn loom_loop_once_routes_clarify_marker_to_label_and_status_blocked() {
         &state_dir,
         "lm-clara",
         "deploy key path?",
-        "Need to know which deploy-key path to mount before continuing.\n",
+        "Need to know which deploy-key path to mount before continuing.\n\n\
+         ## Options — pick a deploy-key path\n\n\
+         ### Option 1 — mount /var/keys\n\
+         body.\n\n\
+         ### Option 2 — mount /etc/keys\n\
+         body.\n",
         &["spec:markertest", "profile:base"],
     );
 

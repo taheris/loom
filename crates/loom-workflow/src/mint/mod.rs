@@ -38,9 +38,43 @@ pub use walk::{
 
 use loom_driver::bd::{BdClient, CommandRunner, CreateOpts, ListOpts};
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_protocol::gate::options::has_well_formed_block;
 
+use crate::gate_clarify::CLARIFY_WITHOUT_OPTIONS_CAUSE;
 use crate::resolve::{ResolveError, resolve_open_epic, resolve_or_mint_open_epic};
 use crate::review::{ConcernToken, Finding};
+
+/// How a finding routes to a label class. Clarify-bound findings whose
+/// evidence is well-formed mint with `loom:clarify`; the same token with
+/// malformed evidence downgrades to `loom:blocked` carrying
+/// [`CLARIFY_WITHOUT_OPTIONS_CAUSE`] so a downstream `loom msg` consumer
+/// is not handed an empty options block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FindingRouting {
+    /// Plain fix-up bead — no clarify or blocked label beyond `loom:mint:<fp>`.
+    Fixup,
+    /// Clarify-bound finding with a well-formed options block in evidence.
+    Clarify,
+    /// Clarify-bound finding whose evidence omits or malforms the
+    /// canonical options block; mints `loom:blocked` instead.
+    BlockedClarifyWithoutOptions,
+}
+
+/// Classify a finding for label / description routing. Today the
+/// clarify-bound subset is `{ InvariantClash }`; when B11's
+/// `ConcernToken::routes_to_clarify` lands the predicate flips to a
+/// per-token method so new clarify-bound tokens inherit the
+/// options-block validation without a carve-out here.
+fn classify_routing(finding: &Finding) -> FindingRouting {
+    if finding.token != ConcernToken::InvariantClash {
+        return FindingRouting::Fixup;
+    }
+    if has_well_formed_block(&finding.evidence) {
+        FindingRouting::Clarify
+    } else {
+        FindingRouting::BlockedClarifyWithoutOptions
+    }
+}
 
 /// Bd label prefix the dedup query uses.
 ///
@@ -362,9 +396,10 @@ pub async fn mint_finding_with_options<R: CommandRunner>(
         });
     }
 
-    let labels = mint_labels(finding, &label);
+    let routing = classify_routing(finding);
+    let labels = mint_labels(finding, &label, routing);
     let title = mint_title(finding);
-    let description = mint_description(finding, &fingerprint);
+    let description = mint_description(finding, &fingerprint, routing);
     let parent = BeadId::new(lead_epic.as_str()).map_err(|source| MintError::InvalidParentId {
         molecule: lead_epic.to_string(),
         source,
@@ -407,16 +442,23 @@ async fn resolve_lead<R: CommandRunner>(
 }
 
 /// Compose the bd-label list for the minted fix-up:
-/// `loom:mint:<fp>`, one `spec:<X>` per bonds entry, and the
-/// `invariant-clash` carve-out's `loom:clarify`.
-fn mint_labels(finding: &Finding, mint_label: &str) -> Vec<String> {
+/// `loom:mint:<fp>`, one `spec:<X>` per bonds entry, plus the routing
+/// label per [`FindingRouting`] — `loom:clarify` for clarify-bound
+/// findings with a well-formed options block in evidence, `loom:blocked`
+/// for clarify-bound findings whose evidence is malformed, and nothing
+/// extra for plain fix-ups.
+fn mint_labels(finding: &Finding, mint_label: &str, routing: FindingRouting) -> Vec<String> {
     let mut labels = Vec::with_capacity(finding.bonds.len() + 2);
     labels.push(mint_label.to_string());
     for spec in &finding.bonds {
         labels.push(format!("spec:{spec}"));
     }
-    if finding.token == ConcernToken::InvariantClash {
-        labels.push("loom:clarify".to_string());
+    match routing {
+        FindingRouting::Fixup => {}
+        FindingRouting::Clarify => labels.push("loom:clarify".to_string()),
+        FindingRouting::BlockedClarifyWithoutOptions => {
+            labels.push("loom:blocked".to_string());
+        }
     }
     labels
 }
@@ -438,8 +480,14 @@ fn mint_title(finding: &Finding) -> String {
 /// expected to already contain the canonical `## Options — …` block
 /// (the rubric is responsible for that — see `specs/gate.md` §
 /// "Invariant-clash carve-out"), so this function preserves it verbatim.
-fn mint_description(finding: &Finding, fingerprint: &str) -> String {
+/// When the routing is [`FindingRouting::BlockedClarifyWithoutOptions`],
+/// the cause string is prepended so the operator sees why the fix-up
+/// minted as `loom:blocked` rather than `loom:clarify`.
+fn mint_description(finding: &Finding, fingerprint: &str, routing: FindingRouting) -> String {
     let mut out = String::with_capacity(finding.evidence.len() + 96);
+    if matches!(routing, FindingRouting::BlockedClarifyWithoutOptions) {
+        out.push_str(&format!("Cause: `{CLARIFY_WITHOUT_OPTIONS_CAUSE}`\n\n"));
+    }
     out.push_str(finding.evidence.trim_end());
     out.push_str("\n\n---\n\n");
     out.push_str(&format!(
@@ -985,6 +1033,68 @@ mod tests {
         assert!(
             description.contains(&format!("{MINT_LABEL_PREFIX}{fp}")),
             "description must cite the fingerprint: {description}",
+        );
+    }
+
+    /// Spec contract `specs/templates.md` § Options-block requirement on
+    /// clarify-bound findings: a clarify-bound finding (e.g. token
+    /// `invariant-clash`) whose evidence omits the canonical `## Options
+    /// — …` block does NOT mint a `loom:clarify` bead; instead the mint
+    /// pipeline downgrades it to `loom:blocked` with cause
+    /// `clarify-without-options` so `loom msg`'s queue is not handed an
+    /// empty options block.
+    #[tokio::test]
+    async fn mint_invariant_clash_without_options_block_downgrades_to_blocked() {
+        let malformed_evidence = "Some prose without the canonical Options block heading.";
+        let finding = invariant_clash_finding(
+            vec![spec("harness")],
+            spec("harness"),
+            "Out of Scope",
+            "loom-runs-podman",
+            malformed_evidence,
+        );
+        let fp = finding.fingerprint();
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-harnessepic", "harness")),
+            ok_stdout("lm-blocked.1\n"),
+        ]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+        let outcome = mint_finding(&bd, &finding, "head-sha").await.unwrap();
+        assert!(matches!(outcome, FindingOutcome::Minted { .. }));
+        let calls = rendered_calls(&invocations);
+        let create = calls
+            .iter()
+            .find(|c| c.iter().any(|a| a == "create"))
+            .expect("create");
+
+        let labels_idx = create
+            .iter()
+            .position(|a| a == "--labels")
+            .expect("--labels");
+        let labels = &create[labels_idx + 1];
+        assert!(
+            labels.contains(&format!("{MINT_LABEL_PREFIX}{fp}")),
+            "labels missing fingerprint: {labels}",
+        );
+        assert!(
+            labels.contains("loom:blocked"),
+            "malformed evidence must downgrade to loom:blocked: {labels}",
+        );
+        assert!(
+            !labels.contains("loom:clarify"),
+            "loom:clarify MUST NOT be applied when options block is missing: {labels}",
+        );
+
+        let desc_idx = create
+            .iter()
+            .position(|a| a == "--description")
+            .expect("--description");
+        let description = &create[desc_idx + 1];
+        assert!(
+            description.contains(CLARIFY_WITHOUT_OPTIONS_CAUSE),
+            "description must cite the cause string: {description}",
         );
     }
 

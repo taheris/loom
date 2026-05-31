@@ -291,28 +291,20 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
     ) -> Result<(), TodoError> {
         // Decomposition Discipline (`specs/templates.md`): LOOM_CLARIFY
         // from a todo session targets the **molecule epic**, not a leaf
-        // bead. The agent has already persisted its `## Options — …`
-        // block to the epic notes per gate.md's Options Format Contract
-        // before emitting the marker; here we stamp the `loom:clarify`
-        // label + status=blocked transition so `bd ready` excludes the
-        // epic until a human resolves via `loom msg`.
+        // bead. Verdict-gate direct-emit check (`specs/gate.md` § Options
+        // Format Contract) validates the epic carries a well-formed
+        // `## Options — …` block before stamping `loom:clarify`; a
+        // malformed / absent block downgrades to `loom:blocked` with
+        // cause `clarify-without-options`.
         if matches!(marker, Some(ExitSignal::Clarify { .. }))
             && let Some(mol_id) = crate::resolve::resolve_open_epic(&self.bd, &self.label).await?
         {
             let bead_id = BeadId::new(mol_id.as_str()).map_err(BdError::CreateInvalidId)?;
-            self.bd
-                .update(
-                    &bead_id,
-                    UpdateOpts {
-                        status: Some("blocked".to_string()),
-                        add_labels: vec!["loom:clarify".to_string()],
-                        ..UpdateOpts::default()
-                    },
-                )
-                .await?;
+            let applied = crate::gate_clarify::apply_clarify_or_blocked(&self.bd, &bead_id).await?;
             info!(
                 label = %self.label,
                 epic = %mol_id,
+                outcome = ?applied,
                 "loom todo: LOOM_CLARIFY routed to molecule epic",
             );
         }
