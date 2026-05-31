@@ -966,7 +966,7 @@ documents in front of the agent with zero configuration.
   a grep for the rule succeeds: interactive sessions persist
   cross-session memory via bd (notes, descriptions, new beads), not
   via Claude Code's `MEMORY.md` system which is container-local
-  [check?](grep -qi 'MEMORY.md\|bd update.*--notes' crates/loom-templates/templates/partial/chat_interview.md)
+  [check](grep -qi 'MEMORY.md\|bd update.*--notes' crates/loom-templates/templates/partial/chat_interview.md)
 - `msg.md` rendered prompt contains the chat-interview discipline
   clauses (picker prohibition + bd-persistence) sourced from the
   pinned partial

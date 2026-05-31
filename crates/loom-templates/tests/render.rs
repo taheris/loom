@@ -1091,6 +1091,37 @@ fn msg_template_teaches_agent_bd_write_authority() -> Result<()> {
     Ok(())
 }
 
+/// Per `specs/templates.md` criterion 979, the rendered `msg.md` prompt
+/// must surface both chat-discipline clauses sourced from
+/// `partial/chat_interview.md`: the picker prohibition (criterion 971
+/// rule body) and the bd-persistence clause (criterion 974 rule body).
+/// The msg session is interactive, so the chat-discipline partial is
+/// pinned there alongside the planning templates.
+#[test]
+fn msg_template_renders_chat_interview_discipline() -> Result<()> {
+    let ctx = MsgContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        companion_paths: vec![],
+        clarify_beads: vec![],
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+    };
+    let out = ctx.render()?;
+
+    assert!(
+        out.contains("AskUserQuestion") || out.contains("option-picker"),
+        "msg.md must surface the picker prohibition from chat_interview.md: {out}",
+    );
+    assert!(
+        out.contains("MEMORY.md"),
+        "msg.md must surface the MEMORY.md container-local clause from chat_interview.md: {out}",
+    );
+    assert!(
+        out.contains("bd update <id> --notes"),
+        "msg.md must surface the bd-persistence destination from chat_interview.md: {out}",
+    );
+    Ok(())
+}
+
 #[test]
 fn msg_renders_with_no_clarify_beads() -> Result<()> {
     let ctx = MsgContext {
