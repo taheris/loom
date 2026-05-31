@@ -1141,7 +1141,7 @@ documents in front of the agent with zero configuration.
   `BadWalk::MalformedFinding` carries the well-formed `terminal`
   alongside the per-line errors. Construction of any variant
   without its max-context fields is a compile error
-  [test?](bad_walk_variants_preserve_max_context_invariant_by_struct_shape)
+  [test](bad_walk_variants_preserve_max_context_invariant_by_struct_shape)
 - `TerminalSurface` enum mirrors `ExitSignal` with explicit
   `Malformed { payload: String }` and `Missing` variants so
   `BadWalk::MalformedFinding`'s `terminal` field can carry the
