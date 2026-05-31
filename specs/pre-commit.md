@@ -366,7 +366,7 @@ declared as such.
   fail the push) when the marker file is absent, so operator-manual
   pushes from a clone with no `.loom/marker.json` progress through the
   slow tier rather than aborting
-  [test?](marker::tests::pre_push_checks_falls_through_on_missing_marker)
+  [test](marker::tests::pre_push_checks_falls_through_on_missing_marker)
 
 ## Requirements
 

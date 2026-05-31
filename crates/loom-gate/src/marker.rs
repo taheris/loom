@@ -479,6 +479,50 @@ mod tests {
         );
     }
 
+    /// Operator-direct invariant: when no `.loom/marker.json` exists in
+    /// the workspace (the normal state of an operator's clone, which the
+    /// driver-side verdict gate never wrote into), the `pre-push-checks`
+    /// wrapper MUST exec the argument command rather than fail the push.
+    /// A regression here forces operators to `--no-verify` to land work.
+    #[test]
+    fn pre_push_checks_falls_through_on_missing_marker() {
+        if !pre_push_checks_available() {
+            eprintln!("pre-push-checks not on PATH; skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path();
+        assert!(
+            !workspace.join(MARKER_PATH).exists(),
+            "precondition: canonical marker path must be absent",
+        );
+        assert!(
+            !workspace.join(LEGACY_MARKER_PATH).exists(),
+            "precondition: legacy marker path must be absent",
+        );
+
+        let bin_dir = workspace.join("bin");
+        let sentinel_marker = workspace.join("sentinel.flag");
+        install_executable(
+            &bin_dir,
+            "sentinel",
+            &format!("#!/bin/sh\ntouch {}\nexit 0\n", sentinel_marker.display()),
+        );
+
+        let output = run_pre_push_checks(workspace, &bin_dir);
+        assert!(
+            output.status.success(),
+            "wrapper must exit 0 when marker is missing (operator-direct fall-through). \
+             stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(
+            sentinel_marker.exists(),
+            "missing marker must fall through: sentinel must execute (not short-circuit)",
+        );
+    }
+
     #[test]
     fn pre_push_checks_falls_through_on_invalid_marker() {
         if !pre_push_checks_available() {
