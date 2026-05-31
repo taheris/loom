@@ -768,12 +768,6 @@ pub enum TerminalSurface {
     Retry { reason: String },
     /// `LOOM_CONCERN: {"summary": "..."}` parsed cleanly.
     Concern { summary: String },
-    /// `LOOM_RETRY` on the final non-empty line; `reason` is the
-    /// adjacent prose read by the parser. Worker-phase-only per
-    /// `specs/templates.md` § *Self-report marker taxonomy*; phase
-    /// enforcement is applied by the verdict gate that consumes
-    /// [`ExitSignal`].
-    Retry { reason: String },
     /// `LOOM_CONCERN:` was present but its JSON payload failed parse
     /// (invalid JSON, missing `summary`, or empty `summary`). The
     /// literal post-marker text is preserved.
@@ -795,7 +789,6 @@ impl TerminalSurface {
             Self::Clarify { .. } => "LOOM_CLARIFY",
             Self::Retry { .. } => "LOOM_RETRY",
             Self::Concern { .. } => "LOOM_CONCERN (well-formed)",
-            Self::Retry { .. } => "LOOM_RETRY",
             Self::Malformed { .. } => "LOOM_CONCERN (malformed payload)",
             Self::Missing => "no terminal marker on the final non-empty line",
         }
@@ -859,19 +852,6 @@ pub enum ExitSignal {
     /// stream/terminator pairing-rule variants are owned by the verdict
     /// gate.
     BadWalk(BadWalk),
-
-    /// Worker-phase agent self-reported that this attempt cannot
-    /// finish but a fresh dispatch is likely to succeed (environmental
-    /// failure: tools failing mid-session, sandbox/cwd unlinked,
-    /// transient IO; or agent self-reset: stuck-but-not-blocked,
-    /// prompt-context exhausted). `reason` is the prose the agent
-    /// wrote on the line immediately preceding the marker, captured
-    /// verbatim — mirrors the [`ExitSignal::Blocked`] / [`ExitSignal::Clarify`]
-    /// reason-capture pattern. Worker-phase-only per
-    /// `specs/templates.md` § *Self-report marker taxonomy*; phase
-    /// enforcement is applied by the verdict gate that consumes this
-    /// signal.
-    Retry { reason: String },
 }
 
 const COMPLETE: &str = "LOOM_COMPLETE";
@@ -880,7 +860,6 @@ const BLOCKED: &str = "LOOM_BLOCKED";
 const CLARIFY: &str = "LOOM_CLARIFY";
 const RETRY: &str = "LOOM_RETRY";
 const CONCERN: &str = "LOOM_CONCERN";
-const RETRY: &str = "LOOM_RETRY";
 
 /// Scan the agent's combined output (or the `result` field of the final
 /// stream-json line) for an exit signal.
@@ -1115,7 +1094,6 @@ fn terminal_surface_from_stdout(output: &str) -> TerminalSurface {
         Some(ExitSignal::Clarify { question }) => TerminalSurface::Clarify { question },
         Some(ExitSignal::Retry { reason }) => TerminalSurface::Retry { reason },
         Some(ExitSignal::Concern { summary }) => TerminalSurface::Concern { summary },
-        Some(ExitSignal::Retry { reason }) => TerminalSurface::Retry { reason },
         Some(ExitSignal::BadWalk(BadWalk::Concern { payload, .. })) => {
             TerminalSurface::Malformed { payload }
         }
@@ -1395,17 +1373,6 @@ mod tests {
                 assert_eq!(question, "should the migration be additive only?");
             }
             other => panic!("expected Clarify, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn retry_carries_reason_from_prior_line() {
-        let out = "container tool exec failed mid-session\nLOOM_RETRY\n";
-        match parse_exit_signal(out) {
-            Some(ExitSignal::Retry { reason }) => {
-                assert_eq!(reason, "container tool exec failed mid-session");
-            }
-            other => panic!("expected Retry, got {other:?}"),
         }
     }
 
