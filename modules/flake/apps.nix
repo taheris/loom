@@ -9,7 +9,7 @@
 #                                   "container smoke not available on
 #                                   Darwin" so the entry point is a no-op
 #                                   rather than missing.
-#   nix run .#test-sandbox-smoke  — boots the built `.#sandbox` image
+#   nix run .#test-sandbox  — boots the built `.#sandbox` image
 #                                   once and asserts the three agent
 #                                   binaries (`pi`, `claude`,
 #                                   `loom-direct-runner`) each respond
@@ -61,13 +61,13 @@ _:
       };
 
       sandboxSmokeLinux = pkgs.writeShellApplication {
-        name = "test-sandbox-smoke";
+        name = "test-sandbox";
         runtimeInputs = [ pkgs.podman ];
         text = ''
           load_out=$("${sandbox.image}" | podman load)
           ref=$(printf '%s\n' "$load_out" | sed -nE 's/^Loaded image: (.+)$/\1/p' | head -n1)
           if [[ -z "$ref" ]]; then
-            printf 'test-sandbox-smoke: could not parse image ref from podman load output:\n%s\n' "$load_out" >&2
+            printf 'test-sandbox: could not parse image ref from podman load output:\n%s\n' "$load_out" >&2
             exit 1
           fi
 
@@ -76,7 +76,7 @@ _:
             rc=0
             for bin in pi claude loom-direct-runner; do
               if ! out=$("$bin" --version 2>&1); then
-                printf "test-sandbox-smoke: %s --version failed: %s\n" "$bin" "$out" >&2
+                printf "test-sandbox: %s --version failed: %s\n" "$bin" "$out" >&2
                 rc=1
               fi
             done
@@ -86,9 +86,9 @@ _:
       };
 
       sandboxSmokeDarwin = pkgs.writeShellApplication {
-        name = "test-sandbox-smoke";
+        name = "test-sandbox";
         text = ''
-          echo "test-sandbox-smoke not available on Darwin"
+          echo "test-sandbox not available on Darwin"
           exit 0
         '';
       };
@@ -102,9 +102,9 @@ _:
           program = "${smokeApp}/bin/test";
           meta.description = "Container smoke harness (Linux only; Darwin stub)";
         };
-        test-sandbox-smoke = {
+        test-sandbox = {
           type = "app";
-          program = "${sandboxSmokeApp}/bin/test-sandbox-smoke";
+          program = "${sandboxSmokeApp}/bin/test-sandbox";
           meta.description = "Runtime check that pi/claude/loom-direct-runner respond to --version inside the sandbox image (Linux only; Darwin stub)";
         };
         fuzz-loom = {

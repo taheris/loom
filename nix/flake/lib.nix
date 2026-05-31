@@ -68,6 +68,7 @@ in
     }:
     let
       wrapixLib = inputs'.wrapix.legacyPackages.lib;
+      pi-mono = pkgs.callPackage ../pi-mono { };
 
       # The same file + hash pin the toolchain for the wrapix sandbox
       # profile, the loom workspace build, and the devshell.
@@ -95,6 +96,7 @@ in
         profile = rustProfile;
         packages = [
           loom.bin
+          pi-mono
           pkgs.cargo-nextest
         ];
       };
@@ -103,6 +105,7 @@ in
         profile = rustProfile;
         packages = [
           loom.bin
+          pi-mono
           pkgs.cargo-nextest
           pkgs.podman
         ];

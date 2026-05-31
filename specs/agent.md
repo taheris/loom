@@ -886,12 +886,7 @@ connection, network filtering, session audit logging.
 - All three agent binaries (`pi`, `claude`, `loom-direct-runner`) launch
   inside the built sandbox image and respond to `--version`; failures
   identify which binary is missing or broken.
-  [system?](nix run .#test-sandbox-smoke)
-  (pending lm-7v08: `pi` and `claude` are not yet packaged into the
-  sandbox image — `modules/flake/overlays.nix:28` records the pinned
-  versions but explicitly defers the packaging. Promote back to
-  `[system]` once lm-7v08 lands the derivations and the smoke passes
-  cleanly.)
+  [system](nix run .#test-sandbox)
 
 ## Requirements
 

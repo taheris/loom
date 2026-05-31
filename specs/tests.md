@@ -726,9 +726,10 @@ the rules:
   [check](grep -q 'name = "fuzz-loom"' modules/flake/apps.nix)
 - Container smoke enforces a <30s wall-time budget
   [check](grep -qE 'ELAPSED.*-gt 30' tests/run-tests.sh)
-- pi-mono and Claude Code versions pinned in
-      `modules/flake/overlays.nix`
-  [check](grep -q 'pi-mono' modules/flake/overlays.nix)
+- pi-mono version pinned in `nix/pi-mono/package.json` (loom owns the
+      build via `buildNpmPackage`); Claude Code tracked via nixpkgs
+      (no local pin)
+  [check](grep -q '@mariozechner/pi-coding-agent' nix/pi-mono/package.json)
 
 ## Requirements
 
