@@ -30,6 +30,7 @@ fn git(repo: &Path, args: &[&str]) -> Result<()> {
     let status = Command::new("git")
         .arg("-C")
         .arg(repo)
+        .args(["-c", "commit.gpgsign=false"])
         .args(args)
         .status()
         .with_context(|| format!("spawn git {args:?}"))?;
@@ -41,6 +42,7 @@ fn git_capture(repo: &Path, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(repo)
+        .args(["-c", "commit.gpgsign=false"])
         .args(args)
         .output()
         .with_context(|| format!("spawn git {args:?}"))?;
