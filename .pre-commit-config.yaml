@@ -46,14 +46,6 @@ repos:
         always_run: true
         pass_filenames: false
 
-      - id: cargo-build
-        name: cargo build --workspace
-        entry: pre-push-checks cargo build --workspace
-        language: system
-        stages: [pre-push]
-        files: '\.rs$'
-        pass_filenames: false
-
       - id: cargo-clippy
         name: cargo clippy --workspace --all-targets -- -D warnings
         entry: pre-push-checks cargo clippy --workspace --all-targets -- -D warnings
