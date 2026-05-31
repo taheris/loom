@@ -92,6 +92,4 @@ the conventions document):
 
 {% include "partial/progress_markers.md" %}
 
-{% include "partial/self_report_markers.md" %}
-
 {% include "partial/chat_marker_final_turn_only.md" %}

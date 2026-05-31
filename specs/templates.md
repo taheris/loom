@@ -118,40 +118,31 @@ blank) in the same diff.
 
 | Partial | `plan_new` | `plan_update` | `todo_new` | `todo_update` | `loop` | `review` | `msg` |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| `context_pinning.md` | ✓ | ✓ | ✓ | ✓ | ? | ✓ | ✓ |
+| `context_pinning.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `style_rules.md` |  |  |  |  | ✓ | ✓ |  |
 | `spec_conventions.md` | ✓ | ✓ |  |  |  |  |  |
 | `spec_header.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |
-| `companions_context.md` |  | ✓ | ✓ | ✓ | ? | ✓ | ✓ |
+| `companions_context.md` |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `scratchpad.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `progress_markers.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |
-| `self_report_markers.md` | ~ | ~ | ✓ | ✓ | ✓ | ✓ |  |
+| `self_report_markers.md` |  |  | ✓ | ✓ | ✓ | ✓ |  |
 | `findings_walk.md` |  |  |  |  |  | ✓ |  |
 | `chat_marker_final_turn_only.md` | ✓ | ✓ |  |  |  |  | ✓ |
 | `interview_modes.md` | ✓ | ✓ |  |  |  |  |  |
-| `chat_interview.md` | ✓ | ✓ |  |  |  |  | ? |
+| `chat_interview.md` | ✓ | ✓ |  |  |  |  | ✓ |
 | `decomposition_discipline.md` |  |  | ✓ | ✓ |  |  |  |
 | `plan_stage_rubric.md` | ✓ | ✓ |  |  |  |  |  |
 | `invariant_clash.md` | ✓ | ✓ |  |  |  |  |  |
 | `review_rubric.md` |  |  |  |  |  | ✓ |  |
 | `sibling_spec_editing.md` |  | ✓ |  |  |  |  |  |
 
-The pending cells reflect planning-session edits whose
-template-wiring implementation hasn't landed yet:
-`self_report_markers.md` is `~` for `plan_new` / `plan_update`
-(pending removal — the template currently includes the partial;
-the include must be dropped per the worker-only marker
-discipline); `chat_interview.md` is `?` for `msg` (pending
-addition — the template doesn't yet include the partial; the
-include must be added per the interactive-session discipline
-pinning); `companions_context.md` and `context_pinning.md` are
-`?` for `loop` (pre-existing drift — the templates don't include
-these partials but the spec asserts they should; the resolving
-session either adds the `{% include %}` to `loop.md` and drops
-the `?` to `✓`, or drops the assertion entirely by changing the
-cell to blank). Each pending marker resolves to `✓` or blank in
-the same diff that lands the include change, enforced by the
-walker's `pending-marker-resolved` finding when state catches up.
+The matrix has no pending cells today; the pending vocabulary
+(`?` and `~`) and its walker-enforced self-cleaning rule remain
+documented above for future planning sessions that need to author
+matrix edits ahead of the include-graph change that lands them.
+The walker's `pending-marker-resolved` finding fires when a
+pending marker's state catches up, forcing the author to drop
+`?` to `✓` or `~` to blank in the same diff.
 
 **`style_rules.md` is pinned only in `loop` and `review`** — the two
 phases that write or evaluate code (`loop` produces it, `review`

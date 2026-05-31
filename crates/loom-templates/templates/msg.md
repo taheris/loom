@@ -165,4 +165,6 @@ bead closed, label left in place, label removed when it shouldn't
 have been) get caught by the human in the next `loom msg` session,
 not by driver auto-fixup.
 
+{% include "partial/chat_interview.md" %}
+
 {% include "partial/chat_marker_final_turn_only.md" %}
