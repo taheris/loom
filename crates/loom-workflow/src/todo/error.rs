@@ -29,10 +29,10 @@ pub enum TodoError {
         source: std::io::Error,
     },
 
-    /// rendering the prompt template failed: {0}
+    /// rendering the prompt template failed
     Render(#[from] askama::Error),
 
-    /// io operation failed: {0}
+    /// io operation failed during `loom todo`
     Io(#[from] std::io::Error),
 
     /// multi-spec fan-out collision; `loom:clarify` bead {clarify_id} created — resolve via `loom msg`
@@ -44,18 +44,18 @@ pub enum TodoError {
         notes_remaining: usize,
     },
 
-    /// agent backend protocol failure: {0}
+    /// agent backend protocol failure during `loom todo`
     Protocol(#[from] ProtocolError),
 
-    /// state-db read/write failure: {0}
+    /// state-db read/write failure during `loom todo`
     State(#[from] StateError),
 
-    /// profile-image manifest dispatch failed: {0}
+    /// profile-image manifest dispatch failed during `loom todo`
     Profile(#[from] ProfileError),
 
-    /// bd client failure: {0}
+    /// bd client failure during `loom todo`
     Bd(#[from] BdError),
 
-    /// spec → molecule resolution failed: {0}
+    /// spec → molecule resolution failed during `loom todo`
     Resolve(#[from] crate::resolve::ResolveError),
 }

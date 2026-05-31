@@ -27,19 +27,19 @@ pub enum InitError {
         source: io::Error,
     },
 
-    /// lock acquisition failed: {0}
+    /// lock acquisition failed while initializing the loom workspace
     Lock(#[from] LockError),
 
-    /// state-db operation failed: {0}
+    /// state-db operation failed while initializing the loom workspace
     State(#[from] StateError),
 
-    /// `bd` CLI invocation failed while gathering active molecules: {0}
+    /// `bd` CLI invocation failed while gathering active molecules
     Bd(#[from] BdError),
 
-    /// git operation failed while materializing the loom workspace: {0}
+    /// git operation failed while materializing the loom workspace
     Git(#[from] GitError),
 
-    /// failed to load `<workspace>/loom.toml` while resolving the integration branch: {0}
+    /// failed to load `<workspace>/loom.toml` while resolving the integration branch
     Config(#[from] LoomConfigError),
 
     /// active molecule {id} carries no `spec:<label>` label

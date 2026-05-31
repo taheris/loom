@@ -140,7 +140,7 @@ pub enum WalkError {
     Rubric(String),
     /// deterministic verifier dispatch failed: {0}
     Verifiers(String),
-    /// rubric stdout parse failed: {0}
+    /// rubric stdout parse failed
     Parse(#[from] WalkOutputError),
     /// owning spec file `{path}` has no parseable spec label
     SpecLabel { path: PathBuf },

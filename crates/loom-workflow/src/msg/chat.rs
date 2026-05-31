@@ -80,7 +80,7 @@ pub struct ChatReport {
 
 #[derive(Debug, Error)]
 pub enum ChatError {
-    #[error("profile resolution failed: {0}")]
+    #[error("profile resolution failed")]
     Profile(#[from] ProfileError),
     #[error("config load failed: {0}")]
     Config(String),
@@ -88,9 +88,9 @@ pub enum ChatError {
     BdList(String),
     #[error("render msg.md template: {0}")]
     Render(String),
-    #[error("state db: {0}")]
+    #[error("state db operation failed while running `loom msg --chat`")]
     State(#[from] loom_driver::state::StateError),
-    #[error("scratch session: {0}")]
+    #[error("scratch session io failed")]
     Scratch(#[from] std::io::Error),
     #[error("lock manager: {0}")]
     Lock(String),

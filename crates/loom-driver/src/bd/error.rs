@@ -33,7 +33,7 @@ pub enum BdError {
     /// `bd create --json` did not include an id
     CreateMissingId,
 
-    /// `bd create --silent` returned a malformed bead id: {0}
+    /// `bd create --silent` returned a malformed bead id
     CreateInvalidId(#[from] ParseBeadIdError),
 
     /// invalid utf-8 in `bd` output

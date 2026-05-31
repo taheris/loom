@@ -192,7 +192,7 @@ pub fn verify_marker(workspace: &Path) -> Result<MarkerProof, MarkerError> {
 /// inner error string.
 #[derive(Debug, Display, Error)]
 pub enum MintError {
-    /// failed to read workspace git state: {0}
+    /// failed to read workspace git state
     Git(#[from] DriverGitError),
     /// system clock returned a time before the unix epoch: {source}
     Clock {
@@ -245,7 +245,7 @@ pub enum MarkerError {
         marker_tree: GitOid,
         head_tree: GitOid,
     },
-    /// failed to read workspace git state: {0}
+    /// failed to read workspace git state
     Git(#[from] DriverGitError),
 }
 

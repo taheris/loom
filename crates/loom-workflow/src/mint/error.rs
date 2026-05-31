@@ -15,10 +15,10 @@ use crate::resolve::ResolveError;
 
 #[derive(Debug, Display, Error)]
 pub enum MintError {
-    /// bd CLI failure: {0}
+    /// bd CLI failure while minting findings
     Bd(#[from] BdError),
 
-    /// spec → epic resolution failed: {0}
+    /// spec → epic resolution failed while minting findings
     Resolve(#[from] ResolveError),
 
     /// structural violation: {count} open beads share label loom:mint:{fingerprint} (ids: {ids}); close all but one before re-running

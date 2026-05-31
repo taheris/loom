@@ -369,7 +369,7 @@ pub enum RunnerError {
     EncodeJson(#[source] serde_json::Error),
     /// llm error during conversation run: {0}
     Llm(String),
-    /// failed to build runner Conversation: {0}
+    /// failed to build runner Conversation
     Build(#[from] ConversationBuildError),
     /// invalid API key sourced from {var}: {source}
     ApiKey {

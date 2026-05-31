@@ -934,7 +934,7 @@ fn reason_for(marker: &str, line: &str, prior: &[&str]) -> Option<String> {
 /// `specs/gate.md` § *Findings and Minting*.
 #[derive(Debug, Display, Error)]
 pub enum WalkOutputError {
-    /// per-line parse failure: {0}
+    /// walk output contained an invalid LOOM_FINDING line
     Finding(#[from] FindingParseError),
     /// walk emitted {findings_count} LOOM_FINDING line(s) but no terminal marker (LOOM_COMPLETE / LOOM_CONCERN / LOOM_BLOCKED / LOOM_CLARIFY)
     MissingTerminalMarker { findings_count: usize },

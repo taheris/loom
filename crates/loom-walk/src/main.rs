@@ -69,7 +69,7 @@ fn main() -> ExitCode {
             }
         }
         Err(err) => {
-            eprintln!("loom-walk: {err}");
+            eprintln!("loom-walk: {err:#}");
             ExitCode::from(2)
         }
     }

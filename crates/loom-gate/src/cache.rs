@@ -305,7 +305,7 @@ pub enum CacheError {
         #[source]
         source: std::io::Error,
     },
-    /// sqlite error: {0}
+    /// sqlite error from the gate cache
     Sqlite(#[from] rusqlite::Error),
     /// cache mutex poisoned by a panicked writer
     Poisoned,

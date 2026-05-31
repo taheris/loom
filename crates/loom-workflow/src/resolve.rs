@@ -17,7 +17,7 @@ use loom_templates::review::TreeScopeEpic;
 /// Failures from [`resolve_open_epic`].
 #[derive(Debug, Display, Error)]
 pub enum ResolveError {
-    /// bd query failed: {0}
+    /// bd query failed while resolving the active molecule
     Bd(#[from] BdError),
     /// multiple open epics found for spec `{label}`: {ids}; close all but one before re-running
     InvariantViolation { label: String, ids: String },

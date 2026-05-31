@@ -172,10 +172,12 @@ the Mayor via `bd human` instead.
 
 - **RS-4** — *Per-module error enums via `thiserror` + `displaydoc`.*
   Messages go in doc comments — never `#[error("...")]` attributes.
-  Every `#[from]` variant must interpolate the wrapped error
-  (`/// foo failed: {0}`) so the inner `Display` survives — without
-  it, `warn!(error = %e)` and CLI exits print the wrapper sentence
-  and drop the actual cause.
+  A `#[from]` variant's `Display` must NOT interpolate the source
+  (no `{0}`); it carries this layer's context only. The chain
+  renders at the print site: `{err:#}` for CLI sinks (anyhow's
+  chain-walk); `?err` or `format!("{err:#}")` for `tracing`
+  fields — **never `%err`**, which uses `Display` and drops the
+  cause.
 - **RS-5** — *Nested directory module structure.* No central
   `types.rs` or `error.rs`. Types and errors live in the module that
   owns them. `lib.rs` has `pub mod` declarations only.

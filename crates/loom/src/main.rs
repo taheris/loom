@@ -2167,7 +2167,7 @@ fn run_loop_cmd(
                         Err(err) => {
                             return (
                                 SessionResult::PreflightFailed {
-                                    error: format!("open log sink: {err}"),
+                                    error: format!("open log sink: {err:#}"),
                                 },
                                 None,
                             );
@@ -2395,7 +2395,7 @@ async fn run_parallel_loop(
                         },
                     },
                     Err(e) => AgentOutcome::Failure {
-                        error: format!("{e}"),
+                        error: format!("{e:#}"),
                     },
                 }
             }

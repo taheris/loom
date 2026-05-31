@@ -43,6 +43,6 @@ pub enum GitError {
     /// invalid utf-8 in git CLI output
     Utf8(#[from] std::string::FromUtf8Error),
 
-    /// git CLI returned a malformed OID: {0}
+    /// git CLI returned a malformed OID
     ParseOid(#[from] ParseGitOidError),
 }

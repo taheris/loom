@@ -12,19 +12,19 @@ use crate::spec::SpecError;
 /// Errors raised by the `loom review` driver.
 #[derive(Debug, Display, Error)]
 pub enum ReviewError {
-    /// agent backend protocol failure: {0}
+    /// agent backend protocol failure during `loom review`
     Protocol(#[from] ProtocolError),
 
-    /// bd CLI failure: {0}
+    /// bd CLI failure during `loom review`
     Bd(#[from] BdError),
 
-    /// rendering the review.md template failed: {0}
+    /// rendering the review.md template failed
     Render(#[from] askama::Error),
 
-    /// log sink failure: {0}
+    /// log sink failure during `loom review`
     Log(#[from] LogError),
 
-    /// io operation failed: {0}
+    /// io operation failed during `loom review`
     Io(#[from] std::io::Error),
 
     /// reviewer agent did not emit LOOM_COMPLETE: {0}
@@ -42,18 +42,18 @@ pub enum ReviewError {
     /// `loom loop` handoff for auto-iteration failed: {0}
     RunHandoff(String),
 
-    /// state-db read/write failure: {0}
+    /// state-db read/write failure during `loom review`
     State(#[from] StateError),
 
-    /// profile-image manifest dispatch failed: {0}
+    /// profile-image manifest dispatch failed during `loom review`
     Profile(#[from] ProfileError),
 
     /// no active molecule for spec {0} — run `loom todo` before `loom review`
     NoActiveMolecule(String),
 
-    /// failed to load `[test]`/`[judge]` sources for review prompt: {0}
+    /// failed to load `[test]`/`[judge]` sources for review prompt
     Spec(#[from] SpecError),
 
-    /// spec → molecule resolution failed: {0}
+    /// spec → molecule resolution failed during `loom review`
     Resolve(#[from] crate::resolve::ResolveError),
 }
