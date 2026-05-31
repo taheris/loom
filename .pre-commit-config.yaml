@@ -64,7 +64,8 @@ repos:
 
       - id: loom-gate-verify-diff
         name: loom gate verify --diff
-        entry: pre-push-checks loom gate verify --diff HEAD
+        # `@{u}..HEAD` = the push range (specs/gate.md § Scope flags).
+        entry: pre-push-checks loom gate verify --diff '@{u}..HEAD'
         language: system
         stages: [pre-push]
         always_run: true

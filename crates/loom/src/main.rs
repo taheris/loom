@@ -852,27 +852,27 @@ fn run_gate(
         }
         Some(GateSubcommand::Status(_args)) => run_gate_status(workspace),
         Some(GateSubcommand::Verify(mut args)) => {
-            apply_default_scope(workspace, &mut args);
+            resolve_gate_scope(workspace, &mut args)?;
             run_gate_verify(workspace, &args)
         }
         Some(GateSubcommand::Check(mut args)) => {
-            apply_default_scope(workspace, &mut args);
+            resolve_gate_scope(workspace, &mut args)?;
             run_gate_single_tier(workspace, &args, Tier::Check)
         }
         Some(GateSubcommand::Test(mut args)) => {
-            apply_default_scope(workspace, &mut args);
+            resolve_gate_scope(workspace, &mut args)?;
             run_gate_single_tier(workspace, &args, Tier::Test)
         }
         Some(GateSubcommand::System(mut args)) => {
-            apply_default_scope(workspace, &mut args);
+            resolve_gate_scope(workspace, &mut args)?;
             run_gate_single_tier(workspace, &args, Tier::System)
         }
         Some(GateSubcommand::Audit(mut args)) => {
-            apply_default_scope(workspace, &mut args);
+            resolve_gate_scope(workspace, &mut args)?;
             run_gate_audit(workspace, args, agent_override)
         }
         Some(GateSubcommand::Review(mut args)) => {
-            apply_default_scope(workspace, &mut args.scope);
+            resolve_gate_scope(workspace, &mut args.scope)?;
             run_gate_review(
                 workspace,
                 args.scope,
@@ -883,7 +883,7 @@ fn run_gate(
             )
         }
         Some(GateSubcommand::Judge(mut args)) => {
-            apply_default_scope(workspace, &mut args);
+            resolve_gate_scope(workspace, &mut args)?;
             run_gate_review(
                 workspace,
                 args,
@@ -894,7 +894,7 @@ fn run_gate(
             )
         }
         Some(GateSubcommand::Rubric(mut args)) => {
-            apply_default_scope(workspace, &mut args);
+            resolve_gate_scope(workspace, &mut args)?;
             run_gate_review(
                 workspace,
                 args,
@@ -905,7 +905,7 @@ fn run_gate(
             )
         }
         Some(GateSubcommand::Mint(mut args)) => {
-            apply_default_scope(workspace, &mut args.scope);
+            resolve_gate_scope(workspace, &mut args.scope)?;
             run_gate_mint(workspace, args, agent_override)
         }
         Some(GateSubcommand::VerifyMarker) => run_gate_verify_marker(workspace),
@@ -944,6 +944,90 @@ fn apply_default_scope(workspace: &Path, args: &mut GateScopeArgs) {
         Some(commit) => format!("{commit}..HEAD"),
         None => "HEAD".to_owned(),
     });
+}
+
+/// Convert `args.diff` into a populated `args.files` via
+/// `git diff <range> --name-only`, per specs/gate.md § *Scope flags*:
+///
+/// > `--diff <range>` | Input set = `git diff <range> --name-only`
+/// > (committed + working tree in the range)
+///
+/// Honoured for every gate subcommand that consumes a `GateScopeArgs`:
+/// without this expansion the dispatcher's `args.files`-based filter
+/// (in `dispatch_tier` and `run_integrity_gate`) silently runs every
+/// verifier when only `--diff` is set — the very push-gate scenario
+/// the spec promises will scope by intersection.
+///
+/// Skipped when `args.files` is already populated (explicit `--files`
+/// wins) or when no `--diff` is set. `--tree` leaves both `args.diff`
+/// and `args.files` unset so dispatcher's "scope was set" check
+/// continues to flow through the tree-mode "match all" path.
+fn expand_diff_to_files(workspace: &Path, args: &mut GateScopeArgs) -> anyhow::Result<()> {
+    if !args.files.is_empty() {
+        return Ok(());
+    }
+    let Some(range) = args.diff.as_deref() else {
+        return Ok(());
+    };
+    let workdir = workspace.to_path_buf();
+    let range_owned = range.to_string();
+    let runtime = tokio::runtime::Runtime::new()?;
+    let result = runtime.block_on(async move {
+        let client = loom_driver::git::GitClient::open(&workdir)?;
+        client.changed_files_in_range(&range_owned, None).await
+    });
+    match result {
+        Ok(files) => args.files = files,
+        Err(err) => {
+            // Range refused (invalid commit, no upstream, etc.) or the
+            // workspace isn't a git repo — leave args.files empty and
+            // log to stderr. scope_is_finite still returns true (args.diff
+            // is set), so the dispatcher filter runs against the empty
+            // list and matches nothing — safer than silently running every
+            // verifier. mint's scope_for_mint still threads args.diff
+            // through to MintScope::Diff for the LLM rubric.
+            eprintln!(
+                "loom gate: --diff {range} expansion failed ({err:#}); running verifiers against empty scope.",
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `apply_default_scope` then `expand_diff_to_files` in one call.
+/// Every gate subcommand goes through this pair, so the dispatcher
+/// downstream sees a fully-resolved scope.
+///
+/// After both steps, `args.files` is normalised against `workspace`
+/// (relative paths become absolute). `filter_by_files` compares paths
+/// by equality against `annotation.source_spec`, which `parse()` sets
+/// to the absolute path it walked under `workspace.join("specs")`;
+/// leaving the file list relative would silently match nothing for
+/// every annotation — both the `--diff` expansion's git output and
+/// the pre-commit hook's `pass_filenames` payload are relative.
+fn resolve_gate_scope(workspace: &Path, args: &mut GateScopeArgs) -> anyhow::Result<()> {
+    apply_default_scope(workspace, args);
+    expand_diff_to_files(workspace, args)?;
+    for path in &mut args.files {
+        if path.is_relative() {
+            *path = workspace.join(&*path);
+        }
+    }
+    Ok(())
+}
+
+/// True iff the caller scoped to a finite file set (`--files`,
+/// `--diff`, or `--bead` — and post-`resolve_gate_scope`, the
+/// auto-defaulted bare invocation that becomes `--diff HEAD`).
+/// `--tree` is intentionally absent: it means "run every verifier",
+/// no filter. Used by `dispatch_tier` and `run_integrity_gate` to
+/// distinguish "scope resolved to empty set — run nothing" (e.g.
+/// clean working tree under bare invocation) from "no scope at all —
+/// run everything" (`--tree`). Per specs/gate.md § *Scope flags* the
+/// contract is that every finite scope flag defines an input set and
+/// verifiers run iff their declared inputs intersect.
+fn scope_is_finite(args: &GateScopeArgs) -> bool {
+    !args.files.is_empty() || args.diff.is_some() || args.bead.is_some()
 }
 
 /// Look up `loom.base_commit` for the open epic of `current_spec` via
@@ -1143,18 +1227,22 @@ fn run_gate_verify(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Tier loop for `loom gate verify`. When `--files` is set, the
-/// invocation is the pre-commit-stage entry whose spec contract is
-/// `integrity gate + [check]-tier verifiers whose declared inputs
-/// intersect staged files` (per `specs/pre-commit.md` § Stage
-/// composition); skipping `[test]` and `[system]` keeps the hook on
-/// its ~1s wall-time target and avoids spawning slow input-resolution
-/// probes (e.g. `nix --print-inputs ...`) for tiers that don't apply.
-/// Without `--files`, the loop honours `LOOM_VERIFY_TIERS` (the Nix
-/// `tests` derivation sets this to skip `[system]` inside the build
-/// sandbox).
+/// Tier loop for `loom gate verify`. An explicit `--files` invocation
+/// is the pre-commit-stage entry whose spec contract is `integrity
+/// gate + [check]-tier verifiers whose declared inputs intersect
+/// staged files` (per `specs/pre-commit.md` § Stage composition);
+/// skipping `[test]` and `[system]` keeps the hook on its ~1s
+/// wall-time target and avoids spawning slow input-resolution probes
+/// (e.g. `nix --print-inputs ...`) for tiers that don't apply. Other
+/// scopes (`--diff` / `--bead` / `--tree` / bare) honour
+/// `LOOM_VERIFY_TIERS` (the Nix `tests` derivation sets this to skip
+/// `[system]` inside the build sandbox). Explicit-`--files`
+/// detection requires `args.diff` to be unset: post-
+/// `resolve_gate_scope`, `--diff` invocations also populate
+/// `args.files` (with the diff's file list), so `args.diff.is_none()`
+/// is the disambiguator.
 fn verify_tiers_for_args(args: &GateScopeArgs) -> Vec<Tier> {
-    if !args.files.is_empty() {
+    if !args.files.is_empty() && args.diff.is_none() {
         return vec![Tier::Check];
     }
     verify_tiers_from_env()
@@ -1289,7 +1377,7 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
     let specs_dir = workspace.join("specs");
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
     let mut selected = filter_annotations(&parsed.annotations, tier, args);
-    if !args.files.is_empty() {
+    if scope_is_finite(args) {
         let mut input_resolver = build_input_resolver(workspace);
         selected = filter_by_files(&selected, &args.files, &mut input_resolver);
         if matches!(tier, Tier::Check | Tier::System) {
@@ -1399,7 +1487,7 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
         return Ok(0);
     }
     let cmd_resolver = FsCommandResolver::new(workspace);
-    if !args.files.is_empty() {
+    if scope_is_finite(args) {
         let mut input_resolver = build_input_resolver(workspace);
         annotations = filter_by_files(&annotations, &args.files, &mut input_resolver);
         annotations
