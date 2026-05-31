@@ -1083,7 +1083,7 @@ capped, total truncated to `PREVIOUS_FAILURE_MAX_LEN = 4000` chars):
 | `tree-not-clean` | `TreeNotClean { dirty_paths: Vec<String> }` | "Working tree was not clean after the bead committed: <N> uncommitted path(s). Stage them into a follow-up commit or revert them." Path list is capped at 30 entries; the truncation suffix names the overflow count. |
 | `observer-abort` | `DriverNotice` | "Session aborted by `<observer name>`: `<reason>`." |
 | `verify-fail` | `VerifyFailures(Vec<VerifierFailure>)` | One `VerifierFailure { target, exit_code, stderr_tail }` per failing `[check]` / `[test]` / `[system]` verifier. All failing verifiers are included; the budget is split across them with later failures truncated first; each `stderr_tail` is capped at ~1500 chars before split. If `review` also raised a concern, its reasoning is set as `review_notes` (separate ~1000-char budget) rendered under a `Review notes:` heading. |
-| `review-concern` | `ReviewConcern { summary: String, findings: Vec<Finding> }` | Summary is the parsed `summary` field from the terminal `LOOM_CONCERN: {"summary": "..."}` marker. `findings` is the buffered list of `LOOM_FINDING:` records the walk streamed before the terminator (per the typed `Finding` record in [gate.md § Findings and Minting](gate.md#findings-and-minting)). Per-finding tokens drive `mint`'s fix-up bead routing; the recovery prompt renders the summary plus a one-line-per-finding `evidence` digest. The in-code recovery cause is `RecoveryCause::ReviewConcern`. |
+| `review-concern` | `ReviewConcern { summary: String, findings: Vec<Finding> }` | Summary is the parsed `summary` field from the terminal `LOOM_CONCERN: {"summary": "..."}` marker. `findings` is the buffered list of `LOOM_FINDING:` records the walk streamed before the terminator (per the typed `Finding` record in [gate.md § Findings and Minting](gate.md#findings-and-minting)). Per-finding tokens drive `mint`'s routing: clarify-bound findings mint as single-finding clarify beads (one per finding), all other findings bundle into per-spec fix-up batches (one batch per lead-spec). The recovery prompt renders the summary plus a one-line-per-finding `evidence` digest. The in-code recovery cause is `RecoveryCause::ReviewConcern`. |
 | `bad-walk` (concern-malformed) | `BadWalk(BadWalk::Concern { payload: String, parsed_findings: Vec<Finding> })` | "Your `LOOM_CONCERN:` payload did not parse as `{"summary": "<non-empty>"}`. Literal payload after the marker: `<payload>`." When `parsed_findings` is non-empty, append a per-finding digest so the agent's diagnosis from the well-formed streamed findings is not lost. Wrapped-enum pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)`. |
 | `bad-walk` (concern-without-findings) | `BadWalk(BadWalk::ConcernWithoutFindings { summary: String })` | "You emitted `LOOM_CONCERN` with summary `<summary>` but no `LOOM_FINDING:` lines streamed. Either emit findings before the terminator or terminate with `LOOM_COMPLETE`." |
 | `bad-walk` (findings-without-concern) | `BadWalk(BadWalk::FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> })` | "You streamed `<finding_count>` `LOOM_FINDING:` line(s) but terminated with `LOOM_COMPLETE`. Use `LOOM_CONCERN: {"summary": "..."}` when findings are emitted." Per-finding digest of `findings` is appended so the agent's next iteration sees the diagnosis it just emitted. |
@@ -1364,7 +1364,7 @@ pub enum GateFailReason {
     StalledMaxIterations,                    // outer-loop counter exhausted
     SignalKilled,                            // child terminated by signal
     ReviewEvidenceMissing,                   // log file absent / empty / mismatched marker
-    IntegrityFinding,                        // unresolved annotation / stub test
+    IntegrityFinding,                        // unresolved annotation / stub test / unneeded pending marker — cap-exhausted; recoverable cases land via mint pipeline, not as a GateFail
 }
 
 pub enum BadWalk {
@@ -2639,20 +2639,34 @@ Criteria.
   [test](continuous_outer_loop_processes_fix_up_bead_then_exits_on_stall)
 - Push gate is a **four-condition AND**: bead labels, verify exit,
       review exit, integrity findings. Failure on any one input
-      refuses the push. The verdict is encoded as `GateOutcome`
-      (`Success` when all four hold, `Fail { reason }` otherwise);
-      the constructor for `GateSuccess` asserts each condition
-      structurally — see [Loop Outcome Types](#loop-outcome-types)
+      refuses the push. The integrity-findings input is **recoverable
+      within the molecule's iteration cap** (per [gate.md § Integrity
+      gate](gate.md#integrity-gate)); the other three are terminal. The
+      verdict is encoded as `GateOutcome` (`Success` when all four
+      hold, `Fail { reason }` otherwise); the constructor for
+      `GateSuccess` asserts each condition structurally — see
+      [Loop Outcome Types](#loop-outcome-types)
   [test](push_gate_evaluates_all_four_conditions)
 - Push gate refuses when `loom gate review`'s `--diff`-scoped
       invocation emits `LOOM_CONCERN`; molecule routes to recovery
       with cause `review-concern`
   [test](push_blocked_on_review_concern_with_id_payload)
-- Push gate refuses on any integrity-gate finding
-      (`UnresolvedAnnotation`, `StubTestFunction`) within the
-      molecule's diff scope; applies `loom:clarify` to the
-      molecule's epic with auto-generated `## Options — …` block
-  [test](push_blocked_on_integrity_finding_applies_clarify)
+- Push gate handles integrity-gate findings
+      (`UnresolvedAnnotation`, `StubTestFunction`,
+      `UnneededPendingMarker`) within the molecule's diff scope by
+      **recovery-first then escalate**: while the molecule's
+      iteration counter is below cap, the gate normalizes findings
+      to typed `Finding`s and dispatches them through the standard
+      `loom gate mint` pipeline (per [gate.md § Findings and
+      Minting](gate.md#findings-and-minting)). Findings bundle into
+      one fix-up batch per lead-spec, the push is refused, the
+      counter is incremented, and the outer loop re-enters so the
+      worker can address the batch. On cap exhaustion, the gate
+      falls back to the terminal escalation: `loom:clarify` on the
+      molecule's epic with one composed auto-generated `## Options
+      — …` block (kind-grouped resolutions per [gate.md § Integrity
+      gate](gate.md#integrity-gate))
+  [test?](push_gate_recovers_integrity_findings_until_cap_then_clarifies)
 - Push gate refuses on any verify-tier dispatch error (exit code
       2 = unknown verifier, command not found); dispatch errors
       count as fails, not skips
@@ -3374,12 +3388,19 @@ two agent-loop observers.
       `LOOM_BLOCKED` → `loom:blocked` on the molecule's epic, human
       resolution via `loom msg`; `LOOM_CLARIFY` → `loom:clarify` on
       the molecule's epic, structured-options resolution via `loom msg`.
-   4. **Integrity gate.** Zero `UnresolvedAnnotation` and zero
-      `StubTestFunction` findings across the molecule's diff scope.
-      An integrity finding refuses the push and applies `loom:clarify`
-      to the molecule's epic with the integrity gate's auto-generated
-      `## Options — …` block (Options Format Contract — see
-      [gate.md](gate.md)).
+   4. **Integrity gate.** Zero `UnresolvedAnnotation`, zero
+      `StubTestFunction`, and zero `UnneededPendingMarker` findings
+      across the molecule's diff scope. Integrity findings are
+      **recoverable within the molecule's iteration cap** (per
+      [gate.md § Integrity gate](gate.md#integrity-gate)): while
+      below cap, the verdict gate normalizes findings to typed
+      `Finding`s, dispatches them through the standard mint pipeline
+      (bundling into one fix-up batch per lead-spec), refuses the
+      push, increments the counter, and re-enters the loop. On cap
+      exhaustion, the gate falls back to terminal escalation —
+      `loom:clarify` on the molecule's epic with the integrity
+      gate's auto-generated `## Options — …` block (Options Format
+      Contract — see [gate.md](gate.md)).
 
    **Production wiring requirement.** The push-gate verdict MUST
    consume the exit codes of the verify and review invocations and

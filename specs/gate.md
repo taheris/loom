@@ -152,7 +152,7 @@ selecting the audit scope:
 | **`loom gate review`** | LLM judge, inspection | Runs the LLM rubric — conformance trace, contract closure, verifier honesty, mock discipline, invariant-clash scan. **Inspection-only**: emits `LOOM_FINDING:` lines + terminal marker to stdout, makes no bd writes. Run selectively (bead completion, on demand, scheduled). Consumes `verify` results as input. Includes `[judge]`-tier criterion verifiers and the rubric walk over the diff. |
 | **`loom gate judge`** | LLM judge, one lane | Runs only criterion-attached `[judge]` verifiers — skips the rubric walk. Inspection-only, like `review`. |
 | **`loom gate rubric`** | LLM judge, one lane | Runs only the rubric walk over the diff — skips criterion-attached judges. Inspection-only, like `review`. |
-| **`loom gate mint`** | Act | Walks the rubric (per-`--bead`/`--diff`/`--files` scope: LLM rubric only; per-`--tree` scope: deterministic verifiers + LLM rubric) and mints fix-up beads from typed findings, bonded per-spec via the molecule lifecycle. The sole driver-side mint chokepoint and the actor in `loom loop`'s per-bead path. See [*Findings and Minting*](#findings-and-minting). |
+| **`loom gate mint`** | Act | Walks the rubric (per-`--bead`/`--diff`/`--files` scope: LLM rubric only; per-`--tree` scope: deterministic verifiers + LLM rubric) and mints fix-up batches — one per lead-spec per mint run, bundling that spec's findings — bonded via the molecule lifecycle. Clarify-bound findings (today only `invariant-clash`) mint as one bead per finding so each carries its own `## Options — …` block; all other findings bundle into their spec's fix-up batch. The sole driver-side mint chokepoint and the actor in `loom loop`'s per-bead path. See [*Findings and Minting*](#findings-and-minting). |
 | **`loom gate verify-marker`** | Trust check | Reads `.loom/marker.json` from the current workspace, deserializes a typed `MarkerProof`, computes the current workspace fingerprint (tree OID at HEAD + porcelain-clean precondition), and exits 0 iff the marker validates against the current fingerprint. Invoked by the `pre-push-checks` wrapper (which wraps each slow-tier prek hook) to short-circuit redundant work on driver-loop integration pushes. **Not itself registered as a prek hook** — a standalone gating hook would block operator-manual pushes that legitimately have no marker. Diagnostic use (`loom gate verify-marker` on the CLI to inspect the current marker's state) remains valid. See [*Marker*](#marker). |
 
 ### Scope flags
@@ -304,6 +304,25 @@ The per-diff stage in `loom loop` composes `loom gate verify` and
 `loom gate mint` in sequence. `loom gate audit --bead <id>` (which
 composes `verify` + `review`) is the inspection-only alternative for
 ad-hoc human review; the loop never runs `review` directly.
+
+**Agent self-check before marker emit.** In `loom loop`'s bead
+container, the worker runs `loom gate verify --diff HEAD` before
+emitting `LOOM_COMPLETE` and resolves any findings in-session.
+
+This is the middle layer of a three-layer belt-and-braces audit:
+the bead-container pre-commit hook catches findings at commit time
+(per [pre-commit.md](pre-commit.md)); the agent preflight catches
+them at marker-emit; the driver-side push-gate audit catches them
+at push (and is the authoritative gate). The preflight is an
+optimization that reduces driver→agent bounces — failure modes it
+catches (typically integrity findings the agent forgot to address,
+e.g. stale `?` markers after the implementing diff landed) are
+caught by the driver-side audit anyway and recover via the push-gate
+recovery branch (per *Integrity gate* below).
+
+The contract is prompt-level — the agent narrates the verify run
+as part of its turn; the driver does not separately gate on the
+preflight's presence.
 
 **Production wiring.** `loom gate mint`'s walk is dispatched via the
 [`MintWalker`](#scope-dependent-walk) trait (defined in
@@ -483,7 +502,7 @@ the molecule lifecycle in
   before re-running.
 
 See [*Findings and Minting*](#findings-and-minting) for the full
-per-finding processing flow, dedup mechanism, and emit shape.
+per-batch processing flow, dedup mechanism, and emit shape.
 
 This behaviour is uniform whether `mint --tree` is invoked
 workspace-wide, narrowed to one spec via `--spec <X>`, or
@@ -731,24 +750,25 @@ finding hashes the same way across rubric runs.
 | `verifier-too-narrow` | Rubric | `Criterion { spec, anchor }` | fix-up |
 | `concurrency-untested` | Rubric | `LockSite { file, line }` | fix-up |
 | `judge-flag` | Rubric (`[judge]` criterion) | `Criterion { spec, anchor }` | fix-up |
-| `invariant-clash` | Rubric (invariant-clash scan) | `Invariant { spec, section, tag }` | **clarify** (evidence MUST embed `## Options — …`; mint falls back to blocked otherwise — see *Per-finding processing* step 2) |
+| `invariant-clash` | Rubric (invariant-clash scan) | `Invariant { spec, section, tag }` | **clarify** (evidence MUST embed `## Options — …`; mint falls back to blocked otherwise — see *Per-batch processing* step 4) |
 | `template-spec-drift` | Rubric (tree-scope only) | `Template { path }` | fix-up |
 | `cross-spec-clash` | Rubric (tree-scope only) | `Criterion { spec, anchor }` | fix-up |
 | `spec-conventions-violation` | Rubric (tree-scope only) | `Criterion { spec, anchor }` | fix-up |
 | `verifier-failed` | Deterministic verifier exit ≠ 0 (tree-scope only) | `Annotation { target_string }` | fix-up |
 | `dispatch-error` | Verifier exit 2 — command not found / missing prereq (tree-scope only) | `Annotation { target_string }` | fix-up |
-| `unresolved-annotation` | Integrity gate forward-resolution (tree-scope only) | `Annotation { target_string }` | fix-up |
-| `stub-pointing` | Integrity gate stub-pointing (tree-scope only) | `Annotation { target_string }` | fix-up |
+| `unresolved-annotation` | Integrity gate forward-resolution (tree-scope and push-gate scope) | `Annotation { target_string }` | fix-up |
+| `stub-pointing` | Integrity gate stub-pointing (tree-scope and push-gate scope) | `Annotation { target_string }` | fix-up |
+| `unneeded-pending-marker` | Integrity gate stale pending modifier (tree-scope and push-gate scope) | `Annotation { target_string }` | fix-up |
 | `multiple-annotations` | Integrity gate atomic-acceptance (tree-scope only) | `Criterion { spec, anchor }` | fix-up |
 | `pending-marker-resolved` | Sweeping walker (any scope) — a pending element (`?` or `~`) in structured spec input has resolved against the pending direction (`?` + present, or `~` + absent), so the author must drop the marker to its resolved value | `MatrixCell { spec, partial, template }` / `SurfaceElement { spec, kind, name }` / per-walker variant | fix-up |
 
 **Clarify-bound subset.** Today only `invariant-clash` routes to
-`loom:clarify`; the rest mint as plain fix-up beads. The "Routes
-to" column is the canonical enumeration mint consults when
-deciding whether to apply the evidence-must-have-options check at
-step 2 — adding a future clarify-bound token is a one-row table
-edit + the new token's enum entry; no per-token carve-out in the
-mint pipeline.
+`loom:clarify`; the rest bundle into their lead-spec's fix-up
+batch (per *Per-batch processing*). The "Routes to" column is the
+canonical enumeration mint consults when deciding whether to apply
+the evidence-must-have-options check at step 4 — adding a future
+clarify-bound token is a one-row table edit + the new token's enum
+entry; no per-token carve-out in the mint pipeline.
 
 `scope-creep` and `scope-shortfall` are per-bead tokens; the
 tree-scope walk does not emit them, and mint never receives them
@@ -785,7 +805,7 @@ LOOM_FINDING: {"token":"<token>","bonds":["<spec>",...],"target":<target>,"evide
   the canonical `## Options — …` block per the *Options Format
   Contract*. Mint validates this at parse time and falls back to
   `loom:blocked` with cause `clarify-without-options` when the
-  options block is absent — see *Per-finding processing* below.
+  options block is absent — see *Per-batch processing* below.
 
 `bonds` is *bonding* metadata; `target` is *identity* metadata. The
 two are kept separate so the driver can shift bonding (e.g., as
@@ -1021,23 +1041,26 @@ from "fingerprint stable" to "full struct round-trip."
 
 ### Fingerprint and dedup
 
-Each finding is fingerprinted to prevent duplicate fix-ups across
-mint invocations:
+Each minted batch is fingerprinted to prevent duplicate batches
+across mint invocations:
 
 ```
-fingerprint = hash(token || canonical_form(target))[:12]
+fingerprint = hash(sorted(token || canonical_form(target) for finding in batch))[:12]
 ```
 
-The fingerprint is **identity-only** — it depends on the token and
-the target's canonical form. `bonds` is deliberately excluded
-because bonding can shift across runs (a multi-spec finding's lead
-shifts when its previously-lead spec's epic closes and lead-selection
-falls to the next `bonds` element with an open epic; a single-spec
-finding could pick a different `bonds[0]` on re-walk). `evidence`
-is also excluded so prose changes (tightened reasoning, refined
-`## Options — …` text) do not re-mint a stable finding. Without
-these exclusions, the same underlying concern would re-mint every
-time its bonding or prose context drifted.
+The fingerprint is **identity-only** — it depends on the sorted
+set of per-finding `(token, canonical_form(target))` tuples in the
+batch. Sorting before hashing makes the result order-independent;
+the same set of findings emitted in a different stream order
+produces the same fingerprint. `bonds` is deliberately excluded
+because bonding can shift across runs without the underlying
+finding set changing (a multi-spec finding's lead shifts when its
+previously-lead spec's epic closes; a single-spec finding could
+pick a different `bonds[0]` on re-walk). `evidence` is also
+excluded so prose changes (tightened reasoning, refined `## Options
+— …` text) do not re-mint a stable batch. Without these
+exclusions, the same underlying batch would re-mint every time its
+bonding or prose context drifted.
 
 `canonical_form` is variant-aware so `Criterion { spec: "gate",
 anchor: "verifier-honesty" }` always serializes the same string
@@ -1046,64 +1069,105 @@ algorithm, delimiter form, and exact 12-character length are
 implementer's choice; what matters is that the result is stable
 across rubric runs and fits in a bd label.
 
-The fingerprint persists on the minted bead as a label:
+The fingerprint persists on the minted batch bead as a label:
 
 ```
-loom:mint:<12-char-hash>
+loom:fixup:<12-char-hash>
 ```
 
-Before minting a finding, the driver queries bd:
+Before minting a batch, the driver queries bd:
 
 ```
-bd query "label=loom:mint:<fingerprint> AND status=open"
+bd query "label=loom:fixup:<fingerprint> AND status=open"
 ```
 
 - **Zero results** — proceed to mint.
-- **One result** — skip (an open fix-up already exists for this
-  finding); log in the run summary.
+- **One result** — skip (an open batch already exists for this
+  finding set); log in the run summary.
 - **More than one** — structural violation (two beads share a
   fingerprint label); refuse and surface the conflicting IDs.
 
 Closed-then-reopened semantics: the query is intentionally narrow
-(`status=open`). A closed bead with the same fingerprint is *not*
+(`status=open`). A closed batch with the same fingerprint is *not*
 re-minted on subsequent runs — operator silence after closure is
 read as "decided not worth fixing." To force re-mint, the operator
-removes the `loom:mint:<fp>` label (or deletes the bead). Reopening
-alone does **not** force re-mint: the reopened bead still carries
+removes the `loom:fixup:<fp>` label (or deletes the bead). Reopening
+alone does **not** force re-mint: the reopened batch still carries
 the fingerprint, so the next dedup query matches an open bead and
 skips. The narrow query is also what makes mint idempotent against
 partial failure: a crash mid-run leaves the successfully-minted
-beads with their labels; the next mint invocation's dedup query
+batches with their labels; the next mint invocation's dedup query
 skips them and retries only the ones that failed.
 
-### Per-finding processing
+**Batch composition shift = new identity.** When the underlying
+finding set changes between runs (some findings resolved, others
+remain, new ones appear), the fingerprint changes. The old batch
+stays closed if the agent already closed it; a new batch mints
+with the new fingerprint. The system self-corrects via re-audit —
+any unresolved finding re-emerges in the next mint run's batch
+under a new composition. Closing a batch is the agent's signal
+that work on it is complete; it does not assert that every finding
+was individually resolved.
 
-For each `LOOM_FINDING:` line the driver receives:
+### Per-batch processing
 
-1. **Parse** into typed fields: `{ token, bonds, target, evidence }`.
-2. **Validate clarify-bound coupling.** If `token` is clarify-bound
-   per the `Routes to` column of *Concern tokens and target variants*
-   above, scan `evidence` for the canonical `## Options — <summary>`
-   heading followed by at least one `### Option <N> — <title>`
-   subsection (per the Options Format Contract). If absent or
-   malformed, fall back: route the finding through steps 3–6 below
-   as a regular fix-up, but apply `loom:blocked` (with cause
-   `clarify-without-options`) instead of `loom:clarify` at step 7.
-   A stranded clarify bead the chat-drafter cannot resolve is worse
-   than a blocked bead the human can re-classify via `msg -c`; the
-   agent should have emitted `LOOM_BLOCKED` directly when it could
-   not articulate options.
-3. **Compute fingerprint** per the previous subsection
-   (`hash(token || canonical_form(target))`; `bonds` and `evidence`
-   are excluded — fingerprinting on evidence would re-mint on any
-   prose tweak).
-4. **Dedup query** by `loom:mint:<fingerprint>` label. Zero results
+The driver buffers the streamed `LOOM_FINDING:` lines until the
+terminator, then processes them as one mint run, producing **one
+fix-up batch per lead-spec** (plus zero or more single-finding
+clarify beads per spec, since clarify findings each carry their
+own `## Options — …` block and cannot share a bead). Inside one
+mint run, processing proceeds as follows:
+
+1. **Parse** each `LOOM_FINDING:` line into typed fields:
+   `{ token, bonds, target, evidence }`. Per-line parse errors
+   surface as `BadWalk::MalformedFinding` (see *Emit shape*) and
+   the mint run is refused; the walk's recovery cause carries the
+   well-formed remainder so a re-run can fix the malformation.
+
+2. **Group findings by lead-spec.** For each well-formed finding,
+   pick the lead via *Multi-spec findings* below — first element
+   of `bonds` whose spec has an open epic, else `bonds[0]`.
+   Findings with the same lead group into the same per-spec
+   candidate. Multi-spec findings join only their lead-spec's
+   group; cross-spec visibility comes from `spec:<X>` labels on
+   the resulting bead (step 8).
+
+3. **Partition by routing within each group.** Each lead-spec
+   group yields:
+     - **At most one fix-up batch** containing every non-clarify-
+       bound finding for that spec.
+     - **N individual clarify beads** containing one clarify-bound
+       finding each (per the *Routes to* column of *Concern tokens
+       and target variants*), each carrying its own Option-Format-
+       Contract `## Options — …` from evidence.
+
+   Clarify-bound findings cannot share a bead because each carries
+   its own options block and `loom msg` consumes one block per
+   bead. The clarify path through steps 4–8 below treats each
+   clarify finding as a one-element batch.
+
+4. **Validate clarify-bound coupling.** For each clarify-bound
+   finding (single-finding batch), scan `evidence` for the canonical
+   `## Options — <summary>` heading followed by at least one
+   `### Option <N> — <title>` subsection (per the Options Format
+   Contract). If absent or malformed, fall back: route the finding
+   through steps 5–8 below as a single-finding fix-up bead, but
+   apply `loom:blocked` (with cause `clarify-without-options`)
+   instead of `loom:clarify` at step 8. A stranded clarify bead the
+   chat-drafter cannot resolve is worse than a blocked bead the
+   human can re-classify via `msg -c`; the agent should have emitted
+   `LOOM_BLOCKED` directly when it could not articulate options.
+
+5. **Compute the batch fingerprint** per *Fingerprint and dedup*
+   above (`hash(sorted [token + canonical_form(target) per finding
+   in batch])`; `bonds` and `evidence` are excluded). For a
+   single-element batch the fingerprint reduces to
+   `hash(token + canonical_form(target))`.
+
+6. **Dedup query** by `loom:fixup:<fingerprint>` label. Zero results
    → continue; one open result → skip; more than one → refuse.
-5. **Pick the bonding lead** from `bonds` per *Multi-spec findings*
-   below — first element of `bonds` whose spec has an open epic; if
-   none of the bonds have open epics, the lead is `bonds[0]` and
-   step 6 mints a molecule + epic for it.
-6. **Resolve the lead's molecule** via the single-tier query from
+
+7. **Resolve the lead's molecule** via the single-tier query from
    [harness.md — Molecule lifecycle](harness.md#molecule-lifecycle):
    ```
    bd query "type=epic AND label=spec:<lead> AND status=open"
@@ -1113,58 +1177,84 @@ For each `LOOM_FINDING:` line the driver receives:
      --type=epic --title="<lead>" --labels="spec:<lead>"
      --metadata "loom.base_commit=<HEAD>"`.
    - More than one → structural violation, refuse.
-7. **Mint the fix-up bead** with `bd create --type=task
-   --parent=<epic-id> --labels="loom:mint:<fingerprint>,<spec-labels>"`,
-   where `<spec-labels>` expands to one `spec:<X>` label per entry
-   in `bonds` so cross-spec searches surface the bead from every
-   named owner's perspective. Title and description shape is
-   implementer's choice; the description must include the evidence
-   string and the fingerprint, and the title must be stable across
-   runs for the same finding (deterministic from token + target).
-   **Clarify-bound findings whose evidence contains a well-formed
-   `## Options — …` block** additionally carry `loom:clarify`; the
-   evidence's options block is the canonical Options-Format-Contract
-   text the bead surfaces to `msg`. The `invariant-clash` token is
-   one such clarify-bound token; new clarify-bound tokens follow the
-   same path automatically — there is no per-token carve-out, only
-   the evidence-validation check at step 2.
 
-End-of-run summary (printed to stdout, no bd writes): `minted M,
-skipped K (dedup), refused R, errors E`, with per-finding fingerprint
+8. **Mint the batch bead** with `bd create --type=task
+   --parent=<epic-id> --labels="loom:fixup:<fingerprint>,<spec-labels>"`,
+   where `<spec-labels>` expands to one `spec:<X>` label per unique
+   entry across the union of `bonds` over the batch's findings, so
+   cross-spec searches surface the batch from every named owner's
+   perspective. Title and description shape is implementer's choice;
+   the description must enumerate every finding in the batch (one
+   item per finding: token, target's canonical form, evidence
+   excerpt) and the title must be stable across runs for the same
+   batch (deterministic from the sorted finding tuples).
+   **Single-finding clarify batches whose evidence contains a
+   well-formed `## Options — …` block** additionally carry
+   `loom:clarify`; the evidence's options block is the canonical
+   Options-Format-Contract text the bead surfaces to `msg`. The
+   `invariant-clash` token is one such clarify-bound token; new
+   clarify-bound tokens follow the same path automatically — there
+   is no per-token carve-out, only the evidence-validation check
+   at step 4.
+   **Fix-up batches** (multi-finding or single-finding non-clarify)
+   carry only `loom:fixup:<fp>` and the spec labels.
+
+End-of-run summary (printed to stdout, no bd writes):
+`minted M batches (F findings across S specs), skipped K (dedup),
+refused R, errors E`, with per-batch fingerprint, finding count,
 and resulting bead id listed.
+
+**Worker discretion on a minted fix-up batch.** The agent
+dispatched against a fix-up batch reads the description's
+enumerated findings and decides:
+
+- Fix every finding in one diff and close the batch.
+- Fix a subset and split the remainder into sibling fix-up beads
+  under the molecule epic via `bd create --parent=<molecule-epic-id>`
+  for deferred work, then close the batch. (Parent is the molecule
+  epic, not the batch — the molecule lifecycle expects fix-ups
+  bonded as direct epic children.)
+- Emit `LOOM_CLARIFY` if no progress is possible (routed via the
+  standard per-bead clarify path).
+
+Closing the batch is the agent's signal that work on it is
+complete; the system self-corrects via re-audit — any unresolved
+finding re-emerges in the next mint run's batch under a new
+fingerprint (composition has shifted).
 
 ### Per-bead mint summary semantics
 
 `loom gate mint --bead <id>` exits non-zero when `refused > 0` or
-`errors > 0`; otherwise exit 0 even on `minted > 0` (creating fix-up
-beads is a successful run). The driver — primarily `loom loop`'s
-per-bead path — interprets the exit code and summary together:
+`errors > 0`; otherwise exit 0 even on `minted > 0` (creating
+fix-up batches is a successful run). The driver — primarily
+`loom loop`'s per-bead path — interprets the exit code and
+summary together:
 
 - **Clean exit (refused == 0, errors == 0, any minted count).** The
-  bead's work is done; whatever fix-ups were minted surface on the
+  bead's work is done; whatever batches were minted surface on the
   next outer-loop pass via `bd ready`. Per-bead path returns Done.
-- **`refused > 0` — structural bd violation.** Refusal means either
-  the dedup query (*Per-finding processing* step 3) returned >1 open
-  bead sharing the fingerprint label, or the lead-resolution query
-  (step 5) returned >1 open epic for the spec. Both are
-  operator-resolvable bd states, not transient failures. The per-bead
-  path routes the bead to `loom:blocked` with cause
-  `mint-structural-violation` and the conflicting bead ids in the
-  detail. Next `loom loop` pass after cleanup picks up where it left
-  off via dedup re-resolve.
+- **`refused > 0` — structural bd violation.** Refusal means
+  either the dedup query (*Per-batch processing* step 6) returned
+  >1 open batch sharing the fingerprint label, or the
+  lead-resolution query (step 7) returned >1 open epic for the
+  spec. Both are operator-resolvable bd states, not transient
+  failures. The per-bead path routes the bead to `loom:blocked`
+  with cause `mint-structural-violation` and the conflicting bead
+  ids in the detail. Next `loom loop` pass after cleanup picks up
+  where it left off via dedup re-resolve.
 - **`errors > 0` — transient.** Unexpected failure during mint
   itself: bd CLI fault, subprocess timeout, or a `bd create` /
-  `bd list` invocation that returned an unexpected shape. The per-
-  bead path threads the summary's error detail into `PreviousFailure`
-  and re-runs through the existing recovery loop bounded by
-  `[loop] max_retries`. After the retry budget exhausts, the bead
-  routes to `loom:blocked` with cause `retry-exhausted` and the
-  accumulated error context in notes — same recovery-exhaustion path
-  the loop-phase uses. (Previously this routed to `loom:clarify`, but
-  the driver cannot synthesize the `## Options — …` block from raw
-  mint errors, so per the Options Format Contract the correct
-  terminal label is `loom:blocked`; `msg -c` walks the human through
-  candidate resolutions in-session.)
+  `bd list` invocation that returned an unexpected shape. The
+  per-bead path threads the summary's error detail into
+  `PreviousFailure` and re-runs through the existing recovery loop
+  bounded by `[loop] max_retries`. After the retry budget exhausts,
+  the bead routes to `loom:blocked` with cause `retry-exhausted`
+  and the accumulated error context in notes — same recovery-
+  exhaustion path the loop-phase uses. (Previously this routed to
+  `loom:clarify`, but the driver cannot synthesize the `## Options
+  — …` block from raw mint errors, so per the Options Format
+  Contract the correct terminal label is `loom:blocked`; `msg -c`
+  walks the human through candidate resolutions in-session.)
 
 The bead's underlying work (the agent's loop-phase) is unaffected by
 this routing; mint runs *after* the agent signals Success per
@@ -1179,31 +1269,38 @@ spans seams (e.g., an `orphan-integration` contract spanning two
 sibling specs). The `bonds` array is always present, always at
 least one element; single-spec findings have a one-element array.
 
-**Lead-spec selection rule.** The driver walks `bonds` in order
-and picks the first element whose spec has an open epic. If none
-of the bonds have an open epic, the lead is `bonds[0]` and mint
-creates a molecule + epic for it. This treats the rubric's
-ordering as authoritative for primacy while preferring existing
-molecules over creating new ones.
+**Lead-spec selection rule (per finding).** The driver walks each
+finding's `bonds` in order and picks the first element whose spec
+has an open epic. If none of the bonds have an open epic, the lead
+is `bonds[0]` and mint creates a molecule + epic for it. This
+treats the rubric's ordering as authoritative for primacy while
+preferring existing molecules over creating new ones.
 
-The fix-up bead is `--parent`-ed to the lead spec's epic and
-carries one `spec:<X>` label per `bonds[i]` so cross-spec searches
-surface it from every named owner's perspective.
+**Batching follows the lead.** A multi-spec finding joins its
+lead-spec's batch (per *Per-batch processing* step 2) — never
+duplicates across multiple specs' batches. The resulting batch
+bead is `--parent`-ed to the lead spec's epic and carries one
+`spec:<X>` label per unique entry across the **union of `bonds`
+over the batch's findings**, so a finding bonded to {gate, harness}
+contributes `spec:harness` to a batch that mostly bonds {gate}
+alone. Cross-spec searches surface the batch from every named
+owner's perspective.
 
 **Bonding shifts are not identity shifts.** Because the
-fingerprint depends only on `(token, canonical_form(target))` and
-*not* on `bonds`, a finding's identity is stable even when the
-bonding context changes between runs (e.g., a new spec joins
-`bonds`, or an open epic closes). The existing fix-up bead remains
-in its original molecule; subsequent walks see the dedup label and
-skip re-minting. Lead-selection is only consulted at first-mint
-time.
+fingerprint depends only on the sorted set of per-finding `(token,
+canonical_form(target))` tuples and *not* on `bonds`, a batch's
+identity is stable even when the bonding context changes between
+runs (e.g., a new spec joins one finding's `bonds`, or an open
+epic closes). The existing batch bead remains in its original
+molecule; subsequent walks see the dedup label and skip
+re-minting. Lead-selection is only consulted at first-mint time.
 
 **Validation rule.** For target variants that carry a `spec`
 field (`Criterion` and `Invariant`), `target.spec` MUST appear in
-`bonds` — the rubric cannot cite a criterion or invariant in spec
-X while bonding only to spec Y. Validation failure rejects the
-finding with a typed parse error.
+that finding's `bonds` — the rubric cannot cite a criterion or
+invariant in spec X while bonding only to spec Y. Validation
+failure rejects the finding with a typed parse error and refuses
+the mint run (per *Per-batch processing* step 1).
 
 ## Marker
 
@@ -1435,10 +1532,55 @@ Each criterion's annotation is resolved per its tier:
 
 | Tier | Target shape | Dispatch |
 |------|--------------|----------|
-| `[check]` | `[check](command)` — shell command | Each annotation invokes its own process (often a walk binary the consumer ships). |
+| `[check]` | `[check](command)` — argv string | Each annotation invokes its own process (often a walk binary the consumer ships). |
 | `[test]` | `[test](path)` — language-native test path (e.g. `crate::module::test_name`, `tests/test_foo.py::test_bar`) | The gate collects all `[test]` targets in a single `loom gate test` invocation and issues **one** runner subprocess (e.g. `cargo nextest run -E 'test(p1) \| test(p2) \| ...'`). One process per invocation, full internal parallelism. |
-| `[system]` | `[system](command)` — shell command | Each annotation invokes its own process. System verifiers are inherently slow and self-contained; batching doesn't help. |
+| `[system]` | `[system](command)` — argv string | Each annotation invokes its own process. System verifiers are inherently slow and self-contained; batching doesn't help. |
 | `[judge]` | `[judge](path)` — file path or criterion id whose content is the LLM rubric | The gate collects all `[judge]` targets and issues concurrent LLM calls (API-level parallelism). |
+
+### Command tokenisation
+
+`[check]` and `[system]` targets are **argv strings, not shell
+commands**. The dispatcher runs `shlex::split(command)` and treats
+the first token as the binary and the remainder as argv — no shell
+wrapper, no `/bin/sh -c`. Shell-only constructs do not survive
+tokenisation and either fail at exec time or become literal argv
+elements with surprising effects:
+
+- Leading `!` (negation) — becomes `argv[0]`; exec fails with
+  "No such file or directory".
+- `|`, `&&`, `||`, `;` — become literal argv elements passed to
+  the first binary.
+- `>`, `<`, `2>&1` — same; no redirection occurs.
+- `$(...)`, `` `...` `` — no command substitution; the literal
+  text is passed.
+- Globs (`*`, `?`, `[abc]`), `~`, brace expansion — no expansion;
+  the literal text is passed.
+
+Two idiomatic workarounds when an annotation genuinely needs
+shell semantics:
+
+1. **Shell-free rewrite (preferred).** Re-encode the assertion
+   using a tool that does the equivalent in one process. The
+   common case — *"file does NOT contain pattern X"* (the natural
+   `! grep -q X file` form) — encodes shell-free as:
+   ```
+   [check](awk 'BEGIN{found=0} /X/{found=1} END{exit found}' file)
+   ```
+   Exits 0 iff `X` is absent. Same semantics, no shell.
+
+2. **`bash -c "…"` wrapper.** When the assertion really needs a
+   pipeline, a redirect, or compound logic, wrap the whole thing
+   in a single shell invocation:
+   ```
+   [check](bash -c "grep -E 'X' file | wc -l | grep -qx '3'")
+   ```
+   The dispatcher sees `bash` as `argv[0]` and `-c "…"` as the
+   remaining argv, which is well-formed.
+
+Prefer the shell-free rewrite when one fits — fewer moving parts
+and faster (no shell-startup overhead per invocation). Reach for
+`bash -c` when the natural shell-encoding is materially clearer
+than any single-tool equivalent.
 
 ### Pending modifier
 
@@ -1528,7 +1670,9 @@ The modifier is **self-cleaning**. It is modelled on Rust's
 tolerated while the underlying condition holds; the moment the
 condition resolves, the marker *itself* becomes the finding. The
 implementer who lands the verifier must drop the `?` in the same
-diff or the push gate refuses on `UnneededPendingMarker`. This
+diff or the push gate refuses on `UnneededPendingMarker`
+(recoverable: the finding mints into a fix-up batch and the loop
+re-enters until the cap exhausts; see *Integrity gate*). This
 forces co-incidence between *"target now resolves"* and
 *"marker now removed,"* so the spec tree never carries stale
 markers past the molecule's push gate.
@@ -1865,12 +2009,59 @@ Failure output (one per finding):
 - `<spec>:<line>: annotation [tier](<target>) points at stub function`
 - `<spec>:<line>: annotation [tier?](<target>) is now resolved — drop the ? marker`
 
-**Integrity findings are terminal at the push gate** (harness.md
-FR9). `UnresolvedAnnotation`, `StubTestFunction`, and
-`UnneededPendingMarker` findings within the molecule's diff scope
-refuse the push and apply `loom:clarify` to the molecule's epic
-with an auto-generated `## Options — …` block per the *Options
-Format Contract* above.
+**Integrity findings at the push gate are recoverable up to the
+molecule's iteration cap.** When `loom gate verify --diff
+<molecule.base_commit>..HEAD` (the molecule-completion audit)
+produces one or more `UnresolvedAnnotation`, `StubTestFunction`,
+or `UnneededPendingMarker` findings within the molecule's diff
+scope, the verdict gate normalizes each into a typed `Finding` per
+the mapping in *Findings and Minting — Concern tokens and target
+variants* and dispatches them through the standard mint pipeline
+(per *Per-batch processing*). The findings bundle into one fix-up
+batch per lead-spec, carrying all integrity findings the audit
+emitted for it. The push is refused for this iteration, the
+iteration counter is incremented, and the outer loop re-enters so
+the worker can address the batch.
+
+**Cap-exhausted fallback.** The recovery branch is bounded by the
+molecule's iteration cap. When the counter exhausts, the verdict
+gate falls back to the terminal escalation: `loom:clarify` on the
+molecule's epic with **one composed `## Options — …` block** per
+the *Options Format Contract*. The composition rule is mechanical:
+
+- For each integrity finding kind present in the molecule's
+  findings (in the order they appear below — `UnresolvedAnnotation`,
+  `StubTestFunction`, `UnneededPendingMarker`), emit one
+  `### Option N` entry drawn from the **primary (Option 1) of that
+  kind's per-kind auto-options template** below, scoped to the
+  affected findings (e.g. *"Option 1 — Drop the `?` markers at
+  specs/templates.md lines 913, 920, 925"*).
+- Close the block with one final `### Option N` for
+  *"Mixed resolution via `msg -c` chat"* — the escape hatch when
+  the operator needs different resolutions across findings or wants
+  options beyond each kind's primary.
+
+This preserves the Options-Format-Contract invariant of one block
+per clarify bead while keeping per-kind resolution paths visible
+to the operator.
+
+**Worker authority on the recovery branch.** Findings are not
+classified as self-fixable in the driver; the worker is the
+authority on whether one turn can resolve every finding in the
+batch. A worker that cannot resolve the batch emits `LOOM_CLARIFY`
+from its own dispatch, which routes through the standard per-bead
+clarify path — the iteration cap is the backstop for both "worker
+keeps failing on the same finding" and "findings are intrinsically
+clarify-shaped."
+
+**Per-kind auto-options templates.** The templates below are the
+building blocks the composition draws from. Two consumption sites:
+
+- **Recovery branch (cap not exhausted).** The worker's fix-up
+  batch description embeds the kind-appropriate template alongside
+  each finding as a suggested mechanical resolution.
+- **Cap-exhausted fallback.** The gate composes one primary option
+  per present kind from these templates per the rule above.
 
 **Auto-generated options for `UnresolvedAnnotation`.** The gate has
 enough information (target string, tier, spec location) to draft
@@ -1994,7 +2185,7 @@ mode* on absence are uniform:
 
 | Path | Writer of the options block | Where the block lives | Validator | Failure mode |
 |---|---|---|---|---|
-| **Mint-from-finding** (worker phase emits `LOOM_FINDING` with a clarify-bound token) | Rubric agent — embeds the block inside `evidence` | Mint extracts from `evidence` into the minted bead's description | `loom gate mint` (per *Per-finding processing* step 2) | Fall back to `loom:blocked` cause `clarify-without-options` |
+| **Mint-from-finding** (worker phase emits `LOOM_FINDING` with a clarify-bound token) | Rubric agent — embeds the block inside `evidence` | Mint extracts from `evidence` into the minted bead's description | `loom gate mint` (per *Per-batch processing* step 4) | Fall back to `loom:blocked` cause `clarify-without-options` |
 | **Direct-emit `LOOM_CLARIFY`** (worker phase emits the marker; target bead is the bead under dispatch for `loop` / `review`, the molecule epic for `todo_*` per [templates.md — Decomposition Discipline](templates.md#decomposition-discipline)) | The worker agent itself, via `bd update --notes` / `bd update --description` against the target bead before emitting the marker | The target bead's notes or description | Verdict gate (per [harness.md § Verdict Gate](harness.md#verdict-gate) marker definitions) | Fall back to `loom:blocked` cause `clarify-without-options` |
 | **Existing-bead promotion** (chat agent in `msg -c` upgrades a `loom:blocked` bead) | The chat agent, with human authorization | The bead's notes (added via `bd update --notes` before `bd update --add-label=loom:clarify`) | None — the chat agent has bd-write authority and the human authorizes each turn (per [harness.md § Msg Modes](harness.md#msg-modes)) | n/a (no automatic validation; if the chat agent skips the options write, the human catches it next turn) |
 
@@ -2045,19 +2236,24 @@ and git commits already provide the durable record:
 
 - **Per-diff verify failures** drive the existing recovery loop
   with `previous_failure` context. They do not produce Finding
-  records or fix-up beads.
-- **Rubric findings** (per-diff via `mint --bead`) and
-  **deterministic + rubric findings** (tree scope via `mint --tree`)
-  are minted into fix-up beads, bonded per-spec via the molecule
-  lifecycle (see [*Findings and Minting*](#findings-and-minting)).
+  records or fix-up batches.
+- **Rubric findings** (per-diff via `mint --bead`),
+  **deterministic + rubric findings** (tree scope via `mint --tree`),
+  and **push-gate integrity findings** (per *Integrity gate*'s
+  recovery branch) all bundle into fix-up batches — one batch per
+  lead-spec per mint run — bonded via the molecule lifecycle (see
+  [*Findings and Minting*](#findings-and-minting)).
 - **Clarify-bound findings** (currently `invariant-clash`; future
-  clarify-bound tokens follow the same path automatically) carry
-  `loom:clarify` on the minted bead, with the `## Options — …`
-  block from the finding's `evidence` rendered into the bead's
-  description per the Options Format Contract. Clarify-bound
-  findings whose evidence lacks a well-formed options block fall
-  back to `loom:blocked` with cause `clarify-without-options`
-  rather than minting a stranded clarify bead.
+  clarify-bound tokens follow the same path automatically) mint as
+  single-finding beads — one bead per finding, never bundled —
+  carrying `loom:clarify` with the `## Options — …` block from the
+  finding's `evidence` rendered into the bead's description per the
+  Options Format Contract. The per-finding (not bundled) shape is
+  load-bearing because `loom msg` cannot consume a bead carrying
+  multiple options blocks. Clarify-bound findings whose evidence
+  lacks a well-formed options block fall back to `loom:blocked`
+  with cause `clarify-without-options` rather than minting a
+  stranded clarify bead.
 
 Past gate runs are not persisted; *past passes don't grant immunity
 from re-evaluation*. Conformance is a property of the current
@@ -2090,14 +2286,15 @@ Per-stage flag handling:
   clarify on the fix-up bead. Clashes never trigger fresh-agent
   retry of the bead that surfaced them.
 - **Standing** — `loom gate mint --tree` walks the deterministic
-  verifiers and the LLM rubric, mints typed findings as fix-up
-  beads bonded to each owning spec's open epic (resolved via single
-  bd query per *Standing-safety-net checks* above); a fresh
-  molecule + epic is minted when no open epic exists for the spec.
-  Invariant clashes surface via `loom:clarify` on the minted
-  fix-up bead; resolved in the next `loom msg` walk. See
-  [*Findings and Minting*](#findings-and-minting) for the
-  per-finding processing flow.
+  verifiers and the LLM rubric, mints typed findings as one fix-up
+  batch per spec (plus single-finding clarify beads for any
+  clarify-bound findings) bonded to each owning spec's open epic
+  (resolved via single bd query per *Standing-safety-net checks*
+  above); a fresh molecule + epic is minted when no open epic
+  exists for the spec. Invariant clashes surface via `loom:clarify`
+  on the minted single-finding clarify bead; resolved in the next
+  `loom msg` walk. See [*Findings and Minting*](#findings-and-minting)
+  for the per-batch processing flow.
 
 ### Post-hoc recovery — when the push gate was skipped
 
@@ -2357,70 +2554,80 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   target content — fails the mint invocation with a typed parse
   error naming the offending line; no silent skip
   [test](mint_malformed_loom_finding_fails_run_with_typed_error)
-- The dedup query (`bd query "label=loom:mint:<fp> AND status=open"`)
-  returning one open result causes the finding to be skipped
-  [test](mint_dedup_query_one_open_result_skips_finding)
+- The dedup query (`bd query "label=loom:fixup:<fp> AND status=open"`)
+  returning one open result causes the batch to be skipped
+  [test?](mint_dedup_query_one_open_result_skips_batch)
 - The dedup query returning zero results proceeds to mint
-  [test](mint_dedup_query_zero_results_proceeds_to_mint)
+  [test?](mint_dedup_query_zero_results_proceeds_to_mint)
 - The dedup query returning more than one open result is refused
   as a structural violation
-  [test](mint_dedup_query_multiple_open_results_refuses_as_structural_violation)
-- A closed bead carrying the same fingerprint label is not
-  re-minted on subsequent runs; only removing the `loom:mint:<fp>`
+  [test?](mint_dedup_query_multiple_open_results_refuses_as_structural_violation)
+- A closed batch bead carrying the same fingerprint label is not
+  re-minted on subsequent runs; only removing the `loom:fixup:<fp>`
   label or deleting the bead forces re-mint
-  [test](mint_dedup_does_not_re_mint_closed_bead_with_same_fingerprint)
-- Reopening a closed bead does not force re-mint — the reopened
-  bead still carries the fingerprint and dedups against itself
-  [test](mint_dedup_skips_reopened_bead_still_carrying_fingerprint_label)
-- The fingerprint hash is stable across rubric runs for the same
-  finding (same `token`, same canonicalized `target` → same
-  12-character hash, regardless of how `bonds` is ordered or which
-  spec ultimately wins lead-selection)
-  [test?](mint_fingerprint_is_stable_across_rubric_runs_for_same_finding)
-- The minted fix-up bead is `--parent`-ed to the lead spec's open
-  epic and carries the `loom:mint:<fingerprint>` label
-  [test](mint_creates_fixup_with_parent_epic_and_fingerprint_label)
-- The bonding lead is the first element of the finding's `bonds`
+  [test?](mint_dedup_does_not_re_mint_closed_batch_with_same_fingerprint)
+- Reopening a closed batch bead does not force re-mint — the
+  reopened bead still carries the fingerprint and dedups against
+  itself
+  [test?](mint_dedup_skips_reopened_batch_still_carrying_fingerprint_label)
+- The batch fingerprint hash is stable across rubric runs for the
+  same finding set (sorted `(token, canonical_form(target))` per
+  finding → same 12-character hash, regardless of stream order,
+  bonds ordering, or which spec wins lead-selection)
+  [test?](mint_fingerprint_is_stable_across_rubric_runs_for_same_finding_set)
+- Each minted batch bead is `--parent`-ed to the lead spec's open
+  epic and carries the `loom:fixup:<fingerprint>` label plus one
+  `spec:<X>` label per unique entry across the union of `bonds`
+  over the batch's findings
+  [test?](mint_creates_batch_with_parent_epic_fingerprint_and_union_spec_labels)
+- The bonding lead is the first element of each finding's `bonds`
   array whose spec has an open epic; if none of the bonds have an
   open epic, the lead is `bonds[0]` and mint creates a molecule +
-  epic for it. The minted fix-up carries one `spec:<X>` label per
-  element of `bonds` so cross-spec searches surface it from every
-  owner's perspective
-  [test](mint_bonding_lead_is_first_bonds_element_with_open_epic)
-- A finding's fingerprint depends on `token` and
-  `canonical_form(target)` only — never on `bonds`. The same
-  finding emitted on a re-run with a different bonds-array
-  ordering or a different lead-spec resolves to the same
-  fingerprint and dedups against the existing fix-up bead
+  epic for it. Findings sharing a lead bundle into the same per-spec
+  fix-up batch
+  [test?](mint_bonding_lead_is_first_bonds_element_with_open_epic_findings_with_same_lead_share_batch)
+- The batch fingerprint depends on the sorted set of per-finding
+  `(token, canonical_form(target))` tuples only — never on `bonds`.
+  The same finding set emitted on a re-run with different per-finding
+  bonds ordering or different lead-spec resolves to the same
+  fingerprint and dedups against the existing batch bead
   [test?](mint_fingerprint_excludes_bonds_so_bonding_shifts_do_not_remint)
-- For target variants that carry a spec field (currently only
-  `Criterion`), `target.spec` MUST appear in `bonds`; a finding
-  that violates this is rejected with a typed parse error
-  [test](mint_rejects_criterion_target_whose_spec_is_not_in_bonds)
-- `invariant-clash` findings mint a fix-up bead carrying both
-  `loom:mint:<fp>` and `loom:clarify` labels, with the description
-  embedding the `## Options — …` block extracted from the finding's
-  `evidence` per the *Options Format Contract*
-  [test](mint_invariant_clash_finding_creates_fixup_with_clarify_label_and_options_block)
-- Any clarify-bound finding (token whose mint would label the
-  resulting bead `loom:clarify`) whose `evidence` lacks a
-  well-formed `## Options — <summary>` heading with at least one
-  `### Option <N> — <title>` subsection is refused at mint and
-  falls back to a fix-up bead carrying `loom:blocked` with cause
-  `clarify-without-options` — never a stranded clarify bead the
-  chat-drafter cannot resolve
+- For target variants that carry a spec field (currently
+  `Criterion` and `Invariant`), `target.spec` MUST appear in that
+  finding's `bonds`; a finding that violates this is rejected with
+  a typed parse error and the containing mint run is refused
+  [test?](mint_rejects_criterion_target_whose_spec_is_not_in_bonds)
+- Clarify-bound findings mint as single-finding beads (one bead
+  per clarify-bound finding, not bundled into the spec's fix-up
+  batch) carrying both `loom:fixup:<fp>` and `loom:clarify` labels,
+  with the description embedding the `## Options — …` block
+  extracted from the finding's `evidence` per the *Options Format
+  Contract*
+  [test?](mint_clarify_bound_finding_creates_single_bead_with_clarify_label_and_options_block)
+- Any clarify-bound finding whose `evidence` lacks a well-formed
+  `## Options — <summary>` heading with at least one `### Option
+  <N> — <title>` subsection falls back to a fix-up bead carrying
+  `loom:blocked` with cause `clarify-without-options` — never a
+  stranded clarify bead the chat-drafter cannot resolve
   [test?](mint_clarify_bound_finding_without_options_falls_back_to_blocked)
-- A clarify-bound finding whose evidence carries a well-formed
-  options block mints a fix-up bead carrying `loom:clarify` — the
-  same path `invariant-clash` uses today; new clarify-bound tokens
-  added in future inherit it automatically via the evidence-
-  validation check at *Per-finding processing* step 2
-  [test?](mint_any_clarify_bound_finding_with_options_mints_clarify_bead)
-- The fingerprint hash excludes `evidence` — the same finding
+- The batch fingerprint excludes `evidence` — the same finding set
   emitted on a re-run with tweaked evidence prose resolves to the
-  same fingerprint and dedups against the existing fix-up bead (so
+  same fingerprint and dedups against the existing batch bead (so
   an options-text edit does not re-mint)
   [test?](mint_fingerprint_excludes_evidence_so_prose_changes_do_not_remint)
+- Fix-up batches enumerate every finding in the bead description
+  (one item per finding: token, target's canonical form, evidence
+  excerpt); the title is stable across runs for the same batch
+  (deterministic from the sorted finding tuples)
+  [test?](mint_batch_description_enumerates_findings_and_title_is_stable)
+- A fix-up batch carrying multiple findings exposes worker
+  discretion to fix all and close, fix a subset and split the
+  remainder into sibling fix-up beads under the molecule epic via
+  `bd create --parent=<molecule-epic-id>` for deferred work, or
+  emit `LOOM_CLARIFY` for no-progress cases; the bead's acceptance
+  criterion is "agent processed the batch", not "every finding
+  individually resolved"
+  [judge?](specs/agent/batch_acceptance_is_agent_processed.md)
 - `mint --bead <id>` walks the LLM rubric only, not the deterministic
   verifiers; verify-side findings have already been handled by the
   preceding `verify --bead <id>` step in the loop
@@ -2430,10 +2637,10 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   source
   [test](mint_tree_scope_walks_verifiers_and_rubric_emitting_findings_from_both)
 - Mint is idempotent against partial failure: a crash mid-run leaves
-  the successfully-minted beads with their fingerprint labels; a
+  the successfully-minted batches with their fingerprint labels; a
   re-run's dedup query skips them and retries only the unfinished
-  findings
-  [test](mint_idempotent_after_partial_failure_retries_only_unfinished_findings)
+  batches
+  [test?](mint_idempotent_after_partial_failure_retries_only_unfinished_batches)
 - `mint --dry-run` walks the rubric, prints proposed bd writes to
   stdout, and makes zero bd writes
   [test](mint_dry_run_makes_no_bd_writes)
@@ -2446,10 +2653,24 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   epic, else `--diff HEAD` — same default policy as `audit` /
   `verify` / `review`
   [test](mint_bare_invocation_defaults_to_active_molecule_diff)
-- The end-of-run summary lists minted, skipped-dedup, refused, and
-  errored counts, with per-finding fingerprint and resulting bead
-  id
-  [test](mint_end_of_run_summary_reports_per_finding_outcomes)
+- The end-of-run summary lists minted batches (with finding count
+  per batch), skipped-dedup, refused, and errored counts, with
+  per-batch fingerprint and resulting bead id
+  [test?](mint_end_of_run_summary_reports_per_batch_outcomes)
+- Push-gate integrity findings recover via the standard mint
+  pipeline until the molecule's iteration counter exhausts: the
+  verdict gate normalizes `UnresolvedAnnotation`, `StubTestFunction`,
+  and `UnneededPendingMarker` into typed `Finding`s, dispatches
+  through `loom gate mint`, refuses the push, increments the
+  counter, and re-enters the loop. On cap exhaustion, the gate
+  falls back to terminal `loom:clarify` on the molecule's epic
+  with one composed auto-generated `## Options — …` block
+  (kind-grouped resolutions per *Integrity gate* above)
+  [test?](push_gate_recovers_integrity_findings_until_cap_then_clarifies)
+- The bead-container worker runs `loom gate verify --diff HEAD`
+  before emitting `LOOM_COMPLETE` and resolves findings in-session;
+  contract is prompt-level (rendered in `loop.md`), not driver-gated
+  [judge?](specs/agent/loop_preflight_runs_gate_verify.md)
 
 ### Wire-format wiring and dead-code excision
 
