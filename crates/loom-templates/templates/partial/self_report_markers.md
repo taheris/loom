@@ -19,18 +19,33 @@ exactly one, on its own line, as the final output of the session.
   escalate to `LOOM_BLOCKED` (no candidate resolutions) or
   `LOOM_CLARIFY` (with a structured Options block) rather than
   emitting `LOOM_RETRY` again.
-- `LOOM_CLARIFY` — You have a specific question with structured
-  options for the human — a decision you can frame as a canonical
-  `## Options — …` block. **Persist the question and the block to
-  bead state before emitting the marker** — either by `bd create`
-  on a new clarify bead or by `bd update --notes` + `bd update
-  --add-label=loom:clarify` on an existing bead — per the Options
-  Format Contract in `specs/gate.md`. The gate does NOT parse your
-  prose for options; if the canonical block lives only in your
-  stdout, `loom msg`'s queue will be empty. After persisting, the
-  gate applies `loom:clarify` to *this* bead and exits without
-  entering recovery; other beads in the molecule continue running.
-  The labelled bead waits for `loom msg` resolution.
+- `LOOM_CLARIFY` — A decision is **blocking your work** and has
+  two or more genuinely viable resolutions you cannot adjudicate
+  from the spec, the code, or research. **Not for ratifying a
+  recommended path** — if you can write "Recommended: X.
+  Alternative: Y" and X is your clear preference, you do not have
+  a clarify question, you have a plan; file or implement it
+  directly. Reserve `LOOM_CLARIFY` for the cases where the spec
+  is genuinely ambiguous, two paths carry materially different
+  costs or risks you cannot weigh, or your judgement of the
+  evidence is itself contestable.
+
+  **Persist the question and the canonical options block to bead
+  state before emitting the marker** — either by `bd create` on
+  a new clarify bead or by `bd update --notes` + `bd update
+  --add-label=loom:clarify` on an existing bead, per the Options
+  Format Contract in `specs/gate.md`. The gate does NOT parse
+  your prose for options: prose `Recommended:` / `Alternative:`
+  headings are NOT the canonical block and will downgrade the
+  bead to `loom:blocked` with cause `clarify-without-options`.
+  The block MUST use the canonical heading shape:
+
+{% include "partial/options_format.md" %}
+
+  After persisting, the gate applies `loom:clarify` to *this*
+  bead and exits without entering recovery; other beads in the
+  molecule continue running. The labelled bead waits for `loom
+  msg` resolution.
 - `LOOM_BLOCKED` — Genuine dead end: you cannot proceed and have
   no candidate resolutions to enumerate. Write the reason on the
   line immediately before the marker (the gate only reads the most
@@ -42,8 +57,10 @@ exactly one, on its own line, as the final output of the session.
   `LOOM_BLOCKED`** — use `LOOM_CLARIFY` above so the candidate
   resolutions reach bead state.
 
-**Discriminator.** expect retry to succeed? → RETRY. can you
-enumerate options? → CLARIFY. dead end? → BLOCKED.
+**Discriminator.** expect retry to succeed? → RETRY. **blocked**
+by a decision you cannot make alone, with ≥2 viable resolutions?
+→ CLARIFY (a recommended path with prose alternatives is NOT
+clarify — file the plan directly). dead end? → BLOCKED.
 
 **Worker-phase only.** These three self-report markers are valid
 in worker phases only (`loop`, `todo_new`, `todo_update`,

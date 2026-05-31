@@ -124,38 +124,10 @@ minted clarify bead's description so `loom msg` can render it. The format
 applies to every clarify situation; invariant clash is one common trigger,
 not the only one.
 
-`loom msg` parses this format to render the SUMMARY column, enumerate
-options for view mode, and resolve integer fast-replies. A malformed
-block — or one that lives only in your prose, never in the `evidence`
-field — breaks fast-reply with `-a <int>` and the options stay invisible
-to `loom msg`'s queue.
+**Required shape** (embed inside `evidence` verbatim — let the
+three-paths principle above shape the actual options):
 
-**Required shape (embed inside `evidence` verbatim):**
-
-```markdown
-## Options — <one-line summary of the decision, ≤50 chars>
-
-### Option 1 — <short title>
-<body paragraph(s) describing the option, naming its cost>
-
-### Option 2 — <short title>
-<body, including cost>
-
-### Option 3 — <short title>
-<body, including cost>
-```
-
-**Rules:**
-
-- The `## Options` header carries a one-line summary (≤50 chars) separated from the
-  word `Options` by em-dash `—` (default), en-dash `–`, single hyphen `-`, or double
-  hyphen `--`. Parsers tolerate any of these; emit em-dash by default.
-- Each option is `### Option N — <title>` where `N` is 1-based sequential. Numbering
-  is required for `-a <int>` lookup to work.
-- Each option body extends from its `### Option N` heading until the next
-  `### Option` or the next `##` heading; name the cost (churn, debt, coupling, risk).
-- Use contextual options per decision — typically 2–4 — shaped by the
-  three-paths principle. Do NOT emit a fixed A/B/C menu.
+{% include "partial/options_format.md" %}
 
 **Persistence (REQUIRED — the gate does NOT parse your prose).** The
 gate routes on mechanical signals (the streamed finding lines,

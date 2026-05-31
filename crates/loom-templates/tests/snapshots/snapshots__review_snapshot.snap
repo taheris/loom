@@ -1,5 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
+assertion_line: 335
 expression: ctx.render().unwrap()
 ---
 # Post-Epic Review
@@ -444,38 +445,41 @@ minted clarify bead's description so `loom msg` can render it. The format
 applies to every clarify situation; invariant clash is one common trigger,
 not the only one.
 
-`loom msg` parses this format to render the SUMMARY column, enumerate
-options for view mode, and resolve integer fast-replies. A malformed
-block — or one that lives only in your prose, never in the `evidence`
-field — breaks fast-reply with `-a <int>` and the options stay invisible
-to `loom msg`'s queue.
+**Required shape** (embed inside `evidence` verbatim — let the
+three-paths principle above shape the actual options):
 
-**Required shape (embed inside `evidence` verbatim):**
+  ```markdown
+  ## Options — <one-line summary of the decision, ≤80 chars>
 
-```markdown
-## Options — <one-line summary of the decision, ≤50 chars>
+  ### Option 1 — <short title>
+  <body paragraph(s) describing the option, naming its cost>
 
-### Option 1 — <short title>
-<body paragraph(s) describing the option, naming its cost>
+  ### Option 2 — <short title>
+  <body, including cost>
 
-### Option 2 — <short title>
-<body, including cost>
+  ### Option 3 — <short title>
+  <body, including cost>
+  ```
 
-### Option 3 — <short title>
-<body, including cost>
-```
+  **Rules:**
 
-**Rules:**
+  - The `## Options` header carries a one-line summary (≤50 chars)
+    separated from the word `Options` by em-dash `—` (default),
+    en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
+    tolerate any of these; emit em-dash by default.
+  - Each option is `### Option N — <title>` where `N` is 1-based
+    sequential. Numbering is required for `-a <int>` lookup to work.
+  - Each option body extends from its `### Option N` heading until
+    the next `### Option` or the next `##` heading; name the cost
+    (churn, debt, coupling, risk).
+  - Use contextual options per decision — typically 2–4, each
+    naming its cost. Do NOT emit a fixed A/B/C menu.
 
-- The `## Options` header carries a one-line summary (≤50 chars) separated from the
-  word `Options` by em-dash `—` (default), en-dash `–`, single hyphen `-`, or double
-  hyphen `--`. Parsers tolerate any of these; emit em-dash by default.
-- Each option is `### Option N — <title>` where `N` is 1-based sequential. Numbering
-  is required for `-a <int>` lookup to work.
-- Each option body extends from its `### Option N` heading until the next
-  `### Option` or the next `##` heading; name the cost (churn, debt, coupling, risk).
-- Use contextual options per decision — typically 2–4 — shaped by the
-  three-paths principle. Do NOT emit a fixed A/B/C menu.
+  `loom msg` parses this format to render the SUMMARY column,
+  enumerate options for view mode, and resolve integer fast-replies.
+  A malformed block — or one that lives only in your prose, never
+  persisted to bead state — breaks fast-reply with `-a <int>` and
+  leaves the options invisible to `loom msg`'s queue.
 
 **Persistence (REQUIRED — the gate does NOT parse your prose).** The
 gate routes on mechanical signals (the streamed finding lines,
@@ -611,9 +615,46 @@ The remaining tokens cover the other rubric dimensions:
   siblings.
 - `invariant-clash` — a load-bearing invariant in the touched spec
   set is silently contradicted by the diff. **Embed the canonical
-  `## Options — …` block in `evidence`**; the driver attaches
-  `loom:clarify` to the minted bead and lifts the block into its
-  description.
+  `## Options — …` block in `evidence`** using the exact heading
+  shape below (prose `Recommended:` / `Alternative:` headings do
+  NOT count and degrade the minted bead to `loom:blocked` with
+  cause `clarify-without-options`):
+
+  ```markdown
+  ## Options — <one-line summary of the decision, ≤80 chars>
+
+  ### Option 1 — <short title>
+  <body paragraph(s) describing the option, naming its cost>
+
+  ### Option 2 — <short title>
+  <body, including cost>
+
+  ### Option 3 — <short title>
+  <body, including cost>
+  ```
+
+  **Rules:**
+
+  - The `## Options` header carries a one-line summary (≤50 chars)
+    separated from the word `Options` by em-dash `—` (default),
+    en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
+    tolerate any of these; emit em-dash by default.
+  - Each option is `### Option N — <title>` where `N` is 1-based
+    sequential. Numbering is required for `-a <int>` lookup to work.
+  - Each option body extends from its `### Option N` heading until
+    the next `### Option` or the next `##` heading; name the cost
+    (churn, debt, coupling, risk).
+  - Use contextual options per decision — typically 2–4, each
+    naming its cost. Do NOT emit a fixed A/B/C menu.
+
+  `loom msg` parses this format to render the SUMMARY column,
+  enumerate options for view mode, and resolve integer fast-replies.
+  A malformed block — or one that lives only in your prose, never
+  persisted to bead state — breaks fast-reply with `-a <int>` and
+  leaves the options invisible to `loom msg`'s queue.
+
+  The driver attaches `loom:clarify` to the minted bead and lifts
+  the block into its description.
 - `template-spec-drift` — at `--tree` scope, a prompt template under
   `crates/loom-templates/templates/` directs agents toward behaviour
   a spec contradicts (Invariant 3 from `specs/gate.md`).
@@ -716,18 +757,64 @@ exactly one, on its own line, as the final output of the session.
   escalate to `LOOM_BLOCKED` (no candidate resolutions) or
   `LOOM_CLARIFY` (with a structured Options block) rather than
   emitting `LOOM_RETRY` again.
-- `LOOM_CLARIFY` — You have a specific question with structured
-  options for the human — a decision you can frame as a canonical
-  `## Options — …` block. **Persist the question and the block to
-  bead state before emitting the marker** — either by `bd create`
-  on a new clarify bead or by `bd update --notes` + `bd update
-  --add-label=loom:clarify` on an existing bead — per the Options
-  Format Contract in `specs/gate.md`. The gate does NOT parse your
-  prose for options; if the canonical block lives only in your
-  stdout, `loom msg`'s queue will be empty. After persisting, the
-  gate applies `loom:clarify` to *this* bead and exits without
-  entering recovery; other beads in the molecule continue running.
-  The labelled bead waits for `loom msg` resolution.
+- `LOOM_CLARIFY` — A decision is **blocking your work** and has
+  two or more genuinely viable resolutions you cannot adjudicate
+  from the spec, the code, or research. **Not for ratifying a
+  recommended path** — if you can write "Recommended: X.
+  Alternative: Y" and X is your clear preference, you do not have
+  a clarify question, you have a plan; file or implement it
+  directly. Reserve `LOOM_CLARIFY` for the cases where the spec
+  is genuinely ambiguous, two paths carry materially different
+  costs or risks you cannot weigh, or your judgement of the
+  evidence is itself contestable.
+
+  **Persist the question and the canonical options block to bead
+  state before emitting the marker** — either by `bd create` on
+  a new clarify bead or by `bd update --notes` + `bd update
+  --add-label=loom:clarify` on an existing bead, per the Options
+  Format Contract in `specs/gate.md`. The gate does NOT parse
+  your prose for options: prose `Recommended:` / `Alternative:`
+  headings are NOT the canonical block and will downgrade the
+  bead to `loom:blocked` with cause `clarify-without-options`.
+  The block MUST use the canonical heading shape:
+
+  ```markdown
+  ## Options — <one-line summary of the decision, ≤80 chars>
+
+  ### Option 1 — <short title>
+  <body paragraph(s) describing the option, naming its cost>
+
+  ### Option 2 — <short title>
+  <body, including cost>
+
+  ### Option 3 — <short title>
+  <body, including cost>
+  ```
+
+  **Rules:**
+
+  - The `## Options` header carries a one-line summary (≤50 chars)
+    separated from the word `Options` by em-dash `—` (default),
+    en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
+    tolerate any of these; emit em-dash by default.
+  - Each option is `### Option N — <title>` where `N` is 1-based
+    sequential. Numbering is required for `-a <int>` lookup to work.
+  - Each option body extends from its `### Option N` heading until
+    the next `### Option` or the next `##` heading; name the cost
+    (churn, debt, coupling, risk).
+  - Use contextual options per decision — typically 2–4, each
+    naming its cost. Do NOT emit a fixed A/B/C menu.
+
+  `loom msg` parses this format to render the SUMMARY column,
+  enumerate options for view mode, and resolve integer fast-replies.
+  A malformed block — or one that lives only in your prose, never
+  persisted to bead state — breaks fast-reply with `-a <int>` and
+  leaves the options invisible to `loom msg`'s queue.
+
+  After persisting, the gate applies `loom:clarify` to *this*
+  bead and exits without entering recovery; other beads in the
+  molecule continue running. The labelled bead waits for `loom
+  msg` resolution.
 - `LOOM_BLOCKED` — Genuine dead end: you cannot proceed and have
   no candidate resolutions to enumerate. Write the reason on the
   line immediately before the marker (the gate only reads the most
@@ -739,8 +826,10 @@ exactly one, on its own line, as the final output of the session.
   `LOOM_BLOCKED`** — use `LOOM_CLARIFY` above so the candidate
   resolutions reach bead state.
 
-**Discriminator.** expect retry to succeed? → RETRY. can you
-enumerate options? → CLARIFY. dead end? → BLOCKED.
+**Discriminator.** expect retry to succeed? → RETRY. **blocked**
+by a decision you cannot make alone, with ≥2 viable resolutions?
+→ CLARIFY (a recommended path with prose alternatives is NOT
+clarify — file the plan directly). dead end? → BLOCKED.
 
 **Worker-phase only.** These three self-report markers are valid
 in worker phases only (`loop`, `todo_new`, `todo_update`,

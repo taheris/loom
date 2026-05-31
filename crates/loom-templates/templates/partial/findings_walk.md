@@ -115,9 +115,15 @@ The remaining tokens cover the other rubric dimensions:
   siblings.
 - `invariant-clash` — a load-bearing invariant in the touched spec
   set is silently contradicted by the diff. **Embed the canonical
-  `## Options — …` block in `evidence`**; the driver attaches
-  `loom:clarify` to the minted bead and lifts the block into its
-  description.
+  `## Options — …` block in `evidence`** using the exact heading
+  shape below (prose `Recommended:` / `Alternative:` headings do
+  NOT count and degrade the minted bead to `loom:blocked` with
+  cause `clarify-without-options`):
+
+{% include "partial/options_format.md" %}
+
+  The driver attaches `loom:clarify` to the minted bead and lifts
+  the block into its description.
 - `template-spec-drift` — at `--tree` scope, a prompt template under
   `crates/loom-templates/templates/` directs agents toward behaviour
   a spec contradicts (Invariant 3 from `specs/gate.md`).
