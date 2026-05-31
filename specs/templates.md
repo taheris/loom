@@ -970,7 +970,7 @@ documents in front of the agent with zero configuration.
 - `msg.md` rendered prompt contains the chat-interview discipline
   clauses (picker prohibition + bd-persistence) sourced from the
   pinned partial
-  [test?](msg_template_renders_chat_interview_discipline)
+  [test](msg_template_renders_chat_interview_discipline)
 
 ### Agent-output markers
 
