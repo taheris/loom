@@ -23,7 +23,7 @@ pub enum LoopError {
     /// log sink failure: {0}
     Log(#[from] LogError),
 
-    /// git operation failed (worktree, merge, branch): {0}
+    /// git operation failed: {0}
     Git(#[from] GitError),
 
     /// io operation failed: {0}

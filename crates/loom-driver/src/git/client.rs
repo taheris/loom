@@ -1278,6 +1278,7 @@ where
         () = sleep => Err(GitError::GitTimeout {
             args: argv_for_log.join(" "),
             timeout_secs: timeout.as_secs(),
+            workdir: workdir.to_path_buf(),
         }),
     }
 }

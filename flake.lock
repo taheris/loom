@@ -2,10 +2,10 @@
   "nodes": {
     "crane": {
       "locked": {
-        "lastModified": 1780029330,
-        "narHash": "sha256-fWFKEKB5CP+NO8/3uOaEZIVbd03mvDJ//VsnKkXty08=",
+        "lastModified": 1780099841,
+        "narHash": "sha256-EVZd2RsbpreRUDSi9rBwPY+ZxoyMaiEBbZxxhljbaS4=",
         "ref": "master",
-        "rev": "6823b493a0bc2142082075576efa6633b537197e",
+        "rev": "0532eb17955225173906d671fb36306bdeb1e2dc",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/ipetkov/crane.git"
@@ -92,10 +92,10 @@
         "wrapix": "wrapix_2"
       },
       "locked": {
-        "lastModified": 1780058789,
-        "narHash": "sha256-xTod8r25uI+UNCgAf5Dj0zeUnzvVainLf54hMBA99Go=",
+        "lastModified": 1780104480,
+        "narHash": "sha256-AsZ1KcJ0gGc3Eus8d00+IVUkq/lLaqMyNOOdYNbQvbo=",
         "ref": "main",
-        "rev": "2ddc5492532f24f43628729a95c7f2d37e234e32",
+        "rev": "74768a5926e69e0575b5bb2d35ed115d627def22",
         "shallow": true,
         "type": "git",
         "url": "ssh://git@github.com/taheris/loom.git"
@@ -146,10 +146,10 @@
         "wrapix": "wrapix_3"
       },
       "locked": {
-        "lastModified": 1780023854,
-        "narHash": "sha256-hUAAAKSwd5Unt+Tu656Vzs7FNnu2lYU3RMx4cyn6efI=",
+        "lastModified": 1780058789,
+        "narHash": "sha256-xTod8r25uI+UNCgAf5Dj0zeUnzvVainLf54hMBA99Go=",
         "ref": "main",
-        "rev": "41fc9a7047936473513b8a3b32cf1971afc2b0fa",
+        "rev": "2ddc5492532f24f43628729a95c7f2d37e234e32",
         "shallow": true,
         "type": "git",
         "url": "ssh://git@github.com/taheris/loom.git"
@@ -210,10 +210,10 @@
         "wrapix": "wrapix_4"
       },
       "locked": {
-        "lastModified": 1779969049,
-        "narHash": "sha256-iZwIA0a/8Ko+cAx4Oko5X3OXWR5aGkqaG64x/LnZ3Ow=",
+        "lastModified": 1780023854,
+        "narHash": "sha256-hUAAAKSwd5Unt+Tu656Vzs7FNnu2lYU3RMx4cyn6efI=",
         "ref": "main",
-        "rev": "ffbd0c968aa919d8489935134a4851f86d5b9d90",
+        "rev": "41fc9a7047936473513b8a3b32cf1971afc2b0fa",
         "shallow": true,
         "type": "git",
         "url": "ssh://git@github.com/taheris/loom.git"
@@ -282,6 +282,90 @@
           "treefmt-nix"
         ],
         "wrapix": "wrapix_5"
+      },
+      "locked": {
+        "lastModified": 1779969049,
+        "narHash": "sha256-iZwIA0a/8Ko+cAx4Oko5X3OXWR5aGkqaG64x/LnZ3Ow=",
+        "ref": "main",
+        "rev": "ffbd0c968aa919d8489935134a4851f86d5b9d90",
+        "shallow": true,
+        "type": "git",
+        "url": "ssh://git@github.com/taheris/loom.git"
+      },
+      "original": {
+        "ref": "main",
+        "shallow": true,
+        "type": "git",
+        "url": "ssh://git@github.com/taheris/loom.git"
+      }
+    },
+    "loom_5": {
+      "inputs": {
+        "crane": [
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "crane"
+        ],
+        "fenix": [
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "fenix"
+        ],
+        "flake-parts": [
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "flake-parts"
+        ],
+        "nixpkgs": [
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "nixpkgs"
+        ],
+        "treefmt-nix": [
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "treefmt-nix"
+        ],
+        "wrapix": "wrapix_6"
       },
       "locked": {
         "lastModified": 1779757891,
@@ -408,10 +492,10 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1780177487,
-        "narHash": "sha256-PU8KGChe7BVDT7KMbFiF82SwmUKcUroXwHLunk7/Q0o=",
+        "lastModified": 1780228398,
+        "narHash": "sha256-HTyfdqkq+7bKoIRIYAEuTWfLraX8cGDWdl30Bjdwc+c=",
         "ref": "main",
-        "rev": "80e1f6394b1289e74f1654934dc3fb225cf0c408",
+        "rev": "d0216ba6fbd064af4b9693973070a0bef3a4b10e",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrapix.git"
@@ -448,10 +532,10 @@
         ]
       },
       "locked": {
-        "lastModified": 1780041097,
-        "narHash": "sha256-iH5TQXVL/6RSv/QlmrakwktBEpq5DxSw+j3dla1zWNM=",
+        "lastModified": 1780074985,
+        "narHash": "sha256-6sldgGHo5v/RUZSrJVhNJEUaKi34yK29XFL/3Dqw04U=",
         "ref": "main",
-        "rev": "0e0c50566c86629027a59300ad0fe234c0acc79d",
+        "rev": "ec93679b6e209900be6bad0bac0ed5e706f8d581",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrapix.git"
@@ -498,10 +582,10 @@
         ]
       },
       "locked": {
-        "lastModified": 1780008955,
-        "narHash": "sha256-chB2EnbNCVZwY8SdAlL/VWij1BDgeZeD3DR6DXQcE0I=",
+        "lastModified": 1780041097,
+        "narHash": "sha256-iH5TQXVL/6RSv/QlmrakwktBEpq5DxSw+j3dla1zWNM=",
         "ref": "main",
-        "rev": "32b11f5a5b905f966cec16cfb355a9585e31ca7f",
+        "rev": "0e0c50566c86629027a59300ad0fe234c0acc79d",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrapix.git"
@@ -558,10 +642,10 @@
         ]
       },
       "locked": {
-        "lastModified": 1779929424,
-        "narHash": "sha256-zvQnZHDtBH2e9rmwuXJA0YyTGdCi8niZpAr2E9dbv8g=",
+        "lastModified": 1780008955,
+        "narHash": "sha256-chB2EnbNCVZwY8SdAlL/VWij1BDgeZeD3DR6DXQcE0I=",
         "ref": "main",
-        "rev": "3c27ee427f13ab741410aca560abc9d32a96f856",
+        "rev": "32b11f5a5b905f966cec16cfb355a9585e31ca7f",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrapix.git"
@@ -605,6 +689,7 @@
           "wrapix",
           "flake-parts"
         ],
+        "loom": "loom_5",
         "nixpkgs": [
           "wrapix",
           "loom",
@@ -616,6 +701,85 @@
           "nixpkgs"
         ],
         "treefmt-nix": [
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "treefmt-nix"
+        ]
+      },
+      "locked": {
+        "lastModified": 1779929424,
+        "narHash": "sha256-zvQnZHDtBH2e9rmwuXJA0YyTGdCi8niZpAr2E9dbv8g=",
+        "ref": "main",
+        "rev": "3c27ee427f13ab741410aca560abc9d32a96f856",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/taheris/wrapix.git"
+      },
+      "original": {
+        "ref": "main",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/taheris/wrapix.git"
+      }
+    },
+    "wrapix_6": {
+      "inputs": {
+        "crane": [
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "crane"
+        ],
+        "fenix": [
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "fenix"
+        ],
+        "flake-parts": [
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "flake-parts"
+        ],
+        "nixpkgs": [
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "loom",
+          "wrapix",
+          "nixpkgs"
+        ],
+        "treefmt-nix": [
+          "wrapix",
+          "loom",
           "wrapix",
           "loom",
           "wrapix",

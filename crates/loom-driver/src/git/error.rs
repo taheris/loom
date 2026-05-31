@@ -21,8 +21,12 @@ pub enum GitError {
     /// git CLI exited with status {status}: {stderr}
     GitCli { status: i32, stderr: String },
 
-    /// git CLI did not finish within {timeout_secs}s: git {args}
-    GitTimeout { args: String, timeout_secs: u64 },
+    /// `git {args}` timed out after {timeout_secs}s in {workdir} (likely a hung hook or stalled remote)
+    GitTimeout {
+        args: String,
+        timeout_secs: u64,
+        workdir: PathBuf,
+    },
 
     /// failed to spawn git CLI
     Spawn(#[source] io::Error),
