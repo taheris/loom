@@ -1449,6 +1449,21 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
     Ok(combined)
 }
 
+/// Split `annotations` into `(pending, non_pending)` for the integrity
+/// gate's scope-finite path. The self-cleaning `?` modifier per
+/// `specs/gate.md` § Pending modifier requires forward-resolution at
+/// every gate scope; routing pending annotations through
+/// [`filter_by_files`] would drop them whenever the spec they live in
+/// is outside the staged set — common for plain test-leaf targets
+/// (no `::`-segmented crate prefix) whose `CargoMetadataScope` lookup
+/// collapses to the auto-included spec file. The pending half rejoins
+/// the kept set after the filter runs.
+fn partition_pending_for_forward_resolution(
+    annotations: Vec<loom_gate::Annotation>,
+) -> (Vec<loom_gate::Annotation>, Vec<loom_gate::Annotation>) {
+    annotations.into_iter().partition(|a| a.pending)
+}
+
 /// Run the annotation integrity gate. The gate is itself a `[check]`-tier
 /// verifier per `specs/gate.md` § Integrity gate — its findings
 /// surface alongside every `loom gate check` (and therefore every `loom
@@ -1489,7 +1504,10 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
     let cmd_resolver = FsCommandResolver::new(workspace);
     if scope_is_finite(args) {
         let mut input_resolver = build_input_resolver(workspace);
-        annotations = filter_by_files(&annotations, &args.files, &mut input_resolver);
+        let (pending, candidates): (Vec<_>, Vec<_>) =
+            partition_pending_for_forward_resolution(annotations);
+        annotations = filter_by_files(&candidates, &args.files, &mut input_resolver);
+        annotations.extend(pending);
         annotations
             .retain(|ann| !is_missing_binary_target(&ann.target, &cmd_resolver) || ann.pending);
         if annotations.is_empty() {
