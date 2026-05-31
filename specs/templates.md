@@ -910,10 +910,10 @@ documents in front of the agent with zero configuration.
   [check](grep -q '{{ style_rules' crates/loom-templates/templates/partial/style_rules.md)
 - `loop.md` and `review.md` include `style_rules.md`; no other
   phase template does
-  [check?](cargo run -p loom-walk -- template_pinning_matrix)
+  [check](cargo run -p loom-walk -- template_pinning_matrix)
 - `spec_conventions.md` partial renders the `spec_conventions`
   variable; included only by `plan_new` and `plan_update`
-  [check?](cargo run -p loom-walk -- template_pinning_matrix)
+  [check](cargo run -p loom-walk -- template_pinning_matrix)
 - `LoopContext` and `ReviewContext` carry `style_rules: String`;
   other phase contexts do not
   [check](cargo test -p loom-templates --test render template_renders_are_byte_stable_across_runs)
@@ -940,7 +940,7 @@ documents in front of the agent with zero configuration.
   include or include with no `✓` — fails the audit. Pending cells
   (`?` and `~`) silent-pass during the pending window per
   *Pinning matrix walker pending support* below
-  [check?](cargo run -p loom-walk -- template_pinning_matrix)
+  [check](cargo run -p loom-walk -- template_pinning_matrix)
 - The `chat_marker_final_turn_only.md` partial is included by
   every interactive-session template (`msg`, `plan_new`,
   `plan_update`), pinning the "emit `LOOM_COMPLETE` on the final
@@ -958,7 +958,7 @@ documents in front of the agent with zero configuration.
   and `msg.md` — and by no worker template; the body forbids
   Claude Code's structured option-picker tool for interactive Q&A
   and requires conversational prose instead
-  [check?](cargo run -p loom-walk -- template_pinning_matrix)
+  [check](cargo run -p loom-walk -- template_pinning_matrix)
 - The partial body names the picker prohibition explicitly so a
   grep for the rule succeeds (no rule-by-implication)
   [check](grep -qi 'option-picker\|AskUserQuestion' crates/loom-templates/templates/partial/chat_interview.md)
@@ -1014,13 +1014,13 @@ documents in front of the agent with zero configuration.
 - The walker's existing per-cell assertion is unchanged for
   non-pending cells: `✓` requires transitive include; blank
   forbids transitive include; mismatch fails the walker
-  [check?](cargo run -p loom-walk -- template_pinning_matrix)
+  [check](cargo run -p loom-walk -- template_pinning_matrix)
 
 ### Planning-rubric pending discipline
 
 - `partial/plan_stage_rubric.md` exists and is included by
   `plan_new.md` and `plan_update.md` only
-  [check?](cargo run -p loom-walk -- template_pinning_matrix)
+  [check](cargo run -p loom-walk -- template_pinning_matrix)
 - The partial body distinguishes **binary-pending** from
   **assertion-pending** pending-modifier cases with worked
   examples, so a planning agent author understands both shapes
@@ -1074,7 +1074,7 @@ documents in front of the agent with zero configuration.
   for interactive sessions — the human resolves friction in-turn.
   Including the partial would teach interactive agents about markers
   they cannot emit
-  [check?](cargo run -p loom-walk -- template_pinning_matrix)
+  [check](cargo run -p loom-walk -- template_pinning_matrix)
 - The partial body names `LOOM_RETRY` semantics distinctively
   (transient / environmental / agent-self-reset, consumes a
   `[loop] max_retries` slot, escalates to `loom:blocked` cause
@@ -1277,7 +1277,7 @@ documents in front of the agent with zero configuration.
 - `partial/decomposition_discipline.md` exists and is included by
   `todo_new.md` and `todo_update.md` only; the body names the
   audit obligation and the two acceptable session outcomes
-  [check?](cargo run -p loom-walk -- template_pinning_matrix)
+  [check](cargo run -p loom-walk -- template_pinning_matrix)
 - The partial body names the discipline distinctively (so a grep
   catches accidental emptying)
   [check](grep -qi 'evidence-confirmed\|audit before' crates/loom-templates/templates/partial/decomposition_discipline.md)

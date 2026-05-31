@@ -37,9 +37,8 @@ use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::StateDb;
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
 use loom_gate::{
-    DispatchOptions, DispatchPendingExecutor, FsCommandResolver, IntegrityFinding,
-    RustWorkspaceStubScanner, RustWorkspaceTestResolver, TierCwds, annotation,
-    format_clarify_options, integrity,
+    DispatchOptions, DispatchPendingExecutor, FsCommandResolver, IntegrityFinding, TierCwds,
+    annotation, format_clarify_options, integrity,
 };
 use loom_templates::previous_failure::PreviousFailure;
 use loom_templates::review::{ReviewContext, ReviewLane, TreeScopeEpic};
@@ -328,10 +327,9 @@ where
             return Ok(vec![]);
         }
         let cmd_resolver = FsCommandResolver::new(&self.workspace);
-        let test_resolver = RustWorkspaceTestResolver::scan(&self.workspace)
-            .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
-        let stub_scanner = RustWorkspaceStubScanner::scan(&self.workspace)
-            .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
+        let (test_resolver, stub_scanner) =
+            loom_gate::integrity::scan_workspace_pair(&self.workspace)
+                .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
         let pending_executor = DispatchPendingExecutor::new(
             &[],
             DispatchOptions::default(),

@@ -389,6 +389,45 @@ fn is_excluded_under_root(path: &Path, repo_root: &Path) -> bool {
         .any(|c| matches!(c.as_os_str().to_str(), Some("target" | ".loom")))
 }
 
+/// Walk `repo_root` once and produce both the test-leaf index and the
+/// stub-leaf index in a single pass — every `.rs` file is read exactly
+/// once and both extractors run on the same string. Callers that need
+/// both resolvers (the integrity gate, `loom gate review`, the mint
+/// walker) should use this instead of calling each `::scan` separately,
+/// since back-to-back scans walk the same 300+ workspace files twice
+/// and re-read every byte.
+pub fn scan_workspace_pair(
+    repo_root: &Path,
+) -> Result<(RustWorkspaceTestResolver, RustWorkspaceStubScanner), IntegrityError> {
+    let mut known_leaves: HashSet<String> = HashSet::new();
+    let mut stub_leaves: HashSet<String> = HashSet::new();
+    for entry in WalkDir::new(repo_root).follow_links(false) {
+        let entry = entry.map_err(|e| IntegrityError::WalkWorkspace {
+            root: repo_root.to_path_buf(),
+            source: e,
+        })?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        if is_excluded_under_root(path, repo_root) {
+            continue;
+        }
+        let Ok(body) = fs::read_to_string(path) else {
+            continue;
+        };
+        extract_test_fn_leaves(&body, &mut known_leaves);
+        extract_stub_test_leaves(&body, &mut stub_leaves);
+    }
+    Ok((
+        RustWorkspaceTestResolver { known_leaves },
+        RustWorkspaceStubScanner { stub_leaves },
+    ))
+}
+
 /// Workspace-scanning implementation of [`TestPathResolver`].
 ///
 /// Walks every `.rs` file under `repo_root`, eagerly indexing every
@@ -1934,6 +1973,24 @@ mod tests {
         fs::write(&src, "fn helper() { }\n").unwrap();
         let resolver = RustWorkspaceTestResolver::scan(dir.path()).unwrap();
         assert!(!resolver.resolves("crate::module::helper"));
+    }
+
+    #[test]
+    fn scan_workspace_pair_indexes_both_test_and_stub_leaves_in_one_walk() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.rs");
+        fs::write(
+            &src,
+            "#[test]\nfn passes() { assert!(true); }\n\
+             #[test]\nfn pending() { _pending_stub(); }\n",
+        )
+        .unwrap();
+
+        let (resolver, scanner) = scan_workspace_pair(dir.path()).unwrap();
+        assert!(resolver.resolves("crate::src::passes"));
+        assert!(resolver.resolves("crate::src::pending"));
+        assert!(!scanner.is_stub("passes"));
+        assert!(scanner.is_stub("pending"));
     }
 
     #[test]

@@ -39,8 +39,8 @@ use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
 use loom_driver::state::StateDb;
 use loom_gate::{
     Annotation, DispatchOptions, DispatchPendingExecutor, EmptyScope, FsCommandResolver,
-    IntegrityFinding, RustWorkspaceStubScanner, RustWorkspaceTestResolver, Tier, TierCwds,
-    annotation as gate_annotation, integrity, run_check, run_system, run_test,
+    IntegrityFinding, Tier, TierCwds, annotation as gate_annotation, integrity, run_check,
+    run_system, run_test,
 };
 use loom_templates::review::{ReviewContext, ReviewLane, TreeScopeEpic};
 use thiserror::Error;
@@ -443,9 +443,7 @@ where
         }
         let mut failures = Vec::new();
         let cmd_resolver = FsCommandResolver::new(&self.workspace);
-        let test_resolver = RustWorkspaceTestResolver::scan(&self.workspace)
-            .map_err(|e| WalkError::Verifiers(e.to_string()))?;
-        let stub_scanner = RustWorkspaceStubScanner::scan(&self.workspace)
+        let (test_resolver, stub_scanner) = integrity::scan_workspace_pair(&self.workspace)
             .map_err(|e| WalkError::Verifiers(e.to_string()))?;
         let options = DispatchOptions::default();
         let tier_cwds = TierCwds::default();

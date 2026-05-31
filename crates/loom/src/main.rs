@@ -27,9 +27,8 @@ use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::StateDb;
 use loom_gate::{
     self, BuiltinParser, CacheRow, CargoMetadataScope, DispatchOptions, DispatchPendingExecutor,
-    EmptyScope, FsCommandResolver, InputResolver, RunnerSpec, RustWorkspaceStubScanner,
-    RustWorkspaceTestResolver, StatusCache, Tier, TierCwds, Verdict, filter_by_files,
-    is_missing_binary_target, render_report, row_for,
+    EmptyScope, FsCommandResolver, InputResolver, RunnerSpec, StatusCache, Tier, TierCwds, Verdict,
+    filter_by_files, is_missing_binary_target, render_report, row_for,
 };
 use loom_workflow::r#loop::{
     GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
@@ -1409,8 +1408,7 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
             return Ok(0);
         }
     }
-    let test_resolver = RustWorkspaceTestResolver::scan(workspace)?;
-    let stub_scanner = RustWorkspaceStubScanner::scan(workspace)?;
+    let (test_resolver, stub_scanner) = loom_gate::integrity::scan_workspace_pair(workspace)?;
     let (specs, tier_cwds) = resolve_check_runner_context(workspace)?;
     let options = DispatchOptions {
         files: args.files.clone(),
