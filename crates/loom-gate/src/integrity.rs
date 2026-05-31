@@ -377,6 +377,18 @@ impl PendingCommandExecutor for DispatchPendingExecutor<'_> {
     }
 }
 
+/// Component check for `target/` and `.loom/` skip, relative to the
+/// scan root. Anchoring on the relative path keeps the skip correct
+/// when the workspace itself lives under a directory named `.loom/`
+/// (e.g. `loom gate verify` run from inside `.loom/beads/<id>/`): only
+/// children of the scan root should be excluded, not parent components
+/// of the absolute prefix.
+fn is_excluded_under_root(path: &Path, repo_root: &Path) -> bool {
+    let rel = path.strip_prefix(repo_root).unwrap_or(path);
+    rel.components()
+        .any(|c| matches!(c.as_os_str().to_str(), Some("target" | ".loom")))
+}
+
 /// Workspace-scanning implementation of [`TestPathResolver`].
 ///
 /// Walks every `.rs` file under `repo_root`, eagerly indexing every
@@ -407,10 +419,7 @@ impl RustWorkspaceTestResolver {
             if path.extension().is_none_or(|e| e != "rs") {
                 continue;
             }
-            if path
-                .components()
-                .any(|c| matches!(c.as_os_str().to_str(), Some("target" | ".loom")))
-            {
+            if is_excluded_under_root(path, repo_root) {
                 continue;
             }
             let Ok(body) = fs::read_to_string(path) else {
@@ -474,10 +483,7 @@ impl RustWorkspaceStubScanner {
             if path.extension().is_none_or(|e| e != "rs") {
                 continue;
             }
-            if path
-                .components()
-                .any(|c| matches!(c.as_os_str().to_str(), Some("target" | ".loom")))
-            {
+            if is_excluded_under_root(path, repo_root) {
                 continue;
             }
             let Ok(body) = fs::read_to_string(path) else {
@@ -1904,6 +1910,21 @@ mod tests {
 
         let resolver = RustWorkspaceTestResolver::scan(dir.path()).unwrap();
         assert!(!resolver.resolves("anything::should_not_be_indexed"));
+    }
+
+    #[test]
+    fn rust_workspace_test_resolver_indexes_when_repo_root_lives_under_dotloom() {
+        // Mirrors the prek pre-push case where `loom gate verify` runs
+        // from inside `.loom/beads/<id>/`: the absolute path's prefix
+        // contains `.loom` but the relative-to-root path does not.
+        let outer = tempdir().unwrap();
+        let repo_root = outer.path().join(".loom/beads/lm-test/clone");
+        let src = repo_root.join("crates/foo/tests/it.rs");
+        fs::create_dir_all(src.parent().unwrap()).unwrap();
+        fs::write(&src, "#[test]\nfn should_be_indexed() {}\n").unwrap();
+
+        let resolver = RustWorkspaceTestResolver::scan(&repo_root).unwrap();
+        assert!(resolver.resolves("crate::foo::it::should_be_indexed"));
     }
 
     #[test]
