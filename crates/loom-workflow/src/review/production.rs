@@ -523,6 +523,9 @@ fn exit_signal_from_terminal(terminal: &TerminalSurface) -> Option<ExitSignal> {
         TerminalSurface::Clarify { question } => Some(ExitSignal::Clarify {
             question: question.clone(),
         }),
+        TerminalSurface::Retry { reason } => Some(ExitSignal::Retry {
+            reason: reason.clone(),
+        }),
         TerminalSurface::Concern { summary } => Some(ExitSignal::Concern {
             summary: summary.clone(),
         }),
@@ -863,6 +866,7 @@ mod tests {
             TerminalSurface::Noop => "LOOM_NOOP\n".to_string(),
             TerminalSurface::Blocked { reason } => format!("{reason}\nLOOM_BLOCKED\n"),
             TerminalSurface::Clarify { question } => format!("{question}\nLOOM_CLARIFY\n"),
+            TerminalSurface::Retry { reason } => format!("{reason}\nLOOM_RETRY\n"),
             TerminalSurface::Concern { summary } => {
                 let json = serde_json::json!({ "summary": summary }).to_string();
                 format!("LOOM_CONCERN: {json}\n")

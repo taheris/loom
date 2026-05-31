@@ -27,6 +27,16 @@ pub enum AgentOutcome {
     /// Routes straight to `loom:clarify` without retry.
     Clarify { question: String },
 
+    /// Agent emitted `LOOM_RETRY` — self-reported that this attempt cannot
+    /// finish but a fresh dispatch is likely to succeed (environmental or
+    /// agent self-reset per `specs/harness.md` § Marker definitions).
+    /// Consumes one `[loop] max_retries` slot via the same counter as
+    /// `Failure`; the verbatim `reason` rides through to the next attempt's
+    /// `PreviousFailure::AgentRetry { reason }`. Exhaustion routes to
+    /// `loom:blocked` cause `retry-exhausted` (distinct from the
+    /// `Failure`-exhaustion path which routes to `loom:clarify`).
+    Retry { reason: String },
+
     /// Pre-flight infra failure (image load, container start) — `B::spawn`
     /// returned an error before the agent process produced any output.
     /// Bypasses retry and routes straight to `loom:blocked` per

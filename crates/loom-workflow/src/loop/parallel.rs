@@ -464,6 +464,20 @@ async fn merge_back_one(
                 error,
             })
         }
+        AgentOutcome::Retry { reason } => {
+            // Parallel mode does not run an in-session retry counter
+            // (the sequential `process_one_bead` does), so a worker
+            // self-reported `LOOM_RETRY` surfaces as a generic
+            // `AgentFailed` here. The next `bd ready` poll re-dispatches
+            // the bead; the retry-exhausted escalation lives in the
+            // sequential path only.
+            warn!(bead = %bead.id, %reason, "agent emitted LOOM_RETRY — cleaning up worktree");
+            git.remove_worktree(&worktree.path).await?;
+            Ok(BatchResult::AgentFailed {
+                bead: bead.id,
+                error: format!("agent-retry: {reason}"),
+            })
+        }
         AgentOutcome::Blocked { reason } => {
             warn!(bead = %bead.id, %reason, "agent emitted LOOM_BLOCKED — cleaning up worktree");
             git.remove_worktree(&worktree.path).await?;

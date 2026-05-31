@@ -592,6 +592,16 @@ where
                 }
             }
         } else {
+            // Stash typed `PreviousFailure::AgentRetry { reason }` so the
+            // next attempt's `run_bead` resolves the rich variant from
+            // `stashed_previous_failure` (consumed via `.take()`) rather
+            // than the opaque `PreviousFailure::from_agent_error`
+            // fallback. Mirrors the tree-not-clean stash pattern.
+            if let AgentOutcome::Retry { reason } = &outcome {
+                self.stashed_previous_failure = Some(PreviousFailure::AgentRetry {
+                    reason: reason.clone(),
+                });
+            }
             cleanup_worktree(&self.git, &worktree).await?;
             Ok(outcome)
         }
@@ -1041,6 +1051,20 @@ fn verdict_to_outcome(verdict: PhaseVerdict, exit_code: i32) -> AgentOutcome {
             cause: RecoveryCause::ObserverAbort { reason },
         } => AgentOutcome::Failure {
             error: format!("Session aborted by observer: {reason}."),
+        },
+        PhaseVerdict::Recovery {
+            cause: RecoveryCause::AgentRetry { reason },
+        } => AgentOutcome::Retry { reason },
+        PhaseVerdict::Recovery {
+            cause:
+                RecoveryCause::WrongPhaseMarker {
+                    marker_name,
+                    phase_kind,
+                },
+        } => AgentOutcome::Failure {
+            error: format!(
+                "wrong-phase-marker: {marker_name} is not admitted in {phase_kind} phases",
+            ),
         },
         PhaseVerdict::Recovery { cause } => AgentOutcome::Failure {
             error: format!("unexpected gate verdict: {}", cause.as_str()),

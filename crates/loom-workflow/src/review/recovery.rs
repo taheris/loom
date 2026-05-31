@@ -83,6 +83,16 @@ fn render_previous_failure(cause: &RecoveryCause) -> String {
         }
         .to_string(),
         RecoveryCause::BadWalk(badwalk) => PreviousFailure::BadWalk(badwalk.clone()).to_string(),
+        RecoveryCause::AgentRetry { reason } => PreviousFailure::AgentRetry {
+            reason: reason.clone(),
+        }
+        .to_string(),
+        RecoveryCause::WrongPhaseMarker {
+            marker_name,
+            phase_kind,
+        } => {
+            format!("wrong-phase-marker: `{marker_name}` is not admitted in {phase_kind} phases.",)
+        }
     }
 }
 
@@ -139,6 +149,18 @@ pub fn cause_to_previous_failure(cause: &RecoveryCause) -> PreviousFailure {
             dirty_paths: dirty_paths.clone(),
         },
         RecoveryCause::BadWalk(badwalk) => PreviousFailure::BadWalk(badwalk.clone()),
+        RecoveryCause::AgentRetry { reason } => PreviousFailure::AgentRetry {
+            reason: reason.clone(),
+        },
+        RecoveryCause::WrongPhaseMarker {
+            marker_name,
+            phase_kind,
+        } => PreviousFailure::DriverNotice {
+            cause: DriverNoticeCause::SwallowedMarker,
+            detail: format!(
+                "wrong-phase-marker: `{marker_name}` is not admitted in {phase_kind} phases.",
+            ),
+        },
     }
 }
 

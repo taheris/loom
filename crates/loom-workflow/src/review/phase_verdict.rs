@@ -147,6 +147,27 @@ pub enum RecoveryCause {
     /// Mirrors [`RecoveryCause::ReviewConcern`]'s wrapped pattern at the
     /// type level.
     BadWalk(BadWalk),
+    /// Worker phase emitted `LOOM_RETRY` — the agent self-reported that
+    /// this attempt cannot finish but a fresh dispatch is likely to
+    /// succeed (environmental failure or agent self-reset per
+    /// `specs/harness.md` § Marker definitions). `reason` is the
+    /// verbatim prose the agent wrote on the line preceding the marker.
+    /// Consumes one `[loop] max_retries` slot; consecutive `LOOM_RETRY`
+    /// exits that exhaust the counter escalate to `loom:blocked` with
+    /// cause `retry-exhausted` (`DriverNoticeCause::RetryExhausted`).
+    AgentRetry { reason: String },
+    /// Defense-in-depth: a worker-phase-only marker (`LOOM_RETRY`,
+    /// `LOOM_BLOCKED`, `LOOM_CLARIFY`) or a review-phase-only marker
+    /// (`LOOM_CONCERN`) was emitted from a phase that does not admit it.
+    /// `marker_name` is the literal marker text; `phase_kind` names the
+    /// rejecting phase class (`"interactive"` or `"worker"`). The agent
+    /// should never reach this branch because the partial-pinning matrix
+    /// scopes each marker per phase; the gate enforces the rule
+    /// mechanically per `specs/harness.md` § Marker definitions.
+    WrongPhaseMarker {
+        marker_name: &'static str,
+        phase_kind: &'static str,
+    },
 }
 
 impl RecoveryCause {
@@ -163,6 +184,8 @@ impl RecoveryCause {
             Self::ObserverAbort { .. } => "observer-abort",
             Self::TreeNotClean { .. } => "tree-not-clean",
             Self::BadWalk(_) => "bad-walk",
+            Self::AgentRetry { .. } => "agent-retry",
+            Self::WrongPhaseMarker { .. } => "wrong-phase-marker",
         }
     }
 }
@@ -251,6 +274,11 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
             decide_progress_marker(false, inputs)
         }
         Some(ExitSignal::Noop) => decide_progress_marker(true, inputs),
+        Some(ExitSignal::Retry { reason }) => PhaseVerdict::Recovery {
+            cause: RecoveryCause::AgentRetry {
+                reason: reason.clone(),
+            },
+        },
         Some(ExitSignal::Concern { summary }) => decide_concern(summary, inputs),
         Some(ExitSignal::BadWalk(badwalk)) => PhaseVerdict::Recovery {
             cause: RecoveryCause::BadWalk(badwalk.clone()),
@@ -261,6 +289,74 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
             },
         },
     }
+}
+
+/// Class of phase from the marker-admissibility perspective.
+///
+/// Worker phases (`loop`, `todo_*`, `review`) admit the worker-phase-only
+/// self-report markers (`LOOM_RETRY`, `LOOM_BLOCKED`, `LOOM_CLARIFY`) and
+/// the review walk's `LOOM_CONCERN` (in the `review` phase only).
+/// Interactive phases (`plan_*`, `msg`) admit `LOOM_COMPLETE` only because
+/// the human is in the room to resolve friction in-turn — the
+/// cannot-finish self-report set has no role to play there per
+/// `specs/templates.md` § Pinning Policy (the `self_report_markers.md`
+/// partial is pinned in worker phases only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseKind {
+    /// `loop`, `todo_*`, `review` — single-shot worker phases that admit
+    /// the worker-phase-only self-report marker set.
+    Worker,
+    /// `plan_*`, `msg` — multi-turn interactive sessions that admit
+    /// `LOOM_COMPLETE` only.
+    Interactive,
+}
+
+impl PhaseKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Worker => "worker",
+            Self::Interactive => "interactive",
+        }
+    }
+}
+
+/// Phase-aware wrapper around [`decide`]. Defense-in-depth: rejects
+/// worker-phase-only markers (`LOOM_RETRY`, `LOOM_BLOCKED`,
+/// `LOOM_CLARIFY`) when emitted from an interactive phase as
+/// `RecoveryCause::WrongPhaseMarker` per `specs/harness.md`
+/// § Marker definitions. The template partial-pinning matrix is the
+/// primary enforcement (the worker-phase self-report partial is not
+/// pinned in interactive templates); this function is the mechanical
+/// backstop for any code path that does parse markers from an
+/// interactive session.
+#[must_use]
+pub fn decide_for_phase(
+    marker: Option<&ExitSignal>,
+    inputs: GateInputs,
+    phase: PhaseKind,
+) -> PhaseVerdict {
+    if matches!(phase, PhaseKind::Interactive)
+        && let Some(rejected) = reject_worker_only_marker_in_interactive(marker)
+    {
+        return rejected;
+    }
+    decide(marker, inputs)
+}
+
+fn reject_worker_only_marker_in_interactive(marker: Option<&ExitSignal>) -> Option<PhaseVerdict> {
+    let name = match marker? {
+        ExitSignal::Retry { .. } => "LOOM_RETRY",
+        ExitSignal::Blocked { .. } => "LOOM_BLOCKED",
+        ExitSignal::Clarify { .. } => "LOOM_CLARIFY",
+        ExitSignal::Concern { .. } | ExitSignal::BadWalk(_) => "LOOM_CONCERN",
+        ExitSignal::Complete | ExitSignal::Noop => return None,
+    };
+    Some(PhaseVerdict::Recovery {
+        cause: RecoveryCause::WrongPhaseMarker {
+            marker_name: name,
+            phase_kind: PhaseKind::Interactive.label(),
+        },
+    })
 }
 
 /// `LOOM_CONCERN` is review-phase-only per `specs/harness.md` § Marker
@@ -933,6 +1029,98 @@ mod tests {
             .as_str(),
             "tree-not-clean",
         );
+        assert_eq!(
+            RecoveryCause::AgentRetry {
+                reason: "tool exec broke".into(),
+            }
+            .as_str(),
+            "agent-retry",
+        );
+        assert_eq!(
+            RecoveryCause::WrongPhaseMarker {
+                marker_name: "LOOM_RETRY",
+                phase_kind: "interactive",
+            }
+            .as_str(),
+            "wrong-phase-marker",
+        );
+    }
+
+    /// `ExitSignal::Retry` routes the verdict gate to
+    /// `PhaseVerdict::Recovery { cause: RecoveryCause::AgentRetry { reason } }`
+    /// with the agent's verbatim reason carried through. The wire-format
+    /// guarantee is that the `reason` field round-trips through `decide()`
+    /// unchanged so the driver can populate
+    /// `PreviousFailure::AgentRetry { reason }` for the next attempt.
+    #[test]
+    fn retry_marker_routes_to_agent_retry_recovery_cause() {
+        let m = ExitSignal::Retry {
+            reason: "tools failing mid-session; cwd unlinked".into(),
+        };
+        match decide(Some(&m), GateInputs::default()) {
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::AgentRetry { reason },
+            } => {
+                assert_eq!(reason, "tools failing mid-session; cwd unlinked");
+            }
+            other => panic!("expected Recovery::AgentRetry, got {other:?}"),
+        }
+    }
+
+    /// Defense-in-depth: `decide_for_phase` rejects `LOOM_RETRY` emitted
+    /// from an interactive phase as `RecoveryCause::WrongPhaseMarker`
+    /// per `specs/harness.md` § Marker definitions. The agent should
+    /// never reach this branch (the worker-phase self-report partial is
+    /// not pinned in interactive templates), but the gate enforces the
+    /// rule mechanically.
+    #[test]
+    fn retry_marker_from_interactive_phase_is_wrong_phase_marker() {
+        let m = ExitSignal::Retry {
+            reason: "should never get here".into(),
+        };
+        match decide_for_phase(Some(&m), GateInputs::default(), PhaseKind::Interactive) {
+            PhaseVerdict::Recovery {
+                cause:
+                    RecoveryCause::WrongPhaseMarker {
+                        marker_name,
+                        phase_kind,
+                    },
+            } => {
+                assert_eq!(marker_name, "LOOM_RETRY");
+                assert_eq!(phase_kind, "interactive");
+            }
+            other => panic!("expected Recovery::WrongPhaseMarker, got {other:?}"),
+        }
+    }
+
+    /// `decide_for_phase(_, _, PhaseKind::Worker)` delegates to `decide`
+    /// — every worker-phase-admissible marker (`LOOM_RETRY`,
+    /// `LOOM_BLOCKED`, `LOOM_CLARIFY`) routes through unchanged.
+    #[test]
+    fn retry_marker_admitted_under_worker_phase() {
+        let m = ExitSignal::Retry {
+            reason: "transient io".into(),
+        };
+        match decide_for_phase(Some(&m), GateInputs::default(), PhaseKind::Worker) {
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::AgentRetry { reason },
+            } => {
+                assert_eq!(reason, "transient io");
+            }
+            other => panic!("expected Recovery::AgentRetry under worker phase, got {other:?}"),
+        }
+    }
+
+    /// `LOOM_COMPLETE` / `LOOM_NOOP` are admitted under interactive
+    /// phases — the phase-aware wrapper only rejects the worker-only
+    /// self-report set.
+    #[test]
+    fn complete_admitted_under_interactive_phase() {
+        let inputs = inputs(true, false, true, None);
+        match decide_for_phase(Some(&ExitSignal::Complete), inputs, PhaseKind::Interactive) {
+            PhaseVerdict::Done => {}
+            other => panic!("expected Done, got {other:?}"),
+        }
     }
 
     #[test]

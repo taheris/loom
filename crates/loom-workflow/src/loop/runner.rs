@@ -167,6 +167,15 @@ pub trait AgentLoopController: Send {
 /// the agent did not provide one).
 pub const AGENT_BLOCKED_CAUSE: &str = "agent-blocked";
 
+/// Re-export the spec-table cause string for `loom:blocked` escalation
+/// when consecutive `LOOM_RETRY` exits exhaust the `[loop] max_retries`
+/// counter. The canonical definition lives in
+/// [`crate::review::recovery::RETRY_EXHAUSTED_CAUSE`]
+/// (`DriverNoticeCause::RetryExhausted` in `loom-templates`); reusing it
+/// here keeps both the recovery-loop exhaustion path and the
+/// `process_one_bead` exhaustion path on a single label string.
+pub use crate::review::RETRY_EXHAUSTED_CAUSE;
+
 /// Spec-table cause string written to `bd update --notes` when a per-bead
 /// `loom gate mint --bead <id>` exits with `refused > 0` — the mint
 /// pipeline detected a structural invariant violation (e.g. more than one
@@ -446,6 +455,40 @@ async fn process_one_bead<C: AgentLoopController>(
                     });
                 }
             },
+            AgentOutcome::Retry { reason } => match policy.decide(retries_used, reason.clone()) {
+                RetryDecision::Retry {
+                    previous_failure: pf,
+                } => {
+                    retries_used += 1;
+                    controller.emit_driver_event(
+                        DriverKind::RetryDispatch,
+                        &format!(
+                            "retry dispatch (LOOM_RETRY) — attempt {retries_used}/{max} for bead {bead_id}",
+                            max = policy.max_retries,
+                            bead_id = bead.id,
+                        ),
+                        serde_json::json!({
+                            "bead_id": bead.id.to_string(),
+                            "attempt": retries_used,
+                            "max_attempts": policy.max_retries,
+                            "cause": "agent-retry",
+                        }),
+                    );
+                    previous_failure = Some(pf);
+                }
+                RetryDecision::GiveUp => {
+                    // Consecutive `LOOM_RETRY` exits exhausted the
+                    // `[loop] max_retries` counter — escalate to
+                    // `loom:blocked` with cause `retry-exhausted` per
+                    // `specs/harness.md` § Marker definitions (the
+                    // self-reported retry-shape failure has no candidate
+                    // resolution; clarify is the wrong terminal).
+                    return Ok(BeadResult::Blocked {
+                        cause: RETRY_EXHAUSTED_CAUSE.to_string(),
+                        error: reason,
+                    });
+                }
+            },
             AgentOutcome::Blocked { reason } => {
                 return Ok(BeadResult::Blocked {
                     cause: AGENT_BLOCKED_CAUSE.to_string(),
@@ -703,6 +746,84 @@ mod tests {
         assert_eq!(c.clarified.len(), 1);
         assert_eq!(c.clarified[0].0, BeadId::new("lm-1").expect("valid"));
         assert_eq!(summary.beads_clarified, 1);
+        Ok(())
+    }
+
+    /// Spec criterion (`specs/templates.md` § Typed `PreviousFailure`
+    /// + `specs/harness.md` § Marker definitions): a worker phase
+    /// emitting `LOOM_RETRY` consumes one slot in
+    /// `[loop] max_retries`, threads the verbatim reason into the next
+    /// attempt's `previous_failure`, and emits a `retry_dispatch`
+    /// driver event tagged with the `agent-retry` cause so a replay
+    /// surface can distinguish the LOOM_RETRY path from generic
+    /// `Failure` retries without re-deriving it from the reason body.
+    #[tokio::test]
+    async fn agent_retry_consumes_max_retries_slot_and_threads_reason() -> Result<(), LoopError> {
+        let mut c = FakeController::default();
+        c.ready_queue.push_back(bead("lm-1", &[]));
+        c.agent_outcomes.push_back(AgentOutcome::Retry {
+            reason: "cwd unlinked mid-session".into(),
+        });
+        c.agent_outcomes.push_back(AgentOutcome::Success);
+
+        let _summary = run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
+
+        assert_eq!(c.run_calls.len(), 2, "Retry consumes one max_retries slot");
+        assert_eq!(c.run_calls[0].1, None);
+        assert_eq!(
+            c.run_calls[1].1.as_deref(),
+            Some("cwd unlinked mid-session"),
+            "second attempt threads the LOOM_RETRY reason verbatim",
+        );
+        // Done — Retry succeeded on retry, no escalation.
+        assert!(c.clarified.is_empty());
+        assert!(c.blocked.is_empty());
+        let kinds: Vec<&str> = c.driver_events.iter().map(|(k, _, _)| k.as_str()).collect();
+        assert_eq!(kinds, vec!["retry_dispatch"]);
+        assert_eq!(c.driver_events[0].2["cause"].as_str(), Some("agent-retry"));
+        Ok(())
+    }
+
+    /// Spec criterion (`specs/harness.md` § Marker definitions):
+    /// exhausting `[loop] max_retries` on consecutive `LOOM_RETRY`
+    /// exits labels the bead `loom:blocked` with cause
+    /// `retry-exhausted`. Distinct from the generic
+    /// `AgentOutcome::Failure` exhaustion path which routes through
+    /// `loom:clarify`; the self-reported retry-shaped failure carries
+    /// no candidate resolution so clarify is the wrong terminal.
+    #[tokio::test]
+    async fn consecutive_agent_retry_exhaustion_routes_to_loom_blocked_retry_exhausted()
+    -> Result<(), LoopError> {
+        let mut c = FakeController::default();
+        c.ready_queue.push_back(bead("lm-1", &[]));
+        // max_retries = 2 → initial + 2 retries = 3 consecutive Retry
+        // outcomes triggers the retry-exhausted escalation.
+        for i in 0..3 {
+            c.agent_outcomes.push_back(AgentOutcome::Retry {
+                reason: format!("retry-reason-{i}"),
+            });
+        }
+
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
+
+        assert_eq!(
+            c.run_calls.len(),
+            3,
+            "initial + 2 retries before exhaustion"
+        );
+        assert!(
+            c.clarified.is_empty(),
+            "retry-exhausted does NOT route through clarify",
+        );
+        assert_eq!(c.blocked.len(), 1);
+        assert_eq!(c.blocked[0].0, BeadId::new("lm-1").expect("valid"));
+        assert_eq!(c.blocked[0].1, RETRY_EXHAUSTED_CAUSE);
+        assert!(
+            c.blocked[0].2.contains("retry-reason-2"),
+            "blocked notes carry the final retry reason: {:?}",
+            c.blocked[0].2,
+        );
+        assert_eq!(summary.beads_blocked, 1);
         Ok(())
     }
 

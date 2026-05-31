@@ -2369,6 +2369,7 @@ async fn run_parallel_loop(
                         (Some(ExitSignal::Clarify { question }), _) => {
                             AgentOutcome::Clarify { question }
                         }
+                        (Some(ExitSignal::Retry { reason }), _) => AgentOutcome::Retry { reason },
                         (Some(ExitSignal::Concern { summary }), _) => AgentOutcome::Failure {
                             error: format!(
                                 "wrong-phase-marker: LOOM_CONCERN ({summary}) is review-phase only",

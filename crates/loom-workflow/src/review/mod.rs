@@ -46,7 +46,8 @@ pub use iteration::{DEFAULT_MAX_ITERATIONS, IterationCap};
 pub use loom_templates::previous_failure::BadWalk;
 pub use loom_templates::review::ReviewLane;
 pub use phase_verdict::{
-    GateInputs, PhaseVerdict, RecoveryCause, ReviewConcern, ReviewFlag, decide,
+    GateInputs, PhaseKind, PhaseVerdict, RecoveryCause, ReviewConcern, ReviewFlag, decide,
+    decide_for_phase,
 };
 pub use production::{AcceptAllFindingValidator, ProductionReviewController};
 pub use recovery::{

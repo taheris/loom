@@ -761,6 +761,11 @@ pub enum TerminalSurface {
     /// `LOOM_CLARIFY` on the final non-empty line; `question` is the
     /// adjacent prose read by the parser.
     Clarify { question: String },
+    /// `LOOM_RETRY` on the final non-empty line; `reason` is the
+    /// adjacent prose the parser captured verbatim. Worker-phase-only
+    /// per `specs/harness.md` § Marker definitions — the verdict gate
+    /// rejects this in interactive phases as `wrong-phase-marker`.
+    Retry { reason: String },
     /// `LOOM_CONCERN: {"summary": "..."}` parsed cleanly.
     Concern { summary: String },
     /// `LOOM_RETRY` on the final non-empty line; `reason` is the
@@ -788,6 +793,7 @@ impl TerminalSurface {
             Self::Noop => "LOOM_NOOP",
             Self::Blocked { .. } => "LOOM_BLOCKED",
             Self::Clarify { .. } => "LOOM_CLARIFY",
+            Self::Retry { .. } => "LOOM_RETRY",
             Self::Concern { .. } => "LOOM_CONCERN (well-formed)",
             Self::Retry { .. } => "LOOM_RETRY",
             Self::Malformed { .. } => "LOOM_CONCERN (malformed payload)",
@@ -822,6 +828,18 @@ pub enum ExitSignal {
     /// Agent needs human input; the driver applies the `loom:clarify`
     /// label and bails.
     Clarify { question: String },
+
+    /// Worker-phase self-report: this attempt cannot finish but a fresh
+    /// dispatch is likely to succeed (environmental failure or agent
+    /// self-reset per `specs/harness.md` § Marker definitions). `reason`
+    /// is the prose the agent wrote on the line preceding the marker,
+    /// captured verbatim. The verdict gate maps this to
+    /// `RecoveryCause::AgentRetry` and routes through the existing
+    /// `[loop] max_retries` counter; consecutive `LOOM_RETRY` exits that
+    /// exhaust the counter escalate to `loom:blocked` with cause
+    /// `retry-exhausted`. Worker-phase-only — emitting `LOOM_RETRY` from
+    /// an interactive phase is a `wrong-phase-marker` error.
+    Retry { reason: String },
 
     /// Review-phase concern. Carries the parsed `summary` field from the
     /// terminal `LOOM_CONCERN: {"summary": "..."}` marker. The summary is
@@ -860,6 +878,7 @@ const COMPLETE: &str = "LOOM_COMPLETE";
 const NOOP: &str = "LOOM_NOOP";
 const BLOCKED: &str = "LOOM_BLOCKED";
 const CLARIFY: &str = "LOOM_CLARIFY";
+const RETRY: &str = "LOOM_RETRY";
 const CONCERN: &str = "LOOM_CONCERN";
 const RETRY: &str = "LOOM_RETRY";
 
@@ -1094,6 +1113,7 @@ fn terminal_surface_from_stdout(output: &str) -> TerminalSurface {
         Some(ExitSignal::Noop) => TerminalSurface::Noop,
         Some(ExitSignal::Blocked { reason }) => TerminalSurface::Blocked { reason },
         Some(ExitSignal::Clarify { question }) => TerminalSurface::Clarify { question },
+        Some(ExitSignal::Retry { reason }) => TerminalSurface::Retry { reason },
         Some(ExitSignal::Concern { summary }) => TerminalSurface::Concern { summary },
         Some(ExitSignal::Retry { reason }) => TerminalSurface::Retry { reason },
         Some(ExitSignal::BadWalk(BadWalk::Concern { payload, .. })) => {
@@ -1376,6 +1396,31 @@ mod tests {
             }
             other => panic!("expected Clarify, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn retry_carries_reason_from_prior_line() {
+        let out = "container tool exec failed mid-session\nLOOM_RETRY\n";
+        match parse_exit_signal(out) {
+            Some(ExitSignal::Retry { reason }) => {
+                assert_eq!(reason, "container tool exec failed mid-session");
+            }
+            other => panic!("expected Retry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retry_co_occurring_with_other_marker_swallowed() {
+        let out = "LOOM_RETRY LOOM_BLOCKED\n";
+        assert_eq!(parse_exit_signal(out), None);
+    }
+
+    #[test]
+    fn terminal_surface_retry_label_round_trips() {
+        let ts = TerminalSurface::Retry {
+            reason: "tool exec broke".into(),
+        };
+        assert_eq!(ts.label(), "LOOM_RETRY");
     }
 
     #[test]
