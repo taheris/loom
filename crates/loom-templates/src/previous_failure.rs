@@ -1,7 +1,7 @@
 //! Typed `previous_failure` retry context.
 //!
 //! `PreviousFailure` is the tagged-enum surface that the driver populates from
-//! the verdict-gate cause classification and that `run.md` renders into the
+//! the verdict-gate cause classification and that `loop.md` renders into the
 //! next agent attempt's prompt. The enum + its sub-types (`DriverNoticeCause`,
 //! `BadWalk`, `VerifierFailure`) are part of the `templates` public contract —
 //! consumers compose them into their own retry prompts. The per-finding
@@ -37,7 +37,7 @@ pub const STDERR_TAIL_PER_BLOCK: usize = 1500;
 /// Marker appended to a rendered failure body when truncation drops content.
 const TRUNC_MARKER: &str = "[truncated]";
 
-/// Typed retry context threaded into `run.md` via `LoopContext.previous_failure`.
+/// Typed retry context threaded into `loop.md` via `LoopContext.previous_failure`.
 /// Variants carry the cause-appropriate detail so the template can render each
 /// with its documented framing (see [`Display`] impl).
 #[derive(Debug, Clone, PartialEq, Eq)]

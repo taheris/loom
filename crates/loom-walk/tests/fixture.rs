@@ -423,7 +423,7 @@ fn template_context_structs_pass() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-templates/templates/run.md",
+        "crates/loom-templates/templates/loop.md",
         "body\n",
     );
     seed(
@@ -431,7 +431,7 @@ fn template_context_structs_pass() {
         "crates/loom-templates/src/lib.rs",
         "use askama::Template;\n\
          #[derive(Template)]\n\
-         #[template(path = \"run.md\")]\n\
+         #[template(path = \"loop.md\")]\n\
          pub struct LoopContext;\n",
     );
     let out = invoke(&["template_context_structs"], Some(ws.path()), None);
@@ -443,7 +443,7 @@ fn template_context_structs_fail() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-templates/templates/run.md",
+        "crates/loom-templates/templates/loop.md",
         "body\n",
     );
     seed(
@@ -452,7 +452,7 @@ fn template_context_structs_fail() {
         "pub struct Nothing;\n",
     );
     let out = invoke(&["template_context_structs"], Some(ws.path()), None);
-    assert_fail(&out, "run.md");
+    assert_fail(&out, "loop.md");
 }
 
 // ---------------------------------------------------------------------------
@@ -1323,13 +1323,13 @@ fn template_pinning_matrix_pass_clean_matrix() {
     let ws = make_workspace();
     seed_pinning_matrix(
         &ws,
-        "| Partial | `run` |\n\
+        "| Partial | `loop` |\n\
          |---|:-:|\n\
          | `context_pinning.md` | ✓ |\n",
     );
     seed(
         ws.path(),
-        "crates/loom-templates/templates/run.md",
+        "crates/loom-templates/templates/loop.md",
         "{% include \"partial/context_pinning.md\" %}\n",
     );
     seed(
@@ -1346,13 +1346,13 @@ fn template_pinning_matrix_fail_spec_marks_but_template_missing_include() {
     let ws = make_workspace();
     seed_pinning_matrix(
         &ws,
-        "| Partial | `run` |\n\
+        "| Partial | `loop` |\n\
          |---|:-:|\n\
          | `style_rules.md` | ✓ |\n",
     );
     seed(
         ws.path(),
-        "crates/loom-templates/templates/run.md",
+        "crates/loom-templates/templates/loop.md",
         "no style_rules include here\n",
     );
     let out = invoke(&["template_pinning_matrix"], Some(ws.path()), None);
@@ -1364,13 +1364,13 @@ fn template_pinning_matrix_fail_template_includes_but_spec_blank() {
     let ws = make_workspace();
     seed_pinning_matrix(
         &ws,
-        "| Partial | `run` |\n\
+        "| Partial | `loop` |\n\
          |---|:-:|\n\
          | `style_rules.md` |  |\n",
     );
     seed(
         ws.path(),
-        "crates/loom-templates/templates/run.md",
+        "crates/loom-templates/templates/loop.md",
         "{% include \"partial/style_rules.md\" %}\n",
     );
     seed(
@@ -2100,7 +2100,7 @@ fn loom_templates_workflow_templates_not_exported_pass_when_only_derive() {
         "crates/loom-templates/src/run.rs",
         "use askama::Template;\n\
          #[derive(Template)]\n\
-         #[template(path = \"run.md\")]\n\
+         #[template(path = \"loop.md\")]\n\
          pub struct LoopContext;\n",
     );
     let out = invoke(
@@ -2112,19 +2112,19 @@ fn loom_templates_workflow_templates_not_exported_pass_when_only_derive() {
 }
 
 #[test]
-fn loom_templates_workflow_templates_not_exported_fail_when_pub_const_run() {
+fn loom_templates_workflow_templates_not_exported_fail_when_pub_const_loop() {
     let ws = make_workspace();
     seed(
         ws.path(),
         "crates/loom-templates/src/lib.rs",
-        "pub const RUN_TEMPLATE: &str = include_str!(\"../templates/run.md\");\n",
+        "pub const LOOP_TEMPLATE: &str = include_str!(\"../templates/loop.md\");\n",
     );
     let out = invoke(
         &["loom_templates_workflow_templates_not_exported"],
         Some(ws.path()),
         None,
     );
-    assert_fail(&out, "run.md");
+    assert_fail(&out, "loop.md");
 }
 
 #[test]
@@ -2760,11 +2760,11 @@ fn template_wire_format_restatement_fails_on_loom_concern_outside_partial() {
     );
     seed(
         ws.path(),
-        "crates/loom-templates/templates/run.md",
+        "crates/loom-templates/templates/loop.md",
         "Run the bead.\nTerminator: LOOM_CONCERN: {\"summary\":\"oops\"}.\n",
     );
     let out = invoke(&["template_wire_format_restatement"], Some(ws.path()), None);
-    assert_fail(&out, "crates/loom-templates/templates/run.md:2");
+    assert_fail(&out, "crates/loom-templates/templates/loop.md:2");
 }
 
 // ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ pub enum LoopError {
     /// bd CLI failure: {0}
     Bd(#[from] BdError),
 
-    /// rendering the run.md template failed: {0}
+    /// rendering the loop.md template failed: {0}
     Render(#[from] askama::Error),
 
     /// log sink failure: {0}

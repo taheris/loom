@@ -901,7 +901,7 @@ documents in front of the agent with zero configuration.
   errors, not runtime errors
   [test](template_renders_are_byte_stable_across_runs)
 - Partials are included via Askama's `{% include %}` mechanism
-  [check?](grep -q 'partial/context_pinning' crates/loom-templates/templates/loop.md)
+  [check](grep -q 'partial/context_pinning' crates/loom-templates/templates/loop.md)
 - Rendered output is stable across runs for identical inputs,
   verified by `insta` snapshots
   [test](template_renders_are_byte_stable_across_runs)
@@ -1246,7 +1246,7 @@ documents in front of the agent with zero configuration.
   [test](run_template_omits_first_instruction_reframe_on_fresh_dispatch)
 - Reframe wording is generic (one form regardless of variant);
   per-variant detail lives inside the previous-failure block itself
-  [check?](grep -q 'Re-read the previous failure block above' crates/loom-templates/templates/loop.md)
+  [check](grep -q 'Re-read the previous failure block above' crates/loom-templates/templates/loop.md)
 
 ### Public surface
 

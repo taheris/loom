@@ -1249,7 +1249,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
 }
 
 /// Smoke check: the rendered run prompt contains every instruction section,
-/// header, and substituted value the run.md template promises for shared
+/// header, and substituted value the loop.md template promises for shared
 /// inputs.
 #[test]
 fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
@@ -1343,7 +1343,7 @@ fn agent_output_markers_wrap_each_agent_supplied_field() -> Result<()> {
     ] {
         assert!(
             contained_within_agent_output(&run, token),
-            "run.md: {token} not enclosed in <agent-output>: {run}",
+            "loop.md: {token} not enclosed in <agent-output>: {run}",
         );
     }
 

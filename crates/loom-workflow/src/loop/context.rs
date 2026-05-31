@@ -22,7 +22,7 @@ pub struct LoopContextInputs {
     /// `previous_failure` is `VerifyFailures` and the reviewer also raised a
     /// concern.
     pub review_notes: Option<String>,
-    /// In-session per-bead retry counter. `0` on fresh dispatch; `run.md`
+    /// In-session per-bead retry counter. `0` on fresh dispatch; `loop.md`
     /// omits the retry line when zero (see `specs/templates.md` §
     /// Attempt Counter).
     pub attempt: u32,

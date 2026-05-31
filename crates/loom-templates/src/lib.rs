@@ -15,7 +15,7 @@
 //! templates from the exposed typed building blocks
 //! ([`PinnedContext`], [`PreviousFailure`], [`LoopContext`],
 //! [`ReviewContext`]) and the `PARTIAL_*` partial-string constants
-//! below. Loom's own workflow templates (`plan_*`, `todo_*`, `run`,
+//! below. Loom's own workflow templates (`plan_*`, `todo_*`, `loop`,
 //! `review`, `msg`) are internal — consumers compose with the partials
 //! and typed contexts, not with the workflow shells.
 
@@ -91,7 +91,7 @@ pub const PARTIAL_FINDINGS_WALK: &str = include_str!("../templates/partial/findi
 /// `partial/progress_markers.md` — `LOOM_COMPLETE` / `LOOM_NOOP`,
 /// the two "work is done" terminators. Pinned by every worker /
 /// planning template (`plan_new`, `plan_update`, `todo_new`,
-/// `todo_update`, `run`, `review`).
+/// `todo_update`, `loop`, `review`).
 pub const PARTIAL_PROGRESS_MARKERS: &str = include_str!("../templates/partial/progress_markers.md");
 
 /// `partial/self_report_markers.md` — `LOOM_BLOCKED` / `LOOM_CLARIFY`,
@@ -106,7 +106,7 @@ pub const PARTIAL_SELF_REPORT_MARKERS: &str =
 /// session. Multi-turn templates (`msg`, `plan_new`, `plan_update`)
 /// include this alongside the progress / self-report marker partials
 /// so the "end your response with the marker" instruction does not
-/// get read as "every response." One-shot worker templates (`run`,
+/// get read as "every response." One-shot worker templates (`loop`,
 /// `todo_*`, `review`) deliberately omit this partial — every
 /// response in those phases IS the final output, so the wrap-up
 /// restriction does not apply.

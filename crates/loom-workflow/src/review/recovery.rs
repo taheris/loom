@@ -88,7 +88,7 @@ fn render_previous_failure(cause: &RecoveryCause) -> String {
 
 /// Map a [`RecoveryCause`] to the typed
 /// [`PreviousFailure`](loom_templates::run::PreviousFailure) variant the
-/// `run.md` template renders. Per `specs/harness.md` § Verdict Gate
+/// `loop.md` template renders. Per `specs/harness.md` § Verdict Gate
 /// (recovery-context table):
 ///
 /// - `SwallowedMarker` / `IncompleteSignaling` / `ZeroProgress` →

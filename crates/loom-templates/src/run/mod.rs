@@ -10,7 +10,7 @@ pub use crate::previous_failure::{
 
 /// Context for `loom loop` executing a single bead.
 #[derive(Template)]
-#[template(path = "run.md", escape = "none")]
+#[template(path = "loop.md", escape = "none")]
 pub struct LoopContext {
     pub pinned_context: String,
     pub label: SpecLabel,
@@ -29,7 +29,7 @@ pub struct LoopContext {
     /// budget so review reasoning never crowds out mechanical failure detail.
     pub review_notes: Option<String>,
     /// In-session per-bead retry counter, populated by the driver. `0` on
-    /// fresh dispatch; `run.md` omits the retry line when zero.
+    /// fresh dispatch; `loop.md` omits the retry line when zero.
     pub attempt: u32,
     pub scratchpad_path: String,
     pub style_rules: String,
