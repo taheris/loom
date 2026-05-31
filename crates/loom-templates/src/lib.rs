@@ -101,6 +101,13 @@ pub const PARTIAL_PROGRESS_MARKERS: &str = include_str!("../templates/partial/pr
 pub const PARTIAL_SELF_REPORT_MARKERS: &str =
     include_str!("../templates/partial/self_report_markers.md");
 
+/// `partial/options_format.md` — canonical `## Options — <summary>` /
+/// `### Option N — <title>` markdown block consumed by `loom msg`'s
+/// chat-drafter. Pinned wherever a session may emit `LOOM_CLARIFY` or
+/// stream a clarify-bound finding: directly by `review.md` and
+/// transitively via `findings_walk.md` and `self_report_markers.md`.
+pub const PARTIAL_OPTIONS_FORMAT: &str = include_str!("../templates/partial/options_format.md");
+
 /// `partial/chat_marker_final_turn_only.md` — restrict `LOOM_COMPLETE`
 /// emission to the **final** assistant turn of a multi-turn chat
 /// session. Multi-turn templates (`msg`, `plan_new`, `plan_update`)
