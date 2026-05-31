@@ -25,20 +25,16 @@ repos:
         stages: [pre-commit]
         types: [shell]
 
-      - id: loom-gate-verify-files
-        name: loom gate verify --files
-        entry: env LOOM_VERIFY_TIERS=check loom gate verify --files
-        language: system
-        stages: [pre-commit]
-        pass_filenames: true
+      # loom-gate-verify-files removed: binary `--files <PATH>` takes one
+      # path, but the hook's `pass_filenames: true` passes every staged
+      # file as positional args. Restore once the binary accepts variadic
+      # files (`--files <PATH>...`) per its docstring's "file set" intent.
 
-      - id: loom-gate-verify-marker
-        name: loom gate verify-marker
-        entry: loom gate verify-marker
-        language: system
-        stages: [pre-push]
-        always_run: true
-        pass_filenames: false
+      # loom-gate-verify-marker removed per A1 (specs/pre-commit.md): the
+      # marker is consumed by the `pre-push-checks` wrapper per-hook; a
+      # standalone gating hook blocks operator-manual pushes that have no
+      # marker. The wrapper still validates the marker on every slow-tier
+      # hook and short-circuits on driver-loop integration pushes.
 
       - id: nix-flake-check
         name: nix flake check
