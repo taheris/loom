@@ -25,9 +25,56 @@ repos:
         stages: [pre-commit]
         types: [shell]
 
+      - id: loom-gate-verify-files
+        name: loom gate verify --files
+        entry: env LOOM_VERIFY_TIERS=check loom gate verify --files
+        language: system
+        stages: [pre-commit]
+        pass_filenames: true
+
+      - id: loom-gate-verify-marker
+        name: loom gate verify-marker
+        entry: loom gate verify-marker
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false
+
       - id: nix-flake-check
         name: nix flake check
-        entry: nix flake check
+        entry: skip-if-missing nix -- nix flake check
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false
+
+      - id: cargo-build
+        name: cargo build --workspace
+        entry: pre-push-checks cargo build --workspace
+        language: system
+        stages: [pre-push]
+        files: '\.rs$'
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy --workspace --all-targets -- -D warnings
+        entry: pre-push-checks cargo clippy --workspace --all-targets -- -D warnings
+        language: system
+        stages: [pre-push]
+        files: '\.rs$'
+        pass_filenames: false
+
+      - id: cargo-nextest
+        name: cargo nextest run --workspace
+        entry: pre-push-checks cargo nextest run --workspace
+        language: system
+        stages: [pre-push]
+        files: '\.rs$'
+        pass_filenames: false
+
+      - id: loom-gate-verify-diff
+        name: loom gate verify --diff
+        entry: pre-push-checks loom gate verify --diff HEAD
         language: system
         stages: [pre-push]
         always_run: true
@@ -35,7 +82,7 @@ repos:
 
       - id: container-smoke
         name: nix run .#test (container smoke)
-        entry: nix run .#test
+        entry: pre-push-checks skip-if-missing nix -- nix run .#test
         language: system
         stages: [pre-push]
         files: '^crates/[^/]+/tests/properties.rs$'

@@ -260,7 +260,7 @@ declared as such.
   [check](grep -q 'scripts/check-shell-reexec' .pre-commit-config.yaml)
 - The pre-commit stage runs `loom gate verify --files` against staged
   files
-  [check?](grep -q 'loom gate verify --files' .pre-commit-config.yaml)
+  [check](grep -q 'loom gate verify --files' .pre-commit-config.yaml)
 - The pre-push stage's first hook is `loom gate verify-marker`
   [check](awk '/^      - id:/{last=$0} /stages:.*pre-push/{print last; exit}' .pre-commit-config.yaml | grep -q 'verify-marker')
 - The pre-push stage includes a `nix flake check` hook with
@@ -268,10 +268,10 @@ declared as such.
   [check](grep -q 'nix flake check' .pre-commit-config.yaml)
 - The pre-push stage includes per-hook `cargo build`, `cargo clippy`,
   and `cargo nextest` entries, each file-gated on `\.rs$`
-  [check?](grep -E -q 'cargo (build|clippy|nextest)' .pre-commit-config.yaml)
+  [check](grep -E -q 'cargo (build|clippy|nextest)' .pre-commit-config.yaml)
 - Each slow-tier pre-push hook's `entry` routes through the
   `pre-push-checks` wrapper from `wrapix.prekHooks`
-  [check?](grep -q 'pre-push-checks' .pre-commit-config.yaml)
+  [check](grep -q 'pre-push-checks' .pre-commit-config.yaml)
 - The `loom gate verify-marker` hook is the first pre-push entry and
   is **not** wrapped by `pre-push-checks` (wrapping the canonical
   marker check with itself would be self-referential)
@@ -280,10 +280,10 @@ declared as such.
   `skip-if-missing nix --` so they no-op in the bead container
   (which has no `nix`) while running normally on the host devShell
   and in CI
-  [check?](grep -q 'skip-if-missing nix --' .pre-commit-config.yaml)
+  [check](grep -q 'skip-if-missing nix --' .pre-commit-config.yaml)
 - The pre-push stage runs `loom gate verify --diff` for the deterministic
   verifier tier against the pushed range
-  [check?](grep -q 'loom gate verify --diff' .pre-commit-config.yaml)
+  [check](grep -q 'loom gate verify --diff' .pre-commit-config.yaml)
 - The pre-push stage includes a container-smoke hook gated on
   `crates/*/tests/properties.rs`
   [check](grep -q 'tests/properties.rs' .pre-commit-config.yaml)
