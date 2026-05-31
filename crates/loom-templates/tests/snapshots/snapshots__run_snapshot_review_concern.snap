@@ -172,6 +172,7 @@ Before outputting LOOM_COMPLETE:
 - Changes staged (`git add`)
 - Spec verification test files created for relevant criteria
 - Bead closed (`bd close lm-3hhwq.10`)
+- Preflight self-check: run `loom gate verify --diff HEAD` and resolve any findings in-session before emitting `LOOM_COMPLETE` — do not defer findings to a follow-up bead.
 
 Post-step hooks verify compliance automatically.
 

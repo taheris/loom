@@ -108,6 +108,7 @@ Before outputting LOOM_COMPLETE:
 - Changes staged (`git add`)
 - Spec verification test files created for relevant criteria
 - Bead closed (`bd close {% match issue_id %}{% when Some with (id) %}{{ id }}{% when None %}<issue-id>{% endmatch %}`)
+- Preflight self-check: run `loom gate verify --diff HEAD` and resolve any findings in-session before emitting `LOOM_COMPLETE` — do not defer findings to a follow-up bead.
 
 Post-step hooks verify compliance automatically.
 
