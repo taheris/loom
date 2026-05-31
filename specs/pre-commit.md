@@ -33,7 +33,9 @@ restructured to a sub-10s fast tier; the workspace cargo dance runs as
 per-hook prek entries against the host's warm cache; and a content-
 addressed `MarkerProof` minted by the driver-side verdict gate lets
 prek's pre-push short-circuit redundant audit work on driver-loop
-integration pushes.
+integration pushes. Operator-manual pushes pay the slow tier exactly
+once per push (~30–90s warm) against the host cache — a first-class,
+supported path, no `--no-verify` required.
 
 ## Architecture
 
@@ -42,7 +44,11 @@ integration pushes.
 | Stage      | Wall-time target          | Hooks |
 |------------|---------------------------|-------|
 | pre-commit | ~1s                       | `repo: builtin` `trailing-whitespace`, `end-of-file-fixer` (excludes `.beads/config.yaml`), `check-merge-conflict`; `treefmt --fail-on-change`; `shell-reexec-explicit-interpreter`; `loom gate verify --files` (integrity gate + `[check]`-tier verifiers whose declared inputs intersect staged files) |
-| pre-push   | <10s fast + ~30–90s slow  | `loom gate verify-marker` (first hook; direct entry, no wrapper — short-circuits the slow tier on valid marker); `skip-if-missing nix -- nix flake check` (the <10s fast tier — treefmt-check derivation + `loom gate check` derivation; **no Rust workspace compile**; no-ops in the bead container which has no `nix`); `pre-push-checks cargo build --workspace` (file-gated on `\.rs$`); `pre-push-checks cargo clippy --workspace --all-targets -- -D warnings` (file-gated on `\.rs$`); `pre-push-checks cargo nextest run --workspace` (file-gated on `\.rs$`); `pre-push-checks loom gate verify --diff <range>` (deterministic-tier verifiers whose declared inputs intersect the diff); `pre-push-checks skip-if-missing nix -- nix run .#test` (`container-smoke`; gated on `^crates/[^/]+/tests/properties\.rs$`; the nested wrappers compose — `pre-push-checks` short-circuits on a valid marker; on marker miss it execs the wrapped command, which is itself wrapped by `skip-if-missing` to no-op when `nix` is absent) |
+| pre-push   | <10s fast + ~30–90s slow  | `skip-if-missing nix -- nix flake check` (the <10s fast tier — treefmt-check derivation + `loom gate check` derivation; **no Rust workspace compile**; no-ops in the bead container which has no `nix`); `pre-push-checks cargo build --workspace` (file-gated on `\.rs$`); `pre-push-checks cargo clippy --workspace --all-targets -- -D warnings` (file-gated on `\.rs$`); `pre-push-checks cargo nextest run --workspace` (file-gated on `\.rs$`); `pre-push-checks loom gate verify --diff <range>` (deterministic-tier verifiers whose declared inputs intersect the diff); `pre-push-checks skip-if-missing nix -- nix run .#test` (`container-smoke`; gated on `^crates/[^/]+/tests/properties\.rs$`; the nested wrappers compose — `pre-push-checks` short-circuits on a valid marker; on marker miss it execs the wrapped command, which is itself wrapped by `skip-if-missing` to no-op when `nix` is absent) |
+
+There is no standalone `loom gate verify-marker` hook; the marker is
+consulted by the `pre-push-checks` wrapper per-hook (see *Marker
+integration* for the lifecycle and the rationale).
 
 The pre-commit trio uses `repo: builtin` — prek's native Rust
 implementations of the standard pre-commit hooks. The upstream
@@ -56,7 +62,9 @@ The `shell-reexec-explicit-interpreter` hook id wraps
 
 ### Fast tier vs slow tier
 
-The pre-push chain splits along the marker's seam.
+The pre-push chain has two tiers: a fast tier that always runs, and
+a slow tier whose hooks are individually wrapped to short-circuit on
+a valid marker.
 
 The **fast tier** is `nix flake check`. It runs on every push and on
 every CI build, unconditionally — no marker shortcut, no file gating.
@@ -70,10 +78,11 @@ build. Target: <10s warm.
 
 The **slow tier** is the cargo dance + `loom gate verify --diff <range>`
 + `container-smoke`. Each runs as an independent prek hook with its
-own `files:` regex so file-pattern selectivity composes with marker
-gating. Each entry routes through a wrapper (`pre-push-checks` — owned
-upstream, see *Plumbing*) that consults the `MarkerProof` and exits 0
-on valid marker, otherwise execs the underlying command. On the
+own `files:` regex so file-pattern selectivity composes with the
+marker-aware short-circuit. Each entry routes through a wrapper
+(`pre-push-checks` — owned upstream, see *Plumbing*) that consults the
+`MarkerProof` and exits 0 on valid marker, otherwise execs the
+underlying command. On the
 driver-loop integration push the wrapper short-circuits the entire
 slow tier in sub-second time; on operator-manual pushes (no marker
 present in the operator's clone) the wrapper falls through and the
@@ -137,19 +146,32 @@ scope:
    `.loom/marker.json` in the loom workspace.
 3. The loom workspace runs `git push origin <integration-branch>` —
    still inside the critical section.
-4. prek's pre-push chain fires. The first hook is `loom gate
-   verify-marker`, which deserializes the marker, computes the
-   workspace fingerprint (tree OID at HEAD + porcelain-clean
-   precondition), compares against the marker's tree OID, and exits
-   0 on match.
-5. Each subsequent slow-tier hook's entry routes through the
-   `pre-push-checks` wrapper; on the just-validated marker the
-   wrapper exits 0 without execing the underlying command.
+4. prek's pre-push chain fires. The `nix flake check` fast tier runs
+   first, unconditionally (no marker consultation). Each slow-tier
+   hook's entry then routes through the `pre-push-checks` wrapper,
+   which deserializes the marker, computes the workspace fingerprint
+   (tree OID at HEAD + porcelain-clean precondition), compares
+   against the marker's tree OID, and exits 0 without execing the
+   underlying command on match. On marker absent / mismatch / dirty
+   tree, the wrapper falls through and execs the underlying command,
+   so the slow tier runs.
+
+There is no standalone `loom gate verify-marker` prek hook. The
+binary stays as a callable subcommand (used by the wrapper, available
+for diagnostic invocation), but registering it as its own gating
+first hook would block operator-manual pushes — the wrapper is the
+sole hook-chain consumer of the marker, and "no marker" is a normal
+operator-push condition the wrapper handles by falling through, not a
+failure that should stop the push.
 
 Operator-manual pushes from the operator's `/workspace` clone have no
 `MarkerProof` (different clone — the verdict gate never wrote a marker
-there). prek's pre-push chain runs the fast tier + the full slow tier
-against the operator's host cache; the wrapper falls through.
+there). The wrapper's marker check returns "no valid marker", and
+because the wrapper treats that as fall-through (not failure), prek's
+pre-push chain runs the fast tier + the full slow tier against the
+operator's host cache. No `--no-verify` is required — the
+operator-manual push is a first-class, supported path that pays the
+slow tier exactly once per push.
 
 ### Plumbing (owned upstream)
 
@@ -261,8 +283,13 @@ declared as such.
 - The pre-commit stage runs `loom gate verify --files` against staged
   files
   [check](grep -q 'loom gate verify --files' .pre-commit-config.yaml)
-- The pre-push stage's first hook is `loom gate verify-marker`
-  [check](awk '/^      - id:/{last=$0} /stages:.*pre-push/{print last; exit}' .pre-commit-config.yaml | grep -q 'verify-marker')
+- The pre-push stage's first hook is the `nix flake check` fast tier
+  [check?](awk '/^      - id:/{last=$0} /stages:.*pre-push/{print last; exit}' .pre-commit-config.yaml | grep -q 'nix flake check\|flake-check')
+- `.pre-commit-config.yaml` does not register `loom gate verify-marker`
+  as a prek hook (the marker is consulted by the `pre-push-checks`
+  wrapper per-hook; a standalone gating hook would block
+  operator-manual pushes that legitimately have no marker)
+  [check?](! grep -q 'verify-marker' .pre-commit-config.yaml)
 - The pre-push stage includes a `nix flake check` hook with
   `always_run: true`
   [check](grep -q 'nix flake check' .pre-commit-config.yaml)
@@ -272,10 +299,6 @@ declared as such.
 - Each slow-tier pre-push hook's `entry` routes through the
   `pre-push-checks` wrapper from `wrapix.prekHooks`
   [check](grep -q 'pre-push-checks' .pre-commit-config.yaml)
-- The `loom gate verify-marker` hook is the first pre-push entry and
-  is **not** wrapped by `pre-push-checks` (wrapping the canonical
-  marker check with itself would be self-referential)
-  [check](awk '/^        entry:/{last=$0} /stages:.*pre-push/{print last; exit}' .pre-commit-config.yaml | grep -v 'pre-push-checks' | grep -q 'loom gate verify-marker')
 - Hooks whose entry runs `nix` are wrapped with
   `skip-if-missing nix --` so they no-op in the bead container
   (which has no `nix`) while running normally on the host devShell
@@ -339,6 +362,11 @@ declared as such.
 - The `pre-push-checks` wrapper execs its argument command when
   `loom gate verify-marker` exits non-zero
   [test](marker::tests::pre_push_checks_falls_through_on_invalid_marker)
+- The `pre-push-checks` wrapper execs its argument command (does not
+  fail the push) when the marker file is absent, so operator-manual
+  pushes from a clone with no `.loom/marker.json` progress through the
+  slow tier rather than aborting
+  [test?](marker::tests::pre_push_checks_falls_through_on_missing_marker)
 
 ## Requirements
 
@@ -348,12 +376,17 @@ declared as such.
    (`trailing-whitespace`, `end-of-file-fixer` with `.beads/config.yaml`
    excluded, `check-merge-conflict`), `treefmt --fail-on-change`,
    `shell-reexec-explicit-interpreter`, and `loom gate verify --files`
-   against staged files. Pre-push runs `loom gate verify-marker` first,
-   then `nix flake check` (the <10s fast tier — no workspace Rust
-   compile), then the slow tier as per-hook entries (`cargo build`,
-   `cargo clippy`, `cargo nextest`, `loom gate verify --diff <range>`,
-   `container-smoke`), each routed through the `pre-push-checks`
-   wrapper so a valid marker short-circuits the slow tier.
+   against staged files. Pre-push runs `nix flake check` first (the
+   <10s fast tier — no workspace Rust compile), then the slow tier as
+   per-hook entries (`cargo build`, `cargo clippy`, `cargo nextest`,
+   `loom gate verify --diff <range>`, `container-smoke`), each routed
+   through the `pre-push-checks` wrapper. A valid marker short-circuits
+   the slow tier on driver-loop integration pushes; on operator-manual
+   pushes (no marker present) the wrapper falls through and the slow
+   tier runs against the host's warm cache. `loom gate verify-marker`
+   is not itself a prek hook — it is the wrapper's marker-validation
+   subcommand, available for diagnostic invocation but never gating
+   the push chain on its own.
 
 2. **Builtin trio over Python.** The trailing-whitespace,
    end-of-file-fixer, and check-merge-conflict hooks use `repo: builtin`
@@ -372,9 +405,12 @@ declared as such.
 
 5. **Marker handoff.** `MarkerProof` is the content-addressed
    trust artifact defined in [gate.md § Marker](gate.md#marker). Mint
-   authority lives driver-side; prek consumes via `loom gate
-   verify-marker`. The marker is not minted by the bead-container
-   agent.
+   authority lives driver-side; prek consumes the marker through the
+   `pre-push-checks` wrapper around each slow-tier hook (the
+   wrapper invokes `loom gate verify-marker` or equivalent
+   marker-validation logic). Marker absence is a normal condition for
+   operator-manual pushes, not a push failure. The marker is not
+   minted by the bead-container agent.
 
 ### Non-Functional
 

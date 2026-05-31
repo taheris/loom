@@ -765,8 +765,10 @@ all beads in the molecule have integrated: full audit
 **audit + mint + push** atomically — releasing the lock between
 mint and push would let another verdict gate's rebase mutate HEAD,
 invalidating the just-minted marker. prek's pre-push hook chain
-fires on the push and reads the just-minted marker via `loom gate
-verify-marker`, short-circuiting the slow tier.
+fires on the push; the `pre-push-checks` wrapper around each
+slow-tier hook reads the just-minted marker (via `loom gate
+verify-marker` or equivalent marker-validation logic) and
+short-circuits the slow tier on a valid marker.
 
 Both stages at the loom workspace is load-bearing for
 parallel-agent correctness: the marker bound to HEAD's tree OID
@@ -809,13 +811,18 @@ molecule-completion push gate's audit-pass: the gate constructs
 `MarkerProof::from_gate_success(success, loom_workspace)`, writes
 the sealed marker atomically to `.loom/marker.json`, then
 runs the integration push — all inside the same critical section.
-prek's pre-push hook chain fires on the push; its first hook
-(`loom gate verify-marker`) reads the just-minted marker and
-short-circuits the slow tier. Per-bead integration steps do not
-mint markers (they do not push); the marker is one per molecule,
-covering the cumulative integrated state. The marker's
-content-addressed validation is what makes the push fast in the
-warm-driver-loop case without trusting an unverified stamp.
+prek's pre-push hook chain fires on the push; the `pre-push-checks`
+wrapper around each slow-tier hook reads the just-minted marker and
+short-circuits the underlying command (per
+[pre-commit.md § Marker integration](pre-commit.md#marker-integration)).
+There is no standalone `loom gate verify-marker` hook gating the
+chain; the wrapper is the marker's only push-time consumer, and
+marker absence is a fall-through condition (operator-manual push),
+not a push failure. Per-bead integration steps do not mint markers
+(they do not push); the marker is one per molecule, covering the
+cumulative integrated state. The marker's content-addressed
+validation is what makes the push fast in the warm-driver-loop
+case without trusting an unverified stamp.
 
 Driver-detected failures enter a bounded recovery loop; agent
 self-reports go straight to human resolution via `loom msg`.

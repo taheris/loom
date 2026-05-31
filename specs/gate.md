@@ -153,7 +153,7 @@ selecting the audit scope:
 | **`loom gate judge`** | LLM judge, one lane | Runs only criterion-attached `[judge]` verifiers — skips the rubric walk. Inspection-only, like `review`. |
 | **`loom gate rubric`** | LLM judge, one lane | Runs only the rubric walk over the diff — skips criterion-attached judges. Inspection-only, like `review`. |
 | **`loom gate mint`** | Act | Walks the rubric (per-`--bead`/`--diff`/`--files` scope: LLM rubric only; per-`--tree` scope: deterministic verifiers + LLM rubric) and mints fix-up beads from typed findings, bonded per-spec via the molecule lifecycle. The sole driver-side mint chokepoint and the actor in `loom loop`'s per-bead path. See [*Findings and Minting*](#findings-and-minting). |
-| **`loom gate verify-marker`** | Trust check | Reads `.loom/marker.json` from the current workspace, deserializes a typed `MarkerProof`, computes the current workspace fingerprint (tree OID at HEAD + porcelain-clean precondition), and exits 0 iff the marker validates against the current fingerprint. Used by prek's pre-push hook chain to short-circuit redundant work on driver-loop integration pushes. See [*Marker*](#marker). |
+| **`loom gate verify-marker`** | Trust check | Reads `.loom/marker.json` from the current workspace, deserializes a typed `MarkerProof`, computes the current workspace fingerprint (tree OID at HEAD + porcelain-clean precondition), and exits 0 iff the marker validates against the current fingerprint. Invoked by the `pre-push-checks` wrapper (which wraps each slow-tier prek hook) to short-circuit redundant work on driver-loop integration pushes. **Not itself registered as a prek hook** — a standalone gating hook would block operator-manual pushes that legitimately have no marker. Diagnostic use (`loom gate verify-marker` on the CLI to inspect the current marker's state) remains valid. See [*Marker*](#marker). |
 
 ### Scope flags
 
@@ -1348,21 +1348,28 @@ before starting its own critical section.
 
 ### Consumer contract
 
-`loom gate verify-marker` is the prek-side consumer. It calls
-`MarkerProof::read_and_validate(".loom/marker.json", ".")`
+`loom gate verify-marker` is the marker-validation subcommand. It
+calls `MarkerProof::read_and_validate(".loom/marker.json", ".")`
 and exits 0 on `Ok`, non-zero on `Err`. The exit code is the
 contract; the diagnostic on stderr names the specific
 `MarkerError` variant for human debugging but is not part of the
 machine-readable contract.
 
-prek's pre-push chain positions `loom gate verify-marker` as the
-first hook. Each subsequent slow-tier hook's `entry` routes
-through a wrapper (`pre-push-checks`, owned upstream by
-`wrapix.prekHooks` — see [pre-commit.md § Marker
-integration](pre-commit.md)) that re-runs the marker check and
-short-circuits the underlying command on valid marker. On invalid
-or missing marker, the wrapper execs the underlying command and
-the slow tier runs normally.
+The subcommand is consumed by the `pre-push-checks` wrapper
+(owned upstream by `wrapix.prekHooks` — see [pre-commit.md §
+Marker integration](pre-commit.md#marker-integration)), which
+wraps each slow-tier prek hook's `entry`. The wrapper invokes
+the marker check, short-circuits the underlying command on valid
+marker, and execs the underlying command (so the slow tier runs)
+on missing-or-invalid marker — operator-manual pushes have no
+marker and naturally fall through.
+
+`loom gate verify-marker` is **not** registered as a standalone
+prek hook. A gating first hook on the marker check would abort
+the push chain on missing marker, which is the normal
+operator-manual condition; the wrapper's per-hook check is the
+only push-chain consumer of the marker, and it interprets
+"missing marker" as fall-through, not failure.
 
 ### Forgery resistance
 
