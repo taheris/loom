@@ -868,7 +868,6 @@ mod tests {
                 let json = serde_json::json!({ "summary": summary }).to_string();
                 format!("LOOM_CONCERN: {json}\n")
             }
-            TerminalSurface::Retry { reason } => format!("{reason}\nLOOM_RETRY\n"),
             TerminalSurface::Malformed { payload } => format!("LOOM_CONCERN: {payload}\n"),
             TerminalSurface::Missing => "no terminal marker on this line\n".to_string(),
         };
