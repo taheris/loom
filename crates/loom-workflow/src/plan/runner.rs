@@ -904,6 +904,58 @@ mod tests {
         Ok(())
     }
 
+    /// Interactive sessions (plan_new, plan_update, msg) skip the
+    /// verdict-gate reconciliation path per `specs/templates.md`
+    /// Implementation Note 5. A mid-session crash surfaces as a typed
+    /// `WrapixExit` error on the first attempt; the runner does NOT
+    /// retry, does NOT construct a `PreviousFailure`, and does NOT
+    /// mutate bd state. The wrapix stub is invoked exactly once.
+    #[test]
+    fn plan_new_crash_surfaces_without_retry_dispatch() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = workspace_with_specs()?;
+        let bin_dir = dir.path().join("bin");
+        std::fs::create_dir_all(&bin_dir)?;
+        let bin = bin_dir.join("wrapix-stub");
+        let call_log = dir.path().join("call_count.log");
+        // Record one line per invocation, then exit non-zero to simulate
+        // a mid-session crash.
+        let script = format!(
+            "#!/bin/sh\necho call >> {call_log:?}\nexit 137\n",
+            call_log = call_log,
+        );
+        std::fs::write(&bin, script)?;
+        let mut perm = std::fs::metadata(&bin)?.permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&bin, perm)?;
+
+        let manifest = three_profile_manifest(dir.path())?;
+        let result = run_with_timeout(
+            dir.path(),
+            plan_opts_new("harness", bin, manifest),
+            Duration::from_millis(100),
+        );
+        match result {
+            Err(PlanError::WrapixExit { status }) => {
+                assert!(
+                    status.contains("137") || status.contains("exit"),
+                    "WrapixExit must surface the non-zero status: {status}",
+                );
+            }
+            other => return Err(anyhow::anyhow!("expected WrapixExit, got {other:?}")),
+        }
+
+        let calls = std::fs::read_to_string(&call_log).unwrap_or_default();
+        let call_count = calls.lines().count();
+        assert_eq!(
+            call_count, 1,
+            "interactive sessions must not retry on crash; wrapix stub was \
+             invoked {call_count} time(s) in:\n{calls}",
+        );
+        Ok(())
+    }
+
     #[test]
     fn plan_acquires_per_spec_lock() -> Result<()> {
         let dir = workspace_with_specs()?;

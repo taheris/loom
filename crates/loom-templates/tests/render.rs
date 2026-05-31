@@ -1055,15 +1055,14 @@ fn msg_chat_template_instructs_options_block_removal_on_resolution() -> Result<(
     Ok(())
 }
 
-/// The msg.md template is a resolution-only chat. The agent's only `bd`
-/// write is the resolution note; the driver runs the terminal state
-/// transition. A msg agent inferring `bd close` from `LOOM_COMPLETE`'s
-/// worker-phase framing transitions the bead closed before any
-/// implementing session can pick up the resolution. This test pins the
-/// absence of every literal that could teach the agent to close or
-/// status-transition a bead from the chat.
+/// Per `specs/templates.md` Implementation Note 5, the chat agent owns
+/// the full bd-state transition during a msg session — including
+/// `bd close` on resolved beads and `--remove-label` on unblock-without-
+/// close. The driver does NOT reconcile bd state after the session.
+/// This test pins that the template names the writes the agent must
+/// make so the agent has explicit authority.
 #[test]
-fn msg_template_does_not_teach_agent_to_close_or_status_transition() -> Result<()> {
+fn msg_template_teaches_agent_bd_write_authority() -> Result<()> {
     let ctx = MsgContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         companion_paths: vec![],
@@ -1082,12 +1081,11 @@ fn msg_template_does_not_teach_agent_to_close_or_status_transition() -> Result<(
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     };
     let out = ctx.render()?;
-    for forbidden in ["bd close", "--status=closed", "bd update --status=closed"] {
+    for required in ["bd update", "bd close", "--remove-label"] {
         assert!(
-            !out.contains(forbidden),
-            "msg.md must not teach the agent the literal `{forbidden}` — \
-             closing a bead from inside the chat strands the resolution \
-             before any implementing session can pick it up",
+            out.contains(required),
+            "msg.md must name the literal `{required}` so the chat agent \
+             has explicit bd-write authority per Implementation Note 5",
         );
     }
     Ok(())

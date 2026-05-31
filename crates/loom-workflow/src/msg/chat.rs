@@ -13,16 +13,19 @@
 //! interactive chat (no readline, no color, no real REPL).
 //!
 //! Resolution itself is the agent's responsibility: the rendered prompt
-//! tells claude to call `bd update <id> --notes "…"` and
-//! `bd update <id> --remove-label=loom:clarify` per resolved bead. The
-//! driver only renders, shells out, and reports.
+//! tells claude to call `bd update <id> --notes "…"`,
+//! `bd update <id> --remove-label=loom:clarify`, and `bd close <id>` per
+//! resolved bead. The driver only renders, shells out, and reports — it
+//! does NOT reconcile bd state after the session, per the verdict-gate
+//! split between worker and interactive phases (`specs/templates.md`
+//! Implementation Note 5).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use askama::Template;
-use loom_driver::bd::{BdClient, Bead, Label, ListOpts, UpdateOpts};
+use loom_driver::bd::{BdClient, Bead, ListOpts};
 use loom_driver::config::{LoomConfig, Phase};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::{LockGuard, LockManager};
@@ -189,22 +192,15 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         });
     }
 
-    // The msg session's job is to write the resolution note; the driver
-    // owns the bead's terminal state transition. For each bead whose
-    // notes/status/labels changed during the session, apply the canonical
-    // unblock so the bead re-enters the work queue. This idempotently
-    // reverses any `bd close` the agent over-applied while leaving
-    // untouched beads labelled for the next msg session.
-    let snapshot: Vec<Bead> = kept.iter().map(|b| (*b).clone()).collect();
+    // Interactive sessions own their own bd state per `specs/templates.md`
+    // Implementation Note 5: the driver runs no post-session
+    // reconciliation, applies no labels, and does not reverse agent
+    // writes. The remaining-bead count is read fresh so the caller can
+    // print a one-line summary; whatever bd state the chat agent + human
+    // established is the canonical state.
     let beads_after = runtime
         .block_on(async {
             let bd = BdClient::new();
-            for before in &snapshot {
-                let current = bd.show(&before.id).await?;
-                if bead_was_touched(before, &current) {
-                    bd.update(&before.id, unblock_opts()).await?;
-                }
-            }
             bd.list(ListOpts {
                 label_any: vec!["loom:clarify".to_string(), "loom:blocked".to_string()],
                 ..ListOpts::default()
@@ -217,33 +213,6 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         beads_surfaced,
         beads_remaining: remaining_kept.len(),
     })
-}
-
-/// The canonical unblock the driver applies per bead the chat agent
-/// resolved. Re-opens the bead (reversing any over-applied `bd close`)
-/// and clears both msg-queue labels in one `bd update` call.
-fn unblock_opts() -> UpdateOpts {
-    UpdateOpts {
-        status: Some("open".to_string()),
-        remove_labels: vec!["loom:clarify".to_string(), "loom:blocked".to_string()],
-        ..UpdateOpts::default()
-    }
-}
-
-/// True when the agent touched the bead with any `bd` write — notes,
-/// status, or label set differs from the snapshot taken before the
-/// chat launched. Untouched beads keep their msg-queue label so they
-/// surface in the next `loom msg` session.
-fn bead_was_touched(before: &Bead, after: &Bead) -> bool {
-    before.notes != after.notes
-        || before.status != after.status
-        || labels_sorted(&before.labels) != labels_sorted(&after.labels)
-}
-
-fn labels_sorted(labels: &[Label]) -> Vec<&str> {
-    let mut s: Vec<&str> = labels.iter().map(Label::as_str).collect();
-    s.sort_unstable();
-    s
 }
 
 /// Build the argv passed to `wrapix run` — the SAME shape `loom plan`

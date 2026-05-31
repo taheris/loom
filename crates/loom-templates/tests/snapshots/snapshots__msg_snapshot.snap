@@ -134,15 +134,15 @@ Use a SQLite table.
       affordances).
    4. **Draft** the final resolution note when the user lands on an answer.
    5. **Confirm** the draft with the user before writing.
-   6. **Write** the resolution note. Your **only** bead-state write in
-      this session is `bd update <id> --notes "..."`. The driver runs
-      the unblock transition (`--status=open` plus
-      `--remove-label=loom:clarify` / `--remove-label=loom:blocked`)
-      after the session exits — you do not need to do it yourself, and
-      you **must not** transition the bead's status from this session.
-      The bead must re-enter the work queue after your note lands so the
-      next implementing session can pick it up; transitioning it to a
-      terminal state here strands the resolution.
+   6. **Write** the resolution note and apply the bd-state transition.
+      You own the full bd-write authority during this session: record
+      the resolution with `bd update <id> --notes "..."`, then remove
+      the msg-queue label with `bd update <id>
+      --remove-label=loom:clarify` (or `--remove-label=loom:blocked`)
+      so the bead re-enters the work queue for the next implementing
+      session. If the resolution closes the work outright (no further
+      implementation needed), use `bd close <id>` instead — the driver
+      does NOT reverse the close.
 
       The new `--notes` payload must **remove the originating `## Options
       — …` block** in the same `bd update` that records the resolution
@@ -204,12 +204,11 @@ mutually exclusive: emit one and only one.
 
 This is a **resolution-only** session. The only valid marker is:
 
-- `LOOM_COMPLETE` — the chat ran cleanly. Each resolved bead has a
-  resolution note appended via `bd update --notes`; the driver applies
-  the unblock transition (`--status=open` plus the matching
-  `--remove-label`) per resolved bead after this session exits.
-  Partial progress is clean: any bead you did not write a note for
-  stays labelled and surfaces in the next `loom msg` session.
+- `LOOM_COMPLETE` — the chat ran cleanly. Whatever bd writes you made
+  during the session (resolution notes, label removals, closes) are the
+  canonical state; the driver does NOT reconcile bd state after the
+  session exits. Partial progress is clean: any bead you did not act
+  on stays labelled and surfaces in the next `loom msg` session.
 
 `LOOM_NOOP`, `LOOM_BLOCKED`, `LOOM_CLARIFY`, and `LOOM_CONCERN` do **not**
 apply here. `LOOM_NOOP` is worker-phase only; `LOOM_BLOCKED` is
@@ -217,15 +216,15 @@ unnecessary because the user is in the room; `LOOM_CLARIFY` would
 create the very work this session is supposed to resolve;
 `LOOM_CONCERN` is review-phase only.
 
-**Persistence boundary — agent narrates, driver persists.** This
-session's only `bd` write is the resolution note (`bd update --notes`).
-Do **not** transition the bead's status — leave the open → terminal
-transition to the driver. Closing the bead from inside this session
-strands the resolution: the bead skips the work queue and the next
-implementing session never picks it up. If you previously claimed the
-bead with `bd update --claim` or `bd update --status=in_progress`,
-leave the unblock to the driver as well; the driver re-opens the bead
-so the implementing session can pick it up cleanly.
+**Persistence boundary — agent owns bd writes.** The chat agent owns
+the full bd-state transition during this session: the resolution note
+(`bd update <id> --notes "..."`), the unblock (`bd update <id>
+--remove-label=loom:clarify` / `--remove-label=loom:blocked`), and
+optional close (`bd close <id>`) all happen from inside the session.
+The driver does NOT reconcile bd state afterwards. Mistakes (wrong
+bead closed, label left in place, label removed when it shouldn't
+have been) get caught by the human in the next `loom msg` session,
+not by driver auto-fixup.
 
 **Emit `LOOM_COMPLETE` on the final turn only.** This is a multi-turn chat,
 not a single-shot worker phase. The "end your response with the marker"
