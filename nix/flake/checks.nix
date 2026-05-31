@@ -16,6 +16,10 @@ _:
         src = stagedSrc;
         inherit cargoArtifacts;
         doCheck = true;
+        # Terminal derivation — nothing downstream consumes our `target/`,
+        # so skip crane's default zstd-pack-target step on install. Saves
+        # ~30s/rebuild for a 4.5 GiB target tree.
+        doInstallCargoArtifacts = false;
         nativeBuildInputs = [
           pkgs.git
           pkgs.cacert
