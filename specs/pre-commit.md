@@ -284,12 +284,12 @@ declared as such.
   files
   [check](grep -q 'loom gate verify --files' .pre-commit-config.yaml)
 - The pre-push stage's first hook is the `nix flake check` fast tier
-  [check?](awk '/^      - id:/{last=$0} /stages:.*pre-push/{print last; exit}' .pre-commit-config.yaml | grep -q 'nix flake check\|flake-check')
+  [check](awk '/^      - id:/{last=$0} /stages:.*pre-push/{print last; exit}' .pre-commit-config.yaml | grep -q 'nix flake check\|flake-check')
 - `.pre-commit-config.yaml` does not register `loom gate verify-marker`
   as a prek hook (the marker is consulted by the `pre-push-checks`
   wrapper per-hook; a standalone gating hook would block
   operator-manual pushes that legitimately have no marker)
-  [check?](! grep -q 'verify-marker' .pre-commit-config.yaml)
+  [check](! grep -Eq '^\s*-\s*id:.*verify-marker' .pre-commit-config.yaml)
 - The pre-push stage includes a `nix flake check` hook with
   `always_run: true`
   [check](grep -q 'nix flake check' .pre-commit-config.yaml)
