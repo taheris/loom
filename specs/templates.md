@@ -70,7 +70,7 @@ Current set:
 | `interview_modes.md` | Describe the "one by one" / "polish the spec" interview sub-modes |
 | `chat_interview.md` | Interactive-session discipline pinned by every interactive-session template (`plan_new`, `plan_update`, `msg`): conversational prose Q&A only, no Claude Code option-picker / `AskUserQuestion` widget, and bd is the durable persistence destination for anything that needs to outlive the session — see *Chat Discipline* below |
 | `decomposition_discipline.md` | Pin the audit-before-fan-out rule on `todo_new` / `todo_update`: every bead must correspond to evidence-confirmed missing work, not a spec criterion in the abstract — see *Decomposition Discipline* below |
-| `plan_stage_rubric.md` | Gate the planning interview on completeness / coherence / invariant-clash before any commit |
+| `plan_stage_rubric.md` | Gate the planning interview on completeness / coherence / invariant-clash before any commit. Carries the **pending-modifier discipline** prominently — see *Planning-Rubric Pending Discipline* below for what the partial body must spell out, including the "modified annotations" case the rule must explicitly cover (not only newly-added ones). |
 | `invariant_clash.md` | Describe the invariant-clash awareness scan (included transitively via `plan_stage_rubric.md`) |
 | `review_rubric.md` | Per-diff review rubric — see [gate.md](gate.md) |
 | `sibling_spec_editing.md` | Authorize cross-spec edits during a planning session |
@@ -103,27 +103,55 @@ narrative from drifting back into spec markdown.
 
 ### Pinning Policy
 
-Each partial is included by an explicit set of templates:
+Each partial is included by an explicit set of templates. **Cell
+vocabulary**: `✓` (partial is transitively `{% include %}`'d by
+this template), blank (partial is NOT included), `?` (pending
+addition — will resolve to `✓` once the template's `{% include %}`
+graph catches up), `~` (pending removal — will resolve to blank
+once the template's `{% include %}` is dropped). Pending cells
+silent-pass during the pending window per [gate.md § Pending
+support in structured walker input](gate.md#pending-support-in-structured-walker-input);
+the walker fails — with a `pending-marker-resolved` finding —
+once the actual include state catches up to the pending direction
+so the author drops the marker to its resolved value (`✓` or
+blank) in the same diff.
 
 | Partial | `plan_new` | `plan_update` | `todo_new` | `todo_update` | `loop` | `review` | `msg` |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| `context_pinning.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `context_pinning.md` | ✓ | ✓ | ✓ | ✓ | ? | ✓ | ✓ |
 | `style_rules.md` |  |  |  |  | ✓ | ✓ |  |
 | `spec_conventions.md` | ✓ | ✓ |  |  |  |  |  |
 | `spec_header.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |
-| `companions_context.md` |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `companions_context.md` |  | ✓ | ✓ | ✓ | ? | ✓ | ✓ |
 | `scratchpad.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `progress_markers.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |
-| `self_report_markers.md` |  |  | ✓ | ✓ | ✓ | ✓ |  |
+| `self_report_markers.md` | ~ | ~ | ✓ | ✓ | ✓ | ✓ |  |
 | `findings_walk.md` |  |  |  |  |  | ✓ |  |
 | `chat_marker_final_turn_only.md` | ✓ | ✓ |  |  |  |  | ✓ |
 | `interview_modes.md` | ✓ | ✓ |  |  |  |  |  |
-| `chat_interview.md` | ✓ | ✓ |  |  |  |  | ✓ |
+| `chat_interview.md` | ✓ | ✓ |  |  |  |  | ? |
 | `decomposition_discipline.md` |  |  | ✓ | ✓ |  |  |  |
 | `plan_stage_rubric.md` | ✓ | ✓ |  |  |  |  |  |
 | `invariant_clash.md` | ✓ | ✓ |  |  |  |  |  |
 | `review_rubric.md` |  |  |  |  |  | ✓ |  |
 | `sibling_spec_editing.md` |  | ✓ |  |  |  |  |  |
+
+The pending cells reflect planning-session edits whose
+template-wiring implementation hasn't landed yet:
+`self_report_markers.md` is `~` for `plan_new` / `plan_update`
+(pending removal — the template currently includes the partial;
+the include must be dropped per the worker-only marker
+discipline); `chat_interview.md` is `?` for `msg` (pending
+addition — the template doesn't yet include the partial; the
+include must be added per the interactive-session discipline
+pinning); `companions_context.md` and `context_pinning.md` are
+`?` for `loop` (pre-existing drift — the templates don't include
+these partials but the spec asserts they should; the resolving
+session either adds the `{% include %}` to `loop.md` and drops
+the `?` to `✓`, or drops the assertion entirely by changing the
+cell to blank). Each pending marker resolves to `✓` or blank in
+the same diff that lands the include change, enforced by the
+walker's `pending-marker-resolved` finding when state catches up.
 
 **`style_rules.md` is pinned only in `loop` and `review`** — the two
 phases that write or evaluate code (`loop` produces it, `review`
@@ -673,6 +701,81 @@ After unification, `review.md` no longer emits `bd create` calls;
 the driver applies the default profile when minting from
 `LOOM_FINDING:` lines.
 
+### Planning-Rubric Pending Discipline
+
+`partial/plan_stage_rubric.md` is pinned in `plan_new.md` and
+`plan_update.md`. It owns the planning interview's pre-commit
+gate (completeness / coherence / invariant-clash) **and** the
+pending-modifier discipline that determines whether the planning
+session's spec edits can pass the push gate.
+
+The partial body MUST spell out the pending-modifier discipline
+unambiguously, because the planning session's biggest failure mode
+is *spec edits that point at not-yet-existing verifier targets,
+which then fail the pre-push `loom gate verify` and block landing
+the plan*. The discipline lives in [gate.md § Pending
+modifier](gate.md#pending-modifier) and its sub-rule [gate.md §
+Pending support in structured walker input](gate.md#pending-support-in-structured-walker-input)
+— the partial body distills both for the planning agent with the
+following clauses, each grep-able by an integrity verifier so the
+partial cannot quietly drift:
+
+1. **Both binary-pending AND assertion-pending are pending.** The
+   partial enumerates both shapes explicitly:
+   - **Binary-pending** — the verifier executable or path doesn't
+     exist yet (e.g. `[check?](cargo run -p my-future-walker ...)`,
+     or `[check?](grep -q ... crates/foo/src/file_that_will_exist.rs)`).
+   - **Assertion-pending** — the verifier executable exists but the
+     asserted condition doesn't hold yet (e.g. `[check?](grep -q
+     'pub enum NewVariant' crates/foo/src/existing_file.rs)` where
+     the file exists but the new symbol hasn't been added).
+
+   Both shapes use the same `?` modifier; both silent-pass under
+   `loom gate verify` and fire `UnneededPendingMarker` once the
+   target newly resolves.
+
+2. **"Added" and "modified" annotations both count.** The partial
+   names this explicitly, with a worked example: *"if you changed
+   an annotation's command — a file path, a grep pattern, a symbol
+   name — and the new target doesn't resolve in the current tree,
+   mark it `[tier?]` even though the annotation itself isn't new.
+   The integrity gate doesn't distinguish 'new claim' from 'modified
+   claim'; it checks whether the target resolves now."* This
+   prevents the failure mode where a planning agent only `?`-marks
+   net-new SCs and forgets that path swaps on existing SCs need it
+   too.
+
+3. **Structured walker input uses `?` and `~` cells.** When the
+   planning session edits structured input read by a sweeping
+   walker (the pinning-matrix cell values, the FR1 command-set
+   entries the surface-conformance walker reads, the canonical-
+   partial path the anti-drift wire-format walker reads), the
+   pending value is `?` (pending addition — will resolve to the
+   present marker) or `~` (pending removal — will resolve to the
+   absent marker) *in the input element itself*, not in the SC
+   annotation. Per [gate.md § Pending support in structured walker
+   input](gate.md#pending-support-in-structured-walker-input),
+   the walker silent-passes pending elements whose state matches
+   the pending direction and fires `pending-marker-resolved` when
+   the state catches up. This is the structural answer to the
+   sweeping-walker case; the partial body cites the gate.md rule
+   and walks the agent through identifying which spec edits affect
+   structured walker input.
+
+4. **Self-cleaning is mandatory.** When the implementation lands,
+   the pending marker (`?` for `[tier?]` annotations, `?` or `~`
+   for structured walker cells) must be dropped in the same diff
+   that resolves the target — `UnneededPendingMarker` for
+   annotations, `pending-marker-resolved` for structured walker
+   cells. The planning prompt names this so the agent doesn't
+   author pending markers as fire-and-forget.
+
+The partial body's text follows the standard one-line-per-rule
+shape pinned by the other discipline partials (`chat_interview.md`,
+`decomposition_discipline.md`); each numbered clause above maps to
+a labelled paragraph in the partial body that the `loom gate check`
+walker greps for.
+
 ### Sibling-Spec Editing
 
 `partial/sibling_spec_editing.md` is included only in
@@ -798,7 +901,7 @@ documents in front of the agent with zero configuration.
   errors, not runtime errors
   [test](template_renders_are_byte_stable_across_runs)
 - Partials are included via Askama's `{% include %}` mechanism
-  [check](grep -q 'partial/context_pinning' crates/loom-templates/templates/loop.md)
+  [check?](grep -q 'partial/context_pinning' crates/loom-templates/templates/loop.md)
 - Rendered output is stable across runs for identical inputs,
   verified by `insta` snapshots
   [test](template_renders_are_byte_stable_across_runs)
@@ -816,10 +919,10 @@ documents in front of the agent with zero configuration.
   [check](grep -q '{{ style_rules' crates/loom-templates/templates/partial/style_rules.md)
 - `loop.md` and `review.md` include `style_rules.md`; no other
   phase template does
-  [check](cargo run -p loom-walk -- template_pinning_matrix)
+  [check?](cargo run -p loom-walk -- template_pinning_matrix)
 - `spec_conventions.md` partial renders the `spec_conventions`
   variable; included only by `plan_new` and `plan_update`
-  [check](cargo run -p loom-walk -- template_pinning_matrix)
+  [check?](cargo run -p loom-walk -- template_pinning_matrix)
 - `LoopContext` and `ReviewContext` carry `style_rules: String`;
   other phase contexts do not
   [check](cargo test -p loom-templates --test render template_renders_are_byte_stable_across_runs)
@@ -840,11 +943,13 @@ documents in front of the agent with zero configuration.
   prefixes like `SH-` / `RS-` / `COM-`; rule-ID examples in
   template prose are placeholders, not normative
   [check](cargo test -p loom-templates --test render review_renders_style_rule_conformance_walkthrough)
-- Every cell of the pinning matrix above matches the actual
-  `{% include %}` graph in `loom-templates/templates/` (transitive
-  resolution); drift in either direction — `✓` with no include or
-  include with no `✓` — fails the audit
-  [check](cargo run -p loom-walk -- template_pinning_matrix)
+- Every non-pending cell of the pinning matrix above matches the
+  actual `{% include %}` graph in `loom-templates/templates/`
+  (transitive resolution); drift in either direction — `✓` with no
+  include or include with no `✓` — fails the audit. Pending cells
+  (`?` and `~`) silent-pass during the pending window per
+  *Pinning matrix walker pending support* below
+  [check?](cargo run -p loom-walk -- template_pinning_matrix)
 - The `chat_marker_final_turn_only.md` partial is included by
   every interactive-session template (`msg`, `plan_new`,
   `plan_update`), pinning the "emit `LOOM_COMPLETE` on the final
@@ -862,7 +967,7 @@ documents in front of the agent with zero configuration.
   and `msg.md` — and by no worker template; the body forbids
   Claude Code's structured option-picker tool for interactive Q&A
   and requires conversational prose instead
-  [check](cargo run -p loom-walk -- template_pinning_matrix)
+  [check?](cargo run -p loom-walk -- template_pinning_matrix)
 - The partial body names the picker prohibition explicitly so a
   grep for the rule succeeds (no rule-by-implication)
   [check](grep -qi 'option-picker\|AskUserQuestion' crates/loom-templates/templates/partial/chat_interview.md)
@@ -870,7 +975,7 @@ documents in front of the agent with zero configuration.
   a grep for the rule succeeds: interactive sessions persist
   cross-session memory via bd (notes, descriptions, new beads), not
   via Claude Code's `MEMORY.md` system which is container-local
-  [check](grep -qi 'MEMORY.md\|bd update.*--notes' crates/loom-templates/templates/partial/chat_interview.md)
+  [check?](grep -qi 'MEMORY.md\|bd update.*--notes' crates/loom-templates/templates/partial/chat_interview.md)
 - `msg.md` rendered prompt contains the chat-interview discipline
   clauses (picker prohibition + bd-persistence) sourced from the
   pinned partial
@@ -897,6 +1002,54 @@ documents in front of the agent with zero configuration.
   sibling spec is a valid planning-session outcome and names the
   bead-allocation carve-out
   [judge](../tests/judges/loom.sh#judge_sibling_spec_editing_documents_split)
+
+### Pinning matrix walker pending support
+
+- The pinning-matrix walker accepts `?` (pending addition) and
+  `~` (pending removal) as valid cell values in the matrix
+  alongside `✓` and blank, per [gate.md § Pending support in
+  structured walker input](gate.md#pending-support-in-structured-walker-input)
+  [check?](cargo run -p loom-walk -- template_pinning_matrix_accepts_pending_cells)
+- `?` + template-doesn't-include → silent pass (pending);
+  `?` + template-includes → walker fails with
+  `pending-marker-resolved` so the author drops `?` to `✓` in the
+  same diff
+  [check?](cargo run -p loom-walk -- pending_addition_marker_fires_when_template_now_includes)
+- `~` + template-includes → silent pass (pending);
+  `~` + template-doesn't-include → walker fails with
+  `pending-marker-resolved` so the author drops `~` to blank in
+  the same diff
+  [check?](cargo run -p loom-walk -- pending_removal_marker_fires_when_template_no_longer_includes)
+- The walker's existing per-cell assertion is unchanged for
+  non-pending cells: `✓` requires transitive include; blank
+  forbids transitive include; mismatch fails the walker
+  [check?](cargo run -p loom-walk -- template_pinning_matrix)
+
+### Planning-rubric pending discipline
+
+- `partial/plan_stage_rubric.md` exists and is included by
+  `plan_new.md` and `plan_update.md` only
+  [check?](cargo run -p loom-walk -- template_pinning_matrix)
+- The partial body distinguishes **binary-pending** from
+  **assertion-pending** pending-modifier cases with worked
+  examples, so a planning agent author understands both shapes
+  warrant `?`
+  [check?](grep -qi 'binary-pending\|assertion-pending' crates/loom-templates/templates/partial/plan_stage_rubric.md)
+- The partial body names the **"added and modified" rule**
+  explicitly — pending discipline applies to annotations the
+  session adds AND to annotations whose target the session
+  changed in a way that breaks resolution
+  [check?](grep -qi 'added.*modified\|added and modified\|modified.*annotation' crates/loom-templates/templates/partial/plan_stage_rubric.md)
+- The partial body names the **structured walker input** rule —
+  planning edits to matrix / surface / wire-format input use the
+  walker's `?` (pending addition) and `~` (pending removal) cell
+  syntax for pending elements, not the SC-level `?` modifier, per
+  gate.md § Pending support in structured walker input
+  [check?](grep -qi 'structured.*input\|pending.*cell\|walker.*input' crates/loom-templates/templates/partial/plan_stage_rubric.md)
+- The partial body names the **self-cleaning obligation** — the
+  `?` must be dropped in the same diff that resolves the target,
+  else `UnneededPendingMarker` fires
+  [check](grep -qi 'UnneededPendingMarker\|self-cleaning\|drop the.*marker' crates/loom-templates/templates/partial/plan_stage_rubric.md)
 
 ### Review emit shape
 
@@ -941,7 +1094,7 @@ documents in front of the agent with zero configuration.
   decision the agent can frame as a structured `## Options — …`
   block. The discriminator (can the agent enumerate options?) is
   named explicitly
-  [check?](grep -qi 'candidate resolution\|enumerate options' crates/loom-templates/templates/partial/self_report_markers.md)
+  [check](grep -qi 'candidate resolution\|enumerate options' crates/loom-templates/templates/partial/self_report_markers.md)
 - The partial body identifies the worker-phase scoping: `LOOM_RETRY`,
   `LOOM_CLARIFY`, `LOOM_BLOCKED` are valid in worker phases (`loop`,
   `todo_*`, `review`) only; interactive sessions (`plan_*`,
@@ -1093,7 +1246,7 @@ documents in front of the agent with zero configuration.
   [test](run_template_omits_first_instruction_reframe_on_fresh_dispatch)
 - Reframe wording is generic (one form regardless of variant);
   per-variant detail lives inside the previous-failure block itself
-  [check](grep -q 'Re-read the previous failure block above' crates/loom-templates/templates/loop.md)
+  [check?](grep -q 'Re-read the previous failure block above' crates/loom-templates/templates/loop.md)
 
 ### Public surface
 
@@ -1133,7 +1286,7 @@ documents in front of the agent with zero configuration.
 - `partial/decomposition_discipline.md` exists and is included by
   `todo_new.md` and `todo_update.md` only; the body names the
   audit obligation and the two acceptable session outcomes
-  [check](cargo run -p loom-walk -- template_pinning_matrix)
+  [check?](cargo run -p loom-walk -- template_pinning_matrix)
 - The partial body names the discipline distinctively (so a grep
   catches accidental emptying)
   [check](grep -qi 'evidence-confirmed\|audit before' crates/loom-templates/templates/partial/decomposition_discipline.md)
@@ -1175,7 +1328,13 @@ documents in front of the agent with zero configuration.
 5. **Per-phase pinning.** Partial inclusion follows *Pinning
    Policy*; `style_rules.md` is pinned in `loop` and `review` only;
    `spec_conventions.md` is pinned in `plan_new` and `plan_update`
-   only.
+   only. Matrix cells use the four-value vocabulary `✓` / blank /
+   `?` (pending addition) / `~` (pending removal) per
+   [gate.md § Pending support in structured walker
+   input](gate.md#pending-support-in-structured-walker-input);
+   the pinning-matrix walker enforces the assertion at the
+   appropriate scope and fails with `pending-marker-resolved`
+   when a pending marker's state catches up.
 6. **Rule-family agnosticism.** The `style_rules.md` and
    `review_rubric.md` partial bodies discover rule families from
    the pinned `{{ style_rules }}` document. Template bodies do

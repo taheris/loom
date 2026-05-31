@@ -740,6 +740,7 @@ finding hashes the same way across rubric runs.
 | `unresolved-annotation` | Integrity gate forward-resolution (tree-scope only) | `Annotation { target_string }` | fix-up |
 | `stub-pointing` | Integrity gate stub-pointing (tree-scope only) | `Annotation { target_string }` | fix-up |
 | `multiple-annotations` | Integrity gate atomic-acceptance (tree-scope only) | `Criterion { spec, anchor }` | fix-up |
+| `pending-marker-resolved` | Sweeping walker (any scope) — a pending element (`?` or `~`) in structured spec input has resolved against the pending direction (`?` + present, or `~` + absent), so the author must drop the marker to its resolved value | `MatrixCell { spec, partial, template }` / `SurfaceElement { spec, kind, name }` / per-walker variant | fix-up |
 
 **Clarify-bound subset.** Today only `invariant-clash` routes to
 `loom:clarify`; the rest mint as plain fix-up beads. The "Routes
@@ -1559,6 +1560,78 @@ clicks the link. Two requirements compose to keep that click working:
 `::fn` selectors are accepted during migration; new annotations use
 `#fn` so the click works.
 
+#### Pending support in structured walker input
+
+The per-annotation pending modifier above handles the common case:
+one SC, one verifier target, dispatch-side skip when `?` is set.
+**Sweeping walkers** — verifiers that read structured input from
+the spec (the pinning-matrix walker reads templates.md's matrix
+table; the surface-conformance walker reads harness.md's FR1
+command-set; the anti-drift wire-format walker reads the canonical
+partial path) and produce *per-element* findings from a single
+dispatch — break that model: the SC-level `?` can suppress the
+walker's dispatch entirely (only if every SC sharing the target is
+`?`-marked) but cannot suppress individual elements the walker
+reports inside one dispatch.
+
+The structural fix: **a sweeping walker that reads structured
+input from the spec MUST support pending element markers in that
+input** — two markers, symmetric: `?` for *pending addition* (the
+element will resolve to its assertion-side present value) and `~`
+for *pending removal* (the element will resolve to its
+assertion-side absent value). Same self-cleaning discipline as
+per-annotation `[tier?]`: the marker silent-passes during the
+pending window; the moment the underlying state catches up and
+makes the marker stale, the walker fails so the author drops the
+marker to its resolved value in the same diff.
+
+**Walker contract** (additive — existing two-valued walkers extend
+to four-valued):
+
+For each element in the walker's structured input, the walker
+checks the element's marker against the actual workspace state:
+
+| Marker | Actual state | Outcome |
+|---|---|---|
+| present (e.g. `✓`) | present | silent pass |
+| present | absent | walker failure (existing — assertion mismatch) |
+| absent (blank) | absent | silent pass |
+| absent | present | walker failure (existing — assertion mismatch) |
+| `?` (pending addition) | absent | silent pass (pending — impl not yet caught up) |
+| `?` (pending addition) | present | **walker failure** with `pending-marker-resolved` — author must drop `?` to the present marker (`✓` for matrix) in the same diff |
+| `~` (pending removal) | present | silent pass (pending — impl not yet caught up) |
+| `~` (pending removal) | absent | **walker failure** with `pending-marker-resolved` — author must drop `~` to absent (blank for matrix) in the same diff |
+
+The walker continues to dispatch once and produce composite
+results; the failure set excludes pending elements whose state
+matches the pending direction (`?` + absent, `~` + present),
+includes elements whose pending state has resolved.
+
+**The marker is self-cleaning** — modelled the same way as the
+per-annotation `[tier?]` modifier above. The author who lands the
+impl that catches up to the matrix cell (`{% include %}` added for
+`?`, removed for `~`) must drop the marker to its resolved value
+in the same diff or the walker refuses on the resolved-state
+failure. This forces co-incidence between *"impl caught up"* and
+*"marker resolved,"* so the spec tree never carries stale pending
+markers past the molecule's push gate.
+
+**Concern token.** `pending-marker-resolved` — emitted by the
+walker when a pending element's state has resolved against the
+pending direction. Target variant depends on the walker emitting
+it (the matrix walker uses `MatrixCell`, the surface walker uses
+`SurfaceElement`, etc. — each sweeping walker defines a target
+variant naming the specific element that should be resolved).
+Routes to fix-up bead (not clarify) — the resolution is mechanical,
+not judgment-requiring.
+
+**Adoption convention.** Every sweeping walker added to loom MUST
+support `?` and `~` in its input from day one. Retrofitting
+pending-marker support to existing walkers (the matrix walker is
+the first case) is a walker-implementation change tracked as an
+ordinary `loom loop` bead per the planning session that surfaces
+the need.
+
 ### Runners — per-language batched dispatch
 
 **Runners, not verifiers, are the dispatch unit.** A runner executes
@@ -2225,7 +2298,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   `LOOM_CONCERN: {"summary": "..."}`, `LOOM_RETRY`, `LOOM_BLOCKED`,
   or `LOOM_CLARIFY`; a walk that emits `LOOM_FINDING:` lines without
   a terminal marker fails the mint invocation with non-zero exit
-  [test?](mint_walk_without_terminal_marker_fails_run)
+  [test](mint_walk_without_terminal_marker_fails_run)
 - A walk that terminates with `LOOM_RETRY` (review itself could not
   run for environmental reasons) routes to recovery cause
   `agent-retry` per [harness.md § Verdict Gate](harness.md#verdict-gate);
@@ -2321,7 +2394,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   `loom:mint:<fp>` and `loom:clarify` labels, with the description
   embedding the `## Options — …` block extracted from the finding's
   `evidence` per the *Options Format Contract*
-  [test?](mint_invariant_clash_finding_creates_fixup_with_clarify_label_and_options_block)
+  [test](mint_invariant_clash_finding_creates_fixup_with_clarify_label_and_options_block)
 - Any clarify-bound finding (token whose mint would label the
   resulting bead `loom:clarify`) whose `evidence` lacks a
   well-formed `## Options — <summary>` heading with at least one
