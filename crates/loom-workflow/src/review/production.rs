@@ -529,9 +529,6 @@ fn exit_signal_from_terminal(terminal: &TerminalSurface) -> Option<ExitSignal> {
         TerminalSurface::Concern { summary } => Some(ExitSignal::Concern {
             summary: summary.clone(),
         }),
-        TerminalSurface::Retry { reason } => Some(ExitSignal::Retry {
-            reason: reason.clone(),
-        }),
         TerminalSurface::Malformed { payload } => Some(ExitSignal::BadWalk(
             loom_templates::previous_failure::BadWalk::Concern {
                 payload: payload.clone(),
