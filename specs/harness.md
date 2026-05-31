@@ -168,32 +168,60 @@ threshold; no operator-explicit GC. A `loom gc` command is an
 additive follow-up if hoarding ever materializes.
 
 **Bead branch flow.** Bead branch `loom/<id>` is created in the
-bead workspace at first dispatch. The agent commits to it. On a
-successful exit (`LOOM_COMPLETE` clearing the verdict gate), the
-bead workspace pushes the branch to the loom workspace (the bead
-workspace's `origin` remote points at the loom workspace); the
-loom workspace then rebases the bead branch onto the integration
-branch and fast-forward-merges it:
+bead workspace at first dispatch via `git checkout -b`. The agent
+commits to it; the worker never pushes. On a successful exit
+(`LOOM_COMPLETE` clearing the bead-exit verdict-gate signals),
+the driver — running on the host in the loom workspace, holding
+`index.lock` — fetches the bead branch from the bead workspace
+path, verifies signatures, rebases onto the integration branch,
+verifies the rewritten commits, fast-forward-merges, and deletes
+the transient `loom/<id>` ref:
 
 ```
-git push origin loom/<id>                          # from bead clone
-git rebase <integration-branch> loom/<id>          # in loom workspace
+# in loom workspace, inside index.lock
+git fetch .loom/beads/<id> loom/<id>:loom/<id>
+# signature verification pass 1 (worker commits)
+git rebase <integration-branch> loom/<id>
+# signature verification pass 2 (rewritten commits)
 git checkout <integration-branch>
 git merge --ff-only loom/<id>
+git branch -D loom/<id>
 ```
 
-Linear history, no merge commits. After integration, loom pushes
-the integration branch to `origin/<integration-branch>`. A
-non-fast-forward error at origin (operator pushed first, or another
-loom landed cross-spec work) retries by fetching + rebasing the
-integration branch onto `origin/<integration-branch>` + re-pushing.
+The verification and rebase-conflict mechanics are defined in
+[Verdict Gate](#verdict-gate). Linear history, no merge commits.
+The `loom/<id>` ref in the loom workspace is transient — deleted
+unconditionally at end of the critical section, whether the path
+exited cleanly, rolled back from audit-fail, or aborted from
+rebase conflict. The bead clone retains its branch until the
+bead transitions to `closed` and the clone is reaped; the operator
+can `cd .loom/beads/<id>` to inspect.
 
-**Preserve-on-failure.** `MergeResult::Conflict` and post-integration
-push failures route the bead to `Blocked` per the verdict gate; the
-bead workspace persists on disk. Under the per-bead-close lifecycle
-"preserve" is the default — the workspace persists until `bd close`
-regardless of why it stopped progressing. The operator unblocks via
-`loom msg`-resolve; the bd-close-driven reap drops the bead workspace.
+The bead clone's `origin` remote remains pointing at the loom
+workspace path; the worker never invokes it but this preserves
+host-side ahead/behind tracking when the operator `cd`s into the
+bead clone (e.g., starship prompt). The bead container has no path
+mount to the loom workspace and cannot push from inside; manual
+host-side pushes are harmless because the integration step still
+owns rebase + verify + ff. The driver's fetch is against a
+filesystem path (always present through the bead's lifetime), not
+over a network or daemon.
+
+After every bead in the molecule has integrated, the
+molecule-completion push gate pushes the integration branch to
+`origin/<integration-branch>`. A non-fast-forward error at origin
+(operator pushed first, or another loom landed cross-spec work)
+retries by fetching + rebasing the integration branch onto
+`origin/<integration-branch>` + re-pushing.
+
+**Preserve-on-failure.** Rebase-conflict abort, audit-fail
+rollback, signature-verification failure, and post-integration push
+failure all route the bead to `Blocked` or `Clarify` per the
+verdict gate; the bead workspace persists on disk. Under the
+per-bead-close lifecycle "preserve" is the default — the workspace
+persists until `bd close` regardless of why it stopped progressing.
+The operator unblocks via `loom msg`-resolve; the bd-close-driven
+reap drops the bead workspace.
 
 **Concurrency.** Concurrent `loom loop --parallel N` and concurrent
 loops across specs share one loom workspace. Serialization points:
@@ -201,8 +229,12 @@ loops across specs share one loom workspace. Serialization points:
 - N concurrent `git clone --local` from the loom workspace into
   bead workspaces: git's atomic-rename + per-ref lock semantics
   make concurrent clone-from-loom safe.
-- Concurrent push-back from N bead workspaces: each push targets
-  a unique ref name (`loom/<bead-id>`), no ref contention.
+- Concurrent driver-side fetches from N bead workspaces into the
+  loom workspace: each fetch lands a uniquely-named ref
+  (`loom/<bead-id>`), so the fetches themselves don't contend on
+  the same ref. The fetch nevertheless runs inside the per-bead
+  critical section's `index.lock` because the subsequent rebase
+  and ff-merge mutate the integration branch.
 - Cross-spec rebase + ff into the integration branch in the loom
   workspace: serialized by git's `index.lock`. The losing process
   surfaces the error and retries the rebase + ff from its current
@@ -265,8 +297,10 @@ the module; callers see only typed Rust methods.
 | **Create loom workspace** (`loom init`) | `git clone <origin> .loom/integration` (CLI) | one-shot, infrequent; `gix-clone` is unchecked |
 | **Create bead clone** | `git clone --local .loom/integration .loom/beads/<id>` then `git checkout -b loom/<id>` (CLI) | hardlinks loom workspace's `.git/objects`; self-contained `.git/` inside bind mount |
 | **Pre-attempt reset of bead clone** | `git reset --hard HEAD` + `git clean -fdx --exclude=target --exclude=.git --exclude=.wrapix` (CLI) | clean working tree at bead-branch HEAD while preserving `target/`, `.git/`, and `.wrapix/` |
-| **Push bead branch to loom workspace** | `git push origin loom/<id>` (CLI) | one push per successful bead |
+| **Fetch bead branch from bead workspace** | `git fetch <bead-workspace-path> loom/<id>:loom/<id>` (CLI) | filesystem path as ad-hoc URL; runs in loom workspace inside `index.lock` |
+| **Verify commit signatures** | `git verify-commit <commits>` (CLI) | gates integration on signed-by-wrapix-key; conditional on signing key resolving (see [Commit signing](#commit-signing)) |
 | **Rebase + ff into integration branch** | `git rebase` + `git merge --ff-only` (CLI) | `gix-merge` cannot persist `MERGE_HEAD`/`MERGE_MSG`; avoids index dance |
+| **Delete bead-branch ref in loom workspace** | `git branch -D loom/<id>` (CLI) | end of per-bead critical section, unconditional |
 | **Push integration to origin** | `git push origin <integration-branch>` (CLI) | with non-ff retry |
 | **Remove bead clone** | `std::fs::remove_dir_all` | standalone tree; not a registered worktree |
 
@@ -283,6 +317,98 @@ for pushes that drive pre-push CI hooks).
 The hybrid line is reviewed each loom release; gix operations
 migrate inward as the corresponding `crate-status.md` items become
 checked.
+
+### Commit signing
+
+Loom's host-side git operations must sign without prompting for
+the operator's GPG passphrase. Two host-side workspaces sign: the
+loom workspace, where driver-side rebase produces new commits, and
+bead clones, where operator-run git commands during debug or
+host-side tests may commit. Both receive a local `.git/config`
+pointing at the same wrapix-injected SSH signing key the bead
+container uses, making signing non-interactive end-to-end.
+
+**Key resolution mirrors wrapix's host-side rule** (see
+`lib/sandbox/linux/default.nix` and `scripts/setup-deploy-key` in
+the wrapix flake — same two-tier precedence, set-but-missing fails
+loud):
+
+1. `$WRAPIX_SIGNING_KEY` pointing at an existing file. Set-but-
+   missing exits non-zero at startup naming the path; silent
+   fallback would mask a parent-process misconfiguration.
+2. `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` if the env var
+   is unset and the file exists. `<repo>` is the repo segment of
+   the loom workspace's origin URL (parsed as
+   `github.com[:/]<user>/<repo>`); `<host>` is `hostname -s`
+   (short form, fallback to `hostname`). Same derivation as
+   wrapix's `setup-deploy-key` script uses to choose the keyname
+   at provisioning time, so the two ends stay in sync without
+   shared config. If the origin URL doesn't match the GitHub
+   pattern, the fallback is skipped.
+3. If neither resolves, loom writes no signing block; the
+   operator's global `~/.gitconfig` governs (and may prompt). This
+   is the "wrapix isn't set up on this host" path — intentionally
+   noisy rather than silently degraded.
+
+Auth is handled by the `GIT_SSH_COMMAND` env var wrapix already
+sets; loom inherits it and does not duplicate auth configuration.
+Deploy-key resolution (same precedence with the suffix dropped:
+`<repo>-<host>` instead of `<repo>-<host>-signing`) is needed only
+to confirm presence on the host — the key path itself is consumed
+by wrapix, not by loom's git invocations.
+
+**Workspace gitconfig writes.** When `loom init` materializes the
+loom workspace and when `GitClient::create_worktree` materializes a
+bead clone, the driver writes a local `.git/config` block:
+
+```ini
+[gpg]
+    format = ssh
+[user]
+    signingkey = <resolved signing-key host path>
+[gpg "ssh"]
+    allowedSignersFile = <workspace>/.git/loom-allowed-signers
+[commit]
+    gpgsign = true
+```
+
+Local config beats the operator's `~/.gitconfig` in git's hierarchy,
+so this block is the sole authority on signing behavior inside the
+loom workspace and every bead clone — operator GPG/passphrase setup
+is bypassed without modification.
+
+**allowed_signers derivation.** Wrapix derives the allowed_signers
+file inside the container via `ssh-keygen -y -f $SIGNING_KEY` against
+the public-key half of the same pair. Loom mirrors this on the host:
+at the same moment it writes the gitconfig block, it runs
+`ssh-keygen -y -f <signing-key>` and writes the result with the
+identity prefix (`$GIT_AUTHOR_EMAIL` or `sandbox@wrapix.dev` per
+wrapix convention) to `<workspace>/.git/loom-allowed-signers`. The
+signing key is passphrase-less, so the derivation is non-interactive.
+The file lives under `.git/` so workspace removal cleans it up
+automatically.
+
+**Scope.** This subsection covers commit signing only.
+SSH-over-git auth (deploy key for github.com push) flows through
+wrapix's existing `GIT_SSH_COMMAND` pathway, inherited via the
+operator's shell environment; loom does not reconfigure it. Container
+gitconfig is unchanged — bead-container commits are already signed
+by wrapix's `git-ssh-setup.sh` entrypoint and need no host-side
+intervention.
+
+**rerere configuration.** Alongside the signing block, `loom init`
+writes `[rerere] enabled = true` and `[rerere] autoupdate = true`
+into the loom workspace's local `.git/config`. The driver-side
+rebase in the per-bead integration step relies on rerere to replay
+previously-recorded conflict resolutions before falling through to
+`integration-conflict` recovery (see
+[Verdict Gate](#verdict-gate)). Recorded resolutions accumulate
+only in the loom workspace's `.git/rr-cache/`, where the driver-
+side rebase consults them across bead lifetimes. Bead clones don't
+need rerere — even when the integration-conflict retry path asks
+an agent to rebase its bead-workspace branch onto the new tip, the
+bead clone is reaped on `bd close` and any rerere cache it
+accumulated wouldn't transfer to the loom workspace.
 
 ### Profile-Image Manifest
 
@@ -733,27 +859,72 @@ markers, labels, and infra-failure handling.
 
 **Where the gate runs — two stages at the loom workspace.**
 
-Per-bead integration runs at the **loom workspace, post-rebase**,
-inside the `index.lock` critical section. The step rebases the
-bead branch onto the integration branch, ff-merges, then runs
-`prek run --hook-stage pre-push --all-files` against the
-integrated tree (cargo + clippy + nextest + `loom gate verify`).
-On verify-pass, the same step walks the LLM rubric at per-bead
-scope and consumes any findings via `loom gate mint --bead <id>`
-(see [gate.md § Stages](gate.md#stages)); this is the
-rubric-walking action that produces fix-up beads, distinct from
-the inspection-only `loom gate review` subcommand. No `loom gate
-review` here, no marker mint, no push. The critical section spans
-**rebase + ff + verify + mint** atomically.
+Per-bead integration runs at the **loom workspace**, inside the
+`index.lock` critical section. The step has six phases, all
+atomic under the lock:
 
-On verify-fail, the integration is rolled back via `git reset
---hard HEAD~1` and the bead routes to recovery with cause
-`post-integrate-fail`. On verify-pass, the bead's integration is
-durable and the lock is released — any findings mint emits become
-bonded fix-up beads in the molecule and are picked up by the next
-`loom loop` iteration; they do not trigger rollback. A structural
-mint failure (dispatch error, duplicate fingerprint label,
-conflicting epic state) refuses the mint and surfaces the
+1. **Fetch** the bead branch from the bead workspace path into the
+   loom workspace as `loom/<id>`. The fetch is against a filesystem
+   path (`git fetch .loom/beads/<id> loom/<id>:loom/<id>`), not the
+   network — workers never push (see [Bead Dispatch § Bead branch
+   flow](#bead-dispatch)).
+2. **Verify signatures (pass 1)** on the fetched commits using
+   `git verify-commit` against
+   `<workspace>/.git/loom-allowed-signers` (see
+   [Commit signing](#commit-signing)). Conditional on the signing
+   key resolving; skipped if no key is configured. Verification
+   failure routes the bead to `loom:blocked` with cause
+   `signature-verification-failed` — agent-retry cannot fix a
+   signature on existing commits, so this is operator
+   investigation territory (likely a misconfigured wrapix
+   container or missing key bind-mount).
+3. **Rebase** the bead branch onto the integration branch. On
+   textual conflict, `git rerere` replays any previously-recorded
+   resolution (rerere is enabled in the loom workspace's gitconfig
+   at `loom init`; see [Commit signing](#commit-signing)); if
+   conflicts remain, `git rebase --abort` returns the loom
+   workspace to its pre-rebase state and routes the bead to
+   recovery with cause `integration-conflict` carrying
+   `{ files, new_base_sha }`. The
+   recovery budget is **one** agent-retry pass (not the full
+   `[loop] max_retries`); the agent's next dispatch sees the
+   conflict files in `previous_failure` and is expected to rebase
+   its work onto the new tip in its bead workspace, resolve, and
+   re-commit. A second rebase-conflict on the retry escalates to
+   `loom:clarify` — same `integration-conflict` cause, human-
+   resolution required.
+4. **Verify signatures (pass 2)** on the rewritten commits the
+   rebase produced. Conditional on the same signing-key
+   resolution. Failure here routes to `loom:blocked` with cause
+   `signature-verification-failed` — meaning loom's own signing
+   setup is broken (gitconfig-write skipped, key path wrong,
+   allowed_signers missing). The recovery detail distinguishes
+   "pass 1" (worker-side signing broken) from "pass 2"
+   (driver-side signing broken) so the operator knows where to
+   look.
+5. **FF-merge** the bead branch into the integration branch and
+   run `prek run --hook-stage pre-push --all-files` against the
+   integrated tree (cargo + clippy + nextest + `loom gate
+   verify`). On verify-pass, walk the LLM rubric at per-bead
+   scope and consume any findings via `loom gate mint --bead <id>`
+   (see [gate.md § Stages](gate.md#stages)); this is the rubric-
+   walking action that produces fix-up beads, distinct from the
+   inspection-only `loom gate review` subcommand. No `loom gate
+   review` here, no marker mint, no push.
+6. **Delete the transient `loom/<id>` ref** with `git branch -D`,
+   unconditionally — whether the path exited cleanly, rolled
+   back from audit-fail, or aborted from rebase conflict. The
+   bead clone keeps its copy of the branch until the bead's
+   workspace is reaped on `bd close`.
+
+On audit-fail, the integration is rolled back via
+`git reset --hard HEAD~1` and the bead routes to recovery with
+cause `post-integrate-fail`. On audit-pass, the bead's integration
+is durable and the lock is released — any findings mint emits
+become bonded fix-up beads in the molecule and are picked up by
+the next `loom loop` iteration; they do not trigger rollback. A
+structural mint failure (dispatch error, duplicate fingerprint
+label, conflicting epic state) refuses the mint and surfaces the
 conflicting bead ids; integration stays durable, the operator
 clears the conflict before re-running.
 
@@ -770,7 +941,7 @@ slow-tier hook reads the just-minted marker (via `loom gate
 verify-marker` or equivalent marker-validation logic) and
 short-circuits the slow tier on a valid marker.
 
-Both stages at the loom workspace is load-bearing for
+Both stages at the loom workspace are load-bearing for
 parallel-agent correctness: the marker bound to HEAD's tree OID
 must match the state being pushed, and rebasing bead A onto
 integration that already includes bead B mutates A's commit SHA
@@ -794,9 +965,9 @@ parallelism caps.
 **Bead-container self-verify is feedback only.** The bead workspace
 inherits `core.hooksPath` from the loom workspace's `wrapix.prekHooks`
 installation (see [pre-commit.md § Agent self-verify in the bead
-container](pre-commit.md)), so prek fires on the agent's commits
-and bead-branch pushes. This catches treefmt drift, integrity
-findings, and obvious cargo failures in-session. It is **not** the
+container](pre-commit.md)), so prek fires on the agent's commits,
+catching treefmt drift, integrity findings, and obvious cargo
+failures in-session. It is **not** the
 trust source for the marker. The driver's verdict gate at the loom
 workspace runs its own independent audit; the agent cannot mint a
 `MarkerProof` and cannot bypass driver verification by emitting a
@@ -896,21 +1067,48 @@ In the table above, `—` means the signal isn't inspected because an
 earlier signal already determined the outcome (e.g. an agent self-report
 short-circuits before review runs); `*` means any value is accepted.
 
-**Post-integrate audit.** The decision table covers the per-bead
-exit signals. Independently, the loom-workspace audit at the
-critical-section's post-rebase step can fail even when the bead's
-own signals were clean: cross-bead interactions (bead A's API
+**Loom-workspace integration outcomes.** The decision table covers
+the per-bead exit signals. Independently, the per-bead integration
+step in the loom workspace can fail in four distinct ways even
+when the bead's own exit signals were clean:
+
+| Failure phase | Cause | Detail | Recovery |
+|---------------|-------|--------|----------|
+| Signature verification pass 1 (fetched commits) | `signature-verification-failed` | side = `worker` | `loom:blocked` — operator investigates wrapix container signing setup |
+| Rebase | `integration-conflict` | `{ files, new_base_sha }` | one agent-retry pass; second failure escalates to `loom:clarify` (same cause) |
+| Signature verification pass 2 (rewritten commits) | `signature-verification-failed` | side = `driver` | `loom:blocked` — operator investigates loom-workspace gitconfig + key resolution |
+| Audit (`prek run --hook-stage pre-push` + verify) | `post-integrate-fail` | `Vec<VerifierFailure>` | rollback via `git reset --hard HEAD~1`; route to recovery so next iteration sees the cross-bead breakage |
+
+`post-integrate-fail` covers cross-bead interactions (bead A's API
 change breaks tests bead B introduced earlier in the molecule),
-rebase-induced breakage, integration-tree state that no
-bead-workspace verify could anticipate. On audit-fail at the loom
-workspace post-rebase, the verdict gate rolls back the integration
-via `git reset --hard HEAD~1` (atomic, single commit) and routes
-the failing bead to recovery with cause `post-integrate-fail`. The
-recovery prompt includes the audit's specific failure (verify
-failures, review concern, or both) so the next iteration can
-address the cross-bead interaction. Other beads in the molecule
-that haven't integrated yet continue to be dispatched; their
-integrations queue at `index.lock` after recovery resolves.
+rebase-induced breakage, and integration-tree state that no
+bead-workspace verify could anticipate. The recovery prompt
+includes the audit's specific failures (verify failures, review
+concern, or both) so the next iteration can address the cross-bead
+interaction. Other beads in the molecule that haven't integrated
+yet continue to be dispatched; their integrations queue at
+`index.lock` after recovery resolves.
+
+`integration-conflict` carries the conflict file list and the new
+integration tip SHA so the agent's next dispatch can rebase its
+bead-workspace branch onto the new tip and resolve. The single-
+retry cap reflects the empirical reality that agents are uneven
+at textual git conflict resolution; one honest attempt is more
+useful than burning the full `[loop] max_retries` budget on a
+structural problem. Permanent escalation lands as `loom:clarify`
+with the same cause so the operator sees the conflict files and
+the SHAs in the bead's notes.
+
+`signature-verification-failed` cannot be addressed by agent retry
+— signatures are bound to existing commits and the cause is
+environmental (wrapix container misconfiguration on pass 1,
+loom-workspace gitconfig drift or missing allowed_signers on
+pass 2). The bead routes to `loom:blocked` immediately; the
+operator investigates per the `side` discriminator in the cause
+detail (`worker` → check the bead container's
+`git-ssh-setup.sh`-rendered `~/.gitconfig`; `driver` → check
+loom's workspace gitconfig writes and the resolver's signing-key
+resolution).
 
 **Tree-clean check.** After the agent emits `LOOM_COMPLETE` or
 `LOOM_NOOP` and the bead is bd-closed, the driver runs `git status
@@ -1088,6 +1286,7 @@ capped, total truncated to `PREVIOUS_FAILURE_MAX_LEN = 4000` chars):
 | `bad-walk` (concern-without-findings) | `BadWalk(BadWalk::ConcernWithoutFindings { summary: String })` | "You emitted `LOOM_CONCERN` with summary `<summary>` but no `LOOM_FINDING:` lines streamed. Either emit findings before the terminator or terminate with `LOOM_COMPLETE`." |
 | `bad-walk` (findings-without-concern) | `BadWalk(BadWalk::FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> })` | "You streamed `<finding_count>` `LOOM_FINDING:` line(s) but terminated with `LOOM_COMPLETE`. Use `LOOM_CONCERN: {"summary": "..."}` when findings are emitted." Per-finding digest of `findings` is appended so the agent's next iteration sees the diagnosis it just emitted. |
 | `bad-walk` (malformed-finding) | `BadWalk(BadWalk::MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface })` | "One or more `LOOM_FINDING:` lines failed parse." Per-line errors are enumerated; the well-formed terminal is rendered alongside so the agent fixes the malformation (typically: drop the surrounding markdown fence) without losing the surrounding well-formed context. This is the variant that fires on backtick-wrapped finding lines whose JSON otherwise would have parsed. |
+| `integration-conflict` | `IntegrationConflict { files: Vec<PathBuf>, new_base_sha: GitOid }` | "Your bead branch could not be rebased onto integration — files conflict: <files>. The new integration tip is <new_base_sha>. Rebase your bead workspace onto the new tip, resolve, and re-commit." Single-retry cap (not full `[loop] max_retries`); a second rebase-conflict escalates the bead to `loom:clarify` with the same cause. The `signature-verification-failed` cause does **not** appear in this table because it routes to `loom:blocked` immediately without an agent-retry pass — there is no next dispatch and thus no `PreviousFailure` context. |
 | `post-integrate-fail` | `PostIntegrateFail { failures: Vec<VerifierFailure> }` | "After your bead was rebased onto the integration branch and ff'd, the post-integration verify failed at the loom workspace. The integration was rolled back. Specific failure: <verifier-failure blocks>." Used for cross-bead interaction breakage where the bead-workspace verify passed but the integrated tree's verify failed. Per-bead does not run `loom gate review` (per the per-bead step composition described above), so review-style concerns are not a `post-integrate-fail` cause — they fire at the molecule-completion push gate via `GateFailReason`. Capped at the shared `PREVIOUS_FAILURE_MAX_LEN` budget. |
 | `agent-retry` | `AgentRetry { reason: String }` | "Previous attempt requested retry: <reason>. A fresh dispatch was scheduled." `reason` is the verbatim prose the agent wrote on the line preceding `LOOM_RETRY` (environmental detail or stuck-on-approach summary). Consumes one `[loop] max_retries` slot; on exhaustion the molecule escalates to `loom:blocked` with cause `retry-exhausted`. The recovery prompt instructs the retry attempt to escalate to `LOOM_BLOCKED` (no candidate resolutions) or `LOOM_CLARIFY` (with `## Options — …`) if the same problem persists rather than emitting `LOOM_RETRY` again. |
 
@@ -1114,11 +1313,21 @@ its own session log if it needs prior tool-call context.
   the chat-drafter cannot resolve). All meanings are uniform from
   the human's perspective — the bead is blocked and `loom msg` is
   the resolution channel.
-- `loom:clarify` is applied only by the `LOOM_CLARIFY` agent marker
-  or by `loom gate mint` lifting a clarify-bound finding whose
-  `evidence` carries a well-formed `## Options — …` block — the
-  agent has a specific question with structured options for the
-  human, persisted to bead state per the Options Format Contract.
+- `loom:clarify` is applied by either: (a) the `LOOM_CLARIFY` agent
+  marker, (b) `loom gate mint` lifting a clarify-bound finding
+  whose `evidence` carries a well-formed `## Options — …` block —
+  the agent has a specific question with structured options for the
+  human, persisted to bead state per the Options Format Contract,
+  or (c) the per-bead integration step escalating
+  `integration-conflict` after one agent-retry pass failed to
+  resolve the rebase conflict. Driver-applied `integration-conflict`
+  clarify beads carry the conflict files and the new integration
+  tip SHA in the bead's notes, plus a synthesized `## Options — …`
+  block satisfying the Options Format Contract with two
+  `### Option N — …` subsections (resolve-in-bead-clone and
+  abandon-the-bead). Synthesizing the block keeps the
+  Options-Format invariant universal — no exemption case for
+  driver-applied clarify.
 - `LOOM_RETRY` does NOT apply a terminal label; it routes the bead
   into the recovery loop with cause `agent-retry`. On recovery
   exhaustion the cause becomes `retry-exhausted` and `loom:blocked`
@@ -1126,10 +1335,10 @@ its own session log if it needs prior tool-call context.
 - The cause of a driver-applied `loom:blocked` (`swallowed-marker`,
   `incomplete-signaling`, `zero-progress`, `tree-not-clean`, `verify-fail`,
   `review-concern`, `bad-walk`, `observer-abort`, `retry-exhausted`,
-  `post-integrate-fail`, `clarify-without-options`) is preserved in
-  the bead's notes. Per-cause sub-labels can be stacked on top later
-  if filtering becomes important; the gate's terminal label stays
-  `loom:blocked`.
+  `post-integrate-fail`, `signature-verification-failed`,
+  `clarify-without-options`) is preserved in the bead's notes.
+  Per-cause sub-labels can be stacked on top later if filtering
+  becomes important; the gate's terminal label stays `loom:blocked`.
 
 **Marker definitions.** The agent ends every phase by emitting exactly
 **one** marker on its own line, as the final output of the session.
@@ -2447,21 +2656,53 @@ Criteria.
 - Each bead workspace's dispatch spawns its own `wrapix spawn`;
       spawns overlap in wall-clock under `--parallel N > 1`
   [test](concurrent_spawns_overlap_in_wall_clock)
-- Successful bead branches push to the loom workspace and rebase +
-      fast-forward into the integration branch (linear history, no
-      merge commits)
-  [test](merge_branch_uses_ff_only_and_rejects_non_ff_history)
+- Successful bead branches are fetched by the driver from the bead
+      workspace path into the loom workspace, then rebased + fast-
+      forwarded into the integration branch (linear history, no
+      merge commits); the worker never invokes `git push`
+  [test?](driver_fetches_bead_branch_from_workspace_path)
+- The bead-branch ref `loom/<id>` in the loom workspace is deleted
+      unconditionally at the end of the per-bead critical section —
+      clean exit, audit-fail rollback, and rebase-conflict abort
+      all delete the ref
+  [test?](bead_branch_ref_deleted_on_every_exit_path)
+- The bead clone's `origin` remote remains pointing at the loom
+      workspace path after `create_worktree` so host-side
+      ahead/behind tracking works; the bead container has no path
+      mount to the loom workspace and cannot push from inside
+  [test?](bead_clone_origin_unchanged_under_a3)
 - Parallel dispatch's second-and-later beads rebase onto the moved
       integration-branch HEAD before fast-forwarding
   [test](merge_branch_rebases_bead_branch_onto_head_before_ff)
+- Driver-side rebase that conflicts textually aborts (`git rebase
+      --abort`) and routes the bead to recovery with cause
+      `integration-conflict` carrying the conflict files and the
+      new integration tip SHA
+  [test?](rebase_conflict_routes_to_integration_conflict)
+- `integration-conflict` recovery dispatches the agent at most
+      once; a second rebase-conflict on the retry escalates to
+      `loom:clarify` with the same cause
+  [test?](integration_conflict_one_retry_then_clarify)
+- Driver-applied `integration-conflict` clarify beads carry a
+      synthesized `## Options — …` block satisfying the Options
+      Format Contract with two `### Option N — …` subsections
+      (resolve-in-bead-clone and abandon-the-bead)
+  [test?](driver_applied_integration_conflict_clarify_carries_synthesized_options)
+- `loom init` writes `[rerere] enabled = true` and `[rerere]
+      autoupdate = true` into the loom workspace's local
+      `.git/config` so the driver-side rebase replays previously-
+      recorded conflict resolutions before falling through to
+      `integration-conflict` recovery
+  [test?](loom_init_enables_rerere_in_loom_workspace_gitconfig)
 - Origin push of the integration branch retries non-fast-forward
       errors by fetching and re-rebasing onto
       `origin/<integration-branch>`
   [test](origin_push_retries_non_fast_forward)
-- On merge conflict or post-merge push failure, the bead workspace
+- On rebase abort, audit-fail rollback, signature-verification
+      failure, or post-integration push failure, the bead workspace
       persists (the default per-bead-close behavior) and the bead is
-      routed to `Blocked` per the verdict gate
-  [test](parallel_conflict_preserves_worktree)
+      routed to `Blocked` or `Clarify` per the verdict gate
+  [test?](workspace_persists_on_all_failure_paths)
 - Bead containers receive the host `wrapix-beads` dolt socket as a
       single-file bind mount at `/workspace/.wrapix/dolt.sock` via
       `SpawnConfig.mounts`, replacing the host-side hardlink shim
@@ -2480,6 +2721,58 @@ Criteria.
 - `GitClient` is the only module that imports `gix` or invokes the
       `git` CLI; callers see typed Rust methods
   [check](cargo run -p loom-walk -- git_client_encapsulation)
+- `loom init` writes a local `.git/config` block in the loom
+      workspace declaring `gpg.format=ssh`, `user.signingkey`
+      pointing at the resolved wrapix signing key,
+      `commit.gpgsign=true`, and `gpg.ssh.allowedSignersFile`
+      pointing at `<workspace>/.git/loom-allowed-signers`, when
+      `$WRAPIX_SIGNING_KEY` or the
+      `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` fallback
+      resolves
+  [test?](loom_init_writes_signing_gitconfig)
+- `GitClient::create_worktree` writes the same signing block into
+      each bead clone's local `.git/config` at materialization time,
+      using the same resolution rule
+  [test?](create_worktree_writes_signing_gitconfig)
+- The fallback keyname is derived as `<repo>-<host>` where `<repo>`
+      is parsed from the origin URL (`github.com[:/]<user>/<repo>`)
+      and `<host>` is `hostname -s`, matching wrapix's
+      `setup-deploy-key` derivation rule
+  [test?](signing_key_fallback_uses_wrapix_repo_host_derivation)
+- The allowed_signers file at
+      `<workspace>/.git/loom-allowed-signers` is derived via
+      `ssh-keygen -y -f <signing-key>` at gitconfig-write time and
+      contains the wrapix signing identity
+  [test?](allowed_signers_derived_from_signing_key)
+- Driver-side rebase in the loom workspace produces signed commits
+      whose `gpgsig` header is present in the commit object, without
+      prompting for a passphrase
+  [test?](driver_rebase_signs_with_wrapix_key)
+- `git log --show-signature` against a driver-rebased commit in the
+      loom workspace prints `Good "git" signature` using the derived
+      allowed_signers file
+  [test?](rebased_commits_verify_via_derived_allowed_signers)
+- `$WRAPIX_SIGNING_KEY` set to a non-existent file aborts loom
+      startup with a non-zero exit and an error naming the missing
+      path
+  [test?](wrapix_signing_key_missing_file_fails_loud)
+- When neither `$WRAPIX_SIGNING_KEY` nor the
+      `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` fallback
+      resolves, no signing block is written and the operator's
+      global gitconfig governs signing in loom-materialized
+      workspaces
+  [test?](no_wrapix_keys_leaves_global_gitconfig_governing)
+- When the signing key resolves, the per-bead integration step
+      runs `git verify-commit` against the fetched commits
+      (pass 1) and against the rebased commits (pass 2); pass-1
+      failure routes the bead to `loom:blocked` with cause
+      `signature-verification-failed` (worker-side) and pass-2
+      failure routes to `loom:blocked` with the same cause but the
+      detail naming "driver-side"
+  [test?](integration_step_verifies_signatures_in_two_passes)
+- When the signing key does not resolve, signature verification is
+      skipped at both passes and the integration step proceeds
+  [test?](signature_verification_skipped_when_no_key)
 
 ### Workflow commands
 
@@ -3334,8 +3627,11 @@ two agent-loop observers.
    under `.loom/beads/<id>/` on a per-bead branch. The operator's
    `/workspace` is never the bead's workdir. `--parallel 1` (default)
    runs one bead at a time; `--parallel N > 1` runs N concurrently.
-   After workers finish, branches push to the loom workspace and
-   rebase + fast-forward into the integration branch sequentially.
+   After workers finish, the driver fetches each bead branch from its
+   bead workspace path into the loom workspace, then rebases +
+   fast-forwards into the integration branch sequentially (per
+   [Verdict Gate § Loom-workspace integration outcomes](#verdict-gate)).
+   Workers never push.
 7. **Retry with context** — on in-session worker failure (or explicit
    agent self-report via `LOOM_RETRY`), retries with the prior error
    output injected as the `previous_failure` template variable.
