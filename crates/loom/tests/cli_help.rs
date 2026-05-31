@@ -254,6 +254,37 @@ fn loom_gate_scope_flags_are_mutually_exclusive() {
     }
 }
 
+/// `loom gate verify --files <PATH>...` must accept variadic paths in
+/// the shape pre-commit's `pass_filenames: true` emits: each staged
+/// file passed as a separate positional value after `--files`. Without
+/// `num_args = 1..` on the field, clap stops after the first value and
+/// the trailing paths are misparsed as the positional `selector`.
+#[test]
+fn loom_gate_verify_files_accepts_variadic_paths() {
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let output = Command::new(loom_bin)
+        .args([
+            "--workspace",
+            tmp.path().to_str().expect("utf-8 tmp path"),
+            "gate",
+            "verify",
+            "--files",
+            "a.rs",
+            "b.rs",
+            "c.rs",
+        ])
+        .env("COLUMNS", "100")
+        .env("CLAP_TERM_WIDTH", "100")
+        .output()
+        .expect("spawn loom");
+    let stderr = String::from_utf8(output.stderr).expect("utf-8");
+    assert!(
+        !stderr.contains("unexpected argument") && !stderr.contains("which wasn't expected"),
+        "variadic --files must not surface as 'unexpected argument', got: {stderr}",
+    );
+}
+
 #[test]
 fn loom_msg_help_snapshot() {
     insta::assert_snapshot!(loom_help(&["msg"]));

@@ -25,10 +25,12 @@ repos:
         stages: [pre-commit]
         types: [shell]
 
-      # loom-gate-verify-files removed: binary `--files <PATH>` takes one
-      # path, but the hook's `pass_filenames: true` passes every staged
-      # file as positional args. Restore once the binary accepts variadic
-      # files (`--files <PATH>...`) per its docstring's "file set" intent.
+      - id: loom-gate-verify-files
+        name: loom gate verify --files
+        entry: loom gate verify --files
+        language: system
+        stages: [pre-commit]
+        pass_filenames: true
 
       # loom-gate-verify-marker removed per A1 (specs/pre-commit.md): the
       # marker is consumed by the `pre-push-checks` wrapper per-hook; a

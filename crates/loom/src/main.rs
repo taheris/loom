@@ -159,7 +159,7 @@ struct GateReviewArgs {
 ))]
 struct GateScopeArgs {
     /// Scope to verifiers whose declared inputs intersect this file set.
-    #[arg(long, value_name = "PATH", value_delimiter = ',')]
+    #[arg(long, value_name = "PATH", value_delimiter = ',', num_args = 1..)]
     files: Vec<PathBuf>,
     /// Filter to one spec's criteria. Defaults to `current_spec` when
     /// applicable to the subcommand.

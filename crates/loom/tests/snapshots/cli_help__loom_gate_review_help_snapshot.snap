@@ -1,6 +1,5 @@
 ---
 source: crates/loom/tests/cli_help.rs
-assertion_line: 179
 expression: "loom_help(&[\"gate\", \"review\"])"
 ---
 Run the LLM rubric — criterion-attached judges plus the rubric walk over the diff. Expensive
@@ -11,7 +10,7 @@ Arguments:
   [SELECTOR]  Run one specific verifier by its annotation target (e.g. a command string for `[check]` / `[system]`, a test path for `[test]`, a rubric path for `[judge]`)
 
 Options:
-      --files <PATH>        Scope to verifiers whose declared inputs intersect this file set
+      --files <PATH>...     Scope to verifiers whose declared inputs intersect this file set
   -w, --workspace <PATH>    Workspace root. Defaults to the current working directory
   -A, --agent <BACKEND>     Override the agent backend for this invocation [possible values: claude, pi]
   -s, --spec <LABEL>        Filter to one spec's criteria. Defaults to `current_spec` when applicable to the subcommand
