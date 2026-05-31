@@ -1127,7 +1127,7 @@ fn print_gate_status(report: &loom_gate::Report) {
 
 fn run_gate_verify(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<()> {
     let mut combined: i32 = 0;
-    for tier in verify_tiers_from_env() {
+    for tier in verify_tiers_for_args(args) {
         eprintln!("--- loom gate verify [{tier}] ---");
         match dispatch_tier(workspace, args, tier) {
             Ok(0) => {}
@@ -1144,12 +1144,23 @@ fn run_gate_verify(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Tier loop for `loom gate verify`, scoped by the `LOOM_VERIFY_TIERS`
-/// env var when set. The env var is a comma-separated list of tier
-/// wire names (`check`, `test`, `system`); unset or empty restores the
-/// default of all three. The Nix `tests` derivation uses this to
-/// skip `[system]` whose verifiers (e.g. `nix build`, `podman`) are
-/// unavailable inside the build sandbox.
+/// Tier loop for `loom gate verify`. When `--files` is set, the
+/// invocation is the pre-commit-stage entry whose spec contract is
+/// `integrity gate + [check]-tier verifiers whose declared inputs
+/// intersect staged files` (per `specs/pre-commit.md` § Stage
+/// composition); skipping `[test]` and `[system]` keeps the hook on
+/// its ~1s wall-time target and avoids spawning slow input-resolution
+/// probes (e.g. `nix --print-inputs ...`) for tiers that don't apply.
+/// Without `--files`, the loop honours `LOOM_VERIFY_TIERS` (the Nix
+/// `tests` derivation sets this to skip `[system]` inside the build
+/// sandbox).
+fn verify_tiers_for_args(args: &GateScopeArgs) -> Vec<Tier> {
+    if !args.files.is_empty() {
+        return vec![Tier::Check];
+    }
+    verify_tiers_from_env()
+}
+
 fn verify_tiers_from_env() -> Vec<Tier> {
     parse_verify_tiers(std::env::var("LOOM_VERIFY_TIERS").ok().as_deref())
 }
@@ -3372,6 +3383,19 @@ mod tests {
             parse_verify_tiers(Some("Check,Bogus")),
             vec![Tier::Check, Tier::Test, Tier::System]
         );
+    }
+
+    #[test]
+    fn verify_tiers_for_args_scopes_to_check_when_files_present() {
+        let mut args = empty_scope_args();
+        args.files.push(PathBuf::from(".pre-commit-config.yaml"));
+        assert_eq!(verify_tiers_for_args(&args), vec![Tier::Check]);
+    }
+
+    #[test]
+    fn verify_tiers_for_args_uses_env_default_when_files_empty() {
+        let args = empty_scope_args();
+        assert_eq!(verify_tiers_for_args(&args), verify_tiers_from_env());
     }
 
     fn empty_scope_args() -> GateScopeArgs {
