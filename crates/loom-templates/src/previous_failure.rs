@@ -68,6 +68,19 @@ pub enum PreviousFailure {
     /// driver caps at 30 entries and appends a `"+N more"` marker as the
     /// final element when the underlying set was larger).
     TreeNotClean { dirty_paths: Vec<String> },
+    /// Bead-workspace verify passed, but the loom-workspace per-bead
+    /// integration step's `loom gate verify` against the integrated tree
+    /// failed (cross-bead interaction, rebase-induced breakage). The
+    /// integration was rolled back via `git reset --hard HEAD~1`. Per-bead
+    /// does not run `loom gate review`, so review concerns are not a
+    /// possible cause here.
+    PostIntegrateFail { failures: Vec<VerifierFailure> },
+    /// Worker phase emitted `LOOM_RETRY` — the agent self-reported that this
+    /// attempt could not finish but a fresh dispatch is likely to succeed.
+    /// `reason` is the prose the agent wrote on the line preceding the
+    /// marker, captured verbatim. Consumes one slot in `[loop] max_retries`;
+    /// exhaustion escalates to `loom:blocked` with cause `retry-exhausted`.
+    AgentRetry { reason: String },
 }
 
 /// Driver-procedural failure causes that map to `DriverNotice`. Mirrors the
@@ -159,7 +172,56 @@ fn render_body(failure: &PreviousFailure) -> String {
             format!("Build failed at {stage}:\n{output}")
         }
         PreviousFailure::TreeNotClean { dirty_paths } => render_tree_not_clean(dirty_paths),
+        PreviousFailure::PostIntegrateFail { failures } => render_post_integrate_fail(failures),
+        PreviousFailure::AgentRetry { reason } => render_agent_retry(reason),
     }
+}
+
+fn render_agent_retry(reason: &str) -> String {
+    format!(
+        "Previous attempt requested retry — reason: {reason}\n\n\
+         If the same problem persists after this attempt, escalate to LOOM_BLOCKED \
+         (no candidate resolutions) or LOOM_CLARIFY (with a structured Options block) \
+         rather than emitting LOOM_RETRY again.",
+    )
+}
+
+fn render_post_integrate_fail(failures: &[VerifierFailure]) -> String {
+    let heading = "After rebasing onto the integration branch, \
+                   the post-integration verify failed:\n\n";
+    let footer = "\nReconcile the cross-bead interaction — your bead's verify passed \
+                  at its own workspace; the failure is in the integrated tree.";
+    let mut out = String::from(heading);
+    // Reserve the footer + outer-truncation marker so the later-truncated-first
+    // rule respects the same total cap as `VerifyFailures` even when many
+    // failures stream through.
+    let budget = PREVIOUS_FAILURE_MAX_LEN.saturating_sub(out.len() + footer.len());
+    let mut remaining = budget;
+    let mut included = 0usize;
+    for failure in failures {
+        let block = format_verifier_block(failure);
+        if block.len() <= remaining {
+            out.push_str(&block);
+            remaining -= block.len();
+            included += 1;
+            continue;
+        }
+        let marker_with_nl = format!("{TRUNC_MARKER}\n");
+        if remaining > marker_with_nl.len() {
+            let allowance = remaining - marker_with_nl.len();
+            let cut = floor_char_boundary(&block, allowance);
+            out.push_str(&block[..cut]);
+            out.push_str(&marker_with_nl);
+            included += 1;
+        }
+        break;
+    }
+    let omitted = failures.len() - included;
+    if omitted > 0 {
+        out.push_str(&format!("[+{omitted} more verify failure(s) omitted]\n"));
+    }
+    out.push_str(footer);
+    out
 }
 
 fn render_review_concern(summary: &str, findings: &[Finding]) -> String {
@@ -546,6 +608,221 @@ mod tests {
         assert!(
             tree.starts_with("Working tree was not clean after the bead committed:\n\n"),
             "{tree}",
+        );
+
+        let post_integrate = PreviousFailure::PostIntegrateFail {
+            failures: vec![VerifierFailure::new("cargo test -p loom-gate", 1, "fail\n")],
+        }
+        .to_string();
+        assert!(
+            post_integrate.starts_with(
+                "After rebasing onto the integration branch, the post-integration verify failed:"
+            ),
+            "{post_integrate}",
+        );
+
+        let agent_retry = PreviousFailure::AgentRetry {
+            reason: "sandbox cwd unlinked".into(),
+        }
+        .to_string();
+        assert!(
+            agent_retry.starts_with("Previous attempt requested retry — reason: "),
+            "{agent_retry}",
+        );
+    }
+
+    /// `Display` on `AgentRetry { reason }` surfaces the agent's verbatim
+    /// `reason` and instructs the next attempt to escalate to
+    /// `LOOM_BLOCKED` or `LOOM_CLARIFY` if the same problem persists,
+    /// rather than emitting `LOOM_RETRY` again. Criterion:
+    /// `agent_retry_display_renders_reason_and_escalation_guidance`.
+    #[test]
+    fn agent_retry_display_renders_reason_and_escalation_guidance() {
+        let pf = PreviousFailure::AgentRetry {
+            reason: "podman socket disappeared mid-session".into(),
+        };
+        let rendered = pf.to_string();
+        assert!(
+            rendered.starts_with("Previous attempt requested retry — reason: "),
+            "framing prefix missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("podman socket disappeared mid-session"),
+            "verbatim reason missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("LOOM_BLOCKED"),
+            "escalation to LOOM_BLOCKED missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("LOOM_CLARIFY"),
+            "escalation to LOOM_CLARIFY missing: {rendered}",
+        );
+    }
+
+    /// `Display` on `PostIntegrateFail { failures }` enumerates each
+    /// `VerifierFailure` block (target + exit + stderr_tail) and trails
+    /// the cross-bead reconciliation hint so the agent knows the bead's
+    /// own verify already passed at its workspace.
+    #[test]
+    fn post_integrate_fail_display_renders_blocks_and_reconciliation_hint() {
+        let pf = PreviousFailure::PostIntegrateFail {
+            failures: vec![
+                VerifierFailure::new(
+                    "cargo test -p loom-gate --lib mint::tests::ok",
+                    101,
+                    "panicked at 'index out of bounds'\n",
+                ),
+                VerifierFailure::new("tests/run-tests.sh", 1, "assertion failed\n"),
+            ],
+        };
+        let rendered = pf.to_string();
+        assert!(
+            rendered.starts_with(
+                "After rebasing onto the integration branch, the post-integration verify failed:"
+            ),
+            "framing prefix missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("cargo test -p loom-gate --lib mint::tests::ok"),
+            "first target missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("exit 101"),
+            "first exit missing: {rendered}"
+        );
+        assert!(
+            rendered.contains("panicked at"),
+            "first stderr missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("tests/run-tests.sh"),
+            "second target missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("Reconcile the cross-bead interaction"),
+            "reconciliation hint missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("your bead's verify passed"),
+            "passed-at-own-workspace hint missing: {rendered}",
+        );
+    }
+
+    /// `Display` on `BadWalk::Concern { parsed_findings: non-empty }`
+    /// appends the per-finding digest (token + target + evidence) so the
+    /// agent's diagnosis is not lost when only the terminator was
+    /// malformed. Criterion:
+    /// `bad_walk_concern_display_renders_parsed_findings_digest_when_present`.
+    #[test]
+    fn bad_walk_concern_display_renders_parsed_findings_digest_when_present() {
+        let pf = PreviousFailure::BadWalk(BadWalk::Concern {
+            payload: "{not valid json".into(),
+            parsed_findings: vec![
+                sample_finding(ConcernToken::VerifierBypass, "stubs the backend"),
+                sample_finding(ConcernToken::JudgeFlag, "judge dissented"),
+            ],
+        });
+        let rendered = pf.to_string();
+        assert!(
+            rendered.contains("2 finding(s) parsed cleanly before the malformed terminator:"),
+            "digest preamble missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("verifier-bypass @ annotation:cargo test --lib sample"),
+            "first finding digest missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("stubs the backend"),
+            "first finding evidence missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("judge-flag @ annotation:cargo test --lib sample"),
+            "second finding digest missing: {rendered}",
+        );
+    }
+
+    /// `Display` on `BadWalk::FindingsWithoutConcern { findings: non-empty }`
+    /// appends the per-finding digest so the agent's next iteration sees
+    /// the diagnosis it just emitted even though the terminator was
+    /// `LOOM_COMPLETE`. Criterion:
+    /// `bad_walk_findings_without_concern_display_renders_findings_digest`.
+    #[test]
+    fn bad_walk_findings_without_concern_display_renders_findings_digest() {
+        let findings = vec![
+            sample_finding(ConcernToken::WeakAssertion, "asserts only prefix"),
+            sample_finding(ConcernToken::JudgeFlag, "judge dissent"),
+        ];
+        let pf = PreviousFailure::BadWalk(BadWalk::FindingsWithoutConcern {
+            finding_count: findings.len(),
+            findings,
+        });
+        let rendered = pf.to_string();
+        assert!(
+            rendered.contains("2 LOOM_FINDING line(s)"),
+            "count missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("weak-assertion @ annotation:cargo test --lib sample"),
+            "first finding digest missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("asserts only prefix"),
+            "first finding evidence missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("judge-flag @ annotation:cargo test --lib sample"),
+            "second finding digest missing: {rendered}",
+        );
+    }
+
+    /// `Display` on `BadWalk::MalformedFinding { errors, terminal }`
+    /// enumerates per-line errors and surfaces the rendered terminal
+    /// (`TerminalSurface::label()`) so the agent can fix the malformed
+    /// lines without losing the well-formed surrounding context.
+    /// Criterion:
+    /// `bad_walk_malformed_finding_display_surfaces_terminal_and_per_line_errors`.
+    #[test]
+    fn bad_walk_malformed_finding_display_surfaces_terminal_and_per_line_errors() {
+        let errors = vec![
+            FindingParseError::Json {
+                line_number: 4,
+                raw: "`LOOM_FINDING: {oops}`".into(),
+                message: "expected value at line 1 column 1".into(),
+            },
+            FindingParseError::Json {
+                line_number: 9,
+                raw: "LOOM_FINDING: {still bad}".into(),
+                message: "expected ident at line 1 column 2".into(),
+            },
+        ];
+        let pf = PreviousFailure::BadWalk(BadWalk::MalformedFinding {
+            errors,
+            terminal: TerminalSurface::Concern {
+                summary: "two findings".into(),
+            },
+        });
+        let rendered = pf.to_string();
+        assert!(
+            rendered.contains("line 4"),
+            "first error line-number missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("line 9"),
+            "second error line-number missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("Your terminal was: "),
+            "terminal label prefix missing: {rendered}",
+        );
+        assert!(
+            rendered.contains(
+                TerminalSurface::Concern {
+                    summary: String::new()
+                }
+                .label()
+            ),
+            "rendered terminal label missing: {rendered}",
         );
     }
 

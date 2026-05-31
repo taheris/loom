@@ -1121,12 +1121,12 @@ documents in front of the agent with zero configuration.
   the `LOOM_RETRY` marker; populated by the driver when a worker
   phase exits with `LOOM_RETRY` per
   [harness.md § Verdict Gate](harness.md#verdict-gate)
-  [check?](grep -q 'AgentRetry' crates/loom-templates/src/previous_failure.rs)
+  [check](grep -q 'AgentRetry' crates/loom-templates/src/previous_failure.rs)
 - The `Display for PreviousFailure` rendering of `AgentRetry`
   surfaces the agent's prior `reason` and instructs the retry
   attempt to escalate to `LOOM_BLOCKED` or `LOOM_CLARIFY` if the
   same problem persists after retry
-  [test?](agent_retry_display_renders_reason_and_escalation_guidance)
+  [test](agent_retry_display_renders_reason_and_escalation_guidance)
 - `BadWalk` enum carries `Concern { payload: String, parsed_findings: Vec<Finding> }`,
   `ConcernWithoutFindings { summary: String }`,
   `FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> }`,
@@ -1157,18 +1157,18 @@ documents in front of the agent with zero configuration.
   `parsed_findings` when non-empty (the agent's diagnosis from the
   streamed findings is surfaced even when the terminal was
   malformed)
-  [test?](bad_walk_concern_display_renders_parsed_findings_digest_when_present)
+  [test](bad_walk_concern_display_renders_parsed_findings_digest_when_present)
 - The `Display for PreviousFailure` rendering of
   `BadWalk(FindingsWithoutConcern)` appends a per-finding digest of
   `findings` so the agent's next iteration sees the diagnosis it
   just emitted
-  [test?](bad_walk_findings_without_concern_display_renders_findings_digest)
+  [test](bad_walk_findings_without_concern_display_renders_findings_digest)
 - The `Display for PreviousFailure` rendering of
   `BadWalk(MalformedFinding)` enumerates per-line errors AND
   surfaces the well-formed `terminal` via its rendered form so the
   agent fixes the fence/format without losing the surrounding
   context
-  [test?](bad_walk_malformed_finding_display_surfaces_terminal_and_per_line_errors)
+  [test](bad_walk_malformed_finding_display_surfaces_terminal_and_per_line_errors)
 - `TreeNotClean` variant carries `dirty_paths: Vec<String>` capped
   at 30 entries by the driver before construction
   [check](grep -q 'TreeNotClean' crates/loom-templates/src/previous_failure.rs)
@@ -1179,7 +1179,7 @@ documents in front of the agent with zero configuration.
   `loom gate review`, so review concerns are not a possible cause —
   they fire at the molecule-completion push gate via
   `GateFailReason` per [harness.md § Verdict Gate](harness.md#verdict-gate)
-  [check?](grep -q 'PostIntegrateFail' crates/loom-templates/src/previous_failure.rs)
+  [check](grep -q 'PostIntegrateFail' crates/loom-templates/src/previous_failure.rs)
 - `DriverNoticeCause` enum covers `SwallowedMarker`,
   `IncompleteSignaling`, `ZeroProgress`, `ObserverAbort`,
   `RetryExhausted`, `UnbondedOrigin`
