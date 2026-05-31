@@ -1,9 +1,12 @@
 //! Errors raised by the mint pipeline.
 //!
-//! Variants are kept narrow so callers (the orchestrator in `mint::mod`)
-//! can pattern-match the structural-violation cases — dedup multi-open
-//! and lead-epic multi-open — and surface them as per-finding [`crate::mint::FindingOutcome::Refused`]
-//! rather than aborting the whole run.
+//! Variants stay narrow so the orchestrator in `mint::mod` can map them
+//! to per-batch [`crate::mint::BatchOutcome::Refused`] /
+//! [`crate::mint::BatchOutcome::Errored`] outcomes rather than aborting
+//! the whole run. The dedup-multi-open structural violation is
+//! constructed inline at the batch boundary (no `From` impl needed
+//! since the bd-list query returns a typed bead vector), so this enum
+//! only carries the failure modes that traverse multiple layers.
 
 use displaydoc::Display;
 use thiserror::Error;
@@ -20,13 +23,6 @@ pub enum MintError {
 
     /// spec → epic resolution failed while minting findings
     Resolve(#[from] ResolveError),
-
-    /// structural violation: {count} open beads share label loom:mint:{fingerprint} (ids: {ids}); close all but one before re-running
-    DuplicateMintLabel {
-        fingerprint: String,
-        count: usize,
-        ids: String,
-    },
 
     /// lead epic id `{molecule}` is not a valid bead id
     InvalidParentId {

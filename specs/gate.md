@@ -2556,7 +2556,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   [test](mint_malformed_loom_finding_fails_run_with_typed_error)
 - The dedup query (`bd query "label=loom:fixup:<fp> AND status=open"`)
   returning one open result causes the batch to be skipped
-  [test?](mint_dedup_query_one_open_result_skips_batch)
+  [test](mint_dedup_query_one_open_result_skips_batch)
 - The dedup query returning zero results proceeds to mint
   [test](mint_dedup_query_zero_results_proceeds_to_mint)
 - The dedup query returning more than one open result is refused
@@ -2565,27 +2565,27 @@ PATH, and a `[judge]` annotation pointing at the gate's own
 - A closed batch bead carrying the same fingerprint label is not
   re-minted on subsequent runs; only removing the `loom:fixup:<fp>`
   label or deleting the bead forces re-mint
-  [test?](mint_dedup_does_not_re_mint_closed_batch_with_same_fingerprint)
+  [test](mint_dedup_does_not_re_mint_closed_batch_with_same_fingerprint)
 - Reopening a closed batch bead does not force re-mint — the
   reopened bead still carries the fingerprint and dedups against
   itself
-  [test?](mint_dedup_skips_reopened_batch_still_carrying_fingerprint_label)
+  [test](mint_dedup_skips_reopened_batch_still_carrying_fingerprint_label)
 - The batch fingerprint hash is stable across rubric runs for the
   same finding set (sorted `(token, canonical_form(target))` per
   finding → same 12-character hash, regardless of stream order,
   bonds ordering, or which spec wins lead-selection)
-  [test?](mint_fingerprint_is_stable_across_rubric_runs_for_same_finding_set)
+  [test](mint_fingerprint_is_stable_across_rubric_runs_for_same_finding_set)
 - Each minted batch bead is `--parent`-ed to the lead spec's open
   epic and carries the `loom:fixup:<fingerprint>` label plus one
   `spec:<X>` label per unique entry across the union of `bonds`
   over the batch's findings
-  [test?](mint_creates_batch_with_parent_epic_fingerprint_and_union_spec_labels)
+  [test](mint_creates_batch_with_parent_epic_fingerprint_and_union_spec_labels)
 - The bonding lead is the first element of each finding's `bonds`
   array whose spec has an open epic; if none of the bonds have an
   open epic, the lead is `bonds[0]` and mint creates a molecule +
   epic for it. Findings sharing a lead bundle into the same per-spec
   fix-up batch
-  [test?](mint_bonding_lead_is_first_bonds_element_with_open_epic_findings_with_same_lead_share_batch)
+  [test](mint_bonding_lead_is_first_bonds_element_with_open_epic_findings_with_same_lead_share_batch)
 - The batch fingerprint depends on the sorted set of per-finding
   `(token, canonical_form(target))` tuples only — never on `bonds`.
   The same finding set emitted on a re-run with different per-finding
@@ -2603,13 +2603,13 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   with the description embedding the `## Options — …` block
   extracted from the finding's `evidence` per the *Options Format
   Contract*
-  [test?](mint_clarify_bound_finding_creates_single_bead_with_clarify_label_and_options_block)
+  [test](mint_clarify_bound_finding_creates_single_bead_with_clarify_label_and_options_block)
 - Any clarify-bound finding whose `evidence` lacks a well-formed
   `## Options — <summary>` heading with at least one `### Option
   <N> — <title>` subsection falls back to a fix-up bead carrying
   `loom:blocked` with cause `clarify-without-options` — never a
   stranded clarify bead the chat-drafter cannot resolve
-  [test?](mint_clarify_bound_finding_without_options_falls_back_to_blocked)
+  [test](mint_clarify_bound_finding_without_options_falls_back_to_blocked)
 - The batch fingerprint excludes `evidence` — the same finding set
   emitted on a re-run with tweaked evidence prose resolves to the
   same fingerprint and dedups against the existing batch bead (so
@@ -2619,7 +2619,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   (one item per finding: token, target's canonical form, evidence
   excerpt); the title is stable across runs for the same batch
   (deterministic from the sorted finding tuples)
-  [test?](mint_batch_description_enumerates_findings_and_title_is_stable)
+  [test](mint_batch_description_enumerates_findings_and_title_is_stable)
 - A fix-up batch carrying multiple findings exposes worker
   discretion to fix all and close, fix a subset and split the
   remainder into sibling fix-up beads under the molecule epic via
@@ -2640,7 +2640,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   the successfully-minted batches with their fingerprint labels; a
   re-run's dedup query skips them and retries only the unfinished
   batches
-  [test?](mint_idempotent_after_partial_failure_retries_only_unfinished_batches)
+  [test](mint_idempotent_after_partial_failure_retries_only_unfinished_batches)
 - `mint --dry-run` walks the rubric, prints proposed bd writes to
   stdout, and makes zero bd writes
   [test](mint_dry_run_makes_no_bd_writes)
@@ -2656,7 +2656,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
 - The end-of-run summary lists minted batches (with finding count
   per batch), skipped-dedup, refused, and errored counts, with
   per-batch fingerprint and resulting bead id
-  [test?](mint_end_of_run_summary_reports_per_batch_outcomes)
+  [test](mint_end_of_run_summary_reports_per_batch_outcomes)
 - Push-gate integrity findings recover via the standard mint
   pipeline until the molecule's iteration counter exhausts: the
   verdict gate normalizes `UnresolvedAnnotation`, `StubTestFunction`,
@@ -2873,11 +2873,11 @@ findings reach mint.
 - `loom gate mint --bead <id>` exits 0 when `refused == 0 && errors
   == 0`, regardless of `minted`/`skipped` counts. The mint summary
   is printed to stdout unchanged
-  [test?](mint_bead_scope_exits_zero_on_clean_summary)
+  [test](mint_bead_scope_exits_zero_on_clean_summary)
 - `loom gate mint --bead <id>` exits non-zero when `refused > 0` or
   `errors > 0`, and the summary header lists the non-zero counts so
   the loop's per-bead path can route on the typed exit
-  [test?](mint_bead_scope_exits_nonzero_on_refused_or_errors)
+  [test](mint_bead_scope_exits_nonzero_on_refused_or_errors)
 
 Loop-side interpretation of these exit codes — routing `refused` to
 `loom:blocked` with cause `mint-structural-violation`, threading

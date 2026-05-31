@@ -1859,10 +1859,24 @@ fn run_gate_mint(
         mint_via_walker(&mut walker, &scope, &validator, &bd, &head_commit, &opts).await
     })?;
     print!("{}", summary.render());
-    if summary.refused > 0 || summary.errors > 0 {
+    if mint_summary_exit_code(&summary) != 0 {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Per `specs/gate.md` § *Per-bead mint summary semantics*:
+/// `loom gate mint --bead <id>` (and every other scope) exits 0 when
+/// `refused == 0 && errors == 0` — minted/skipped counts are
+/// irrelevant. Non-zero only when `refused > 0` or `errors > 0`, so
+/// the loop's per-bead path can route on the typed exit.
+#[must_use]
+fn mint_summary_exit_code(summary: &loom_workflow::mint::MintSummary) -> i32 {
+    if summary.refused > 0 || summary.errors > 0 {
+        1
+    } else {
+        0
+    }
 }
 
 /// Walk-then-mint pipeline seam. `run_gate_mint` constructs the
@@ -3427,6 +3441,99 @@ fn run_spec(workspace: &std::path::Path, deps: bool) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    /// Spec contract `specs/gate.md` § *Per-bead mint summary semantics*
+    /// (criterion `mint_bead_scope_exits_zero_on_clean_summary`):
+    /// `loom gate mint --bead <id>` exits 0 when `refused == 0 &&
+    /// errors == 0`, regardless of `minted`/`skipped` counts. Drives
+    /// every clean shape through the same exit-code helper that
+    /// `run_gate_mint` routes on.
+    #[test]
+    fn mint_bead_scope_exits_zero_on_clean_summary() {
+        use loom_workflow::mint::MintSummary;
+
+        let mk = |minted: usize, skipped: usize| MintSummary {
+            batches: Vec::new(),
+            minted,
+            would_mint: 0,
+            skipped,
+            skipped_filter: 0,
+            refused: 0,
+            errors: 0,
+            findings_across_minted: 0,
+            specs_across_minted: 0,
+        };
+
+        // Every clean shape (refused==0, errors==0) routes to exit 0.
+        for (label, summary) in [
+            ("empty", mk(0, 0)),
+            ("minted-only", mk(3, 0)),
+            ("skipped-only", mk(0, 2)),
+            ("mixed minted+skipped", mk(2, 4)),
+        ] {
+            assert_eq!(
+                mint_summary_exit_code(&summary),
+                0,
+                "{label}: refused/errors == 0 → exit 0: {summary:?}",
+            );
+        }
+    }
+
+    /// Spec contract `specs/gate.md` § *Per-bead mint summary semantics*
+    /// (criterion `mint_bead_scope_exits_nonzero_on_refused_or_errors`):
+    /// `loom gate mint --bead <id>` exits non-zero when `refused > 0`
+    /// or `errors > 0`. The summary header lists the non-zero counts
+    /// so the loop's per-bead path can route on the typed exit.
+    #[test]
+    fn mint_bead_scope_exits_nonzero_on_refused_or_errors() {
+        use loom_workflow::mint::MintSummary;
+
+        let mk = |refused: usize, errors: usize| MintSummary {
+            batches: Vec::new(),
+            minted: 0,
+            would_mint: 0,
+            skipped: 0,
+            skipped_filter: 0,
+            refused,
+            errors,
+            findings_across_minted: 0,
+            specs_across_minted: 0,
+        };
+
+        // Refused-only.
+        let refused = mk(1, 0);
+        assert_ne!(
+            mint_summary_exit_code(&refused),
+            0,
+            "refused > 0 → non-zero exit: {refused:?}",
+        );
+        assert!(
+            refused.render().contains("refused 1"),
+            "header lists refused count: {}",
+            refused.render(),
+        );
+
+        // Errored-only.
+        let errored = mk(0, 1);
+        assert_ne!(
+            mint_summary_exit_code(&errored),
+            0,
+            "errors > 0 → non-zero exit: {errored:?}",
+        );
+        assert!(
+            errored.render().contains("errors 1"),
+            "header lists errors count: {}",
+            errored.render(),
+        );
+
+        // Refused + errored together.
+        let both = mk(1, 1);
+        assert_ne!(
+            mint_summary_exit_code(&both),
+            0,
+            "refused + errored → non-zero exit: {both:?}",
+        );
+    }
+
     #[test]
     fn parse_verify_tiers_defaults_to_all_three_when_unset() {
         assert_eq!(
@@ -3756,7 +3863,7 @@ mod tests {
             "non-Tree scope must not dispatch verifiers",
         );
         assert!(
-            summary.findings.is_empty(),
+            summary.batches.is_empty(),
             "no LOOM_FINDING lines in rubric → empty summary: {summary:?}",
         );
     }
