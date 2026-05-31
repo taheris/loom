@@ -255,6 +255,11 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
         Some(ExitSignal::BadWalk(badwalk)) => PhaseVerdict::Recovery {
             cause: RecoveryCause::BadWalk(badwalk.clone()),
         },
+        Some(ExitSignal::Retry { reason }) => PhaseVerdict::Recovery {
+            cause: RecoveryCause::ObserverAbort {
+                reason: reason.clone(),
+            },
+        },
     }
 }
 

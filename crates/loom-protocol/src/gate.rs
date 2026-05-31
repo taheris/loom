@@ -681,6 +681,30 @@ fn target_unresolved_detail(target: &FindingTarget) -> String {
 /// shape per `specs/gate.md` § *Maximum-context preservation invariant*
 /// — the failure mode "lost the agent's diagnosis when one piece of the
 /// walk was malformed" is structurally unrepresentable.
+///
+/// Constructing [`BadWalk::Concern`] without `parsed_findings` is a
+/// compile error:
+///
+/// ```compile_fail
+/// use loom_protocol::gate::BadWalk;
+/// let _ = BadWalk::Concern { payload: String::new() };
+/// ```
+///
+/// Constructing [`BadWalk::FindingsWithoutConcern`] without `findings`
+/// is a compile error:
+///
+/// ```compile_fail
+/// use loom_protocol::gate::BadWalk;
+/// let _ = BadWalk::FindingsWithoutConcern { finding_count: 0 };
+/// ```
+///
+/// Constructing [`BadWalk::MalformedFinding`] without `terminal` is a
+/// compile error:
+///
+/// ```compile_fail
+/// use loom_protocol::gate::BadWalk;
+/// let _ = BadWalk::MalformedFinding { errors: Vec::new() };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BadWalk {
     /// `LOOM_CONCERN:` payload did not parse as
@@ -739,6 +763,12 @@ pub enum TerminalSurface {
     Clarify { question: String },
     /// `LOOM_CONCERN: {"summary": "..."}` parsed cleanly.
     Concern { summary: String },
+    /// `LOOM_RETRY` on the final non-empty line; `reason` is the
+    /// adjacent prose read by the parser. Worker-phase-only per
+    /// `specs/templates.md` § *Self-report marker taxonomy*; phase
+    /// enforcement is applied by the verdict gate that consumes
+    /// [`ExitSignal`].
+    Retry { reason: String },
     /// `LOOM_CONCERN:` was present but its JSON payload failed parse
     /// (invalid JSON, missing `summary`, or empty `summary`). The
     /// literal post-marker text is preserved.
@@ -759,6 +789,7 @@ impl TerminalSurface {
             Self::Blocked { .. } => "LOOM_BLOCKED",
             Self::Clarify { .. } => "LOOM_CLARIFY",
             Self::Concern { .. } => "LOOM_CONCERN (well-formed)",
+            Self::Retry { .. } => "LOOM_RETRY",
             Self::Malformed { .. } => "LOOM_CONCERN (malformed payload)",
             Self::Missing => "no terminal marker on the final non-empty line",
         }
@@ -810,6 +841,19 @@ pub enum ExitSignal {
     /// stream/terminator pairing-rule variants are owned by the verdict
     /// gate.
     BadWalk(BadWalk),
+
+    /// Worker-phase agent self-reported that this attempt cannot
+    /// finish but a fresh dispatch is likely to succeed (environmental
+    /// failure: tools failing mid-session, sandbox/cwd unlinked,
+    /// transient IO; or agent self-reset: stuck-but-not-blocked,
+    /// prompt-context exhausted). `reason` is the prose the agent
+    /// wrote on the line immediately preceding the marker, captured
+    /// verbatim — mirrors the [`ExitSignal::Blocked`] / [`ExitSignal::Clarify`]
+    /// reason-capture pattern. Worker-phase-only per
+    /// `specs/templates.md` § *Self-report marker taxonomy*; phase
+    /// enforcement is applied by the verdict gate that consumes this
+    /// signal.
+    Retry { reason: String },
 }
 
 const COMPLETE: &str = "LOOM_COMPLETE";
@@ -817,6 +861,7 @@ const NOOP: &str = "LOOM_NOOP";
 const BLOCKED: &str = "LOOM_BLOCKED";
 const CLARIFY: &str = "LOOM_CLARIFY";
 const CONCERN: &str = "LOOM_CONCERN";
+const RETRY: &str = "LOOM_RETRY";
 
 /// Scan the agent's combined output (or the `result` field of the final
 /// stream-json line) for an exit signal.
@@ -860,6 +905,9 @@ pub fn parse_exit_signal(output: &str) -> Option<ExitSignal> {
     if let Some(question) = reason_for(CLARIFY, final_line, prior) {
         return Some(ExitSignal::Clarify { question });
     }
+    if let Some(reason) = reason_for(RETRY, final_line, prior) {
+        return Some(ExitSignal::Retry { reason });
+    }
     if final_line.contains(COMPLETE) {
         return Some(ExitSignal::Complete);
     }
@@ -874,7 +922,7 @@ pub fn parse_exit_signal(output: &str) -> Option<ExitSignal> {
 /// the others are pairwise non-overlapping, so distinct hits map one-to-one
 /// to distinct markers.
 fn has_multiple_markers(line: &str) -> bool {
-    let markers = [COMPLETE, NOOP, BLOCKED, CLARIFY, CONCERN];
+    let markers = [COMPLETE, NOOP, BLOCKED, CLARIFY, CONCERN, RETRY];
     let mut hits = 0;
     for marker in markers {
         if line.contains(marker) {
@@ -1047,6 +1095,7 @@ fn terminal_surface_from_stdout(output: &str) -> TerminalSurface {
         Some(ExitSignal::Blocked { reason }) => TerminalSurface::Blocked { reason },
         Some(ExitSignal::Clarify { question }) => TerminalSurface::Clarify { question },
         Some(ExitSignal::Concern { summary }) => TerminalSurface::Concern { summary },
+        Some(ExitSignal::Retry { reason }) => TerminalSurface::Retry { reason },
         Some(ExitSignal::BadWalk(BadWalk::Concern { payload, .. })) => {
             TerminalSurface::Malformed { payload }
         }
@@ -1448,6 +1497,160 @@ mod tests {
         let out =
             "LOOM_REVIEW_FLAG: verifier-bypass -- test mocks the agent backend\nLOOM_COMPLETE\n";
         assert_eq!(parse_exit_signal(out), Some(ExitSignal::Complete));
+    }
+
+    #[test]
+    fn retry_carries_reason_from_prior_line() {
+        let out = "tools failing mid-session, sandbox unlinked\nLOOM_RETRY\n";
+        match parse_exit_signal(out) {
+            Some(ExitSignal::Retry { reason }) => {
+                assert_eq!(reason, "tools failing mid-session, sandbox unlinked");
+            }
+            other => panic!("expected Retry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retry_reads_reason_from_same_line_prefix() {
+        let out = "prompt context exhausted LOOM_RETRY\n";
+        match parse_exit_signal(out) {
+            Some(ExitSignal::Retry { reason }) => {
+                assert_eq!(reason, "prompt context exhausted");
+            }
+            other => panic!("expected Retry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retry_at_start_with_no_prior_lines_yields_empty_reason() {
+        let out = "LOOM_RETRY";
+        match parse_exit_signal(out) {
+            Some(ExitSignal::Retry { reason }) => assert!(reason.is_empty()),
+            other => panic!("expected Retry with empty reason, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retry_with_other_marker_on_final_line_is_swallowed() {
+        let out = "LOOM_RETRY LOOM_COMPLETE\n";
+        assert_eq!(parse_exit_signal(out), None);
+    }
+
+    #[test]
+    fn retry_with_blocked_on_final_line_is_swallowed() {
+        let out = "LOOM_BLOCKED LOOM_RETRY\n";
+        assert_eq!(parse_exit_signal(out), None);
+    }
+
+    #[test]
+    fn retry_on_non_final_line_is_swallowed() {
+        let out = "LOOM_RETRY\nfollow-up prose that hides the marker\n";
+        assert_eq!(parse_exit_signal(out), None);
+    }
+
+    #[test]
+    fn terminal_surface_retry_label_round_trips_to_loom_retry() {
+        let surface = TerminalSurface::Retry {
+            reason: "tools failing mid-session".to_owned(),
+        };
+        assert_eq!(surface.label(), "LOOM_RETRY");
+    }
+
+    #[test]
+    fn walk_output_terminal_surfaces_retry_from_stdout() {
+        struct AcceptAll;
+        impl FindingValidator for AcceptAll {
+            fn spec_label_is_known(&self, _label: &SpecLabel) -> bool {
+                true
+            }
+            fn criterion_anchor_resolves(&self, _spec: &SpecLabel, _anchor: &str) -> bool {
+                true
+            }
+            fn annotation_resolves(&self, _target_string: &str) -> bool {
+                true
+            }
+            fn file_exists(&self, _path: &str) -> bool {
+                true
+            }
+            fn invariant_resolves(&self, _spec: &SpecLabel, _section: &str, _tag: &str) -> bool {
+                true
+            }
+        }
+        let walk = WalkOutput::from_stdout(
+            "sandbox cwd unlinked\nLOOM_RETRY\n",
+            DispatchScope::Tree,
+            &AcceptAll,
+        );
+        match walk.terminal() {
+            TerminalSurface::Retry { reason } => {
+                assert_eq!(reason, "sandbox cwd unlinked");
+            }
+            other => panic!("expected Retry terminal, got {other:?}"),
+        }
+    }
+
+    /// Spec contract `specs/templates.md` § Typed `PreviousFailure` —
+    /// every [`BadWalk`] variant carries the maximum well-formed
+    /// context by struct shape. The variants enumerated here cover
+    /// every cell in the (stream-shape × terminal-shape) cross product
+    /// from the maximum-context preservation invariant; the literal
+    /// presence of `parsed_findings` / `findings` / `errors` +
+    /// `terminal` in the field-init shorthand below is the structural
+    /// pin — a future contributor cannot drop them without breaking
+    /// this test, and cannot construct the variants from outside the
+    /// crate without them either (see the `compile_fail` doctests on
+    /// the [`BadWalk`] enum).
+    #[test]
+    fn bad_walk_variants_preserve_max_context_invariant_by_struct_shape() {
+        let payload = "literal post-marker text".to_owned();
+        let parsed_findings: Vec<Finding> = Vec::new();
+        let concern = BadWalk::Concern {
+            payload: payload.clone(),
+            parsed_findings: parsed_findings.clone(),
+        };
+        match &concern {
+            BadWalk::Concern {
+                payload: p,
+                parsed_findings: f,
+            } => {
+                assert_eq!(p, &payload);
+                assert_eq!(f, &parsed_findings);
+            }
+            other => panic!("expected BadWalk::Concern, got {other:?}"),
+        }
+
+        let findings: Vec<Finding> = Vec::new();
+        let no_concern = BadWalk::FindingsWithoutConcern {
+            finding_count: findings.len(),
+            findings: findings.clone(),
+        };
+        match &no_concern {
+            BadWalk::FindingsWithoutConcern {
+                finding_count,
+                findings: f,
+            } => {
+                assert_eq!(*finding_count, findings.len());
+                assert_eq!(f, &findings);
+            }
+            other => panic!("expected BadWalk::FindingsWithoutConcern, got {other:?}"),
+        }
+
+        let errors: Vec<FindingParseError> = Vec::new();
+        let terminal = TerminalSurface::Complete;
+        let malformed = BadWalk::MalformedFinding {
+            errors: errors.clone(),
+            terminal: terminal.clone(),
+        };
+        match &malformed {
+            BadWalk::MalformedFinding {
+                errors: e,
+                terminal: t,
+            } => {
+                assert_eq!(e, &errors);
+                assert_eq!(t, &terminal);
+            }
+            other => panic!("expected BadWalk::MalformedFinding, got {other:?}"),
+        }
     }
 
     #[test]

@@ -2378,6 +2378,9 @@ async fn run_parallel_loop(
                             error: "wrong-phase-marker: LOOM_CONCERN is review-phase only"
                                 .to_string(),
                         },
+                        (Some(ExitSignal::Retry { reason }), _) => AgentOutcome::Failure {
+                            error: format!("LOOM_RETRY ({reason}) — verdict-gate routing pending",),
+                        },
                         (Some(ExitSignal::Complete | ExitSignal::Noop), 0) => AgentOutcome::Success,
                         (Some(ExitSignal::Complete | ExitSignal::Noop), code) => {
                             AgentOutcome::Failure {

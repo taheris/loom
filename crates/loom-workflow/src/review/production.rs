@@ -526,6 +526,9 @@ fn exit_signal_from_terminal(terminal: &TerminalSurface) -> Option<ExitSignal> {
         TerminalSurface::Concern { summary } => Some(ExitSignal::Concern {
             summary: summary.clone(),
         }),
+        TerminalSurface::Retry { reason } => Some(ExitSignal::Retry {
+            reason: reason.clone(),
+        }),
         TerminalSurface::Malformed { payload } => Some(ExitSignal::BadWalk(
             loom_templates::previous_failure::BadWalk::Concern {
                 payload: payload.clone(),
@@ -864,6 +867,7 @@ mod tests {
                 let json = serde_json::json!({ "summary": summary }).to_string();
                 format!("LOOM_CONCERN: {json}\n")
             }
+            TerminalSurface::Retry { reason } => format!("{reason}\nLOOM_RETRY\n"),
             TerminalSurface::Malformed { payload } => format!("LOOM_CONCERN: {payload}\n"),
             TerminalSurface::Missing => "no terminal marker on this line\n".to_string(),
         };
