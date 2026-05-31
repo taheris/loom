@@ -440,10 +440,10 @@
         ]
       },
       "locked": {
-        "lastModified": 1775636079,
-        "narHash": "sha256-pc20NRoMdiar8oPQceQT47UUZMBTiMdUuWrYu2obUP0=",
+        "lastModified": 1780220602,
+        "narHash": "sha256-eynAfOmbmxJnkp7YewvCEbShNnnYJ9gLLqkzsYtBPeM=",
         "ref": "main",
-        "rev": "790751ff7fd3801feeaf96d7dc416a8d581265ba",
+        "rev": "db947814a175b7ca6ded66e21383d938df01c227",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/numtide/treefmt-nix.git"
@@ -492,10 +492,10 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1780228398,
-        "narHash": "sha256-HTyfdqkq+7bKoIRIYAEuTWfLraX8cGDWdl30Bjdwc+c=",
+        "lastModified": 1780230523,
+        "narHash": "sha256-EuDsoZTy/PwS/Kxc3Duu6/HBUsXJQ6XJpjoepNhYBqs=",
         "ref": "main",
-        "rev": "d0216ba6fbd064af4b9693973070a0bef3a4b10e",
+        "rev": "b84a3cedbdfb50e13cde2569d04e818bea820821",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrapix.git"

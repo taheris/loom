@@ -1,15 +1,11 @@
 # modules/flake/tests.nix
 #
-# Lifts the derivations exposed by tests/default.nix into the flake's
-# `checks.<system>` and `packages.<system>` sets:
-#
-#   checks.<system>.tests   — the `loom gate verify` run gated by
-#                             `nix flake check` on every supported
-#                             system (x86_64-linux, aarch64-linux,
-#                             x86_64-darwin, aarch64-darwin).
-#   packages.<system>.loom-tests — same derivation lifted to packages
-#                             so it can be built directly via
-#                             `nix build .#loom-tests`.
+# Lifts the `loom gate verify` derivation into `packages.<system>` so
+# it can be built directly via `nix build .#loom-tests`. It is *not*
+# attached to `checks.<system>` — per specs/pre-commit.md the fast
+# tier (`nix flake check`) must not compile the workspace under test;
+# that work runs as per-hook prek entries against the host's warm
+# cargo cache.
 #
 # Spec: specs/tests.md § CI integration / Cross-platform.
 _:
@@ -24,7 +20,6 @@ _:
       };
     in
     {
-      checks.tests = testsDeriv.rustChecks.loom-tests;
       packages.loom-tests = testsDeriv.rustChecks.loom-tests;
     };
 }

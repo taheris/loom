@@ -282,11 +282,7 @@ declared as such.
   [check](grep -q 'scripts/check-shell-reexec' .pre-commit-config.yaml)
 - The pre-commit stage runs `loom gate verify --files` against staged
   files
-  [check?](grep -q 'loom gate verify --files' .pre-commit-config.yaml)
-  (pending lm-nzjp.28: the `loom-gate-verify-files` hook is currently
-  commented out in `.pre-commit-config.yaml` awaiting variadic
-  `--files <PATH>...` support in the binary; promote back to `[check]`
-  once the hook is reinstated)
+  [check](grep -q 'loom gate verify --files' .pre-commit-config.yaml)
 - The pre-push stage's first hook is the `nix flake check` fast tier
   [check](awk '/^      - id:/{last=$0} /stages:.*pre-push/{print last; exit}' .pre-commit-config.yaml | grep -q 'nix flake check\|flake-check')
 - `.pre-commit-config.yaml` does not register `loom gate verify-marker`
