@@ -2660,7 +2660,7 @@ Criteria.
       workspace path into the loom workspace, then rebased + fast-
       forwarded into the integration branch (linear history, no
       merge commits); the worker never invokes `git push`
-  [test?](driver_fetches_bead_branch_from_workspace_path)
+  [test](driver_fetches_bead_branch_from_workspace_path)
 - The bead-branch ref `loom/<id>` in the loom workspace is deleted
       unconditionally at the end of the per-bead critical section —
       clean exit, audit-fail rollback, and rebase-conflict abort
@@ -2670,7 +2670,7 @@ Criteria.
       workspace path after `create_worktree` so host-side
       ahead/behind tracking works; the bead container has no path
       mount to the loom workspace and cannot push from inside
-  [test?](bead_clone_origin_unchanged_under_a3)
+  [test](bead_clone_origin_unchanged_under_a3)
 - Parallel dispatch's second-and-later beads rebase onto the moved
       integration-branch HEAD before fast-forwarding
   [test](merge_branch_rebases_bead_branch_onto_head_before_ff)

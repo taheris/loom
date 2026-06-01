@@ -456,15 +456,17 @@ where
                     error: "tree-not-clean".to_string(),
                 });
             }
-            // Push the bead branch from the clone back to its origin (the
-            // main repo) so `merge_branch` can fold it into the driver
-            // branch. Path A from `harness.md` § Worktree Dispatch.
-            self.git
-                .push_branch_to_origin(&worktree.path, &worktree.branch)
-                .await?;
+            // A3: the worker never pushes; the driver fetches the bead
+            // branch from the bead workspace path into the loom workspace
+            // so `merge_branch` can rebase + ff it onto the integration
+            // branch.
+            self.git.fetch_bead_branch(&worktree.path, &bead.id).await?;
             self.emit_to_log(
                 DriverKind::BeadBranchPushed,
-                &format!("bead branch pushed to driver origin: {}", worktree.branch),
+                &format!(
+                    "bead branch fetched into loom workspace: {}",
+                    worktree.branch
+                ),
                 serde_json::json!({
                     "bead_id": bead.id.to_string(),
                     "branch": worktree.branch,

@@ -664,31 +664,6 @@ async fn commits_since_surfaces_git_cli_error_on_unknown_commit() -> Result<()> 
     Ok(())
 }
 
-/// Absolute path to a `bash` interpreter resolved at test time.
-///
-/// Hook scripts need a shebang the kernel can exec. `/usr/bin/env` isn't
-/// in the nix build sandbox, so `#!/usr/bin/env bash` fails with
-/// `cannot exec ...: No such file or directory` (the error is about the
-/// interpreter, not the script). Discover bash via `PATH` and embed the
-/// absolute path in the shebang instead.
-fn shebang_bash() -> Result<std::path::PathBuf> {
-    let path = std::env::var_os("PATH").context("PATH not set")?;
-    std::env::split_paths(&path)
-        .map(|d| d.join("bash"))
-        .find(|p| p.is_file())
-        .context("bash not on PATH")
-}
-
-fn install_pre_push_hook(hooks_dir: &Path, body: &str) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let hook = hooks_dir.join("pre-push");
-    let bash = shebang_bash()?;
-    let script = format!("#!{}\nset -euo pipefail\n{body}", bash.display());
-    std::fs::write(&hook, script)?;
-    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
-    Ok(())
-}
-
 fn agent_commit(worktree: &Path, filename: &str, body: &str, msg: &str) -> Result<()> {
     std::fs::write(worktree.join(filename), body)?;
     git(worktree, &["add", filename])?;
@@ -699,98 +674,93 @@ fn agent_commit(worktree: &Path, filename: &str, body: &str, msg: &str) -> Resul
     Ok(())
 }
 
-/// `push_branch_to_origin` fires the destination's pre-push hook — that's
-/// the per-bead test backpressure (the workspace's pre-push CI stage runs
-/// here). If this stopped firing, broken commits would slip into driver
-/// `main` without the test gate.
+/// Spec contract (`specs/harness.md` § Success Criteria · Bead dispatch):
+/// the driver fetches the bead branch from the bead workspace path into
+/// the loom workspace — `git fetch <bead-workspace-path> loom/<id>:loom/<id>`
+/// treating the path as an ad-hoc filesystem URL — so `merge_branch` can
+/// rebase + ff it onto the integration branch. The worker never pushes;
+/// the fetch is the only thing that makes the bead branch visible in the
+/// loom workspace.
 #[tokio::test]
-async fn push_branch_to_origin_invokes_pre_push_hook() -> Result<()> {
+async fn driver_fetches_bead_branch_from_workspace_path() -> Result<()> {
     let repo = init_repo()?;
-    let hooks_dir = repo.path().join(".loom-test-hooks");
-    std::fs::create_dir_all(&hooks_dir)?;
-    let marker = repo.path().join("hook-fired");
-    let hook_log = repo.path().join("hook-log");
-    // The hook writes both a marker file (assertion target) and a log
-    // capturing its env, cwd, and any error. When the marker is missing
-    // post-push, the log tells us whether the hook ran at all and what
-    // it saw.
-    install_pre_push_hook(
-        &hooks_dir,
-        &format!(
-            "{{ date; pwd; echo HOOK_PATH=$0; echo HOOKS_PATH=$(git config --get core.hooksPath); }} > {:?} 2>&1\ntouch {:?}\nexit 0\n",
-            hook_log.display(),
-            marker.display()
-        ),
-    )?;
-
+    let loom = loom_path(repo.path());
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
-    let bead = BeadId::new("lm-pp.1")?;
+    let bead = BeadId::new("lm-fetch.1")?;
     let created = client.create_worktree(&label, &bead).await?;
-    // pre-push fires on the sending side; set core.hooksPath on the clone.
-    git(
-        &created.path,
-        &["config", "core.hooksPath", hooks_dir.to_str().unwrap()],
-    )?;
     agent_commit(&created.path, "agent-change.txt", "agent work\n", "agent")?;
+    let bead_head = capture_head(&created.path)?;
 
-    client
-        .push_branch_to_origin(&created.path, &created.branch)
-        .await?;
-    if !marker.exists() {
-        // Diagnostics for the flake: what did the hook see (if it ran)?
-        use std::os::unix::fs::PermissionsExt;
-        let log =
-            std::fs::read_to_string(&hook_log).unwrap_or_else(|e| format!("(log missing: {e})"));
-        let hook_meta = std::fs::metadata(hooks_dir.join("pre-push"))
-            .map(|m| format!("mode={:o} size={}", m.permissions().mode() & 0o777, m.len()))
-            .unwrap_or_else(|e| format!("(hook stat failed: {e})"));
-        panic!(
-            "pre-push hook must fire on bead-merge push\n\
-             marker={}\n\
-             hook script: {}\n\
-             hook log:\n{}",
-            marker.display(),
-            hook_meta,
-            log,
-        );
-    }
+    // Pre-condition: the bead branch is absent from the loom workspace
+    // until the driver fetches it — the worker never pushed.
+    assert!(
+        rev_parse(&loom, &created.branch).is_none(),
+        "bead branch must not exist in the loom workspace before the fetch",
+    );
+
+    client.fetch_bead_branch(&created.path, &bead).await?;
+
+    let fetched = rev_parse(&loom, &created.branch)
+        .context("bead branch must exist in the loom workspace after fetch")?;
+    assert_eq!(
+        fetched, bead_head,
+        "fetched ref must point at the bead clone's HEAD",
+    );
+
+    // The fetched branch is what `merge_branch` rebases + ff's onto the
+    // integration branch — no push was involved at any step.
+    let result = client.merge_branch(&created.branch).await?;
+    assert_eq!(result, MergeResult::Ok);
+    assert!(
+        loom.join("agent-change.txt").exists(),
+        "fetched bead work must land in the loom workspace after merge",
+    );
 
     client.remove_worktree(&created.path).await?;
     Ok(())
 }
 
-/// A failing pre-push hook surfaces as `GitError::GitCli`, blocking the
-/// merge. If the workspace's pre-push CI fails (test regression, lint
-/// failure), the bead's commit must not land on driver `main`.
+/// Spec contract (`specs/harness.md` § Success Criteria · Bead dispatch):
+/// under A3 the bead clone's `origin` remote remains pointing at the loom
+/// workspace path after `create_worktree`. It is unused by the worker (no
+/// push) but preserved so host-side ahead/behind tracking works when the
+/// operator `cd`s into the bead clone; `create_worktree` must not stub or
+/// rewrite it.
 #[tokio::test]
-async fn push_branch_to_origin_propagates_pre_push_hook_failure() -> Result<()> {
+async fn bead_clone_origin_unchanged_under_a3() -> Result<()> {
     let repo = init_repo()?;
-    let hooks_dir = repo.path().join(".loom-test-hooks");
-    std::fs::create_dir_all(&hooks_dir)?;
-    install_pre_push_hook(&hooks_dir, "exit 1\n")?;
-
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
-    let bead = BeadId::new("lm-pp.2")?;
+    let bead = BeadId::new("lm-origin.1")?;
     let created = client.create_worktree(&label, &bead).await?;
-    git(
-        &created.path,
-        &["config", "core.hooksPath", hooks_dir.to_str().unwrap()],
-    )?;
-    agent_commit(&created.path, "agent-change.txt", "agent work\n", "agent")?;
 
-    let err = client
-        .push_branch_to_origin(&created.path, &created.branch)
-        .await
-        .expect_err("failing pre-push must surface as an error");
-    assert!(
-        matches!(err, loom_driver::git::GitError::GitCli { .. }),
-        "expected GitCli error from failing hook, got {err:?}",
+    let origin = loom_driver::git::read_origin_url(&created.path)?
+        .context("bead clone must retain an origin remote under A3")?;
+    assert_eq!(
+        std::path::Path::new(&origin),
+        client.loom_workspace().as_path(),
+        "bead clone origin must point at the loom workspace path, not be stubbed",
     );
 
     client.remove_worktree(&created.path).await?;
     Ok(())
+}
+
+/// `git -C <repo> rev-parse <rev>` returning the resolved SHA, or `None`
+/// when `<rev>` does not resolve (e.g. a branch absent from this repo).
+fn rev_parse(repo: &Path, rev: &str) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "--verify", "--quiet", rev])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!sha.is_empty()).then_some(sha)
 }
 
 /// Spec contract `[test?]` annotation

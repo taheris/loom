@@ -224,18 +224,20 @@ impl GitClient {
     /// branch construction.
     ///
     /// Cloning from the loom workspace (not the operator's workdir)
-    /// sets the bead clone's `origin` to the loom workspace, so
-    /// [`Self::push_branch_to_origin`] from the bead clone surfaces the
-    /// bead branch where [`Self::merge_branch`] expects to find it.
+    /// leaves the bead clone's `origin` pointing at the loom workspace
+    /// path. Under the A3 push-reliability model the worker never pushes
+    /// to it; the remote is preserved only so host-side ahead/behind
+    /// tracking works when the operator `cd`s into the bead clone (e.g.
+    /// the starship prompt). The driver pulls the bead branch via
+    /// [`Self::fetch_bead_branch`] against the same filesystem path.
     ///
     /// Path A from `specs/harness.md § Bead dispatch`: the per-bead
     /// workspace is a self-contained clone — its `.git/` is a regular
     /// directory inside the bind-mounted path, so workers running in the
-    /// wrapix container can resolve the gitdir, commit, and (driver-side)
-    /// the bead branch is pushed back to the loom workspace for
-    /// merge-back. Linked worktrees were rejected here because a
-    /// worktree's `.git` file points at a host-absolute path outside the
-    /// container's `/workspace` bind-mount.
+    /// wrapix container can resolve the gitdir and commit. Linked
+    /// worktrees were rejected here because a worktree's `.git` file
+    /// points at a host-absolute path outside the container's
+    /// `/workspace` bind-mount.
     ///
     /// Idempotent at the directory level: if the destination already
     /// exists, the call returns a [`CreatedWorktree`] pointing at it
@@ -469,24 +471,33 @@ impl GitClient {
         Ok(removed)
     }
 
-    /// Push `branch` from the bead's clone at `workdir` back to its origin
-    /// (the main repo this `GitClient` was opened against). Run after a
-    /// successful agent session so [`Self::merge_branch`] can fold the bead's
-    /// work into the driver branch.
+    /// Fetch the bead branch `loom/<bead_id>` from the bead workspace at
+    /// `bead_workspace_path` into the loom workspace, where
+    /// [`Self::merge_branch`] rebases and fast-forwards it onto the
+    /// integration branch.
     ///
-    /// Uses [`GIT_HOOK_TIMEOUT`] because the destination repo's pre-push
-    /// hook runs the workspace's pre-push CI stage (nextest + nix smoke)
-    /// — legitimate backpressure that takes minutes, not seconds.
-    pub async fn push_branch_to_origin(
+    /// Runs `git fetch <bead-workspace-path> loom/<id>:loom/<id>` in the
+    /// loom workspace ([`Self::loom_workspace`]), treating the bead
+    /// workspace path as an ad-hoc filesystem URL — no network, no daemon.
+    /// Under the A3 push-reliability model the worker never pushes; the
+    /// driver pulls the branch over the filesystem path, which is always
+    /// reachable from the host through the bead's lifetime (the bead
+    /// container, by contrast, has no mount back to the loom workspace).
+    pub async fn fetch_bead_branch(
         &self,
-        workdir: &Path,
-        branch: &str,
+        bead_workspace_path: &Path,
+        bead_id: &BeadId,
     ) -> Result<(), GitError> {
-        run_git_with_timeout(
-            workdir,
+        let refspec = format!("{BRANCH_PREFIX}/{bead_id}:{BRANCH_PREFIX}/{bead_id}");
+        run_git(
+            &self.loom_workspace(),
             self.clock.as_ref(),
-            GIT_HOOK_TIMEOUT,
-            ["push", "--quiet", "origin", branch],
+            [
+                OsString::from("fetch"),
+                OsString::from("--quiet"),
+                bead_workspace_path.into(),
+                OsString::from(refspec),
+            ],
             None,
         )
         .await

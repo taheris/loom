@@ -330,17 +330,18 @@ async fn merge_back_one(
         .and_then(|(root, lbl)| BeadEmit::for_bead(root, lbl, &bead.id));
     match outcome {
         AgentOutcome::Success => {
-            // Push the bead branch from the clone back to its origin so
-            // `merge_branch` can fold it into the driver branch. Path A
-            // from `specs/harness.md § Worktree Dispatch`: the bead workspace
-            // is a standalone clone, so the bead's branch lives only inside
-            // the clone until this push exposes it on the main repo.
-            git.push_branch_to_origin(&worktree.path, &worktree.branch)
-                .await?;
+            // A3: the worker never pushes; the driver fetches the bead
+            // branch from the bead workspace path into the loom workspace,
+            // where `merge_branch` rebases + ff's it onto the integration
+            // branch.
+            git.fetch_bead_branch(&worktree.path, &bead.id).await?;
             if let Some(e) = emit.as_mut() {
                 e.emit(
                     DriverKind::BeadBranchPushed,
-                    &format!("bead branch pushed to driver origin: {}", worktree.branch),
+                    &format!(
+                        "bead branch fetched into loom workspace: {}",
+                        worktree.branch
+                    ),
                     serde_json::json!({
                         "bead_id": bead.id.to_string(),
                         "branch": worktree.branch,
