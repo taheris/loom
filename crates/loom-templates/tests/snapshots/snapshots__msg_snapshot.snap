@@ -136,13 +136,23 @@ Use a SQLite table.
    5. **Confirm** the draft with the user before writing.
    6. **Write** the resolution note and apply the bd-state transition.
       You own the full bd-write authority during this session: record
-      the resolution with `bd update <id> --notes "..."`, then remove
-      the msg-queue label with `bd update <id>
-      --remove-label=loom:clarify` (or `--remove-label=loom:blocked`)
+      the resolution with `bd update <id> --notes "..."`, then unblock
+      the bead with `bd update <id> --remove-label=loom:clarify
+      --status=open` (or `--remove-label=loom:blocked --status=open`)
       so the bead re-enters the work queue for the next implementing
-      session. If the resolution closes the work outright (no further
-      implementation needed), use `bd close <id>` instead — the driver
-      does NOT reverse the close.
+      session. **The `--status=open` is mandatory, not optional.** Both
+      the clarify and blocked routes set `status=blocked` when they
+      park the bead (`apply_clarify` / `apply_blocked` in
+      `loom-workflow/src/loop/production.rs` + `gate_clarify.rs`), and
+      `bd ready` excludes anything at `status=blocked`. Removing only
+      the label leaves the bead stuck at `status=blocked` — it will NOT
+      surface in `bd ready` and the work silently never re-enters the
+      queue. Always pair the label removal with `--status=open`. (Verify
+      with `bd show <id>`: the header must read `OPEN`, not `BLOCKED`.)
+      If the resolution closes the work outright (no further
+      implementation needed), use `bd close <id>` instead — that sets
+      the terminal status itself, so no `--status=open` is needed, and
+      the driver does NOT reverse the close.
 
       The new `--notes` payload must **remove the originating `## Options
       — …` block** in the same `bd update` that records the resolution
@@ -219,8 +229,11 @@ create the very work this session is supposed to resolve;
 **Persistence boundary — agent owns bd writes.** The chat agent owns
 the full bd-state transition during this session: the resolution note
 (`bd update <id> --notes "..."`), the unblock (`bd update <id>
---remove-label=loom:clarify` / `--remove-label=loom:blocked`), and
-optional close (`bd close <id>`) all happen from inside the session.
+--remove-label=loom:clarify --status=open` / `--remove-label=loom:blocked
+--status=open` — the `--status=open` is required because both park
+routes set `status=blocked`, and label removal alone leaves the bead
+excluded from `bd ready`), and optional close (`bd close <id>`) all
+happen from inside the session.
 The driver does NOT reconcile bd state afterwards. Mistakes (wrong
 bead closed, label left in place, label removed when it shouldn't
 have been) get caught by the human in the next `loom msg` session,
