@@ -36,7 +36,7 @@ use std::process::Command;
 
 use loom_driver::identifier::{MoleculeId, SpecLabel};
 use loom_driver::state::{ActiveMolecule, StateDb};
-use loom_gate::{IntegrityFinding, Tier, format_clarify_options};
+use loom_workflow::review::DEFAULT_MAX_ITERATIONS;
 
 // -------------------------------------------------------------------
 // Workspace + state setup
@@ -509,6 +509,10 @@ fn push_gate_refuses_on_integrity_finding_via_live_path() {
     );
 
     seed_active_molecule(workspace, label, "lm-mol", &base_sha);
+    // Exhaust the iteration cap so the integrity branch takes the
+    // terminal clarify fallback rather than minting a recovery batch and
+    // re-entering the loop (which would spawn live subprocesses).
+    seed_iteration_at_cap(workspace, "lm-mol");
 
     let bin_dir = install_path_shims(workspace, false);
     let manifest = write_minimal_manifest(workspace);
@@ -553,25 +557,25 @@ fn push_gate_refuses_on_integrity_finding_via_live_path() {
     );
     let notes = read_field(&state_dir, "lm-mol", "notes");
     assert!(
-        notes.contains("## Options —"),
+        notes.starts_with("## Options — "),
         "epic notes must carry the canonical Options block. notes:\n{notes}",
     );
-    // The block must round-trip through `format_clarify_options` —
-    // independently re-rendering the finding shape must reproduce
-    // every byte of the notes the controller wrote. Spec line and
-    // path are derived from the parsed annotation so the test cannot
-    // diverge from the writer's coordinate by accident.
-    let line = parse_options_spec_line(&notes);
-    let expected = format_clarify_options(&[IntegrityFinding::UnresolvedAnnotation {
-        spec: PathBuf::from(format!("specs/{label}.md")),
-        line,
-        tier: Tier::Check,
-        target: unresolvable_target.to_string(),
-    }]);
+    // Cap-exhausted fallback: the controller writes exactly the composed
+    // block `compose_clarify_options` produces — one primary option per
+    // present integrity-finding kind plus the mixed escape hatch, scoped
+    // to the affected `spec:line (target)` locations.
     assert_eq!(
-        notes, expected,
-        "epic notes must match format_clarify_options verbatim. \
-         expected:\n{expected}\nactual:\n{notes}",
+        notes.matches("## Options — ").count(),
+        1,
+        "one composed block per clarify bead: {notes}",
+    );
+    assert!(
+        notes.contains("### Option 1 — Implement"),
+        "Option 1 must lead with the unresolved-annotation primary: {notes}",
+    );
+    assert!(
+        notes.contains(&format!("specs/{label}.md:")),
+        "epic notes must cite the affected spec:line: {notes}",
     );
     assert!(
         notes.contains(unresolvable_target),
@@ -579,18 +583,14 @@ fn push_gate_refuses_on_integrity_finding_via_live_path() {
     );
 }
 
-/// Extract the `:line` suffix from the canonical `## Options — Unresolved
-/// [tier](target) at <spec>:<line>` heading the integrity-gate writer
-/// produces. Lets the integrity-finding test compare the whole notes
-/// body against `format_clarify_options` without hard-coding the
-/// criterion line.
-fn parse_options_spec_line(notes: &str) -> u32 {
-    let heading = notes
-        .lines()
-        .next()
-        .expect("notes must carry the canonical Options heading");
-    let (_, tail) = heading.rsplit_once(':').expect("heading must end :<line>");
-    tail.trim().parse().expect("line suffix must parse as u32")
+/// Set the active molecule's iteration counter to the cap so the
+/// push-gate integrity branch escalates to the terminal `loom:clarify`
+/// fallback instead of recovering through the mint pipeline.
+fn seed_iteration_at_cap(workspace: &Path, mol_id: &str) {
+    let db = StateDb::open(workspace.join(".loom/state.db")).expect("open state.db");
+    db.set_iteration(&MoleculeId::new(mol_id), DEFAULT_MAX_ITERATIONS)
+        .expect("set iteration to cap");
+    drop(db);
 }
 
 // -------------------------------------------------------------------

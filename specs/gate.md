@@ -2666,7 +2666,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   falls back to terminal `loom:clarify` on the molecule's epic
   with one composed auto-generated `## Options — …` block
   (kind-grouped resolutions per *Integrity gate* above)
-  [test?](push_gate_recovers_integrity_findings_until_cap_then_clarifies)
+  [test](push_gate_recovers_integrity_findings_until_cap_then_clarifies)
 - The bead-container worker runs `loom gate verify --diff HEAD`
   before emitting `LOOM_COMPLETE` and resolves findings in-session;
   contract is prompt-level (rendered in `loop.md`), not driver-gated

@@ -2959,7 +2959,7 @@ Criteria.
       molecule's epic with one composed auto-generated `## Options
       — …` block (kind-grouped resolutions per [gate.md § Integrity
       gate](gate.md#integrity-gate))
-  [test?](push_gate_recovers_integrity_findings_until_cap_then_clarifies)
+  [test](push_gate_recovers_integrity_findings_until_cap_then_clarifies)
 - Push gate refuses on any verify-tier dispatch error (exit code
       2 = unknown verifier, command not found); dispatch errors
       count as fails, not skips

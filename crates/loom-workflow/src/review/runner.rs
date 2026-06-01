@@ -141,6 +141,21 @@ pub trait ReviewController: Send {
         async { Ok(()) }
     }
 
+    /// Normalize the molecule's integrity findings into typed `Finding`s
+    /// and dispatch the batch through the standard mint pipeline, per
+    /// `specs/gate.md` § *Integrity gate* (recovery branch) — the push is
+    /// refused for this iteration and the worker addresses the minted
+    /// fix-up batch on the next pass. Production wires this to
+    /// `mint_findings_with_options` against the molecule's HEAD commit.
+    /// The default impl is a no-op so test fakes that don't exercise the
+    /// recovery branch keep working.
+    fn mint_integrity_findings(
+        &mut self,
+        _findings: &[IntegrityFinding],
+    ) -> impl std::future::Future<Output = Result<(), ReviewError>> + Send {
+        async { Ok(()) }
+    }
+
     /// Fetch a single bead by id, used by the epic auto-close walk to
     /// inspect `issue_type`, `status`, and `parent` as it walks up the
     /// ancestry chain. Production wires this to `BdClient::show`. The
@@ -393,11 +408,22 @@ async fn decide_verdict<C: ReviewController>(
     }
 
     if !integrity_findings.is_empty() {
-        return Ok(ReviewVerdict::PushBlocked {
-            cause: PushGateRefuseCause::IntegrityFinding,
-            blocked_ids: vec![],
-            clarify_ids: vec![],
-            integrity_findings: integrity_findings.to_vec(),
+        // Integrity findings are recoverable up to the molecule's
+        // iteration cap (specs/gate.md § Integrity gate): below the cap
+        // they mint a fix-up batch and re-enter the loop; at the cap they
+        // fall back to the terminal clarify escalation on the epic.
+        let current = controller.iteration_count().await?;
+        if cap.is_exhausted(current) {
+            return Ok(ReviewVerdict::PushBlocked {
+                cause: PushGateRefuseCause::IntegrityFinding,
+                blocked_ids: vec![],
+                clarify_ids: vec![],
+                integrity_findings: integrity_findings.to_vec(),
+            });
+        }
+        return Ok(ReviewVerdict::IntegrityRecover {
+            findings: integrity_findings.to_vec(),
+            next_iteration: current + 1,
         });
     }
 
@@ -502,6 +528,27 @@ async fn apply_verdict<C: ReviewController>(
             controller.exec_run().await?;
             Ok(ReviewResult::AutoIterated { next_iteration })
         }
+        ReviewVerdict::IntegrityRecover {
+            findings,
+            next_iteration,
+        } => {
+            controller.emit_driver_event(
+                DriverKind::PushGateRefuse,
+                &format!(
+                    "verdict integrity-recover — {} finding(s), minting fix-up batch and re-entering loom loop",
+                    findings.len()
+                ),
+                serde_json::json!({
+                    "cause": PushGateRefuseCause::IntegrityFinding.as_str(),
+                    "next_iteration": next_iteration,
+                    "finding_count": findings.len(),
+                }),
+            );
+            controller.mint_integrity_findings(&findings).await?;
+            controller.set_iteration_count(next_iteration).await?;
+            controller.exec_run().await?;
+            Ok(ReviewResult::AutoIterated { next_iteration })
+        }
         ReviewVerdict::IterationCap {
             escalate_id,
             cap: cap_value,
@@ -535,6 +582,7 @@ fn verdict_label(verdict: &ReviewVerdict) -> &'static str {
         ReviewVerdict::Clean => "clean",
         ReviewVerdict::PushBlocked { .. } => "push_blocked",
         ReviewVerdict::AutoIterate { .. } => "auto_iterate",
+        ReviewVerdict::IntegrityRecover { .. } => "integrity_recover",
         ReviewVerdict::IterationCap { .. } => "iteration_cap",
     }
 }
@@ -556,6 +604,7 @@ mod tests {
         reset_iter_calls: u32,
         apply_clarify_calls: Vec<(BeadId, String)>,
         apply_integrity_clarify_calls: Vec<Vec<IntegrityFinding>>,
+        mint_integrity_findings_calls: Vec<Vec<IntegrityFinding>>,
         git_push_calls: u32,
         beads_push_calls: u32,
         exec_run_calls: u32,
@@ -627,6 +676,14 @@ mod tests {
             findings: &[IntegrityFinding],
         ) -> Result<(), ReviewError> {
             self.apply_integrity_clarify_calls.push(findings.to_vec());
+            Ok(())
+        }
+
+        async fn mint_integrity_findings(
+            &mut self,
+            findings: &[IntegrityFinding],
+        ) -> Result<(), ReviewError> {
+            self.mint_integrity_findings_calls.push(findings.to_vec());
             Ok(())
         }
 
@@ -1226,55 +1283,74 @@ mod tests {
         Ok(())
     }
 
-    /// FR9 — push-gate integrity branch: any integrity-gate finding
-    /// refuses the push with cause `integrity-finding`.
+    /// specs/gate.md § Integrity gate: push-gate integrity findings
+    /// recover through the mint pipeline until the molecule's iteration
+    /// counter exhausts, then fall back to clarify. Below the cap a finding
+    /// mints a fix-up batch, increments the counter, re-enters the loop
+    /// (auto-iterate), and never pushes or escalates to clarify; at the cap
+    /// the same finding refuses the push with cause `integrity-finding`,
+    /// mints nothing, and escalates to the terminal clarify fallback.
     #[tokio::test]
-    async fn push_gate_refuses_on_integrity_finding() -> Result<(), ReviewError> {
-        let mut c = FakeController {
+    async fn push_gate_recovers_integrity_findings_until_cap_then_clarifies()
+    -> Result<(), ReviewError> {
+        let cap = IterationCap::default();
+        let findings = vec![unresolved_finding()];
+
+        // Below the cap: recover via mint + re-enter the loop.
+        let mut below = FakeController {
             pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![bead("lm-1", &["spec:harness"])],
-            integrity_findings: vec![unresolved_finding()],
+            integrity_findings: findings.clone(),
+            iter_count: 0,
             ..FakeController::default()
         };
-        let result = review_loop(&mut c, IterationCap::default()).await?;
-        assert!(matches!(result, ReviewResult::PushBlocked { .. }));
-        assert_eq!(c.git_push_calls, 0, "integrity finding must refuse push");
-        let refuse = c
+        let result = review_loop(&mut below, cap).await?;
+        assert_eq!(result, ReviewResult::AutoIterated { next_iteration: 1 });
+        assert_eq!(below.git_push_calls, 0, "recovery branch never pushes");
+        assert_eq!(
+            below.mint_integrity_findings_calls,
+            vec![findings.clone()],
+            "findings minted through the recovery pipeline",
+        );
+        assert_eq!(
+            below.set_iter_calls,
+            vec![1],
+            "iteration counter incremented before re-entry",
+        );
+        assert!(
+            below.apply_integrity_clarify_calls.is_empty(),
+            "recovery does not escalate to clarify below the cap",
+        );
+        assert_eq!(below.exec_run_calls, 1, "re-enters the loop via exec_run");
+        let refuse = below
             .driver_events
             .iter()
             .find(|(k, _, _)| k == "push_gate_refuse")
             .expect("refuse event present");
         assert_eq!(refuse.2["cause"].as_str(), Some("integrity-finding"));
-        Ok(())
-    }
 
-    /// FR9 — push-gate integrity terminal: when integrity findings refuse
-    /// the push, the gate also threads the findings into
-    /// `apply_integrity_clarify` so the production controller can stamp
-    /// `loom:clarify` on the molecule's epic with the auto-generated
-    /// `## Options — …` block. The test fixes the spec-named contract
-    /// from `specs/harness.md` FR9 condition 4 — finding present →
-    /// apply_integrity_clarify called with the same findings, no push.
-    #[tokio::test]
-    async fn push_blocked_on_integrity_finding_applies_clarify() -> Result<(), ReviewError> {
-        let findings = vec![unresolved_finding()];
-        let mut c = FakeController {
+        // At the cap: refuse the push and fall back to clarify, no mint.
+        let mut at_cap = FakeController {
             pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![bead("lm-1", &["spec:harness"])],
             integrity_findings: findings.clone(),
+            iter_count: cap.max,
             ..FakeController::default()
         };
-        let result = review_loop(&mut c, IterationCap::default()).await?;
+        let result = review_loop(&mut at_cap, cap).await?;
         assert!(matches!(result, ReviewResult::PushBlocked { .. }));
-        assert_eq!(c.git_push_calls, 0, "integrity finding never pushes");
         assert_eq!(
-            c.apply_integrity_clarify_calls.len(),
-            1,
-            "apply_integrity_clarify called exactly once on the IntegrityFinding branch",
+            at_cap.git_push_calls, 0,
+            "integrity finding must refuse push"
+        );
+        assert!(
+            at_cap.mint_integrity_findings_calls.is_empty(),
+            "cap-exhausted fallback does not mint a recovery batch",
         );
         assert_eq!(
-            c.apply_integrity_clarify_calls[0], findings,
-            "findings threaded through verdict to controller",
+            at_cap.apply_integrity_clarify_calls,
+            vec![findings],
+            "cap-exhausted fallback escalates to clarify with the same findings",
         );
         Ok(())
     }
@@ -1415,6 +1491,11 @@ mod tests {
                     pre_beads: vec![bead("lm-1", &["spec:harness"])],
                     post_beads: vec![bead("lm-1", &["spec:harness"])],
                     integrity_findings: vec![unresolved_finding()],
+                    // Exhaust the cap so the integrity branch refuses
+                    // (cap-exhausted fallback) rather than recovering — the
+                    // truth table here is about refusal causes, not the
+                    // recovery branch (covered by its own test).
+                    iter_count: IterationCap::default().max,
                     ..FakeController::default()
                 },
             ),

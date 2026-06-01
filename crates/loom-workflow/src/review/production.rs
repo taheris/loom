@@ -38,7 +38,7 @@ use loom_driver::state::StateDb;
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
 use loom_gate::{
     DispatchOptions, DispatchPendingExecutor, FsCommandResolver, IntegrityFinding, TierCwds,
-    annotation, format_clarify_options, integrity,
+    annotation, compose_clarify_options, integrity,
 };
 use loom_templates::previous_failure::PreviousFailure;
 use loom_templates::review::{ReviewContext, ReviewLane, TreeScopeEpic};
@@ -671,7 +671,7 @@ where
             );
             return Ok(());
         };
-        let notes = format_clarify_options(findings);
+        let notes = compose_clarify_options(findings);
         self.bd
             .update(
                 &epic.id,
@@ -683,6 +683,31 @@ where
                 },
             )
             .await?;
+        Ok(())
+    }
+
+    async fn mint_integrity_findings(
+        &mut self,
+        findings: &[IntegrityFinding],
+    ) -> Result<(), ReviewError> {
+        if findings.is_empty() {
+            return Ok(());
+        }
+        let git = GitClient::open(&self.workspace)
+            .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
+        let head = git
+            .head_commit_sha()
+            .await
+            .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
+        let summary = crate::mint::mint_integrity_recovery(&self.bd, findings, head.as_str()).await;
+        if summary.refused > 0 || summary.errors > 0 {
+            warn!(
+                label = %self.label,
+                refused = summary.refused,
+                errors = summary.errors,
+                "integrity-recovery mint reported refused/errored batches",
+            );
+        }
         Ok(())
     }
 

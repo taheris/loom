@@ -34,6 +34,9 @@ use displaydoc::Display;
 use thiserror::Error;
 use walkdir::WalkDir;
 
+use loom_events::identifier::SpecLabel;
+use loom_protocol::gate::{ConcernToken, Finding, FindingTarget};
+
 use crate::annotation::{Annotation, Tier};
 use crate::dispatch::{DispatchOptions, TierCwds, run_with_runners};
 use crate::runner::RunnerSpec;
@@ -111,6 +114,43 @@ impl IntegrityFinding {
                 | Self::StubTestFunction { .. }
                 | Self::UnneededPendingMarker { .. }
         )
+    }
+
+    /// Normalize a push-gate-terminal finding into the typed
+    /// [`Finding`] the mint pipeline consumes, per `specs/gate.md`
+    /// § *Concern tokens and target variants* (integrity-gate rows). The
+    /// token follows that table (`unresolved-annotation` / `stub-pointing`
+    /// / `unneeded-pending-marker`); the target is always
+    /// [`FindingTarget::Annotation`]; `bonds` carries the lead spec label
+    /// derived from the finding's spec-file stem; `evidence` is the
+    /// finding's own [`std::fmt::Display`]. Non-terminal variants
+    /// ([`Self::is_push_gate_terminal`] false) and findings whose spec
+    /// path has no file stem return `None`.
+    #[must_use]
+    pub fn to_finding(&self) -> Option<Finding> {
+        let (token, spec, target) = match self {
+            Self::UnresolvedAnnotation { spec, target, .. } => {
+                (ConcernToken::UnresolvedAnnotation, spec, target)
+            }
+            Self::StubTestFunction { spec, target, .. } => {
+                (ConcernToken::StubPointing, spec, target)
+            }
+            Self::UnneededPendingMarker { spec, target, .. } => {
+                (ConcernToken::UnneededPendingMarker, spec, target)
+            }
+            Self::UnresolvedCargoTestName { .. } | Self::MultipleAnnotations { .. } => {
+                return None;
+            }
+        };
+        let label = spec.file_stem().and_then(|s| s.to_str())?;
+        Some(Finding {
+            token,
+            bonds: vec![SpecLabel::new(label)],
+            target: FindingTarget::Annotation {
+                target_string: target.clone(),
+            },
+            evidence: self.to_string(),
+        })
     }
 }
 
@@ -838,107 +878,97 @@ fn find_proptest_bodies(bytes: &[u8]) -> Vec<Range<usize>> {
     out
 }
 
-/// Render the push-gate `loom:clarify` notes block for a set of
-/// integrity findings, per `specs/gate.md` § Options Format
-/// Contract. Each terminal finding ([`IntegrityFinding::is_push_gate_terminal`])
-/// produces one `## Options — …` section with three `### Option N —
-/// <title>` resolutions. Non-terminal variants are skipped silently —
-/// they belong to other channels (atomic-acceptance flags, etc.). The
-/// concatenated string is what `bd update <epic> --notes` consumes, and
-/// what `loom msg` parses to populate the option-reply menu.
-pub fn format_clarify_options(findings: &[IntegrityFinding]) -> String {
+/// Compose the cap-exhausted `loom:clarify` notes block for a
+/// molecule's integrity findings, per `specs/gate.md` § *Integrity gate*
+/// (Cap-exhausted fallback). Emits **one** composed `## Options — …`
+/// block: one `### Option N` per integrity finding kind present, in the
+/// spec's kind order (`UnresolvedAnnotation`, `StubTestFunction`,
+/// `UnneededPendingMarker`), each drawn from that kind's primary
+/// (Option 1) auto-option template and scoped to the affected
+/// `spec:line` locations; the block closes with one final `### Option N`
+/// for *"Mixed resolution via `msg -c` chat"*. Non-terminal variants are
+/// skipped. Returns an empty string when no terminal finding is present.
+///
+/// One block per clarify bead preserves the *Options Format Contract*
+/// invariant while keeping each present kind's resolution path visible.
+/// The string is what `bd update <epic> --notes` consumes and what
+/// `loom msg` parses to populate the option-reply menu.
+#[must_use]
+pub fn compose_clarify_options(findings: &[IntegrityFinding]) -> String {
     use std::fmt::Write;
 
-    let mut out = String::new();
+    let mut unresolved: Vec<String> = Vec::new();
+    let mut stub: Vec<String> = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
     for finding in findings.iter().filter(|f| f.is_push_gate_terminal()) {
-        if !out.is_empty() {
-            out.push('\n');
-        }
         match finding {
             IntegrityFinding::UnresolvedAnnotation {
-                spec,
-                line,
-                tier,
-                target,
-            } => {
-                let _ = write!(
-                    out,
-                    "## Options — Unresolved [{tier}]({target}) at {spec}:{line}\n\n\
-                     ### Option 1 — Implement the verifier at the expected path\n\
-                     Add the missing {tier} verifier so `{target}` resolves. \
-                     Pick this when the criterion is correct and the verifier \
-                     has not been written yet.\n\n\
-                     ### Option 2 — Retarget to an existing verifier\n\
-                     Replace `{target}` with the name of an existing verifier \
-                     that exercises the same claim. Pick this when the \
-                     criterion is correct but the annotation points at the \
-                     wrong (or renamed) verifier.\n\n\
-                     ### Option 3 — Remove the criterion at {spec}:{line}\n\
-                     Delete or rewrite the criterion so it no longer requires \
-                     this verifier. Pick this when the criterion is \
-                     superseded or out of scope.\n",
-                    tier = tier,
-                    target = target,
-                    spec = spec.display(),
-                    line = line,
-                );
-            }
+                spec, line, target, ..
+            } => unresolved.push(format!("{}:{line} (`{target}`)", spec.display())),
             IntegrityFinding::StubTestFunction {
                 spec,
                 line,
-                tier: _,
-                target,
                 test_name,
-            } => {
-                let _ = write!(
-                    out,
-                    "## Options — Stub verifier `{test_name}` at {spec}:{line}\n\n\
-                     ### Option 1 — Implement the test body\n\
-                     Replace the `_pending_stub` sigil in `{test_name}` with a \
-                     real assertion that exercises the criterion. Pick this \
-                     when the criterion is correct and the test is owed.\n\n\
-                     ### Option 2 — Retarget to a non-stub verifier\n\
-                     Replace `{target}` with a verifier that already \
-                     exercises the claim. Pick this when another verifier \
-                     supersedes the stub.\n\n\
-                     ### Option 3 — Remove the criterion at {spec}:{line}\n\
-                     Delete or rewrite the criterion so it no longer points \
-                     at a stub. Pick this when the work behind the criterion \
-                     is no longer planned.\n",
-                    test_name = test_name,
-                    target = target,
-                    spec = spec.display(),
-                    line = line,
-                );
-            }
+                ..
+            } => stub.push(format!("{}:{line} (`{test_name}`)", spec.display())),
             IntegrityFinding::UnneededPendingMarker {
-                spec,
-                line,
-                tier,
-                target,
-            } => {
-                let _ = write!(
-                    out,
-                    "## Options — Stale `?` on [{tier}?]({target}) at {spec}:{line}\n\n\
-                     ### Option 1 — Drop the `?` from the annotation\n\
-                     Change `[{tier}?]({target})` to `[{tier}]({target})` at \
-                     {spec}:{line}. The implementation has caught up to the \
-                     claim; this is the expected resolution and almost always \
-                     the right one.\n\n\
-                     ### Option 2 — Retarget to the intended verifier\n\
-                     If the resolution is incidental (the target name collides \
-                     with an unrelated symbol now visible in the workspace), \
-                     replace `{target}` with the actual intended verifier and \
-                     keep `?` until that one resolves.\n",
-                    tier = tier,
-                    target = target,
-                    spec = spec.display(),
-                    line = line,
-                );
-            }
+                spec, line, target, ..
+            } => pending.push(format!("{}:{line} (`{target}`)", spec.display())),
             _ => {}
         }
     }
+
+    let total = unresolved.len() + stub.len() + pending.len();
+    if total == 0 {
+        return String::new();
+    }
+
+    let mut out = format!(
+        "## Options — Integrity gate refused the push after the iteration cap \
+         ({total} finding(s))\n\n",
+    );
+    let mut n = 1u32;
+    if !unresolved.is_empty() {
+        let _ = write!(
+            out,
+            "### Option {n} — Implement the missing verifier(s)\n\
+             Add the verifier so each target resolves, at: {}. Pick this when \
+             the criteria are correct and the verifiers have not been written \
+             yet.\n\n",
+            unresolved.join(", "),
+        );
+        n += 1;
+    }
+    if !stub.is_empty() {
+        let _ = write!(
+            out,
+            "### Option {n} — Implement the stub test body(ies)\n\
+             Replace the `_pending_stub` sigil with a real assertion that \
+             exercises the criterion, at: {}. Pick this when the criteria are \
+             correct and the tests are owed.\n\n",
+            stub.join(", "),
+        );
+        n += 1;
+    }
+    if !pending.is_empty() {
+        let _ = write!(
+            out,
+            "### Option {n} — Drop the `?` marker(s)\n\
+             The implementation has caught up to the claim; change \
+             `[tier?](target)` to `[tier](target)` at: {}. This is the \
+             expected resolution and almost always the right one.\n\n",
+            pending.join(", "),
+        );
+        n += 1;
+    }
+    let _ = write!(
+        out,
+        "### Option {n} — Mixed resolution via `msg -c` chat\n\
+         Reply with `loom msg -c` when the findings need different \
+         resolutions across kinds, or you want options beyond each kind's \
+         primary (retarget, mark the annotation pending with `?`, or remove \
+         the criterion).\n",
+    );
     out
 }
 
@@ -2526,117 +2556,183 @@ fn delta_helper() {
     }
 
     #[test]
-    fn format_clarify_options_renders_two_options_for_unneeded_pending_marker() {
-        let f = IntegrityFinding::UnneededPendingMarker {
+    fn compose_clarify_options_emits_one_block_per_present_kind_plus_mixed() {
+        let findings = vec![
+            IntegrityFinding::UnresolvedAnnotation {
+                spec: PathBuf::from("specs/harness.md"),
+                line: 42,
+                tier: Tier::Check,
+                target: "loom-walk surface".into(),
+            },
+            IntegrityFinding::StubTestFunction {
+                spec: PathBuf::from("specs/gate.md"),
+                line: 100,
+                tier: Tier::Test,
+                target: "crate::a::stub_me".into(),
+                test_name: "stub_me".into(),
+            },
+            IntegrityFinding::UnneededPendingMarker {
+                spec: PathBuf::from("specs/templates.md"),
+                line: 88,
+                tier: Tier::Test,
+                target: "crate::a::landed".into(),
+            },
+        ];
+        let out = compose_clarify_options(&findings);
+
+        // One composed block: exactly one `## Options — …` heading.
+        assert_eq!(
+            out.matches("## Options — ").count(),
+            1,
+            "one composed block per clarify bead: {out}"
+        );
+        assert!(out.starts_with("## Options — "), "options heading: {out}");
+
+        // One primary per present kind, then the mixed escape hatch, in
+        // sequential N order matching the spec's kind ordering.
+        assert!(out.contains("### Option 1 — Implement"), "kind 1: {out}");
+        assert!(
+            out.contains("### Option 2 — Implement the stub"),
+            "kind 2: {out}"
+        );
+        assert!(out.contains("### Option 3 — Drop the `?`"), "kind 3: {out}");
+        assert!(
+            out.contains("### Option 4 — Mixed resolution via `msg -c` chat"),
+            "mixed escape hatch closes the block: {out}"
+        );
+
+        // Each option is scoped to the affected location(s).
+        assert!(out.contains("specs/harness.md:42"), "unresolved loc: {out}");
+        assert!(out.contains("specs/gate.md:100"), "stub loc: {out}");
+        assert!(out.contains("specs/templates.md:88"), "pending loc: {out}");
+
+        assert!(
+            loom_protocol::gate::options::has_well_formed_block(&out),
+            "composed block satisfies the Options Format Contract: {out}"
+        );
+    }
+
+    #[test]
+    fn compose_clarify_options_numbers_only_present_kinds() {
+        let findings = vec![IntegrityFinding::UnneededPendingMarker {
             spec: PathBuf::from("specs/harness.md"),
             line: 88,
             tier: Tier::Test,
             target: "crate::a::landed".into(),
-        };
-        let out = format_clarify_options(&[f]);
-        assert!(out.starts_with("## Options — "), "options heading: {out}");
+        }];
+        let out = compose_clarify_options(&findings);
+        // Only the pending kind is present, so its primary is Option 1 and
+        // the mixed escape hatch is Option 2 — no gaps for absent kinds.
+        assert!(
+            out.contains("### Option 1 — Drop the `?`"),
+            "pending primary: {out}"
+        );
+        assert!(
+            out.contains("### Option 2 — Mixed resolution via `msg -c` chat"),
+            "mixed is option 2: {out}"
+        );
+        assert!(
+            !out.contains("### Option 3"),
+            "no gap for absent kinds: {out}"
+        );
         assert!(out.contains("specs/harness.md:88"), "spec:line: {out}");
-        assert!(
-            out.contains("[test?](crate::a::landed)"),
-            "stale annotation form: {out}"
-        );
-        assert!(
-            out.contains("[test](crate::a::landed)"),
-            "post-fix annotation form: {out}"
-        );
-        assert!(out.contains("### Option 1 —"), "option 1: {out}");
-        assert!(out.contains("### Option 2 —"), "option 2: {out}");
-        assert!(out.contains("Drop the `?`"), "drop language: {out}");
     }
 
     #[test]
-    fn format_clarify_options_renders_three_options_for_unresolved_annotation() {
-        let f = IntegrityFinding::UnresolvedAnnotation {
-            spec: PathBuf::from("specs/harness.md"),
-            line: 42,
-            tier: Tier::Check,
-            target: "loom-walk surface".into(),
-        };
-        let out = format_clarify_options(&[f]);
-        assert!(
-            out.starts_with("## Options — "),
-            "must start with Options heading: {out}"
-        );
-        assert!(
-            out.contains("specs/harness.md:42"),
-            "must cite spec:line: {out}"
-        );
-        assert!(
-            out.contains("[check](loom-walk surface)"),
-            "tier+target: {out}"
-        );
-        assert!(out.contains("### Option 1 —"), "option 1: {out}");
-        assert!(out.contains("### Option 2 —"), "option 2: {out}");
-        assert!(out.contains("### Option 3 —"), "option 3: {out}");
-        assert!(out.contains("Implement"), "implement language: {out}");
-        assert!(out.contains("Retarget"), "retarget language: {out}");
-        assert!(
-            out.contains("Remove the criterion"),
-            "remove language: {out}"
-        );
-    }
-
-    #[test]
-    fn format_clarify_options_renders_three_options_for_stub_test_function() {
-        let f = IntegrityFinding::StubTestFunction {
-            spec: PathBuf::from("specs/harness.md"),
-            line: 100,
-            tier: Tier::Test,
-            target: "crate::a::stub_me".into(),
-            test_name: "stub_me".into(),
-        };
-        let out = format_clarify_options(&[f]);
-        assert!(out.starts_with("## Options — "), "summary heading: {out}");
-        assert!(out.contains("stub_me"), "test name: {out}");
-        assert!(out.contains("specs/harness.md:100"), "spec:line: {out}");
-        assert!(out.contains("### Option 1 —"), "option 1: {out}");
-        assert!(out.contains("### Option 2 —"), "option 2: {out}");
-        assert!(out.contains("### Option 3 —"), "option 3: {out}");
-        assert!(out.contains("test body"), "implement test body: {out}");
-    }
-
-    #[test]
-    fn format_clarify_options_concatenates_blocks_for_multiple_findings() {
-        let a = IntegrityFinding::UnresolvedAnnotation {
-            spec: PathBuf::from("specs/a.md"),
-            line: 1,
-            tier: Tier::Check,
-            target: "missing_a".into(),
-        };
-        let b = IntegrityFinding::StubTestFunction {
-            spec: PathBuf::from("specs/b.md"),
-            line: 2,
-            tier: Tier::Test,
-            target: "crate::b::s".into(),
-            test_name: "s".into(),
-        };
-        let out = format_clarify_options(&[a, b]);
-        let heading_count = out.matches("## Options — ").count();
-        assert_eq!(heading_count, 2, "one block per finding: {out}");
-        assert!(out.contains("missing_a"), "first finding present: {out}");
-        assert!(
-            out.contains("specs/b.md:2"),
-            "second finding present: {out}"
-        );
-    }
-
-    #[test]
-    fn format_clarify_options_skips_non_terminal_findings() {
+    fn compose_clarify_options_skips_non_terminal_findings() {
         let f = IntegrityFinding::MultipleAnnotations {
             spec: PathBuf::from("specs/a.md"),
             line: 1,
             count: 2,
         };
-        let out = format_clarify_options(&[f]);
+        let out = compose_clarify_options(&[f]);
         assert!(
             out.is_empty(),
             "non-terminal variants produce no options block: {out:?}"
         );
+    }
+
+    #[test]
+    fn to_finding_maps_terminal_variants_to_typed_findings() {
+        let cases = [
+            (
+                IntegrityFinding::UnresolvedAnnotation {
+                    spec: PathBuf::from("specs/harness.md"),
+                    line: 42,
+                    tier: Tier::Check,
+                    target: "missing-runner".into(),
+                },
+                ConcernToken::UnresolvedAnnotation,
+            ),
+            (
+                IntegrityFinding::StubTestFunction {
+                    spec: PathBuf::from("specs/gate.md"),
+                    line: 100,
+                    tier: Tier::Test,
+                    target: "crate::a::stub_me".into(),
+                    test_name: "stub_me".into(),
+                },
+                ConcernToken::StubPointing,
+            ),
+            (
+                IntegrityFinding::UnneededPendingMarker {
+                    spec: PathBuf::from("specs/templates.md"),
+                    line: 88,
+                    tier: Tier::Test,
+                    target: "crate::a::landed".into(),
+                },
+                ConcernToken::UnneededPendingMarker,
+            ),
+        ];
+        for (finding, expected_token) in cases {
+            let mapped = finding.to_finding().expect("terminal finding maps");
+            assert_eq!(mapped.token, expected_token, "token for {finding:?}");
+            assert!(
+                matches!(mapped.target, FindingTarget::Annotation { .. }),
+                "target is Annotation for {finding:?}",
+            );
+            assert_eq!(mapped.bonds.len(), 1, "single lead-spec bond: {finding:?}");
+            assert_eq!(
+                mapped.evidence,
+                finding.to_string(),
+                "evidence is the finding's Display: {finding:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn to_finding_derives_lead_spec_from_path_stem() {
+        let f = IntegrityFinding::UnresolvedAnnotation {
+            spec: PathBuf::from("specs/templates.md"),
+            line: 1,
+            tier: Tier::Check,
+            target: "x".into(),
+        };
+        let mapped = f.to_finding().expect("terminal finding maps");
+        assert_eq!(mapped.bonds[0].as_str(), "templates");
+        assert_eq!(
+            mapped.target,
+            FindingTarget::Annotation {
+                target_string: "x".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn to_finding_returns_none_for_non_terminal_variants() {
+        let multi = IntegrityFinding::MultipleAnnotations {
+            spec: PathBuf::from("specs/a.md"),
+            line: 1,
+            count: 2,
+        };
+        assert!(multi.to_finding().is_none(), "non-terminal maps to None");
+        let cargo = IntegrityFinding::UnresolvedCargoTestName {
+            spec: PathBuf::from("specs/a.md"),
+            line: 1,
+            target: "cargo test --lib x".into(),
+            test_name: "x".into(),
+        };
+        assert!(cargo.to_finding().is_none(), "non-terminal maps to None");
     }
 
     #[test]

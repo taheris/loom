@@ -44,6 +44,7 @@ use std::collections::{HashMap, HashSet};
 
 use loom_driver::bd::{BdClient, CommandRunner, CreateOpts, ListOpts};
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_gate::IntegrityFinding;
 use loom_protocol::gate::options::has_well_formed_block;
 
 use crate::gate_clarify::CLARIFY_WITHOUT_OPTIONS_CAUSE;
@@ -336,6 +337,25 @@ pub async fn mint_findings<R: CommandRunner>(
     head_commit: &str,
 ) -> MintSummary {
     mint_findings_with_options(bd, findings, head_commit, &MintOptions::default()).await
+}
+
+/// Dispatch a molecule's push-gate-terminal integrity findings through
+/// the standard mint pipeline, per `specs/gate.md` § *Integrity gate*
+/// (recovery branch). Each finding is normalized into a typed [`Finding`]
+/// via [`IntegrityFinding::to_finding`] (non-terminal variants drop out)
+/// and the batch is minted against `head_commit`. The review push-gate
+/// reaches mint only through this seam so the `mint_findings_with_options`
+/// call stays inside the mint module.
+pub async fn mint_integrity_recovery<R: CommandRunner>(
+    bd: &BdClient<R>,
+    findings: &[IntegrityFinding],
+    head_commit: &str,
+) -> MintSummary {
+    let typed: Vec<Finding> = findings
+        .iter()
+        .filter_map(IntegrityFinding::to_finding)
+        .collect();
+    mint_findings_with_options(bd, &typed, head_commit, &MintOptions::default()).await
 }
 
 /// Walk a sequence of findings through the per-batch mint pipeline.

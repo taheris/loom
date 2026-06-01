@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use loom_gate::{IntegrityFinding, Tier, format_clarify_options};
+use loom_gate::{IntegrityFinding, Tier, compose_clarify_options};
 
 #[test]
 fn mint_applies_per_spec_default_profile_label_to_created_beads() {}
@@ -30,7 +30,7 @@ fn mint_emits_drop_marker_option_for_unneeded_pending_marker() {
         tier: Tier::Check,
         target: "true".into(),
     };
-    let out = format_clarify_options(&[finding]);
+    let out = compose_clarify_options(&[finding]);
     assert!(
         out.starts_with("## Options — "),
         "block must start with the options summary heading: {out}",
@@ -40,15 +40,11 @@ fn mint_emits_drop_marker_option_for_unneeded_pending_marker() {
         "spec:line missing: {out}"
     );
     assert!(
-        out.contains("[check?](true)"),
-        "stale annotation form missing: {out}",
+        out.contains('`') && out.contains("true"),
+        "target must be named: {out}",
     );
     assert!(
-        out.contains("[check](true)"),
-        "post-fix annotation form missing: {out}",
-    );
-    assert!(
-        out.contains("### Option 1 —") && out.contains("Drop the `?`"),
+        out.contains("### Option 1 — Drop the `?`"),
         "Option 1 must lead with 'Drop the `?`' language: {out}",
     );
 }

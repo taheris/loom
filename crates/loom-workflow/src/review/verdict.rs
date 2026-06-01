@@ -81,6 +81,19 @@ pub enum ReviewVerdict {
         next_iteration: u32,
     },
 
+    /// Integrity-gate findings present, iteration cap not yet exhausted →
+    /// normalize each finding into a typed `Finding`, dispatch the batch
+    /// through the standard mint pipeline, refuse the push for this
+    /// iteration, increment the counter, and re-enter the loop so the
+    /// worker can address the fix-up batch. Per `specs/gate.md` §
+    /// *Integrity gate* (recovery branch). The cap-exhausted fallback
+    /// routes to [`Self::PushBlocked`] with cause
+    /// [`PushGateRefuseCause::IntegrityFinding`] instead.
+    IntegrityRecover {
+        findings: Vec<IntegrityFinding>,
+        next_iteration: u32,
+    },
+
     /// New fix-up beads, no blocked/clarify, iteration cap exhausted →
     /// escalate the newest fix-up bead to `loom:clarify` and stop.
     IterationCap {
