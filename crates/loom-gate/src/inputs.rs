@@ -162,8 +162,27 @@ impl InputResolver {
     fn collect_declared(&mut self, annotation: &Annotation) -> Vec<PathBuf> {
         match annotation.tier {
             Tier::Test => self.declared_for_test(annotation),
-            Tier::Check | Tier::System | Tier::Judge => self.declared_for_command(annotation),
+            Tier::Judge => self.declared_for_judge(annotation),
+            Tier::Check | Tier::System => self.declared_for_command(annotation),
         }
+    }
+
+    /// `[judge]` targets are a single spec-relative script path carrying a
+    /// `#fn`/`::fn` selector (e.g. `../tests/judges/loom.sh#judge_x`), not
+    /// a shell command. The selector and `..` prefix make a raw repo-root
+    /// join miss on disk, so resolution mirrors the integrity gate: strip
+    /// the selector, resolve against the spec file's own directory, then
+    /// read the script's `# loom-inputs:` header (Source 2). No
+    /// `--print-inputs` / heuristic fallback — a judge script with no
+    /// header declares nothing, which the standing sweep surfaces.
+    fn declared_for_judge(&mut self, annotation: &Annotation) -> Vec<PathBuf> {
+        crate::integrity::resolve_judge_script_path(
+            &annotation.target,
+            &annotation.source_spec,
+            &self.repo_root,
+        )
+        .and_then(|script| read_script_header(&script))
+        .unwrap_or_default()
     }
 
     fn declared_for_test(&mut self, annotation: &Annotation) -> Vec<PathBuf> {
@@ -638,6 +657,93 @@ mod tests {
         assert!(
             got.paths
                 .contains(&PathBuf::from("crates/mycrate/src/x.rs"))
+        );
+    }
+
+    #[test]
+    fn judge_tier_strips_selector_and_reads_header_relative_to_spec_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        // Judge target is spec-relative with a `#fn` selector; the script
+        // lives at <repo>/tests/judges/loom.sh while the spec is under
+        // <repo>/specs, so the `../` must resolve against the spec dir.
+        let script_dir = dir.path().join("tests/judges");
+        fs::create_dir_all(&script_dir).unwrap();
+        fs::write(
+            script_dir.join("loom.sh"),
+            "#!/usr/bin/env bash\n# loom-inputs: crates/loom-llm/src/**, specs/harness.md\njudge_x() { :; }\n",
+        )
+        .unwrap();
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf());
+        let a = ann(
+            Tier::Judge,
+            "../tests/judges/loom.sh#judge_x",
+            "specs/harness.md",
+        );
+        let got = resolver.resolve(&a);
+        assert!(
+            got.paths.contains(&PathBuf::from("crates/loom-llm/src/**")),
+            "judge header glob resolved: {:?}",
+            got.paths,
+        );
+        assert!(
+            got.paths.contains(&PathBuf::from("specs/harness.md")),
+            "judge header + spec auto-include: {:?}",
+            got.paths,
+        );
+        assert!(
+            !resolver.declares_no_inputs(&a),
+            "a judge script with a header declares inputs",
+        );
+    }
+
+    #[test]
+    fn judge_tier_accepts_legacy_colon_selector() {
+        let dir = tempfile::tempdir().unwrap();
+        let script_dir = dir.path().join("tests/judges");
+        fs::create_dir_all(&script_dir).unwrap();
+        fs::write(
+            script_dir.join("loom.sh"),
+            "#!/usr/bin/env bash\n# loom-inputs: crates/loom-gate/src/lib.rs\n",
+        )
+        .unwrap();
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf());
+        let a = ann(
+            Tier::Judge,
+            "../tests/judges/loom.sh::judge_x",
+            "specs/gate.md",
+        );
+        let got = resolver.resolve(&a);
+        assert!(
+            got.paths
+                .contains(&PathBuf::from("crates/loom-gate/src/lib.rs")),
+            "legacy `::fn` selector resolves the same script: {:?}",
+            got.paths,
+        );
+    }
+
+    #[test]
+    fn judge_tier_without_header_declares_no_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let script_dir = dir.path().join("tests/judges");
+        fs::create_dir_all(&script_dir).unwrap();
+        // Script exists and resolves, but carries no `# loom-inputs:` line.
+        fs::write(
+            script_dir.join("loom.sh"),
+            "#!/usr/bin/env bash\njudge_x() { :; }\n",
+        )
+        .unwrap();
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf());
+        let a = ann(
+            Tier::Judge,
+            "../tests/judges/loom.sh#judge_x",
+            "specs/harness.md",
+        );
+        assert!(
+            resolver.declares_no_inputs(&a),
+            "judge script with no header relies on the spec auto-include alone",
         );
     }
 

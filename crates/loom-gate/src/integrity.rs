@@ -1266,13 +1266,28 @@ fn extract_cargo_test_name(command: &str) -> Option<&str> {
 /// when present, falling back to `repo_root` only when the spec has no
 /// parent component.
 fn resolves_judge_path(target: &str, source_spec: &Path, repo_root: &Path) -> bool {
+    resolve_judge_script_path(target, source_spec, repo_root).is_some_and(|p| p.exists())
+}
+
+/// Lexically resolve a `[judge]` target to the on-disk script path it
+/// points at — selector stripped, spec-relative path joined against the
+/// spec file's own directory, `..`/`.` collapsed. Returns `None` only
+/// when the target (or its path part) is empty; existence is *not*
+/// checked here so callers can choose between an existence test
+/// (integrity gate) and reading the script body (input resolver, which
+/// reads the `# loom-inputs:` header). The returned path may not exist.
+pub(crate) fn resolve_judge_script_path(
+    target: &str,
+    source_spec: &Path,
+    repo_root: &Path,
+) -> Option<PathBuf> {
     let trimmed = target.trim();
     if trimmed.is_empty() {
-        return false;
+        return None;
     }
     let path_part = strip_judge_selector(trimmed);
     if path_part.is_empty() {
-        return false;
+        return None;
     }
     let p = Path::new(path_part);
     let raw = if p.is_absolute() {
@@ -1280,7 +1295,7 @@ fn resolves_judge_path(target: &str, source_spec: &Path, repo_root: &Path) -> bo
     } else {
         judge_base(source_spec, repo_root).join(p)
     };
-    normalize_path(&raw).exists()
+    Some(normalize_path(&raw))
 }
 
 /// Collapse `..` and `.` lexically. Intermediate components in a

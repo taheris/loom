@@ -4,6 +4,10 @@
 # Each function describes a rubric the judge LLM evaluates against the
 # referenced source files; the spec links to the function via a
 # `[judge](tests/judges/loom.sh::<name>)` annotation in its Success Criteria.
+#
+# One inputs header per script (specs/gate.md § Verifier inputs); the
+# rubrics span crate sources, rendered templates, and harness.md.
+# loom-inputs: crates/*/src/**, crates/loom-templates/templates/**, specs/harness.md
 
 test_git_client_encapsulation() {
   judge_files \
