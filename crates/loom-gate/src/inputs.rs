@@ -23,8 +23,12 @@
 //!    `cargo test -p <crate>` patterns.
 //!
 //! Empty declarations after every source has run signal a misdeclaration
-//! (or a no-op verifier) — [`InputResolver::resolve`] emits a `warn!`
-//! event so the standing safety-net sweep can surface it.
+//! (or a no-op verifier). Per `specs/gate.md` § Verifier inputs these
+//! "empty is a smell" cases are surfaced by the standing-stage safety-net
+//! sweep, not by per-resolution diagnostics: [`InputResolver::resolve`]
+//! is on the scoped `--files`/`--diff` filter hot path, which the
+//! `--tree` standing sweep skips entirely, so warning here would only
+//! fire on the runs where the smell is *not* meant to be reported.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -34,7 +38,6 @@ use std::process::Command;
 use displaydoc::Display;
 use serde::Deserialize;
 use thiserror::Error;
-use tracing::warn;
 
 use crate::annotation::{Annotation, Tier};
 use crate::dispatch::TestScope;
@@ -125,20 +128,14 @@ impl InputResolver {
 
     /// Resolve declared inputs for one annotation. The annotation's
     /// `source_spec` is unconditionally folded into the result (the
-    /// spec-section auto-include rule). When every source produces no
-    /// paths, a `warn!` is emitted identifying the verifier; the
-    /// caller still receives the auto-included spec file so the
-    /// returned set is never *truly* empty in practice.
+    /// spec-section auto-include rule), so the returned set is never
+    /// *truly* empty in practice. Verifiers that declare no inputs of
+    /// their own — relying on the spec-section auto-include alone — are
+    /// the "empty is a smell" case in `specs/gate.md` § Verifier inputs;
+    /// surfacing those is the standing-stage safety-net sweep's job, not
+    /// this scoped-filter hot path's.
     pub fn resolve(&mut self, annotation: &Annotation) -> VerifierInputs {
-        let declared = self.collect_declared(annotation);
-        if declared.is_empty() {
-            warn!(
-                target: "loom_gate::inputs",
-                verifier = %verifier_identifier(annotation),
-                "verifier declared no inputs; declarations rely on the spec-section auto-include only"
-            );
-        }
-        let mut paths: Vec<PathBuf> = declared;
+        let mut paths: Vec<PathBuf> = self.collect_declared(annotation);
         let spec = annotation.source_spec.clone();
         if !paths.iter().any(|p| p == &spec) {
             paths.push(spec);
@@ -385,19 +382,6 @@ fn looks_like_path(tok: &str) -> bool {
         return true;
     }
     tok.contains('.') && tok.len() >= 4
-}
-
-/// Identifier used in the empty-inputs `warn!` message. Includes the
-/// spec file and line so the operator can jump straight to the
-/// misdeclared annotation.
-fn verifier_identifier(annotation: &Annotation) -> String {
-    format!(
-        "[{}]({}) at {}:{}",
-        annotation.tier,
-        annotation.target,
-        annotation.source_spec.display(),
-        annotation.line,
-    )
 }
 
 #[cfg(test)]
