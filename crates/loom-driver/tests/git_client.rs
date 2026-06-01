@@ -747,6 +747,48 @@ async fn bead_clone_origin_unchanged_under_a3() -> Result<()> {
     Ok(())
 }
 
+/// `create_worktree` must set the bead branch's upstream to
+/// `origin/<integration_branch>` so the pre-push hook's
+/// `loom gate verify --diff @{u}..HEAD` (`.pre-commit-config.yaml`)
+/// resolves to the bead's own commits. Without an upstream, `@{u}` fails
+/// ("no upstream configured") and the gate silently degrades to an
+/// unscoped, whole-tree walk.
+#[tokio::test]
+async fn bead_branch_tracks_integration_branch_for_push_scope() -> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("lm-upstream.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+
+    let upstream = rev_parse(&created.path, &format!("{}@{{upstream}}", created.branch))
+        .context("bead branch must have an upstream so @{u} resolves")?;
+    let origin_main = rev_parse(&created.path, "origin/main")
+        .context("bead clone must have an origin/main tracking ref")?;
+    assert_eq!(
+        upstream, origin_main,
+        "bead branch upstream must point at origin/<integration_branch>",
+    );
+
+    // The agent's commit is the only thing in the `@{u}..HEAD` push range —
+    // exactly the scope the pre-push gate verifies.
+    agent_commit(&created.path, "agent-change.txt", "agent work\n", "agent")?;
+    let count = Command::new("git")
+        .arg("-C")
+        .arg(&created.path)
+        .args(["rev-list", "--count", "@{u}..HEAD"])
+        .output()?;
+    assert!(count.status.success(), "rev-list @{{u}}..HEAD must succeed");
+    assert_eq!(
+        String::from_utf8(count.stdout)?.trim(),
+        "1",
+        "@{{u}}..HEAD must scope to the bead's lone commit",
+    );
+
+    client.remove_worktree(&created.path).await?;
+    Ok(())
+}
+
 /// `git -C <repo> rev-parse <rev>` returning the resolved SHA, or `None`
 /// when `<rev>` does not resolve (e.g. a branch absent from this repo).
 fn rev_parse(repo: &Path, rev: &str) -> Option<String> {

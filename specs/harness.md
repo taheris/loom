@@ -200,12 +200,18 @@ can `cd .loom/beads/<id>` to inspect.
 The bead clone's `origin` remote remains pointing at the loom
 workspace path; the worker never invokes it but this preserves
 host-side ahead/behind tracking when the operator `cd`s into the
-bead clone (e.g., starship prompt). The bead container has no path
-mount to the loom workspace and cannot push from inside; manual
-host-side pushes are harmless because the integration step still
-owns rebase + verify + ff. The driver's fetch is against a
-filesystem path (always present through the bead's lifetime), not
-over a network or daemon.
+bead clone (e.g., starship prompt). `create_worktree` sets the bead
+branch's upstream to `origin/<integration-branch>`, so `@{u}`
+resolves to the bead's base: the starship ahead/behind count is
+correct, and the pre-push hook's `loom gate verify --diff @{u}..HEAD`
+scopes to exactly the bead's commits instead of failing with "no
+upstream configured" (which silently degrades the gate to an
+unscoped, whole-tree walk — see gate.md § Scope flags). The bead
+container has no path mount to the loom workspace and cannot push
+from inside; manual host-side pushes are harmless because the
+integration step still owns rebase + verify + ff. The driver's
+fetch is against a filesystem path (always present through the
+bead's lifetime), not over a network or daemon.
 
 After every bead in the molecule has integrated, the
 molecule-completion push gate pushes the integration branch to
@@ -295,7 +301,7 @@ the module; callers see only typed Rust methods.
 | List refs / branches | `gix::Repository::references()` | mature |
 | Read commit graph / HEAD | `gix` | mature |
 | **Create loom workspace** (`loom init`) | `git clone <origin> .loom/integration` (CLI) | one-shot, infrequent; `gix-clone` is unchecked |
-| **Create bead clone** | `git clone --local .loom/integration .loom/beads/<id>` then `git checkout -b loom/<id>` (CLI) | hardlinks loom workspace's `.git/objects`; self-contained `.git/` inside bind mount |
+| **Create bead clone** | `git clone --local .loom/integration .loom/beads/<id>`, `git checkout -b loom/<id>`, then `git branch --set-upstream-to origin/<integration-branch>` (CLI) | hardlinks loom workspace's `.git/objects`; self-contained `.git/` inside bind mount; upstream makes `@{u}..HEAD` resolve for the push-gate hook |
 | **Pre-attempt reset of bead clone** | `git reset --hard HEAD` + `git clean -fdx --exclude=target --exclude=.git --exclude=.wrapix` (CLI) | clean working tree at bead-branch HEAD while preserving `target/`, `.git/`, and `.wrapix/` |
 | **Fetch bead branch from bead workspace** | `git fetch <bead-workspace-path> loom/<id>:loom/<id>` (CLI) | filesystem path as ad-hoc URL; runs in loom workspace inside `index.lock` |
 | **Verify commit signatures** | `git verify-commit <commits>` (CLI) | gates integration on signed-by-wrapix-key; conditional on signing key resolving (see [Commit signing](#commit-signing)) |

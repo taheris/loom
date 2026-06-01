@@ -333,6 +333,21 @@ impl GitClient {
         )
         .await?;
 
+        // Track `origin/<integration_branch>` so the pre-push hook's
+        // `--diff @{u}..HEAD` (`.pre-commit-config.yaml`) resolves to the
+        // bead's commits over its base instead of failing with "no upstream
+        // configured" — which silently degrades the gate to an unscoped,
+        // whole-tree walk. The clone's `origin` is the loom workspace, whose
+        // only branch is the integration branch, so the tracking ref exists.
+        let upstream = format!("origin/{}", self.integration_branch);
+        run_git(
+            &path,
+            self.clock.as_ref(),
+            ["branch", "--set-upstream-to", &upstream, &branch],
+            None,
+        )
+        .await?;
+
         ensure_wrapix_mount_dir(&path)?;
 
         // Resolve against the loom workspace (whose `origin` is GitHub), not
