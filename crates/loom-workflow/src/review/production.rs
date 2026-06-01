@@ -19,7 +19,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use askama::Template;
 use loom_driver::agent::{
@@ -123,6 +123,11 @@ where
     /// [`Self::with_integration_branch`]. Defaults to `main` so tests
     /// that skip the builder still push the conventional branch name.
     integration_branch: String,
+    /// Timeout for the gate's `git push` (whose pre-push hook runs the
+    /// workspace CI stage) — threaded from `[loom] git_hook_timeout_secs`
+    /// via [`Self::with_hook_timeout`]. Defaults to the same 600s the
+    /// `GitClient` uses so tests skipping the builder keep prior behavior.
+    hook_timeout: Duration,
     /// Exit code of the molecule-final `loom gate verify --diff
     /// <base>..HEAD` run, threaded from `loom loop`'s handoff via the
     /// `--verify-exit` flag on `loom gate review`. Defaults to `None`
@@ -175,6 +180,7 @@ where
             envelope_builder: Mutex::new(None),
             style_rules: "docs/style-rules.md".to_string(),
             integration_branch: "main".to_string(),
+            hook_timeout: Duration::from_secs(loom_driver::config::default_git_hook_timeout_secs()),
             verify_exit: None,
             lane: ReviewLane::Both,
             tree_scope_epics: Vec::new(),
@@ -201,6 +207,14 @@ where
     /// tests rely on the `main` default.
     pub fn with_integration_branch(mut self, branch: String) -> Self {
         self.integration_branch = branch;
+        self
+    }
+
+    /// Override the timeout for the gate's `git push`. Production callers
+    /// thread `LoomConfig.loom.git_hook_timeout()`; tests rely on the
+    /// built-in default.
+    pub fn with_hook_timeout(mut self, hook_timeout: Duration) -> Self {
+        self.hook_timeout = hook_timeout;
         self
     }
 
@@ -716,7 +730,8 @@ where
             &self.workspace,
             self.integration_branch.clone(),
         )
-        .map_err(|e| ReviewError::GitPushFailed(e.to_string()))?;
+        .map_err(|e| ReviewError::GitPushFailed(e.to_string()))?
+        .with_hook_timeout(self.hook_timeout);
         client
             .push()
             .await

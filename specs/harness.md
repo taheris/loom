@@ -2273,6 +2273,11 @@ integration_branch = "main"
 # consulted only when `sccache_dir` is set.
 # sccache_dir = "~/.cache/loom-sccache"
 # sccache_container_path = "/sccache"
+# Timeout (seconds) for git operations whose hooks legitimately run for
+# minutes — notably the gate's `git push`, which fires the workspace's
+# pre-push CI stage (nextest + nix build). Surfaces true hangs without
+# aborting legitimate CI. Default 600 (10 minutes).
+# git_hook_timeout_secs = 600
 
 [loop]
 # Molecule-level: bounds `loom loop`'s outer loop on fix-up beads (each

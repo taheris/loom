@@ -34,7 +34,10 @@ pub use beads::BeadsConfig;
 pub use claude::ClaudeConfig;
 pub use error::LoomConfigError;
 pub use logs::LogsConfig;
-pub use loom_section::{LoomTopConfig, default_integration_branch, default_sccache_container_path};
+pub use loom_section::{
+    LoomTopConfig, default_git_hook_timeout_secs, default_integration_branch,
+    default_sccache_container_path,
+};
 pub use loop_config::LoopConfig;
 pub use runner::{Parser, RunnerConfig, RunnerEntry, RunnerTier};
 pub use security::SecurityConfig;
@@ -465,6 +468,27 @@ sccache_dir = "/var/cache/loom-sccache"
             Some(PathBuf::from("/var/cache/loom-sccache")),
         );
         assert_eq!(cfg.loom.sccache_container_path, PathBuf::from("/sccache"));
+        Ok(())
+    }
+
+    /// `[loom] git_hook_timeout_secs` round-trips through the parser and
+    /// surfaces as a typed `Duration` via `git_hook_timeout()`. An absent
+    /// value defaults to 600 seconds.
+    #[test]
+    fn loom_git_hook_timeout_round_trips_and_defaults() -> Result<()> {
+        use std::time::Duration;
+
+        let absent = LoomConfig::from_toml_str("")?;
+        assert_eq!(absent.loom.git_hook_timeout_secs, 600);
+        assert_eq!(absent.loom.git_hook_timeout(), Duration::from_secs(600));
+
+        let src = r#"
+[loom]
+git_hook_timeout_secs = 1200
+"#;
+        let cfg = LoomConfig::from_toml_str(src)?;
+        assert_eq!(cfg.loom.git_hook_timeout_secs, 1200);
+        assert_eq!(cfg.loom.git_hook_timeout(), Duration::from_secs(1200));
         Ok(())
     }
 

@@ -15,11 +15,13 @@ use super::error::GitError;
 use super::oid::GitOid;
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
-/// Timeout for git operations whose hooks can legitimately run for
-/// minutes — pre-push fires the workspace's pre-push CI stage (nextest +
-/// nix build), which on a warm sccache takes a few minutes. The timeout
-/// surfaces true hangs (deadlocked subprocess, runaway network); it must
-/// not abort legitimate CI.
+/// Default timeout for git operations whose hooks can legitimately run
+/// for minutes — pre-push fires the workspace's pre-push CI stage
+/// (nextest + nix build), which on a warm sccache takes a few minutes.
+/// The timeout surfaces true hangs (deadlocked subprocess, runaway
+/// network); it must not abort legitimate CI. Overridable per client via
+/// [`GitClient::with_hook_timeout`], which production threads from
+/// `[loom] git_hook_timeout_secs`.
 const GIT_HOOK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const WORKTREE_BASE: &str = ".loom/beads";
 const BRANCH_PREFIX: &str = "loom";
@@ -57,6 +59,10 @@ pub struct GitClient {
     workdir: PathBuf,
     clock: Arc<dyn Clock>,
     integration_branch: String,
+    /// Timeout for hook-running git operations (currently [`Self::push`]).
+    /// Defaults to [`GIT_HOOK_TIMEOUT`]; production overrides it from
+    /// `[loom] git_hook_timeout_secs` via [`Self::with_hook_timeout`].
+    hook_timeout: Duration,
 }
 
 impl GitClient {
@@ -107,7 +113,17 @@ impl GitClient {
             workdir,
             clock,
             integration_branch,
+            hook_timeout: GIT_HOOK_TIMEOUT,
         })
+    }
+
+    /// Override the timeout used for hook-running git operations
+    /// (currently [`Self::push`]). Production threads
+    /// `[loom] git_hook_timeout_secs` here; absent an override the client
+    /// uses [`GIT_HOOK_TIMEOUT`].
+    pub fn with_hook_timeout(mut self, hook_timeout: Duration) -> Self {
+        self.hook_timeout = hook_timeout;
+        self
     }
 
     /// Name of the integration branch this client targets (the branch
@@ -538,9 +554,10 @@ impl GitClient {
     /// times. Other push failures (auth, pre-push hook, network) are
     /// surfaced as [`GitError::GitCli`] without retry.
     ///
-    /// Uses [`GIT_HOOK_TIMEOUT`] because the remote's pre-push hook (or
-    /// loom's own pre-push hook on the GitHub publish) runs the workspace's
-    /// pre-push CI stage.
+    /// Uses [`Self::hook_timeout`] (configurable via
+    /// `[loom] git_hook_timeout_secs`, default [`GIT_HOOK_TIMEOUT`])
+    /// because the remote's pre-push hook (or loom's own pre-push hook on
+    /// the GitHub publish) runs the workspace's pre-push CI stage.
     pub async fn push(&self) -> Result<(), GitError> {
         let workdir = self.loom_workspace();
         let integration_branch = self.integration_branch.as_str();
@@ -550,7 +567,7 @@ impl GitClient {
             let output = run_git_raw_with_timeout(
                 &workdir,
                 self.clock.as_ref(),
-                GIT_HOOK_TIMEOUT,
+                self.hook_timeout,
                 ["push", "origin", integration_branch],
                 None,
             )

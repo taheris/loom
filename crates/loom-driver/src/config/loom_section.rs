@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -29,6 +30,15 @@ pub struct LoomTopConfig {
     /// only when `sccache_dir` is set; harmless when unset.
     #[serde(default = "default_sccache_container_path")]
     pub sccache_container_path: PathBuf,
+    /// Timeout in seconds for git operations whose hooks can legitimately
+    /// run for minutes — notably `git push`, which fires the workspace's
+    /// pre-push CI stage (nextest + nix build). Surfaces true hangs
+    /// (deadlocked subprocess, runaway network) without aborting
+    /// legitimate CI. Default 600 (10 minutes). Threaded into
+    /// [`GitClient`](crate::git::GitClient) via
+    /// `GitClient::with_hook_timeout` at the push call sites.
+    #[serde(default = "default_git_hook_timeout_secs")]
+    pub git_hook_timeout_secs: u64,
 }
 
 impl Default for LoomTopConfig {
@@ -37,6 +47,7 @@ impl Default for LoomTopConfig {
             integration_branch: default_integration_branch(),
             sccache_dir: None,
             sccache_container_path: default_sccache_container_path(),
+            git_hook_timeout_secs: default_git_hook_timeout_secs(),
         }
     }
 }
@@ -49,7 +60,17 @@ pub fn default_sccache_container_path() -> PathBuf {
     PathBuf::from("/sccache")
 }
 
+pub fn default_git_hook_timeout_secs() -> u64 {
+    600
+}
+
 impl LoomTopConfig {
+    /// [`git_hook_timeout_secs`](Self::git_hook_timeout_secs) as a typed
+    /// [`Duration`], ready to hand to `GitClient::with_hook_timeout`.
+    pub fn git_hook_timeout(&self) -> Duration {
+        Duration::from_secs(self.git_hook_timeout_secs)
+    }
+
     /// Container-side sccache env entries: `SCCACHE_DIR` set to the
     /// configured container path plus `RUSTC_WRAPPER=sccache`. Empty when
     /// [`sccache_dir`](Self::sccache_dir) is `None` so callers can

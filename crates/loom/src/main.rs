@@ -2251,7 +2251,8 @@ fn run_loop_cmd(
     };
     let max_iterations = config.loop_.max_iterations;
     let git =
-        GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?;
+        GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?
+            .with_hook_timeout(config.loom.git_hook_timeout());
     let label_for_mint = label.clone();
     let summary = runtime.block_on(async move {
         let bd = BdClient::new();
@@ -2442,7 +2443,8 @@ async fn run_parallel_loop(
     let git = GitClient::open_with_integration_branch(
         workspace.clone(),
         loom_cfg.integration_branch.clone(),
-    )?;
+    )?
+    .with_hook_timeout(loom_cfg.git_hook_timeout());
     let logs_root = workspace.join(".loom/logs");
     let logs_root_for_merge = logs_root.clone();
     let label_for_closure = label.clone();
@@ -3015,6 +3017,7 @@ fn run_review(
     let logs_root_for_spawn = logs_root.clone();
     let style_rules_for_review = config.style_rules.clone();
     let integration_branch_for_review = config.loom.integration_branch.clone();
+    let hook_timeout_for_review = config.loom.git_hook_timeout();
     let tree_scope_epics = opts
         .tree_scope_epics
         .iter()
@@ -3064,6 +3067,7 @@ fn run_review(
         .with_phase_log(logs_root, phase_when)
         .with_style_rules(style_rules_for_review)
         .with_integration_branch(integration_branch_for_review)
+        .with_hook_timeout(hook_timeout_for_review)
         .with_verify_exit(opts.verify_exit)
         .with_lane(opts.lane)
         .with_tree_scope_epics(tree_scope_epics);
