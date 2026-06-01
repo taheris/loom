@@ -20,7 +20,9 @@ use tracing::{info, warn};
 
 use loom_driver::bd::{BdClient, BdError, CommandRunner, ListOpts, UpdateOpts};
 use loom_driver::config::LoomConfig;
-use loom_driver::git::{clone_loom_workspace, read_origin_url};
+use loom_driver::git::{
+    clone_loom_workspace, enable_rerere, read_origin_url, resolve_signing_key, write_signing_config,
+};
 use loom_driver::identifier::{BeadId, MoleculeId};
 use loom_driver::lock::LockManager;
 use loom_driver::state::{ActiveMolecule, RebuildReport, StateDb};
@@ -78,6 +80,21 @@ pub fn run(
     opts: InitOpts,
     molecules: &[ActiveMolecule],
 ) -> Result<InitReport, InitError> {
+    run_with_resolver(workspace, opts, molecules, resolve_signing_key)
+}
+
+/// `loom init` with an injectable signing-key resolver. Production calls
+/// [`run`], which threads [`resolve_signing_key`] (the env + deploy-key
+/// resolver). The seam exists so tests can materialize the loom workspace
+/// with a fabricated signing key without mutating the process environment
+/// (`std::env::set_var` is unsafe under edition 2024 and the workspace
+/// forbids `unsafe_code`).
+fn run_with_resolver(
+    workspace: &Path,
+    opts: InitOpts,
+    molecules: &[ActiveMolecule],
+    resolve: impl Fn(&Path) -> Result<Option<PathBuf>, loom_driver::git::GitError>,
+) -> Result<InitReport, InitError> {
     let lock_mgr = LockManager::new(workspace)?;
     let _guard = lock_mgr.acquire_workspace()?;
 
@@ -114,7 +131,8 @@ pub fn run(
         None
     };
 
-    let integration_workspace = materialize_integration_workspace(workspace, &config_path)?;
+    let integration_workspace =
+        materialize_integration_workspace(workspace, &config_path, &resolve)?;
 
     Ok(InitReport {
         config_path,
@@ -139,6 +157,7 @@ pub fn run(
 fn materialize_integration_workspace(
     workspace: &Path,
     config_path: &Path,
+    resolve: &impl Fn(&Path) -> Result<Option<PathBuf>, loom_driver::git::GitError>,
 ) -> Result<Option<MaterializedIntegration>, InitError> {
     let dest = workspace.join(".loom/integration");
     if dest.exists() {
@@ -152,6 +171,16 @@ fn materialize_integration_workspace(
     };
     let config = LoomConfig::load(config_path)?;
     clone_loom_workspace(&origin_url, &dest, &config.loom.integration_branch)?;
+
+    // Enable rerere unconditionally so the driver-side rebase replays
+    // recorded conflict resolutions; write the signing block when the
+    // wrapix signing key resolves (otherwise the operator's global
+    // gitconfig governs). Both target the loom workspace itself.
+    enable_rerere(&dest)?;
+    if let Some(key) = resolve(&dest)? {
+        write_signing_config(&dest, &key)?;
+    }
+
     Ok(Some(MaterializedIntegration {
         path: dest,
         created: true,
@@ -549,6 +578,125 @@ mod tests {
         assert!(
             !dir.path().join(".loom/integration").exists(),
             "integration directory must NOT be created without an origin",
+        );
+        Ok(())
+    }
+
+    fn gen_ssh_key(dir: &Path) -> PathBuf {
+        let key = dir.join("signing-key");
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-t", "ed25519", "-N", "", "-q", "-C", "", "-f"])
+            .arg(&key)
+            .status()
+            .expect("spawn ssh-keygen");
+        assert!(status.success(), "ssh-keygen must succeed");
+        key
+    }
+
+    /// Spec contract `[test]` annotation (`specs/harness.md` § Success
+    /// Criteria · Commit signing): `loom init` writes the signing block
+    /// (`gpg.format=ssh`, `user.signingkey`, `commit.gpgsign=true`,
+    /// `gpg.ssh.allowedSignersFile`) into the loom workspace's local
+    /// `.git/config` when a signing key resolves. Driven through the
+    /// injectable resolver seam because `$WRAPIX_SIGNING_KEY` cannot be set
+    /// under edition 2024's unsafe `env::set_var`.
+    #[test]
+    fn loom_init_writes_signing_gitconfig() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let workspace = tmp.path().join("loom-init-signing-ws");
+        loom_driver::git::init_test_repo(&workspace)?;
+        let key = gen_ssh_key(tmp.path());
+
+        let report = run_with_resolver(&workspace, InitOpts::default(), &[], |_dir| {
+            Ok(Some(key.clone()))
+        })?;
+        let integ = report
+            .integration_workspace
+            .ok_or_else(|| anyhow!("integration workspace must be materialized"))?;
+
+        let config = std::fs::read_to_string(integ.path.join(".git/config"))?;
+        assert!(config.contains("format = ssh"), "gpg.format: {config}");
+        assert!(
+            config.contains(&format!("signingkey = {}", key.display())),
+            "user.signingkey: {config}",
+        );
+        assert!(
+            config.contains("gpgsign = true"),
+            "commit.gpgsign: {config}"
+        );
+        let signers = integ.path.join(".git/loom-allowed-signers");
+        assert!(
+            config.contains(&format!("allowedSignersFile = {}", signers.display())),
+            "gpg.ssh.allowedSignersFile: {config}",
+        );
+        assert!(
+            signers.is_file(),
+            "allowed_signers must be derived into the loom workspace: {signers:?}",
+        );
+        Ok(())
+    }
+
+    /// Spec contract `[test]` annotation (`specs/harness.md` § Success
+    /// Criteria · Verdict Gate): `loom init` enables rerere
+    /// (`rerere.enabled=true`, `rerere.autoupdate=true`) in the loom
+    /// workspace's local `.git/config`, unconditionally.
+    #[test]
+    fn loom_init_enables_rerere_in_loom_workspace_gitconfig() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let workspace = tmp.path().join("loom-init-rerere-ws");
+        loom_driver::git::init_test_repo(&workspace)?;
+
+        let report = run(&workspace, InitOpts::default(), &[])?;
+        let integ = report
+            .integration_workspace
+            .ok_or_else(|| anyhow!("integration workspace must be materialized"))?;
+
+        let config = std::fs::read_to_string(integ.path.join(".git/config"))?;
+        assert!(config.contains("[rerere]"), "rerere section: {config}");
+        assert!(
+            config.contains("enabled = true"),
+            "rerere.enabled: {config}"
+        );
+        assert!(
+            config.contains("autoupdate = true"),
+            "rerere.autoupdate: {config}",
+        );
+        Ok(())
+    }
+
+    /// Spec contract `[test]` annotation (`specs/harness.md` § Success
+    /// Criteria · Commit signing): when no signing key resolves, `loom init`
+    /// writes no signing block — the operator's global gitconfig governs.
+    /// The test repo's origin is a local bare path (not GitHub), so the
+    /// deploy-key fallback is skipped.
+    #[test]
+    fn no_wrapix_keys_leaves_global_gitconfig_governing() -> Result<()> {
+        if std::env::var_os("WRAPIX_SIGNING_KEY").is_some() {
+            // Ambient env carries a real signing key; the no-key path
+            // cannot be exercised in this environment.
+            return Ok(());
+        }
+        let tmp = tempfile::tempdir()?;
+        let workspace = tmp.path().join("loom-init-nokey-ws");
+        loom_driver::git::init_test_repo(&workspace)?;
+
+        let report = run(&workspace, InitOpts::default(), &[])?;
+        let integ = report
+            .integration_workspace
+            .ok_or_else(|| anyhow!("integration workspace must be materialized"))?;
+
+        let config = std::fs::read_to_string(integ.path.join(".git/config"))?;
+        assert!(
+            !config.contains("signingkey"),
+            "no signing block expected when key unresolved: {config}",
+        );
+        assert!(
+            !config.contains("gpgsign"),
+            "no commit.gpgsign expected when key unresolved: {config}",
+        );
+        assert!(
+            !integ.path.join(".git/loom-allowed-signers").exists(),
+            "no allowed_signers file expected when key unresolved",
         );
         Ok(())
     }

@@ -2698,7 +2698,7 @@ Criteria.
       `.git/config` so the driver-side rebase replays previously-
       recorded conflict resolutions before falling through to
       `integration-conflict` recovery
-  [test?](loom_init_enables_rerere_in_loom_workspace_gitconfig)
+  [test](loom_init_enables_rerere_in_loom_workspace_gitconfig)
 - Origin push of the integration branch retries non-fast-forward
       errors by fetching and re-rebasing onto
       `origin/<integration-branch>`
@@ -2734,21 +2734,21 @@ Criteria.
       `$WRAPIX_SIGNING_KEY` or the
       `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` fallback
       resolves
-  [test?](loom_init_writes_signing_gitconfig)
+  [test](loom_init_writes_signing_gitconfig)
 - `GitClient::create_worktree` writes the same signing block into
       each bead clone's local `.git/config` at materialization time,
       using the same resolution rule
-  [test?](create_worktree_writes_signing_gitconfig)
+  [test](create_worktree_writes_signing_gitconfig)
 - The fallback keyname is derived as `<repo>-<host>` where `<repo>`
       is parsed from the origin URL (`github.com[:/]<user>/<repo>`)
       and `<host>` is `hostname -s`, matching wrapix's
       `setup-deploy-key` derivation rule
-  [test?](signing_key_fallback_uses_wrapix_repo_host_derivation)
+  [test](signing_key_fallback_uses_wrapix_repo_host_derivation)
 - The allowed_signers file at
       `<workspace>/.git/loom-allowed-signers` is derived via
       `ssh-keygen -y -f <signing-key>` at gitconfig-write time and
       contains the wrapix signing identity
-  [test?](allowed_signers_derived_from_signing_key)
+  [test](allowed_signers_derived_from_signing_key)
 - Driver-side rebase in the loom workspace produces signed commits
       whose `gpgsig` header is present in the commit object, without
       prompting for a passphrase
@@ -2760,13 +2760,13 @@ Criteria.
 - `$WRAPIX_SIGNING_KEY` set to a non-existent file aborts loom
       startup with a non-zero exit and an error naming the missing
       path
-  [test?](wrapix_signing_key_missing_file_fails_loud)
+  [test](wrapix_signing_key_missing_file_fails_loud)
 - When neither `$WRAPIX_SIGNING_KEY` nor the
       `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` fallback
       resolves, no signing block is written and the operator's
       global gitconfig governs signing in loom-materialized
       workspaces
-  [test?](no_wrapix_keys_leaves_global_gitconfig_governing)
+  [test](no_wrapix_keys_leaves_global_gitconfig_governing)
 - When the signing key resolves, the per-bead integration step
       runs `git verify-commit` against the fetched commits
       (pass 1) and against the rebased commits (pass 2); pass-1

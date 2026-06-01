@@ -45,4 +45,10 @@ pub enum GitError {
 
     /// git CLI returned a malformed OID
     ParseOid(#[from] ParseGitOidError),
+
+    /// $WRAPIX_SIGNING_KEY points at a non-existent file: {path}
+    SigningKeyMissing { path: PathBuf },
+
+    /// `ssh-keygen -y` failed deriving the public half of {key}: {stderr}
+    SshKeygen { key: PathBuf, stderr: String },
 }

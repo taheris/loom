@@ -1076,3 +1076,90 @@ async fn loop_startup_gc_no_op_when_base_dir_missing() -> Result<()> {
     assert!(removed.is_empty());
     Ok(())
 }
+
+fn gen_signing_key(dir: &Path) -> Result<std::path::PathBuf> {
+    let key = dir.join("signing-key");
+    let status = Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-N", "", "-q", "-C", "", "-f"])
+        .arg(&key)
+        .status()
+        .context("spawn ssh-keygen")?;
+    anyhow::ensure!(status.success(), "ssh-keygen exited with {status}");
+    Ok(key)
+}
+
+fn local_config(repo: &Path, key: &str) -> Result<Option<String>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["config", "--local", "--get", key])
+        .output()
+        .context("spawn git config")?;
+    Ok(out
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+}
+
+/// Spec contract `[test]` annotation (`specs/harness.md` § Success
+/// Criteria · Commit signing): `GitClient::create_worktree` writes the
+/// signing block into the bead clone's local `.git/config` when a signing
+/// key resolves. Driven through the test-only override seam because
+/// `$WRAPIX_SIGNING_KEY` cannot be set under edition 2024's unsafe
+/// `env::set_var` with `unsafe_code` forbidden.
+#[tokio::test]
+async fn create_worktree_writes_signing_gitconfig() -> Result<()> {
+    let repo = init_repo()?;
+    let key = gen_signing_key(repo.path())?;
+    let mut client = GitClient::open(repo.path())?;
+    client.set_signing_key_override(key.clone());
+
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("lm-sign.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+
+    assert_eq!(
+        local_config(&created.path, "gpg.format")?.as_deref(),
+        Some("ssh"),
+    );
+    assert_eq!(
+        local_config(&created.path, "user.signingkey")?.as_deref(),
+        Some(key.to_string_lossy().as_ref()),
+    );
+    assert_eq!(
+        local_config(&created.path, "commit.gpgsign")?.as_deref(),
+        Some("true"),
+    );
+    let signers = created.path.join(".git").join("loom-allowed-signers");
+    assert!(
+        signers.is_file(),
+        "allowed_signers file must be derived into the bead clone: {signers:?}",
+    );
+    assert_eq!(
+        local_config(&created.path, "gpg.ssh.allowedSignersFile")?.as_deref(),
+        Some(signers.to_string_lossy().as_ref()),
+    );
+    Ok(())
+}
+
+/// Without a resolved signing key, `create_worktree` writes no signing
+/// block — the operator's global gitconfig governs (the bead clone's own
+/// `origin` is a local path, so the GitHub deploy-key fallback is skipped).
+#[tokio::test]
+async fn create_worktree_omits_signing_block_when_no_key() -> Result<()> {
+    if std::env::var_os("WRAPIX_SIGNING_KEY").is_some() {
+        // The ambient env carries a real signing key; the no-key path
+        // cannot be exercised here.
+        return Ok(());
+    }
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("lm-sign.2")?;
+    let created = client.create_worktree(&label, &bead).await?;
+
+    assert_eq!(local_config(&created.path, "user.signingkey")?, None);
+    assert_eq!(local_config(&created.path, "gpg.format")?, None);
+    Ok(())
+}

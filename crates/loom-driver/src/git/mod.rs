@@ -13,6 +13,7 @@
 mod client;
 mod error;
 mod oid;
+mod signing;
 
 pub use client::{
     CreatedWorktree, GitClient, MergeResult, StatusEntry, StatusKind, WorktreeInfo,
@@ -22,3 +23,4 @@ pub use client::{
 };
 pub use error::GitError;
 pub use oid::{GitOid, ParseGitOidError};
+pub use signing::{enable_rerere, resolve_signing_key, write_signing_config};

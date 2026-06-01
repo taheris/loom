@@ -63,6 +63,13 @@ pub struct GitClient {
     /// Defaults to [`GIT_HOOK_TIMEOUT`]; production overrides it from
     /// `[loom] git_hook_timeout_secs` via [`Self::with_hook_timeout`].
     hook_timeout: Duration,
+    /// Test-only seam: when `Some`, [`Self::create_worktree`] writes the
+    /// signing block using this key instead of resolving it from the env +
+    /// deploy-key fallback. Production constructs this `None` and resolves
+    /// per [`super::signing::resolve_signing_key`]; the seam exists because
+    /// `std::env::set_var` is unsafe under edition 2024 and the workspace
+    /// forbids `unsafe_code`, so tests cannot drive `$WRAPIX_SIGNING_KEY`.
+    signing_key_override: Option<PathBuf>,
 }
 
 impl GitClient {
@@ -114,6 +121,7 @@ impl GitClient {
             clock,
             integration_branch,
             hook_timeout: GIT_HOOK_TIMEOUT,
+            signing_key_override: None,
         })
     }
 
@@ -124,6 +132,14 @@ impl GitClient {
     pub fn with_hook_timeout(mut self, hook_timeout: Duration) -> Self {
         self.hook_timeout = hook_timeout;
         self
+    }
+
+    /// Test-only: force [`Self::create_worktree`] to write the signing
+    /// block with `key` instead of resolving it from the environment.
+    /// See [`Self::signing_key_override`].
+    #[doc(hidden)]
+    pub fn set_signing_key_override(&mut self, key: PathBuf) {
+        self.signing_key_override = Some(key);
     }
 
     /// Name of the integration branch this client targets (the branch
@@ -318,6 +334,22 @@ impl GitClient {
         .await?;
 
         ensure_wrapix_mount_dir(&path)?;
+
+        // Resolve against the loom workspace (whose `origin` is GitHub), not
+        // the bead clone (whose `origin` is the loom workspace path).
+        let signing_target = path.clone();
+        let signing_override = self.signing_key_override.clone();
+        spawn_blocking(move || -> Result<(), GitError> {
+            let key = match signing_override {
+                Some(key) => Some(key),
+                None => super::signing::resolve_signing_key(&loom_workspace)?,
+            };
+            if let Some(key) = key {
+                super::signing::write_signing_config(&signing_target, &key)?;
+            }
+            Ok(())
+        })
+        .await??;
 
         Ok(CreatedWorktree { path, branch })
     }
