@@ -19,6 +19,14 @@
 //! placeholder `crate::` prefix used in inline test fixtures cannot
 //! disambiguate which workspace package owns the test and falls through to
 //! an empty scope — production annotations must use real crate names.
+//!
+//! `[test]` targets in practice are predominantly **bare leaf names**
+//! (`verify_marker_exits_zero_on_match`, no `crate::` prefix), per the
+//! `specs/gate.md` § Verifier inputs rule "resolve the test's owning
+//! crate." For those the first-segment lookup misses, so the scope also
+//! indexes every test-function leaf name to its owning workspace crate
+//! during construction; [`TestScope::scope_for`] falls back to that index
+//! when the direct crate-key lookup finds no crate.
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
@@ -36,6 +44,11 @@ use crate::dispatch::TestScope;
 /// Production [`TestScope`] backed by `cargo metadata`.
 pub struct CargoMetadataScope {
     crate_scope: HashMap<String, Vec<PathBuf>>,
+    /// Maps a test-function leaf name to the crate key(s) that define it,
+    /// so bare `[test](leaf)` targets resolve to their owning crate's
+    /// scope. A leaf can appear in more than one crate (duplicate test
+    /// names); [`TestScope::scope_for`] unions every owner's scope.
+    test_leaf_to_keys: HashMap<String, Vec<String>>,
 }
 
 /// Failures surfaced while building a [`CargoMetadataScope`].
@@ -92,6 +105,7 @@ impl CargoMetadataScope {
         let ws_members: HashSet<String> = workspace_members.into_iter().collect();
 
         let mut pkg_files: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        let mut pkg_leaves: HashMap<String, HashSet<String>> = HashMap::new();
         for ws_id in &ws_members {
             let Some(pkg) = pkg_by_id.get(ws_id) else {
                 continue;
@@ -101,11 +115,13 @@ impl CargoMetadataScope {
                 .parent()
                 .unwrap_or(&pkg.manifest_path)
                 .to_path_buf();
-            let files = walk_rs_files(&pkg_dir, &workspace_root)?;
+            let (files, leaves) = walk_rs_files(&pkg_dir, &workspace_root)?;
             pkg_files.insert(ws_id.clone(), files);
+            pkg_leaves.insert(ws_id.clone(), leaves);
         }
 
         let mut crate_scope: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        let mut test_leaf_to_keys: HashMap<String, Vec<String>> = HashMap::new();
         for ws_id in &ws_members {
             let Some(pkg) = pkg_by_id.get(ws_id) else {
                 continue;
@@ -118,21 +134,67 @@ impl CargoMetadataScope {
                 }
             }
             let files_vec: Vec<PathBuf> = files.into_iter().collect();
-            for key in crate_keys_for(pkg) {
+            let keys = crate_keys_for(pkg);
+            // The package's primary key (its name, `-`→`_`) is the scope
+            // owner a bare test leaf maps to; the leaf's scope is then the
+            // crate's full transitive file set, identical to the named
+            // `crate::…::leaf` form.
+            if let Some(primary) = keys.first()
+                && let Some(leaves) = pkg_leaves.get(ws_id)
+            {
+                for leaf in leaves {
+                    let owners = test_leaf_to_keys.entry(leaf.clone()).or_default();
+                    if !owners.contains(primary) {
+                        owners.push(primary.clone());
+                    }
+                }
+            }
+            for key in keys {
                 crate_scope.entry(key).or_insert_with(|| files_vec.clone());
             }
         }
 
-        Ok(Self { crate_scope })
+        Ok(Self {
+            crate_scope,
+            test_leaf_to_keys,
+        })
     }
 }
 
 impl TestScope for CargoMetadataScope {
     fn scope_for(&self, annotation: &Annotation) -> Vec<PathBuf> {
-        let Some(key) = crate_key_from_target(&annotation.target) else {
+        // Named `crate::…::leaf` targets resolve on the first segment.
+        if let Some(key) = crate_key_from_target(&annotation.target)
+            && let Some(files) = self.crate_scope.get(&key)
+        {
+            return files.clone();
+        }
+        // Bare `[test](leaf)` targets — the dominant form — carry no crate
+        // segment, so resolve the test's owning crate(s) by leaf name and
+        // union their scopes (per `specs/gate.md` § Verifier inputs).
+        self.scope_for_test_leaf(&annotation.target)
+    }
+}
+
+impl CargoMetadataScope {
+    /// Resolve a bare test target to the union of its owning crates'
+    /// scopes via the test-leaf index. Returns an empty scope when the
+    /// leaf is not a known test (e.g. the `crate::` placeholder or the
+    /// heuristic's synthetic `__heuristic` marker).
+    fn scope_for_test_leaf(&self, target: &str) -> Vec<PathBuf> {
+        let Some(leaf) = crate::integrity::test_target_leaf(target) else {
             return Vec::new();
         };
-        self.crate_scope.get(&key).cloned().unwrap_or_default()
+        let Some(keys) = self.test_leaf_to_keys.get(leaf) else {
+            return Vec::new();
+        };
+        let mut files: BTreeSet<PathBuf> = BTreeSet::new();
+        for key in keys {
+            if let Some(fs) = self.crate_scope.get(key) {
+                files.extend(fs.iter().cloned());
+            }
+        }
+        files.into_iter().collect()
     }
 }
 
@@ -155,8 +217,17 @@ fn run_cargo_metadata(manifest_path: &Path) -> Result<Vec<u8>, ScopeError> {
     Ok(output.stdout)
 }
 
-fn walk_rs_files(dir: &Path, workspace_root: &Path) -> Result<Vec<PathBuf>, ScopeError> {
-    let mut out: Vec<PathBuf> = Vec::new();
+/// Walk a package directory and return its workspace-relative `.rs` file
+/// paths alongside the set of test-function leaf names those files define.
+/// The leaf set feeds the bare-test-name index so `[test](leaf)` targets
+/// resolve to this package's scope. Leaf extraction reuses the integrity
+/// gate's scanner so both surfaces recognise the same test forms.
+fn walk_rs_files(
+    dir: &Path,
+    workspace_root: &Path,
+) -> Result<(Vec<PathBuf>, HashSet<String>), ScopeError> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut leaves: HashSet<String> = HashSet::new();
     for entry in WalkDir::new(dir).follow_links(false) {
         let entry = entry.map_err(|source| ScopeError::WalkSources {
             root: dir.to_path_buf(),
@@ -175,11 +246,14 @@ fn walk_rs_files(dir: &Path, workspace_root: &Path) -> Result<Vec<PathBuf>, Scop
         {
             continue;
         }
+        if let Ok(body) = std::fs::read_to_string(path) {
+            crate::integrity::extract_test_fn_leaves(&body, &mut leaves);
+        }
         let rel = path.strip_prefix(workspace_root).unwrap_or(path);
-        out.push(rel.to_path_buf());
+        paths.push(rel.to_path_buf());
     }
-    out.sort();
-    Ok(out)
+    paths.sort();
+    Ok((paths, leaves))
 }
 
 fn transitive_closure(start: &str, deps: &HashMap<String, Vec<String>>) -> HashSet<String> {
@@ -234,7 +308,10 @@ fn crate_key_from_target(target: &str) -> Option<String> {
     if first.is_empty() || first == "crate" {
         return None;
     }
-    Some(first.to_string())
+    // Cargo keys crates by name with `-`→`_`; the heuristic's synthetic
+    // `cargo test -p loom-agent` target arrives hyphenated, so normalize
+    // here to match `crate_keys_for`.
+    Some(first.replace('-', "_"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -408,7 +485,7 @@ mod tests {
         fs::write(root.join("crate_a/target/debug/build.rs"), "").unwrap();
         fs::write(root.join("crate_a/README.md"), "").unwrap();
 
-        let files = walk_rs_files(&root.join("crate_a"), root).unwrap();
+        let (files, _leaves) = walk_rs_files(&root.join("crate_a"), root).unwrap();
         assert_eq!(
             files,
             vec![
@@ -517,6 +594,58 @@ mod tests {
         assert!(
             scope.scope_for(&ann("crate::placeholder")).is_empty(),
             "literal `crate::` placeholder cannot disambiguate"
+        );
+    }
+
+    #[test]
+    fn crate_key_from_target_normalizes_hyphens_to_underscores() {
+        // The `cargo test -p <crate>` heuristic feeds a synthetic
+        // `loom-agent::__heuristic` target; cargo keys crates by the
+        // `-`→`_` form, so the lookup key must normalize too.
+        assert_eq!(
+            crate_key_from_target("loom-agent::__heuristic"),
+            Some("loom_agent".into())
+        );
+        assert_eq!(
+            crate_key_from_target("already_underscored"),
+            Some("already_underscored".into())
+        );
+    }
+
+    #[test]
+    fn bare_test_leaf_resolves_to_owning_crate_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        write_two_crate_fixture(dir.path());
+        // Plant a real `#[test]` fn in crate_a so the leaf index maps the
+        // bare name back to crate_a's scope.
+        fs::write(
+            dir.path().join("crate_a/src/lib.rs"),
+            "#[test]\nfn happy_path_works() {}\n",
+        )
+        .unwrap();
+        let scope = CargoMetadataScope::from_metadata(fixture_metadata(dir.path())).unwrap();
+
+        // Bare leaf name, no `crate::` prefix — the dominant convention.
+        let files = scope.scope_for(&ann("happy_path_works"));
+        assert!(
+            files.contains(&PathBuf::from("crate_a/src/lib.rs")),
+            "bare test leaf resolves to its owning crate's sources: {files:?}"
+        );
+        assert!(
+            files.contains(&PathBuf::from("crate_b/src/lib.rs")),
+            "owning crate's transitive deps are included: {files:?}"
+        );
+    }
+
+    #[test]
+    fn bare_test_leaf_unknown_returns_empty_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        write_two_crate_fixture(dir.path());
+        let scope = CargoMetadataScope::from_metadata(fixture_metadata(dir.path())).unwrap();
+
+        assert!(
+            scope.scope_for(&ann("no_such_test_anywhere")).is_empty(),
+            "a bare name matching no known test resolves to nothing"
         );
     }
 }

@@ -29,7 +29,7 @@ use loom_driver::state::StateDb;
 use loom_gate::{
     self, BuiltinParser, CacheRow, CargoMetadataScope, DispatchOptions, DispatchPendingExecutor,
     EmptyScope, FsCommandResolver, InputResolver, RunnerSpec, StatusCache, Tier, TierCwds, Verdict,
-    filter_by_files, is_missing_binary_target, render_report, row_for,
+    empty_input_verifiers, filter_by_files, is_missing_binary_target, render_report, row_for,
 };
 use loom_workflow::r#loop::{
     GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
@@ -1206,6 +1206,9 @@ fn print_gate_status(report: &loom_gate::Report) {
 }
 
 fn run_gate_verify(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<()> {
+    if args.tree {
+        warn_empty_input_verifiers(workspace, args);
+    }
     let mut combined: i32 = 0;
     for tier in verify_tiers_for_args(args) {
         eprintln!("--- loom gate verify [{tier}] ---");
@@ -1222,6 +1225,58 @@ fn run_gate_verify(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<()>
         std::process::exit(combined);
     }
     Ok(())
+}
+
+/// Standing-stage safety-net sweep for verifier-input declarations, per
+/// `specs/gate.md` § Verifier inputs ("Empty inputs are a smell"). Each
+/// verifier whose declared inputs resolve empty — relying solely on the
+/// spec-section auto-include — is reported to stderr so the operator can
+/// fix a misdeclaration or no-op verifier. Honours the `--spec` filter.
+///
+/// Non-terminal: empties are a smell to investigate, not a gate failure
+/// (the auto-include keeps the resolved set non-empty, so dispatch is
+/// never actually broken). Runs only under `--tree`; the scoped
+/// `--files`/`--diff`/`--bead` filters deliberately skip it so the
+/// warning fires on exactly the standing sweep the spec assigns it to,
+/// never on the per-molecule push gate where empties are not the smell
+/// being reported.
+fn warn_empty_input_verifiers(workspace: &Path, args: &GateScopeArgs) {
+    let specs_dir = workspace.join("specs");
+    if !specs_dir.exists() {
+        return;
+    }
+    let Ok(parsed) = loom_gate::annotation::parse(&specs_dir) else {
+        return;
+    };
+    let annotations: Vec<loom_gate::Annotation> = parsed
+        .annotations
+        .into_iter()
+        .filter(|a| {
+            args.spec.as_deref().is_none_or(|label| {
+                a.source_spec
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s == label)
+            })
+        })
+        .collect();
+    if annotations.is_empty() {
+        return;
+    }
+    let mut resolver = build_input_resolver(workspace);
+    let empties = empty_input_verifiers(&annotations, &mut resolver);
+    let mut stderr = std::io::stderr().lock();
+    use std::io::Write;
+    for ann in empties {
+        let _ = writeln!(
+            stderr,
+            "loom gate [inputs]: {}:{}: verifier [{}]({}) declares no inputs — relies on the spec-section auto-include only (empty inputs are a smell)",
+            ann.source_spec.display(),
+            ann.line,
+            ann.tier,
+            ann.target,
+        );
+    }
 }
 
 /// Tier loop for `loom gate verify`. An explicit `--files` invocation

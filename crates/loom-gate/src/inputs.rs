@@ -29,6 +29,9 @@
 //! is on the scoped `--files`/`--diff` filter hot path, which the
 //! `--tree` standing sweep skips entirely, so warning here would only
 //! fire on the runs where the smell is *not* meant to be reported.
+//! [`empty_input_verifiers`] is the standing-sweep detector — it folds
+//! [`InputResolver::declares_no_inputs`] across an annotation set so the
+//! `--tree` verify path can report empties where the spec assigns them.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -141,6 +144,19 @@ impl InputResolver {
             paths.push(spec);
         }
         VerifierInputs { paths }
+    }
+
+    /// True iff the verifier declares no inputs of its own — every
+    /// declaration source (test-framework metadata, script header,
+    /// `--print-inputs`, heuristic fallback) yielded nothing, so the
+    /// resolved input set would be the spec-section auto-include alone.
+    /// This is the "empty is a smell" signal in `specs/gate.md`
+    /// § Verifier inputs; [`empty_input_verifiers`] folds it across an
+    /// annotation set for the standing-stage safety-net sweep. Distinct
+    /// from [`Self::resolve`], which always folds the spec section in so
+    /// the returned set is never observably empty.
+    pub fn declares_no_inputs(&mut self, annotation: &Annotation) -> bool {
+        self.collect_declared(annotation).is_empty()
     }
 
     fn collect_declared(&mut self, annotation: &Annotation) -> Vec<PathBuf> {
@@ -279,6 +295,28 @@ pub fn filter_by_files(
             inputs.paths.iter().any(|p| file_set.contains(p.as_path()))
         })
         .cloned()
+        .collect()
+}
+
+/// Verifiers in `annotations` that declare no inputs of their own — the
+/// "empty is a smell" case in `specs/gate.md` § Verifier inputs. A
+/// verifier relying solely on the spec-section auto-include is either a
+/// misdeclaration or a no-op; the standing-stage safety-net sweep
+/// (`loom gate verify --tree`) surfaces it. Pending-marked annotations
+/// (`[tier?](target)`) are skipped: there is no verifier yet to be too
+/// narrow about, matching the verifier-honesty exemption.
+///
+/// Resolution runs every declaration source per annotation (the same
+/// chain [`InputResolver::resolve`] walks), so the result reflects live
+/// scripts/binaries, not just the parsed command string.
+pub fn empty_input_verifiers<'a>(
+    annotations: &'a [Annotation],
+    resolver: &mut InputResolver,
+) -> Vec<&'a Annotation> {
+    annotations
+        .iter()
+        .filter(|ann| !ann.pending)
+        .filter(|ann| resolver.declares_no_inputs(ann))
         .collect()
 }
 
@@ -692,6 +730,62 @@ mod tests {
         assert!(!looks_like_path("happy_name"));
         assert!(!looks_like_path("X"));
         assert!(!looks_like_path("--lib"));
+    }
+
+    #[test]
+    fn declares_no_inputs_true_when_every_source_empty() {
+        let mut resolver = InputResolver::new(PathBuf::from("/repo"));
+        // A bare command that is not a script, not a `--print-inputs`
+        // binary, and yields no heuristic paths: declares nothing.
+        let a = ann(Tier::Check, "no-such-binary-anywhere", "specs/x.md");
+        assert!(
+            resolver.declares_no_inputs(&a),
+            "verifier with no resolvable inputs declares none",
+        );
+    }
+
+    #[test]
+    fn declares_no_inputs_false_when_a_source_yields_paths() {
+        let scope = Box::new(StubScope::new(&[(
+            "loom_gate",
+            &["crates/loom-gate/src/lib.rs"],
+        )]));
+        let mut resolver = InputResolver::new(PathBuf::from("/repo")).with_test_scope(scope);
+        let a = ann(Tier::Test, "loom_gate::module::ok", "specs/gate.md");
+        assert!(
+            !resolver.declares_no_inputs(&a),
+            "the test-scope source yields the owning crate's sources",
+        );
+    }
+
+    #[test]
+    fn empty_input_verifiers_flags_only_the_empty_declarers() {
+        let scope = Box::new(StubScope::new(&[(
+            "loom_gate",
+            &["crates/loom-gate/src/lib.rs"],
+        )]));
+        let mut resolver = InputResolver::new(PathBuf::from("/repo")).with_test_scope(scope);
+        let declares = ann(Tier::Test, "loom_gate::module::ok", "specs/gate.md");
+        let empty = ann(Tier::Check, "no-such-binary-anywhere", "specs/x.md");
+        let annotations = vec![declares, empty.clone()];
+        let flagged = empty_input_verifiers(&annotations, &mut resolver);
+        assert_eq!(flagged.len(), 1, "only the empty declarer is flagged");
+        assert_eq!(flagged[0].target, empty.target);
+    }
+
+    #[test]
+    fn empty_input_verifiers_skips_pending_annotations() {
+        let mut resolver = InputResolver::new(PathBuf::from("/repo"));
+        // Pending verifier with empty declarations — exempt because there
+        // is no verifier yet to be too narrow about.
+        let mut pending = ann(Tier::Check, "no-such-binary-anywhere", "specs/x.md");
+        pending.pending = true;
+        let annotations = vec![pending];
+        let flagged = empty_input_verifiers(&annotations, &mut resolver);
+        assert!(
+            flagged.is_empty(),
+            "pending annotations are skipped: {flagged:?}",
+        );
     }
 
     #[test]

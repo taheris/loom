@@ -599,7 +599,7 @@ impl StubScanner for RustWorkspaceStubScanner {
 /// for Rust, `tests/file.py::test_name` for Python. Both shapes carry
 /// the leaf at the final segment after splitting on `::` and then on
 /// `/`.
-fn test_target_leaf(target: &str) -> Option<&str> {
+pub(crate) fn test_target_leaf(target: &str) -> Option<&str> {
     let trimmed = target.trim();
     if trimmed.is_empty() {
         return None;
@@ -617,7 +617,7 @@ fn test_target_leaf(target: &str) -> Option<&str> {
 /// to `sink`. The scanner is line-oriented and intentionally light —
 /// pulling in `syn` for one leaf-extraction pass is overkill given the
 /// resolver only needs membership lookup.
-fn extract_test_fn_leaves(source: &str, sink: &mut HashSet<String>) {
+pub(crate) fn extract_test_fn_leaves(source: &str, sink: &mut HashSet<String>) {
     let mut last_attr: Option<usize> = None;
     let mut proptest_depth: usize = 0;
     let mut bare_brace_depth_for_proptest: usize = 0;
