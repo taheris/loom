@@ -67,7 +67,7 @@ async fn create_and_remove_worktree_round_trip() -> Result<()> {
         "workspace path should end with .loom/beads/<bead-id>: {:?}",
         created.path
     );
-    // Path A (specs/harness.md § Worktree Dispatch): the bead workspace is
+    // Path A (specs/harness.md § Bead dispatch): the bead workspace is
     // a self-contained `git clone --local`, so `.git/` is a regular
     // directory inside the bind-mounted path (not a `.git` *file* pointing
     // at a host-absolute gitdir, which is what `git worktree add` produces).

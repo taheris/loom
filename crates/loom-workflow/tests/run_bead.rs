@@ -3,7 +3,7 @@
 //!
 //! These tests must run against a real git repo so the controller's
 //! `create_worktree` / `merge_branch` calls observe a real refs/index
-//! state (spec gate from `harness.md` § Worktree Dispatch). The pure
+//! state (spec gate from `harness.md` § Bead dispatch). The pure
 //! marker-routing logic lives in `src/loop/production.rs::tests`; this
 //! file exercises the worktree-mutation side that needs the `git`
 //! binary.

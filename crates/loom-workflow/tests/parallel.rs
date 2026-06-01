@@ -190,7 +190,7 @@ async fn parallel_run_two_beads_e2e() -> Result<()> {
         assert_eq!(slot.worktree.path, expected_path);
         assert_eq!(slot.worktree.branch, format!("loom/{}", bead.id));
         assert_eq!(slot.bead.id, bead.id);
-        // Path A (specs/harness.md § Worktree Dispatch): each workspace is a
+        // Path A (specs/harness.md § Bead dispatch): each workspace is a
         // self-contained clone — its `.git/` is a regular directory inside
         // the bind-mounted path so the wrapix container can resolve gitdir.
         assert!(
