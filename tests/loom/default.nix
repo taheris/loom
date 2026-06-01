@@ -51,8 +51,13 @@ let
       export HOME=$(mktemp -d)
       export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
     '';
+    # `--tree` (every verifier, no file filter) is the explicit scope for a
+    # git-less build sandbox: the source artifact has no `.git`, so a
+    # `--diff`-based scope can't resolve and `loom gate` now fails loudly
+    # rather than silently degrading. `--tree` matches the prior whole-tree
+    # behavior exactly (an empty file filter ran every verifier).
     checkPhaseCargoCommand = ''
-      LOOM_VERIFY_TIERS=check,test loom gate verify
+      LOOM_VERIFY_TIERS=check,test loom gate verify --tree
     '';
   };
 
