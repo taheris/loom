@@ -170,6 +170,15 @@ inputs* below); otherwise it's skipped.
 | `--files <paths>` | Explicit path list | pre-commit hooks (`loom gate verify --files $(git diff --cached --name-only)`) |
 | `--tree` | Every file in the workspace | nightly CI safety net; manual debugging; **not used by push gate** |
 
+A `--diff <range>` that git itself rejects — an unknown commit, or
+`@{u}` when the branch has no upstream — is a **hard error**: the gate
+exits non-zero naming the range, rather than degrading to an empty
+input set. An empty input set reads downstream as "no filter" and
+walks the whole tree, so a silent degrade would both misreport
+findings outside the intended scope and hide that the push range was
+never verified. A *valid* range that simply matches no files (e.g.
+`HEAD` on a clean tree) is a legitimate empty scope, not an error.
+
 Filters compose with any scope flag:
 
 - `--spec <label>` — narrow to one spec's criteria

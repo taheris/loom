@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use loom_agent::{ClaudeBackend, PiBackend};
@@ -976,21 +977,17 @@ fn expand_diff_to_files(workspace: &Path, args: &mut GateScopeArgs) -> anyhow::R
         let client = loom_driver::git::GitClient::open(&workdir)?;
         client.changed_files_in_range(&range_owned, None).await
     });
-    match result {
-        Ok(files) => args.files = files,
-        Err(err) => {
-            // Range refused (invalid commit, no upstream, etc.) or the
-            // workspace isn't a git repo — leave args.files empty and
-            // log to stderr. scope_is_finite still returns true (args.diff
-            // is set), so the dispatcher filter runs against the empty
-            // list and matches nothing — safer than silently running every
-            // verifier. mint's scope_for_mint still threads args.diff
-            // through to MintScope::Diff for the LLM rubric.
-            eprintln!(
-                "loom gate: --diff {range} expansion failed ({err:#}); running verifiers against empty scope.",
-            );
-        }
-    }
+    // A valid-but-empty diff returns `Ok(vec![])` (legitimate empty scope —
+    // e.g. `HEAD` on a clean tree); only a range git itself rejects (invalid
+    // commit, `@{u}` with no upstream, not a git repo) returns `Err`. The
+    // latter must fail loudly: an unparseable range silently degraded to an
+    // empty `args.files`, which `narrow_to_loom_files` then treats as "no
+    // filter" and walks the whole tree — surfacing findings outside the
+    // intended scope (and masking that the push range was never verified).
+    let files = result.with_context(|| {
+        format!("loom gate: --diff {range} could not be resolved to a file set")
+    })?;
+    args.files = files;
     Ok(())
 }
 
@@ -3673,6 +3670,43 @@ mod tests {
         apply_default_scope(tmp.path(), &mut args);
         assert!(args.diff.is_none());
         assert_eq!(args.files, vec![PathBuf::from("src/lib.rs")]);
+    }
+
+    /// An unparseable `--diff` range (here a ref that does not exist, the
+    /// same failure shape as `@{u}` with no upstream) must fail loudly
+    /// rather than degrade to an empty `args.files` — empty scope reads as
+    /// "no filter" downstream and walks the whole tree.
+    #[test]
+    fn expand_diff_to_files_errors_on_unresolvable_range() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        loom_driver::git::init_test_repo_with_integration(tmp.path()).expect("init repo");
+        let mut args = empty_scope_args();
+        args.diff = Some("no-such-ref..HEAD".into());
+        let err = expand_diff_to_files(tmp.path(), &mut args)
+            .expect_err("an unresolvable diff range must fail loudly");
+        assert!(
+            args.files.is_empty(),
+            "a failed expansion must not leave a partial scope",
+        );
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no-such-ref..HEAD"),
+            "error must name the offending range: {msg}",
+        );
+    }
+
+    /// A valid range that simply has no changes (`HEAD` on a clean tree) is
+    /// a legitimate empty scope, not an error — only ranges git rejects
+    /// trip the fail-loud path.
+    #[test]
+    fn expand_diff_to_files_accepts_valid_empty_range() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        loom_driver::git::init_test_repo_with_integration(tmp.path()).expect("init repo");
+        let mut args = empty_scope_args();
+        args.diff = Some("HEAD".into());
+        expand_diff_to_files(tmp.path(), &mut args)
+            .expect("a valid range with no changes is a legitimate empty scope");
+        assert!(args.files.is_empty());
     }
 
     /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion

@@ -83,6 +83,31 @@ fn run_gate_mint_subprocess(workspace: &Path) -> (std::process::Output, PathBuf)
     (output, state_dir.join(".invocations.log"))
 }
 
+/// Initialise the fixture workspace as a git repo with one commit so the
+/// `--diff HEAD` scope resolves. `resolve_gate_scope` fails loudly when a
+/// `--diff` range can't be parsed (e.g. outside a git repo), so the
+/// walker-wiring fixture must be a real git workspace — the same shape
+/// mint runs against in production.
+fn git_init_workspace(workspace: &Path) {
+    let run = |args: &[&str]| {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(workspace)
+            .args(args)
+            .status()
+            .expect("spawn git")
+            .success();
+        assert!(ok, "git {args:?} failed");
+    };
+    run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "Test"]);
+    run(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(workspace.join("README.md"), "fixture\n").expect("write README");
+    run(&["add", "README.md"]);
+    run(&["commit", "-q", "-m", "init"]);
+}
+
 /// Write a minimal spec the walker can render against. No `[test]` /
 /// `[judge]` annotations — `load_review_sources` returns empty vecs so
 /// the prompt build proceeds to the manifest lookup that fails.
@@ -119,6 +144,7 @@ fn invocation_log_records_spec_label_list(log: &str) -> bool {
 fn run_gate_mint_dispatches_through_production_walker_not_empty_vec() {
     let dir = tempfile::tempdir().expect("tempdir");
     let workspace = dir.path();
+    git_init_workspace(workspace);
     write_fixture_spec(workspace);
 
     let (output, log_path) = run_gate_mint_subprocess(workspace);
