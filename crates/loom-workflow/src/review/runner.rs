@@ -1154,6 +1154,78 @@ mod tests {
         Ok(())
     }
 
+    /// Harness-lane variant of the dead-code excision pin
+    /// (criterion `no_path_constructs_concern_without_bead_deltas_in_production_harness_lane`):
+    /// the molecule-completion push gate under `spec:harness` routes
+    /// `LOOM_CONCERN` exclusively through
+    /// `decide_concern` → `RecoveryCause::ReviewConcern`, never through
+    /// a `ReviewError::ConcernWithoutBeadDeltas` raise site. The
+    /// exhaustive match below is the compile-time half of the
+    /// assertion — if the deleted variant is re-introduced the match
+    /// becomes non-exhaustive and fails to compile. The runtime half
+    /// drives a harness-lane `LOOM_CONCERN` through `review_loop` and
+    /// pins that the refusal is `review-concern` (no
+    /// `review_protocol_violation` event).
+    #[tokio::test]
+    async fn no_path_constructs_concern_without_bead_deltas_in_production_harness_lane()
+    -> Result<(), ReviewError> {
+        fn variant_set_excludes_concern_without_bead_deltas(err: ReviewError) {
+            match err {
+                ReviewError::Protocol(_)
+                | ReviewError::Bd(_)
+                | ReviewError::Render(_)
+                | ReviewError::Log(_)
+                | ReviewError::Io(_)
+                | ReviewError::ReviewIncomplete(_)
+                | ReviewError::GitPushFailed(_)
+                | ReviewError::BeadsPushFailed(_)
+                | ReviewError::DetachedHead
+                | ReviewError::RunHandoff(_)
+                | ReviewError::State(_)
+                | ReviewError::Profile(_)
+                | ReviewError::NoActiveMolecule(_)
+                | ReviewError::Spec(_)
+                | ReviewError::Resolve(_) => {}
+            }
+        }
+        let _ = variant_set_excludes_concern_without_bead_deltas;
+
+        let mut c = FakeController {
+            review: Some(ReviewOutcome::Incomplete {
+                detail: "LOOM_CONCERN: scope -- diff strays in harness lane".into(),
+            }),
+            review_marker: Some(ExitSignal::Concern {
+                summary: "scope drift across the harness diff".into(),
+            }),
+            pre_beads: vec![bead("lm-harness.3", &["spec:harness"])],
+            post_beads: vec![
+                bead("lm-harness.3", &["spec:harness"]),
+                bead("lm-harness.4", &["spec:harness"]),
+            ],
+            ..FakeController::default()
+        };
+        let result = review_loop(&mut c, IterationCap::default()).await?;
+        assert!(matches!(result, ReviewResult::PushBlocked { .. }));
+        let refuse = c
+            .driver_events
+            .iter()
+            .find(|(k, _, _)| k == "push_gate_refuse")
+            .expect("refuse event present");
+        assert_eq!(
+            refuse.2["cause"].as_str(),
+            Some("review-concern"),
+            "harness-lane concern routes through decide_concern → ReviewConcern, \
+             never through a ConcernWithoutBeadDeltas raise site",
+        );
+        assert!(
+            c.driver_events
+                .iter()
+                .all(|(k, _, _)| k != "review_protocol_violation"),
+            "no legacy guard event in the harness lane",
+        );
+        Ok(())
+    }
+
     /// FR9 — push-gate integrity branch: any integrity-gate finding
     /// refuses the push with cause `integrity-finding`.
     #[tokio::test]

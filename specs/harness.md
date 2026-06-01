@@ -3185,13 +3185,13 @@ Criteria.
       to `RecoveryCause::ReviewConcern { summary, findings }`, never
       collapses to `BadWalk::ConcernWithoutFindings` because the count
       was left at default
-  [test?](classify_review_phase_invokes_parse_walk_output_and_threads_findings_through_gate_inputs)
+  [test](classify_review_phase_invokes_parse_walk_output_and_threads_findings_through_gate_inputs)
 - Wire-format dead-code excision: no production code path
       constructs `ReviewError::ConcernWithoutBeadDeltas`; the variant
       is removed from `review/error.rs` and its raise site at
       `review/runner.rs` is deleted. Concern handling routes through
       `decide_concern` + `RecoveryCause::ReviewConcern` exclusively
-  [test?](no_path_constructs_concern_without_bead_deltas_in_production_harness_lane)
+  [test](no_path_constructs_concern_without_bead_deltas_in_production_harness_lane)
 - Recovery iter < `[loop] max_iterations` (default 10) → spawns
       fix-up bead OR retries the bead with prior failure context
   [test](under_max_recovers_with_previous_failure)

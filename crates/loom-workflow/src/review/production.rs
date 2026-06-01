@@ -967,6 +967,55 @@ mod tests {
         let _: fn(&WalkOutput, i32) -> ReviewOutcome = classify_review_phase;
     }
 
+    /// Criterion
+    /// `classify_review_phase_invokes_parse_walk_output_and_threads_findings_through_gate_inputs`:
+    /// the molecule-completion review path runs `parse_walk_output`
+    /// (via [`WalkOutput::from_stdout`]) against the agent's combined
+    /// stdout and threads the resulting `Vec<Finding>` through
+    /// `GateInputs`. A well-formed `LOOM_CONCERN` paired with one or
+    /// more streamed `LOOM_FINDING:` lines MUST route to
+    /// `RecoveryCause::ReviewConcern { summary, findings }` (rendered
+    /// via [`PreviousFailure::ReviewConcern`]), NOT
+    /// `BadWalk::ConcernWithoutFindings`. Without the wiring, the
+    /// `..GateInputs::default()` shape leaves the streamed-findings vec
+    /// empty and the `LOOM_CONCERN` collapses to the
+    /// `ConcernWithoutFindings` BadWalk variant.
+    #[test]
+    fn classify_review_phase_invokes_parse_walk_output_and_threads_findings_through_gate_inputs() {
+        let finding_line = r#"LOOM_FINDING: {"token":"verifier-bypass","bonds":["harness"],"target":{"kind":"Annotation","target_string":"cargo test --lib sample"},"evidence":"test mocks the agent backend"}"#;
+        let concern_line = r#"LOOM_CONCERN: {"summary":"reviewer flagged a verifier-bypass"}"#;
+        let stdout = format!("{finding_line}\n{concern_line}\n");
+        let walk =
+            WalkOutput::from_stdout(&stdout, DispatchScope::PerBead, &AcceptAllFindingValidator);
+        assert_eq!(
+            walk.findings().len(),
+            1,
+            "parse_walk_output must thread the streamed finding through WalkOutput",
+        );
+        match classify_review_phase(&walk, 0) {
+            ReviewOutcome::Incomplete { detail } => {
+                assert!(
+                    detail.contains("reviewer flagged a verifier-bypass"),
+                    "ReviewConcern summary missing from detail: {detail}",
+                );
+                assert!(
+                    detail.contains("verifier-bypass"),
+                    "ReviewConcern finding token missing from detail: {detail}",
+                );
+                assert!(
+                    detail.contains("test mocks the agent backend"),
+                    "ReviewConcern finding evidence missing from detail: {detail}",
+                );
+                assert!(
+                    !detail.contains("ConcernWithoutFindings"),
+                    "must NOT collapse to BadWalk::ConcernWithoutFindings — \
+                     streamed_findings were threaded through GateInputs: {detail}",
+                );
+            }
+            other => panic!("expected Incomplete (ReviewConcern), got {other:?}"),
+        }
+    }
+
     /// Behavioral matrix (D7 layer 2) per `specs/gate.md` §
     /// *Verification surface*: the 24-cell (stream-shape ×
     /// terminal-shape) cross-product is the load-bearing class
