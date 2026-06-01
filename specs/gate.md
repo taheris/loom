@@ -2627,7 +2627,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   emit `LOOM_CLARIFY` for no-progress cases; the bead's acceptance
   criterion is "agent processed the batch", not "every finding
   individually resolved"
-  [judge](specs/agent/batch_acceptance_is_agent_processed.md)
+  [judge](agent/batch_acceptance_is_agent_processed.md)
 - `mint --bead <id>` walks the LLM rubric only, not the deterministic
   verifiers; verify-side findings have already been handled by the
   preceding `verify --bead <id>` step in the loop
