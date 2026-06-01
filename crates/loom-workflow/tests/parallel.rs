@@ -268,12 +268,14 @@ async fn parallel_merge_back() -> Result<()> {
     Ok(())
 }
 
-/// Acceptance: on agent failure the per-bead worktree branch is cleaned up
-/// (deleted) and the bead is queued for retry per the retry policy. The
-/// `BatchResult::AgentFailed` variant carries the error body the caller
-/// threads back into the next attempt as `previous_failure`.
+/// Acceptance (`specs/harness.md` § Verdict Gate —
+/// `workspace_persists_on_all_failure_paths`): on agent failure the per-bead
+/// worktree and its branch are PRESERVED on disk (not removed) so a partial
+/// diff survives for recovery and the next `bd ready` re-dispatch can reuse
+/// the clone. The `BatchResult::AgentFailed` variant carries the error body
+/// the caller threads back into the next attempt as `previous_failure`.
 #[tokio::test]
-async fn parallel_failure_cleanup() -> Result<()> {
+async fn parallel_failure_preserves_worktree() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
@@ -325,14 +327,28 @@ async fn parallel_failure_cleanup() -> Result<()> {
     let loom = loom_path(repo.path());
     for slot in &slots {
         assert!(
-            !slot.worktree.path.exists(),
-            "worktree {:?} should be cleaned up on agent failure",
+            slot.worktree.path.exists(),
+            "worktree {:?} must be preserved on agent failure for recovery",
             slot.worktree.path,
         );
+        // The agent's commits live on the bead branch inside the preserved
+        // clone (the failure path never fetches the branch into the loom
+        // repo), so the bead branch must still resolve there.
+        let clone_branches = git_capture(
+            &slot.worktree.path,
+            &["branch", "--list", &slot.worktree.branch],
+        )?;
+        assert!(
+            !clone_branches.trim().is_empty(),
+            "bead branch {} must survive in the preserved clone (got: {:?})",
+            slot.worktree.branch,
+            clone_branches,
+        );
+        // Nothing leaks into the loom integration repo on a failed bead.
         let branches = git_capture(&loom, &["branch", "--list", &slot.worktree.branch])?;
         assert!(
             branches.trim().is_empty(),
-            "branch {} should be deleted after agent failure (got: {:?})",
+            "branch {} must not appear in the loom repo after agent failure (got: {:?})",
             slot.worktree.branch,
             branches,
         );
@@ -351,6 +367,104 @@ async fn parallel_failure_cleanup() -> Result<()> {
             !loom.join(&file).exists(),
             "{} must not appear on the integration branch after agent failure",
             file,
+        );
+    }
+    Ok(())
+}
+
+/// Spec contract `[test]` annotation (`specs/harness.md` § Success Criteria —
+/// `workspace_persists_on_all_failure_paths`): every non-merged exit
+/// (`Failure`, `Retry`, `Blocked`, `Clarify`) leaves the per-bead workspace
+/// and its branch on disk so a partial diff survives for recovery and the
+/// next `bd ready` re-dispatch reuses the clone. Removing it would force a
+/// full re-implementation of an agent that stopped mid-edit.
+#[tokio::test]
+async fn workspace_persists_on_all_failure_paths() -> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("harness");
+    let beads = vec![
+        fake_bead("lm-fail"),
+        fake_bead("lm-retry"),
+        fake_bead("lm-block"),
+        fake_bead("lm-clarify"),
+    ];
+    let slots = create_worktrees(&client, &label, beads.clone()).await?;
+
+    // Each agent committed partial work on its bead branch before stopping.
+    for slot in &slots {
+        let file = format!("{}.partial", slot.bead.id);
+        std::fs::write(slot.worktree.path.join(&file), "partial work\n")?;
+        git(&slot.worktree.path, &["add", &file])?;
+        git(
+            &slot.worktree.path,
+            &[
+                "commit",
+                "-q",
+                "-m",
+                &format!("partial for {}", slot.bead.id),
+            ],
+        )?;
+    }
+
+    let outcomes = [
+        AgentOutcome::Failure {
+            error: "boom".to_string(),
+        },
+        AgentOutcome::Retry {
+            reason: "stuck".to_string(),
+        },
+        AgentOutcome::Blocked {
+            reason: "needs a human".to_string(),
+        },
+        AgentOutcome::Clarify {
+            question: "which path?".to_string(),
+        },
+    ];
+    let batch_slots: Vec<BatchSlot> = slots
+        .iter()
+        .zip(outcomes)
+        .map(|(w, outcome)| BatchSlot {
+            bead: w.bead.clone(),
+            worktree: w.worktree.clone(),
+            outcome,
+        })
+        .collect();
+
+    let stub = beads_push_stub(repo.path());
+    let outcome = merge_back(&client, &stub, batch_slots).await?;
+    assert_eq!(outcome.results.len(), 4);
+
+    // Every result routes to a non-merged variant AND preserves its clone.
+    for slot in &slots {
+        let result = outcome
+            .results
+            .iter()
+            .find(|r| match r {
+                BatchResult::AgentFailed { bead, .. }
+                | BatchResult::AgentBlocked { bead, .. }
+                | BatchResult::AgentClarify { bead, .. } => *bead == slot.bead.id,
+                _ => false,
+            })
+            .unwrap_or_else(|| panic!("non-merged result for {}", slot.bead.id));
+        assert!(
+            !matches!(result, BatchResult::Merged { .. }),
+            "{} must not merge: {result:?}",
+            slot.bead.id,
+        );
+        assert!(
+            slot.worktree.path.exists(),
+            "worktree {:?} must persist on a non-merged exit",
+            slot.worktree.path,
+        );
+        let branch = git_capture(
+            &slot.worktree.path,
+            &["branch", "--list", &slot.worktree.branch],
+        )?;
+        assert!(
+            !branch.trim().is_empty(),
+            "bead branch {} must survive in the preserved clone",
+            slot.worktree.branch,
         );
     }
     Ok(())

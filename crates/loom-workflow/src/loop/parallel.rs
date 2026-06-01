@@ -454,12 +454,19 @@ async fn merge_back_one(
                 }
             }
         }
+        // Every non-merged exit preserves the bead workspace (and any
+        // staged-but-uncommitted diff) on disk: the per-bead-close lifecycle
+        // reaps it at `bd close` via `GitClient::sweep_orphan_bead_clones`,
+        // and the next `bd ready` re-dispatch reuses it through the idempotent
+        // `create_worktree` + `reset_bead_clone`. Removing it here would
+        // destroy an agent's partial work and force a full re-implementation
+        // (`specs/harness.md` § Verdict Gate — workspace persists on all
+        // failure paths).
         AgentOutcome::Failure { error }
         | AgentOutcome::InfraPreflight { error }
         | AgentOutcome::InfraMidSession { error }
         | AgentOutcome::UnknownProfile { error } => {
-            warn!(bead = %bead.id, %error, "agent failed — cleaning up worktree");
-            git.remove_worktree(&worktree.path).await?;
+            warn!(bead = %bead.id, %error, "agent failed — worktree preserved for recovery");
             Ok(BatchResult::AgentFailed {
                 bead: bead.id,
                 error,
@@ -472,24 +479,21 @@ async fn merge_back_one(
             // `AgentFailed` here. The next `bd ready` poll re-dispatches
             // the bead; the retry-exhausted escalation lives in the
             // sequential path only.
-            warn!(bead = %bead.id, %reason, "agent emitted LOOM_RETRY — cleaning up worktree");
-            git.remove_worktree(&worktree.path).await?;
+            warn!(bead = %bead.id, %reason, "agent emitted LOOM_RETRY — worktree preserved for recovery");
             Ok(BatchResult::AgentFailed {
                 bead: bead.id,
                 error: format!("agent-retry: {reason}"),
             })
         }
         AgentOutcome::Blocked { reason } => {
-            warn!(bead = %bead.id, %reason, "agent emitted LOOM_BLOCKED — cleaning up worktree");
-            git.remove_worktree(&worktree.path).await?;
+            warn!(bead = %bead.id, %reason, "agent emitted LOOM_BLOCKED — worktree preserved for recovery");
             Ok(BatchResult::AgentBlocked {
                 bead: bead.id,
                 reason,
             })
         }
         AgentOutcome::Clarify { question } => {
-            warn!(bead = %bead.id, %question, "agent emitted LOOM_CLARIFY — cleaning up worktree");
-            git.remove_worktree(&worktree.path).await?;
+            warn!(bead = %bead.id, %question, "agent emitted LOOM_CLARIFY — worktree preserved for recovery");
             Ok(BatchResult::AgentClarify {
                 bead: bead.id,
                 question,

@@ -15,3 +15,50 @@ pub mod pi;
 pub use claude::ClaudeBackend;
 pub use direct::DirectBackend;
 pub use pi::PiBackend;
+
+/// Apply [`SpawnConfig::launcher_env`] to the `wrapix spawn` child process
+/// before it is spawned. These pairs (`WRAPIX_DEPLOY_KEY` /
+/// `WRAPIX_SIGNING_KEY` → host key paths) are read by the wrapix launcher to
+/// bind-mount the deploy + signing keys into the bead container; they are
+/// deliberately **not** part of [`SpawnConfig::env`] (the in-container
+/// allowlist) and never reach the spawn-config JSON. Without this, loop
+/// agents boot with no git keys and cannot sign or push (`specs/harness.md`
+/// § Commit signing).
+///
+/// [`SpawnConfig::launcher_env`]: loom_driver::agent::SpawnConfig::launcher_env
+/// [`SpawnConfig::env`]: loom_driver::agent::SpawnConfig::env
+pub(crate) fn apply_launcher_env(
+    cmd: &mut tokio::process::Command,
+    launcher_env: &[(String, String)],
+) {
+    cmd.envs(launcher_env.iter().map(|(k, v)| (k, v)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_launcher_env;
+
+    /// `apply_launcher_env` places each pair on the child process
+    /// environment — the load-bearing half of Bug 1's fix. Verified by
+    /// spawning `printenv` and reading the value back rather than
+    /// inspecting `Command` (which exposes no env getter), so a regression
+    /// that drops the call surfaces here.
+    #[tokio::test]
+    async fn apply_launcher_env_sets_child_process_env() {
+        let mut cmd = tokio::process::Command::new("printenv");
+        cmd.arg("WRAPIX_SIGNING_KEY");
+        apply_launcher_env(
+            &mut cmd,
+            &[(
+                "WRAPIX_SIGNING_KEY".to_string(),
+                "/home/op/.ssh/deploy_keys/k-signing".to_string(),
+            )],
+        );
+        let output = cmd.output().await.expect("spawn printenv");
+        assert!(output.status.success(), "printenv must find the var");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "/home/op/.ssh/deploy_keys/k-signing",
+        );
+    }
+}

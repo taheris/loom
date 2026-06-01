@@ -19,6 +19,8 @@ use loom_driver::agent::{
 };
 use loom_events::ParsedAgentEvent;
 use loom_events::identifier::ToolCallId;
+
+use crate::apply_launcher_env;
 use serde::{Deserialize, Serialize};
 use tokio::io::BufWriter;
 use tokio::process::Command;
@@ -62,7 +64,8 @@ impl AgentBackend for DirectBackend {
             "direct backend spawn",
         );
 
-        let cmd = build_wrapix_command(&wrapix_bin, &spawn_config_path);
+        let mut cmd = build_wrapix_command(&wrapix_bin, &spawn_config_path);
+        apply_launcher_env(&mut cmd, &config.launcher_env);
         spawn_session(cmd).await
     }
 }
@@ -315,6 +318,7 @@ mod tests {
             shutdown_grace: None,
             handshake_timeout: None,
             stall_warn_interval: None,
+            launcher_env: Vec::new(),
         }
     }
 

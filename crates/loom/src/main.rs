@@ -2442,6 +2442,12 @@ async fn run_parallel_loop(
         loom_cfg.integration_branch.clone(),
     )?
     .with_hook_timeout(loom_cfg.git_hook_timeout());
+    // Resolve the host deploy/signing key paths once for the whole batch —
+    // every bead shares the same loom workspace, so the launcher env is
+    // identical across slots. Each `wrapix spawn` child receives these so the
+    // wrapper mounts the keys into the bead container (Bug 1; `specs/harness.md`
+    // § Commit signing).
+    let launcher_env = git.launcher_key_env()?;
     let logs_root = workspace.join(".loom/logs");
     let logs_root_for_merge = logs_root.clone();
     let label_for_closure = label.clone();
@@ -2462,6 +2468,7 @@ async fn run_parallel_loop(
             let style_rules_inner = style_rules.clone();
             let workspace_inner = workspace_for_closure.clone();
             let loom_cfg_inner = loom_cfg.clone();
+            let launcher_env_inner = launcher_env.clone();
             async move {
                 // Marker is the primary signal here too — without it, parallel
                 // mode would swallow `LOOM_BLOCKED` / `LOOM_CLARIFY` self-reports
@@ -2478,6 +2485,7 @@ async fn run_parallel_loop(
                     &style_rules_inner,
                     &workspace_inner,
                     &loom_cfg_inner,
+                    launcher_env_inner,
                 )
                 .await
                 {
@@ -2619,6 +2627,7 @@ async fn dispatch_for_slot(
     style_rules: &str,
     loom_workspace: &Path,
     loom_cfg: &loom_driver::config::LoomTopConfig,
+    launcher_env: Vec<(String, String)>,
 ) -> anyhow::Result<(SessionOutcome, Option<ExitSignal>)> {
     use loom_driver::scratch::ScratchSession;
     use loom_workflow::r#loop::{
@@ -2663,6 +2672,7 @@ async fn dispatch_for_slot(
         extra_env,
         vec![],
         mounts,
+        launcher_env,
     )?;
 
     let sink = open_bead_sink(logs_root, label, &slot.bead.id)?;

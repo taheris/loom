@@ -37,6 +37,7 @@ use tracing::{debug, error, info, warn};
 
 use super::messages::{PiEnvelope, PiResponse, SetThinkingLevelCommand};
 use super::parser::PiParser;
+use crate::apply_launcher_env;
 
 /// Env var that overrides the launcher binary. Production resolves
 /// `wrapix` from `PATH`; tests substitute the mock pi script via this.
@@ -92,6 +93,7 @@ impl AgentBackend for PiBackend {
             .arg("--spawn-config")
             .arg(&spawn_config_path)
             .arg("--stdio");
+        apply_launcher_env(&mut cmd, &config.launcher_env);
 
         spawn_with_handshake(
             cmd,
@@ -507,6 +509,7 @@ mod tests {
             shutdown_grace: None,
             handshake_timeout: None,
             stall_warn_interval: None,
+            launcher_env: Vec::new(),
         }
     }
 

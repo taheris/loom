@@ -24,7 +24,7 @@ use loom_driver::bd::{
 };
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomTopConfig, Phase};
-use loom_driver::git::{CreatedWorktree, GitClient, MergeResult};
+use loom_driver::git::{GitClient, MergeResult};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
 use loom_driver::logging::phase_log_path;
@@ -356,7 +356,6 @@ where
         }) {
             Ok(p) => p,
             Err(e) => {
-                cleanup_worktree(&self.git, &worktree).await?;
                 return Err(LoopError::Protocol(ProtocolError::Io(
                     std::io::Error::other(e),
                 )));
@@ -370,7 +369,6 @@ where
         ) {
             Ok(s) => s,
             Err(source) => {
-                cleanup_worktree(&self.git, &worktree).await?;
                 return Err(LoopError::Protocol(ProtocolError::Io(source)));
             }
         };
@@ -379,6 +377,10 @@ where
             mounts.push(spec);
         }
         let extra_env = self.loom_cfg.container_sccache_env();
+        // Host key paths handed to the `wrapix spawn` launcher so it mounts
+        // the deploy + signing keys into the bead container; the agent boots
+        // without git keys otherwise (`specs/harness.md` § Commit signing).
+        let launcher_env = self.git.launcher_key_env()?;
         let spawn_config = match build_spawn_config_from_manifest(
             &self.manifest,
             bead,
@@ -390,18 +392,17 @@ where
             extra_env,
             vec![],
             mounts,
+            launcher_env,
         ) {
             Ok(cfg) => cfg,
             Err(ProfileError::UnknownProfile { name, .. }) => {
                 drop(scratch);
-                cleanup_worktree(&self.git, &worktree).await?;
                 return Ok(AgentOutcome::UnknownProfile {
                     error: format_unknown_profile_error(&name, &self.manifest),
                 });
             }
             Err(e) => {
                 drop(scratch);
-                cleanup_worktree(&self.git, &worktree).await?;
                 return Err(LoopError::Profile(e));
             }
         };
@@ -435,7 +436,7 @@ where
                 warn!(
                     bead = %bead.id,
                     dirty_count = dirty.len(),
-                    "tree-not-clean: cleaning worktree and stashing TreeNotClean for the next attempt",
+                    "tree-not-clean: preserving worktree and stashing TreeNotClean for the next attempt",
                 );
                 self.emit_to_log(
                     DriverKind::TreeNotClean,
@@ -449,7 +450,12 @@ where
                         "dirty_paths": dirty,
                     }),
                 );
-                cleanup_worktree(&self.git, &worktree).await?;
+                // The bead workspace persists on every non-merged exit
+                // (`specs/harness.md` § Verdict Gate — the per-bead-close
+                // lifecycle preserves the clone until `bd close`). The next
+                // attempt reuses it via the idempotent `create_worktree` +
+                // `reset_bead_clone`, which drops these dirty leftovers while
+                // keeping any committed work on the bead branch.
                 self.stashed_previous_failure =
                     Some(PreviousFailure::TreeNotClean { dirty_paths: dirty });
                 return Ok(AgentOutcome::Failure {
@@ -604,7 +610,14 @@ where
                     reason: reason.clone(),
                 });
             }
-            cleanup_worktree(&self.git, &worktree).await?;
+            // Preserve the bead workspace (and any staged-but-uncommitted
+            // diff) on every non-merged exit — agent failure, retry, block,
+            // or clarify. The per-bead-close lifecycle reaps it at `bd close`
+            // (`GitClient::sweep_orphan_bead_clones`); a retry reuses it via
+            // the idempotent `create_worktree`. Removing it here would force a
+            // full re-implementation of an agent that blocked mid-edit
+            // (`specs/harness.md` § Verdict Gate — workspace persists on all
+            // failure paths).
             Ok(outcome)
         }
     }
@@ -891,17 +904,6 @@ fn extract_lines_with_prefix(stdout: &str, prefix: &str) -> Option<String> {
     } else {
         Some(out.join("\n"))
     }
-}
-
-/// Remove the per-bead clone directory. Used by the run-phase verdict gate
-/// on every non-merged exit path (agent failure, tree-not-clean recovery,
-/// profile-resolution failure) so a stale workspace never survives a bead's
-/// retry chain. The bead branch lives only inside the clone (it is pushed
-/// back to the main repo on the success path), so removing the clone
-/// directory is sufficient — no `git branch -D` is needed.
-async fn cleanup_worktree(git: &GitClient, worktree: &CreatedWorktree) -> Result<(), LoopError> {
-    git.remove_worktree(&worktree.path).await?;
-    Ok(())
 }
 
 /// Render the operator-facing note body for the `unknown-profile`

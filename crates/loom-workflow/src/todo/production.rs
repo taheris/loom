@@ -279,6 +279,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
                 shutdown_grace: None,
                 handshake_timeout: None,
                 stall_warn_interval: None,
+                launcher_env: Vec::new(),
             },
             scratch,
         })

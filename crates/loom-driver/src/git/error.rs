@@ -49,6 +49,12 @@ pub enum GitError {
     /// $WRAPIX_SIGNING_KEY points at a non-existent file: {path}
     SigningKeyMissing { path: PathBuf },
 
+    /// $WRAPIX_DEPLOY_KEY points at a non-existent file: {path}
+    DeployKeyMissing { path: PathBuf },
+
+    /// signing key {path} has no file name to map into the container keys dir
+    SigningKeyNoName { path: PathBuf },
+
     /// `ssh-keygen -y` failed deriving the public half of {key}: {stderr}
     SshKeygen { key: PathBuf, stderr: String },
 }

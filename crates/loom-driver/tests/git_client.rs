@@ -1146,9 +1146,15 @@ fn local_config(repo: &Path, key: &str) -> Result<Option<String>> {
 /// Spec contract `[test]` annotation (`specs/harness.md` § Success
 /// Criteria · Commit signing): `GitClient::create_worktree` writes the
 /// signing block into the bead clone's local `.git/config` when a signing
-/// key resolves. Driven through the test-only override seam because
-/// `$WRAPIX_SIGNING_KEY` cannot be set under edition 2024's unsafe
-/// `env::set_var` with `unsafe_code` forbidden.
+/// key resolves, using IN-CONTAINER paths (the committing agent runs inside
+/// the wrapix sandbox, where the host key path does not exist):
+/// `user.signingkey` → `/etc/wrapix/keys/<host-key-basename>` and
+/// `gpg.ssh.allowedSignersFile` → `/workspace/.git/loom-allowed-signers`.
+/// The derived allowed_signers file is still physically written to the host
+/// clone's `.git/` (visible in-container under `/workspace/.git/`). Driven
+/// through the test-only override seam because `$WRAPIX_SIGNING_KEY` cannot
+/// be set under edition 2024's unsafe `env::set_var` with `unsafe_code`
+/// forbidden.
 #[tokio::test]
 async fn create_worktree_writes_signing_gitconfig() -> Result<()> {
     let repo = init_repo()?;
@@ -1164,14 +1170,19 @@ async fn create_worktree_writes_signing_gitconfig() -> Result<()> {
         local_config(&created.path, "gpg.format")?.as_deref(),
         Some("ssh"),
     );
+    let key_basename = key.file_name().expect("key has a basename");
+    let expected_container_key = std::path::Path::new("/etc/wrapix/keys").join(key_basename);
     assert_eq!(
         local_config(&created.path, "user.signingkey")?.as_deref(),
-        Some(key.to_string_lossy().as_ref()),
+        Some(expected_container_key.to_string_lossy().as_ref()),
+        "user.signingkey must be the in-container key path, not the host path",
     );
     assert_eq!(
         local_config(&created.path, "commit.gpgsign")?.as_deref(),
         Some("true"),
     );
+    // The file lands on the host clone's `.git/`, but the config value points
+    // at its in-container view.
     let signers = created.path.join(".git").join("loom-allowed-signers");
     assert!(
         signers.is_file(),
@@ -1179,7 +1190,8 @@ async fn create_worktree_writes_signing_gitconfig() -> Result<()> {
     );
     assert_eq!(
         local_config(&created.path, "gpg.ssh.allowedSignersFile")?.as_deref(),
-        Some(signers.to_string_lossy().as_ref()),
+        Some("/workspace/.git/loom-allowed-signers"),
+        "allowedSignersFile must be the in-container path",
     );
     Ok(())
 }
@@ -1203,5 +1215,43 @@ async fn create_worktree_omits_signing_block_when_no_key() -> Result<()> {
 
     assert_eq!(local_config(&created.path, "user.signingkey")?, None);
     assert_eq!(local_config(&created.path, "gpg.format")?, None);
+    Ok(())
+}
+
+/// `GitClient::launcher_key_env` surfaces the resolved signing key as a
+/// `WRAPIX_SIGNING_KEY` → HOST-path pair so loom can hand it to the `wrapix
+/// spawn` launcher (Bug 1: loop agents otherwise boot with no git keys).
+/// Unlike the bead-clone gitconfig (which maps to in-container paths), the
+/// launcher env carries the host path verbatim — wrapix performs the
+/// host→container mapping itself. Driven through the signing-key override
+/// seam; the deploy key is absent because the test repo's origin is a local
+/// path (not GitHub), so the deploy-key fallback is skipped.
+#[tokio::test]
+async fn launcher_key_env_exposes_signing_key_host_path() -> Result<()> {
+    if std::env::var_os("WRAPIX_DEPLOY_KEY").is_some() {
+        // Ambient env would inject a deploy-key entry; skip to keep the
+        // assertion on the absent-deploy-key path deterministic.
+        return Ok(());
+    }
+    let repo = init_repo()?;
+    let key = gen_signing_key(repo.path())?;
+    let mut client = GitClient::open(repo.path())?;
+    client.set_signing_key_override(key.clone());
+
+    let env = client.launcher_key_env()?;
+
+    let signing = env
+        .iter()
+        .find(|(k, _)| k == "WRAPIX_SIGNING_KEY")
+        .expect("WRAPIX_SIGNING_KEY must be present");
+    assert_eq!(
+        signing.1,
+        key.to_string_lossy(),
+        "launcher env must carry the HOST signing-key path verbatim",
+    );
+    assert!(
+        !env.iter().any(|(k, _)| k == "WRAPIX_DEPLOY_KEY"),
+        "no deploy key resolves for a non-GitHub origin: {env:?}",
+    );
     Ok(())
 }

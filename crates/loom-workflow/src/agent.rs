@@ -885,6 +885,7 @@ mod tests {
             shutdown_grace: None,
             handshake_timeout: None,
             stall_warn_interval: Some(Duration::ZERO),
+            launcher_env: Vec::new(),
         };
         let result =
             run_agent_classified::<FailingBackend>(&cfg, Some(sink), None, None, Some(b)).await;

@@ -359,13 +359,36 @@ loud):
 Auth is handled by the `GIT_SSH_COMMAND` env var wrapix already
 sets; loom inherits it and does not duplicate auth configuration.
 Deploy-key resolution (same precedence with the suffix dropped:
-`<repo>-<host>` instead of `<repo>-<host>-signing`) is needed only
-to confirm presence on the host — the key path itself is consumed
-by wrapix, not by loom's git invocations.
+`<repo>-<host>` instead of `<repo>-<host>-signing`) yields the host
+key path loom hands to the `wrapix spawn` **launcher** environment
+(see *Launcher key environment* below); loom's own git invocations
+never read it — the key is consumed by wrapix to mount it into the
+bead container.
+
+**Launcher key environment.** A bead container's agent commits and
+pushes from inside the sandbox, so it needs the deploy + signing
+keys mounted in. wrapix mounts them only when their host paths are
+named in the launcher process environment (`$WRAPIX_DEPLOY_KEY` /
+`$WRAPIX_SIGNING_KEY`) — the in-container `SpawnConfig.env`
+allowlist cannot carry them, because that is the env wrapix builds
+*inside* the container, and the host key paths are meaningless
+there. At bead dispatch the driver resolves both keys against the
+loom workspace (`GitClient::launcher_key_env`, same two-tier
+precedence as signing) and carries the resolved HOST paths on
+`SpawnConfig.launcher_env`; the backend sets them on the `wrapix
+spawn` child process before exec. `launcher_env` is host-only
+state: it is `#[serde(skip)]`-excluded from the spawn-config JSON
+so host key paths never land in a world-readable file, and wrapix
+re-points `$WRAPIX_DEPLOY_KEY` / `$WRAPIX_SIGNING_KEY` to the fixed
+in-container destinations (`/etc/wrapix/keys/<basename>`) once the
+keys are mounted. A key that does not resolve is simply omitted —
+`wrapix spawn` fails loudly on its own when a key it needs is
+absent, and the "wrapix isn't set up on this host" path stays
+non-fatal on loom's side.
 
 **Workspace gitconfig writes.** When `loom init` materializes the
-loom workspace and when `GitClient::create_worktree` materializes a
-bead clone, the driver writes a local `.git/config` block:
+loom workspace, the driver writes a local `.git/config` block keyed
+to **host** paths (the loom workspace is operated on the host):
 
 ```ini
 [gpg]
@@ -378,10 +401,35 @@ bead clone, the driver writes a local `.git/config` block:
     gpgsign = true
 ```
 
-Local config beats the operator's `~/.gitconfig` in git's hierarchy,
-so this block is the sole authority on signing behavior inside the
-loom workspace and every bead clone — operator GPG/passphrase setup
-is bypassed without modification.
+When `GitClient::create_worktree` materializes a bead clone, it
+writes the same four keys but with **in-container** path values,
+because the agent that consumes the config and signs commits runs
+inside the wrapix sandbox where the host paths do not exist:
+
+```ini
+[gpg]
+    format = ssh
+[user]
+    signingkey = /etc/wrapix/keys/<signing-key basename>
+[gpg "ssh"]
+    allowedSignersFile = /workspace/.git/loom-allowed-signers
+[commit]
+    gpgsign = true
+```
+
+`/etc/wrapix/keys/<basename>` is the fixed destination wrapix
+bind-mounts the signing key to — the host source path never crosses
+the boundary, only the basename is preserved (wrapix
+`specs/security.md` § Credential Surfaces). `/workspace` is the
+in-container mount point of the bead clone, so the allowed_signers
+file the driver writes on the host at
+`<clone>/.git/loom-allowed-signers` is visible in-container at
+`/workspace/.git/loom-allowed-signers`. The public half is still
+derived from the host key (the only place the private key exists at
+write time). Local config beats the operator's `~/.gitconfig` in
+git's hierarchy, so this block is the sole authority on signing
+behavior inside the loom workspace and every bead clone — operator
+GPG/passphrase setup is bypassed without modification.
 
 **allowed_signers derivation.** Wrapix derives the allowed_signers
 file inside the container via `ssh-keygen -y -f $SIGNING_KEY` against
@@ -2710,10 +2758,11 @@ Criteria.
       `origin/<integration-branch>`
   [test](origin_push_retries_non_fast_forward)
 - On rebase abort, audit-fail rollback, signature-verification
-      failure, or post-integration push failure, the bead workspace
+      failure, post-integration push failure, agent failure, retry,
+      tree-not-clean recovery, block, or clarify, the bead workspace
       persists (the default per-bead-close behavior) and the bead is
       routed to `Blocked` or `Clarify` per the verdict gate
-  [test?](workspace_persists_on_all_failure_paths)
+  [test](workspace_persists_on_all_failure_paths)
 - Bead containers receive the host `wrapix-beads` dolt socket as a
       single-file bind mount at `/workspace/.wrapix/dolt.sock` via
       `SpawnConfig.mounts`, replacing the host-side hardlink shim
@@ -2741,9 +2790,14 @@ Criteria.
       `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` fallback
       resolves
   [test](loom_init_writes_signing_gitconfig)
-- `GitClient::create_worktree` writes the same signing block into
-      each bead clone's local `.git/config` at materialization time,
-      using the same resolution rule
+- `GitClient::create_worktree` writes the signing block into each
+      bead clone's local `.git/config` at materialization time using
+      **in-container** path values — `user.signingkey` at
+      `/etc/wrapix/keys/<signing-key basename>` and
+      `gpg.ssh.allowedSignersFile` at
+      `/workspace/.git/loom-allowed-signers` — because the agent that
+      signs commits runs inside the sandbox where the host paths do
+      not exist
   [test](create_worktree_writes_signing_gitconfig)
 - The fallback keyname is derived as `<repo>-<host>` where `<repo>`
       is parsed from the origin URL (`github.com[:/]<user>/<repo>`)
@@ -2784,6 +2838,22 @@ Criteria.
 - When the signing key does not resolve, signature verification is
       skipped at both passes and the integration step proceeds
   [test?](signature_verification_skipped_when_no_key)
+- `GitClient::launcher_key_env` surfaces each resolved key as a
+      `WRAPIX_DEPLOY_KEY` / `WRAPIX_SIGNING_KEY` → HOST-path pair so
+      loom can hand them to the `wrapix spawn` launcher; an
+      unresolved key is omitted rather than erroring
+  [test](launcher_key_env_exposes_signing_key_host_path)
+- Bead dispatch threads the resolved launcher keys onto
+      `SpawnConfig.launcher_env` and keeps them out of the
+      in-container `SpawnConfig.env` allowlist
+  [test](launcher_env_threads_onto_spawn_config_not_container_env)
+- `SpawnConfig.launcher_env` is `#[serde(skip)]`-excluded from the
+      spawn-config JSON so host key paths never leak into the
+      world-readable file the wrapper reads
+  [test](launcher_env_is_never_serialized)
+- Each backend applies `SpawnConfig.launcher_env` to the `wrapix
+      spawn` child process environment before exec
+  [test](apply_launcher_env_sets_child_process_env)
 
 ### Workflow commands
 

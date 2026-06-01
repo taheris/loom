@@ -420,6 +420,7 @@ where
             shutdown_grace: None,
             handshake_timeout: None,
             stall_warn_interval: None,
+            launcher_env: Vec::new(),
         };
         let result = (self.spawn)(spawn_config).await;
         drop(scratch);

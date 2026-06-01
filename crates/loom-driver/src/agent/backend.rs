@@ -112,6 +112,18 @@ pub struct SpawnConfig {
         with = "duration_secs_opt"
     )]
     pub stall_warn_interval: Option<Duration>,
+    /// Host-side environment loom sets on the `wrapix spawn` **launcher**
+    /// process (not the in-container env — that is [`SpawnConfig::env`]).
+    /// Carries `WRAPIX_DEPLOY_KEY` / `WRAPIX_SIGNING_KEY` pointing at the
+    /// host key paths so `wrapix spawn` can bind-mount the keys into the
+    /// bead container; the host paths never cross the boundary (wrapix
+    /// `specs/security.md` § Credential Surfaces). `#[serde(skip)]`: this
+    /// never reaches the wrapper's spawn-config JSON — it is applied to the
+    /// child process environment by the backend before `wrapix spawn` runs,
+    /// and keeping it out of the on-disk JSON avoids leaking host key paths
+    /// into a world-readable file.
+    #[serde(skip)]
+    pub launcher_env: Vec<(String, String)>,
 }
 
 /// Env var name set by the driver in every bead container's
@@ -294,6 +306,7 @@ mod tests {
             shutdown_grace: None,
             handshake_timeout: None,
             stall_warn_interval: None,
+            launcher_env: Vec::new(),
         }
     }
 
@@ -568,6 +581,47 @@ mod tests {
             !obj.contains_key("mounts"),
             "mounts: empty must be omitted, got JSON: {json}",
         );
+    }
+
+    /// `launcher_env` is host-only state (deploy/signing key paths handed to
+    /// the `wrapix spawn` launcher) and must NEVER reach the spawn-config
+    /// JSON: it is the in-container `env` allowlist's host-side counterpart,
+    /// and leaking host key paths into a world-readable file is a security
+    /// regression. `#[serde(skip)]` enforces this — pin it so a future
+    /// derive change fails here, not in production.
+    #[test]
+    fn launcher_env_is_never_serialized() {
+        let mut cfg = sample_config(None);
+        cfg.launcher_env = vec![
+            (
+                "WRAPIX_DEPLOY_KEY".into(),
+                "/home/op/.ssh/deploy_keys/k".into(),
+            ),
+            (
+                "WRAPIX_SIGNING_KEY".into(),
+                "/home/op/.ssh/deploy_keys/k-signing".into(),
+            ),
+        ];
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        assert!(
+            !json.contains("launcher_env"),
+            "launcher_env key must be absent from JSON: {json}",
+        );
+        assert!(
+            !json.contains("deploy_keys"),
+            "host key paths must not leak into the spawn-config JSON: {json}",
+        );
+    }
+
+    /// `launcher_env` deserializes to an empty vector via `#[serde(skip)]`'s
+    /// `Default` even when present in the wire bytes — the field is a
+    /// host-process detail the wrapper neither emits nor consumes.
+    #[test]
+    fn launcher_env_defaults_to_empty_on_deserialize() {
+        let cfg = sample_config(None);
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.launcher_env.is_empty());
     }
 
     /// Legacy fixtures without a `mounts` key parse as an empty vector —

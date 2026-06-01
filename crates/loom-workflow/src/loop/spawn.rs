@@ -71,6 +71,7 @@ fn build_spawn_config(
     extra_env: Vec<(String, String)>,
     agent_args: Vec<String>,
     mounts: Vec<MountSpec>,
+    launcher_env: Vec<(String, String)>,
 ) -> SpawnConfig {
     let mut env = extra_env;
     set_loom_inside(&mut env);
@@ -93,6 +94,7 @@ fn build_spawn_config(
         shutdown_grace: None,
         handshake_timeout: None,
         stall_warn_interval: None,
+        launcher_env,
     }
 }
 
@@ -107,6 +109,13 @@ fn build_spawn_config(
 /// profile silently. `phase_default` carries the per-phase fallback name
 /// (already chained through `[phase.run]` → `[phase.default]` → built-in
 /// `base` by `LoomConfig::agent_for`).
+///
+/// `launcher_env` carries host-only key paths (`WRAPIX_DEPLOY_KEY` /
+/// `WRAPIX_SIGNING_KEY`) onto [`SpawnConfig::launcher_env`] — resolve it via
+/// [`GitClient::launcher_key_env`] at the dispatch site so the backend can
+/// set them on the `wrapix spawn` child process.
+///
+/// [`GitClient::launcher_key_env`]: loom_driver::git::GitClient::launcher_key_env
 #[expect(clippy::too_many_arguments, reason = "explicit dispatch surface")]
 pub fn build_spawn_config_from_manifest(
     manifest: &ProfileImageManifest,
@@ -119,6 +128,7 @@ pub fn build_spawn_config_from_manifest(
     extra_env: Vec<(String, String)>,
     agent_args: Vec<String>,
     mounts: Vec<MountSpec>,
+    launcher_env: Vec<(String, String)>,
 ) -> Result<SpawnConfig, ProfileError> {
     let entry = resolve_profile_image(manifest, &bead.labels, override_, phase_default)?;
     Ok(build_spawn_config(
@@ -130,6 +140,7 @@ pub fn build_spawn_config_from_manifest(
         extra_env,
         agent_args,
         mounts,
+        launcher_env,
     ))
 }
 
@@ -192,6 +203,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
         )
         .expect("rust dispatch");
         let cfg_python = build_spawn_config_from_manifest(
@@ -202,6 +214,7 @@ mod tests {
             PathBuf::from("/work/lm-2"),
             "python prompt".into(),
             dir.path().join("scratch"),
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -242,6 +255,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
         )
         .expect("rust dispatch");
         let overridden = build_spawn_config_from_manifest(
@@ -252,6 +266,7 @@ mod tests {
             PathBuf::from("/work/lm-1"),
             "p".into(),
             dir.path().join("scratch"),
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -288,6 +303,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
         )
         .expect("sequential dispatch");
         let par = build_spawn_config_from_manifest(
@@ -298,6 +314,7 @@ mod tests {
             PathBuf::from("/repo-root/.loom/beads/lm-1"),
             prompt,
             dir.path().join("scratch"),
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -335,6 +352,7 @@ mod tests {
             "p".into(),
             dir.path().join("scratch"),
             vec![("WRAPIX_AGENT".into(), "claude".into())],
+            vec![],
             vec![],
             vec![],
         )
@@ -396,6 +414,7 @@ mod tests {
             vec![],
             vec![],
             vec![mount.clone()],
+            vec![],
         )
         .expect("dispatch");
         assert_eq!(
@@ -451,6 +470,7 @@ mod tests {
             cfg.container_sccache_env(),
             vec![],
             vec![mount.clone()],
+            vec![],
         )
         .expect("dispatch");
         assert!(
@@ -531,6 +551,7 @@ mod tests {
             cfg.container_sccache_env(),
             vec![],
             sccache_mount(&cfg).into_iter().collect(),
+            vec![],
         )
         .expect("dispatch");
         assert!(
@@ -550,6 +571,44 @@ mod tests {
         );
     }
 
+    /// The `launcher_env` passed at dispatch lands verbatim on
+    /// [`SpawnConfig::launcher_env`] (the host key paths a backend sets on
+    /// the `wrapix spawn` child) and stays out of the in-container `env`
+    /// allowlist. Bug 1: a loop agent boots without git keys unless this
+    /// threading holds.
+    #[test]
+    fn launcher_env_threads_onto_spawn_config_not_container_env() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = three_profile_manifest(dir.path());
+        let bead = bead_with_labels("lm-1", &["profile:rust"]);
+        let launcher_env = vec![(
+            "WRAPIX_SIGNING_KEY".to_string(),
+            "/home/op/.ssh/deploy_keys/loom-host-signing".to_string(),
+        )];
+
+        let cfg = build_spawn_config_from_manifest(
+            &manifest,
+            &bead,
+            None,
+            &base(),
+            PathBuf::from("/work/lm-1"),
+            "p".into(),
+            dir.path().join("scratch"),
+            vec![],
+            vec![],
+            vec![],
+            launcher_env.clone(),
+        )
+        .expect("dispatch");
+
+        assert_eq!(cfg.launcher_env, launcher_env);
+        assert!(
+            !cfg.env.iter().any(|(k, _)| k == "WRAPIX_SIGNING_KEY"),
+            "launcher keys must NOT leak into the in-container env allowlist: {:?}",
+            cfg.env,
+        );
+    }
+
     /// A bead with a `profile:X` not declared in the manifest fails
     /// loudly with [`ProfileError::UnknownProfile`] — no silent default.
     #[test]
@@ -566,6 +625,7 @@ mod tests {
             PathBuf::from("/work"),
             "p".into(),
             dir.path().join("scratch"),
+            vec![],
             vec![],
             vec![],
             vec![],

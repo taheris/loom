@@ -351,7 +351,13 @@ impl GitClient {
         ensure_wrapix_mount_dir(&path)?;
 
         // Resolve against the loom workspace (whose `origin` is GitHub), not
-        // the bead clone (whose `origin` is the loom workspace path).
+        // the bead clone (whose `origin` is the loom workspace path). The
+        // resolved key is a HOST path; the bead clone is bind-mounted into a
+        // wrapix container where the committing agent runs, so the signing
+        // config must reference the in-container key path
+        // (`/etc/wrapix/keys/<basename>`) rather than the host path —
+        // `write_signing_config_for_container` performs that mapping while
+        // still deriving the allowed_signers pubkey from the host key.
         let signing_target = path.clone();
         let signing_override = self.signing_key_override.clone();
         spawn_blocking(move || -> Result<(), GitError> {
@@ -360,13 +366,54 @@ impl GitClient {
                 None => super::signing::resolve_signing_key(&loom_workspace)?,
             };
             if let Some(key) = key {
-                super::signing::write_signing_config(&signing_target, &key)?;
+                super::signing::write_signing_config_for_container(&signing_target, &key)?;
             }
             Ok(())
         })
         .await??;
 
         Ok(CreatedWorktree { path, branch })
+    }
+
+    /// Resolve the host key paths loom must hand to `wrapix spawn` through
+    /// the **launcher** environment (the child-process env, not the
+    /// in-container [`SpawnConfig::env`] allowlist) so the wrapper can
+    /// bind-mount the deploy + signing keys into the bead container.
+    ///
+    /// Returns `(env var, host path)` pairs — `WRAPIX_DEPLOY_KEY` and
+    /// `WRAPIX_SIGNING_KEY` — for each key that resolves. Resolution runs
+    /// against the loom workspace (whose `origin` is GitHub), matching
+    /// [`Self::create_worktree`]'s signing-key resolution, and honors the
+    /// [`Self::signing_key_override`] test seam for the signing key. A key
+    /// that does not resolve is omitted rather than erroring: `wrapix spawn`
+    /// fails loudly on its own when a key it needs is absent, and the
+    /// "wrapix isn't set up on this host" path must stay non-fatal here.
+    ///
+    /// The host paths never cross the sandbox boundary; wrapix copies the
+    /// keys to `/etc/wrapix/keys/<basename>` in-container and resets
+    /// `$WRAPIX_DEPLOY_KEY` / `$WRAPIX_SIGNING_KEY` to those paths (wrapix
+    /// `specs/security.md` § Credential Surfaces). See `specs/harness.md`
+    /// § Commit signing.
+    pub fn launcher_key_env(&self) -> Result<Vec<(String, String)>, GitError> {
+        let loom_workspace = self.loom_workspace();
+        let mut env = Vec::new();
+        let signing = match &self.signing_key_override {
+            Some(key) => Some(key.clone()),
+            None => super::signing::resolve_signing_key(&loom_workspace)?,
+        };
+        if let Some(key) = signing {
+            env.push((
+                super::signing::WRAPIX_SIGNING_KEY_ENV.to_string(),
+                key.to_string_lossy().into_owned(),
+            ));
+        }
+        if let Some(key) = super::signing::resolve_deploy_key(&loom_workspace)? {
+            env.push((
+                super::signing::WRAPIX_DEPLOY_KEY_ENV.to_string(),
+                key.to_string_lossy().into_owned(),
+            ));
+        }
+        Ok(env)
     }
 
     /// Reset a per-bead workspace's working tree to its current `HEAD` and

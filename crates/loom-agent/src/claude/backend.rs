@@ -25,6 +25,7 @@ use tokio::process::{Child, Command};
 use tracing::{debug, info, warn};
 
 use super::parser::ClaudeParser;
+use crate::apply_launcher_env;
 
 /// File name for the JSON-serialized [`SpawnConfig`] handed to
 /// `wrapix spawn --spawn-config`. Written into the per-session
@@ -72,6 +73,7 @@ impl AgentBackend for ClaudeBackend {
             .arg("--spawn-config")
             .arg(&spawn_config_path)
             .arg("--stdio");
+        apply_launcher_env(&mut cmd, &config.launcher_env);
 
         spawn_session(cmd, Vec::new()).await
     }
@@ -305,6 +307,7 @@ mod tests {
             shutdown_grace: None,
             handshake_timeout: None,
             stall_warn_interval: None,
+            launcher_env: Vec::new(),
         };
 
         let spawn_config_path = prepare_runtime(&cfg).expect("prepare_runtime");

@@ -197,8 +197,10 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success()
 /// 2. Stash `PreviousFailure::TreeNotClean { dirty_paths }` so the next
 ///    `run_bead` call threads the typed variant into the rendered prompt
 ///    (rather than the opaque "tree-not-clean" string the runner sees).
-/// 3. Clean up the workspace even though the agent claimed success — the
-///    half-staged tree would confuse the next attempt's diff.
+/// 3. Preserve the workspace even though the agent claimed success — the
+///    per-bead-close lifecycle keeps the clone until `bd close`, and the
+///    next attempt's `reset_bead_clone` drops the half-staged leftovers
+///    while keeping any committed bead-branch work.
 #[tokio::test]
 async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
@@ -260,8 +262,9 @@ async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() ->
         other => panic!("expected Failure, got {other:?}"),
     }
     assert!(
-        !expected_worktree.exists(),
-        "worktree must be cleaned up after tree-not-clean recovery",
+        expected_worktree.exists(),
+        "worktree must be preserved after tree-not-clean recovery so the next \
+         attempt reuses the clone (specs/harness.md § Verdict Gate)",
     );
 
     // Second attempt: the runner threads the opaque error back as the
