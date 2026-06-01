@@ -138,7 +138,7 @@ pub enum ModelId {
 }
 
 pub enum AnthropicModel {
-    ClaudeOpus47,
+    ClaudeOpus48,
     ClaudeSonnet46,
     ClaudeHaiku45,
     // … other known Anthropic models

@@ -875,8 +875,8 @@ mod tests {
     #[test]
     fn model_id_to_provider_name_maps_known_and_other_variants() {
         assert_eq!(
-            model_id_to_provider_name(&ModelId::Anthropic(AnthropicModel::ClaudeOpus47)),
-            "claude-opus-4-7"
+            model_id_to_provider_name(&ModelId::Anthropic(AnthropicModel::ClaudeOpus48)),
+            "claude-opus-4-8"
         );
         assert_eq!(
             model_id_to_provider_name(&ModelId::Anthropic(AnthropicModel::ClaudeSonnet46)),

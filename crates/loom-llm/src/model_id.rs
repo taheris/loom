@@ -40,7 +40,7 @@ pub enum ModelId {
 /// supported pattern, and the `Other` arm already absorbs unknowns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnthropicModel {
-    ClaudeOpus47,
+    ClaudeOpus48,
     ClaudeSonnet46,
     ClaudeHaiku45,
     Other(String),
@@ -91,7 +91,7 @@ impl ModelId {
     )]
     pub fn from_str(s: &str) -> Self {
         match s {
-            "claude-opus-4-7" => ModelId::Anthropic(AnthropicModel::ClaudeOpus47),
+            "claude-opus-4-8" => ModelId::Anthropic(AnthropicModel::ClaudeOpus48),
             "claude-sonnet-4-6" => ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
             "claude-haiku-4-5" => ModelId::Anthropic(AnthropicModel::ClaudeHaiku45),
             "gpt-5.5" => ModelId::OpenAi(OpenAiModel::Gpt55),
@@ -107,7 +107,7 @@ impl ModelId {
     pub fn as_wire(&self) -> String {
         match self {
             ModelId::Anthropic(m) => match m {
-                AnthropicModel::ClaudeOpus47 => "claude-opus-4-7".to_string(),
+                AnthropicModel::ClaudeOpus48 => "claude-opus-4-8".to_string(),
                 AnthropicModel::ClaudeSonnet46 => "claude-sonnet-4-6".to_string(),
                 AnthropicModel::ClaudeHaiku45 => "claude-haiku-4-5".to_string(),
                 AnthropicModel::Other(s) => s.clone(),
@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn modelid_schema_method_returns_matching_schema_kind() {
         assert_eq!(
-            ModelId::Anthropic(AnthropicModel::ClaudeOpus47).schema(),
+            ModelId::Anthropic(AnthropicModel::ClaudeOpus48).schema(),
             SchemaKind::Anthropic,
         );
         assert_eq!(
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn modelid_known_wire_strings_round_trip() {
         let canonical = [
-            "claude-opus-4-7",
+            "claude-opus-4-8",
             "claude-sonnet-4-6",
             "claude-haiku-4-5",
             "gpt-5.5",
