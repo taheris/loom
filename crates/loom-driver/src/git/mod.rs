@@ -15,8 +15,9 @@ mod error;
 mod signing;
 
 pub use client::{
-    CreatedWorktree, GitClient, MergeResult, SignatureCheck, StatusEntry, StatusKind, WorktreeInfo,
-    bare_origin_path, clone_loom_workspace, head_tree_oid_sync, init_test_repo,
+    CreatedWorktree, FastForwardOutcome, GitClient, MergeResult, SignatureCheck, StatusEntry,
+    StatusKind, WorktreeInfo, bare_origin_path, clone_loom_workspace,
+    fast_forward_loom_workspace_to_origin, head_tree_oid_sync, init_test_repo,
     init_test_repo_with_integration, init_test_repo_with_integration_branch, read_origin_url,
     status_porcelain_sync, sync_head_commit_sha,
 };

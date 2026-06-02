@@ -2247,6 +2247,32 @@ fn run_loop_cmd(
         }
     });
 
+    // Reconcile the integration line with published HEAD before any bead
+    // clone is materialized, so `loom/<id>` always branches off
+    // origin/<integration-branch>. A diverged line (local commits never
+    // pushed) fails loud here rather than seeding every bead with a stale
+    // base — per `specs/harness.md` § Bead dispatch.
+    let ff_git =
+        GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?;
+    let ff_workspace = workspace.to_path_buf();
+    runtime.block_on(async move {
+        let outcome = ff_git
+            .fast_forward_integration_to_origin()
+            .await
+            .with_context(|| {
+                format!(
+                    "loom loop startup: integration fast-forward failed in {}",
+                    ff_workspace.display(),
+                )
+            })?;
+        tracing::info!(
+            outcome = ?outcome,
+            workspace = %ff_workspace.display(),
+            "loom loop startup: integration line reconciled with origin",
+        );
+        anyhow::Ok(())
+    })?;
+
     if !parallel.is_one() {
         let parallel_n = parallel.get();
         let workspace_buf = workspace.to_path_buf();

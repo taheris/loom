@@ -54,4 +54,7 @@ pub enum GitError {
 
     /// `ssh-keygen -y` failed deriving the public half of {key}: {stderr}
     SshKeygen { key: PathBuf, stderr: String },
+
+    /// integration branch {branch} has diverged from origin/{branch} — it carries local commits not on origin, so it cannot fast-forward; reconcile before looping. divergent commits: {commits}
+    IntegrationDiverged { branch: String, commits: String },
 }

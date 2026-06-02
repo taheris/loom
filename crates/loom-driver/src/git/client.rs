@@ -1053,6 +1053,125 @@ impl GitClient {
         }
         Ok(SignatureCheck::Verified)
     }
+
+    /// Fast-forward the loom workspace's integration branch to
+    /// `origin/<integration-branch>` before any bead clone is
+    /// materialized, so every `loom/<id>` branch forks from published
+    /// `HEAD` rather than a stale local base.
+    ///
+    /// Delegates to [`fast_forward_loom_workspace_to_origin`] inside
+    /// `spawn_blocking`. A diverged integration line (local commits not on
+    /// origin) surfaces as [`GitError::IntegrationDiverged`] so the caller
+    /// fails loud instead of branching off a split-brained base (per
+    /// `specs/harness.md` § Bead dispatch).
+    pub async fn fast_forward_integration_to_origin(&self) -> Result<FastForwardOutcome, GitError> {
+        let loom_workspace = self.loom_workspace();
+        let branch = self.integration_branch.clone();
+        spawn_blocking(move || fast_forward_loom_workspace_to_origin(&loom_workspace, &branch))
+            .await?
+    }
+}
+
+/// Outcome of [`GitClient::fast_forward_integration_to_origin`] /
+/// [`fast_forward_loom_workspace_to_origin`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FastForwardOutcome {
+    /// The loom workspace's integration branch already matched
+    /// `origin/<branch>` — no ref moved.
+    AlreadyUpToDate,
+    /// The integration branch was fast-forwarded to `origin/<branch>`,
+    /// advancing by `advanced` published commits.
+    FastForwarded { advanced: u32 },
+    /// No fast-forward was attempted: the loom workspace is absent or
+    /// `origin/<branch>` does not resolve (fresh fixture, unpublished
+    /// branch). The caller proceeds without reconciliation.
+    Skipped,
+}
+
+/// Fast-forward the loom workspace's local `branch` to `origin/<branch>`
+/// so bead clones always fork from published `HEAD`.
+///
+/// Fetches `origin <branch>`, then compares the local branch to
+/// `origin/<branch>`: already equal → [`FastForwardOutcome::AlreadyUpToDate`];
+/// origin strictly ahead → `git merge --ff-only` →
+/// [`FastForwardOutcome::FastForwarded`]; local carries commits not on origin
+/// (diverged) → [`GitError::IntegrationDiverged`] naming the divergent
+/// commits. Returns [`FastForwardOutcome::Skipped`] when `loom_workspace`
+/// does not exist or `origin/<branch>` does not resolve.
+///
+/// Synchronous: invoked directly from `loom init` and, via `spawn_blocking`,
+/// from `loom loop` startup ([`GitClient::fast_forward_integration_to_origin`]).
+pub fn fast_forward_loom_workspace_to_origin(
+    loom_workspace: &Path,
+    branch: &str,
+) -> Result<FastForwardOutcome, GitError> {
+    if !loom_workspace.exists() {
+        return Ok(FastForwardOutcome::Skipped);
+    }
+    let fetch = sync_git_raw(loom_workspace, &["fetch", "--quiet", "origin", branch])?;
+    if !fetch.status.success() {
+        return Err(cli_error(&fetch));
+    }
+    let remote_ref = format!("origin/{branch}");
+    let resolve = sync_git_raw(
+        loom_workspace,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{remote_ref}^{{commit}}"),
+        ],
+    )?;
+    if !resolve.status.success() {
+        return Ok(FastForwardOutcome::Skipped);
+    }
+    let ahead = sync_rev_count(loom_workspace, &format!("{remote_ref}..{branch}"))?;
+    if ahead > 0 {
+        let commits = sync_git_capture(
+            loom_workspace,
+            &["rev-list", "--oneline", &format!("{remote_ref}..{branch}")],
+        )?;
+        return Err(GitError::IntegrationDiverged {
+            branch: branch.to_string(),
+            commits: commits.trim().to_string(),
+        });
+    }
+    let behind = sync_rev_count(loom_workspace, &format!("{branch}..{remote_ref}"))?;
+    if behind == 0 {
+        return Ok(FastForwardOutcome::AlreadyUpToDate);
+    }
+    let merged = sync_git_raw(loom_workspace, &["merge", "--ff-only", &remote_ref])?;
+    if !merged.status.success() {
+        return Err(cli_error(&merged));
+    }
+    Ok(FastForwardOutcome::FastForwarded { advanced: behind })
+}
+
+/// Synchronous `git -C <workspace> <args>` returning the raw `Output`
+/// (status preserved for skip / divergence classification). Spawn failures
+/// surface as [`GitError::Spawn`]; non-zero exits are the caller's to
+/// interpret.
+fn sync_git_raw(workspace: &Path, args: &[&str]) -> Result<std::process::Output, GitError> {
+    use std::process::Command as StdCommand;
+    StdCommand::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(args)
+        .output()
+        .map_err(GitError::Spawn)
+}
+
+/// Synchronous `git -C <workspace> rev-list --count <range>` parsed to a
+/// commit count. Used by [`fast_forward_loom_workspace_to_origin`] to
+/// classify the local-vs-origin relationship.
+fn sync_rev_count(workspace: &Path, range: &str) -> Result<u32, GitError> {
+    let raw = sync_git_capture(workspace, &["rev-list", "--count", range])?;
+    raw.trim()
+        .parse()
+        .map_err(|e: std::num::ParseIntError| GitError::GitCli {
+            status: 0,
+            stderr: format!("rev-list --count {range} returned non-integer `{raw}`: {e}"),
+        })
 }
 
 /// Outcome of [`GitClient::verify_commit_range`].

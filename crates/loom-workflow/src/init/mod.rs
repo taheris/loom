@@ -21,7 +21,8 @@ use tracing::{info, warn};
 use loom_driver::bd::{BdClient, BdError, CommandRunner, ListOpts, UpdateOpts};
 use loom_driver::config::LoomConfig;
 use loom_driver::git::{
-    clone_loom_workspace, enable_rerere, read_origin_url, resolve_signing_key, write_signing_config,
+    clone_loom_workspace, enable_rerere, fast_forward_loom_workspace_to_origin, read_origin_url,
+    resolve_signing_key, write_signing_config,
 };
 use loom_driver::identifier::{BeadId, MoleculeId};
 use loom_driver::lock::LockManager;
@@ -161,6 +162,13 @@ fn materialize_integration_workspace(
 ) -> Result<Option<MaterializedIntegration>, InitError> {
     let dest = workspace.join(".loom/integration");
     if dest.exists() {
+        // Reconcile an existing integration line with published HEAD before
+        // any later `loom loop` materializes bead clones off it. A diverged
+        // line (local commits never pushed) fails loud rather than seeding
+        // every bead with a stale base (per `specs/harness.md` § Bead
+        // dispatch).
+        let config = LoomConfig::load(config_path)?;
+        fast_forward_loom_workspace_to_origin(&dest, &config.loom.integration_branch)?;
         return Ok(Some(MaterializedIntegration {
             path: dest,
             created: false,

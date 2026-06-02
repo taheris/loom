@@ -2702,6 +2702,20 @@ Criteria.
       workspace's current HEAD; `target/`, `.git/`, and `.wrapix/`
       survive the pre-attempt reset
   [test](bead_workspace_reset_preserves_target_and_dotwrapix)
+- `loom loop` / `loom init` startup fast-forwards the loom
+      workspace's integration branch to `origin/<integration-branch>`
+      before any bead clone is materialized, so `loom/<id>` always
+      branches off published HEAD
+  [test](loop_start_fast_forwards_integration_to_origin_main)
+- When the integration branch has diverged from
+      `origin/<integration-branch>` (local commits not on origin),
+      startup fails loud naming the divergent commits instead of
+      branching beads off the stale base
+  [test](loop_start_fails_loud_when_integration_diverged_from_origin)
+- After the startup fast-forward, a bead clone forks from published
+      HEAD, carrying commits that landed on `origin/<integration-branch>`
+      rather than the pre-reconciliation local base
+  [test](bead_clone_branches_off_published_head_not_stale_base)
 - `loom loop` startup drops every bead workspace under
       `.loom/beads/` whose bead is `closed`, under the spec
       advisory lock

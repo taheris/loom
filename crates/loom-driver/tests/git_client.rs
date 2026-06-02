@@ -21,7 +21,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
-use loom_driver::git::{GitClient, MergeResult, SignatureCheck, StatusKind};
+use loom_driver::git::{
+    FastForwardOutcome, GitClient, GitError, MergeResult, SignatureCheck, StatusKind,
+};
 use loom_driver::identifier::{BeadId, SpecLabel};
 use tempfile::TempDir;
 
@@ -1289,6 +1291,135 @@ async fn launcher_key_env_exposes_signing_key_host_path() -> Result<()> {
     assert!(
         !env.iter().any(|(k, _)| k == "WRAPIX_DEPLOY_KEY"),
         "no deploy key resolves for a non-GitHub origin: {env:?}",
+    );
+    Ok(())
+}
+
+/// Land a fresh commit carrying `file` on `origin/main` from a throwaway
+/// clone — simulating cross-path work reaching published main while the
+/// loom workspace's local main stays behind (its `origin/main` tracking
+/// ref goes stale).
+fn advance_origin_main(repo: &Path, file: &str) -> Result<()> {
+    let origin = loom_driver::git::bare_origin_path(repo);
+    let other_root = tempfile::tempdir()?;
+    let other = other_root.path().join("other");
+    let origin_str = origin
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("origin path not utf-8"))?;
+    let other_str = other
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("other path not utf-8"))?;
+    git(
+        other_root.path(),
+        &["clone", "--quiet", origin_str, other_str],
+    )?;
+    git(&other, &["config", "user.email", "other@example.com"])?;
+    git(&other, &["config", "user.name", "Other"])?;
+    git(&other, &["config", "commit.gpgsign", "false"])?;
+    std::fs::write(other.join(file), b"published\n")?;
+    git(&other, &["add", file])?;
+    git(&other, &["commit", "-q", "-m", "published commit"])?;
+    git(&other, &["push", "-q", "origin", "main"])?;
+    Ok(())
+}
+
+/// Spec contract (`specs/harness.md` § Success Criteria · Bead dispatch):
+/// `loom loop` / `loom init` startup fast-forwards the loom workspace's
+/// integration branch to `origin/<branch>` before any bead clone is
+/// materialized, so the local base matches published HEAD.
+#[tokio::test]
+async fn loop_start_fast_forwards_integration_to_origin_main() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let loom = loom_path(path);
+
+    advance_origin_main(path, "published.txt")?;
+    assert!(
+        !loom.join("published.txt").exists(),
+        "precondition: loom workspace main is behind published HEAD",
+    );
+
+    let client = GitClient::open(path)?;
+    let outcome = client.fast_forward_integration_to_origin().await?;
+    assert_eq!(outcome, FastForwardOutcome::FastForwarded { advanced: 1 });
+
+    assert!(
+        loom.join("published.txt").exists(),
+        "loom workspace main must carry the published commit after FF",
+    );
+    let origin = loom_driver::git::bare_origin_path(path);
+    assert_eq!(
+        capture_head(&loom)?,
+        capture_head(&origin)?,
+        "local integration HEAD must equal origin/main after FF",
+    );
+    Ok(())
+}
+
+/// Spec contract (`specs/harness.md` § Success Criteria · Bead dispatch):
+/// when the integration branch has diverged from `origin/<branch>` (local
+/// commits not on origin), startup fails loud naming the divergent commits
+/// rather than silently branching every bead off the stale base.
+#[tokio::test]
+async fn loop_start_fails_loud_when_integration_diverged_from_origin() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let loom = loom_path(path);
+
+    // Unpublished driver work on local main (never pushed to origin).
+    std::fs::write(loom.join("loom-only.txt"), b"local\n")?;
+    git(&loom, &["add", "loom-only.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "unpublished driver work"])?;
+    let divergent = capture_head(&loom)?;
+
+    // Origin advances along a different line — the split-brain.
+    advance_origin_main(path, "published.txt")?;
+
+    let client = GitClient::open(path)?;
+    let err = client
+        .fast_forward_integration_to_origin()
+        .await
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("diverged integration must fail loud"))?;
+    match err {
+        GitError::IntegrationDiverged { branch, commits } => {
+            assert_eq!(branch, "main");
+            assert!(
+                commits.contains(&divergent[..7]),
+                "error must name the divergent commit {divergent}: {commits}",
+            );
+        }
+        other => anyhow::bail!("expected IntegrationDiverged, got {other:?}"),
+    }
+    assert_eq!(
+        capture_head(&loom)?,
+        divergent,
+        "diverged local main must be left untouched — no silent FF or reset",
+    );
+    Ok(())
+}
+
+/// Spec contract (`specs/harness.md` § Success Criteria · Bead dispatch):
+/// after the startup fast-forward, a bead clone forks from published HEAD,
+/// carrying commits that landed on `origin/main` rather than the stale
+/// local base that existed before reconciliation.
+#[tokio::test]
+async fn bead_clone_branches_off_published_head_not_stale_base() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+
+    advance_origin_main(path, "published.txt")?;
+
+    let client = GitClient::open(path)?;
+    client.fast_forward_integration_to_origin().await?;
+
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("lm-ff.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+
+    assert!(
+        created.path.join("published.txt").exists(),
+        "bead clone must branch off published HEAD carrying the landed commit",
     );
     Ok(())
 }
