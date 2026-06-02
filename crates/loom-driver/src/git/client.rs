@@ -66,10 +66,13 @@ pub struct GitClient {
     hook_timeout: Duration,
     /// Test-only seam: when `Some`, [`Self::create_worktree`] writes the
     /// signing block using this key instead of resolving it from the env +
-    /// deploy-key fallback. Production constructs this `None` and resolves
-    /// per [`super::signing::resolve_signing_key`]; the seam exists because
+    /// deploy-key fallback. Production resolves per
+    /// [`super::signing::resolve_signing_key`]; the seam exists because
     /// `std::env::set_var` is unsafe under edition 2024 and the workspace
     /// forbids `unsafe_code`, so tests cannot drive `$WRAPIX_SIGNING_KEY`.
+    /// Gated behind `cfg(test)` / the `test-support` feature so it is absent
+    /// from production builds (RS-14).
+    #[cfg(any(test, feature = "test-support"))]
     signing_key_override: Option<PathBuf>,
 }
 
@@ -122,6 +125,7 @@ impl GitClient {
             clock,
             integration_branch,
             hook_timeout: GIT_HOOK_TIMEOUT,
+            #[cfg(any(test, feature = "test-support"))]
             signing_key_override: None,
         })
     }
@@ -137,10 +141,27 @@ impl GitClient {
 
     /// Test-only: force [`Self::create_worktree`] to write the signing
     /// block with `key` instead of resolving it from the environment.
-    /// See [`Self::signing_key_override`].
+    /// Gated behind `cfg(test)` / the `test-support` feature (RS-14).
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn set_signing_key_override(&mut self, key: PathBuf) {
         self.signing_key_override = Some(key);
+    }
+
+    /// The signing-key override set via [`Self::set_signing_key_override`],
+    /// or `None`. Production builds (where the seam is compiled out) always
+    /// return `None`, so the signing key resolves from the environment +
+    /// deploy-key fallback.
+    #[cfg(any(test, feature = "test-support"))]
+    fn signing_override(&self) -> Option<PathBuf> {
+        self.signing_key_override.clone()
+    }
+
+    /// See the `cfg(test)` / `test-support` variant — production carries no
+    /// override seam, so this always resolves the key from the environment.
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn signing_override(&self) -> Option<PathBuf> {
+        None
     }
 
     /// Name of the integration branch this client targets (the branch
@@ -356,7 +377,7 @@ impl GitClient {
         // block signs host-side debug/test commits in the clone; in-container
         // commits are signed by wrapix's git-ssh-setup.sh entrypoint.
         let signing_target = path.clone();
-        let signing_override = self.signing_key_override.clone();
+        let signing_override = self.signing_override();
         spawn_blocking(move || -> Result<(), GitError> {
             let key = match signing_override {
                 Some(key) => Some(key),
@@ -381,7 +402,7 @@ impl GitClient {
     /// `WRAPIX_SIGNING_KEY` — for each key that resolves. Resolution runs
     /// against the loom workspace (whose `origin` is GitHub), matching
     /// [`Self::create_worktree`]'s signing-key resolution, and honors the
-    /// [`Self::signing_key_override`] test seam for the signing key. A key
+    /// signing-key override test seam (when built with `test-support`). A key
     /// that does not resolve is omitted rather than erroring: `wrapix spawn`
     /// fails loudly on its own when a key it needs is absent, and the
     /// "wrapix isn't set up on this host" path must stay non-fatal here.
@@ -394,8 +415,8 @@ impl GitClient {
     pub fn launcher_key_env(&self) -> Result<Vec<(String, String)>, GitError> {
         let loom_workspace = self.loom_workspace();
         let mut env = Vec::new();
-        let signing = match &self.signing_key_override {
-            Some(key) => Some(key.clone()),
+        let signing = match self.signing_override() {
+            Some(key) => Some(key),
             None => super::signing::resolve_signing_key(&loom_workspace)?,
         };
         if let Some(key) = signing {
@@ -986,7 +1007,7 @@ impl GitClient {
             // paused mid-conflict — `git rebase --abort` discards it. A
             // non-conflict refusal (unstaged changes) leaves no
             // diff-filter=U entries, so `files` comes back empty.
-            let files = self.unmerged_paths(&workdir).await;
+            let files = self.unmerged_paths(&workdir).await?;
             if files.is_empty() && steps < max_steps {
                 // rerere staged a full resolution but the rebase paused
                 // awaiting `--continue`; carry it forward.
@@ -1071,25 +1092,26 @@ impl GitClient {
 
     /// Unmerged paths in `workdir` (`git diff --name-only
     /// --diff-filter=U`). Used while a rebase is paused mid-conflict to
-    /// tell a genuine conflict from a rerere-staged resolution. A failed
-    /// invocation or a clean index yields an empty list.
-    async fn unmerged_paths(&self, workdir: &Path) -> Vec<PathBuf> {
-        run_git_raw(
+    /// tell a genuine conflict from a rerere-staged resolution. A clean
+    /// index yields an empty list; a failed `git diff` surfaces as
+    /// [`GitError`] rather than collapsing to an empty list, which the
+    /// caller would otherwise mistake for a no-conflict result (RS-11).
+    async fn unmerged_paths(&self, workdir: &Path) -> Result<Vec<PathBuf>, GitError> {
+        let output = run_git_raw(
             workdir,
             self.clock.as_ref(),
             ["diff", "--name-only", "--diff-filter=U"],
             None,
         )
-        .await
-        .ok()
-        .map(|out| {
-            String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .map(|l| PathBuf::from(l.trim()))
-                .filter(|p| !p.as_os_str().is_empty())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default()
+        .await?;
+        if !output.status.success() {
+            return Err(cli_error(&output));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|l| PathBuf::from(l.trim()))
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect())
     }
 
     /// Path to the loom-workspace allowed_signers file the per-bead

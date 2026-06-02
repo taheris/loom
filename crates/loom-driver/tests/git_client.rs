@@ -22,7 +22,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
 use loom_driver::git::{
-    FastForwardOutcome, GitClient, GitError, MergeResult, RebaseOutcome, SignatureCheck, StatusKind,
+    FastForwardOutcome, GitClient, GitError, MergeResult, RebaseOutcome, SignatureCheck,
+    StatusKind, write_signing_config,
 };
 use loom_driver::identifier::{BeadId, SpecLabel};
 use tempfile::TempDir;
@@ -890,6 +891,80 @@ async fn signature_verification_skipped_when_no_key() -> Result<()> {
     // And the integration step proceeds: the conditional verify is a
     // no-op, so the merge still folds the bead work in cleanly.
     assert_eq!(client.merge_branch(&created.branch).await?, MergeResult::Ok);
+    client.remove_worktree(&created.path).await?;
+    Ok(())
+}
+
+/// Key-present counterpart to [`signature_verification_skipped_when_no_key`]:
+/// with a loom-workspace `.git/loom-allowed-signers` file present, the early
+/// "no key" skip guard in `verify_commit_range` is bypassed — a signed bead
+/// commit verifies as [`SignatureCheck::Verified`], NOT `Skipped`. Without
+/// this contrast the no-key test would pass coincidentally (the loom
+/// workspace never carries an allowed_signers file in that fixture, so the
+/// `Skipped` result holds regardless of the key state). Spec criterion
+/// (`specs/harness.md` § Verdict Gate, phase 2):
+/// `signature_verification_runs_when_key_present`.
+#[tokio::test]
+async fn signature_verification_runs_when_key_present() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+    let key = gen_signing_key(repo.path())?;
+
+    // Materialize the loom-workspace allowed_signers file (and the ssh
+    // verify config `verify-commit` reads) for the resolved key — the state
+    // `loom init` / `create_worktree` produce when a wrapix key resolves.
+    write_signing_config(&loom, &key)?;
+    let signers_file = loom.join(".git").join("loom-allowed-signers");
+    assert!(
+        signers_file.is_file(),
+        "precondition: allowed_signers file present (key configured)",
+    );
+    // verify-commit matches the committer email against the allowed_signers
+    // principal — derive it so the signed bead commit lines up.
+    let signers = std::fs::read_to_string(&signers_file)?;
+    let identity = signers
+        .split_whitespace()
+        .next()
+        .context("allowed_signers principal")?
+        .to_string();
+
+    // Sign the bead commit with the same key (via the override seam) so the
+    // loom-workspace allowed_signers file trusts it.
+    let mut client = GitClient::open(repo.path())?;
+    client.set_signing_key_override(key.clone());
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("lm-sig.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+    std::fs::write(created.path.join("agent-change.txt"), "agent work\n")?;
+    git(&created.path, &["add", "agent-change.txt"])?;
+    let email_arg = format!("user.email={identity}");
+    git(
+        &created.path,
+        &[
+            "-c",
+            email_arg.as_str(),
+            "-c",
+            "user.name=loom",
+            "commit",
+            "-S",
+            "-q",
+            "-m",
+            "signed agent work",
+        ],
+    )?;
+    client.fetch_bead_branch(&created.path, &bead).await?;
+
+    assert!(
+        client.signing_verification_enabled().await,
+        "verification must be enabled when the allowed_signers file resolves",
+    );
+    let range = format!("HEAD..{}", created.branch);
+    assert_eq!(
+        client.verify_commit_range(&range).await?,
+        SignatureCheck::Verified,
+        "with a key present the signed bead commit must verify, not skip",
+    );
+
     client.remove_worktree(&created.path).await?;
     Ok(())
 }

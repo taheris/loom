@@ -2591,6 +2591,7 @@ dependencies = [
  "displaydoc",
  "fd-lock",
  "gix",
+ "loom-driver",
  "loom-events",
  "loom-protocol",
  "loom-render",

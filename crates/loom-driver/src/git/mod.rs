@@ -25,8 +25,8 @@ pub use error::GitError;
 // `GitOid` lives in the public-contract leaf `loom-protocol::oid` so the
 // typed retry-context surface in `loom-templates`
 // (`PreviousFailure::IntegrationConflict { new_base_sha: GitOid }`) can
-// name it without a `loom-driver` dependency (lm-rxo8.7). Re-exported
-// here so existing `loom_driver::git::GitOid` callers stay unchanged.
+// name it without a `loom-driver` dependency. Re-exported here so existing
+// `loom_driver::git::GitOid` callers stay unchanged.
 pub use loom_protocol::oid::{GitOid, ParseGitOidError};
 pub use signing::{
     WRAPIX_DEPLOY_KEY_ENV, WRAPIX_SIGNING_KEY_ENV, enable_rerere, resolve_deploy_key,
