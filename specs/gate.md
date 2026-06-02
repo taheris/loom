@@ -2636,7 +2636,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   emit `LOOM_CLARIFY` for no-progress cases; the bead's acceptance
   criterion is "agent processed the batch", not "every finding
   individually resolved"
-  [judge](agent/batch_acceptance_is_agent_processed.md)
+  [judge](../tests/judges/loom.sh#judge_fixup_batch_acceptance)
 - `mint --bead <id>` walks the LLM rubric only, not the deterministic
   verifiers; verify-side findings have already been handled by the
   preceding `verify --bead <id>` step in the loop
@@ -2679,7 +2679,7 @@ PATH, and a `[judge]` annotation pointing at the gate's own
 - The bead-container worker runs `loom gate verify --diff HEAD`
   before emitting `LOOM_COMPLETE` and resolves findings in-session;
   contract is prompt-level (rendered in `loop.md`), not driver-gated
-  [judge?](specs/agent/loop_preflight_runs_gate_verify.md)
+  [judge](../tests/judges/loom.sh#judge_loop_preflight)
 
 ### Wire-format wiring and dead-code excision
 

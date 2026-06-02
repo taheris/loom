@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Judge rubrics for harness.md success criteria.
+# Judge rubrics for harness.md and gate.md success criteria.
 #
 # Each function describes a rubric the judge LLM evaluates against the
 # referenced source files; the spec links to the function via a
 # `[judge](tests/judges/loom.sh::<name>)` annotation in its Success Criteria.
 #
 # One inputs header per script (specs/gate.md § Verifier inputs); the
-# rubrics span crate sources, rendered templates, and harness.md.
-# loom-inputs: crates/*/src/**, crates/loom-templates/templates/**, specs/harness.md
+# rubrics span crate sources, rendered templates, harness.md, and gate.md.
+# loom-inputs: crates/*/src/**, crates/loom-templates/templates/**, specs/harness.md, specs/gate.md
 
 test_git_client_encapsulation() {
   judge_files \
@@ -132,4 +132,21 @@ judge_sibling_spec_editing_documents_split() {
     "crates/loom-templates/templates/partial/sibling_spec_editing.md"
   judge_criterion \
     "partial/sibling_spec_editing.md establishes three things, all in one place: (1) the anchor/sibling editing model — that the -u label owns the session state row and any spec under specs/ may be edited in-place during the interview; (2) the new-sibling-spec carve-out — the planner may decide a section warrants its own spec, in which case it allocates a tracking epic via 'bd create --type=epic' and adds the row to docs/README.md, and this is the SINGLE permitted exception to the otherwise-strict 'no bead creation during planning' rule (implementation beads come later, from loom todo, not here); and (3) the commit-discipline rule — planning sessions edit specs in place but do NOT commit; soft signals like 'looks good' or 'next' or 'accept' authorize the next interview step but never authorize a commit; commits require unambiguous language such as 'commit', 'ship it', 'land the changes', 'land the plane', or 'push it'. The same discipline applies to git push, beads-push, and any shared-state mutation. The partial must name all three: the editing model, the bead-allocation carve-out (with the 'one carve-out' framing so the reader understands why it's an exception), and the commit-discipline rule (with explicit examples of soft signals vs. unambiguous triggers). Vague phrasing like 'be careful with commits' is insufficient — the partial must enumerate concrete trigger phrases."
+}
+
+judge_fixup_batch_acceptance() {
+  judge_files \
+    "crates/loom-templates/templates/loop.md" \
+    "crates/loom-templates/templates/partial/decomposition_discipline.md" \
+    "crates/loom-templates/templates/partial/self_report_markers.md"
+  judge_criterion \
+    "The rendered loop.md worker prompt (directly or via an included partial — follow the include graph) must direct a worker dispatched against a fix-up batch (a bead carrying the loom:fixup:<fp> label whose description enumerates MULTIPLE findings) that all three acceptance shapes are legitimate, and that closing the batch without taking one of them is a contract violation: (1) FIX ALL — resolve every enumerated finding in one diff and run bd close on the batch; (2) SPLIT SUBSET — fix a subset and split the remainder into sibling fix-up beads under the molecule epic via the exact invocation 'bd create --parent=<molecule-epic-id>', where the parent is the MOLECULE EPIC, not the batch bead itself (the parenting shape is load-bearing: the molecule lifecycle expects fix-ups bonded as direct epic children, so 'create a follow-up bead' without naming the molecule-epic parent does NOT satisfy this shape); (3) CLARIFY — emit LOOM_CLARIFY when neither (1) nor (2) is achievable, routed via the standard per-bead clarify path (the Options block persisted to bead state per the Options Format Contract). The prompt MUST additionally frame the acceptance criterion correctly: closing the batch is the agent's signal that they PROCESSED the batch (chose one of shapes 1–3), not that every finding was individually resolved — e.g. 'the bead's acceptance criterion is \"agent processed the batch\", not \"every finding individually resolved\"' or an equivalent explicit statement; a prompt that merely lists the three shapes without naming this underlying acceptance contract leaves the worker free to read closure as 'all findings fixed' and is insufficient. Non-goals: do NOT check that the driver enforces a particular acceptance shape (it does not — the contract is prompt-level and the system self-corrects via re-audit, with any unresolved finding re-emerging under a new fingerprint in the next mint run); do NOT check which shape a worker actually chose on any bead (runtime worker behavior is observed by the gate's audit pipeline, not this rubric); do NOT require a specific section heading (the guidance may live under any section or any partial loop.md includes, as long as the rendered prompt makes the four required points before the progress-marker partial include); do NOT pin guidance for single-finding fix-up beads (the discretion contract applies only to multi-finding batches, where the three shapes collapse to fix-and-close or clarify). Pass iff all four points hold in the rendered prompt: shape (1), shape (2) with the correct --parent=<molecule-epic-id> framing, shape (3), and the 'agent processed the batch' acceptance framing. Fail otherwise, naming each missing piece — 'fix-all shape absent', 'split-subset shape absent' (shape mentioned but bd invocation / parent target wrong or missing), 'clarify shape absent', or 'acceptance framing absent'; multiple may apply."
+}
+
+judge_loop_preflight() {
+  judge_files \
+    "crates/loom-templates/templates/loop.md" \
+    "crates/loom-templates/templates/partial/review_rubric.md"
+  judge_criterion \
+    "The rendered loop.md worker prompt MUST direct the bead-container worker to do both of the following before emitting LOOM_COMPLETE: (1) COMMAND SURFACE — run the literal command 'loom gate verify --diff HEAD', named exactly, placed before LOOM_COMPLETE emission; aliases, paraphrases, or scope-flag substitutions (e.g. '--bead <id>', '--tree', 'loom gate audit ...') do NOT satisfy this — the command surface the agent runs is the literal string 'loom gate verify --diff HEAD'; (2) IN-SESSION RESOLUTION — the same instruction (or an adjacent sentence in the same bullet/section) must emphasise that any findings the preflight surfaces are resolved in the CURRENT session, not deferred to a follow-up bead and not ignored before emitting LOOM_COMPLETE (phrasings such as 'resolve any findings in-session' or 'fix findings before emitting LOOM_COMPLETE' or an equivalent imperative count; silently mentioning the command without the resolution discipline does not). Context: this preflight is the middle layer of the three-layer per-diff audit (bead-container pre-commit hook at commit time → this marker-emit preflight → the authoritative driver-side push-gate audit at push); the contract is prompt-level only — the driver does not separately gate on the preflight's presence, and an agent that skips it is caught by the push-gate audit anyway. Non-goals: do NOT check that the driver enforces the preflight ran (it does not); do NOT check that the preflight appears in any other template (loop.md is the bead-container worker prompt and the only template this contract pins); do NOT require a specific section heading (the instruction may live under Quality Gates, Instructions, Land the Plane, or any equivalent location, as long as it appears before the progress-marker partial include). Pass iff both conditions hold in the rendered prompt. Fail otherwise, naming the missing piece — 'command surface absent' (condition 1) or 'in-session resolution not emphasised' (condition 2), or both."
 }
