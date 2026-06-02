@@ -878,7 +878,7 @@ async fn signature_verification_skipped_when_no_key() -> Result<()> {
         "precondition: no allowed_signers file (no key configured)",
     );
     assert!(
-        !client.signing_verification_enabled().await,
+        !client.signing_verification_enabled().await?,
         "verification must be disabled when no allowed_signers file resolves",
     );
     let range = format!("HEAD..{}", created.branch);
@@ -955,7 +955,7 @@ async fn signature_verification_runs_when_key_present() -> Result<()> {
     client.fetch_bead_branch(&created.path, &bead).await?;
 
     assert!(
-        client.signing_verification_enabled().await,
+        client.signing_verification_enabled().await?,
         "verification must be enabled when the allowed_signers file resolves",
     );
     let range = format!("HEAD..{}", created.branch);

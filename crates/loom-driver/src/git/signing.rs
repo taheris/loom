@@ -203,6 +203,9 @@ fn resolve_hostname() -> Option<String> {
 /// it up automatically.
 pub fn write_signing_config(target_dir: &Path, signing_key: &Path) -> Result<(), GitError> {
     let allowed_signers_file = target_dir.join(".git").join(ALLOWED_SIGNERS_FILE);
+    // `.ok()` discards VarError (unset or non-UTF-8): either case means the
+    // wrapix author identity isn't available here, so fall back to the
+    // default signing identity — the env-var-default intent, not a swallow.
     let identity = std::env::var("GIT_AUTHOR_EMAIL")
         .ok()
         .filter(|s| !s.is_empty())

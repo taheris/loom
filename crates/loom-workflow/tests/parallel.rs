@@ -775,7 +775,7 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
     // file + ssh-verify config the way `loom init` does when a key resolves.
     loom_driver::git::write_signing_config(&loom, &key)?;
     assert!(
-        client.signing_verification_enabled().await,
+        client.signing_verification_enabled().await?,
         "precondition: verification must be enabled once allowed_signers resolves",
     );
 

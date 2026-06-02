@@ -1131,10 +1131,14 @@ impl GitClient {
     /// time. When false the per-bead integration step skips both
     /// verify-signature passes (the spec-sanctioned "no key" path —
     /// `specs/harness.md` § Verdict Gate, phase 2).
-    pub async fn signing_verification_enabled(&self) -> bool {
-        tokio::fs::try_exists(self.allowed_signers_path())
-            .await
-            .unwrap_or(false)
+    pub async fn signing_verification_enabled(&self) -> Result<bool, GitError> {
+        // `try_exists` already reports Ok(false) for an absent file (the
+        // spec-sanctioned "no key" path), so a genuine Err here is an
+        // anomalous IO failure (permission denied, symlink loop) on a path
+        // under our own `.git/`. Propagate it rather than swallowing to
+        // false — collapsing it to "no key" would fail open, silently
+        // skipping both verify-signature passes on a security control.
+        Ok(tokio::fs::try_exists(self.allowed_signers_path()).await?)
     }
 
     /// Verify every commit in `range` (e.g. `main..loom/<id>`) against the
@@ -1148,7 +1152,7 @@ impl GitClient {
     /// `git verify-commit` rejects, carrying the offending sha + stderr so
     /// the caller can route to `signature-verification-failed`.
     pub async fn verify_commit_range(&self, range: &str) -> Result<SignatureCheck, GitError> {
-        if !self.signing_verification_enabled().await {
+        if !self.signing_verification_enabled().await? {
             return Ok(SignatureCheck::Skipped);
         }
         let workdir = self.loom_workspace();
