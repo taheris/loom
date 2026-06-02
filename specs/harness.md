@@ -2969,7 +2969,7 @@ Criteria.
       `MintWalker` impl (per [gate.md § Production walker
       wiring](gate.md#production-walker-wiring)), not from a
       `Vec::new()` shortcut
-  [test?](per_bead_path_invokes_verify_then_mint_after_run_phase_success)
+  [test](exec_per_bead_gate_invokes_loom_gate_verify_then_mint_subprocesses)
 - The molecule-completion handoff's `HandoffEvidence` is populated
       from the reviewer subprocess's actual outputs: `verify_exit` and
       `review_exit` from the child exit codes, `review_marker` from
