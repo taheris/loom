@@ -1469,7 +1469,7 @@ async fn create_worktree_omits_signing_block_when_no_key() -> Result<()> {
 
 /// `GitClient::launcher_key_env` surfaces the resolved signing key as a
 /// `WRAPIX_SIGNING_KEY` → HOST-path pair so loom can hand it to the `wrapix
-/// spawn` launcher (Bug 1: loop agents otherwise boot with no git keys).
+/// spawn` launcher (loop agents otherwise boot with no git keys).
 /// Unlike the bead-clone gitconfig (which maps to in-container paths), the
 /// launcher env carries the host path verbatim — wrapix performs the
 /// host→container mapping itself. Driven through the signing-key override

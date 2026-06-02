@@ -39,10 +39,10 @@ mod tests {
     use super::apply_launcher_env;
 
     /// `apply_launcher_env` places each pair on the child process
-    /// environment — the load-bearing half of Bug 1's fix. Verified by
-    /// spawning `printenv` and reading the value back rather than
-    /// inspecting `Command` (which exposes no env getter), so a regression
-    /// that drops the call surfaces here.
+    /// environment — the load-bearing half of delivering git keys to a
+    /// spawned loop agent. Verified by spawning `printenv` and reading the
+    /// value back rather than inspecting `Command` (which exposes no env
+    /// getter), so a regression that drops the call surfaces here.
     #[tokio::test]
     async fn apply_launcher_env_sets_child_process_env() {
         let mut cmd = tokio::process::Command::new("printenv");

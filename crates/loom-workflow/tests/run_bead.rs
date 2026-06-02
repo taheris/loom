@@ -111,9 +111,10 @@ fn setup() -> (
 /// bead ids, no spec partition per `harness.md` § Bead dispatch). The
 /// workspace is a `git clone --local` of the loom workspace — its `.git/`
 /// is a regular directory inside the bind-mounted path, so workers in
-/// the wrapix container can commit. On clean agent success the
-/// controller pushes the bead branch back to the loom workspace, merges
-/// it into the integration branch, and removes the workspace + branch.
+/// the wrapix container can commit. The worker never pushes; on clean
+/// agent success the driver fetches the bead branch from the workspace
+/// into the loom workspace, merges it into the integration branch, and
+/// removes the workspace + branch.
 #[tokio::test]
 async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();

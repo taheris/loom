@@ -574,7 +574,7 @@ mod tests {
     /// The `launcher_env` passed at dispatch lands verbatim on
     /// [`SpawnConfig::launcher_env`] (the host key paths a backend sets on
     /// the `wrapix spawn` child) and stays out of the in-container `env`
-    /// allowlist. Bug 1: a loop agent boots without git keys unless this
+    /// allowlist. A loop agent boots without git keys unless this
     /// threading holds.
     #[test]
     fn launcher_env_threads_onto_spawn_config_not_container_env() {
