@@ -11,6 +11,7 @@ displaydoc = { workspace = true }
 fd-lock = { workspace = true }
 gix = { workspace = true }
 loom-events = { workspace = true }
+loom-protocol = { workspace = true }
 loom-render = { workspace = true }
 pulldown-cmark = { workspace = true }
 rusqlite = { workspace = true }

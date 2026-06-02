@@ -12,7 +12,6 @@
 
 mod client;
 mod error;
-mod oid;
 mod signing;
 
 pub use client::{
@@ -22,7 +21,7 @@ pub use client::{
     status_porcelain_sync, sync_head_commit_sha,
 };
 pub use error::GitError;
-pub use oid::{GitOid, ParseGitOidError};
+pub use loom_protocol::oid::{GitOid, ParseGitOidError};
 pub use signing::{
     WRAPIX_DEPLOY_KEY_ENV, WRAPIX_SIGNING_KEY_ENV, enable_rerere, resolve_deploy_key,
     resolve_signing_key, write_signing_config, write_signing_config_for_container,

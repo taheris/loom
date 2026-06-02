@@ -1368,7 +1368,8 @@ impl MarkerProof {
 ```
 
 The `commit_sha` and `tree_oid` fields carry the `GitOid` newtype
-defined in `loom-driver::git`, which parses the lowercase-hex shape
+defined in `loom-protocol::oid` (re-exported through `loom-driver::git`
+for the driver's git surface), which parses the lowercase-hex shape
 (40 or 64 characters) at construction. Malformed OIDs are rejected
 at deserialise time as a typed parse error rather than reaching the
 fingerprint check — per RS-7 (*Newtypes for identifiers*).

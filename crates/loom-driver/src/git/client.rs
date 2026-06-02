@@ -11,8 +11,9 @@ use crate::bd::{BdClient, CommandRunner};
 use crate::clock::{Clock, SystemClock};
 use crate::identifier::{BeadId, SpecLabel};
 
+use loom_protocol::oid::GitOid;
+
 use super::error::GitError;
-use super::oid::GitOid;
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Default timeout for git operations whose hooks can legitimately run

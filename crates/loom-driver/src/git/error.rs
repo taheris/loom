@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use displaydoc::Display;
 use thiserror::Error;
 
-use super::oid::ParseGitOidError;
+use loom_protocol::oid::ParseGitOidError;
 
 #[derive(Debug, Display, Error)]
 pub enum GitError {

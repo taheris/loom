@@ -2592,6 +2592,7 @@ dependencies = [
  "fd-lock",
  "gix",
  "loom-events",
+ "loom-protocol",
  "loom-render",
  "loom-test-support",
  "proptest",
@@ -2702,6 +2703,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

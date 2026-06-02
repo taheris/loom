@@ -133,3 +133,32 @@ fn loom_templates_re_exports_finding_contract_from_loom_protocol() {
         prev_path.display(),
     );
 }
+
+/// `GitOid`'s canonical home is `loom-protocol::oid` (a public-contract
+/// leaf), so `loom-templates` can carry it in
+/// `PreviousFailure::IntegrationConflict { new_base_sha: GitOid }`
+/// without depending on `loom-driver` (gix / rusqlite / tokio). This
+/// test pins both halves of that decision: the type is reachable from
+/// the leaf, and `loom-templates`' `[dependencies]` never names
+/// `loom-driver`.
+#[test]
+fn loom_templates_reaches_git_oid_from_loom_protocol_leaf_without_loom_driver() {
+    let oid = loom_protocol::oid::GitOid::new("deadbeefcafe1234567890abcdef0123456789ab")
+        .expect("valid sha-1 oid");
+    assert_eq!(oid.as_str(), "deadbeefcafe1234567890abcdef0123456789ab");
+
+    let manifest = workspace_root().join("crates/loom-templates/Cargo.toml");
+    let body = std::fs::read_to_string(&manifest)
+        .unwrap_or_else(|e| panic!("read {}: {e}", manifest.display()));
+    let parsed: toml::Value = toml::from_str(&body).expect("parse Cargo.toml");
+    let deps = parsed
+        .get("dependencies")
+        .and_then(toml::Value::as_table)
+        .expect("[dependencies] table present");
+    assert!(
+        !deps.contains_key("loom-driver"),
+        "loom-templates must not depend on loom-driver — GitOid lives in the \
+         loom-protocol leaf so the integration-conflict retry context stays \
+         driver-free",
+    );
+}
