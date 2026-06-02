@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use loom_driver::bd::Bead;
-use loom_driver::git::{CreatedWorktree, GitClient, MergeResult};
+use loom_driver::git::{CreatedWorktree, GitClient, RebaseOutcome};
 use loom_driver::identifier::{BeadId, SpecLabel};
 use loom_events::DriverKind;
 use tokio::task::JoinSet;
@@ -12,6 +12,7 @@ use super::driver_emit::BeadEmit;
 use super::error::LoopError;
 use super::outcome::AgentOutcome;
 use super::post_merge_push::push_merged_main_then_beads;
+use super::verify::{VerifyPass, verify_pass};
 
 /// Pairing of a bead with the worktree that was created for it. Built by
 /// [`create_worktrees`] and consumed by [`run_concurrent_spawns`].
@@ -349,13 +350,55 @@ async fn merge_back_one(
                     }),
                 );
             }
-            match git.merge_branch(&worktree.branch).await? {
-                MergeResult::Ok => {
-                    let main_sha = git
-                        .head_commit_sha()
-                        .await
-                        .map(|oid| oid.to_string())
-                        .unwrap_or_else(|_| "unknown".to_string());
+            // Verify signatures (pass 1) on the fetched worker commits
+            // before any rebase — the parallel path mirrors the
+            // sequential `run_bead` integration step and the spec recipe
+            // (`specs/harness.md` § Verdict Gate phases 2-4) rather than
+            // collapsing rebase + ff into a single unverified
+            // `merge_branch`. A rejected signature routes the bead to
+            // `loom:blocked` (worker-side); `verify_pass` deletes the
+            // transient ref so a retry's fetch starts clean.
+            let integration_branch = git.integration_branch().to_string();
+            let pass1_range = format!("{integration_branch}..{}", worktree.branch);
+            if let Some(reason) = verify_pass(
+                git,
+                emit.as_mut(),
+                &bead.id,
+                &worktree.branch,
+                &pass1_range,
+                VerifyPass::Worker,
+            )
+            .await?
+            {
+                return Ok(BatchResult::AgentBlocked {
+                    bead: bead.id,
+                    reason,
+                });
+            }
+            // Rebase onto the integration tip (rerere replays any recorded
+            // resolution), then verify pass 2 on the rewritten commits
+            // BEFORE the ff-merge so a driver-side signature failure leaves
+            // the integration branch untouched.
+            match git.rebase_onto_integration(&worktree.branch).await? {
+                RebaseOutcome::Rebased => {
+                    let pass2_range = format!("{integration_branch}..{}", worktree.branch);
+                    if let Some(reason) = verify_pass(
+                        git,
+                        emit.as_mut(),
+                        &bead.id,
+                        &worktree.branch,
+                        &pass2_range,
+                        VerifyPass::Driver,
+                    )
+                    .await?
+                    {
+                        return Ok(BatchResult::AgentBlocked {
+                            bead: bead.id,
+                            reason,
+                        });
+                    }
+                    git.ff_merge_integration(&worktree.branch).await?;
+                    let main_sha = git.head_commit_sha().await?.to_string();
                     if let Some(e) = emit.as_mut() {
                         e.emit(
                             DriverKind::MergeOk,
@@ -426,7 +469,7 @@ async fn merge_back_one(
                     }
                     Ok(BatchResult::Merged { bead: bead.id })
                 }
-                MergeResult::Conflict { detail, .. } => {
+                RebaseOutcome::Conflict { detail, .. } => {
                     warn!(
                         bead = %bead.id,
                         branch = %worktree.branch,
@@ -499,13 +542,15 @@ async fn merge_back_one(
                 question,
             })
         }
-        // The integration-conflict and signature-verification outcomes
-        // are produced only by the sequential `run_bead` integration
-        // path (which owns the single integration-conflict retry and the
-        // blocked routing); parallel dispatch runs its own merge inside
-        // the `Success` branch above and never surfaces them here. Map
-        // defensively to `AgentBlocked` so the bead workspace is reaped
-        // and the next `bd ready` poll re-dispatches.
+        // These two `AgentOutcome` variants are driver-side integration
+        // verdicts, never produced by the spawn closure that yields the
+        // per-bead session `outcome` matched here: the parallel path runs
+        // its own rebase + two-pass signature verification inside the
+        // `Success` branch above and surfaces a failure as
+        // `BatchResult::AgentBlocked` directly, not by round-tripping
+        // through these variants. The arms are kept defensive — map to
+        // `AgentBlocked` so the bead workspace is reaped and the next
+        // `bd ready` poll re-dispatches.
         AgentOutcome::IntegrationConflict { new_base_sha, .. } => {
             warn!(bead = %bead.id, "integration conflict in parallel dispatch — cleaning up worktree");
             git.remove_worktree(&worktree.path).await?;

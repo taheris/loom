@@ -46,6 +46,7 @@ mod retry;
 mod runner;
 mod spawn;
 mod tree_clean;
+mod verify;
 
 pub use context::{LoopContextInputs, build_loop_context, render_loop_prompt};
 pub use error::LoopError;
@@ -74,3 +75,4 @@ pub use runner::{
 };
 pub use spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 pub use tree_clean::{TREE_NOT_CLEAN_CAP, dirty_paths_from_porcelain};
+pub use verify::{VerifyPass, verify_pass};

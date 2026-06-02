@@ -91,6 +91,24 @@ fn fake_bead(id: &str) -> Bead {
     }
 }
 
+/// Generate a passphrase-less ed25519 signing key under `dir`. Returns
+/// `Ok(None)` when `ssh-keygen` is not on `PATH` so the signing tests
+/// degrade to a skip on hosts without OpenSSH (the criterion is annotated
+/// `[test?]`).
+fn gen_signing_key(dir: &Path) -> Result<Option<std::path::PathBuf>> {
+    let key = dir.join("signing-key");
+    let spawned = Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-N", "", "-q", "-C", "", "-f"])
+        .arg(&key)
+        .status();
+    match spawned {
+        Ok(status) if status.success() => Ok(Some(key)),
+        Ok(status) => anyhow::bail!("ssh-keygen exited with {status}"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).context("spawn ssh-keygen"),
+    }
+}
+
 /// Acceptance (`specs/harness.md` § Bead dispatch — flat-keyed
 /// `.loom/beads/<id>/` layout): dispatching a single bead — even
 /// at `--parallel 1` — materialises `.loom/beads/<bead-id>/` and
@@ -728,6 +746,85 @@ async fn parallel_merge_back_preserves_worktree_on_push_failure() -> Result<()> 
     assert!(
         worktree_path.exists(),
         "worktree {worktree_path:?} MUST be preserved on push failure",
+    );
+    Ok(())
+}
+
+/// Spec criterion (`specs/harness.md` § Verdict Gate, phases 2 & 4 —
+/// `integration_step_verifies_signatures_in_two_passes`): the **parallel**
+/// merge-back path runs `git verify-commit` over the fetched bead commits
+/// (pass 1) BEFORE folding them onto the integration branch, exactly as the
+/// sequential `run_bead` path does. With a signing key resolved in the loom
+/// workspace (an `allowed_signers` file present) an UNSIGNED bead commit
+/// must route the bead to `loom:blocked` carrying a
+/// `signature-verification-failed (worker-side)` reason — NOT merge
+/// silently. Before the fix the parallel path called `merge_branch` with
+/// zero verification, so an unsigned/tampered commit landed on every host
+/// where wrapix signing is configured, bypassing the spec's tamper guard.
+#[tokio::test]
+async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
+    let repo = init_repo()?;
+    let Some(key) = gen_signing_key(repo.path())? else {
+        // No `ssh-keygen` on PATH — the signing path cannot be exercised.
+        return Ok(());
+    };
+    let client = GitClient::open(repo.path())?;
+    let loom = loom_path(repo.path());
+
+    // Enable verification in the loom workspace: write the allowed_signers
+    // file + ssh-verify config the way `loom init` does when a key resolves.
+    loom_driver::git::write_signing_config(&loom, &key)?;
+    assert!(
+        client.signing_verification_enabled().await,
+        "precondition: verification must be enabled once allowed_signers resolves",
+    );
+
+    let label = SpecLabel::new("harness");
+    let bead = fake_bead("lm-unsigned.1");
+    let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
+    let slot = slots.into_iter().next().expect("one slot");
+
+    // The shared `git` helper forces `commit.gpgsign=false`, so the bead
+    // commit carries no signature — pass 1 must reject it.
+    std::fs::write(slot.worktree.path.join("payload.txt"), b"unsigned\n")?;
+    git(&slot.worktree.path, &["add", "payload.txt"])?;
+    git(
+        &slot.worktree.path,
+        &["commit", "-q", "-m", "unsigned work"],
+    )?;
+
+    let batch_slot = BatchSlot {
+        bead: slot.bead.clone(),
+        worktree: slot.worktree.clone(),
+        outcome: AgentOutcome::Success,
+    };
+    let stub = beads_push_stub(repo.path());
+    let outcome = merge_back(&client, &stub, vec![batch_slot]).await?;
+
+    assert_eq!(outcome.results.len(), 1);
+    let r = &outcome.results[0];
+    let BatchResult::AgentBlocked { bead: bid, reason } = r else {
+        panic!("unsigned commit must route to AgentBlocked, got {r:?}");
+    };
+    assert_eq!(*bid, bead.id);
+    assert!(
+        reason.contains("signature-verification-failed (worker-side)"),
+        "blocked reason must name the worker-side pass-1 failure: {reason}",
+    );
+
+    // The unverified commit was blocked BEFORE the ff-merge, so nothing
+    // landed on the integration branch.
+    assert!(
+        !loom.join("payload.txt").exists(),
+        "an unsigned bead commit must NOT reach the integration branch",
+    );
+    // The transient `loom/<id>` ref was deleted on the block path so a
+    // later dispatch's fetch starts clean.
+    let leaked = git_capture(&loom, &["branch", "--list", &slot.worktree.branch])?;
+    assert!(
+        leaked.trim().is_empty(),
+        "transient ref {} must be deleted on signature-block (got: {leaked:?})",
+        slot.worktree.branch,
     );
     Ok(())
 }

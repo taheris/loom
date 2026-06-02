@@ -2857,7 +2857,7 @@ Criteria.
       `signature-verification-failed` (worker-side) and pass-2
       failure routes to `loom:blocked` with the same cause but the
       detail naming "driver-side"
-  [test?](integration_step_verifies_signatures_in_two_passes)
+  [test](integration_step_verifies_signatures_in_two_passes)
 - When the signing key does not resolve, signature verification is
       skipped at both passes and the integration step proceeds
   [test](signature_verification_skipped_when_no_key)

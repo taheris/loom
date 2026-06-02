@@ -24,7 +24,7 @@ use loom_driver::bd::{
 };
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomTopConfig, Phase};
-use loom_driver::git::{CreatedWorktree, GitClient, RebaseOutcome, SignatureCheck};
+use loom_driver::git::{CreatedWorktree, GitClient, RebaseOutcome};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
 use loom_driver::logging::phase_log_path;
@@ -44,6 +44,7 @@ use super::post_merge_push::{default_beads_push_program, push_merged_main_then_b
 use super::runner::{AgentLoopController, PerBeadGateOutcome};
 use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 use super::tree_clean::dirty_paths_from_porcelain;
+use super::verify::{VerifyPass, verify_pass};
 use crate::review::{
     AcceptAllFindingValidator, DispatchScope, GateInputs, PhaseVerdict, RecoveryCause, WalkOutput,
     decide,
@@ -249,9 +250,10 @@ where
     }
 
     /// Run one `git verify-commit` pass over `range` in the loom
-    /// workspace. `side` is `"worker"` (pass 1, fetched commits) or
-    /// `"driver"` (pass 2, rebased commits) — it rides into the
-    /// `signature-verification-failed` detail so the operator knows
+    /// workspace via the shared [`verify_pass`] helper. `pass` is
+    /// [`VerifyPass::Worker`] (pass 1, fetched commits) or
+    /// [`VerifyPass::Driver`] (pass 2, rebased commits) — it rides into
+    /// the `signature-verification-failed` detail so the operator knows
     /// whether to investigate the wrapix container's signing setup or the
     /// loom-workspace gitconfig + key resolution.
     ///
@@ -264,41 +266,22 @@ where
         bead: &BeadId,
         worktree: &CreatedWorktree,
         range: &str,
-        side: &str,
+        pass: VerifyPass,
     ) -> Result<Option<AgentOutcome>, LoopError> {
-        match self.git.verify_commit_range(range).await? {
-            SignatureCheck::Skipped | SignatureCheck::Verified => Ok(None),
-            SignatureCheck::Failed { commit, detail } => {
-                let reason = format!(
-                    "signature-verification-failed ({side}-side): \
-                     git verify-commit rejected {commit} in range {range} — {detail}",
-                );
-                warn!(
-                    bead = %bead,
-                    branch = %worktree.branch,
-                    side,
-                    commit = %commit,
-                    "signature verification failed — routing to loom:blocked",
-                );
-                self.emit_to_log(
-                    DriverKind::SignatureVerificationFailed,
-                    &format!("signature verification failed ({side}-side): {commit}"),
-                    serde_json::json!({
-                        "bead_id": bead.to_string(),
-                        "branch": worktree.branch,
-                        "side": side,
-                        "commit": commit,
-                        "range": range,
-                        "detail": detail,
-                    }),
-                );
-                // `loom/<id>` ref deleted unconditionally on this exit path.
-                self.git.delete_branch(&worktree.branch).await?;
-                Ok(Some(AgentOutcome::SignatureVerificationFailed {
-                    detail: reason,
-                }))
-            }
-        }
+        // Disjoint field borrows: `&self.git` (shared) alongside
+        // `self.current_emit.as_mut()` (exclusive) is sound because they
+        // are distinct fields accessed directly rather than through a
+        // method.
+        let reason = verify_pass(
+            &self.git,
+            self.current_emit.as_mut(),
+            bead,
+            &worktree.branch,
+            range,
+            pass,
+        )
+        .await?;
+        Ok(reason.map(|detail| AgentOutcome::SignatureVerificationFailed { detail }))
     }
 }
 
@@ -541,7 +524,7 @@ where
             let integration_branch = self.git.integration_branch().to_string();
             let pass1_range = format!("{integration_branch}..{}", worktree.branch);
             if let Some(outcome) = self
-                .verify_or_block(&bead.id, &worktree, &pass1_range, "worker")
+                .verify_or_block(&bead.id, &worktree, &pass1_range, VerifyPass::Worker)
                 .await?
             {
                 return Ok(outcome);
@@ -567,18 +550,13 @@ where
                     // integration line.
                     let pass2_range = format!("{integration_branch}..{}", worktree.branch);
                     if let Some(outcome) = self
-                        .verify_or_block(&bead.id, &worktree, &pass2_range, "driver")
+                        .verify_or_block(&bead.id, &worktree, &pass2_range, VerifyPass::Driver)
                         .await?
                     {
                         return Ok(outcome);
                     }
                     self.git.ff_merge_integration(&worktree.branch).await?;
-                    let main_sha = self
-                        .git
-                        .head_commit_sha()
-                        .await
-                        .map(|oid| oid.to_string())
-                        .unwrap_or_else(|_| "unknown".to_string());
+                    let main_sha = self.git.head_commit_sha().await?.to_string();
                     self.emit_to_log(
                         DriverKind::MergeOk,
                         &format!("merge ok: {} → main", worktree.branch),
