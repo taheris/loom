@@ -160,8 +160,10 @@ selecting the audit scope:
 All gate subcommands take exactly one scope flag (mutually
 exclusive), plus optional filters. The scope flag defines the
 **input set** — the files the gate is being asked about. A verifier
-runs iff its declared inputs intersect the input set (see *Verifier
-inputs* below); otherwise it's skipped.
+whose inputs the gate can derive runs iff those inputs intersect the
+input set (see *Verifier inputs* below); a verifier whose inputs
+can't be derived always runs (the *Conservative default*, below) —
+an undeterminable input set is never grounds to skip.
 
 | Flag | Input set | Typical caller |
 |---|---|---|
@@ -214,8 +216,9 @@ claim is "the work *I* did is done and correct", which is
 exclusively about files the molecule changed. Verifiers whose
 inputs don't intersect the molecule's diff have results unchanged
 from when they last ran; skipping them is safe. `--tree` is the
-nightly safety net that catches verifier-input-declaration drift
-(see *Verifier inputs*), not the push gate.
+nightly safety net that catches verifier-input under-reporting (a
+derived input set too narrow to fire when it should — see *Verifier
+inputs*), not the push gate.
 
 The composition: `loom gate audit` ≡ `loom gate verify && loom gate
 review`. Both are inspection paths; `audit` produces no bd writes.
@@ -233,8 +236,8 @@ underlying check is the same.
 |---|---|---|---|---|
 | **Plan** | `loom plan -n` / `loom plan -u` | Spec under interview | Lowest — no code yet | Missing claims, weak claims, missing verifier surfaces, invariant clashes in proposed spec changes |
 | **Per-diff** | In `loom loop`: `loom gate verify --bead <id>` then `loom gate mint --bead <id>`. For ad-hoc inspection: `loom gate audit --bead <id>` (verify + review, no minting) | Spec sections the diff touches; the diff itself; tests in the diff | Medium — one bead's worth | Conformance gaps in diff, lint violations, weak verifiers, contract gaps inside one diff's reach, invariant clashes in proposed code changes |
-| **Push** | `loom gate audit --diff <molecule.base_commit>..HEAD` (unconditionally on `loom loop` molecule completion — see [harness.md FR1 + FR9](harness.md#functional)) | The molecule's own diff (files it touched) × every verifier whose declared inputs intersect that diff | Highest — **blocks push**, gate verdict encoded in [`GateOutcome`](harness.md#loop-outcome-types) (`Success`/`Fail`/`NoGate`). `GateSuccess` is constructible only when all four FR9 conditions hold *and* on-disk review-log evidence is present; the struct's private `_private: ()` field seals struct-literal construction so `GateSuccess::new` is the sole minting path and asserts each condition. Silent gate-skip is structurally unrepresentable | Conformance gaps in the molecule, integrity-gate findings (unresolved annotations, stub tests) within the molecule's diff, review concerns, dispatch errors |
-| **Standing safety net** | `loom gate audit --tree` for inspection; `loom gate mint --tree` to act (on-demand, nightly CI, scheduled). The mint path is the only one that creates fix-up beads — see [*Findings and Minting*](#findings-and-minting) | Entire spec tree × entire implementation | Catches **verifier-input-declaration drift** — any verifier the push-gate's `--diff` scope would have skipped on the same diff is surfaced here. Findings (including drift) surface as regular fix-up beads via mint; `invariant-clash` findings additionally carry `loom:clarify` for human resolution | Cross-file incoherence the molecule's diff didn't surface, contracts orphaned across PRs, accumulated style/test regressions, template-vs-spec drift (Invariant 3), surface drift, verifier-input declarations that are too narrow |
+| **Push** | `loom gate audit --diff <molecule.base_commit>..HEAD` (unconditionally on `loom loop` molecule completion — see [harness.md FR1 + FR9](harness.md#functional)) | The molecule's own diff (files it touched) × every verifier the diff could affect (derived inputs intersect the diff, plus every verifier whose inputs can't be derived — see *Verifier inputs* § Conservative default) | Highest — **blocks push**, gate verdict encoded in [`GateOutcome`](harness.md#loop-outcome-types) (`Success`/`Fail`/`NoGate`). `GateSuccess` is constructible only when all four FR9 conditions hold *and* on-disk review-log evidence is present; the struct's private `_private: ()` field seals struct-literal construction so `GateSuccess::new` is the sole minting path and asserts each condition. Silent gate-skip is structurally unrepresentable | Conformance gaps in the molecule, integrity-gate findings (unresolved annotations, stub tests) within the molecule's diff, review concerns, dispatch errors |
+| **Standing safety net** | `loom gate audit --tree` for inspection; `loom gate mint --tree` to act (on-demand, nightly CI, scheduled). The mint path is the only one that creates fix-up beads — see [*Findings and Minting*](#findings-and-minting) | Entire spec tree × entire implementation | Catches **verifier-input under-reporting** — any verifier the push-gate's `--diff` scope would have skipped because its derived input set was too narrow is surfaced here (the `--tree` sweep runs every verifier regardless of scope). Findings surface as regular fix-up beads via mint; `invariant-clash` findings additionally carry `loom:clarify` for human resolution | Cross-file incoherence the molecule's diff didn't surface, contracts orphaned across PRs, accumulated style/test regressions, template-vs-spec drift (Invariant 3), surface drift, verifier-reported input sets that are too narrow |
 
 The plan stage has no separate command invocation — the agent runs
 the rubric inline during the planning interview, and `loom plan` is
@@ -262,8 +265,8 @@ only minting path — no code path outside that module can fabricate
 one, so a clean `loom loop` exit without the gate actually firing is
 unrepresentable.
 The standing safety net is **scheduled, not load-bearing for any
-individual push** — its job is to catch verifier-input-declaration
-drift over time, not to gate per-molecule pushes.
+individual push** — its job is to catch verifier-input
+under-reporting over time, not to gate per-molecule pushes.
 
 ### Plan-stage checks
 
@@ -768,6 +771,7 @@ finding hashes the same way across rubric runs.
 | `unresolved-annotation` | Integrity gate forward-resolution (tree-scope and push-gate scope) | `Annotation { target_string }` | fix-up |
 | `stub-pointing` | Integrity gate stub-pointing (tree-scope and push-gate scope) | `Annotation { target_string }` | fix-up |
 | `unneeded-pending-marker` | Integrity gate stale pending modifier (tree-scope and push-gate scope) | `Annotation { target_string }` | fix-up |
+| `inputs-protocol-error` | Integrity gate inputs-protocol check (tree-scope and push-gate scope) — a `[judge]` collect mode (`<script> --print-inputs <fn>`) exited non-zero or emitted a malformed inputs document | `Annotation { target_string }` | fix-up |
 | `multiple-annotations` | Integrity gate atomic-acceptance (tree-scope only) | `Criterion { spec, anchor }` | fix-up |
 | `pending-marker-resolved` | Sweeping walker (any scope) — a pending element (`?` or `~`) in structured spec input has resolved against the pending direction (`?` + present, or `~` + absent), so the author must drop the marker to its resolved value | `MatrixCell { spec, partial, template }` / `SurfaceElement { spec, kind, name }` / per-walker variant | fix-up |
 
@@ -883,6 +887,7 @@ applies the same mint flow uniformly. The mapping:
 | Integrity gate: stub-pointing | `stub-pointing` | same | `Annotation { target_string }` | "annotation points at stub function" |
 | Integrity gate: atomic-acceptance violation | `multiple-annotations` | same | `Criterion { spec, anchor }` | "criterion carries N annotations, expected 1" |
 | Integrity gate: stale pending modifier | `unneeded-pending-marker` | same | `Annotation { target_string }` | "annotation is now resolved — drop the ? marker" with spec:line |
+| Integrity gate: inputs-protocol error | `inputs-protocol-error` | `[<spec owning the annotation>]` | `Annotation { target_string }` | "`[judge]` collect mode errored / emitted a malformed inputs document" with spec:line |
 
 The owning spec for `bonds` is the spec containing the annotation
 the verifier was dispatched for — the same spec-section auto-include
@@ -1862,46 +1867,124 @@ the defaults are heuristics for common shapes, not assumptions.
 
 #### Verifier inputs
 
-Every verifier declares the **files it examines** — the gate uses
-these declarations to decide whether to run the verifier given a
-scope's input set. The intersection rule is: verifier runs iff
-`declared inputs ∩ scope input set ≠ ∅`.
+A verifier's inputs are the **files it examines** — the gate
+intersects them with a scope's input set to decide whether to run
+the verifier: it runs iff `inputs ∩ scope input set ≠ ∅`. Inputs are
+a **derived property of the verifier**, computed from the same
+definition that does the verifying — never a parallel,
+hand-maintained list that can drift from what the verifier actually
+reads.
 
 The wire format is a list of **gitignore-style glob patterns
-relative to repo root**. Where the declarations come from depends
-on verifier kind:
+relative to repo root**. How the gate derives them depends on
+verifier kind:
 
 | Verifier kind | Source of inputs |
 |---|---|
-| `[test](name)` | Derived from test framework metadata. For Rust: walk `cargo metadata`, resolve the test's owning crate, declare the crate's source dirs. For pytest: pytest's collection output. For other frameworks: `<workspace>/loom.toml` `[runner.<tier>] inputs_for_test = "<command>"`. |
-| `[check]` / `[system]` referencing a **script** | A `# loom-inputs: <comma-separated globs>` header line in the script. Format is uniform across script languages — the line is found by literal-string search, not by interpreting shebangs. |
-| `[check]` / `[system]` referencing a **binary** that supports the input-query protocol | The binary returns inputs via `<binary> --print-inputs <remaining-argv>` printing JSON `{"inputs": ["glob1", "glob2"]}` to stdout. |
-| `[check]` / `[system]` — fallback | Heuristic path extraction from the command string. `grep -q 'X' path/to/file` → `path/to/file`. `cargo test -p mycrate --lib testname` → `mycrate`'s sources via cargo metadata. Conservative; misses are caught by the standing-stage safety-net sweep. |
-| `[judge](script#fn)` | A `# loom-inputs:` header line in the judge script (same convention as `[check]`/`[system]` scripts). |
+| `[test](name)` | Test-framework metadata. For Rust: walk `cargo metadata`, resolve the test's owning crate, resolve the crate's source dirs. For pytest: pytest's collection output. For other frameworks: `<workspace>/loom.toml` `[runner.<tier>] inputs_for_test = "<command>"`. |
+| `[check]` / `[system]` / `[judge]` whose target resolves to a **script or binary supporting the input-query protocol** | The verifier reports its own inputs: `<target> --print-inputs <remaining-argv>` prints JSON `{"inputs": ["glob1", "glob2"]}` to stdout (for `[judge]`, the remaining argv is the `#fn` selector — see *Judge collect mode*). |
+| `[check]` / `[system]` — heuristic | Path extraction from genuine command tokens. `grep -q 'X' path/to/file` → `path/to/file`; `cargo test -p mycrate --lib testname` → `mycrate`'s sources via cargo metadata. Only tokens that are the verifier's own command arguments — never a guess at what a script reads internally. |
+
+**Input-query protocol.** The `--print-inputs` query is issued
+through the verifier's runner / command template — **never by
+prepending the flag to the command's first token.** The template
+decides where the flag lands, so a `cargo run -p loom-walk -- foo`
+verifier is queried as the walk's own argument (after the `--`
+boundary), not as an argument to `cargo`, and a `sh -c "<script>"`
+verifier is queried by running the script, not by token-scanning for
+a path. Two response shapes:
+
+- **Single-target** — `{"inputs": ["glob", ...]}`, the inputs for the
+  one target queried.
+- **Batch** — `{"inputs": {"<target>": ["glob", ...], ...}}`, a
+  per-target map. A runner that batches *execution* (one subprocess
+  for many targets — see *Dispatch — per-tier process model*) reports
+  inputs the same way: **one query spawn learns the inputs for its
+  whole matched group**, never one spawn per target. Discovery
+  batches exactly where execution batches, so scoping a large tree
+  costs no more processes than running it.
+
+**Target resolution.** A `[judge]` target — and any `[check]` /
+`[system]` target that *is* a script-file path — is located by
+selector-stripping + spec-relative resolution: a `#fn` / `::fn` /
+`::attr` selector is stripped before the on-disk lookup, and a
+relative path is joined against the annotation's spec-file directory
+(not the repo root), matching the markdown renderer's relative-link
+resolution. The integrity gate and the input resolver share **one
+helper** for this, so the existence check and the collect-mode
+invocation cannot disagree about where the script lives. This is the
+deterministic resolution of a target that genuinely *is* a path — not
+the retired token-scanning of a free-form command, whose inputs come
+from its runner template (per *Input-query protocol*), never from
+guessing which token is a file.
+
+**Judge collect mode.** A judge script reports per-function inputs by
+running the function in a **collect mode** rather than evaluating it:
+`<script> --print-inputs <fn>` defines `judge_files` to *record* its
+path arguments and `judge_criterion` (and any LLM call) as a no-op,
+runs `<fn>`, and emits the recorded paths as `{"inputs": [...]}`.
+Invoked with **no** `<fn>` the script emits the batch map for every
+rubric it defines (`{"inputs": {"<fn>": [paths], ...}}`) in a single
+spawn, so the gate learns one script's whole judge set at once. The
+`judge_files` calls a rubric already makes are therefore the
+**single source of truth** for that judge's inputs — per-function,
+with no separate header to maintain or drift. This requires judge
+scripts to be executable with the loom judge-harness preamble (which
+supplies `judge_files` / `judge_criterion`); a judge whose collect
+mode errors or emits a malformed inputs document is a loud finding,
+not a silent fallback (see *Inputs-protocol error*).
 
 **Spec-section auto-include.** The spec section the annotation lives
-in is *always* part of the verifier's inputs. The gate adds it
-automatically; spec authors don't declare it. Editing the spec
-section re-runs the verifier without anyone writing a rule.
+in is *always* part of the verifier's inputs — added automatically,
+never declared. Editing the spec section re-runs the verifier. The
+auto-include is an *additional* input, not the resolution floor:
+when a verifier reports no inputs of its own, the gate does not
+narrow it to the spec section alone (see *Conservative default*).
 
-**Empty inputs are a smell.** A verifier that examines nothing under
-the repo is either a misdeclaration or a no-op. Genuinely
-cross-cutting verifiers declare **broad** inputs (e.g. integrity
-gate declares "every spec file in the input set"; workspace lints
-declare every workspace `Cargo.toml`), not empty. The standing-stage
-safety net surfaces unintentional empties.
+**Conservative default.** A verifier that reports no inputs of its
+own — no test-framework metadata, no `--print-inputs` support, no
+heuristic path token — **always runs** under every scope. Inputs are
+an optimization that lets the gate *skip* verifiers it can prove are
+unaffected; an undeterminable input set is never grounds to skip.
+Incremental skipping must never silently drop a verifier that should
+have fired, so "inputs unknown" resolves to *run*, not to *narrow to
+the spec section*. Precision is opt-in (via `--print-inputs` or
+`[test]` framework metadata); imprecision costs wasted work, never a
+missed verifier.
 
-**Repo-agnostic.** The `# loom-inputs:` header works in any script
-language. The `--print-inputs` convention works for any binary. The
-`[runner.<tier>] inputs_for_test` config knob handles non-default
-test frameworks. Loom-the-library has no privileged knowledge of
-any consumer's layout.
+**Inputs-protocol error.** Reporting inputs is opt-in. For a
+`[check]` / `[system]` target the probe is **best-effort**: a
+well-formed `{"inputs":[...]}` on exit 0 is used (an empty list is a
+deliberate narrow, honoured as-is); anything else — a non-zero exit,
+or non-JSON stdout — falls through to the conservative always-run
+default, **silently**. The gate cannot tell a command that rejected
+an unknown flag from one that opted in and then failed, so it never
+faults an arbitrary command for a malformed probe.
+
+`[judge]` targets are the exception, because loom owns their
+contract: the harness preamble guarantees `--print-inputs <fn>` is a
+real code path, so a judge collect mode can only **report** or be
+**broken**. A collect mode that exits non-zero or emits a malformed
+inputs document is a loud `inputs-protocol-error` finding (see
+*Concern tokens and target variants*) — deterministic, emitted by
+the integrity gate during `loom gate verify` / `check`, exiting
+non-zero at the push gate and minting as a fix-up at tree scope. This
+is where loudness costs nothing: a broken single source of truth
+surfaces, while no third-party `grep` / `nix` command is ever
+mis-flagged.
+
+**Repo-agnostic.** The `--print-inputs` convention works for any
+script or binary in any language, and the `[runner.<tier>]
+inputs_for_test` config knob handles non-default test frameworks —
+loom-the-library imposes no layout of its own.
 
 Spec annotations stay **clean** — `[tier](target)` and nothing else.
-No inline metadata, no HTML-comment companions, no syntax
-extensions. Override mechanisms live next to the verifier (script
-header, binary protocol, runner config), not next to the
-annotation.
+No inline metadata, no HTML-comment companions, no syntax extensions,
+**and no in-script `# loom-inputs:` header** — a verifier reports its
+inputs by executing, not by carrying a comment a reader must keep in
+sync. The reporting mechanism lives in the verifier's own definition
+(test metadata, `--print-inputs`, command arguments), never beside
+the annotation and never as a parallel declaration.
 
 ### Verifier-runner contract
 
@@ -1976,7 +2059,7 @@ runner fails on zero-match.
 ## Integrity gate
 
 The deterministic gate that verifies the annotations themselves
-resolve. Runs as part of `loom gate check`. Three directions:
+resolve. Runs as part of `loom gate check`. Four directions:
 
 1. **Forward — every annotation's target is valid for its tier.**
    - `[check](cmd)` and `[system](cmd)`: the command's first token
@@ -2012,19 +2095,35 @@ resolve. Runs as part of `loom gate check`. Three directions:
    suppressible by `?` — having two annotations on one criterion is
    wrong regardless of either's resolution state.
 
+4. **Inputs-protocol honesty — a `[judge]` collect mode must honour
+   the input-query contract** (`inputs-protocol-error`). Every
+   `[judge]` target is probed via its collect mode (`<script>
+   --print-inputs <fn>`); because the harness preamble guarantees that
+   code path exists, a collect mode that exits non-zero or emits a
+   malformed inputs document is unambiguously broken and the gate
+   flags it. This is the loud counterpart to the *Conservative
+   default*: `[check]` / `[system]` probes that fail fall through to
+   always-run silently (loom cannot tell a declined flag from a broken
+   opt-in), but a judge's contract is loom's own, so its breakage is
+   never silent. The pending modifier suppresses `inputs-protocol-error`
+   the same way it suppresses `UnresolvedAnnotation` — a `[tier?]`
+   annotation has no verifier yet to hold to the protocol.
+
 Failure output (one per finding):
 
 - `<spec>:<line>: annotation [tier](<target>) — does not resolve`
 - `<spec>:<line>: criterion carries N annotations, expected 1`
 - `<spec>:<line>: annotation [tier](<target>) points at stub function`
 - `<spec>:<line>: annotation [tier?](<target>) is now resolved — drop the ? marker`
+- `<spec>:<line>: annotation [judge](<target>) — collect mode errored / emitted a malformed inputs document`
 
 **Integrity findings at the push gate are recoverable up to the
 molecule's iteration cap.** When `loom gate verify --diff
 <molecule.base_commit>..HEAD` (the molecule-completion audit)
 produces one or more `UnresolvedAnnotation`, `StubTestFunction`,
-or `UnneededPendingMarker` findings within the molecule's diff
-scope, the verdict gate normalizes each into a typed `Finding` per
+`UnneededPendingMarker`, or `inputs-protocol-error` findings within
+the molecule's diff scope, the verdict gate normalizes each into a
+typed `Finding` per
 the mapping in *Findings and Minting — Concern tokens and target
 variants* and dispatches them through the standard mint pipeline
 (per *Per-batch processing*). The findings bundle into one fix-up
@@ -2938,6 +3037,37 @@ Loop-side interpretation of these exit codes — routing `refused` to
   owning crate's source directories (via `cargo metadata`) and the spec
   section the annotation lives in (spec-section auto-include)
   [test](test_tier_resolution_uses_cargo_metadata_plus_spec_autoinclude)
+- A `[judge]` target — and any `[check]` / `[system]` target that is a
+  script-file path — is located by shared selector-stripping (`#fn` /
+  `::fn` / `::attr`) plus spec-relative resolution, the same helper the
+  integrity gate uses, so the input resolver and integrity gate cannot
+  disagree about where the script lives
+  [test?](script_target_resolved_via_shared_spec_relative_helper)
+- A judge script reports per-function inputs via `<script> --print-inputs
+  <fn>` collect mode — `judge_files` records its path arguments while
+  `judge_criterion` and the LLM call are skipped, and the recorded paths
+  are emitted as `{"inputs":[...]}`
+  [test?](judge_collect_mode_records_judge_files_paths)
+- The input-query batch form maps each target to its globs in one spawn —
+  `<script> --print-inputs` with no `<fn>` emits `{"inputs":{"<fn>":[...]}}`
+  for every rubric, so discovery spawns no more processes than batched
+  execution
+  [test?](batch_print_inputs_maps_each_target_to_its_globs)
+- The `--print-inputs` query is issued through the verifier's command
+  template, not by prepending the flag to the command's first token, so a
+  `cargo run -p <crate> -- <walk>` verifier is queried as the walk's own
+  argument
+  [test?](print_inputs_issued_through_command_template_not_argv_head)
+- A verifier that reports no inputs of its own always runs under a
+  `--files` scope — the resolver never narrows an undeterminable input
+  set to the spec section alone
+  [test?](undeclared_verifier_always_runs_under_files_scope)
+- A `[judge]` collect mode (`<script> --print-inputs <fn>`) that exits
+  non-zero or emits a malformed inputs document is flagged
+  `inputs-protocol-error`; a `[check]` / `[system]` probe that does not
+  report well-formed inputs falls through to the conservative
+  always-run default
+  [test?](judge_collect_mode_protocol_error_flagged)
 
 ### Scope handling
 
