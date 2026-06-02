@@ -1,0 +1,7 @@
+# Point git at a committed, signing-disabled config for all test/dev cargo
+# invocations so the suite never reaches the operator's global signing key
+# (which prompts for a passphrase under `cargo nextest`). Honored by both
+# `cargo test` and `cargo nextest`.
+[env]
+GIT_CONFIG_GLOBAL = { value = ".config/git/test-gitconfig", relative = true }
+GIT_CONFIG_SYSTEM = "/dev/null"

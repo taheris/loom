@@ -353,12 +353,8 @@ impl GitClient {
 
         // Resolve against the loom workspace (whose `origin` is GitHub), not
         // the bead clone (whose `origin` is the loom workspace path). The
-        // resolved key is a HOST path; the bead clone is bind-mounted into a
-        // wrapix container where the committing agent runs, so the signing
-        // config must reference the in-container key path
-        // (`/etc/wrapix/keys/<basename>`) rather than the host path —
-        // `write_signing_config_for_container` performs that mapping while
-        // still deriving the allowed_signers pubkey from the host key.
+        // block signs host-side debug/test commits in the clone; in-container
+        // commits are signed by wrapix's git-ssh-setup.sh entrypoint.
         let signing_target = path.clone();
         let signing_override = self.signing_key_override.clone();
         spawn_blocking(move || -> Result<(), GitError> {
@@ -367,7 +363,7 @@ impl GitClient {
                 None => super::signing::resolve_signing_key(&loom_workspace)?,
             };
             if let Some(key) = key {
-                super::signing::write_signing_config_for_container(&signing_target, &key)?;
+                super::signing::write_signing_config(&signing_target, &key)?;
             }
             Ok(())
         })

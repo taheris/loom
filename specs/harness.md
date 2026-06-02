@@ -402,34 +402,31 @@ to **host** paths (the loom workspace is operated on the host):
 ```
 
 When `GitClient::create_worktree` materializes a bead clone, it
-writes the same four keys but with **in-container** path values,
-because the agent that consumes the config and signs commits runs
-inside the wrapix sandbox where the host paths do not exist:
+writes the same block with the same **host** path values, so
+host-side commits in the clone — operator debug sessions and
+host-side tests — sign against the resolved key and the clone's own
+allowed_signers file without prompting:
 
 ```ini
 [gpg]
     format = ssh
 [user]
-    signingkey = /etc/wrapix/keys/<signing-key basename>
+    signingkey = <resolved signing-key host path>
 [gpg "ssh"]
-    allowedSignersFile = /workspace/.git/loom-allowed-signers
+    allowedSignersFile = <clone>/.git/loom-allowed-signers
 [commit]
     gpgsign = true
 ```
 
-`/etc/wrapix/keys/<basename>` is the fixed destination wrapix
-bind-mounts the signing key to — the host source path never crosses
-the boundary, only the basename is preserved (wrapix
-`specs/security.md` § Credential Surfaces). `/workspace` is the
-in-container mount point of the bead clone, so the allowed_signers
-file the driver writes on the host at
-`<clone>/.git/loom-allowed-signers` is visible in-container at
-`/workspace/.git/loom-allowed-signers`. The public half is still
-derived from the host key (the only place the private key exists at
-write time). Local config beats the operator's `~/.gitconfig` in
-git's hierarchy, so this block is the sole authority on signing
-behavior inside the loom workspace and every bead clone — operator
-GPG/passphrase setup is bypassed without modification.
+In-container commits do not consume this block: wrapix's
+`git-ssh-setup.sh` entrypoint configures container signing
+independently (see *Scope* below), so loom never writes in-container
+key paths into the clone. The public half is derived from the host
+key (the only place the private key exists at write time). Local
+config beats the operator's `~/.gitconfig` in git's hierarchy, so
+this block is the sole authority on host-side signing inside the loom
+workspace and every bead clone — operator GPG/passphrase setup is
+bypassed without modification.
 
 **allowed_signers derivation.** Wrapix derives the allowed_signers
 file inside the container via `ssh-keygen -y -f $SIGNING_KEY` against
@@ -2792,12 +2789,11 @@ Criteria.
   [test](loom_init_writes_signing_gitconfig)
 - `GitClient::create_worktree` writes the signing block into each
       bead clone's local `.git/config` at materialization time using
-      **in-container** path values — `user.signingkey` at
-      `/etc/wrapix/keys/<signing-key basename>` and
-      `gpg.ssh.allowedSignersFile` at
-      `/workspace/.git/loom-allowed-signers` — because the agent that
-      signs commits runs inside the sandbox where the host paths do
-      not exist
+      **host** path values — `user.signingkey` at the resolved key
+      path and `gpg.ssh.allowedSignersFile` at the clone's own
+      `<clone>/.git/loom-allowed-signers` — so host-side debug and
+      test commits sign without prompting; in-container commits are
+      signed by wrapix's `git-ssh-setup.sh` entrypoint
   [test](create_worktree_writes_signing_gitconfig)
 - The fallback keyname is derived as `<repo>-<host>` where `<repo>`
       is parsed from the origin URL (`github.com[:/]<user>/<repo>`)

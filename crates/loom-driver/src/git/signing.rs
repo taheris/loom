@@ -32,21 +32,6 @@ pub const WRAPIX_DEPLOY_KEY_ENV: &str = "WRAPIX_DEPLOY_KEY";
 /// analogue of [`WRAPIX_DEPLOY_KEY_ENV`].
 pub const WRAPIX_SIGNING_KEY_ENV: &str = "WRAPIX_SIGNING_KEY";
 
-/// Fixed in-container directory wrapix bind-mounts deploy/signing keys into.
-/// The host source path never crosses the sandbox boundary; only the key's
-/// basename is preserved at this destination (wrapix `specs/security.md`
-/// § Credential Surfaces). A bead clone's signing config must reference the
-/// key here — not at its host path — because the agent that consumes the
-/// config (and signs commits) runs inside the container.
-const CONTAINER_KEYS_DIR: &str = "/etc/wrapix/keys";
-
-/// In-container mount point of a per-bead clone: the host `.loom/beads/<id>/`
-/// tree is bind-mounted here (`specs/agent.md` § SpawnConfig). The clone's
-/// `.git/` is a regular directory under this path, so the allowed_signers
-/// file the driver writes on the host at `<clone>/.git/loom-allowed-signers`
-/// is visible in-container at `/workspace/.git/loom-allowed-signers`.
-const CONTAINER_WORKSPACE: &str = "/workspace";
-
 /// Resolve the wrapix signing key for loom-materialized workspaces, using
 /// the same two-tier precedence wrapix applies host-side:
 ///
@@ -217,77 +202,24 @@ fn resolve_hostname() -> Option<String> {
 /// `sandbox@wrapix.dev`). It lives under `.git/` so workspace removal cleans
 /// it up automatically.
 pub fn write_signing_config(target_dir: &Path, signing_key: &Path) -> Result<(), GitError> {
-    let allowed_signers = target_dir.join(".git").join(ALLOWED_SIGNERS_FILE);
-    write_signing_block(
-        target_dir,
-        signing_key,
-        &signing_key.to_string_lossy(),
-        &allowed_signers.to_string_lossy(),
-    )
-}
-
-/// Variant of [`write_signing_config`] for a bead clone bind-mounted into a
-/// wrapix container. The committing agent runs **inside** the container, so
-/// the config's `user.signingkey` and `gpg.ssh.allowedSignersFile` must be
-/// in-container paths, not the host paths [`write_signing_config`] writes —
-/// those host paths do not exist in the sandbox and would break commit
-/// signing (`specs/harness.md` § Commit signing). Specifically:
-///
-/// - `user.signingkey` → `/etc/wrapix/keys/<host-key-basename>`, the fixed
-///   destination wrapix bind-mounts the key to (the host source path never
-///   crosses the boundary).
-/// - `gpg.ssh.allowedSignersFile` → `/workspace/.git/loom-allowed-signers`,
-///   the in-container view of the file this function writes on the host.
-///
-/// The public half is still derived from `host_key` on the host (the only
-/// place the private key exists at write time), and the derived
-/// allowed_signers file is written to the host `<target_dir>/.git/` path.
-pub fn write_signing_config_for_container(
-    target_dir: &Path,
-    host_key: &Path,
-) -> Result<(), GitError> {
-    let key_name = host_key
-        .file_name()
-        .ok_or_else(|| GitError::SigningKeyNoName {
-            path: host_key.to_path_buf(),
-        })?;
-    let container_key = Path::new(CONTAINER_KEYS_DIR).join(key_name);
-    let container_signers = format!("{CONTAINER_WORKSPACE}/.git/{ALLOWED_SIGNERS_FILE}");
-    write_signing_block(
-        target_dir,
-        host_key,
-        &container_key.to_string_lossy(),
-        &container_signers,
-    )
-}
-
-/// Shared core of [`write_signing_config`] and
-/// [`write_signing_config_for_container`]. Derives the allowed_signers file
-/// from `host_key` (always a host path — the private key only exists there)
-/// and writes the gitconfig block. `signingkey_value` and
-/// `allowed_signers_value` are the literal strings stored in
-/// `user.signingkey` / `gpg.ssh.allowedSignersFile`, which differ between
-/// the host workspace (host paths) and a bead clone (in-container paths).
-fn write_signing_block(
-    target_dir: &Path,
-    host_key: &Path,
-    signingkey_value: &str,
-    allowed_signers_value: &str,
-) -> Result<(), GitError> {
     let allowed_signers_file = target_dir.join(".git").join(ALLOWED_SIGNERS_FILE);
     let identity = std::env::var("GIT_AUTHOR_EMAIL")
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| DEFAULT_SIGNING_IDENTITY.to_string());
-    let pubkey = derive_public_key(host_key)?;
+    let pubkey = derive_public_key(signing_key)?;
     std::fs::write(&allowed_signers_file, format!("{identity} {pubkey}\n"))?;
 
     sync_git_config(target_dir, "gpg.format", "ssh")?;
-    sync_git_config(target_dir, "user.signingkey", signingkey_value)?;
+    sync_git_config(
+        target_dir,
+        "user.signingkey",
+        &signing_key.to_string_lossy(),
+    )?;
     sync_git_config(
         target_dir,
         "gpg.ssh.allowedSignersFile",
-        allowed_signers_value,
+        &allowed_signers_file.to_string_lossy(),
     )?;
     sync_git_config(target_dir, "commit.gpgsign", "true")?;
     Ok(())
@@ -605,56 +537,6 @@ mod tests {
                 assert_eq!(path, PathBuf::from("/nonexistent/wrapix-deploy-key"));
             }
             other => panic!("expected DeployKeyMissing, got {other:?}"),
-        }
-    }
-
-    /// A bead clone's signing config must reference in-container paths: the
-    /// key at `/etc/wrapix/keys/<basename>` and the allowed_signers file at
-    /// `/workspace/.git/loom-allowed-signers`. The allowed_signers file is
-    /// still physically written to the host `.git/` so it is visible in the
-    /// bind-mounted container.
-    #[test]
-    fn container_signing_config_uses_in_container_paths() {
-        let tmp = tempfile::tempdir().unwrap();
-        let target = tmp.path();
-        init_git_repo(target);
-        let key = gen_ssh_key(tmp.path());
-
-        write_signing_config_for_container(target, &key).unwrap();
-
-        let key_basename = key.file_name().unwrap();
-        let expected_key = Path::new(CONTAINER_KEYS_DIR).join(key_basename);
-        assert_eq!(
-            git_config_get(target, "user.signingkey").as_deref(),
-            Some(expected_key.to_string_lossy().as_ref()),
-        );
-        assert_eq!(
-            git_config_get(target, "gpg.ssh.allowedSignersFile").as_deref(),
-            Some("/workspace/.git/loom-allowed-signers"),
-        );
-        assert_eq!(git_config_get(target, "gpg.format").as_deref(), Some("ssh"));
-        assert_eq!(
-            git_config_get(target, "commit.gpgsign").as_deref(),
-            Some("true"),
-        );
-        // The derived file lands on the host so the bind mount exposes it.
-        assert!(target.join(".git").join(ALLOWED_SIGNERS_FILE).is_file());
-    }
-
-    /// A key with no basename (a bare root path) cannot be mapped into the
-    /// container keys dir — surfaces [`GitError::SigningKeyNoName`] rather
-    /// than writing a malformed config.
-    #[test]
-    fn container_signing_config_rejects_nameless_key() {
-        let tmp = tempfile::tempdir().unwrap();
-        let target = tmp.path();
-        init_git_repo(target);
-
-        match write_signing_config_for_container(target, Path::new("/")) {
-            Err(GitError::SigningKeyNoName { path }) => {
-                assert_eq!(path, PathBuf::from("/"));
-            }
-            other => panic!("expected SigningKeyNoName, got {other:?}"),
         }
     }
 }

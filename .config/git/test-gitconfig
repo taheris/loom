@@ -1,0 +1,13 @@
+# Hermetic git config for `cargo nextest` / `cargo test`. Test fixtures
+# create bead clones that, with no loom signing key resolved, would
+# inherit the operator's global commit.gpgsign + signing key and prompt
+# for a passphrase. Pin a test identity and disable signing here; tests
+# that exercise signing set commit.gpgsign=true in local config, which
+# overrides this file.
+[user]
+	name = loom-tests
+	email = tests@loom.invalid
+[commit]
+	gpgsign = false
+[tag]
+	gpgsign = false

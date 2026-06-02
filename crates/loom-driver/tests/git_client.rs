@@ -1186,15 +1186,14 @@ fn local_config(repo: &Path, key: &str) -> Result<Option<String>> {
 /// Spec contract `[test]` annotation (`specs/harness.md` § Success
 /// Criteria · Commit signing): `GitClient::create_worktree` writes the
 /// signing block into the bead clone's local `.git/config` when a signing
-/// key resolves, using IN-CONTAINER paths (the committing agent runs inside
-/// the wrapix sandbox, where the host key path does not exist):
-/// `user.signingkey` → `/etc/wrapix/keys/<host-key-basename>` and
-/// `gpg.ssh.allowedSignersFile` → `/workspace/.git/loom-allowed-signers`.
-/// The derived allowed_signers file is still physically written to the host
-/// clone's `.git/` (visible in-container under `/workspace/.git/`). Driven
-/// through the test-only override seam because `$WRAPIX_SIGNING_KEY` cannot
-/// be set under edition 2024's unsafe `env::set_var` with `unsafe_code`
-/// forbidden.
+/// key resolves, using host paths so host-side debug/test commits sign
+/// against the resolved key and the clone's own allowed_signers file:
+/// `user.signingkey` → the resolved key path and
+/// `gpg.ssh.allowedSignersFile` → `<clone>/.git/loom-allowed-signers`.
+/// In-container commits are signed via wrapix's `git-ssh-setup.sh`
+/// entrypoint. Driven through the test-only override seam because
+/// `$WRAPIX_SIGNING_KEY` cannot be set under edition 2024's unsafe
+/// `env::set_var` with `unsafe_code` forbidden.
 #[tokio::test]
 async fn create_worktree_writes_signing_gitconfig() -> Result<()> {
     let repo = init_repo()?;
@@ -1210,28 +1209,26 @@ async fn create_worktree_writes_signing_gitconfig() -> Result<()> {
         local_config(&created.path, "gpg.format")?.as_deref(),
         Some("ssh"),
     );
-    let key_basename = key.file_name().expect("key has a basename");
-    let expected_container_key = std::path::Path::new("/etc/wrapix/keys").join(key_basename);
     assert_eq!(
         local_config(&created.path, "user.signingkey")?.as_deref(),
-        Some(expected_container_key.to_string_lossy().as_ref()),
-        "user.signingkey must be the in-container key path, not the host path",
+        Some(key.to_string_lossy().as_ref()),
+        "user.signingkey must be the resolved host key path",
     );
     assert_eq!(
         local_config(&created.path, "commit.gpgsign")?.as_deref(),
         Some("true"),
     );
-    // The file lands on the host clone's `.git/`, but the config value points
-    // at its in-container view.
     let signers = created.path.join(".git").join("loom-allowed-signers");
     assert!(
         signers.is_file(),
         "allowed_signers file must be derived into the bead clone: {signers:?}",
     );
     assert_eq!(
-        local_config(&created.path, "gpg.ssh.allowedSignersFile")?.as_deref(),
-        Some("/workspace/.git/loom-allowed-signers"),
-        "allowedSignersFile must be the in-container path",
+        local_config(&created.path, "gpg.ssh.allowedSignersFile")?
+            .as_deref()
+            .map(std::path::PathBuf::from),
+        Some(signers.clone()),
+        "allowedSignersFile must point at the clone's own allowed_signers file",
     );
     Ok(())
 }
