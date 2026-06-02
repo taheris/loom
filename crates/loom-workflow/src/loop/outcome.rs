@@ -1,4 +1,7 @@
+use std::path::PathBuf;
+
 use loom_driver::agent::SessionOutcome;
+use loom_driver::git::GitOid;
 
 /// Result of one agent invocation against a bead. The driver translates
 /// session-level signals (JSONL `result/success`, non-zero process exit,
@@ -36,6 +39,32 @@ pub enum AgentOutcome {
     /// `loom:blocked` cause `retry-exhausted` (distinct from the
     /// `Failure`-exhaustion path which routes to `loom:clarify`).
     Retry { reason: String },
+
+    /// The driver-side rebase of the bead branch onto the integration
+    /// branch hit a textual conflict `git rerere` could not replay; the
+    /// rebase was aborted and the loom workspace returned to its
+    /// pre-rebase state. `files` are the unmerged paths and
+    /// `new_base_sha` the integration tip the rebase targeted. Routed by
+    /// [`super::runner::process_one_bead`] through a **single**
+    /// integration-conflict retry (distinct from `[loop] max_retries`):
+    /// the agent's next attempt rebases its bead-workspace branch onto
+    /// `new_base_sha`, resolves, and re-commits. A second conflict
+    /// escalates to `loom:clarify` with a synthesized Options block. Per
+    /// `specs/harness.md` § Verdict Gate.
+    IntegrationConflict {
+        files: Vec<PathBuf>,
+        new_base_sha: GitOid,
+    },
+
+    /// `git verify-commit` rejected a fetched (pass 1, worker-side) or
+    /// rebased (pass 2, driver-side) commit during the per-bead
+    /// integration step. Routes straight to `loom:blocked` with cause
+    /// `signature-verification-failed` — agent-retry cannot re-sign
+    /// existing commits, so this is operator-investigation territory
+    /// (wrapix container signing setup for pass 1; loom-workspace
+    /// gitconfig + key resolution for pass 2). `detail` names the side
+    /// and the offending commit. Per `specs/harness.md` § Verdict Gate.
+    SignatureVerificationFailed { detail: String },
 
     /// Pre-flight infra failure (image load, container start) — `B::spawn`
     /// returned an error before the agent process produced any output.

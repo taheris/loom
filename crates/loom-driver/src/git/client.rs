@@ -925,6 +925,26 @@ impl GitClient {
             let detail = String::from_utf8_lossy(&rebase_output.stderr)
                 .trim()
                 .to_string();
+            // Capture the unmerged-path set while the rebase is still
+            // paused mid-conflict — `git rebase --abort` discards it.
+            // A non-conflict refusal (unstaged changes) leaves no
+            // diff-filter=U entries, so `files` comes back empty.
+            let files = run_git_raw(
+                &workdir,
+                self.clock.as_ref(),
+                ["diff", "--name-only", "--diff-filter=U"],
+                None,
+            )
+            .await
+            .ok()
+            .map(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(|l| PathBuf::from(l.trim()))
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
             let _ = run_git_raw(&workdir, self.clock.as_ref(), ["rebase", "--abort"], None).await?;
             run_git(
                 &workdir,
@@ -933,7 +953,21 @@ impl GitClient {
                 None,
             )
             .await?;
-            return Ok(MergeResult::Conflict { detail });
+            // The integration-branch tip is the base the rebase
+            // targeted; the agent's retry rebases its branch onto this.
+            let new_base_raw = run_git_raw(
+                &workdir,
+                self.clock.as_ref(),
+                ["rev-parse", integration_branch],
+                None,
+            )
+            .await?;
+            let new_base_sha = GitOid::new(String::from_utf8_lossy(&new_base_raw.stdout).trim())?;
+            return Ok(MergeResult::Conflict {
+                detail,
+                files,
+                new_base_sha,
+            });
         }
 
         run_git(
@@ -960,6 +994,82 @@ impl GitClient {
             stderr,
         })
     }
+
+    /// Path to the loom-workspace allowed_signers file the per-bead
+    /// integration step verifies commits against. Written by `loom init`
+    /// / `create_worktree` when a wrapix signing key resolves (see
+    /// `specs/harness.md` § Commit signing). Absent when no key is
+    /// configured.
+    fn allowed_signers_path(&self) -> PathBuf {
+        self.loom_workspace()
+            .join(".git")
+            .join("loom-allowed-signers")
+    }
+
+    /// Whether driver-side signature verification is active in the loom
+    /// workspace. True only when the allowed_signers file exists — i.e. a
+    /// wrapix signing key resolved at `loom init` / `create_worktree`
+    /// time. When false the per-bead integration step skips both
+    /// verify-signature passes (the spec-sanctioned "no key" path —
+    /// `specs/harness.md` § Verdict Gate, phase 2).
+    pub async fn signing_verification_enabled(&self) -> bool {
+        tokio::fs::try_exists(self.allowed_signers_path())
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Verify every commit in `range` (e.g. `main..loom/<id>`) against the
+    /// loom workspace's allowed_signers file with `git verify-commit`.
+    ///
+    /// Returns [`SignatureCheck::Skipped`] when signing verification is
+    /// disabled (no allowed_signers file — no key configured), so the
+    /// per-bead integration step proceeds unchanged on hosts where wrapix
+    /// signing is not set up. When enabled, walks the commits oldest-first
+    /// and returns [`SignatureCheck::Failed`] on the first commit
+    /// `git verify-commit` rejects, carrying the offending sha + stderr so
+    /// the caller can route to `signature-verification-failed`.
+    pub async fn verify_commit_range(&self, range: &str) -> Result<SignatureCheck, GitError> {
+        if !self.signing_verification_enabled().await {
+            return Ok(SignatureCheck::Skipped);
+        }
+        let workdir = self.loom_workspace();
+        let listed = run_git_raw(
+            &workdir,
+            self.clock.as_ref(),
+            ["rev-list", "--reverse", range],
+            None,
+        )
+        .await?;
+        let shas: Vec<String> = String::from_utf8_lossy(&listed.stdout)
+            .lines()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect();
+        for sha in &shas {
+            let out =
+                run_git_raw(&workdir, self.clock.as_ref(), ["verify-commit", sha], None).await?;
+            if !out.status.success() {
+                return Ok(SignatureCheck::Failed {
+                    commit: sha.clone(),
+                    detail: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+                });
+            }
+        }
+        Ok(SignatureCheck::Verified)
+    }
+}
+
+/// Outcome of [`GitClient::verify_commit_range`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignatureCheck {
+    /// No allowed_signers file resolved — verification skipped. The
+    /// per-bead integration step proceeds (spec-sanctioned "no key" path).
+    Skipped,
+    /// Every commit in range carried a signature trusted by the loom
+    /// workspace's allowed_signers file.
+    Verified,
+    /// `git verify-commit` rejected `commit`; `detail` is its stderr.
+    Failed { commit: String, detail: String },
 }
 
 /// Initialize a real git repository at `path` with one `initial` commit
@@ -1232,8 +1342,20 @@ pub enum MergeResult {
     /// "cannot rebase: You have unstaged changes" refusal — both used
     /// to map to the same opaque `Conflict` and the actual cause was
     /// lost at the warn! line. Empty string is allowed but unusual.
+    ///
+    /// `files` is the unmerged-path set captured (`git diff
+    /// --name-only --diff-filter=U`) before the `git rebase --abort`,
+    /// and `new_base_sha` is the integration-branch tip the rebase was
+    /// targeting. Both ride out to the verdict gate's
+    /// `integration-conflict` recovery so the agent's single retry can
+    /// rebase its bead-workspace branch onto the new tip and resolve
+    /// the named files (per `specs/harness.md` § Verdict Gate). For a
+    /// non-conflict rebase refusal (e.g. unstaged changes) `files` is
+    /// empty.
     Conflict {
         detail: String,
+        files: Vec<PathBuf>,
+        new_base_sha: GitOid,
     },
 }
 

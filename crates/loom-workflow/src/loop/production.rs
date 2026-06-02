@@ -24,7 +24,7 @@ use loom_driver::bd::{
 };
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomTopConfig, Phase};
-use loom_driver::git::{GitClient, MergeResult};
+use loom_driver::git::{CreatedWorktree, GitClient, MergeResult, SignatureCheck};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
 use loom_driver::logging::phase_log_path;
@@ -245,6 +245,59 @@ where
     fn emit_to_log(&mut self, kind: DriverKind, summary: &str, payload: serde_json::Value) {
         if let Some(state) = self.current_emit.as_mut() {
             state.emit(kind, summary, payload);
+        }
+    }
+
+    /// Run one `git verify-commit` pass over `range` in the loom
+    /// workspace. `side` is `"worker"` (pass 1, fetched commits) or
+    /// `"driver"` (pass 2, rebased commits) — it rides into the
+    /// `signature-verification-failed` detail so the operator knows
+    /// whether to investigate the wrapix container's signing setup or the
+    /// loom-workspace gitconfig + key resolution.
+    ///
+    /// Returns `Ok(None)` when the pass verified (or was skipped because
+    /// no signing key resolved). Returns `Ok(Some(SignatureVerificationFailed))`
+    /// on a rejected signature — the transient `loom/<id>` ref is deleted
+    /// unconditionally first so a later dispatch's fetch starts clean.
+    async fn verify_or_block(
+        &mut self,
+        bead: &BeadId,
+        worktree: &CreatedWorktree,
+        range: &str,
+        side: &str,
+    ) -> Result<Option<AgentOutcome>, LoopError> {
+        match self.git.verify_commit_range(range).await? {
+            SignatureCheck::Skipped | SignatureCheck::Verified => Ok(None),
+            SignatureCheck::Failed { commit, detail } => {
+                let reason = format!(
+                    "signature-verification-failed ({side}-side): \
+                     git verify-commit rejected {commit} in range {range} — {detail}",
+                );
+                warn!(
+                    bead = %bead,
+                    branch = %worktree.branch,
+                    side,
+                    commit = %commit,
+                    "signature verification failed — routing to loom:blocked",
+                );
+                self.emit_to_log(
+                    DriverKind::SignatureVerificationFailed,
+                    &format!("signature verification failed ({side}-side): {commit}"),
+                    serde_json::json!({
+                        "bead_id": bead.to_string(),
+                        "branch": worktree.branch,
+                        "side": side,
+                        "commit": commit,
+                        "range": range,
+                        "detail": detail,
+                    }),
+                );
+                // `loom/<id>` ref deleted unconditionally on this exit path.
+                self.git.delete_branch(&worktree.branch).await?;
+                Ok(Some(AgentOutcome::SignatureVerificationFailed {
+                    detail: reason,
+                }))
+            }
         }
     }
 }
@@ -479,9 +532,40 @@ where
                     "worktree_path": worktree.path.to_string_lossy(),
                 }),
             );
+            // Verify signatures (pass 1) on the fetched worker commits.
+            // Conditional on a signing key resolving (allowed_signers file
+            // present); skipped otherwise. A rejected signature routes the
+            // bead to `loom:blocked` (worker-side) — the transient
+            // `loom/<id>` ref is deleted unconditionally first so a retry's
+            // fetch starts clean.
+            let integration_branch = self.git.integration_branch().to_string();
+            let pass1_range = format!("{integration_branch}..{}", worktree.branch);
+            if let Some(outcome) = self
+                .verify_or_block(&bead.id, &worktree, &pass1_range, "worker")
+                .await?
+            {
+                return Ok(outcome);
+            }
+            // Pre-merge integration tip — pass-2 verifies the rebased
+            // commits this produces, i.e. the range `<pre_tip>..HEAD`.
+            let pre_merge_tip = self.git.head_commit_sha().await.ok();
             let merge_result = self.git.merge_branch(&worktree.branch).await?;
             match merge_result {
                 MergeResult::Ok => {
+                    // Verify signatures (pass 2) on the rewritten commits
+                    // the rebase produced, before the integration is
+                    // pushed. Conditional on the same signing-key
+                    // resolution as pass 1; a rejected signature here means
+                    // loom's own (driver-side) signing setup is broken.
+                    if let Some(pre_tip) = &pre_merge_tip {
+                        let pass2_range = format!("{pre_tip}..HEAD");
+                        if let Some(outcome) = self
+                            .verify_or_block(&bead.id, &worktree, &pass2_range, "driver")
+                            .await?
+                        {
+                            return Ok(outcome);
+                        }
+                    }
                     let main_sha = self
                         .git
                         .head_commit_sha()
@@ -563,39 +647,49 @@ where
                     );
                     Ok(AgentOutcome::Success)
                 }
-                MergeResult::Conflict { detail } => {
-                    // Worktree preserved for human resolution per
-                    // parallel-path semantics. Route to Blocked, not
-                    // Failure: a retry would invoke `create_worktree`
-                    // against the still-existing directory and abort the
-                    // entire `loom loop` with a fatal `git clone` error;
-                    // merge conflicts also aren't transient (re-running
-                    // the agent on the same base reproduces the conflict
-                    // or silently regenerates work).
+                MergeResult::Conflict {
+                    detail,
+                    files,
+                    new_base_sha,
+                } => {
+                    // Rebase conflict. The bead workspace is preserved
+                    // (per the per-bead-close lifecycle); the transient
+                    // loom-workspace `loom/<id>` ref is deleted
+                    // unconditionally so the integration-conflict retry's
+                    // fetch starts clean (a rebased bead branch would not
+                    // fast-forward the stale ref). Routes to a single
+                    // integration-conflict retry — `run_loop` threads the
+                    // stashed typed `IntegrationConflict` into the next
+                    // dispatch; a second conflict escalates to clarify.
                     warn!(
                         bead = %bead.id,
                         branch = %worktree.branch,
                         path = %worktree.path.display(),
                         detail = %detail,
-                        "merge conflict — worktree preserved for inspection",
+                        files = files.len(),
+                        new_base = %new_base_sha,
+                        "rebase conflict — bead workspace preserved, routing to integration-conflict recovery",
                     );
                     self.emit_to_log(
-                        DriverKind::MergeConflict,
-                        &format!("merge conflict: {}", worktree.branch),
+                        DriverKind::IntegrationConflict,
+                        &format!("rebase conflict: {}", worktree.branch),
                         serde_json::json!({
                             "bead_id": bead.id.to_string(),
                             "branch": worktree.branch,
                             "worktree_path": worktree.path.to_string_lossy(),
                             "detail": detail,
+                            "new_base_sha": new_base_sha.as_str(),
+                            "files": files.iter().map(|f| f.to_string_lossy()).collect::<Vec<_>>(),
                         }),
                     );
-                    Ok(AgentOutcome::Blocked {
-                        reason: format!(
-                            "merge conflict: worktree preserved at {} on branch {} for human resolution — {}",
-                            worktree.path.display(),
-                            worktree.branch,
-                            detail,
-                        ),
+                    self.git.delete_branch(&worktree.branch).await?;
+                    self.stashed_previous_failure = Some(PreviousFailure::IntegrationConflict {
+                        files: files.clone(),
+                        new_base_sha: new_base_sha.clone(),
+                    });
+                    Ok(AgentOutcome::IntegrationConflict {
+                        files,
+                        new_base_sha,
                     })
                 }
             }
@@ -622,14 +716,31 @@ where
         }
     }
 
-    async fn apply_clarify(&mut self, bead: &BeadId, _question: &str) -> Result<(), LoopError> {
+    async fn apply_clarify(&mut self, bead: &BeadId, question: &str) -> Result<(), LoopError> {
+        // Driver-authored clarify (e.g. the integration-conflict
+        // escalation): when `question` is itself a well-formed
+        // `## Options — …` block, the driver — not the agent — is the
+        // author, so persist it to bead state before the validation
+        // pass. The agent-self-report path passes a plain question with
+        // no options block; the guard skips persisting and the agent's
+        // own prior write is what gets validated.
+        if loom_protocol::gate::options::has_well_formed_block(question) {
+            self.bd
+                .update(
+                    bead,
+                    UpdateOpts {
+                        notes: Some(question.to_string()),
+                        ..UpdateOpts::default()
+                    },
+                )
+                .await?;
+        }
         // Verdict-gate direct-emit LOOM_CLARIFY check (specs/gate.md §
         // Options Format Contract): inspect the bead under dispatch for a
         // well-formed `## Options — …` block. Well-formed → loom:clarify;
         // malformed / absent → loom:blocked with cause
         // `clarify-without-options` so `loom msg`'s queue is not handed
-        // an empty options block. The agent owns persisting the block
-        // before emitting LOOM_CLARIFY; this gate only validates.
+        // an empty options block.
         crate::gate_clarify::apply_clarify_or_blocked(&self.bd, bead).await?;
         Ok(())
     }

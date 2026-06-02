@@ -186,6 +186,67 @@ pub use crate::review::RETRY_EXHAUSTED_CAUSE;
 /// operator unblocks via `loom msg`.
 pub const MINT_STRUCTURAL_VIOLATION_CAUSE: &str = "mint-structural-violation";
 
+/// Spec-table cause string written to `bd update --notes` when the
+/// per-bead integration step's `git verify-commit` rejects a fetched
+/// (pass 1, worker-side) or rebased (pass 2, driver-side) commit. The
+/// bead routes straight to `loom:blocked` with no retry — re-running the
+/// agent cannot re-sign existing commits; the operator investigates the
+/// signing setup (wrapix container for pass 1, loom-workspace gitconfig +
+/// key resolution for pass 2). Per `specs/harness.md` § Verdict Gate.
+pub const SIGNATURE_VERIFICATION_FAILED_CAUSE: &str = "signature-verification-failed";
+
+/// Spec-table cause string written when the driver-side rebase of a bead
+/// branch onto the integration branch conflicts textually and the single
+/// integration-conflict retry also conflicts. The bead escalates to
+/// `loom:clarify` carrying a synthesized Options block. Per
+/// `specs/harness.md` § Verdict Gate.
+pub const INTEGRATION_CONFLICT_CAUSE: &str = "integration-conflict";
+
+/// Synthesize the canonical `## Options — …` block a driver-applied
+/// `integration-conflict` clarify bead carries when the single
+/// integration-conflict retry also conflicts. Satisfies the Options
+/// Format Contract (`specs/gate.md` § *Options Format Contract*): a
+/// `## Options — <summary>` heading plus two `### Option N — <title>`
+/// subsections (resolve-in-bead-clone and abandon-the-bead), each naming
+/// its cost, so `loom msg` can render the SUMMARY column and resolve
+/// integer fast-replies. The driver is the author here (not the agent),
+/// so the per-bead path persists this block to bead state before
+/// applying `loom:clarify` (see the production `apply_clarify`).
+pub fn synthesize_integration_conflict_options(
+    files: &[std::path::PathBuf],
+    new_base_sha: &loom_driver::git::GitOid,
+) -> String {
+    let file_list = if files.is_empty() {
+        "(no unmerged paths reported)".to_string()
+    } else {
+        files
+            .iter()
+            .map(|f| format!("`{}`", f.display()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "## Options — integration-conflict needs human resolution\n\
+         \n\
+         The driver-side rebase onto the integration tip `{sha}` conflicted \
+         twice (the single automatic retry is exhausted). Conflicting files: \
+         {files}.\n\
+         \n\
+         ### Option 1 — Resolve in the bead clone\n\
+         `cd .loom/beads/{{bead-id}}`, `git rebase {sha}`, resolve the \
+         conflicts by hand, and re-commit on the bead branch. Cost: manual \
+         git work in the preserved bead workspace; the next `loom loop` pass \
+         re-attempts integration from the resolved branch.\n\
+         \n\
+         ### Option 2 — Abandon the bead\n\
+         Close the bead without integrating (`bd close`) and re-decompose the \
+         work against the moved integration tip. Cost: the bead's commits are \
+         discarded; any still-needed work must be re-planned into fresh beads.\n",
+        sha = new_base_sha.as_str(),
+        files = file_list,
+    )
+}
+
 /// Outcome of [`AgentLoopController::exec_per_bead_gate`]. Routes per
 /// `specs/gate.md` § *Per-diff stage checks* / `specs/harness.md`
 /// § *Functional* — the runner's per-bead state machine consumes this
@@ -390,6 +451,11 @@ async fn process_one_bead<C: AgentLoopController>(
 ) -> Result<BeadResult, LoopError> {
     let mut retries_used: u32 = 0;
     let mut previous_failure: Option<String> = None;
+    // The integration-conflict recovery budget is a single retry,
+    // independent of `policy.max_retries` (per `specs/harness.md`
+    // § Verdict Gate). Tracked separately so a bead that also hits
+    // ordinary agent-retries does not borrow this slot.
+    let mut integration_conflict_used = false;
     loop {
         match controller.run_bead(bead, previous_failure.clone()).await? {
             AgentOutcome::Success => match controller.exec_per_bead_gate(&bead.id).await? {
@@ -489,6 +555,46 @@ async fn process_one_bead<C: AgentLoopController>(
                     });
                 }
             },
+            AgentOutcome::IntegrationConflict {
+                files,
+                new_base_sha,
+            } => {
+                if integration_conflict_used {
+                    // Second rebase-conflict on the single retry —
+                    // escalate to `loom:clarify` with a synthesized
+                    // Options block (resolve-in-bead-clone /
+                    // abandon-the-bead) the gate persists to bead state.
+                    return Ok(BeadResult::Clarified {
+                        note: synthesize_integration_conflict_options(&files, &new_base_sha),
+                    });
+                }
+                integration_conflict_used = true;
+                controller.emit_driver_event(
+                    DriverKind::RetryDispatch,
+                    &format!(
+                        "integration-conflict retry — single attempt for bead {bead_id}",
+                        bead_id = bead.id,
+                    ),
+                    serde_json::json!({
+                        "bead_id": bead.id.to_string(),
+                        "cause": INTEGRATION_CONFLICT_CAUSE,
+                        "new_base_sha": new_base_sha.as_str(),
+                    }),
+                );
+                // The typed `PreviousFailure::IntegrationConflict` was
+                // stashed by `run_bead`; this string only marks the next
+                // dispatch as a retry so the stash is consumed.
+                previous_failure = Some(format!(
+                    "{INTEGRATION_CONFLICT_CAUSE}: rebase onto {} conflicted",
+                    new_base_sha.as_str(),
+                ));
+            }
+            AgentOutcome::SignatureVerificationFailed { detail } => {
+                return Ok(BeadResult::Blocked {
+                    cause: SIGNATURE_VERIFICATION_FAILED_CAUSE.to_string(),
+                    error: detail,
+                });
+            }
             AgentOutcome::Blocked { reason } => {
                 return Ok(BeadResult::Blocked {
                     cause: AGENT_BLOCKED_CAUSE.to_string(),
@@ -1508,6 +1614,175 @@ mod tests {
         assert!(c.blocked.is_empty());
         assert_eq!(summary.beads_processed, 1);
         Ok(())
+    }
+
+    /// Spec criterion 2891 (`specs/harness.md` § Functional): after each
+    /// per-bead agent run signals `Success` and the bead's branch is
+    /// rebased + ff'd at the loom workspace, the loop invokes the per-bead
+    /// gate (`loom gate verify --bead <id>` then `loom gate mint --bead
+    /// <id>`). This pins the run-phase-Success → per-bead-gate edge; the
+    /// verify→mint subprocess order + production `MintWalker` wiring
+    /// (not a `Vec::new()` shortcut) is pinned by the production test
+    /// `exec_per_bead_gate_invokes_loom_gate_verify_then_mint_subprocesses`.
+    #[tokio::test]
+    async fn per_bead_path_invokes_verify_then_mint_after_run_phase_success()
+    -> Result<(), LoopError> {
+        let mut c = FakeController::default();
+        c.ready_queue.push_back(bead("lm-1", &[]));
+        c.agent_outcomes.push_back(AgentOutcome::Success);
+        c.per_bead_gate_outcomes
+            .push_back(PerBeadGateOutcome::Clean);
+
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy::default(), 10).await?;
+
+        // The per-bead gate fires exactly once, after the run-phase
+        // Success, against the bead under dispatch.
+        assert_eq!(
+            c.per_bead_gate_calls,
+            vec![BeadId::new("lm-1").expect("valid")]
+        );
+        assert_eq!(c.run_calls.len(), 1, "gate runs after a single agent run");
+        assert!(c.clarified.is_empty());
+        assert!(c.blocked.is_empty());
+        assert_eq!(summary.beads_processed, 1);
+        Ok(())
+    }
+
+    /// Spec criterion (`specs/harness.md` § Verdict Gate): a driver-side
+    /// rebase conflict surfaces as `AgentOutcome::IntegrationConflict` and
+    /// routes the bead through the single integration-conflict retry — not
+    /// an immediate block or clarify. The retry that succeeds resolves the
+    /// bead to `Done`; the recovery hop emits a `retry_dispatch` driver
+    /// event carrying the `integration-conflict` cause.
+    #[tokio::test]
+    async fn rebase_conflict_routes_to_integration_conflict() -> Result<(), LoopError> {
+        let mut c = FakeController::default();
+        c.ready_queue.push_back(bead("lm-1", &[]));
+        c.agent_outcomes
+            .push_back(AgentOutcome::IntegrationConflict {
+                files: vec![std::path::PathBuf::from("README.md")],
+                new_base_sha: loom_driver::git::GitOid::new(
+                    "0123456789abcdef0123456789abcdef01234567",
+                )
+                .expect("oid"),
+            });
+        // The single retry succeeds + the per-bead gate is Clean → Done.
+        c.agent_outcomes.push_back(AgentOutcome::Success);
+        c.per_bead_gate_outcomes
+            .push_back(PerBeadGateOutcome::Clean);
+
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy::default(), 10).await?;
+
+        assert_eq!(
+            c.run_calls.len(),
+            2,
+            "conflict consumes the single integration-conflict retry: initial + 1 retry",
+        );
+        assert!(
+            c.run_calls[1].1.is_some(),
+            "the retry dispatch must be flagged as a retry (previous_failure set)",
+        );
+        assert!(c.blocked.is_empty(), "first conflict must not block");
+        assert!(c.clarified.is_empty(), "first conflict must not clarify");
+        let causes: Vec<&str> = c
+            .driver_events
+            .iter()
+            .filter_map(|(_, _, p)| p.get("cause").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            causes.contains(&INTEGRATION_CONFLICT_CAUSE),
+            "recovery hop must carry the integration-conflict cause: {causes:?}",
+        );
+        assert_eq!(summary.beads_processed, 1);
+        Ok(())
+    }
+
+    /// Spec criterion (`specs/harness.md` § Verdict Gate):
+    /// `integration-conflict` recovery dispatches the agent at most once;
+    /// a second rebase-conflict on the retry escalates to `loom:clarify`
+    /// carrying a synthesized Options block. The retry budget is
+    /// independent of `[loop] max_retries`.
+    #[tokio::test]
+    async fn integration_conflict_one_retry_then_clarify() -> Result<(), LoopError> {
+        let conflict = || AgentOutcome::IntegrationConflict {
+            files: vec![std::path::PathBuf::from("crates/loom-gate/src/marker.rs")],
+            new_base_sha: loom_driver::git::GitOid::new("0123456789abcdef0123456789abcdef01234567")
+                .expect("oid"),
+        };
+        let mut c = FakeController::default();
+        c.ready_queue.push_back(bead("lm-1", &[]));
+        c.agent_outcomes.push_back(conflict());
+        c.agent_outcomes.push_back(conflict());
+
+        // `max_retries: 5` proves the cap is the integration-conflict
+        // single-retry budget, not the ordinary agent-retry budget.
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 5 }, 10).await?;
+
+        assert_eq!(
+            c.run_calls.len(),
+            2,
+            "integration-conflict allows exactly one retry regardless of max_retries",
+        );
+        assert!(
+            c.blocked.is_empty(),
+            "second conflict escalates to clarify, not block"
+        );
+        assert_eq!(c.clarified.len(), 1, "second conflict escalates to clarify");
+        assert_eq!(c.clarified[0].0, BeadId::new("lm-1").expect("valid"));
+        assert!(
+            loom_protocol::gate::options::has_well_formed_block(&c.clarified[0].1),
+            "clarify note must carry a well-formed Options block: {:?}",
+            c.clarified[0].1,
+        );
+        assert_eq!(summary.beads_clarified, 1);
+        Ok(())
+    }
+
+    /// Spec criterion (`specs/harness.md` § Verdict Gate): driver-applied
+    /// `integration-conflict` clarify beads carry a synthesized
+    /// `## Options — …` block satisfying the Options Format Contract with
+    /// two `### Option N — …` subsections (resolve-in-bead-clone and
+    /// abandon-the-bead), each naming its cost.
+    #[test]
+    fn driver_applied_integration_conflict_clarify_carries_synthesized_options() {
+        let block = synthesize_integration_conflict_options(
+            &[
+                std::path::PathBuf::from("crates/loom-gate/src/marker.rs"),
+                std::path::PathBuf::from("README.md"),
+            ],
+            &loom_driver::git::GitOid::new("0123456789abcdef0123456789abcdef01234567")
+                .expect("oid"),
+        );
+        assert!(
+            loom_protocol::gate::options::has_well_formed_block(&block),
+            "synthesized block must satisfy the Options Format Contract: {block}",
+        );
+        assert!(
+            block.contains("## Options —"),
+            "canonical heading missing: {block}"
+        );
+        assert!(
+            block.contains("### Option 1 — Resolve in the bead clone"),
+            "resolve-in-bead-clone option missing: {block}",
+        );
+        assert!(
+            block.contains("### Option 2 — Abandon the bead"),
+            "abandon-the-bead option missing: {block}",
+        );
+        // Each option names its cost.
+        assert!(
+            block.matches("Cost:").count() >= 2,
+            "each option must name a cost: {block}"
+        );
+        // The new integration tip + conflicting files ride through.
+        assert!(
+            block.contains("0123456789abcdef0123456789abcdef01234567"),
+            "new integration tip missing: {block}",
+        );
+        assert!(
+            block.contains("crates/loom-gate/src/marker.rs"),
+            "conflicting files missing: {block}",
+        );
     }
 
     /// Spec criterion (`specs/harness.md` § Functional): a per-bead

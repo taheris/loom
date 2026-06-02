@@ -426,7 +426,7 @@ async fn merge_back_one(
                     }
                     Ok(BatchResult::Merged { bead: bead.id })
                 }
-                MergeResult::Conflict { detail } => {
+                MergeResult::Conflict { detail, .. } => {
                     warn!(
                         bead = %bead.id,
                         branch = %worktree.branch,
@@ -497,6 +497,29 @@ async fn merge_back_one(
             Ok(BatchResult::AgentClarify {
                 bead: bead.id,
                 question,
+            })
+        }
+        // The integration-conflict and signature-verification outcomes
+        // are produced only by the sequential `run_bead` integration
+        // path (which owns the single integration-conflict retry and the
+        // blocked routing); parallel dispatch runs its own merge inside
+        // the `Success` branch above and never surfaces them here. Map
+        // defensively to `AgentBlocked` so the bead workspace is reaped
+        // and the next `bd ready` poll re-dispatches.
+        AgentOutcome::IntegrationConflict { new_base_sha, .. } => {
+            warn!(bead = %bead.id, "integration conflict in parallel dispatch — cleaning up worktree");
+            git.remove_worktree(&worktree.path).await?;
+            Ok(BatchResult::AgentBlocked {
+                bead: bead.id,
+                reason: format!("integration-conflict: rebase onto {new_base_sha} conflicted"),
+            })
+        }
+        AgentOutcome::SignatureVerificationFailed { detail } => {
+            warn!(bead = %bead.id, %detail, "signature verification failed in parallel dispatch — cleaning up worktree");
+            git.remove_worktree(&worktree.path).await?;
+            Ok(BatchResult::AgentBlocked {
+                bead: bead.id,
+                reason: detail,
             })
         }
     }

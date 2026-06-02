@@ -2724,7 +2724,7 @@ Criteria.
       unconditionally at the end of the per-bead critical section —
       clean exit, audit-fail rollback, and rebase-conflict abort
       all delete the ref
-  [test?](bead_branch_ref_deleted_on_every_exit_path)
+  [test](bead_branch_ref_deleted_on_every_exit_path)
 - The bead clone's `origin` remote remains pointing at the loom
       workspace path after `create_worktree` so host-side
       ahead/behind tracking works; the bead container has no path
@@ -2737,16 +2737,16 @@ Criteria.
       --abort`) and routes the bead to recovery with cause
       `integration-conflict` carrying the conflict files and the
       new integration tip SHA
-  [test?](rebase_conflict_routes_to_integration_conflict)
+  [test](rebase_conflict_routes_to_integration_conflict)
 - `integration-conflict` recovery dispatches the agent at most
       once; a second rebase-conflict on the retry escalates to
       `loom:clarify` with the same cause
-  [test?](integration_conflict_one_retry_then_clarify)
+  [test](integration_conflict_one_retry_then_clarify)
 - Driver-applied `integration-conflict` clarify beads carry a
       synthesized `## Options — …` block satisfying the Options
       Format Contract with two `### Option N — …` subsections
       (resolve-in-bead-clone and abandon-the-bead)
-  [test?](driver_applied_integration_conflict_clarify_carries_synthesized_options)
+  [test](driver_applied_integration_conflict_clarify_carries_synthesized_options)
 - `loom init` writes `[rerere] enabled = true` and `[rerere]
       autoupdate = true` into the loom workspace's local
       `.git/config` so the driver-side rebase replays previously-
@@ -2837,7 +2837,7 @@ Criteria.
   [test?](integration_step_verifies_signatures_in_two_passes)
 - When the signing key does not resolve, signature verification is
       skipped at both passes and the integration step proceeds
-  [test?](signature_verification_skipped_when_no_key)
+  [test](signature_verification_skipped_when_no_key)
 - `GitClient::launcher_key_env` surfaces each resolved key as a
       `WRAPIX_DEPLOY_KEY` / `WRAPIX_SIGNING_KEY` → HOST-path pair so
       loom can hand them to the `wrapix spawn` launcher; an

@@ -54,6 +54,18 @@ pub enum DriverKind {
     /// `AgentOutcome::Blocked`. Payload fields: `bead_id`, `branch`,
     /// `worktree_path`.
     MergeConflict,
+    /// Driver-side rebase of a bead branch onto the integration branch
+    /// conflicted textually; the rebase was aborted and the bead routed
+    /// to the single integration-conflict retry (or to `loom:clarify` on
+    /// the second conflict). Payload fields: `bead_id`, `branch`,
+    /// `worktree_path`, `detail`, `new_base_sha`, `files`.
+    IntegrationConflict,
+    /// `git verify-commit` rejected a fetched (pass 1, worker-side) or
+    /// rebased (pass 2, driver-side) commit during the per-bead
+    /// integration step. Routed to `loom:blocked` with cause
+    /// `signature-verification-failed`. Payload fields: `bead_id`,
+    /// `branch`, `side`, `commit`, `range`, `detail`.
+    SignatureVerificationFailed,
     /// `git push` to GitHub plus the `beads-push` sync both succeeded
     /// after a clean merge. Payload field: `bead_id`.
     PostMergePushOk,
@@ -97,6 +109,8 @@ impl DriverKind {
             DriverKind::BeadBranchPushed => "bead_branch_pushed",
             DriverKind::MergeOk => "merge_ok",
             DriverKind::MergeConflict => "merge_conflict",
+            DriverKind::IntegrationConflict => "integration_conflict",
+            DriverKind::SignatureVerificationFailed => "signature_verification_failed",
             DriverKind::PostMergePushOk => "post_merge_push_ok",
             DriverKind::PostMergePushFailed => "post_merge_push_failed",
             DriverKind::WorktreeCleanupOk => "worktree_cleanup_ok",
@@ -124,6 +138,8 @@ impl DriverKind {
             "bead_branch_pushed" => DriverKind::BeadBranchPushed,
             "merge_ok" => DriverKind::MergeOk,
             "merge_conflict" => DriverKind::MergeConflict,
+            "integration_conflict" => DriverKind::IntegrationConflict,
+            "signature_verification_failed" => DriverKind::SignatureVerificationFailed,
             "post_merge_push_ok" => DriverKind::PostMergePushOk,
             "post_merge_push_failed" => DriverKind::PostMergePushFailed,
             "worktree_cleanup_ok" => DriverKind::WorktreeCleanupOk,
@@ -1105,6 +1121,11 @@ mod tests {
             ("bead_branch_pushed", DriverKind::BeadBranchPushed),
             ("merge_ok", DriverKind::MergeOk),
             ("merge_conflict", DriverKind::MergeConflict),
+            ("integration_conflict", DriverKind::IntegrationConflict),
+            (
+                "signature_verification_failed",
+                DriverKind::SignatureVerificationFailed,
+            ),
             ("post_merge_push_ok", DriverKind::PostMergePushOk),
             ("post_merge_push_failed", DriverKind::PostMergePushFailed),
             ("worktree_cleanup_ok", DriverKind::WorktreeCleanupOk),

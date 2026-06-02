@@ -595,15 +595,16 @@ async fn production_loop_preserves_worktree_on_push_failure() -> Result<()> {
     Ok(())
 }
 
-/// Regression: when `merge_branch` returned `MergeResult::Conflict` the
-/// run-phase used to emit `AgentOutcome::Failure`. `process_one_bead`
-/// routed that through `policy.decide(...)` → `Retry`, and the retry
-/// called `create_worktree` against the still-preserved per-bead
-/// directory and aborted the whole `loom loop` with
-/// `git clone --local: destination path already exists`. The fix routes
-/// the conflict through `AgentOutcome::Blocked` instead so the bead is
-/// parked under `loom:blocked` and the loop keeps draining other work.
-/// The preserved worktree must remain on disk for human resolution.
+/// Under A3, a `merge_branch` rebase conflict routes the bead through
+/// `AgentOutcome::IntegrationConflict { files, new_base_sha }` — the
+/// single integration-conflict retry, not a terminal block. The bead
+/// workspace is preserved on disk (the per-bead-close lifecycle's
+/// default) so the retry's `previous_failure` can ask the agent to
+/// rebase its branch onto the new tip; the transient loom-workspace
+/// `loom/<id>` ref is deleted unconditionally so the retry's fetch
+/// starts clean. Criteria: `rebase_conflict_routes_to_integration_conflict`,
+/// `workspace_persists_on_all_failure_paths`,
+/// `bead_branch_ref_deleted_on_every_exit_path`.
 #[tokio::test]
 async fn production_loop_preserves_worktree_on_merge_conflict() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
@@ -648,21 +649,198 @@ async fn production_loop_preserves_worktree_on_merge_conflict() -> Result<()> {
         .run_bead(&fake_bead("lm-conflict.1"), None)
         .await?;
     match outcome {
-        AgentOutcome::Blocked { reason } => {
+        AgentOutcome::IntegrationConflict {
+            files,
+            new_base_sha,
+        } => {
             assert!(
-                reason.contains("merge conflict"),
-                "blocked reason must signal merge conflict: {reason}",
+                files.iter().any(|f| f.ends_with("README.md")),
+                "conflicting files must name the clashing path: {files:?}",
+            );
+            assert!(
+                !new_base_sha.as_str().is_empty(),
+                "new integration tip SHA must be captured: {new_base_sha}",
             );
         }
         other => panic!(
-            "merge conflict must route to Blocked (not Failure — the worktree is preserved and \
-             a retry would collide with the existing directory): got {other:?}",
+            "rebase conflict must route to IntegrationConflict (the single integration-conflict \
+             retry, per A3): got {other:?}",
         ),
     }
     assert!(
         expected_worktree.exists(),
-        "worktree must be preserved on merge conflict so a human can resolve it; got removed at {expected_worktree:?}",
+        "bead workspace must be preserved on rebase conflict so the retry can rebase + resolve; got removed at {expected_worktree:?}",
     );
+    // The transient loom-workspace `loom/lm-conflict.1` ref is deleted
+    // unconditionally on the conflict exit path.
+    let loom_ws = workspace.join(".loom/integration");
+    let branches = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&loom_ws)
+        .args(["branch", "--list", "loom/lm-conflict.1"])
+        .output()
+        .expect("git branch --list");
+    let branches = String::from_utf8_lossy(&branches.stdout);
+    assert!(
+        branches.trim().is_empty(),
+        "loom/<id> ref must be deleted on the conflict exit path; still present: {branches:?}",
+    );
+    Ok(())
+}
+
+/// Spec criterion (`specs/harness.md` § Success Criteria · Bead
+/// dispatch): on a rebase-conflict abort — a failure exit path — the
+/// bead workspace persists on disk (the per-bead-close lifecycle's
+/// default) so the operator / the integration-conflict retry can resolve
+/// it. Criterion: `workspace_persists_on_all_failure_paths`.
+#[tokio::test]
+async fn workspace_persists_on_all_failure_paths() -> Result<()> {
+    let (_dir, workspace, manifest, git_client) = setup();
+    let label = SpecLabel::new("harness");
+    let stub = beads_push_stub(_dir.path());
+    let expected_worktree = workspace.join(".loom/beads/lm-persist.1");
+    let workspace_for_closure = workspace.clone();
+
+    let mut controller = ProductionAgentLoopController::new(
+        BdClient::new(),
+        label.clone(),
+        std::path::PathBuf::from("/loom/bin"),
+        workspace.clone(),
+        git_client,
+        manifest,
+        None,
+        ProfileName::new("base"),
+        move |cfg: SpawnConfig, _bead_id: BeadId| {
+            let loom_ws = workspace_for_closure.join(".loom/integration");
+            async move {
+                // Diverge bead + integration on the same path → rebase conflict.
+                std::fs::write(cfg.workspace.join("README.md"), "bead version\n")
+                    .expect("write bead README");
+                git(&cfg.workspace, &["commit", "-q", "-am", "bead change"])
+                    .expect("git commit in bead workspace");
+                std::fs::write(loom_ws.join("README.md"), "integration version\n")
+                    .expect("write integration README");
+                git(&loom_ws, &["commit", "-q", "-am", "integration change"])
+                    .expect("git commit in integration workspace");
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            }
+        },
+    )
+    .with_beads_push_program(stub);
+
+    let outcome = controller
+        .run_bead(&fake_bead("lm-persist.1"), None)
+        .await?;
+    assert!(
+        matches!(outcome, AgentOutcome::IntegrationConflict { .. }),
+        "rebase conflict is a failure exit path: got {outcome:?}",
+    );
+    assert!(
+        expected_worktree.exists(),
+        "bead workspace must persist on the rebase-conflict failure path; got removed at {expected_worktree:?}",
+    );
+    Ok(())
+}
+
+/// Spec criterion (`specs/harness.md` § Success Criteria · Bead
+/// dispatch): the transient loom-workspace `loom/<id>` ref is deleted
+/// unconditionally at the end of the per-bead critical section — both on
+/// a clean merge-back and on a rebase-conflict abort. Criterion:
+/// `bead_branch_ref_deleted_on_every_exit_path`.
+#[tokio::test]
+async fn bead_branch_ref_deleted_on_every_exit_path() -> Result<()> {
+    // Clean exit path: a non-conflicting bead merges back and its
+    // loom-workspace ref is deleted as part of cleanup.
+    {
+        let (_dir, workspace, manifest, git_client) = setup();
+        let label = SpecLabel::new("harness");
+        let stub = beads_push_stub(_dir.path());
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            label.clone(),
+            std::path::PathBuf::from("/loom/bin"),
+            workspace.clone(),
+            git_client,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            move |cfg: SpawnConfig, _bead_id: BeadId| async move {
+                std::fs::write(cfg.workspace.join("from-bead.txt"), "from-bead\n")
+                    .expect("write file");
+                git(&cfg.workspace, &["add", "from-bead.txt"]).expect("git add");
+                git(&cfg.workspace, &["commit", "-q", "-m", "bead work"]).expect("git commit");
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        )
+        .with_beads_push_program(stub);
+        let outcome = controller.run_bead(&fake_bead("lm-clean.1"), None).await?;
+        assert_eq!(outcome, AgentOutcome::Success);
+        let loom = workspace.join(".loom/integration");
+        let branches = git_capture(&loom, &["branch", "--list", "loom/lm-clean.1"])?;
+        assert!(
+            branches.trim().is_empty(),
+            "clean exit must delete loom/<id> ref; still present: {branches:?}",
+        );
+    }
+
+    // Conflict exit path: a rebase-conflict abort deletes the ref too.
+    {
+        let (_dir, workspace, manifest, git_client) = setup();
+        let label = SpecLabel::new("harness");
+        let stub = beads_push_stub(_dir.path());
+        let workspace_for_closure = workspace.clone();
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            label.clone(),
+            std::path::PathBuf::from("/loom/bin"),
+            workspace.clone(),
+            git_client,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            move |cfg: SpawnConfig, _bead_id: BeadId| {
+                let loom_ws = workspace_for_closure.join(".loom/integration");
+                async move {
+                    std::fs::write(cfg.workspace.join("README.md"), "bead version\n")
+                        .expect("write bead README");
+                    git(&cfg.workspace, &["commit", "-q", "-am", "bead change"])
+                        .expect("git commit in bead workspace");
+                    std::fs::write(loom_ws.join("README.md"), "integration version\n")
+                        .expect("write integration README");
+                    git(&loom_ws, &["commit", "-q", "-am", "integration change"])
+                        .expect("git commit in integration workspace");
+                    (
+                        SessionResult::Complete(SessionOutcome {
+                            exit_code: 0,
+                            cost_usd: None,
+                        }),
+                        Some(ExitSignal::Complete),
+                    )
+                }
+            },
+        )
+        .with_beads_push_program(stub);
+        let outcome = controller.run_bead(&fake_bead("lm-conf.1"), None).await?;
+        assert!(matches!(outcome, AgentOutcome::IntegrationConflict { .. }));
+        let loom = workspace.join(".loom/integration");
+        let branches = git_capture(&loom, &["branch", "--list", "loom/lm-conf.1"])?;
+        assert!(
+            branches.trim().is_empty(),
+            "conflict exit must delete loom/<id> ref; still present: {branches:?}",
+        );
+    }
     Ok(())
 }
 
@@ -719,6 +897,8 @@ fn merge_window_events(events: &[serde_json::Value]) -> Vec<(String, u64)> {
         "bead_branch_pushed",
         "merge_ok",
         "merge_conflict",
+        "integration_conflict",
+        "signature_verification_failed",
         "post_merge_push_ok",
         "post_merge_push_failed",
         "worktree_cleanup_ok",
@@ -812,11 +992,11 @@ async fn run_bead_emits_driver_events_for_happy_path_in_seq_order() -> Result<()
     Ok(())
 }
 
-/// Conflict path: when `merge_branch` aborts on conflict, the
-/// controller MUST emit a single `merge_conflict` event and NEITHER
-/// `merge_ok` NOR `post_merge_push_ok`. Mirrors the existing
-/// `production_loop_preserves_worktree_on_merge_conflict` regression
-/// — adds the driver-event channel assertion on top.
+/// Conflict path: when `merge_branch` aborts on a rebase conflict, the
+/// controller MUST emit a single `integration_conflict` event and
+/// NEITHER `merge_ok` NOR `post_merge_push_ok`. Mirrors the
+/// `production_loop_preserves_worktree_on_merge_conflict` regression —
+/// adds the driver-event channel assertion on top.
 #[tokio::test]
 async fn run_bead_emits_merge_conflict_and_no_merge_ok() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
@@ -866,14 +1046,14 @@ async fn run_bead_emits_merge_conflict_and_no_merge_ok() -> Result<()> {
 
     let bead = fake_bead("lm-emitconflict");
     let outcome = controller.run_bead(&bead, None).await?;
-    assert!(matches!(outcome, AgentOutcome::Blocked { .. }));
+    assert!(matches!(outcome, AgentOutcome::IntegrationConflict { .. }));
 
     let events = read_bead_events(&logs_root, &label, &bead.id);
     let merge_window = merge_window_events(&events);
     let kinds: Vec<&str> = merge_window.iter().map(|(k, _)| k.as_str()).collect();
     assert!(
-        kinds.contains(&"merge_conflict"),
-        "conflict path MUST emit merge_conflict: {events:?}",
+        kinds.contains(&"integration_conflict"),
+        "conflict path MUST emit integration_conflict: {events:?}",
     );
     assert!(
         !kinds.contains(&"merge_ok"),

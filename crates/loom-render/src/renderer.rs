@@ -583,6 +583,8 @@ impl TerminalRenderer {
                     | DriverKind::BeadBranchPushed
                     | DriverKind::MergeOk
                     | DriverKind::MergeConflict
+                    | DriverKind::IntegrationConflict
+                    | DriverKind::SignatureVerificationFailed
                     | DriverKind::PostMergePushOk
                     | DriverKind::PostMergePushFailed
                     | DriverKind::WorktreeCleanupOk

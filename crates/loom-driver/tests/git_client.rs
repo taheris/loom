@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
-use loom_driver::git::{GitClient, MergeResult, StatusKind};
+use loom_driver::git::{GitClient, MergeResult, SignatureCheck, StatusKind};
 use loom_driver::identifier::{BeadId, SpecLabel};
 use tempfile::TempDir;
 
@@ -717,6 +717,46 @@ async fn driver_fetches_bead_branch_from_workspace_path() -> Result<()> {
         "fetched bead work must land in the loom workspace after merge",
     );
 
+    client.remove_worktree(&created.path).await?;
+    Ok(())
+}
+
+/// Spec criterion (`specs/harness.md` § Verdict Gate, phase 2): when no
+/// signing key resolves — i.e. the loom workspace has no
+/// `.git/loom-allowed-signers` file — signature verification is skipped
+/// at both passes and the integration step proceeds. The fetched bead
+/// branch verifies as `SignatureCheck::Skipped` rather than failing.
+/// Criterion: `signature_verification_skipped_when_no_key`.
+#[tokio::test]
+async fn signature_verification_skipped_when_no_key() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("lm-nosig.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+    agent_commit(&created.path, "agent-change.txt", "agent work\n", "agent")?;
+    client.fetch_bead_branch(&created.path, &bead).await?;
+
+    // No allowed_signers file was written, so verification is inactive.
+    assert!(
+        !loom.join(".git/loom-allowed-signers").exists(),
+        "precondition: no allowed_signers file (no key configured)",
+    );
+    assert!(
+        !client.signing_verification_enabled().await,
+        "verification must be disabled when no allowed_signers file resolves",
+    );
+    let range = format!("HEAD..{}", created.branch);
+    assert_eq!(
+        client.verify_commit_range(&range).await?,
+        SignatureCheck::Skipped,
+        "with no key the range must verify as Skipped, not fail",
+    );
+
+    // And the integration step proceeds: the conditional verify is a
+    // no-op, so the merge still folds the bead work in cleanly.
+    assert_eq!(client.merge_branch(&created.branch).await?, MergeResult::Ok);
     client.remove_worktree(&created.path).await?;
     Ok(())
 }

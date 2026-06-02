@@ -19,10 +19,12 @@
 //!   exceeds budget.
 
 use std::fmt::{self, Display};
+use std::path::PathBuf;
 
 use crate::finding::Finding;
 
 pub use loom_protocol::gate::{BadWalk, TerminalSurface};
+pub use loom_protocol::oid::GitOid;
 
 /// Maximum length of the rendered `previous_failure` body. The render path
 /// truncates anything past this at a char boundary so multi-byte stderr does
@@ -75,6 +77,20 @@ pub enum PreviousFailure {
     /// does not run `loom gate review`, so review concerns are not a
     /// possible cause here.
     PostIntegrateFail { failures: Vec<VerifierFailure> },
+    /// The driver-side rebase of the bead branch onto the integration
+    /// branch hit a textual conflict that `git rerere` could not replay,
+    /// so the rebase was aborted (`git rebase --abort`) and the loom
+    /// workspace returned to its pre-rebase state. The bead's commits are
+    /// intact on its own branch; the agent's next (single) retry must
+    /// rebase its bead-workspace branch onto the new integration tip
+    /// (`new_base_sha`), resolve the conflicting `files`, and re-commit.
+    /// A second rebase-conflict on the retry escalates to `loom:clarify`
+    /// (no `PreviousFailure` — the clarify path carries a synthesized
+    /// Options block instead). Per `specs/harness.md` § Verdict Gate.
+    IntegrationConflict {
+        files: Vec<PathBuf>,
+        new_base_sha: GitOid,
+    },
     /// Worker phase emitted `LOOM_RETRY` — the agent self-reported that this
     /// attempt could not finish but a fresh dispatch is likely to succeed.
     /// `reason` is the prose the agent wrote on the line preceding the
@@ -173,6 +189,10 @@ fn render_body(failure: &PreviousFailure) -> String {
         }
         PreviousFailure::TreeNotClean { dirty_paths } => render_tree_not_clean(dirty_paths),
         PreviousFailure::PostIntegrateFail { failures } => render_post_integrate_fail(failures),
+        PreviousFailure::IntegrationConflict {
+            files,
+            new_base_sha,
+        } => render_integration_conflict(files, new_base_sha),
         PreviousFailure::AgentRetry { reason } => render_agent_retry(reason),
     }
 }
@@ -184,6 +204,30 @@ fn render_agent_retry(reason: &str) -> String {
          (no candidate resolutions) or LOOM_CLARIFY (with a structured Options block) \
          rather than emitting LOOM_RETRY again.",
     )
+}
+
+fn render_integration_conflict(files: &[PathBuf], new_base_sha: &GitOid) -> String {
+    let mut out = String::from(
+        "Your bead branch could not be rebased onto the integration branch — \
+         a textual conflict the driver could not replay aborted the rebase, \
+         so the integration was left untouched.\n\n\
+         Rebase your bead-workspace branch onto the new integration tip, \
+         resolve the conflicts, and re-commit. New integration tip:\n",
+    );
+    out.push_str("  ");
+    out.push_str(new_base_sha.as_str());
+    out.push_str("\n\nConflicting files:\n");
+    for file in files {
+        out.push_str("  ");
+        out.push_str(&file.display().to_string());
+        out.push('\n');
+    }
+    out.push_str(
+        "\nThis is the single integration-conflict retry — if the rebase \
+         conflicts again, the bead escalates to loom:clarify for human \
+         resolution.",
+    );
+    out
 }
 
 fn render_post_integrate_fail(failures: &[VerifierFailure]) -> String {
@@ -628,6 +672,50 @@ mod tests {
         assert!(
             agent_retry.starts_with("Previous attempt requested retry — reason: "),
             "{agent_retry}",
+        );
+
+        let integration_conflict = PreviousFailure::IntegrationConflict {
+            files: vec![PathBuf::from("crates/loom-gate/src/marker.rs")],
+            new_base_sha: GitOid::new("deadbeefcafe1234567890abcdef0123456789ab").expect("oid"),
+        }
+        .to_string();
+        assert!(
+            integration_conflict.starts_with("Your bead branch could not be rebased"),
+            "{integration_conflict}",
+        );
+    }
+
+    /// `Display` on `IntegrationConflict { files, new_base_sha }` names the
+    /// new integration tip the agent must rebase onto, enumerates the
+    /// conflicting files, and flags that this is the single
+    /// integration-conflict retry before escalation to `loom:clarify`.
+    /// Per `specs/harness.md` § Verdict Gate.
+    #[test]
+    fn integration_conflict_display_names_new_base_and_conflict_files() {
+        let pf = PreviousFailure::IntegrationConflict {
+            files: vec![
+                PathBuf::from("crates/loom-gate/src/marker.rs"),
+                PathBuf::from("crates/loom-templates/src/previous_failure.rs"),
+            ],
+            new_base_sha: GitOid::new("0123456789abcdef0123456789abcdef01234567").expect("oid"),
+        };
+        let rendered = pf.to_string();
+        assert!(
+            rendered.starts_with("Your bead branch could not be rebased"),
+            "framing prefix missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("0123456789abcdef0123456789abcdef01234567"),
+            "new integration tip missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("crates/loom-gate/src/marker.rs")
+                && rendered.contains("crates/loom-templates/src/previous_failure.rs"),
+            "conflicting files missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("single integration-conflict retry"),
+            "one-retry framing missing: {rendered}",
         );
     }
 

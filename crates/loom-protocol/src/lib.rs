@@ -2,11 +2,13 @@
 //!
 //! `loom-protocol` is single-purpose: cross-crate wire protocols loom
 //! produces on stdout or accepts from external consumers. It carries
-//! [`gate`], covering the findings / concern surface defined in
-//! `specs/gate.md`, and [`oid`], the validated `GitOid` newtype shared
-//! by the gate marker and the driver's git surface. Future protocols
-//! (agent stream-json, pi-mono RPC, run-phase exit markers) may land as
-//! sibling modules without re-litigating crate-extraction overhead.
+//! the [`gate`] module (the findings / concern surface defined in
+//! `specs/gate.md`) and the [`oid`] module ([`oid::GitOid`], the
+//! validated git-object-id newtype shared by `loom-driver`,
+//! `loom-gate`, and the typed retry-context surface in
+//! `loom-templates`). Future protocols (agent stream-json, pi-mono
+//! RPC, run-phase exit markers) may land as sibling modules without
+//! re-litigating crate-extraction overhead.
 //!
 //! # Public contract
 //!
