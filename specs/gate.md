@@ -771,7 +771,7 @@ finding hashes the same way across rubric runs.
 | `unresolved-annotation` | Integrity gate forward-resolution (tree-scope and push-gate scope) | `Annotation { target_string }` | fix-up |
 | `stub-pointing` | Integrity gate stub-pointing (tree-scope and push-gate scope) | `Annotation { target_string }` | fix-up |
 | `unneeded-pending-marker` | Integrity gate stale pending modifier (tree-scope and push-gate scope) | `Annotation { target_string }` | fix-up |
-| `inputs-protocol-error` | Integrity gate inputs-protocol check (tree-scope and push-gate scope) — a `[judge]` collect mode (`<script> --print-inputs <fn>`) exited non-zero or emitted a malformed inputs document | `Annotation { target_string }` | fix-up |
+| `inputs-protocol-error` | Integrity gate inputs-protocol check (tree-scope and push-gate scope) — an opted-in input-query (a `[judge]` collect mode, or a `[check]` / `[system]` runner that declares an `inputs` query) exited non-zero or emitted a malformed inputs document | `Annotation { target_string }` | fix-up |
 | `multiple-annotations` | Integrity gate atomic-acceptance (tree-scope only) | `Criterion { spec, anchor }` | fix-up |
 | `pending-marker-resolved` | Sweeping walker (any scope) — a pending element (`?` or `~`) in structured spec input has resolved against the pending direction (`?` + present, or `~` + absent), so the author must drop the marker to its resolved value | `MatrixCell { spec, partial, template }` / `SurfaceElement { spec, kind, name }` / per-walker variant | fix-up |
 
@@ -887,7 +887,7 @@ applies the same mint flow uniformly. The mapping:
 | Integrity gate: stub-pointing | `stub-pointing` | same | `Annotation { target_string }` | "annotation points at stub function" |
 | Integrity gate: atomic-acceptance violation | `multiple-annotations` | same | `Criterion { spec, anchor }` | "criterion carries N annotations, expected 1" |
 | Integrity gate: stale pending modifier | `unneeded-pending-marker` | same | `Annotation { target_string }` | "annotation is now resolved — drop the ? marker" with spec:line |
-| Integrity gate: inputs-protocol error | `inputs-protocol-error` | `[<spec owning the annotation>]` | `Annotation { target_string }` | "`[judge]` collect mode errored / emitted a malformed inputs document" with spec:line |
+| Integrity gate: inputs-protocol error | `inputs-protocol-error` | `[<spec owning the annotation>]` | `Annotation { target_string }` | "opted-in input-query errored / emitted a malformed inputs document" with spec:line |
 
 The owning spec for `bonds` is the spec containing the annotation
 the verifier was dispatched for — the same spec-section auto-include
@@ -1827,6 +1827,7 @@ results, and where to run from.
 | `join` | String inserted between formatted targets to build `{filter}` / `{targets}`. |
 | `parse` | Named built-in parser (see below) that extracts per-target verdicts from the runner's stdout. |
 | `cwd` | Repo-relative directory to run the command from. Override the tier-default cwd. |
+| `inputs` | Optional command template for the runner's **input-query** — how it asks its verifiers to self-report inputs, with `{print_inputs}` marking where the `--print-inputs` flag lands in the verifier's own argv (omit the placeholder and the flag is appended after the verifier's own arguments). Declaring `inputs` opts the runner into the input-query protocol: its verifiers MUST emit a well-formed inputs document or the gate raises `inputs-protocol-error` (see *Verifier inputs*). Omitted → the runner's annotations fall to the conservative always-run default — no precision, no protocol enforcement. |
 
 **Built-in parsers** ship with loom — consumers add new runners that
 emit one of these formats, rather than authoring custom parsers:
@@ -1864,6 +1865,35 @@ nextest for `[test]` if a `Cargo.toml` is detected, nix for
 Consumers extend or override in `<workspace>/loom.toml`. **Loom-
 the-library has no privileged knowledge of any consumer's layout** —
 the defaults are heuristics for common shapes, not assumptions.
+
+**Runner-owned resolution, invocation, and input-query.** A runner
+that `match`es an annotation **owns** that annotation end to end —
+loom never falls back to parsing the annotation's argv for it:
+
+- **Resolution.** The annotation resolves (integrity gate, direction
+  1) because a runner claims it, not because its first token is on
+  PATH. The `tokens[0]`-on-PATH check is the fallback for annotations
+  no runner matches. Registering a runner — rather than wrapping logic
+  in `sh -c "…"` so `tokens[0]` happens to be `sh` — is what earns
+  precise scoping, batched dispatch, and loud input-query errors; the
+  `sh -c` wrapper defeats all three and is no longer the only way to
+  satisfy resolution.
+- **Invocation.** The `command` template is the single definition of
+  how the verifier is spawned. Loom does not reconstruct the command
+  by token-splitting the annotation; `--print-inputs` (and every other
+  argument) lands where the template places it, so a `cargo run -p
+  loom-walk -- {targets}` runner queries the walk, never `cargo`.
+- **Input-query.** Inputs come from the runner's `inputs` query (per
+  *Verifier inputs* § Input-query protocol), batched: one query spawn
+  returns the per-target map for the whole matched group.
+- **Execution.** Matched annotations batch into one subprocess per
+  runner (the dispatcher's step 3 above); per-annotation spawn is only
+  the unmatched fallback.
+
+Unmatched annotations keep literal-command semantics — `tokens[0]`
+resolution, heuristic input extraction, conservative always-run, no
+protocol enforcement. The runner-owned path is the opt-in to
+precision; the literal path is the floor.
 
 #### Verifier inputs
 
@@ -1952,26 +1982,27 @@ the spec section*. Precision is opt-in (via `--print-inputs` or
 `[test]` framework metadata); imprecision costs wasted work, never a
 missed verifier.
 
-**Inputs-protocol error.** Reporting inputs is opt-in. For a
-`[check]` / `[system]` target the probe is **best-effort**: a
-well-formed `{"inputs":[...]}` on exit 0 is used (an empty list is a
-deliberate narrow, honoured as-is); anything else — a non-zero exit,
-or non-JSON stdout — falls through to the conservative always-run
-default, **silently**. The gate cannot tell a command that rejected
-an unknown flag from one that opted in and then failed, so it never
-faults an arbitrary command for a malformed probe.
+**Inputs-protocol error.** Reporting inputs is opt-in, and the opt-in
+is an **explicit signal, not a guess.** A verifier has opted in when
+loom owns its input-query contract:
 
-`[judge]` targets are the exception, because loom owns their
-contract: the harness preamble guarantees `--print-inputs <fn>` is a
-real code path, so a judge collect mode can only **report** or be
-**broken**. A collect mode that exits non-zero or emits a malformed
-inputs document is a loud `inputs-protocol-error` finding (see
-*Concern tokens and target variants*) — deterministic, emitted by
-the integrity gate during `loom gate verify` / `check`, exiting
-non-zero at the push gate and minting as a fix-up at tree scope. This
-is where loudness costs nothing: a broken single source of truth
-surfaces, while no third-party `grep` / `nix` command is ever
-mis-flagged.
+- a `[judge]` — the harness preamble guarantees `--print-inputs <fn>`
+  is a real code path; or
+- a `[check]` / `[system]` matched by a runner that declares an
+  `inputs` query (see *Runners*).
+
+An opted-in verifier that exits non-zero or emits a malformed inputs
+document is a loud `inputs-protocol-error` finding (see *Concern
+tokens and target variants*) — deterministic, emitted by the
+integrity gate during `loom gate verify` / `check`, exiting non-zero
+at the push gate and minting as a fix-up at tree scope. Because the
+opt-in is explicit, loudness never mis-fires: a verifier whose
+contract loom does *not* own — an unregistered literal command, or a
+runner with no `inputs` query — falls through to the conservative
+always-run default, **silently**. The gate never faults a `grep` or
+`nix` invocation for declining a protocol it never opted into. (A
+well-formed empty `{"inputs":[]}` from an opted-in verifier is a
+deliberate narrow, honoured as-is — not an error.)
 
 **Repo-agnostic.** The `--print-inputs` convention works for any
 script or binary in any language, and the `[runner.<tier>]
@@ -2062,9 +2093,12 @@ The deterministic gate that verifies the annotations themselves
 resolve. Runs as part of `loom gate check`. Four directions:
 
 1. **Forward — every annotation's target is valid for its tier.**
-   - `[check](cmd)` and `[system](cmd)`: the command's first token
-     resolves on PATH or as a file in the repo (best-effort —
-     dynamic commands may resolve only at runtime).
+   - `[check](target)` and `[system](target)`: the target resolves
+     via a matching runner (`[runner.<tier>.<name>] match`), or — when
+     no runner claims it — its first token resolves on PATH or as a
+     file in the repo (best-effort; dynamic commands may resolve only
+     at runtime). Runner-match is the primary path; the `tokens[0]`
+     check is the unregistered-command fallback.
    - `[test](path)`: the path resolves to a `#[test]` /
      `#[tokio::test]` / proptest function (or language equivalent)
      in the consumer's workspace, via the consumer's toolchain
@@ -2095,19 +2129,19 @@ resolve. Runs as part of `loom gate check`. Four directions:
    suppressible by `?` — having two annotations on one criterion is
    wrong regardless of either's resolution state.
 
-4. **Inputs-protocol honesty — a `[judge]` collect mode must honour
-   the input-query contract** (`inputs-protocol-error`). Every
-   `[judge]` target is probed via its collect mode (`<script>
-   --print-inputs <fn>`); because the harness preamble guarantees that
-   code path exists, a collect mode that exits non-zero or emits a
-   malformed inputs document is unambiguously broken and the gate
-   flags it. This is the loud counterpart to the *Conservative
-   default*: `[check]` / `[system]` probes that fail fall through to
-   always-run silently (loom cannot tell a declined flag from a broken
-   opt-in), but a judge's contract is loom's own, so its breakage is
-   never silent. The pending modifier suppresses `inputs-protocol-error`
-   the same way it suppresses `UnresolvedAnnotation` — a `[tier?]`
-   annotation has no verifier yet to hold to the protocol.
+4. **Inputs-protocol honesty — an opted-in input-query must honour
+   its contract** (`inputs-protocol-error`). A verifier opts in when
+   loom owns its query: a `[judge]` (the harness preamble guarantees
+   `<script> --print-inputs <fn>`) or a `[check]` / `[system]` whose
+   runner declares an `inputs` query (see *Runners*). An opted-in
+   query that exits non-zero or emits a malformed inputs document is
+   unambiguously broken and the gate flags it. This is the loud
+   counterpart to the *Conservative default*: a verifier whose
+   contract loom does not own falls through to always-run silently, so
+   no `grep` / `nix` command is ever mis-flagged. The pending modifier
+   suppresses `inputs-protocol-error` the same way it suppresses
+   `UnresolvedAnnotation` — a `[tier?]` annotation has no verifier yet
+   to hold to the protocol.
 
 Failure output (one per finding):
 
@@ -2115,7 +2149,7 @@ Failure output (one per finding):
 - `<spec>:<line>: criterion carries N annotations, expected 1`
 - `<spec>:<line>: annotation [tier](<target>) points at stub function`
 - `<spec>:<line>: annotation [tier?](<target>) is now resolved — drop the ? marker`
-- `<spec>:<line>: annotation [judge](<target>) — collect mode errored / emitted a malformed inputs document`
+- `<spec>:<line>: annotation [tier](<target>) — input-query errored / emitted a malformed inputs document`
 
 **Integrity findings at the push gate are recoverable up to the
 molecule's iteration cap.** When `loom gate verify --diff
@@ -3062,12 +3096,20 @@ Loop-side interpretation of these exit codes — routing `refused` to
   `--files` scope — the resolver never narrows an undeterminable input
   set to the spec section alone
   [test?](undeclared_verifier_always_runs_under_files_scope)
-- A `[judge]` collect mode (`<script> --print-inputs <fn>`) that exits
-  non-zero or emits a malformed inputs document is flagged
-  `inputs-protocol-error`; a `[check]` / `[system]` probe that does not
-  report well-formed inputs falls through to the conservative
-  always-run default
-  [test?](judge_collect_mode_protocol_error_flagged)
+- An opted-in input-query that exits non-zero or emits a malformed
+  inputs document is flagged `inputs-protocol-error` — opt-in being a
+  `[judge]` collect mode or a `[check]` / `[system]` runner that
+  declares an `inputs` query
+  [test?](opted_in_input_query_failure_flagged_inputs_protocol_error)
+- A verifier whose input-query contract loom does not own — an
+  unregistered command, or a runner with no `inputs` query — falls
+  through to the conservative always-run default without an
+  `inputs-protocol-error`
+  [test?](unowned_verifier_input_query_falls_through_silently)
+- A `[check]` / `[system]` target that matches a runner resolves via
+  that runner, not via a `tokens[0]` PATH/file check; only an unmatched
+  target falls back to the `tokens[0]` check
+  [test?](runner_matched_target_resolves_via_runner_not_token_path_check)
 
 ### Scope handling
 
