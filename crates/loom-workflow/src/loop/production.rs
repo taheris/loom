@@ -24,7 +24,7 @@ use loom_driver::bd::{
 };
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomTopConfig, Phase};
-use loom_driver::git::{CreatedWorktree, GitClient, MergeResult, SignatureCheck};
+use loom_driver::git::{CreatedWorktree, GitClient, RebaseOutcome, SignatureCheck};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
 use loom_driver::logging::phase_log_path;
@@ -546,26 +546,33 @@ where
             {
                 return Ok(outcome);
             }
-            // Pre-merge integration tip — pass-2 verifies the rebased
-            // commits this produces, i.e. the range `<pre_tip>..HEAD`.
-            let pre_merge_tip = self.git.head_commit_sha().await.ok();
-            let merge_result = self.git.merge_branch(&worktree.branch).await?;
-            match merge_result {
-                MergeResult::Ok => {
+            // Rebase the bead branch onto the integration tip (rerere
+            // replays any recorded conflict resolution). Pass-2
+            // verification runs on the rewritten commits BEFORE the
+            // ff-merge, matching the spec recipe (specs/harness.md
+            // § Bead dispatch — Bead branch flow; § Verdict Gate phases
+            // 3-4): a driver-side signature failure leaves the integration
+            // branch untouched because the ff-merge has not run yet.
+            match self.git.rebase_onto_integration(&worktree.branch).await? {
+                RebaseOutcome::Rebased => {
                     // Verify signatures (pass 2) on the rewritten commits
-                    // the rebase produced, before the integration is
-                    // pushed. Conditional on the same signing-key
-                    // resolution as pass 1; a rejected signature here means
-                    // loom's own (driver-side) signing setup is broken.
-                    if let Some(pre_tip) = &pre_merge_tip {
-                        let pass2_range = format!("{pre_tip}..HEAD");
-                        if let Some(outcome) = self
-                            .verify_or_block(&bead.id, &worktree, &pass2_range, "driver")
-                            .await?
-                        {
-                            return Ok(outcome);
-                        }
+                    // the rebase produced, before the ff-merge. The range
+                    // is `<integration-branch>..<branch>` evaluated in the
+                    // loom workspace where the rebase ran — not the
+                    // operator workdir's HEAD. Conditional on the same
+                    // signing-key resolution as pass 1; a rejected
+                    // signature here means loom's own (driver-side) signing
+                    // setup is broken. `verify_or_block` deletes the
+                    // transient ref, so a failure rolls nothing onto the
+                    // integration line.
+                    let pass2_range = format!("{integration_branch}..{}", worktree.branch);
+                    if let Some(outcome) = self
+                        .verify_or_block(&bead.id, &worktree, &pass2_range, "driver")
+                        .await?
+                    {
+                        return Ok(outcome);
                     }
+                    self.git.ff_merge_integration(&worktree.branch).await?;
                     let main_sha = self
                         .git
                         .head_commit_sha()
@@ -647,7 +654,7 @@ where
                     );
                     Ok(AgentOutcome::Success)
                 }
-                MergeResult::Conflict {
+                RebaseOutcome::Conflict {
                     detail,
                     files,
                     new_base_sha,

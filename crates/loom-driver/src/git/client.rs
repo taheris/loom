@@ -903,44 +903,111 @@ impl GitClient {
     /// query, so the value is unambiguously the operator's configured
     /// target rather than whatever happens to be checked out.
     pub async fn merge_branch(&self, branch: &str) -> Result<MergeResult, GitError> {
+        match self.rebase_onto_integration(branch).await? {
+            RebaseOutcome::Conflict {
+                detail,
+                files,
+                new_base_sha,
+            } => Ok(MergeResult::Conflict {
+                detail,
+                files,
+                new_base_sha,
+            }),
+            RebaseOutcome::Rebased => {
+                self.ff_merge_integration(branch).await?;
+                Ok(MergeResult::Ok)
+            }
+        }
+    }
+
+    /// Rebase `branch` onto the configured integration branch inside the
+    /// loom workspace, replaying any rerere-recorded conflict resolution.
+    /// On [`RebaseOutcome::Rebased`] the workspace is left checked out on
+    /// the rewritten `branch`, whose `<integration-branch>..<branch>`
+    /// range is the rebased commits ready for pass-2 signature
+    /// verification; the integration branch has *not* moved yet — the
+    /// fast-forward happens in [`Self::ff_merge_integration`]. Splitting
+    /// the rebase from the ff-merge lets the verdict gate verify the
+    /// rewritten commits between the two steps (per `specs/harness.md`
+    /// § Bead dispatch — Bead branch flow), so a pass-2 failure leaves
+    /// the integration line untouched.
+    ///
+    /// rerere (enabled in the loom workspace at `loom init`) replays a
+    /// previously-recorded resolution before falling through to
+    /// `integration-conflict` recovery. Because `rerere.autoupdate`
+    /// stages the recorded resolution into the index but still pauses the
+    /// rebase awaiting `--continue`, a paused rebase with no remaining
+    /// unmerged paths means rerere resolved the conflict: the
+    /// `--continue` drive loop below carries it to completion. Paths that
+    /// stay unmerged are a conflict rerere has no record for — abort,
+    /// restore the integration branch, and surface
+    /// [`RebaseOutcome::Conflict`].
+    pub async fn rebase_onto_integration(&self, branch: &str) -> Result<RebaseOutcome, GitError> {
         let workdir = self.loom_workspace();
         let integration_branch = self.integration_branch.as_str();
 
-        let rebase_output = run_git_raw(
+        // Upper bound on `--continue` drives: the rebase replays one
+        // commit per step, so it can pause for a rerere-resolved conflict
+        // at most once per replayed commit. The `+ 1` absorbs an
+        // off-by-one when the final commit also conflicts; the bound
+        // keeps a non-advancing `--continue` (e.g. a resolution that
+        // emptied the commit) from spinning forever.
+        let max_steps = run_git_raw(
+            &workdir,
+            self.clock.as_ref(),
+            [
+                "rev-list",
+                "--count",
+                &format!("{integration_branch}..{branch}"),
+            ],
+            None,
+        )
+        .await
+        .ok()
+        .and_then(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse::<u32>()
+                .ok()
+        })
+        .unwrap_or(0)
+        .saturating_add(1);
+
+        let mut output = run_git_raw(
             &workdir,
             self.clock.as_ref(),
             ["rebase", integration_branch, branch],
             None,
         )
         .await?;
-        if !rebase_output.status.success() {
-            // Capture stderr BEFORE the abort+checkout so the caller
-            // sees the actual rebase refusal (content conflict vs.
-            // "cannot rebase: You have unstaged changes" vs. anything
-            // else) rather than the cleanup commands' output.
-            let detail = String::from_utf8_lossy(&rebase_output.stderr)
-                .trim()
-                .to_string();
+        let mut steps = 0u32;
+        while !output.status.success() {
             // Capture the unmerged-path set while the rebase is still
-            // paused mid-conflict — `git rebase --abort` discards it.
-            // A non-conflict refusal (unstaged changes) leaves no
+            // paused mid-conflict — `git rebase --abort` discards it. A
+            // non-conflict refusal (unstaged changes) leaves no
             // diff-filter=U entries, so `files` comes back empty.
-            let files = run_git_raw(
-                &workdir,
-                self.clock.as_ref(),
-                ["diff", "--name-only", "--diff-filter=U"],
-                None,
-            )
-            .await
-            .ok()
-            .map(|out| {
-                String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .map(|l| PathBuf::from(l.trim()))
-                    .filter(|p| !p.as_os_str().is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            let files = self.unmerged_paths(&workdir).await;
+            if files.is_empty() && steps < max_steps {
+                // rerere staged a full resolution but the rebase paused
+                // awaiting `--continue`; carry it forward.
+                // `-c core.editor=true` keeps `--continue` from opening an
+                // editor for the reused commit message.
+                steps += 1;
+                output = run_git_raw(
+                    &workdir,
+                    self.clock.as_ref(),
+                    ["-c", "core.editor=true", "rebase", "--continue"],
+                    None,
+                )
+                .await?;
+                continue;
+            }
+            // Genuine conflict (or a stuck `--continue`). Capture stderr
+            // BEFORE the abort+checkout so the caller sees the actual
+            // rebase refusal (content conflict vs. "cannot rebase: You
+            // have unstaged changes" vs. anything else) rather than the
+            // cleanup commands' output.
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let _ = run_git_raw(&workdir, self.clock.as_ref(), ["rebase", "--abort"], None).await?;
             run_git(
                 &workdir,
@@ -959,12 +1026,23 @@ impl GitClient {
             )
             .await?;
             let new_base_sha = GitOid::new(String::from_utf8_lossy(&new_base_raw.stdout).trim())?;
-            return Ok(MergeResult::Conflict {
+            return Ok(RebaseOutcome::Conflict {
                 detail,
                 files,
                 new_base_sha,
             });
         }
+        Ok(RebaseOutcome::Rebased)
+    }
+
+    /// Fast-forward the configured integration branch to the tip of the
+    /// already-rebased `branch` (see [`Self::rebase_onto_integration`]).
+    /// Checks out the integration branch and runs `git merge --ff-only`
+    /// so history stays linear (no merge commits); a non-fast-forward
+    /// refusal surfaces as [`GitError`].
+    pub async fn ff_merge_integration(&self, branch: &str) -> Result<(), GitError> {
+        let workdir = self.loom_workspace();
+        let integration_branch = self.integration_branch.as_str();
 
         run_git(
             &workdir,
@@ -982,13 +1060,36 @@ impl GitClient {
         )
         .await?;
         if output.status.success() {
-            return Ok(MergeResult::Ok);
+            return Ok(());
         }
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         Err(GitError::GitCli {
             status: output.status.code().unwrap_or(-1),
             stderr,
         })
+    }
+
+    /// Unmerged paths in `workdir` (`git diff --name-only
+    /// --diff-filter=U`). Used while a rebase is paused mid-conflict to
+    /// tell a genuine conflict from a rerere-staged resolution. A failed
+    /// invocation or a clean index yields an empty list.
+    async fn unmerged_paths(&self, workdir: &Path) -> Vec<PathBuf> {
+        run_git_raw(
+            workdir,
+            self.clock.as_ref(),
+            ["diff", "--name-only", "--diff-filter=U"],
+            None,
+        )
+        .await
+        .ok()
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| PathBuf::from(l.trim()))
+                .filter(|p| !p.as_os_str().is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
     }
 
     /// Path to the loom-workspace allowed_signers file the per-bead
@@ -1445,6 +1546,27 @@ impl StatusEntry {
 pub enum StatusKind {
     IndexChange,
     WorktreeChange,
+}
+
+/// Outcome of [`GitClient::rebase_onto_integration`] — the rebase half of
+/// the per-bead integration step, split from the fast-forward
+/// ([`GitClient::ff_merge_integration`]) so the verdict gate can verify
+/// the rewritten commits in between.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RebaseOutcome {
+    /// `branch` was rebased onto the integration tip (replaying any
+    /// rerere-recorded resolution). The workspace is checked out on the
+    /// rewritten `branch`; the integration branch has not moved.
+    Rebased,
+    /// `git rebase` left unmerged paths rerere had no recorded resolution
+    /// for. The rebase was aborted and the integration branch restored.
+    /// `detail`/`files`/`new_base_sha` carry the same recovery payload as
+    /// [`MergeResult::Conflict`].
+    Conflict {
+        detail: String,
+        files: Vec<PathBuf>,
+        new_base_sha: GitOid,
+    },
 }
 
 /// Outcome of [`GitClient::merge_branch`].

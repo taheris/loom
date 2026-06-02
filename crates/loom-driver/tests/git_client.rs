@@ -22,7 +22,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
 use loom_driver::git::{
-    FastForwardOutcome, GitClient, GitError, MergeResult, SignatureCheck, StatusKind,
+    FastForwardOutcome, GitClient, GitError, MergeResult, RebaseOutcome, SignatureCheck, StatusKind,
 };
 use loom_driver::identifier::{BeadId, SpecLabel};
 use tempfile::TempDir;
@@ -290,6 +290,137 @@ async fn merge_branch_conflict_is_reported() -> Result<()> {
         matches!(result, MergeResult::Conflict { .. }),
         "expected Conflict, got {result:?}",
     );
+    Ok(())
+}
+
+/// rerere replay carries the driver-side rebase to completion. With
+/// `rerere.enabled` + `rerere.autoupdate` (written by `loom init`), a
+/// previously-recorded conflict resolution is auto-staged when the same
+/// conflict recurs — but the rebase still pauses awaiting `--continue`.
+/// `merge_branch` must drive that `--continue` to completion and return
+/// `Ok` rather than aborting on the paused status, so the recorded
+/// resolution is not dead weight (specs/harness.md § Verdict Gate
+/// phase 3, § Commit signing — rerere configuration).
+#[tokio::test]
+async fn merge_branch_replays_recorded_rerere_resolution() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+
+    // rerere config mirrors what `loom init` writes into the loom
+    // workspace's local gitconfig.
+    git(&loom, &["config", "rerere.enabled", "true"])?;
+    git(&loom, &["config", "rerere.autoupdate", "true"])?;
+
+    // A conflicting pair: feature and main both edit README.md.
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("README.md"), "feature line\n")?;
+    git(&loom, &["commit", "-q", "-am", "feature edit"])?;
+    let feature_base = capture_head(&loom)?;
+
+    git(&loom, &["checkout", "-q", "main"])?;
+    std::fs::write(loom.join("README.md"), "main line\n")?;
+    git(&loom, &["commit", "-q", "-am", "main edit"])?;
+
+    // Round 1 — record a resolution. `git rebase` conflicts; resolve to a
+    // distinctive merged value, stage it, and `--continue` (with a no-op
+    // editor so the reused commit message needs no interaction). rerere
+    // records the resolution keyed by the conflict's preimage.
+    let conflicting_rebase = Command::new("git")
+        .arg("-C")
+        .arg(&loom)
+        .args(["rebase", "main", "feature"])
+        .status()?;
+    assert!(
+        !conflicting_rebase.success(),
+        "round-1 rebase should conflict so rerere can record a resolution",
+    );
+    std::fs::write(loom.join("README.md"), "resolved line\n")?;
+    git(&loom, &["add", "README.md"])?;
+    git(&loom, &["-c", "core.editor=true", "rebase", "--continue"])?;
+
+    // Round 2 — reproduce the identical conflict. Restore feature to its
+    // pre-rebase commit (from a clean checkout so the ref move is allowed)
+    // and let `merge_branch` rebase it onto main again.
+    git(&loom, &["checkout", "-q", "main"])?;
+    git(&loom, &["branch", "-f", "feature", &feature_base])?;
+
+    let client = GitClient::open(repo.path())?;
+    let result = client.merge_branch("feature").await?;
+
+    assert_eq!(
+        result,
+        MergeResult::Ok,
+        "rerere should replay the recorded resolution and the rebase complete",
+    );
+    assert_eq!(
+        std::fs::read_to_string(loom.join("README.md"))?,
+        "resolved line\n",
+        "the replayed resolution must land on the integration branch",
+    );
+    Ok(())
+}
+
+/// `rebase_onto_integration` rewrites the bead branch onto the
+/// integration tip but does NOT advance the integration branch — the
+/// fast-forward is the separate `ff_merge_integration` step. This is the
+/// ordering the verdict gate relies on: pass-2 signature verification
+/// runs on the rewritten `<integration>..<branch>` commits between the
+/// two, so a pass-2 failure leaves the integration line untouched
+/// (specs/harness.md § Bead dispatch — Bead branch flow).
+#[tokio::test]
+async fn rebase_onto_integration_leaves_integration_branch_unmoved() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("feature.txt"), "feature side\n")?;
+    git(&loom, &["add", "feature.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "feature commit"])?;
+
+    git(&loom, &["checkout", "-q", "main"])?;
+    std::fs::write(loom.join("main.txt"), "main side\n")?;
+    git(&loom, &["add", "main.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "main commit"])?;
+    let main_tip = capture_rev(&loom, "main")?;
+
+    let client = GitClient::open(repo.path())?;
+    let outcome = client.rebase_onto_integration("feature").await?;
+    assert!(
+        matches!(outcome, RebaseOutcome::Rebased),
+        "expected Rebased, got {outcome:?}",
+    );
+
+    // The integration branch must not have moved — only the ff-merge
+    // advances it.
+    assert_eq!(
+        capture_rev(&loom, "main")?,
+        main_tip,
+        "rebase_onto_integration must not advance the integration branch",
+    );
+    // The rewritten commit is observable as `main..feature`, the pass-2
+    // verification range.
+    let rewritten = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(&loom)
+            .args(["rev-list", "--count", "main..feature"])
+            .output()?
+            .stdout,
+    )?
+    .trim()
+    .to_string();
+    assert_eq!(rewritten, "1", "one rewritten commit in the pass-2 range");
+
+    // The follow-up ff-merge advances the integration branch to the
+    // rebased tip and lands the work.
+    client.ff_merge_integration("feature").await?;
+    assert_ne!(
+        capture_rev(&loom, "main")?,
+        main_tip,
+        "ff_merge_integration must advance the integration branch",
+    );
+    assert!(loom.join("feature.txt").exists());
+    assert!(loom.join("main.txt").exists());
     Ok(())
 }
 
@@ -985,12 +1116,16 @@ async fn origin_push_retries_non_fast_forward() -> Result<()> {
 }
 
 fn capture_head(repo: &Path) -> Result<String> {
+    capture_rev(repo, "HEAD")
+}
+
+fn capture_rev(repo: &Path, rev: &str) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["rev-parse", "HEAD"])
+        .args(["rev-parse", rev])
         .output()?;
-    anyhow::ensure!(output.status.success(), "git rev-parse failed");
+    anyhow::ensure!(output.status.success(), "git rev-parse {rev} failed");
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 

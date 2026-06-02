@@ -2526,7 +2526,7 @@ async fn run_parallel_loop(
     // Resolve the host deploy/signing key paths once for the whole batch —
     // every bead shares the same loom workspace, so the launcher env is
     // identical across slots. Each `wrapix spawn` child receives these so the
-    // wrapper mounts the keys into the bead container (Bug 1; `specs/harness.md`
+    // wrapper mounts the keys into the bead container (`specs/harness.md`
     // § Commit signing).
     let launcher_env = git.launcher_key_env()?;
     let logs_root = workspace.join(".loom/logs");

@@ -2764,6 +2764,19 @@ Criteria.
       recorded conflict resolutions before falling through to
       `integration-conflict` recovery
   [test](loom_init_enables_rerere_in_loom_workspace_gitconfig)
+- The driver-side rebase drives a rerere-replayed resolution to
+      completion: when `rerere.autoupdate` auto-stages a recorded
+      resolution and the rebase pauses awaiting `--continue`, the
+      rebase is carried through (no remaining unmerged paths) rather
+      than aborted, so a recorded resolution lands instead of falling
+      to `integration-conflict` recovery
+  [test](merge_branch_replays_recorded_rerere_resolution)
+- The driver-side rebase (`rebase_onto_integration`) does not advance
+      the integration branch — the fast-forward is a separate step
+      (`ff_merge_integration`), so pass-2 signature verification runs
+      on the rewritten commits before anything lands durably and a
+      pass-2 failure leaves the integration line untouched
+  [test](rebase_onto_integration_leaves_integration_branch_unmoved)
 - Origin push of the integration branch retries non-fast-forward
       errors by fetching and re-rebasing onto
       `origin/<integration-branch>`
