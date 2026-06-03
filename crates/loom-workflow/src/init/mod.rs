@@ -169,6 +169,17 @@ fn materialize_integration_workspace(
         // dispatch).
         let config = LoomConfig::load(config_path)?;
         fast_forward_loom_workspace_to_origin(&dest, &config.loom.integration_branch)?;
+        // Re-init must refresh the signing + rerere block idempotently: a
+        // workspace materialized before signing landed (or a host where the
+        // key was provisioned after the first init) would otherwise never be
+        // upgraded, leaving host-side loom-workspace commits prompting or
+        // falling through to the global gitconfig. Both writes are
+        // idempotent, so reconciling them on every init is safe (per
+        // `specs/harness.md` § Bead Dispatch — signing gitconfig).
+        enable_rerere(&dest)?;
+        if let Some(key) = resolve(&dest)? {
+            write_signing_config(&dest, &key)?;
+        }
         return Ok(Some(MaterializedIntegration {
             path: dest,
             created: false,
@@ -640,6 +651,55 @@ mod tests {
         assert!(
             signers.is_file(),
             "allowed_signers must be derived into the loom workspace: {signers:?}",
+        );
+        Ok(())
+    }
+
+    /// Regression (`criterion:harness:loom_init_writes_signing_gitconfig`):
+    /// a re-init over an existing loom workspace must refresh the signing +
+    /// rerere block idempotently, so a workspace materialized before the
+    /// signing key was provisioned gets upgraded on the next `loom init`
+    /// rather than staying stuck on the global gitconfig. The first init
+    /// resolves no key (no signing block written); the second resolves the
+    /// key and the block must then appear in the existing workspace.
+    #[test]
+    fn loom_init_reinit_upgrades_signing_gitconfig() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let workspace = tmp.path().join("loom-init-reinit-signing-ws");
+        loom_driver::git::init_test_repo(&workspace)?;
+        let key = gen_ssh_key(tmp.path());
+
+        // First init: no key resolves → no signing block.
+        let first = run_with_resolver(&workspace, InitOpts::default(), &[], |_dir| Ok(None))?
+            .integration_workspace
+            .ok_or_else(|| anyhow!("first init must materialize integration workspace"))?;
+        assert!(first.created, "first init must clone");
+        let config = std::fs::read_to_string(first.path.join(".git/config"))?;
+        assert!(
+            !config.contains("signingkey"),
+            "no signing block expected on first init without a key: {config}",
+        );
+
+        // Second init over the existing workspace: key now resolves → the
+        // reconcile path must write the signing block into the workspace it
+        // did NOT re-clone.
+        let second = run_with_resolver(&workspace, InitOpts::default(), &[], |_dir| {
+            Ok(Some(key.clone()))
+        })?
+        .integration_workspace
+        .ok_or_else(|| anyhow!("second init must report the existing workspace"))?;
+        assert!(!second.created, "second init must NOT re-clone");
+        assert_eq!(second.path, first.path);
+
+        let config = std::fs::read_to_string(second.path.join(".git/config"))?;
+        assert!(config.contains("format = ssh"), "gpg.format: {config}");
+        assert!(
+            config.contains(&format!("signingkey = {}", key.display())),
+            "user.signingkey must be written on re-init: {config}",
+        );
+        assert!(
+            config.contains("gpgsign = true"),
+            "commit.gpgsign: {config}"
         );
         Ok(())
     }

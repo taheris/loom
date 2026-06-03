@@ -488,9 +488,14 @@ async fn workspace_persists_on_all_failure_paths() -> Result<()> {
     Ok(())
 }
 
-/// Acceptance: on merge conflict the worktree is preserved and the bead is
-/// marked failed (not silently overwritten). The driver branch is left
-/// in a merge-in-progress state, which the caller resolves out-of-band.
+/// Acceptance: on merge conflict the bead workspace is preserved (so the
+/// agent's work survives) and the bead is marked failed (not silently
+/// overwritten), but the transient loom-workspace `loom/<id>` ref is
+/// deleted unconditionally — the rebase already aborted, restoring the
+/// integration tip, and the dangling ref must not leak
+/// (`specs/harness.md` § Bead Dispatch phase 6 — deleted on every exit
+/// path, including the rebase-conflict-abort case). The bead clone keeps
+/// its own copy of the branch for inspection.
 #[tokio::test]
 async fn parallel_conflict_preserves_worktree() -> Result<()> {
     let repo = init_repo()?;
@@ -525,19 +530,29 @@ async fn parallel_conflict_preserves_worktree() -> Result<()> {
         panic!("expected Conflict, got {r:?}");
     };
     assert_eq!(*bid, bead.id);
-    // Worktree preserved.
+    // Bead workspace preserved so the agent's work survives.
     assert!(
         worktree_path.exists(),
-        "worktree {:?} should be preserved on conflict",
+        "bead workspace {:?} should be preserved on conflict",
         worktree_path,
     );
     assert_eq!(*branch, slot.worktree.branch);
+    // Transient loom-workspace ref deleted unconditionally on the
+    // rebase-conflict-abort path — it must not leak.
     let branches = git_capture(&loom, &["branch", "--list", &slot.worktree.branch])?;
     assert!(
-        !branches.trim().is_empty(),
-        "branch {} should be preserved on conflict (got: {:?})",
+        branches.trim().is_empty(),
+        "transient ref {} should be deleted in the loom workspace on conflict (got: {:?})",
         slot.worktree.branch,
         branches,
+    );
+    // The bead clone keeps its own copy of the branch for inspection.
+    let bead_branches = git_capture(worktree_path, &["branch", "--list", &slot.worktree.branch])?;
+    assert!(
+        !bead_branches.trim().is_empty(),
+        "bead clone should retain branch {} for inspection (got: {:?})",
+        slot.worktree.branch,
+        bead_branches,
     );
 
     Ok(())

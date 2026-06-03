@@ -52,17 +52,21 @@ pub enum BatchResult {
         branch: String,
     },
 
-    /// Agent failed. The worktree branch was deleted; the bead is queued
-    /// for retry per the configured policy (the caller owns retry budget
-    /// accounting).
+    /// Agent failed. The bead workspace is **preserved** on disk (any
+    /// staged-but-uncommitted diff survives) and no branch is deleted; the
+    /// bead is queued for retry per the configured policy (the caller owns
+    /// retry budget accounting). The per-bead-close lifecycle reaps the
+    /// workspace at `bd close`.
     AgentFailed { bead: BeadId, error: String },
 
-    /// Agent emitted `LOOM_BLOCKED`. Worktree + branch were deleted; the
-    /// caller applies `loom:blocked` and writes `reason` to notes.
+    /// Agent emitted `LOOM_BLOCKED`, or a driver-side signature pass
+    /// rejected the bead. The bead workspace is **preserved** for recovery;
+    /// the caller applies `loom:blocked` and writes `reason` to notes.
     AgentBlocked { bead: BeadId, reason: String },
 
-    /// Agent emitted `LOOM_CLARIFY`. Worktree + branch were deleted; the
-    /// caller applies `loom:clarify` and writes `question` to notes.
+    /// Agent emitted `LOOM_CLARIFY`. The bead workspace is **preserved** for
+    /// recovery; the caller applies `loom:clarify` and writes `question` to
+    /// notes.
     AgentClarify { bead: BeadId, question: String },
 
     /// Merge succeeded but the post-merge push (`git push` to the GitHub
@@ -273,14 +277,20 @@ where
 /// branch **sequentially** (the spec calls this out — "single-threaded merge
 /// avoids index lock contention").
 ///
-/// Per-slot policy:
+/// Per-slot policy (driver-side rebase + ff, A3):
 ///
-/// - [`AgentOutcome::Success`] + [`MergeResult::Ok`] → remove the worktree
-///   and return [`BatchResult::Merged`].
-/// - [`AgentOutcome::Success`] + [`MergeResult::Conflict`] → **preserve** the
-///   worktree, return [`BatchResult::Conflict`].
-/// - [`AgentOutcome::Failure`] → remove the worktree, delete the branch,
-///   return [`BatchResult::AgentFailed`] (the caller owns retry accounting).
+/// - [`AgentOutcome::Success`] + [`RebaseOutcome::Rebased`] (and both
+///   signature passes clean) → ff-merge, push, remove the bead workspace,
+///   delete the transient `loom/<id>` ref, return [`BatchResult::Merged`].
+/// - [`AgentOutcome::Success`] + [`RebaseOutcome::Conflict`] → **preserve**
+///   the bead workspace for inspection, delete only the transient
+///   `loom/<id>` ref (the rebase already aborted), return
+///   [`BatchResult::Conflict`].
+/// - [`AgentOutcome::Failure`] (and the other infra/profile failure
+///   variants) → **preserve** the bead workspace for recovery, delete
+///   nothing, return [`BatchResult::AgentFailed`] (the caller owns retry
+///   accounting; the per-bead-close lifecycle reaps the workspace at
+///   `bd close`).
 pub async fn merge_back(
     git: &GitClient,
     beads_push_program: &Path,
@@ -475,7 +485,7 @@ async fn merge_back_one(
                         branch = %worktree.branch,
                         path = %worktree.path.display(),
                         detail = %detail,
-                        "merge conflict — worktree preserved for inspection",
+                        "merge conflict — bead workspace preserved for inspection",
                     );
                     if let Some(e) = emit.as_mut() {
                         e.emit(
@@ -489,6 +499,16 @@ async fn merge_back_one(
                             }),
                         );
                     }
+                    // `rebase_onto_integration` already ran `git rebase
+                    // --abort` (restoring the integration tip) but that
+                    // leaves the transient loom-workspace `loom/<id>` ref
+                    // dangling. Delete it unconditionally — mirroring the
+                    // sequential conflict arm and clean-merge arm — so the
+                    // ref is gone on every exit path (`specs/harness.md`
+                    // § Bead Dispatch phase 6). The bead clone keeps its
+                    // own copy of the branch until the bead is reaped on
+                    // `bd close`; only the loom-workspace ref is removed.
+                    git.delete_branch(&worktree.branch).await?;
                     Ok(BatchResult::Conflict {
                         bead: bead.id,
                         worktree_path: worktree.path,
