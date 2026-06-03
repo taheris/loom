@@ -1549,7 +1549,7 @@ Each criterion's annotation is resolved per its tier:
 |------|--------------|----------|
 | `[check]` | `[check](target)` — a runner identifier (matched by a `[runner.check.<name>]` block in `loom.toml`) or an argv string | Runner-matched targets batch into one subprocess per runner and self-report inputs (see *Runners*); an unmatched target falls back to invoking its own process (often a walk binary the consumer ships). |
 | `[test]` | `[test](path)` — language-native test path (e.g. `crate::module::test_name`, `tests/test_foo.py::test_bar`) | The gate collects all `[test]` targets in a single `loom gate test` invocation and issues **one** runner subprocess (e.g. `cargo nextest run -E 'test(p1) \| test(p2) \| ...'`). One process per invocation, full internal parallelism. |
-| `[system]` | `[system](target)` — a runner identifier (matched by a `[runner.system.<name>]` block in `loom.toml`) or an argv string | Runner-matched targets batch into one subprocess per runner (see *Runners*); an unmatched target falls back to invoking its own process. System verifiers without a runner are inherently slow and self-contained; batching doesn't help. |
+| `[system]` | `[system](target)` — a runner identifier (matched by a `[runner.system.<name>]` block in `loom.toml`) or an argv string | One subprocess per `[system]` annotation — never batched. A runner match resolves the target's *inputs* (see *Runners*), but execution stays per-annotation: system verifiers are inherently slow and self-contained, so batching doesn't help. |
 | `[judge]` | `[judge](path)` — file path or criterion id whose content is the LLM rubric | The gate collects all `[judge]` targets and issues concurrent LLM calls (API-level parallelism). |
 
 ### Command tokenisation
