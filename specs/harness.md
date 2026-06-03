@@ -204,9 +204,10 @@ bead clone (e.g., starship prompt). `create_worktree` sets the bead
 branch's upstream to `origin/<integration-branch>`, so `@{u}`
 resolves to the bead's base: the starship ahead/behind count is
 correct, and the pre-push hook's `loom gate verify --diff @{u}..HEAD`
-scopes to exactly the bead's commits instead of failing with "no
-upstream configured" (which silently degrades the gate to an
-unscoped, whole-tree walk — see gate.md § Scope flags). The bead
+scopes to exactly the bead's commits. Were the upstream unset, `@{u}`
+could not resolve and the gate would exit non-zero naming the range —
+a hard error, not a silent degrade to a whole-tree walk (see gate.md
+§ Scope flags). The bead
 container has no path mount to the loom workspace and cannot push
 from inside; manual host-side pushes are harmless because the
 integration step still owns rebase + verify + ff. The driver's
