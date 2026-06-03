@@ -1889,8 +1889,15 @@ loom never falls back to parsing the annotation's argv for it:
   argument) lands where the template places it, so a `cargo run -p
   loom-walk -- {targets}` runner queries the walk, never `cargo`.
 - **Input-query.** Inputs come from the runner's `inputs` query (per
-  *Verifier inputs* § Input-query protocol), batched: one query spawn
-  returns the per-target map for the whole matched group.
+  *Verifier inputs* § Input-query protocol). For the batched tiers
+  (`[check]`, `[test]`, `[judge]`) discovery is batched: one query spawn
+  returns the per-target map for the whole matched group. `[system]` is
+  the same exception as for execution (below): a runner match resolves
+  its inputs but discovery stays per-annotation — one query spawn per
+  `[system]` annotation. Discovery thus batches exactly where execution
+  batches, so the parity invariant (§ Verifier inputs → Input-query
+  protocol) holds for a runner-matched `[system]` group without a
+  carve-out.
 - **Execution.** For the batched tiers (`[check]`, `[test]`, `[judge]`),
   matched annotations batch into one subprocess per runner (the
   dispatcher's step 3 above); per-annotation spawn is only the unmatched
