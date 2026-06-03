@@ -27,8 +27,8 @@ use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::StateDb;
 use loom_gate::{
-    self, BuiltinParser, CacheRow, CargoMetadataScope, DispatchOptions, DispatchPendingExecutor,
-    EmptyScope, FsCommandResolver, InputResolver, RunnerSpec, StatusCache, Tier, TierCwds, Verdict,
+    self, CacheRow, CargoMetadataScope, DispatchOptions, DispatchPendingExecutor, EmptyScope,
+    FsCommandResolver, InputResolver, RunnerSpec, StatusCache, Tier, TierCwds, Verdict,
     filter_by_files, is_missing_binary_target, render_report, row_for,
 };
 use loom_workflow::r#loop::{
@@ -1297,24 +1297,6 @@ fn all_tier_cwds(config: &LoomConfig) -> TierCwds {
     }
 }
 
-/// Compile the named `[runner.<tier>.<name>]` runners — and the implicit
-/// tier-default runner — declared under `tier` into runtime [`RunnerSpec`]s.
-/// Matching keys on target shape, not tier, so the caller decides which
-/// annotations flow through the returned specs; the `[check]`-tier builtin
-/// batcher is layered by the caller, not here.
-fn compile_tier_runners(config: &LoomConfig, tier: &str) -> anyhow::Result<Vec<RunnerSpec>> {
-    let mut specs = Vec::new();
-    if let Some(tier_block) = config.runner.tier(tier) {
-        for (name, entry) in &tier_block.runners {
-            specs.push(compile_runner_entry(name, entry)?);
-        }
-        if let Some(default_entry) = tier_block.default_runner() {
-            specs.push(compile_runner_entry("default", &default_entry)?);
-        }
-    }
-    Ok(specs)
-}
-
 /// Resolve the runner specs and tier-default cwds a single dispatch `tier`
 /// consults from `<workspace>/loom.toml`. `[check]` always carries the
 /// builtin loom-walk batcher plus any `[runner.check.<name>]` overrides;
@@ -1332,50 +1314,28 @@ fn resolve_runner_context(
     let tier_cwds = all_tier_cwds(&config);
     let specs = match tier {
         Tier::Check => {
-            let mut specs = vec![builtin_loom_walk_runner()?];
-            specs.extend(compile_tier_runners(&config, "check")?);
+            let mut specs = vec![loom_gate::runner::builtin_loom_walk_runner()?];
+            specs.extend(loom_gate::runner::compile_tier_runners(&config, "check")?);
             specs
         }
-        Tier::System => compile_tier_runners(&config, "system")?,
+        Tier::System => loom_gate::runner::compile_tier_runners(&config, "system")?,
         Tier::Test | Tier::Judge => Vec::new(),
     };
     Ok((specs, tier_cwds))
 }
 
-/// Resolve the runner specs the integrity gate's forward-resolution
-/// consults. The gate checks every annotation regardless of tier, so it
-/// needs the union of `[check]`- and `[system]`-tier runners: a
-/// `[system](target)` matched by a `[runner.system.<name>]` block must
-/// resolve by runner ownership exactly as a `[check]` target matched by
-/// `[runner.check.<name>]` does (`specs/gate.md` § Target resolution).
-/// RunnerSpec matching keys on target shape, not tier, so the union never
-/// cross-resolves a check target against a system runner or vice versa.
+/// Resolve the runner specs and tier-default cwds the integrity gate's
+/// forward-resolution consults: the union of the builtin loom-walk batcher
+/// plus `[check]`- and `[system]`-tier runners
+/// ([`loom_gate::runner::integrity_runner_specs`]), paired with every tier's
+/// default cwd.
 fn resolve_integrity_runner_context(
     workspace: &Path,
 ) -> anyhow::Result<(Vec<RunnerSpec>, TierCwds)> {
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     let tier_cwds = all_tier_cwds(&config);
-    let mut specs = vec![builtin_loom_walk_runner()?];
-    specs.extend(compile_tier_runners(&config, "check")?);
-    specs.extend(compile_tier_runners(&config, "system")?);
+    let specs = loom_gate::runner::integrity_runner_specs(&config)?;
     Ok((specs, tier_cwds))
-}
-
-/// Built-in batcher for `cargo run -p loom-walk -- <name>` `[check]`
-/// annotations. Ships in code (not `loom.toml`) so the batching is
-/// the default behaviour; operators don't need to add a row to enable
-/// it and can't accidentally remove it. Consumers can still layer
-/// overrides via `[runner.check.<name>]` entries.
-fn builtin_loom_walk_runner() -> anyhow::Result<RunnerSpec> {
-    Ok(RunnerSpec::compile(
-        "builtin-loom-walk",
-        Some(r"^cargo run -p loom-walk -- (\S+)$"),
-        "cargo run -p loom-walk -- {targets}",
-        "{capture_1}",
-        " ",
-        BuiltinParser::JsonLines,
-        None,
-    )?)
 }
 
 fn tier_cwd(config: &LoomConfig, tier: &str) -> Option<PathBuf> {
@@ -1384,36 +1344,6 @@ fn tier_cwd(config: &LoomConfig, tier: &str) -> Option<PathBuf> {
         .tier(tier)
         .and_then(|t| t.cwd.clone())
         .map(PathBuf::from)
-}
-
-fn compile_runner_entry(
-    name: &str,
-    entry: &loom_driver::config::RunnerEntry,
-) -> anyhow::Result<RunnerSpec> {
-    let command = entry
-        .command
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("runner `{name}` missing `command`"))?;
-    let target = entry.target.as_deref().unwrap_or("{name}");
-    let join = entry.join.as_deref().unwrap_or(" ");
-    let parse = match entry.parse {
-        Some(loom_driver::config::Parser::LibtestJson) => BuiltinParser::LibtestJson,
-        Some(loom_driver::config::Parser::JunitXml) => BuiltinParser::JunitXml,
-        Some(loom_driver::config::Parser::NixBuildStatus) => BuiltinParser::NixBuildStatus,
-        Some(loom_driver::config::Parser::JsonLines) | None => BuiltinParser::JsonLines,
-        Some(loom_driver::config::Parser::ExitCode) => BuiltinParser::ExitCode,
-    };
-    let cwd = entry.cwd.as_deref().map(PathBuf::from);
-    Ok(RunnerSpec::compile(
-        name,
-        entry.match_regex.as_deref(),
-        command,
-        target,
-        join,
-        parse,
-        cwd,
-    )?
-    .with_inputs(entry.inputs.clone()))
 }
 
 fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::Result<i32> {

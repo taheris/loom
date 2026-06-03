@@ -32,7 +32,7 @@ use loom_driver::agent::{
     ProtocolError, RePinContent, SessionOutcome, SpawnConfig, set_loom_inside,
 };
 use loom_driver::bd::{BdClient, CommandRunner, ListOpts, TokioRunner};
-use loom_driver::config::Phase;
+use loom_driver::config::{LoomConfig, Phase};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
@@ -446,13 +446,17 @@ where
         let cmd_resolver = FsCommandResolver::new(&self.workspace);
         let (test_resolver, stub_scanner) = integrity::scan_workspace_pair(&self.workspace)
             .map_err(|e| WalkError::Verifiers(e.to_string()))?;
+        let config = LoomConfig::load(LoomConfig::resolve_path(&self.workspace))
+            .map_err(|e| WalkError::Verifiers(e.to_string()))?;
+        let runner_specs = loom_gate::runner::integrity_runner_specs(&config)
+            .map_err(|e| WalkError::Verifiers(e.to_string()))?;
         let options = DispatchOptions::default();
         let tier_cwds = TierCwds::default();
         let pending_executor =
             DispatchPendingExecutor::new(&[], options.clone(), &self.workspace, tier_cwds.clone());
         let integrity_findings = integrity::check(
             &annotations,
-            &[],
+            &runner_specs,
             &self.workspace,
             &cmd_resolver,
             &test_resolver,

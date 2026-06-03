@@ -27,7 +27,7 @@ use loom_driver::agent::{
 };
 use loom_driver::bd::{BdClient, BdError, Bead, CommandRunner, ListOpts, TokioRunner, UpdateOpts};
 use loom_driver::clock::{Clock, SystemClock};
-use loom_driver::config::Phase;
+use loom_driver::config::{LoomConfig, Phase};
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
@@ -345,6 +345,10 @@ where
         let (test_resolver, stub_scanner) =
             loom_gate::integrity::scan_workspace_pair(&self.workspace)
                 .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
+        let config = LoomConfig::load(LoomConfig::resolve_path(&self.workspace))
+            .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
+        let runner_specs = loom_gate::runner::integrity_runner_specs(&config)
+            .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
         let pending_executor = DispatchPendingExecutor::new(
             &[],
             DispatchOptions::default(),
@@ -353,7 +357,7 @@ where
         );
         let findings = integrity::check_forward(
             &annotations,
-            &[],
+            &runner_specs,
             &self.workspace,
             &cmd_resolver,
             &test_resolver,

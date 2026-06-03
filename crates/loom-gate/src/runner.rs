@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use displaydoc::Display;
+use loom_driver::config::{self, LoomConfig, RunnerEntry};
 use regex::Regex;
 use thiserror::Error;
 
@@ -250,6 +251,8 @@ pub enum RunnerError {
         #[source]
         source: regex::Error,
     },
+    /// runner `{name}` missing `command`
+    MissingCommand { name: String },
 }
 
 /// Named built-in parser that extracts per-target verdicts from a runner's
@@ -386,6 +389,91 @@ impl RunnerSpec {
             .as_ref()
             .is_none_or(|re| re.is_match(target))
     }
+}
+
+/// Built-in batcher for `cargo run -p loom-walk -- <name>` `[check]`
+/// annotations. Ships in code (not `loom.toml`) so the batching is the
+/// default behaviour; operators can layer overrides via
+/// `[runner.check.<name>]` entries but cannot accidentally remove it.
+pub fn builtin_loom_walk_runner() -> Result<RunnerSpec, RunnerError> {
+    RunnerSpec::compile(
+        "builtin-loom-walk",
+        Some(r"^cargo run -p loom-walk -- (\S+)$"),
+        "cargo run -p loom-walk -- {targets}",
+        "{capture_1}",
+        " ",
+        BuiltinParser::JsonLines,
+        None,
+    )
+}
+
+/// Compile one `[runner.<tier>.<name>]` schema entry into runtime form.
+/// The `command` field is required; missing it is a
+/// [`RunnerError::MissingCommand`].
+pub fn compile_runner_entry(name: &str, entry: &RunnerEntry) -> Result<RunnerSpec, RunnerError> {
+    let command = entry
+        .command
+        .as_deref()
+        .ok_or_else(|| RunnerError::MissingCommand {
+            name: name.to_string(),
+        })?;
+    let target = entry.target.as_deref().unwrap_or("{name}");
+    let join = entry.join.as_deref().unwrap_or(" ");
+    let parse = match entry.parse {
+        Some(config::Parser::LibtestJson) => BuiltinParser::LibtestJson,
+        Some(config::Parser::JunitXml) => BuiltinParser::JunitXml,
+        Some(config::Parser::NixBuildStatus) => BuiltinParser::NixBuildStatus,
+        Some(config::Parser::JsonLines) | None => BuiltinParser::JsonLines,
+        Some(config::Parser::ExitCode) => BuiltinParser::ExitCode,
+    };
+    let cwd = entry.cwd.as_deref().map(PathBuf::from);
+    Ok(RunnerSpec::compile(
+        name,
+        entry.match_regex.as_deref(),
+        command,
+        target,
+        join,
+        parse,
+        cwd,
+    )?
+    .with_inputs(entry.inputs.clone()))
+}
+
+/// Compile the named `[runner.<tier>.<name>]` runners — and the implicit
+/// tier-default runner — declared under `tier` into runtime [`RunnerSpec`]s.
+/// Matching keys on target shape, not tier, so the caller decides which
+/// annotations flow through the returned specs; the `[check]`-tier builtin
+/// batcher is layered by the caller, not here.
+pub fn compile_tier_runners(
+    config: &LoomConfig,
+    tier: &str,
+) -> Result<Vec<RunnerSpec>, RunnerError> {
+    let mut specs = Vec::new();
+    if let Some(tier_block) = config.runner.tier(tier) {
+        for (name, entry) in &tier_block.runners {
+            specs.push(compile_runner_entry(name, entry)?);
+        }
+        if let Some(default_entry) = tier_block.default_runner() {
+            specs.push(compile_runner_entry("default", &default_entry)?);
+        }
+    }
+    Ok(specs)
+}
+
+/// Resolve the runner specs the integrity gate's forward-resolution
+/// consults. The gate checks every annotation regardless of tier, so it
+/// needs the union of the builtin loom-walk batcher plus `[check]`- and
+/// `[system]`-tier runners: a `[system](target)` matched by a
+/// `[runner.system.<name>]` block must resolve by runner ownership exactly
+/// as a `[check]` target matched by `[runner.check.<name>]` does
+/// (`specs/gate.md` § Target resolution). RunnerSpec matching keys on
+/// target shape, not tier, so the union never cross-resolves a check target
+/// against a system runner or vice versa.
+pub fn integrity_runner_specs(config: &LoomConfig) -> Result<Vec<RunnerSpec>, RunnerError> {
+    let mut specs = vec![builtin_loom_walk_runner()?];
+    specs.extend(compile_tier_runners(config, "check")?);
+    specs.extend(compile_tier_runners(config, "system")?);
+    Ok(specs)
 }
 
 /// One annotation matched by a [`RunnerSpec`] together with its rendered
@@ -1471,5 +1559,58 @@ test result: ok. 3 passed; 0 failed
         let only = fail.values().next().unwrap();
         assert!(!only.pass);
         assert_eq!(only.evidence, "stderr body");
+    }
+
+    fn config_with_check_and_system_runners() -> LoomConfig {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("loom.toml"),
+            r#"
+[runner.check.grep]
+match   = '^grep '
+command = "{targets}"
+
+[runner.system.nix]
+match   = '^nix (build|run) \.#(\S+)$'
+command = "nix build {targets}"
+parse   = "nix-build-status"
+"#,
+        )
+        .unwrap();
+        LoomConfig::load(LoomConfig::resolve_path(dir.path())).unwrap()
+    }
+
+    #[test]
+    fn integrity_runner_specs_carries_builtin_loom_walk_batcher() {
+        let specs = integrity_runner_specs(&LoomConfig::default()).unwrap();
+        assert!(
+            specs.iter().any(|s| s.name == "builtin-loom-walk"
+                && s.matches("cargo run -p loom-walk -- inputs-check")),
+            "the builtin loom-walk batcher must always be present and own its target",
+        );
+    }
+
+    #[test]
+    fn integrity_runner_specs_unions_check_and_system_runners() {
+        let config = config_with_check_and_system_runners();
+        let specs = integrity_runner_specs(&config).unwrap();
+        assert!(
+            specs.iter().any(|s| s.matches("grep -q X file")),
+            "a [check] target must resolve through its [runner.check.<name>] runner",
+        );
+        assert!(
+            specs.iter().any(|s| s.matches("nix run .#test-loom")),
+            "a [system] target must resolve through its [runner.system.<name>] runner",
+        );
+    }
+
+    #[test]
+    fn compile_runner_entry_without_command_is_missing_command_error() {
+        let entry = RunnerEntry {
+            match_regex: Some("^x".into()),
+            ..RunnerEntry::default()
+        };
+        let err = compile_runner_entry("orphan", &entry).unwrap_err();
+        assert!(matches!(err, RunnerError::MissingCommand { name } if name == "orphan"));
     }
 }
