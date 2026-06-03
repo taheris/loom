@@ -79,12 +79,13 @@ fn test_tier_resolution_uses_cargo_metadata_plus_spec_autoinclude() {
     );
 }
 
-/// Scope-by-files end-to-end: a staged `.pre-commit-config.yaml` only
-/// keeps annotations whose declared inputs intersect that file. The
-/// spec-section auto-include keeps in-spec annotations from being
-/// dropped when their owning spec is staged, but spec-only annotations
-/// (no command-token reference to the staged file) drop out when only
-/// `.pre-commit-config.yaml` is staged.
+/// Scope-by-files end-to-end: a staged `.pre-commit-config.yaml` keeps
+/// only annotations the file could affect. A `[test]` annotation whose
+/// declared inputs (its owning crate's sources plus the spec
+/// auto-include) are disjoint from the staged file drops out; a `[check]`
+/// whose command references the staged file is kept by the heuristic.
+/// The dropped annotation must declare inputs of its own — a no-input
+/// verifier would always run under the Conservative default.
 #[test]
 fn filter_by_files_drops_unrelated_check_annotations_against_a_yaml_staged_file() {
     if !cargo_available() {
@@ -95,8 +96,8 @@ fn filter_by_files_drops_unrelated_check_annotations_against_a_yaml_staged_file(
 
     let annotations = vec![
         Annotation {
-            tier: Tier::Check,
-            target: "cargo run -p loom-walk -- happy_walk".into(),
+            tier: Tier::Test,
+            target: "loom_gate::dispatch::ok".into(),
             source_spec: PathBuf::from("specs/gate.md"),
             line: 10,
             criterion_line: 10,

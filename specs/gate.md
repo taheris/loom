@@ -3095,7 +3095,7 @@ Loop-side interpretation of these exit codes — routing `refused` to
 - A verifier that reports no inputs of its own always runs under a
   `--files` scope — the resolver never narrows an undeterminable input
   set to the spec section alone
-  [test?](undeclared_verifier_always_runs_under_files_scope)
+  [test](undeclared_verifier_always_runs_under_files_scope)
 - An opted-in input-query that exits non-zero or emits a malformed
   inputs document is flagged `inputs-protocol-error` — opt-in being a
   `[judge]` collect mode or a `[check]` / `[system]` runner that

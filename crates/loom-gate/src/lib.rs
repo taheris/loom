@@ -40,9 +40,7 @@ pub use dispatch::{
 pub use gate_outcome::{
     GateFail, GateFailReason, GateOutcome, GateSuccess, HandoffEvidence, LoopOutcome, NoGateReason,
 };
-pub use inputs::{
-    InputResolver, InputsError, VerifierInputs, empty_input_verifiers, filter_by_files,
-};
+pub use inputs::{InputResolver, InputsError, VerifierInputs, filter_by_files};
 pub use integrity::{
     CommandResolver, DispatchPendingExecutor, FsCommandResolver, IntegrityError, IntegrityFinding,
     PendingCommandExecutor, RustWorkspaceStubScanner, RustWorkspaceTestResolver, StubScanner,

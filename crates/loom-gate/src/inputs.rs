@@ -22,16 +22,13 @@
 //!    command tokens. Recognises `grep`-style file arguments and
 //!    `cargo test -p <crate>` patterns.
 //!
-//! Empty declarations after every source has run signal a misdeclaration
-//! (or a no-op verifier). Per `specs/gate.md` § Verifier inputs these
-//! "empty is a smell" cases are surfaced by the standing-stage safety-net
-//! sweep, not by per-resolution diagnostics: [`InputResolver::resolve`]
-//! is on the scoped `--files`/`--diff` filter hot path, which the
-//! `--tree` standing sweep skips entirely, so warning here would only
-//! fire on the runs where the smell is *not* meant to be reported.
-//! [`empty_input_verifiers`] is the standing-sweep detector — it folds
-//! [`InputResolver::declares_no_inputs`] across an annotation set so the
-//! `--tree` verify path can report empties where the spec assigns them.
+//! A verifier that declares no inputs of its own — every source above
+//! yielded nothing — is not an error. Per `specs/gate.md` § Verifier
+//! inputs (*Conservative default*) an undeterminable input set is never
+//! grounds to skip: "inputs unknown" resolves to *run*, not to narrow to
+//! the spec section. [`InputResolver::declares_no_inputs`] reports that
+//! state and [`filter_by_files`] honours it by always retaining such a
+//! verifier under any finite scope.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -130,31 +127,39 @@ impl InputResolver {
     }
 
     /// Resolve declared inputs for one annotation. The annotation's
-    /// `source_spec` is unconditionally folded into the result (the
-    /// spec-section auto-include rule), so the returned set is never
-    /// *truly* empty in practice. Verifiers that declare no inputs of
-    /// their own — relying on the spec-section auto-include alone — are
-    /// the "empty is a smell" case in `specs/gate.md` § Verifier inputs;
-    /// surfacing those is the standing-stage safety-net sweep's job, not
-    /// this scoped-filter hot path's.
+    /// `source_spec` is folded into the result as an *additional* input
+    /// (the spec-section auto-include rule), so the returned set is never
+    /// observably empty. The auto-include is not the resolution floor: a
+    /// verifier that declares nothing of its own is the *Conservative
+    /// default* case, handled by [`filter_by_files`], not narrowed to the
+    /// spec section here.
     pub fn resolve(&mut self, annotation: &Annotation) -> VerifierInputs {
+        self.resolve_with_provenance(annotation).0
+    }
+
+    /// Resolve declared inputs and report whether the verifier declared
+    /// any of its own (`true` in the second field iff at least one
+    /// declaration source yielded a path before the spec-section
+    /// auto-include). Walks the declaration chain once, so callers that
+    /// need both the resolved set and the *Conservative default* signal
+    /// pay for resolution a single time.
+    pub fn resolve_with_provenance(&mut self, annotation: &Annotation) -> (VerifierInputs, bool) {
         let mut paths: Vec<PathBuf> = self.collect_declared(annotation);
+        let declared_own = !paths.is_empty();
         let spec = annotation.source_spec.clone();
         if !paths.iter().any(|p| p == &spec) {
             paths.push(spec);
         }
-        VerifierInputs { paths }
+        (VerifierInputs { paths }, declared_own)
     }
 
     /// True iff the verifier declares no inputs of its own — every
     /// declaration source (test-framework metadata, script header,
     /// `--print-inputs`, heuristic fallback) yielded nothing, so the
     /// resolved input set would be the spec-section auto-include alone.
-    /// This is the "empty is a smell" signal in `specs/gate.md`
-    /// § Verifier inputs; [`empty_input_verifiers`] folds it across an
-    /// annotation set for the standing-stage safety-net sweep. Distinct
-    /// from [`Self::resolve`], which always folds the spec section in so
-    /// the returned set is never observably empty.
+    /// Per `specs/gate.md` § Verifier inputs (*Conservative default*)
+    /// such a verifier always runs; [`filter_by_files`] consumes this to
+    /// retain it under any finite scope rather than skip it.
     pub fn declares_no_inputs(&mut self, annotation: &Annotation) -> bool {
         self.collect_declared(annotation).is_empty()
     }
@@ -292,12 +297,15 @@ impl InputResolver {
     }
 }
 
-/// Retain only annotations whose declared inputs (per [`InputResolver`])
-/// intersect `files`. An empty `files` slice short-circuits to the
-/// caller's input unchanged — "no `--files` filter requested." Matches
-/// the `loom gate verify --files` contract in `specs/pre-commit.md`: the
-/// integrity gate and `[check]`-tier dispatch narrow to verifiers whose
-/// declared inputs intersect staged files.
+/// Retain annotations the scope `files` could affect. An empty `files`
+/// slice short-circuits to the caller's input unchanged — "no `--files`
+/// filter requested." Otherwise an annotation is kept when either its
+/// declared inputs (per [`InputResolver`]) intersect `files`, or it
+/// declares no inputs of its own — the *Conservative default* in
+/// `specs/gate.md` § Verifier inputs, under which an undeterminable input
+/// set always runs rather than being narrowed to the spec section.
+/// Matches the `loom gate verify --files` contract in
+/// `specs/pre-commit.md`.
 pub fn filter_by_files(
     annotations: &[Annotation],
     files: &[PathBuf],
@@ -310,32 +318,10 @@ pub fn filter_by_files(
     annotations
         .iter()
         .filter(|ann| {
-            let inputs = resolver.resolve(ann);
-            inputs.paths.iter().any(|p| file_set.contains(p.as_path()))
+            let (inputs, declared_own) = resolver.resolve_with_provenance(ann);
+            !declared_own || inputs.paths.iter().any(|p| file_set.contains(p.as_path()))
         })
         .cloned()
-        .collect()
-}
-
-/// Verifiers in `annotations` that declare no inputs of their own — the
-/// "empty is a smell" case in `specs/gate.md` § Verifier inputs. A
-/// verifier relying solely on the spec-section auto-include is either a
-/// misdeclaration or a no-op; the standing-stage safety-net sweep
-/// (`loom gate verify --tree`) surfaces it. Pending-marked annotations
-/// (`[tier?](target)`) are skipped: there is no verifier yet to be too
-/// narrow about, matching the verifier-honesty exemption.
-///
-/// Resolution runs every declaration source per annotation (the same
-/// chain [`InputResolver::resolve`] walks), so the result reflects live
-/// scripts/binaries, not just the parsed command string.
-pub fn empty_input_verifiers<'a>(
-    annotations: &'a [Annotation],
-    resolver: &mut InputResolver,
-) -> Vec<&'a Annotation> {
-    annotations
-        .iter()
-        .filter(|ann| !ann.pending)
-        .filter(|ann| resolver.declares_no_inputs(ann))
         .collect()
 }
 
@@ -865,36 +851,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_input_verifiers_flags_only_the_empty_declarers() {
-        let scope = Box::new(StubScope::new(&[(
-            "loom_gate",
-            &["crates/loom-gate/src/lib.rs"],
-        )]));
-        let mut resolver = InputResolver::new(PathBuf::from("/repo")).with_test_scope(scope);
-        let declares = ann(Tier::Test, "loom_gate::module::ok", "specs/gate.md");
-        let empty = ann(Tier::Check, "no-such-binary-anywhere", "specs/x.md");
-        let annotations = vec![declares, empty.clone()];
-        let flagged = empty_input_verifiers(&annotations, &mut resolver);
-        assert_eq!(flagged.len(), 1, "only the empty declarer is flagged");
-        assert_eq!(flagged[0].target, empty.target);
-    }
-
-    #[test]
-    fn empty_input_verifiers_skips_pending_annotations() {
-        let mut resolver = InputResolver::new(PathBuf::from("/repo"));
-        // Pending verifier with empty declarations — exempt because there
-        // is no verifier yet to be too narrow about.
-        let mut pending = ann(Tier::Check, "no-such-binary-anywhere", "specs/x.md");
-        pending.pending = true;
-        let annotations = vec![pending];
-        let flagged = empty_input_verifiers(&annotations, &mut resolver);
-        assert!(
-            flagged.is_empty(),
-            "pending annotations are skipped: {flagged:?}",
-        );
-    }
-
-    #[test]
     fn filter_by_files_empty_files_returns_all_annotations_unchanged() {
         let mut resolver = InputResolver::new(PathBuf::from("/repo"));
         let annotations = vec![
@@ -907,8 +863,19 @@ mod tests {
 
     #[test]
     fn filter_by_files_keeps_annotation_whose_spec_file_is_staged() {
-        let mut resolver = InputResolver::new(PathBuf::from("/repo"));
-        let annotations = vec![ann(Tier::Check, "cargo run -p w", "specs/pre-commit.md")];
+        let scope = Box::new(StubScope::new(&[(
+            "loom_gate",
+            &["crates/loom-gate/src/lib.rs"],
+        )]));
+        let mut resolver = InputResolver::new(PathBuf::from("/repo")).with_test_scope(scope);
+        // Declares an input (the owning crate's source, disjoint from the
+        // staged set); kept only because the spec-section auto-include
+        // intersects the staged file.
+        let annotations = vec![ann(
+            Tier::Test,
+            "loom_gate::module::ok",
+            "specs/pre-commit.md",
+        )];
         let files = vec![PathBuf::from("specs/pre-commit.md")];
         let got = filter_by_files(&annotations, &files, &mut resolver);
         assert_eq!(
@@ -920,13 +887,37 @@ mod tests {
 
     #[test]
     fn filter_by_files_drops_annotation_when_inputs_disjoint_from_files() {
-        let mut resolver = InputResolver::new(PathBuf::from("/repo"));
-        let annotations = vec![ann(Tier::Check, "cargo run -p w", "specs/gate.md")];
+        let scope = Box::new(StubScope::new(&[(
+            "loom_gate",
+            &["crates/loom-gate/src/lib.rs"],
+        )]));
+        let mut resolver = InputResolver::new(PathBuf::from("/repo")).with_test_scope(scope);
+        // Declares its owning crate's source plus the spec auto-include;
+        // neither intersects the staged file, so it is dropped.
+        let annotations = vec![ann(Tier::Test, "loom_gate::module::ok", "specs/gate.md")];
         let files = vec![PathBuf::from(".pre-commit-config.yaml")];
         let got = filter_by_files(&annotations, &files, &mut resolver);
         assert!(
             got.is_empty(),
-            "annotation in specs/gate.md should not match staged .pre-commit-config.yaml"
+            "declaring annotation with inputs disjoint from staged files is dropped"
+        );
+    }
+
+    #[test]
+    fn undeclared_verifier_always_runs_under_files_scope() {
+        let mut resolver = InputResolver::new(PathBuf::from("/repo"));
+        // Declares no inputs of its own (not a script, not a
+        // `--print-inputs` binary, no heuristic path); its resolved set is
+        // the spec-section auto-include alone, which the staged set does
+        // not touch. The Conservative default retains it rather than
+        // narrowing to the spec section.
+        let annotations = vec![ann(Tier::Check, "no-such-binary-anywhere", "specs/gate.md")];
+        let files = vec![PathBuf::from(".pre-commit-config.yaml")];
+        let got = filter_by_files(&annotations, &files, &mut resolver);
+        assert_eq!(
+            got.len(),
+            1,
+            "an undeclared-input verifier always runs under a finite scope",
         );
     }
 
