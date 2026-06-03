@@ -23,7 +23,7 @@
 //!    `{print_inputs}` flag placed where the template dictates), batched
 //!    so one spawn returns the matched group's per-target map. An
 //!    unmatched target keeps literal-command semantics — its first token
-//!    is spawned with `--print-inputs` after the verifier's own argv.
+//!    is probed with `--print-inputs`.
 //!    Stdout is parsed as the single `{"inputs": ["glob1", ...]}` or batch
 //!    `{"inputs": {"<target>": [...]}}` form; results are cached per
 //!    session.
@@ -397,7 +397,17 @@ impl InputResolver {
         let mut cmd = Command::new(head);
         cmd.arg("--print-inputs").args(tail);
         cmd.current_dir(&self.repo_root);
-        let output = cmd.output().ok()?;
+        let output = match cmd.output() {
+            Ok(output) => output,
+            Err(source) => {
+                let err = InputsError::Spawn {
+                    command: head.clone(),
+                    source,
+                };
+                tracing::warn!(err = ?err, "--print-inputs probe spawn failed; conservative always-run default applies");
+                return None;
+            }
+        };
         if !output.status.success() {
             return None;
         }
@@ -412,7 +422,17 @@ impl InputResolver {
         let mut cmd = Command::new(head);
         cmd.args(tail);
         cmd.current_dir(&self.repo_root);
-        let output = cmd.output().ok()?;
+        let output = match cmd.output() {
+            Ok(output) => output,
+            Err(source) => {
+                let err = InputsError::Spawn {
+                    command: command.to_string(),
+                    source,
+                };
+                tracing::warn!(err = ?err, "inputs_for_test helper spawn failed; conservative always-run default applies");
+                return None;
+            }
+        };
         if !output.status.success() {
             return None;
         }
