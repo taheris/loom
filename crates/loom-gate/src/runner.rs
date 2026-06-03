@@ -470,6 +470,50 @@ impl RunnerGroup<'_, '_> {
             first_target,
         )
     }
+
+    /// Render the runner's input-query command for this group, or `None`
+    /// when the runner declares no `inputs` query and so stays on the
+    /// conservative always-run default. `{filter}` / `{targets}` /
+    /// `{capture_N}` substitute exactly as in [`Self::render_command`]; the
+    /// `--print-inputs` flag lands at the template's `{print_inputs}`
+    /// marker, or is appended after the verifier's own arguments when the
+    /// marker is absent. Per `specs/gate.md` § Runners the query is issued
+    /// through this template — never by prepending the flag to the
+    /// command's first token.
+    pub fn render_inputs_query(&self) -> Option<String> {
+        let template = self.spec.inputs.as_deref()?;
+        let joined = self
+            .matched
+            .iter()
+            .map(|m| m.rendered_target.as_str())
+            .collect::<Vec<_>>()
+            .join(&self.spec.join);
+        let first_target = self.matched.first().map(|m| m.annotation.target.as_str());
+        let rendered = substitute_command(
+            template,
+            &joined,
+            self.spec.match_regex.as_ref(),
+            first_target,
+        );
+        Some(place_print_inputs(&rendered))
+    }
+}
+
+/// The `--print-inputs` query flag, placed where the runner's `inputs`
+/// template marks it.
+const PRINT_INPUTS_FLAG: &str = "--print-inputs";
+
+/// Substitute the `{print_inputs}` marker with the query flag, or append
+/// the flag after the verifier's own arguments when the template omits the
+/// marker. Per `specs/gate.md` § Runners the flag's placement is the
+/// template's decision, never a prepend to `tokens[0]`.
+fn place_print_inputs(rendered: &str) -> String {
+    const MARKER: &str = "{print_inputs}";
+    if rendered.contains(MARKER) {
+        rendered.replace(MARKER, PRINT_INPUTS_FLAG)
+    } else {
+        format!("{rendered} {PRINT_INPUTS_FLAG}")
+    }
 }
 
 fn render_target(spec: &RunnerSpec, annotation_target: &str) -> String {
@@ -1248,6 +1292,73 @@ test result: ok. 3 passed; 0 failed
         assert!(
             rendered.starts_with("cargo nextest run -E 'test(a::one) + test(b::two)'"),
             "rendered = {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_inputs_query_places_flag_at_marker_not_command_head() {
+        let spec = RunnerSpec::compile(
+            "walk",
+            Some(r"^cargo run -p loom-walk -- (\S+)$"),
+            "cargo run -p loom-walk -- {targets}",
+            "{capture_1}",
+            " ",
+            BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(
+            "cargo run -p loom-walk -- {targets} {print_inputs}".to_string(),
+        ));
+        let inputs = vec![ann(Tier::Check, "cargo run -p loom-walk -- foo")];
+        let specs = [spec];
+        let (groups, _) = group_by_runner(&specs, &inputs);
+        let query = groups[0].render_inputs_query().unwrap();
+        assert_eq!(query, "cargo run -p loom-walk -- foo --print-inputs");
+        assert!(
+            !query.starts_with("cargo --print-inputs"),
+            "flag must not prepend to tokens[0]: {query}"
+        );
+    }
+
+    #[test]
+    fn render_inputs_query_appends_flag_when_template_omits_marker() {
+        let spec = RunnerSpec::compile(
+            "walk",
+            Some(r"^cargo run -p loom-walk -- (\S+)$"),
+            "cargo run -p loom-walk -- {targets}",
+            "{capture_1}",
+            " ",
+            BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some("cargo run -p loom-walk -- {targets}".to_string()));
+        let inputs = vec![ann(Tier::Check, "cargo run -p loom-walk -- foo")];
+        let specs = [spec];
+        let (groups, _) = group_by_runner(&specs, &inputs);
+        let query = groups[0].render_inputs_query().unwrap();
+        assert_eq!(query, "cargo run -p loom-walk -- foo --print-inputs");
+    }
+
+    #[test]
+    fn render_inputs_query_is_none_without_inputs_template() {
+        let spec = RunnerSpec::compile(
+            "walk",
+            Some(r"^cargo run -p loom-walk -- (\S+)$"),
+            "cargo run -p loom-walk -- {targets}",
+            "{capture_1}",
+            " ",
+            BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap();
+        let inputs = vec![ann(Tier::Check, "cargo run -p loom-walk -- foo")];
+        let specs = [spec];
+        let (groups, _) = group_by_runner(&specs, &inputs);
+        assert!(
+            groups[0].render_inputs_query().is_none(),
+            "no inputs query template means the runner stays always-run"
         );
     }
 

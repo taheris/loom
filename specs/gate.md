@@ -3097,7 +3097,7 @@ Loop-side interpretation of these exit codes — routing `refused` to
   template, not by prepending the flag to the command's first token, so a
   `cargo run -p <crate> -- <walk>` verifier is queried as the walk's own
   argument
-  [test?](print_inputs_issued_through_command_template_not_argv_head)
+  [test](print_inputs_issued_through_command_template_not_argv_head)
 - A verifier that reports no inputs of its own always runs under a
   `--files` scope — the resolver never narrows an undeterminable input
   set to the spec section alone

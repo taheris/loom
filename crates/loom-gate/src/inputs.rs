@@ -21,10 +21,16 @@
 //!    the referenced script are scanned (literal string-search,
 //!    language-agnostic) for a `# loom-inputs: <comma-separated globs>`
 //!    line.
-//! 4. **`[check]` / `[system]` binary `--print-inputs` protocol** — the
-//!    first token is spawned with `--print-inputs` prepended to the
-//!    remaining argv; stdout is parsed as `{"inputs": ["glob1", ...]}`.
-//!    Results are cached per session keyed by the command string.
+//! 4. **`[check]` / `[system]` `--print-inputs` protocol** — a target a
+//!    runner `match`es is owned by that runner: the query is issued
+//!    through the runner's `inputs` command template (with the
+//!    `{print_inputs}` flag placed where the template dictates), batched
+//!    so one spawn returns the matched group's per-target map. An
+//!    unmatched target keeps literal-command semantics — its first token
+//!    is spawned with `--print-inputs` after the verifier's own argv.
+//!    Stdout is parsed as the single `{"inputs": ["glob1", ...]}` or batch
+//!    `{"inputs": {"<target>": [...]}}` form; results are cached per
+//!    session.
 //! 5. **Heuristic fallback** — best-effort path extraction from the
 //!    command tokens. Recognises `grep`-style file arguments and
 //!    `cargo test -p <crate>` patterns.
@@ -48,6 +54,7 @@ use thiserror::Error;
 
 use crate::annotation::{Annotation, Tier};
 use crate::dispatch::TestScope;
+use crate::runner::{RunnerSpec, group_by_runner};
 
 /// Header tag the resolver searches for inside a script's first lines.
 const LOOM_INPUTS_HEADER: &str = "# loom-inputs:";
@@ -170,6 +177,7 @@ pub struct InputResolver {
     repo_root: PathBuf,
     test_scope: Option<Box<dyn TestScope>>,
     inputs_for_test_command: Option<String>,
+    runners: Vec<RunnerSpec>,
     print_inputs_cache: HashMap<String, Vec<PathBuf>>,
 }
 
@@ -182,8 +190,21 @@ impl InputResolver {
             repo_root,
             test_scope: None,
             inputs_for_test_command: None,
+            runners: Vec::new(),
             print_inputs_cache: HashMap::new(),
         }
+    }
+
+    /// Attach the `[check]` / `[system]` runner specs the resolver
+    /// consults to route the input-query. A target a runner `match`es is
+    /// owned by that runner — its inputs come from the runner's `inputs`
+    /// query template, never from argv-mangling `tokens[0]`. Targets no
+    /// runner matches keep literal-command semantics. See
+    /// `specs/gate.md` § Runners.
+    #[must_use]
+    pub fn with_runners(mut self, runners: Vec<RunnerSpec>) -> Self {
+        self.runners = runners;
+        self
     }
 
     /// Attach a [`TestScope`] used for `[test]`-tier resolution and
@@ -324,6 +345,10 @@ impl InputResolver {
             return paths;
         }
 
+        if let Some(paths) = self.runner_owned_inputs(annotation) {
+            return paths;
+        }
+
         let cache_key = target.to_string();
         if let Some(cached) = self.print_inputs_cache.get(&cache_key) {
             return cached.clone();
@@ -334,6 +359,53 @@ impl InputResolver {
         }
 
         self.heuristic_extract(&tokens)
+    }
+
+    /// Resolve a runner-matched `[check]` / `[system]` target's inputs
+    /// through the matched runner's `inputs` query template. Returns
+    /// `Some` (terminal — the runner owns the annotation end to end, so no
+    /// argv-mangling or heuristic fallback) when a runner matches the
+    /// target, `None` when none does (the caller falls through to
+    /// literal-command semantics). A matched runner with no `inputs` query
+    /// yields `Some(empty)`: the conservative always-run default, never a
+    /// `tokens[0]` probe. The query is spawned once per matched group; a
+    /// batch response (`{"inputs": {"<target>": [...]}}`) primes the cache
+    /// for every sibling, so discovery batches where execution batches.
+    fn runner_owned_inputs(&mut self, annotation: &Annotation) -> Option<Vec<PathBuf>> {
+        let (runner_name, rendered_target, query) = {
+            let (groups, _) = group_by_runner(&self.runners, std::slice::from_ref(annotation));
+            let group = groups.into_iter().next()?;
+            let rendered_target = group.matched.first()?.rendered_target.clone();
+            (
+                group.spec.name.clone(),
+                rendered_target,
+                group.render_inputs_query(),
+            )
+        };
+        let cache_key = runner_cache_key(&runner_name, &rendered_target);
+        if let Some(cached) = self.print_inputs_cache.get(&cache_key) {
+            return Some(cached.clone());
+        }
+        let Some(query) = query else {
+            return Some(Vec::new());
+        };
+        let Some(stdout) = run_command_query(&self.repo_root, &query) else {
+            return Some(Vec::new());
+        };
+        if let Some(batch) = parse_inputs_batch_json(&stdout) {
+            for (target, paths) in batch {
+                self.print_inputs_cache
+                    .insert(runner_cache_key(&runner_name, &target), paths);
+            }
+        } else if let Some(paths) = parse_inputs_json(&stdout) {
+            self.print_inputs_cache.insert(cache_key.clone(), paths);
+        }
+        Some(
+            self.print_inputs_cache
+                .get(&cache_key)
+                .cloned()
+                .unwrap_or_default(),
+        )
     }
 
     /// Find the first command token that names a script file on disk,
@@ -510,6 +582,33 @@ fn run_judge_collect(repo_root: &Path, script: &Path, function: Option<&str>) ->
 /// distinct from raw command strings.
 fn judge_cache_key(script: &Path, function: &str) -> String {
     format!("{}#{function}", script.display())
+}
+
+/// Per-session cache key for one runner-matched target's input-query
+/// result. The `runner:` prefix keeps these distinct from raw command
+/// strings and `<script>#<fn>` judge keys sharing the same map, and the
+/// rendered target lets a batch response prime every sibling in the group.
+fn runner_cache_key(runner: &str, rendered_target: &str) -> String {
+    format!("runner:{runner}\u{1f}{rendered_target}")
+}
+
+/// Spawn a runner's rendered input-query command in `repo_root` and return
+/// its stdout, or `None` when the command fails to spawn or exits
+/// non-zero. A non-zero exit falls through to the conservative always-run
+/// default here; surfacing it as a loud `inputs-protocol-error` is the
+/// integrity gate's job (see `specs/gate.md` § Inputs-protocol error).
+fn run_command_query(repo_root: &Path, command: &str) -> Option<String> {
+    let mut tokens = shlex::split(command)?.into_iter();
+    let head = tokens.next()?;
+    let tail: Vec<String> = tokens.collect();
+    let mut cmd = Command::new(head);
+    cmd.args(&tail);
+    cmd.current_dir(repo_root);
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// The `#fn` / `::fn` selector trailing a script-path target, or `None`
@@ -903,6 +1002,94 @@ mod tests {
             got.paths.contains(&PathBuf::from("specs/walk.md")),
             "header glob + spec auto-include: {:?}",
             got.paths,
+        );
+    }
+
+    #[test]
+    fn print_inputs_issued_through_command_template_not_argv_head() {
+        let dir = tempfile::tempdir().unwrap();
+        // Mimics `loom-walk`: the walk name is the responder's first arg
+        // and `--print-inputs` is a *later* flag. If the flag were
+        // prepended to the command's first token (the argv-head bug), the
+        // walk name would be `--print-inputs` and the responder errors —
+        // emitting no inputs document. Routed through the runner template,
+        // the flag lands after the walk name and the responder answers.
+        let responder = dir.path().join("responder.sh");
+        fs::write(
+            &responder,
+            "#!/bin/sh\n\
+             walk=$1\n\
+             if [ \"$walk\" = \"--print-inputs\" ]; then\n\
+               echo 'error: --print-inputs is not a walk name' >&2\n\
+               exit 2\n\
+             fi\n\
+             shift\n\
+             for arg in \"$@\"; do\n\
+               if [ \"$arg\" = \"--print-inputs\" ]; then\n\
+                 printf '{\"inputs\": [\"crates/loom-walk/src/foo.rs\"]}\\n'\n\
+                 exit 0\n\
+               fi\n\
+             done\n\
+             exit 1\n",
+        )
+        .unwrap();
+
+        let spec = RunnerSpec::compile(
+            "walk",
+            Some(r"^cargo run -p loom-walk -- (\S+)$"),
+            "cargo run -p loom-walk -- {targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(format!(
+            "sh {} {{targets}} {{print_inputs}}",
+            responder.display()
+        )));
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![spec]);
+        let a = ann(
+            Tier::Check,
+            "cargo run -p loom-walk -- foo",
+            "specs/gate.md",
+        );
+        let got = resolver.resolve(&a);
+        assert!(
+            got.paths
+                .contains(&PathBuf::from("crates/loom-walk/src/foo.rs")),
+            "input-query routed through the runner template (flag after the \
+             walk name), not prepended to tokens[0]: {:?}",
+            got.paths,
+        );
+    }
+
+    #[test]
+    fn runner_matched_target_with_no_inputs_query_stays_always_run() {
+        let dir = tempfile::tempdir().unwrap();
+        // A runner matches the target but declares no `inputs` query, so the
+        // runner owns the annotation end to end: no argv-mangling probe, and
+        // the conservative always-run default applies (declares no inputs).
+        let spec = RunnerSpec::compile(
+            "walk",
+            Some(r"^cargo run -p loom-walk -- (\S+)$"),
+            "cargo run -p loom-walk -- {targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap();
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![spec]);
+        let a = ann(
+            Tier::Check,
+            "cargo run -p loom-walk -- foo",
+            "specs/gate.md",
+        );
+        assert!(
+            resolver.declares_no_inputs(&a),
+            "matched runner with no inputs query relies on the always-run default",
         );
     }
 

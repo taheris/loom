@@ -1072,8 +1072,8 @@ fn gate_dispatch_options(args: &GateScopeArgs) -> DispatchOptions {
 /// with a resolver that has no `TestScope` attached — the spec-section
 /// auto-include keeps `[test]` annotations scoped to their owning spec
 /// even without the cargo graph.
-fn build_input_resolver(workspace: &Path) -> InputResolver {
-    let resolver = InputResolver::new(workspace.to_path_buf());
+fn build_input_resolver(workspace: &Path, runners: &[RunnerSpec]) -> InputResolver {
+    let resolver = InputResolver::new(workspace.to_path_buf()).with_runners(runners.to_vec());
     let manifest = workspace.join("Cargo.toml");
     if !manifest.exists() {
         return resolver;
@@ -1376,7 +1376,11 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
     let mut selected = filter_annotations(&parsed.annotations, tier, args);
     if scope_is_finite(args) {
-        let mut input_resolver = build_input_resolver(workspace);
+        let runner_specs = match tier {
+            Tier::Check | Tier::System => resolve_check_runner_context(workspace)?.0,
+            Tier::Test | Tier::Judge => Vec::new(),
+        };
+        let mut input_resolver = build_input_resolver(workspace, &runner_specs);
         selected = filter_by_files(&selected, &args.files, &mut input_resolver);
         if matches!(tier, Tier::Check | Tier::System) {
             let cmd_resolver = FsCommandResolver::new(workspace);
@@ -1500,8 +1504,9 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
         return Ok(0);
     }
     let cmd_resolver = FsCommandResolver::new(workspace);
+    let (specs, tier_cwds) = resolve_check_runner_context(workspace)?;
     if scope_is_finite(args) {
-        let mut input_resolver = build_input_resolver(workspace);
+        let mut input_resolver = build_input_resolver(workspace, &specs);
         let (pending, candidates): (Vec<_>, Vec<_>) =
             partition_pending_for_forward_resolution(annotations);
         annotations = filter_by_files(&candidates, &args.files, &mut input_resolver);
@@ -1513,7 +1518,6 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
         }
     }
     let (test_resolver, stub_scanner) = loom_gate::integrity::scan_workspace_pair(workspace)?;
-    let (specs, tier_cwds) = resolve_check_runner_context(workspace)?;
     let options = DispatchOptions {
         files: args.files.clone(),
         spec: args.spec.clone(),
