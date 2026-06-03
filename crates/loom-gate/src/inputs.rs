@@ -770,8 +770,7 @@ mod tests {
 
     #[test]
     fn check_tier_ignores_in_script_loom_inputs_header() {
-        // The retired in-script `# loom-inputs:` header is inert: its globs
-        // must never surface, since inputs now come only by execution.
+        // The in-script `# loom-inputs:` header is inert; inputs come only by execution.
         let dir = tempfile::tempdir().unwrap();
         let script_path = dir.path().join("walk.sh");
         fs::write(
@@ -1012,11 +1011,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        // The command head answers `--print-inputs` with a real path when
-        // probed as a bare literal command. A matched runner with no `inputs`
-        // query must own the annotation terminally and never issue that
-        // tokens[0] probe, so the input set stays undeterminable (always-run)
-        // *despite* the head being probe-answerable.
+        // The responder answers `--print-inputs` when probed as a bare literal command.
         let responder = dir.path().join("responder.sh");
         fs::write(
             &responder,
