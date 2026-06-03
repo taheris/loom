@@ -1803,7 +1803,10 @@ the need.
 **Runners, not verifiers, are the dispatch unit.** A runner executes
 one batch of annotations in a single subprocess. Per-language
 batching avoids the "process per test" cost that dominates wall-clock
-on non-trivial specs.
+on non-trivial specs. One tier is carved out: `[system]` is
+runner-owned for resolution and input-query, but its execution stays
+per-annotation (see *Execution* below) — system verifiers are slow and
+self-contained, so batching them does not pay.
 
 The dispatcher's job:
 
@@ -1811,7 +1814,9 @@ The dispatcher's job:
    scope flag's input set, intersected).
 2. Group by which runner matches them.
 3. For each runner with a batch template, build one command, spawn
-   once, parse per-target verdicts from the output.
+   once, parse per-target verdicts from the output — except `[system]`,
+   whose matched runner resolves inputs but still spawns one subprocess
+   per annotation (see *Execution* below).
 4. For unmatched annotations, fall back to per-annotation spawn.
 
 **Schema: `[runner.<tier>.<name>]` in `<workspace>/loom.toml`.**
@@ -1886,9 +1891,13 @@ loom never falls back to parsing the annotation's argv for it:
 - **Input-query.** Inputs come from the runner's `inputs` query (per
   *Verifier inputs* § Input-query protocol), batched: one query spawn
   returns the per-target map for the whole matched group.
-- **Execution.** Matched annotations batch into one subprocess per
-  runner (the dispatcher's step 3 above); per-annotation spawn is only
-  the unmatched fallback.
+- **Execution.** For the batched tiers (`[check]`, `[test]`, `[judge]`),
+  matched annotations batch into one subprocess per runner (the
+  dispatcher's step 3 above); per-annotation spawn is only the unmatched
+  fallback. `[system]` is the exception: a runner match resolves its
+  inputs (above) but execution stays per-annotation — one subprocess per
+  `[system]` annotation, matched or not, because system verifiers are
+  inherently slow and self-contained, so batching does not help.
 
 Unmatched annotations keep literal-command semantics — `tokens[0]`
 resolution, heuristic input extraction, conservative always-run, no
