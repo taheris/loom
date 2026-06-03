@@ -10,15 +10,22 @@
 //!    annotation's owning crate's source files via [`TestScope`]; for
 //!    other toolchains, the `inputs_for_test` config override invokes a
 //!    consumer-supplied helper.
-//! 2. **`[check]` / `[system]` / `[judge]` script header** — the first
-//!    `~10` lines of the referenced script are scanned (literal
-//!    string-search, language-agnostic) for a
-//!    `# loom-inputs: <comma-separated globs>` line.
-//! 3. **`[check]` / `[system]` binary `--print-inputs` protocol** — the
+//! 2. **`[judge]` collect mode** — the rubric script is run through the
+//!    loom judge-harness preamble, which defines `judge_files` to *record*
+//!    its path arguments and `judge_criterion` (with any LLM call) as a
+//!    no-op. One `<script> --print-inputs` spawn emits the batch map
+//!    `{"inputs": {"<fn>": ["glob", ...], ...}}` for every rubric the
+//!    script defines; the per-function entries are cached per session so a
+//!    script referenced from N criteria spawns the harness once.
+//! 3. **`[check]` / `[system]` script header** — the first `~10` lines of
+//!    the referenced script are scanned (literal string-search,
+//!    language-agnostic) for a `# loom-inputs: <comma-separated globs>`
+//!    line.
+//! 4. **`[check]` / `[system]` binary `--print-inputs` protocol** — the
 //!    first token is spawned with `--print-inputs` prepended to the
 //!    remaining argv; stdout is parsed as `{"inputs": ["glob1", ...]}`.
 //!    Results are cached per session keyed by the command string.
-//! 4. **Heuristic fallback** — best-effort path extraction from the
+//! 5. **Heuristic fallback** — best-effort path extraction from the
 //!    command tokens. Recognises `grep`-style file arguments and
 //!    `cargo test -p <crate>` patterns.
 //!
@@ -83,6 +90,78 @@ pub enum InputsError {
 struct PrintInputsDoc {
     inputs: Vec<String>,
 }
+
+/// JSON document the judge collect-mode batch query emits — a per-rubric
+/// map rather than a flat list. Sorted so the resolver's cache population
+/// and any rendered diagnostics are deterministic.
+#[derive(Debug, Deserialize)]
+struct PrintInputsBatchDoc {
+    inputs: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+/// Shell preamble that makes a judge rubric script runnable in *collect
+/// mode*. `judge_files` records its path arguments and `judge_criterion`
+/// (standing in for the evaluation / LLM call) is a no-op, so *running* a
+/// rubric reports the files it examines instead of judging them. The
+/// rubric set is the functions the sourced script defines minus the
+/// harness's own. Dispatches on `--print-inputs [<fn>]`: with a function
+/// name it emits that rubric's `{"inputs":[...]}`; with none it emits the
+/// batch map `{"inputs":{"<fn>":[...]}}` for every rubric in one spawn.
+/// Invoked as `bash -c <harness> loom-judge-harness <script> --print-inputs
+/// [<fn>]`, so `$1` is the script path and the dispatch args follow `shift`.
+const JUDGE_COLLECT_HARNESS: &str = r#"set -euo pipefail
+__loom_files=()
+judge_files() { __loom_files+=("$@"); }
+judge_criterion() { :; }
+__loom_json_str() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '"%s"' "$s"
+}
+__loom_files_json() {
+  local out="[" first=1 p
+  for p in ${__loom_files[@]+"${__loom_files[@]}"}; do
+    if [[ $first -eq 1 ]]; then first=0; else out+=","; fi
+    out+=$(__loom_json_str "$p")
+  done
+  printf '%s]' "$out"
+}
+__loom_run_one() {
+  __loom_files=()
+  "$1"
+  __loom_files_json
+}
+__loom_script=$1
+shift
+__loom_harness=" judge_files judge_criterion __loom_json_str __loom_files_json __loom_run_one "
+source "$__loom_script"
+__loom_rubrics=()
+while read -r _ _ __loom_name; do
+  case "$__loom_harness" in
+    *" $__loom_name "*) continue ;;
+  esac
+  case "$__loom_name" in
+    __loom_*) continue ;;
+  esac
+  __loom_rubrics+=("$__loom_name")
+done < <(declare -F)
+if [[ ${1:-} != "--print-inputs" ]]; then
+  exit 0
+fi
+if [[ -n ${2:-} ]]; then
+  printf '{"inputs":%s}\n' "$(__loom_run_one "$2")"
+  exit 0
+fi
+out='{"inputs":{'
+first=1
+for __loom_r in ${__loom_rubrics[@]+"${__loom_rubrics[@]}"}; do
+  if [[ $first -eq 1 ]]; then first=0; else out+=","; fi
+  out+="$(__loom_json_str "$__loom_r"):$(__loom_run_one "$__loom_r")"
+done
+out+="}}"
+printf '%s\n' "$out"
+"#;
 
 /// Stateful resolver — `--print-inputs` invocations are cached per
 /// session so the same binary is not spawned twice for two annotations
@@ -177,18 +256,45 @@ impl InputResolver {
     /// a shell command. The selector and `..` prefix make a raw repo-root
     /// join miss on disk, so resolution mirrors the integrity gate: strip
     /// the selector, resolve against the spec file's own directory, then
-    /// read the script's `# loom-inputs:` header (Source 2). No
-    /// `--print-inputs` / heuristic fallback — a judge script with no
-    /// header declares nothing of its own, so it falls through to the
-    /// *Conservative default* (always runs) per [`filter_by_files`].
+    /// run the rubric in collect mode (`<script> --print-inputs`) to learn
+    /// the paths its `judge_files` calls examine. One batch spawn maps every
+    /// rubric the script defines; entries are cached per session keyed by
+    /// `<script>#<fn>` so N criteria on one script spawn the harness once.
+    /// A rubric that calls no `judge_files` declares nothing of its own, so
+    /// it falls through to the *Conservative default* (always runs) per
+    /// [`filter_by_files`].
     fn declared_for_judge(&mut self, annotation: &Annotation) -> Vec<PathBuf> {
-        crate::integrity::resolve_spec_relative_script_path(
+        let Some(script) = crate::integrity::resolve_spec_relative_script_path(
             &annotation.target,
             &annotation.source_spec,
             &self.repo_root,
-        )
-        .and_then(|script| read_script_header(&script))
-        .unwrap_or_default()
+        ) else {
+            return Vec::new();
+        };
+        if !script.is_file() {
+            return Vec::new();
+        }
+        let Some(function) = target_selector(&annotation.target) else {
+            return Vec::new();
+        };
+        let cache_key = judge_cache_key(&script, function);
+        if let Some(cached) = self.print_inputs_cache.get(&cache_key) {
+            return cached.clone();
+        }
+        let Some(stdout) = run_judge_collect(&self.repo_root, &script, None) else {
+            return Vec::new();
+        };
+        let Some(batch) = parse_inputs_batch_json(&stdout) else {
+            return Vec::new();
+        };
+        for (rubric, paths) in batch {
+            self.print_inputs_cache
+                .insert(judge_cache_key(&script, &rubric), paths);
+        }
+        self.print_inputs_cache
+            .get(&cache_key)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn declared_for_test(&mut self, annotation: &Annotation) -> Vec<PathBuf> {
@@ -347,6 +453,84 @@ fn parse_inputs_json(stdout: &str) -> Option<Vec<PathBuf>> {
         }
     }
     None
+}
+
+/// Parse the judge collect-mode batch document — `{"inputs": {"<fn>":
+/// ["glob", ...], ...}}` — into a per-rubric path map. Scans stdout
+/// bottom-up like [`parse_inputs_json`] so leading helper chatter is
+/// ignored; the object-valued `inputs` disambiguates it from the
+/// array-valued single-target form.
+fn parse_inputs_batch_json(stdout: &str) -> Option<HashMap<String, Vec<PathBuf>>> {
+    for raw in stdout.lines().rev() {
+        let line = raw.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+        if let Ok(doc) = serde_json::from_str::<PrintInputsBatchDoc>(line) {
+            return Some(
+                doc.inputs
+                    .into_iter()
+                    .map(|(fn_name, globs)| {
+                        (fn_name, globs.into_iter().map(PathBuf::from).collect())
+                    })
+                    .collect(),
+            );
+        }
+    }
+    None
+}
+
+/// Run a judge rubric script in collect mode under the loom judge-harness
+/// preamble. With `function` set, returns the single-target document's
+/// stdout (`{"inputs":[...]}`); with `None`, the batch map's stdout. Falls
+/// through to `None` when the harness fails to spawn or exits non-zero, so
+/// the resolver lands on the *Conservative default* rather than the gate
+/// crashing over a malformed rubric.
+fn run_judge_collect(repo_root: &Path, script: &Path, function: Option<&str>) -> Option<String> {
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
+        .arg(JUDGE_COLLECT_HARNESS)
+        .arg("loom-judge-harness")
+        .arg(script)
+        .arg("--print-inputs");
+    if let Some(function) = function {
+        cmd.arg(function);
+    }
+    cmd.current_dir(repo_root);
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Per-session cache key for one rubric's collect-mode inputs. Shares
+/// [`InputResolver::print_inputs_cache`] with the `[check]` / `[system]`
+/// `--print-inputs` results; the `<script>#<fn>` shape keeps judge keys
+/// distinct from raw command strings.
+fn judge_cache_key(script: &Path, function: &str) -> String {
+    format!("{}#{function}", script.display())
+}
+
+/// The `#fn` / `::fn` selector trailing a script-path target, or `None`
+/// when the target carries no selector. Mirrors the integrity gate's
+/// selector handling so the same target resolves to the same rubric name.
+fn target_selector(target: &str) -> Option<&str> {
+    let trimmed = target.trim();
+    let hash = trimmed.find('#');
+    let colons = trimmed.find("::");
+    let (pos, len) = match (hash, colons) {
+        (Some(h), Some(c)) if h < c => (h, 1),
+        (Some(h), None) => (h, 1),
+        (_, Some(c)) => (c, 2),
+        (None, None) => return None,
+    };
+    let selector = trimmed[pos + len..].trim();
+    if selector.is_empty() {
+        None
+    } else {
+        Some(selector)
+    }
 }
 
 fn read_script_header(path: &Path) -> Option<Vec<PathBuf>> {
@@ -652,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn judge_tier_strips_selector_and_reads_header_relative_to_spec_dir() {
+    fn judge_tier_strips_selector_and_collects_relative_to_spec_dir() {
         let dir = tempfile::tempdir().unwrap();
         // Judge target is spec-relative with a `#fn` selector; the script
         // lives at <repo>/tests/judges/loom.sh while the spec is under
@@ -661,7 +845,7 @@ mod tests {
         fs::create_dir_all(&script_dir).unwrap();
         fs::write(
             script_dir.join("loom.sh"),
-            "#!/usr/bin/env bash\n# loom-inputs: crates/loom-llm/src/**, specs/harness.md\njudge_x() { :; }\n",
+            "#!/usr/bin/env bash\njudge_x() { judge_files \"crates/loom-llm/src/**\" \"specs/harness.md\"; judge_criterion \"eval\"; }\n",
         )
         .unwrap();
 
@@ -674,17 +858,17 @@ mod tests {
         let got = resolver.resolve(&a);
         assert!(
             got.paths.contains(&PathBuf::from("crates/loom-llm/src/**")),
-            "judge header glob resolved: {:?}",
+            "judge_files glob collected: {:?}",
             got.paths,
         );
         assert!(
             got.paths.contains(&PathBuf::from("specs/harness.md")),
-            "judge header + spec auto-include: {:?}",
+            "judge_files glob + spec auto-include: {:?}",
             got.paths,
         );
         assert!(
             !resolver.declares_no_inputs(&a),
-            "a judge script with a header declares inputs",
+            "a judge rubric calling judge_files declares inputs",
         );
     }
 
@@ -729,7 +913,7 @@ mod tests {
         fs::create_dir_all(&script_dir).unwrap();
         fs::write(
             script_dir.join("loom.sh"),
-            "#!/usr/bin/env bash\n# loom-inputs: crates/loom-gate/src/lib.rs\n",
+            "#!/usr/bin/env bash\njudge_x() { judge_files \"crates/loom-gate/src/lib.rs\"; }\n",
         )
         .unwrap();
 
@@ -743,20 +927,20 @@ mod tests {
         assert!(
             got.paths
                 .contains(&PathBuf::from("crates/loom-gate/src/lib.rs")),
-            "legacy `::fn` selector resolves the same script: {:?}",
+            "legacy `::fn` selector resolves the same rubric: {:?}",
             got.paths,
         );
     }
 
     #[test]
-    fn judge_tier_without_header_declares_no_inputs() {
+    fn judge_tier_without_judge_files_declares_no_inputs() {
         let dir = tempfile::tempdir().unwrap();
         let script_dir = dir.path().join("tests/judges");
         fs::create_dir_all(&script_dir).unwrap();
-        // Script exists and resolves, but carries no `# loom-inputs:` line.
+        // Script exists and resolves, but the rubric calls no judge_files.
         fs::write(
             script_dir.join("loom.sh"),
-            "#!/usr/bin/env bash\njudge_x() { :; }\n",
+            "#!/usr/bin/env bash\njudge_x() { judge_criterion \"no files examined\"; }\n",
         )
         .unwrap();
 
@@ -768,7 +952,118 @@ mod tests {
         );
         assert!(
             resolver.declares_no_inputs(&a),
-            "judge script with no header relies on the spec auto-include alone",
+            "judge rubric calling no judge_files relies on the spec auto-include alone",
+        );
+    }
+
+    #[test]
+    fn judge_collect_mode_records_judge_files_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("rubric.sh");
+        // The rubric records two paths via judge_files; judge_criterion
+        // carries a sentinel that must never leak into the inputs document,
+        // proving the evaluation/LLM call is a no-op in collect mode.
+        fs::write(
+            &script,
+            "#!/usr/bin/env bash\n\
+             judge_x() {\n\
+               judge_files \"crates/loom-llm/src/client.rs\" \"specs/llm.md\"\n\
+               judge_criterion \"SENTINEL_CRITERION must never reach the inputs output\"\n\
+             }\n",
+        )
+        .unwrap();
+
+        let stdout =
+            run_judge_collect(dir.path(), &script, Some("judge_x")).expect("collect mode runs");
+        let paths = parse_inputs_json(&stdout).expect("single-target inputs document");
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("crates/loom-llm/src/client.rs"),
+                PathBuf::from("specs/llm.md"),
+            ],
+            "judge_files arguments recorded in order: {stdout}",
+        );
+        assert!(
+            !stdout.contains("SENTINEL_CRITERION"),
+            "judge_criterion must be a no-op in collect mode: {stdout}",
+        );
+    }
+
+    #[test]
+    fn batch_print_inputs_maps_each_target_to_its_globs() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("rubric.sh");
+        fs::write(
+            &script,
+            "#!/usr/bin/env bash\n\
+             judge_a() { judge_files \"crates/a/src/**\"; judge_criterion \"a\"; }\n\
+             judge_b() { judge_files \"crates/b/src/**\" \"specs/b.md\"; judge_criterion \"b\"; }\n",
+        )
+        .unwrap();
+
+        let stdout = run_judge_collect(dir.path(), &script, None).expect("batch collect runs");
+        let map = parse_inputs_batch_json(&stdout).expect("batch inputs document");
+        assert_eq!(
+            map.get("judge_a"),
+            Some(&vec![PathBuf::from("crates/a/src/**")]),
+            "judge_a mapped to its glob: {stdout}",
+        );
+        assert_eq!(
+            map.get("judge_b"),
+            Some(&vec![
+                PathBuf::from("crates/b/src/**"),
+                PathBuf::from("specs/b.md"),
+            ]),
+            "judge_b mapped to its globs: {stdout}",
+        );
+        assert_eq!(
+            map.len(),
+            2,
+            "every rubric the script defines mapped in one spawn: {stdout}",
+        );
+    }
+
+    #[test]
+    fn judge_resolution_spawns_harness_once_per_script_via_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("spawns.txt");
+        fs::write(&counter, "0").unwrap();
+        let script_dir = dir.path().join("tests/judges");
+        fs::create_dir_all(&script_dir).unwrap();
+        // Source-time code bumps a counter once per harness spawn; resolving
+        // two rubrics of one script must batch into a single spawn.
+        let counter_path = counter.display();
+        fs::write(
+            script_dir.join("loom.sh"),
+            format!(
+                "#!/usr/bin/env bash\n\
+                 n=$(cat {counter_path}); echo $((n + 1)) > {counter_path}\n\
+                 judge_a() {{ judge_files \"crates/a/src/**\"; }}\n\
+                 judge_b() {{ judge_files \"crates/b/src/**\"; }}\n",
+            ),
+        )
+        .unwrap();
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf());
+        let a = ann(Tier::Judge, "../tests/judges/loom.sh#judge_a", "specs/x.md");
+        let b = ann(Tier::Judge, "../tests/judges/loom.sh#judge_b", "specs/x.md");
+        let got_a = resolver.resolve(&a);
+        let got_b = resolver.resolve(&b);
+        assert!(
+            got_a.paths.contains(&PathBuf::from("crates/a/src/**")),
+            "first rubric resolved: {:?}",
+            got_a.paths,
+        );
+        assert!(
+            got_b.paths.contains(&PathBuf::from("crates/b/src/**")),
+            "second rubric served from the batch cache: {:?}",
+            got_b.paths,
+        );
+        assert_eq!(
+            fs::read_to_string(&counter).unwrap().trim(),
+            "1",
+            "batch + per-session cache spawn the harness exactly once",
         );
     }
 

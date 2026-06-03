@@ -5,9 +5,9 @@
 # referenced source files; the spec links to the function via a
 # `[judge](tests/judges/loom.sh::<name>)` annotation in its Success Criteria.
 #
-# One inputs header per script (specs/gate.md § Verifier inputs); the
-# rubrics span crate sources, rendered templates, harness.md, and gate.md.
-# loom-inputs: crates/*/src/**, crates/loom-templates/templates/**, specs/harness.md, specs/gate.md
+# Each rubric's judge_files calls are the single source of truth for its
+# inputs: loom runs the script in collect mode (`--print-inputs`) under the
+# judge-harness preamble to learn them (specs/gate.md § Judge collect mode).
 
 test_git_client_encapsulation() {
   judge_files \

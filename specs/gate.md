@@ -3087,12 +3087,12 @@ Loop-side interpretation of these exit codes — routing `refused` to
   <fn>` collect mode — `judge_files` records its path arguments while
   `judge_criterion` and the LLM call are skipped, and the recorded paths
   are emitted as `{"inputs":[...]}`
-  [test?](judge_collect_mode_records_judge_files_paths)
+  [test](judge_collect_mode_records_judge_files_paths)
 - The input-query batch form maps each target to its globs in one spawn —
   `<script> --print-inputs` with no `<fn>` emits `{"inputs":{"<fn>":[...]}}`
   for every rubric, so discovery spawns no more processes than batched
   execution
-  [test?](batch_print_inputs_maps_each_target_to_its_globs)
+  [test](batch_print_inputs_maps_each_target_to_its_globs)
 - The `--print-inputs` query is issued through the verifier's command
   template, not by prepending the flag to the command's first token, so a
   `cargo run -p <crate> -- <walk>` verifier is queried as the walk's own
