@@ -4,8 +4,10 @@
 //! `specs/gate.md`:
 //!
 //! 1. **Forward** — every annotation's target is valid for its tier:
-//!    `[check](cmd)` and `[system](cmd)` first token resolves on PATH or
-//!    as a file in the repo; `[test](path)` resolves to a `#[test]` /
+//!    `[check](cmd)` and `[system](cmd)` resolve via a runner that
+//!    `match`es the target (the runner owns it), falling back to the
+//!    first token resolving on PATH or as a file in the repo only when no
+//!    runner matches; `[test](path)` resolves to a `#[test]` /
 //!    `#[tokio::test]` / `proptest!` function in the workspace;
 //!    `[judge](path)` resolves to a file on disk.
 //! 2. **Atomic acceptance** — each criterion carries exactly one
@@ -976,6 +978,7 @@ pub fn compose_clarify_options(findings: &[IntegrityFinding]) -> String {
 /// resolution, atomic acceptance, and stub-pointing.
 pub fn check(
     annotations: &[Annotation],
+    runner_specs: &[RunnerSpec],
     repo_root: &Path,
     command_resolver: &dyn CommandResolver,
     test_resolver: &dyn TestPathResolver,
@@ -984,6 +987,7 @@ pub fn check(
 ) -> Vec<IntegrityFinding> {
     let mut findings = check_forward(
         annotations,
+        runner_specs,
         repo_root,
         command_resolver,
         test_resolver,
@@ -1022,6 +1026,7 @@ pub fn check(
 /// non-zero exit, both silent-pass under the modifier.
 pub fn check_forward(
     annotations: &[Annotation],
+    runner_specs: &[RunnerSpec],
     repo_root: &Path,
     command_resolver: &dyn CommandResolver,
     test_resolver: &dyn TestPathResolver,
@@ -1044,7 +1049,10 @@ pub fn check_forward(
             continue;
         }
         let resolved = match ann.tier {
-            Tier::Check | Tier::System => resolves_command(&ann.target, command_resolver),
+            Tier::Check | Tier::System => {
+                runner_owns_target(runner_specs, &ann.target)
+                    || resolves_command(&ann.target, command_resolver)
+            }
             Tier::Test => test_resolver.resolves(&ann.target),
             Tier::Judge => resolves_judge_path(&ann.target, &ann.source_spec, repo_root),
         };
@@ -1152,6 +1160,17 @@ pub fn check_atomic_acceptance(annotations: &[Annotation]) -> Vec<IntegrityFindi
         }
     }
     out
+}
+
+/// True iff some runner in `specs` `match`es `target` — the runner owns
+/// the annotation, so forward-resolution succeeds because a runner claims
+/// it, not because `tokens[0]` is on PATH. Reuses [`RunnerSpec::matches`]
+/// (the same compiled match regex `dispatch::group_by_runner` keys on) so
+/// resolution and dispatch agree on ownership. An unmatched target falls
+/// through to the [`resolves_command`] `tokens[0]`-on-PATH check per
+/// `specs/gate.md` § Runners — *Runner-owned resolution*.
+fn runner_owns_target(specs: &[RunnerSpec], target: &str) -> bool {
+    specs.iter().any(|spec| spec.matches(target))
 }
 
 fn resolves_command(target: &str, command_resolver: &dyn CommandResolver) -> bool {
@@ -1545,6 +1564,7 @@ mod tests {
         let tests = StubTests::with(&["crate::a::ok"]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -1568,6 +1588,7 @@ mod tests {
         let tests = StubTests::with(&[]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -1600,6 +1621,7 @@ mod tests {
         let tests = StubTests::with(&[]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -1617,6 +1639,66 @@ mod tests {
     }
 
     #[test]
+    fn runner_matched_target_resolves_via_runner_not_token_path_check() {
+        let dir = tempdir().unwrap();
+        let annotations = vec![ann(
+            Tier::Check,
+            "loom-walk inputs-check",
+            "specs/a.md",
+            20,
+            20,
+        )];
+        let no_path = StubCommands::with(&[]);
+        let tests = StubTests::with(&[]);
+
+        let unmatched = check_forward(
+            &annotations,
+            &[],
+            dir.path(),
+            &no_path,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
+        assert_eq!(
+            unmatched.len(),
+            1,
+            "unmatched target falls back to the tokens[0]-on-PATH check"
+        );
+        assert!(matches!(
+            unmatched[0],
+            IntegrityFinding::UnresolvedAnnotation {
+                tier: Tier::Check,
+                ..
+            }
+        ));
+
+        let runner = RunnerSpec::compile(
+            "walk",
+            Some(r"^loom-walk "),
+            "loom-walk {targets}",
+            "{name}",
+            " ",
+            crate::runner::BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap();
+        let matched = check_forward(
+            &annotations,
+            std::slice::from_ref(&runner),
+            dir.path(),
+            &no_path,
+            &tests,
+            &StubLeaves::none(),
+            &StubExecutor::none(),
+        );
+        assert!(
+            matched.is_empty(),
+            "runner-matched target resolves via runner ownership, not tokens[0]: {matched:?}"
+        );
+    }
+
+    #[test]
     fn forward_flags_test_with_unknown_path() {
         let dir = tempdir().unwrap();
         let annotations = vec![ann(
@@ -1630,6 +1712,7 @@ mod tests {
         let tests = StubTests::with(&["crate::a::ok"]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -1654,6 +1737,7 @@ mod tests {
         let tests = StubTests::with(&[]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -1682,6 +1766,7 @@ mod tests {
         let tests = StubTests::with(&[]);
         let findings = check_forward(
             &annotations,
+            &[],
             Path::new("/this/is/ignored"),
             &cmds,
             &tests,
@@ -1710,6 +1795,7 @@ mod tests {
         let tests = StubTests::with(&[]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -1741,6 +1827,7 @@ mod tests {
         let tests = StubTests::with(&[]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -1765,6 +1852,7 @@ mod tests {
         let tests = StubTests::with(&[]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -1814,6 +1902,7 @@ mod tests {
         let tests = StubTests::with(&[]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -1840,6 +1929,7 @@ mod tests {
         let tests = StubTests::with(&[]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -1870,6 +1960,7 @@ mod tests {
         let tests = StubTests::with(&[]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -1897,6 +1988,7 @@ mod tests {
         let tests = StubTests::with(&["crate::a::t"]);
         let findings = check(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -2140,6 +2232,7 @@ mod tests {
         let tests = StubTests::with(&["other_name"]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -2172,6 +2265,7 @@ mod tests {
         let tests = StubTests::with(&["end_to_end_specs_dir_check_combines_both_directions"]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -2195,6 +2289,7 @@ mod tests {
         let tests = StubTests::with(&[]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -2221,6 +2316,7 @@ mod tests {
         let tests = StubTests::with(&[]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -2271,6 +2367,7 @@ mod tests {
         let stubs = StubLeaves::with(&["stub_me"]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -2299,6 +2396,7 @@ mod tests {
         let stubs = StubLeaves::none();
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -2326,6 +2424,7 @@ mod tests {
         let stubs = StubLeaves::with(&["stub_me"]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -2362,6 +2461,7 @@ mod tests {
         let stubs = StubLeaves::with(&["foo", "r"]);
         let findings = check_forward(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,
@@ -2490,6 +2590,7 @@ fn delta_helper() {
         let stubs = StubLeaves::with(&["stub_me"]);
         let findings = check(
             &annotations,
+            &[],
             dir.path(),
             &cmds,
             &tests,

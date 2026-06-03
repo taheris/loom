@@ -452,6 +452,7 @@ where
             DispatchPendingExecutor::new(&[], options.clone(), &self.workspace, tier_cwds.clone());
         let integrity_findings = integrity::check(
             &annotations,
+            &[],
             &self.workspace,
             &cmd_resolver,
             &test_resolver,

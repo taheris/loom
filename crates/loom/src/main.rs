@@ -1525,6 +1525,7 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
     let pending_executor = DispatchPendingExecutor::new(&specs, options, workspace, tier_cwds);
     let findings = loom_gate::integrity::check(
         &annotations,
+        &specs,
         workspace,
         &cmd_resolver,
         &test_resolver,

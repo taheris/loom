@@ -79,6 +79,7 @@ fn parse_then_check_with_all_valid_annotations_yields_no_findings() {
     let tests = RustWorkspaceTestResolver::from_leaves(["it_works"]);
     let findings = check(
         &parsed.annotations,
+        &[],
         &specs,
         &cmds,
         &tests,
@@ -111,6 +112,7 @@ fn fixture_with_broken_target_per_tier_flags_each_one() {
     }
     let findings = check_forward(
         &parsed.annotations,
+        &[],
         dir.path(),
         &NoCommands,
         &NeverOkTests,
@@ -167,6 +169,7 @@ fn self_referential_check_annotation_resolves_against_integrity_gate_implementat
 
     let findings = check_forward(
         &parsed.annotations,
+        &[],
         &workspace_root,
         &resolver,
         &NeverOkTests,
@@ -201,6 +204,7 @@ fn self_referential_judge_annotation_resolves_against_integrity_source_file() {
     }
     let findings = check_forward(
         &parsed.annotations,
+        &[],
         Path::new("/this/is/ignored-when-target-is-absolute"),
         &NoCommands,
         &NeverOkTests,
@@ -234,6 +238,7 @@ fn check_flags_cargo_test_annotation_with_missing_test_name() {
     let tests = RustWorkspaceTestResolver::from_leaves(["known_test"]);
     let findings = check(
         &parsed.annotations,
+        &[],
         &specs,
         &cmds,
         &tests,
@@ -287,6 +292,7 @@ fn end_to_end_specs_dir_check_combines_both_directions() {
     let tests = RustWorkspaceTestResolver::from_leaves(["ok"]);
     let findings = check(
         &parsed.annotations,
+        &[],
         &specs,
         &cmds,
         &tests,
@@ -339,6 +345,7 @@ fn stub_pointing_test_annotation_flags_via_workspace_scanner() {
     let stubs = RustWorkspaceStubScanner::scan(dir.path()).unwrap();
     let findings = check(
         &parsed.annotations,
+        &[],
         &specs,
         &cmds,
         &tests,
@@ -384,6 +391,7 @@ fn pending_marked_unresolved_target_yields_no_finding() {
     let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
     let findings = check_forward(
         &parsed.annotations,
+        &[],
         dir.path(),
         &NoCommands,
         &NeverOkTests,
@@ -408,6 +416,7 @@ fn pending_marked_resolved_target_yields_unneeded_pending_marker() {
     let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
     let findings = check_forward(
         &parsed.annotations,
+        &[],
         dir.path(),
         &AlwaysOkCommands,
         &NeverOkTests,
@@ -447,6 +456,7 @@ fn pending_marked_stub_test_body_yields_no_finding() {
     let stubs = RustWorkspaceStubScanner::scan(dir.path()).unwrap();
     let findings = check_forward(
         &parsed.annotations,
+        &[],
         dir.path(),
         &NoCommands,
         &tests,
@@ -475,6 +485,7 @@ fn pending_marked_non_stub_test_body_yields_unneeded_pending_marker() {
     let stubs = RustWorkspaceStubScanner::scan(dir.path()).unwrap();
     let findings = check_forward(
         &parsed.annotations,
+        &[],
         dir.path(),
         &NoCommands,
         &tests,
@@ -527,6 +538,7 @@ fn unneeded_pending_marker_is_terminal_at_push_gate() {
     let parsed = parse_content(&PathBuf::from("specs/pending.md"), md);
     let findings = check_forward(
         &parsed.annotations,
+        &[],
         dir.path(),
         &AlwaysOkCommands,
         &NeverOkTests,
@@ -562,6 +574,7 @@ fn pending_check_command_exit_zero_via_subprocess_emits_unneeded_pending_marker(
     );
     let findings = check_forward(
         &parsed.annotations,
+        &[],
         dir.path(),
         &AlwaysOkCommands,
         &NeverOkTests,
@@ -602,6 +615,7 @@ fn pending_check_command_exit_nonzero_via_subprocess_passes_silently() {
     );
     let findings = check_forward(
         &parsed.annotations,
+        &[],
         dir.path(),
         &AlwaysOkCommands,
         &NeverOkTests,
@@ -639,6 +653,7 @@ fn pending_check_assertion_grep_with_missing_symbol_passes_silently() {
     );
     let findings = check_forward(
         &parsed.annotations,
+        &[],
         dir.path(),
         &AlwaysOkCommands,
         &NeverOkTests,
@@ -679,6 +694,7 @@ fn pending_check_assertion_grep_with_present_symbol_emits_unneeded_pending_marke
     );
     let findings = check_forward(
         &parsed.annotations,
+        &[],
         dir.path(),
         &AlwaysOkCommands,
         &NeverOkTests,

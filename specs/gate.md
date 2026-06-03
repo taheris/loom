@@ -3114,7 +3114,7 @@ Loop-side interpretation of these exit codes — routing `refused` to
 - A `[check]` / `[system]` target that matches a runner resolves via
   that runner, not via a `tokens[0]` PATH/file check; only an unmatched
   target falls back to the `tokens[0]` check
-  [test?](runner_matched_target_resolves_via_runner_not_token_path_check)
+  [test](runner_matched_target_resolves_via_runner_not_token_path_check)
 
 ### Scope handling
 

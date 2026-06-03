@@ -353,6 +353,7 @@ where
         );
         let findings = integrity::check_forward(
             &annotations,
+            &[],
             &self.workspace,
             &cmd_resolver,
             &test_resolver,
