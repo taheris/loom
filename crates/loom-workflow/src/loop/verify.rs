@@ -102,7 +102,13 @@ pub async fn verify_pass(
                     }),
                 );
             }
-            // `loom/<id>` ref deleted unconditionally on this exit path.
+            // `loom/<id>` ref deleted unconditionally on this exit path. A
+            // successful rebase (pass 2) leaves the workspace on the rewritten
+            // bead branch, so return to the integration branch first — git
+            // refuses to delete the checked-out branch, and this restores the
+            // untouched integration line as the checked-out state. On pass 1
+            // the workspace is already on the integration branch (no-op).
+            git.checkout_integration().await?;
             git.delete_branch(branch).await?;
             Ok(Some(reason))
         }

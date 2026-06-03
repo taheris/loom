@@ -1130,6 +1130,31 @@ impl GitClient {
         })
     }
 
+    /// Check out the configured integration branch in the loom workspace.
+    ///
+    /// A successful [`Self::rebase_onto_integration`] leaves the workspace
+    /// on the rewritten bead branch; the pass-2 signature-failure cleanup
+    /// uses this to return to the integration branch before deleting that
+    /// transient branch (git refuses to delete the checked-out branch) so a
+    /// driver-side rejection leaves the integration line as the checked-out
+    /// state with the transient ref gone. When the workspace is already on
+    /// the integration branch (the pass-1 path) it is a no-op.
+    pub async fn checkout_integration(&self) -> Result<(), GitError> {
+        let workdir = self.loom_workspace();
+        let integration_branch = self.integration_branch.as_str();
+        let checkout = run_git_index_mut(
+            &workdir,
+            self.clock.as_ref(),
+            ["checkout", "-q", integration_branch],
+            None,
+        )
+        .await?;
+        if checkout.status.success() {
+            return Ok(());
+        }
+        Err(cli_error(&checkout))
+    }
+
     /// Unmerged paths in `workdir` (`git diff --name-only
     /// --diff-filter=U`). Used while a rebase is paused mid-conflict to
     /// tell a genuine conflict from a rerere-staged resolution. A clean
