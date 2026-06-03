@@ -1367,7 +1367,8 @@ fn compile_runner_entry(
         join,
         parse,
         cwd,
-    )?)
+    )?
+    .with_inputs(entry.inputs.clone()))
 }
 
 fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::Result<i32> {

@@ -323,6 +323,13 @@ pub struct RunnerSpec {
     /// Repo-relative cwd override. Resolution against the workspace root
     /// happens in the dispatcher.
     pub cwd: Option<PathBuf>,
+    /// Optional command template for the runner's input-query. A
+    /// `{print_inputs}` placement marks where the `--print-inputs` flag
+    /// lands in the verifier's own argv; omitting it appends the flag after
+    /// the verifier's own arguments. `Some(..)` opts the runner's verifiers
+    /// into the input-query protocol; `None` leaves them on the
+    /// conservative always-run default. See `specs/gate.md` § Runners.
+    pub inputs: Option<String>,
 }
 
 impl RunnerSpec {
@@ -358,7 +365,17 @@ impl RunnerSpec {
             join: join.into(),
             parse,
             cwd,
+            inputs: None,
         })
+    }
+
+    /// Attach the input-query template (the `inputs` schema field),
+    /// chained after [`Self::compile`]. `None` leaves the runner on the
+    /// conservative always-run default.
+    #[must_use]
+    pub fn with_inputs(mut self, inputs: Option<String>) -> Self {
+        self.inputs = inputs;
+        self
     }
 
     /// Whether `target` matches this runner. A default runner
@@ -1029,6 +1046,61 @@ test result: ok. 3 passed; 0 failed
             }
             other => panic!("expected InvalidMatch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn runner_spec_compile_defaults_inputs_to_none() {
+        let spec = RunnerSpec::compile(
+            "default",
+            None,
+            "cmd {targets}",
+            "{name}",
+            " ",
+            BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap();
+        assert!(
+            spec.inputs.is_none(),
+            "compile leaves the runner on the always-run default"
+        );
+    }
+
+    #[test]
+    fn runner_spec_with_inputs_attaches_query_template() {
+        let spec = RunnerSpec::compile(
+            "walk",
+            Some(r"^cargo run -p loom-walk -- (\S+)$"),
+            "cargo run -p loom-walk -- {targets}",
+            "{capture_1}",
+            " ",
+            BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(
+            "cargo run -p loom-walk -- {targets} {print_inputs}".to_string(),
+        ));
+        assert_eq!(
+            spec.inputs.as_deref(),
+            Some("cargo run -p loom-walk -- {targets} {print_inputs}")
+        );
+    }
+
+    #[test]
+    fn runner_spec_with_inputs_none_keeps_default() {
+        let spec = RunnerSpec::compile(
+            "default",
+            None,
+            "cmd {targets}",
+            "{name}",
+            " ",
+            BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_inputs(None);
+        assert!(spec.inputs.is_none());
     }
 
     #[test]

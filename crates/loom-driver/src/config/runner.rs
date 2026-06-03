@@ -52,6 +52,15 @@ pub struct RunnerEntry {
     /// Repo-relative directory to run the command from. Overrides the
     /// tier-default `cwd`.
     pub cwd: Option<String>,
+
+    /// Optional command template for the runner's input-query, with a
+    /// `{print_inputs}` placement marking where the `--print-inputs` flag
+    /// lands in the verifier's own argv (omit the placeholder and the flag
+    /// is appended after the verifier's own arguments). Declaring `inputs`
+    /// is the explicit opt-in that this runner's verifiers participate in
+    /// the input-query protocol; omitted leaves them on the conservative
+    /// always-run default.
+    pub inputs: Option<String>,
 }
 
 /// One tier block: `[runner.<tier>]` carries the tier-default `cwd` plus
@@ -86,6 +95,9 @@ pub struct RunnerTier {
     /// Implicit default runner's parser.
     pub parse: Option<Parser>,
 
+    /// Implicit default runner's input-query template (the `inputs` field).
+    pub inputs: Option<String>,
+
     /// Named runners declared under this tier as `[runner.<tier>.<name>]`.
     #[serde(flatten)]
     pub runners: BTreeMap<String, RunnerEntry>,
@@ -101,7 +113,8 @@ impl RunnerTier {
             || self.command.is_some()
             || self.target.is_some()
             || self.join.is_some()
-            || self.parse.is_some();
+            || self.parse.is_some()
+            || self.inputs.is_some();
         if !has_runner_field {
             return None;
         }
@@ -112,6 +125,7 @@ impl RunnerTier {
             join: self.join.clone(),
             parse: self.parse,
             cwd: self.cwd.clone(),
+            inputs: self.inputs.clone(),
         })
     }
 }
@@ -316,6 +330,116 @@ parse = "json-lines"
         assert_eq!(custom.command.as_deref(), Some("custom-runner {targets}"));
         assert_eq!(custom.match_regex.as_deref(), Some("^custom::"));
         assert_eq!(custom.parse, Some(Parser::JsonLines));
+    }
+
+    #[test]
+    fn inputs_field_parses_and_round_trips_on_named_runner() {
+        let toml = r#"
+[runner.check.walk]
+match   = '^cargo run -p loom-walk -- (\S+)$'
+command = "cargo run -p loom-walk -- {targets}"
+target  = "{capture_1}"
+join    = " "
+parse   = "json-lines"
+inputs  = "cargo run -p loom-walk -- {targets} {print_inputs}"
+"#;
+        let cfg = LoomConfig::from_toml_str(toml).unwrap();
+        let walk = cfg
+            .runner
+            .tier("check")
+            .unwrap()
+            .runners
+            .get("walk")
+            .unwrap();
+        assert_eq!(
+            walk.inputs.as_deref(),
+            Some("cargo run -p loom-walk -- {targets} {print_inputs}")
+        );
+    }
+
+    #[test]
+    fn inputs_field_omitted_defaults_to_none() {
+        let toml = r#"
+[runner.check.walk]
+command = "cargo run -p loom-walk -- {targets}"
+parse   = "json-lines"
+"#;
+        let cfg = LoomConfig::from_toml_str(toml).unwrap();
+        let walk = cfg
+            .runner
+            .tier("check")
+            .unwrap()
+            .runners
+            .get("walk")
+            .unwrap();
+        assert!(
+            walk.inputs.is_none(),
+            "an omitted inputs field leaves the runner on the always-run default"
+        );
+    }
+
+    #[test]
+    fn inputs_without_print_inputs_placeholder_parses() {
+        // The `{print_inputs}` placement is optional; the schema parser
+        // accepts the template either way (placement is read downstream).
+        let toml = r#"
+[runner.check.walk]
+command = "cargo run -p loom-walk -- {targets}"
+parse   = "json-lines"
+inputs  = "cargo run -p loom-walk -- {targets}"
+"#;
+        let cfg = LoomConfig::from_toml_str(toml).unwrap();
+        let walk = cfg
+            .runner
+            .tier("check")
+            .unwrap()
+            .runners
+            .get("walk")
+            .unwrap();
+        assert_eq!(
+            walk.inputs.as_deref(),
+            Some("cargo run -p loom-walk -- {targets}")
+        );
+    }
+
+    #[test]
+    fn inputs_field_on_tier_implicit_default_runner_round_trips() {
+        let toml = r#"
+[runner.test]
+command = "default-runner {filter}"
+target  = "test({name})"
+join    = " + "
+parse   = "libtest-json"
+inputs  = "default-runner {filter} {print_inputs}"
+"#;
+        let cfg = LoomConfig::from_toml_str(toml).unwrap();
+        let test = cfg.runner.tier("test").unwrap();
+        assert_eq!(
+            test.inputs.as_deref(),
+            Some("default-runner {filter} {print_inputs}")
+        );
+        let default = test
+            .default_runner()
+            .expect("implicit default runner present");
+        assert_eq!(
+            default.inputs.as_deref(),
+            Some("default-runner {filter} {print_inputs}"),
+            "default_runner() threads the tier-level inputs template through"
+        );
+    }
+
+    #[test]
+    fn tier_with_only_inputs_forms_an_implicit_default_runner() {
+        let toml = r#"
+[runner.check]
+inputs = "verifier {print_inputs}"
+"#;
+        let cfg = LoomConfig::from_toml_str(toml).unwrap();
+        let check = cfg.runner.tier("check").unwrap();
+        let default = check
+            .default_runner()
+            .expect("an inputs-bearing tier block forms a default runner");
+        assert_eq!(default.inputs.as_deref(), Some("verifier {print_inputs}"));
     }
 
     #[test]
