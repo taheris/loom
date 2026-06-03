@@ -2847,11 +2847,11 @@ Criteria.
 - Driver-side rebase in the loom workspace produces signed commits
       whose `gpgsig` header is present in the commit object, without
       prompting for a passphrase
-  [test?](driver_rebase_signs_with_wrapix_key)
+  [test](driver_rebase_signs_with_wrapix_key)
 - `git log --show-signature` against a driver-rebased commit in the
       loom workspace prints `Good "git" signature` using the derived
       allowed_signers file
-  [test?](rebased_commits_verify_via_derived_allowed_signers)
+  [test](rebased_commits_verify_via_derived_allowed_signers)
 - `$WRAPIX_SIGNING_KEY` set to a non-existent file aborts loom
       startup with a non-zero exit and an error naming the missing
       path

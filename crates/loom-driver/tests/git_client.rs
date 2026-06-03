@@ -1093,6 +1093,112 @@ async fn signature_verification_runs_when_key_present() -> Result<()> {
     Ok(())
 }
 
+/// Spec contract `[test?]` annotation (`specs/harness.md` § Success Criteria
+/// · Commit signing): the driver-side rebase in the loom workspace produces
+/// signed commits — the rewritten commit carries a `gpgsig` header even
+/// though the worker's original commit was unsigned. The wrapix signing key
+/// is passphrase-less, so the rebase completes non-interactively (a prompt
+/// would hang the test rather than fail it).
+/// Criterion: `driver_rebase_signs_with_wrapix_key`.
+#[tokio::test]
+async fn driver_rebase_signs_with_wrapix_key() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+    let key = gen_signing_key(repo.path())?;
+
+    // Worker commit on the bead branch BEFORE any signing block is written,
+    // so the rewrite is the only place a signature can appear.
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("feature.txt"), "feature side\n")?;
+    git(&loom, &["add", "feature.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "feature commit"])?;
+    anyhow::ensure!(
+        !commit_has_gpgsig(&loom, "feature")?,
+        "precondition: the worker commit must start unsigned",
+    );
+
+    git(&loom, &["checkout", "-q", "main"])?;
+    std::fs::write(loom.join("main.txt"), "main side\n")?;
+    git(&loom, &["add", "main.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "main commit"])?;
+
+    // The signing block `loom init` writes when a wrapix key resolves
+    // (commit.gpgsign=true + user.signingkey) is what makes the rebase sign.
+    write_signing_config(&loom, &key)?;
+
+    let client = GitClient::open(repo.path())?;
+    let outcome = client.rebase_onto_integration("feature").await?;
+    assert!(
+        matches!(outcome, RebaseOutcome::Rebased),
+        "expected Rebased, got {outcome:?}",
+    );
+
+    assert!(
+        commit_has_gpgsig(&loom, "feature")?,
+        "the driver-rebased commit must carry a gpgsig header",
+    );
+    Ok(())
+}
+
+/// Spec contract `[test?]` annotation (`specs/harness.md` § Success Criteria
+/// · Commit signing): `git log --show-signature` against a driver-rebased
+/// commit prints `Good "git" signature` using the derived allowed_signers
+/// file, and the typed pass-2 path (`verify_commit_range`) agrees that the
+/// rewritten range verifies.
+/// Criterion: `rebased_commits_verify_via_derived_allowed_signers`.
+#[tokio::test]
+async fn rebased_commits_verify_via_derived_allowed_signers() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+    let key = gen_signing_key(repo.path())?;
+
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("feature.txt"), "feature side\n")?;
+    git(&loom, &["add", "feature.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "feature commit"])?;
+
+    git(&loom, &["checkout", "-q", "main"])?;
+    std::fs::write(loom.join("main.txt"), "main side\n")?;
+    git(&loom, &["add", "main.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "main commit"])?;
+
+    write_signing_config(&loom, &key)?;
+
+    let client = GitClient::open(repo.path())?;
+    assert!(
+        matches!(
+            client.rebase_onto_integration("feature").await?,
+            RebaseOutcome::Rebased,
+        ),
+        "rebase must rewrite the worker commit onto the integration tip",
+    );
+
+    // `git log --show-signature` reads `gpg.ssh.allowedSignersFile` from the
+    // block `write_signing_config` wrote and reports a good signature on its
+    // stdout for the rewritten commit.
+    let shown = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(&loom)
+            .args(["log", "--show-signature", "-1", "feature"])
+            .output()?
+            .stdout,
+    )?;
+    assert!(
+        shown.contains("Good \"git\" signature"),
+        "show-signature must report a good signature via the derived \
+         allowed_signers file, got: {shown}",
+    );
+
+    // The typed pass-2 verification path agrees on the rewritten range.
+    assert_eq!(
+        client.verify_commit_range("main..feature").await?,
+        SignatureCheck::Verified,
+        "verify_commit_range must accept the driver-rebased commit",
+    );
+    Ok(())
+}
+
 /// Spec contract (`specs/harness.md` § Success Criteria · Bead dispatch):
 /// under A3 the bead clone's `origin` remote remains pointing at the loom
 /// workspace path after `create_worktree`. It is unused by the worker (no
@@ -1504,6 +1610,21 @@ fn gen_signing_key(dir: &Path) -> Result<std::path::PathBuf> {
         .context("spawn ssh-keygen")?;
     anyhow::ensure!(status.success(), "ssh-keygen exited with {status}");
     Ok(key)
+}
+
+/// Whether `rev`'s commit object carries a `gpgsig` header — the structural
+/// marker of a signed commit, present regardless of which key signed it.
+fn commit_has_gpgsig(repo: &Path, rev: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["cat-file", "commit", rev])
+        .output()?;
+    anyhow::ensure!(output.status.success(), "git cat-file commit {rev} failed");
+    Ok(String::from_utf8(output.stdout)?
+        .lines()
+        .take_while(|line| !line.is_empty())
+        .any(|line| line.starts_with("gpgsig")))
 }
 
 fn local_config(repo: &Path, key: &str) -> Result<Option<String>> {
