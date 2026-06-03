@@ -2373,6 +2373,22 @@ fn gate_label(gate: &GateOutcome) -> &'static str {
     }
 }
 
+/// `UpdateOpts` for a parallel-mode `loom:clarify` / `loom:blocked`
+/// self-report. Pairs `status=blocked` with the terminal label so
+/// `bd ready` excludes the parked bead via its native status filter
+/// (`specs/harness.md` § Labels), mirroring the serial
+/// `apply_clarify_or_blocked` / `apply_blocked` paths. Without the
+/// paired status the escalated bead stays ready and the next
+/// `loom loop` re-dispatches it instead of parking for human resolution.
+fn parallel_park_update(label: &str, notes: Option<String>) -> UpdateOpts {
+    UpdateOpts {
+        status: Some("blocked".to_string()),
+        add_labels: vec![label.to_string()],
+        notes,
+        ..UpdateOpts::default()
+    }
+}
+
 #[expect(clippy::too_many_arguments, reason = "fan-out wiring surface")]
 async fn run_parallel_loop(
     workspace: PathBuf,
@@ -2517,14 +2533,7 @@ async fn run_parallel_loop(
             Some(question)
         };
         bd_label
-            .update(
-                &bead,
-                UpdateOpts {
-                    add_labels: vec!["loom:clarify".to_string()],
-                    notes,
-                    ..UpdateOpts::default()
-                },
-            )
+            .update(&bead, parallel_park_update("loom:clarify", notes))
             .await?;
     }
     for (bead, reason) in outcome.blocked() {
@@ -2534,14 +2543,7 @@ async fn run_parallel_loop(
             format!("agent-blocked: {reason}")
         };
         bd_label
-            .update(
-                &bead,
-                UpdateOpts {
-                    add_labels: vec!["loom:blocked".to_string()],
-                    notes: Some(notes),
-                    ..UpdateOpts::default()
-                },
-            )
+            .update(&bead, parallel_park_update("loom:blocked", Some(notes)))
             .await?;
     }
 
@@ -3457,6 +3459,30 @@ fn run_spec(workspace: &std::path::Path, deps: bool) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Spec contract `specs/harness.md` § Labels: parallel-mode
+    /// `loom:clarify` / `loom:blocked` self-reports must pair
+    /// `status=blocked` with the label so `bd ready` excludes the parked
+    /// bead via its native status filter. Without it the escalated bead
+    /// stays ready and the next `loom loop` re-dispatches it instead of
+    /// parking for human resolution — the divergence from the serial
+    /// `apply_*` paths this guards against.
+    #[test]
+    fn parallel_park_pairs_status_blocked_with_label() {
+        for label in ["loom:clarify", "loom:blocked"] {
+            let opts = parallel_park_update(label, Some("a-note".to_string()));
+            assert_eq!(
+                opts.status.as_deref(),
+                Some("blocked"),
+                "{label}: must transition status=blocked so `bd ready` excludes it",
+            );
+            assert!(
+                opts.add_labels.iter().any(|l| l == label),
+                "{label}: terminal label must be applied: {:?}",
+                opts.add_labels,
+            );
+        }
+    }
 
     /// Spec contract `specs/gate.md` § *Per-bead mint summary semantics*
     /// (criterion `mint_bead_scope_exits_zero_on_clean_summary`):
