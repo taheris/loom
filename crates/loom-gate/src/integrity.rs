@@ -1,7 +1,9 @@
 //! Annotation integrity gate.
 //!
-//! Runs as part of `loom gate check`. Two directions per
-//! `specs/gate.md`:
+//! Runs as part of `loom gate check`. Three directions are realized here
+//! per `specs/gate.md` § Integrity gate; the spec enumerates a fourth
+//! (inputs-protocol honesty) that is planned and not yet emitted on any
+//! production path:
 //!
 //! 1. **Forward** — every annotation's target is valid for its tier:
 //!    `[check](cmd)` and `[system](cmd)` resolve via a runner that
@@ -10,22 +12,21 @@
 //!    runner matches; `[test](path)` resolves to a `#[test]` /
 //!    `#[tokio::test]` / `proptest!` function in the workspace;
 //!    `[judge](path)` resolves to a file on disk.
-//! 2. **Atomic acceptance** — each criterion carries exactly one
+//! 2. **Stub-pointing** — an annotation whose target Rust test function
+//!    body invokes the `_pending_stub` sigil is flagged: the target
+//!    resolves but the verifier produces no real evidence. Applies to
+//!    `[test]` annotations and to `[check](cargo test ... <name>)`
+//!    annotations that embed a test name. Under the
+//!    verifier-driven-status invariant (`docs/spec-conventions.md`) the
+//!    deterministic gate flags it without waiting for `loom gate review`'s
+//!    verifier-honesty rubric.
+//! 3. **Atomic acceptance** — each criterion carries exactly one
 //!    annotation. N→1 sharing (multiple criteria pointing at the same
 //!    verifier) is allowed.
 //!
 //! Findings render in the form prescribed by the spec:
 //! `<spec>:<line>: annotation [tier](<target>) — does not resolve` or
 //! `<spec>:<line>: criterion carries N annotations, expected 1`.
-//!
-//! A third direction — **stub-pointing annotations** — flags any
-//! annotation whose target Rust test function body invokes the
-//! `_pending_stub` sigil. Applies to `[test]` annotations and to
-//! `[check](cargo test ... <name>)` annotations that embed a test name.
-//! Under the verifier-driven-status invariant (`docs/spec-conventions.md`)
-//! a stubbed verifier means the criterion has no real evidence; the
-//! deterministic gate flags it without waiting for `loom gate review`'s
-//! verifier-honesty rubric.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
