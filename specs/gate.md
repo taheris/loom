@@ -1934,19 +1934,21 @@ a path. Two response shapes:
   batches exactly where execution batches, so scoping a large tree
   costs no more processes than running it.
 
-**Target resolution.** A `[judge]` target — and any `[check]` /
-`[system]` target that *is* a script-file path — is located by
+**Target resolution.** A `[judge]` target is located by
 selector-stripping + spec-relative resolution: a `#fn` / `::fn` /
 `::attr` selector is stripped before the on-disk lookup, and a
 relative path is joined against the annotation's spec-file directory
 (not the repo root), matching the markdown renderer's relative-link
 resolution. The integrity gate and the input resolver share **one
 helper** for this, so the existence check and the collect-mode
-invocation cannot disagree about where the script lives. This is the
-deterministic resolution of a target that genuinely *is* a path — not
-the retired token-scanning of a free-form command, whose inputs come
-from its runner template (per *Input-query protocol*), never from
-guessing which token is a file.
+invocation cannot disagree about where the judge script lives. This
+is the deterministic resolution of a target that genuinely *is* a
+path. A `[check]` / `[system]` target is *not* path-resolved this
+way: it resolves by **runner match** — the matching runner owns the
+annotation end to end (per *Runners*) — or, when no runner matches,
+by the `tokens[0]`-on-PATH fallback. Its inputs come from the matched
+runner's template (per *Input-query protocol*), never from scanning
+its argv to guess which token is a file.
 
 **Judge collect mode.** A judge script reports per-function inputs by
 running the function in a **collect mode** rather than evaluating it:

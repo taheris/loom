@@ -1288,17 +1288,17 @@ fn resolves_judge_path(target: &str, source_spec: &Path, repo_root: &Path) -> bo
     resolve_spec_relative_script_path(target, source_spec, repo_root).is_some_and(|p| p.exists())
 }
 
-/// Lexically resolve a target that *is* a script-file path — every
-/// `[judge]` target, plus any `[check]` / `[system]` token that names a
-/// script — to the on-disk path it points at: selector stripped,
-/// spec-relative path joined against the spec file's own directory,
-/// `..`/`.` collapsed. Shared by the integrity gate and the input
-/// resolver so the existence check and the input-query invocation cannot
-/// disagree about where the script lives. Returns `None` only when the
-/// target (or its path part) is empty; existence is *not* checked here so
-/// callers can choose between an existence test (integrity gate) and
-/// reading the script body (input resolver). The returned path may not
-/// exist.
+/// Lexically resolve a `[judge]` target that *is* a script-file path to
+/// the on-disk path it points at: selector stripped, spec-relative path
+/// joined against the spec file's own directory, `..`/`.` collapsed.
+/// Shared by the integrity gate and the input resolver so the existence
+/// check and the input-query invocation cannot disagree about where the
+/// judge script lives. `[check]` / `[system]` targets do not use this
+/// helper — they resolve by runner match or the `tokens[0]` fallback.
+/// Returns `None` only when the target (or its path part) is empty;
+/// existence is *not* checked here so callers can choose between an
+/// existence test (integrity gate) and reading the script body (input
+/// resolver). The returned path may not exist.
 pub(crate) fn resolve_spec_relative_script_path(
     target: &str,
     source_spec: &Path,
