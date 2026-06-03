@@ -43,7 +43,7 @@ Backends are zero-sized types — `PiBackend`, `ClaudeBackend`, and
 No instances, no constructor.
 
 The backend is resolved **per phase** from config, not once at startup.
-Each workflow command (plan, todo, run, gate, msg) independently selects
+Each workflow command (plan, todo, loop, gate, msg) independently selects
 its backend + model. The binary crate exposes a single `dispatch`
 function that matches on the per-phase choice and forwards to a generic
 helper parameterized by backend type. The workflow engine receives that
@@ -188,7 +188,7 @@ State-machine rules (Pi and Claude):
   watchdog), so a follow-up prompt fails with a process-exit error.
 
 The session type and the parser abstraction both live in `loom-driver` —
-not in `agent` — because the agent-backend trait returns a session,
+not in `loom-agent` — because the agent-backend trait returns a session,
 and the inverse dependency would be a cycle.
 
 The Direct backend does NOT carry this typestate: it composes
@@ -333,6 +333,11 @@ Required fields:
   compaction events; see [harness.md § Compaction
   Recovery](harness.md#compaction-recovery).
 
+Additionally, `output_limits` (optional, Direct-only) carries
+`max_inline_bytes` — the inline-output cap above which content-returning
+Direct tools offload to the scratch offload directory. See [Direct Output
+Bounding](#direct-output-bounding).
+
 `image_ref` and `image_source` come from the profile-image manifest at
 dispatch time — see [harness.md — Profile-Image
 Manifest](harness.md#profile-image-manifest).
@@ -378,7 +383,7 @@ loom (host)                                            container
 
 The wrapper hides container construction (mounts, env allowlist, krun
 runtime, network filter, deploy key, beads dolt socket) so loom owns only
-JSONL framing and the typed `SpawnConfig` it serializes. Both backends use
+JSONL framing and the typed `SpawnConfig` it serializes. All three backends use
 bidirectional JSONL over stdin/stdout. The Claude backend uses
 `--input-format stream-json --output-format stream-json` for full
 bidirectional support.
@@ -611,7 +616,7 @@ not expose compaction events — Anthropic compacts internally with no
 protocol notification, so claude uses its own `SessionStart` hook
 system. Pi exposes compaction events natively in JSONL, so its
 backend reacts to them with a `steer`-based re-pin. Direct owns the
-conversation transcript itself via `llm` and never sees an
+conversation transcript itself via `loom-llm` and never sees an
 external compaction event at all. The asymmetry is fundamental to
 how each underlying agent (or LLM) manages context, not a Loom
 design choice.
@@ -651,7 +656,7 @@ design choice.
   compactions.
 
 **Direct backend:**
-- Compaction is not a provider-driven event in Direct — `llm`
+- Compaction is not a provider-driven event in Direct — `loom-llm`
   owns the conversation transcript itself, so there is no
   external compaction notification to react to.
 - `loom-direct-runner` is responsible for its own context-budget
@@ -696,7 +701,7 @@ paths and executes inside the container's sandbox, matching how
 the subprocess backends' built-in tools behave.
 
 **Per-call provider and caching.** Direct exposes the typed
-`CacheControl` surface from `llm` for prompts that want
+`CacheControl` surface from `loom-llm` for prompts that want
 explicit cache breakpoints; the agent's system prompt and any
 long static context can be marked cached. Token usage flows back
 through the standard `DriverKind::TokenUsage` event.
@@ -708,19 +713,130 @@ default — without the driver doing anything special. Loom's
 binary-level event chain (LogSink + driver-emitting events) sits
 on top, composed via `EventSink::tee`.
 
-**Library use vs CLI use of `llm`.** The above describes
+**Library use vs CLI use of `loom-llm`.** The above describes
 Loom's CLI use of Direct backend. External Rust consumers that
-depend on `llm` directly (without `agent`) make their
-own sandboxing decisions — `llm` is just a library with no
+depend on `loom-llm` directly (without `loom-agent`) make their
+own sandboxing decisions — `loom-llm` is just a library with no
 opinion about how its tool handlers execute. The
 `loom-direct-runner` binary's sandboxing is a Loom-CLI concern,
-not a `llm` concern.
+not a `loom-llm` concern.
 
-**Dependencies.** `loom-agent::direct` depends on `llm`
+**Dependencies.** `loom-agent::direct` depends on `loom-llm`
 (internal-to-workspace dependency); both crates respect their
 respective public-contract surfaces. Adding a new sandbox-aware
-tool to Direct is a `agent` change, independent of the
-`llm` surface.
+tool to Direct is a `loom-agent` change, independent of the
+`loom-llm` surface.
+
+### Direct Output Bounding
+
+Direct is the only backend whose tool implementations Loom owns: a
+tool's output flows `loom-agent::direct::tools` → `ToolOutput` → the
+`Conversation` transcript `loom-llm` manages on Loom's behalf, so a size
+cap can be applied **at the source**, before the bytes reach the
+agent's context. The Pi and Claude backends produce tool output inside
+their own subprocess agents and own their own transcripts — Loom only
+observes their `tool_result` events *after* the content has already
+entered context — so output bounding is **Direct-only by structure**,
+not by policy (see *Out of Scope*).
+
+**Single cap, offload-preferred.** Each content-returning Direct tool —
+`Read`, `Bash`, `Grep`, `Glob` — bounds the bytes it places inline at
+`max_inline_bytes`. `Write` and `Edit` return short status strings and
+are not capped. The cap is measured against the **raw UTF-8 byte length
+of the content string** the tool would emit (per stream for `Bash`),
+*before* JSON serialization — not the escaped/serialized size of
+`ToolOutput.content`. At or below the cap the tool returns its payload
+verbatim. Above it the tool writes the **full** payload to a
+session-scoped offload file and returns a structured reference in place
+of the content:
+
+```json
+{ "offloaded": true,
+  "path": "/workspace/.loom/scratch/<key>/offload/<hash>.txt",
+  "total_bytes": 1234567,
+  "total_lines": 9001,
+  "head_lines": 412,
+  "head": "first 412 whole lines …\n[truncated: showing 412 of 9001 lines; full output at <path>; Read with offset 413 to continue]" }
+```
+
+`head` is the longest whole-line prefix of the payload whose UTF-8 byte
+length stays within `max_inline_bytes` (a single line longer than the cap
+is cut at a UTF-8 character boundary, with `head_lines: 0`). Cutting on a
+line boundary lets the agent **resume cleanly**: `head_lines` is the line
+count of the head, so the agent recovers the tail by issuing `Read`
+against `path` with `offset = head_lines + 1`. All Direct tools emit
+valid UTF-8 (`Bash` via lossy conversion), so the offloaded file always
+round-trips back through `Read`. The head's marker is a bracketed
+truncation notice in the spirit of Grep's existing `[truncated at N
+matches]`. If the offload write itself fails, the tool degrades to a
+plain inline truncation: the `head` followed by a **path-less** marker
+(`[truncated: showing N of M lines]`) and no offload reference — the same
+shape Grep emits at its match cap.
+
+`max_inline_bytes` bounds the `head` payload, not the whole reference:
+the `{ offloaded, path, total_bytes, total_lines, head_lines }` envelope
+around `head` adds a small bounded overhead, so a reference puts slightly
+more than `max_inline_bytes` inline by that fixed wrapper cost. The cap
+is a budget for content, not a hard ceiling on the envelope.
+
+`Bash` output is structured (`{exit_code, stdout, stderr}`); the cap
+applies to `stdout` and `stderr` **independently**, and `exit_code` is
+always kept inline. A stream under the cap stays verbatim; only an
+oversized stream is replaced with a reference. `Grep` applies its
+existing 1000-match cap **first**; the byte cap then gates that
+already-capped output, offloading only if the capped match set still
+exceeds `max_inline_bytes` (e.g. long individual match lines).
+
+**Content-addressed naming.** An offload file is named by a hash of its
+payload — `<hash>.txt` under the offload directory. Naming is therefore a
+pure function of the content: deterministic for fixed input (no counter,
+no wall-clock, no randomness in the path) and collision-free across
+distinct content. Two results with identical content dedupe to one file;
+two with distinct content get distinct paths. Writes are atomic — write
+to a temp file, then rename into place — so two identical-content writes
+that race converge safely; this matters only if the Conversation loop
+ever dispatches tool calls concurrently, which today it does not (it
+dispatches strictly sequentially).
+
+**Offload location & lifecycle.** Offload files live under `offload/`
+inside the existing per-session scratch directory
+(`.loom/scratch/<key>/offload/`, see [harness.md § Compaction
+Recovery](harness.md#compaction-recovery)). Reusing the scratch
+directory inherits its lifecycle for free: the path is already
+agent-visible and `Read`-able; `<key>` is the per-session / per-bead
+concurrency unit (no cross-session collision); the driver removes and
+recreates the whole `<key>` tree at **session start**, so a crashed
+prior session leaves no carry-over (the lazily-created `offload/` begins
+empty each session); and the driver's session-end teardown removes the
+tree again (no stranded files). The `git clean` reset of the bead
+worktree does *not* reach the scratch tree — it is a sibling of the bead
+clone, not inside it — so the start-of-session remove-and-recreate, not
+`git clean`, is what guarantees a clean slate. The subdirectory is
+created lazily by the runner on the first offload.
+
+**Session-context handle.** Cap-and-offload needs per-session state (the
+offload directory) the previously stateless tools did not carry, so the
+six tools stop being zero-sized types and instead hold a cheap clone of a
+`ToolContext` constructed once per session and passed at `six_tools(ctx)`
+construction. `ToolContext` v1 carries only the offload sink: the offload
+directory plus the `cap_or_offload` helper that returns a payload
+verbatim under the cap or writes-and-references it above. The handle is
+shaped so a future delegate / sub-agent tool could carry an `LlmClient` +
+`ModelId` through the same mechanism **without** changing `six_tools`'s
+signature or the `loom-llm::Tool` trait — it absorbs new per-session
+capabilities additively. No delegation is built here.
+
+**Offload observability.** Every offload emits a `driver_event` whose
+`driver_kind` marks a tool-output offload, carrying the tool name and the
+offloaded byte count — the sibling signal to `DriverKind::TokenUsage`. It
+is the only way to see how often the cap actually bites, and the evidence
+that informs whether the deferred delegation work (see *Out of Scope*) is
+worth doing.
+
+**Configuration.** `max_inline_bytes` is set by a top-level `[direct]`
+block in `loom.toml` (default 16384), symmetric with the `[claude]`
+block, and flows into the Direct runner via a `SpawnConfig.output_limits`
+field.
 
 ### Two-Axis Composition
 
@@ -736,7 +852,7 @@ standalone `profiles.pi`; no `pi+rust` / `pi+python` proliferation.
 The claude runtime layer is empty (claude is already in the base
 image today); the pi runtime layer adds Node.js and the pi binary;
 the direct runtime layer adds the statically-linked
-`loom-direct-runner` binary (which carries `llm` and the six
+`loom-direct-runner` binary (which carries `loom-llm` and the six
 sandbox-aware tool impls).
 
 ### Entrypoint Agent Selection
@@ -748,8 +864,10 @@ The container entrypoint branches on `WRAPIX_AGENT`:
 - `pi`: skips Claude-specific config merging and the Claude
   permission flag; starts pi in RPC mode listening on
   stdin/stdout.
+- `direct`: skips Claude-specific config and exec's
+  `loom-direct-runner` listening on stdin/stdout.
 
-Both branches preserve shared setup: git SSH, beads-dolt
+All three branches preserve shared setup: git SSH, beads-dolt
 connection, network filtering, session audit logging.
 
 ## Success Criteria
@@ -833,6 +951,29 @@ connection, network filtering, session audit logging.
   [test](direct_cache_control_propagates_to_anthropic_request)
 - `DriverKind::TokenUsage` event emits on every completion within Direct sessions
   [test](direct_emits_token_usage_per_completion)
+
+### Direct output bounding
+
+- `Read` whose returned content exceeds `max_inline_bytes` returns an `{ offloaded, path, total_bytes, total_lines, head_lines, head }` reference whose `head` is a whole-line prefix within the cap; the full payload is written to the offload file
+  [test?](read_over_cap_offloads_full_payload_and_returns_head_reference)
+- The cap is measured on the raw UTF-8 byte length of the tool's content string (per stream for `Bash`), not the JSON-serialized size of `ToolOutput.content`
+  [test?](cap_measured_on_raw_utf8_byte_length_not_serialized)
+- `Bash` caps `stdout` and `stderr` independently and always keeps `exit_code` inline; an oversized stream is offloaded while an under-cap stream stays verbatim
+  [test?](bash_caps_streams_independently_keeps_exit_code_inline)
+- `Grep` and `Glob` string output exceeding `max_inline_bytes` is offloaded and replaced with a reference
+  [test?](grep_and_glob_offload_string_output_over_cap)
+- The agent recovers the tail by issuing `Read` against the offload `path` with `offset = head_lines + 1`, reconstructing the full original content (offload round-trips)
+  [test?](offloaded_file_round_trips_through_read_via_head_lines_offset)
+- Two results with distinct content offload to distinct paths; the file name is a deterministic content hash for fixed input
+  [test?](distinct_content_offloads_to_distinct_deterministic_paths)
+- When the offload write fails, the tool degrades to an inline truncation (head + marker, no `path`) rather than erroring
+  [test?](offload_write_failure_degrades_to_inline_truncation)
+- Every offload emits a `driver_event` (offload `driver_kind`) carrying the tool name and offloaded byte count
+  [test?](offload_emits_driver_event_with_tool_and_byte_count)
+- `[direct].max_inline_bytes` resolves from `loom.toml` into `SpawnConfig.output_limits`, defaulting to 16384 when absent
+  [test?](direct_max_inline_bytes_resolves_from_config_default_16384)
+- `ToolContext` is shaped so a future delegate tool can carry an `LlmClient` + `ModelId` through it without changing `six_tools`'s signature or the `loom-llm::Tool` trait
+  [judge?](specs/agent.md#direct-output-bounding)
 
 ### Backend selection
 
@@ -932,13 +1073,13 @@ connection, network filtering, session audit logging.
    tools are net-new implementations in `loom-agent::direct`, not shared
    with Claude Code (closed-source) or with consumer-supplied tools (which
    consumers register via `Conversation::register` in their own apps when
-   using `llm` as a library). All `llm` features — typed
+   using `loom-llm` as a library). All `loom-llm` features — typed
    `CacheControl`, structured output via `T: DeserializeOwned + JsonSchema`,
    per-call `ModelId`, `DoomLoopObserver` + `DuplicateResultObserver`
    composed by default, `DriverKind::TokenUsage` events — are available
    in Direct sessions.
-6. **Per-phase backend selection** — each workflow phase (plan, todo, run,
-   check, msg) independently resolves its backend and model from config.
+6. **Per-phase backend selection** — each workflow phase (plan, todo, loop,
+   gate, msg) independently resolves its backend and model from config.
    `[phase.default].agent.backend` sets the fallback (`claude`). Per-phase
    overrides (e.g. `[phase.todo]`) carry `agent.backend` plus optional
    `agent.provider` and `agent.model_id`. Valid `agent.backend` values are
@@ -975,6 +1116,23 @@ connection, network filtering, session audit logging.
     (one complete JSON object per line, separated by `\n`). The JSONL
     reader splits on `\n` only, not Unicode line separators (U+2028,
     U+2029). Each line is independently parseable.
+12. **Direct output bounding** — content-returning Direct tools (`Read`,
+    `Bash`, `Grep`, `Glob`) cap the bytes they place inline at
+    `max_inline_bytes` (the `[direct]` block, default 16384). Above the
+    cap the tool writes the full payload to a content-addressed file under
+    the per-session scratch offload directory and returns a
+    `{ offloaded, path, total_bytes, total_lines, head_lines, head }`
+    reference whose `head` is a whole-line prefix (so the agent resumes via
+    `Read` at `offset = head_lines + 1`); an offload-write failure degrades
+    to an inline truncation marker. The cap is measured on the raw UTF-8
+    byte length of the content string (per stream for `Bash`, which keeps
+    `exit_code` inline and caps `stdout`/`stderr` independently); offload
+    writes are atomic (temp-then-rename). `Write` and `Edit` are not
+    capped. Every offload emits a `driver_event` recording the tool and
+    byte count. The per-session `ToolContext` handle carries the offload
+    sink and is shaped to absorb a future delegate tool's `LlmClient` +
+    `ModelId` without altering `six_tools` or the `Tool` trait. See
+    [Direct Output Bounding](#direct-output-bounding).
 
 ### Non-Functional
 
@@ -1009,12 +1167,12 @@ connection, network filtering, session audit logging.
   binary; its built-in tool implementations are not available to share.
   Loom's six sandbox-aware tools in `loom-agent::direct` are net-new
   Rust implementations.
-- **Sharing Direct's tools with consumer-driven `llm` use** —
-  consumers depending on `llm` directly register their own custom
+- **Sharing Direct's tools with consumer-driven `loom-llm` use** —
+  consumers depending on `loom-llm` directly register their own custom
   tools via `Conversation::register`. The six sandbox-aware tools live in
   `loom-agent::direct` (internal); their sandboxing model assumes the
   `loom-direct-runner` container context. Consumers building their own
-  Rust apps on `llm` make their own sandboxing decisions per
+  Rust apps on `loom-llm` make their own sandboxing decisions per
   [llm.md — Two Consumer Paths](llm.md#two-consumer-paths).
 - **Transcript-rewriting dedup in pi/Claude backends** — pi-mono and
   Claude Code own their own transcripts; Loom does not intercept and
@@ -1027,3 +1185,11 @@ connection, network filtering, session audit logging.
   the backend resolved for that phase.
 - **Claude Code RPC mode** — if Anthropic ships an RPC mode for Claude Code,
   the Claude backend can be upgraded. Not in scope today.
+- **Output bounding for the Pi and Claude backends** — those agents own
+  their tool implementations and transcripts; Loom only sees their
+  `tool_result` events after content has entered context, so it bounds tool
+  output only for Direct, where it owns the tools. See [Direct Output
+  Bounding](#direct-output-bounding).
+- **Sub-agent / delegation tool** — `ToolContext` is shaped so a future
+  delegate tool could carry an `LlmClient` + `ModelId`, but no delegation
+  tool is built in this work.

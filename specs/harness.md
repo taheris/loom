@@ -2269,6 +2269,11 @@ session — joined by a hook script that re-injects both after compaction.
 - `repin.sh` — small bash that emits the `SessionStart[compact]` JSON
   envelope: a short fixed preamble identifying this as a post-compaction
   re-pin, then `cat prompt.txt`, then `cat scratch.md`.
+- `offload/` — Direct-backend sessions only: a subdirectory the Direct
+  runner creates lazily to hold tool output that exceeded the inline cap.
+  Semantics are owned by [agent.md § Direct Output
+  Bounding](agent.md#direct-output-bounding); the directory is removed by
+  the same session-end cleanup below.
 
 `<key>` is the session concurrency unit, matching the existing locks:
 spec **label** for `loom plan -n` / `loom plan -u` / `loom todo`; **bead
