@@ -26,10 +26,10 @@
         "rust-analyzer-src": "rust-analyzer-src"
       },
       "locked": {
-        "lastModified": 1780314950,
-        "narHash": "sha256-1y6LHeumqA2lnUZap2yor+g4jMFtno5mx119LEv+dQQ=",
+        "lastModified": 1780397302,
+        "narHash": "sha256-SQmrkj17xBdvc8lVMbsY7pIJCjKftgNh42R1keP3dLQ=",
         "ref": "main",
-        "rev": "8160d67d2693a1f7ea219db159ccdc29ae632918",
+        "rev": "f6670530f53e69cc284f7aef818eb0f08fe81905",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/nix-community/fenix.git"
@@ -92,10 +92,10 @@
         "wrapix": "wrapix_2"
       },
       "locked": {
-        "lastModified": 1780443420,
-        "narHash": "sha256-JRAxiyiHZCm55xdxj645BYLjMe+vl4P3TCmcAKEBfDU=",
+        "lastModified": 1780454512,
+        "narHash": "sha256-TE9k7SExGRC/DkdQt/gJlMWTTCr8MWdyVMbD1rPd2o4=",
         "ref": "main",
-        "rev": "99567f9cd9d73b520830912890da71a29ce149b5",
+        "rev": "fdd3483fb031d60b4ea7434cbed4f09569fb2d50",
         "shallow": true,
         "type": "git",
         "url": "ssh://git@github.com/taheris/loom.git"
@@ -731,11 +731,11 @@
     "rust-analyzer-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1780260465,
-        "narHash": "sha256-yJIyzYb6LhvbVMmj2EH62Mt0JHU3pQefr+oPEgaoaI8=",
+        "lastModified": 1780337665,
+        "narHash": "sha256-RS3F+/6dtBIwd5+47GVen3jAk62/KumFZ4q3RVYafDk=",
         "owner": "rust-lang",
         "repo": "rust-analyzer",
-        "rev": "c5d30e2331acb2cec913a086ab242591f4f367a5",
+        "rev": "55af1774e9e840d3b28d12fcfaa72d2e2caa8ac9",
         "type": "github"
       },
       "original": {
@@ -804,10 +804,10 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1780484186,
-        "narHash": "sha256-Dw/vjjSvNCtRQx0mKPpnm3/X0eEBBxcseUWHvaAKGaE=",
+        "lastModified": 1780486374,
+        "narHash": "sha256-+0wQAtIilfyfI8Z71ay4qScKWDIgal2vnNK+v1py6ik=",
         "ref": "main",
-        "rev": "a3abca5567471f208173abe8d4d346b6f46de9de",
+        "rev": "07034b4521207100ead88b14ac0ededbada7a46e",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrapix.git"
