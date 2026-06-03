@@ -452,8 +452,12 @@ where
             .map_err(|e| WalkError::Verifiers(e.to_string()))?;
         let options = DispatchOptions::default();
         let tier_cwds = TierCwds::default();
-        let pending_executor =
-            DispatchPendingExecutor::new(&[], options.clone(), &self.workspace, tier_cwds.clone());
+        let pending_executor = DispatchPendingExecutor::new(
+            &runner_specs,
+            options.clone(),
+            &self.workspace,
+            tier_cwds.clone(),
+        );
         let integrity_findings = integrity::check(
             &annotations,
             &runner_specs,
@@ -468,7 +472,13 @@ where
                 failures.push(failure);
             }
         }
-        for outcome in run_check(&annotations, &[], &options, &self.workspace, &tier_cwds) {
+        for outcome in run_check(
+            &annotations,
+            &runner_specs,
+            &options,
+            &self.workspace,
+            &tier_cwds,
+        ) {
             failures.extend(dispatch_outcome_to_failures(outcome));
         }
         for outcome in run_system(&annotations, &options) {
@@ -1409,5 +1419,96 @@ mod tests {
         // compile rather than at runtime.
         fn assert_is_mint_walker<W: MintWalker>(_w: &W) {}
         assert_is_mint_walker(&walker);
+    }
+
+    /// Spec contract `specs/gate.md` § Runners, *Runner-owned resolution*:
+    /// a tree-scope `[check]` target resolves and dispatches **because a
+    /// runner claims it**, not because its first token is on PATH. The
+    /// production walker's `run_verifiers` threads the resolved
+    /// `[runner.check.<name>]` specs into both the integrity gate
+    /// forward-resolution *and* the `run_check` batched dispatch.
+    ///
+    /// Behavioral assertion: a `[check]` target whose `tokens[0]` is **not**
+    /// on PATH but is matched by a `[runner.check]` block resolves cleanly —
+    /// no `UnresolvedAnnotation` and no `DispatchError` finding tagged with
+    /// the target. With the runner specs withheld from `run_check` (the
+    /// pre-fix `&[]` path), the unmatched fallback spawns the missing binary
+    /// literally and a `DispatchError` finding fires, so this test pins the
+    /// driver-side `run_check` wiring.
+    #[tokio::test]
+    async fn mint_tree_scope_check_dispatches_runner_owned_target_without_finding() {
+        use loom_driver::profile_manifest::ProfileImageManifest;
+        use loom_driver::state::StateDb;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().to_path_buf();
+
+        // tokens[0] is deliberately absent from PATH; only the runner match
+        // can resolve and dispatch it.
+        const RUNNER_OWNED_TARGET: &str = "loom-runner-only-fixture-7c3a-not-on-path";
+
+        std::fs::create_dir_all(workspace.join("specs")).expect("specs dir");
+        std::fs::write(
+            workspace.join("specs/test-mint.md"),
+            format!("# test-mint\n\n- exercise runner dispatch [check]({RUNNER_OWNED_TARGET})\n"),
+        )
+        .expect("spec");
+        std::fs::write(
+            workspace.join("loom.toml"),
+            "[runner.check.fixture]\nmatch   = '^loom-runner-only-fixture'\ncommand = \"true {targets}\"\nparse   = \"exit-code\"\n",
+        )
+        .expect("loom.toml");
+        let manifest_path = workspace.join("profile-images.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{"base":{"ref":"localhost/wrapix-base:abc","source":"/nix/store/aaa"}}"#,
+        )
+        .expect("manifest");
+        let manifest =
+            Arc::new(ProfileImageManifest::from_path(&manifest_path).expect("manifest parse"));
+        let state = Arc::new(StateDb::open(workspace.join(".loom/state.db")).expect("state db"));
+
+        let responses = vec![ok_stdout("[]"), ok_stdout("[]")];
+        let bd = BdClient::with_runner(ScriptedRunner::new(responses));
+
+        let spawn = move |_cfg: SpawnConfig| async move {
+            Ok((
+                SessionOutcome {
+                    exit_code: 0,
+                    cost_usd: None,
+                },
+                Some(ExitSignal::Complete),
+                "LOOM_COMPLETE\n".to_string(),
+            ))
+        };
+
+        let mut walker = ProductionMintWalker::new(
+            bd,
+            SpecLabel::new("test-mint"),
+            workspace.clone(),
+            state,
+            manifest,
+            ProfileName::new("base"),
+            spawn,
+        );
+
+        let findings = walk(&mut walker, &MintScope::Tree, &AlwaysValid)
+            .await
+            .expect("walk succeeds end-to-end");
+
+        let target_findings: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| {
+                matches!(
+                    &f.target,
+                    FindingTarget::Annotation { target_string }
+                        if target_string == RUNNER_OWNED_TARGET
+                )
+            })
+            .collect();
+        assert!(
+            target_findings.is_empty(),
+            "runner-owned [check] target must resolve and dispatch via its runner, not surface a finding; got {target_findings:?}",
+        );
     }
 }

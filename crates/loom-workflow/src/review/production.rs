@@ -350,7 +350,7 @@ where
         let runner_specs = loom_gate::runner::integrity_runner_specs(&config)
             .map_err(|e| ReviewError::Io(std::io::Error::other(e.to_string())))?;
         let pending_executor = DispatchPendingExecutor::new(
-            &[],
+            &runner_specs,
             DispatchOptions::default(),
             &self.workspace,
             TierCwds::default(),
