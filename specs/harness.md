@@ -328,12 +328,25 @@ checked.
 ### Commit signing
 
 Loom's host-side git operations must sign without prompting for
-the operator's GPG passphrase. Two host-side workspaces sign: the
-loom workspace, where driver-side rebase produces new commits, and
-bead clones, where operator-run git commands during debug or
-host-side tests may commit. Both receive a local `.git/config`
-pointing at the same wrapix-injected SSH signing key the bead
-container uses, making signing non-interactive end-to-end.
+the operator's GPG passphrase. The driver-side rebase produces new
+commits in the loom workspace, which is operated on the host only
+(never bind-mounted into a bead container). It receives a local
+`.git/config` block pointing at the wrapix-injected SSH signing key,
+making driver signing non-interactive.
+
+Bead clones deliberately do **not** receive this local block. A bead
+clone is the workspace wrapix bind-mounts into the bead container,
+where the worker's in-container commits are the load-bearing signed
+path. wrapix's `git-ssh-setup.sh` entrypoint configures container
+signing in the **global** `~/.gitconfig`, pointing `user.signingkey`
+at the in-container key copy (`/etc/wrapix/keys/<basename>`). Because
+a local `.git/config` always beats global, a loom-written local block
+carrying the **host** key path — which does not exist in-container —
+would shadow the entrypoint's correct container path and break the
+worker's `git commit` ("Couldn't load public key …: No such file or
+directory"). So loom writes no signing block into bead clones;
+host-side operator debug/test commits in a clone fall through to the
+operator's global gitconfig instead.
 
 **Key resolution mirrors wrapix's host-side rule** (see
 `lib/sandbox/linux/default.nix` and `scripts/setup-deploy-key` in
@@ -403,31 +416,20 @@ to **host** paths (the loom workspace is operated on the host):
 ```
 
 When `GitClient::create_worktree` materializes a bead clone, it
-writes the same block with the same **host** path values, so
-host-side commits in the clone — operator debug sessions and
-host-side tests — sign against the resolved key and the clone's own
-allowed_signers file without prompting:
-
-```ini
-[gpg]
-    format = ssh
-[user]
-    signingkey = <resolved signing-key host path>
-[gpg "ssh"]
-    allowedSignersFile = <clone>/.git/loom-allowed-signers
-[commit]
-    gpgsign = true
-```
-
-In-container commits do not consume this block: wrapix's
-`git-ssh-setup.sh` entrypoint configures container signing
-independently (see *Scope* below), so loom never writes in-container
-key paths into the clone. The public half is derived from the host
-key (the only place the private key exists at write time). Local
-config beats the operator's `~/.gitconfig` in git's hierarchy, so
-this block is the sole authority on host-side signing inside the loom
-workspace and every bead clone — operator GPG/passphrase setup is
-bypassed without modification.
+writes **no** signing block. The clone is bind-mounted into the bead
+container, where the host key path the block would carry does not
+exist, and a local block beats — and so would shadow — wrapix's
+`git-ssh-setup.sh` global config that points `user.signingkey` at the
+in-container key copy. In-container worker commits therefore sign via
+that wrapix global config; host-side operator debug/test commits in
+the clone fall through to the operator's global gitconfig. The driver
+itself never commits in a bead clone (its commits land in the loom
+workspace), so dropping the clone block does not affect any loom-driven
+signing path. The public half is derived from the host key (the only
+place the private key exists at write time). Local config beats the
+operator's `~/.gitconfig` in git's hierarchy, so the loom-workspace
+block is the sole authority on host-side signing there — operator
+GPG/passphrase setup is bypassed without modification.
 
 **allowed_signers derivation.** Wrapix derives the allowed_signers
 file inside the container via `ssh-keygen -y -f $SIGNING_KEY` against
@@ -2826,14 +2828,15 @@ Criteria.
       `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` fallback
       resolves
   [test](loom_init_writes_signing_gitconfig)
-- `GitClient::create_worktree` writes the signing block into each
-      bead clone's local `.git/config` at materialization time using
-      **host** path values — `user.signingkey` at the resolved key
-      path and `gpg.ssh.allowedSignersFile` at the clone's own
-      `<clone>/.git/loom-allowed-signers` — so host-side debug and
-      test commits sign without prompting; in-container commits are
-      signed by wrapix's `git-ssh-setup.sh` entrypoint
-  [test](create_worktree_writes_signing_gitconfig)
+- `GitClient::create_worktree` writes **no** signing block into a
+      bead clone's local `.git/config`, even when the signing key
+      resolves: the clone is bind-mounted into the bead container,
+      where a local block carrying the host key path would shadow
+      wrapix's `git-ssh-setup.sh` global config and break the
+      worker's in-container `git commit`. In-container commits sign
+      via that wrapix global config; host-side clone commits fall
+      through to the operator's global gitconfig
+  [test](create_worktree_omits_signing_block_in_bead_clone)
 - The fallback keyname is derived as `<repo>-<host>` where `<repo>`
       is parsed from the origin URL (`github.com[:/]<user>/<repo>`)
       and `<host>` is `hostname -s`, matching wrapix's

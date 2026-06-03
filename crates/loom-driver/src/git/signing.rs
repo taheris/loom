@@ -4,9 +4,13 @@
 //! Mirrors wrapix's host-side signing rule (see `lib/sandbox/linux/default.nix`
 //! and `scripts/setup-deploy-key` in the wrapix flake): a two-tier
 //! signing-key resolver feeds a local `.git/config` block that makes commit
-//! signing non-interactive in the loom workspace and every bead clone. The
-//! key resolution and gitconfig writes live here, alongside the rest of the
-//! `git` CLI surface, so the `git_client_encapsulation` rule stays satisfied.
+//! signing non-interactive in the host-only loom workspace. The block is
+//! written ONLY into that workspace — never into bead clones, whose
+//! in-container worker commits are signed by wrapix's `git-ssh-setup.sh`
+//! global config and would be broken by a host-path local block that shadows
+//! it (`specs/harness.md` § Commit signing). The key resolution and gitconfig
+//! writes live here, alongside the rest of the `git` CLI surface, so the
+//! `git_client_encapsulation` rule stays satisfied.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -196,6 +200,12 @@ fn resolve_hostname() -> Option<String> {
 /// `gpg.ssh.allowedSignersFile=<target_dir>/.git/loom-allowed-signers`, and
 /// `commit.gpgsign=true`. Local config beats the operator's `~/.gitconfig`,
 /// so this is the sole authority on signing inside the workspace.
+///
+/// `target_dir` must be the host-only loom workspace, NOT a bead clone:
+/// `user.signingkey` holds the HOST key path, which does not exist inside the
+/// wrapix bead container, and a local block in a container-mounted clone would
+/// shadow wrapix's `git-ssh-setup.sh` global config and break the worker's
+/// in-container `git commit` (`specs/harness.md` § Commit signing).
 ///
 /// The allowed_signers file is derived with `ssh-keygen -y -f <signing_key>`
 /// and prefixed with the wrapix signing identity (`$GIT_AUTHOR_EMAIL`, or

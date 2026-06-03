@@ -1052,16 +1052,20 @@ async fn signature_verification_runs_when_key_present() -> Result<()> {
         .context("allowed_signers principal")?
         .to_string();
 
-    // Sign the bead commit with the same key (via the override seam) so the
-    // loom-workspace allowed_signers file trusts it.
-    let mut client = GitClient::open(repo.path())?;
-    client.set_signing_key_override(key.clone());
+    // Sign the bead commit with the same key the loom-workspace
+    // allowed_signers file trusts. The bead clone carries no signing block
+    // (it would shadow wrapix's container global config), so the signing key
+    // and format are passed explicitly here — standing in for the wrapix
+    // `git-ssh-setup.sh` global config that signs the worker's commits
+    // in-container.
+    let client = GitClient::open(repo.path())?;
     let label = SpecLabel::new("harness");
     let bead = BeadId::new("lm-sig.1")?;
     let created = client.create_worktree(&label, &bead).await?;
     std::fs::write(created.path.join("agent-change.txt"), "agent work\n")?;
     git(&created.path, &["add", "agent-change.txt"])?;
     let email_arg = format!("user.email={identity}");
+    let signingkey_arg = format!("user.signingkey={}", key.to_string_lossy());
     git(
         &created.path,
         &[
@@ -1069,6 +1073,10 @@ async fn signature_verification_runs_when_key_present() -> Result<()> {
             email_arg.as_str(),
             "-c",
             "user.name=loom",
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            signingkey_arg.as_str(),
             "commit",
             "-S",
             "-q",
@@ -1641,18 +1649,18 @@ fn local_config(repo: &Path, key: &str) -> Result<Option<String>> {
 }
 
 /// Spec contract `[test]` annotation (`specs/harness.md` § Success
-/// Criteria · Commit signing): `GitClient::create_worktree` writes the
-/// signing block into the bead clone's local `.git/config` when a signing
-/// key resolves, using host paths so host-side debug/test commits sign
-/// against the resolved key and the clone's own allowed_signers file:
-/// `user.signingkey` → the resolved key path and
-/// `gpg.ssh.allowedSignersFile` → `<clone>/.git/loom-allowed-signers`.
-/// In-container commits are signed via wrapix's `git-ssh-setup.sh`
-/// entrypoint. Driven through the test-only override seam because
+/// Criteria · Commit signing): `GitClient::create_worktree` writes **no**
+/// signing block into the bead clone's local `.git/config`, even when a
+/// signing key resolves. A local block would carry the HOST key path, which
+/// does not exist inside the wrapix bead container; because local config
+/// beats global, it would shadow wrapix's `git-ssh-setup.sh` global config
+/// (which points `user.signingkey` at the in-container key copy) and break
+/// the worker's in-container `git commit`. Driven through the test-only
+/// override seam — which forces the key to resolve — because
 /// `$WRAPIX_SIGNING_KEY` cannot be set under edition 2024's unsafe
 /// `env::set_var` with `unsafe_code` forbidden.
 #[tokio::test]
-async fn create_worktree_writes_signing_gitconfig() -> Result<()> {
+async fn create_worktree_omits_signing_block_in_bead_clone() -> Result<()> {
     let repo = init_repo()?;
     let key = gen_signing_key(repo.path())?;
     let mut client = GitClient::open(repo.path())?;
@@ -1662,30 +1670,28 @@ async fn create_worktree_writes_signing_gitconfig() -> Result<()> {
     let bead = BeadId::new("lm-sign.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
-    assert_eq!(
-        local_config(&created.path, "gpg.format")?.as_deref(),
-        Some("ssh"),
-    );
-    assert_eq!(
-        local_config(&created.path, "user.signingkey")?.as_deref(),
-        Some(key.to_string_lossy().as_ref()),
-        "user.signingkey must be the resolved host key path",
-    );
-    assert_eq!(
-        local_config(&created.path, "commit.gpgsign")?.as_deref(),
-        Some("true"),
-    );
-    let signers = created.path.join(".git").join("loom-allowed-signers");
+    // No signing keys are written into the clone's local config, so the
+    // wrapix container global config remains the sole in-container authority.
+    for k in [
+        "gpg.format",
+        "user.signingkey",
+        "commit.gpgsign",
+        "gpg.ssh.allowedSignersFile",
+    ] {
+        assert_eq!(
+            local_config(&created.path, k)?,
+            None,
+            "bead clone must carry no local `{k}` — it would shadow wrapix's \
+             container global signing config and break the worker's commit",
+        );
+    }
     assert!(
-        signers.is_file(),
-        "allowed_signers file must be derived into the bead clone: {signers:?}",
-    );
-    assert_eq!(
-        local_config(&created.path, "gpg.ssh.allowedSignersFile")?
-            .as_deref()
-            .map(std::path::PathBuf::from),
-        Some(signers.clone()),
-        "allowedSignersFile must point at the clone's own allowed_signers file",
+        !created
+            .path
+            .join(".git")
+            .join("loom-allowed-signers")
+            .exists(),
+        "no allowed_signers file should be derived into the bead clone",
     );
     Ok(())
 }

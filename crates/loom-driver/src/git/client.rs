@@ -389,23 +389,21 @@ impl GitClient {
 
         ensure_wrapix_mount_dir(&path)?;
 
-        // Resolve against the loom workspace (whose `origin` is GitHub), not
-        // the bead clone (whose `origin` is the loom workspace path). The
-        // block signs host-side debug/test commits in the clone; in-container
-        // commits are signed by wrapix's git-ssh-setup.sh entrypoint.
-        let signing_target = path.clone();
-        let signing_override = self.signing_override();
-        spawn_blocking(move || -> Result<(), GitError> {
-            let key = match signing_override {
-                Some(key) => Some(key),
-                None => super::signing::resolve_signing_key(&loom_workspace)?,
-            };
-            if let Some(key) = key {
-                super::signing::write_signing_config(&signing_target, &key)?;
-            }
-            Ok(())
-        })
-        .await??;
+        // No signing block is written into the bead clone. The clone is the
+        // workspace wrapix bind-mounts into the bead container, where the
+        // worker's commits are the load-bearing signed path. wrapix's
+        // `git-ssh-setup.sh` entrypoint configures container signing in the
+        // GLOBAL `~/.gitconfig`, pointing `user.signingkey` at the
+        // in-container key copy (`/etc/wrapix/keys/<id>-nix-signing`). A local
+        // `.git/config` block here would carry the HOST key path — which does
+        // not exist in-container — and local config beats global, so the block
+        // would shadow the entrypoint's correct container path and break the
+        // worker's `git commit` with "Couldn't load public key ...". Host-side
+        // operator debug/test commits in the clone instead fall through to the
+        // operator's global gitconfig. Only the host-only loom workspace
+        // (never container-mounted) carries loom's local signing block, so it
+        // is free of this host/container path conflict (`specs/harness.md`
+        // § Commit signing).
 
         Ok(CreatedWorktree { path, branch })
     }
