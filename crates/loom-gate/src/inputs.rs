@@ -17,11 +17,7 @@
 //!    `{"inputs": {"<fn>": ["glob", ...], ...}}` for every rubric the
 //!    script defines; the per-function entries are cached per session so a
 //!    script referenced from N criteria spawns the harness once.
-//! 3. **`[check]` / `[system]` script header** — the first `~10` lines of
-//!    the referenced script are scanned (literal string-search,
-//!    language-agnostic) for a `# loom-inputs: <comma-separated globs>`
-//!    line.
-//! 4. **`[check]` / `[system]` `--print-inputs` protocol** — a target a
+//! 3. **`[check]` / `[system]` `--print-inputs` protocol** — a target a
 //!    runner `match`es is owned by that runner: the query is issued
 //!    through the runner's `inputs` command template (with the
 //!    `{print_inputs}` flag placed where the template dictates), batched
@@ -31,7 +27,7 @@
 //!    Stdout is parsed as the single `{"inputs": ["glob1", ...]}` or batch
 //!    `{"inputs": {"<target>": [...]}}` form; results are cached per
 //!    session.
-//! 5. **Heuristic fallback** — best-effort path extraction from the
+//! 4. **Heuristic fallback** — best-effort path extraction from the
 //!    command tokens. Recognises `grep`-style file arguments and
 //!    `cargo test -p <crate>` patterns.
 //!
@@ -44,7 +40,6 @@
 //! verifier under any finite scope.
 
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -55,12 +50,6 @@ use thiserror::Error;
 use crate::annotation::{Annotation, Tier};
 use crate::dispatch::TestScope;
 use crate::runner::{RunnerSpec, group_by_runner};
-
-/// Header tag the resolver searches for inside a script's first lines.
-const LOOM_INPUTS_HEADER: &str = "# loom-inputs:";
-
-/// How many lines from the top of a script are scanned for the header.
-const SCRIPT_HEADER_LINE_BUDGET: usize = 10;
 
 /// Repo-relative paths/globs declared as the verifier's inputs. The
 /// gate filters verifiers by intersecting these with the scope's
@@ -254,7 +243,7 @@ impl InputResolver {
     }
 
     /// True iff the verifier declares no inputs of its own — every
-    /// declaration source (test-framework metadata, script header,
+    /// declaration source (test-framework metadata, judge collect mode,
     /// `--print-inputs`, heuristic fallback) yielded nothing, so the
     /// resolved input set would be the spec-section auto-include alone.
     /// Per `specs/gate.md` § Verifier inputs (*Conservative default*)
@@ -339,12 +328,6 @@ impl InputResolver {
             return Vec::new();
         }
 
-        if let Some(script_path) = self.script_in_repo(&tokens, &annotation.source_spec)
-            && let Some(paths) = read_script_header(&script_path)
-        {
-            return paths;
-        }
-
         if let Some(paths) = self.runner_owned_inputs(annotation) {
             return paths;
         }
@@ -406,25 +389,6 @@ impl InputResolver {
                 .cloned()
                 .unwrap_or_default(),
         )
-    }
-
-    /// Find the first command token that names a script file on disk,
-    /// resolved through the shared spec-relative helper the integrity gate
-    /// uses for `[judge]` targets — selector-stripped and joined against
-    /// the spec file's own directory — so the input resolver and integrity
-    /// gate cannot disagree about where the script lives.
-    fn script_in_repo(&self, tokens: &[String], source_spec: &Path) -> Option<PathBuf> {
-        for tok in tokens {
-            if let Some(resolved) = crate::integrity::resolve_spec_relative_script_path(
-                tok,
-                source_spec,
-                &self.repo_root,
-            ) && resolved.is_file()
-            {
-                return Some(resolved);
-            }
-        }
-        None
     }
 
     fn invoke_print_inputs(&self, tokens: &[String]) -> Option<Vec<PathBuf>> {
@@ -632,26 +596,6 @@ fn target_selector(target: &str) -> Option<&str> {
     }
 }
 
-fn read_script_header(path: &Path) -> Option<Vec<PathBuf>> {
-    let body = fs::read_to_string(path).ok()?;
-    for line in body.lines().take(SCRIPT_HEADER_LINE_BUDGET) {
-        let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix(LOOM_INPUTS_HEADER) {
-            let globs: Vec<PathBuf> = rest
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(PathBuf::from)
-                .collect();
-            if globs.is_empty() {
-                return None;
-            }
-            return Some(globs);
-        }
-    }
-    None
-}
-
 /// Extract `-p <crate>` (or `--package <crate>`) from a `cargo test`
 /// invocation; returns `None` for non-cargo-test commands or when no
 /// package is named.
@@ -721,6 +665,7 @@ mod tests {
     use super::*;
 
     use std::collections::HashMap;
+    use std::fs;
 
     fn ann(tier: Tier, target: &str, spec: &str) -> Annotation {
         Annotation {
@@ -784,7 +729,9 @@ mod tests {
     }
 
     #[test]
-    fn check_tier_reads_loom_inputs_header_from_script() {
+    fn check_tier_ignores_in_script_loom_inputs_header() {
+        // The retired in-script `# loom-inputs:` header is inert: its globs
+        // must never surface, since inputs now come only by execution.
         let dir = tempfile::tempdir().unwrap();
         let script_path = dir.path().join("walk.sh");
         fs::write(
@@ -797,29 +744,19 @@ mod tests {
         let target = format!("sh {}", script_path.display());
         let a = ann(Tier::Check, &target, "specs/gate.md");
         let got = resolver.resolve(&a);
-        assert!(got.paths.contains(&PathBuf::from("src/walk/*.rs")));
-        assert!(got.paths.contains(&PathBuf::from("src/lib.rs")));
-        assert!(got.paths.contains(&PathBuf::from("specs/gate.md")));
-    }
-
-    #[test]
-    fn script_header_ignored_past_line_budget() {
-        let dir = tempfile::tempdir().unwrap();
-        let script_path = dir.path().join("late.sh");
-        let mut body = String::from("#!/bin/sh\n");
-        for _ in 0..15 {
-            body.push_str("# padding line\n");
-        }
-        body.push_str("# loom-inputs: never-seen.rs\n");
-        fs::write(&script_path, body).unwrap();
-
-        let mut resolver = InputResolver::new(dir.path().to_path_buf());
-        let target = format!("sh {}", script_path.display());
-        let a = ann(Tier::Check, &target, "specs/x.md");
-        let got = resolver.resolve(&a);
         assert!(
-            !got.paths.contains(&PathBuf::from("never-seen.rs")),
-            "header past line budget must be ignored: {:?}",
+            !got.paths.contains(&PathBuf::from("src/walk/*.rs")),
+            "in-script header glob must not be read: {:?}",
+            got.paths,
+        );
+        assert!(
+            !got.paths.contains(&PathBuf::from("src/lib.rs")),
+            "in-script header glob must not be read: {:?}",
+            got.paths,
+        );
+        assert!(
+            got.paths.contains(&PathBuf::from("specs/gate.md")),
+            "spec section still auto-included: {:?}",
             got.paths,
         );
     }
@@ -843,9 +780,8 @@ mod tests {
 
         let mut resolver = InputResolver::new(dir.path().to_path_buf());
         // Target's first token resolves to a binary supporting the
-        // protocol. The script-header source must skip it (the script
-        // body has no `# loom-inputs:` line) so we fall through to
-        // --print-inputs.
+        // protocol, so the unmatched-runner path falls through to the
+        // `--print-inputs` probe on the command's first token.
         let target = format!("{} walks/foo", helper.display());
         let a = ann(Tier::Check, &target, "specs/x.md");
         let got = resolver.resolve(&a);
@@ -968,40 +904,6 @@ mod tests {
         assert!(
             !resolver.declares_no_inputs(&a),
             "a judge rubric calling judge_files declares inputs",
-        );
-    }
-
-    #[test]
-    fn script_target_resolved_via_shared_spec_relative_helper() {
-        let dir = tempfile::tempdir().unwrap();
-        // [check] target IS a script-file path with a `#fn` selector and a
-        // spec-relative `..`; resolution must strip the selector and join
-        // against the spec dir (shared judge helper), not repo-root-join.
-        let script_dir = dir.path().join("tests/checks");
-        fs::create_dir_all(&script_dir).unwrap();
-        fs::write(
-            script_dir.join("walk.sh"),
-            "#!/bin/sh\n# loom-inputs: crates/loom-walk/src/**, specs/walk.md\necho hi\n",
-        )
-        .unwrap();
-
-        let mut resolver = InputResolver::new(dir.path().to_path_buf());
-        let a = ann(
-            Tier::Check,
-            "../tests/checks/walk.sh#check_fn",
-            "specs/harness.md",
-        );
-        let got = resolver.resolve(&a);
-        assert!(
-            got.paths
-                .contains(&PathBuf::from("crates/loom-walk/src/**")),
-            "check script header glob resolved spec-relative with selector stripped: {:?}",
-            got.paths,
-        );
-        assert!(
-            got.paths.contains(&PathBuf::from("specs/walk.md")),
-            "header glob + spec auto-include: {:?}",
-            got.paths,
         );
     }
 

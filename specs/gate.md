@@ -3077,12 +3077,11 @@ Loop-side interpretation of these exit codes — routing `refused` to
   owning crate's source directories (via `cargo metadata`) and the spec
   section the annotation lives in (spec-section auto-include)
   [test](test_tier_resolution_uses_cargo_metadata_plus_spec_autoinclude)
-- A `[judge]` target — and any `[check]` / `[system]` target that is a
-  script-file path — is located by shared selector-stripping (`#fn` /
+- A `[judge]` target is located by shared selector-stripping (`#fn` /
   `::fn` / `::attr`) plus spec-relative resolution, the same helper the
   integrity gate uses, so the input resolver and integrity gate cannot
   disagree about where the script lives
-  [test](script_target_resolved_via_shared_spec_relative_helper)
+  [test](judge_tier_strips_selector_and_collects_relative_to_spec_dir)
 - A judge script reports per-function inputs via `<script> --print-inputs
   <fn>` collect mode — `judge_files` records its path arguments while
   `judge_criterion` and the LLM call are skipped, and the recorded paths

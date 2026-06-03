@@ -3,7 +3,7 @@
 //! live `cargo metadata`-backed [`CargoMetadataScope`].
 //!
 //! The inline tests in `src/inputs.rs` cover the pure source paths
-//! (script-header parsing, `--print-inputs` spawn, heuristics, override)
+//! (judge collect mode, `--print-inputs` spawn, heuristics, override)
 //! against synthetic fixtures. This integration test wires the resolver
 //! to the real workspace's cargo metadata so the `[test]` source
 //! actually examines the loom-gate crate's transitive dep closure.
