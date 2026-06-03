@@ -2341,7 +2341,6 @@ fn run_loop_cmd(
         .with_handoff_lock(guard)
         .with_style_rules(style_rules_for_run)
         .with_loom_config(loom_cfg_for_run)
-        .with_beads_push_program(resolve_beads_push_program())
         .with_phase_log_root(logs_root_for_controller);
         run_loop(&mut controller, mode, retry_policy, max_iterations).await
     })?;

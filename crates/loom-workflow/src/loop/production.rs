@@ -24,7 +24,7 @@ use loom_driver::bd::{
 };
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomTopConfig, Phase};
-use loom_driver::git::{CreatedWorktree, GitClient, RebaseOutcome};
+use loom_driver::git::{CreatedWorktree, GitClient, GitOid, RebaseOutcome};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
 use loom_driver::logging::phase_log_path;
@@ -40,7 +40,6 @@ use super::context::{LoopContextInputs, render_loop_prompt};
 use super::driver_emit::BeadEmit;
 use super::error::LoopError;
 use super::outcome::{AgentOutcome, SessionResult};
-use super::post_merge_push::{default_beads_push_program, push_merged_main_then_beads};
 use super::runner::{AgentLoopController, PerBeadGateOutcome};
 use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 use super::tree_clean::dirty_paths_from_porcelain;
@@ -50,7 +49,7 @@ use crate::review::{
     decide,
 };
 use crate::todo::{ExitSignal, parse_exit_signal};
-use loom_templates::previous_failure::TerminalSurface;
+use loom_templates::previous_failure::{TerminalSurface, VerifierFailure};
 use loom_templates::run::PreviousFailure;
 
 /// Env var the molecule-completion handoff sets when spawning `loom gate
@@ -120,11 +119,6 @@ where
     /// § *molecule_completion_review_threads_findings_into_previous_failure_review_concern*.
     /// Consumed once (take); cleared on first read.
     stashed_review_concern: Option<PreviousFailure>,
-    /// Program invoked to sync the beads remote after `git push` lands.
-    /// Defaults to `beads-push` on `PATH`; tests override with a stub
-    /// script that exits 0 (or records calls) so cargo nextest does not
-    /// shell out to the real remote.
-    beads_push_program: PathBuf,
     /// Per-bead JSONL log root. When set, the controller appends driver
     /// events (`bead_branch_pushed`, `merge_ok`, `tree_not_clean`,
     /// `retry_dispatch`, …) into the current bead's `.jsonl` so the
@@ -143,6 +137,13 @@ where
     /// post-session merge/push/cleanup window. Reset at the start of
     /// each `run_bead` call.
     current_emit: Option<BeadEmit>,
+    /// Integration tip the current bead's ff-merge advanced past, captured
+    /// in `run_bead` only when the merge actually moved the integration
+    /// branch. `exec_per_bead_gate`'s audit-fail rollback consumes it: a
+    /// bead that added no commit leaves this `None`, so the rollback is
+    /// skipped rather than unwinding a prior bead's commit
+    /// (`specs/harness.md` § Verdict Gate — `post-integrate-fail`).
+    pre_integration_tip: Option<GitOid>,
 }
 
 impl<S, F, R: CommandRunner> ProductionAgentLoopController<S, F, R>
@@ -176,10 +177,10 @@ where
             style_rules: "docs/style-rules.md".to_string(),
             stashed_previous_failure: None,
             stashed_review_concern: None,
-            beads_push_program: default_beads_push_program(),
             logs_root: None,
             current_emit: None,
             loom_cfg: LoomTopConfig::default(),
+            pre_integration_tip: None,
         }
     }
 
@@ -206,15 +207,6 @@ where
     /// before spawning the `loom review` child (which acquires the same lock).
     pub fn with_handoff_lock(mut self, guard: LockGuard) -> Self {
         self.lock = Some(guard);
-        self
-    }
-
-    /// Override the program used to sync the beads remote after `git push`.
-    /// Production callers rely on the `beads-push`-on-`PATH` default; tests
-    /// override with a stub script to avoid shelling out to the real remote
-    /// while still exercising the post-merge push path.
-    pub fn with_beads_push_program(mut self, program: PathBuf) -> Self {
-        self.beads_push_program = program;
         self
     }
 
@@ -555,70 +547,27 @@ where
                     {
                         return Ok(outcome);
                     }
+                    // Capture the pre-merge integration tip so the per-bead
+                    // audit can tell whether this bead actually advanced the
+                    // line; a no-op ff (bead committed nothing) leaves the
+                    // rollback target unset so `exec_per_bead_gate` does not
+                    // unwind a prior bead's commit.
+                    let pre_tip = self.git.integration_commit_sha().await?;
                     self.git.ff_merge_integration(&worktree.branch).await?;
-                    let main_sha = self.git.head_commit_sha().await?.to_string();
+                    let main_sha = self.git.integration_commit_sha().await?;
+                    self.pre_integration_tip = (main_sha != pre_tip).then_some(pre_tip);
                     self.emit_to_log(
                         DriverKind::MergeOk,
                         &format!("merge ok: {} → main", worktree.branch),
                         serde_json::json!({
                             "bead_id": bead.id.to_string(),
                             "branch": worktree.branch,
-                            "main_sha": main_sha,
+                            "main_sha": main_sha.to_string(),
                         }),
                     );
-                    // Per-bead push of the freshly-merged driver branch to
-                    // GitHub plus a beads-remote sync. Without this, beads
-                    // closed by the loop only reach `origin` at the
-                    // molecule-end review-phase push — which on long
-                    // molecules may not fire for hours. Preserve the
-                    // workspace on push failure so a transient blip is
-                    // recoverable (mirrors merge-conflict semantics) and
-                    // the local/remote divergence cannot pile up silently.
-                    if let Err(e) = push_merged_main_then_beads(
-                        &self.git,
-                        &self.workspace,
-                        &self.beads_push_program,
-                    )
-                    .await
-                    {
-                        warn!(
-                            bead = %bead.id,
-                            branch = %worktree.branch,
-                            path = %worktree.path.display(),
-                            error = %e,
-                            "push failed — worktree preserved for retry",
-                        );
-                        self.emit_to_log(
-                            DriverKind::PostMergePushFailed,
-                            &format!("post-merge push failed: {e}"),
-                            serde_json::json!({
-                                "bead_id": bead.id.to_string(),
-                                "branch": worktree.branch,
-                                "worktree_path": worktree.path.to_string_lossy(),
-                                "error": e.to_string(),
-                            }),
-                        );
-                        // Route to Blocked, not Failure: the worktree is
-                        // intentionally preserved on disk for human
-                        // inspection, and retrying would invoke
-                        // `create_worktree` against the still-existing
-                        // directory and abort the entire `loom loop` with
-                        // a fatal `git clone` error.
-                        return Ok(AgentOutcome::Blocked {
-                            reason: format!(
-                                "push failed: {e}; worktree preserved at {} on branch {} for retry",
-                                worktree.path.display(),
-                                worktree.branch,
-                            ),
-                        });
-                    }
-                    self.emit_to_log(
-                        DriverKind::PostMergePushOk,
-                        &format!("post-merge push ok for bead {}", bead.id),
-                        serde_json::json!({
-                            "bead_id": bead.id.to_string(),
-                        }),
-                    );
+                    // Per-bead integration never pushes; origin is reached
+                    // once per molecule, post-audit, by the push gate
+                    // (specs/harness.md § Verdict Gate, phase 5).
                     self.git.remove_worktree(&worktree.path).await?;
                     self.git.delete_branch(&worktree.branch).await?;
                     self.emit_to_log(
@@ -901,6 +850,32 @@ where
             let detail = format!(
                 "loom gate verify --bead {bead} exited {verify_exit}\n\
                  stdout:\n{stdout_tail}\nstderr:\n{stderr_tail}",
+            );
+            // Audit-fail rolls the ff-merge back one commit and threads the
+            // failing verifier into the next dispatch (specs/harness.md
+            // § Verdict Gate — post-integrate-fail). The rollback only fires
+            // when this bead's ff actually advanced the integration tip — a
+            // bead that committed nothing leaves nothing to unwind.
+            let rolled_back = self.pre_integration_tip.take().is_some();
+            if rolled_back {
+                self.git.rollback_integration().await?;
+            }
+            self.stashed_previous_failure = Some(PreviousFailure::PostIntegrateFail {
+                failures: vec![VerifierFailure::new(
+                    format!("loom gate verify --bead {bead}"),
+                    verify_exit,
+                    format!("{stdout_tail}\n{stderr_tail}"),
+                )],
+            });
+            self.emit_to_log(
+                DriverKind::VerdictGate,
+                &format!("post-integrate-fail: integration audit failed for bead {bead}"),
+                serde_json::json!({
+                    "bead_id": bead.to_string(),
+                    "cause": "post-integrate-fail",
+                    "verify_exit": verify_exit,
+                    "rolled_back": rolled_back,
+                }),
             );
             return Ok(PerBeadGateOutcome::Recovery { detail });
         }
@@ -1445,19 +1420,6 @@ mod tests {
         loom_driver::git::init_test_repo_with_integration(workspace).expect("init test repo")
     }
 
-    /// Write a `beads-push` stub at `dir/beads-push-stub.sh` that exits 0.
-    /// Threaded into `ProductionAgentLoopController::with_beads_push_program`
-    /// in tests that reach the post-merge push path so cargo nextest does
-    /// not shell out to the real beads remote.
-    fn beads_push_stub(dir: &std::path::Path) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        let stub = dir.join("beads-push-stub.sh");
-        std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("write stub");
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod stub");
-        stub
-    }
-
     fn bead(id: &str) -> Bead {
         Bead {
             id: BeadId::new(id).expect("valid bead id"),
@@ -1479,7 +1441,6 @@ mod tests {
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
-        let stub = beads_push_stub(dir.path());
         let captured: Arc<Mutex<Option<SpawnConfig>>> = Arc::new(Mutex::new(None));
         let captured_for_closure = Arc::clone(&captured);
         let mut controller = ProductionAgentLoopController::new(
@@ -1504,8 +1465,7 @@ mod tests {
                     )
                 }
             },
-        )
-        .with_beads_push_program(stub);
+        );
         let outcome = controller
             .run_bead(&bead("lm-1"), None)
             .await
@@ -1527,7 +1487,6 @@ mod tests {
         let manifest = write_manifest(dir.path());
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
-        let stub = beads_push_stub(dir.path());
         let captured: Arc<Mutex<Option<SpawnConfig>>> = Arc::new(Mutex::new(None));
         let captured_for_closure = Arc::clone(&captured);
         let prompt_seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -1560,8 +1519,7 @@ mod tests {
                     )
                 }
             },
-        )
-        .with_beads_push_program(stub);
+        );
         let bead = Bead {
             id: BeadId::new("lm-99").expect("bead id"),
             title: "Implement the harness".into(),
@@ -2899,6 +2857,175 @@ mod tests {
         assert_eq!(
             calls[1], "gate mint --bead lm-1 -s gate",
             "second subprocess argv must be `loom gate mint --bead <id> -s <spec>` after verify",
+        );
+    }
+
+    /// A non-zero `loom gate verify --bead` against the integrated tree is
+    /// the `post-integrate-fail` audit failure: the integration is rolled
+    /// back (`git reset --hard HEAD~1`), `PreviousFailure::PostIntegrateFail`
+    /// is stashed for the next dispatch, the mint step never runs, and the
+    /// bead routes to recovery (specs/harness.md § Verdict Gate).
+    #[tokio::test]
+    async fn exec_per_bead_gate_verify_fail_rolls_back_and_stashes_post_integrate_fail() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let loom_ws = git.loom_workspace();
+        let base_tip = loom_driver::git::sync_head_commit_sha(&loom_ws).expect("base sha");
+
+        // Stand in for the just-ff'd bead commit so `reset --hard HEAD~1`
+        // has a commit to unwind back to the pre-merge tip.
+        std::fs::write(loom_ws.join("integrated.txt"), "merged\n").expect("write");
+        loom_driver::git::commit_all_in(&loom_ws, "integrated bead").expect("commit");
+        assert_ne!(
+            loom_driver::git::sync_head_commit_sha(&loom_ws)
+                .expect("ff'd sha")
+                .to_string(),
+            base_tip.to_string(),
+            "the ff-merge stand-in must advance the integration branch",
+        );
+
+        let stub = dir.path().join("loom-stub.sh");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\n\
+             set -euo pipefail\n\
+             case \"$2\" in\n\
+                 verify) echo 'verifier failed: cargo test' >&2; exit 1 ;;\n\
+                 mint) echo 'mint must not run after verify-fail' ; exit 99 ;;\n\
+             esac\n\
+             exit 0\n",
+        )
+        .expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod stub");
+
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            SpecLabel::new("gate"),
+            stub.clone(),
+            workspace.clone(),
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                panic!("spawn closure must not fire during exec_per_bead_gate");
+            },
+        );
+
+        // `run_bead` would set this before the ff-merge; the test drives
+        // `exec_per_bead_gate` directly, so seed the pre-merge tip the
+        // advancing commit moved past.
+        controller.pre_integration_tip = Some(base_tip.clone());
+
+        let bead_id = BeadId::new("lm-1").expect("valid bead id");
+        let outcome = controller
+            .exec_per_bead_gate(&bead_id)
+            .await
+            .expect("exec_per_bead_gate ok");
+
+        assert!(
+            matches!(outcome, PerBeadGateOutcome::Recovery { .. }),
+            "verify-fail must route to Recovery, got {outcome:?}",
+        );
+        let rolled_back = loom_driver::git::sync_head_commit_sha(&loom_ws)
+            .expect("rolled-back sha")
+            .to_string();
+        assert_eq!(
+            rolled_back,
+            base_tip.to_string(),
+            "audit-fail must reset the integration branch back to its pre-merge tip",
+        );
+        assert!(
+            !loom_ws.join("integrated.txt").exists(),
+            "reset --hard must drop the rolled-back commit's content",
+        );
+        match controller.stashed_previous_failure {
+            Some(PreviousFailure::PostIntegrateFail { ref failures }) => {
+                assert_eq!(failures.len(), 1, "one verifier-failure block expected");
+                assert_eq!(failures[0].exit_code, 1);
+                assert!(
+                    failures[0].target.contains("loom gate verify --bead lm-1"),
+                    "failure block names the failing verifier: {:?}",
+                    failures[0].target,
+                );
+            }
+            other => panic!("expected stashed PostIntegrateFail, got {other:?}"),
+        }
+    }
+
+    /// A verify-fail on a bead whose ff advanced nothing
+    /// (`pre_integration_tip == None`) must NOT roll back — there is no
+    /// bead commit to unwind, and `reset --hard HEAD~1` against a tip with
+    /// no parent would abort the loop. The bead still stashes
+    /// `PostIntegrateFail` and routes to recovery.
+    #[tokio::test]
+    async fn exec_per_bead_gate_verify_fail_skips_rollback_when_integration_did_not_advance() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let loom_ws = git.loom_workspace();
+        let root_tip = loom_driver::git::sync_head_commit_sha(&loom_ws)
+            .expect("root sha")
+            .to_string();
+
+        let stub = dir.path().join("loom-stub.sh");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\n\
+             set -euo pipefail\n\
+             case \"$2\" in\n\
+                 verify) echo 'verifier failed' >&2; exit 1 ;;\n\
+             esac\n\
+             exit 0\n",
+        )
+        .expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod stub");
+
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            SpecLabel::new("gate"),
+            stub.clone(),
+            workspace.clone(),
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                panic!("spawn closure must not fire during exec_per_bead_gate");
+            },
+        );
+        // `pre_integration_tip` stays None: the bead committed nothing.
+
+        let bead_id = BeadId::new("lm-1").expect("valid bead id");
+        let outcome = controller
+            .exec_per_bead_gate(&bead_id)
+            .await
+            .expect("exec_per_bead_gate must not abort when there is nothing to roll back");
+
+        assert!(
+            matches!(outcome, PerBeadGateOutcome::Recovery { .. }),
+            "verify-fail still routes to Recovery, got {outcome:?}",
+        );
+        assert_eq!(
+            loom_driver::git::sync_head_commit_sha(&loom_ws)
+                .expect("post sha")
+                .to_string(),
+            root_tip,
+            "no-advance verify-fail must leave the integration tip untouched",
+        );
+        assert!(
+            matches!(
+                controller.stashed_previous_failure,
+                Some(PreviousFailure::PostIntegrateFail { .. })
+            ),
+            "PostIntegrateFail is stashed even when nothing was rolled back",
         );
     }
 }

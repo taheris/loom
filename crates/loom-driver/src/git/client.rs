@@ -1128,6 +1128,50 @@ impl GitClient {
         })
     }
 
+    /// Commit SHA the integration branch currently points at, read in the
+    /// loom workspace (`git rev-parse <integration-branch>`). Used to tell
+    /// whether a bead's ff-merge actually advanced the integration line so
+    /// the per-bead audit rollback fires only when there is a bead commit
+    /// to unwind (`specs/harness.md` § Verdict Gate).
+    pub async fn integration_commit_sha(&self) -> Result<GitOid, GitError> {
+        let output = run_git_raw(
+            &self.loom_workspace(),
+            self.clock.as_ref(),
+            ["rev-parse", self.integration_branch.as_str()],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(cli_error(&output));
+        }
+        let raw = String::from_utf8(output.stdout)?;
+        Ok(GitOid::new(raw.trim())?)
+    }
+
+    /// Roll the integration branch back one commit (`git reset --hard
+    /// HEAD~1`) in the loom workspace.
+    ///
+    /// The per-bead audit (`loom gate verify --bead`) runs after the
+    /// ff-merge but before any origin push; an audit failure undoes the
+    /// just-merged commit so the integration line returns to its
+    /// pre-merge tip and the next iteration sees the cross-bead breakage
+    /// (`specs/harness.md` § Verdict Gate — `post-integrate-fail`). Takes
+    /// the loom workspace's `index.lock`; a cross-spec peer holding it
+    /// loses the race to a retryable [`GitError::IndexLocked`].
+    pub async fn rollback_integration(&self) -> Result<(), GitError> {
+        let output = run_git_index_mut(
+            &self.loom_workspace(),
+            self.clock.as_ref(),
+            ["reset", "--hard", "HEAD~1"],
+            None,
+        )
+        .await?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(cli_error(&output))
+    }
+
     /// Check out the configured integration branch in the loom workspace.
     ///
     /// A successful [`Self::rebase_onto_integration`] leaves the workspace
@@ -1463,6 +1507,16 @@ fn init_bare_test_repo(path: &Path, branch: &str) -> Result<GitClient, GitError>
     run_test_git(path, &["remote", "add", "origin", &origin_url])?;
     run_test_git(path, &["push", "-q", "-u", "origin", branch])?;
     GitClient::open(path)
+}
+
+/// Stage all changes in `workspace` and commit them with `msg`. Test
+/// support for exercising the loom-workspace integration line (e.g. the
+/// `post-integrate-fail` rollback) without callers outside this module
+/// shelling `git`, which the git-client-encapsulation gate forbids.
+#[doc(hidden)]
+pub fn commit_all_in(workspace: &Path, msg: &str) -> Result<(), GitError> {
+    run_test_git(workspace, &["add", "-A"])?;
+    run_test_git(workspace, &["commit", "-q", "-m", msg])
 }
 
 fn run_test_git(dir: &Path, args: &[&str]) -> Result<(), GitError> {

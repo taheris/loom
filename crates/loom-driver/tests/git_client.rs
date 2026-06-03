@@ -425,6 +425,68 @@ async fn rebase_onto_integration_leaves_integration_branch_unmoved() -> Result<(
     Ok(())
 }
 
+/// `integration_commit_sha` reads the integration branch tip in the loom
+/// workspace and tracks it as commits land — the signal the per-bead
+/// audit uses to tell whether a bead's ff actually advanced the line.
+#[tokio::test]
+async fn integration_commit_sha_tracks_the_integration_branch_tip() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+    let client = GitClient::open(repo.path())?;
+
+    let before = client.integration_commit_sha().await?;
+    assert_eq!(
+        before.to_string(),
+        capture_rev(&loom, "main")?,
+        "integration_commit_sha must read the loom-workspace integration tip",
+    );
+
+    std::fs::write(loom.join("advance.txt"), "more\n")?;
+    git(&loom, &["add", "advance.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "advance"])?;
+    let after = client.integration_commit_sha().await?;
+    assert_ne!(
+        after.to_string(),
+        before.to_string(),
+        "integration_commit_sha must follow the branch as commits land",
+    );
+    Ok(())
+}
+
+/// A per-bead audit failure rolls the just-ff'd commit back one
+/// (`git reset --hard HEAD~1`) so the integration line returns to its
+/// pre-merge tip and the merged content is gone, before the bead routes
+/// to `post-integrate-fail` recovery (specs/harness.md § Verdict Gate).
+#[tokio::test]
+async fn rollback_integration_resets_integration_branch_by_one_commit() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+    let base_tip = capture_rev(&loom, "main")?;
+
+    std::fs::write(loom.join("integrated.txt"), "merged work\n")?;
+    git(&loom, &["add", "integrated.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "integrated bead"])?;
+    assert_ne!(
+        capture_rev(&loom, "main")?,
+        base_tip,
+        "the ff-merge stand-in must advance the integration branch",
+    );
+
+    let client = GitClient::open(repo.path())?;
+    client.rollback_integration().await?;
+
+    assert_eq!(
+        capture_rev(&loom, "main")?,
+        base_tip,
+        "rollback must return the integration branch to its pre-merge tip",
+    );
+    assert!(
+        !loom.join("integrated.txt").exists(),
+        "reset --hard must drop the rolled-back commit's tree content",
+    );
+    Ok(())
+}
+
 /// Cross-spec `loom loop` invocations share one loom workspace; the
 /// rebase + ff critical section is serialized by git's `index.lock`
 /// (specs/harness.md § Concurrency). When a peer holds the lock the losing
