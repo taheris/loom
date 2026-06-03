@@ -2365,17 +2365,6 @@ fn run_loop_cmd(
 /// One-word render of a [`GateOutcome`] for the operator-facing summary
 /// line. The structured variant lives in [`LoopOutcome::gate`] for
 /// programmatic consumers; this is the human-friendly column.
-/// Resolve the `beads-push` program path. Defaults to `beads-push` on
-/// `PATH`; `LOOM_BEADS_PUSH_PROGRAM` overrides it, letting integration
-/// tests stub the sync so they don't need a real beads remote in the
-/// tempdir.
-fn resolve_beads_push_program() -> PathBuf {
-    match std::env::var_os("LOOM_BEADS_PUSH_PROGRAM") {
-        Some(v) if !v.is_empty() => PathBuf::from(v),
-        _ => loom_workflow::r#loop::default_beads_push_program(),
-    }
-}
-
 fn gate_label(gate: &GateOutcome) -> &'static str {
     match gate {
         GateOutcome::Success(_) => "success",
@@ -2439,13 +2428,11 @@ async fn run_parallel_loop(
     let logs_root = workspace.join(".loom/logs");
     let logs_root_for_merge = logs_root.clone();
     let label_for_closure = label.clone();
-    let beads_push_program = resolve_beads_push_program();
     let workspace_for_closure = workspace.clone();
     let outcome = loom_workflow::r#loop::run_parallel_batch_with_logs(
         &git,
         &label,
         beads,
-        &beads_push_program,
         Some(&logs_root_for_merge),
         move |slot| {
             let manifest_inner = Arc::clone(&manifest);
@@ -2558,27 +2545,40 @@ async fn run_parallel_loop(
             .await?;
     }
 
-    // Per-bead push failures surface as `PushFailed` (worktree preserved
-    // for retry). Log them so the operator sees the divergence between
-    // local `main` and the GitHub mirror; a fresh `loom loop` invocation
-    // is expected to retry the push.
-    for (bead, error) in outcome.push_failed() {
+    // First-conflict integration failures (worktree preserved) get the
+    // single-retry marker label so the bead stays ready and the next
+    // `loom loop` re-dispatches it against the moved integration tip; a
+    // second conflict is read off this label by `merge_back_one` and
+    // escalates to `loom:clarify` (handled in the `clarified()` loop above).
+    // This is the parallel-shaped home for the serial path's in-process
+    // integration-conflict counter (`specs/harness.md` § Verdict Gate
+    // phase 3).
+    let conflict_ids = outcome.conflict_ids();
+    for bead in &conflict_ids {
         tracing::warn!(
             bead = %bead,
-            %error,
-            "loom loop: per-bead push failed — worktree preserved; rerun loom loop to retry the push",
+            "loom loop: integration conflict — marking for single retry; rerun loom loop to re-dispatch against the moved tip",
         );
+        bd_label
+            .update(
+                bead,
+                UpdateOpts {
+                    add_labels: vec![loom_workflow::r#loop::CONFLICT_RETRY_LABEL.to_string()],
+                    ..UpdateOpts::default()
+                },
+            )
+            .await?;
     }
 
     let merged = u32::try_from(outcome.merged_ids().len()).unwrap_or(u32::MAX);
     let clarified = u32::try_from(outcome.clarified().len()).unwrap_or(u32::MAX);
     let blocked_n = u32::try_from(outcome.blocked().len()).unwrap_or(u32::MAX);
-    let push_failed_n = u32::try_from(outcome.push_failed().len()).unwrap_or(u32::MAX);
+    let conflict_n = u32::try_from(conflict_ids.len()).unwrap_or(u32::MAX);
     let processed = merged
         .saturating_add(clarified)
         .saturating_add(blocked_n)
         .saturating_add(u32::try_from(outcome.failure_ids().len()).unwrap_or(u32::MAX))
-        .saturating_add(push_failed_n);
+        .saturating_add(conflict_n);
     Ok(LoopOutcome {
         beads_processed: processed,
         beads_clarified: clarified,

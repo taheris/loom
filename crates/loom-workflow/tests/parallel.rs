@@ -17,12 +17,12 @@ use std::process::Command;
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
-use loom_driver::bd::Bead;
+use loom_driver::bd::{Bead, Label};
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, SpecLabel};
 use loom_workflow::r#loop::{
-    AgentOutcome, BatchResult, BatchSlot, Parallelism, ParallelismError, create_worktrees,
-    merge_back,
+    AgentOutcome, BatchResult, BatchSlot, CONFLICT_RETRY_LABEL, Parallelism, ParallelismError,
+    create_worktrees, merge_back,
 };
 use tempfile::TempDir;
 
@@ -62,18 +62,6 @@ fn init_repo() -> Result<TempDir> {
 
 fn loom_path(repo: &Path) -> std::path::PathBuf {
     repo.join(".loom/integration")
-}
-
-/// Write a `beads-push` stub at `dir/beads-push-stub.sh` that exits 0,
-/// returning its path. Threaded into `merge_back` so cargo nextest does
-/// not shell out to the real beads remote while exercising the post-merge
-/// push path.
-fn beads_push_stub(dir: &Path) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let stub = dir.join("beads-push-stub.sh");
-    std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("write stub");
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
-    stub
 }
 
 fn fake_bead(id: &str) -> Bead {
@@ -162,8 +150,7 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
         worktree: slot.worktree.clone(),
         outcome: AgentOutcome::Success,
     }];
-    let stub = beads_push_stub(repo.path());
-    let outcome = merge_back(&client, &stub, batch_slots).await?;
+    let outcome = merge_back(&client, batch_slots).await?;
 
     assert_eq!(outcome.merged_ids(), vec![slot.bead.id.clone()]);
     let loom = loom_path(repo.path());
@@ -254,8 +241,7 @@ async fn parallel_merge_back() -> Result<()> {
         })
         .collect();
 
-    let stub = beads_push_stub(repo.path());
-    let outcome = merge_back(&client, &stub, batch_slots).await?;
+    let outcome = merge_back(&client, batch_slots).await?;
 
     assert_eq!(outcome.results.len(), 2);
     let merged = outcome.merged_ids();
@@ -330,8 +316,7 @@ async fn parallel_failure_preserves_worktree() -> Result<()> {
         })
         .collect();
 
-    let stub = beads_push_stub(repo.path());
-    let outcome = merge_back(&client, &stub, batch_slots).await?;
+    let outcome = merge_back(&client, batch_slots).await?;
     assert_eq!(outcome.results.len(), 2);
 
     let failures = outcome.failure_ids();
@@ -449,8 +434,7 @@ async fn workspace_persists_on_all_failure_paths() -> Result<()> {
         })
         .collect();
 
-    let stub = beads_push_stub(repo.path());
-    let outcome = merge_back(&client, &stub, batch_slots).await?;
+    let outcome = merge_back(&client, batch_slots).await?;
     assert_eq!(outcome.results.len(), 4);
 
     // Every result routes to a non-merged variant AND preserves its clone.
@@ -516,8 +500,7 @@ async fn parallel_conflict_preserves_worktree() -> Result<()> {
         worktree: slot.worktree.clone(),
         outcome: AgentOutcome::Success,
     };
-    let stub = beads_push_stub(repo.path());
-    let outcome = merge_back(&client, &stub, vec![batch_slot]).await?;
+    let outcome = merge_back(&client, vec![batch_slot]).await?;
 
     assert_eq!(outcome.results.len(), 1);
     let r = &outcome.results[0];
@@ -553,6 +536,70 @@ async fn parallel_conflict_preserves_worktree() -> Result<()> {
         "bead clone should retain branch {} for inspection (got: {:?})",
         slot.worktree.branch,
         bead_branches,
+    );
+
+    Ok(())
+}
+
+/// Spec contract (`specs/harness.md` § Verdict Gate phase 3 — the parallel
+/// shape of `integration_conflict_one_retry_then_clarify`): the single
+/// integration-conflict retry budget lives on the bead as the
+/// [`CONFLICT_RETRY_LABEL`] marker, because a one-shot batch has
+/// no agent left to re-dispatch in-process. A bead that ALREADY carries the
+/// marker (its first conflict was retried on a prior `loom loop` pass) and
+/// conflicts again escalates to [`BatchResult::AgentClarify`] carrying the
+/// synthesized `## Options — …` block — not another silent `Conflict` that
+/// would re-queue forever.
+#[tokio::test]
+async fn parallel_second_conflict_escalates_to_clarify_with_options() -> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("harness");
+    let mut bead = fake_bead("lm-conflict2");
+    // The marker the first-conflict pass would have applied via the caller.
+    bead.labels = vec![Label::new(CONFLICT_RETRY_LABEL)];
+    let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
+    let slot = slots.into_iter().next().expect("one slot");
+
+    let loom = loom_path(repo.path());
+    std::fs::write(slot.worktree.path.join("README.md"), "from-bead\n")?;
+    git(&slot.worktree.path, &["commit", "-q", "-am", "bead edit"])?;
+    std::fs::write(loom.join("README.md"), "from-driver\n")?;
+    git(&loom, &["commit", "-q", "-am", "driver edit"])?;
+
+    let batch_slot = BatchSlot {
+        bead: slot.bead.clone(),
+        worktree: slot.worktree.clone(),
+        outcome: AgentOutcome::Success,
+    };
+    let outcome = merge_back(&client, vec![batch_slot]).await?;
+
+    assert_eq!(outcome.results.len(), 1);
+    let r = &outcome.results[0];
+    let BatchResult::AgentClarify {
+        bead: bid,
+        question,
+    } = r
+    else {
+        panic!("expected AgentClarify on the second conflict, got {r:?}");
+    };
+    assert_eq!(*bid, bead.id);
+    assert!(
+        loom_protocol::gate::options::has_well_formed_block(question),
+        "escalation note must carry a well-formed Options block: {question:?}",
+    );
+    // The synthesized block names both human-resolution paths.
+    assert!(
+        question.contains("Resolve in the bead clone") && question.contains("Abandon the bead"),
+        "synthesized Options must offer resolve-in-clone and abandon: {question:?}",
+    );
+    // Worktree preserved; transient loom-workspace ref still cleaned up.
+    assert!(slot.worktree.path.exists(), "bead workspace must persist");
+    let branches = git_capture(&loom, &["branch", "--list", &slot.worktree.branch])?;
+    assert!(
+        branches.trim().is_empty(),
+        "transient ref {} must be deleted on the escalation path",
+        slot.worktree.branch,
     );
 
     Ok(())
@@ -601,8 +648,7 @@ async fn merge_back_preserves_input_slot_order() -> Result<()> {
         })
         .collect();
 
-    let stub = beads_push_stub(repo.path());
-    let outcome = merge_back(&client, &stub, batch_slots).await?;
+    let outcome = merge_back(&client, batch_slots).await?;
     let observed: Vec<&str> = outcome
         .results
         .iter()
@@ -612,7 +658,6 @@ async fn merge_back_preserves_input_slot_order() -> Result<()> {
             BatchResult::AgentFailed { bead, .. } => bead.as_str(),
             BatchResult::AgentBlocked { bead, .. } => bead.as_str(),
             BatchResult::AgentClarify { bead, .. } => bead.as_str(),
-            BatchResult::PushFailed { bead, .. } => bead.as_str(),
         })
         .collect();
     let expected: Vec<&str> = beads.iter().map(|b| b.id.as_str()).collect();
@@ -620,147 +665,6 @@ async fn merge_back_preserves_input_slot_order() -> Result<()> {
         observed, expected,
         "merge_back must produce results in input order — parallel dispatch \
          would scramble them and race the git index",
-    );
-    Ok(())
-}
-
-/// Spec gate (`specs/harness.md` § "loop dispatch: per-bead push regression"):
-/// every clean merge inside `merge_back_one` MUST push the driver branch
-/// to `origin` so per-bead state reaches GitHub before the molecule-end
-/// review-phase push. After three beads each merge cleanly, the bare
-/// origin's `main` MUST equal the workspace's `main` and the beads-push
-/// stub MUST have run exactly three times.
-#[tokio::test]
-async fn parallel_merge_back_pushes_after_each_merge() -> Result<()> {
-    let repo = init_repo()?;
-    let client = GitClient::open(repo.path())?;
-    let label = SpecLabel::new("harness");
-    let beads = vec![
-        fake_bead("lm-mp.1"),
-        fake_bead("lm-mp.2"),
-        fake_bead("lm-mp.3"),
-    ];
-    let slots = create_worktrees(&client, &label, beads.clone()).await?;
-
-    for slot in &slots {
-        let file = format!("{}.txt", slot.bead.id);
-        std::fs::write(slot.worktree.path.join(&file), b"work\n")?;
-        git(&slot.worktree.path, &["add", &file])?;
-        git(
-            &slot.worktree.path,
-            &["commit", "-q", "-m", &format!("work {}", slot.bead.id)],
-        )?;
-    }
-
-    // Counting `beads-push` stub: increments a file once per invocation.
-    let counter_file = repo.path().join("beads-push-count");
-    std::fs::write(&counter_file, "0")?;
-    let counter_stub = repo.path().join("beads-push-counter.sh");
-    std::fs::write(
-        &counter_stub,
-        format!(
-            "#!/bin/sh\nset -eu\nn=$(cat {file})\necho $((n+1)) > {file}\nexit 0\n",
-            file = counter_file.to_string_lossy(),
-        ),
-    )?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&counter_stub, std::fs::Permissions::from_mode(0o755))?;
-
-    let batch_slots: Vec<BatchSlot> = slots
-        .iter()
-        .map(|w| BatchSlot {
-            bead: w.bead.clone(),
-            worktree: w.worktree.clone(),
-            outcome: AgentOutcome::Success,
-        })
-        .collect();
-
-    let outcome = merge_back(&client, &counter_stub, batch_slots).await?;
-    assert_eq!(outcome.merged_ids().len(), 3);
-
-    // beads-push fired once per successful merge.
-    let count: u32 = std::fs::read_to_string(&counter_file)?.trim().parse()?;
-    assert_eq!(
-        count, 3,
-        "beads-push must run once per successful merge in the parallel path (got {count})",
-    );
-
-    let origin = loom_driver::git::bare_origin_path(repo.path());
-    let loom = loom_path(repo.path());
-    let origin_head = git_capture(&origin, &["rev-parse", "main"])?;
-    let loom_head = git_capture(&loom, &["rev-parse", "main"])?;
-    assert_eq!(
-        origin_head.trim(),
-        loom_head.trim(),
-        "post-merge push must keep origin/main pinned to the integration-branch HEAD",
-    );
-    for bead in &beads {
-        let file = format!("{}.txt", bead.id);
-        let listed = git_capture(&origin, &["ls-tree", "-r", "--name-only", "main"])?;
-        assert!(
-            listed.lines().any(|l| l == file),
-            "origin must carry {file} after per-bead push (tree: {listed})",
-        );
-    }
-    Ok(())
-}
-
-/// Spec gate (`specs/harness.md` § "loop dispatch: per-bead push regression"):
-/// when `git push` fails after a clean merge, `merge_back_one` MUST
-/// surface `BatchResult::PushFailed` and preserve the worktree so a
-/// transient blip stays recoverable on the next iteration.
-#[tokio::test]
-async fn parallel_merge_back_preserves_worktree_on_push_failure() -> Result<()> {
-    let repo = init_repo()?;
-    let client = GitClient::open(repo.path())?;
-    let label = SpecLabel::new("harness");
-    let bead = fake_bead("lm-mpfail.1");
-    let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
-    let slot = slots.into_iter().next().expect("one slot");
-
-    // Commit something so merge has work to fold.
-    std::fs::write(slot.worktree.path.join("payload.txt"), b"hi\n")?;
-    git(&slot.worktree.path, &["add", "payload.txt"])?;
-    git(&slot.worktree.path, &["commit", "-q", "-m", "work"])?;
-
-    let loom = loom_path(repo.path());
-    git(
-        &loom,
-        &[
-            "remote",
-            "set-url",
-            "origin",
-            "/nonexistent/path/that/cannot/exist.git",
-        ],
-    )?;
-
-    let stub = beads_push_stub(repo.path());
-    let batch_slot = BatchSlot {
-        bead: slot.bead.clone(),
-        worktree: slot.worktree.clone(),
-        outcome: AgentOutcome::Success,
-    };
-    let outcome = merge_back(&client, &stub, vec![batch_slot]).await?;
-    assert_eq!(outcome.results.len(), 1);
-    let r = &outcome.results[0];
-    let BatchResult::PushFailed {
-        bead: bid,
-        worktree_path,
-        branch,
-        error,
-    } = r
-    else {
-        panic!("expected PushFailed, got {r:?}");
-    };
-    assert_eq!(*bid, bead.id);
-    assert_eq!(*branch, slot.worktree.branch);
-    assert!(
-        error.contains("push failed:"),
-        "PushFailed error must signal push failure: {error}",
-    );
-    assert!(
-        worktree_path.exists(),
-        "worktree {worktree_path:?} MUST be preserved on push failure",
     );
     Ok(())
 }
@@ -822,8 +726,7 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
         worktree: slot.worktree.clone(),
         outcome: AgentOutcome::Success,
     };
-    let stub = beads_push_stub(repo.path());
-    let outcome = merge_back(&client, &stub, vec![batch_slot]).await?;
+    let outcome = merge_back(&client, vec![batch_slot]).await?;
 
     assert_eq!(outcome.results.len(), 1);
     let r = &outcome.results[0];
@@ -934,7 +837,7 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
         worktree: slot2.worktree.clone(),
         outcome: AgentOutcome::Success,
     };
-    let outcome2 = merge_back(&client, &stub, vec![batch_slot2]).await?;
+    let outcome2 = merge_back(&client, vec![batch_slot2]).await?;
 
     assert_eq!(outcome2.results.len(), 1);
     let r2 = &outcome2.results[0];

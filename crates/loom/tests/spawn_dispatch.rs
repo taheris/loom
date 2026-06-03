@@ -221,19 +221,6 @@ fn init_workspace_repo(workspace: &Path) {
         .expect("init test repo with loom integration");
 }
 
-/// Install a `beads-push` stub at `dir/beads-push-stub.sh` that exits 0,
-/// returning its absolute path. Threaded via the
-/// `LOOM_BEADS_PUSH_PROGRAM` env var so `loom loop`'s post-merge sync
-/// fires without a real beads remote in scope.
-fn install_beads_push_stub(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let stub = dir.join("beads-push-stub.sh");
-    std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("write beads-push stub");
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-        .expect("chmod beads-push stub");
-    stub
-}
-
 /// Install a stub `loom` shim that exits 0 for any args. Threaded via
 /// `LOOM_BIN` so the per-bead gate's `loom gate verify --bead` /
 /// `loom gate mint --bead` subprocesses (per `specs/gate.md` § *Per-diff
@@ -460,7 +447,6 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
 
     let bead_json = r#"[{"id":"lm-runtest","title":"run gate bead","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","profile:base"]}]"#;
     let bd_bin_dir = install_bd_bead_stub(workspace, bead_json);
-    let beads_push_stub = install_beads_push_stub(workspace);
     let loom_noop_stub = install_loom_noop_stub(workspace);
 
     let path_var = std::env::var_os("PATH").unwrap_or_default();
@@ -486,7 +472,6 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
         // writes, not gate dispatch.
         .env("LOOM_BIN", &loom_noop_stub)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
-        .env("LOOM_BEADS_PUSH_PROGRAM", &beads_push_stub)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         // Bypass the nested-loom guard so cargo test inside a loom container
         // still reaches the run dispatch path under test.
@@ -544,8 +529,8 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
         .unwrap_or_else(|| panic!("no session_complete event in log. lines={lines:?}"));
     // After session_complete the run-phase verdict gate appends
     // driver events for bead_branch_pushed / merge_ok /
-    // post_merge_push_ok / worktree_cleanup_ok so operators tailing
-    // the loop see the dispatch-to-dispatch gap as named steps.
+    // worktree_cleanup_ok so operators tailing the loop see the
+    // dispatch-to-dispatch gap as named steps.
     for line in &lines[session_complete_idx + 1..] {
         let v: serde_json::Value = serde_json::from_str(line).expect("json");
         assert_eq!(

@@ -39,7 +39,6 @@ mod error;
 mod outcome;
 mod parallel;
 mod parallelism;
-mod post_merge_push;
 mod production;
 mod profile;
 mod retry;
@@ -59,10 +58,6 @@ pub use parallel::{
     merge_back_with_logs, run_concurrent_spawns, run_parallel_batch, run_parallel_batch_with_logs,
 };
 pub use parallelism::{Parallelism, ParallelismError};
-pub use post_merge_push::{
-    DEFAULT_BEADS_PUSH_PROGRAM, default_beads_push_program, push_merged_main_then_beads,
-    run_beads_push,
-};
 pub use production::{
     ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV,
     format_unknown_profile_error, list_open_for_spec,
@@ -70,8 +65,8 @@ pub use production::{
 pub use profile::{DEFAULT_PROFILE, resolve_profile, resolve_profile_image};
 pub use retry::{RetryDecision, RetryPolicy};
 pub use runner::{
-    AgentLoopController, INFRA_PREFLIGHT_CAUSE, INFRA_REPEATED_CAUSE, LoopMode,
-    UNKNOWN_PROFILE_CAUSE, run_loop,
+    AgentLoopController, CONFLICT_RETRY_LABEL, INFRA_PREFLIGHT_CAUSE, INFRA_REPEATED_CAUSE,
+    LoopMode, UNKNOWN_PROFILE_CAUSE, run_loop,
 };
 pub use spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 pub use tree_clean::{TREE_NOT_CLEAN_CAP, dirty_paths_from_porcelain};

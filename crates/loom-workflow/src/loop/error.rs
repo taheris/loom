@@ -29,9 +29,6 @@ pub enum LoopError {
     /// io operation failed during `loom loop`
     Io(#[from] std::io::Error),
 
-    /// `beads-push` failed after `git push` succeeded: {0}
-    BeadsPushFailed(String),
-
     /// profile-image manifest dispatch failed during `loom loop`
     Profile(#[from] ProfileError),
 

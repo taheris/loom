@@ -23,17 +23,6 @@ fn init_workspace_repo(path: &Path) {
         .expect("init test repo with loom integration");
 }
 
-/// Write a `beads-push` stub at `dir/beads-push-stub.sh` that exits 0.
-/// Threaded via `LOOM_BEADS_PUSH_PROGRAM` so post-merge sync fires
-/// without a real beads remote in scope.
-fn install_beads_push_stub(dir: &Path) -> PathBuf {
-    let stub = dir.join("beads-push-stub.sh");
-    std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("write beads-push stub");
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-        .expect("chmod beads-push stub");
-    stub
-}
-
 fn seed_bead(state_dir: &Path, id: &str, title: &str, description: &str, labels: &[&str]) {
     let bead_dir = state_dir.join(id);
     std::fs::create_dir_all(&bead_dir).expect("mkdir bead dir");
@@ -104,7 +93,6 @@ fn run_loom_loop_once(
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     let mock_agent = env!("CARGO_BIN_EXE_mock-loom-agent");
-    let beads_push_stub = install_beads_push_stub(workspace);
     let loom_noop_stub = install_loom_noop_stub(workspace);
 
     Command::new(loom_bin)
@@ -125,7 +113,6 @@ fn run_loom_loop_once(
         // the run-phase path, not gate dispatch.
         .env("LOOM_BIN", &loom_noop_stub)
         .env("LOOM_PROFILES_MANIFEST", manifest)
-        .env("LOOM_BEADS_PUSH_PROGRAM", &beads_push_stub)
         .env("BD_STATE_DIR", state_dir)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         // Bypass the nested-loom guard so cargo test inside a loom container

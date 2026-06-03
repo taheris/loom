@@ -11,7 +11,7 @@ use tracing::{info, warn};
 use super::driver_emit::BeadEmit;
 use super::error::LoopError;
 use super::outcome::AgentOutcome;
-use super::post_merge_push::push_merged_main_then_beads;
+use super::runner::{CONFLICT_RETRY_LABEL, synthesize_integration_conflict_options};
 use super::verify::{VerifyPass, verify_pass};
 
 /// Pairing of a bead with the worktree that was created for it. Built by
@@ -43,9 +43,14 @@ pub enum BatchResult {
     /// branch without conflict. The worktree has been removed.
     Merged { bead: BeadId },
 
-    /// Agent finished cleanly but the merge produced conflicts. The
-    /// worktree is **preserved** at `worktree_path` for human inspection
-    /// (per the spec — "on merge conflict the worktree is preserved").
+    /// The driver-side rebase onto the integration tip conflicted on the
+    /// bead's **first** integration attempt (it did not yet carry the
+    /// [`CONFLICT_RETRY_LABEL`] marker). The worktree is
+    /// **preserved** at `worktree_path` and the caller applies the marker so
+    /// the next `loom loop` re-dispatches the bead against the moved tip; a
+    /// second conflict escalates to [`BatchResult::AgentClarify`]. This is
+    /// the parallel-shaped single-retry budget (`specs/harness.md`
+    /// § Verdict Gate phase 3).
     Conflict {
         bead: BeadId,
         worktree_path: PathBuf,
@@ -64,22 +69,13 @@ pub enum BatchResult {
     /// the caller applies `loom:blocked` and writes `reason` to notes.
     AgentBlocked { bead: BeadId, reason: String },
 
-    /// Agent emitted `LOOM_CLARIFY`. The bead workspace is **preserved** for
-    /// recovery; the caller applies `loom:clarify` and writes `question` to
-    /// notes.
+    /// Agent emitted `LOOM_CLARIFY`, or the driver-side integration
+    /// conflict exhausted its single retry (the bead already carried the
+    /// [`CONFLICT_RETRY_LABEL`] marker). The bead workspace is
+    /// **preserved** for recovery; the caller applies `loom:clarify` and
+    /// writes `question` to notes — for the integration-conflict case
+    /// `question` is the synthesized `## Options — …` block.
     AgentClarify { bead: BeadId, question: String },
-
-    /// Merge succeeded but the post-merge push (`git push` to the GitHub
-    /// origin, then the beads-remote sync) failed. The worktree is
-    /// **preserved** so a transient failure stays recoverable on the next
-    /// iteration — mirroring [`BatchResult::Conflict`] semantics — rather
-    /// than letting the local/remote divergence pile up silently.
-    PushFailed {
-        bead: BeadId,
-        worktree_path: PathBuf,
-        branch: String,
-        error: String,
-    },
 }
 
 /// Aggregate outcome of one parallel batch.
@@ -140,16 +136,6 @@ impl BatchOutcome {
             })
             .collect()
     }
-
-    pub fn push_failed(&self) -> Vec<(BeadId, String)> {
-        self.results
-            .iter()
-            .filter_map(|r| match r {
-                BatchResult::PushFailed { bead, error, .. } => Some((bead.clone(), error.clone())),
-                _ => None,
-            })
-            .collect()
-    }
 }
 
 /// Drive one parallel batch end-to-end: create worktrees, spawn agents
@@ -171,18 +157,17 @@ pub async fn run_parallel_batch<S, F>(
     git: &GitClient,
     label: &SpecLabel,
     beads: Vec<Bead>,
-    beads_push_program: &Path,
     spawn: S,
 ) -> Result<BatchOutcome, LoopError>
 where
     S: Fn(WorktreeBead) -> F + Send + Sync + 'static,
     F: std::future::Future<Output = AgentOutcome> + Send + 'static,
 {
-    run_parallel_batch_with_logs(git, label, beads, beads_push_program, None, spawn).await
+    run_parallel_batch_with_logs(git, label, beads, None, spawn).await
 }
 
 /// Same as [`run_parallel_batch`] but threads a `logs_root` through to
-/// `merge_back_one` so each slot's merge/push/cleanup steps emit
+/// `merge_back_one` so each slot's merge/cleanup steps emit
 /// driver events into the per-bead `.jsonl` the spawn closure already
 /// wrote to. Production callers pass
 /// `Some(<workspace>/.loom/logs)`; tests that do not exercise
@@ -191,7 +176,6 @@ pub async fn run_parallel_batch_with_logs<S, F>(
     git: &GitClient,
     label: &SpecLabel,
     beads: Vec<Bead>,
-    beads_push_program: &Path,
     logs_root: Option<&Path>,
     spawn: S,
 ) -> Result<BatchOutcome, LoopError>
@@ -201,7 +185,7 @@ where
 {
     let slots = create_worktrees(git, label, beads).await?;
     let batch_slots = run_concurrent_spawns(slots, spawn).await;
-    merge_back_with_logs(git, beads_push_program, batch_slots, logs_root, label).await
+    merge_back_with_logs(git, batch_slots, logs_root, label).await
 }
 
 /// Step 1 of a parallel batch: create one worktree per bead.
@@ -277,48 +261,46 @@ where
 /// branch **sequentially** (the spec calls this out — "single-threaded merge
 /// avoids index lock contention").
 ///
-/// Per-slot policy (driver-side rebase + ff, A3):
+/// Per-slot policy (driver-side rebase + ff, A3 — never pushes; origin is
+/// reached once per molecule by the push gate):
 ///
 /// - [`AgentOutcome::Success`] + [`RebaseOutcome::Rebased`] (and both
-///   signature passes clean) → ff-merge, push, remove the bead workspace,
+///   signature passes clean) → ff-merge, remove the bead workspace,
 ///   delete the transient `loom/<id>` ref, return [`BatchResult::Merged`].
 /// - [`AgentOutcome::Success`] + [`RebaseOutcome::Conflict`] → **preserve**
-///   the bead workspace for inspection, delete only the transient
-///   `loom/<id>` ref (the rebase already aborted), return
-///   [`BatchResult::Conflict`].
+///   the bead workspace, delete only the transient `loom/<id>` ref (the
+///   rebase already aborted); on the bead's first conflict return
+///   [`BatchResult::Conflict`] (caller applies the retry marker), on a
+///   second conflict (marker present) escalate to
+///   [`BatchResult::AgentClarify`] with the synthesized Options block.
 /// - [`AgentOutcome::Failure`] (and the other infra/profile failure
 ///   variants) → **preserve** the bead workspace for recovery, delete
 ///   nothing, return [`BatchResult::AgentFailed`] (the caller owns retry
 ///   accounting; the per-bead-close lifecycle reaps the workspace at
 ///   `bd close`).
-pub async fn merge_back(
-    git: &GitClient,
-    beads_push_program: &Path,
-    slots: Vec<BatchSlot>,
-) -> Result<BatchOutcome, LoopError> {
+pub async fn merge_back(git: &GitClient, slots: Vec<BatchSlot>) -> Result<BatchOutcome, LoopError> {
     let mut results = Vec::with_capacity(slots.len());
     for slot in slots {
-        let result = merge_back_one(git, beads_push_program, slot, None, None).await?;
+        let result = merge_back_one(git, slot, None, None).await?;
         results.push(result);
     }
     Ok(BatchOutcome { results })
 }
 
 /// Same as [`merge_back`] but threads `logs_root` + `label` through to
-/// every slot's merge/push/cleanup so driver events surface in the
+/// every slot's merge/cleanup so driver events surface in the
 /// per-bead `.jsonl`. Production callers pass
 /// `Some(<workspace>/.loom/logs)`; tests that do not exercise
 /// the driver-event channel pass `None`.
 pub async fn merge_back_with_logs(
     git: &GitClient,
-    beads_push_program: &Path,
     slots: Vec<BatchSlot>,
     logs_root: Option<&Path>,
     label: &SpecLabel,
 ) -> Result<BatchOutcome, LoopError> {
     let mut results = Vec::with_capacity(slots.len());
     for slot in slots {
-        let result = merge_back_one(git, beads_push_program, slot, logs_root, Some(label)).await?;
+        let result = merge_back_one(git, slot, logs_root, Some(label)).await?;
         results.push(result);
     }
     Ok(BatchOutcome { results })
@@ -326,7 +308,6 @@ pub async fn merge_back_with_logs(
 
 async fn merge_back_one(
     git: &GitClient,
-    beads_push_program: &Path,
     slot: BatchSlot,
     logs_root: Option<&Path>,
     label: Option<&SpecLabel>,
@@ -407,6 +388,10 @@ async fn merge_back_one(
                             reason,
                         });
                     }
+                    // Per-bead integration never pushes; origin is reached
+                    // once per molecule by the molecule-completion push gate
+                    // (`specs/harness.md` § Verdict Gate phase 5). Mirrors the
+                    // serial `run_bead` integration step.
                     git.ff_merge_integration(&worktree.branch).await?;
                     let main_sha = git.head_commit_sha().await?.to_string();
                     if let Some(e) = emit.as_mut() {
@@ -417,50 +402,6 @@ async fn merge_back_one(
                                 "bead_id": bead.id.to_string(),
                                 "branch": worktree.branch,
                                 "main_sha": main_sha,
-                            }),
-                        );
-                    }
-                    // Per-bead push of the freshly-merged driver branch to
-                    // GitHub plus a beads-remote sync. Without this, beads
-                    // closed by the parallel batch only reach `origin` at
-                    // the molecule-end review-phase push. Preserve the
-                    // workspace on push failure so a transient blip stays
-                    // recoverable (mirrors merge-conflict semantics).
-                    if let Err(error) =
-                        push_merged_main_then_beads(git, git.workdir(), beads_push_program).await
-                    {
-                        warn!(
-                            bead = %bead.id,
-                            branch = %worktree.branch,
-                            path = %worktree.path.display(),
-                            %error,
-                            "post-merge push failed — worktree preserved for retry",
-                        );
-                        if let Some(e) = emit.as_mut() {
-                            e.emit(
-                                DriverKind::PostMergePushFailed,
-                                &format!("post-merge push failed: {error}"),
-                                serde_json::json!({
-                                    "bead_id": bead.id.to_string(),
-                                    "branch": worktree.branch,
-                                    "worktree_path": worktree.path.to_string_lossy(),
-                                    "error": error.to_string(),
-                                }),
-                            );
-                        }
-                        return Ok(BatchResult::PushFailed {
-                            bead: bead.id,
-                            worktree_path: worktree.path,
-                            branch: worktree.branch,
-                            error: format!("push failed: {error}"),
-                        });
-                    }
-                    if let Some(e) = emit.as_mut() {
-                        e.emit(
-                            DriverKind::PostMergePushOk,
-                            &format!("post-merge push ok for bead {}", bead.id),
-                            serde_json::json!({
-                                "bead_id": bead.id.to_string(),
                             }),
                         );
                     }
@@ -479,23 +420,47 @@ async fn merge_back_one(
                     }
                     Ok(BatchResult::Merged { bead: bead.id })
                 }
-                RebaseOutcome::Conflict { detail, .. } => {
+                RebaseOutcome::Conflict {
+                    detail,
+                    files,
+                    new_base_sha,
+                } => {
+                    // Integration-conflict recovery, parallel-shaped. The
+                    // serial path retries by re-dispatching the agent inside
+                    // its in-process loop; a one-shot batch has no agent left
+                    // to retry, so the single-retry budget lives on the bead
+                    // as the [`CONFLICT_RETRY_LABEL`] marker: a
+                    // first conflict marks the bead (caller applies the label)
+                    // and preserves the workspace so the next `loom loop`
+                    // re-dispatches against the moved tip; a second conflict
+                    // (marker already present) escalates to `loom:clarify`
+                    // with the synthesized Options block. Mirrors the serial
+                    // budget in `process_one_bead` (`specs/harness.md`
+                    // § Verdict Gate phase 3).
+                    let retry_exhausted = bead
+                        .labels
+                        .iter()
+                        .any(|l| l.as_str() == CONFLICT_RETRY_LABEL);
                     warn!(
                         bead = %bead.id,
                         branch = %worktree.branch,
                         path = %worktree.path.display(),
                         detail = %detail,
-                        "merge conflict — bead workspace preserved for inspection",
+                        new_base = %new_base_sha,
+                        retry_exhausted,
+                        "integration conflict — bead workspace preserved for recovery",
                     );
                     if let Some(e) = emit.as_mut() {
                         e.emit(
-                            DriverKind::MergeConflict,
-                            &format!("merge conflict: {}", worktree.branch),
+                            DriverKind::IntegrationConflict,
+                            &format!("integration conflict: {}", worktree.branch),
                             serde_json::json!({
                                 "bead_id": bead.id.to_string(),
                                 "branch": worktree.branch,
                                 "worktree_path": worktree.path.to_string_lossy(),
                                 "detail": detail,
+                                "new_base_sha": new_base_sha.as_str(),
+                                "files": files.iter().map(|f| f.to_string_lossy()).collect::<Vec<_>>(),
                             }),
                         );
                     }
@@ -509,11 +474,21 @@ async fn merge_back_one(
                     // own copy of the branch until the bead is reaped on
                     // `bd close`; only the loom-workspace ref is removed.
                     git.delete_branch(&worktree.branch).await?;
-                    Ok(BatchResult::Conflict {
-                        bead: bead.id,
-                        worktree_path: worktree.path,
-                        branch: worktree.branch,
-                    })
+                    if retry_exhausted {
+                        Ok(BatchResult::AgentClarify {
+                            bead: bead.id,
+                            question: synthesize_integration_conflict_options(
+                                &files,
+                                &new_base_sha,
+                            ),
+                        })
+                    } else {
+                        Ok(BatchResult::Conflict {
+                            bead: bead.id,
+                            worktree_path: worktree.path,
+                            branch: worktree.branch,
+                        })
+                    }
                 }
             }
         }

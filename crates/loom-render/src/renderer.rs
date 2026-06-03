@@ -585,8 +585,6 @@ impl TerminalRenderer {
                     | DriverKind::MergeConflict
                     | DriverKind::IntegrationConflict
                     | DriverKind::SignatureVerificationFailed
-                    | DriverKind::PostMergePushOk
-                    | DriverKind::PostMergePushFailed
                     | DriverKind::WorktreeCleanupOk
                     | DriverKind::TreeNotClean => driver_kind.as_wire(),
                     DriverKind::Other(name) => name.as_str(),

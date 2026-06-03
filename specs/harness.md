@@ -1382,6 +1382,20 @@ its own session log if it needs prior tool-call context.
   abandon-the-bead). Synthesizing the block keeps the
   Options-Format invariant universal — no exemption case for
   driver-applied clarify.
+- `loom:conflict` is the non-terminal marker the parallel
+  (`--parallel N`) verdict gate applies to a bead whose first
+  driver-side rebase conflicted. It is the parallel-shaped home for
+  the single `integration-conflict` retry budget the serial path
+  holds in driver memory: a one-shot batch has no in-process agent
+  left to re-dispatch once merge-back runs, so the budget rides on
+  the bead instead. Unlike `loom:blocked` / `loom:clarify` it is
+  *not* paired with a `status=blocked` transition, so `bd ready`
+  keeps surfacing the bead for its one retry against the moved
+  integration tip on the next `loom loop` pass. A second conflict —
+  detected by the merge-back step re-reading this label off the
+  re-fetched bead — escalates to `loom:clarify` with cause
+  `integration-conflict` and the synthesized `## Options — …` block,
+  exactly as the serial path's second rebase-conflict does.
 - `LOOM_RETRY` does NOT apply a terminal label; it routes the bead
   into the recovery loop with cause `agent-retry`. On recovery
   exhaustion the cause becomes `retry-exhausted` and `loom:blocked`
@@ -2796,10 +2810,10 @@ Criteria.
       `origin/<integration-branch>`
   [test](origin_push_retries_non_fast_forward)
 - On rebase abort, audit-fail rollback, signature-verification
-      failure, post-integration push failure, agent failure, retry,
-      tree-not-clean recovery, block, or clarify, the bead workspace
-      persists (the default per-bead-close behavior) and the bead is
-      routed to `Blocked` or `Clarify` per the verdict gate
+      failure, agent failure, retry, tree-not-clean recovery, block,
+      or clarify, the bead workspace persists (the default
+      per-bead-close behavior) and the bead is routed to `Blocked` or
+      `Clarify` per the verdict gate
   [test](workspace_persists_on_all_failure_paths)
 - Bead containers receive the host `wrapix-beads` dolt socket as a
       single-file bind mount at `/workspace/.wrapix/dolt.sock` via

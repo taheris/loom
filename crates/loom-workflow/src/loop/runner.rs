@@ -202,6 +202,18 @@ pub const SIGNATURE_VERIFICATION_FAILED_CAUSE: &str = "signature-verification-fa
 /// `specs/harness.md` § Verdict Gate.
 pub const INTEGRATION_CONFLICT_CAUSE: &str = "integration-conflict";
 
+/// Non-terminal bead label tracking the parallel path's single
+/// integration-conflict retry budget. The serial path holds this counter
+/// in `process_one_bead`'s stack, but a one-shot `--parallel` batch has no
+/// agent left to retry once `merge_back` runs, so the budget lives on the
+/// bead instead: a first conflict applies this label (the bead stays ready
+/// and is re-dispatched against the moved tip next `loom loop`), a second
+/// conflict — observed by `merge_back_one` reading the label off the
+/// re-fetched bead — escalates to `loom:clarify`. Unlike `loom:clarify` /
+/// `loom:blocked` it does **not** pair with a `status=blocked` transition,
+/// so `bd ready` keeps surfacing the bead for its one retry.
+pub const CONFLICT_RETRY_LABEL: &str = "loom:conflict";
+
 /// Synthesize the canonical `## Options — …` block a driver-applied
 /// `integration-conflict` clarify bead carries when the single
 /// integration-conflict retry also conflicts. Satisfies the Options
