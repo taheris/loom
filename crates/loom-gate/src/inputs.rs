@@ -179,7 +179,8 @@ impl InputResolver {
     /// the selector, resolve against the spec file's own directory, then
     /// read the script's `# loom-inputs:` header (Source 2). No
     /// `--print-inputs` / heuristic fallback — a judge script with no
-    /// header declares nothing, which the standing sweep surfaces.
+    /// header declares nothing of its own, so it falls through to the
+    /// *Conservative default* (always runs) per [`filter_by_files`].
     fn declared_for_judge(&mut self, annotation: &Annotation) -> Vec<PathBuf> {
         crate::integrity::resolve_judge_script_path(
             &annotation.target,
