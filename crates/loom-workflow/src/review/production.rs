@@ -31,14 +31,15 @@ use loom_driver::config::Phase;
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
+use loom_driver::logging::phase_log_path;
 use loom_driver::logging::{BeadOutcome, LogSink};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::StateDb;
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
 use loom_gate::{
-    DispatchOptions, DispatchPendingExecutor, FsCommandResolver, IntegrityFinding, TierCwds,
-    annotation, compose_clarify_options, integrity,
+    DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateSuccess, HandoffEvidence,
+    IntegrityFinding, MarkerProof, TierCwds, annotation, compose_clarify_options, integrity,
 };
 use loom_templates::previous_failure::PreviousFailure;
 use loom_templates::review::{ReviewContext, ReviewLane, TreeScopeEpic};
@@ -722,6 +723,59 @@ where
                 errors = summary.errors,
                 "integrity-recovery mint reported refused/errored batches",
             );
+        }
+        Ok(())
+    }
+
+    async fn mint_marker(&mut self) -> Result<(), ReviewError> {
+        // Reaching the Clean verdict means the FR9 four-condition AND
+        // already passed, so the `GateSuccess` evidence holds: verify
+        // exited 0, the review terminated `LOOM_COMPLETE`, and the review
+        // log is on disk. Re-resolve the review log path the same way
+        // `exec_review` does — `(phase_log_root, label, "review",
+        // phase_log_when)` — so the sealed constructor's on-disk evidence
+        // check reads the file the reviewer agent actually wrote.
+        //
+        // The mint is best-effort (specs/harness.md § Verdict Gate): a
+        // failed `GateSuccess` construction or marker write is logged and
+        // swallowed, because prek's pre-push consumer treats a missing or
+        // invalid marker as "fall through to the slow tier". Never abort
+        // the push on a mint failure.
+        let review_log_path = self
+            .phase_log_root
+            .as_deref()
+            .map(|root| phase_log_path(root, &self.label, "review", self.phase_log_when))
+            .filter(|p| p.exists());
+        let evidence = HandoffEvidence {
+            verify_exit: self.verify_exit,
+            review_exit: Some(0),
+            review_marker: Some(ExitSignal::Complete),
+            review_log_path,
+        };
+        let success = match GateSuccess::new(&evidence, 1) {
+            Ok(success) => success,
+            Err(fail) => {
+                warn!(
+                    label = %self.label,
+                    reason = ?fail.reason,
+                    "marker mint skipped: gate-success evidence incomplete — \
+                     prek pre-push falls through to slow tier",
+                );
+                return Ok(());
+            }
+        };
+        let clock = SystemClock::new();
+        match MarkerProof::mint(success, &self.workspace, &clock) {
+            Ok(_) => info!(
+                label = %self.label,
+                workspace = %self.workspace.display(),
+                "marker minted: .loom/marker.json",
+            ),
+            Err(error) => warn!(
+                %error,
+                label = %self.label,
+                "marker mint failed — prek pre-push falls through to slow tier",
+            ),
         }
         Ok(())
     }

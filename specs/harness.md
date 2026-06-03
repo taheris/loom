@@ -3059,6 +3059,18 @@ Criteria.
       `GateSuccess` asserts each condition structurally — see
       [Loop Outcome Types](#loop-outcome-types)
   [test](push_gate_evaluates_all_four_conditions)
+- On a **clean** push gate the `MarkerProof` is minted to
+      `.loom/marker.json` **immediately before** `git push`, inside
+      the gate's critical section, so prek's pre-push hook chain reads
+      the just-minted marker and short-circuits the slow tier. The mint
+      is the immediate predecessor of the push with no HEAD-mutating
+      step between them; a **refused** push (blocked/clarify bead,
+      verify-fail, review-concern, integrity finding) mints nothing,
+      because the marker authorizes a push that does not happen. The
+      mint is best-effort — a missing or invalid marker falls the
+      pre-push consumer through to the slow tier rather than failing
+      the push
+  [test](clean_review_pushes_and_resets_counter)
 - Push gate refuses when `loom gate review`'s `--diff`-scoped
       invocation emits `LOOM_CONCERN`; molecule routes to recovery
       with cause `review-concern`

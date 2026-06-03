@@ -72,6 +72,24 @@ pub trait ReviewController: Send {
         reason: &str,
     ) -> impl std::future::Future<Output = Result<(), ReviewError>> + Send;
 
+    /// Mint the molecule-completion `MarkerProof` to `.loom/marker.json`
+    /// immediately before [`Self::git_push`], inside the push gate's
+    /// critical section per `specs/harness.md` § Verdict Gate. The mint
+    /// must precede the push so prek's pre-push hook chain reads the
+    /// just-minted marker and short-circuits the slow tier; releasing the
+    /// section between mint and push would let a concurrent verdict gate's
+    /// rebase mutate `HEAD` and invalidate the marker.
+    ///
+    /// Minting is **best-effort**: the prek consumer treats a missing or
+    /// invalid marker as "fall through to the slow tier", so a failed mint
+    /// degrades performance but never invariant safety. Implementations
+    /// therefore log and return `Ok(())` on a mint failure rather than
+    /// aborting the push. The default impl is a no-op so test fakes and
+    /// pre-wiring callers compile unchanged.
+    fn mint_marker(&mut self) -> impl std::future::Future<Output = Result<(), ReviewError>> + Send {
+        async { Ok(()) }
+    }
+
     /// `git push` — code-only push. Errors map to
     /// [`ReviewError::GitPushFailed`] or [`ReviewError::DetachedHead`].
     fn git_push(&mut self) -> impl std::future::Future<Output = Result<(), ReviewError>> + Send;
@@ -477,6 +495,13 @@ async fn apply_verdict<C: ReviewController>(
                 serde_json::json!({}),
             );
             controller.reset_iteration_count().await?;
+            // Mint the molecule-completion marker before the push so the
+            // pre-push hook chain reads it and short-circuits the slow
+            // tier. Audit + mint + push stay atomic under the push gate's
+            // critical section (specs/harness.md § Verdict Gate): the mint
+            // is the immediate predecessor of `git_push`, with no
+            // HEAD-mutating step in between.
+            controller.mint_marker().await?;
             controller.git_push().await?;
             controller.beads_push().await?;
             // Auto-close every epic whose direct children are all closed.
@@ -605,9 +630,14 @@ mod tests {
         apply_clarify_calls: Vec<(BeadId, String)>,
         apply_integrity_clarify_calls: Vec<Vec<IntegrityFinding>>,
         mint_integrity_findings_calls: Vec<Vec<IntegrityFinding>>,
+        mint_marker_calls: u32,
         git_push_calls: u32,
         beads_push_calls: u32,
         exec_run_calls: u32,
+        /// Ordered log of the push-gate side effects that must stay
+        /// sequenced — the marker mint MUST precede the push so the
+        /// pre-push hook reads it (specs/harness.md § Verdict Gate).
+        push_order: Vec<&'static str>,
         /// Capture the (kind, summary, payload) tuple for every
         /// `emit_driver_event` so tests can pin the verdict-gate
         /// emission sequence.
@@ -687,8 +717,15 @@ mod tests {
             Ok(())
         }
 
+        async fn mint_marker(&mut self) -> Result<(), ReviewError> {
+            self.mint_marker_calls += 1;
+            self.push_order.push("mint_marker");
+            Ok(())
+        }
+
         async fn git_push(&mut self) -> Result<(), ReviewError> {
             self.git_push_calls += 1;
+            self.push_order.push("git_push");
             Ok(())
         }
 
@@ -775,6 +812,15 @@ mod tests {
         assert_eq!(result, ReviewResult::Pushed);
         assert_eq!(c.git_push_calls, 1);
         assert_eq!(c.beads_push_calls, 1);
+        assert_eq!(c.mint_marker_calls, 1, "clean push mints the marker");
+        // The marker mint MUST precede the push so prek's pre-push hook
+        // reads it and short-circuits the slow tier (specs/harness.md
+        // § Verdict Gate — audit + mint + push atomic).
+        assert_eq!(
+            c.push_order,
+            vec!["mint_marker", "git_push"],
+            "marker mint must run immediately before the push",
+        );
         assert_eq!(c.reset_iter_calls, 1, "counter resets on clean push");
         assert_eq!(c.exec_run_calls, 0, "no auto-iterate on clean push");
         // The verdict-gate fence emits `push_gate_walk` first, then the
@@ -784,6 +830,35 @@ mod tests {
         assert_eq!(
             kinds,
             vec!["push_gate_walk", "verdict_gate", "push_gate_clean"],
+        );
+        Ok(())
+    }
+
+    /// A refused push never mints a marker: the marker authorizes the
+    /// push, so a blocked/clarify molecule that stops short of `git_push`
+    /// must also stop short of `mint_marker` (specs/harness.md § Verdict
+    /// Gate — mint is the immediate predecessor of the push, not a
+    /// standalone side effect).
+    #[tokio::test]
+    async fn push_blocked_does_not_mint_marker() -> Result<(), ReviewError> {
+        let mut c = FakeController {
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
+            post_beads: vec![
+                bead("lm-1", &["spec:harness"]),
+                bead("lm-2", &["spec:harness", "loom:blocked"]),
+            ],
+            ..FakeController::default()
+        };
+
+        let _ = review_loop(&mut c, IterationCap::default()).await?;
+        assert_eq!(c.git_push_calls, 0, "blocked molecule never pushes");
+        assert_eq!(
+            c.mint_marker_calls, 0,
+            "blocked molecule never mints — the marker authorizes a push that did not happen",
+        );
+        assert!(
+            c.push_order.is_empty(),
+            "no mint/push side effects on a refused push",
         );
         Ok(())
     }
