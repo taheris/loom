@@ -2836,7 +2836,7 @@ and conservative fall-through for unowned queries.
 
 The production wiring obligation — every caller that constructs
 `GateInputs` for the review-phase verdict gate must populate
-`streamed_findings_count` from a real `parse_walk_output` invocation
+`streamed_findings` from a real `parse_walk_output` invocation
 rather than leaving it at default — is owned by
 [harness.md § Verdict gate](harness.md#verdict-gate). This
 subsection covers the wire-format-side dead-code excision and the

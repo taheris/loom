@@ -533,7 +533,17 @@ fn run_judge_collect(repo_root: &Path, script: &Path, function: Option<&str>) ->
         cmd.arg(function);
     }
     cmd.current_dir(repo_root);
-    let output = cmd.output().ok()?;
+    let output = match cmd.output() {
+        Ok(output) => output,
+        Err(source) => {
+            let err = InputsError::Spawn {
+                command: format!("loom-judge-harness {}", script.display()),
+                source,
+            };
+            tracing::warn!(err = ?err, "judge collect-mode spawn failed; conservative always-run default applies");
+            return None;
+        }
+    };
     if !output.status.success() {
         return None;
     }
@@ -568,7 +578,17 @@ fn run_command_query(repo_root: &Path, command: &str) -> Option<String> {
     let mut cmd = Command::new(head);
     cmd.args(&tail);
     cmd.current_dir(repo_root);
-    let output = cmd.output().ok()?;
+    let output = match cmd.output() {
+        Ok(output) => output,
+        Err(source) => {
+            let err = InputsError::Spawn {
+                command: command.to_string(),
+                source,
+            };
+            tracing::warn!(err = ?err, "input-query spawn failed; conservative always-run default applies");
+            return None;
+        }
+    };
     if !output.status.success() {
         return None;
     }
@@ -969,14 +989,47 @@ mod tests {
 
     #[test]
     fn runner_matched_target_with_no_inputs_query_stays_always_run() {
+        use std::os::unix::fs::PermissionsExt;
+
         let dir = tempfile::tempdir().unwrap();
-        // A runner matches the target but declares no `inputs` query, so the
-        // runner owns the annotation end to end: no argv-mangling probe, and
-        // the conservative always-run default applies (declares no inputs).
+        // The command head answers `--print-inputs` with a real path when
+        // probed as a bare literal command. A matched runner with no `inputs`
+        // query must own the annotation terminally and never issue that
+        // tokens[0] probe, so the input set stays undeterminable (always-run)
+        // *despite* the head being probe-answerable.
+        let responder = dir.path().join("responder.sh");
+        fs::write(
+            &responder,
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"--print-inputs\" ]; then\n\
+               printf '{\"inputs\": [\"crates/loom-walk/src/probed.rs\"]}\\n'\n\
+               exit 0\n\
+             fi\n\
+             exit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&responder, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let head = responder.display().to_string();
+        let target = format!("{head} foo");
+        let pattern = format!("^{} (\\S+)$", regex::escape(&head));
+        let a = ann(Tier::Check, &target, "specs/gate.md");
+
+        // Control: with no runner, the bare command IS probed — tokens[0]
+        // answers `--print-inputs`, so the verifier declares its own inputs.
+        let mut bare = InputResolver::new(dir.path().to_path_buf());
+        assert!(
+            !bare.declares_no_inputs(&a),
+            "control: the command head answers --print-inputs when probed literally",
+        );
+
+        // With the matched runner (no inputs query), the probe is suppressed:
+        // the runner owns the annotation and yields the conservative
+        // always-run default even though the head would answer if probed.
         let spec = RunnerSpec::compile(
             "walk",
-            Some(r"^cargo run -p loom-walk -- (\S+)$"),
-            "cargo run -p loom-walk -- {targets}",
+            Some(pattern.as_str()),
+            "{targets}",
             "{capture_1}",
             " ",
             crate::runner::BuiltinParser::JsonLines,
@@ -984,14 +1037,10 @@ mod tests {
         )
         .unwrap();
         let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![spec]);
-        let a = ann(
-            Tier::Check,
-            "cargo run -p loom-walk -- foo",
-            "specs/gate.md",
-        );
         assert!(
             resolver.declares_no_inputs(&a),
-            "matched runner with no inputs query relies on the always-run default",
+            "matched runner with no inputs query suppresses the tokens[0] probe \
+             and relies on the always-run default",
         );
     }
 
