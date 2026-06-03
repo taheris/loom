@@ -3303,19 +3303,26 @@ Criteria.
       detail names which concern triggered (live-path / mock / scope /
       judge / style-rule)
   [test](concern_marker_with_streamed_findings_routes_to_review_concern_recovery)
-- Production wiring obligation: every production caller that
-      constructs `GateInputs` for the review-phase verdict gate must
-      populate `streamed_findings_count` from the parsed walk output
-      rather than relying on `..GateInputs::default()` (which leaves
-      it at 0). At minimum: `classify_review_phase` at
-      `crates/loom-workflow/src/review/production.rs` and
-      `neutral_gate_inputs` at `crates/loom-workflow/src/loop/production.rs`
-      both invoke `parse_walk_output` against the agent's combined
-      stdout before constructing `GateInputs`. A well-formed
-      `LOOM_CONCERN` with `≥1` streamed `LOOM_FINDING:` lines routes
-      to `RecoveryCause::ReviewConcern { summary, findings }`, never
-      collapses to `BadWalk::ConcernWithoutFindings` because the count
-      was left at default
+- Production wiring obligation: the review-phase verdict-gate caller
+      that constructs `GateInputs` must populate `streamed_findings`
+      from the parsed walk output rather than relying on
+      `..GateInputs::default()` (which leaves it empty).
+      `classify_review_phase` at
+      `crates/loom-workflow/src/review/production.rs` invokes
+      `parse_walk_output` against the agent's combined stdout before
+      constructing `GateInputs`. A well-formed `LOOM_CONCERN` with `≥1`
+      streamed `LOOM_FINDING:` lines routes to
+      `RecoveryCause::ReviewConcern { summary, findings }`, never
+      collapses to `BadWalk::ConcernWithoutFindings` because the
+      findings were left at default. The run/loop classifier
+      (`neutral_gate_inputs` at `crates/loom-workflow/src/loop/production.rs`)
+      is deliberately exempt: it passes an empty findings vec because
+      worker phases have no findings stream, and `classify_session`
+      rejects `LOOM_CONCERN`/`BadWalk` markers as review-phase-only
+      (loop/production.rs:1062-1074) before `decide` is reached, so
+      populated findings could not affect routing — wiring it would
+      instead risk mis-routing a loop-phase `LOOM_COMPLETE` to
+      `FindingsWithoutConcern`
   [test](classify_review_phase_invokes_parse_walk_output_and_threads_findings_through_gate_inputs)
 - Wire-format dead-code excision: no production code path
       constructs `ReviewError::ConcernWithoutBeadDeltas`; the variant
