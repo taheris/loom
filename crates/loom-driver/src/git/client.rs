@@ -39,6 +39,23 @@ const LOOM_WORKSPACE_REL: &str = ".loom/integration";
 /// remote does not loop forever; large enough that realistic cross-spec
 /// loom contention resolves within the budget.
 const PUSH_NON_FF_RETRIES: u32 = 5;
+/// Number of times an index-mutating git invocation in the loom workspace
+/// retries against git lock-file contention before surfacing
+/// [`GitError::IndexLocked`]. Cross-spec `loom loop` invocations share one
+/// loom workspace; the rebase + ff critical section is serialized by git's
+/// own `index.lock` (specs/harness.md § Concurrency). The loop's command
+/// that loses the race observes git's "Unable to create '…/index.lock':
+/// File exists" failure — having mutated nothing — and retries from its
+/// current view of the integration branch. Bounded so a crashed peer that
+/// left a stale lock cannot loop forever.
+const INDEX_LOCK_RETRIES: u32 = 100;
+/// Backoff between [`INDEX_LOCK_RETRIES`] attempts. The lock is held only
+/// for the duration of a peer's single index write (rebase / checkout /
+/// ff-merge run no hooks, so milliseconds), so a short fixed pause drains
+/// realistic contention well inside the retry budget; the product
+/// (`RETRIES * BACKOFF` ≈ 2s) is the worst-case wait before a stale lock is
+/// reported.
+const INDEX_LOCK_BACKOFF: Duration = Duration::from_millis(20);
 /// Fallback integration branch when the caller opens a `GitClient` via
 /// [`GitClient::open`] / [`GitClient::open_with_clock`] without naming
 /// one. Production paths thread `[loom] integration_branch` from
@@ -973,7 +990,7 @@ impl GitClient {
         // off-by-one when the final commit also conflicts; the bound
         // keeps a non-advancing `--continue` (e.g. a resolution that
         // emptied the commit) from spinning forever.
-        let max_steps = run_git_raw(
+        let count_output = run_git_raw(
             &workdir,
             self.clock.as_ref(),
             [
@@ -983,18 +1000,30 @@ impl GitClient {
             ],
             None,
         )
-        .await
-        .ok()
-        .and_then(|out| {
-            String::from_utf8_lossy(&out.stdout)
-                .trim()
-                .parse::<u32>()
-                .ok()
-        })
-        .unwrap_or(0)
-        .saturating_add(1);
+        .await?;
+        if !count_output.status.success() {
+            // A failed `rev-list --count` (bad range, spawn failure,
+            // timeout) must not collapse to the sentinel 0 — that would
+            // silently degrade `max_steps` to 1 and starve the `--continue`
+            // drive loop below, indistinguishable from a legitimately empty
+            // range (RS-11). Surface the CLI error instead.
+            return Err(cli_error(&count_output));
+        }
+        let count_stdout = String::from_utf8(count_output.stdout)?;
+        let max_steps = count_stdout
+            .trim()
+            .parse::<u32>()
+            .map_err(|e: std::num::ParseIntError| GitError::GitCli {
+                status: 0,
+                stderr: format!("rev-list --count returned non-integer `{count_stdout}`: {e}"),
+            })?
+            .saturating_add(1);
 
-        let mut output = run_git_raw(
+        // The rebase / --continue / --abort / checkout below all take the
+        // loom workspace's `index.lock`; a cross-spec peer holding it loses
+        // the race to a clear, retryable error rather than a spurious
+        // conflict (specs/harness.md § Concurrency).
+        let mut output = run_git_index_mut(
             &workdir,
             self.clock.as_ref(),
             ["rebase", integration_branch, branch],
@@ -1014,7 +1043,7 @@ impl GitClient {
                 // `-c core.editor=true` keeps `--continue` from opening an
                 // editor for the reused commit message.
                 steps += 1;
-                output = run_git_raw(
+                output = run_git_index_mut(
                     &workdir,
                     self.clock.as_ref(),
                     ["-c", "core.editor=true", "rebase", "--continue"],
@@ -1029,14 +1058,18 @@ impl GitClient {
             // have unstaged changes" vs. anything else) rather than the
             // cleanup commands' output.
             let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let _ = run_git_raw(&workdir, self.clock.as_ref(), ["rebase", "--abort"], None).await?;
-            run_git(
+            let _ = run_git_index_mut(&workdir, self.clock.as_ref(), ["rebase", "--abort"], None)
+                .await?;
+            let checkout = run_git_index_mut(
                 &workdir,
                 self.clock.as_ref(),
                 ["checkout", "-q", integration_branch],
                 None,
             )
             .await?;
+            if !checkout.status.success() {
+                return Err(cli_error(&checkout));
+            }
             // The integration-branch tip is the base the rebase
             // targeted; the agent's retry rebases its branch onto this.
             let new_base_raw = run_git_raw(
@@ -1065,15 +1098,22 @@ impl GitClient {
         let workdir = self.loom_workspace();
         let integration_branch = self.integration_branch.as_str();
 
-        run_git(
+        // Both the checkout and the ff-merge take the loom workspace's
+        // `index.lock`; a cross-spec peer holding it loses the race to a
+        // retryable [`GitError::IndexLocked`] rather than a spurious
+        // failure (specs/harness.md § Concurrency).
+        let checkout = run_git_index_mut(
             &workdir,
             self.clock.as_ref(),
             ["checkout", "-q", integration_branch],
             None,
         )
         .await?;
+        if !checkout.status.success() {
+            return Err(cli_error(&checkout));
+        }
 
-        let output = run_git_raw(
+        let output = run_git_index_mut(
             &workdir,
             self.clock.as_ref(),
             ["merge", "--ff-only", branch],
@@ -1678,6 +1718,60 @@ fn is_non_fast_forward(output: &std::process::Output) -> bool {
     let stderr = String::from_utf8_lossy(&output.stderr);
     stderr.contains("! [rejected]")
         && (stderr.contains("non-fast-forward") || stderr.contains("fetch first"))
+}
+
+/// Classify a failed git invocation as loom-workspace lock contention.
+/// When a concurrent process holds `index.lock`, git refuses to start the
+/// index-mutating command and writes `fatal: Unable to create
+/// '<path>/index.lock': File exists.` plus an "Another git process seems to
+/// be running" hint to `stderr`, having mutated nothing. The
+/// [`run_git_index_mut`] retry loop keys off this signature to distinguish
+/// recoverable contention (retry) from a content failure or rebase conflict
+/// (surface), matching on the `index.lock` lock-file name the spec names as
+/// the serialization point rather than the variable cleanup output.
+fn is_index_locked(output: &std::process::Output) -> bool {
+    if output.status.success() {
+        return false;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    stderr.contains("index.lock")
+        && (stderr.contains("File exists")
+            || stderr.contains("Another git process seems to be running"))
+}
+
+/// Run an index-mutating git invocation in the loom workspace, retrying on
+/// git lock-file contention ([`is_index_locked`]). Two `loom loop`
+/// invocations on different specs share the loom workspace and collide on
+/// its `index.lock` during the rebase + ff critical section; the command
+/// that loses the race mutated nothing, so re-running it is safe and picks
+/// up the winner's now-current integration tip (specs/harness.md §
+/// Concurrency). Bounded by [`INDEX_LOCK_RETRIES`] with an
+/// [`INDEX_LOCK_BACKOFF`] pause between attempts (clock-driven so paused-time
+/// tests stay deterministic); exhaustion surfaces [`GitError::IndexLocked`]
+/// rather than the raw CLI error so the caller can tell stale-lock
+/// contention from a content failure. The returned `Output` is the first
+/// attempt that was *not* lock-contended — its status may still be a
+/// non-zero conflict the caller inspects.
+async fn run_git_index_mut<I, S>(
+    workdir: &Path,
+    clock: &dyn Clock,
+    args: I,
+    trailing: Option<&OsString>,
+) -> Result<std::process::Output, GitError>
+where
+    I: IntoIterator<Item = S> + Clone,
+    S: AsRef<std::ffi::OsStr>,
+{
+    for _ in 0..INDEX_LOCK_RETRIES {
+        let output = run_git_raw(workdir, clock, args.clone(), trailing).await?;
+        if !is_index_locked(&output) {
+            return Ok(output);
+        }
+        clock.sleep(INDEX_LOCK_BACKOFF).await;
+    }
+    Err(GitError::IndexLocked {
+        workdir: workdir.to_path_buf(),
+    })
 }
 
 fn cli_error(output: &std::process::Output) -> GitError {

@@ -425,6 +425,130 @@ async fn rebase_onto_integration_leaves_integration_branch_unmoved() -> Result<(
     Ok(())
 }
 
+/// Cross-spec `loom loop` invocations share one loom workspace; the
+/// rebase + ff critical section is serialized by git's `index.lock`
+/// (specs/harness.md § Concurrency). When a peer holds the lock the losing
+/// `rebase_onto_integration` must treat git's "Unable to create
+/// '…/index.lock': File exists" refusal as *recoverable contention* — retry
+/// from its current view of the integration tip — not as a spurious
+/// conflict. Modelled deterministically: a pre-created `index.lock` stands
+/// in for a peer's held lock, and a concurrent task releases it mid-flight
+/// so the retry loop observes the lock clear and the rebase lands.
+#[tokio::test]
+async fn rebase_onto_integration_retries_through_index_lock_contention() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("feature.txt"), "feature side\n")?;
+    git(&loom, &["add", "feature.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "feature commit"])?;
+    git(&loom, &["checkout", "-q", "main"])?;
+    std::fs::write(loom.join("main.txt"), "main side\n")?;
+    git(&loom, &["add", "main.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "main commit"])?;
+
+    // Stand in for a peer mid-rebase holding the workspace index lock. The
+    // loom workspace is a clone, so `.git` is a regular directory.
+    let lock = loom.join(".git/index.lock");
+    std::fs::write(&lock, b"")?;
+
+    // Release the lock shortly after the rebase starts contending so the
+    // bounded retry loop observes it clear and proceeds.
+    let lock_clone = lock.clone();
+    let releaser = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        std::fs::remove_file(&lock_clone)
+    });
+
+    let client = GitClient::open(repo.path())?;
+    let outcome = client.rebase_onto_integration("feature").await?;
+    releaser.await?.context("release stand-in index.lock")?;
+
+    assert!(
+        matches!(outcome, RebaseOutcome::Rebased),
+        "rebase must retry through index.lock contention and land, got {outcome:?}",
+    );
+    assert!(
+        !lock.exists(),
+        "the stand-in index.lock should have been released by the concurrent task",
+    );
+    Ok(())
+}
+
+/// The ff-merge half of the same critical section: `ff_merge_integration`
+/// also takes the loom-workspace `index.lock` (checkout + `merge --ff-only`)
+/// and must retry through a peer's held lock rather than surfacing a
+/// spurious failure (specs/harness.md § Concurrency). Same deterministic
+/// stand-in lock + concurrent release as the rebase case.
+#[tokio::test]
+async fn ff_merge_integration_retries_through_index_lock_contention() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("feature.txt"), "feature side\n")?;
+    git(&loom, &["add", "feature.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "feature commit"])?;
+    git(&loom, &["checkout", "-q", "main"])?;
+
+    let client = GitClient::open(repo.path())?;
+    // Rebase first (no contention) so the ff-merge is the operation under
+    // lock contention.
+    assert!(matches!(
+        client.rebase_onto_integration("feature").await?,
+        RebaseOutcome::Rebased,
+    ));
+
+    let lock = loom.join(".git/index.lock");
+    std::fs::write(&lock, b"")?;
+    let lock_clone = lock.clone();
+    let releaser = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        std::fs::remove_file(&lock_clone)
+    });
+
+    client.ff_merge_integration("feature").await?;
+    releaser.await?.context("release stand-in index.lock")?;
+
+    assert!(
+        loom.join("feature.txt").exists(),
+        "ff-merge must land after retrying through index.lock contention",
+    );
+    Ok(())
+}
+
+/// A lock that never clears (a crashed peer's stale `index.lock`) must not
+/// loop forever: the bounded retry budget exhausts and surfaces a typed
+/// [`GitError::IndexLocked`] naming the loom workspace, distinct from a
+/// content failure, so the caller can report stale-lock contention.
+#[tokio::test]
+async fn rebase_onto_integration_surfaces_index_locked_on_stale_lock() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("feature.txt"), "feature side\n")?;
+    git(&loom, &["add", "feature.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "feature commit"])?;
+    git(&loom, &["checkout", "-q", "main"])?;
+
+    // Held for the duration of the call — never released.
+    let lock = loom.join(".git/index.lock");
+    std::fs::write(&lock, b"")?;
+
+    let client = GitClient::open(repo.path())?;
+    let err = client
+        .rebase_onto_integration("feature")
+        .await
+        .expect_err("a stale index.lock must exhaust the retry budget");
+    assert!(
+        matches!(err, GitError::IndexLocked { ref workdir } if workdir.ends_with(".loom/integration")),
+        "expected GitError::IndexLocked naming the loom workspace, got {err:?}",
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn status_reports_working_tree_and_index_changes() -> Result<()> {
     // Status on a clean checkout reports zero entries; modifying a tracked

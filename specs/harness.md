@@ -2777,6 +2777,17 @@ Criteria.
       on the rewritten commits before anything lands durably and a
       pass-2 failure leaves the integration line untouched
   [test](rebase_onto_integration_leaves_integration_branch_unmoved)
+- The cross-spec rebase + ff critical section in the shared loom
+      workspace is serialized by git's `index.lock`; a peer holding the
+      lock makes the losing `rebase_onto_integration` /
+      `ff_merge_integration` retry from its current view of the
+      integration tip rather than surface a spurious conflict
+  [test](rebase_onto_integration_retries_through_index_lock_contention)
+- A stale loom-workspace `index.lock` that never clears exhausts the
+      bounded retry budget and surfaces a typed `GitError::IndexLocked`
+      naming the workspace (distinct from a content failure), instead of
+      looping forever
+  [test](rebase_onto_integration_surfaces_index_locked_on_stale_lock)
 - Origin push of the integration branch retries non-fast-forward
       errors by fetching and re-rebasing onto
       `origin/<integration-branch>`

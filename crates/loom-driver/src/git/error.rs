@@ -57,4 +57,7 @@ pub enum GitError {
 
     /// integration branch {branch} has diverged from origin/{branch} — it carries local commits not on origin, so it cannot fast-forward; reconcile before looping. divergent commits: {commits}
     IntegrationDiverged { branch: String, commits: String },
+
+    /// git lock contention in {workdir} persisted across the retry budget — a concurrent loom process is holding the loom-workspace `index.lock`, or a crashed process left a stale `.git/index.lock` behind
+    IndexLocked { workdir: PathBuf },
 }
