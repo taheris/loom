@@ -110,7 +110,7 @@ __loom_files=()
 judge_files() { __loom_files+=("$@"); }
 judge_criterion() { :; }
 __loom_json_str() {
-  local s=$1
+  local s="$1"
   s=${s//\\/\\\\}
   s=${s//\"/\\\"}
   printf '"%s"' "$s"
@@ -128,7 +128,7 @@ __loom_run_one() {
   "$1"
   __loom_files_json
 }
-__loom_script=$1
+__loom_script="$1"
 shift
 __loom_harness=" judge_files judge_criterion __loom_json_str __loom_files_json __loom_run_one "
 source "$__loom_script"
