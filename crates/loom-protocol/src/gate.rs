@@ -119,6 +119,8 @@ pub enum ConcernToken {
     MultipleAnnotations,
     #[serde(rename = "unneeded-pending-marker")]
     UnneededPendingMarker,
+    #[serde(rename = "inputs-protocol-error")]
+    InputsProtocolError,
     #[serde(rename = "scope-creep")]
     ScopeCreep,
     #[serde(rename = "scope-shortfall")]
@@ -153,6 +155,7 @@ impl ConcernToken {
             Self::StubPointing => "stub-pointing",
             Self::MultipleAnnotations => "multiple-annotations",
             Self::UnneededPendingMarker => "unneeded-pending-marker",
+            Self::InputsProtocolError => "inputs-protocol-error",
             Self::ScopeCreep => "scope-creep",
             Self::ScopeShortfall => "scope-shortfall",
         }
@@ -183,7 +186,8 @@ impl ConcernToken {
             | Self::DispatchError
             | Self::UnresolvedAnnotation
             | Self::StubPointing
-            | Self::UnneededPendingMarker => TargetKind::Annotation,
+            | Self::UnneededPendingMarker
+            | Self::InputsProtocolError => TargetKind::Annotation,
             Self::MockDiscipline => TargetKind::TestPath,
             Self::ConcurrencyUntested => TargetKind::LockSite,
             Self::InvariantClash => TargetKind::Invariant,
@@ -197,9 +201,10 @@ impl ConcernToken {
     ///
     /// - `template-spec-drift` / `verifier-failed` / `dispatch-error` /
     ///   `unresolved-annotation` / `stub-pointing` /
-    ///   `multiple-annotations` / `unneeded-pending-marker` are emitted
-    ///   only at `--tree` scope (deterministic verifier dispatch and
-    ///   integrity-gate sources run only there).
+    ///   `multiple-annotations` / `unneeded-pending-marker` /
+    ///   `inputs-protocol-error` are emitted only at `--tree` scope
+    ///   (deterministic verifier dispatch and integrity-gate sources
+    ///   run only there).
     /// - `scope-creep` / `scope-shortfall` are per-bead-only — the
     ///   tree-scope walk never emits them.
     /// - Everything else is admissible at any scope.
@@ -214,7 +219,8 @@ impl ConcernToken {
             | Self::UnresolvedAnnotation
             | Self::StubPointing
             | Self::MultipleAnnotations
-            | Self::UnneededPendingMarker => ScopeKind::TreeOnly,
+            | Self::UnneededPendingMarker
+            | Self::InputsProtocolError => ScopeKind::TreeOnly,
             Self::ScopeCreep | Self::ScopeShortfall => ScopeKind::PerBead,
             Self::SpecCoherenceFail
             | Self::OrphanIntegration
@@ -1299,6 +1305,7 @@ mod tests {
             (ConcernToken::StubPointing, TargetKind::Annotation),
             (ConcernToken::MultipleAnnotations, TargetKind::Criterion),
             (ConcernToken::UnneededPendingMarker, TargetKind::Annotation),
+            (ConcernToken::InputsProtocolError, TargetKind::Annotation),
             (ConcernToken::ScopeCreep, TargetKind::Criterion),
             (ConcernToken::ScopeShortfall, TargetKind::Criterion),
         ] {
@@ -2105,6 +2112,9 @@ mod tests {
             ConcernToken::UnneededPendingMarker => FindingTarget::Annotation {
                 target_string: "cargo test --lib already_resolved".to_owned(),
             },
+            ConcernToken::InputsProtocolError => FindingTarget::Annotation {
+                target_string: "cargo run -p loom-walk -- inputs".to_owned(),
+            },
             ConcernToken::MockDiscipline => FindingTarget::TestPath {
                 path: "crates/loom-gate/src/integrity.rs::mock_disciplined".to_owned(),
             },
@@ -2164,6 +2174,7 @@ mod tests {
             ConcernToken::StubPointing,
             ConcernToken::MultipleAnnotations,
             ConcernToken::UnneededPendingMarker,
+            ConcernToken::InputsProtocolError,
             ConcernToken::ScopeCreep,
             ConcernToken::ScopeShortfall,
         ];
@@ -2253,6 +2264,7 @@ mod tests {
             ConcernToken::StubPointing,
             ConcernToken::MultipleAnnotations,
             ConcernToken::UnneededPendingMarker,
+            ConcernToken::InputsProtocolError,
         ];
         for token in tree_only {
             assert_eq!(token.scope_kind(), ScopeKind::TreeOnly, "{token:?}");
@@ -2395,6 +2407,36 @@ mod tests {
             bonds: vec![gate.clone()],
             target,
             evidence: "spec-conventions-violation round-trip".to_owned(),
+        };
+        let payload = serde_json::to_string(&finding).expect("serialize");
+        let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_COMPLETE\n");
+        let parsed = parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid)
+            .expect("round-trip parse");
+        assert_eq!(parsed, vec![finding]);
+    }
+
+    /// Spec contract `specs/gate.md` § *Concern tokens and target
+    /// variants* — the `inputs-protocol-error` integrity-gate token
+    /// round-trips byte-equal through `serde_json` and
+    /// `parse_walk_output` with canonical target
+    /// `Annotation { target_string }`, and is a tree-scope-only token
+    /// (emitted by the integrity gate's inputs-protocol check).
+    #[test]
+    fn concern_token_inputs_protocol_error_round_trips_with_annotation_target() {
+        let token = ConcernToken::InputsProtocolError;
+        assert_eq!(token.as_wire(), "inputs-protocol-error");
+        assert_eq!(token.expected_target_kind(), TargetKind::Annotation);
+        assert_eq!(token.scope_kind(), ScopeKind::TreeOnly);
+
+        let gate = spec("gate");
+        let target = canonical_target(token, &gate);
+        assert!(matches!(target, FindingTarget::Annotation { .. }));
+
+        let finding = Finding {
+            token,
+            bonds: vec![gate.clone()],
+            target,
+            evidence: "inputs-protocol-error round-trip".to_owned(),
         };
         let payload = serde_json::to_string(&finding).expect("serialize");
         let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_COMPLETE\n");
