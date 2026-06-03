@@ -2013,7 +2013,9 @@ An opted-in verifier that exits non-zero or emits a malformed inputs
 document is a loud `inputs-protocol-error` finding (see *Concern
 tokens and target variants*) — deterministic, emitted by the
 integrity gate during `loom gate verify` / `check`, exiting non-zero
-at the push gate and minting as a fix-up at tree scope. Because the
+at the push gate and minting as a fix-up at tree scope. *(Planned —
+this is the integrity gate's fourth direction; see *Integrity gate*,
+Direction 4: it is not yet emitted on any production path.)* Because the
 opt-in is explicit, loudness never mis-fires: a verifier whose
 contract loom does *not* own — an unregistered literal command, or a
 runner with no `inputs` query — falls through to the conservative
@@ -2148,12 +2150,17 @@ resolve. Runs as part of `loom gate check`. Four directions:
    wrong regardless of either's resolution state.
 
 4. **Inputs-protocol honesty — an opted-in input-query must honour
-   its contract** (`inputs-protocol-error`). A verifier opts in when
-   loom owns its query: a `[judge]` (the harness preamble guarantees
-   `<script> --print-inputs <fn>`) or a `[check]` / `[system]` whose
+   its contract** (`inputs-protocol-error`). *Planned, not yet
+   realized: HEAD implements the three directions above; the gate does
+   not yet emit `inputs-protocol-error` on any production path, and the
+   direction's success criteria below carry the `[test?]` pending
+   marker. The contract that follows is the target behaviour.* A
+   verifier opts in when loom owns its query: a `[judge]` (the harness
+   preamble guarantees `<script> --print-inputs <fn>`) or a `[check]` /
+   `[system]` whose
    runner declares an `inputs` query (see *Runners*). An opted-in
    query that exits non-zero or emits a malformed inputs document is
-   unambiguously broken and the gate flags it. This is the loud
+   unambiguously broken and the gate will flag it. This is the loud
    counterpart to the *Conservative default*: a verifier whose
    contract loom does not own falls through to always-run silently, so
    no `grep` / `nix` command is ever mis-flagged. The pending modifier

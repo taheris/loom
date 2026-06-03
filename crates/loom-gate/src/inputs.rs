@@ -949,12 +949,7 @@ mod tests {
     #[test]
     fn print_inputs_issued_through_command_template_not_argv_head() {
         let dir = tempfile::tempdir().unwrap();
-        // Mimics `loom-walk`: the walk name is the responder's first arg
-        // and `--print-inputs` is a *later* flag. If the flag were
-        // prepended to the command's first token (the argv-head bug), the
-        // walk name would be `--print-inputs` and the responder errors —
-        // emitting no inputs document. Routed through the runner template,
-        // the flag lands after the walk name and the responder answers.
+        // Responder errors if `--print-inputs` lands as its first arg (the argv-head bug); answers only when the flag follows the walk name.
         let responder = dir.path().join("responder.sh");
         fs::write(
             &responder,
