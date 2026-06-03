@@ -1547,9 +1547,9 @@ Each criterion's annotation is resolved per its tier:
 
 | Tier | Target shape | Dispatch |
 |------|--------------|----------|
-| `[check]` | `[check](command)` — argv string | Each annotation invokes its own process (often a walk binary the consumer ships). |
+| `[check]` | `[check](target)` — a runner identifier (matched by a `[runner.check.<name>]` block in `loom.toml`) or an argv string | Runner-matched targets batch into one subprocess per runner and self-report inputs (see *Runners*); an unmatched target falls back to invoking its own process (often a walk binary the consumer ships). |
 | `[test]` | `[test](path)` — language-native test path (e.g. `crate::module::test_name`, `tests/test_foo.py::test_bar`) | The gate collects all `[test]` targets in a single `loom gate test` invocation and issues **one** runner subprocess (e.g. `cargo nextest run -E 'test(p1) \| test(p2) \| ...'`). One process per invocation, full internal parallelism. |
-| `[system]` | `[system](command)` — argv string | Each annotation invokes its own process. System verifiers are inherently slow and self-contained; batching doesn't help. |
+| `[system]` | `[system](target)` — a runner identifier (matched by a `[runner.system.<name>]` block in `loom.toml`) or an argv string | Runner-matched targets batch into one subprocess per runner (see *Runners*); an unmatched target falls back to invoking its own process. System verifiers without a runner are inherently slow and self-contained; batching doesn't help. |
 | `[judge]` | `[judge](path)` — file path or criterion id whose content is the LLM rubric | The gate collects all `[judge]` targets and issues concurrent LLM calls (API-level parallelism). |
 
 ### Command tokenisation
@@ -2492,7 +2492,7 @@ the original gate-skip class are structurally unreachable.
 The gate's spec defines the verifier-annotation taxonomy, so these
 criteria self-host — they use the same `[check]` / `[test]` /
 `[system]` / `[judge]` annotations the rest of the spec defines. The
-integrity gate's self-referential tests (under *Integrity gate — three
+integrity gate's self-referential tests (under *Integrity gate — four
 directions* below) pin that this self-hosting actually resolves: a
 `[check]` annotation in `specs/gate.md` whose first token is on
 PATH, and a `[judge]` annotation pointing at the gate's own
@@ -2511,7 +2511,13 @@ PATH, and a `[judge]` annotation pointing at the gate's own
   is missing rather than producing an empty result
   [test](parse_returns_read_dir_error_for_missing_directory)
 
-### Integrity gate — three directions
+### Integrity gate — four directions
+
+Directions 1–3 (forward resolution, stub-pointing, atomic acceptance)
+are covered by the criteria below. Direction 4 (inputs-protocol
+honesty) is covered by the `inputs-protocol-error` criteria under
+*Verifier inputs* below — opt-in resolution, opted-in query failure,
+and conservative fall-through for unowned queries.
 
 - **Forward — baseline.** A spec with all valid annotations yields no
   findings
