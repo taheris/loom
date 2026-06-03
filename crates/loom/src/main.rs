@@ -1285,34 +1285,79 @@ fn resolve_test_runner_template(workspace: &Path) -> anyhow::Result<loom_gate::R
     Ok(loom_gate::runner::discover(workspace, Tier::Test)?)
 }
 
-/// Resolve the `[check]`-tier runner specs and tier-default cwds from
-/// `<workspace>/loom.toml`. Empty specs (no `[runner.check]` block,
-/// or block with only `cwd`) yields the per-annotation fallback —
-/// Returns the runner specs the `[check]`-tier dispatcher consults. A
-/// built-in loom-walk batcher is always present so consumers don't have
-/// to declare it — every annotation shaped `cargo run -p loom-walk --
-/// <name>` collapses into one subprocess (bead `lm-6k4j`). Additional
-/// or overriding runners can be layered via `[runner.check.<name>]`
-/// entries in `loom.toml`. Annotations whose target matches none of
-/// the configured runners (grep, bash, misc shell-outs) fall through
-/// to per-annotation spawn via `run_with_runners`'s unmatched path.
-fn resolve_check_runner_context(workspace: &Path) -> anyhow::Result<(Vec<RunnerSpec>, TierCwds)> {
-    let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
-    let tier_cwds = TierCwds {
-        check: tier_cwd(&config, "check"),
-        test: tier_cwd(&config, "test"),
-        system: tier_cwd(&config, "system"),
-        judge: tier_cwd(&config, "judge"),
-    };
-    let mut specs = vec![builtin_loom_walk_runner()?];
-    if let Some(check_tier) = config.runner.tier("check") {
-        for (name, entry) in &check_tier.runners {
+/// Tier-default cwds for all four tiers, read from `<workspace>/loom.toml`'s
+/// `[runner.<tier>] cwd` entries. Independent of the runner-spec list, so
+/// every runner-context resolver shares one copy.
+fn all_tier_cwds(config: &LoomConfig) -> TierCwds {
+    TierCwds {
+        check: tier_cwd(config, "check"),
+        test: tier_cwd(config, "test"),
+        system: tier_cwd(config, "system"),
+        judge: tier_cwd(config, "judge"),
+    }
+}
+
+/// Compile the named `[runner.<tier>.<name>]` runners — and the implicit
+/// tier-default runner — declared under `tier` into runtime [`RunnerSpec`]s.
+/// Matching keys on target shape, not tier, so the caller decides which
+/// annotations flow through the returned specs; the `[check]`-tier builtin
+/// batcher is layered by the caller, not here.
+fn compile_tier_runners(config: &LoomConfig, tier: &str) -> anyhow::Result<Vec<RunnerSpec>> {
+    let mut specs = Vec::new();
+    if let Some(tier_block) = config.runner.tier(tier) {
+        for (name, entry) in &tier_block.runners {
             specs.push(compile_runner_entry(name, entry)?);
         }
-        if let Some(default_entry) = check_tier.default_runner() {
+        if let Some(default_entry) = tier_block.default_runner() {
             specs.push(compile_runner_entry("default", &default_entry)?);
         }
     }
+    Ok(specs)
+}
+
+/// Resolve the runner specs and tier-default cwds a single dispatch `tier`
+/// consults from `<workspace>/loom.toml`. `[check]` always carries the
+/// builtin loom-walk batcher plus any `[runner.check.<name>]` overrides;
+/// `[system]` carries its `[runner.system.<name>]` blocks, so a
+/// `[system](target)` resolves its inputs end-to-end through the matching
+/// runner per `specs/gate.md` § Target resolution — execution stays
+/// per-annotation. `[test]` / `[judge]` batch through their own templates
+/// and consult no RunnerSpec list. Targets matching no configured runner
+/// fall through to per-annotation spawn / the `tokens[0]`-on-PATH fallback.
+fn resolve_runner_context(
+    workspace: &Path,
+    tier: Tier,
+) -> anyhow::Result<(Vec<RunnerSpec>, TierCwds)> {
+    let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
+    let tier_cwds = all_tier_cwds(&config);
+    let specs = match tier {
+        Tier::Check => {
+            let mut specs = vec![builtin_loom_walk_runner()?];
+            specs.extend(compile_tier_runners(&config, "check")?);
+            specs
+        }
+        Tier::System => compile_tier_runners(&config, "system")?,
+        Tier::Test | Tier::Judge => Vec::new(),
+    };
+    Ok((specs, tier_cwds))
+}
+
+/// Resolve the runner specs the integrity gate's forward-resolution
+/// consults. The gate checks every annotation regardless of tier, so it
+/// needs the union of `[check]`- and `[system]`-tier runners: a
+/// `[system](target)` matched by a `[runner.system.<name>]` block must
+/// resolve by runner ownership exactly as a `[check]` target matched by
+/// `[runner.check.<name>]` does (`specs/gate.md` § Target resolution).
+/// RunnerSpec matching keys on target shape, not tier, so the union never
+/// cross-resolves a check target against a system runner or vice versa.
+fn resolve_integrity_runner_context(
+    workspace: &Path,
+) -> anyhow::Result<(Vec<RunnerSpec>, TierCwds)> {
+    let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
+    let tier_cwds = all_tier_cwds(&config);
+    let mut specs = vec![builtin_loom_walk_runner()?];
+    specs.extend(compile_tier_runners(&config, "check")?);
+    specs.extend(compile_tier_runners(&config, "system")?);
     Ok((specs, tier_cwds))
 }
 
@@ -1377,7 +1422,7 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
     let mut selected = filter_annotations(&parsed.annotations, tier, args);
     if scope_is_finite(args) {
         let runner_specs = match tier {
-            Tier::Check | Tier::System => resolve_check_runner_context(workspace)?.0,
+            Tier::Check | Tier::System => resolve_runner_context(workspace, tier)?.0,
             Tier::Test | Tier::Judge => Vec::new(),
         };
         let mut input_resolver = build_input_resolver(workspace, &runner_specs);
@@ -1406,7 +1451,7 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
     match tier {
         Tier::Check => {
             combined = combined.max(run_integrity_gate(workspace, args)?);
-            let (specs, tier_cwds) = resolve_check_runner_context(workspace)?;
+            let (specs, tier_cwds) = resolve_runner_context(workspace, Tier::Check)?;
             combined = run_check_with_progress(
                 &selected, &options, &specs, workspace, &tier_cwds, &cache, now_ms, &commit,
                 combined,
@@ -1504,7 +1549,7 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
         return Ok(0);
     }
     let cmd_resolver = FsCommandResolver::new(workspace);
-    let (specs, tier_cwds) = resolve_check_runner_context(workspace)?;
+    let (specs, tier_cwds) = resolve_integrity_runner_context(workspace)?;
     if scope_is_finite(args) {
         let mut input_resolver = build_input_resolver(workspace, &specs);
         let (pending, candidates): (Vec<_>, Vec<_>) =
@@ -3945,6 +3990,97 @@ mod tests {
         assert!(
             summary.batches.is_empty(),
             "no LOOM_FINDING lines in rubric → empty summary: {summary:?}",
+        );
+    }
+
+    fn workspace_with_check_and_system_runners() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join("loom.toml"),
+            r#"
+[runner.check.grep]
+match   = '^grep '
+command = "{targets}"
+
+[runner.system.nix]
+match   = '^nix (build|run) \.#(\S+)$'
+command = "nix build {targets}"
+parse   = "nix-build-status"
+"#,
+        )
+        .expect("write loom.toml");
+        tmp
+    }
+
+    /// Spec contract `specs/gate.md` § Target resolution: a `[system](target)`
+    /// resolves by matching a `[runner.system.<name>]` block, so the binary's
+    /// System-tier runner context MUST compile those blocks. The earlier
+    /// check-only producer never read `tier("system")`, leaving every system
+    /// runner unmatched.
+    #[test]
+    fn resolve_runner_context_system_tier_compiles_runner_system_blocks() {
+        let tmp = workspace_with_check_and_system_runners();
+        let (specs, _) =
+            resolve_runner_context(tmp.path(), Tier::System).expect("resolve system context");
+
+        assert!(
+            specs
+                .iter()
+                .any(|s| s.name == "nix" && s.matches("nix run .#test-loom")),
+            "[runner.system.nix] must compile into the System-tier context and match its target: {:?}",
+            specs.iter().map(|s| &s.name).collect::<Vec<_>>(),
+        );
+        assert!(
+            !specs.iter().any(|s| s.name == "builtin-loom-walk"),
+            "the [check]-tier builtin batcher must not leak into the System-tier context",
+        );
+        assert!(
+            !specs.iter().any(|s| s.name == "grep"),
+            "the System-tier context must not carry [runner.check.<name>] runners",
+        );
+    }
+
+    /// The `[check]`-tier context keeps the always-present builtin loom-walk
+    /// batcher alongside any `[runner.check.<name>]` overrides, and never
+    /// carries `[runner.system.<name>]` runners.
+    #[test]
+    fn resolve_runner_context_check_tier_includes_builtin_and_check_runners() {
+        let tmp = workspace_with_check_and_system_runners();
+        let (specs, _) =
+            resolve_runner_context(tmp.path(), Tier::Check).expect("resolve check context");
+
+        assert!(
+            specs.iter().any(|s| s.name == "builtin-loom-walk"),
+            "the builtin loom-walk batcher is always present for [check]",
+        );
+        assert!(
+            specs.iter().any(|s| s.name == "grep"),
+            "[runner.check.<name>] overrides layer onto the [check] context",
+        );
+        assert!(
+            !specs.iter().any(|s| s.name == "nix"),
+            "the [check] context must not carry [runner.system.<name>] runners",
+        );
+    }
+
+    /// The integrity gate checks every annotation regardless of tier, so its
+    /// runner context unions `[check]`- and `[system]`-tier runners: both a
+    /// `[check]` and a `[system]` target resolve by runner ownership. Before
+    /// the fix the system target matched no spec and fell through to the
+    /// `tokens[0]`-on-PATH check.
+    #[test]
+    fn resolve_integrity_runner_context_unions_check_and_system_runners() {
+        let tmp = workspace_with_check_and_system_runners();
+        let (specs, _) =
+            resolve_integrity_runner_context(tmp.path()).expect("resolve integrity context");
+
+        assert!(
+            specs.iter().any(|s| s.matches("grep -q X file")),
+            "integrity context resolves a [check] target through its runner",
+        );
+        assert!(
+            specs.iter().any(|s| s.matches("nix run .#test-loom")),
+            "integrity context resolves a [system] target through its runner",
         );
     }
 }
