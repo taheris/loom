@@ -3082,7 +3082,7 @@ Loop-side interpretation of these exit codes — routing `refused` to
   `::fn` / `::attr`) plus spec-relative resolution, the same helper the
   integrity gate uses, so the input resolver and integrity gate cannot
   disagree about where the script lives
-  [test?](script_target_resolved_via_shared_spec_relative_helper)
+  [test](script_target_resolved_via_shared_spec_relative_helper)
 - A judge script reports per-function inputs via `<script> --print-inputs
   <fn>` collect mode — `judge_files` records its path arguments while
   `judge_criterion` and the LLM call are skipped, and the recorded paths

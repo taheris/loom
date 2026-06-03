@@ -1266,17 +1266,21 @@ fn extract_cargo_test_name(command: &str) -> Option<&str> {
 /// when present, falling back to `repo_root` only when the spec has no
 /// parent component.
 fn resolves_judge_path(target: &str, source_spec: &Path, repo_root: &Path) -> bool {
-    resolve_judge_script_path(target, source_spec, repo_root).is_some_and(|p| p.exists())
+    resolve_spec_relative_script_path(target, source_spec, repo_root).is_some_and(|p| p.exists())
 }
 
-/// Lexically resolve a `[judge]` target to the on-disk script path it
-/// points at — selector stripped, spec-relative path joined against the
-/// spec file's own directory, `..`/`.` collapsed. Returns `None` only
-/// when the target (or its path part) is empty; existence is *not*
-/// checked here so callers can choose between an existence test
-/// (integrity gate) and reading the script body (input resolver, which
-/// reads the `# loom-inputs:` header). The returned path may not exist.
-pub(crate) fn resolve_judge_script_path(
+/// Lexically resolve a target that *is* a script-file path — every
+/// `[judge]` target, plus any `[check]` / `[system]` token that names a
+/// script — to the on-disk path it points at: selector stripped,
+/// spec-relative path joined against the spec file's own directory,
+/// `..`/`.` collapsed. Shared by the integrity gate and the input
+/// resolver so the existence check and the input-query invocation cannot
+/// disagree about where the script lives. Returns `None` only when the
+/// target (or its path part) is empty; existence is *not* checked here so
+/// callers can choose between an existence test (integrity gate) and
+/// reading the script body (input resolver). The returned path may not
+/// exist.
+pub(crate) fn resolve_spec_relative_script_path(
     target: &str,
     source_spec: &Path,
     repo_root: &Path,
@@ -1285,7 +1289,7 @@ pub(crate) fn resolve_judge_script_path(
     if trimmed.is_empty() {
         return None;
     }
-    let path_part = strip_judge_selector(trimmed);
+    let path_part = strip_target_selector(trimmed);
     if path_part.is_empty() {
         return None;
     }
@@ -1293,7 +1297,7 @@ pub(crate) fn resolve_judge_script_path(
     let raw = if p.is_absolute() {
         p.to_path_buf()
     } else {
-        judge_base(source_spec, repo_root).join(p)
+        spec_relative_base(source_spec, repo_root).join(p)
     };
     Some(normalize_path(&raw))
 }
@@ -1325,7 +1329,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 /// in markdown renderers); `::` is accepted during migration. Whichever
 /// appears first wins so paths containing the other character are handled
 /// predictably.
-fn strip_judge_selector(target: &str) -> &str {
+fn strip_target_selector(target: &str) -> &str {
     let hash = target.find('#');
     let colons = target.find("::");
     match (hash, colons) {
@@ -1336,7 +1340,7 @@ fn strip_judge_selector(target: &str) -> &str {
     }
 }
 
-fn judge_base(source_spec: &Path, repo_root: &Path) -> PathBuf {
+fn spec_relative_base(source_spec: &Path, repo_root: &Path) -> PathBuf {
     match source_spec.parent() {
         Some(parent) if parent.as_os_str().is_empty() => repo_root.to_path_buf(),
         Some(parent) if parent.is_absolute() => parent.to_path_buf(),

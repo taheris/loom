@@ -182,7 +182,7 @@ impl InputResolver {
     /// header declares nothing of its own, so it falls through to the
     /// *Conservative default* (always runs) per [`filter_by_files`].
     fn declared_for_judge(&mut self, annotation: &Annotation) -> Vec<PathBuf> {
-        crate::integrity::resolve_judge_script_path(
+        crate::integrity::resolve_spec_relative_script_path(
             &annotation.target,
             &annotation.source_spec,
             &self.repo_root,
@@ -212,7 +212,7 @@ impl InputResolver {
             return Vec::new();
         }
 
-        if let Some(script_path) = self.script_in_repo(&tokens)
+        if let Some(script_path) = self.script_in_repo(&tokens, &annotation.source_spec)
             && let Some(paths) = read_script_header(&script_path)
         {
             return paths;
@@ -230,16 +230,20 @@ impl InputResolver {
         self.heuristic_extract(&tokens)
     }
 
-    fn script_in_repo(&self, tokens: &[String]) -> Option<PathBuf> {
+    /// Find the first command token that names a script file on disk,
+    /// resolved through the shared spec-relative helper the integrity gate
+    /// uses for `[judge]` targets — selector-stripped and joined against
+    /// the spec file's own directory — so the input resolver and integrity
+    /// gate cannot disagree about where the script lives.
+    fn script_in_repo(&self, tokens: &[String], source_spec: &Path) -> Option<PathBuf> {
         for tok in tokens {
-            let candidate = PathBuf::from(tok);
-            let absolute = if candidate.is_absolute() {
-                candidate
-            } else {
-                self.repo_root.join(&candidate)
-            };
-            if absolute.is_file() {
-                return Some(absolute);
+            if let Some(resolved) = crate::integrity::resolve_spec_relative_script_path(
+                tok,
+                source_spec,
+                &self.repo_root,
+            ) && resolved.is_file()
+            {
+                return Some(resolved);
             }
         }
         None
@@ -681,6 +685,40 @@ mod tests {
         assert!(
             !resolver.declares_no_inputs(&a),
             "a judge script with a header declares inputs",
+        );
+    }
+
+    #[test]
+    fn script_target_resolved_via_shared_spec_relative_helper() {
+        let dir = tempfile::tempdir().unwrap();
+        // [check] target IS a script-file path with a `#fn` selector and a
+        // spec-relative `..`; resolution must strip the selector and join
+        // against the spec dir (shared judge helper), not repo-root-join.
+        let script_dir = dir.path().join("tests/checks");
+        fs::create_dir_all(&script_dir).unwrap();
+        fs::write(
+            script_dir.join("walk.sh"),
+            "#!/bin/sh\n# loom-inputs: crates/loom-walk/src/**, specs/walk.md\necho hi\n",
+        )
+        .unwrap();
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf());
+        let a = ann(
+            Tier::Check,
+            "../tests/checks/walk.sh#check_fn",
+            "specs/harness.md",
+        );
+        let got = resolver.resolve(&a);
+        assert!(
+            got.paths
+                .contains(&PathBuf::from("crates/loom-walk/src/**")),
+            "check script header glob resolved spec-relative with selector stripped: {:?}",
+            got.paths,
+        );
+        assert!(
+            got.paths.contains(&PathBuf::from("specs/walk.md")),
+            "header glob + spec auto-include: {:?}",
+            got.paths,
         );
     }
 
