@@ -3094,9 +3094,9 @@ Criteria.
       invocation emits `LOOM_CONCERN`; molecule routes to recovery
       with cause `review-concern`
   [test](push_blocked_on_review_concern_with_id_payload)
-- Push gate handles integrity-gate findings
-      (`UnresolvedAnnotation`, `StubTestFunction`,
-      `UnneededPendingMarker`) within the molecule's diff scope by
+- Push gate handles the integrity-gate findings that
+      [gate.md § Integrity gate](gate.md#integrity-gate) defines as
+      push-gate-terminal within the molecule's diff scope by
       **recovery-first then escalate**: while the molecule's
       iteration counter is below cap, the gate normalizes findings
       to typed `Finding`s and dispatches them through the standard
@@ -3841,9 +3841,11 @@ two agent-loop observers.
       `LOOM_BLOCKED` → `loom:blocked` on the molecule's epic, human
       resolution via `loom msg`; `LOOM_CLARIFY` → `loom:clarify` on
       the molecule's epic, structured-options resolution via `loom msg`.
-   4. **Integrity gate.** Zero `UnresolvedAnnotation`, zero
-      `StubTestFunction`, and zero `UnneededPendingMarker` findings
-      across the molecule's diff scope. Integrity findings are
+   4. **Integrity gate.** Zero push-gate-terminal integrity findings
+      across the molecule's diff scope, where the push-gate-terminal
+      finding set is the one defined by [gate.md § Integrity
+      gate](gate.md#integrity-gate); FR9 consumes whatever it emits
+      rather than re-enumerating the variants here. Integrity findings are
       **recoverable within the molecule's iteration cap** (per
       [gate.md § Integrity gate](gate.md#integrity-gate)): while
       below cap, the verdict gate normalizes findings to typed
