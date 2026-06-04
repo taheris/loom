@@ -1870,6 +1870,77 @@ mod tests {
         assert!(findings.is_empty(), "no base_commit => no findings");
     }
 
+    /// Spec contract `specs/gate.md` § Runners, *Runner-owned resolution*:
+    /// at the push gate a `[check]` target resolves **because a runner
+    /// claims it**, not because its first token is on PATH. The production
+    /// controller's `molecule_integrity_findings` threads the resolved
+    /// `[runner.check.<name>]` specs into the integrity gate's
+    /// forward-resolution.
+    ///
+    /// Behavioral assertion: a `[check]` target whose `tokens[0]` is **not**
+    /// on PATH but is matched by a `[runner.check]` block produces no
+    /// push-gate-terminal `UnresolvedAnnotation`. With the runner specs
+    /// withheld (the pre-fix `&[]` path), forward-resolution falls through
+    /// to the `tokens[0]`-on-PATH probe and surfaces a push-blocking false
+    /// positive, so this test pins the driver-side `check_forward` wiring.
+    #[tokio::test]
+    async fn molecule_integrity_resolves_runner_owned_target_without_unresolved() {
+        // tokens[0] is deliberately absent from PATH; only the runner match
+        // can resolve it.
+        const RUNNER_OWNED_TARGET: &str = "loom-runner-only-fixture-7c3a-not-on-path";
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        loom_driver::git::init_test_repo(&workspace).expect("init repo");
+        let base = loom_driver::git::sync_head_commit_sha(&workspace)
+            .expect("base sha")
+            .to_string();
+
+        std::fs::write(
+            workspace.join("loom.toml"),
+            "[runner.check.fixture]\nmatch   = '^loom-runner-only-fixture'\ncommand = \"true {targets}\"\nparse   = \"exit-code\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(workspace.join("specs")).unwrap();
+        std::fs::write(
+            workspace.join("specs/alpha.md"),
+            format!("# alpha\n\n- exercise runner dispatch [check]({RUNNER_OWNED_TARGET})\n"),
+        )
+        .unwrap();
+        loom_driver::git::commit_all_in(&workspace, "add runner-owned spec").expect("commit");
+
+        let db = StateDb::open(workspace.join(".loom/state.db")).unwrap();
+        db.rebuild(
+            &workspace,
+            &[ActiveMolecule {
+                id: MoleculeId::new("lm-alpha"),
+                spec_label: SpecLabel::new("alpha"),
+                base_commit: Some(base),
+            }],
+        )
+        .unwrap();
+        let state = Arc::new(db);
+
+        let epic = epic_body("lm-alpha", "alpha");
+        let mut ctrl = scripted_controller(workspace, "alpha", state, [epic]);
+
+        let findings = ctrl.integrity_findings().await.unwrap();
+        let offenders: Vec<&IntegrityFinding> = findings
+            .iter()
+            .filter(|f| {
+                matches!(
+                    f,
+                    IntegrityFinding::UnresolvedAnnotation { target, .. }
+                        if target == RUNNER_OWNED_TARGET
+                )
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "runner-owned [check] target must resolve via its runner at the push gate, not surface an unresolved-annotation finding; got {offenders:?}",
+        );
+    }
+
     /// `apply_integrity_clarify` is a no-op when handed an empty findings
     /// list — there is no clarify to apply, and the controller must not
     /// query `bd` for a molecule that may not exist.
