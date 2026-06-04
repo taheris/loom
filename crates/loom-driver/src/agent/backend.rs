@@ -77,6 +77,16 @@ pub struct SpawnConfig {
     /// `None` so existing wrapper fixtures round-trip identically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
+    /// Inline-output cap for the Direct backend, resolved from `[direct]` in
+    /// `loom.toml` at dispatch time. Carries `max_inline_bytes`, the byte
+    /// budget above which content-returning Direct tools offload to the
+    /// scratch offload directory (see `specs/agent.md` § Direct Output
+    /// Bounding). Direct-only: the Pi and Claude backends own their own
+    /// transcripts and never consult this field, so it is `None` for them.
+    /// Skipped during serialization when `None` so existing wrapper fixtures
+    /// round-trip identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_limits: Option<OutputLimits>,
     /// Grace window the workflow's `after_session_complete` hook waits for
     /// the agent to exit on its own before escalating signals. Currently
     /// consumed only by [`ClaudeBackend`](crate::agent::AgentBackend) — pi
@@ -177,6 +187,20 @@ pub struct MountSpec {
     pub host_path: PathBuf,
     pub container_path: PathBuf,
     pub read_only: bool,
+}
+
+/// Inline-output cap carried on [`SpawnConfig::output_limits`] for the Direct
+/// backend (`specs/agent.md` § Direct Output Bounding).
+///
+/// `max_inline_bytes` is the raw-UTF-8 byte budget a content-returning Direct
+/// tool (`Read`, `Bash`, `Grep`, `Glob`) may place inline before offloading
+/// the full payload to the scratch offload directory and returning a
+/// reference. Resolved from `[direct] max_inline_bytes` in `loom.toml`. The
+/// wrapper does not consult this field; only the in-container Direct runner
+/// does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputLimits {
+    pub max_inline_bytes: usize,
 }
 
 /// Per-session model override: pi RPC's `set_model { provider, modelId }`.
@@ -303,6 +327,7 @@ mod tests {
             scratch_dir: PathBuf::from("/workspace/.loom/scratch/test"),
             model,
             thinking_level: None,
+            output_limits: None,
             shutdown_grace: None,
             handshake_timeout: None,
             stall_warn_interval: None,
@@ -496,6 +521,7 @@ mod tests {
             "\"mounts\":",
             "\"model\":",
             "\"thinking_level\":",
+            "\"output_limits\":",
             "\"shutdown_grace\":",
             "\"handshake_timeout\":",
             "\"stall_warn_interval\":",
@@ -522,6 +548,42 @@ mod tests {
             });
             cursor += rel + key.len();
         }
+    }
+
+    /// `output_limits: None` (the Pi/Claude steady state) is omitted from the
+    /// on-disk JSON via `#[serde(skip_serializing_if = "Option::is_none")]`,
+    /// so wrapper fixtures predating the Direct cap round-trip identically.
+    #[test]
+    fn spawn_config_with_output_limits_none_omits_field() {
+        let cfg = sample_config(None);
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        let obj = v.as_object().expect("object");
+        assert!(
+            !obj.contains_key("output_limits"),
+            "output_limits: None must be omitted, got JSON: {json}"
+        );
+    }
+
+    /// `output_limits: Some(_)` round-trips with `max_inline_bytes` reaching
+    /// the deserialized struct — the wire field the in-container Direct runner
+    /// reads to bound its tool output.
+    #[test]
+    fn spawn_config_with_output_limits_some_round_trips() {
+        let mut cfg = sample_config(None);
+        cfg.output_limits = Some(OutputLimits {
+            max_inline_bytes: 16384,
+        });
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["output_limits"]["max_inline_bytes"], 16384);
+        let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            back.output_limits
+                .expect("output_limits present")
+                .max_inline_bytes,
+            16384,
+        );
     }
 
     /// `MountSpec` is constructible from production code and serializes the

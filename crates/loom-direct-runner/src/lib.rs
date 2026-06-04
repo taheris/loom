@@ -418,6 +418,7 @@ mod tests {
                 model_id: m.into(),
             }),
             thinking_level: None,
+            output_limits: None,
             shutdown_grace: None,
             handshake_timeout: None,
             stall_warn_interval: None,

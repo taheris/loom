@@ -971,7 +971,7 @@ connection, network filtering, session audit logging.
 - Every offload emits a `driver_event` (offload `driver_kind`) carrying the tool name and offloaded byte count
   [test?](offload_emits_driver_event_with_tool_and_byte_count)
 - `[direct].max_inline_bytes` resolves from `loom.toml` into `SpawnConfig.output_limits`, defaulting to 16384 when absent
-  [test?](direct_max_inline_bytes_resolves_from_config_default_16384)
+  [test](direct_max_inline_bytes_resolves_from_config_default_16384)
 - `ToolContext` is shaped so a future delegate tool can carry an `LlmClient` + `ModelId` through it without changing `six_tools`'s signature or the `loom-llm::Tool` trait
   [judge?](specs/agent.md#direct-output-bounding)
 

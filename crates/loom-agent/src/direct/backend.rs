@@ -315,6 +315,7 @@ mod tests {
             scratch_dir,
             model: None,
             thinking_level: None,
+            output_limits: None,
             shutdown_grace: None,
             handshake_timeout: None,
             stall_warn_interval: None,

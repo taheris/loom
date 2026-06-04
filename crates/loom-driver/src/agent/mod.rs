@@ -29,7 +29,8 @@ mod session;
 
 pub use backend::{
     AgentBackend, DEFAULT_HANDSHAKE_TIMEOUT_SECS, DEFAULT_STALL_WARN_SECS, LOOM_INSIDE_ENV,
-    ModelSelection, MountSpec, SessionOutcome, SpawnConfig, ThinkingLevel, set_loom_inside,
+    ModelSelection, MountSpec, OutputLimits, SessionOutcome, SpawnConfig, ThinkingLevel,
+    set_loom_inside,
 };
 pub use error::ProtocolError;
 pub use jsonl::{JsonlReader, MAX_LINE_BYTES};

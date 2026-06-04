@@ -17,6 +17,7 @@ mod agent;
 mod agent_observer;
 mod beads;
 mod claude;
+mod direct;
 mod error;
 mod logs;
 mod loom_section;
@@ -32,6 +33,7 @@ pub use agent::{
 pub use agent_observer::{AgentObserversConfig, DoomLoopConfig, DuplicateResultConfig};
 pub use beads::BeadsConfig;
 pub use claude::ClaudeConfig;
+pub use direct::DirectConfig;
 pub use error::LoomConfigError;
 pub use logs::LogsConfig;
 pub use loom_section::{
@@ -56,7 +58,7 @@ pub const CONFIG_PATH_ENV: &str = "LOOM_CONFIG";
 /// when [`CONFIG_PATH_ENV`] is unset.
 pub const DEFAULT_CONFIG_FILENAME: &str = "loom.toml";
 
-use crate::agent::AgentKind;
+use crate::agent::{AgentKind, OutputLimits};
 use crate::identifier::ProfileName;
 use agent::lookup_phase_field;
 
@@ -86,6 +88,10 @@ pub struct LoomConfig {
     /// any field a per-phase table does not declare.
     pub phase: BTreeMap<String, PhaseConfig>,
     pub claude: ClaudeConfig,
+    /// `[direct]` block — Direct-backend runtime settings (`max_inline_bytes`).
+    /// Resolved into [`crate::agent::SpawnConfig::output_limits`] via
+    /// [`LoomConfig::direct_output_limits`] at dispatch time.
+    pub direct: DirectConfig,
     pub security: SecurityConfig,
     /// `[runner.<tier>.<name>]` blocks per `specs/gate.md` § Runners.
     /// The runtime dispatcher reads this map; an empty table parses as
@@ -110,6 +116,7 @@ impl Default for LoomConfig {
             logs: LogsConfig::default(),
             phase: BTreeMap::new(),
             claude: ClaudeConfig::default(),
+            direct: DirectConfig::default(),
             security: SecurityConfig::default(),
             runner: RunnerConfig::default(),
             agent: AgentObserversConfig::default(),
@@ -179,6 +186,16 @@ impl LoomConfig {
             thinking_level,
             claude_settings,
         })
+    }
+
+    /// Resolve the Direct backend's [`OutputLimits`] from the `[direct]`
+    /// block, ready to install on [`crate::agent::SpawnConfig::output_limits`]
+    /// when the direct backend is dispatched. `max_inline_bytes` falls back to
+    /// the [`DirectConfig`] default (16384) when `[direct]` is absent.
+    pub fn direct_output_limits(&self) -> OutputLimits {
+        OutputLimits {
+            max_inline_bytes: self.direct.max_inline_bytes,
+        }
     }
 
     /// Resolve the on-disk config path for `workspace`. Returns the value
@@ -547,6 +564,65 @@ agent.backend = "claude"
         assert!(check.profile.is_none());
         assert_eq!(check.agent.backend.as_deref(), Some("claude"));
         assert!(check.agent.provider.is_none());
+        Ok(())
+    }
+
+    /// `[direct] max_inline_bytes` resolves through [`LoomConfig`] into the
+    /// value installed on [`crate::agent::SpawnConfig::output_limits`],
+    /// defaulting to 16384 when the block is absent. Spec: `specs/agent.md`
+    /// § Direct Output Bounding — Configuration.
+    #[test]
+    fn direct_max_inline_bytes_resolves_from_config_default_16384() -> Result<()> {
+        use crate::agent::{OutputLimits, RePinContent, SpawnConfig};
+
+        fn spawn_config_carrying(limits: OutputLimits) -> SpawnConfig {
+            SpawnConfig {
+                image_ref: "localhost/wrapix:tag".into(),
+                image_source: PathBuf::from("/nix/store/zzz-wrapix.tar"),
+                workspace: PathBuf::from("/workspace"),
+                env: vec![("WRAPIX_AGENT".into(), "direct".into())],
+                mounts: Vec::new(),
+                initial_prompt: "go".into(),
+                agent_args: Vec::new(),
+                repin: RePinContent {
+                    orientation: String::new(),
+                    pinned_context: String::new(),
+                    partial_bodies: vec![],
+                },
+                scratch_dir: PathBuf::from("/workspace/.loom/scratch/k"),
+                model: None,
+                thinking_level: None,
+                output_limits: Some(limits),
+                shutdown_grace: None,
+                handshake_timeout: None,
+                stall_warn_interval: None,
+                launcher_env: Vec::new(),
+            }
+        }
+
+        // Absent [direct] block → default 16384 reaches SpawnConfig.
+        let absent = LoomConfig::from_toml_str("")?;
+        assert_eq!(absent.direct.max_inline_bytes, 16384);
+        let spawn = spawn_config_carrying(absent.direct_output_limits());
+        assert_eq!(
+            spawn
+                .output_limits
+                .expect("output_limits set")
+                .max_inline_bytes,
+            16384,
+        );
+
+        // Explicit override resolves through to SpawnConfig verbatim.
+        let cfg = LoomConfig::from_toml_str("[direct]\nmax_inline_bytes = 32768\n")?;
+        assert_eq!(cfg.direct.max_inline_bytes, 32768);
+        let spawn = spawn_config_carrying(cfg.direct_output_limits());
+        assert_eq!(
+            spawn
+                .output_limits
+                .expect("output_limits set")
+                .max_inline_bytes,
+            32768,
+        );
         Ok(())
     }
 

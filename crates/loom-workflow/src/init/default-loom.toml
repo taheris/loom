@@ -69,6 +69,14 @@ post_result_grace_secs = 5
 # handshake_timeout_secs = 30
 # stall_warn_secs = 60
 
+# [direct]
+# Direct-backend runtime settings, applied wherever the direct backend is
+# selected. `max_inline_bytes` is the byte budget a content-returning Direct
+# tool (Read/Bash/Grep/Glob) may place inline before offloading the full
+# payload to the scratch offload directory and returning a reference. Default
+# 16384.
+# max_inline_bytes = 16384
+
 [security]
 # Tool names to deny when claude sends control_request. Claude-only —
 # pi has no host-side permission flow (tools execute internally, no

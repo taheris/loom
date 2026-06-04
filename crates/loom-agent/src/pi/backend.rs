@@ -506,6 +506,7 @@ mod tests {
             scratch_dir: PathBuf::from("/workspace/.loom/scratch/test"),
             model,
             thinking_level: None,
+            output_limits: None,
             shutdown_grace: None,
             handshake_timeout: None,
             stall_warn_interval: None,
