@@ -155,6 +155,17 @@ where
             Output = Result<(SessionOutcome, Option<ExitSignal>, String), ProtocolError>,
         > + Send,
 {
+    /// Re-resolve the review log path the same way `exec_review` does, from
+    /// `(phase_log_root, label, "review", phase_log_when)`, keeping it only
+    /// when the file is on disk — so the sealed `GateSuccess` constructor's
+    /// evidence check reads the file the reviewer agent actually wrote.
+    fn resolve_review_log_for_marker(&self) -> Option<PathBuf> {
+        self.phase_log_root
+            .as_deref()
+            .map(|root| phase_log_path(root, &self.label, "review", self.phase_log_when))
+            .filter(|p| p.exists())
+    }
+
     #[expect(clippy::too_many_arguments, reason = "controller construction surface")]
     pub fn new(
         bd: BdClient<R>,
@@ -733,29 +744,13 @@ where
     }
 
     async fn mint_marker(&mut self) -> Result<(), ReviewError> {
-        // Reaching the Clean verdict means the FR9 four-condition AND
-        // already passed, so the `GateSuccess` evidence holds: verify
-        // exited 0, the review terminated `LOOM_COMPLETE`, and the review
-        // log is on disk. Re-resolve the review log path the same way
-        // `exec_review` does — `(phase_log_root, label, "review",
-        // phase_log_when)` — so the sealed constructor's on-disk evidence
-        // check reads the file the reviewer agent actually wrote.
-        //
-        // The mint is best-effort (specs/harness.md § Verdict Gate): a
-        // failed `GateSuccess` construction or marker write is logged and
-        // swallowed, because prek's pre-push consumer treats a missing or
-        // invalid marker as "fall through to the slow tier". Never abort
-        // the push on a mint failure.
-        let review_log_path = self
-            .phase_log_root
-            .as_deref()
-            .map(|root| phase_log_path(root, &self.label, "review", self.phase_log_when))
-            .filter(|p| p.exists());
+        // Best-effort: specs/harness.md § Verdict Gate — mint failures fall
+        // through to prek's slow tier, never abort the push.
         let evidence = HandoffEvidence {
             verify_exit: self.verify_exit,
             review_exit: Some(0),
             review_marker: Some(ExitSignal::Complete),
-            review_log_path,
+            review_log_path: self.resolve_review_log_for_marker(),
         };
         let success = match GateSuccess::new(&evidence, 1) {
             Ok(success) => success,
