@@ -1388,15 +1388,10 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
             );
         }
         Tier::System => {
-            combined = run_per_annotation_with_progress(
-                &selected,
-                tier,
-                &options,
-                &cache,
-                now_ms,
-                &commit,
+            let (specs, tier_cwds) = resolve_runner_context(workspace, Tier::System)?;
+            combined = run_system_with_progress(
+                &selected, &options, &specs, workspace, &tier_cwds, &cache, now_ms, &commit,
                 combined,
-                loom_gate::run_system,
             );
         }
         Tier::Test => {
@@ -1518,30 +1513,12 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
     Ok(1)
 }
 
-/// Per-annotation dispatch loop for the System tier with fail-eager,
-/// pass-silent output. On a TTY, an overwriting status line tracks the
-/// currently-running verifier; on a pipe the line is omitted entirely.
-/// Each failing verdict and each dispatch error is printed to stderr
-/// as soon as the verifier returns.
-///
-/// `[check]` shares the same output shape (skip / pass-silent /
-/// fail-loud), but routes through [`run_check_with_progress`] so the
-/// matched-runner batching from `specs/gate.md` § Runners can collapse
-/// N walk shell-outs into one subprocess. Function pointer matching
-/// the per-tier dispatch runner: takes the selected annotations +
-/// dispatch options, returns one result per annotation in the same
-/// order.
-type DispatchRunner = fn(
-    &[loom_gate::Annotation],
-    &loom_gate::DispatchOptions,
-) -> Vec<Result<loom_gate::DispatchOutcome, loom_gate::DispatchError>>;
-
 /// Batched-aware dispatch loop for the `[check]` tier. Delegates to
 /// [`loom_gate::run_check`], which routes matched annotations through
 /// [`loom_gate::run_with_runners`] (one subprocess per runner group,
 /// per-annotation fallback for unmatched targets) per
 /// `specs/gate.md` § Runners. Pass / fail / skip handling mirrors
-/// [`run_per_annotation_with_progress`].
+/// [`run_system_with_progress`].
 #[expect(
     clippy::too_many_arguments,
     reason = "progress-driving dispatch surface threads cache + commit + runner context together"
@@ -1615,21 +1592,36 @@ fn run_check_with_progress(
     combined
 }
 
+/// Per-annotation dispatch loop for the `[system]` tier with fail-eager,
+/// pass-silent output. On a TTY, an overwriting status line tracks the
+/// currently-running verifier; on a pipe the line is omitted entirely.
+/// Each failing verdict and each dispatch error is printed to stderr
+/// as soon as the verifier returns.
+///
+/// `[check]` shares the same output shape (skip / pass-silent /
+/// fail-loud), but routes through [`run_check_with_progress`] so the
+/// matched-runner batching from `specs/gate.md` § Runners can collapse
+/// N walk shell-outs into one subprocess. `[system]` execution stays
+/// per-annotation per that section, but a matched runner's `cwd` (and the
+/// `[runner.system]` tier-default cwd) still resolves the per-spawn
+/// working directory via [`loom_gate::run_system`].
 #[expect(
     clippy::too_many_arguments,
-    reason = "progress-driving dispatch surface threads cache + commit + tier together"
+    reason = "progress-driving dispatch surface threads cache + commit + runner context together"
 )]
-fn run_per_annotation_with_progress(
+fn run_system_with_progress(
     selected: &[loom_gate::Annotation],
-    tier: Tier,
     options: &loom_gate::DispatchOptions,
+    specs: &[RunnerSpec],
+    repo_root: &Path,
+    tier_cwds: &TierCwds,
     cache: &StatusCache,
     now_ms: i64,
     commit: &str,
     mut combined: i32,
-    runner: DispatchRunner,
 ) -> i32 {
     use std::io::{IsTerminal, Write};
+    let tier = Tier::System;
     let mut stderr = std::io::stderr();
     let is_tty = stderr.is_terminal();
     let total = selected.len();
@@ -1639,7 +1631,13 @@ fn run_per_annotation_with_progress(
             let _ = write!(stderr, "\x1b[2K\rrunning [{}/{total}]: {target}", i + 1);
             let _ = stderr.flush();
         }
-        let results = runner(std::slice::from_ref(ann), options);
+        let results = loom_gate::run_system(
+            std::slice::from_ref(ann),
+            specs,
+            options,
+            repo_root,
+            tier_cwds,
+        );
         for result in results {
             match result {
                 Ok(outcome) if outcome.verdict.skipped => {

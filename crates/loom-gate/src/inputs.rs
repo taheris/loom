@@ -1054,6 +1054,129 @@ mod tests {
         );
     }
 
+    /// The runner input-query seam (`render_inputs_query` →
+    /// `run_command_query` → `parse_inputs_batch_json` cache-prime) batches
+    /// across siblings: a batch response (`{"inputs":{"<target>":[...]}}`)
+    /// primes the cache for every sibling in the matched group, so two
+    /// `[check]` siblings sharing one runner spawn the query once — the
+    /// "discovery batches where execution batches" contract from
+    /// `specs/gate.md` § Runners. A counting responder pins the spawn count.
+    #[test]
+    fn runner_input_query_batch_response_primes_cache_for_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("queries.txt");
+        fs::write(&counter, "0").unwrap();
+        let counter_path = counter.display();
+        let responder = dir.path().join("batch-responder.sh");
+        fs::write(
+            &responder,
+            format!(
+                "#!/bin/sh\n\
+                 n=$(cat \"{counter_path}\"); echo $((n + 1)) > \"{counter_path}\"\n\
+                 printf '{{\"inputs\":{{\"alpha\":[\"crates/a/src/x.rs\"],\"beta\":[\"crates/b/src/y.rs\"]}}}}\\n'\n",
+            ),
+        )
+        .unwrap();
+
+        let spec = RunnerSpec::compile(
+            "walk",
+            Some(r"^walk -- (\S+)$"),
+            "walk -- {targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(format!(
+            "sh {} {{targets}} {{print_inputs}}",
+            responder.display()
+        )));
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![spec]);
+        let alpha = ann(Tier::Check, "walk -- alpha", "specs/gate.md");
+        let beta = ann(Tier::Check, "walk -- beta", "specs/gate.md");
+
+        let got_alpha = resolver.resolve(&alpha);
+        let got_beta = resolver.resolve(&beta);
+
+        assert!(
+            got_alpha
+                .paths
+                .contains(&PathBuf::from("crates/a/src/x.rs")),
+            "alpha resolves its own glob from the batch response: {:?}",
+            got_alpha.paths,
+        );
+        assert!(
+            got_beta.paths.contains(&PathBuf::from("crates/b/src/y.rs")),
+            "beta is served from the sibling cache-prime, not a second query: {:?}",
+            got_beta.paths,
+        );
+        assert_eq!(
+            fs::read_to_string(&counter).unwrap().trim(),
+            "1",
+            "one input-query spawn covers the matched group; the sibling hits the primed cache",
+        );
+    }
+
+    /// `[system]` input-query is runner-owned exactly as `[check]` is: a
+    /// matched `[runner.system.<name>]` routes the query through the
+    /// runner's `inputs` template (flag after the target), never a
+    /// `tokens[0]` probe. Per `specs/gate.md` § Runners this is the
+    /// load-bearing `[system]` carve-out — inputs are runner-owned even
+    /// though execution stays per-annotation.
+    #[test]
+    fn system_tier_input_query_routed_through_runner_template() {
+        let dir = tempfile::tempdir().unwrap();
+        // Responder errors if `--print-inputs` lands as its first arg (the
+        // argv-head bug); answers only when the flag follows the target.
+        let responder = dir.path().join("sys-responder.sh");
+        fs::write(
+            &responder,
+            "#!/bin/sh\n\
+             target=$1\n\
+             if [ \"$target\" = \"--print-inputs\" ]; then\n\
+               echo 'error: --print-inputs is not a target' >&2\n\
+               exit 2\n\
+             fi\n\
+             shift\n\
+             for arg in \"$@\"; do\n\
+               if [ \"$arg\" = \"--print-inputs\" ]; then\n\
+                 printf '{\"inputs\": [\"crates/loom-sys/src/probe.rs\"]}\\n'\n\
+                 exit 0\n\
+               fi\n\
+             done\n\
+             exit 1\n",
+        )
+        .unwrap();
+
+        let spec = RunnerSpec::compile(
+            "nix",
+            Some(r"^nix run \.#(\S+)$"),
+            "nix run .#{targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::NixBuildStatus,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(format!(
+            "sh {} {{targets}} {{print_inputs}}",
+            responder.display()
+        )));
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![spec]);
+        let a = ann(Tier::System, "nix run .#test-loom", "specs/gate.md");
+        let got = resolver.resolve(&a);
+        assert!(
+            got.paths
+                .contains(&PathBuf::from("crates/loom-sys/src/probe.rs")),
+            "[system] input-query routed through the runner template (flag after \
+             the target), not prepended to tokens[0]: {:?}",
+            got.paths,
+        );
+    }
+
     #[test]
     fn judge_tier_accepts_legacy_colon_selector() {
         let dir = tempfile::tempdir().unwrap();

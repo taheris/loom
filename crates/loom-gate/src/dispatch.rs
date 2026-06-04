@@ -194,12 +194,34 @@ pub fn run_check(
 }
 
 /// Dispatch every `[system]`-tier annotation in `annotations`. One
-/// subprocess per annotation, identical shape to [`run_check`].
+/// subprocess per annotation — `[system]` execution stays per-annotation
+/// per `specs/gate.md` § Runners (system verifiers are slow and
+/// self-contained, so batching does not pay). A matched runner does not
+/// batch execution, but its `cwd` still resolves the per-spawn working
+/// directory: the matched-runner > tier-default > repo-root chain (§
+/// Runners) applies to `[system]` exactly as to `[check]`, since that
+/// section carves `[system]` out only for batching and input-query, never
+/// for cwd. The annotation's literal target is spawned (never the runner's
+/// `command` template).
 pub fn run_system(
     annotations: &[Annotation],
+    specs: &[RunnerSpec],
     options: &DispatchOptions,
+    repo_root: &Path,
+    tier_cwds: &TierCwds,
 ) -> Vec<Result<DispatchOutcome, DispatchError>> {
-    run_per_annotation(annotations, Tier::System, options)
+    annotations
+        .iter()
+        .filter(|a| a.tier == Tier::System && !a.pending)
+        .map(|a| {
+            let runner_cwd = specs
+                .iter()
+                .find(|s| s.matches(&a.target))
+                .and_then(|s| s.cwd.as_deref());
+            let cwd = resolve_cwd(runner_cwd, tier_cwds.for_tier(Tier::System), repo_root);
+            run_single_in(a, options, cwd.as_deref())
+        })
+        .collect()
 }
 
 /// Dispatch every `[test]`-tier annotation in `annotations` as one
@@ -405,25 +427,6 @@ fn dispatch_group(
             }),
         })
         .collect()
-}
-
-fn run_per_annotation(
-    annotations: &[Annotation],
-    tier: Tier,
-    options: &DispatchOptions,
-) -> Vec<Result<DispatchOutcome, DispatchError>> {
-    annotations
-        .iter()
-        .filter(|a| a.tier == tier && !a.pending)
-        .map(|a| run_single(a, options))
-        .collect()
-}
-
-fn run_single(
-    annotation: &Annotation,
-    options: &DispatchOptions,
-) -> Result<DispatchOutcome, DispatchError> {
-    run_single_in(annotation, options, None)
 }
 
 fn run_single_in(
@@ -794,7 +797,8 @@ mod tests {
             ann(Tier::System, "/no/such/system-2"),
         ];
         let opts = DispatchOptions::default();
-        let results = run_system(&inputs, &opts);
+        let dir = tempfile::tempdir().unwrap();
+        let results = run_system(&inputs, &[], &opts, dir.path(), &TierCwds::default());
         assert_eq!(results.len(), 2);
     }
 

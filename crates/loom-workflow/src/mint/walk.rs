@@ -481,7 +481,13 @@ where
         ) {
             failures.extend(dispatch_outcome_to_failures(outcome));
         }
-        for outcome in run_system(&annotations, &options) {
+        for outcome in run_system(
+            &annotations,
+            &runner_specs,
+            &options,
+            &self.workspace,
+            &tier_cwds,
+        ) {
             failures.extend(dispatch_outcome_to_failures(outcome));
         }
         if let Ok(template) = loom_gate::runner::discover(&self.workspace, Tier::Test) {

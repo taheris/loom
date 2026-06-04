@@ -81,15 +81,25 @@ fn fixture_dir() -> TempDir {
 #[test]
 fn dispatcher_spawns_one_subprocess_per_check_annotation() {
     let dir = fixture_dir();
+    let counter = dir.path().join("spawns.txt");
+    fs::write(&counter, "").unwrap();
+    let counter_path = counter.display();
+    // Each verifier appends a line on spawn, so the line count is the
+    // observed subprocess count: 2 lines pins per-annotation spawn and
+    // rules out a single batched subprocess emitting 2 verdict rows.
     let pass_script = write_script(
         dir.path(),
         "a.sh",
-        "#!/bin/sh\nprintf '{\"pass\": true, \"evidence\": \"a-ok\"}\\n'\n",
+        &format!(
+            "#!/bin/sh\nprintf 'x\\n' >> \"{counter_path}\"\nprintf '{{\"pass\": true, \"evidence\": \"a-ok\"}}\\n'\n"
+        ),
     );
     let fail_script = write_script(
         dir.path(),
         "b.sh",
-        "#!/bin/sh\nprintf '{\"pass\": false, \"evidence\": \"b-fail\"}\\n'\nexit 1\n",
+        &format!(
+            "#!/bin/sh\nprintf 'x\\n' >> \"{counter_path}\"\nprintf '{{\"pass\": false, \"evidence\": \"b-fail\"}}\\n'\nexit 1\n"
+        ),
     );
 
     let inputs = vec![
@@ -107,6 +117,12 @@ fn dispatcher_spawns_one_subprocess_per_check_annotation() {
     let second = results[1].as_ref().unwrap();
     assert!(!second.verdict.pass);
     assert_eq!(second.verdict.evidence, "b-fail");
+
+    let spawns = fs::read_to_string(&counter).unwrap().lines().count();
+    assert_eq!(
+        spawns, 2,
+        "one subprocess spawned per [check] annotation, not a single batched spawn",
+    );
 }
 
 #[test]
@@ -120,7 +136,7 @@ fn dispatcher_spawns_one_subprocess_per_system_annotation() {
 
     let inputs = vec![ann(Tier::System, &script)];
     let opts = DispatchOptions::default();
-    let results = run_system(&inputs, &opts);
+    let results = run_system(&inputs, &[], &opts, dir.path(), &TierCwds::default());
     assert_eq!(results.len(), 1);
     assert!(results[0].as_ref().unwrap().verdict.pass);
 }
@@ -184,7 +200,7 @@ fn system_tier_exit_77_classifies_as_skipped_not_failed() {
 
     let inputs = vec![ann(Tier::System, &script)];
     let opts = DispatchOptions::default();
-    let results = run_system(&inputs, &opts);
+    let results = run_system(&inputs, &[], &opts, dir.path(), &TierCwds::default());
     let outcome = results.into_iter().next().unwrap().unwrap();
     assert!(
         outcome.verdict.skipped,
@@ -460,12 +476,13 @@ fn dispatcher_skips_test_pending_annotation() {
 /// for the pending entry; the result vec is empty.
 #[test]
 fn dispatcher_skips_system_pending_annotation() {
+    let dir = fixture_dir();
     let inputs = vec![pending_ann(
         Tier::System,
         "/no/such/binary/anywhere-pending-system",
     )];
     let opts = DispatchOptions::default();
-    let results = run_system(&inputs, &opts);
+    let results = run_system(&inputs, &[], &opts, dir.path(), &TierCwds::default());
     assert!(
         results.is_empty(),
         "[system?] must be skipped at dispatch — got {} result(s): {:?}",
@@ -810,6 +827,73 @@ fn run_with_runners_tier_default_applies_to_unmatched_per_annotation_fallback() 
     assert!(
         outcome.verdict.evidence.contains(subdir_name),
         "unmatched annotation must inherit tier-default cwd `{subdir_name}` but got `{}`",
+        outcome.verdict.evidence,
+    );
+}
+
+/// `[system]` execution stays per-annotation, but the per-spawn cwd still
+/// resolves via the `[runner.system] cwd = "..."` tier default per
+/// `specs/gate.md` § Runners — the section carves `[system]` out only for
+/// batching and input-query, never for cwd. A configured tier-default cwd
+/// that the old `run_system(annotations, options)` signature could not see
+/// must now reach the spawn.
+#[test]
+fn run_system_resolves_tier_default_cwd() {
+    let dir = fixture_dir();
+    let subdir_name = "sys-default-cwd";
+    std::fs::create_dir(dir.path().join(subdir_name)).unwrap();
+    let probe = write_script(
+        dir.path(),
+        "sys-tier-probe.sh",
+        "#!/bin/sh\nprintf '{\"pass\": true, \"evidence\": \"%s\"}\\n' \"$PWD\"\n",
+    );
+    let tier_cwds = TierCwds {
+        system: Some(PathBuf::from(subdir_name)),
+        ..TierCwds::default()
+    };
+    let inputs = vec![ann(Tier::System, &probe)];
+    let opts = DispatchOptions::default();
+    let results = run_system(&inputs, &[], &opts, dir.path(), &tier_cwds);
+    let outcome = results[0].as_ref().unwrap();
+    assert!(
+        outcome.verdict.evidence.ends_with(subdir_name),
+        "system spawn must honour tier-default cwd `{subdir_name}` but got `{}`",
+        outcome.verdict.evidence,
+    );
+}
+
+/// A `[runner.system.<name>]` block that matches a `[system]` target owns
+/// its `cwd` (step 1 of the matched-runner > tier-default > repo-root
+/// chain). Execution stays per-annotation: the annotation's literal target
+/// is spawned, the runner's `command` template is ignored — only its cwd
+/// applies.
+#[test]
+fn run_system_resolves_matched_runner_cwd() {
+    let dir = fixture_dir();
+    let subdir_name = "sys-runner-cwd";
+    std::fs::create_dir(dir.path().join(subdir_name)).unwrap();
+    let probe = write_script(
+        dir.path(),
+        "sys-runner-probe.sh",
+        "#!/bin/sh\nprintf '{\"pass\": true, \"evidence\": \"%s\"}\\n' \"$PWD\"\n",
+    );
+    let spec = RunnerSpec::compile(
+        "sys",
+        Some(r"^sh "),
+        "this-command-template-is-never-executed-for-system {targets}",
+        "{name}",
+        " ",
+        BuiltinParser::JsonLines,
+        Some(PathBuf::from(subdir_name)),
+    )
+    .unwrap();
+    let inputs = vec![ann(Tier::System, &probe)];
+    let opts = DispatchOptions::default();
+    let results = run_system(&inputs, &[spec], &opts, dir.path(), &TierCwds::default());
+    let outcome = results[0].as_ref().unwrap();
+    assert!(
+        outcome.verdict.evidence.ends_with(subdir_name),
+        "system spawn must honour matched-runner cwd `{subdir_name}` but got `{}`",
         outcome.verdict.evidence,
     );
 }
