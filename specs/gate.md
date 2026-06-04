@@ -1092,26 +1092,32 @@ loom:fixup:<12-char-hash>
 Before minting a batch, the driver queries bd:
 
 ```
-bd query "label=loom:fixup:<fingerprint> AND status=open"
+bd query "label=loom:fixup:<fingerprint> AND status IN (open, in_progress, blocked, deferred)"
 ```
 
 - **Zero results** — proceed to mint.
-- **One result** — skip (an open batch already exists for this
+- **One result** — skip (a live batch already exists for this
   finding set); log in the run summary.
 - **More than one** — structural violation (two beads share a
   fingerprint label); refuse and surface the conflicting IDs.
 
-Closed-then-reopened semantics: the query is intentionally narrow
-(`status=open`). A closed batch with the same fingerprint is *not*
+The query matches every *live* (non-closed) status. Only `closed`
+is excluded, so a parked clarify bead — which `apply_clarify` flips
+to `status=blocked` — still dedups against itself; re-detecting the
+same clash on a later loop skips rather than minting a duplicate.
+
+Closed-then-reopened semantics: the query excludes exactly one
+status, `closed`. A closed batch with the same fingerprint is *not*
 re-minted on subsequent runs — operator silence after closure is
 read as "decided not worth fixing." To force re-mint, the operator
 removes the `loom:fixup:<fp>` label (or deletes the bead). Reopening
 alone does **not** force re-mint: the reopened batch still carries
-the fingerprint, so the next dedup query matches an open bead and
-skips. The narrow query is also what makes mint idempotent against
-partial failure: a crash mid-run leaves the successfully-minted
-batches with their labels; the next mint invocation's dedup query
-skips them and retries only the ones that failed.
+the fingerprint, so the next dedup query matches a live bead and
+skips. The non-closed query is also what makes mint idempotent
+against partial failure: a crash mid-run leaves the
+successfully-minted batches with their labels; the next mint
+invocation's dedup query skips them and retries only the ones that
+failed.
 
 **Batch composition shift = new identity.** When the underlying
 finding set changes between runs (some findings resolved, others
@@ -1178,8 +1184,10 @@ mint run, processing proceeds as follows:
    single-element batch the fingerprint reduces to
    `hash(token + canonical_form(target))`.
 
-6. **Dedup query** by `loom:fixup:<fingerprint>` label. Zero results
-   → continue; one open result → skip; more than one → refuse.
+6. **Dedup query** by `loom:fixup:<fingerprint>` label, restricted to
+   the live (non-closed) statuses per *Fingerprint and dedup* above.
+   Zero results → continue; one live result (open, in_progress,
+   blocked, or deferred) → skip; more than one → refuse.
 
 7. **Resolve the lead's molecule** via the single-tier query from
    [harness.md — Molecule lifecycle](harness.md#molecule-lifecycle):
@@ -2724,14 +2732,19 @@ and conservative fall-through for unowned queries.
   target content — fails the mint invocation with a typed parse
   error naming the offending line; no silent skip
   [test](mint_malformed_loom_finding_fails_run_with_typed_error)
-- The dedup query (`bd query "label=loom:fixup:<fp> AND status=open"`)
-  returning one open result causes the batch to be skipped
+- The dedup query (`bd query "label=loom:fixup:<fp> AND status IN
+  (open, in_progress, blocked, deferred)"`) returning one live result
+  causes the batch to be skipped
   [test](mint_dedup_query_one_open_result_skips_batch)
 - The dedup query returning zero results proceeds to mint
   [test](mint_dedup_query_zero_results_proceeds_to_mint)
-- The dedup query returning more than one open result is refused
+- The dedup query returning more than one live result is refused
   as a structural violation
   [test](mint_dedup_query_multiple_open_results_refuses_as_structural_violation)
+- A parked clarify bead carrying the same fingerprint label —
+  flipped to `status=blocked` by `apply_clarify` — still suppresses
+  re-mint; the live-status dedup query surfaces it (one hit ⇒ skip)
+  [test](mint_dedup_skips_blocked_batch_with_same_fingerprint)
 - A closed batch bead carrying the same fingerprint label is not
   re-minted on subsequent runs; only removing the `loom:fixup:<fp>`
   label or deleting the bead forces re-mint
