@@ -123,6 +123,11 @@ pub enum VerifierFailureKind {
     /// has a non-stub body). The marker must be dropped in the same diff
     /// that landed the verifier.
     UnneededPendingMarker,
+    /// Integrity gate inputs-protocol error: an opted-in input-query (a
+    /// `[judge]` collect mode, or a `[check]` / `[system]` runner that
+    /// declares an `inputs` query) exited non-zero or emitted a malformed
+    /// inputs document.
+    InputsProtocolError,
     /// Integrity gate atomic-acceptance violation: the criterion at
     /// `criterion_anchor` carries `count` annotations (expected 1).
     MultipleAnnotations {
@@ -226,6 +231,10 @@ pub fn verifier_failure_to_finding(failure: VerifierFailure) -> Result<Finding, 
         ),
         VerifierFailureKind::UnneededPendingMarker => (
             ConcernToken::UnneededPendingMarker,
+            FindingTarget::Annotation { target_string },
+        ),
+        VerifierFailureKind::InputsProtocolError => (
+            ConcernToken::InputsProtocolError,
             FindingTarget::Annotation { target_string },
         ),
         VerifierFailureKind::MultipleAnnotations {
@@ -529,6 +538,13 @@ fn integrity_to_verifier_failure(
         } => match_annotation(annotations, spec, *line, target).map(|annotation| VerifierFailure {
             annotation,
             kind: VerifierFailureKind::UnneededPendingMarker,
+            evidence: finding.to_string(),
+        }),
+        IntegrityFinding::InputsProtocolError {
+            spec, line, target, ..
+        } => match_annotation(annotations, spec, *line, target).map(|annotation| VerifierFailure {
+            annotation,
+            kind: VerifierFailureKind::InputsProtocolError,
             evidence: finding.to_string(),
         }),
         IntegrityFinding::MultipleAnnotations { spec, line, count } => annotations
@@ -1204,6 +1220,10 @@ mod tests {
             (
                 VerifierFailureKind::UnneededPendingMarker,
                 ConcernToken::UnneededPendingMarker,
+            ),
+            (
+                VerifierFailureKind::InputsProtocolError,
+                ConcernToken::InputsProtocolError,
             ),
         ];
         for (kind, expected_token) in cases {

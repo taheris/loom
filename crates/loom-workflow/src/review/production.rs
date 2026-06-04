@@ -39,7 +39,8 @@ use loom_driver::state::StateDb;
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
 use loom_gate::{
     DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateSuccess, HandoffEvidence,
-    IntegrityFinding, MarkerProof, TierCwds, annotation, compose_clarify_options, integrity,
+    InputResolver, IntegrityFinding, MarkerProof, TierCwds, annotation, compose_clarify_options,
+    integrity,
 };
 use loom_templates::previous_failure::PreviousFailure;
 use loom_templates::review::{ReviewContext, ReviewLane, TreeScopeEpic};
@@ -315,8 +316,9 @@ where
 
     /// Walk the spec files changed between the active molecule's
     /// `base_commit` and `HEAD`, run the integrity gate's forward
-    /// resolution against the annotations they declare, and keep only the
-    /// findings that are terminal at the push gate
+    /// resolution and inputs-protocol direction against the annotations
+    /// they declare, and keep only the findings that are terminal at the
+    /// push gate
     /// ([`IntegrityFinding::is_push_gate_terminal`]). Workspace-wide
     /// resolver scans (`RustWorkspaceTestResolver`, `RustWorkspaceStubScanner`)
     /// are built once per call. Returns an empty list when no molecule is
@@ -366,7 +368,7 @@ where
             &self.workspace,
             TierCwds::default(),
         );
-        let findings = integrity::check_forward(
+        let mut findings = integrity::check_forward(
             &annotations,
             &runner_specs,
             &self.workspace,
@@ -375,6 +377,12 @@ where
             &stub_scanner,
             &pending_executor,
         );
+        let mut input_resolver =
+            InputResolver::new(self.workspace.clone()).with_runners(runner_specs.clone());
+        findings.extend(integrity::check_inputs_protocol(
+            &annotations,
+            &mut input_resolver,
+        ));
         Ok(findings
             .into_iter()
             .filter(IntegrityFinding::is_push_gate_terminal)

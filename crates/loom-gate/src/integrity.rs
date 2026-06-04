@@ -1,9 +1,7 @@
 //! Annotation integrity gate.
 //!
-//! Runs as part of `loom gate check`. Three directions are realized here
-//! per `specs/gate.md` § Integrity gate; the spec enumerates a fourth
-//! (inputs-protocol honesty) that is planned and not yet emitted on any
-//! production path:
+//! Runs as part of `loom gate check`. Four directions are realized here
+//! per `specs/gate.md` § Integrity gate:
 //!
 //! 1. **Forward** — every annotation's target is valid for its tier:
 //!    `[check](cmd)` and `[system](cmd)` resolve via a runner that
@@ -23,6 +21,12 @@
 //! 3. **Atomic acceptance** — each criterion carries exactly one
 //!    annotation. N→1 sharing (multiple criteria pointing at the same
 //!    verifier) is allowed.
+//! 4. **Inputs-protocol honesty** — an *opted-in* input-query (a
+//!    `[judge]` collect mode, or a `[check]` / `[system]` runner that
+//!    declares an `inputs` query) that exits non-zero or emits a
+//!    malformed inputs document is flagged. Verifiers whose contract loom
+//!    does not own fall through to the conservative always-run default
+//!    silently.
 //!
 //! Findings render in the form prescribed by the spec:
 //! `<spec>:<line>: annotation [tier](<target>) — does not resolve` or
@@ -42,6 +46,7 @@ use loom_protocol::gate::{ConcernToken, Finding, FindingTarget};
 
 use crate::annotation::{Annotation, Tier};
 use crate::dispatch::{DispatchOptions, TierCwds, run_with_runners};
+use crate::inputs::{InputQueryProbe, InputResolver};
 use crate::runner::RunnerSpec;
 
 /// One finding surfaced by the integrity gate.
@@ -102,20 +107,35 @@ pub enum IntegrityFinding {
         tier: Tier,
         target: String,
     },
+    /// An *opted-in* input-query — a `[judge]` collect mode, or a
+    /// `[check]` / `[system]` runner that declares an `inputs` query —
+    /// exited non-zero or emitted a malformed inputs document. The fourth
+    /// integrity direction per `specs/gate.md` § Inputs-protocol error;
+    /// push-gate terminal and minted as a tree-scope fix-up. A verifier
+    /// whose input-query contract loom does not own never reaches this
+    /// variant — it falls through to the conservative always-run default.
+    InputsProtocolError {
+        spec: PathBuf,
+        line: u32,
+        tier: Tier,
+        target: String,
+    },
 }
 
 impl IntegrityFinding {
     /// True iff this finding is terminal at the push gate per
     /// `specs/gate.md` § Integrity gate. [`Self::UnresolvedAnnotation`],
-    /// [`Self::StubTestFunction`], and [`Self::UnneededPendingMarker`]
-    /// refuse the push and raise `loom:clarify`. The remaining variants
-    /// surface as warnings elsewhere.
+    /// [`Self::StubTestFunction`], [`Self::UnneededPendingMarker`], and
+    /// [`Self::InputsProtocolError`] refuse the push and raise
+    /// `loom:clarify`. The remaining variants surface as warnings
+    /// elsewhere.
     pub fn is_push_gate_terminal(&self) -> bool {
         matches!(
             self,
             Self::UnresolvedAnnotation { .. }
                 | Self::StubTestFunction { .. }
                 | Self::UnneededPendingMarker { .. }
+                | Self::InputsProtocolError { .. }
         )
     }
 
@@ -123,7 +143,8 @@ impl IntegrityFinding {
     /// [`Finding`] the mint pipeline consumes, per `specs/gate.md`
     /// § *Concern tokens and target variants* (integrity-gate rows). The
     /// token follows that table (`unresolved-annotation` / `stub-pointing`
-    /// / `unneeded-pending-marker`); the target is always
+    /// / `unneeded-pending-marker` / `inputs-protocol-error`); the target
+    /// is always
     /// [`FindingTarget::Annotation`]; `bonds` carries the lead spec label
     /// derived from the finding's spec-file stem; `evidence` is the
     /// finding's own [`std::fmt::Display`]. Non-terminal variants
@@ -140,6 +161,9 @@ impl IntegrityFinding {
             }
             Self::UnneededPendingMarker { spec, target, .. } => {
                 (ConcernToken::UnneededPendingMarker, spec, target)
+            }
+            Self::InputsProtocolError { spec, target, .. } => {
+                (ConcernToken::InputsProtocolError, spec, target)
             }
             Self::UnresolvedCargoTestName { .. } | Self::MultipleAnnotations { .. } => {
                 return None;
@@ -216,6 +240,19 @@ impl std::fmt::Display for IntegrityFinding {
             } => write!(
                 f,
                 "{}:{}: annotation [{}?]({}) is now resolved — drop the ? marker",
+                spec.display(),
+                line,
+                tier,
+                target
+            ),
+            Self::InputsProtocolError {
+                spec,
+                line,
+                tier,
+                target,
+            } => write!(
+                f,
+                "{}:{}: annotation [{}]({}) — input-query errored / emitted a malformed inputs document",
                 spec.display(),
                 line,
                 tier,
@@ -976,7 +1013,10 @@ pub fn compose_clarify_options(findings: &[IntegrityFinding]) -> String {
 }
 
 /// Run every integrity direction and return all findings: forward
-/// resolution, atomic acceptance, and stub-pointing.
+/// resolution (with stub-pointing), atomic acceptance, and inputs-protocol
+/// honesty. The inputs-protocol direction's [`InputResolver`] is built from
+/// `runner_specs` + `repo_root` — the runner `inputs` queries determine
+/// which `[check]` / `[system]` targets are opted in.
 pub fn check(
     annotations: &[Annotation],
     runner_specs: &[RunnerSpec],
@@ -996,7 +1036,41 @@ pub fn check(
         pending_executor,
     );
     findings.extend(check_atomic_acceptance(annotations));
+    let mut input_resolver =
+        InputResolver::new(repo_root.to_path_buf()).with_runners(runner_specs.to_vec());
+    findings.extend(check_inputs_protocol(annotations, &mut input_resolver));
     findings
+}
+
+/// Inputs-protocol direction: every *opted-in* input-query must run to
+/// completion and emit a well-formed inputs document. Emits one
+/// [`IntegrityFinding::InputsProtocolError`] per opted-in annotation whose
+/// query exits non-zero or returns a malformed document, per
+/// `specs/gate.md` § Integrity gate (Direction 4). Opt-in is explicit (a
+/// `[judge]`, or a `[check]` / `[system]` runner declaring an `inputs`
+/// query); [`InputResolver::probe_input_query`] owns that determination.
+/// The `?` pending modifier suppresses the direction — a `[tier?]`
+/// annotation has no verifier yet to hold to the protocol. Verifiers loom
+/// does not own fall through silently and never appear here.
+pub fn check_inputs_protocol(
+    annotations: &[Annotation],
+    input_resolver: &mut InputResolver,
+) -> Vec<IntegrityFinding> {
+    let mut out = Vec::new();
+    for ann in annotations {
+        if ann.pending {
+            continue;
+        }
+        if let InputQueryProbe::Errored { .. } = input_resolver.probe_input_query(ann) {
+            out.push(IntegrityFinding::InputsProtocolError {
+                spec: ann.source_spec.clone(),
+                line: ann.line,
+                tier: ann.tier,
+                target: ann.target.clone(),
+            });
+        }
+    }
+    out
 }
 
 /// Forward direction: every annotation's target must resolve for its
@@ -2609,6 +2683,199 @@ fn delta_helper() {
                 .iter()
                 .any(|f| matches!(f, IntegrityFinding::MultipleAnnotations { .. })),
             "atomic-acceptance finding present: {findings:?}"
+        );
+    }
+
+    /// A `[check]` runner that declares an `inputs` query whose responder
+    /// either exits non-zero or emits a non-JSON document, plus a `[judge]`
+    /// whose collect mode errors at source time. All three are opted in, so
+    /// the inputs-protocol direction flags each as `InputsProtocolError`.
+    #[test]
+    fn opted_in_input_query_failure_flagged_inputs_protocol_error() {
+        let dir = tempdir().unwrap();
+        let exit_nonzero = dir.path().join("exit2.sh");
+        fs::write(&exit_nonzero, "#!/bin/sh\nexit 2\n").unwrap();
+        let malformed = dir.path().join("malformed.sh");
+        fs::write(
+            &malformed,
+            "#!/bin/sh\necho 'not a json document'\nexit 0\n",
+        )
+        .unwrap();
+        let judge_dir = dir.path().join("tests/judges");
+        fs::create_dir_all(&judge_dir).unwrap();
+        fs::write(
+            judge_dir.join("broken.sh"),
+            "#!/usr/bin/env bash\n\
+             judge_x() { judge_files \"crates/x/src/a.rs\"; }\n\
+             command-that-does-not-exist-9f3\n",
+        )
+        .unwrap();
+
+        let runner = |name: &str, responder: &Path| {
+            RunnerSpec::compile(
+                name,
+                Some(&format!("^{name} -- (\\S+)$")),
+                format!("{name} -- {{targets}}"),
+                "{capture_1}",
+                " ",
+                crate::runner::BuiltinParser::JsonLines,
+                None,
+            )
+            .unwrap()
+            .with_inputs(Some(format!(
+                "sh {} {{targets}} {{print_inputs}}",
+                responder.display()
+            )))
+        };
+        let runners = vec![
+            runner("nonzero", &exit_nonzero),
+            runner("malformed", &malformed),
+        ];
+
+        let annotations = vec![
+            ann(Tier::Check, "nonzero -- foo", "specs/a.md", 10, 9),
+            ann(Tier::Check, "malformed -- bar", "specs/a.md", 12, 11),
+            ann(
+                Tier::Judge,
+                "../tests/judges/broken.sh#judge_x",
+                "specs/a.md",
+                14,
+                13,
+            ),
+        ];
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(runners);
+        let findings = check_inputs_protocol(&annotations, &mut resolver);
+
+        assert_eq!(
+            findings.len(),
+            3,
+            "each opted-in failing query is flagged: {findings:?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .all(|f| matches!(f, IntegrityFinding::InputsProtocolError { .. })),
+            "every finding is InputsProtocolError: {findings:?}"
+        );
+        assert!(
+            findings.iter().all(IntegrityFinding::is_push_gate_terminal),
+            "inputs-protocol-error is terminal at the push gate: {findings:?}"
+        );
+    }
+
+    /// A `[check]` whose target no runner matches (an unregistered literal
+    /// command), and a `[check]` matched by a runner that declares no
+    /// `inputs` query, both fall through to the conservative always-run
+    /// default without an `InputsProtocolError` — even though the
+    /// unregistered command's first token would answer `--print-inputs` if
+    /// probed literally.
+    #[test]
+    fn unowned_verifier_input_query_falls_through_silently() {
+        let dir = tempdir().unwrap();
+        let answers = dir.path().join("answers.sh");
+        fs::write(
+            &answers,
+            "#!/bin/sh\nprintf '{\"inputs\": [\"crates/x/src/a.rs\"]}\\n'\nexit 0\n",
+        )
+        .unwrap();
+
+        // Matched runner, but no `inputs` query declared.
+        let no_inputs_runner = RunnerSpec::compile(
+            "walk",
+            Some(r"^walk -- (\S+)$"),
+            "walk -- {targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap();
+
+        let annotations = vec![
+            ann(
+                Tier::Check,
+                &format!("sh {} probe", answers.display()),
+                "specs/a.md",
+                10,
+                9,
+            ),
+            ann(Tier::Check, "walk -- foo", "specs/a.md", 12, 11),
+        ];
+        let mut resolver =
+            InputResolver::new(dir.path().to_path_buf()).with_runners(vec![no_inputs_runner]);
+        let findings = check_inputs_protocol(&annotations, &mut resolver);
+
+        assert!(
+            findings.is_empty(),
+            "unowned verifiers never raise inputs-protocol-error: {findings:?}"
+        );
+    }
+
+    /// A well-formed empty `{"inputs":[]}` from an opted-in query is a
+    /// deliberate narrow, honoured as-is — not an `InputsProtocolError`.
+    #[test]
+    fn opted_in_empty_inputs_document_is_honoured_not_flagged() {
+        let dir = tempdir().unwrap();
+        let empty = dir.path().join("empty.sh");
+        fs::write(&empty, "#!/bin/sh\nprintf '{\"inputs\": []}\\n'\nexit 0\n").unwrap();
+        let runner = RunnerSpec::compile(
+            "walk",
+            Some(r"^walk -- (\S+)$"),
+            "walk -- {targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(format!(
+            "sh {} {{targets}} {{print_inputs}}",
+            empty.display()
+        )));
+
+        let annotations = vec![ann(Tier::Check, "walk -- foo", "specs/a.md", 10, 9)];
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+        assert!(
+            check_inputs_protocol(&annotations, &mut resolver).is_empty(),
+            "a deliberate-narrow empty inputs document is honoured",
+        );
+    }
+
+    /// The `?` pending modifier suppresses the inputs-protocol direction —
+    /// a `[tier?]` annotation has no verifier yet to hold to the protocol,
+    /// so even an erroring opted-in query passes silently.
+    #[test]
+    fn pending_annotation_suppresses_inputs_protocol_error() {
+        let dir = tempdir().unwrap();
+        let exit_nonzero = dir.path().join("exit2.sh");
+        fs::write(&exit_nonzero, "#!/bin/sh\nexit 2\n").unwrap();
+        let runner = RunnerSpec::compile(
+            "walk",
+            Some(r"^walk -- (\S+)$"),
+            "walk -- {targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(format!(
+            "sh {} {{targets}} {{print_inputs}}",
+            exit_nonzero.display()
+        )));
+
+        let pending = Annotation {
+            tier: Tier::Check,
+            target: "walk -- foo".into(),
+            source_spec: PathBuf::from("specs/a.md"),
+            line: 10,
+            criterion_line: 9,
+            pending: true,
+        };
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![runner]);
+        assert!(
+            check_inputs_protocol(std::slice::from_ref(&pending), &mut resolver).is_empty(),
+            "the ? pending modifier suppresses inputs-protocol-error",
         );
     }
 

@@ -61,7 +61,9 @@ fn parse_then_check_with_all_valid_annotations_yields_no_findings() {
     let specs = dir.path().join("specs");
     fs::create_dir_all(&specs).unwrap();
     let rubric = dir.path().join("rubric.md");
-    fs::write(&rubric, "rubric body").unwrap();
+    // Source-clean under the judge collect harness (Direction 4): a comment
+    // body defines no rubric functions, so collect mode emits `{"inputs":{}}`.
+    fs::write(&rubric, "#!/usr/bin/env bash\n# rubric body\n").unwrap();
 
     write(
         &specs,

@@ -2013,9 +2013,9 @@ An opted-in verifier that exits non-zero or emits a malformed inputs
 document is a loud `inputs-protocol-error` finding (see *Concern
 tokens and target variants*) — deterministic, emitted by the
 integrity gate during `loom gate verify` / `check`, exiting non-zero
-at the push gate and minting as a fix-up at tree scope. *(Planned —
-this is the integrity gate's fourth direction; see *Integrity gate*,
-Direction 4: it is not yet emitted on any production path.)* Because the
+at the push gate and minting as a fix-up at tree scope. This is the
+integrity gate's fourth direction; see *Integrity gate*, Direction 4.
+Because the
 opt-in is explicit, loudness never mis-fires: a verifier whose
 contract loom does *not* own — an unregistered literal command, or a
 runner with no `inputs` query — falls through to the conservative
@@ -2150,17 +2150,13 @@ resolve. Runs as part of `loom gate check`. Four directions:
    wrong regardless of either's resolution state.
 
 4. **Inputs-protocol honesty — an opted-in input-query must honour
-   its contract** (`inputs-protocol-error`). *Planned, not yet
-   realized: HEAD implements the three directions above; the gate does
-   not yet emit `inputs-protocol-error` on any production path, and the
-   direction's success criteria below carry the `[test?]` pending
-   marker. The contract that follows is the target behaviour.* A
+   its contract** (`inputs-protocol-error`). A
    verifier opts in when loom owns its query: a `[judge]` (the harness
    preamble guarantees `<script> --print-inputs <fn>`) or a `[check]` /
    `[system]` whose
    runner declares an `inputs` query (see *Runners*). An opted-in
    query that exits non-zero or emits a malformed inputs document is
-   unambiguously broken and the gate will flag it. This is the loud
+   unambiguously broken and the gate flags it. This is the loud
    counterpart to the *Conservative default*: a verifier whose
    contract loom does not own falls through to always-run silently, so
    no `grep` / `nix` command is ever mis-flagged. The pending modifier
@@ -3130,12 +3126,12 @@ Loop-side interpretation of these exit codes — routing `refused` to
   inputs document is flagged `inputs-protocol-error` — opt-in being a
   `[judge]` collect mode or a `[check]` / `[system]` runner that
   declares an `inputs` query
-  [test?](opted_in_input_query_failure_flagged_inputs_protocol_error)
+  [test](opted_in_input_query_failure_flagged_inputs_protocol_error)
 - A verifier whose input-query contract loom does not own — an
   unregistered command, or a runner with no `inputs` query — falls
   through to the conservative always-run default without an
   `inputs-protocol-error`
-  [test?](unowned_verifier_input_query_falls_through_silently)
+  [test](unowned_verifier_input_query_falls_through_silently)
 - A `[check]` / `[system]` target that matches a runner resolves via
   that runner, not via a `tokens[0]` PATH/file check; only an unmatched
   target falls back to the `tokens[0]` check

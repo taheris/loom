@@ -59,6 +59,28 @@ pub struct VerifierInputs {
     pub paths: Vec<PathBuf>,
 }
 
+/// Verdict of probing one annotation's input-query for the integrity
+/// gate's inputs-protocol direction (`specs/gate.md` § Inputs-protocol
+/// error). Enforcement is gated on an **explicit** opt-in, so only
+/// [`Self::Errored`] is a finding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputQueryProbe {
+    /// loom does not own this verifier's input-query contract — an
+    /// unregistered literal command, a matched runner with no `inputs`
+    /// query, a `[test]` annotation, or an opted-in query that could not
+    /// be spawned at all (missing-binary tolerance). The verifier falls
+    /// through to the conservative always-run default; never a finding.
+    NotOptedIn,
+    /// An opted-in query ran and emitted a well-formed inputs document —
+    /// possibly the deliberate-narrow empty `{"inputs":[]}`. Honoured
+    /// as-is; never a finding.
+    Honoured,
+    /// An opted-in query exited non-zero or emitted a malformed inputs
+    /// document — the loud `inputs-protocol-error`. `detail` records the
+    /// failure mode for diagnostics.
+    Errored { detail: String },
+}
+
 /// Failures surfaced while reading or invoking input-declaration
 /// sources. Surfaced individually so the resolver can fall through to
 /// the next source rather than failing the gate over a misdeclared
@@ -251,6 +273,68 @@ impl InputResolver {
     /// retain it under any finite scope rather than skip it.
     pub fn declares_no_inputs(&mut self, annotation: &Annotation) -> bool {
         self.collect_declared(annotation).is_empty()
+    }
+
+    /// Probe one annotation's input-query for the integrity gate's
+    /// inputs-protocol direction. Enforcement is gated on an explicit
+    /// opt-in (`specs/gate.md` § Inputs-protocol error): a `[judge]` (the
+    /// harness preamble owns its collect mode) or a `[check]` / `[system]`
+    /// whose matched runner declares an `inputs` query. Everything else —
+    /// unregistered commands, runners without an `inputs` query, `[test]`
+    /// annotations, and queries that cannot be spawned — resolves to
+    /// [`InputQueryProbe::NotOptedIn`] and is never faulted. An opted-in
+    /// query that exits non-zero or returns a malformed document is
+    /// [`InputQueryProbe::Errored`].
+    pub fn probe_input_query(&mut self, annotation: &Annotation) -> InputQueryProbe {
+        match annotation.tier {
+            Tier::Judge => self.probe_judge_query(annotation),
+            Tier::Check | Tier::System => self.probe_command_query(annotation),
+            Tier::Test => InputQueryProbe::NotOptedIn,
+        }
+    }
+
+    /// A `[judge]` opts in unconditionally — the harness preamble owns
+    /// `<script> --print-inputs`. A script that does not resolve to a file
+    /// is the forward direction's [`UnresolvedAnnotation`], not ours, so it
+    /// stays [`InputQueryProbe::NotOptedIn`] here to avoid a double finding.
+    fn probe_judge_query(&self, annotation: &Annotation) -> InputQueryProbe {
+        let Some(script) = crate::integrity::resolve_spec_relative_script_path(
+            &annotation.target,
+            &annotation.source_spec,
+            &self.repo_root,
+        ) else {
+            return InputQueryProbe::NotOptedIn;
+        };
+        if !script.is_file() {
+            return InputQueryProbe::NotOptedIn;
+        }
+        classify_query_run(
+            run_query_capturing(judge_collect_command(&self.repo_root, &script, None)),
+            &format!("loom-judge-harness {}", script.display()),
+        )
+    }
+
+    /// A `[check]` / `[system]` opts in only when a runner `match`es the
+    /// target *and* declares an `inputs` query. An unmatched target (a
+    /// literal command loom never registered) or a matched runner with no
+    /// `inputs` query stays [`InputQueryProbe::NotOptedIn`] — the gate
+    /// never faults a bare `grep` / `nix` for declining a protocol it never
+    /// opted into.
+    fn probe_command_query(&self, annotation: &Annotation) -> InputQueryProbe {
+        let query = {
+            let (groups, _) = group_by_runner(&self.runners, std::slice::from_ref(annotation));
+            let Some(group) = groups.into_iter().next() else {
+                return InputQueryProbe::NotOptedIn;
+            };
+            match group.render_inputs_query() {
+                Some(query) => query,
+                None => return InputQueryProbe::NotOptedIn,
+            }
+        };
+        let Some(command) = command_query_command(&self.repo_root, &query) else {
+            return InputQueryProbe::NotOptedIn;
+        };
+        classify_query_run(run_query_capturing(command), &query)
     }
 
     fn collect_declared(&mut self, annotation: &Annotation) -> Vec<PathBuf> {
@@ -608,13 +692,12 @@ fn parse_inputs_batch_json(stdout: &str) -> Option<HashMap<String, Vec<PathBuf>>
     None
 }
 
-/// Run a judge rubric script in collect mode under the loom judge-harness
-/// preamble. With `function` set, returns the single-target document's
-/// stdout (`{"inputs":[...]}`); with `None`, the batch map's stdout. Falls
-/// through to `None` when the harness fails to spawn or exits non-zero, so
-/// the resolver lands on the *Conservative default* rather than the gate
-/// crashing over a malformed rubric.
-fn run_judge_collect(repo_root: &Path, script: &Path, function: Option<&str>) -> Option<String> {
+/// Build the judge collect-mode `Command` under the loom judge-harness
+/// preamble. With `function` set the harness emits the single-target
+/// document (`{"inputs":[...]}`); with `None`, the batch map. Shared by the
+/// silent resolve path ([`run_judge_collect`]) and the integrity gate's
+/// inputs-protocol probe so both spawn byte-identical argv.
+fn judge_collect_command(repo_root: &Path, script: &Path, function: Option<&str>) -> Command {
     let mut cmd = Command::new("bash");
     cmd.arg("-c")
         .arg(JUDGE_COLLECT_HARNESS)
@@ -625,6 +708,17 @@ fn run_judge_collect(repo_root: &Path, script: &Path, function: Option<&str>) ->
         cmd.arg(function);
     }
     cmd.current_dir(repo_root);
+    cmd
+}
+
+/// Run a judge rubric script in collect mode under the loom judge-harness
+/// preamble. With `function` set, returns the single-target document's
+/// stdout (`{"inputs":[...]}`); with `None`, the batch map's stdout. Falls
+/// through to `None` when the harness fails to spawn or exits non-zero, so
+/// the resolver lands on the *Conservative default* rather than the gate
+/// crashing over a malformed rubric.
+fn run_judge_collect(repo_root: &Path, script: &Path, function: Option<&str>) -> Option<String> {
+    let mut cmd = judge_collect_command(repo_root, script, function);
     let output = match cmd.output() {
         Ok(output) => output,
         Err(source) => {
@@ -658,18 +752,26 @@ fn runner_cache_key(runner: &str, rendered_target: &str) -> String {
     format!("runner:{runner}\u{1f}{rendered_target}")
 }
 
+/// Build the `Command` for a runner's rendered input-query string, or
+/// `None` when the string has no leading token. Shared by the silent
+/// resolve path ([`run_command_query`]) and the integrity gate's
+/// inputs-protocol probe so both spawn byte-identical argv.
+fn command_query_command(repo_root: &Path, command: &str) -> Option<Command> {
+    let mut tokens = shlex::split(command)?.into_iter();
+    let head = tokens.next()?;
+    let tail: Vec<String> = tokens.collect();
+    let mut cmd = Command::new(head);
+    cmd.args(&tail).current_dir(repo_root);
+    Some(cmd)
+}
+
 /// Spawn a runner's rendered input-query command in `repo_root` and return
 /// its stdout, or `None` when the command fails to spawn or exits
 /// non-zero. A non-zero exit falls through to the conservative always-run
 /// default here; surfacing it as a loud `inputs-protocol-error` is the
 /// integrity gate's job (see `specs/gate.md` § Inputs-protocol error).
 fn run_command_query(repo_root: &Path, command: &str) -> Option<String> {
-    let mut tokens = shlex::split(command)?.into_iter();
-    let head = tokens.next()?;
-    let tail: Vec<String> = tokens.collect();
-    let mut cmd = Command::new(head);
-    cmd.args(&tail);
-    cmd.current_dir(repo_root);
+    let mut cmd = command_query_command(repo_root, command)?;
     let output = match cmd.output() {
         Ok(output) => output,
         Err(source) => {
@@ -685,6 +787,62 @@ fn run_command_query(repo_root: &Path, command: &str) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Outcome of spawning an opted-in input-query for the integrity gate's
+/// inputs-protocol probe: the process ran (carrying its exit success and
+/// captured stdout) or could not be spawned at all.
+enum QueryRun {
+    Ran { success: bool, stdout: String },
+    SpawnFailed { source: std::io::Error },
+}
+
+/// Spawn `cmd`, capturing exit success and stdout. Unlike
+/// [`run_command_query`] this does *not* collapse a non-zero exit into the
+/// silent always-run default — the inputs-protocol probe needs the exit
+/// status to tell a protocol error from a well-formed narrow.
+fn run_query_capturing(mut cmd: Command) -> QueryRun {
+    match cmd.output() {
+        Ok(output) => QueryRun::Ran {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        },
+        Err(source) => QueryRun::SpawnFailed { source },
+    }
+}
+
+/// Map a captured input-query run to an [`InputQueryProbe`] verdict. A
+/// spawn failure is the missing-binary tolerance (silent always-run); a
+/// non-zero exit, or stdout that parses as neither the single
+/// (`{"inputs":[...]}`) nor the batch (`{"inputs":{...}}`) document, is the
+/// loud `inputs-protocol-error`. A well-formed (possibly empty) document is
+/// honoured.
+fn classify_query_run(run: QueryRun, command: &str) -> InputQueryProbe {
+    match run {
+        QueryRun::SpawnFailed { source } => {
+            let err = InputsError::Spawn {
+                command: command.to_string(),
+                source,
+            };
+            tracing::warn!(err = ?err, "opted-in input-query spawn failed; conservative always-run default applies");
+            InputQueryProbe::NotOptedIn
+        }
+        QueryRun::Ran { success: false, .. } => InputQueryProbe::Errored {
+            detail: "input-query exited non-zero".to_owned(),
+        },
+        QueryRun::Ran {
+            success: true,
+            stdout,
+        } => {
+            if parse_inputs_batch_json(&stdout).is_some() || parse_inputs_json(&stdout).is_some() {
+                InputQueryProbe::Honoured
+            } else {
+                InputQueryProbe::Errored {
+                    detail: "input-query emitted a malformed inputs document".to_owned(),
+                }
+            }
+        }
+    }
 }
 
 /// The `#fn` / `::fn` selector trailing a script-path target, or `None`

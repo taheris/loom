@@ -546,7 +546,8 @@ fn summarise_health(
                 target: target.clone(),
             }),
             IntegrityFinding::MultipleAnnotations { .. }
-            | IntegrityFinding::UnneededPendingMarker { .. } => None,
+            | IntegrityFinding::UnneededPendingMarker { .. }
+            | IntegrityFinding::InputsProtocolError { .. } => None,
         })
         .collect();
 
