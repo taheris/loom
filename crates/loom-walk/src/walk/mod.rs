@@ -11,12 +11,15 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub use inputs::render_print_inputs;
+
 mod audit_makes_no_bd_writes_outside_mint_module;
 mod crate_structure;
 mod direct_tools_net_new;
 mod event_sink_in_loom_events;
 mod finding_no_duplicate_definitions;
 mod git_client_encapsulation;
+mod inputs;
 mod loom_agent_deps;
 mod loom_does_not_invoke_podman;
 mod loom_events_is_leaf;

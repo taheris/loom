@@ -395,8 +395,14 @@ impl RunnerSpec {
 /// annotations. Ships in code (not `loom.toml`) so the batching is the
 /// default behaviour; operators can layer overrides via
 /// `[runner.check.<name>]` entries but cannot accidentally remove it.
+///
+/// Declares an `inputs` query (`cargo run -p loom-walk -- {targets}
+/// {print_inputs}`) so each walk answers `--print-inputs` with its scanned
+/// file set: the gate scopes the ~77 loom-walk verifiers precisely under
+/// `loom gate verify --files` instead of always-running them, and the
+/// integrity gate holds the walks to the inputs-protocol contract.
 pub fn builtin_loom_walk_runner() -> Result<RunnerSpec, RunnerError> {
-    RunnerSpec::compile(
+    Ok(RunnerSpec::compile(
         "builtin-loom-walk",
         Some(r"^cargo run -p loom-walk -- (\S+)$"),
         "cargo run -p loom-walk -- {targets}",
@@ -404,7 +410,10 @@ pub fn builtin_loom_walk_runner() -> Result<RunnerSpec, RunnerError> {
         " ",
         BuiltinParser::JsonLines,
         None,
-    )
+    )?
+    .with_inputs(Some(
+        "cargo run -p loom-walk -- {targets} {print_inputs}".to_string(),
+    )))
 }
 
 /// Compile one `[runner.<tier>.<name>]` schema entry into runtime form.
@@ -1380,6 +1389,27 @@ test result: ok. 3 passed; 0 failed
         assert!(
             rendered.starts_with("cargo nextest run -E 'test(a::one) + test(b::two)'"),
             "rendered = {rendered}"
+        );
+    }
+
+    #[test]
+    fn builtin_loom_walk_runner_opts_into_the_input_query_protocol() {
+        let spec = builtin_loom_walk_runner().unwrap();
+        assert_eq!(
+            spec.inputs.as_deref(),
+            Some("cargo run -p loom-walk -- {targets} {print_inputs}"),
+            "the builtin runner must declare an inputs query so the ~77 loom-walk verifiers are scoped, not always-run",
+        );
+        let annotations = vec![ann(
+            Tier::Check,
+            "cargo run -p loom-walk -- no_thread_sleep",
+        )];
+        let specs = [spec];
+        let (groups, _) = group_by_runner(&specs, &annotations);
+        let query = groups[0].render_inputs_query().unwrap();
+        assert_eq!(
+            query,
+            "cargo run -p loom-walk -- no_thread_sleep --print-inputs",
         );
     }
 
