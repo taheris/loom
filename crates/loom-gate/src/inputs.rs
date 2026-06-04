@@ -351,9 +351,16 @@ impl InputResolver {
     /// target, `None` when none does (the caller falls through to
     /// literal-command semantics). A matched runner with no `inputs` query
     /// yields `Some(empty)`: the conservative always-run default, never a
-    /// `tokens[0]` probe. The query is spawned once per matched group; a
-    /// batch response (`{"inputs": {"<target>": [...]}}`) primes the cache
-    /// for every sibling, so discovery batches where execution batches.
+    /// `tokens[0]` probe.
+    ///
+    /// This is the per-annotation path: it renders the query for one
+    /// annotation and serves the primed cache without re-querying. The
+    /// **group** spawn that satisfies the "discovery batches exactly where
+    /// execution batches" invariant (`specs/gate.md` § Verifier inputs →
+    /// Input-query protocol) — one query naming every sibling in a matched
+    /// `[check]` group — is issued up front by
+    /// [`Self::prime_runner_inputs`]; a sibling whose group was primed hits
+    /// the cache here and never spawns.
     fn runner_owned_inputs(&mut self, annotation: &Annotation) -> Option<Vec<PathBuf>> {
         let (runner_name, rendered_target, query) = {
             let (groups, _) = group_by_runner(&self.runners, std::slice::from_ref(annotation));
@@ -389,6 +396,70 @@ impl InputResolver {
                 .cloned()
                 .unwrap_or_default(),
         )
+    }
+
+    /// Prime the runner-owned input-query cache for `annotations` with
+    /// **one query spawn per matched `[check]` group**, honouring the
+    /// "discovery batches exactly where execution batches" invariant
+    /// (`specs/gate.md` § Verifier inputs → Input-query protocol). The group
+    /// query names every sibling target, so a runner whose `inputs` template
+    /// filters by `{targets}` answers for the whole group in a single spawn;
+    /// the per-target batch map primes the cache that [`Self::resolve`] then
+    /// hits without re-querying.
+    ///
+    /// `[system]` annotations are excluded — per the spec carve-out their
+    /// discovery stays per-annotation, matching their per-annotation
+    /// execution. Groups already fully cached, runners without an `inputs`
+    /// template, and unmatched annotations are skipped. Priming is
+    /// best-effort: a failed or single-target response to a multi-sibling
+    /// query leaves the group to the per-annotation path in
+    /// [`Self::resolve`], preserving correctness at the per-annotation spawn
+    /// cost.
+    pub fn prime_runner_inputs(&mut self, annotations: &[Annotation]) {
+        let check: Vec<Annotation> = annotations
+            .iter()
+            .filter(|a| a.tier == Tier::Check)
+            .cloned()
+            .collect();
+        if check.is_empty() {
+            return;
+        }
+        let plans: Vec<(String, String, Option<String>)> = {
+            let (groups, _) = group_by_runner(&self.runners, &check);
+            groups
+                .into_iter()
+                .filter_map(|group| {
+                    let fully_cached = group.matched.iter().all(|m| {
+                        self.print_inputs_cache
+                            .contains_key(&runner_cache_key(&group.spec.name, &m.rendered_target))
+                    });
+                    if fully_cached {
+                        return None;
+                    }
+                    let query = group.render_inputs_query()?;
+                    let single = (group.matched.len() == 1)
+                        .then(|| group.matched.first().map(|m| m.rendered_target.clone()))
+                        .flatten();
+                    Some((group.spec.name.clone(), query, single))
+                })
+                .collect()
+        };
+        for (runner_name, query, single) in plans {
+            let Some(stdout) = run_command_query(&self.repo_root, &query) else {
+                continue;
+            };
+            if let Some(batch) = parse_inputs_batch_json(&stdout) {
+                for (target, paths) in batch {
+                    self.print_inputs_cache
+                        .insert(runner_cache_key(&runner_name, &target), paths);
+                }
+            } else if let Some(paths) = parse_inputs_json(&stdout)
+                && let Some(target) = single
+            {
+                self.print_inputs_cache
+                    .insert(runner_cache_key(&runner_name, &target), paths);
+            }
+        }
     }
 
     fn invoke_print_inputs(&self, tokens: &[String]) -> Option<Vec<PathBuf>> {
@@ -481,6 +552,7 @@ pub fn filter_by_files(
     if files.is_empty() {
         return annotations.to_vec();
     }
+    resolver.prime_runner_inputs(annotations);
     let file_set: HashSet<&Path> = files.iter().map(PathBuf::as_path).collect();
     annotations
         .iter()
@@ -1116,6 +1188,137 @@ mod tests {
             fs::read_to_string(&counter).unwrap().trim(),
             "1",
             "one input-query spawn covers the matched group; the sibling hits the primed cache",
+        );
+    }
+
+    /// A realistic runner `inputs` responder answers only for the
+    /// `{targets}` on its argv — it does NOT volunteer globs for targets it
+    /// was never asked about. [`InputResolver::prime_runner_inputs`] still
+    /// resolves a two-sibling `[check]` group in a single query spawn
+    /// because the group query names every sibling, so the responder answers
+    /// for both at once. This pins the "discovery batches exactly where
+    /// execution batches" invariant (`specs/gate.md` § Verifier inputs →
+    /// Input-query protocol) against the filtering responder that
+    /// [`runner_input_query_batch_response_primes_cache_for_siblings`]'s
+    /// volunteer-the-whole-map responder cannot distinguish.
+    #[test]
+    fn prime_runner_inputs_batches_group_query_for_filtering_responder() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("queries.txt");
+        fs::write(&counter, "0").unwrap();
+        let counter_path = counter.display();
+        let responder = dir.path().join("filter-responder.sh");
+        fs::write(
+            &responder,
+            format!(
+                "#!/bin/sh\n\
+                 n=$(cat \"{counter_path}\"); echo $((n + 1)) > \"{counter_path}\"\n\
+                 printf '{{\"inputs\":{{'\n\
+                 first=1\n\
+                 for arg in \"$@\"; do\n\
+                   [ \"$arg\" = \"--print-inputs\" ] && continue\n\
+                   [ \"$first\" = 1 ] || printf ','\n\
+                   printf '\"%s\":[\"crates/%s/src.rs\"]' \"$arg\" \"$arg\"\n\
+                   first=0\n\
+                 done\n\
+                 printf '}}}}\\n'\n",
+            ),
+        )
+        .unwrap();
+
+        let spec = RunnerSpec::compile(
+            "walk",
+            Some(r"^walk -- (\S+)$"),
+            "walk -- {targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(format!(
+            "sh {} {{targets}} {{print_inputs}}",
+            responder.display()
+        )));
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![spec]);
+        let alpha = ann(Tier::Check, "walk -- alpha", "specs/gate.md");
+        let beta = ann(Tier::Check, "walk -- beta", "specs/gate.md");
+        let annotations = vec![alpha.clone(), beta.clone()];
+
+        resolver.prime_runner_inputs(&annotations);
+
+        let got_alpha = resolver.resolve(&alpha);
+        let got_beta = resolver.resolve(&beta);
+
+        assert!(
+            got_alpha
+                .paths
+                .contains(&PathBuf::from("crates/alpha/src.rs")),
+            "alpha resolves from the primed group query: {:?}",
+            got_alpha.paths,
+        );
+        assert!(
+            got_beta
+                .paths
+                .contains(&PathBuf::from("crates/beta/src.rs")),
+            "beta resolves from the primed group query, not a second spawn: {:?}",
+            got_beta.paths,
+        );
+        assert_eq!(
+            fs::read_to_string(&counter).unwrap().trim(),
+            "1",
+            "one group query spawn covers both siblings even though the \
+             responder answers only for the targets named on its argv",
+        );
+    }
+
+    /// `[system]` discovery stays per-annotation per the spec carve-out:
+    /// [`InputResolver::prime_runner_inputs`] must not batch a `[system]`
+    /// group even when a matching runner declares an `inputs` template. The
+    /// counting responder would fire once if the system group were primed;
+    /// it stays at zero because priming skips the `[system]` tier.
+    #[test]
+    fn prime_runner_inputs_excludes_system_tier() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("queries.txt");
+        fs::write(&counter, "0").unwrap();
+        let counter_path = counter.display();
+        let responder = dir.path().join("sys-count-responder.sh");
+        fs::write(
+            &responder,
+            format!(
+                "#!/bin/sh\n\
+                 n=$(cat \"{counter_path}\"); echo $((n + 1)) > \"{counter_path}\"\n\
+                 printf '{{\"inputs\":[\"crates/loom-sys/src/probe.rs\"]}}\\n'\n",
+            ),
+        )
+        .unwrap();
+
+        let spec = RunnerSpec::compile(
+            "nix",
+            Some(r"^nix run \.#(\S+)$"),
+            "nix run .#{targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::NixBuildStatus,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(format!(
+            "sh {} {{targets}} {{print_inputs}}",
+            responder.display()
+        )));
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![spec]);
+        let a = ann(Tier::System, "nix run .#test-loom", "specs/gate.md");
+
+        resolver.prime_runner_inputs(std::slice::from_ref(&a));
+
+        assert_eq!(
+            fs::read_to_string(&counter).unwrap().trim(),
+            "0",
+            "[system] discovery stays per-annotation; the prime pass skips it",
         );
     }
 
