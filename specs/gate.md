@@ -3136,6 +3136,11 @@ Loop-side interpretation of these exit codes — routing `refused` to
   that runner, not via a `tokens[0]` PATH/file check; only an unmatched
   target falls back to the `tokens[0]` check
   [test](runner_matched_target_resolves_via_runner_not_token_path_check)
+- A runner-matched verifier's queried inputs decide its `--files` scope
+  inclusion: the scope filter keeps the matched sibling whose queried
+  glob is staged and drops the one whose glob is disjoint, priming the
+  matched `[check]` group in a single query spawn
+  [test](filter_by_files_keeps_runner_matched_check_sibling_whose_queried_input_is_staged)
 
 ### Scope handling
 

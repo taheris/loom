@@ -1906,4 +1906,127 @@ mod tests {
             "heuristic should pull .pre-commit-config.yaml out of the grep command tokens",
         );
     }
+
+    /// End-to-end runner-owned scope filtering: a matched `[check]`
+    /// group's queried inputs decide `--files` inclusion. [`filter_by_files`]
+    /// primes the group in one query spawn, then keeps the sibling whose
+    /// queried glob is staged and drops the sibling whose queried glob is
+    /// not — the production seam (`with_runners` → `filter_by_files`) every
+    /// other runner test sidesteps by calling `resolve` directly.
+    #[test]
+    fn filter_by_files_keeps_runner_matched_check_sibling_whose_queried_input_is_staged() {
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("queries.txt");
+        fs::write(&counter, "0").unwrap();
+        let counter_path = counter.display();
+        let responder = dir.path().join("scope-responder.sh");
+        fs::write(
+            &responder,
+            format!(
+                "#!/bin/sh\n\
+                 n=$(cat \"{counter_path}\"); echo $((n + 1)) > \"{counter_path}\"\n\
+                 printf '{{\"inputs\":{{'\n\
+                 first=1\n\
+                 for arg in \"$@\"; do\n\
+                   [ \"$arg\" = \"--print-inputs\" ] && continue\n\
+                   [ \"$first\" = 1 ] || printf ','\n\
+                   printf '\"%s\":[\"crates/%s/src.rs\"]' \"$arg\" \"$arg\"\n\
+                   first=0\n\
+                 done\n\
+                 printf '}}}}\\n'\n",
+            ),
+        )
+        .unwrap();
+
+        let spec = RunnerSpec::compile(
+            "walk",
+            Some(r"^walk -- (\S+)$"),
+            "walk -- {targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(format!(
+            "sh {} {{targets}} {{print_inputs}}",
+            responder.display()
+        )));
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![spec]);
+        let alpha = ann(Tier::Check, "walk -- alpha", "specs/gate.md");
+        let beta = ann(Tier::Check, "walk -- beta", "specs/gate.md");
+        let annotations = vec![alpha, beta];
+
+        let files = vec![PathBuf::from("crates/alpha/src.rs")];
+        let got = filter_by_files(&annotations, &files, &mut resolver);
+
+        assert_eq!(
+            got.iter().map(|a| a.target.as_str()).collect::<Vec<_>>(),
+            vec!["walk -- alpha"],
+            "only the runner-matched sibling whose queried glob is staged survives scope filtering",
+        );
+        assert_eq!(
+            fs::read_to_string(&counter).unwrap().trim(),
+            "1",
+            "one group query spawn primes both siblings for the scope decision",
+        );
+    }
+
+    /// `[system]` discovery is per-annotation (excluded from group priming),
+    /// yet a matched `[system]` runner's queried inputs still decide
+    /// `--files` inclusion: the per-annotation runner-owned query during
+    /// resolution feeds the scope filter, keeping the verifier whose queried
+    /// glob is staged and dropping the one whose glob is not.
+    #[test]
+    fn filter_by_files_keeps_runner_matched_system_verifier_whose_queried_input_is_staged() {
+        let dir = tempfile::tempdir().unwrap();
+        // Responder answers only when --print-inputs follows the target,
+        // echoing a per-target glob keyed by the queried target name.
+        let responder = dir.path().join("sys-scope-responder.sh");
+        fs::write(
+            &responder,
+            "#!/bin/sh\n\
+             target=$1\n\
+             shift\n\
+             for arg in \"$@\"; do\n\
+               if [ \"$arg\" = \"--print-inputs\" ]; then\n\
+                 printf '{\"inputs\": [\"crates/%s/sys.rs\"]}\\n' \"$target\"\n\
+                 exit 0\n\
+               fi\n\
+             done\n\
+             exit 1\n",
+        )
+        .unwrap();
+
+        let spec = RunnerSpec::compile(
+            "nix",
+            Some(r"^nix run \.#(\S+)$"),
+            "nix run .#{targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::NixBuildStatus,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(format!(
+            "sh {} {{targets}} {{print_inputs}}",
+            responder.display()
+        )));
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![spec]);
+        let staged = ann(Tier::System, "nix run .#alpha", "specs/gate.md");
+        let unstaged = ann(Tier::System, "nix run .#beta", "specs/gate.md");
+        let annotations = vec![staged, unstaged];
+
+        let files = vec![PathBuf::from("crates/alpha/sys.rs")];
+        let got = filter_by_files(&annotations, &files, &mut resolver);
+
+        assert_eq!(
+            got.iter().map(|a| a.target.as_str()).collect::<Vec<_>>(),
+            vec!["nix run .#alpha"],
+            "the runner-matched [system] verifier whose queried glob is staged survives; \
+             the disjoint sibling drops",
+        );
+    }
 }
