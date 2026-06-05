@@ -608,7 +608,7 @@ fn main() -> ExitCode {
             new,
             update,
             profile,
-        } => run_plan(&workspace, new, update, profile).map(|()| ExitCode::SUCCESS),
+        } => run_plan(&workspace, new, update, profile, agent_override).map(|()| ExitCode::SUCCESS),
         Command::Loop {
             once,
             parallel,
@@ -2076,6 +2076,7 @@ fn run_plan(
     new: Option<String>,
     update: Option<String>,
     profile: Option<String>,
+    agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
     let manifest = ProfileImageManifest::from_env()?;
     let mode = plan::parse_mode(new, update)?;
@@ -2085,6 +2086,7 @@ fn run_plan(
             mode,
             wrapix_bin: std::env::var_os("LOOM_WRAPIX_BIN").map(PathBuf::from),
             cli_profile: profile.map(ProfileName::new),
+            agent_override,
             manifest,
         },
     )?;
@@ -3105,12 +3107,13 @@ fn run_msg(
 fn run_msg_chat(
     workspace: &Path,
     spec_filter: Option<SpecLabel>,
-    _agent_override: Option<AgentKind>,
+    agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
     let manifest = ProfileImageManifest::from_env()?;
     let opts = loom_workflow::msg::chat::ChatOpts {
         spec_filter,
         cli_profile: None,
+        agent_override,
         manifest,
         wrapix_bin: std::env::var_os("LOOM_WRAPIX_BIN").map(PathBuf::from),
     };

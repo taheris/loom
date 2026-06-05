@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use tracing::info;
 
+use loom_driver::agent::AgentKind;
 use loom_driver::config::{LoomConfig, Phase};
 use loom_driver::identifier::{ProfileName, SpecLabel};
 use loom_driver::lock::LockManager;
@@ -39,6 +40,10 @@ pub struct PlanOpts {
     /// `[phase.default]` resolution per `specs/harness.md` § Profile-Image
     /// Manifest. `None` falls back to the per-phase config chain.
     pub cli_profile: Option<ProfileName>,
+    /// CLI `--agent` override. When absent, `[phase.plan].agent.backend` /
+    /// `[phase.default].agent.backend` select the interactive command passed
+    /// to `wrapix run`.
+    pub agent_override: Option<AgentKind>,
     /// Parsed profile-image manifest. The runner looks the resolved profile
     /// up against this to populate the `WRAPIX_DEFAULT_IMAGE_REF` /
     /// `WRAPIX_DEFAULT_IMAGE_SOURCE` env vars the launcher reads when no
@@ -63,8 +68,8 @@ pub struct PlanReport {
 ///
 /// 1. Acquire `<label>.lock` for the duration of the call.
 /// 2. Render the appropriate Askama template into a prompt body.
-/// 3. Spawn `wrapix run <workspace> claude --dangerously-skip-permissions
-///    <prompt>` with stdio inherited and wait for it to exit.
+/// 3. Spawn `wrapix run <workspace> <agent command> ... <prompt>` with stdio
+///    inherited and wait for it to exit.
 /// 4. After the interactive session exits, replace the companion rows for
 ///    `label` in the state DB by re-parsing the spec file.
 pub fn run(workspace: &Path, opts: PlanOpts) -> Result<PlanReport, PlanError> {
@@ -87,7 +92,8 @@ pub fn run_with_timeout(
     let cfg = LoomConfig::load(LoomConfig::resolve_path(workspace))
         .unwrap_or_else(|_| LoomConfig::default());
 
-    let profile = resolve_plan_profile(opts.cli_profile.as_ref(), &cfg)?;
+    let (profile, agent_kind) =
+        resolve_plan_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
     let image: &ImageEntry = opts.manifest.lookup(&profile)?;
 
     let spec_rel = format!("specs/{}.md", label.as_str());
@@ -141,11 +147,12 @@ pub fn run_with_timeout(
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, &banner)
         .map_err(|source| PlanError::Spawn { source })?;
 
-    let argv = build_wrapix_argv(workspace, &prompt_body);
+    let argv = build_wrapix_argv(workspace, &prompt_body, agent_kind);
     let bin: PathBuf = opts.wrapix_bin.unwrap_or_else(|| PathBuf::from(WRAPIX_BIN));
     info!(
         label = %label,
         profile = %profile,
+        agent = ?agent_kind,
         image_ref = %image.r#ref,
         image_source = %image.source.display(),
         wrapix_bin = %bin.display(),
@@ -193,14 +200,19 @@ pub fn run_with_timeout(
 /// `agent_for` also validates the resolved backend name. We surface that
 /// failure via `PlanError::AgentSelection` so a typo in `[phase.plan]
 /// agent.backend` fails loudly here rather than silently falling back.
-fn resolve_plan_profile(
+fn resolve_plan_selection(
     cli_profile: Option<&ProfileName>,
+    agent_override: Option<AgentKind>,
     config: &LoomConfig,
-) -> Result<ProfileName, PlanError> {
+) -> Result<(ProfileName, AgentKind), PlanError> {
+    let mut selection = config.agent_for(Phase::Plan)?;
     if let Some(p) = cli_profile {
-        return Ok(p.clone());
+        selection.profile = p.clone();
     }
-    Ok(config.agent_for(Phase::Plan)?.profile)
+    if let Some(kind) = agent_override {
+        selection.kind = kind;
+    }
+    Ok((selection.profile, selection.kind))
 }
 
 fn read_pinned_context(workspace: &Path, rel: &str) -> Result<String, PlanError> {
@@ -295,6 +307,7 @@ mod tests {
             mode: PlanMode::New(SpecLabel::new(label)),
             wrapix_bin: Some(bin),
             cli_profile: None,
+            agent_override: None,
             manifest,
         }
     }
@@ -304,6 +317,7 @@ mod tests {
             mode: PlanMode::Update(SpecLabel::new(label)),
             wrapix_bin: Some(bin),
             cli_profile: None,
+            agent_override: None,
             manifest,
         }
     }
@@ -340,6 +354,40 @@ mod tests {
         assert!(!lines.contains(&"--spawn-config"));
         assert!(lines.contains(&"claude"));
         assert!(lines.contains(&"--dangerously-skip-permissions"));
+        Ok(())
+    }
+
+    #[test]
+    fn plan_phase_agent_pi_selects_pi_command() -> Result<()> {
+        let dir = workspace_with_specs()?;
+        let spec_path = dir.path().join("specs/harness.md");
+        let bin = install_wrapix_stub(
+            dir.path(),
+            Some((&spec_path, "# loom-harness\n\n## Companions\n\n")),
+        )?;
+        std::fs::write(
+            dir.path().join("loom.toml"),
+            "[phase.default]\nagent.backend = \"pi\"\n",
+        )?;
+        let manifest = three_profile_manifest(dir.path())?;
+
+        run_with_timeout(
+            dir.path(),
+            plan_opts_new("harness", bin, manifest),
+            Duration::from_millis(100),
+        )?;
+
+        let argv_log = std::fs::read_to_string(dir.path().join("argv.log"))?;
+        let lines: Vec<&str> = argv_log.lines().collect();
+        assert!(lines.contains(&"pi"), "expected pi argv: {argv_log}");
+        assert!(
+            !lines.contains(&"claude"),
+            "pi-backed plan must not call claude: {argv_log}",
+        );
+        assert!(
+            !lines.contains(&"--dangerously-skip-permissions"),
+            "pi-backed plan must not receive claude-only flags: {argv_log}",
+        );
         Ok(())
     }
 
@@ -395,6 +443,7 @@ mod tests {
             mode: PlanMode::New(SpecLabel::new("harness")),
             wrapix_bin: Some(bin),
             cli_profile: Some(ProfileName::new("rust")),
+            agent_override: None,
             manifest,
         };
         run_with_timeout(dir.path(), opts, Duration::from_millis(100))?;
@@ -442,6 +491,7 @@ mod tests {
                 mode: PlanMode::New(SpecLabel::new("harness")),
                 wrapix_bin: Some(bin),
                 cli_profile,
+                agent_override: None,
                 manifest,
             };
             run_with_timeout(dir.path(), opts, Duration::from_millis(100))?;
@@ -548,6 +598,7 @@ mod tests {
             mode: PlanMode::New(SpecLabel::new("harness")),
             wrapix_bin: Some(PathBuf::from("/nonexistent/wrapix")),
             cli_profile: Some(ProfileName::new("ruby")),
+            agent_override: None,
             manifest,
         };
 

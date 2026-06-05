@@ -528,10 +528,11 @@ before exec'ing `wrapix run`. The launcher reads those env vars when no
 `--spawn-config` is supplied — see
 [sandbox.md — Launcher Subcommands](sandbox.md#launcher-subcommands).
 `wrapix run` has no `--profile` argv parser; any extra tokens between
-the workspace positional and the in-container command (`claude
---dangerously-skip-permissions …`) are forwarded into the container as
-the command vector, so the env-var hand-off is the sole
-profile-selection contract on this path.
+the workspace positional and the in-container command are forwarded into
+the container as the command vector, so the env-var hand-off is the sole
+profile-selection contract on this path. The in-container command is
+selected from the resolved phase backend: Claude uses `claude
+--dangerously-skip-permissions`, while Pi uses `pi`.
 
 ### Concurrency & Locking
 

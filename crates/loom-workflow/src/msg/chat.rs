@@ -2,18 +2,18 @@
 //!
 //! Mirrors `loom plan`'s runner shape: the driver renders the `msg.md`
 //! template against the outstanding clarify queue, builds the same
-//! `wrapix run <workspace> claude --dangerously-skip-permissions <prompt>`
-//! argv plan uses, and shells out with **inherited stdio** so claude
-//! attaches directly to the user's terminal as a real REPL.
+//! `wrapix run <workspace> <agent command> ... <prompt>` argv plan uses, and
+//! shells out with **inherited stdio** so the configured agent attaches
+//! directly to the user's terminal as a real REPL.
 //!
-//! This deliberately bypasses the `dispatch` / pi-mono / claude
-//! stream-json surface used by `loom loop` / `loom gate` / `loom todo`.
-//! Those backends pipe stdio so the driver can read events and write
-//! the JSONL log — fine for non-interactive sessions, fatal for an
-//! interactive chat (no readline, no color, no real REPL).
+//! This deliberately bypasses the `dispatch` stream-json surface used by
+//! `loom loop` / `loom gate` / `loom todo`. Those backends pipe stdio so the
+//! driver can read events and write the JSONL log — fine for non-interactive
+//! sessions, fatal for an interactive chat (no readline, no color, no real
+//! REPL).
 //!
 //! Resolution itself is the agent's responsibility: the rendered prompt
-//! tells claude to call `bd update <id> --notes "…"`,
+//! tells the configured agent to call `bd update <id> --notes "…"`,
 //! `bd update <id> --remove-label=loom:clarify`, and `bd close <id>` per
 //! resolved bead. The driver only renders, shells out, and reports — it
 //! does NOT reconcile bd state after the session, per the verdict-gate
@@ -25,6 +25,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use askama::Template;
+use loom_driver::agent::AgentKind;
 use loom_driver::bd::{BdClient, Bead, ListOpts};
 use loom_driver::config::{LoomConfig, Phase};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
@@ -59,6 +60,10 @@ pub struct ChatOpts {
     /// Optional `--profile <name>` override. Wins over per-phase
     /// config and the built-in `base` default.
     pub cli_profile: Option<ProfileName>,
+    /// CLI `--agent` override. When absent, `[phase.msg].agent.backend` /
+    /// `[phase.default].agent.backend` select the interactive command passed
+    /// to `wrapix run`.
+    pub agent_override: Option<AgentKind>,
     /// Resolved profile-image manifest. The driver reads this via
     /// `LOOM_PROFILES_MANIFEST`.
     pub manifest: ProfileImageManifest,
@@ -108,7 +113,8 @@ pub enum ChatError {
 pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     let cfg = LoomConfig::load(LoomConfig::resolve_path(workspace))
         .map_err(|e| ChatError::Config(e.to_string()))?;
-    let profile = resolve_chat_profile(opts.cli_profile.as_ref(), &cfg)?;
+    let (profile, agent_kind) =
+        resolve_chat_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
     let image: &ImageEntry = opts.manifest.lookup(&profile)?;
 
     // Lock only when a spec filter is in scope — cross-spec sessions
@@ -163,7 +169,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     let banner = "loom msg --chat".to_string();
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, &banner)?;
 
-    let argv = build_wrapix_argv(workspace, &prompt_body);
+    let argv = build_wrapix_argv(workspace, &prompt_body, agent_kind);
     let bin: PathBuf = opts
         .wrapix_bin
         .or_else(|| std::env::var_os("LOOM_WRAPIX_BIN").map(PathBuf::from))
@@ -173,6 +179,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         wrapix_bin = %bin.display(),
         beads_surfaced,
         profile = %profile,
+        agent = ?agent_kind,
         image_ref = %image.r#ref,
         scratch_dir = %scratch.path().display(),
         "loom msg --chat: shelling out to interactive wrapix run",
@@ -223,14 +230,28 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
 /// exported by [`run`]; `wrapix run` has no `--profile` parser (any
 /// trailing tokens after the workspace are forwarded into the container
 /// as the command vector).
-pub fn build_wrapix_argv(workspace: &Path, prompt_body: &str) -> Vec<String> {
-    vec![
+pub fn build_wrapix_argv(
+    workspace: &Path,
+    prompt_body: &str,
+    agent_kind: AgentKind,
+) -> Vec<String> {
+    let mut argv = vec![
         "run".to_string(),
         workspace.to_string_lossy().into_owned(),
-        "claude".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-        prompt_body.to_string(),
-    ]
+        agent_command(agent_kind).to_string(),
+    ];
+    if matches!(agent_kind, AgentKind::Claude) {
+        argv.push("--dangerously-skip-permissions".to_string());
+    }
+    argv.push(prompt_body.to_string());
+    argv
+}
+
+fn agent_command(kind: AgentKind) -> &'static str {
+    match kind {
+        AgentKind::Claude => "claude",
+        AgentKind::Pi => "pi",
+    }
 }
 
 /// Aggregate companion paths from the state DB across every spec label
@@ -267,17 +288,21 @@ fn load_companion_paths(
 /// Resolve the profile `loom msg --chat` should pass to the launcher.
 /// Same precedence chain as `loom plan`: CLI override → per-phase
 /// config → built-in `base`.
-fn resolve_chat_profile(
+fn resolve_chat_selection(
     cli_profile: Option<&ProfileName>,
+    agent_override: Option<AgentKind>,
     config: &LoomConfig,
-) -> Result<ProfileName, ChatError> {
-    if let Some(p) = cli_profile {
-        return Ok(p.clone());
-    }
-    Ok(config
+) -> Result<(ProfileName, AgentKind), ChatError> {
+    let mut selection = config
         .agent_for(Phase::Msg)
-        .map_err(|e| ChatError::AgentSelection(e.to_string()))?
-        .profile)
+        .map_err(|e| ChatError::AgentSelection(e.to_string()))?;
+    if let Some(p) = cli_profile {
+        selection.profile = p.clone();
+    }
+    if let Some(kind) = agent_override {
+        selection.kind = kind;
+    }
+    Ok((selection.profile, selection.kind))
 }
 
 // Unused type alias — `BeadId` import kept so callers needing it via
@@ -292,7 +317,7 @@ mod tests {
 
     #[test]
     fn argv_starts_with_wrapix_run_and_workspace() {
-        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT");
+        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT", AgentKind::Claude);
         assert_eq!(argv[0], "run");
         assert_eq!(argv[1], "/work");
         assert_eq!(argv[2], "claude");
@@ -300,10 +325,18 @@ mod tests {
 
     #[test]
     fn argv_passes_prompt_to_claude_with_skip_permissions() {
-        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT BODY");
+        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT BODY", AgentKind::Claude);
         assert_eq!(argv[2], "claude");
         assert_eq!(argv[3], "--dangerously-skip-permissions");
         assert_eq!(argv[4], "PROMPT BODY");
+    }
+
+    #[test]
+    fn argv_passes_prompt_to_pi_without_claude_flags() {
+        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT BODY", AgentKind::Pi);
+        assert_eq!(argv[2], "pi");
+        assert_eq!(argv[3], "PROMPT BODY");
+        assert!(!argv.iter().any(|a| a == "--dangerously-skip-permissions"));
     }
 
     /// The dispatch must NEVER include `--profile`, `--stdio`, or
@@ -316,7 +349,7 @@ mod tests {
     /// no pi-mono protocol).
     #[test]
     fn argv_never_contains_profile_spawn_or_stdio_or_spawn_config() {
-        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT");
+        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT", AgentKind::Claude);
         assert!(
             !argv.iter().any(|a| a == "--profile"),
             "wrapix run has no --profile parser; profile flows via WRAPIX_DEFAULT_IMAGE_* env vars"

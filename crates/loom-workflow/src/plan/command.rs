@@ -1,15 +1,19 @@
 use std::path::Path;
 
+use loom_driver::agent::AgentKind;
+
 /// Default name of the wrapix launcher binary on PATH. Tests override via
 /// the `LOOM_WRAPIX_BIN` env var resolved by [`super::runner::run`].
 pub const WRAPIX_BIN: &str = "wrapix";
 
-/// Build the argv passed to `wrapix run` for an interactive `loom plan` session.
+/// Build the argv passed to `wrapix run` for an interactive `loom plan`
+/// session.
 ///
 /// Layout:
 ///
 /// ```text
 /// wrapix run <workspace> claude --dangerously-skip-permissions <prompt>
+/// wrapix run <workspace> pi <prompt>
 /// ```
 ///
 /// `wrapix run` (NOT `spawn`) keeps the TTY attached and inherits the
@@ -23,14 +27,28 @@ pub const WRAPIX_BIN: &str = "wrapix";
 /// entrypoint exec `--profile` and exit 127).
 /// Returns argv as a `Vec<String>` so callers (and tests) can inspect it
 /// without paying for a real spawn.
-pub fn build_wrapix_argv(workspace: &Path, prompt_body: &str) -> Vec<String> {
-    vec![
+pub fn build_wrapix_argv(
+    workspace: &Path,
+    prompt_body: &str,
+    agent_kind: AgentKind,
+) -> Vec<String> {
+    let mut argv = vec![
         "run".to_string(),
         workspace.to_string_lossy().into_owned(),
-        "claude".to_string(),
-        "--dangerously-skip-permissions".to_string(),
-        prompt_body.to_string(),
-    ]
+        agent_command(agent_kind).to_string(),
+    ];
+    if matches!(agent_kind, AgentKind::Claude) {
+        argv.push("--dangerously-skip-permissions".to_string());
+    }
+    argv.push(prompt_body.to_string());
+    argv
+}
+
+fn agent_command(kind: AgentKind) -> &'static str {
+    match kind {
+        AgentKind::Claude => "claude",
+        AgentKind::Pi => "pi",
+    }
 }
 
 #[cfg(test)]
@@ -40,7 +58,7 @@ mod tests {
 
     #[test]
     fn argv_starts_with_run_subcommand() {
-        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT");
+        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT", AgentKind::Claude);
         assert_eq!(argv[0], "run");
         assert_eq!(argv[1], "/work");
         assert_eq!(argv[2], "claude");
@@ -48,15 +66,23 @@ mod tests {
 
     #[test]
     fn argv_passes_prompt_to_claude_with_skip_permissions() {
-        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT BODY");
+        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT BODY", AgentKind::Claude);
         assert_eq!(argv[2], "claude");
         assert_eq!(argv[3], "--dangerously-skip-permissions");
         assert_eq!(argv[4], "PROMPT BODY");
     }
 
     #[test]
+    fn argv_passes_prompt_to_pi_without_claude_flags() {
+        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT BODY", AgentKind::Pi);
+        assert_eq!(argv[2], "pi");
+        assert_eq!(argv[3], "PROMPT BODY");
+        assert!(!argv.iter().any(|a| a == "--dangerously-skip-permissions"));
+    }
+
+    #[test]
     fn argv_never_contains_profile_spawn_or_stdio_or_spawn_config() {
-        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT");
+        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT", AgentKind::Claude);
         assert!(
             !argv.iter().any(|a| a == "--profile"),
             "wrapix run has no --profile parser; profile flows via WRAPIX_DEFAULT_IMAGE_* env vars"

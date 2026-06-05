@@ -86,11 +86,11 @@ production code change.
 
 `loom plan` and `loom msg --chat` bypass the agent-backend abstraction
 and shell out to an interactive REPL with inherited stdio. Both invoke
-`wrapix run <workspace> claude --dangerously-skip-permissions <prompt>`
-and let the spawned process attach directly to the controlling terminal;
-the driver-side stream-json parser does not run on this path. Today only
-claude is wired up here; pi would need an interactive frontend before it
-could be selected.
+`wrapix run <workspace> <agent command> ... <prompt>` and let the spawned
+process attach directly to the controlling terminal; the driver-side
+stream-json parser does not run on this path. The command is selected from
+the resolved phase backend: `claude --dangerously-skip-permissions` for
+Claude and `pi` for Pi.
 
 Per-phase config still resolves: each phase's `profile` key flows
 through `LoomConfig::agent_for(Phase)` exactly like the non-interactive
@@ -101,8 +101,8 @@ documented in [harness.md — Profile-Image
 Manifest](harness.md#profile-image-manifest). The env-var hand-off is
 the sole profile-selection contract on this path: `wrapix run` has no
 `--profile` parser, and any extra tokens between the workspace
-positional and `claude` would be forwarded into the container as the
-command vector (the entrypoint would exec them literally and exit 127).
+positional and the agent command would be forwarded into the container as
+the command vector (the entrypoint would exec them literally and exit 127).
 
 `wrapix run` reads those env vars (when no `--spawn-config` is supplied)
 to pick the same per-profile image the non-interactive `wrapix spawn`
@@ -1085,15 +1085,16 @@ connection, network filtering, session audit logging.
    config for the current invocation.
 7. **Interactive shell-out profile contract** — `loom plan` and `loom msg
    --chat` bypass the agent-backend abstraction (so stdio can attach as a
-   REPL) and invoke `wrapix run <workspace> claude
-   --dangerously-skip-permissions <prompt>` directly. The profile resolved
-   by `LoomConfig::agent_for(Phase)` is looked up in the profile-image
-   manifest and the matching `ImageEntry` is exported to `wrapix run` via
-   the `WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` env
-   vars. The env-var hand-off is the sole profile-selection contract on
-   this path; `wrapix run` has no `--profile` parser, and extra argv
-   tokens between the workspace positional and `claude` would be
-   forwarded into the container as the command vector (exit 127).
+   REPL) and invoke `wrapix run <workspace> <agent command> ... <prompt>`
+   directly. The profile and backend resolved by
+   `LoomConfig::agent_for(Phase)` select the image and command together:
+   Claude uses `claude --dangerously-skip-permissions`, while Pi uses `pi`.
+   The profile's matching `ImageEntry` is exported to `wrapix run` via the
+   `WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` env vars.
+   The env-var hand-off is the sole profile-selection contract on this path;
+   `wrapix run` has no `--profile` parser, and extra argv tokens between the
+   workspace positional and agent command would be forwarded into the
+   container as the command vector (exit 127).
 8. **Agent runtime layer** — the image builder composes two orthogonal axes:
    *workspace profile* (base, rust, python) and *agent runtime* (claude, pi,
    direct). Loom's default sandbox and profile manifest build the Pi variant

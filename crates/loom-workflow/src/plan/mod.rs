@@ -5,12 +5,9 @@
 //! `wrapix run` (TTY attached) rather than `wrapix spawn --stdio`. There
 //! is no subprocess capture, no JSONL parsing, and no event tee.
 //!
-//! `[phase.plan]` is permitted in `LoomConfig` for symmetry with the other
-//! phase keys, but `loom plan` always shells to `wrapix run` today — the
-//! claude binary is the only frontend wired up for an interactive TTY
-//! session. Selecting `pi` for `[phase.plan].agent.backend` is a no-op until
-//! pi grows an interactive frontend (the current `--mode rpc` entry point
-//! is non-TTY).
+//! `[phase.plan]` selects both the profile image and agent command used for
+//! the interactive shell-out. A Pi sandbox runs `pi`; a Claude sandbox runs
+//! `claude`.
 //!
 //! Flow per `specs/harness.md`:
 //!
@@ -18,9 +15,9 @@
 //! 2. acquire `<label>.lock` for the duration of the call;
 //! 3. render `plan_new.md` or `plan_update.md` via Askama into a typed
 //!    prompt body ([`prompt::render_prompt`]);
-//! 4. exec `wrapix run <workspace> claude --dangerously-skip-permissions
-//!    <prompt>` with stdio inherited so claude attaches to the user's
-//!    terminal ([`command::build_wrapix_argv`]);
+//! 4. exec `wrapix run <workspace> <agent command> ... <prompt>` with stdio
+//!    inherited so the configured agent attaches to the user's terminal
+//!    ([`command::build_wrapix_argv`]);
 //! 5. after the interactive session exits, parse the resulting spec markdown
 //!    for `## Companions` and replace the companion rows for `label` in the
 //!    state DB ([`companions::reconcile_companions`]);

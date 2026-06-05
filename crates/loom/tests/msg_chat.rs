@@ -1,16 +1,15 @@
 //! `loom msg --chat` integration tests.
 //!
-//! `loom msg --chat` mirrors `loom plan`'s shape: a single `wrapix run
-//! <workspace> claude --dangerously-skip-permissions <prompt>` shell-out
-//! with **inherited stdio** so claude attaches directly to the user's
-//! terminal as a real REPL. There is no pi-mono protocol involved here
+//! `loom msg --chat` mirrors `loom plan`'s shape: a single interactive
+//! `wrapix run <workspace> <agent command> ... <prompt>` shell-out with
+//! **inherited stdio** so the configured agent attaches directly to the
+//! user's terminal as a real REPL. There is no pi-mono protocol involved here
 //! — the tests use a shell stub that records argv and (per the test
 //! mode) forks `bd update` calls or exits non-zero.
 //!
 //! Five distinct slices, one per `test_msg_chat_*` dispatcher:
 //!
-//! - `launches_container`     — argv shape: `run <workspace> claude
-//!   --dangerously-skip-permissions <prompt>` plus the
+//! - `launches_container`     — argv shape plus the
 //!   `WRAPIX_DEFAULT_IMAGE_REF` / `_SOURCE` env vars the launcher reads.
 //! - `writes_notes`           — stub parses the prompt for `### <id>`
 //!   headers and forks `bd update <id> --notes "…" --remove-label
@@ -95,14 +94,17 @@ printf 'WRAPIX_DEFAULT_IMAGE_SOURCE=%s\n' "${{WRAPIX_DEFAULT_IMAGE_SOURCE:-}}" >
 # Argv layout (per loom-workflow/src/msg/chat.rs::build_wrapix_argv):
 #   $1 = "run"
 #   $2 = <workspace>
-#   $3 = "claude"
-#   $4 = "--dangerously-skip-permissions"
-#   $5 = <prompt body>
+#   Claude: $3 = "claude", $4 = "--dangerously-skip-permissions", $5 = <prompt body>
+#   Pi:     $3 = "pi",     $4 = <prompt body>
 # Profile selection rides the WRAPIX_DEFAULT_IMAGE_* env vars, NOT argv —
 # `wrapix run` has no --profile parser; any extra tokens between the
-# workspace and `claude` would be forwarded into the container as a
+# workspace and agent command would be forwarded into the container as a
 # command and exit 127.
-prompt="${{5:-}}"
+if [ "${{3:-}}" = "pi" ]; then
+    prompt="${{4:-}}"
+else
+    prompt="${{5:-}}"
+fi
 
 if [ -n "${{WRAPIX_STUB_PROMPT_DUMP:-}}" ]; then
     printf '%s' "$prompt" > "$WRAPIX_STUB_PROMPT_DUMP"
@@ -276,9 +278,9 @@ fn loom_msg_chat_launches_container() {
     );
 
     // wrapix-stub's argv.log holds every argument the dispatch passed.
-    // The contract is the same as `loom plan`: `wrapix run <workspace>
-    // claude --dangerously-skip-permissions <prompt>` — no `--stdio`,
-    // no `--spawn-config` (those are the non-interactive surfaces).
+    // The contract is the same as `loom plan`: interactive `wrapix run`
+    // with no `--stdio` and no `--spawn-config` (those are the
+    // non-interactive surfaces).
     let argv = std::fs::read_to_string(&env.argv_log).expect("argv.log present");
     let lines: Vec<&str> = argv.lines().collect();
     assert!(
@@ -316,6 +318,43 @@ fn loom_msg_chat_launches_container() {
     assert!(
         stdout.contains("loom msg --chat"),
         "expected a session-summary line on stdout: {stdout:?}",
+    );
+}
+
+#[test]
+fn loom_msg_chat_phase_agent_pi_selects_pi_command() {
+    let env = setup_chat();
+    std::fs::write(
+        env.workspace.join("loom.toml"),
+        "[phase.default]\nagent.backend = \"pi\"\n",
+    )
+    .expect("write loom.toml");
+    seed_bead(
+        &env.state_dir,
+        "lm-pi01",
+        "pi command pin",
+        "## Options — pick one\n\n### Option 1 — A\nbody\n",
+        &["loom:clarify", "spec:scope-a"],
+    );
+
+    let output = run_loom_msg_chat(&env, "resolve-none", &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "loom msg --chat must exit 0 on a clean pi session.\nstdout={stdout}\nstderr={stderr}",
+    );
+
+    let argv = std::fs::read_to_string(&env.argv_log).expect("argv.log present");
+    let lines: Vec<&str> = argv.lines().collect();
+    assert!(lines.contains(&"pi"), "expected pi argv: {argv}");
+    assert!(
+        !lines.contains(&"claude"),
+        "pi-backed msg chat must not call claude: {argv}",
+    );
+    assert!(
+        !lines.contains(&"--dangerously-skip-permissions"),
+        "pi-backed msg chat must not receive claude-only flags: {argv}",
     );
 }
 
