@@ -67,7 +67,7 @@ pub fn build_review_context(inputs: ReviewContextInputs) -> ReviewContext {
 ///
 /// Cargo-bound specs (whose `[check]` / `[test]` verifiers run cargo) need
 /// `profile:rust` so the bead's dispatch container has the Rust toolchain
-/// and the `/home/wrapix/.cargo` writable-dirs setup. The Nix-only specs
+/// and the `/home/wrix/.cargo` writable-dirs setup. The Nix-only specs
 /// (currently `pre-commit`) stay on `profile:base` so they aren't forced
 /// to pull the rust image. Unknown specs fall through to `base` — a
 /// container without cargo will fail loudly on a cargo-bound verifier

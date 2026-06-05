@@ -831,11 +831,11 @@ async fn bead_worktree_post_reset_porcelain_is_empty() -> Result<()> {
 /// Spec gate (`specs/harness.md` § Bead dispatch — Per-bead-close
 /// lifecycle): `reset_bead_clone` MUST drop uncommitted mid-session
 /// leftovers while preserving the bead branch's `HEAD` *and* the warm
-/// caches under `target/`, `.git/`, and `.wrapix/`. Without those
+/// caches under `target/`, `.git/`, and `.wrix/`. Without those
 /// excludes, every recovery iteration would burn cargo + sccache state
 /// and tear out bind-mount staging.
 #[tokio::test]
-async fn bead_workspace_reset_preserves_target_and_dotwrapix() -> Result<()> {
+async fn bead_workspace_reset_preserves_target_and_dotwrix() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
 
@@ -851,7 +851,7 @@ async fn bead_workspace_reset_preserves_target_and_dotwrapix() -> Result<()> {
     //   recovery-leftover case),
     // * an untracked top-level file (must be dropped — `git clean -fdx`),
     // * warm scratch dirs at `target/`, `.git/objects/loom-test`, and
-    //   `.wrapix/dolt.sock-marker` (each must survive the clean — those
+    //   `.wrix/dolt.sock-marker` (each must survive the clean — those
     //   are cargo/sccache state, refs, and bind-mount staging).
     agent_commit(&created.path, "committed.txt", "agent commit\n", "agent")?;
     std::fs::write(created.path.join("README.md"), "mid-session edit\n")?;
@@ -861,9 +861,9 @@ async fn bead_workspace_reset_preserves_target_and_dotwrapix() -> Result<()> {
         created.path.join("target/debug/sentinel"),
         b"cargo artifact\n",
     )?;
-    std::fs::create_dir_all(created.path.join(".wrapix"))?;
+    std::fs::create_dir_all(created.path.join(".wrix"))?;
     std::fs::write(
-        created.path.join(".wrapix/dolt.sock-marker"),
+        created.path.join(".wrix/dolt.sock-marker"),
         b"bind-mount staging\n",
     )?;
     let head_before = String::from_utf8(
@@ -922,8 +922,8 @@ async fn bead_workspace_reset_preserves_target_and_dotwrapix() -> Result<()> {
         ".git/ must survive (refs + bead branch)",
     );
     assert!(
-        created.path.join(".wrapix/dolt.sock-marker").exists(),
-        ".wrapix/ must survive so extra-mount staging persists across attempts",
+        created.path.join(".wrix/dolt.sock-marker").exists(),
+        ".wrix/ must survive so extra-mount staging persists across attempts",
     );
 
     // Idempotence: a second reset against the now-clean tree is a no-op —
@@ -931,14 +931,14 @@ async fn bead_workspace_reset_preserves_target_and_dotwrapix() -> Result<()> {
     client.reset_bead_clone(&created.path).await?;
     assert!(created.path.join("committed.txt").exists());
     assert!(created.path.join("target/debug/sentinel").exists());
-    assert!(created.path.join(".wrapix/dolt.sock-marker").exists());
+    assert!(created.path.join(".wrix/dolt.sock-marker").exists());
 
     client.remove_worktree(&created.path).await?;
     Ok(())
 }
 
 /// `create_worktree` MUST NOT write `commit.gpgsign=false` into the bead
-/// clone's local config. The wrapix profile provisions a signing key and
+/// clone's local config. The wrix profile provisions a signing key and
 /// sets `commit.gpgsign=true` globally; a local `false` override silently
 /// produces unsigned agent commits that then land on driver `main`.
 #[tokio::test]
@@ -1098,7 +1098,7 @@ async fn signature_verification_runs_when_key_present() -> Result<()> {
 
     // Materialize the loom-workspace allowed_signers file (and the ssh
     // verify config `verify-commit` reads) for the resolved key — the state
-    // `loom init` / `create_worktree` produce when a wrapix key resolves.
+    // `loom init` / `create_worktree` produce when a wrix key resolves.
     write_signing_config(&loom, &key)?;
     let signers_file = loom.join(".git").join("loom-allowed-signers");
     assert!(
@@ -1116,8 +1116,8 @@ async fn signature_verification_runs_when_key_present() -> Result<()> {
 
     // Sign the bead commit with the same key the loom-workspace
     // allowed_signers file trusts. The bead clone carries no signing block
-    // (it would shadow wrapix's container global config), so the signing key
-    // and format are passed explicitly here — standing in for the wrapix
+    // (it would shadow wrix's container global config), so the signing key
+    // and format are passed explicitly here — standing in for the wrix
     // `git-ssh-setup.sh` global config that signs the worker's commits
     // in-container.
     let client = GitClient::open(repo.path())?;
@@ -1166,12 +1166,12 @@ async fn signature_verification_runs_when_key_present() -> Result<()> {
 /// Spec contract `[test?]` annotation (`specs/harness.md` § Success Criteria
 /// · Commit signing): the driver-side rebase in the loom workspace produces
 /// signed commits — the rewritten commit carries a `gpgsig` header even
-/// though the worker's original commit was unsigned. The wrapix signing key
+/// though the worker's original commit was unsigned. The wrix signing key
 /// is passphrase-less, so the rebase completes non-interactively (a prompt
 /// would hang the test rather than fail it).
-/// Criterion: `driver_rebase_signs_with_wrapix_key`.
+/// Criterion: `driver_rebase_signs_with_wrix_key`.
 #[tokio::test]
-async fn driver_rebase_signs_with_wrapix_key() -> Result<()> {
+async fn driver_rebase_signs_with_wrix_key() -> Result<()> {
     let repo = init_repo()?;
     let loom = loom_path(repo.path());
     let key = gen_signing_key(repo.path())?;
@@ -1192,7 +1192,7 @@ async fn driver_rebase_signs_with_wrapix_key() -> Result<()> {
     git(&loom, &["add", "main.txt"])?;
     git(&loom, &["commit", "-q", "-m", "main commit"])?;
 
-    // The signing block `loom init` writes when a wrapix key resolves
+    // The signing block `loom init` writes when a wrix key resolves
     // (commit.gpgsign=true + user.signingkey) is what makes the rebase sign.
     write_signing_config(&loom, &key)?;
 
@@ -1714,12 +1714,12 @@ fn local_config(repo: &Path, key: &str) -> Result<Option<String>> {
 /// Criteria · Commit signing): `GitClient::create_worktree` writes **no**
 /// signing block into the bead clone's local `.git/config`, even when a
 /// signing key resolves. A local block would carry the HOST key path, which
-/// does not exist inside the wrapix bead container; because local config
-/// beats global, it would shadow wrapix's `git-ssh-setup.sh` global config
+/// does not exist inside the wrix bead container; because local config
+/// beats global, it would shadow wrix's `git-ssh-setup.sh` global config
 /// (which points `user.signingkey` at the in-container key copy) and break
 /// the worker's in-container `git commit`. Driven through the test-only
 /// override seam — which forces the key to resolve — because
-/// `$WRAPIX_SIGNING_KEY` cannot be set under edition 2024's unsafe
+/// `$WRIX_SIGNING_KEY` cannot be set under edition 2024's unsafe
 /// `env::set_var` with `unsafe_code` forbidden.
 #[tokio::test]
 async fn create_worktree_omits_signing_block_in_bead_clone() -> Result<()> {
@@ -1733,7 +1733,7 @@ async fn create_worktree_omits_signing_block_in_bead_clone() -> Result<()> {
     let created = client.create_worktree(&label, &bead).await?;
 
     // No signing keys are written into the clone's local config, so the
-    // wrapix container global config remains the sole in-container authority.
+    // wrix container global config remains the sole in-container authority.
     for k in [
         "gpg.format",
         "user.signingkey",
@@ -1743,7 +1743,7 @@ async fn create_worktree_omits_signing_block_in_bead_clone() -> Result<()> {
         assert_eq!(
             local_config(&created.path, k)?,
             None,
-            "bead clone must carry no local `{k}` — it would shadow wrapix's \
+            "bead clone must carry no local `{k}` — it would shadow wrix's \
              container global signing config and break the worker's commit",
         );
     }
@@ -1763,7 +1763,7 @@ async fn create_worktree_omits_signing_block_in_bead_clone() -> Result<()> {
 /// `origin` is a local path, so the GitHub deploy-key fallback is skipped).
 #[tokio::test]
 async fn create_worktree_omits_signing_block_when_no_key() -> Result<()> {
-    if std::env::var_os("WRAPIX_SIGNING_KEY").is_some() {
+    if std::env::var_os("WRIX_SIGNING_KEY").is_some() {
         // The ambient env carries a real signing key; the no-key path
         // cannot be exercised here.
         return Ok(());
@@ -1781,16 +1781,16 @@ async fn create_worktree_omits_signing_block_when_no_key() -> Result<()> {
 }
 
 /// `GitClient::launcher_key_env` surfaces the resolved signing key as a
-/// `WRAPIX_SIGNING_KEY` → HOST-path pair so loom can hand it to the `wrapix
+/// `WRIX_SIGNING_KEY` → HOST-path pair so loom can hand it to the `wrix
 /// spawn` launcher (loop agents otherwise boot with no git keys).
 /// Unlike the bead-clone gitconfig (which maps to in-container paths), the
-/// launcher env carries the host path verbatim — wrapix performs the
+/// launcher env carries the host path verbatim — wrix performs the
 /// host→container mapping itself. Driven through the signing-key override
 /// seam; the deploy key is absent because the test repo's origin is a local
 /// path (not GitHub), so the deploy-key fallback is skipped.
 #[tokio::test]
 async fn launcher_key_env_exposes_signing_key_host_path() -> Result<()> {
-    if std::env::var_os("WRAPIX_DEPLOY_KEY").is_some() {
+    if std::env::var_os("WRIX_DEPLOY_KEY").is_some() {
         // Ambient env would inject a deploy-key entry; skip to keep the
         // assertion on the absent-deploy-key path deterministic.
         return Ok(());
@@ -1804,15 +1804,15 @@ async fn launcher_key_env_exposes_signing_key_host_path() -> Result<()> {
 
     let signing = env
         .iter()
-        .find(|(k, _)| k == "WRAPIX_SIGNING_KEY")
-        .expect("WRAPIX_SIGNING_KEY must be present");
+        .find(|(k, _)| k == "WRIX_SIGNING_KEY")
+        .expect("WRIX_SIGNING_KEY must be present");
     assert_eq!(
         signing.1,
         key.to_string_lossy(),
         "launcher env must carry the HOST signing-key path verbatim",
     );
     assert!(
-        !env.iter().any(|(k, _)| k == "WRAPIX_DEPLOY_KEY"),
+        !env.iter().any(|(k, _)| k == "WRIX_DEPLOY_KEY"),
         "no deploy key resolves for a non-GitHub origin: {env:?}",
     );
     Ok(())

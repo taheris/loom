@@ -1,7 +1,7 @@
 //! End-to-end live-path tests for the four-condition push gate.
 //!
 //! Drives `loom gate review` against a Rust mock agent (mock-loom-agent
-//! under `LOOM_WRAPIX_BIN`) and a stub `bd` (bd-shim) so the test
+//! under `LOOM_WRIX_BIN`) and a stub `bd` (bd-shim) so the test
 //! exercises `ProductionReviewController::review_loop` — the production
 //! wiring — rather than `decide_verdict` in isolation. The May-19 lesson
 //! pinned by `specs/harness.md` § FR9 is that unit tests on
@@ -69,7 +69,7 @@ fn init_workspace_repo(workspace: &Path) -> String {
     // workspace; otherwise `git diff` would surface them on every run.
     std::fs::write(
         workspace.join(".gitignore"),
-        "bd-state/\nbd-bin/\nbin/\n.loom-test-state/\n.loom/\n.wrapix/\n*.tar\nprofile-images.json\n",
+        "bd-state/\nbd-bin/\nbin/\n.loom-test-state/\n.loom/\n.wrix/\n*.tar\nprofile-images.json\n",
     )
     .expect("write .gitignore");
     let status = Command::new("git")
@@ -230,7 +230,7 @@ fn write_minimal_manifest(workspace: &Path) -> PathBuf {
     std::fs::write(&source, "").expect("write base.tar");
     let manifest = workspace.join("profile-images.json");
     let body = format!(
-        r#"{{"base": {{"ref":"localhost/wrapix-base:test","source":{source:?}}}}}"#,
+        r#"{{"base": {{"ref":"localhost/wrix-base:test","source":{source:?}}}}}"#,
         source = source.display().to_string(),
     );
     std::fs::write(&manifest, body).expect("write manifest");
@@ -293,7 +293,7 @@ fn run_loom_gate_review(
         cmd.arg("--verify-exit").arg(code.to_string());
     }
     cmd.env("PATH", new_path)
-        .env("LOOM_WRAPIX_BIN", mock_agent)
+        .env("LOOM_WRIX_BIN", mock_agent)
         .env("LOOM_TEST_AGENT_MODE", agent_mode)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", manifest)

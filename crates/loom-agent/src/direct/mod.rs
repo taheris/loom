@@ -6,7 +6,7 @@
 //!
 //! - [`backend`] — the [`DirectBackend`] zero-sized type plus its
 //!   [`AgentBackend`](loom_driver::agent::AgentBackend) impl. Spawns a
-//!   container via `wrapix spawn` whose entrypoint exec's
+//!   container via `wrix spawn` whose entrypoint exec's
 //!   `loom-direct-runner` over JSONL on stdin/stdout.
 //! - [`tools`] — net-new sandbox-aware tool implementations the runner
 //!   registers with the in-process `Conversation`. See `specs/agent.md`

@@ -1,7 +1,7 @@
 //! Pi-mono RPC backend: spawn + startup probe + optional `set_model`.
 //!
 //! [`PiBackend::spawn`] serializes the [`SpawnConfig`] to a JSON file,
-//! execs `wrapix spawn --spawn-config <file> --stdio` (the wrapper that
+//! execs `wrix spawn --spawn-config <file> --stdio` (the wrapper that
 //! owns container construction), and drives the pi RPC handshake before
 //! handing back an [`AgentSession`] in the [`Idle`] state:
 //!
@@ -40,8 +40,8 @@ use super::parser::PiParser;
 use crate::apply_launcher_env;
 
 /// Env var that overrides the launcher binary. Production resolves
-/// `wrapix` from `PATH`; tests substitute the mock pi script via this.
-const ENV_WRAPIX_BIN: &str = "LOOM_WRAPIX_BIN";
+/// `wrix` from `PATH`; tests substitute the mock pi script via this.
+const ENV_WRIX_BIN: &str = "LOOM_WRIX_BIN";
 
 /// Probe id used for the startup `get_state` request. The id appears in
 /// pi's response so the backend can correlate request/response without
@@ -64,15 +64,15 @@ const REQUIRED_STATE_FIELDS: &[&str] = &[
     "pendingMessageCount",
 ];
 
-/// Verbose wrapix stderr line emitted after image load/staging and immediately
+/// Verbose wrix stderr line emitted after image load/staging and immediately
 /// before `podman run`. Waiting for this boundary keeps image materialization
 /// out of Pi's RPC probe timeout.
-const WRAPIX_CONTAINER_START_MARKER: &str = "Starting container";
+const WRIX_CONTAINER_START_MARKER: &str = "Starting container";
 
-/// Upper bound for wrapix image materialization + launcher setup. Separate
+/// Upper bound for wrix image materialization + launcher setup. Separate
 /// from the Pi probe budget: a cold image load may be slow, but it is not an
 /// unresponsive Pi RPC process.
-const WRAPIX_CONTAINER_START_TIMEOUT_SECS: u64 = 600;
+const WRIX_CONTAINER_START_TIMEOUT_SECS: u64 = 600;
 
 /// Counter that distinguishes simultaneous spawn-config files inside the
 /// same loom process. The pid component handles cross-process uniqueness.
@@ -92,29 +92,28 @@ impl AgentBackend for PiBackend {
     async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
         let spawn_config_path = write_spawn_config(config)?;
 
-        let wrapix_bin =
-            std::env::var_os(ENV_WRAPIX_BIN).unwrap_or_else(|| OsString::from("wrapix"));
+        let wrix_bin = std::env::var_os(ENV_WRIX_BIN).unwrap_or_else(|| OsString::from("wrix"));
         let handshake_budget = config
             .handshake_timeout
             .unwrap_or_else(|| Duration::from_secs(DEFAULT_HANDSHAKE_TIMEOUT_SECS));
         info!(
-            wrapix = %wrapix_bin.to_string_lossy(),
+            wrix = %wrix_bin.to_string_lossy(),
             spawn_config = %spawn_config_path.display(),
             handshake_timeout_secs = handshake_budget.as_secs(),
             "pi backend spawn",
         );
 
-        let mut cmd = Command::new(&wrapix_bin);
+        let mut cmd = Command::new(&wrix_bin);
         cmd.arg("spawn")
             .arg("--spawn-config")
             .arg(&spawn_config_path)
             .arg("--stdio");
         apply_launcher_env(&mut cmd, &config.launcher_env);
         // Needed for the stderr readiness boundary below. The marker is
-        // emitted by wrapix after image load/staging and before `podman run`.
-        cmd.env("WRAPIX_VERBOSE", "1");
+        // emitted by wrix after image load/staging and before `podman run`.
+        cmd.env("WRIX_VERBOSE", "1");
 
-        spawn_with_handshake_after_wrapix_start(
+        spawn_with_handshake_after_wrix_start(
             cmd,
             config.model.as_ref(),
             config.thinking_level,
@@ -189,8 +188,8 @@ struct SetModelCommand<'a> {
 /// optional `set_model`), and return a session in the [`Idle`] state.
 ///
 /// Public so integration tests under `loom-agent/tests/` can substitute a
-/// mock pi binary in place of the real `wrapix spawn` exec without going
-/// through the `LOOM_WRAPIX_BIN` env-var override (Rust 2024 makes
+/// mock pi binary in place of the real `wrix spawn` exec without going
+/// through the `LOOM_WRIX_BIN` env-var override (Rust 2024 makes
 /// `env::set_var` unsafe, and the workspace forbids `unsafe_code`).
 /// Production callers go through [`PiBackend::spawn`].
 pub async fn spawn_with_handshake(
@@ -203,7 +202,7 @@ pub async fn spawn_with_handshake(
     spawn_with_handshake_inner(cmd, model, thinking_level, handshake_timeout, clock, false).await
 }
 
-async fn spawn_with_handshake_after_wrapix_start(
+async fn spawn_with_handshake_after_wrix_start(
     cmd: Command,
     model: Option<&ModelSelection>,
     thinking_level: Option<ThinkingLevel>,
@@ -219,11 +218,11 @@ async fn spawn_with_handshake_inner(
     thinking_level: Option<ThinkingLevel>,
     handshake_timeout: Duration,
     clock: &dyn Clock,
-    wait_for_wrapix_start: bool,
+    wait_for_wrix_start: bool,
 ) -> Result<AgentSession<Idle>, ProtocolError> {
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
-    if wait_for_wrapix_start {
+    if wait_for_wrix_start {
         cmd.stderr(Stdio::piped());
     } else {
         cmd.stderr(Stdio::inherit());
@@ -240,12 +239,12 @@ async fn spawn_with_handshake_inner(
         .take()
         .ok_or_else(|| ProtocolError::Io(io::Error::other("pi child stdout not piped")))?;
 
-    if wait_for_wrapix_start {
+    if wait_for_wrix_start {
         let stderr = child
             .stderr
             .take()
             .ok_or_else(|| ProtocolError::Io(io::Error::other("pi child stderr not piped")))?;
-        wait_for_wrapix_container_start(stderr, clock).await?;
+        wait_for_wrix_container_start(stderr, clock).await?;
     }
 
     let mut writer = BufWriter::new(stdin);
@@ -265,16 +264,16 @@ async fn spawn_with_handshake_inner(
     Ok(AgentSession::new(child, writer, reader, Box::new(parser)))
 }
 
-/// Wait for wrapix to finish image materialization/staging and start the
+/// Wait for wrix to finish image materialization/staging and start the
 /// container, then continue relaying stderr in the background. This keeps cold
 /// `podman`/`skopeo` image work out of Pi's RPC probe timeout while preserving
 /// the operator-visible startup log.
-async fn wait_for_wrapix_container_start(
+async fn wait_for_wrix_container_start(
     stderr: ChildStderr,
     clock: &dyn Clock,
 ) -> Result<(), ProtocolError> {
-    let wait = await_wrapix_container_start_marker(stderr);
-    let budget = Duration::from_secs(WRAPIX_CONTAINER_START_TIMEOUT_SECS);
+    let wait = await_wrix_container_start_marker(stderr);
+    let budget = Duration::from_secs(WRIX_CONTAINER_START_TIMEOUT_SECS);
     let sleep = clock.sleep(budget);
     tokio::select! {
         result = wait => result,
@@ -282,7 +281,7 @@ async fn wait_for_wrapix_container_start(
             warn!(
                 stage = "container_start",
                 budget_secs = budget.as_secs(),
-                "wrapix container startup timed out before Pi RPC probe",
+                "wrix container startup timed out before Pi RPC probe",
             );
             Err(ProtocolError::HandshakeTimeout {
                 stage: "container_start",
@@ -292,7 +291,7 @@ async fn wait_for_wrapix_container_start(
     }
 }
 
-async fn await_wrapix_container_start_marker(stderr: ChildStderr) -> Result<(), ProtocolError> {
+async fn await_wrix_container_start_marker(stderr: ChildStderr) -> Result<(), ProtocolError> {
     let mut reader = BufReader::new(stderr);
     let mut line = String::new();
     loop {
@@ -302,8 +301,8 @@ async fn await_wrapix_container_start_marker(stderr: ChildStderr) -> Result<(), 
             return Err(ProtocolError::UnexpectedEof);
         }
         relay_stderr_line(&line).await?;
-        if line.contains(WRAPIX_CONTAINER_START_MARKER) {
-            debug!("wrapix container start marker observed; starting Pi RPC probe");
+        if line.contains(WRIX_CONTAINER_START_MARKER) {
+            debug!("wrix container start marker observed; starting Pi RPC probe");
             tokio::spawn(relay_remaining_stderr(reader));
             return Ok(());
         }
@@ -318,12 +317,12 @@ async fn relay_remaining_stderr(mut reader: BufReader<ChildStderr>) {
             Ok(0) => break,
             Ok(_) => {
                 if let Err(err) = relay_stderr_line(&line).await {
-                    warn!(error = ?err, "failed to relay wrapix stderr");
+                    warn!(error = ?err, "failed to relay wrix stderr");
                     break;
                 }
             }
             Err(err) => {
-                warn!(error = ?err, "failed to read wrapix stderr");
+                warn!(error = ?err, "failed to read wrix stderr");
                 break;
             }
         }
@@ -572,7 +571,7 @@ fn validate_state_probe(resp: &PiResponse) -> Result<(), ProtocolError> {
 }
 
 /// Serialize `config` as JSON and write it to a uniquely-named tempfile
-/// under the system temp dir. The path is handed to `wrapix spawn
+/// under the system temp dir. The path is handed to `wrix spawn
 /// --spawn-config`; the wrapper reads it back and ignores any unknown
 /// fields (`model` is consumed by the host-side backend, not the wrapper).
 fn write_spawn_config(config: &SpawnConfig) -> Result<PathBuf, ProtocolError> {
@@ -632,11 +631,11 @@ mod tests {
 
     fn sample_config(model: Option<ModelSelection>) -> SpawnConfig {
         SpawnConfig {
-            image_ref: "localhost/wrapix-test:pi".to_string(),
-            image_source: PathBuf::from("/nix/store/zzz-wrapix-test-pi.tar"),
+            image_ref: "localhost/wrix-test:pi".to_string(),
+            image_source: PathBuf::from("/nix/store/zzz-wrix-test-pi.tar"),
             image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
-            env: vec![("WRAPIX_AGENT".into(), "pi".into())],
+            env: vec![("WRIX_AGENT".into(), "pi".into())],
             mounts: vec![],
             initial_prompt: "hello pi".to_string(),
             agent_args: vec![],

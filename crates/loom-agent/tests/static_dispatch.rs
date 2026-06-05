@@ -118,10 +118,10 @@ fn mock_pi_path() -> PathBuf {
 }
 
 /// Build a `Command` that exec's `bash mock-pi.sh <mode>`. Used as a
-/// drop-in for the production launcher (`wrapix spawn --spawn-config
+/// drop-in for the production launcher (`wrix spawn --spawn-config
 /// <file> --stdio`); the argv contract for that path is exercised by
 /// `loom/tests/spawn_dispatch.rs`. Here the test cares only about the
-/// handshake round-trip, so we bypass the wrapix shim.
+/// handshake round-trip, so we bypass the wrix shim.
 fn mock_command(mode: &str) -> Command {
     let mut cmd = Command::new("bash");
     cmd.arg(mock_pi_path()).arg(mode);

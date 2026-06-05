@@ -56,7 +56,7 @@ fn git_capture(repo: &Path, args: &[&str]) -> Result<String> {
 
 fn write_manifest(dir: &Path) -> Arc<ProfileImageManifest> {
     let body = r#"{
-      "base": { "ref": "localhost/wrapix-base:abc", "source": "/nix/store/aaa-image-base" }
+      "base": { "ref": "localhost/wrix-base:abc", "source": "/nix/store/aaa-image-base" }
     }"#;
     let path = dir.join("profile-images.json");
     std::fs::write(&path, body).expect("write manifest");
@@ -99,7 +99,7 @@ fn setup() -> (
 /// bead ids, no spec partition per `harness.md` § Bead dispatch). The
 /// workspace is a `git clone --local` of the loom workspace — its `.git/`
 /// is a regular directory inside the bind-mounted path, so workers in
-/// the wrapix container can commit. The worker never pushes; on clean
+/// the wrix container can commit. The worker never pushes; on clean
 /// agent success the driver fetches the bead branch from the workspace
 /// into the loom workspace, merges it into the integration branch, and
 /// removes the workspace + branch.
@@ -315,15 +315,15 @@ async fn run_bead_resets_dirty_bead_workspace_before_dispatch() -> Result<()> {
     let created = git_client.create_worktree(&label, &bead.id).await?;
     assert_eq!(created.path, expected_worktree);
 
-    // Mirror the production `.gitignore` shape so `.loom/` and `.wrapix/`
+    // Mirror the production `.gitignore` shape so `.loom/` and `.wrix/`
     // don't leak into porcelain — production workspaces have them ignored
     // at the repo root and so must the test workspace, otherwise the
     // controller's scratch staging confounds the post-reset assertion.
-    std::fs::write(expected_worktree.join(".gitignore"), ".loom/\n.wrapix/\n")?;
+    std::fs::write(expected_worktree.join(".gitignore"), ".loom/\n.wrix/\n")?;
     git(&expected_worktree, &["add", ".gitignore"])?;
     git(
         &expected_worktree,
-        &["commit", "-q", "-m", "ignore .loom/ and .wrapix/"],
+        &["commit", "-q", "-m", "ignore .loom/ and .wrix/"],
     )?;
 
     // Plant the two shapes the verdict gate must catch: a tracked-file

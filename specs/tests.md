@@ -97,7 +97,7 @@ loom/
       tests/
         run_smoke.rs          # Integration: CLI subcommand surface
         agent_flag.rs         # Integration: --agent flag parsing/validation
-        spawn_dispatch.rs     # Integration: shim-based wrapix spawn argv
+        spawn_dispatch.rs     # Integration: shim-based wrix spawn argv
                               #   contract + stdin-pipe-not-tty assertion
                               # properties.rs is reserved here for cross-crate
                               #   invariants; per-crate properties live in
@@ -589,11 +589,11 @@ in Functional #4.
 - Startup probe malformed-state guard: mock pi with malformed `get_state`
       data → loom fails fast with a version-mismatch error
   [test](pi_startup_probe_fails_with_bad_get_state_shape)
-- `wrapix spawn` argv contract: loom invokes
-      `wrapix spawn --spawn-config <file> --stdio` with stdin
+- `wrix spawn` argv contract: loom invokes
+      `wrix spawn --spawn-config <file> --stdio` with stdin
       attached as a pipe (not a TTY); recorded `SpawnConfig` JSON
       matches the on-disk shape
-  [test](wrapix_spawn_invocation_records_correct_argv)
+  [test](wrix_spawn_invocation_records_correct_argv)
 - Parallel run end-to-end: `loom loop --parallel 2` with two ready
       beads dispatches two mock-agent spawns concurrently, each in its
       own worktree, then merges both branches back to driver
@@ -620,7 +620,7 @@ in Functional #4.
 ### Container smoke
 
 - `nix run .#test` spawns a real podman container, runs
-      `loom loop --once` against a bead with `WRAPIX_AGENT=pi`
+      `loom loop --once` against a bead with `WRIX_AGENT=pi`
       `MOCK_PI_SCENARIO=happy-path`, exits 0 with the bead closed
   [system](nix run .#test)
 
@@ -749,10 +749,10 @@ the rules:
      `crates/<crate>/tests/*.rs`. Annotated `[test]`; run via
      `loom gate test`.
    - **Container smoke** — one happy-path scenario that spawns a real
-     podman container via `wrapix spawn`, runs a mock agent *inside*
+     podman container via `wrix spawn`, runs a mock agent *inside*
      the container, drives `loom loop --once` against it, and asserts
      the bead closes. Validates host↔container plumbing
-     (entrypoint.sh, bind mounts, `WRAPIX_AGENT` branching, container
+     (entrypoint.sh, bind mounts, `WRIX_AGENT` branching, container
      teardown) — *not* protocol depth, which the integration level
      already covers. Annotated `[system](nix run .#test)`; run
      via `loom gate system`. Linux-only (no podman in Darwin CI).
@@ -803,7 +803,7 @@ the rules:
    - Config file loading (TOML parsing into `LoomConfig`), defaults when
      file is absent or fields are missing
    - `SpawnConfig` JSON serialization round-trips with stable field ordering
-     and key names (the contract with `wrapix spawn --spawn-config`).
+     and key names (the contract with `wrix spawn --spawn-config`).
      Adding a field is non-breaking; renaming or removing one is — the test
      pins the on-disk shape so changes surface as test failures, not silent
      wire-format drift. Includes the optional
@@ -886,7 +886,7 @@ the rules:
      state via the bind-mounted Dolt socket)
    - Parallel batch dispatch: given 3 ready beads and `--parallel 3`,
      the dispatcher creates 3 bead clones under `.loom/beads/`,
-     spawns 3 `wrapix spawn` futures concurrently, and reports all
+     spawns 3 `wrix spawn` futures concurrently, and reports all
      results before integration
    - Parallel batch with N=1 (the default): one bead clone is created
      per bead, same shape as N>1 (no special-case sequential path)
@@ -973,7 +973,7 @@ the rules:
 
    #### GitClient (loom-driver)
    - `GitClient::create_worktree(label, bead_id)` creates a worktree under
-     `.wrapix/worktree/<label>/<bead-id>/` on a fresh branch
+     `.wrix/worktree/<label>/<bead-id>/` on a fresh branch
      `loom/<label>/<bead-id>` from HEAD
    - `GitClient::list_worktrees` returns worktrees registered with the
      repo (parity with `git worktree list --porcelain`)
@@ -1042,8 +1042,8 @@ the rules:
    - **Startup probe round-trip** — mock pi replies to `get_state` with
      a valid state object; loom proceeds. Mock pi replies with malformed
      state data; loom fails fast with a version-mismatch error.
-   - **`wrapix spawn` argv contract** — loom writes a `SpawnConfig`
-     JSON, invokes a `wrapix-spawn` shim that records the argv +
+   - **`wrix spawn` argv contract** — loom writes a `SpawnConfig`
+     JSON, invokes a `wrix-spawn` shim that records the argv +
      stdin properties (TTY vs pipe), then exec's a mock agent. Asserts
      the JSON shape, the `--spawn-config <file> --stdio` argv, and that
      stdin is a pipe (not a TTY).
@@ -1072,8 +1072,8 @@ the rules:
    host↔container plumbing that the integration tier cannot reach: a
    temp `.beads/` is seeded with one ready bead labelled
    `profile:base`; a test image bundles `mock-pi` at a known path
-   inside the container; loom invokes `wrapix spawn` with
-   `WRAPIX_AGENT=pi` and `MOCK_PI_SCENARIO=happy-path`; the smoke
+   inside the container; loom invokes `wrix spawn` with
+   `WRIX_AGENT=pi` and `MOCK_PI_SCENARIO=happy-path`; the smoke
    asserts the container exits clean and the bead closes.
    Workflow-level coverage (plan/todo/run/gate/msg, profile selection,
    agent switching, runtime composition) lives in inline

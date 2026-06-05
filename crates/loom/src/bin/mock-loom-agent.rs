@@ -1,17 +1,17 @@
-//! Test-only mock agent. Stands in for the wrapix → pi binary chain
+//! Test-only mock agent. Stands in for the wrix → pi binary chain
 //! when an integration test wants to drive `loom loop` end-to-end
 //! against a controllable backend. Speaks the pi-mono JSONL RPC
 //! protocol — enough of it to reach the marker-emission point and
 //! exit cleanly — and chooses what marker text to emit based on the
 //! `LOOM_TEST_AGENT_MODE` env var.
 //!
-//! Selection: the test points `LOOM_WRAPIX_BIN` at this binary. loom
+//! Selection: the test points `LOOM_WRIX_BIN` at this binary. loom
 //! invokes it with `spawn --spawn-config <path> --stdio` (the
-//! production wrapix CLI shape) plus whatever spawn-config the
+//! production wrix CLI shape) plus whatever spawn-config the
 //! production code resolved. The mock ignores those args — there is
 //! no container, no wrapper — and immediately starts speaking pi-mono
 //! on its own stdin/stdout. That collapses two test-harness layers
-//! into one Rust binary, replacing the previous bash `install_wrapix_shim`
+//! into one Rust binary, replacing the previous bash `install_wrix_shim`
 //! + `tests/mock-pi/pi.sh` pair without extending either.
 //!
 //! Modes (set `LOOM_TEST_AGENT_MODE`):
@@ -67,6 +67,8 @@ fn main() -> ExitCode {
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
+
+    eprintln!("[wrix] Starting container (mock)...");
 
     // Step 1 — handshake. Production loom sends a `get_state` probe as
     // the first JSONL line; the agent must respond with the minimal state

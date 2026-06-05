@@ -144,7 +144,7 @@ impl BatchOutcome {
 ///
 /// `spawn` is the per-slot dispatcher — typically a closure that resolves
 /// the per-phase backend through the binary's `dispatch` function and runs
-/// `wrapix spawn --spawn-config <file> --stdio` inside it. The closure
+/// `wrix spawn --spawn-config <file> --stdio` inside it. The closure
 /// returns an [`AgentOutcome`] so this driver does not need to know which
 /// backend ran or whether `LOOM_COMPLETE` / `LOOM_BLOCKED` was the verdict;
 /// that translation lives one layer up.
@@ -204,7 +204,7 @@ pub async fn create_worktrees(
         let wt = git.create_worktree(label, &bead.id).await?;
         // Drop any uncommitted mid-session leftovers from a prior attempt
         // while preserving the bead branch's HEAD (i.e. the agent's prior
-        // commits) and the warm caches under `target/` + `.wrapix/`. No-op
+        // commits) and the warm caches under `target/` + `.wrix/`. No-op
         // on the first attempt against a freshly-cloned tree.
         git.reset_bead_clone(&wt.path).await?;
         info!(bead = %bead.id, path = %wt.path.display(), branch = %wt.branch, "worktree created");
@@ -219,7 +219,7 @@ pub async fn create_worktrees(
 ///
 /// `spawn` is the per-slot dispatcher. The driver passes a closure that
 /// builds a `SpawnConfig` with the worktree path as the workspace mount
-/// and runs `wrapix spawn --spawn-config <file> --stdio` against an
+/// and runs `wrix spawn --spawn-config <file> --stdio` against an
 /// `AgentBackend` — see [`super::spawn::build_spawn_config`]. Tests pass
 /// closures that resolve immediately so the join logic can be exercised
 /// without a real container.

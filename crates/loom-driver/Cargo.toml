@@ -25,7 +25,7 @@ tracing = { workspace = true }
 [features]
 # Exposes the signing-key injection seam (`GitClient::set_signing_key_override`)
 # used by the test suite to drive the signing path without mutating
-# `$WRAPIX_SIGNING_KEY` (unsafe `env::set_var` is forbidden under edition 2024).
+# `$WRIX_SIGNING_KEY` (unsafe `env::set_var` is forbidden under edition 2024).
 # Off in production builds; the self dev-dependency below turns it on for tests.
 test-support = []
 

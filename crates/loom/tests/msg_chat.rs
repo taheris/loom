@@ -1,7 +1,7 @@
 //! `loom msg --chat` integration tests.
 //!
 //! `loom msg --chat` mirrors `loom plan`'s shape: a single interactive
-//! `wrapix run <workspace> <agent command> ... <prompt>` shell-out with
+//! `wrix run <workspace> <agent command> ... <prompt>` shell-out with
 //! **inherited stdio** so the configured agent attaches directly to the
 //! user's terminal as a real REPL. There is no pi-mono protocol involved here
 //! — the tests use a shell stub that records argv and (per the test
@@ -10,14 +10,14 @@
 //! Five distinct slices, one per `test_msg_chat_*` dispatcher:
 //!
 //! - `launches_container`     — argv shape plus the
-//!   `WRAPIX_DEFAULT_IMAGE_REF` / `_SOURCE` env vars the launcher reads.
+//!   `WRIX_DEFAULT_IMAGE_REF` / `_SOURCE` env vars the launcher reads.
 //! - `writes_notes`           — stub parses the prompt for `### <id>`
 //!   headers and forks `bd update <id> --notes "…" --remove-label
 //!   loom:clarify` per bead; bd-shim log + bead state reflect it.
 //! - `partial_progress`       — stub exits 0 without resolving anything;
 //!   remaining clarifies persist.
 //! - `rejects_non_complete_exit` — stub exits non-zero; loom msg --chat
-//!   surfaces it as a wrapix-exit error.
+//!   surfaces it as a wrix-exit error.
 //! - `scope_filters_to_spec`  — `-s <label>` narrows the prompt; stub
 //!   dumps the prompt and only in-scope IDs are present.
 
@@ -56,24 +56,24 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
     bin_dir
 }
 
-/// Install a shell stub at `<dir>/wrapix-bin/wrapix-stub` that pretends
-/// to be `wrapix run`. The stub:
+/// Install a shell stub at `<dir>/wrix-bin/wrix-stub` that pretends
+/// to be `wrix run`. The stub:
 ///
 /// 1. Logs every argv element (one per line) to `<dir>/argv.log` so the
 ///    `launches_container` test can pin the dispatch shape.
-/// 2. Logs the `WRAPIX_DEFAULT_IMAGE_REF` / `_SOURCE` env vars to
+/// 2. Logs the `WRIX_DEFAULT_IMAGE_REF` / `_SOURCE` env vars to
 ///    `<dir>/env.log` so the same test can verify the launcher contract.
-/// 3. Optionally dumps the prompt (argv[5]) to `$WRAPIX_STUB_PROMPT_DUMP`.
-/// 4. Branches on `$WRAPIX_STUB_MODE`:
+/// 3. Optionally dumps the prompt (argv[5]) to `$WRIX_STUB_PROMPT_DUMP`.
+/// 4. Branches on `$WRIX_STUB_MODE`:
 ///    - `resolve-all` — parses the prompt for `### lm-…` lines and
 ///      forks `bd update <id> --notes "resolved …" --remove-label
 ///      loom:clarify` per match.
 ///    - `resolve-none` (default) — exits 0 immediately.
 ///    - `emit-blocked` — exits 1 so loom msg --chat surfaces failure.
-fn install_wrapix_stub(dir: &Path) -> PathBuf {
-    let bin_dir = dir.join("wrapix-bin");
-    std::fs::create_dir_all(&bin_dir).expect("mkdir wrapix-bin");
-    let bin = bin_dir.join("wrapix-stub");
+fn install_wrix_stub(dir: &Path) -> PathBuf {
+    let bin_dir = dir.join("wrix-bin");
+    std::fs::create_dir_all(&bin_dir).expect("mkdir wrix-bin");
+    let bin = bin_dir.join("wrix-stub");
     let argv_log = dir.join("argv.log");
     let env_log = dir.join("env.log");
     let script = format!(
@@ -88,16 +88,16 @@ for a in "$@"; do
 done
 printf -- '---\n' >> "$argv_log"
 
-printf 'WRAPIX_DEFAULT_IMAGE_REF=%s\n' "${{WRAPIX_DEFAULT_IMAGE_REF:-}}" >> "$env_log"
-printf 'WRAPIX_DEFAULT_IMAGE_SOURCE=%s\n' "${{WRAPIX_DEFAULT_IMAGE_SOURCE:-}}" >> "$env_log"
+printf 'WRIX_DEFAULT_IMAGE_REF=%s\n' "${{WRIX_DEFAULT_IMAGE_REF:-}}" >> "$env_log"
+printf 'WRIX_DEFAULT_IMAGE_SOURCE=%s\n' "${{WRIX_DEFAULT_IMAGE_SOURCE:-}}" >> "$env_log"
 
-# Argv layout (per loom-workflow/src/msg/chat.rs::build_wrapix_argv):
+# Argv layout (per loom-workflow/src/msg/chat.rs::build_wrix_argv):
 #   $1 = "run"
 #   $2 = <workspace>
 #   Claude: $3 = "claude", $4 = "--dangerously-skip-permissions", $5 = <prompt body>
 #   Pi:     $3 = "pi",     $4 = <prompt body>
-# Profile selection rides the WRAPIX_DEFAULT_IMAGE_* env vars, NOT argv —
-# `wrapix run` has no --profile parser; any extra tokens between the
+# Profile selection rides the WRIX_DEFAULT_IMAGE_* env vars, NOT argv —
+# `wrix run` has no --profile parser; any extra tokens between the
 # workspace and agent command would be forwarded into the container as a
 # command and exit 127.
 if [ "${{3:-}}" = "pi" ]; then
@@ -106,11 +106,11 @@ else
     prompt="${{5:-}}"
 fi
 
-if [ -n "${{WRAPIX_STUB_PROMPT_DUMP:-}}" ]; then
-    printf '%s' "$prompt" > "$WRAPIX_STUB_PROMPT_DUMP"
+if [ -n "${{WRIX_STUB_PROMPT_DUMP:-}}" ]; then
+    printf '%s' "$prompt" > "$WRIX_STUB_PROMPT_DUMP"
 fi
 
-mode="${{WRAPIX_STUB_MODE:-resolve-none}}"
+mode="${{WRIX_STUB_MODE:-resolve-none}}"
 case "$mode" in
     resolve-all)
         # Parse the rendered msg.md prompt for `### <id> — …` lines and
@@ -147,7 +147,7 @@ case "$mode" in
         exit 1
         ;;
     *)
-        echo "wrapix-stub: unknown mode $mode" >&2
+        echo "wrix-stub: unknown mode $mode" >&2
         exit 2
         ;;
 esac
@@ -167,7 +167,7 @@ fn write_minimal_manifest(dir: &Path) -> PathBuf {
     std::fs::write(&source, "").expect("write base.tar");
     let manifest = dir.join("profile-images.json");
     let body = format!(
-        r#"{{"base": {{"ref":"localhost/wrapix-base:test","source":{source:?}}}}}"#,
+        r#"{{"base": {{"ref":"localhost/wrix-base:test","source":{source:?}}}}}"#,
         source = source.display().to_string(),
     );
     std::fs::write(&manifest, body).expect("write manifest");
@@ -178,7 +178,7 @@ struct ChatRun {
     workspace: PathBuf,
     state_dir: PathBuf,
     bd_bin_dir: PathBuf,
-    wrapix_stub: PathBuf,
+    wrix_stub: PathBuf,
     manifest: PathBuf,
     argv_log: PathBuf,
     _tmp: tempfile::TempDir,
@@ -190,14 +190,14 @@ fn setup_chat() -> ChatRun {
     let state_dir = workspace.join("bd-state");
     std::fs::create_dir_all(&state_dir).expect("mkdir state");
     let bd_bin_dir = install_bd_shim(&workspace);
-    let wrapix_stub = install_wrapix_stub(&workspace);
+    let wrix_stub = install_wrix_stub(&workspace);
     let manifest = write_minimal_manifest(&workspace);
     let argv_log = workspace.join("argv.log");
     ChatRun {
         workspace,
         state_dir,
         bd_bin_dir,
-        wrapix_stub,
+        wrix_stub,
         manifest,
         argv_log,
         _tmp: tmp,
@@ -228,8 +228,8 @@ fn run_loom_msg_chat_with_extra_env(
         .arg("-c")
         .args(args)
         .env("PATH", new_path)
-        .env("LOOM_WRAPIX_BIN", &env.wrapix_stub)
-        .env("WRAPIX_STUB_MODE", mode)
+        .env("LOOM_WRIX_BIN", &env.wrix_stub)
+        .env("WRIX_STUB_MODE", mode)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &env.manifest)
         .env("BD_STATE_DIR", &env.state_dir)
@@ -277,8 +277,8 @@ fn loom_msg_chat_launches_container() {
         "loom msg --chat must exit 0 on a clean session.\nstdout={stdout}\nstderr={stderr}",
     );
 
-    // wrapix-stub's argv.log holds every argument the dispatch passed.
-    // The contract is the same as `loom plan`: interactive `wrapix run`
+    // wrix-stub's argv.log holds every argument the dispatch passed.
+    // The contract is the same as `loom plan`: interactive `wrix run`
     // with no `--stdio` and no `--spawn-config` (those are the
     // non-interactive surfaces).
     let argv = std::fs::read_to_string(&env.argv_log).expect("argv.log present");
@@ -312,7 +312,7 @@ fn loom_msg_chat_launches_container() {
     // contract `loom plan` enforces.
     let env_log = std::fs::read_to_string(env.workspace.join("env.log")).unwrap_or_default();
     assert!(
-        env_log.contains("WRAPIX_DEFAULT_IMAGE_REF=localhost/wrapix-base:test"),
+        env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-base:test"),
         "env.log missing image ref: {env_log}",
     );
     assert!(
@@ -359,14 +359,14 @@ fn loom_msg_chat_phase_agent_pi_selects_pi_command() {
 }
 
 /// The resolved profile (from `LoomConfig::agent_for(Phase::Msg)` or
-/// the CLI override) flows to `wrapix run` via the
-/// `WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` env vars
-/// — not via argv. `wrapix run` has no `--profile` parser; any
+/// the CLI override) flows to `wrix run` via the
+/// `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` env vars
+/// — not via argv. `wrix run` has no `--profile` parser; any
 /// extra tokens between the workspace and `claude` would be forwarded
 /// into the container as a command and exit 127. The empty-config
 /// default profile is `base`.
 #[test]
-fn msg_chat_passes_resolved_profile_to_wrapix_run() {
+fn msg_chat_passes_resolved_profile_to_wrix_run() {
     let env = setup_chat();
     seed_bead(
         &env.state_dir,
@@ -386,13 +386,13 @@ fn msg_chat_passes_resolved_profile_to_wrapix_run() {
     let argv = std::fs::read_to_string(&env.argv_log).expect("argv.log present");
     assert!(
         !argv.lines().any(|l| l == "--profile"),
-        "wrapix run has no --profile parser; the flag must not appear in argv. \
+        "wrix run has no --profile parser; the flag must not appear in argv. \
          argv.log:\n{argv}",
     );
 
     let env_log = std::fs::read_to_string(env.workspace.join("env.log")).expect("env.log present");
     assert!(
-        env_log.contains("WRAPIX_DEFAULT_IMAGE_REF=localhost/wrapix-base:test"),
+        env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-base:test"),
         "empty-config default profile (base) must select the matching image ref \
          via env var. env.log:\n{env_log}",
     );
@@ -489,11 +489,11 @@ fn loom_msg_chat_rejects_non_complete_exit_signal() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !output.status.success(),
-        "wrapix-stub exit 1 must fail the session: stderr={stderr}",
+        "wrix-stub exit 1 must fail the session: stderr={stderr}",
     );
     assert!(
-        stderr.contains("wrapix exited") || stderr.contains("exit status"),
-        "error must reference the wrapix exit status: stderr={stderr}",
+        stderr.contains("wrix exited") || stderr.contains("exit status"),
+        "error must reference the wrix exit status: stderr={stderr}",
     );
 }
 
@@ -519,7 +519,7 @@ fn loom_msg_chat_scope_filters_to_spec() {
         &env,
         "resolve-none",
         &["-s", "alpha"],
-        &[("WRAPIX_STUB_PROMPT_DUMP", &prompt_dump.to_string_lossy())],
+        &[("WRIX_STUB_PROMPT_DUMP", &prompt_dump.to_string_lossy())],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

@@ -4,8 +4,8 @@
 # One happy-path scenario validates host↔container plumbing the
 # integration tier cannot reach: a temp `.beads/` is seeded with one ready
 # bead labelled `profile:base`, the test image bundles `mock-pi` at a
-# known path inside the container, loom invokes `wrapix spawn` with
-# `WRAPIX_AGENT=pi` `MOCK_PI_SCENARIO=happy-path`, and the smoke asserts
+# known path inside the container, loom invokes `wrix spawn` with
+# `WRIX_AGENT=pi` `MOCK_PI_SCENARIO=happy-path`, and the smoke asserts
 # the container exits clean with the bead closed.
 #
 # Spec: specs/tests.md § Container smoke. Per NFR #6 this uses live `bd`,
@@ -16,7 +16,7 @@
 #   LOOM_TEST_IMAGE          — path to a `podman load`-compatible archive
 #                              whose ref is LOOM_TEST_IMAGE_REF; the image
 #                              must contain `pi` as the mock-pi script.
-#   LOOM_TEST_IMAGE_REF      — image ref tag (e.g. localhost/wrapix-test:smoke)
+#   LOOM_TEST_IMAGE_REF      — image ref tag (e.g. localhost/wrix-test:smoke)
 #   LOOM_TEST_MOCK_PI_PATH   — host path to tests/mock-pi/pi.sh; sourced for
 #                              the container build step when the image is
 #                              produced inline rather than from a Nix archive.
@@ -100,7 +100,7 @@ log "seeded bead: $BEAD_ID"
 
 set +e
 LOOM_PROFILES_MANIFEST="$WORKSPACE/profile-images.json" \
-WRAPIX_AGENT=pi \
+WRIX_AGENT=pi \
 MOCK_PI_SCENARIO=happy-path \
 "$LOOM_BIN" --workspace "$WORKSPACE" -A pi run --once
 RC=$?

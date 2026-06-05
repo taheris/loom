@@ -694,10 +694,6 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
         Vec::new()
     };
     let report = init::run(workspace, init::InitOpts { rebuild }, &molecules)?;
-    let migration = runtime.block_on(async {
-        let bd = BdClient::new();
-        init::migrate_legacy_worktrees(workspace, &bd).await
-    })?;
     println!("loom init: workspace={}", workspace.display());
     println!(
         "  config: {} ({})",
@@ -720,26 +716,6 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
             },
         ),
         None => println!("  integration: skipped (workspace has no `origin` remote)"),
-    }
-    if !migration.reaped.is_empty() {
-        println!(
-            "  migrated {} stale bead worktree(s) from pre-loom-workspace layout",
-            migration.reaped.len(),
-        );
-    }
-    if !migration.warned.is_empty() {
-        println!(
-            "  {} stale bead worktree(s) still open — resolve manually:",
-            migration.warned.len(),
-        );
-        for entry in &migration.warned {
-            println!(
-                "    {} ({}) — `loom msg {id}` or `bd close {id}`",
-                entry.path.display(),
-                entry.bead_id,
-                id = entry.bead_id,
-            );
-        }
     }
     if let Some(rb) = report.rebuild {
         println!(
@@ -1116,7 +1092,7 @@ fn filter_annotations(
 /// pass but doesn't. Every entry carries a comment naming the cause.
 const CHECK_ANNOTATION_ALLOWLIST: &[(&str, &str)] = &[
     // The three entrypoint.sh greps shell out via
-    // `nix build .#wrapixSrc`, which cannot run inside the
+    // `nix build .#wrixSrc`, which cannot run inside the
     // `nix flake check` build sandbox (no recursive nix). Skip them at
     // execution; the same greps pass when `loom gate check` runs under
     // `nix develop` or anywhere with a working `nix` on PATH.
@@ -2084,7 +2060,7 @@ fn run_plan(
         workspace,
         plan::PlanOpts {
             mode,
-            wrapix_bin: std::env::var_os("LOOM_WRAPIX_BIN").map(PathBuf::from),
+            wrix_bin: std::env::var_os("LOOM_WRIX_BIN").map(PathBuf::from),
             cli_profile: profile.map(ProfileName::new),
             agent_override,
             manifest,
@@ -2412,7 +2388,7 @@ async fn run_parallel_loop(
     .with_hook_timeout(loom_cfg.git_hook_timeout());
     // Resolve the host deploy/signing key paths once for the whole batch —
     // every bead shares the same loom workspace, so the launcher env is
-    // identical across slots. Each `wrapix spawn` child receives these so the
+    // identical across slots. Each `wrix spawn` child receives these so the
     // wrapper mounts the keys into the bead container (`specs/harness.md`
     // § Commit signing).
     let launcher_env = git.launcher_key_env()?;
@@ -3115,7 +3091,7 @@ fn run_msg_chat(
         cli_profile: None,
         agent_override,
         manifest,
-        wrapix_bin: std::env::var_os("LOOM_WRAPIX_BIN").map(PathBuf::from),
+        wrix_bin: std::env::var_os("LOOM_WRIX_BIN").map(PathBuf::from),
     };
     let report = loom_workflow::msg::chat::run(workspace, opts)?;
     if report.beads_surfaced == 0 {

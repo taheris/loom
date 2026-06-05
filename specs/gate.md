@@ -624,7 +624,7 @@ version doesn't match the loom binary it spawns. Cargo + Cargo.lock
 pinning coordinates the two halves of the pipeline; no per-line
 versioning needed.
 
-**Cross-repo consumers.** External consumers (e.g. wrapix) depend on
+**Cross-repo consumers.** External consumers (e.g. wrix) depend on
 `loom-protocol` directly. The expected consumption shape is:
 spawn `loom gate review` / `loom gate mint` as a subprocess, capture
 stdout, call `loom-protocol::gate::parse_walk_output(&stdout,
@@ -1476,7 +1476,7 @@ contract; the diagnostic on stderr names the specific
 machine-readable contract.
 
 The subcommand is consumed by the `pre-push-checks` wrapper
-(owned upstream by `wrapix.prekHooks` — see [pre-commit.md §
+(owned upstream by `wrix.prekHooks` — see [pre-commit.md §
 Marker integration](pre-commit.md#marker-integration)), which
 wraps each slow-tier prek hook's `entry`. The wrapper invokes
 the marker check, short-circuits the underlying command on valid

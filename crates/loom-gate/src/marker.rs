@@ -371,19 +371,10 @@ mod tests {
             .is_ok()
     }
 
-    /// Legacy marker path the pre-rename `pre-push-checks` wrapper
-    /// reads; superseded by [`MARKER_PATH`] in the upstream wrapix
-    /// rename. Bridged in wrapper-behaviour tests so the assertions
-    /// exercise the contract on either wrapper version present on PATH.
-    const LEGACY_MARKER_PATH: &str = ".wrapix/loom/marker.json";
-
-    fn seed_marker_for_either_wrapper(workspace: &Path) {
-        for relative in [MARKER_PATH, LEGACY_MARKER_PATH] {
-            let path = workspace.join(relative);
-            std::fs::create_dir_all(path.parent().expect("marker parent"))
-                .expect("mkdir marker dir");
-            std::fs::write(&path, "{}").expect("write marker");
-        }
+    fn seed_marker(workspace: &Path) {
+        let path = workspace.join(MARKER_PATH);
+        std::fs::create_dir_all(path.parent().expect("marker parent")).expect("mkdir marker dir");
+        std::fs::write(&path, "{}").expect("write marker");
     }
 
     fn run_pre_push_checks(workspace: &Path, bin_dir: &Path) -> std::process::Output {
@@ -399,54 +390,6 @@ mod tests {
             .expect("spawn pre-push-checks")
     }
 
-    /// Probe whether the `pre-push-checks` wrapper on `PATH` honors the
-    /// canonical marker location at [`MARKER_PATH`]. Pre-rename
-    /// wrappers check `.wrapix/loom/marker.json` and miss `mint`'s
-    /// output entirely; until a host devshell rebuilt from a
-    /// `flake.lock` that includes the upstream rename appears on
-    /// `PATH`, the wrapper sees a different file from the one
-    /// [`MarkerProof::mint`] writes and the assertions below have
-    /// nothing meaningful to pin. The probe seeds the canonical path
-    /// only and stubs `loom` to short-circuit; a wrapper still wired
-    /// to the old path falls through to the sentinel and reports
-    /// false.
-    fn pre_push_checks_honors_canonical_marker_path() -> bool {
-        let Ok(dir) = tempfile::tempdir() else {
-            return false;
-        };
-        let workspace = dir.path();
-        if std::fs::create_dir_all(workspace.join(".loom")).is_err()
-            || std::fs::write(workspace.join(MARKER_PATH), "{}").is_err()
-        {
-            return false;
-        }
-        let bin_dir = workspace.join("bin");
-        install_executable(&bin_dir, "loom", "#!/bin/sh\nexit 0\n");
-        let probe_flag = workspace.join("probe-sentinel.flag");
-        install_executable(
-            &bin_dir,
-            "sentinel",
-            &format!("#!/bin/sh\ntouch {}\nexit 0\n", probe_flag.display()),
-        );
-        let output = run_pre_push_checks(workspace, &bin_dir);
-        output.status.success() && !probe_flag.exists()
-    }
-
-    fn skip_unless_canonical_path() -> bool {
-        if !pre_push_checks_available() {
-            eprintln!("pre-push-checks not on PATH; skipping");
-            return true;
-        }
-        if !pre_push_checks_honors_canonical_marker_path() {
-            eprintln!(
-                "pre-push-checks on PATH does not honor {MARKER_PATH}; \
-                 host devshell predates the upstream rename — skipping"
-            );
-            return true;
-        }
-        false
-    }
-
     #[test]
     fn pre_push_checks_short_circuits_on_valid_marker() {
         if !pre_push_checks_available() {
@@ -455,7 +398,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path();
-        seed_marker_for_either_wrapper(workspace);
+        seed_marker(workspace);
 
         let bin_dir = workspace.join("bin");
         install_executable(&bin_dir, "loom", "#!/bin/sh\nexit 0\n");
@@ -496,11 +439,6 @@ mod tests {
             !workspace.join(MARKER_PATH).exists(),
             "precondition: canonical marker path must be absent",
         );
-        assert!(
-            !workspace.join(LEGACY_MARKER_PATH).exists(),
-            "precondition: legacy marker path must be absent",
-        );
-
         let bin_dir = workspace.join("bin");
         let sentinel_marker = workspace.join("sentinel.flag");
         install_executable(
@@ -531,7 +469,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path();
-        seed_marker_for_either_wrapper(workspace);
+        seed_marker(workspace);
 
         let bin_dir = workspace.join("bin");
         install_executable(&bin_dir, "loom", "#!/bin/sh\nexit 1\n");
@@ -564,7 +502,8 @@ mod tests {
     /// to, against a real git workspace and the real mint code path.
     #[test]
     fn mint_and_pre_push_checks_short_circuit_joint_path() {
-        if skip_unless_canonical_path() {
+        if !pre_push_checks_available() {
+            eprintln!("pre-push-checks not on PATH; skipping");
             return;
         }
         let dir = init_test_workspace();

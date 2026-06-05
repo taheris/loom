@@ -61,7 +61,7 @@ pub enum AgentOutcome {
     /// integration step. Routes straight to `loom:blocked` with cause
     /// `signature-verification-failed` — agent-retry cannot re-sign
     /// existing commits, so this is operator-investigation territory
-    /// (wrapix container signing setup for pass 1; loom-workspace
+    /// (wrix container signing setup for pass 1; loom-workspace
     /// gitconfig + key resolution for pass 2). `detail` names the side
     /// and the offending commit. Per `specs/harness.md` § Verdict Gate.
     SignatureVerificationFailed { detail: String },

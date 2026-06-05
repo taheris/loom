@@ -1,12 +1,12 @@
 //! Commit-signing + rerere gitconfig writes for loom-materialized
 //! workspaces.
 //!
-//! Mirrors wrapix's host-side signing rule (see `lib/sandbox/linux/default.nix`
-//! and `scripts/setup-deploy-key` in the wrapix flake): a two-tier
+//! Mirrors wrix's host-side signing rule (see `lib/sandbox/linux/default.nix`
+//! and `scripts/setup-deploy-key` in the wrix flake): a two-tier
 //! signing-key resolver feeds a local `.git/config` block that makes commit
 //! signing non-interactive in the host-only loom workspace. The block is
 //! written ONLY into that workspace — never into bead clones, whose
-//! in-container worker commits are signed by wrapix's `git-ssh-setup.sh`
+//! in-container worker commits are signed by wrix's `git-ssh-setup.sh`
 //! global config and would be broken by a host-path local block that shadows
 //! it (`specs/harness.md` § Commit signing). The key resolution and gitconfig
 //! writes live here, alongside the rest of the `git` CLI surface, so the
@@ -19,27 +19,27 @@ use std::process::Command as StdCommand;
 use super::client::read_origin_url;
 use super::error::GitError;
 
-/// Wrapix convention: the signing identity stamped into the
+/// Wrix convention: the signing identity stamped into the
 /// allowed_signers file when `$GIT_AUTHOR_EMAIL` is unset.
-const DEFAULT_SIGNING_IDENTITY: &str = "sandbox@wrapix.dev";
+const DEFAULT_SIGNING_IDENTITY: &str = "sandbox@wrix.dev";
 
 /// Basename of the derived allowed_signers file under a workspace's
 /// `.git/` directory.
 const ALLOWED_SIGNERS_FILE: &str = "loom-allowed-signers";
 
 /// Launcher env var naming the host deploy-key path. Loom sets it on the
-/// `wrapix spawn` child process so the wrapper mounts the key into the bead
+/// `wrix spawn` child process so the wrapper mounts the key into the bead
 /// container; it is also the first tier [`resolve_deploy_key`] consults.
-pub const WRAPIX_DEPLOY_KEY_ENV: &str = "WRAPIX_DEPLOY_KEY";
+pub const WRIX_DEPLOY_KEY_ENV: &str = "WRIX_DEPLOY_KEY";
 
 /// Launcher env var naming the host signing-key path — the signing-key
-/// analogue of [`WRAPIX_DEPLOY_KEY_ENV`].
-pub const WRAPIX_SIGNING_KEY_ENV: &str = "WRAPIX_SIGNING_KEY";
+/// analogue of [`WRIX_DEPLOY_KEY_ENV`].
+pub const WRIX_SIGNING_KEY_ENV: &str = "WRIX_SIGNING_KEY";
 
-/// Resolve the wrapix signing key for loom-materialized workspaces, using
-/// the same two-tier precedence wrapix applies host-side:
+/// Resolve the wrix signing key for loom-materialized workspaces, using
+/// the same two-tier precedence wrix applies host-side:
 ///
-/// 1. `$WRAPIX_SIGNING_KEY` pointing at an existing file. Set-but-missing
+/// 1. `$WRIX_SIGNING_KEY` pointing at an existing file. Set-but-missing
 ///    is a hard error ([`GitError::SigningKeyMissing`]) — a silent fallback
 ///    would mask a parent-process misconfiguration.
 /// 2. `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` when the env var is
@@ -60,11 +60,11 @@ pub fn resolve_signing_key(origin_dir: &Path) -> Result<Option<PathBuf>, GitErro
     )
 }
 
-/// Resolve the wrapix deploy key for the launcher environment, mirroring
+/// Resolve the wrix deploy key for the launcher environment, mirroring
 /// [`resolve_signing_key`] with the `-signing` suffix dropped: the keyname
-/// fallback is `<repo>-<host>` and the env var is `$WRAPIX_DEPLOY_KEY`.
+/// fallback is `<repo>-<host>` and the env var is `$WRIX_DEPLOY_KEY`.
 /// Set-but-missing is a hard error ([`GitError::DeployKeyMissing`]). Loom
-/// passes the resolved host path to `wrapix spawn` as `$WRAPIX_DEPLOY_KEY`
+/// passes the resolved host path to `wrix spawn` as `$WRIX_DEPLOY_KEY`
 /// so the launcher mounts the key into the bead container; loom's own git
 /// invocations never read it (`specs/harness.md` § Commit signing).
 pub fn resolve_deploy_key(origin_dir: &Path) -> Result<Option<PathBuf>, GitError> {
@@ -74,7 +74,7 @@ pub fn resolve_deploy_key(origin_dir: &Path) -> Result<Option<PathBuf>, GitError
     )
 }
 
-/// Which wrapix key a resolution targets — selects the env var, the keyname
+/// Which wrix key a resolution targets — selects the env var, the keyname
 /// suffix, and the set-but-missing error variant.
 #[derive(Clone, Copy)]
 enum KeyKind {
@@ -85,8 +85,8 @@ enum KeyKind {
 impl KeyKind {
     fn env_var(self) -> &'static str {
         match self {
-            KeyKind::Deploy => WRAPIX_DEPLOY_KEY_ENV,
-            KeyKind::Signing => WRAPIX_SIGNING_KEY_ENV,
+            KeyKind::Deploy => WRIX_DEPLOY_KEY_ENV,
+            KeyKind::Signing => WRIX_SIGNING_KEY_ENV,
         }
     }
 
@@ -203,18 +203,18 @@ fn resolve_hostname() -> Option<String> {
 ///
 /// `target_dir` must be the host-only loom workspace, NOT a bead clone:
 /// `user.signingkey` holds the HOST key path, which does not exist inside the
-/// wrapix bead container, and a local block in a container-mounted clone would
-/// shadow wrapix's `git-ssh-setup.sh` global config and break the worker's
+/// wrix bead container, and a local block in a container-mounted clone would
+/// shadow wrix's `git-ssh-setup.sh` global config and break the worker's
 /// in-container `git commit` (`specs/harness.md` § Commit signing).
 ///
 /// The allowed_signers file is derived with `ssh-keygen -y -f <signing_key>`
-/// and prefixed with the wrapix signing identity (`$GIT_AUTHOR_EMAIL`, or
-/// `sandbox@wrapix.dev`). It lives under `.git/` so workspace removal cleans
+/// and prefixed with the wrix signing identity (`$GIT_AUTHOR_EMAIL`, or
+/// `sandbox@wrix.dev`). It lives under `.git/` so workspace removal cleans
 /// it up automatically.
 pub fn write_signing_config(target_dir: &Path, signing_key: &Path) -> Result<(), GitError> {
     let allowed_signers_file = target_dir.join(".git").join(ALLOWED_SIGNERS_FILE);
     // `.ok()` discards VarError (unset or non-UTF-8): either case means the
-    // wrapix author identity isn't available here, so fall back to the
+    // wrix author identity isn't available here, so fall back to the
     // default signing identity — the env-var-default intent, not a swallow.
     let identity = std::env::var("GIT_AUTHOR_EMAIL")
         .ok()
@@ -252,7 +252,7 @@ pub fn enable_rerere(target_dir: &Path) -> Result<(), GitError> {
 }
 
 /// `ssh-keygen -y -f <signing_key>` — the public half of the signing pair.
-/// The wrapix signing key is passphrase-less, so this is non-interactive.
+/// The wrix signing key is passphrase-less, so this is non-interactive.
 fn derive_public_key(signing_key: &Path) -> Result<String, GitError> {
     let output = StdCommand::new("ssh-keygen")
         .arg("-y")
@@ -295,15 +295,15 @@ mod tests {
     #[test]
     fn parse_github_repo_handles_ssh_https_and_dot_git() {
         assert_eq!(
-            parse_github_repo("git@github.com:wrapix/loom.git").as_deref(),
+            parse_github_repo("git@github.com:wrix/loom.git").as_deref(),
             Some("loom"),
         );
         assert_eq!(
-            parse_github_repo("https://github.com/wrapix/loom").as_deref(),
+            parse_github_repo("https://github.com/wrix/loom").as_deref(),
             Some("loom"),
         );
         assert_eq!(
-            parse_github_repo("https://github.com/wrapix/loom.git").as_deref(),
+            parse_github_repo("https://github.com/wrix/loom.git").as_deref(),
             Some("loom"),
         );
         assert_eq!(
@@ -315,8 +315,8 @@ mod tests {
     #[test]
     fn parse_github_repo_rejects_non_github() {
         assert_eq!(parse_github_repo("/srv/git/local-bare.git"), None);
-        assert_eq!(parse_github_repo("git@gitlab.com:wrapix/loom.git"), None);
-        assert_eq!(parse_github_repo("https://example.com/wrapix/loom"), None);
+        assert_eq!(parse_github_repo("git@gitlab.com:wrix/loom.git"), None);
+        assert_eq!(parse_github_repo("https://example.com/wrix/loom"), None);
         assert_eq!(parse_github_repo("github.com-no-separator/x/y"), None);
     }
 
@@ -325,7 +325,7 @@ mod tests {
     /// `<repo>-<host>-signing` where `<repo>` comes from the origin URL and
     /// `<host>` is the short hostname.
     #[test]
-    fn signing_key_fallback_uses_wrapix_repo_host_derivation() {
+    fn signing_key_fallback_uses_wrix_repo_host_derivation() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let deploy = home.join(".ssh/deploy_keys");
@@ -336,7 +336,7 @@ mod tests {
         let inputs = ResolveInputs {
             env_key: None,
             home: Some(home.to_path_buf()),
-            origin_url: Some("git@github.com:wrapix/loom.git".to_string()),
+            origin_url: Some("git@github.com:wrix/loom.git".to_string()),
             hostname: Some("buildbox".to_string()),
         };
         let resolved = resolve_from(&inputs, KeyKind::Signing).unwrap();
@@ -362,25 +362,25 @@ mod tests {
         let inputs = ResolveInputs {
             env_key: None,
             home: Some(tmp.path().to_path_buf()),
-            origin_url: Some("git@github.com:wrapix/loom.git".to_string()),
+            origin_url: Some("git@github.com:wrix/loom.git".to_string()),
             hostname: Some("buildbox".to_string()),
         };
         assert_eq!(resolve_from(&inputs, KeyKind::Signing).unwrap(), None);
     }
 
-    /// Spec contract `[test]` annotation: `$WRAPIX_SIGNING_KEY` pointing at
+    /// Spec contract `[test]` annotation: `$WRIX_SIGNING_KEY` pointing at
     /// a non-existent file is a hard error naming the missing path.
     #[test]
-    fn wrapix_signing_key_missing_file_fails_loud() {
+    fn wrix_signing_key_missing_file_fails_loud() {
         let inputs = ResolveInputs {
-            env_key: Some(OsString::from("/nonexistent/wrapix-signing-key")),
+            env_key: Some(OsString::from("/nonexistent/wrix-signing-key")),
             home: None,
             origin_url: None,
             hostname: None,
         };
         match resolve_from(&inputs, KeyKind::Signing) {
             Err(GitError::SigningKeyMissing { path }) => {
-                assert_eq!(path, PathBuf::from("/nonexistent/wrapix-signing-key"));
+                assert_eq!(path, PathBuf::from("/nonexistent/wrix-signing-key"));
             }
             other => panic!("expected SigningKeyMissing, got {other:?}"),
         }
@@ -455,7 +455,7 @@ mod tests {
 
     /// Spec contract `[test]` annotation (`specs/harness.md` § Success
     /// Criteria · Commit signing): the allowed_signers file is derived via
-    /// `ssh-keygen -y -f <signing-key>` and prefixed with the wrapix
+    /// `ssh-keygen -y -f <signing-key>` and prefixed with the wrix
     /// signing identity.
     #[test]
     fn allowed_signers_derived_from_signing_key() {
@@ -485,7 +485,7 @@ mod tests {
         let line = contents.trim();
         let (identity, key_field) = line.split_once(' ').unwrap();
         // Default identity when $GIT_AUTHOR_EMAIL is unset (set in some CI
-        // envs — accept either the wrapix default or the configured email).
+        // envs — accept either the wrix default or the configured email).
         let expected_identity = std::env::var("GIT_AUTHOR_EMAIL")
             .ok()
             .filter(|s| !s.is_empty())
@@ -495,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn wrapix_signing_key_present_takes_precedence() {
+    fn wrix_signing_key_present_takes_precedence() {
         let tmp = tempfile::tempdir().unwrap();
         let key = tmp.path().join("explicit-signing-key");
         std::fs::write(&key, "PRIVATE KEY\n").unwrap();
@@ -504,7 +504,7 @@ mod tests {
             // env var resolves.
             env_key: Some(key.clone().into_os_string()),
             home: Some(tmp.path().to_path_buf()),
-            origin_url: Some("git@github.com:wrapix/loom.git".to_string()),
+            origin_url: Some("git@github.com:wrix/loom.git".to_string()),
             hostname: Some("buildbox".to_string()),
         };
         assert_eq!(
@@ -514,7 +514,7 @@ mod tests {
     }
 
     /// The deploy-key fallback drops the `-signing` suffix: keyname is
-    /// `<repo>-<host>`, mirroring [`signing_key_fallback_uses_wrapix_repo_host_derivation`].
+    /// `<repo>-<host>`, mirroring [`signing_key_fallback_uses_wrix_repo_host_derivation`].
     #[test]
     fn deploy_key_fallback_omits_signing_suffix() {
         let tmp = tempfile::tempdir().unwrap();
@@ -527,27 +527,27 @@ mod tests {
         let inputs = ResolveInputs {
             env_key: None,
             home: Some(home.to_path_buf()),
-            origin_url: Some("git@github.com:wrapix/loom.git".to_string()),
+            origin_url: Some("git@github.com:wrix/loom.git".to_string()),
             hostname: Some("buildbox".to_string()),
         };
         let resolved = resolve_from(&inputs, KeyKind::Deploy).unwrap();
         assert_eq!(resolved.as_deref(), Some(key.as_path()));
     }
 
-    /// `$WRAPIX_DEPLOY_KEY` pointing at a non-existent file is a hard error
+    /// `$WRIX_DEPLOY_KEY` pointing at a non-existent file is a hard error
     /// naming the missing path — the deploy-key analogue of
-    /// [`wrapix_signing_key_missing_file_fails_loud`].
+    /// [`wrix_signing_key_missing_file_fails_loud`].
     #[test]
-    fn wrapix_deploy_key_missing_file_fails_loud() {
+    fn wrix_deploy_key_missing_file_fails_loud() {
         let inputs = ResolveInputs {
-            env_key: Some(OsString::from("/nonexistent/wrapix-deploy-key")),
+            env_key: Some(OsString::from("/nonexistent/wrix-deploy-key")),
             home: None,
             origin_url: None,
             hostname: None,
         };
         match resolve_from(&inputs, KeyKind::Deploy) {
             Err(GitError::DeployKeyMissing { path }) => {
-                assert_eq!(path, PathBuf::from("/nonexistent/wrapix-deploy-key"));
+                assert_eq!(path, PathBuf::from("/nonexistent/wrix-deploy-key"));
             }
             other => panic!("expected DeployKeyMissing, got {other:?}"),
         }

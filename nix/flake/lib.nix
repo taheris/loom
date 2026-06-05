@@ -33,8 +33,8 @@ in
     mkProfileManifest =
       {
         pkgs,
-        wrapixLib,
-        profiles ? { inherit (wrapixLib.profiles) base rust python; },
+        wrixLib,
+        profiles ? { inherit (wrixLib.profiles) base rust python; },
         agent ? "pi",
         agentPkg ? null,
         loomBin ?
@@ -55,7 +55,7 @@ in
       loomLib.mkProfileManifest {
         inherit
           pkgs
-          wrapixLib
+          wrixLib
           profiles
           agent
           agentPkg
@@ -71,10 +71,10 @@ in
       ...
     }:
     let
-      wrapixLib = inputs'.wrapix.legacyPackages.lib;
+      wrixLib = inputs'.wrix.legacyPackages.lib;
       pi-mono = pkgs.callPackage ../pi-mono { };
 
-      # The same file + hash pin the toolchain for the wrapix sandbox
+      # The same file + hash pin the toolchain for the wrix sandbox
       # profile, the loom workspace build, and the devshell.
       rustToolchainFile = ../../rust-toolchain.toml;
       rustToolchainSha256 = "sha256-mvUGEOHYJpn3ikC5hckneuGixaC+yGrkMM/liDIDgoU=";
@@ -84,7 +84,7 @@ in
         sha256 = rustToolchainSha256;
       };
 
-      rustProfile = wrapixLib.rustProfile {
+      rustProfile = wrixLib.rustProfile {
         toolchain = rustToolchainFile;
         sha256 = rustToolchainSha256;
       };
@@ -96,7 +96,7 @@ in
         src = loomSrc;
       };
 
-      sandbox = wrapixLib.mkSandbox {
+      sandbox = wrixLib.mkSandbox {
         profile = rustProfile;
         agent = "pi";
         agentPkg = pi-mono;
@@ -106,7 +106,7 @@ in
         ];
       };
 
-      debugSandbox = wrapixLib.mkSandbox {
+      debugSandbox = wrixLib.mkSandbox {
         profile = rustProfile;
         agent = "pi";
         agentPkg = pi-mono;
@@ -118,7 +118,7 @@ in
       };
 
       profileManifest = loomLib.mkProfileManifest {
-        inherit pkgs wrapixLib;
+        inherit pkgs wrixLib;
         loomBin = loom.bin;
         agentPkg = pi-mono;
       };
@@ -126,7 +126,7 @@ in
       loomBin = loomLib.mkLoomBin {
         inherit pkgs profileManifest;
         loomBuild = loom;
-        wrapixLauncher = sandbox.package;
+        wrixLauncher = sandbox.package;
       };
     in
     {
@@ -139,7 +139,7 @@ in
           rustProfile
           rustToolchain
           sandbox
-          wrapixLib
+          wrixLib
           ;
       };
     };

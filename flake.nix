@@ -4,16 +4,16 @@
   inputs = {
     nixpkgs.url = "git+https://github.com/NixOS/nixpkgs.git?ref=nixos-unstable&shallow=1";
 
-    wrapix = {
-      url = "git+https://github.com/taheris/wrapix.git?ref=main&shallow=1";
+    wrix = {
+      url = "git+https://github.com/taheris/wrix.git?ref=main&shallow=1";
       inputs = {
         flake-parts.follows = "flake-parts";
         nixpkgs.follows = "nixpkgs";
       };
     };
 
-    crane.follows = "wrapix/crane";
-    fenix.follows = "wrapix/fenix";
+    crane.follows = "wrix/crane";
+    fenix.follows = "wrix/fenix";
 
     flake-parts = {
       url = "git+https://github.com/hercules-ci/flake-parts.git?ref=main&shallow=1";

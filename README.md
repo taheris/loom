@@ -14,7 +14,7 @@ nix flake check        # Clippy + nextest
 ```
 
 Inside `nix develop`, the pinned Rust toolchain (`rust-toolchain.toml`),
-`cargo-nextest`, `wrapix`, and the wrapped `loom` binary are on PATH:
+`cargo-nextest`, `wrix`, and the wrapped `loom` binary are on PATH:
 
 ```bash
 cargo build
@@ -46,20 +46,20 @@ Author specs per [`docs/spec-conventions.md`](docs/spec-conventions.md); follow
 
 ## Using Loom
 
-The flake exposes a `loom` package whose binary already has `wrapix` on its
+The flake exposes a `loom` package whose binary already has `wrix` on its
 internal PATH and `LOOM_PROFILES_MANIFEST` defaulted to a base/rust/python
-manifest. Add it to a wrapix devshell and `loom plan` works end-to-end:
+manifest. Add it to a wrix devshell and `loom plan` works end-to-end:
 
 ```nix
 {
   inputs = {
-    wrapix.url = "github:taheris/wrapix";
+    wrix.url = "github:taheris/wrix";
     loom.url   = "github:taheris/loom";
   };
 
   outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } {
     perSystem = { inputs', ... }: {
-      devShells.default = inputs'.wrapix.legacyPackages.lib.mkDevShell {
+      devShells.default = inputs'.wrix.legacyPackages.lib.mkDevShell {
         packages = [
           inputs'.loom.packages.loom
           # ... your other dev tools
@@ -77,14 +77,14 @@ exporting their own manifest wins. Build one via `lib.mkProfileManifest`:
 
 ```nix
 let
-  wrapixLib = inputs'.wrapix.legacyPackages.lib;
+  wrixLib = inputs'.wrix.legacyPackages.lib;
   manifest  = inputs.loom.lib.mkProfileManifest {
-    inherit wrapixLib;
-    profiles = { inherit (wrapixLib.profiles) base rust; };
+    inherit wrixLib;
+    profiles = { inherit (wrixLib.profiles) base rust; };
   };
 in
 {
-  devShells.default = wrapixLib.mkDevShell {
+  devShells.default = wrixLib.mkDevShell {
     shellHook = ''
       export LOOM_PROFILES_MANIFEST=${manifest}
     '';
@@ -97,20 +97,20 @@ in
 
 For the Direct agent backend, the sandbox image must bundle the
 `loom-direct-runner` binary. `lib.mkLoom` builds a Linux-targeted runner that
-wrapix can hand to `mkSandbox`:
+wrix can hand to `mkSandbox`:
 
 ```nix
 {
-  inputs.wrapix.url = "github:taheris/wrapix";
+  inputs.wrix.url = "github:taheris/wrix";
   inputs.loom.url   = "github:taheris/loom";
 
   outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } {
     perSystem = { pkgs, system, ... }:
       let
-        wrapix     = inputs.wrapix.legacyPackages.${system}.lib;
+        wrix     = inputs.wrix.legacyPackages.${system}.lib;
         loomLinux  = inputs.loom.lib.mkLoom { pkgs = inputs.nixpkgs.legacyPackages.x86_64-linux; };
-        sandbox    = wrapix.mkSandbox {
-          profile      = wrapix.profiles.rust;
+        sandbox    = wrix.mkSandbox {
+          profile      = wrix.profiles.rust;
           agent        = "direct";
           directRunner = loomLinux.bin;
         };
@@ -121,5 +121,5 @@ wrapix can hand to `mkSandbox`:
 }
 ```
 
-Loom itself has no Nix dependency on wrapix — it just expects the binary on
+Loom itself has no Nix dependency on wrix — it just expects the binary on
 PATH and the standard env vars.

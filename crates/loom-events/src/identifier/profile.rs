@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn parse_accepts_canonical_shapes() -> Result<()> {
-        for input in ["rust", "python", "base", "wrapix-mcp", "p1"] {
+        for input in ["rust", "python", "base", "wrix-mcp", "p1"] {
             let p: ProfileName = input.parse()?;
             assert_eq!(p.as_str(), input);
         }

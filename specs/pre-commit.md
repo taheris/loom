@@ -6,7 +6,7 @@ how the agent self-verifies inside its bead container, and how the
 content-addressed `MarkerProof` short-circuits redundant pre-push work
 on driver-loop integration pushes. The hook plumbing (lock, shim shape,
 devshell wiring, install lifecycle, marker-check wrapper) is owned
-upstream by `wrapix.prekHooks`.
+upstream by `wrix.prekHooks`.
 
 ## Problem Statement
 
@@ -99,7 +99,7 @@ re-derives every check fresh.
 The bead workspace is a `git clone --local` of the loom workspace, and
 the container's bind-mounted `/workspace` includes the cloned
 `.git/`. The bead container inherits `core.hooksPath` from the loom
-workspace's prek installation (same `wrapix.prekHooks`-shipped path),
+workspace's prek installation (same `wrix.prekHooks`-shipped path),
 so prek's hook chain fires on every `git commit` and `git push` the
 agent invokes. The agent is a developer using git; prek is the
 orchestrator of "what to verify when."
@@ -128,7 +128,7 @@ emitting a structured "I verified" report.
 The bead container has no `nix`. Hooks whose entry runs `nix` are
 wrapped as `entry: skip-if-missing nix -- <command>` in
 `.pre-commit-config.yaml` (the wrapper is shipped from
-`wrapix.prekHooks` per *Plumbing* below); inside the bead container
+`wrix.prekHooks` per *Plumbing* below); inside the bead container
 the wrapper observes `nix` absent on `PATH` and exits 0 silently,
 no-op-ing the hook. Outside the bead container (host devShell + CI)
 the same wrapper finds `nix` and execs normally. Everything else in
@@ -187,11 +187,11 @@ to decouple from SSH latency), the `pre-push-checks` wrapper script
 (per-hook marker-aware short-circuit inside the prek chain), and the
 `skip-if-missing` wrapper (PATH-conditional exec for hooks whose
 binary may be absent in some contexts, notably `nix` inside the
-bead container) are all packaged in the `wrapix.prekHooks`
-derivation and installed by `wrapixLib.mkDevShell` when this
+bead container) are all packaged in the `wrix.prekHooks`
+derivation and installed by `wrixLib.mkDevShell` when this
 project's `nix develop` is entered. **The same installation applies
 inside the bead container**: bead-container entrypoints from profile
-images that build on `wrapixLib` inherit `core.hooksPath` and put
+images that build on `wrixLib` inherit `core.hooksPath` and put
 both wrappers on `PATH`, so the agent's `git commit` and `git push`
 fire the prek chain uniformly with the host. The downstream project
 does not maintain its own hook shims, lock script, wrappers, or
@@ -211,7 +211,7 @@ underlying binary is not guaranteed in every context — the bead
 container has no `nix`, so any hook that runs `nix` is wrapped as
 `entry: skip-if-missing nix -- <command>`. The wrapper exits 0
 silently when the named binary isn't on `PATH` and execs the
-command otherwise. Wrapix does **not** maintain a hook-id skip
+command otherwise. Wrix does **not** maintain a hook-id skip
 list, and does not stub `nix` on the container `PATH`; the absence
 is observable at the hook's entry, tagged via the wrapper at the
 point of use.
@@ -302,7 +302,7 @@ declared as such.
   for spec-declared non-system verifiers
   [check](grep -q 'cargo clippy' .pre-commit-config.yaml && grep -q 'LOOM_VERIFY_TIERS=check,test loom gate verify --diff' .pre-commit-config.yaml)
 - Each slow-tier pre-push hook's `entry` routes through the
-  `pre-push-checks` wrapper from `wrapix.prekHooks`
+  `pre-push-checks` wrapper from `wrix.prekHooks`
   [check](grep -q 'pre-push-checks' .pre-commit-config.yaml)
 - Hooks whose entry runs `nix` are wrapped with
   `skip-if-missing nix --` so they no-op in the bead container
@@ -335,7 +335,7 @@ declared as such.
 ### Agent self-verify
 
 - The bead container inherits `core.hooksPath` from the
-  `wrapix.prekHooks` installation so prek fires on agent commits
+  `wrix.prekHooks` installation so prek fires on agent commits
   [test?](loom_workflow::tests::bead_container_inherits_hooks_path)
 - Bead-container pre-commit hooks fire on the agent's `git commit`
   invocations
@@ -443,14 +443,14 @@ declared as such.
   wrapper script (per-hook marker-aware short-circuit), and the
   `skip-if-missing` wrapper (PATH-conditional exec for hooks whose
   binary may be absent in some contexts) are all owned upstream by
-  `wrapix.prekHooks`. Failures in serialization, prek shim
+  `wrix.prekHooks`. Failures in serialization, prek shim
   regeneration, `core.hooksPath` wiring, wrapper-script behaviour,
   or stamp lifecycle belong to that project. This spec consumes
   these surfaces by name in `.pre-commit-config.yaml`; it does not
   redefine them.
 
 - **Per-user `pre-commit install`.** Installation flows through
-  `wrapixLib.mkDevShell` exclusively. The
+  `wrixLib.mkDevShell` exclusively. The
   `.pre-commit-config.yaml` shape is portable but documenting a
   manual-install path is not this spec's concern.
 
@@ -458,11 +458,11 @@ declared as such.
   [tests.md](tests.md); this spec only specifies when the hook fires
   it.
 
-- **Binary cache for `nix flake check`.** A wrapix-side binary cache
+- **Binary cache for `nix flake check`.** A wrix-side binary cache
   (cachix / attic / S3 substituter) would let CI and cold operator
   workstations hit precomputed derivations, eliminating cold-cache
   latency on `nix flake check`. The configuration (substituter URL,
-  trusted public keys, populator workflow) is a wrapix concern and not
+  trusted public keys, populator workflow) is a wrix concern and not
   part of this spec's contract. No `nixConfig.substituters` is
   currently declared in this project's flake; that's a known gap, not
   a contract.

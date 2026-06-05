@@ -55,7 +55,7 @@ fn write_minimal_manifest(dir: &Path) -> PathBuf {
     std::fs::write(&source, "").expect("write base.tar");
     let manifest = dir.join("profile-images.json");
     let body = format!(
-        r#"{{"base": {{"ref":"localhost/wrapix-base:test","source":{source:?}}}}}"#,
+        r#"{{"base": {{"ref":"localhost/wrix-base:test","source":{source:?}}}}}"#,
         source = source.display().to_string(),
     );
     std::fs::write(&manifest, body).expect("write manifest");
@@ -89,7 +89,7 @@ fn run_loom_with_flag(
         .arg(spec_label)
         .arg(flag)
         .env("PATH", new_path)
-        .env("LOOM_WRAPIX_BIN", mock_agent)
+        .env("LOOM_WRIX_BIN", mock_agent)
         .env("LOOM_TEST_AGENT_MODE", "complete-marker")
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", manifest)

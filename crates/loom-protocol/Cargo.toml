@@ -12,7 +12,7 @@ public_contract = true
 # PUBLIC CONTRACT LEAF — `loom-protocol` is single-purpose: cross-crate
 # wire protocols loom emits or consumes. The crate's MAJOR version is the
 # wire-format protocol version per `specs/gate.md` § *Canonical contract
-# location*. External consumers (e.g. wrapix) depend on this crate
+# location*. External consumers (e.g. wrix) depend on this crate
 # directly to call `loom-protocol::gate::parse_walk_output` against
 # captured agent stdout.
 #

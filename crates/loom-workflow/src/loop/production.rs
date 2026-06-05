@@ -246,7 +246,7 @@ where
     /// [`VerifyPass::Worker`] (pass 1, fetched commits) or
     /// [`VerifyPass::Driver`] (pass 2, rebased commits) — it rides into
     /// the `signature-verification-failed` detail so the operator knows
-    /// whether to investigate the wrapix container's signing setup or the
+    /// whether to investigate the wrix container's signing setup or the
     /// loom-workspace gitconfig + key resolution.
     ///
     /// Returns `Ok(None)` when the pass verified (or was skipped because
@@ -346,7 +346,7 @@ where
         // `.loom/beads/<bead-id>/` (per `specs/harness.md`
         // § Bead dispatch — Path A). The clone's `.git/` is a regular
         // directory inside the bind-mounted path, so workers inside the
-        // wrapix container can commit and the driver can fold the work
+        // wrix container can commit and the driver can fold the work
         // back via push + merge_branch on clean exit.
         let worktree = self.git.create_worktree(&self.label, &bead.id).await?;
         info!(
@@ -357,7 +357,7 @@ where
         );
         // Drop any uncommitted mid-session leftovers from a prior attempt
         // while preserving the bead branch's HEAD (i.e. the agent's prior
-        // commits) and the warm caches under `target/` + `.wrapix/`. No-op
+        // commits) and the warm caches under `target/` + `.wrix/`. No-op
         // on the first attempt against a freshly-cloned tree.
         self.git.reset_bead_clone(&worktree.path).await?;
 
@@ -405,7 +405,7 @@ where
             mounts.push(spec);
         }
         let extra_env = self.loom_cfg.container_sccache_env();
-        // Host key paths handed to the `wrapix spawn` launcher so it mounts
+        // Host key paths handed to the `wrix spawn` launcher so it mounts
         // the deploy + signing keys into the bead container; the agent boots
         // without git keys otherwise (`specs/harness.md` § Commit signing).
         let launcher_env = self.git.launcher_key_env()?;
@@ -1405,7 +1405,7 @@ mod tests {
 
     fn write_manifest(dir: &std::path::Path) -> Arc<ProfileImageManifest> {
         let body = r#"{
-          "base": { "ref": "localhost/wrapix-base:abc", "source": "/nix/store/aaa-image-base" }
+          "base": { "ref": "localhost/wrix-base:abc", "source": "/nix/store/aaa-image-base" }
         }"#;
         let path = dir.join("profile-images.json");
         std::fs::write(&path, body).expect("write manifest");
@@ -1472,7 +1472,7 @@ mod tests {
             .expect("run_bead ok");
         assert_eq!(outcome, AgentOutcome::Success);
         let cfg = captured.lock().unwrap().take().expect("closure called");
-        assert_eq!(cfg.image_ref, "localhost/wrapix-base:abc");
+        assert_eq!(cfg.image_ref, "localhost/wrix-base:abc");
         assert!(cfg.initial_prompt.contains("lm-1"));
     }
 

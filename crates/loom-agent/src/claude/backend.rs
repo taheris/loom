@@ -1,7 +1,7 @@
 //! Claude Code backend: spawn + shutdown watchdog.
 //!
 //! [`ClaudeBackend::spawn`] writes the re-pin files into the workspace
-//! runtime dir, serializes the [`SpawnConfig`] to JSON, and execs `wrapix
+//! runtime dir, serializes the [`SpawnConfig`] to JSON, and execs `wrix
 //! spawn --spawn-config <file> --stdio` with stdin/stdout piped. The
 //! watchdog ([`ClaudeBackend::shutdown_after_result`]) handles the
 //! post-`result` cleanup: drop the writer, wait `grace`, escalate
@@ -28,7 +28,7 @@ use super::parser::ClaudeParser;
 use crate::apply_launcher_env;
 
 /// File name for the JSON-serialized [`SpawnConfig`] handed to
-/// `wrapix spawn --spawn-config`. Written into the per-session
+/// `wrix spawn --spawn-config`. Written into the per-session
 /// [`SpawnConfig::scratch_dir`] alongside `repin.sh` and
 /// `claude-settings.json` (which the workflow code wrote earlier via
 /// [`ScratchSession`]).
@@ -43,8 +43,8 @@ const SPAWN_CONFIG_FILE: &str = "spawn-config.json";
 pub const DEFAULT_POST_RESULT_GRACE_SECS: u64 = 5;
 
 /// Env var that overrides the launcher binary. Production resolves
-/// `wrapix` from `PATH`.
-const ENV_WRAPIX_BIN: &str = "LOOM_WRAPIX_BIN";
+/// `wrix` from `PATH`.
+const ENV_WRIX_BIN: &str = "LOOM_WRIX_BIN";
 
 /// Zero-sized marker for the Claude Code stream-json backend.
 ///
@@ -52,7 +52,7 @@ const ENV_WRAPIX_BIN: &str = "LOOM_WRAPIX_BIN";
 /// spawned [`AgentSession`] and the [`SpawnConfig`] passed to
 /// [`AgentBackend::spawn`]. The body launches `claude --print
 /// --input-format stream-json --output-format stream-json` (via
-/// `wrapix spawn --stdio`) with `--permission-prompt-tool stdio` so
+/// `wrix spawn --stdio`) with `--permission-prompt-tool stdio` so
 /// tool permissions flow over the same pipe.
 pub struct ClaudeBackend;
 
@@ -60,15 +60,14 @@ impl AgentBackend for ClaudeBackend {
     async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
         let spawn_config_path = prepare_runtime(config)?;
 
-        let wrapix_bin =
-            std::env::var_os(ENV_WRAPIX_BIN).unwrap_or_else(|| OsString::from("wrapix"));
+        let wrix_bin = std::env::var_os(ENV_WRIX_BIN).unwrap_or_else(|| OsString::from("wrix"));
         info!(
-            wrapix = %wrapix_bin.to_string_lossy(),
+            wrix = %wrix_bin.to_string_lossy(),
             spawn_config = %spawn_config_path.display(),
             "claude backend spawn",
         );
 
-        let mut cmd = Command::new(&wrapix_bin);
+        let mut cmd = Command::new(&wrix_bin);
         cmd.arg("spawn")
             .arg("--spawn-config")
             .arg(&spawn_config_path)
@@ -142,7 +141,7 @@ impl ClaudeBackend {
 /// [`ScratchSession`]. Returns the path of the written spawn-config.
 ///
 /// Module-public so tests can verify the side effects independently of
-/// the launcher exec (which would otherwise require the real `wrapix`
+/// the launcher exec (which would otherwise require the real `wrix`
 /// wrapper on `PATH`).
 ///
 /// [`ScratchSession`]: loom_driver::scratch::ScratchSession
@@ -166,7 +165,7 @@ fn upsert_env(env: &mut Vec<(String, String)>, key: &str, value: &str) {
 ///
 /// Module-private — the public surface is [`ClaudeBackend::spawn`]. Tests
 /// call this through the `pub(crate)` re-export to substitute a mock claude
-/// binary in place of the real `wrapix spawn` exec.
+/// binary in place of the real `wrix spawn` exec.
 pub(crate) async fn spawn_session(
     mut cmd: Command,
     denied_tools: Vec<String>,
@@ -293,11 +292,11 @@ mod tests {
         )
         .expect("open scratch");
         let cfg = SpawnConfig {
-            image_ref: "localhost/wrapix-test:claude".to_string(),
-            image_source: PathBuf::from("/nix/store/zzz-wrapix-test-claude.tar"),
+            image_ref: "localhost/wrix-test:claude".to_string(),
+            image_source: PathBuf::from("/nix/store/zzz-wrix-test-claude.tar"),
             image_digest_path: None,
             workspace: workspace.path().to_path_buf(),
-            env: vec![("WRAPIX_AGENT".into(), "claude".into())],
+            env: vec![("WRIX_AGENT".into(), "claude".into())],
             mounts: vec![],
             initial_prompt: "hello".to_string(),
             agent_args: vec!["--print".into()],

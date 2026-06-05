@@ -27,7 +27,7 @@ use loom_driver::logging::{BeadOutcome, LogSink};
 use loom_events::{
     DriverKind, EnvelopeBuilder, EventSink, ParsedAgentEvent, SessionCommand, Source,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::r#loop::SessionResult;
 use crate::observer::DefaultObserverChain;
@@ -202,7 +202,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
             },
         };
         let event = AgentEvent::from_parsed(parsed, envelope);
-        info!(event = %summarize_event(&event), "agent event");
+        log_agent_event(&event);
         if let AgentEvent::TextDelta { text, .. } = &event
             && let Some(buf) = text_capture.as_deref_mut()
         {
@@ -511,6 +511,24 @@ fn emit_midsession_failure_event(
     );
 }
 
+fn log_agent_event(event: &AgentEvent) {
+    let summary = summarize_event(event);
+    if is_high_volume_log_event(event) {
+        debug!(event = %summary, "agent event");
+    } else {
+        info!(event = %summary, "agent event");
+    }
+}
+
+fn is_high_volume_log_event(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::ThinkingDelta { .. }
+            | AgentEvent::ToolcallDelta { .. }
+            | AgentEvent::ToolProgress { .. }
+    )
+}
+
 fn summarize_event(event: &AgentEvent) -> String {
     match event {
         AgentEvent::AgentStart { title, profile, .. } => {
@@ -769,6 +787,26 @@ mod tests {
         assert!(is_non_streaming(&AgentEvent::TurnEnd {
             envelope: sample_envelope()
         }));
+    }
+
+    #[test]
+    fn high_volume_agent_events_are_debug_only() {
+        assert!(!is_high_volume_log_event(&text_delta_event()));
+        assert!(is_high_volume_log_event(&AgentEvent::ThinkingDelta {
+            envelope: sample_envelope(),
+            text: "x".into(),
+        }));
+        assert!(is_high_volume_log_event(&AgentEvent::ToolcallDelta {
+            envelope: sample_envelope(),
+            id: loom_events::identifier::ToolCallId::new("tc-1"),
+            delta: "x".into(),
+        }));
+        assert!(is_high_volume_log_event(&AgentEvent::ToolProgress {
+            envelope: sample_envelope(),
+            id: loom_events::identifier::ToolCallId::new("tc-1"),
+            text: "progress".into(),
+        }));
+        assert!(!is_high_volume_log_event(&tool_call_event()));
     }
 
     /// Spec criterion: "Driver treats any `SessionCommand::Abort`

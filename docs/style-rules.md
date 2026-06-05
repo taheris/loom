@@ -106,7 +106,7 @@ the Mayor via `bd human` instead.
     equivalent removal patterns where the change set still leaves
     source references to the removed element
 - **TST-8** — *Test infrastructure is itself tested.* Stubs (stub
-  agents, fixture helpers, `wrapix spawn` fakes, JSONL fakes) must
+  agents, fixture helpers, `wrix spawn` fakes, JSONL fakes) must
   carry at least one conformance test asserting the stub's observable
   contract matches the real implementation. `loom gate` audits
   (verifier, review, integrity-gate walks) must each carry a

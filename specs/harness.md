@@ -45,7 +45,7 @@ in-container loom loop. The two motivations:
 2. **Trust boundary.** Loom (orchestrator, on host) is trusted; the agent
    (claude or pi, in container) is the sandboxed execution layer.
 
-**Container spawn is delegated to `wrapix spawn`** — a thin wrapix
+**Container spawn is delegated to `wrix spawn`** — a thin wrix
 subcommand that owns container construction (mounts, env passthrough, krun
 runtime selection on aarch64 microVM, network filtering, deploy key, beads
 dolt socket). Loom never invokes `podman run` directly. Nix remains the source
@@ -58,7 +58,7 @@ loom (host)
     ├─ build SpawnConfig (image_ref, image_source, env allowlist, mounts, scratch_dir)
     ├─ serialize to /tmp/loom-<id>.json
     │
-    ├─ spawn: wrapix spawn --spawn-config /tmp/loom-<id>.json --stdio
+    ├─ spawn: wrix spawn --spawn-config /tmp/loom-<id>.json --stdio
     │   │
     │   └─ exec podman run [no -t, stdio piped] <image> <entrypoint>
     │       │
@@ -69,8 +69,8 @@ loom (host)
     └─ on bead completion: container exits, next bead → next spawn
 ```
 
-`wrapix spawn --stdio` is the non-TTY counterpart of today's interactive
-`wrapix run` (which uses `podman run -it`). Both modes share container
+`wrix spawn --stdio` is the non-TTY counterpart of today's interactive
+`wrix run` (which uses `podman run -it`). Both modes share container
 construction; they differ only in stdio attachment. The
 `--spawn-config <file>` flag accepts a JSON file that mirrors loom's typed
 `SpawnConfig` — avoiding a fat argv interface and giving loom a single
@@ -78,12 +78,12 @@ serialization boundary.
 
 **`loom plan` is the exception.** It is an interactive spec interview
 (human-in-the-loop terminal session), so it shells out to interactive
-`wrapix run` rather than driving an JSONL session. Loom prepares the
-template-rendered prompt, sets environment, exec's `wrapix run`, and lets
+`wrix run` rather than driving an JSONL session. Loom prepares the
+template-rendered prompt, sets environment, exec's `wrix run`, and lets
 claude attach to the user's terminal. No subprocess capture, no JSONL.
 
 **Trade-off accepted:** parallelism is straightforward (N concurrent
-`wrapix spawn` invocations) and per-bead container spawn cost (~1-2s
+`wrix spawn` invocations) and per-bead container spawn cost (~1-2s
 on podman) is dominated by agent runtime for typical bead sizes
 (minutes of agent work). The alternative — one long-lived container
 sharing one agent across beads — was rejected because it conflicts
@@ -130,7 +130,7 @@ unchanged.
 - **Bead workspace as a child of the loom workspace.** Same fractal
   pattern at every level: bead is to loom-workspace what
   loom-workspace is to origin. The bead workspace has a
-  self-contained `.git/` inside the bind-mounted path so the wrapix
+  self-contained `.git/` inside the bind-mounted path so the wrix
   container's `/workspace` mount resolves git operations without
   external `.git/`-mount wiring. Linked worktrees are unsuitable:
   their `.git` pointer file references a host-absolute path
@@ -144,14 +144,14 @@ to `closed` (via the agent's `bd close` on success, the operator's
 `loom msg`-resolve, or a direct `bd close`). Within that lifetime
 every fresh dispatch attempt sees a clean working tree: the
 dispatch path runs `git reset --hard HEAD` plus
-`git clean -fdx --exclude=target --exclude=.git --exclude=.wrapix`
+`git clean -fdx --exclude=target --exclude=.git --exclude=.wrix`
 before handing off to the agent. On the first attempt this is a
 no-op against a freshly-cloned tree; on retries it discards any
 mid-session leftovers and preserves the agent's prior commits on
 the bead branch — the agent is responsible for amending or
 branch-resetting if `previous_failure` context calls for a
 different approach. `target/` survives so cargo + sccache start
-warm; `.git/` and `.wrapix/` (extra-mount staging) survive.
+warm; `.git/` and `.wrix/` (extra-mount staging) survive.
 `create_worktree` is idempotent at the directory level: directory
 exists → reuse; missing → clone fresh from the loom workspace.
 
@@ -257,12 +257,12 @@ spec.
 optional sccache mount, all via `SpawnConfig`:
 
 - **Mandatory: the bead workspace** at `/workspace`.
-- **Mandatory: the host `wrapix-beads` dolt socket** at
-  `/workspace/.wrapix/dolt.sock` via `SpawnConfig.mounts`
+- **Mandatory: the host `wrix-beads` dolt socket** at
+  `/workspace/.wrix/dolt.sock` via `SpawnConfig.mounts`
   (see [agent.md § SpawnConfig](agent.md#spawnconfig)). This
   replaces the historical host-side hardlink shim and survives
   changes to the bead-workspace path. Linux passes the socket
-  through directly; on Darwin the wrapix sandbox rejects
+  through directly; on Darwin the wrix sandbox rejects
   Unix-socket `host_path` entries at launch (VirtioFS cannot
   forward socket operations across the VM boundary), so dolt-over-
   socket on Darwin requires a TCP fallback rather than this mount —
@@ -284,7 +284,7 @@ optional sccache mount, all via `SpawnConfig`:
 **Darwin compatibility.** Clones on a single host filesystem
 hardlink objects within that filesystem — no VM-boundary crossing.
 Bind-mounting plain directories and the dolt socket file through
-virtiofs is the standard wrapix pattern. The clone-over-worktree
+virtiofs is the standard wrix pattern. The clone-over-worktree
 choice eliminates the host-absolute `.git`-pointer failure mode
 that would also bite on Darwin. Outstanding Darwin work for the
 broader runtime layer is tracked in
@@ -303,9 +303,9 @@ the module; callers see only typed Rust methods.
 | Read commit graph / HEAD | `gix` | mature |
 | **Create loom workspace** (`loom init`) | `git clone <origin> .loom/integration` (CLI) | one-shot, infrequent; `gix-clone` is unchecked |
 | **Create bead clone** | `git clone --local .loom/integration .loom/beads/<id>`, `git checkout -b loom/<id>`, then `git branch --set-upstream-to origin/<integration-branch>` (CLI) | hardlinks loom workspace's `.git/objects`; self-contained `.git/` inside bind mount; upstream makes `@{u}..HEAD` resolve for the push-gate hook |
-| **Pre-attempt reset of bead clone** | `git reset --hard HEAD` + `git clean -fdx --exclude=target --exclude=.git --exclude=.wrapix` (CLI) | clean working tree at bead-branch HEAD while preserving `target/`, `.git/`, and `.wrapix/` |
+| **Pre-attempt reset of bead clone** | `git reset --hard HEAD` + `git clean -fdx --exclude=target --exclude=.git --exclude=.wrix` (CLI) | clean working tree at bead-branch HEAD while preserving `target/`, `.git/`, and `.wrix/` |
 | **Fetch bead branch from bead workspace** | `git fetch <bead-workspace-path> loom/<id>:loom/<id>` (CLI) | filesystem path as ad-hoc URL; runs in loom workspace inside `index.lock` |
-| **Verify commit signatures** | `git verify-commit <commits>` (CLI) | gates integration on signed-by-wrapix-key; conditional on signing key resolving (see [Commit signing](#commit-signing)) |
+| **Verify commit signatures** | `git verify-commit <commits>` (CLI) | gates integration on signed-by-wrix-key; conditional on signing key resolving (see [Commit signing](#commit-signing)) |
 | **Rebase + ff into integration branch** | `git rebase` + `git merge --ff-only` (CLI) | `gix-merge` cannot persist `MERGE_HEAD`/`MERGE_MSG`; avoids index dance |
 | **Delete bead-branch ref in loom workspace** | `git branch -D loom/<id>` (CLI) | end of per-bead critical section, unconditional |
 | **Push integration to origin** | `git push origin <integration-branch>` (CLI) | with non-ff retry |
@@ -331,15 +331,15 @@ Loom's host-side git operations must sign without prompting for
 the operator's GPG passphrase. The driver-side rebase produces new
 commits in the loom workspace, which is operated on the host only
 (never bind-mounted into a bead container). It receives a local
-`.git/config` block pointing at the wrapix-injected SSH signing key,
+`.git/config` block pointing at the wrix-injected SSH signing key,
 making driver signing non-interactive.
 
 Bead clones deliberately do **not** receive this local block. A bead
-clone is the workspace wrapix bind-mounts into the bead container,
+clone is the workspace wrix bind-mounts into the bead container,
 where the worker's in-container commits are the load-bearing signed
-path. wrapix's `git-ssh-setup.sh` entrypoint configures container
+path. wrix's `git-ssh-setup.sh` entrypoint configures container
 signing in the **global** `~/.gitconfig`, pointing `user.signingkey`
-at the in-container key copy (`/etc/wrapix/keys/<basename>`). Because
+at the in-container key copy (`/etc/wrix/keys/<basename>`). Because
 a local `.git/config` always beats global, a loom-written local block
 carrying the **host** key path — which does not exist in-container —
 would shadow the entrypoint's correct container path and break the
@@ -348,12 +348,12 @@ directory"). So loom writes no signing block into bead clones;
 host-side operator debug/test commits in a clone fall through to the
 operator's global gitconfig instead.
 
-**Key resolution mirrors wrapix's host-side rule** (see
+**Key resolution mirrors wrix's host-side rule** (see
 `lib/sandbox/linux/default.nix` and `scripts/setup-deploy-key` in
-the wrapix flake — same two-tier precedence, set-but-missing fails
+the wrix flake — same two-tier precedence, set-but-missing fails
 loud):
 
-1. `$WRAPIX_SIGNING_KEY` pointing at an existing file. Set-but-
+1. `$WRIX_SIGNING_KEY` pointing at an existing file. Set-but-
    missing exits non-zero at startup naming the path; silent
    fallback would mask a parent-process misconfiguration.
 2. `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` if the env var
@@ -361,43 +361,43 @@ loud):
    the loom workspace's origin URL (parsed as
    `github.com[:/]<user>/<repo>`); `<host>` is `hostname -s`
    (short form, fallback to `hostname`). Same derivation as
-   wrapix's `setup-deploy-key` script uses to choose the keyname
+   wrix's `setup-deploy-key` script uses to choose the keyname
    at provisioning time, so the two ends stay in sync without
    shared config. If the origin URL doesn't match the GitHub
    pattern, the fallback is skipped.
 3. If neither resolves, loom writes no signing block; the
    operator's global `~/.gitconfig` governs (and may prompt). This
-   is the "wrapix isn't set up on this host" path — intentionally
+   is the "wrix isn't set up on this host" path — intentionally
    noisy rather than silently degraded.
 
-Auth is handled by the `GIT_SSH_COMMAND` env var wrapix already
+Auth is handled by the `GIT_SSH_COMMAND` env var wrix already
 sets; loom inherits it and does not duplicate auth configuration.
 Deploy-key resolution (same precedence with the suffix dropped:
 `<repo>-<host>` instead of `<repo>-<host>-signing`) yields the host
-key path loom hands to the `wrapix spawn` **launcher** environment
+key path loom hands to the `wrix spawn` **launcher** environment
 (see *Launcher key environment* below); loom's own git invocations
-never read it — the key is consumed by wrapix to mount it into the
+never read it — the key is consumed by wrix to mount it into the
 bead container.
 
 **Launcher key environment.** A bead container's agent commits and
 pushes from inside the sandbox, so it needs the deploy + signing
-keys mounted in. wrapix mounts them only when their host paths are
-named in the launcher process environment (`$WRAPIX_DEPLOY_KEY` /
-`$WRAPIX_SIGNING_KEY`) — the in-container `SpawnConfig.env`
-allowlist cannot carry them, because that is the env wrapix builds
+keys mounted in. wrix mounts them only when their host paths are
+named in the launcher process environment (`$WRIX_DEPLOY_KEY` /
+`$WRIX_SIGNING_KEY`) — the in-container `SpawnConfig.env`
+allowlist cannot carry them, because that is the env wrix builds
 *inside* the container, and the host key paths are meaningless
 there. At bead dispatch the driver resolves both keys against the
 loom workspace (`GitClient::launcher_key_env`, same two-tier
 precedence as signing) and carries the resolved HOST paths on
-`SpawnConfig.launcher_env`; the backend sets them on the `wrapix
+`SpawnConfig.launcher_env`; the backend sets them on the `wrix
 spawn` child process before exec. `launcher_env` is host-only
 state: it is `#[serde(skip)]`-excluded from the spawn-config JSON
-so host key paths never land in a world-readable file, and wrapix
-re-points `$WRAPIX_DEPLOY_KEY` / `$WRAPIX_SIGNING_KEY` to the fixed
-in-container destinations (`/etc/wrapix/keys/<basename>`) once the
+so host key paths never land in a world-readable file, and wrix
+re-points `$WRIX_DEPLOY_KEY` / `$WRIX_SIGNING_KEY` to the fixed
+in-container destinations (`/etc/wrix/keys/<basename>`) once the
 keys are mounted. A key that does not resolve is simply omitted —
-`wrapix spawn` fails loudly on its own when a key it needs is
-absent, and the "wrapix isn't set up on this host" path stays
+`wrix spawn` fails loudly on its own when a key it needs is
+absent, and the "wrix isn't set up on this host" path stays
 non-fatal on loom's side.
 
 **Workspace gitconfig writes.** When `loom init` materializes the
@@ -418,10 +418,10 @@ to **host** paths (the loom workspace is operated on the host):
 When `GitClient::create_worktree` materializes a bead clone, it
 writes **no** signing block. The clone is bind-mounted into the bead
 container, where the host key path the block would carry does not
-exist, and a local block beats — and so would shadow — wrapix's
+exist, and a local block beats — and so would shadow — wrix's
 `git-ssh-setup.sh` global config that points `user.signingkey` at the
 in-container key copy. In-container worker commits therefore sign via
-that wrapix global config; host-side operator debug/test commits in
+that wrix global config; host-side operator debug/test commits in
 the clone fall through to the operator's global gitconfig. The driver
 itself never commits in a bead clone (its commits land in the loom
 workspace), so dropping the clone block does not affect any loom-driven
@@ -431,23 +431,23 @@ operator's `~/.gitconfig` in git's hierarchy, so the loom-workspace
 block is the sole authority on host-side signing there — operator
 GPG/passphrase setup is bypassed without modification.
 
-**allowed_signers derivation.** Wrapix derives the allowed_signers
+**allowed_signers derivation.** Wrix derives the allowed_signers
 file inside the container via `ssh-keygen -y -f $SIGNING_KEY` against
 the public-key half of the same pair. Loom mirrors this on the host:
 at the same moment it writes the gitconfig block, it runs
 `ssh-keygen -y -f <signing-key>` and writes the result with the
-identity prefix (`$GIT_AUTHOR_EMAIL` or `sandbox@wrapix.dev` per
-wrapix convention) to `<workspace>/.git/loom-allowed-signers`. The
+identity prefix (`$GIT_AUTHOR_EMAIL` or `sandbox@wrix.dev` per
+wrix convention) to `<workspace>/.git/loom-allowed-signers`. The
 signing key is passphrase-less, so the derivation is non-interactive.
 The file lives under `.git/` so workspace removal cleans it up
 automatically.
 
 **Scope.** This subsection covers commit signing only.
 SSH-over-git auth (deploy key for github.com push) flows through
-wrapix's existing `GIT_SSH_COMMAND` pathway, inherited via the
+wrix's existing `GIT_SSH_COMMAND` pathway, inherited via the
 operator's shell environment; loom does not reconfigure it. Container
 gitconfig is unchanged — bead-container commits are already signed
-by wrapix's `git-ssh-setup.sh` entrypoint and need no host-side
+by wrix's `git-ssh-setup.sh` entrypoint and need no host-side
 intervention.
 
 **rerere configuration.** Alongside the signing block, `loom init`
@@ -472,7 +472,7 @@ optional content-digest path needed to spawn its image. Loom reads it at
 startup and, for each bead, looks up the profile label to populate
 `SpawnConfig.image_ref` (the podman ref), `SpawnConfig.image_source` (the
 store path handed to the launcher install step), and
-`SpawnConfig.image_digest_path` (the digest file wrapix uses to skip
+`SpawnConfig.image_digest_path` (the digest file wrix uses to skip
 reloading already-present image content).
 
 The file is a JSON object keyed by profile name, with two required string
@@ -480,13 +480,13 @@ fields plus an optional `digest` string per entry:
 
 ```json
 {
-  "base":   { "ref": "localhost/wrapix-base:abc123",   "source": "/nix/store/...-image-base",   "digest": "/nix/store/...-image-base-digest" },
-  "rust":   { "ref": "localhost/wrapix-rust:def456",   "source": "/nix/store/...-image-rust",   "digest": "/nix/store/...-image-rust-digest" },
-  "python": { "ref": "localhost/wrapix-python:ghi789", "source": "/nix/store/...-image-python", "digest": "/nix/store/...-image-python-digest" }
+  "base":   { "ref": "localhost/wrix-base:abc123",   "source": "/nix/store/...-image-base",   "digest": "/nix/store/...-image-base-digest" },
+  "rust":   { "ref": "localhost/wrix-rust:def456",   "source": "/nix/store/...-image-rust",   "digest": "/nix/store/...-image-rust-digest" },
+  "python": { "ref": "localhost/wrix-python:ghi789", "source": "/nix/store/...-image-python", "digest": "/nix/store/...-image-python-digest" }
 }
 ```
 
-Built by `wrapix.lib.${system}.mkProfileImages` (defined in
+Built by `wrix.lib.${system}.mkProfileImages` (defined in
 [profiles.md](profiles.md)); the bundled flake output is
 `packages.profile-images`. External flakes that add custom profiles call
 `mkProfileImages` themselves to produce a manifest covering their full
@@ -512,9 +512,9 @@ Per-bead dispatch is:
    `infra-preflight` (see *Verdict gate* below).
 3. Build `SpawnConfig` with `image_ref = entry.ref`, `image_source =
    entry.source`, and `image_digest_path = entry.digest` when present. Hand it
-   to `wrapix spawn`.
+   to `wrix spawn`.
 
-Agent (claude vs pi) is selected at container start via the `WRAPIX_AGENT`
+Agent (claude vs pi) is selected at container start via the `WRIX_AGENT`
 env-allowlist entry the entrypoint switches on — see
 [agent.md — Entrypoint Agent Selection](agent.md#entrypoint-agent-selection).
 The manifest stays one-dimensional; each per-profile image carries both
@@ -522,15 +522,15 @@ runtimes, and `mkSandbox` no longer takes an `agent` parameter at Nix-eval
 time.
 
 `loom plan` and `loom msg --chat` are interactive, so they shell out to
-`wrapix run` (TTY-attached) rather than `wrapix spawn`. To keep one
+`wrix run` (TTY-attached) rather than `wrix spawn`. To keep one
 resolution path, both commands look up their profile (per
 [Configuration](#configuration); default `base`) in the manifest and
-export `WRAPIX_DEFAULT_IMAGE_REF=<entry.ref>` plus
-`WRAPIX_DEFAULT_IMAGE_SOURCE=<entry.source>` into the child environment
-before exec'ing `wrapix run`. The launcher reads those env vars when no
+export `WRIX_DEFAULT_IMAGE_REF=<entry.ref>` plus
+`WRIX_DEFAULT_IMAGE_SOURCE=<entry.source>` into the child environment
+before exec'ing `wrix run`. The launcher reads those env vars when no
 `--spawn-config` is supplied — see
 [sandbox.md — Launcher Subcommands](sandbox.md#launcher-subcommands).
-`wrapix run` has no `--profile` argv parser; any extra tokens between
+`wrix run` has no `--profile` argv parser; any extra tokens between
 the workspace positional and the in-container command are forwarded into
 the container as the command vector, so the env-var hand-off is the sole
 profile-selection contract on this path. The in-container command is
@@ -934,7 +934,7 @@ atomic under the lock:
    failure routes the bead to `loom:blocked` with cause
    `signature-verification-failed` — agent-retry cannot fix a
    signature on existing commits, so this is operator
-   investigation territory (likely a misconfigured wrapix
+   investigation territory (likely a misconfigured wrix
    container or missing key bind-mount).
 3. **Rebase** the bead branch onto the integration branch. On
    textual conflict, `git rerere` replays any previously-recorded
@@ -1021,7 +1021,7 @@ the bottleneck and the throughput gain from per-bead-container
 parallelism caps.
 
 **Bead-container self-verify is feedback only.** The bead workspace
-inherits `core.hooksPath` from the loom workspace's `wrapix.prekHooks`
+inherits `core.hooksPath` from the loom workspace's `wrix.prekHooks`
 installation (see [pre-commit.md § Agent self-verify in the bead
 container](pre-commit.md)), so prek fires on the agent's commits,
 catching treefmt drift, integrity findings, and obvious cargo
@@ -1132,7 +1132,7 @@ when the bead's own exit signals were clean:
 
 | Failure phase | Cause | Detail | Recovery |
 |---------------|-------|--------|----------|
-| Signature verification pass 1 (fetched commits) | `signature-verification-failed` | side = `worker` | `loom:blocked` — operator investigates wrapix container signing setup |
+| Signature verification pass 1 (fetched commits) | `signature-verification-failed` | side = `worker` | `loom:blocked` — operator investigates wrix container signing setup |
 | Rebase | `integration-conflict` | `{ files, new_base_sha }` | one agent-retry pass; second failure escalates to `loom:clarify` (same cause) |
 | Signature verification pass 2 (rewritten commits) | `signature-verification-failed` | side = `driver` | `loom:blocked` — operator investigates loom-workspace gitconfig + key resolution |
 | Audit (`prek run --hook-stage pre-push` + verify) | `post-integrate-fail` | `Vec<VerifierFailure>` | rollback via `git reset --hard HEAD~1`; route to recovery so next iteration sees the cross-bead breakage |
@@ -1159,7 +1159,7 @@ the SHAs in the bead's notes.
 
 `signature-verification-failed` cannot be addressed by agent retry
 — signatures are bound to existing commits and the cause is
-environmental (wrapix container misconfiguration on pass 1,
+environmental (wrix container misconfiguration on pass 1,
 loom-workspace gitconfig drift or missing allowed_signers on
 pass 2). The bead routes to `loom:blocked` immediately; the
 operator investigates per the `side` discriminator in the cause
@@ -1172,7 +1172,7 @@ resolution).
 `LOOM_NOOP` and the bead is bd-closed, the driver runs `git status
 --porcelain` against the bead's workspace. The pre-attempt reset
 described in [Bead Dispatch](#bead-dispatch) — `git reset --hard
-HEAD` plus `git clean -fdx` (with `target/`, `.git/`, `.wrapix/`
+HEAD` plus `git clean -fdx` (with `target/`, `.git/`, `.wrix/`
 excluded) — is the load-bearing source of the empty-starting-tree
 guarantee. The bead workspace persists across attempts under the
 per-bead-close lifecycle, so freshness from `create_worktree` is
@@ -1716,7 +1716,7 @@ the `current_spec` meta value. `-s <label>` is the only narrowing path.
 The `current_spec` is not consulted for any msg mode.
 
 **Chat session shape.** `loom msg -c` (optionally with `-s <label>`)
-launches the base profile via `wrapix spawn`, runs Claude with the
+launches the base profile via `wrix spawn`, runs Claude with the
 `msg.md` template, and walks the user through outstanding beads
 interactively. The session has **full bd-write authority** on the
 beads in its queue: notes via `bd update --notes`, label add/remove
@@ -2506,20 +2506,20 @@ Criteria.
 - Loom never invokes `podman run` directly (grep `crates/` for
       `podman` finds only documentation references)
   [check](cargo run -p loom-walk -- loom_does_not_invoke_podman)
-- `wrapix spawn --spawn-config <file> --stdio` accepts a JSON config,
-      reuses container construction from existing `wrapix run`, omits TTY
-  [test](wrapix_spawn_invocation_records_correct_argv)
+- `wrix spawn --spawn-config <file> --stdio` accepts a JSON config,
+      reuses container construction from existing `wrix run`, omits TTY
+  [test](wrix_spawn_invocation_records_correct_argv)
 - `SpawnConfig` JSON shape is stable: serialization round-trip preserves
       all fields and key names, including the `image_ref`, `image_source`,
       and optional `image_digest_path` fields
   [test](spawn_config_with_image_digest_path_round_trips)
-- `wrapix spawn` installs from `image_source` (a Nix store path) before
+- `wrix spawn` installs from `image_source` (a Nix store path) before
       invoking podman with `image_ref` as the ref; when `image_digest_path`
-      is present, wrapix skips reloading bytes if the same content already
+      is present, wrix skips reloading bytes if the same content already
       exists in the local image store
   [system](nix run .#test)
 - Per-bead profile selection: two beads with different profile labels
-      result in two `wrapix spawn` invocations with different `image_ref`
+      result in two `wrix spawn` invocations with different `image_ref`
       and `image_source` (and digest paths when present)
   [test](per_bead_profile_dispatch_produces_distinct_image_refs)
 - Loom reads `LOOM_PROFILES_MANIFEST` at startup and parses it into
@@ -2531,7 +2531,7 @@ Criteria.
   [test](lookup_unknown_profile_carries_manifest_path)
 - `--profile` CLI override takes precedence over bead labels
   [test](cli_override_swaps_resolved_image)
-- `loom plan` shells out to interactive `wrapix run` (TTY attached); does
+- `loom plan` shells out to interactive `wrix run` (TTY attached); does
       not capture stdio for JSONL
   [check](cargo test -p loom-workflow --lib argv_starts_with_run_subcommand)
 
@@ -2726,9 +2726,9 @@ Criteria.
       observes the bead in `closed` status
   [test?](bead_workspace_reaped_on_bd_close)
 - Every dispatch attempt sees a clean working tree against the bead
-      workspace's current HEAD; `target/`, `.git/`, and `.wrapix/`
+      workspace's current HEAD; `target/`, `.git/`, and `.wrix/`
       survive the pre-attempt reset
-  [test](bead_workspace_reset_preserves_target_and_dotwrapix)
+  [test](bead_workspace_reset_preserves_target_and_dotwrix)
 - `loom loop` / `loom init` startup fast-forwards the loom
       workspace's integration branch to `origin/<integration-branch>`
       before any bead clone is materialized, so `loom/<id>` always
@@ -2750,7 +2750,7 @@ Criteria.
 - `loom loop` startup leaves bead workspaces alone whose bead is in
       any non-closed state
   [test](loop_startup_gc_skips_open_bead_workspaces)
-- Each bead workspace's dispatch spawns its own `wrapix spawn`;
+- Each bead workspace's dispatch spawns its own `wrix spawn`;
       spawns overlap in wall-clock under `--parallel N > 1`
   [test](concurrent_spawns_overlap_in_wall_clock)
 - Successful bead branches are fetched by the driver from the bead
@@ -2825,8 +2825,8 @@ Criteria.
       per-bead-close behavior) and the bead is routed to `Blocked` or
       `Clarify` per the verdict gate
   [test](workspace_persists_on_all_failure_paths)
-- Bead containers receive the host `wrapix-beads` dolt socket as a
-      single-file bind mount at `/workspace/.wrapix/dolt.sock` via
+- Bead containers receive the host `wrix-beads` dolt socket as a
+      single-file bind mount at `/workspace/.wrix/dolt.sock` via
       `SpawnConfig.mounts`, replacing the host-side hardlink shim
       previously used in `GitClient::create_worktree`
   [test](bead_container_dolt_socket_via_mounts)
@@ -2845,10 +2845,10 @@ Criteria.
   [check](cargo run -p loom-walk -- git_client_encapsulation)
 - `loom init` writes a local `.git/config` block in the loom
       workspace declaring `gpg.format=ssh`, `user.signingkey`
-      pointing at the resolved wrapix signing key,
+      pointing at the resolved wrix signing key,
       `commit.gpgsign=true`, and `gpg.ssh.allowedSignersFile`
       pointing at `<workspace>/.git/loom-allowed-signers`, when
-      `$WRAPIX_SIGNING_KEY` or the
+      `$WRIX_SIGNING_KEY` or the
       `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` fallback
       resolves
   [test](loom_init_writes_signing_gitconfig)
@@ -2856,39 +2856,39 @@ Criteria.
       bead clone's local `.git/config`, even when the signing key
       resolves: the clone is bind-mounted into the bead container,
       where a local block carrying the host key path would shadow
-      wrapix's `git-ssh-setup.sh` global config and break the
+      wrix's `git-ssh-setup.sh` global config and break the
       worker's in-container `git commit`. In-container commits sign
-      via that wrapix global config; host-side clone commits fall
+      via that wrix global config; host-side clone commits fall
       through to the operator's global gitconfig
   [test](create_worktree_omits_signing_block_in_bead_clone)
 - The fallback keyname is derived as `<repo>-<host>` where `<repo>`
       is parsed from the origin URL (`github.com[:/]<user>/<repo>`)
-      and `<host>` is `hostname -s`, matching wrapix's
+      and `<host>` is `hostname -s`, matching wrix's
       `setup-deploy-key` derivation rule
-  [test](signing_key_fallback_uses_wrapix_repo_host_derivation)
+  [test](signing_key_fallback_uses_wrix_repo_host_derivation)
 - The allowed_signers file at
       `<workspace>/.git/loom-allowed-signers` is derived via
       `ssh-keygen -y -f <signing-key>` at gitconfig-write time and
-      contains the wrapix signing identity
+      contains the wrix signing identity
   [test](allowed_signers_derived_from_signing_key)
 - Driver-side rebase in the loom workspace produces signed commits
       whose `gpgsig` header is present in the commit object, without
       prompting for a passphrase
-  [test](driver_rebase_signs_with_wrapix_key)
+  [test](driver_rebase_signs_with_wrix_key)
 - `git log --show-signature` against a driver-rebased commit in the
       loom workspace prints `Good "git" signature` using the derived
       allowed_signers file
   [test](rebased_commits_verify_via_derived_allowed_signers)
-- `$WRAPIX_SIGNING_KEY` set to a non-existent file aborts loom
+- `$WRIX_SIGNING_KEY` set to a non-existent file aborts loom
       startup with a non-zero exit and an error naming the missing
       path
-  [test](wrapix_signing_key_missing_file_fails_loud)
-- When neither `$WRAPIX_SIGNING_KEY` nor the
+  [test](wrix_signing_key_missing_file_fails_loud)
+- When neither `$WRIX_SIGNING_KEY` nor the
       `$HOME/.ssh/deploy_keys/<repo>-<host>-signing` fallback
       resolves, no signing block is written and the operator's
       global gitconfig governs signing in loom-materialized
       workspaces
-  [test](no_wrapix_keys_leaves_global_gitconfig_governing)
+  [test](no_wrix_keys_leaves_global_gitconfig_governing)
 - When the signing key resolves, the per-bead integration step
       runs `git verify-commit` against the fetched commits
       (pass 1) and against the rebased commits (pass 2); pass-1
@@ -2901,8 +2901,8 @@ Criteria.
       skipped at both passes and the integration step proceeds
   [test](signature_verification_skipped_when_no_key)
 - `GitClient::launcher_key_env` surfaces each resolved key as a
-      `WRAPIX_DEPLOY_KEY` / `WRAPIX_SIGNING_KEY` → HOST-path pair so
-      loom can hand them to the `wrapix spawn` launcher; an
+      `WRIX_DEPLOY_KEY` / `WRIX_SIGNING_KEY` → HOST-path pair so
+      loom can hand them to the `wrix spawn` launcher; an
       unresolved key is omitted rather than erroring
   [test](launcher_key_env_exposes_signing_key_host_path)
 - Bead dispatch threads the resolved launcher keys onto
@@ -2913,7 +2913,7 @@ Criteria.
       spawn-config JSON so host key paths never leak into the
       world-readable file the wrapper reads
   [test](launcher_env_is_never_serialized)
-- Each backend applies `SpawnConfig.launcher_env` to the `wrapix
+- Each backend applies `SpawnConfig.launcher_env` to the `wrix
       spawn` child process environment before exec
   [test](apply_launcher_env_sets_child_process_env)
 
@@ -2921,7 +2921,7 @@ Criteria.
 
 - `loom plan -n <label>` spawns container with base profile, runs
       spec interview; edits the spec markdown only — no bd writes
-  [test](plan_new_invokes_wrapix_run_and_records_companions)
+  [test](plan_new_invokes_wrix_run_and_records_companions)
 - `loom plan -u <label>` updates existing spec with anchor/sibling
       support; edits the spec markdown(s) only — same isolation as
       `-n`. Sibling specs that the interview touches are detected
@@ -3899,8 +3899,8 @@ two agent-loop observers.
    `loom:blocked` / `loom:clarify`) — those paths leave the gate
    before the `Clean` arm runs.
 10. **Beads via shared Dolt socket** — every container has the host's
-    `wrapix-beads` Dolt server bind-mounted at
-    `/workspace/.wrapix/dolt.sock` via `SpawnConfig.mounts`
+    `wrix-beads` Dolt server bind-mounted at
+    `/workspace/.wrix/dolt.sock` via `SpawnConfig.mounts`
     (see [Bead Dispatch](#bead-dispatch)); in-container `bd` writes
     go straight to the authoritative state. No per-bead `bd dolt
     push/pull` handoff. Loom on the host reads the same state
@@ -3998,7 +3998,7 @@ two agent-loop observers.
    `ProfileName` for domain identifiers; `SessionId`, `ToolCallId`,
    `RequestId` for protocol identifiers. No bare `String` for typed IDs.
    `AgentKind` is an enum (`Pi`, `Claude`), not a newtype.
-3. **Nix integration** — built via `wrapix.profiles.rust.buildPackage`
+3. **Nix integration** — built via `wrix.profiles.rust.buildPackage`
    (crane-backed; see [profiles.md — Rust package builder](profiles.md#rust-profile)).
    `packages.loom` consumes `.bin` so devshell rebuilds skip the clippy/nextest
    passes; those land as separate `loom-clippy` / `loom-nextest` entries in

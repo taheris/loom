@@ -63,7 +63,7 @@ case "$MODE" in
         # assert the second turn was triggered by the steer.
         IFS= read -r steer_line
         # Pull the content field out via a sloppy regex. jq is not a hard
-        # dependency in the wrapix tests env, but stream-json messages
+        # dependency in the wrix tests env, but stream-json messages
         # use a stable shape so a substring match is sufficient.
         if [[ "$steer_line" == *STEERED_TEXT* ]]; then
             emit_assistant_text "ack STEERED_TEXT"

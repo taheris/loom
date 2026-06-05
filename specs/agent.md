@@ -26,7 +26,7 @@ Claude Code backend that runs the `claude` binary directly.
 This spec defines the agent abstraction that lets Loom drive any of
 the three runtimes through a common interface, and the infrastructure
 changes (runtime layer, entrypoint) that make each backend available
-inside wrapix containers. The Loom platform (crate structure,
+inside wrix containers. The Loom platform (crate structure,
 templates, workflow) is defined in [harness.md](harness.md).
 
 ## Architecture
@@ -86,7 +86,7 @@ production code change.
 
 `loom plan` and `loom msg --chat` bypass the agent-backend abstraction
 and shell out to an interactive REPL with inherited stdio. Both invoke
-`wrapix run <workspace> <agent command> ... <prompt>` and let the spawned
+`wrix run <workspace> <agent command> ... <prompt>` and let the spawned
 process attach directly to the controlling terminal; the driver-side
 stream-json parser does not run on this path. The command is selected from
 the resolved phase backend: `claude --dangerously-skip-permissions` for
@@ -95,17 +95,17 @@ Claude and `pi` for Pi.
 Per-phase config still resolves: each phase's `profile` key flows
 through `LoomConfig::agent_for(Phase)` exactly like the non-interactive
 phases. The resolved name is looked up in the profile-image manifest
-and the resulting `ImageEntry` is exported to `wrapix run` via the
-`WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` env vars
+and the resulting `ImageEntry` is exported to `wrix run` via the
+`WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` env vars
 documented in [harness.md — Profile-Image
 Manifest](harness.md#profile-image-manifest). The env-var hand-off is
-the sole profile-selection contract on this path: `wrapix run` has no
+the sole profile-selection contract on this path: `wrix run` has no
 `--profile` parser, and any extra tokens between the workspace
 positional and the agent command would be forwarded into the container as
 the command vector (the entrypoint would exec them literally and exit 127).
 
-`wrapix run` reads those env vars (when no `--spawn-config` is supplied)
-to pick the same per-profile image the non-interactive `wrapix spawn`
+`wrix run` reads those env vars (when no `--spawn-config` is supplied)
+to pick the same per-profile image the non-interactive `wrix spawn`
 path selects — the two paths must select the same image for the same
 profile name.
 
@@ -300,18 +300,18 @@ parser boundary.
 ### SpawnConfig
 
 The harness writes a `SpawnConfig` to a JSON file at dispatch time, and
-`wrapix spawn --spawn-config <file>` reads it back. This is the single
+`wrix spawn --spawn-config <file>` reads it back. This is the single
 serialization boundary between loom and the wrapper — preferred over a
 fat argv interface. The wrapper's JSON shape is the stable contract;
-loom and `wrapix spawn` ship from the same flake and stay in lockstep.
+loom and `wrix spawn` ship from the same flake and stay in lockstep.
 
 Required fields:
 
-- `image_ref` — podman image reference (e.g. `localhost/wrapix-rust:<hash>`).
+- `image_ref` — podman image reference (e.g. `localhost/wrix-rust:<hash>`).
 - `image_source` — Nix store path the launcher uses to materialize that ref
   when needed.
 - `image_digest_path` — optional Nix store path containing the image content
-  digest. Modern wrapix launchers use it to skip reloading identical image
+  digest. Modern wrix launchers use it to skip reloading identical image
   content that is already present under any tag.
 - `workspace` — host path bind-mounted into the container at
   `/workspace`.
@@ -320,12 +320,12 @@ Required fields:
 - `mounts` — typed list of per-spawn bind mounts beyond `workspace`,
   additive to the resolved profile's `mounts`. Each entry carries
   `host_path`, `container_path`, and `read_only`. Loom uses this to
-  project the `wrapix-beads` dolt socket into every bead container at
-  `/workspace/.wrapix/dolt.sock` (replacing the host-side hardlink
+  project the `wrix-beads` dolt socket into every bead container at
+  `/workspace/.wrix/dolt.sock` (replacing the host-side hardlink
   shim) and the shared sccache directory at the configured cache
   path; see [harness.md § Bead Dispatch](harness.md#bead-dispatch).
   Single-file mounts (sockets) and directory mounts both pass through
-  virtiofs on Linux. On Darwin the wrapix sandbox classifier accepts
+  virtiofs on Linux. On Darwin the wrix sandbox classifier accepts
   directories and regular files but rejects Unix-socket `host_path`
   entries at launch — VirtioFS does not pass socket operations across
   the VM boundary — so dolt-over-socket on Darwin needs a TCP-routed
@@ -350,7 +350,7 @@ known-needed variables:
 
 | Variable | When | Purpose |
 |----------|------|---------|
-| `WRAPIX_AGENT` | always | Agent selection in entrypoint |
+| `WRIX_AGENT` | always | Agent selection in entrypoint |
 | `CLAUDE_CODE_OAUTH_TOKEN` | claude backend | Claude authentication |
 | `ANTHROPIC_API_KEY` | pi or direct backend (Anthropic models) | LLM API key |
 | `TERM` | always | Terminal capability |
@@ -368,7 +368,7 @@ spawn; values are never logged.
 loom (host)                                            container
     │                                                       │
     ├─ serialize SpawnConfig → /tmp/loom-<id>.json          │
-    ├─ wrapix spawn --spawn-config <file> --stdio        │
+    ├─ wrix spawn --spawn-config <file> --stdio        │
     │   └─ exec podman run [no TTY, stdio piped] ─►  entrypoint.sh
     │                                                       │
     │                                                  agent (pi --mode rpc / claude / loom-direct-runner)
@@ -381,7 +381,7 @@ loom (host)                                            container
     ├─ reads JSONL from stdout ◄─────────────────────  agent streams events
     │   (all three backends)                                │
     │                                                       │
-    └─ on exit: container teardown via wrapix              │
+    └─ on exit: container teardown via wrix              │
 ```
 
 The wrapper hides container construction (mounts, env allowlist, krun
@@ -415,8 +415,8 @@ further.
 ### Pi-Mono RPC Protocol
 
 Pi's `--mode rpc` uses JSONL over stdin/stdout. The protocol has no version
-negotiation or handshake. After launching `wrapix spawn`, the Pi backend waits
-for wrapix's container-start stderr marker before starting the Pi RPC probe
+negotiation or handshake. After launching `wrix spawn`, the Pi backend waits
+for wrix's container-start stderr marker before starting the Pi RPC probe
 budget; image materialization and container staging are launcher startup, not
 agent-protocol silence. It then sends a `get_state` probe and verifies the
 response has the documented state-object shape (`isStreaming`,
@@ -549,7 +549,7 @@ by the top-level `tool_execution_*` and `turn_end` events.
 
 **Extension UI passthrough:** Pi emits `extension_ui_request` messages for
 extension-defined UI. Loom logs these at `debug!` level — no pi extensions
-are loaded in the wrapix sandbox, so this should not arise in practice.
+are loaded in the wrix sandbox, so this should not arise in practice.
 However, the timeout on these requests is set by the *extension*, not
 enforced by pi: if an extension does not specify `timeout?` and the host
 does not respond, the extension's promise hangs forever and may stall the
@@ -877,7 +877,7 @@ sandbox-aware tool impls).
 
 ### Entrypoint Agent Selection
 
-The container entrypoint branches on `WRAPIX_AGENT`:
+The container entrypoint branches on `WRIX_AGENT`:
 
 - `claude` (default): existing Claude config merging, hooks,
   launching the claude binary.
@@ -913,7 +913,7 @@ connection, network filtering, session audit logging.
 
 ### Pi backend
 
-- Pi backend waits for the wrapix container-start marker before starting the RPC probe budget
+- Pi backend waits for the wrix container-start marker before starting the RPC probe budget
   [test](loom_todo_pi_hang_probe_surfaces_handshake_timeout)
 - Pi backend sends `get_state` after startup and proceeds when the response shape is valid
   [test](startup_probe_succeeds_when_get_state_shape_is_valid)
@@ -957,8 +957,8 @@ connection, network filtering, session audit logging.
 
 ### Direct backend
 
-- Direct backend's `Session` impl spawns a container via `wrapix spawn` with the `direct` runtime layer; the container's entrypoint exec's `loom-direct-runner`
-  [test](direct_session_spawn_invokes_wrapix_spawn_with_direct_runtime)
+- Direct backend's `Session` impl spawns a container via `wrix spawn` with the `direct` runtime layer; the container's entrypoint exec's `loom-direct-runner`
+  [test](direct_session_spawn_invokes_wrix_spawn_with_direct_runtime)
 - `loom-direct-runner` constructs a `loom-llm::Conversation`, registers the six sandbox-aware tools, runs the loop, and emits `AgentEvent` JSONL to stdout — same wire shape as Pi/Claude
   [test](direct_runner_emits_agent_event_jsonl_compatible_with_pi_and_claude)
 - Direct registers exactly six tools by name: `Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`
@@ -1022,31 +1022,31 @@ connection, network filtering, session audit logging.
 
 ### Interactive shell-out
 
-- `loom plan` exports `WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` to `wrapix run` (no `--profile` argv flag — `wrapix run` has no parser for it), with the profile resolved through `LoomConfig::agent_for(Phase::Plan)`
-  [test](plan_runner_passes_resolved_profile_to_wrapix_run)
-- `loom msg --chat` exports `WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` to `wrapix run` (no `--profile` argv flag), with the profile resolved through `LoomConfig::agent_for(Phase::Msg)`
-  [test](msg_chat_passes_resolved_profile_to_wrapix_run)
+- `loom plan` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` to `wrix run` (no `--profile` argv flag — `wrix run` has no parser for it), with the profile resolved through `LoomConfig::agent_for(Phase::Plan)`
+  [test](plan_runner_passes_resolved_profile_to_wrix_run)
+- `loom msg --chat` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` to `wrix run` (no `--profile` argv flag), with the profile resolved through `LoomConfig::agent_for(Phase::Msg)`
+  [test](msg_chat_passes_resolved_profile_to_wrix_run)
 - `[phase.default].profile` alone (no per-phase override, no CLI override) reaches `Phase::Plan` via the env-var hand-off
   [test](plan_phase_default_profile_alone_picks_manifest_entry)
 
 ### Container integration
 
-- Loom spawns containers via `wrapix spawn --spawn-config <file>
+- Loom spawns containers via `wrix spawn --spawn-config <file>
       --stdio` with the correct profile image, never via `podman run` directly
-  [test](wrapix_spawn_invocation_records_correct_argv)
+  [test](wrix_spawn_invocation_records_correct_argv)
 - Container receives agent stdin/stdout via pipe
   [test](child_stdin_is_a_pipe_not_a_tty)
-- Entrypoint starts pi in RPC mode when `WRAPIX_AGENT=pi`
-  [check](bash -c "grep -q 'pi --mode rpc' $(nix build --no-link --print-out-paths .#wrapixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
-- Entrypoint starts claude normally when `WRAPIX_AGENT=claude`
-  [check](bash -c "grep -q 'dangerously-skip-permissions' $(nix build --no-link --print-out-paths .#wrapixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
+- Entrypoint starts pi in RPC mode when `WRIX_AGENT=pi`
+  [check](bash -c "grep -q 'pi --mode rpc' $(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
+- Entrypoint starts claude normally when `WRIX_AGENT=claude`
+  [check](bash -c "grep -q 'dangerously-skip-permissions' $(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
 - Entrypoint preserves git SSH, beads, network filtering for both agents
-  [check](bash -c "grep -q '/git-ssh-setup.sh' $(nix build --no-link --print-out-paths .#wrapixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
+  [check](bash -c "grep -q '/git-ssh-setup.sh' $(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
 
 ### Agent runtime layer
 
 - The default Loom sandbox image builds with the Pi agent runtime selected
-  explicitly (`agent = "pi"`), matching wrapix's one-agent-per-image format.
+  explicitly (`agent = "pi"`), matching wrix's one-agent-per-image format.
   [system](nix build .#sandbox)
 - The selected Pi agent binary launches inside the built sandbox image and
   responds to `--version`; failures identify when the selected runtime is
@@ -1058,8 +1058,8 @@ connection, network filtering, session audit logging.
 ### Functional
 
 1. **Host-side execution** — Loom runs on the host, not inside containers. It
-   spawns per-bead containers by invoking `wrapix spawn --spawn-config
-   <file> --stdio` (a thin wrapix subcommand that owns container construction)
+   spawns per-bead containers by invoking `wrix spawn --spawn-config
+   <file> --stdio` (a thin wrix subcommand that owns container construction)
    and communicates with the agent process inside via stdin/stdout pipes.
    Loom never calls `podman run` directly; see
    [harness.md — Process Architecture](harness.md#process-architecture).
@@ -1110,14 +1110,14 @@ connection, network filtering, session audit logging.
    config for the current invocation.
 7. **Interactive shell-out profile contract** — `loom plan` and `loom msg
    --chat` bypass the agent-backend abstraction (so stdio can attach as a
-   REPL) and invoke `wrapix run <workspace> <agent command> ... <prompt>`
+   REPL) and invoke `wrix run <workspace> <agent command> ... <prompt>`
    directly. The profile and backend resolved by
    `LoomConfig::agent_for(Phase)` select the image and command together:
    Claude uses `claude --dangerously-skip-permissions`, while Pi uses `pi`.
-   The profile's matching `ImageEntry` is exported to `wrapix run` via the
-   `WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` env vars.
+   The profile's matching `ImageEntry` is exported to `wrix run` via the
+   `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` env vars.
    The env-var hand-off is the sole profile-selection contract on this path;
-   `wrapix run` has no `--profile` parser, and extra argv tokens between the
+   `wrix run` has no `--profile` parser, and extra argv tokens between the
    workspace positional and agent command would be forwarded into the
    container as the command vector (exit 127).
 8. **Agent runtime layer** — the image builder composes two orthogonal axes:
@@ -1125,9 +1125,9 @@ connection, network filtering, session audit logging.
    direct). Loom's default sandbox and profile manifest build the Pi variant
    explicitly with `agent = "pi"`. That selected runtime layer (Node.js + pi
    binary) is added to whichever workspace profile is configured for the
-   bead. Direct and Claude remain separate wrapix image variants rather than
+   bead. Direct and Claude remain separate wrix image variants rather than
    binaries bundled into the same image.
-9. **Entrypoint agent selection** — `entrypoint.sh` checks `WRAPIX_AGENT` and:
+9. **Entrypoint agent selection** — `entrypoint.sh` checks `WRIX_AGENT` and:
    - `claude` (default): existing behavior (Claude config merging, hooks,
      `claude --dangerously-skip-permissions`)
    - `pi`: skips Claude-specific config, starts `pi --mode rpc` listening on
@@ -1160,7 +1160,7 @@ connection, network filtering, session audit logging.
 
 ### Non-Functional
 
-1. **No podman socket mounting** — `wrapix spawn` invokes podman on the
+1. **No podman socket mounting** — `wrix spawn` invokes podman on the
    host; the agent runs inside the resulting container with no access to the
    podman socket. No nested container support needed.
 2. **Graceful degradation** — if a backend-specific feature is unavailable

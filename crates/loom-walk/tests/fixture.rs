@@ -846,7 +846,7 @@ fn loom_does_not_invoke_podman_pass_doc_mention_ok() {
     let target = seed(
         ws.path(),
         "crates/loom-agent/src/pi/backend.rs",
-        "//! drives the wrapix wrapper which talks to podman under the hood\npub fn ok() {}\n",
+        "//! drives the wrix wrapper which talks to podman under the hood\npub fn ok() {}\n",
     );
     let out = invoke(
         &["loom_does_not_invoke_podman"],

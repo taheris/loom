@@ -10,7 +10,7 @@
 //! 2. renders the [`LoopContext`](loom_templates::run::LoopContext) prompt with
 //!    the bead's id/title/description, threading the previous-failure body
 //!    (truncated to 4000 chars) on retries;
-//! 3. spawns `wrapix spawn --spawn-config <file> --stdio` via an
+//! 3. spawns `wrix spawn --spawn-config <file> --stdio` via an
 //!    [`AgentBackend`](loom_driver::agent::AgentBackend) and tees the
 //!    [`AgentEvent`](loom_driver::agent::AgentEvent) stream into the terminal
 //!    renderer + per-bead JSONL log;

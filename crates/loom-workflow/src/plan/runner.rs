@@ -13,18 +13,18 @@ use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
 use loom_driver::state::StateDb;
 
 use super::args::PlanMode;
-use super::command::{WRAPIX_BIN, build_wrapix_argv};
+use super::command::{WRIX_BIN, build_wrix_argv};
 use super::companions::reconcile_companions;
 use super::error::PlanError;
 use super::prompt::{PlanPromptInputs, render_prompt};
 
-/// Env var read by `wrapix run` to pick the podman ref of the per-profile
+/// Env var read by `wrix run` to pick the podman ref of the per-profile
 /// image. Mirrors `lib/sandbox/linux/default.nix`.
-pub const WRAPIX_DEFAULT_IMAGE_REF: &str = "WRAPIX_DEFAULT_IMAGE_REF";
+pub const WRIX_DEFAULT_IMAGE_REF: &str = "WRIX_DEFAULT_IMAGE_REF";
 
-/// Env var read by `wrapix run` to pick the Nix store path handed to
+/// Env var read by `wrix run` to pick the Nix store path handed to
 /// `podman load`. Mirrors `lib/sandbox/linux/default.nix`.
-pub const WRAPIX_DEFAULT_IMAGE_SOURCE: &str = "WRAPIX_DEFAULT_IMAGE_SOURCE";
+pub const WRIX_DEFAULT_IMAGE_SOURCE: &str = "WRIX_DEFAULT_IMAGE_SOURCE";
 
 /// Default timeout used by [`run`] — mirrors the rest of the spec-scoped
 /// command surface (see `LockManager::acquire_spec`).
@@ -33,20 +33,20 @@ pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Options accepted by [`run`].
 pub struct PlanOpts {
     pub mode: PlanMode,
-    /// Explicit path to the `wrapix` launcher. `None` falls back to
-    /// [`WRAPIX_BIN`] on `PATH`. Tests pass a stub here.
-    pub wrapix_bin: Option<PathBuf>,
+    /// Explicit path to the `wrix` launcher. `None` falls back to
+    /// [`WRIX_BIN`] on `PATH`. Tests pass a stub here.
+    pub wrix_bin: Option<PathBuf>,
     /// CLI `--profile` override — wins over `[phase.plan]` /
     /// `[phase.default]` resolution per `specs/harness.md` § Profile-Image
     /// Manifest. `None` falls back to the per-phase config chain.
     pub cli_profile: Option<ProfileName>,
     /// CLI `--agent` override. When absent, `[phase.plan].agent.backend` /
     /// `[phase.default].agent.backend` select the interactive command passed
-    /// to `wrapix run`.
+    /// to `wrix run`.
     pub agent_override: Option<AgentKind>,
     /// Parsed profile-image manifest. The runner looks the resolved profile
-    /// up against this to populate the `WRAPIX_DEFAULT_IMAGE_REF` /
-    /// `WRAPIX_DEFAULT_IMAGE_SOURCE` env vars the launcher reads when no
+    /// up against this to populate the `WRIX_DEFAULT_IMAGE_REF` /
+    /// `WRIX_DEFAULT_IMAGE_SOURCE` env vars the launcher reads when no
     /// `--spawn-config` is supplied (see `lib/sandbox/linux/default.nix`).
     pub manifest: ProfileImageManifest,
 }
@@ -68,7 +68,7 @@ pub struct PlanReport {
 ///
 /// 1. Acquire `<label>.lock` for the duration of the call.
 /// 2. Render the appropriate Askama template into a prompt body.
-/// 3. Spawn `wrapix run <workspace> <agent command> ... <prompt>` with stdio
+/// 3. Spawn `wrix run <workspace> <agent command> ... <prompt>` with stdio
 ///    inherited and wait for it to exit.
 /// 4. After the interactive session exits, replace the companion rows for
 ///    `label` in the state DB by re-parsing the spec file.
@@ -139,7 +139,7 @@ pub fn run_with_timeout(
         spec_conventions: cfg.spec_conventions.clone(),
     })?;
 
-    // Set before wrapix runs so a non-zero interactive exit (Ctrl-C, agent
+    // Set before wrix runs so a non-zero interactive exit (Ctrl-C, agent
     // crash) does not leave current_spec pointing at a stale prior spec.
     db.set_current_spec(&label)?;
 
@@ -147,27 +147,27 @@ pub fn run_with_timeout(
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, &banner)
         .map_err(|source| PlanError::Spawn { source })?;
 
-    let argv = build_wrapix_argv(workspace, &prompt_body, agent_kind);
-    let bin: PathBuf = opts.wrapix_bin.unwrap_or_else(|| PathBuf::from(WRAPIX_BIN));
+    let argv = build_wrix_argv(workspace, &prompt_body, agent_kind);
+    let bin: PathBuf = opts.wrix_bin.unwrap_or_else(|| PathBuf::from(WRIX_BIN));
     info!(
         label = %label,
         profile = %profile,
         agent = ?agent_kind,
         image_ref = %image.r#ref,
         image_source = %image.source.display(),
-        wrapix_bin = %bin.display(),
+        wrix_bin = %bin.display(),
         scratch_dir = %scratch.path().display(),
-        "loom plan: shelling out to interactive wrapix run",
+        "loom plan: shelling out to interactive wrix run",
     );
     let status = Command::new(&bin)
         .args(&argv)
-        .env(WRAPIX_DEFAULT_IMAGE_REF, &image.r#ref)
-        .env(WRAPIX_DEFAULT_IMAGE_SOURCE, &image.source)
+        .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
+        .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
         .status()
         .map_err(|source| PlanError::Spawn { source })?;
     drop(scratch);
     if !status.success() {
-        return Err(PlanError::WrapixExit {
+        return Err(PlanError::WrixExit {
             status: status.to_string(),
         });
     }
@@ -241,9 +241,9 @@ mod tests {
         let manifest_path = dir.join("profile-images.json");
         let body = format!(
             r#"{{
-              "base":   {{ "ref": "localhost/wrapix-base:abc",   "source": {base:?} }},
-              "rust":   {{ "ref": "localhost/wrapix-rust:def",   "source": {rust:?} }},
-              "python": {{ "ref": "localhost/wrapix-python:ghi", "source": {py:?} }}
+              "base":   {{ "ref": "localhost/wrix-base:abc",   "source": {base:?} }},
+              "rust":   {{ "ref": "localhost/wrix-rust:def",   "source": {rust:?} }},
+              "python": {{ "ref": "localhost/wrix-python:ghi", "source": {py:?} }}
             }}"#,
             base = dir.join("base.tar").display().to_string(),
             rust = dir.join("rust.tar").display().to_string(),
@@ -253,19 +253,16 @@ mod tests {
         Ok(ProfileImageManifest::from_path(&manifest_path)?)
     }
 
-    /// Write a stub `wrapix` shell launcher under `dir/bin/`, recording argv
+    /// Write a stub `wrix` shell launcher under `dir/bin/`, recording argv
     /// to `dir/argv.log` and the env vars the runner injected to
     /// `dir/env.log`, and return the absolute binary path. The script
     /// touches `<workspace>/specs/<label>.md` so post-session companion
     /// reconciliation finds a file to read — mirroring what claude would
     /// have written during the interview.
-    fn install_wrapix_stub(
-        dir: &Path,
-        post_session_spec: Option<(&Path, &str)>,
-    ) -> Result<PathBuf> {
+    fn install_wrix_stub(dir: &Path, post_session_spec: Option<(&Path, &str)>) -> Result<PathBuf> {
         let bin_dir = dir.join("bin");
         std::fs::create_dir_all(&bin_dir)?;
-        let bin = bin_dir.join("wrapix-stub");
+        let bin = bin_dir.join("wrix-stub");
         let log = dir.join("argv.log");
         let env_log = dir.join("env.log");
         let mut script = format!(
@@ -274,16 +271,16 @@ mod tests {
              for a in \"$@\"; do printf '%s\\n' \"$a\" >> {log:?}; done\n\
              printf -- '---\\n' >> {log:?}\n\
              # log the launcher-image env vars so tests can pin the contract\n\
-             # the runner has with `wrapix run` (see lib/sandbox/linux/default.nix)\n\
-             printf 'WRAPIX_DEFAULT_IMAGE_REF=%s\\n' \"${{WRAPIX_DEFAULT_IMAGE_REF:-}}\" >> {env_log:?}\n\
-             printf 'WRAPIX_DEFAULT_IMAGE_SOURCE=%s\\n' \"${{WRAPIX_DEFAULT_IMAGE_SOURCE:-}}\" >> {env_log:?}\n",
+             # the runner has with `wrix run` (see lib/sandbox/linux/default.nix)\n\
+             printf 'WRIX_DEFAULT_IMAGE_REF=%s\\n' \"${{WRIX_DEFAULT_IMAGE_REF:-}}\" >> {env_log:?}\n\
+             printf 'WRIX_DEFAULT_IMAGE_SOURCE=%s\\n' \"${{WRIX_DEFAULT_IMAGE_SOURCE:-}}\" >> {env_log:?}\n",
             log = log,
             env_log = env_log,
         );
         if let Some((spec, body)) = post_session_spec {
             let parent = spec.parent().unwrap().to_path_buf();
             script.push_str(&format!(
-                "mkdir -p {parent:?}\ncat > {spec:?} <<'WRAPIX_EOF'\n{body}\nWRAPIX_EOF\n",
+                "mkdir -p {parent:?}\ncat > {spec:?} <<'WRIX_EOF'\n{body}\nWRIX_EOF\n",
             ));
         }
         std::fs::write(&bin, script)?;
@@ -305,7 +302,7 @@ mod tests {
     fn plan_opts_new(label: &str, bin: PathBuf, manifest: ProfileImageManifest) -> PlanOpts {
         PlanOpts {
             mode: PlanMode::New(SpecLabel::new(label)),
-            wrapix_bin: Some(bin),
+            wrix_bin: Some(bin),
             cli_profile: None,
             agent_override: None,
             manifest,
@@ -315,7 +312,7 @@ mod tests {
     fn plan_opts_update(label: &str, bin: PathBuf, manifest: ProfileImageManifest) -> PlanOpts {
         PlanOpts {
             mode: PlanMode::Update(SpecLabel::new(label)),
-            wrapix_bin: Some(bin),
+            wrix_bin: Some(bin),
             cli_profile: None,
             agent_override: None,
             manifest,
@@ -323,10 +320,10 @@ mod tests {
     }
 
     #[test]
-    fn plan_new_invokes_wrapix_run_and_records_companions() -> Result<()> {
+    fn plan_new_invokes_wrix_run_and_records_companions() -> Result<()> {
         let dir = workspace_with_specs()?;
         let spec_path = dir.path().join("specs/harness.md");
-        let bin = install_wrapix_stub(
+        let bin = install_wrix_stub(
             dir.path(),
             Some((
                 &spec_path,
@@ -361,7 +358,7 @@ mod tests {
     fn plan_phase_agent_pi_selects_pi_command() -> Result<()> {
         let dir = workspace_with_specs()?;
         let spec_path = dir.path().join("specs/harness.md");
-        let bin = install_wrapix_stub(
+        let bin = install_wrix_stub(
             dir.path(),
             Some((&spec_path, "# loom-harness\n\n## Companions\n\n")),
         )?;
@@ -393,15 +390,15 @@ mod tests {
 
     /// Default profile resolution (no CLI override, empty config) lands on
     /// `base` per `LoomConfig::agent_for(Phase::Plan)`. The runner must
-    /// inject `WRAPIX_DEFAULT_IMAGE_REF` + `WRAPIX_DEFAULT_IMAGE_SOURCE`
-    /// into the spawned `wrapix run` env so the launcher (which now refuses
+    /// inject `WRIX_DEFAULT_IMAGE_REF` + `WRIX_DEFAULT_IMAGE_SOURCE`
+    /// into the spawned `wrix run` env so the launcher (which now refuses
     /// to start without them — see `lib/sandbox/linux/default.nix`) can
     /// resolve the image without a `--spawn-config`.
     #[test]
-    fn plan_exports_default_image_env_for_wrapix_run() -> Result<()> {
+    fn plan_exports_default_image_env_for_wrix_run() -> Result<()> {
         let dir = workspace_with_specs()?;
         let spec_path = dir.path().join("specs/harness.md");
-        let bin = install_wrapix_stub(
+        let bin = install_wrix_stub(
             dir.path(),
             Some((&spec_path, "# loom-harness\n\n## Companions\n\n")),
         )?;
@@ -415,12 +412,12 @@ mod tests {
 
         let env_log = std::fs::read_to_string(dir.path().join("env.log"))?;
         assert!(
-            env_log.contains("WRAPIX_DEFAULT_IMAGE_REF=localhost/wrapix-base:abc"),
+            env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-base:abc"),
             "expected base profile ref. env.log:\n{env_log}",
         );
         let expected_source = dir.path().join("base.tar").display().to_string();
         assert!(
-            env_log.contains(&format!("WRAPIX_DEFAULT_IMAGE_SOURCE={expected_source}")),
+            env_log.contains(&format!("WRIX_DEFAULT_IMAGE_SOURCE={expected_source}")),
             "expected base profile source. env.log:\n{env_log}",
         );
         Ok(())
@@ -433,7 +430,7 @@ mod tests {
     fn plan_cli_profile_override_picks_manifest_entry() -> Result<()> {
         let dir = workspace_with_specs()?;
         let spec_path = dir.path().join("specs/harness.md");
-        let bin = install_wrapix_stub(
+        let bin = install_wrix_stub(
             dir.path(),
             Some((&spec_path, "# loom-harness\n\n## Companions\n\n")),
         )?;
@@ -441,7 +438,7 @@ mod tests {
 
         let opts = PlanOpts {
             mode: PlanMode::New(SpecLabel::new("harness")),
-            wrapix_bin: Some(bin),
+            wrix_bin: Some(bin),
             cli_profile: Some(ProfileName::new("rust")),
             agent_override: None,
             manifest,
@@ -450,38 +447,38 @@ mod tests {
 
         let env_log = std::fs::read_to_string(dir.path().join("env.log"))?;
         assert!(
-            env_log.contains("WRAPIX_DEFAULT_IMAGE_REF=localhost/wrapix-rust:def"),
+            env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-rust:def"),
             "CLI override must select rust ref. env.log:\n{env_log}",
         );
         let expected_source = dir.path().join("rust.tar").display().to_string();
         assert!(
-            env_log.contains(&format!("WRAPIX_DEFAULT_IMAGE_SOURCE={expected_source}")),
+            env_log.contains(&format!("WRIX_DEFAULT_IMAGE_SOURCE={expected_source}")),
             "CLI override must select rust source. env.log:\n{env_log}",
         );
         Ok(())
     }
 
     /// The resolved profile (from `LoomConfig::agent_for(Phase::Plan)` or
-    /// the CLI override) flows to `wrapix run` via the
-    /// `WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` env vars
-    /// — not via argv. `wrapix run` has no `--profile` parser; any
+    /// the CLI override) flows to `wrix run` via the
+    /// `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` env vars
+    /// — not via argv. `wrix run` has no `--profile` parser; any
     /// trailing tokens are forwarded into the container as the command
     /// vector, so passing `--profile <name>` made the entrypoint exec
     /// `--profile` and exit 127. The env-var contract documented in
     /// `specs/harness.md` § Profile-Image Manifest is the sole hand-off.
     #[test]
-    fn plan_runner_passes_resolved_profile_to_wrapix_run() -> Result<()> {
+    fn plan_runner_passes_resolved_profile_to_wrix_run() -> Result<()> {
         for (cli_profile, expected_ref, expected_source_name) in [
-            (None, "localhost/wrapix-base:abc", "base.tar"),
+            (None, "localhost/wrix-base:abc", "base.tar"),
             (
                 Some(ProfileName::new("rust")),
-                "localhost/wrapix-rust:def",
+                "localhost/wrix-rust:def",
                 "rust.tar",
             ),
         ] {
             let dir = workspace_with_specs()?;
             let spec_path = dir.path().join("specs/harness.md");
-            let bin = install_wrapix_stub(
+            let bin = install_wrix_stub(
                 dir.path(),
                 Some((&spec_path, "# loom-harness\n\n## Companions\n\n")),
             )?;
@@ -489,7 +486,7 @@ mod tests {
 
             let opts = PlanOpts {
                 mode: PlanMode::New(SpecLabel::new("harness")),
-                wrapix_bin: Some(bin),
+                wrix_bin: Some(bin),
                 cli_profile,
                 agent_override: None,
                 manifest,
@@ -499,18 +496,18 @@ mod tests {
             let argv_log = std::fs::read_to_string(dir.path().join("argv.log"))?;
             assert!(
                 !argv_log.lines().any(|l| l == "--profile"),
-                "wrapix run has no --profile parser; the flag must not appear in argv. \
+                "wrix run has no --profile parser; the flag must not appear in argv. \
                  argv.log:\n{argv_log}",
             );
 
             let env_log = std::fs::read_to_string(dir.path().join("env.log"))?;
             assert!(
-                env_log.contains(&format!("WRAPIX_DEFAULT_IMAGE_REF={expected_ref}")),
+                env_log.contains(&format!("WRIX_DEFAULT_IMAGE_REF={expected_ref}")),
                 "resolved profile must select image ref via env var. env.log:\n{env_log}",
             );
             let expected_source = dir.path().join(expected_source_name).display().to_string();
             assert!(
-                env_log.contains(&format!("WRAPIX_DEFAULT_IMAGE_SOURCE={expected_source}")),
+                env_log.contains(&format!("WRIX_DEFAULT_IMAGE_SOURCE={expected_source}")),
                 "resolved profile must select image source via env var. env.log:\n{env_log}",
             );
         }
@@ -523,7 +520,7 @@ mod tests {
     fn plan_phase_config_profile_picks_manifest_entry() -> Result<()> {
         let dir = workspace_with_specs()?;
         let spec_path = dir.path().join("specs/harness.md");
-        let bin = install_wrapix_stub(
+        let bin = install_wrix_stub(
             dir.path(),
             Some((&spec_path, "# loom-harness\n\n## Companions\n\n")),
         )?;
@@ -541,14 +538,14 @@ mod tests {
 
         let env_log = std::fs::read_to_string(dir.path().join("env.log"))?;
         assert!(
-            env_log.contains("WRAPIX_DEFAULT_IMAGE_REF=localhost/wrapix-python:ghi"),
+            env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-python:ghi"),
             "phase config must select python. env.log:\n{env_log}",
         );
         Ok(())
     }
 
     /// Regression: `[phase.default].profile` alone (no `[phase.plan]`
-    /// override) must propagate to the image-env vars `wrapix run`
+    /// override) must propagate to the image-env vars `wrix run`
     /// reads. Was masked while the bogus argv `--profile <name>` made
     /// the entrypoint exit 127 before the env vars could pick the
     /// image — the user's bug report ("kept getting a base profile").
@@ -556,7 +553,7 @@ mod tests {
     fn plan_phase_default_profile_alone_picks_manifest_entry() -> Result<()> {
         let dir = workspace_with_specs()?;
         let spec_path = dir.path().join("specs/harness.md");
-        let bin = install_wrapix_stub(
+        let bin = install_wrix_stub(
             dir.path(),
             Some((&spec_path, "# loom-harness\n\n## Companions\n\n")),
         )?;
@@ -574,13 +571,13 @@ mod tests {
 
         let env_log = std::fs::read_to_string(dir.path().join("env.log"))?;
         assert!(
-            env_log.contains("WRAPIX_DEFAULT_IMAGE_REF=localhost/wrapix-rust:def"),
+            env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-rust:def"),
             "phase.default profile must reach Phase::Plan via the env-var \
              hand-off. env.log:\n{env_log}",
         );
         let expected_source = dir.path().join("rust.tar").display().to_string();
         assert!(
-            env_log.contains(&format!("WRAPIX_DEFAULT_IMAGE_SOURCE={expected_source}")),
+            env_log.contains(&format!("WRIX_DEFAULT_IMAGE_SOURCE={expected_source}")),
             "phase.default profile must reach Phase::Plan via the env-var \
              hand-off. env.log:\n{env_log}",
         );
@@ -596,7 +593,7 @@ mod tests {
         let manifest = three_profile_manifest(dir.path())?;
         let opts = PlanOpts {
             mode: PlanMode::New(SpecLabel::new("harness")),
-            wrapix_bin: Some(PathBuf::from("/nonexistent/wrapix")),
+            wrix_bin: Some(PathBuf::from("/nonexistent/wrix")),
             cli_profile: Some(ProfileName::new("ruby")),
             agent_override: None,
             manifest,
@@ -623,7 +620,7 @@ mod tests {
         db.replace_companions(&SpecLabel::new("harness"), &["lib/sandbox/".to_string()])?;
         drop(db);
 
-        let bin = install_wrapix_stub(
+        let bin = install_wrix_stub(
             dir.path(),
             Some((
                 &spec_path,
@@ -653,7 +650,7 @@ mod tests {
     /// from the state DB and render them into the rendered prompt body so the
     /// agent can perform the keep/drop/add merge described in the spec's
     /// *Implementation-notes lifecycle* section. The notes appear verbatim
-    /// in argv (the prompt body is the final positional for `wrapix run`).
+    /// in argv (the prompt body is the final positional for `wrix run`).
     #[test]
     fn plan_update_threads_existing_implementation_notes_into_prompt() -> Result<()> {
         let dir = workspace_with_specs()?;
@@ -675,7 +672,7 @@ mod tests {
         )?;
         drop(db);
 
-        let bin = install_wrapix_stub(
+        let bin = install_wrix_stub(
             dir.path(),
             Some((
                 &spec_path,
@@ -723,7 +720,7 @@ mod tests {
     fn plan_new_prompt_directs_agent_to_seed_implementation_notes() -> Result<()> {
         let dir = workspace_with_specs()?;
         let spec_path = dir.path().join("specs/harness.md");
-        let bin = install_wrapix_stub(
+        let bin = install_wrix_stub(
             dir.path(),
             Some((&spec_path, "# loom-harness\n\n## Companions\n\n")),
         )?;
@@ -757,7 +754,7 @@ mod tests {
         let manifest = three_profile_manifest(dir.path())?;
         let result = run_with_timeout(
             dir.path(),
-            plan_opts_update("harness", PathBuf::from("/nonexistent/wrapix"), manifest),
+            plan_opts_update("harness", PathBuf::from("/nonexistent/wrix"), manifest),
             Duration::from_millis(100),
         );
         match result {
@@ -774,7 +771,7 @@ mod tests {
         let dir = workspace_with_specs()?;
         // Stub exits 0 without writing the spec — mimics the agent quitting
         // the interview without saving the file.
-        let bin = install_wrapix_stub(dir.path(), None)?;
+        let bin = install_wrix_stub(dir.path(), None)?;
         let manifest = three_profile_manifest(dir.path())?;
 
         let result = run_with_timeout(
@@ -798,7 +795,7 @@ mod tests {
         let dir = workspace_with_specs()?;
         let spec_path = dir.path().join("specs/harness.md");
         // Spec written, but the agent did not include `## Companions`.
-        let bin = install_wrapix_stub(
+        let bin = install_wrix_stub(
             dir.path(),
             Some((&spec_path, "# loom-harness\n\nNo companions yet.\n")),
         )?;
@@ -819,7 +816,7 @@ mod tests {
     fn plan_sets_current_spec_so_subsequent_commands_resolve_label() -> Result<()> {
         let dir = workspace_with_specs()?;
         let spec_path = dir.path().join("specs/harness.md");
-        let bin = install_wrapix_stub(
+        let bin = install_wrix_stub(
             dir.path(),
             Some((&spec_path, "# loom-harness\n\n## Companions\n\n")),
         )?;
@@ -839,15 +836,15 @@ mod tests {
         Ok(())
     }
 
-    /// Before the interactive `wrapix run` exec, the runner
+    /// Before the interactive `wrix run` exec, the runner
     /// must have installed the per-key scratch directory with `prompt.txt`
     /// (rendered plan template), `repin.sh` (executable), and the
     /// `claude-settings.json` fragment registering `repin.sh` under
     /// `SessionStart[matcher: compact]`. The scratch dir is removed by Drop
-    /// after exec, so the wrapix stub snapshots the three files mid-run for
+    /// after exec, so the wrix stub snapshots the three files mid-run for
     /// the assertions below.
     #[test]
-    fn plan_installs_scratch_dir_before_wrapix_exec() -> Result<()> {
+    fn plan_installs_scratch_dir_before_wrix_exec() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = workspace_with_specs()?;
@@ -856,7 +853,7 @@ mod tests {
         std::fs::create_dir_all(&snap_dir)?;
         let bin_dir = dir.path().join("bin");
         std::fs::create_dir_all(&bin_dir)?;
-        let bin = bin_dir.join("wrapix-stub");
+        let bin = bin_dir.join("wrix-stub");
         let scratch_root = "$2/.loom/scratch/harness";
         let script = format!(
             "#!/bin/sh\nset -e\n\
@@ -864,7 +861,7 @@ mod tests {
              cp {scratch_root}/claude-settings.json {snap_dir:?}/claude-settings.json\n\
              cp {scratch_root}/repin.sh {snap_dir:?}/repin.sh\n\
              test -x {scratch_root}/repin.sh\n\
-             cat > {spec_path:?} <<'WRAPIX_EOF'\n# loom-harness\n\n## Companions\n\nWRAPIX_EOF\n",
+             cat > {spec_path:?} <<'WRIX_EOF'\n# loom-harness\n\n## Companions\n\nWRIX_EOF\n",
             scratch_root = scratch_root,
             snap_dir = snap_dir,
             spec_path = spec_path,
@@ -903,12 +900,12 @@ mod tests {
         // Drop must have cleaned the scratch dir after exec returned.
         assert!(
             !dir.path().join(".loom/scratch/harness").exists(),
-            "scratch dir must be cleaned up after wrapix returns",
+            "scratch dir must be cleaned up after wrix returns",
         );
         Ok(())
     }
 
-    /// Mirror of `plan_installs_scratch_dir_before_wrapix_exec` for the
+    /// Mirror of `plan_installs_scratch_dir_before_wrix_exec` for the
     /// update branch — the prompt.txt body must be the `plan_update`
     /// template, not `plan_new`, when an existing spec is being revised.
     #[test]
@@ -925,12 +922,12 @@ mod tests {
         std::fs::create_dir_all(&snap_dir)?;
         let bin_dir = dir.path().join("bin");
         std::fs::create_dir_all(&bin_dir)?;
-        let bin = bin_dir.join("wrapix-stub");
+        let bin = bin_dir.join("wrix-stub");
         let scratch_root = "$2/.loom/scratch/harness";
         let script = format!(
             "#!/bin/sh\nset -e\n\
              cp {scratch_root}/prompt.txt {snap_dir:?}/prompt.txt\n\
-             cat > {spec_path:?} <<'WRAPIX_EOF'\n# loom-harness\n\n## Companions\n\n- `lib/sandbox/`\nWRAPIX_EOF\n",
+             cat > {spec_path:?} <<'WRIX_EOF'\n# loom-harness\n\n## Companions\n\n- `lib/sandbox/`\nWRIX_EOF\n",
             scratch_root = scratch_root,
             snap_dir = snap_dir,
             spec_path = spec_path,
@@ -958,9 +955,9 @@ mod tests {
     /// Interactive sessions (plan_new, plan_update, msg) skip the
     /// verdict-gate reconciliation path per `specs/templates.md`
     /// Implementation Note 5. A mid-session crash surfaces as a typed
-    /// `WrapixExit` error on the first attempt; the runner does NOT
+    /// `WrixExit` error on the first attempt; the runner does NOT
     /// retry, does NOT construct a `PreviousFailure`, and does NOT
-    /// mutate bd state. The wrapix stub is invoked exactly once.
+    /// mutate bd state. The wrix stub is invoked exactly once.
     #[test]
     fn plan_new_crash_surfaces_without_retry_dispatch() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
@@ -968,7 +965,7 @@ mod tests {
         let dir = workspace_with_specs()?;
         let bin_dir = dir.path().join("bin");
         std::fs::create_dir_all(&bin_dir)?;
-        let bin = bin_dir.join("wrapix-stub");
+        let bin = bin_dir.join("wrix-stub");
         let call_log = dir.path().join("call_count.log");
         // Record one line per invocation, then exit non-zero to simulate
         // a mid-session crash.
@@ -988,20 +985,20 @@ mod tests {
             Duration::from_millis(100),
         );
         match result {
-            Err(PlanError::WrapixExit { status }) => {
+            Err(PlanError::WrixExit { status }) => {
                 assert!(
                     status.contains("137") || status.contains("exit"),
-                    "WrapixExit must surface the non-zero status: {status}",
+                    "WrixExit must surface the non-zero status: {status}",
                 );
             }
-            other => return Err(anyhow::anyhow!("expected WrapixExit, got {other:?}")),
+            other => return Err(anyhow::anyhow!("expected WrixExit, got {other:?}")),
         }
 
         let calls = std::fs::read_to_string(&call_log).unwrap_or_default();
         let call_count = calls.lines().count();
         assert_eq!(
             call_count, 1,
-            "interactive sessions must not retry on crash; wrapix stub was \
+            "interactive sessions must not retry on crash; wrix stub was \
              invoked {call_count} time(s) in:\n{calls}",
         );
         Ok(())
@@ -1016,7 +1013,7 @@ mod tests {
 
         match run_with_timeout(
             dir.path(),
-            plan_opts_new("alpha", PathBuf::from("/nonexistent/wrapix"), manifest),
+            plan_opts_new("alpha", PathBuf::from("/nonexistent/wrix"), manifest),
             Duration::from_millis(100),
         ) {
             Err(PlanError::Lock(LockError::SpecBusy { label })) => {

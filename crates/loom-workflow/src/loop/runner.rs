@@ -191,7 +191,7 @@ pub const MINT_STRUCTURAL_VIOLATION_CAUSE: &str = "mint-structural-violation";
 /// (pass 1, worker-side) or rebased (pass 2, driver-side) commit. The
 /// bead routes straight to `loom:blocked` with no retry — re-running the
 /// agent cannot re-sign existing commits; the operator investigates the
-/// signing setup (wrapix container for pass 1, loom-workspace gitconfig +
+/// signing setup (wrix container for pass 1, loom-workspace gitconfig +
 /// key resolution for pass 2). Per `specs/harness.md` § Verdict Gate.
 pub const SIGNATURE_VERIFICATION_FAILED_CAUSE: &str = "signature-verification-failed";
 

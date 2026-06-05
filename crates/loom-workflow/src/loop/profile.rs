@@ -74,9 +74,9 @@ mod tests {
 
     fn three_profile_manifest(dir: &std::path::Path) -> ProfileImageManifest {
         let body = r#"{
-          "base":   { "ref": "localhost/wrapix-base:abc",   "source": "/nix/store/aaa-image-base" },
-          "rust":   { "ref": "localhost/wrapix-rust:def",   "source": "/nix/store/bbb-image-rust" },
-          "python": { "ref": "localhost/wrapix-python:ghi", "source": "/nix/store/ccc-image-python" }
+          "base":   { "ref": "localhost/wrix-base:abc",   "source": "/nix/store/aaa-image-base" },
+          "rust":   { "ref": "localhost/wrix-rust:def",   "source": "/nix/store/bbb-image-rust" },
+          "python": { "ref": "localhost/wrix-python:ghi", "source": "/nix/store/ccc-image-python" }
         }"#;
         let path = write_manifest(dir, body);
         ProfileImageManifest::from_path(&path).expect("parse manifest")
@@ -117,7 +117,7 @@ mod tests {
         let manifest = three_profile_manifest(dir.path());
         let labels = labels(&["spec:harness", "profile:rust"]);
         let entry = resolve_profile_image(&manifest, &labels, None, &base()).expect("resolve");
-        assert_eq!(entry.r#ref, "localhost/wrapix-rust:def");
+        assert_eq!(entry.r#ref, "localhost/wrix-rust:def");
         assert_eq!(entry.source, PathBuf::from("/nix/store/bbb-image-rust"));
     }
 
@@ -138,8 +138,8 @@ mod tests {
             &base(),
         )
         .expect("python");
-        assert_eq!(no_override.r#ref, "localhost/wrapix-rust:def");
-        assert_eq!(with_override.r#ref, "localhost/wrapix-python:ghi");
+        assert_eq!(no_override.r#ref, "localhost/wrix-rust:def");
+        assert_eq!(with_override.r#ref, "localhost/wrix-python:ghi");
         assert_ne!(no_override.r#ref, with_override.r#ref);
         assert_ne!(no_override.source, with_override.source);
     }

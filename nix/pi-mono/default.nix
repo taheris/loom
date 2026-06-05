@@ -1,6 +1,6 @@
 # pi-mono coding agent packaged for the loom sandbox.
 #
-# Mirrors the `lib/pi-mono/` pattern wrapix used to ship: the published
+# Mirrors the `lib/pi-mono/` pattern wrix used to ship: the published
 # @mariozechner/pi-coding-agent npm tarball already contains a pre-built
 # `dist/` (the upstream `prepublishOnly` script runs `tsgo` before
 # publish), so this derivation only resolves and stages dependencies —

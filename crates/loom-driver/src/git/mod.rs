@@ -29,6 +29,6 @@ pub use error::GitError;
 // `loom_driver::git::GitOid` callers stay unchanged.
 pub use loom_protocol::oid::{GitOid, ParseGitOidError};
 pub use signing::{
-    WRAPIX_DEPLOY_KEY_ENV, WRAPIX_SIGNING_KEY_ENV, enable_rerere, resolve_deploy_key,
+    WRIX_DEPLOY_KEY_ENV, WRIX_SIGNING_KEY_ENV, enable_rerere, resolve_deploy_key,
     resolve_signing_key, write_signing_config,
 };

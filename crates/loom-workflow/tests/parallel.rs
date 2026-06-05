@@ -197,7 +197,7 @@ async fn parallel_run_two_beads_e2e() -> Result<()> {
         assert_eq!(slot.bead.id, bead.id);
         // Path A (specs/harness.md § Bead dispatch): each workspace is a
         // self-contained clone — its `.git/` is a regular directory inside
-        // the bind-mounted path so the wrapix container can resolve gitdir.
+        // the bind-mounted path so the wrix container can resolve gitdir.
         assert!(
             slot.worktree.path.join(".git").is_dir(),
             ".git inside the bead workspace must be a regular directory, \
@@ -681,7 +681,7 @@ async fn merge_back_preserves_input_slot_order() -> Result<()> {
 ///   `loom:blocked` carrying `signature-verification-failed (worker-side)`
 ///   — NOT merged silently. (Before the fix the parallel path called
 ///   `merge_branch` with zero verification, so an unsigned/tampered commit
-///   landed on every host where wrapix signing is configured.)
+///   landed on every host where wrix signing is configured.)
 /// - **Pass 2 (driver-side):** a worker commit signed by a TRUSTED key
 ///   clears pass 1, but the loom workspace re-signs the rebased commit with
 ///   an UNTRUSTED key (loom's own signing setup broken), so `git

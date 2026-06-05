@@ -2,7 +2,7 @@
 //!
 //! Mirrors `loom plan`'s runner shape: the driver renders the `msg.md`
 //! template against the outstanding clarify queue, builds the same
-//! `wrapix run <workspace> <agent command> ... <prompt>` argv plan uses, and
+//! `wrix run <workspace> <agent command> ... <prompt>` argv plan uses, and
 //! shells out with **inherited stdio** so the configured agent attaches
 //! directly to the user's terminal as a real REPL.
 //!
@@ -39,16 +39,16 @@ use tracing::info;
 use super::context::build_msg_context;
 use super::list::{filter_msg_beads, spec_label_of};
 
-/// Default name of the wrapix launcher binary on PATH. Tests override
-/// via the `LOOM_WRAPIX_BIN` env var resolved by the CLI caller.
-pub const WRAPIX_BIN: &str = "wrapix";
+/// Default name of the wrix launcher binary on PATH. Tests override
+/// via the `LOOM_WRIX_BIN` env var resolved by the CLI caller.
+pub const WRIX_BIN: &str = "wrix";
 
-/// Env vars `wrapix run` reads to pick the per-profile image when no
+/// Env vars `wrix run` reads to pick the per-profile image when no
 /// `--spawn-config` is supplied — the sole profile-selection contract
 /// on the interactive shell-out path. Shared with `loom plan` so the
 /// chat dispatch picks up the same per-phase profile resolution.
-pub const WRAPIX_DEFAULT_IMAGE_REF: &str = "WRAPIX_DEFAULT_IMAGE_REF";
-pub const WRAPIX_DEFAULT_IMAGE_SOURCE: &str = "WRAPIX_DEFAULT_IMAGE_SOURCE";
+pub const WRIX_DEFAULT_IMAGE_REF: &str = "WRIX_DEFAULT_IMAGE_REF";
+pub const WRIX_DEFAULT_IMAGE_SOURCE: &str = "WRIX_DEFAULT_IMAGE_SOURCE";
 
 /// Inputs to one [`run`] call.
 #[derive(Debug)]
@@ -62,14 +62,14 @@ pub struct ChatOpts {
     pub cli_profile: Option<ProfileName>,
     /// CLI `--agent` override. When absent, `[phase.msg].agent.backend` /
     /// `[phase.default].agent.backend` select the interactive command passed
-    /// to `wrapix run`.
+    /// to `wrix run`.
     pub agent_override: Option<AgentKind>,
     /// Resolved profile-image manifest. The driver reads this via
     /// `LOOM_PROFILES_MANIFEST`.
     pub manifest: ProfileImageManifest,
-    /// Explicit path to the `wrapix` launcher. `None` falls back to
-    /// the `LOOM_WRAPIX_BIN` env var, then to `wrapix` on PATH.
-    pub wrapix_bin: Option<PathBuf>,
+    /// Explicit path to the `wrix` launcher. `None` falls back to
+    /// the `LOOM_WRIX_BIN` env var, then to `wrix` on PATH.
+    pub wrix_bin: Option<PathBuf>,
 }
 
 /// Outcome of one `loom msg --chat` session.
@@ -99,8 +99,8 @@ pub enum ChatError {
     Scratch(#[from] std::io::Error),
     #[error("lock manager: {0}")]
     Lock(String),
-    #[error("wrapix exited with status {status}")]
-    WrapixExit { status: String },
+    #[error("wrix exited with status {status}")]
+    WrixExit { status: String },
     #[error("agent selection: {0}")]
     AgentSelection(String),
     #[error("bead identifier: {0}")]
@@ -169,32 +169,32 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     let banner = "loom msg --chat".to_string();
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, &banner)?;
 
-    let argv = build_wrapix_argv(workspace, &prompt_body, agent_kind);
+    let argv = build_wrix_argv(workspace, &prompt_body, agent_kind);
     let bin: PathBuf = opts
-        .wrapix_bin
-        .or_else(|| std::env::var_os("LOOM_WRAPIX_BIN").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from(WRAPIX_BIN));
+        .wrix_bin
+        .or_else(|| std::env::var_os("LOOM_WRIX_BIN").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from(WRIX_BIN));
 
     info!(
-        wrapix_bin = %bin.display(),
+        wrix_bin = %bin.display(),
         beads_surfaced,
         profile = %profile,
         agent = ?agent_kind,
         image_ref = %image.r#ref,
         scratch_dir = %scratch.path().display(),
-        "loom msg --chat: shelling out to interactive wrapix run",
+        "loom msg --chat: shelling out to interactive wrix run",
     );
 
     let status = Command::new(&bin)
         .args(&argv)
-        .env(WRAPIX_DEFAULT_IMAGE_REF, &image.r#ref)
-        .env(WRAPIX_DEFAULT_IMAGE_SOURCE, &image.source)
+        .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
+        .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
         .status()
         .map_err(ChatError::Scratch)?;
     drop(scratch);
 
     if !status.success() {
-        return Err(ChatError::WrapixExit {
+        return Err(ChatError::WrixExit {
             status: status.to_string(),
         });
     }
@@ -222,19 +222,15 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     })
 }
 
-/// Build the argv passed to `wrapix run` — the SAME shape `loom plan`
-/// uses so both interactive sessions share one entry point. `wrapix
+/// Build the argv passed to `wrix run` — the SAME shape `loom plan`
+/// uses so both interactive sessions share one entry point. `wrix
 /// run` (NOT `spawn`) keeps the TTY attached and inherits the user's
 /// terminal. Profile selection flows through the
-/// `WRAPIX_DEFAULT_IMAGE_REF` / `WRAPIX_DEFAULT_IMAGE_SOURCE` env vars
-/// exported by [`run`]; `wrapix run` has no `--profile` parser (any
+/// `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` env vars
+/// exported by [`run`]; `wrix run` has no `--profile` parser (any
 /// trailing tokens after the workspace are forwarded into the container
 /// as the command vector).
-pub fn build_wrapix_argv(
-    workspace: &Path,
-    prompt_body: &str,
-    agent_kind: AgentKind,
-) -> Vec<String> {
+pub fn build_wrix_argv(workspace: &Path, prompt_body: &str, agent_kind: AgentKind) -> Vec<String> {
     let mut argv = vec![
         "run".to_string(),
         workspace.to_string_lossy().into_owned(),
@@ -316,8 +312,8 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn argv_starts_with_wrapix_run_and_workspace() {
-        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT", AgentKind::Claude);
+    fn argv_starts_with_wrix_run_and_workspace() {
+        let argv = build_wrix_argv(&PathBuf::from("/work"), "PROMPT", AgentKind::Claude);
         assert_eq!(argv[0], "run");
         assert_eq!(argv[1], "/work");
         assert_eq!(argv[2], "claude");
@@ -325,7 +321,7 @@ mod tests {
 
     #[test]
     fn argv_passes_prompt_to_claude_with_skip_permissions() {
-        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT BODY", AgentKind::Claude);
+        let argv = build_wrix_argv(&PathBuf::from("/work"), "PROMPT BODY", AgentKind::Claude);
         assert_eq!(argv[2], "claude");
         assert_eq!(argv[3], "--dangerously-skip-permissions");
         assert_eq!(argv[4], "PROMPT BODY");
@@ -333,26 +329,26 @@ mod tests {
 
     #[test]
     fn argv_passes_prompt_to_pi_without_claude_flags() {
-        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT BODY", AgentKind::Pi);
+        let argv = build_wrix_argv(&PathBuf::from("/work"), "PROMPT BODY", AgentKind::Pi);
         assert_eq!(argv[2], "pi");
         assert_eq!(argv[3], "PROMPT BODY");
         assert!(!argv.iter().any(|a| a == "--dangerously-skip-permissions"));
     }
 
     /// The dispatch must NEVER include `--profile`, `--stdio`, or
-    /// `--spawn-config`. `wrapix run` has no `--profile` parser (the
+    /// `--spawn-config`. `wrix run` has no `--profile` parser (the
     /// flag would be forwarded into the container as a command and
     /// crash the entrypoint); profile selection rides the
-    /// `WRAPIX_DEFAULT_IMAGE_*` env vars instead. `--stdio` /
+    /// `WRIX_DEFAULT_IMAGE_*` env vars instead. `--stdio` /
     /// `--spawn-config` are the non-interactive surfaces `loom loop` /
-    /// `check` / `todo` use — msg --chat is interactive (`wrapix run`,
+    /// `check` / `todo` use — msg --chat is interactive (`wrix run`,
     /// no pi-mono protocol).
     #[test]
     fn argv_never_contains_profile_spawn_or_stdio_or_spawn_config() {
-        let argv = build_wrapix_argv(&PathBuf::from("/work"), "PROMPT", AgentKind::Claude);
+        let argv = build_wrix_argv(&PathBuf::from("/work"), "PROMPT", AgentKind::Claude);
         assert!(
             !argv.iter().any(|a| a == "--profile"),
-            "wrapix run has no --profile parser; profile flows via WRAPIX_DEFAULT_IMAGE_* env vars"
+            "wrix run has no --profile parser; profile flows via WRIX_DEFAULT_IMAGE_* env vars"
         );
         assert!(!argv.iter().any(|a| a == "spawn"));
         assert!(!argv.iter().any(|a| a == "--stdio"));

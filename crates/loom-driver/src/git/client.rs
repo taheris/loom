@@ -86,7 +86,7 @@ pub struct GitClient {
     /// deploy-key fallback. Production resolves per
     /// [`super::signing::resolve_signing_key`]; the seam exists because
     /// `std::env::set_var` is unsafe under edition 2024 and the workspace
-    /// forbids `unsafe_code`, so tests cannot drive `$WRAPIX_SIGNING_KEY`.
+    /// forbids `unsafe_code`, so tests cannot drive `$WRIX_SIGNING_KEY`.
     /// Gated behind `cfg(test)` / the `test-support` feature so it is absent
     /// from production builds (RS-14).
     #[cfg(any(test, feature = "test-support"))]
@@ -305,7 +305,7 @@ impl GitClient {
     /// Path A from `specs/harness.md § Bead dispatch`: the per-bead
     /// workspace is a self-contained clone — its `.git/` is a regular
     /// directory inside the bind-mounted path, so workers running in the
-    /// wrapix container can resolve the gitdir and commit. Linked
+    /// wrix container can resolve the gitdir and commit. Linked
     /// worktrees were rejected here because a worktree's `.git` file
     /// points at a host-absolute path outside the container's
     /// `/workspace` bind-mount.
@@ -387,14 +387,14 @@ impl GitClient {
         )
         .await?;
 
-        ensure_wrapix_mount_dir(&path)?;
+        ensure_wrix_mount_dir(&path)?;
 
         // No signing block is written into the bead clone. The clone is the
-        // workspace wrapix bind-mounts into the bead container, where the
-        // worker's commits are the load-bearing signed path. wrapix's
+        // workspace wrix bind-mounts into the bead container, where the
+        // worker's commits are the load-bearing signed path. wrix's
         // `git-ssh-setup.sh` entrypoint configures container signing in the
         // GLOBAL `~/.gitconfig`, pointing `user.signingkey` at the
-        // in-container key copy (`/etc/wrapix/keys/<id>-nix-signing`). A local
+        // in-container key copy (`/etc/wrix/keys/<id>-nix-signing`). A local
         // `.git/config` block here would carry the HOST key path — which does
         // not exist in-container — and local config beats global, so the block
         // would shadow the entrypoint's correct container path and break the
@@ -408,23 +408,23 @@ impl GitClient {
         Ok(CreatedWorktree { path, branch })
     }
 
-    /// Resolve the host key paths loom must hand to `wrapix spawn` through
+    /// Resolve the host key paths loom must hand to `wrix spawn` through
     /// the **launcher** environment (the child-process env, not the
     /// in-container [`SpawnConfig::env`] allowlist) so the wrapper can
     /// bind-mount the deploy + signing keys into the bead container.
     ///
-    /// Returns `(env var, host path)` pairs — `WRAPIX_DEPLOY_KEY` and
-    /// `WRAPIX_SIGNING_KEY` — for each key that resolves. Resolution runs
+    /// Returns `(env var, host path)` pairs — `WRIX_DEPLOY_KEY` and
+    /// `WRIX_SIGNING_KEY` — for each key that resolves. Resolution runs
     /// against the loom workspace (whose `origin` is GitHub), matching
     /// [`Self::create_worktree`]'s signing-key resolution, and honors the
     /// signing-key override test seam (when built with `test-support`). A key
-    /// that does not resolve is omitted rather than erroring: `wrapix spawn`
+    /// that does not resolve is omitted rather than erroring: `wrix spawn`
     /// fails loudly on its own when a key it needs is absent, and the
-    /// "wrapix isn't set up on this host" path must stay non-fatal here.
+    /// "wrix isn't set up on this host" path must stay non-fatal here.
     ///
-    /// The host paths never cross the sandbox boundary; wrapix copies the
-    /// keys to `/etc/wrapix/keys/<basename>` in-container and resets
-    /// `$WRAPIX_DEPLOY_KEY` / `$WRAPIX_SIGNING_KEY` to those paths (wrapix
+    /// The host paths never cross the sandbox boundary; wrix copies the
+    /// keys to `/etc/wrix/keys/<basename>` in-container and resets
+    /// `$WRIX_DEPLOY_KEY` / `$WRIX_SIGNING_KEY` to those paths (wrix
     /// `specs/security.md` § Credential Surfaces). See `specs/harness.md`
     /// § Commit signing.
     pub fn launcher_key_env(&self) -> Result<Vec<(String, String)>, GitError> {
@@ -436,13 +436,13 @@ impl GitClient {
         };
         if let Some(key) = signing {
             env.push((
-                super::signing::WRAPIX_SIGNING_KEY_ENV.to_string(),
+                super::signing::WRIX_SIGNING_KEY_ENV.to_string(),
                 key.to_string_lossy().into_owned(),
             ));
         }
         if let Some(key) = super::signing::resolve_deploy_key(&loom_workspace)? {
             env.push((
-                super::signing::WRAPIX_DEPLOY_KEY_ENV.to_string(),
+                super::signing::WRIX_DEPLOY_KEY_ENV.to_string(),
                 key.to_string_lossy().into_owned(),
             ));
         }
@@ -452,14 +452,14 @@ impl GitClient {
     /// Reset a per-bead workspace's working tree to its current `HEAD` and
     /// drop everything outside the tracked content + the preserved
     /// scratch dirs. Runs `git reset --hard HEAD` followed by
-    /// `git clean -fdx --exclude=target --exclude=.git --exclude=.wrapix`.
+    /// `git clean -fdx --exclude=target --exclude=.git --exclude=.wrix`.
     ///
     /// Called by the dispatch path immediately before every agent session
     /// attempt — first attempt (where it is a no-op against a freshly-cloned
     /// tree) and every recovery iteration (where it discards mid-session
     /// leftovers while preserving the agent's prior commits on the bead
     /// branch). Idempotent. `target/` survives so cargo + sccache stay warm;
-    /// `.git/` survives so refs and the bead branch stay intact; `.wrapix/`
+    /// `.git/` survives so refs and the bead branch stay intact; `.wrix/`
     /// survives so extra-mount staging (e.g. dolt socket landing point)
     /// persists across attempts.
     pub async fn reset_bead_clone(&self, path: &Path) -> Result<(), GitError> {
@@ -479,7 +479,7 @@ impl GitClient {
                 "--quiet",
                 "--exclude=target",
                 "--exclude=.git",
-                "--exclude=.wrapix",
+                "--exclude=.wrix",
             ],
             None,
         )
@@ -1223,7 +1223,7 @@ impl GitClient {
 
     /// Path to the loom-workspace allowed_signers file the per-bead
     /// integration step verifies commits against. Written by `loom init`
-    /// / `create_worktree` when a wrapix signing key resolves (see
+    /// / `create_worktree` when a wrix signing key resolves (see
     /// `specs/harness.md` § Commit signing). Absent when no key is
     /// configured.
     fn allowed_signers_path(&self) -> PathBuf {
@@ -1234,7 +1234,7 @@ impl GitClient {
 
     /// Whether driver-side signature verification is active in the loom
     /// workspace. True only when the allowed_signers file exists — i.e. a
-    /// wrapix signing key resolved at `loom init` / `create_worktree`
+    /// wrix signing key resolved at `loom init` / `create_worktree`
     /// time. When false the per-bead integration step skips both
     /// verify-signature passes (the spec-sanctioned "no key" path —
     /// `specs/harness.md` § Verdict Gate, phase 2).
@@ -1253,7 +1253,7 @@ impl GitClient {
     ///
     /// Returns [`SignatureCheck::Skipped`] when signing verification is
     /// disabled (no allowed_signers file — no key configured), so the
-    /// per-bead integration step proceeds unchanged on hosts where wrapix
+    /// per-bead integration step proceeds unchanged on hosts where wrix
     /// signing is not set up. When enabled, walks the commits oldest-first
     /// and returns [`SignatureCheck::Failed`] on the first commit
     /// `git verify-commit` rejects, carrying the offending sha + stderr so
@@ -1494,7 +1494,7 @@ fn init_bare_test_repo(path: &Path, branch: &str) -> Result<GitClient, GitError>
     // Mirror the production `.gitignore` so the loom workspace at
     // `.loom/integration/` does not show as untracked in the
     // operator workspace's `git status`.
-    std::fs::write(path.join(".gitignore"), ".loom/\n.wrapix/\ntarget/\n")?;
+    std::fs::write(path.join(".gitignore"), ".loom/\n.wrix/\ntarget/\n")?;
     run_test_git(path, &["add", "README.md", ".gitignore"])?;
     run_test_git(path, &["commit", "-q", "-m", "initial"])?;
     let origin_path = bare_origin_path(path);
@@ -1874,15 +1874,15 @@ fn cli_error(output: &std::process::Output) -> GitError {
     }
 }
 
-/// Create `<clone>/.wrapix/` mode 0o777 so the container's dolt-socket
+/// Create `<clone>/.wrix/` mode 0o777 so the container's dolt-socket
 /// bind-mount target pre-exists and both the host user (post-session
 /// pre-push hook) and container-namespace processes can write to it.
-/// Without this, the container runtime mkdirs `.wrapix/` as namespace-root
+/// Without this, the container runtime mkdirs `.wrix/` as namespace-root
 /// (host uid 100000) when materializing the mount, locking the host user
 /// out of the dir and breaking the post-session push.
-fn ensure_wrapix_mount_dir(clone_path: &Path) -> Result<(), GitError> {
+fn ensure_wrix_mount_dir(clone_path: &Path) -> Result<(), GitError> {
     use std::os::unix::fs::PermissionsExt;
-    let dir = clone_path.join(".wrapix");
+    let dir = clone_path.join(".wrix");
     std::fs::create_dir_all(&dir)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777))?;
     Ok(())

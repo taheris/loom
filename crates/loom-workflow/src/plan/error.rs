@@ -52,12 +52,12 @@ pub enum PlanError {
     /// agent-selection failed for `[phase.plan]`
     AgentSelection(#[from] loom_driver::config::AgentSelectionError),
 
-    /// failed to spawn `wrapix run`
+    /// failed to spawn `wrix run`
     Spawn {
         #[source]
         source: io::Error,
     },
 
-    /// `wrapix run` exited with status {status}
-    WrapixExit { status: String },
+    /// `wrix run` exited with status {status}
+    WrixExit { status: String },
 }

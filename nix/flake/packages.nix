@@ -20,14 +20,14 @@
         debug = debugSandbox.package;
         sandbox = sandbox.package;
 
-        # Pinned wrapix source, exposed so spec verifiers in this repo can
+        # Pinned wrix source, exposed so spec verifiers in this repo can
         # grep against the same `lib/sandbox/linux/entrypoint.sh` the
-        # sandbox image actually runs. The wrapix source lives in a
+        # sandbox image actually runs. The wrix source lives in a
         # separate flake input, so the verifier resolves the path through
-        # `nix build --no-link --print-out-paths .#wrapixSrc` (see
+        # `nix build --no-link --print-out-paths .#wrixSrc` (see
         # `specs/agent.md` § Container integration).
-        wrapixSrc = pkgs.runCommand "wrapix-src" { } ''
-          cp -r ${inputs.wrapix} $out
+        wrixSrc = pkgs.runCommand "wrix-src" { } ''
+          cp -r ${inputs.wrix} $out
         '';
       };
     };

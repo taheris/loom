@@ -29,7 +29,7 @@ use super::error::LoopError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyPass {
     /// Pass 1 — the fetched worker commits. A rejected signature here
-    /// means the wrapix container's signing setup is broken; the bead
+    /// means the wrix container's signing setup is broken; the bead
     /// routes to `loom:blocked` (worker-side).
     Worker,
     /// Pass 2 — the rebased commits the integration rewrite produced. A

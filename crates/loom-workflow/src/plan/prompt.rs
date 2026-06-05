@@ -34,7 +34,7 @@ pub struct PlanPromptInputs {
 }
 
 /// Render the appropriate Askama template for `inputs.mode`. Returns the
-/// rendered prompt body the driver will pass to `wrapix run`.
+/// rendered prompt body the driver will pass to `wrix run`.
 pub fn render_prompt(inputs: PlanPromptInputs) -> Result<String, PlanError> {
     let body = match inputs.mode {
         PlanMode::New(label) => PlanNewContext {

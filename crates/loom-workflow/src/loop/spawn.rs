@@ -8,23 +8,23 @@ use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
 
 use super::profile::resolve_profile_image;
 
-/// Workspace-relative host path of the `wrapix-beads` dolt socket. Held as a
+/// Workspace-relative host path of the `wrix-beads` dolt socket. Held as a
 /// constant so the bead-container mount and any future host-side consumer of
 /// the same socket stay in lockstep.
-const DOLT_SOCKET_REL_PATH: &str = ".wrapix/dolt.sock";
+const DOLT_SOCKET_REL_PATH: &str = ".wrix/dolt.sock";
 
 /// Container-side path the dolt socket is projected to. Matches
 /// `BEADS_DOLT_SERVER_SOCKET` set in the bead container env.
-const DOLT_SOCKET_CONTAINER_PATH: &str = "/workspace/.wrapix/dolt.sock";
+const DOLT_SOCKET_CONTAINER_PATH: &str = "/workspace/.wrix/dolt.sock";
 
-/// Build the [`MountSpec`] that projects the loom workspace's `wrapix-beads`
+/// Build the [`MountSpec`] that projects the loom workspace's `wrix-beads`
 /// dolt socket into a bead container at [`DOLT_SOCKET_CONTAINER_PATH`].
 ///
 /// Returns `None` when the host socket is absent (e.g. test fixtures that do
-/// not stand up the wrapix-beads server), so the resulting spawn config has
+/// not stand up the wrix-beads server), so the resulting spawn config has
 /// no socket mount in that environment. Production callers running under a
 /// real loom workspace always observe `Some`. Linux passes the socket file
-/// through virtiofs directly; on Darwin the wrapix sandbox classifier
+/// through virtiofs directly; on Darwin the wrix sandbox classifier
 /// rejects Unix-socket `host_path` entries at launch — see
 /// `specs/harness.md` § Bead dispatch / Darwin compatibility.
 pub fn dolt_socket_mount(loom_workspace: &Path) -> Option<MountSpec> {
@@ -113,10 +113,10 @@ fn build_spawn_config(
 /// (already chained through `[phase.run]` → `[phase.default]` → built-in
 /// `base` by `LoomConfig::agent_for`).
 ///
-/// `launcher_env` carries host-only key paths (`WRAPIX_DEPLOY_KEY` /
-/// `WRAPIX_SIGNING_KEY`) onto [`SpawnConfig::launcher_env`] — resolve it via
+/// `launcher_env` carries host-only key paths (`WRIX_DEPLOY_KEY` /
+/// `WRIX_SIGNING_KEY`) onto [`SpawnConfig::launcher_env`] — resolve it via
 /// [`GitClient::launcher_key_env`] at the dispatch site so the backend can
-/// set them on the `wrapix spawn` child process.
+/// set them on the `wrix spawn` child process.
 ///
 /// [`GitClient::launcher_key_env`]: loom_driver::git::GitClient::launcher_key_env
 #[expect(clippy::too_many_arguments, reason = "explicit dispatch surface")]
@@ -171,9 +171,9 @@ mod tests {
 
     fn three_profile_manifest(dir: &std::path::Path) -> ProfileImageManifest {
         let body = r#"{
-          "base":   { "ref": "localhost/wrapix-base:abc",   "source": "/nix/store/aaa-image-base" },
-          "rust":   { "ref": "localhost/wrapix-rust:def",   "source": "/nix/store/bbb-image-rust", "digest": "/nix/store/ddd-image-rust-digest" },
-          "python": { "ref": "localhost/wrapix-python:ghi", "source": "/nix/store/ccc-image-python" }
+          "base":   { "ref": "localhost/wrix-base:abc",   "source": "/nix/store/aaa-image-base" },
+          "rust":   { "ref": "localhost/wrix-rust:def",   "source": "/nix/store/bbb-image-rust", "digest": "/nix/store/ddd-image-rust-digest" },
+          "python": { "ref": "localhost/wrix-python:ghi", "source": "/nix/store/ccc-image-python" }
         }"#;
         let path = dir.join("profile-images.json");
         std::fs::write(&path, body).expect("write manifest");
@@ -225,7 +225,7 @@ mod tests {
         )
         .expect("python dispatch");
 
-        assert_eq!(cfg_rust.image_ref, "localhost/wrapix-rust:def");
+        assert_eq!(cfg_rust.image_ref, "localhost/wrix-rust:def");
         assert_eq!(
             cfg_rust.image_source,
             PathBuf::from("/nix/store/bbb-image-rust")
@@ -234,7 +234,7 @@ mod tests {
             cfg_rust.image_digest_path,
             Some(PathBuf::from("/nix/store/ddd-image-rust-digest"))
         );
-        assert_eq!(cfg_python.image_ref, "localhost/wrapix-python:ghi");
+        assert_eq!(cfg_python.image_ref, "localhost/wrix-python:ghi");
         assert_eq!(
             cfg_python.image_source,
             PathBuf::from("/nix/store/ccc-image-python")
@@ -281,8 +281,8 @@ mod tests {
         )
         .expect("python dispatch");
 
-        assert_eq!(labelled.image_ref, "localhost/wrapix-rust:def");
-        assert_eq!(overridden.image_ref, "localhost/wrapix-python:ghi");
+        assert_eq!(labelled.image_ref, "localhost/wrix-rust:def");
+        assert_eq!(overridden.image_ref, "localhost/wrix-python:ghi");
         assert_ne!(labelled.image_ref, overridden.image_ref);
     }
 
@@ -359,7 +359,7 @@ mod tests {
             PathBuf::from("/work"),
             "p".into(),
             dir.path().join("scratch"),
-            vec![("WRAPIX_AGENT".into(), "claude".into())],
+            vec![("WRIX_AGENT".into(), "claude".into())],
             vec![],
             vec![],
             vec![],
@@ -374,7 +374,7 @@ mod tests {
         assert!(
             cfg.env
                 .iter()
-                .any(|(k, v)| k == "WRAPIX_AGENT" && v == "claude"),
+                .any(|(k, v)| k == "WRIX_AGENT" && v == "claude"),
             "SpawnConfig.env dropped caller env: {:?}",
             cfg.env,
         );
@@ -382,11 +382,11 @@ mod tests {
 
     /// Spec gate (`specs/harness.md` § Bead dispatch —
     /// `bead_container_dolt_socket_via_mounts`): the host
-    /// `wrapix-beads` dolt socket is projected into bead containers via a
-    /// `SpawnConfig.mounts` entry at `/workspace/.wrapix/dolt.sock`,
+    /// `wrix-beads` dolt socket is projected into bead containers via a
+    /// `SpawnConfig.mounts` entry at `/workspace/.wrix/dolt.sock`,
     /// replacing the historical hardlink shim that lived in
     /// `GitClient::create_worktree`. The `host_path` resolves against the
-    /// loom workspace's `.wrapix/dolt.sock`; `read_only = false` because
+    /// loom workspace's `.wrix/dolt.sock`; `read_only = false` because
     /// dolt clients write through the socket.
     #[test]
     fn bead_container_dolt_socket_via_mounts() {
@@ -394,14 +394,14 @@ mod tests {
         let loom_workspace = dir.path().join("loom-workspace");
         let socket_path = loom_workspace.join(DOLT_SOCKET_REL_PATH);
         std::fs::create_dir_all(socket_path.parent().expect("socket parent"))
-            .expect("create wrapix dir");
+            .expect("create wrix dir");
         std::fs::write(&socket_path, b"").expect("touch socket");
 
         let mount = dolt_socket_mount(&loom_workspace).expect("socket present → mount");
         assert_eq!(mount.host_path, socket_path);
         assert_eq!(
             mount.container_path,
-            PathBuf::from("/workspace/.wrapix/dolt.sock"),
+            PathBuf::from("/workspace/.wrix/dolt.sock"),
         );
         assert!(
             !mount.read_only,
@@ -432,9 +432,9 @@ mod tests {
         );
     }
 
-    /// When the loom workspace has no `wrapix-beads` dolt socket on disk
+    /// When the loom workspace has no `wrix-beads` dolt socket on disk
     /// (test fixtures, CI sandboxes), [`dolt_socket_mount`] returns `None`
-    /// rather than projecting a missing host path the wrapix launcher
+    /// rather than projecting a missing host path the wrix launcher
     /// would reject at startup.
     #[test]
     fn dolt_socket_mount_returns_none_when_socket_absent() {
@@ -581,7 +581,7 @@ mod tests {
 
     /// The `launcher_env` passed at dispatch lands verbatim on
     /// [`SpawnConfig::launcher_env`] (the host key paths a backend sets on
-    /// the `wrapix spawn` child) and stays out of the in-container `env`
+    /// the `wrix spawn` child) and stays out of the in-container `env`
     /// allowlist. A loop agent boots without git keys unless this
     /// threading holds.
     #[test]
@@ -590,7 +590,7 @@ mod tests {
         let manifest = three_profile_manifest(dir.path());
         let bead = bead_with_labels("lm-1", &["profile:rust"]);
         let launcher_env = vec![(
-            "WRAPIX_SIGNING_KEY".to_string(),
+            "WRIX_SIGNING_KEY".to_string(),
             "/home/op/.ssh/deploy_keys/loom-host-signing".to_string(),
         )];
 
@@ -611,7 +611,7 @@ mod tests {
 
         assert_eq!(cfg.launcher_env, launcher_env);
         assert!(
-            !cfg.env.iter().any(|(k, _)| k == "WRAPIX_SIGNING_KEY"),
+            !cfg.env.iter().any(|(k, _)| k == "WRIX_SIGNING_KEY"),
             "launcher keys must NOT leak into the in-container env allowlist: {:?}",
             cfg.env,
         );

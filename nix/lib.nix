@@ -12,22 +12,22 @@ in
 
   # Build a `profile-images.json` derivation for the given profile set,
   # suitable for `export LOOM_PROFILES_MANIFEST=...`. `profiles` is an attrset
-  # of wrapix profile definitions; default covers the three wrapix ships out
+  # of wrix profile definitions; default covers the three wrix ships out
   # of the box. `loomBin` is the loom binary to thread into every sandbox's
   # package set — required, so the in-container PATH always carries `loom`.
   mkProfileManifest =
     {
       pkgs,
-      wrapixLib,
+      wrixLib,
       loomBin,
-      profiles ? { inherit (wrapixLib.profiles) base rust python; },
+      profiles ? { inherit (wrixLib.profiles) base rust python; },
       agent ? "pi",
       agentPkg ? null,
     }:
     let
       sandboxes = mapAttrs (
         _name: profile:
-        wrapixLib.mkSandbox (
+        wrixLib.mkSandbox (
           {
             inherit profile;
             inherit agent;
@@ -37,7 +37,7 @@ in
         )
       ) profiles;
       images = mapAttrs (_: s: s.image) sandboxes;
-      baseManifest = wrapixLib.mkProfileImages images;
+      baseManifest = wrixLib.mkProfileImages images;
       manifest = mapAttrs (
         name: entry:
         entry
@@ -59,7 +59,7 @@ in
     {
       pkgs,
       loomBuild,
-      wrapixLauncher,
+      wrixLauncher,
       profileManifest,
     }:
     pkgs.runCommand "loom"
@@ -70,8 +70,8 @@ in
       ''
         mkdir -p $out/bin
         makeWrapper ${loomBuild.bin}/bin/loom $out/bin/loom \
-          --prefix PATH : ${wrapixLauncher}/bin \
-          --set-default LOOM_WRAPIX_BIN ${wrapixLauncher}/bin/wrapix \
+          --prefix PATH : ${wrixLauncher}/bin \
+          --set-default LOOM_WRIX_BIN ${wrixLauncher}/bin/wrix \
           --set-default LOOM_PROFILES_MANIFEST ${profileManifest}
       '';
 }

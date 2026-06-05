@@ -1654,7 +1654,7 @@ mod tests {
 
     fn stub_manifest(dir: &std::path::Path) -> Arc<ProfileImageManifest> {
         let body = r#"{
-          "base": { "ref": "localhost/wrapix-base:abc", "source": "/nix/store/aaa-image-base" }
+          "base": { "ref": "localhost/wrix-base:abc", "source": "/nix/store/aaa-image-base" }
         }"#;
         let path = dir.join("profile-images.json");
         std::fs::write(&path, body).unwrap();

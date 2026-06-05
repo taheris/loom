@@ -577,11 +577,11 @@ agent.backend = "claude"
 
         fn spawn_config_carrying(limits: OutputLimits) -> SpawnConfig {
             SpawnConfig {
-                image_ref: "localhost/wrapix:tag".into(),
-                image_source: PathBuf::from("/nix/store/zzz-wrapix.tar"),
+                image_ref: "localhost/wrix:tag".into(),
+                image_source: PathBuf::from("/nix/store/zzz-wrix.tar"),
                 image_digest_path: None,
                 workspace: PathBuf::from("/workspace"),
-                env: vec![("WRAPIX_AGENT".into(), "direct".into())],
+                env: vec![("WRIX_AGENT".into(), "direct".into())],
                 mounts: Vec::new(),
                 initial_prompt: "go".into(),
                 agent_args: Vec::new(),

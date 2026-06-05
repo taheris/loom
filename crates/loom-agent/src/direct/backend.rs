@@ -1,4 +1,4 @@
-//! Direct backend: spawn `wrapix spawn` so the container's entrypoint
+//! Direct backend: spawn `wrix spawn` so the container's entrypoint
 //! exec's `loom-direct-runner` listening on stdin/stdout.
 //!
 //! The host-side driver wires the launcher's stdio to an
@@ -26,15 +26,15 @@ use tokio::io::BufWriter;
 use tokio::process::Command;
 use tracing::info;
 
-/// File name for the JSON-serialized [`SpawnConfig`] handed to `wrapix
+/// File name for the JSON-serialized [`SpawnConfig`] handed to `wrix
 /// spawn --spawn-config`. Written into the per-session
 /// [`SpawnConfig::scratch_dir`]; the wrapper reads it back to materialize
 /// the container.
 const SPAWN_CONFIG_FILE: &str = "spawn-config.json";
 
 /// Env var that overrides the launcher binary. Production resolves
-/// `wrapix` from `PATH`; tests substitute a mock script via this.
-const ENV_WRAPIX_BIN: &str = "LOOM_WRAPIX_BIN";
+/// `wrix` from `PATH`; tests substitute a mock script via this.
+const ENV_WRIX_BIN: &str = "LOOM_WRIX_BIN";
 
 /// Zero-sized marker for the Direct backend.
 ///
@@ -56,28 +56,27 @@ impl AgentBackend for DirectBackend {
     async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
         let spawn_config_path = prepare_runtime(config)?;
 
-        let wrapix_bin =
-            std::env::var_os(ENV_WRAPIX_BIN).unwrap_or_else(|| OsString::from("wrapix"));
+        let wrix_bin = std::env::var_os(ENV_WRIX_BIN).unwrap_or_else(|| OsString::from("wrix"));
         info!(
-            wrapix = %wrapix_bin.to_string_lossy(),
+            wrix = %wrix_bin.to_string_lossy(),
             spawn_config = %spawn_config_path.display(),
             "direct backend spawn",
         );
 
-        let mut cmd = build_wrapix_command(&wrapix_bin, &spawn_config_path);
+        let mut cmd = build_wrix_command(&wrix_bin, &spawn_config_path);
         apply_launcher_env(&mut cmd, &config.launcher_env);
         spawn_session(cmd).await
     }
 }
 
-/// Build the `<wrapix_bin> spawn --spawn-config <file> --stdio` command
+/// Build the `<wrix_bin> spawn --spawn-config <file> --stdio` command
 /// [`DirectBackend::spawn`] launches. The argv shape is the load-bearing
-/// contract loom owes the wrapix wrapper: the wrapper resolves `<file>`
+/// contract loom owes the wrix wrapper: the wrapper resolves `<file>`
 /// as a JSON [`SpawnConfig`] and `--stdio` selects the JSONL wire path
 /// (rather than a TTY attach). Extracted so tests can pin the contract
 /// without spawning a child or mutating the process env.
-pub(crate) fn build_wrapix_command(wrapix_bin: &OsStr, spawn_config_path: &Path) -> Command {
-    let mut cmd = Command::new(wrapix_bin);
+pub(crate) fn build_wrix_command(wrix_bin: &OsStr, spawn_config_path: &Path) -> Command {
+    let mut cmd = Command::new(wrix_bin);
     cmd.arg("spawn")
         .arg("--spawn-config")
         .arg(spawn_config_path)
@@ -109,7 +108,7 @@ fn write_spawn_config(runtime_dir: &Path, config: &SpawnConfig) -> Result<PathBu
 /// Build an [`AgentSession`] from a launcher [`Command`].
 ///
 /// Module-public so integration tests can substitute a mock runner
-/// binary in place of the real `wrapix spawn` exec.
+/// binary in place of the real `wrix spawn` exec.
 pub(crate) async fn spawn_session(mut cmd: Command) -> Result<AgentSession<Idle>, ProtocolError> {
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
@@ -304,11 +303,11 @@ mod tests {
 
     fn sample_config(scratch_dir: PathBuf) -> SpawnConfig {
         SpawnConfig {
-            image_ref: "localhost/wrapix-test:direct".to_string(),
-            image_source: PathBuf::from("/nix/store/zzz-wrapix-test-direct.tar"),
+            image_ref: "localhost/wrix-test:direct".to_string(),
+            image_source: PathBuf::from("/nix/store/zzz-wrix-test-direct.tar"),
             image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
-            env: vec![("WRAPIX_AGENT".into(), "direct".into())],
+            env: vec![("WRIX_AGENT".into(), "direct".into())],
             mounts: vec![],
             initial_prompt: "hello".to_string(),
             agent_args: vec![],
@@ -352,37 +351,37 @@ mod tests {
     }
 
     /// Spec contract (`specs/agent.md` § Direct backend, L753–754):
-    /// `DirectBackend::spawn` launches `wrapix spawn --spawn-config <file>
+    /// `DirectBackend::spawn` launches `wrix spawn --spawn-config <file>
     /// --stdio`, and the spawn-config the wrapper reads carries
-    /// `WRAPIX_AGENT=direct` so the container's entrypoint dispatches to
+    /// `WRIX_AGENT=direct` so the container's entrypoint dispatches to
     /// the direct runtime layer (`lib/sandbox/linux/entrypoint.sh` exec's
     /// `loom-direct-runner` on this value). Both halves of the contract
-    /// are pinned here: the argv shape via [`build_wrapix_command`]
+    /// are pinned here: the argv shape via [`build_wrix_command`]
     /// inspection (the in-process function `DirectBackend::spawn` calls)
     /// and the runtime-layer signal via the on-disk spawn-config the
     /// wrapper deserialises.
     #[test]
-    fn direct_session_spawn_invokes_wrapix_spawn_with_direct_runtime() {
+    fn direct_session_spawn_invokes_wrix_spawn_with_direct_runtime() {
         let scratch = tempfile::tempdir().expect("tempdir");
         let cfg = sample_config(scratch.path().to_path_buf());
         assert!(
             cfg.env
                 .iter()
-                .any(|(k, v)| k == "WRAPIX_AGENT" && v == "direct"),
+                .any(|(k, v)| k == "WRIX_AGENT" && v == "direct"),
             "sample_config must seed the direct runtime marker; got env={:?}",
             cfg.env,
         );
 
         let spawn_config_path = prepare_runtime(&cfg).expect("prepare_runtime");
 
-        let wrapix_bin = OsStr::new("wrapix");
-        let cmd = build_wrapix_command(wrapix_bin, &spawn_config_path);
+        let wrix_bin = OsStr::new("wrix");
+        let cmd = build_wrix_command(wrix_bin, &spawn_config_path);
         let std_cmd = cmd.as_std();
 
         assert_eq!(
             std_cmd.get_program(),
-            wrapix_bin,
-            "program must be the wrapix launcher, not podman directly",
+            wrix_bin,
+            "program must be the wrix launcher, not podman directly",
         );
         let args: Vec<&OsStr> = std_cmd.get_args().collect();
         assert_eq!(
@@ -402,8 +401,8 @@ mod tests {
             decoded
                 .env
                 .iter()
-                .any(|(k, v)| k == "WRAPIX_AGENT" && v == "direct"),
-            "spawn-config.json must round-trip WRAPIX_AGENT=direct so the \
+                .any(|(k, v)| k == "WRIX_AGENT" && v == "direct"),
+            "spawn-config.json must round-trip WRIX_AGENT=direct so the \
              entrypoint exec's loom-direct-runner; got env={:?}",
             decoded.env,
         );

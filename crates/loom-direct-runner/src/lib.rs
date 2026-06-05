@@ -400,11 +400,11 @@ mod tests {
 
     fn sample_config(model_id: Option<&str>) -> SpawnConfig {
         SpawnConfig {
-            image_ref: "localhost/wrapix-test:direct".into(),
+            image_ref: "localhost/wrix-test:direct".into(),
             image_source: PathBuf::from("/nix/store/zzz-test.tar"),
             image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
-            env: vec![("WRAPIX_AGENT".into(), "direct".into())],
+            env: vec![("WRIX_AGENT".into(), "direct".into())],
             mounts: vec![],
             initial_prompt: "hello".into(),
             agent_args: vec![],

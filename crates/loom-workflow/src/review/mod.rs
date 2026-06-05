@@ -7,7 +7,7 @@
 //!
 //! 1. snapshots beads carrying `spec:<label>` (`pre`);
 //! 2. renders [`ReviewContext`](loom_templates::review::ReviewContext), spawns
-//!    `wrapix spawn --spawn-config <file> --stdio`, drives an
+//!    `wrix spawn --spawn-config <file> --stdio`, drives an
 //!    [`AgentBackend`](loom_driver::agent::AgentBackend) and tees the
 //!    [`AgentEvent`](loom_driver::agent::AgentEvent) stream into the
 //!    terminal renderer + per-bead JSONL log;

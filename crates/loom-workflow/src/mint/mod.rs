@@ -1338,7 +1338,7 @@ mod tests {
     async fn mint_clarify_bound_finding_creates_single_bead_with_clarify_label_and_options_block() {
         let options_block = "## Options — keep loom out of podman\n\n\
                              ### Option 1 — Preserve the invariant\n\
-                             rework podman call to delegate to wrapix.\n\n\
+                             rework podman call to delegate to wrix.\n\n\
                              ### Option 2 — Carry the contradiction\n\
                              record exception in specs/harness.md.\n\n\
                              ### Option 3 — Change the invariant\n\

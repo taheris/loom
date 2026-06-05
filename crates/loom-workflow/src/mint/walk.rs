@@ -1365,7 +1365,7 @@ mod tests {
         let manifest_path = workspace.join("profile-images.json");
         std::fs::write(
             &manifest_path,
-            r#"{"base":{"ref":"localhost/wrapix-base:abc","source":"/nix/store/aaa"}}"#,
+            r#"{"base":{"ref":"localhost/wrix-base:abc","source":"/nix/store/aaa"}}"#,
         )
         .expect("manifest");
         let manifest =
@@ -1495,7 +1495,7 @@ mod tests {
         let manifest_path = workspace.join("profile-images.json");
         std::fs::write(
             &manifest_path,
-            r#"{"base":{"ref":"localhost/wrapix-base:abc","source":"/nix/store/aaa"}}"#,
+            r#"{"base":{"ref":"localhost/wrix-base:abc","source":"/nix/store/aaa"}}"#,
         )
         .expect("manifest");
         let manifest =

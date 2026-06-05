@@ -7,16 +7,16 @@ use super::error::ProtocolError;
 use super::repin::RePinContent;
 use super::session::{Active, AgentSession, Idle};
 
-/// Configuration `loom` hands to `wrapix spawn` describing how to launch
+/// Configuration `loom` hands to `wrix spawn` describing how to launch
 /// the per-bead container and what initial agent state to install.
 ///
 /// Serialized to a JSON file (`/tmp/loom-<id>.json`) and read back by
-/// `wrapix spawn --spawn-config <file>` — this is the single stable
+/// `wrix spawn --spawn-config <file>` — this is the single stable
 /// boundary between loom and the wrapper. `env` is an explicit allowlist;
 /// the wrapper never inherits the host environment wholesale.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpawnConfig {
-    /// Podman image reference (e.g. `localhost/wrapix-rust:<hash>`) — the
+    /// Podman image reference (e.g. `localhost/wrix-rust:<hash>`) — the
     /// argument passed to `podman run`. Populated by loom from the
     /// profile-image manifest at dispatch time.
     pub image_ref: String,
@@ -24,7 +24,7 @@ pub struct SpawnConfig {
     /// `image_ref`. The wrapper installs it before `podman run` when needed.
     pub image_source: PathBuf,
     /// Optional Nix store path containing the image content digest. Modern
-    /// wrapix launchers use this to skip image installation when the same
+    /// wrix launchers use this to skip image installation when the same
     /// content already exists under any tag, avoiding cold layer reloads when
     /// only the generated ref changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -32,14 +32,14 @@ pub struct SpawnConfig {
     pub workspace: PathBuf,
     pub env: Vec<(String, String)>,
     /// Per-spawn bind mounts beyond [`SpawnConfig::workspace`]. Loom uses this
-    /// to project the `wrapix-beads` dolt socket into every bead container at
-    /// `/workspace/.wrapix/dolt.sock` (replacing the host-side hardlink shim
+    /// to project the `wrix-beads` dolt socket into every bead container at
+    /// `/workspace/.wrix/dolt.sock` (replacing the host-side hardlink shim
     /// in [`crate::git::GitClient`]) and, when configured, the shared sccache
     /// directory at the configured container path. Additive to the resolved
     /// profile's `mounts`; see `specs/agent.md` § SpawnConfig.
     ///
     /// Single-file mounts (sockets) and directory mounts both pass through
-    /// virtiofs on Linux. On Darwin, the wrapix sandbox classifier accepts
+    /// virtiofs on Linux. On Darwin, the wrix sandbox classifier accepts
     /// directories (staged + copied at launch) and regular files
     /// (copy-from-parent-dir), but rejects Unix-socket `host_path` entries at
     /// launch — Apple's VirtioFS does not pass socket operations across the
@@ -127,14 +127,14 @@ pub struct SpawnConfig {
         with = "duration_secs_opt"
     )]
     pub stall_warn_interval: Option<Duration>,
-    /// Host-side environment loom sets on the `wrapix spawn` **launcher**
+    /// Host-side environment loom sets on the `wrix spawn` **launcher**
     /// process (not the in-container env — that is [`SpawnConfig::env`]).
-    /// Carries `WRAPIX_DEPLOY_KEY` / `WRAPIX_SIGNING_KEY` pointing at the
-    /// host key paths so `wrapix spawn` can bind-mount the keys into the
-    /// bead container; the host paths never cross the boundary (wrapix
+    /// Carries `WRIX_DEPLOY_KEY` / `WRIX_SIGNING_KEY` pointing at the
+    /// host key paths so `wrix spawn` can bind-mount the keys into the
+    /// bead container; the host paths never cross the boundary (wrix
     /// `specs/security.md` § Credential Surfaces). `#[serde(skip)]`: this
     /// never reaches the wrapper's spawn-config JSON — it is applied to the
-    /// child process environment by the backend before `wrapix spawn` runs,
+    /// child process environment by the backend before `wrix spawn` runs,
     /// and keeping it out of the on-disk JSON avoids leaking host key paths
     /// into a world-readable file.
     #[serde(skip)]
@@ -317,11 +317,11 @@ mod tests {
 
     fn sample_config(model: Option<ModelSelection>) -> SpawnConfig {
         SpawnConfig {
-            image_ref: "localhost/wrapix-test:tag".into(),
-            image_source: PathBuf::from("/nix/store/zzz-wrapix-test.tar"),
+            image_ref: "localhost/wrix-test:tag".into(),
+            image_source: PathBuf::from("/nix/store/zzz-wrix-test.tar"),
             image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
-            env: vec![("WRAPIX_AGENT".into(), "pi".into())],
+            env: vec![("WRIX_AGENT".into(), "pi".into())],
             mounts: Vec::new(),
             initial_prompt: "hello".into(),
             agent_args: vec!["--print".into()],
@@ -378,14 +378,14 @@ mod tests {
     #[test]
     fn spawn_config_with_image_digest_path_round_trips() {
         let mut cfg = sample_config(None);
-        cfg.image_digest_path = Some(PathBuf::from("/nix/store/ddd-wrapix-digest"));
+        cfg.image_digest_path = Some(PathBuf::from("/nix/store/ddd-wrix-digest"));
         let json = serde_json::to_string(&cfg).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        assert_eq!(v["image_digest_path"], "/nix/store/ddd-wrapix-digest");
+        assert_eq!(v["image_digest_path"], "/nix/store/ddd-wrix-digest");
         let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(
             back.image_digest_path,
-            Some(PathBuf::from("/nix/store/ddd-wrapix-digest"))
+            Some(PathBuf::from("/nix/store/ddd-wrix-digest"))
         );
     }
 
@@ -409,12 +409,12 @@ mod tests {
     /// when already present. Spec: `harness.md` § Nested-Loom Guard.
     #[test]
     fn set_loom_inside_appends_when_missing() {
-        let mut env = vec![("WRAPIX_AGENT".into(), "claude".into())];
+        let mut env = vec![("WRIX_AGENT".into(), "claude".into())];
         set_loom_inside(&mut env);
         assert_eq!(
             env,
             vec![
-                ("WRAPIX_AGENT".into(), "claude".into()),
+                ("WRIX_AGENT".into(), "claude".into()),
                 ("LOOM_INSIDE".into(), "1".into()),
             ],
         );
@@ -504,7 +504,7 @@ mod tests {
     }
 
     /// The on-disk JSON shape is the contract with
-    /// `wrapix spawn --spawn-config <file>`. Key order is fixed by serde's
+    /// `wrix spawn --spawn-config <file>`. Key order is fixed by serde's
     /// field-declaration order; reordering fields in [`SpawnConfig`] would
     /// silently shift the wire payload. Pinning the expected key sequence
     /// makes such drift fail loud here instead of in the wrapper.
@@ -618,15 +618,15 @@ mod tests {
     #[test]
     fn mount_spec_is_constructible_and_serializes_documented_fields() {
         let spec = MountSpec {
-            host_path: PathBuf::from("/run/wrapix-beads/dolt.sock"),
-            container_path: PathBuf::from("/workspace/.wrapix/dolt.sock"),
+            host_path: PathBuf::from("/run/wrix-beads/dolt.sock"),
+            container_path: PathBuf::from("/workspace/.wrix/dolt.sock"),
             read_only: false,
         };
         let json = serde_json::to_string(&spec).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
         let obj = v.as_object().expect("object");
-        assert_eq!(obj["host_path"], "/run/wrapix-beads/dolt.sock");
-        assert_eq!(obj["container_path"], "/workspace/.wrapix/dolt.sock");
+        assert_eq!(obj["host_path"], "/run/wrix-beads/dolt.sock");
+        assert_eq!(obj["container_path"], "/workspace/.wrix/dolt.sock");
         assert_eq!(obj["read_only"], false);
         let back: MountSpec = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, spec);
@@ -634,15 +634,15 @@ mod tests {
 
     /// A populated `mounts` round-trips through JSON with both
     /// single-file (socket) and directory mounts, preserving the
-    /// `read_only` discipline per entry. This is the wrapix-facing contract
+    /// `read_only` discipline per entry. This is the wrix-facing contract
     /// for projecting the dolt socket and the optional sccache directory.
     #[test]
     fn spawn_config_mounts_round_trip_preserves_per_entry_fields() {
         let mut cfg = sample_config(None);
         cfg.mounts = vec![
             MountSpec {
-                host_path: PathBuf::from("/run/wrapix-beads/dolt.sock"),
-                container_path: PathBuf::from("/workspace/.wrapix/dolt.sock"),
+                host_path: PathBuf::from("/run/wrix-beads/dolt.sock"),
+                container_path: PathBuf::from("/workspace/.wrix/dolt.sock"),
                 read_only: false,
             },
             MountSpec {
@@ -672,7 +672,7 @@ mod tests {
     }
 
     /// `launcher_env` is host-only state (deploy/signing key paths handed to
-    /// the `wrapix spawn` launcher) and must NEVER reach the spawn-config
+    /// the `wrix spawn` launcher) and must NEVER reach the spawn-config
     /// JSON: it is the in-container `env` allowlist's host-side counterpart,
     /// and leaking host key paths into a world-readable file is a security
     /// regression. `#[serde(skip)]` enforces this — pin it so a future
@@ -682,11 +682,11 @@ mod tests {
         let mut cfg = sample_config(None);
         cfg.launcher_env = vec![
             (
-                "WRAPIX_DEPLOY_KEY".into(),
+                "WRIX_DEPLOY_KEY".into(),
                 "/home/op/.ssh/deploy_keys/k".into(),
             ),
             (
-                "WRAPIX_SIGNING_KEY".into(),
+                "WRIX_SIGNING_KEY".into(),
                 "/home/op/.ssh/deploy_keys/k-signing".into(),
             ),
         ];
@@ -713,7 +713,7 @@ mod tests {
     }
 
     /// Legacy fixtures without a `mounts` key parse as an empty vector —
-    /// the absence-equals-empty contract that lets older wrapix payloads
+    /// the absence-equals-empty contract that lets older wrix payloads
     /// round-trip into the new struct.
     #[test]
     fn spawn_config_legacy_fixture_without_mounts_defaults_to_empty() {

@@ -20,7 +20,7 @@
 //! minor bumps. No `"protocol": <n>` field appears on the wire — the
 //! typed parse errors give loud structural breakage on version skew.
 //!
-//! External Rust consumers (e.g. wrapix) depend on this crate directly
+//! External Rust consumers (e.g. wrix) depend on this crate directly
 //! to call [`gate::parse_walk_output`] against captured agent stdout.
 //! Compile-time type safety + the leaf-crate dependency shape gives
 //! consumers the same guarantees loom's own internal pipeline has.

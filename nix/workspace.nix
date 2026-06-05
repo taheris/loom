@@ -1,10 +1,10 @@
 # Build the loom Cargo workspace.
 #
 # Exposed as `legacyPackages.${system}.lib.mkLoom` so consumers (notably
-# wrapix dogfood + any flake that wires loom into a wrapix sandbox in
+# wrix dogfood + any flake that wires loom into a wrix sandbox in
 # "direct" mode) can call it with their own `pkgs`/`crane`/`fenix` — for
 # example with `linuxPkgs` on a Darwin host to get a Linux-built
-# `loom-direct-runner` to drop into a wrapix sandbox image.
+# `loom-direct-runner` to drop into a wrix sandbox image.
 {
   pkgs,
   crane,

@@ -16,15 +16,15 @@ mod error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use tracing::{info, warn};
+use tracing::info;
 
-use loom_driver::bd::{BdClient, BdError, CommandRunner, ListOpts, UpdateOpts};
+use loom_driver::bd::{BdClient, CommandRunner, ListOpts, UpdateOpts};
 use loom_driver::config::LoomConfig;
 use loom_driver::git::{
     clone_loom_workspace, enable_rerere, fast_forward_loom_workspace_to_origin, read_origin_url,
     resolve_signing_key, write_signing_config,
 };
-use loom_driver::identifier::{BeadId, MoleculeId};
+use loom_driver::identifier::MoleculeId;
 use loom_driver::lock::LockManager;
 use loom_driver::state::{ActiveMolecule, RebuildReport, StateDb};
 
@@ -193,7 +193,7 @@ fn materialize_integration_workspace(
 
     // Enable rerere unconditionally so the driver-side rebase replays
     // recorded conflict resolutions; write the signing block when the
-    // wrapix signing key resolves (otherwise the operator's global
+    // wrix signing key resolves (otherwise the operator's global
     // gitconfig governs). Both target the loom workspace itself.
     enable_rerere(&dest)?;
     if let Some(key) = resolve(&dest)? {
@@ -204,141 +204,6 @@ fn materialize_integration_workspace(
         path: dest,
         created: true,
     }))
-}
-
-/// One bead worktree discovered under the legacy
-/// `<workspace>/.wrapix/worktree/<label>/<bead-id>/` layout.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacyWorktree {
-    pub bead_id: BeadId,
-    pub path: PathBuf,
-}
-
-/// Outcome of [`migrate_legacy_worktrees`].
-#[derive(Debug, Clone, Default)]
-pub struct MigrationReport {
-    /// Legacy worktrees whose backing bead was `closed` and have been
-    /// removed from disk.
-    pub reaped: Vec<PathBuf>,
-    /// Legacy worktrees left in place because their backing bead is
-    /// still open (or could not be resolved). The operator must reap
-    /// these manually after resolving via `loom msg <id>` or `bd close <id>`.
-    pub warned: Vec<LegacyWorktree>,
-}
-
-impl MigrationReport {
-    pub fn is_empty(&self) -> bool {
-        self.reaped.is_empty() && self.warned.is_empty()
-    }
-}
-
-/// Detect legacy operator-workspace bead worktrees under
-/// `<workspace>/.wrapix/worktree/<label>/<bead-id>/` left over from the
-/// pre-loom-workspace layout. For each, `bd show <id>` resolves the bead's
-/// status: closed → `remove_dir_all`, otherwise the worktree is preserved
-/// and the operator is warned. Returns an empty report when the legacy
-/// directory does not exist (post-migration steady state) — the absence
-/// of `.wrapix/worktree/` is the success signal.
-pub async fn migrate_legacy_worktrees<R: CommandRunner>(
-    workspace: &Path,
-    bd: &BdClient<R>,
-) -> Result<MigrationReport, InitError> {
-    let legacy_root = workspace.join(".wrapix/worktree");
-    let entries = match enumerate_legacy_worktrees(&legacy_root)? {
-        None => return Ok(MigrationReport::default()),
-        Some(entries) => entries,
-    };
-
-    let mut report = MigrationReport::default();
-    for entry in entries {
-        let closed = match bd.show(&entry.bead_id).await {
-            Ok(bead) => bead.status == "closed",
-            Err(BdError::ShowEmpty) => false,
-            Err(e) => return Err(e.into()),
-        };
-        if closed {
-            fs::remove_dir_all(&entry.path).map_err(|source| InitError::ReapLegacyWorktree {
-                path: entry.path.clone(),
-                source,
-            })?;
-            report.reaped.push(entry.path);
-        } else {
-            report.warned.push(entry);
-        }
-    }
-
-    if !report.reaped.is_empty() {
-        info!(
-            count = report.reaped.len(),
-            "migrated {} stale bead worktrees from pre-loom-workspace layout",
-            report.reaped.len(),
-        );
-    }
-    for entry in &report.warned {
-        warn!(
-            bead_id = %entry.bead_id,
-            path = %entry.path.display(),
-            "stale bead worktree from pre-loom-workspace layout is still open — \
-             resolve via `loom msg {id}` or `bd close {id}`",
-            id = entry.bead_id,
-        );
-    }
-
-    Ok(report)
-}
-
-/// Enumerate two-level entries under `<workspace>/.wrapix/worktree/<label>/<bead-id>/`.
-/// Returns `Ok(None)` when the legacy root does not exist; `Ok(Some(vec))`
-/// otherwise. Non-directory entries and bead-id strings that fail
-/// [`BeadId::new`] are skipped silently — only directories matching the
-/// legacy shape participate in migration.
-fn enumerate_legacy_worktrees(
-    legacy_root: &Path,
-) -> Result<Option<Vec<LegacyWorktree>>, InitError> {
-    if !legacy_root.exists() {
-        return Ok(None);
-    }
-    let mut out = Vec::new();
-    let labels = fs::read_dir(legacy_root).map_err(|source| InitError::ReadLegacyWorktree {
-        path: legacy_root.to_path_buf(),
-        source,
-    })?;
-    for label_entry in labels {
-        let label_entry = label_entry.map_err(|source| InitError::ReadLegacyWorktree {
-            path: legacy_root.to_path_buf(),
-            source,
-        })?;
-        let label_path = label_entry.path();
-        if !label_path.is_dir() {
-            continue;
-        }
-        let beads = fs::read_dir(&label_path).map_err(|source| InitError::ReadLegacyWorktree {
-            path: label_path.clone(),
-            source,
-        })?;
-        for bead_entry in beads {
-            let bead_entry = bead_entry.map_err(|source| InitError::ReadLegacyWorktree {
-                path: label_path.clone(),
-                source,
-            })?;
-            let bead_path = bead_entry.path();
-            if !bead_path.is_dir() {
-                continue;
-            }
-            let Some(name) = bead_path.file_name().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            let Ok(bead_id) = BeadId::new(name) else {
-                continue;
-            };
-            out.push(LegacyWorktree {
-                bead_id,
-                path: bead_path,
-            });
-        }
-    }
-    out.sort_by(|a, b| a.bead_id.as_str().cmp(b.bead_id.as_str()));
-    Ok(Some(out))
 }
 
 /// Enumerate active molecules via `bd list --status=open --type=epic`.
@@ -617,7 +482,7 @@ mod tests {
     /// (`gpg.format=ssh`, `user.signingkey`, `commit.gpgsign=true`,
     /// `gpg.ssh.allowedSignersFile`) into the loom workspace's local
     /// `.git/config` when a signing key resolves. Driven through the
-    /// injectable resolver seam because `$WRAPIX_SIGNING_KEY` cannot be set
+    /// injectable resolver seam because `$WRIX_SIGNING_KEY` cannot be set
     /// under edition 2024's unsafe `env::set_var`.
     #[test]
     fn loom_init_writes_signing_gitconfig() -> Result<()> {
@@ -738,8 +603,8 @@ mod tests {
     /// The test repo's origin is a local bare path (not GitHub), so the
     /// deploy-key fallback is skipped.
     #[test]
-    fn no_wrapix_keys_leaves_global_gitconfig_governing() -> Result<()> {
-        if std::env::var_os("WRAPIX_SIGNING_KEY").is_some() {
+    fn no_wrix_keys_leaves_global_gitconfig_governing() -> Result<()> {
+        if std::env::var_os("WRIX_SIGNING_KEY").is_some() {
             // Ambient env carries a real signing key; the no-key path
             // cannot be exercised in this environment.
             return Ok(());
@@ -1181,101 +1046,6 @@ mod tests {
                 ));
             }
         }
-        Ok(())
-    }
-
-    fn closed_bead_json(id: &str) -> String {
-        format!(
-            r#"[{{"id":"{id}","title":"x","status":"closed","priority":2,"issue_type":"task"}}]"#,
-        )
-    }
-
-    fn open_bead_json(id: &str) -> String {
-        format!(r#"[{{"id":"{id}","title":"x","status":"open","priority":2,"issue_type":"task"}}]"#,)
-    }
-
-    fn touch_legacy_worktree(workspace: &Path, label: &str, bead_id: &str) -> Result<PathBuf> {
-        let path = workspace.join(".wrapix/worktree").join(label).join(bead_id);
-        std::fs::create_dir_all(&path)?;
-        std::fs::write(path.join("marker.txt"), bead_id)?;
-        Ok(path)
-    }
-
-    /// Closed beads → reap. The legacy worktree directories are removed
-    /// and the report names them.
-    #[tokio::test]
-    async fn migration_detects_and_reaps_closed_legacy_worktrees() -> Result<()> {
-        let dir = temp_workspace()?;
-        let p1 = touch_legacy_worktree(dir.path(), "harness", "lm-old.1")?;
-        let p2 = touch_legacy_worktree(dir.path(), "harness", "lm-old.2")?;
-        assert!(p1.exists() && p2.exists());
-
-        // bd.show is called once per bead in sorted bead-id order.
-        let runner = CapturingRunner::new([
-            ok(closed_bead_json("lm-old.1").as_bytes()),
-            ok(closed_bead_json("lm-old.2").as_bytes()),
-        ]);
-        let bd = BdClient::with_runner(runner);
-
-        let report = migrate_legacy_worktrees(dir.path(), &bd).await?;
-        assert_eq!(
-            report.reaped.len(),
-            2,
-            "both legacy worktrees must be reaped: {report:?}",
-        );
-        assert!(report.warned.is_empty(), "no warnings expected: {report:?}");
-        assert!(!p1.exists(), "lm-old.1 worktree must be removed");
-        assert!(!p2.exists(), "lm-old.2 worktree must be removed");
-        Ok(())
-    }
-
-    /// Any open bead → warn (do not delete). The legacy worktree
-    /// directories survive on disk so the operator can investigate.
-    #[tokio::test]
-    async fn migration_warns_on_open_legacy_worktrees() -> Result<()> {
-        let dir = temp_workspace()?;
-        let open_path = touch_legacy_worktree(dir.path(), "harness", "lm-old.3")?;
-        let closed_path = touch_legacy_worktree(dir.path(), "harness", "lm-old.4")?;
-
-        let runner = CapturingRunner::new([
-            ok(open_bead_json("lm-old.3").as_bytes()),
-            ok(closed_bead_json("lm-old.4").as_bytes()),
-        ]);
-        let bd = BdClient::with_runner(runner);
-
-        let report = migrate_legacy_worktrees(dir.path(), &bd).await?;
-        assert_eq!(report.warned.len(), 1, "open bead must warn: {report:?}");
-        assert_eq!(report.warned[0].bead_id.as_str(), "lm-old.3");
-        assert_eq!(report.warned[0].path, open_path);
-        assert!(
-            open_path.exists(),
-            "open bead's worktree must NOT be removed",
-        );
-        assert_eq!(
-            report.reaped.len(),
-            1,
-            "closed bead must still be reaped alongside the warn: {report:?}",
-        );
-        assert_eq!(report.reaped[0], closed_path);
-        assert!(!closed_path.exists());
-        Ok(())
-    }
-
-    /// Steady-state workspaces (no `.wrapix/worktree/`) return an empty
-    /// report without invoking bd. No bd calls are issued.
-    #[tokio::test]
-    async fn migration_is_noop_when_legacy_root_missing() -> Result<()> {
-        let dir = temp_workspace()?;
-        let runner = CapturingRunner::new([]);
-        let handle = runner.clone();
-        let bd = BdClient::with_runner(runner);
-
-        let report = migrate_legacy_worktrees(dir.path(), &bd).await?;
-        assert!(report.is_empty());
-        assert!(
-            handle.calls().is_empty(),
-            "no bd calls expected when legacy root is absent",
-        );
         Ok(())
     }
 }

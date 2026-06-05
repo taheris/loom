@@ -57,13 +57,13 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
 /// Write a profile manifest pointing at an empty tar; `loom loop`
 /// resolves it via `LOOM_PROFILES_MANIFEST` even on the empty-queue
 /// fast path. The image is never instantiated — the mock agent
-/// replaces wrapix end-to-end — so the source tar can be empty.
+/// replaces wrix end-to-end — so the source tar can be empty.
 fn write_minimal_manifest(dir: &Path) -> PathBuf {
     let source = dir.join("base.tar");
     std::fs::write(&source, "").expect("write base.tar");
     let manifest = dir.join("profile-images.json");
     let body = format!(
-        r#"{{"base": {{"ref":"localhost/wrapix-base:test","source":{source:?}}}}}"#,
+        r#"{{"base": {{"ref":"localhost/wrix-base:test","source":{source:?}}}}}"#,
         source = source.display().to_string(),
     );
     std::fs::write(&manifest, body).expect("write manifest");
@@ -96,7 +96,7 @@ fn run_loom_loop_once(
         .arg("-s")
         .arg(spec_label)
         .env("PATH", new_path)
-        .env("LOOM_WRAPIX_BIN", mock_agent)
+        .env("LOOM_WRIX_BIN", mock_agent)
         .env("LOOM_TEST_AGENT_MODE", agent_mode)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", manifest)

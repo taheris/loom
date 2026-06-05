@@ -16,9 +16,9 @@ pub use claude::ClaudeBackend;
 pub use direct::DirectBackend;
 pub use pi::PiBackend;
 
-/// Apply [`SpawnConfig::launcher_env`] to the `wrapix spawn` child process
-/// before it is spawned. These pairs (`WRAPIX_DEPLOY_KEY` /
-/// `WRAPIX_SIGNING_KEY` → host key paths) are read by the wrapix launcher to
+/// Apply [`SpawnConfig::launcher_env`] to the `wrix spawn` child process
+/// before it is spawned. These pairs (`WRIX_DEPLOY_KEY` /
+/// `WRIX_SIGNING_KEY` → host key paths) are read by the wrix launcher to
 /// bind-mount the deploy + signing keys into the bead container; they are
 /// deliberately **not** part of [`SpawnConfig::env`] (the in-container
 /// allowlist) and never reach the spawn-config JSON. Without this, loop
@@ -46,11 +46,11 @@ mod tests {
     #[tokio::test]
     async fn apply_launcher_env_sets_child_process_env() {
         let mut cmd = tokio::process::Command::new("printenv");
-        cmd.arg("WRAPIX_SIGNING_KEY");
+        cmd.arg("WRIX_SIGNING_KEY");
         apply_launcher_env(
             &mut cmd,
             &[(
-                "WRAPIX_SIGNING_KEY".to_string(),
+                "WRIX_SIGNING_KEY".to_string(),
                 "/home/op/.ssh/deploy_keys/k-signing".to_string(),
             )],
         );

@@ -1,15 +1,15 @@
-//! Cross-cutting integration test: host -> wrapix spawn -> agent dispatch.
+//! Cross-cutting integration test: host -> wrix spawn -> agent dispatch.
 //!
-//! Verifies the contract loom owes the wrapix wrapper:
+//! Verifies the contract loom owes the wrix wrapper:
 //!
-//! 1. `wrapix spawn --spawn-config <file> --stdio` is the only argv shape
+//! 1. `wrix spawn --spawn-config <file> --stdio` is the only argv shape
 //!    loom hands to the wrapper. `<file>` resolves to a JSON-serialized
 //!    [`SpawnConfig`] containing the resolved profile image.
 //! 2. The container child receives stdin via a pipe (not a TTY) so JSONL
 //!    framing flows correctly and EOF semantics work when loom closes its
 //!    end of the pipe.
 //!
-//! Both tests drive `loom --agent pi todo` through a wrapix shim that
+//! Both tests drive `loom --agent pi todo` through a wrix shim that
 //! records what the loom binary actually exec'd. The shim then hands the
 //! exchange off to the existing `mock-pi.sh` so the pi backend's startup
 //! probe + prompt round-trip completes naturally — without that, the loom
@@ -44,13 +44,13 @@ fn find_bash() -> PathBuf {
     panic!("bash not found in PATH");
 }
 
-/// Write the wrapix shim into `dir` and return its path. The shim records
+/// Write the wrix shim into `dir` and return its path. The shim records
 /// argv (one quoted token per line) and stdin TTY/pipe state into the two
 /// sibling files, copies the `--spawn-config` JSON aside (so the test can
 /// inspect it without racing the temp-file delete), then exec's mock-pi in
 /// `happy-path` mode so the pi backend handshake AND the prompt round-trip
 /// complete; otherwise the loom binary would hang waiting for `agent_end`.
-fn install_wrapix_shim(
+fn install_wrix_shim(
     dir: &Path,
     argv_file: &Path,
     stdin_info: &Path,
@@ -58,7 +58,7 @@ fn install_wrapix_shim(
     mock_agent: &Path,
     mock_agent_mode: &str,
 ) -> PathBuf {
-    let shim = dir.join("wrapix");
+    let shim = dir.join("wrix");
     let bash = find_bash();
     let body = format!(
         "#!{bash}\n\
@@ -84,7 +84,7 @@ fn install_wrapix_shim(
              prev=\"$a\"\n\
          done\n\
          \n\
-         echo '[wrapix] Starting container (mock)...' >&2\n\
+         echo '[wrix] Starting container (mock)...' >&2\n\
          exec '{bash}' \"$MOCK_AGENT\" \"$MOCK_AGENT_MODE\"\n",
         bash = bash.display(),
         argv = argv_file.display(),
@@ -133,7 +133,7 @@ fn mock_claude_path() -> PathBuf {
     locate_mock("mock-claude/claude.sh")
 }
 
-/// Run `loom --workspace <ws> --agent pi todo` against a shim wrapix and
+/// Run `loom --workspace <ws> --agent pi todo` against a shim wrix and
 /// return the captured `Output`. The active spec is set via `loom use`
 /// before dispatch (the `--spec` override was removed from `Command::Todo`
 /// per `specs/harness.md` *Removed surface*). Shared by both tests so the
@@ -148,7 +148,7 @@ fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::pro
     std::fs::write(&image_source, "").expect("write stub image source");
     let manifest_body = format!(
         r#"{{
-          "base": {{ "ref": "localhost/wrapix-base:test", "source": {source:?} }}
+          "base": {{ "ref": "localhost/wrix-base:test", "source": {source:?} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -163,7 +163,7 @@ fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::pro
         .arg("pi")
         .arg("todo")
         .env("PATH", new_path)
-        .env("LOOM_WRAPIX_BIN", shim)
+        .env("LOOM_WRIX_BIN", shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
@@ -237,14 +237,14 @@ fn install_loom_noop_stub(dir: &Path) -> PathBuf {
     stub
 }
 
-/// Loom hands the wrapper exactly `wrapix spawn --spawn-config <file>
+/// Loom hands the wrapper exactly `wrix spawn --spawn-config <file>
 /// --stdio`, and the file resolves to a JSON [`SpawnConfig`] carrying
 /// the per-bead profile image. A future profile-resolution change that
 /// drops the `image_ref`/`image_source` fields or renames the
 /// subcommand will trip this assertion before the wrapper ever sees the
 /// malformed argv.
 #[test]
-fn wrapix_spawn_invocation_records_correct_argv() {
+fn wrix_spawn_invocation_records_correct_argv() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
 
@@ -253,7 +253,7 @@ fn wrapix_spawn_invocation_records_correct_argv() {
     let argv_file = shim_dir.join("argv.txt");
     let stdin_info = shim_dir.join("stdin-info.txt");
     let spawn_copy = shim_dir.join("spawn-config.json");
-    let shim = install_wrapix_shim(
+    let shim = install_wrix_shim(
         &shim_dir,
         &argv_file,
         &stdin_info,
@@ -297,12 +297,12 @@ fn wrapix_spawn_invocation_records_correct_argv() {
 
     // The spawn-config JSON must round-trip through SpawnConfig and carry
     // the resolved image_ref + image_source from the manifest written by
-    // `drive_loom_todo_pi` (`base` profile maps to `localhost/wrapix-base:test`).
+    // `drive_loom_todo_pi` (`base` profile maps to `localhost/wrix-base:test`).
     let bytes = std::fs::read(&spawn_copy).expect("shim should copy spawn-config aside");
     let cfg: loom_driver::agent::SpawnConfig =
         serde_json::from_slice(&bytes).expect("spawn-config must deserialize");
     assert_eq!(
-        cfg.image_ref, "localhost/wrapix-base:test",
+        cfg.image_ref, "localhost/wrix-base:test",
         "spawn-config image_ref must match the resolved profile image",
     );
     assert!(
@@ -338,7 +338,7 @@ fn loom_todo_writes_jsonl_log_under_workspace_logs_dir() {
     let argv_file = shim_dir.join("argv.txt");
     let stdin_info = shim_dir.join("stdin-info.txt");
     let spawn_copy = shim_dir.join("spawn-config.json");
-    let shim = install_wrapix_shim(
+    let shim = install_wrix_shim(
         &shim_dir,
         &argv_file,
         &stdin_info,
@@ -412,7 +412,7 @@ fn loom_todo_writes_jsonl_log_under_workspace_logs_dir() {
 /// against the regression where the production sequential controller
 /// passed `None` for the sink and every agent event was discarded. The
 /// bd stub returns one ready bead so `LoopMode::Once` exercises the full
-/// `next_ready_bead` → `run_bead` → `close_bead` path; the wrapix shim
+/// `next_ready_bead` → `run_bead` → `close_bead` path; the wrix shim
 /// and mock-pi finish the protocol so the sink reaches `session_complete`
 /// before being dropped.
 #[test]
@@ -426,7 +426,7 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "ref": "localhost/wrapix-base:test", "source": {source:?} }}
+          "base": {{ "ref": "localhost/wrix-base:test", "source": {source:?} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -437,7 +437,7 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
     let argv_file = shim_dir.join("argv.txt");
     let stdin_info = shim_dir.join("stdin-info.txt");
     let spawn_copy = shim_dir.join("spawn-config.json");
-    let shim = install_wrapix_shim(
+    let shim = install_wrix_shim(
         &shim_dir,
         &argv_file,
         &stdin_info,
@@ -466,7 +466,7 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
         .arg("-s")
         .arg("agent")
         .env("PATH", new_path)
-        .env("LOOM_WRAPIX_BIN", &shim)
+        .env("LOOM_WRIX_BIN", &shim)
         // Point `LOOM_BIN` at a no-op shim so the per-bead gate's
         // `loom gate verify --bead` + `loom gate mint --bead` calls
         // exit 0 silently — this test asserts run-phase JSONL log
@@ -484,7 +484,7 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom loop --once must exit 0 against the bd + wrapix stubs. stdout={stdout} stderr={stderr}",
+        "loom loop --once must exit 0 against the bd + wrix stubs. stdout={stdout} stderr={stderr}",
     );
 
     let logs_dir = workspace.join(".loom/logs/agent");
@@ -567,7 +567,7 @@ fn loom_gate_review_writes_phase_jsonl_log() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "ref": "localhost/wrapix-base:test", "source": {source:?} }}
+          "base": {{ "ref": "localhost/wrix-base:test", "source": {source:?} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -578,7 +578,7 @@ fn loom_gate_review_writes_phase_jsonl_log() {
     let argv_file = shim_dir.join("argv.txt");
     let stdin_info = shim_dir.join("stdin-info.txt");
     let spawn_copy = shim_dir.join("spawn-config.json");
-    let shim = install_wrapix_shim(
+    let shim = install_wrix_shim(
         &shim_dir,
         &argv_file,
         &stdin_info,
@@ -608,7 +608,7 @@ fn loom_gate_review_writes_phase_jsonl_log() {
         .arg("-s")
         .arg("agent")
         .env("PATH", new_path)
-        .env("LOOM_WRAPIX_BIN", &shim)
+        .env("LOOM_WRIX_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
@@ -622,7 +622,7 @@ fn loom_gate_review_writes_phase_jsonl_log() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom gate review must exit 0 against the bd + wrapix stubs. stdout={stdout} stderr={stderr}",
+        "loom gate review must exit 0 against the bd + wrix stubs. stdout={stdout} stderr={stderr}",
     );
 
     let logs_dir = workspace.join(".loom/logs/agent");
@@ -738,7 +738,7 @@ fn child_stdin_is_a_pipe_not_a_tty() {
     let argv_file = shim_dir.join("argv.txt");
     let stdin_info = shim_dir.join("stdin-info.txt");
     let spawn_copy = shim_dir.join("spawn-config.json");
-    let shim = install_wrapix_shim(
+    let shim = install_wrix_shim(
         &shim_dir,
         &argv_file,
         &stdin_info,
@@ -807,7 +807,7 @@ fn loom_todo_pi_compaction_drives_repin_steer_through_run_agent() {
     let argv_file = shim_dir.join("argv.txt");
     let stdin_info = shim_dir.join("stdin-info.txt");
     let spawn_copy = shim_dir.join("spawn-config.json");
-    let shim = install_wrapix_shim(
+    let shim = install_wrix_shim(
         &shim_dir,
         &argv_file,
         &stdin_info,
@@ -899,7 +899,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "ref": "localhost/wrapix-base:test", "source": {source:?} }}
+          "base": {{ "ref": "localhost/wrix-base:test", "source": {source:?} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -910,7 +910,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
     let argv_file = shim_dir.join("argv.txt");
     let stdin_info = shim_dir.join("stdin-info.txt");
     let spawn_copy = shim_dir.join("spawn-config.json");
-    let shim = install_wrapix_shim(
+    let shim = install_wrix_shim(
         &shim_dir,
         &argv_file,
         &stdin_info,
@@ -930,7 +930,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
         .arg("claude")
         .arg("todo")
         .env("PATH", new_path)
-        .env("LOOM_WRAPIX_BIN", &shim)
+        .env("LOOM_WRIX_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("RUST_LOG", "loom_agent=warn")
@@ -982,7 +982,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "ref": "localhost/wrapix-base:test", "source": {source:?} }}
+          "base": {{ "ref": "localhost/wrix-base:test", "source": {source:?} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -993,7 +993,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
     let argv_file = shim_dir.join("argv.txt");
     let stdin_info = shim_dir.join("stdin-info.txt");
     let spawn_copy = shim_dir.join("spawn-config.json");
-    let shim = install_wrapix_shim(
+    let shim = install_wrix_shim(
         &shim_dir,
         &argv_file,
         &stdin_info,
@@ -1013,7 +1013,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
         .arg("pi")
         .arg("todo")
         .env("PATH", new_path)
-        .env("LOOM_WRAPIX_BIN", &shim)
+        .env("LOOM_WRIX_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("LOOM_HANDSHAKE_TIMEOUT_MS", "500")
@@ -1062,7 +1062,7 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "ref": "localhost/wrapix-base:test", "source": {source:?} }}
+          "base": {{ "ref": "localhost/wrix-base:test", "source": {source:?} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -1073,7 +1073,7 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
     let argv_file = shim_dir.join("argv.txt");
     let stdin_info = shim_dir.join("stdin-info.txt");
     let spawn_copy = shim_dir.join("spawn-config.json");
-    let shim = install_wrapix_shim(
+    let shim = install_wrix_shim(
         &shim_dir,
         &argv_file,
         &stdin_info,
@@ -1098,7 +1098,7 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
         .arg("pi")
         .arg("todo")
         .env("PATH", new_path)
-        .env("LOOM_WRAPIX_BIN", &shim)
+        .env("LOOM_WRIX_BIN", &shim)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("LOOM_STALL_WARN_MS", "300")
