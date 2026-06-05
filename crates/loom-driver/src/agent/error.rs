@@ -14,6 +14,13 @@ pub enum ProtocolError {
     /// invalid JSON on protocol line
     InvalidJson(#[from] serde_json::Error),
 
+    /// invalid JSON on protocol line: {preview} ({source})
+    InvalidProtocolLine {
+        preview: String,
+        #[source]
+        source: serde_json::Error,
+    },
+
     /// unknown message type: {0}
     UnknownMessageType(String),
 
@@ -40,4 +47,27 @@ pub enum ProtocolError {
 
     /// parser-internal mutex was poisoned by a panicking thread
     LockPoisoned,
+}
+
+impl ProtocolError {
+    pub fn invalid_protocol_line(line: &str, source: serde_json::Error) -> Self {
+        Self::InvalidProtocolLine {
+            preview: preview_protocol_line(line),
+            source,
+        }
+    }
+}
+
+fn preview_protocol_line(line: &str) -> String {
+    const MAX_PREVIEW_BYTES: usize = 240;
+    let mut preview = String::new();
+    for ch in line.chars() {
+        let escaped = ch.escape_debug().to_string();
+        if preview.len() + escaped.len() > MAX_PREVIEW_BYTES {
+            preview.push('…');
+            break;
+        }
+        preview.push_str(&escaped);
+    }
+    preview
 }

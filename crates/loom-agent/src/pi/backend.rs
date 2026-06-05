@@ -483,9 +483,11 @@ async fn await_response(
             Some(line) => line.to_owned(),
             None => return Err(ProtocolError::UnexpectedEof),
         };
-        let env: PiEnvelope = serde_json::from_str(&line_owned)?;
+        let env: PiEnvelope = serde_json::from_str(&line_owned)
+            .map_err(|err| ProtocolError::invalid_protocol_line(&line_owned, err))?;
         if env.msg_type.as_deref() == Some("response") {
-            let resp: PiResponse = serde_json::from_str(&line_owned)?;
+            let resp: PiResponse = serde_json::from_str(&line_owned)
+                .map_err(|err| ProtocolError::invalid_protocol_line(&line_owned, err))?;
             if resp.id.as_str() == expected_id {
                 return Ok(resp);
             }

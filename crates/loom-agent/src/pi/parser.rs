@@ -286,8 +286,8 @@ impl LineParse for PiParser {
         let env: PiEnvelope = match serde_json::from_str(line) {
             Ok(env) => env,
             Err(err) => {
-                warn!(error = %err, "pi line failed JSON envelope parse");
-                return Err(ProtocolError::InvalidJson(err));
+                warn!(error = %err, preview = %line.escape_debug(), "pi line failed JSON envelope parse");
+                return Err(ProtocolError::invalid_protocol_line(line, err));
             }
         };
         match env.msg_type.as_deref() {
@@ -800,7 +800,12 @@ mod tests {
     #[test]
     fn malformed_json_returns_invalid_json_error() {
         let err = parse_err("not-json");
-        assert!(matches!(err, ProtocolError::InvalidJson(_)));
+        match err {
+            ProtocolError::InvalidProtocolLine { preview, .. } => {
+                assert_eq!(preview, "not-json");
+            }
+            other => panic!("expected InvalidProtocolLine, got {other:?}"),
+        }
     }
 
     // -- test_pi_extension_ui_passthrough ---------------------------------
