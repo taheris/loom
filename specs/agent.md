@@ -538,10 +538,13 @@ by the top-level `tool_execution_*` and `turn_end` events.
 | Delta Type | Maps To |
 |------------|---------|
 | `text_delta` | `AgentEvent::TextDelta` (extract `delta`; legacy `text` accepted) |
+| `text_end` | `AgentEvent::TextEnd` |
+| `thinking_delta` | `AgentEvent::ThinkingDelta` (extract `delta`; legacy `text` accepted) |
+| `thinking_end` | `AgentEvent::ThinkingEnd` |
+| `toolcall_delta` with `toolCallId` | `AgentEvent::ToolcallDelta` |
 | `error` | `AgentEvent::Error` (reasons: `"aborted"`, `"error"`) |
-| `start`, `text_start`, `text_end` | logged at `trace!`, skipped |
-| `thinking_start`, `thinking_delta`, `thinking_end` | logged at `trace!`, skipped |
-| `toolcall_start`, `toolcall_delta`, `toolcall_end` | logged at `trace!`, skipped |
+| `start`, `text_start`, `thinking_start` | logged at `trace!`, skipped |
+| `toolcall_start`, `toolcall_delta` without `toolCallId`, `toolcall_end` | logged at `trace!`, skipped; executable tool lifecycle is handled by top-level `tool_execution_*` events |
 | `done` | logged at `trace!`, skipped (reasons: `"stop"`, `"length"`, `"toolUse"`) |
 
 **Extension UI passthrough:** Pi emits `extension_ui_request` messages for

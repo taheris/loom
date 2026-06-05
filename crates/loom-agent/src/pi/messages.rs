@@ -169,12 +169,13 @@ pub enum AssistantMessageDelta {
     /// Closes a `thinking_delta` stream.
     ThinkingEnd,
 
-    /// Streaming tool-call argument fragment — pi has decided to call
-    /// a tool but is still emitting its JSON params one chunk at a
-    /// time. The `toolCallId` field comes camelCased on the wire.
+    /// Streaming tool-call argument fragment in the assistant message stream.
+    /// Current Pi identifies these by `contentIndex` and may omit
+    /// `toolCallId`; Loom does not need these chunks to drive tools because
+    /// executable tool lifecycle arrives separately via `tool_execution_*`.
     ToolcallDelta {
-        #[serde(rename = "toolCallId")]
-        tool_call_id: ToolCallId,
+        #[serde(default, rename = "toolCallId")]
+        tool_call_id: Option<ToolCallId>,
         delta: String,
     },
 
@@ -652,10 +653,8 @@ mod tests {
         }
     }
 
-    /// `toolcall_delta` round-trips BOTH documented fields: `toolCallId`
-    /// (camelCase rename) and `delta` (raw chunk of streaming
-    /// tool-call JSON). A rename of either would silently lose
-    /// streaming-tool progress.
+    /// `toolcall_delta` round-trips legacy idful chunks: `toolCallId`
+    /// (camelCase rename) and `delta` (raw chunk of streaming tool-call JSON).
     #[test]
     fn assistant_delta_toolcall_delta_maps_both_fields() {
         let line = r#"{"type":"toolcall_delta","toolCallId":"tc-1","delta":"chunk"}"#;
@@ -665,7 +664,26 @@ mod tests {
                 tool_call_id,
                 delta,
             } => {
-                assert_eq!(tool_call_id.as_str(), "tc-1");
+                assert_eq!(tool_call_id.as_ref().map(|id| id.as_str()), Some("tc-1"));
+                assert_eq!(delta, "chunk");
+            }
+            other => panic!("expected ToolcallDelta, got {other:?}"),
+        }
+    }
+
+    /// Current Pi assistant-message `toolcall_delta` chunks are indexed by
+    /// `contentIndex` and omit `toolCallId`; executable tool lifecycle still
+    /// arrives later via `tool_execution_*` events.
+    #[test]
+    fn assistant_delta_toolcall_delta_allows_missing_tool_call_id() {
+        let line = r#"{"type":"toolcall_delta","contentIndex":1,"delta":"chunk","partial":{}}"#;
+        let delta: AssistantMessageDelta = serde_json::from_str(line).expect("parse");
+        match delta {
+            AssistantMessageDelta::ToolcallDelta {
+                tool_call_id,
+                delta,
+            } => {
+                assert!(tool_call_id.is_none());
                 assert_eq!(delta, "chunk");
             }
             other => panic!("expected ToolcallDelta, got {other:?}"),

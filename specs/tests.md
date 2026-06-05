@@ -822,9 +822,9 @@ the rules:
      acknowledgements parse and are ignored mid-session
    - `message_update` nested delta dispatch: `text_delta` →
      `AgentEvent::TextDelta`, `thinking_delta` →
-     `AgentEvent::ThinkingDelta`, `toolcall_delta` →
-     `AgentEvent::ToolcallDelta`, `error` → `AgentEvent::Error`,
-     `done` → skipped (empty events)
+     `AgentEvent::ThinkingDelta`, idful `toolcall_delta` →
+     `AgentEvent::ToolcallDelta`, idless `toolcall_delta` → skipped,
+     `error` → `AgentEvent::Error`, `done` → skipped (empty events)
    - Pi `tool_execution_start` field mapping: `toolCallId` → `ToolCallId`,
      `toolName` → `tool`, `args` → `params`
    - Pi `tool_execution_end` field mapping: `result` → `output`,

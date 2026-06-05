@@ -131,12 +131,18 @@ fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, Protocol
             AssistantMessageDelta::ToolcallDelta {
                 tool_call_id,
                 delta,
-            } => ParsedLine {
-                events: vec![ParsedAgentEvent::ToolcallDelta {
-                    id: tool_call_id,
-                    delta,
-                }],
-                response: None,
+            } => match tool_call_id {
+                Some(tool_call_id) => ParsedLine {
+                    events: vec![ParsedAgentEvent::ToolcallDelta {
+                        id: tool_call_id,
+                        delta,
+                    }],
+                    response: None,
+                },
+                None => {
+                    trace!("assistant toolcall_delta without toolCallId ignored");
+                    empty()
+                }
             },
             AssistantMessageDelta::Error { reason, message } => {
                 let message = message.or(reason).unwrap_or_default();
@@ -553,7 +559,7 @@ mod tests {
 
     #[test]
     fn message_update_toolcall_delta_yields_toolcall_delta_event() {
-        // toolcall_delta surfaces with the tool call id + raw chunk.
+        // Legacy/idful toolcall_delta surfaces with the tool call id + raw chunk.
         let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","toolCallId":"tc-9","delta":"{\"file_path\":\"a\"}"}}"#;
         let p = parse(line);
         assert_eq!(p.events.len(), 1);
@@ -564,6 +570,18 @@ mod tests {
             }
             other => panic!("expected ToolcallDelta, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn message_update_idless_toolcall_delta_is_silent() {
+        // Current Pi streams assistant-message tool-call argument chunks by
+        // contentIndex before emitting the executable tool_execution_start
+        // event. Without a toolCallId there is no stable AgentEvent id, so
+        // the parser accepts and ignores the chunk.
+        let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","contentIndex":1,"delta":"{\"file_path\":\"a\"}","partial":{}}}"#;
+        let p = parse(line);
+        assert!(p.events.is_empty());
+        assert!(p.response.is_none());
     }
 
     #[test]
