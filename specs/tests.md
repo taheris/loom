@@ -818,7 +818,8 @@ the rules:
      - Full parse into `PiResponse`, `PiEvent`, or `PiUiRequest`
      - Test that envelope-only parse does not fail on unknown fields
    - `PiResponse` success/failure discrimination: `success: true` extracts
-     `data`, `success: false` extracts `error` message
+     `data`, `success: false` extracts `error` message; idless prompt
+     acknowledgements parse and are ignored mid-session
    - `message_update` nested delta dispatch: `text_delta` →
      `AgentEvent::TextDelta`, `thinking_delta` →
      `AgentEvent::ThinkingDelta`, `toolcall_delta` →

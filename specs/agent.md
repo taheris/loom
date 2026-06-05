@@ -438,7 +438,8 @@ deserialize the full payload into the correct type.
 
 The classifier rules:
 
-- A `type` of `"response"` → a response message (carries an `id`).
+- A `type` of `"response"` → a response message (may carry an `id`; prompt
+  acknowledgements in current Pi omit it).
 - A `type` of `"extension_ui_request"` → a UI extension request.
 - Any other line lacking an `id` → an event (events carry their own
   `type` values like `"message_update"` and never have an `id`).
@@ -446,20 +447,24 @@ The classifier rules:
   unknown-message-type protocol error.
 
 **Why two-phase?** Pi messages don't follow a clean tagged union:
-responses have `type: "response"` plus an `id`, events carry their own
-`type` values without an `id`, and extension UI requests have a distinct
+correlated responses have `type: "response"` plus an `id`, prompt
+acknowledgements are `type: "response"` without an `id`, events carry their
+own `type` values without an `id`, and extension UI requests have a distinct
 `type`. The discriminant is `type` for the known message names, with
-id-absence as the fallback for events — a two-field dispatch that
-serde's built-in tag/content support can't express. The envelope parse
-is cheap (unknown fields are skipped); the second parse deserializes
-into the exact target type.
+id-absence as the fallback for events — a two-field dispatch that serde's
+built-in tag/content support can't express. The envelope parse is cheap
+(unknown fields are skipped); the second parse deserializes into the exact
+target type.
 
-**Response envelope.** Every response carries `id`, `command`, `success`,
-optional `data` (success payload), and optional `error` (failure
-message). The `command` field echoes back the command name. The
-`success` boolean discriminates between a successful result (payload in
-`data`) and a failure (message in `error`); the driver checks `success`
-before accessing `data`.
+**Response envelope.** Every response carries `command`, `success`, optional
+`id`, optional `data` (success payload), and optional `error` (failure
+message). The `command` field echoes back the command name. The `success`
+boolean discriminates between a successful result (payload in `data`) and a
+failure (message in `error`); the driver checks `success` before accessing
+`data`. Startup handshake commands (`get_state`, `set_model`,
+`set_thinking_level`) require correlated `id` responses in the backend wait
+loop. Mid-session command acknowledgements without `id` are valid and are
+parsed then ignored.
 
 **Commands (driver → pi, via stdin):**
 

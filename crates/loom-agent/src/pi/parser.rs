@@ -295,10 +295,10 @@ impl LineParse for PiParser {
                 let resp: PiResponse = serde_json::from_str(line)
                     .map_err(|err| ProtocolError::invalid_protocol_line(line, err))?;
                 if resp.success {
-                    debug!(id = %resp.id, command = %resp.command, "pi response ok");
+                    debug!(id = ?resp.id, command = %resp.command, "pi response ok");
                 } else {
                     debug!(
-                        id = %resp.id,
+                        id = ?resp.id,
                         command = %resp.command,
                         error = ?resp.error,
                         "pi response failed",
@@ -440,6 +440,17 @@ mod tests {
     fn full_response_classifies_and_re_deserializes() {
         // type=response → second pass populates PiResponse.command/success.
         let line = r#"{"type":"response","id":"r1","command":"prompt","success":true}"#;
+        let p = parse(line);
+        assert!(p.events.is_empty());
+        assert!(p.response.is_none());
+    }
+
+    #[test]
+    fn idless_prompt_response_classifies_and_is_ignored() {
+        // Current Pi emits command acknowledgements for prompt without `id`.
+        // They are valid mid-session responses; only handshake correlation
+        // requires ids.
+        let line = r#"{"type":"response","command":"prompt","success":true}"#;
         let p = parse(line);
         assert!(p.events.is_empty());
         assert!(p.response.is_none());

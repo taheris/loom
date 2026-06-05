@@ -488,13 +488,17 @@ async fn await_response(
         if env.msg_type.as_deref() == Some("response") {
             let resp: PiResponse = serde_json::from_str(&line_owned)
                 .map_err(|err| ProtocolError::invalid_protocol_line(&line_owned, err))?;
-            if resp.id.as_str() == expected_id {
+            if resp
+                .id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == expected_id)
+            {
                 return Ok(resp);
             }
             debug!(
-                got = %resp.id,
+                got = ?resp.id,
                 want = %expected_id,
-                "pi response id mismatch — discarding",
+                "pi response id missing or mismatched — discarding",
             );
         } else {
             debug!(

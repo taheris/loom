@@ -1,7 +1,8 @@
 //! Pi-mono RPC protocol message types.
 //!
-//! Pi messages do not follow a clean tagged-union shape: responses carry
-//! `type: "response"` plus an `id`, events carry their own `type` values
+//! Pi messages do not follow a clean tagged-union shape: correlated responses
+//! carry `type: "response"` plus an `id`, some command-ack responses omit the
+//! `id`, events carry their own `type` values
 //! (`message_update`, `tool_execution_start`, …) without an `id`, and
 //! extension UI requests carry `type: "extension_ui_request"`. The parser
 //! therefore peeks at `(type, id)` via [`PiEnvelope`] and re-deserializes the
@@ -21,19 +22,21 @@ pub struct PiEnvelope {
     #[serde(rename = "type")]
     pub msg_type: Option<String>,
 
-    /// Present on responses and extension UI requests; absent on events.
-    /// The parser uses id-absence as the fallback that classifies the
-    /// remainder as events.
+    /// Present on correlated responses and extension UI requests; absent on
+    /// events and on some command-ack responses (notably prompt acks). The
+    /// parser uses `type`, not id-presence alone, for response classification.
     pub id: Option<RequestId>,
 }
 
-/// Response envelope — one of these is emitted for every command sent on
-/// stdin. The `command` field echoes back the command name; `success`
+/// Response envelope — one of these is emitted for commands sent on stdin.
+/// Request/response handshake commands carry `id`; current Pi prompt acks do
+/// not. The `command` field echoes back the command name; `success`
 /// discriminates between a successful `data` payload and a failure carried
 /// in `error`.
 #[derive(Debug, Deserialize)]
 pub struct PiResponse {
-    pub id: RequestId,
+    #[serde(default)]
+    pub id: Option<RequestId>,
     pub command: String,
     pub success: bool,
     #[serde(default)]
@@ -262,7 +265,7 @@ mod tests {
         let line =
             r#"{"type":"response","id":"r-1","command":"prompt","success":true,"data":{"k":"v"}}"#;
         let resp: PiResponse = serde_json::from_str(line).expect("parse");
-        assert_eq!(resp.id.as_str(), "r-1");
+        assert_eq!(resp.id.as_ref().map(|id| id.as_str()), Some("r-1"));
         assert_eq!(resp.command, "prompt");
         assert!(resp.success);
         let data = resp.data.expect("data present on success");
@@ -276,7 +279,7 @@ mod tests {
     fn pi_response_failure_populates_error_field() {
         let line = r#"{"type":"response","id":"r-2","command":"set_model","success":false,"error":"unsupported provider"}"#;
         let resp: PiResponse = serde_json::from_str(line).expect("parse");
-        assert_eq!(resp.id.as_str(), "r-2");
+        assert_eq!(resp.id.as_ref().map(|id| id.as_str()), Some("r-2"));
         assert_eq!(resp.command, "set_model");
         assert!(!resp.success);
         assert_eq!(resp.error.as_deref(), Some("unsupported provider"));
@@ -284,14 +287,26 @@ mod tests {
     }
 
     /// `data` and `error` are both optional via `#[serde(default)]` so a
-    /// minimal response (only the four required fields) parses without
-    /// either populated.
+    /// minimal response parses without either populated.
     #[test]
     fn pi_response_minimal_shape_omits_data_and_error() {
         let line = r#"{"type":"response","id":"r-3","command":"abort","success":true}"#;
         let resp: PiResponse = serde_json::from_str(line).expect("parse");
+        assert_eq!(resp.id.as_ref().map(|id| id.as_str()), Some("r-3"));
         assert!(resp.data.is_none());
         assert!(resp.error.is_none());
+    }
+
+    /// Current Pi prompt acknowledgements omit `id`; mid-session parsing
+    /// must accept and drop them while handshake correlation remains strict
+    /// in the backend's `await_response` loop.
+    #[test]
+    fn pi_response_prompt_ack_allows_missing_id() {
+        let line = r#"{"type":"response","command":"prompt","success":true}"#;
+        let resp: PiResponse = serde_json::from_str(line).expect("parse");
+        assert!(resp.id.is_none());
+        assert_eq!(resp.command, "prompt");
+        assert!(resp.success);
     }
 
     /// `tool_execution_start` field mapping: every documented field
