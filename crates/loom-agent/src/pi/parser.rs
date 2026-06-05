@@ -292,7 +292,8 @@ impl LineParse for PiParser {
         };
         match env.msg_type.as_deref() {
             Some("response") => {
-                let resp: PiResponse = serde_json::from_str(line)?;
+                let resp: PiResponse = serde_json::from_str(line)
+                    .map_err(|err| ProtocolError::invalid_protocol_line(line, err))?;
                 if resp.success {
                     debug!(id = %resp.id, command = %resp.command, "pi response ok");
                 } else {
@@ -306,11 +307,13 @@ impl LineParse for PiParser {
                 Ok(empty())
             }
             Some("extension_ui_request") => {
-                let req: PiUiRequest = serde_json::from_str(line)?;
+                let req: PiUiRequest = serde_json::from_str(line)
+                    .map_err(|err| ProtocolError::invalid_protocol_line(line, err))?;
                 parse_ui_request(req)
             }
             _ if env.id.is_none() => {
-                let evt: PiEvent = serde_json::from_str(line)?;
+                let evt: PiEvent = serde_json::from_str(line)
+                    .map_err(|err| ProtocolError::invalid_protocol_line(line, err))?;
                 parse_event(self, evt)
             }
             other => Err(ProtocolError::UnknownMessageType(
