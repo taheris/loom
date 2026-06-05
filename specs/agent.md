@@ -1019,14 +1019,12 @@ connection, network filtering, session audit logging.
 
 ### Agent runtime layer
 
-- Single sandbox image builds with all three agent binaries (claude, pi,
-  `loom-direct-runner`) layered in; runtime agent selection is the
-  responsibility of the entrypoint per *Entrypoint Agent Selection* and
-  Requirement #8 above.
+- The default Loom sandbox image builds with the Pi agent runtime selected
+  explicitly (`agent = "pi"`), matching wrapix's one-agent-per-image format.
   [system](nix build .#sandbox)
-- All three agent binaries (`pi`, `claude`, `loom-direct-runner`) launch
-  inside the built sandbox image and respond to `--version`; failures
-  identify which binary is missing or broken.
+- The selected Pi agent binary launches inside the built sandbox image and
+  responds to `--version`; failures identify when the selected runtime is
+  missing or broken.
   [system](nix run .#test-sandbox)
 
 ## Requirements
@@ -1098,11 +1096,11 @@ connection, network filtering, session audit logging.
    forwarded into the container as the command vector (exit 127).
 8. **Agent runtime layer** — the image builder composes two orthogonal axes:
    *workspace profile* (base, rust, python) and *agent runtime* (claude, pi,
-   direct). When `WRAPIX_AGENT=pi`, the pi runtime layer (Node.js + pi
+   direct). Loom's default sandbox and profile manifest build the Pi variant
+   explicitly with `agent = "pi"`. That selected runtime layer (Node.js + pi
    binary) is added to whichever workspace profile is configured for the
-   bead. When `WRAPIX_AGENT=direct`, the direct runtime layer (statically-
-   linked `loom-direct-runner` binary) is added. No standalone profile
-   proliferation per runtime.
+   bead. Direct and Claude remain separate wrapix image variants rather than
+   binaries bundled into the same image.
 9. **Entrypoint agent selection** — `entrypoint.sh` checks `WRAPIX_AGENT` and:
    - `claude` (default): existing behavior (Claude config merging, hooks,
      `claude --dangerously-skip-permissions`)

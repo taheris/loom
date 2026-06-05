@@ -542,7 +542,7 @@ in
 `loomTests` is exposed via `tests/default.nix` (as
 `loom-tests = loomDeriv.loomTests` under `rustChecks`, joining the flake
 `checks` set) and lifted to `packages.loom-tests` in
-`modules/flake/tests.nix`. It runs alongside `loom-nextest` (the bare
+`nix/flake/tests.nix`. It runs alongside `loom-nextest` (the bare
 `cargo nextest run` derivation): the gate-driven variant batches the
 `[test]`-annotated targets and runs the `[check]` walks across every
 spec under `specs/`, while `loom-nextest` continues to cover every
@@ -723,7 +723,7 @@ the rules:
   [check](grep -q 'name = "test"' tests/loom/default.nix)
 - `nix run .#fuzz-loom` exists for on-demand `cargo fuzz` runs
       (not gated by `nix flake check`)
-  [check](grep -q 'name = "fuzz-loom"' modules/flake/apps.nix)
+  [check](grep -q 'name = "fuzz-loom"' nix/flake/apps.nix)
 - Container smoke enforces a <30s wall-time budget
   [check](grep -qE 'ELAPSED.*-gt 30' tests/run-tests.sh)
 - pi-mono version pinned in `nix/pi-mono/package.json` (loom owns the
@@ -1172,7 +1172,7 @@ the rules:
    include a short comment or doc string explaining why an in-process
    equivalent (via `LineParse` + `tokio::io::duplex`) isn't feasible.
 9. **Upstream protocol versioning** — pi-mono and Claude Code versions
-   are pinned in `modules/flake/overlays.nix`. Bumps are deliberate PRs
+   are pinned in `nix/flake/overlays.nix`. Bumps are deliberate PRs
    accompanied by a protocol-bump checklist (re-run parser tests, scan
    upstream changelog for new event types, add `Unknown` coverage if
    any new types lack typed variants, update mock scripts if new types
@@ -1196,7 +1196,7 @@ the rules:
   cover the protocol surface (parser tests use inline strings; mocks
   cover pipe-level paths; smoke runs mock pi inside the container).
   Validation against real binaries happens during development, outside
-  CI. Pinned versions in `modules/flake/overlays.nix` plus parser
+  CI. Pinned versions in `nix/flake/overlays.nix` plus parser
   tests with field-level coverage catch silent protocol drift on
   bumps.
 - **macOS container smoke** — the smoke requires `podman` (Linux). Darwin

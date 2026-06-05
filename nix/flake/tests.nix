@@ -1,4 +1,4 @@
-# modules/flake/tests.nix
+# nix/flake/tests.nix
 #
 # Lifts the `loom gate verify` derivation into `packages.<system>` so
 # it can be built directly via `nix build .#loom-tests`. It is *not*

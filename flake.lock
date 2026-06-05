@@ -171,10 +171,10 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1780660843,
-        "narHash": "sha256-2jMmxveE7L82VjzUkZmmEjOXVZyoB+VbMqyDnqUtVIw=",
+        "lastModified": 1780686841,
+        "narHash": "sha256-482jSEdZFHkKVRJRJNRdtr3lwCjIAEiyE6gQh3dCDrU=",
         "ref": "main",
-        "rev": "69c84cd87b73f8dfd00700762dc3eb1d0d467343",
+        "rev": "05a8b7af84c41fa98ca020062e7dc124e2828a87",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrapix.git"

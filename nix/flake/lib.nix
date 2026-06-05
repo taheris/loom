@@ -35,6 +35,8 @@ in
         pkgs,
         wrapixLib,
         profiles ? { inherit (wrapixLib.profiles) base rust python; },
+        agent ? "pi",
+        agentPkg ? null,
         loomBin ?
           (loomLib.mkLoom {
             inherit
@@ -55,6 +57,8 @@ in
           pkgs
           wrapixLib
           profiles
+          agent
+          agentPkg
           loomBin
           ;
       };
@@ -94,18 +98,20 @@ in
 
       sandbox = wrapixLib.mkSandbox {
         profile = rustProfile;
+        agent = "pi";
+        agentPkg = pi-mono;
         packages = [
           loom.bin
-          pi-mono
           pkgs.cargo-nextest
         ];
       };
 
       debugSandbox = wrapixLib.mkSandbox {
         profile = rustProfile;
+        agent = "pi";
+        agentPkg = pi-mono;
         packages = [
           loom.bin
-          pi-mono
           pkgs.cargo-nextest
           pkgs.podman
         ];
@@ -114,6 +120,7 @@ in
       profileManifest = loomLib.mkProfileManifest {
         inherit pkgs wrapixLib;
         loomBin = loom.bin;
+        agentPkg = pi-mono;
       };
 
       loomBin = loomLib.mkLoomBin {

@@ -1,28 +1,11 @@
-# modules/flake/apps.nix
+# Exposes user-facing `nix run` entry points:
 #
-# Exposes the user-facing `nix run` entry points:
-#
-#   nix run .#test                — container smoke harness. On Linux,
-#                                   runs the real `writeShellApplication`
-#                                   wrapper around tests/run-tests.sh. On
-#                                   Darwin, runs a stub that exits 0 with
-#                                   "container smoke not available on
-#                                   Darwin" so the entry point is a no-op
-#                                   rather than missing.
-#   nix run .#test-sandbox  — boots the built `.#sandbox` image
-#                                   once and asserts the three agent
-#                                   binaries (`pi`, `claude`,
-#                                   `loom-direct-runner`) each respond
-#                                   to `--version`. Linux only; Darwin
-#                                   returns a stub. Spec verifier for
-#                                   `specs/agent.md` § Agent runtime
-#                                   layer.
-#   nix run .#fuzz-loom           — on-demand `cargo fuzz` driver. NOT
-#                                   gated by `nix flake check` (per spec
-#                                   § Property-based testing: "No
-#                                   `cargo fuzz` under `nix flake
-#                                   check`"); intended for nightly or
-#                                   local exhaustive runs only.
+# - `.#test`: container smoke harness.
+#   Linux runs `tests/run-tests.sh`; Darwin returns a no-op stub.
+# - `.#test-sandbox`: boots `.#sandbox` and checks the selected Pi runtime.
+#   Linux only; Darwin returns a no-op stub.
+# - `.#fuzz-loom`: on-demand `cargo fuzz` driver.
+#   This is intentionally not gated by `nix flake check`.
 #
 # Spec: specs/tests.md § CI integration / Cross-platform.
 _:
@@ -73,14 +56,10 @@ _:
 
           podman run --rm --entrypoint=/bin/bash "$ref" -c '
             set -uo pipefail
-            rc=0
-            for bin in pi claude loom-direct-runner; do
-              if ! out=$("$bin" --version 2>&1); then
-                printf "test-sandbox: %s --version failed: %s\n" "$bin" "$out" >&2
-                rc=1
-              fi
-            done
-            exit "$rc"
+            if ! out=$(pi --version 2>&1); then
+              printf "test-sandbox: pi --version failed: %s\n" "$out" >&2
+              exit 1
+            fi
           '
         '';
       };
@@ -105,7 +84,7 @@ _:
         test-sandbox = {
           type = "app";
           program = "${sandboxSmokeApp}/bin/test-sandbox";
-          meta.description = "Runtime check that pi/claude/loom-direct-runner respond to --version inside the sandbox image (Linux only; Darwin stub)";
+          meta.description = "Runtime check that the selected Pi agent responds to --version inside the sandbox image (Linux only; Darwin stub)";
         };
         fuzz-loom = {
           type = "app";

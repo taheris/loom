@@ -5,9 +5,9 @@ _:
     {
       config,
       pkgs,
-      inputs',
       wrapixLib,
       rustProfile,
+      sandbox,
       profileManifest,
       ...
     }:
@@ -17,14 +17,14 @@ _:
 
         env = {
           LOOM_PROFILES_MANIFEST = profileManifest;
+          LOOM_WRAPIX_BIN = "${sandbox.package}/bin/wrapix";
         };
 
-        # `inputs'.wrapix.packages.sandbox` ships the wrapix launcher CLI
-        # without depending on `loom.bin`, so `wrapix` stays on PATH for
-        # `loom loop` to spawn agents while direnv reload stays fast.
+        # Keep the same sandbox wrapper on PATH that loom loop gets via
+        # LOOM_WRAPIX_BIN, so interactive wrapix runs match the packaged CLI.
         packages = [
           config.treefmt.build.wrapper
-          inputs'.wrapix.packages.sandbox
+          sandbox.package
           pkgs.cargo-nextest
         ];
       };

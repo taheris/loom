@@ -21,32 +21,28 @@ in
       wrapixLib,
       loomBin,
       profiles ? { inherit (wrapixLib.profiles) base rust python; },
+      agent ? "pi",
+      agentPkg ? null,
     }:
     let
-      extraForProfile =
-        name:
-        if name == "rust" then
-          [
-            pkgs.flock
-            pkgs.cargo-nextest
-          ]
-        else
-          [ ];
       sandboxes = mapAttrs (
         name: profile:
-        wrapixLib.mkSandbox {
-          inherit profile;
-          packages = [ loomBin ] ++ extraForProfile name;
-        }
+        wrapixLib.mkSandbox (
+          {
+            inherit profile;
+            inherit agent;
+            packages = [ loomBin ];
+          }
+          // pkgs.lib.optionalAttrs (agentPkg != null) { inherit agentPkg; }
+        )
       ) profiles;
       images = mapAttrs (_: s: s.image) sandboxes;
     in
     wrapixLib.mkProfileImages images;
 
-  # Wrap the raw loom binary with `bin/wrapix` on its internal PATH and
-  # `--set-default` LOOM_PROFILES_MANIFEST, so a consumer only needs the
-  # wrapped binary on PATH to run `loom plan` end-to-end. Consumers can still
-  # override the env var to point at a custom manifest.
+  # Wrap the raw loom binary with the matching sandbox launcher defaults, so a
+  # consumer only needs the wrapped binary on PATH to run loom end-to-end.
+  # Consumers can still override either env var.
   mkLoomBin =
     {
       pkgs,
@@ -63,6 +59,7 @@ in
         mkdir -p $out/bin
         makeWrapper ${loomBuild.bin}/bin/loom $out/bin/loom \
           --prefix PATH : ${wrapixLauncher}/bin \
+          --set-default LOOM_WRAPIX_BIN ${wrapixLauncher}/bin/wrapix \
           --set-default LOOM_PROFILES_MANIFEST ${profileManifest}
       '';
 }

@@ -1,2 +1,3 @@
 [phase.default]
 profile = "rust"
+agent.backend = "pi"

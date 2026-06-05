@@ -57,7 +57,6 @@ let
     "tests/judges" = "${src}/tests/judges";
     "specs" = "${src}/specs";
     "docs" = "${src}/docs";
-    "modules" = "${src}/modules";
     "nix/flake" = "${src}/nix/flake";
     "nix/pi-mono" = "${src}/nix/pi-mono";
     "scripts" = "${src}/scripts";
