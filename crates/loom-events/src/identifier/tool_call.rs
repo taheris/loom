@@ -27,17 +27,16 @@ impl fmt::Display for ToolCallId {
 impl FromStr for ToolCallId {
     type Err = ParseToolCallIdError;
 
-    /// Parse a tool-call id: non-empty ASCII alphanumerics plus `_`
-    /// and `-`. Matches Anthropic's `toolu_<base64ish>` convention while
-    /// also accepting the short `t1` forms used in fixtures. Whitespace,
-    /// dots, and other punctuation are rejected to catch garbled
-    /// subprocess output at the boundary.
+    /// Parse a tool-call id: non-empty ASCII alphanumerics plus `_`, `-`,
+    /// and `|`. `|` is accepted for current Pi/OpenAI composite tool-call ids
+    /// (`call_...|fc_...`). Whitespace, dots, slashes, and shell punctuation
+    /// remain rejected to catch garbled subprocess output at the boundary.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.is_empty() {
             return Err(ParseToolCallIdError(s.to_owned()));
         }
         for &b in s.as_bytes() {
-            let ok = b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
+            let ok = b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'|';
             if !ok {
                 return Err(ParseToolCallIdError(s.to_owned()));
             }
@@ -54,7 +53,7 @@ impl<'de> Deserialize<'de> for ToolCallId {
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
-#[error("invalid tool call id `{0}`: expected ASCII alphanumerics with `_`/`-`")]
+#[error("invalid tool call id `{0}`: expected ASCII alphanumerics with `_`/`-`/`|`")]
 pub struct ParseToolCallIdError(pub String);
 
 #[cfg(test)]
@@ -87,7 +86,14 @@ mod tests {
 
     #[test]
     fn parse_accepts_canonical_shapes() -> Result<()> {
-        for input in ["toolu_01", "toolu_42", "t1", "toolu_AbCd1234", "call-x"] {
+        for input in [
+            "toolu_01",
+            "toolu_42",
+            "t1",
+            "toolu_AbCd1234",
+            "call-x",
+            "call_es8xfFZpiG9eU4F6ONqu9AC5|fc_084fe1d174a690c2016a234c2e4d108191a893f4d1bf036187",
+        ] {
             let id: ToolCallId = input.parse()?;
             assert_eq!(id.as_str(), input);
         }
