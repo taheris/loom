@@ -146,14 +146,22 @@ pub enum PiEvent {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AssistantMessageDelta {
-    /// Streaming text fragment.
-    TextDelta { text: String },
+    /// Streaming text fragment. Pi 0.73 uses `delta`; older mocks/tests used
+    /// `text`, so the parser accepts both wire field names.
+    TextDelta {
+        #[serde(alias = "delta")]
+        text: String,
+    },
 
     /// Closes a `text_delta` stream — paired terminator.
     TextEnd,
 
-    /// Streaming "thinking" fragment (extended-thinking models).
-    ThinkingDelta { text: String },
+    /// Streaming "thinking" fragment (extended-thinking models). Pi 0.73
+    /// uses `delta`; older mocks/tests used `text`, so both are accepted.
+    ThinkingDelta {
+        #[serde(alias = "delta")]
+        text: String,
+    },
 
     /// Closes a `thinking_delta` stream.
     ThinkingEnd,
@@ -594,11 +602,22 @@ mod tests {
     }
 
     /// Inner `assistantMessageEvent` delta variants: `text_delta` round-trips
-    /// the `text` field; the parser later surfaces this as
-    /// `ParsedAgentEvent::TextDelta`. Direct deserialize pins the
-    /// field name independently of the outer envelope.
+    /// the current pi `delta` field; the parser later surfaces this as
+    /// `ParsedAgentEvent::TextDelta`.
     #[test]
-    fn assistant_delta_text_delta_maps_text_field() {
+    fn assistant_delta_text_delta_maps_delta_field() {
+        let line = r#"{"type":"text_delta","delta":"hello"}"#;
+        let delta: AssistantMessageDelta = serde_json::from_str(line).expect("parse");
+        match delta {
+            AssistantMessageDelta::TextDelta { text } => assert_eq!(text, "hello"),
+            other => panic!("expected TextDelta, got {other:?}"),
+        }
+    }
+
+    /// `text_delta` also accepts the legacy `text` field used by older
+    /// mocks, preserving compatibility with existing fixtures.
+    #[test]
+    fn assistant_delta_text_delta_accepts_legacy_text_field() {
         let line = r#"{"type":"text_delta","text":"hello"}"#;
         let delta: AssistantMessageDelta = serde_json::from_str(line).expect("parse");
         match delta {
@@ -607,10 +626,10 @@ mod tests {
         }
     }
 
-    /// `thinking_delta` round-trips the `text` field.
+    /// `thinking_delta` round-trips the current pi `delta` field.
     #[test]
-    fn assistant_delta_thinking_delta_maps_text_field() {
-        let line = r#"{"type":"thinking_delta","text":"thought"}"#;
+    fn assistant_delta_thinking_delta_maps_delta_field() {
+        let line = r#"{"type":"thinking_delta","delta":"thought"}"#;
         let delta: AssistantMessageDelta = serde_json::from_str(line).expect("parse");
         match delta {
             AssistantMessageDelta::ThinkingDelta { text } => assert_eq!(text, "thought"),

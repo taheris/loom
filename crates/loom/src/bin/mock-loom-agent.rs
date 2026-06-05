@@ -68,10 +68,9 @@ fn main() -> ExitCode {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
-    // Step 1 — handshake. Production loom sends a `get_commands` probe
-    // as the first JSONL line; the agent must respond with the full
-    // command list before any further protocol traffic flows. Pi-mono's
-    // unit tests in loom-agent assert this exact set of commands.
+    // Step 1 — handshake. Production loom sends a `get_state` probe as
+    // the first JSONL line; the agent must respond with the minimal state
+    // object shape before any further protocol traffic flows.
     let probe_line = match read_line(&stdin) {
         Some(l) => l,
         None => {
@@ -81,7 +80,7 @@ fn main() -> ExitCode {
     };
     let probe_id = extract_field("id", &probe_line).unwrap_or_else(|| "probe-0".to_string());
     let probe_response = format!(
-        r#"{{"type":"response","id":"{probe_id}","command":"get_commands","success":true,"data":["prompt","steer","abort","set_model","compact","get_session_stats"]}}"#,
+        r#"{{"type":"response","id":"{probe_id}","command":"get_state","success":true,"data":{{"model":null,"thinkingLevel":"medium","isStreaming":false,"isCompacting":false,"messageCount":0,"pendingMessageCount":0}}}}"#,
     );
     emit(&mut stdout, &probe_response);
 
@@ -164,15 +163,15 @@ fn emit_message_delta(stdout: &mut io::Stdout, text: &str) {
         "type": "message_update",
         "assistantMessageEvent": {
             "type": "text_delta",
-            "text": text,
+            "delta": text,
         },
     });
     emit(stdout, &event.to_string());
 }
 
 /// Minimal JSON field extractor — pulls a string value for `field` out
-/// of a flat JSON line. The probe line is shallow (`{"type":"command",
-/// "id":"…","name":"get_commands"}`) so this avoids pulling serde_json's
+/// of a flat JSON line. The probe line is shallow (`{"type":"get_state",
+/// "id":"…"}`) so this avoids pulling serde_json's
 /// parser into the read path; if the field is absent we fall back to a
 /// stand-in id and the caller decides whether that's fatal.
 fn extract_field(field: &str, line: &str) -> Option<String> {

@@ -44,7 +44,7 @@ supported path, no `--no-verify` required.
 | Stage      | Wall-time target          | Hooks |
 |------------|---------------------------|-------|
 | pre-commit | ~1s                       | `repo: builtin` `trailing-whitespace`, `end-of-file-fixer` (excludes `.beads/config.yaml`), `check-merge-conflict`; `treefmt --fail-on-change`; `shell-reexec-explicit-interpreter`; `loom gate verify --files` (integrity gate + `[check]`-tier verifiers scoped to staged files per [gate.md § Verifier inputs](gate.md)) |
-| pre-push   | <10s fast + ~30–90s slow  | `skip-if-missing nix -- nix flake check` (the <10s fast tier — treefmt-check derivation + `loom gate check` derivation; **no Rust workspace compile**; no-ops in the bead container which has no `nix`); `pre-push-checks cargo clippy --workspace --all-targets -- -D warnings` (file-gated on `\.rs$`; clippy runs `cargo check` semantics across all targets, so a separate `cargo build` hook would be redundant — bin codegen is still exercised by `nix flake check`'s `loom-gate-check` derivation, which declares the loom binary as a build input); `pre-push-checks cargo nextest run --workspace` (file-gated on `\.rs$`); `pre-push-checks loom gate verify --diff <range>` (deterministic-tier verifiers scoped to the diff per [gate.md § Verifier inputs](gate.md)); `pre-push-checks skip-if-missing nix -- nix run .#test` (`container-smoke`; gated on `^crates/[^/]+/tests/properties\.rs$`; the nested wrappers compose — `pre-push-checks` short-circuits on a valid marker; on marker miss it execs the wrapped command, which is itself wrapped by `skip-if-missing` to no-op when `nix` is absent) |
+| pre-push   | <10s fast + targeted slow  | `skip-if-missing nix -- pre-push-checks nix flake check` (the fast tier — treefmt-check derivation + `loom gate check` derivation; **no Rust workspace compile**; no-ops in the bead container which has no `nix`; marker-aware like the rest of the push path); `pre-push-checks cargo clippy --workspace --all-targets -- -D warnings` (file-gated on `\.rs$`; clippy runs `cargo check` semantics across all targets, so a separate `cargo build` hook would be redundant — bin codegen is still exercised by `nix flake check`'s `loom-gate-check` derivation, which declares the loom binary as a build input); `pre-push-checks loom gate check --diff <range>` and `pre-push-checks loom gate test --diff <range>` (deterministic check/test verifiers scoped to the diff per [gate.md § Verifier inputs](gate.md)); `pre-push-checks skip-if-missing nix -- nix run .#test` (`container-smoke`; gated on `^crates/[^/]+/tests/properties\.rs$`; the nested wrappers compose — `pre-push-checks` short-circuits on a valid marker; on marker miss it execs the wrapped command, which is itself wrapped by `skip-if-missing` to no-op when `nix` is absent) |
 
 There is no standalone `loom gate verify-marker` hook; the marker is
 consulted by the `pre-push-checks` wrapper per-hook (see *Marker
@@ -67,7 +67,8 @@ a slow tier whose hooks are individually wrapped to short-circuit on
 a valid marker.
 
 The **fast tier** is `nix flake check`. It runs on every push and on
-every CI build, unconditionally — no marker shortcut, no file gating.
+every CI build. It is marker-aware on pre-push via `pre-push-checks`,
+but unconditional in CI — no CI marker shortcut, no file gating.
 Its derivation chain contains only checks that don't require compiling
 the workspace under test: the treefmt-check derivation plus a
 `loom gate check` derivation that runs `[check]`-tier verifiers + the
@@ -76,9 +77,9 @@ is precompiled (via crane's `cargoArtifacts` chain, reused), so the
 derivation's wall-clock budget is the checks themselves, not the
 build. Target: <10s warm.
 
-The **slow tier** is the cargo dance + `loom gate verify --diff <range>`
-+ `container-smoke`. Each runs as an independent prek hook with its
-own `files:` regex so file-pattern selectivity composes with the
+The **slow tier** is clippy + targeted `loom gate check --diff <range>` /
+`loom gate test --diff <range>` + gated `container-smoke`. Each runs as an independent prek hook with its
+own `files:` regex where applicable so file-pattern selectivity composes with the
 marker-aware short-circuit. Each entry routes through a wrapper
 (`pre-push-checks` — owned upstream, see *Plumbing*) that consults the
 `MarkerProof` and exits 0 on valid marker, otherwise execs the
@@ -89,8 +90,9 @@ present in the operator's clone) the wrapper falls through and the
 slow tier runs against the host's warm `target/` cache.
 
 CI is the immovable defence-in-depth: it invokes the same prek hooks
-plus `loom gate review` in a nix-pure sandbox with no marker shortcut,
-so the per-PR cycle re-derives every check fresh.
+plus the CI-only `nix run .#test-ci` slow suite and `loom gate review`
+in a nix-pure sandbox with no marker shortcut, so the per-PR cycle
+re-derives every check fresh.
 
 ### Agent self-verify in the bead container
 
@@ -110,9 +112,10 @@ What this catches in-session:
   agent fixes annotations or stages the corrective change).
 - `[check]`-tier verifier failures whose inputs intersect staged
   files (same pre-commit hook).
-- Cargo build / clippy / nextest failures on the bead branch's push
-  to the loom workspace (pre-push hooks fire against the bead tree
-  warm with the agent's session work).
+- Cargo build / clippy failures and targeted gate-test failures on the
+  bead branch's push to the loom workspace (pre-push hooks fire against
+  the bead tree warm with the agent's session work). Full workspace
+  nextest is a CI-only `nix run .#test-ci` responsibility.
 
 What it does *not* do: act as the trust source for the driver-side
 verdict gate. The agent's hook chain is **feedback only**. The driver
@@ -293,9 +296,9 @@ declared as such.
 - The pre-push stage includes a `nix flake check` hook with
   `always_run: true`
   [check](grep -q 'nix flake check' .pre-commit-config.yaml)
-- The pre-push stage includes per-hook `cargo clippy` and `cargo nextest`
-  entries, each file-gated on `\.rs$`
-  [check](grep -E -q 'cargo (clippy|nextest)' .pre-commit-config.yaml)
+- The pre-push stage includes `cargo clippy` file-gated on `\.rs$` and
+  targeted `loom gate test --diff` for spec-declared test verifiers
+  [check](grep -q 'cargo clippy' .pre-commit-config.yaml && grep -q 'loom gate test --diff' .pre-commit-config.yaml)
 - Each slow-tier pre-push hook's `entry` routes through the
   `pre-push-checks` wrapper from `wrapix.prekHooks`
   [check](grep -q 'pre-push-checks' .pre-commit-config.yaml)
@@ -304,9 +307,9 @@ declared as such.
   (which has no `nix`) while running normally on the host devShell
   and in CI
   [check](grep -q 'skip-if-missing nix --' .pre-commit-config.yaml)
-- The pre-push stage runs `loom gate verify --diff` for the deterministic
-  verifier tier against the pushed range
-  [check](grep -q 'loom gate verify --diff' .pre-commit-config.yaml)
+- The pre-push stage runs `loom gate check --diff` and `loom gate test --diff`
+  for deterministic non-system verifier tiers against the pushed range
+  [check](grep -q 'loom gate check --diff' .pre-commit-config.yaml && grep -q 'loom gate test --diff' .pre-commit-config.yaml)
 - The pre-push stage includes a container-smoke hook gated on
   `crates/*/tests/properties.rs`
   [check](grep -q 'tests/properties.rs' .pre-commit-config.yaml)
@@ -378,8 +381,8 @@ declared as such.
    `shell-reexec-explicit-interpreter`, and `loom gate verify --files`
    against staged files. Pre-push runs `nix flake check` first (the
    <10s fast tier — no workspace Rust compile), then the slow tier as
-   per-hook entries (`cargo clippy`, `cargo nextest`,
-   `loom gate verify --diff <range>`, `container-smoke`), each routed
+   per-hook entries (`cargo clippy`, `loom gate check --diff <range>`,
+   `loom gate test --diff <range>`, `container-smoke`), each routed
    through the `pre-push-checks` wrapper. A valid marker short-circuits
    the slow tier on driver-loop integration pushes; on operator-manual
    pushes (no marker present) the wrapper falls through and the slow

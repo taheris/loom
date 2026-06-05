@@ -4,6 +4,8 @@
 #   Linux runs `tests/run-tests.sh`; Darwin returns a no-op stub.
 # - `.#test-sandbox`: boots `.#sandbox` and checks the selected Pi runtime.
 #   Linux only; Darwin returns a no-op stub.
+# - `.#test-ci`: slow CI-only suite split out of the interactive pre-push
+#   path (full workspace nextest + system/container verifiers).
 # - `.#fuzz-loom`: on-demand `cargo fuzz` driver.
 #   This is intentionally not gated by `nix flake check`.
 #
@@ -27,6 +29,25 @@ _:
       };
 
       smokeApp = testsDeriv.loom-smoke;
+
+      testCiApp = pkgs.writeShellApplication {
+        name = "test-ci";
+        runtimeInputs = [
+          pkgs.cargo-nextest
+          pkgs.git
+          pkgs.nix
+          loom.toolchain
+        ];
+        text = ''
+          repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd) # best-effort: allow invocation outside a checkout.
+          cd "$repo_root"
+
+          nix flake check --no-warn-dirty
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo nextest run --workspace
+          ${loom.bin}/bin/loom gate system --tree
+        '';
+      };
 
       fuzzApp = pkgs.writeShellApplication {
         name = "fuzz-loom";
@@ -85,6 +106,11 @@ _:
           type = "app";
           program = "${sandboxSmokeApp}/bin/test-sandbox";
           meta.description = "Runtime check that the selected Pi agent responds to --version inside the sandbox image (Linux only; Darwin stub)";
+        };
+        test-ci = {
+          type = "app";
+          program = "${testCiApp}/bin/test-ci";
+          meta.description = "Slow CI-only suite: flake check, clippy, full nextest, and system/container verifiers";
         };
         fuzz-loom = {
           type = "app";

@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn message_update_text_delta_yields_message_delta() {
-        let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","text":"hello"}}"#;
+        let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello"}}"#;
         let p = parse(line);
         assert_eq!(p.events.len(), 1);
         match &p.events[0] {
@@ -512,7 +512,7 @@ mod tests {
     #[test]
     fn message_update_thinking_delta_yields_thinking_delta_event() {
         // thinking_delta maps to ParsedAgentEvent::ThinkingDelta.
-        let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","text":"…"}}"#;
+        let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"…"}}"#;
         let p = parse(line);
         assert_eq!(p.events.len(), 1);
         match &p.events[0] {

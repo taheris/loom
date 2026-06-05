@@ -26,7 +26,7 @@ in
     }:
     let
       sandboxes = mapAttrs (
-        name: profile:
+        _name: profile:
         wrapixLib.mkSandbox (
           {
             inherit profile;

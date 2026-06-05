@@ -413,14 +413,18 @@ further.
 
 Pi's `--mode rpc` uses JSONL over stdin/stdout. The protocol has no version
 negotiation or handshake. After spawning the process, the Pi backend sends a
-`get_commands` probe and verifies the response contains every command Loom
-depends on. The probe set is always `prompt`, `steer`, `abort`, `set_model`,
-optionally extended with `compact` (if manual compaction is wired up) and
-`get_session_stats` (if cost capture is enabled — see
-[Pi cost tracking](#pi-cost-tracking)). If the response shape is unexpected
-or a required command is missing, the backend fails fast with a clear
-version-mismatch error before any workflow begins. After the probe succeeds,
-normal command flow starts.
+`get_state` probe and verifies the response has the documented state-object
+shape (`isStreaming`, `isCompacting`, `messageCount`, and
+`pendingMessageCount` are required). If the response shape is unexpected, the
+backend fails fast with a clear version-mismatch error before any workflow
+begins. After the probe succeeds, normal command flow starts.
+
+Pi 0.73's `get_commands` does **not** enumerate built-in RPC verbs; it lists
+slash commands, prompt templates, and skills that can be invoked through
+`prompt` by prefixing `/`. Loom therefore does not use `get_commands` for
+startup capability validation. Built-in command failures are still enforced at
+send time: configured `set_model` is a hard-fail handshake step, while
+`set_thinking_level` remains best-effort.
 
 Messages are classified by **two-phase deserialization**: peek at the
 `type` and `id` fields to determine the message category, then
@@ -468,10 +472,12 @@ response echoes it back.
 | `new_session` | `parentSession?` | Start fresh session (optional parent for forking) |
 | `compact` | `customInstructions?` | Trigger manual compaction |
 | `set_auto_compaction` | `enabled` | Toggle automatic compaction |
-| `get_commands` | — | Probe available commands (startup validation) |
+| `get_state` | — | Startup liveness/protocol-shape probe; returns current session state |
+| `get_commands` | — | List slash commands, prompt templates, and skills (not startup validation) |
 
-Loom uses the commands above. Pi supports additional commands that Loom does not
-use in v1: `get_state`, `get_messages`, `get_session_stats`, `cycle_model`,
+Loom uses the commands above as needed by backend features. Pi supports
+additional commands that Loom does not use in v1: `get_messages`,
+`get_session_stats`, `cycle_model`,
 `get_available_models`, `cycle_thinking_level`, `set_steering_mode`,
 `set_follow_up_mode`, `set_auto_retry`, `abort_retry`, `bash`, `abort_bash`,
 `export_html`, `switch_session`, `fork`, `clone`, `get_fork_messages`,
@@ -520,7 +526,7 @@ by the top-level `tool_execution_*` and `turn_end` events.
 
 | Delta Type | Maps To |
 |------------|---------|
-| `text_delta` | `AgentEvent::TextDelta` (extract `text`) |
+| `text_delta` | `AgentEvent::TextDelta` (extract `delta`; legacy `text` accepted) |
 | `error` | `AgentEvent::Error` (reasons: `"aborted"`, `"error"`) |
 | `start`, `text_start`, `text_end` | logged at `trace!`, skipped |
 | `thinking_start`, `thinking_delta`, `thinking_end` | logged at `trace!`, skipped |
@@ -893,8 +899,10 @@ connection, network filtering, session audit logging.
 
 ### Pi backend
 
-- Pi backend sends `get_commands` probe on startup and fails fast if required commands are missing
-  [test](startup_probe_succeeds_when_required_commands_present)
+- Pi backend sends `get_state` probe on startup and proceeds when the response shape is valid
+  [test](startup_probe_succeeds_when_get_state_shape_is_valid)
+- Pi backend fails fast if the startup `get_state` response shape is invalid
+  [test](startup_probe_fails_fast_when_get_state_shape_is_invalid)
 - Pi backend parses JSONL events via two-phase deserialization
   [test](full_response_classifies_and_re_deserializes)
 - Pi backend sends JSONL commands to pi's stdin
@@ -987,6 +995,8 @@ connection, network filtering, session audit logging.
   [test](agent_for_unknown_backend_in_default_returns_error)
 - Pi backend calls `set_model` after spawn when phase config specifies provider/model
   [test](set_model_from_phase_config_reaches_mock_pi)
+- Pi backend hard-fails the handshake when pi rejects configured `set_model`
+  [test](set_model_rejection_from_pi_hard_fails_handshake)
 - Pi backend sends best-effort `set_thinking_level` when phase config sets it
   [test](set_thinking_level_from_phase_config_reaches_mock_pi)
 - Pi backend skips `set_thinking_level` entirely when phase config leaves it unset
@@ -1045,9 +1055,8 @@ connection, network filtering, session audit logging.
    - `prompt` — send initial or follow-up prompts
    - `steer` — mid-session course correction
    - `abort` — terminate current operation
-   - `set_thinking_level` — adjust reasoning effort (best-effort: not
-     included in the startup `get_commands` probe; sent only when the
-     phase config requests it, and silently skipped if pi rejects it)
+   - `set_thinking_level` — adjust reasoning effort (best-effort: sent only
+     when the phase config requests it, and silently skipped if pi rejects it)
    - `set_model` — switch LLM provider/model mid-session
 
    Plus streaming event parsing for message deltas, tool calls, tool results,

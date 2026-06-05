@@ -11,8 +11,8 @@
 //!    that the binary monomorphizes once per concrete backend.
 //!
 //! 2. **Startup probe round-trip** (spec Functional #4 first bullet) —
-//!    drives the pi handshake against `mock-pi.sh` in `probe-ok` and
-//!    `probe-missing-set-model` modes. The first must hand back an `Idle`
+//!    drives the pi handshake against `mock-pi.sh` in valid `get_state`
+//!    and malformed-state modes. The first must hand back an `Idle`
 //!    session; the second must surface [`ProtocolError::Unsupported`] (the
 //!    version-mismatch sentinel) before any conversation begins.
 //!
@@ -127,12 +127,12 @@ fn mock_command(mode: &str) -> Command {
     cmd
 }
 
-/// `mock-pi probe-ok` returns the full required command set; the backend
+/// `mock-pi happy-path` returns a valid `get_state` payload; the backend
 /// handshake completes and yields an `Idle` session. Driving a single
 /// prompt through to `SessionComplete` verifies the session is wired and
 /// the launcher's stdin/stdout pipes round-trip JSONL frames.
 #[tokio::test]
-async fn pi_startup_probe_succeeds_with_required_commands() {
+async fn pi_startup_probe_succeeds_with_valid_get_state() {
     let session = spawn_with_handshake(
         mock_command("happy-path"),
         None,
@@ -141,7 +141,7 @@ async fn pi_startup_probe_succeeds_with_required_commands() {
         &SystemClock::new(),
     )
     .await
-    .expect("probe-ok handshake should succeed");
+    .expect("get_state handshake should succeed");
 
     // Run one prompt round-trip to confirm the session is alive past the
     // handshake. `happy-path` sends one message_delta then `agent_end`.
@@ -155,15 +155,14 @@ async fn pi_startup_probe_succeeds_with_required_commands() {
     }
 }
 
-/// `mock-pi probe-missing-set-model` returns a command set that omits
-/// `set_model`, which is on `REQUIRED_COMMANDS`. The handshake must short
-/// circuit with `ProtocolError::Unsupported` *before* any prompt is sent —
-/// the version-mismatch contract that keeps Loom from running against an
-/// incompatible pi build.
+/// `mock-pi probe-bad-state` returns a malformed `get_state` payload.
+/// The handshake must short circuit with `ProtocolError::Unsupported`
+/// *before* any prompt is sent — the version-mismatch contract that keeps
+/// Loom from running against an incompatible pi build.
 #[tokio::test]
-async fn pi_startup_probe_fails_with_missing_required_command() {
+async fn pi_startup_probe_fails_with_bad_get_state_shape() {
     let result = spawn_with_handshake(
-        mock_command("probe-missing-set-model"),
+        mock_command("probe-bad-state"),
         None,
         None,
         Duration::from_secs(5),
@@ -173,6 +172,6 @@ async fn pi_startup_probe_fails_with_missing_required_command() {
     match result {
         Err(ProtocolError::Unsupported) => {}
         Err(other) => panic!("expected ProtocolError::Unsupported, got {other:?}"),
-        Ok(_) => panic!("probe should have failed when required command absent"),
+        Ok(_) => panic!("probe should have failed on malformed get_state data"),
     }
 }

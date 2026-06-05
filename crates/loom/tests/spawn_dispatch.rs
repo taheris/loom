@@ -767,7 +767,7 @@ fn child_stdin_is_a_pipe_not_a_tty() {
     );
 
     // The mock-pi handshake completing end-to-end is the second half of
-    // the EOF contract: the pi backend writes get_commands then prompt
+    // the EOF contract: the pi backend writes get_state then prompt
     // through the same pipe, mock-pi reads each line, responds, and the
     // session reaches agent_end. If stdin were not a pipe, those `read`
     // calls would either block forever (TTY without echo) or return
@@ -968,7 +968,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
 /// Pi handshake against an unresponsive launcher must surface
 /// `ProtocolError::HandshakeTimeout` within the configured budget
 /// instead of hanging silently. mock-pi `hang-probe` reads the
-/// `get_commands` line and then sleeps; without the bounded handshake the
+/// `get_state` line and then sleeps; without the bounded handshake the
 /// loom binary would block forever waiting for the response.
 #[test]
 fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {

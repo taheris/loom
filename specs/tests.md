@@ -471,12 +471,13 @@ Modes (selected via `argv[1]`):
 
 | Mode | Used by | Wire behavior |
 |------|---------|---------------|
-| `probe-ok` | startup probe round-trip test | Replies to `get_commands` with the full required set |
-| `probe-missing-set-model` | startup probe failure test | Replies to `get_commands` omitting `set_model` |
+| `probe-ok` | startup probe round-trip test | Replies to `get_state` with a valid state object |
+| `probe-bad-state` | startup probe failure test | Replies to `get_state` with malformed state data |
 | `echo-prompt` | wire-shape assertion test | Probe ok, then echoes the prompt payload as a `message_delta` |
 | `steering` | mid-session steer test | Probe ok, prompt → first turn, then echoes the steer payload on the next turn |
 | `compaction` | re-pin-via-steer test | Probe ok, emits `compaction_start`, expects the re-pin steer, echoes it back, emits `compaction_end` |
 | `set-model` | per-phase model override test | Probe ok, expects `set_model { provider, modelId }`, echoes the pair into a later `message_delta` |
+| `set-model-reject` | model override failure test | Probe ok, rejects `set_model` so the backend hard-fails the handshake |
 | `happy-path` | container smoke | Probe ok, prompt → `message_delta` → `agent_end` |
 
 Each mode is single-shot: the script runs until the conversation it
@@ -582,10 +583,12 @@ the verify loop runs unscoped — no `--spec` filter.
 Each criterion below corresponds to one of the seven load-bearing flows
 in Functional #4.
 
-- Startup probe round-trip: mock pi with full required command set
-      → loom proceeds; mock pi missing `set_model` → loom fails fast
-      with a version-mismatch error
-  [test](pi_startup_probe_succeeds_with_required_commands)
+- Startup probe round-trip: mock pi with valid `get_state` data
+      → loom proceeds
+  [test](pi_startup_probe_succeeds_with_valid_get_state)
+- Startup probe malformed-state guard: mock pi with malformed `get_state`
+      data → loom fails fast with a version-mismatch error
+  [test](pi_startup_probe_fails_with_bad_get_state_shape)
 - `wrapix spawn` argv contract: loom invokes
       `wrapix spawn --spawn-config <file> --stdio` with stdin
       attached as a pipe (not a TTY); recorded `SpawnConfig` JSON
@@ -817,8 +820,10 @@ the rules:
    - `PiResponse` success/failure discrimination: `success: true` extracts
      `data`, `success: false` extracts `error` message
    - `message_update` nested delta dispatch: `text_delta` →
-     `AgentEvent::MessageDelta`, `error` → `AgentEvent::Error`,
-     `thinking_delta` / `done` / toolcall deltas → skipped (empty events)
+     `AgentEvent::TextDelta`, `thinking_delta` →
+     `AgentEvent::ThinkingDelta`, `toolcall_delta` →
+     `AgentEvent::ToolcallDelta`, `error` → `AgentEvent::Error`,
+     `done` → skipped (empty events)
    - Pi `tool_execution_start` field mapping: `toolCallId` → `ToolCallId`,
      `toolName` → `tool`, `args` → `params`
    - Pi `tool_execution_end` field mapping: `result` → `output`,
@@ -1033,10 +1038,9 @@ the rules:
    shape coverage (event mapping, malformed JSONL, control_request
    responses) belongs in parser unit tests; this list is the
    integration-tier contract.
-   - **Startup probe round-trip** — mock pi replies to `get_commands`
-     with the full required set; loom proceeds. Mock pi replies with a
-     missing required command; loom fails fast with a version-mismatch
-     error.
+   - **Startup probe round-trip** — mock pi replies to `get_state` with
+     a valid state object; loom proceeds. Mock pi replies with malformed
+     state data; loom fails fast with a version-mismatch error.
    - **`wrapix spawn` argv contract** — loom writes a `SpawnConfig`
      JSON, invokes a `wrapix-spawn` shim that records the argv +
      stdin properties (TTY vs pipe), then exec's a mock agent. Asserts
@@ -1146,13 +1150,14 @@ the rules:
    smoke (single scenario) gets its own pre-seeded `.beads/` snapshot
    in a tempdir, fully isolated from any concurrent peers running
    against the workspace.
-5. **CI-friendly** — `nix flake check` runs `loom gate verify`
-   (deterministic verifiers: `[check]` + `[test]` + `[system]`) via a
-   single Nix derivation. The container smoke is exposed as a
-   separate `nix run .#test` app because it needs podman at
-   runtime; its acceptance criterion is annotated
-   `[system](nix run .#test)`. Both entry points are also wired
-   into the prek pre-push hook; composition, stage budgets, and lock
+5. **CI-friendly** — `nix flake check` runs the fast deterministic
+   derivations that stay inside the interactive push budget. Full
+   workspace nextest plus `[system]`/container verifiers live in the
+   CI-only `nix run .#test-ci` app. The container smoke remains exposed
+   as a separate `nix run .#test` app because it needs podman at runtime;
+   its acceptance criterion is annotated `[system](nix run .#test)`.
+   Pre-push runs clippy plus targeted `loom gate check --diff` /
+   `loom gate test --diff`; composition, stage budgets, and lock
    semantics live in [pre-commit.md](pre-commit.md).
 6. **Real bd** — the container smoke runs against live `bd` (not a
    mock). The integration tier may mock `bd` where the test concern

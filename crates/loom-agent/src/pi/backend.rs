@@ -5,10 +5,10 @@
 //! owns container construction), and drives the pi RPC handshake before
 //! handing back an [`AgentSession`] in the [`Idle`] state:
 //!
-//! 1. `get_commands` probe — verifies pi exposes every command Loom
-//!    depends on (`prompt`, `steer`, `abort`, `set_model`). A missing
-//!    required command surfaces as [`ProtocolError::Unsupported`] so a
-//!    version mismatch is caught before any workflow begins.
+//! 1. `get_state` probe — verifies the RPC process is responsive and
+//!    returns the documented state object shape before any workflow begins.
+//!    Pi's `get_commands` lists slash commands/templates/skills, not built-in
+//!    RPC verbs, so it is not a startup capability probe.
 //! 2. `set_model` (optional) — sent only when [`SpawnConfig::model`] is
 //!    populated by per-phase config. Failure is hard-fail.
 //!
@@ -30,7 +30,7 @@ use loom_driver::agent::{
     ModelSelection, ProtocolError, SpawnConfig, ThinkingLevel,
 };
 use loom_driver::clock::{Clock, SystemClock};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::process::{ChildStdin, Command};
 use tracing::{debug, error, info, warn};
@@ -43,7 +43,7 @@ use crate::apply_launcher_env;
 /// `wrapix` from `PATH`; tests substitute the mock pi script via this.
 const ENV_WRAPIX_BIN: &str = "LOOM_WRAPIX_BIN";
 
-/// Probe id used for the startup `get_commands` request. The id appears in
+/// Probe id used for the startup `get_state` request. The id appears in
 /// pi's response so the backend can correlate request/response without
 /// blocking on intervening events.
 const PROBE_REQUEST_ID: &str = "loom-pi-probe";
@@ -54,9 +54,15 @@ const SET_MODEL_REQUEST_ID: &str = "loom-pi-set-model";
 /// Request id used for the optional post-probe `set_thinking_level` request.
 const SET_THINKING_LEVEL_REQUEST_ID: &str = "loom-pi-set-thinking-level";
 
-/// Pi commands Loom depends on. A missing entry in the `get_commands`
-/// response is a hard fail (`ProtocolError::Unsupported`).
-const REQUIRED_COMMANDS: &[&str] = &["prompt", "steer", "abort", "set_model"];
+/// State fields Loom requires in a successful `get_state` probe. Missing or
+/// mistyped fields indicate a protocol-shape mismatch and fail the startup
+/// handshake.
+const REQUIRED_STATE_FIELDS: &[&str] = &[
+    "isStreaming",
+    "isCompacting",
+    "messageCount",
+    "pendingMessageCount",
+];
 
 /// Counter that distinguishes simultaneous spawn-config files inside the
 /// same loom process. The pid component handles cross-process uniqueness.
@@ -131,13 +137,26 @@ fn build_repin_payload(scratch_dir: &Path) -> Result<String, ProtocolError> {
     Ok(format!("{prompt}\n\n{scratch}"))
 }
 
-/// `get_commands` request body. Sent on stdin during the startup handshake
+/// `get_state` request body. Sent on stdin during the startup handshake
 /// before any [`AgentSession`] is constructed.
 #[derive(Serialize)]
-struct GetCommandsCommand<'a> {
+struct GetStateCommand<'a> {
     #[serde(rename = "type")]
     kind: &'static str,
     id: &'a str,
+}
+
+/// Minimal `get_state.data` shape required by Loom's startup probe. Pi
+/// includes additional fields (`model`, `thinkingLevel`, session metadata),
+/// but these four pin the liveness-relevant state object without depending on
+/// provider-specific model configuration.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StateProbeData {
+    is_streaming: bool,
+    is_compacting: bool,
+    message_count: u64,
+    pending_message_count: u64,
 }
 
 /// `set_model` request body. Sent only when [`SpawnConfig::model`] is
@@ -200,7 +219,7 @@ pub async fn spawn_with_handshake(
     Ok(AgentSession::new(child, writer, reader, Box::new(parser)))
 }
 
-/// Send `get_commands` on stdin and wait for the matching response. Events
+/// Send `get_state` on stdin and wait for the matching response. Events
 /// emitted before the response are observed but ignored — pi can interleave
 /// telemetry around request handling, so the loop drains lines until the
 /// correlated response arrives.
@@ -210,37 +229,25 @@ async fn run_probe(
     budget: Duration,
     clock: &dyn Clock,
 ) -> Result<(), ProtocolError> {
-    let cmd = GetCommandsCommand {
-        kind: "get_commands",
+    let cmd = GetStateCommand {
+        kind: "get_state",
         id: PROBE_REQUEST_ID,
     };
-    info!(id = PROBE_REQUEST_ID, "pi probe: sending get_commands");
+    info!(id = PROBE_REQUEST_ID, "pi probe: sending get_state");
     write_command(writer, &cmd).await?;
 
     let resp = bounded_await_response(reader, PROBE_REQUEST_ID, budget, "probe", clock).await?;
     if !resp.success {
         error!(
             error = ?resp.error,
-            "pi get_commands probe failed",
+            "pi get_state probe failed",
         );
         return Err(ProtocolError::Unsupported);
     }
 
-    let commands = extract_commands(&resp)?;
-    let missing: Vec<&&str> = REQUIRED_COMMANDS
-        .iter()
-        .filter(|req| !commands.iter().any(|c| c == *req))
-        .collect();
-    if !missing.is_empty() {
-        error!(
-            missing = ?missing,
-            available = ?commands,
-            "pi get_commands probe missing required commands — version mismatch",
-        );
-        return Err(ProtocolError::Unsupported);
-    }
+    validate_state_probe(&resp)?;
 
-    info!(commands = ?commands, "pi probe: get_commands succeeded");
+    info!("pi probe: get_state succeeded");
     Ok(())
 }
 
@@ -412,26 +419,32 @@ async fn bounded_await_response(
     }
 }
 
-/// Pull the command list out of a successful `get_commands` response.
-/// Pi v0.72+ returns a JSON array of strings under `data`; anything else is
-/// a protocol-shape mismatch.
-fn extract_commands(resp: &PiResponse) -> Result<Vec<String>, ProtocolError> {
+/// Validate the successful `get_state` response used as the Pi startup
+/// liveness/protocol-shape probe. Pi 0.73's `get_commands` reports slash
+/// commands/templates/skills, so the backend uses `get_state` for a stable
+/// built-in RPC round-trip instead.
+fn validate_state_probe(resp: &PiResponse) -> Result<(), ProtocolError> {
     let data = resp.data.as_ref().ok_or_else(|| {
-        error!("pi get_commands response missing `data`");
+        error!("pi get_state response missing `data`");
         ProtocolError::Unsupported
     })?;
-    let arr = data.as_array().ok_or_else(|| {
-        error!(data = %data, "pi get_commands `data` is not an array");
+    let state: StateProbeData = serde_json::from_value(data.clone()).map_err(|err| {
+        error!(
+            error = %err,
+            required = ?REQUIRED_STATE_FIELDS,
+            data = %data,
+            "pi get_state probe has unexpected shape — version mismatch",
+        );
         ProtocolError::Unsupported
     })?;
-    arr.iter()
-        .map(|v| {
-            v.as_str().map(str::to_owned).ok_or_else(|| {
-                error!(entry = %v, "pi get_commands entry is not a string");
-                ProtocolError::Unsupported
-            })
-        })
-        .collect()
+    debug!(
+        is_streaming = state.is_streaming,
+        is_compacting = state.is_compacting,
+        message_count = state.message_count,
+        pending_message_count = state.pending_message_count,
+        "pi get_state probe shape validated",
+    );
+    Ok(())
 }
 
 /// Serialize `config` as JSON and write it to a uniquely-named tempfile
@@ -537,7 +550,7 @@ mod tests {
     // -- test_pi_startup_probe --------------------------------------------
 
     #[tokio::test]
-    async fn startup_probe_succeeds_when_required_commands_present() {
+    async fn startup_probe_succeeds_when_get_state_shape_is_valid() {
         let session = spawn_with_handshake(
             mock_command("happy-path"),
             None,
@@ -560,9 +573,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_probe_fails_fast_when_required_command_missing() {
+    async fn startup_probe_fails_fast_when_get_state_shape_is_invalid() {
         let result = spawn_with_handshake(
-            mock_command("probe-missing-set-model"),
+            mock_command("probe-bad-state"),
             None,
             None,
             TEST_HANDSHAKE_BUDGET,
@@ -812,6 +825,27 @@ mod tests {
         assert!(saw_model_id, "mock did not observe model_id");
     }
 
+    #[tokio::test]
+    async fn set_model_rejection_from_pi_hard_fails_handshake() {
+        let model = ModelSelection {
+            provider: "deepseek".into(),
+            model_id: "deepseek-v3".into(),
+        };
+        let result = spawn_with_handshake(
+            mock_command("set-model-reject"),
+            Some(&model),
+            None,
+            TEST_HANDSHAKE_BUDGET,
+            &SystemClock::new(),
+        )
+        .await;
+        match result {
+            Err(ProtocolError::Unsupported) => {}
+            Err(other) => panic!("expected Unsupported, got {other:?}"),
+            Ok(_) => panic!("set_model rejection should hard-fail the handshake"),
+        }
+    }
+
     // -- test_pi_set_thinking_level_from_phase_config ---------------------
 
     /// Driver-sends-when-config-set: with `thinking_level: Some(_)` the
@@ -924,19 +958,19 @@ mod tests {
 
     // -- command struct serialization -------------------------------------
 
-    /// `get_commands` body serializes with the two documented fields
+    /// `get_state` body serializes with the two documented fields
     /// (`type` discriminator, request `id`). The startup probe sends this
     /// over stdin; a rename here would silently break pi's classification
     /// of the probe request as a command rather than a stray event.
     #[test]
-    fn get_commands_command_serializes_to_expected_shape() {
-        let cmd = GetCommandsCommand {
-            kind: "get_commands",
+    fn get_state_command_serializes_to_expected_shape() {
+        let cmd = GetStateCommand {
+            kind: "get_state",
             id: PROBE_REQUEST_ID,
         };
         let json = serde_json::to_string(&cmd).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        assert_eq!(v["type"], "get_commands");
+        assert_eq!(v["type"], "get_state");
         assert_eq!(v["id"], PROBE_REQUEST_ID);
     }
 

@@ -40,7 +40,7 @@ repos:
 
       - id: nix-flake-check
         name: nix flake check
-        entry: skip-if-missing nix -- nix flake check
+        entry: skip-if-missing nix -- pre-push-checks nix flake check
         language: system
         stages: [pre-push]
         always_run: true
@@ -54,18 +54,20 @@ repos:
         files: '\.rs$'
         pass_filenames: false
 
-      - id: cargo-nextest
-        name: cargo nextest run --workspace
-        entry: pre-push-checks cargo nextest run --workspace
+      - id: loom-gate-check-diff
+        name: loom gate check --diff
+        # `@{u}..HEAD` = the push range (specs/gate.md § Scope flags).
+        entry: pre-push-checks loom gate check --diff '@{u}..HEAD'
         language: system
         stages: [pre-push]
-        files: '\.rs$'
+        always_run: true
         pass_filenames: false
 
-      - id: loom-gate-verify-diff
-        name: loom gate verify --diff
-        # `@{u}..HEAD` = the push range (specs/gate.md § Scope flags).
-        entry: pre-push-checks loom gate verify --diff '@{u}..HEAD'
+      - id: loom-gate-test-diff
+        name: loom gate test --diff
+        # Targeted `[test]` verifiers stay on pre-push; full workspace
+        # nextest moved to the CI-only `nix run .#test-ci` app.
+        entry: pre-push-checks loom gate test --diff '@{u}..HEAD'
         language: system
         stages: [pre-push]
         always_run: true

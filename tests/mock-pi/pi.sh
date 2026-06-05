@@ -5,13 +5,12 @@
 # The first argument selects a behavior mode used by the unit tests in
 # loom-agent/src/pi/backend.rs and the container smoke runner:
 #
-#   probe-ok                  — respond to get_commands with the full
-#                               required command set, then exit. The
-#                               session-handshake test asserts loom
-#                               proceeds past the probe; nothing more
-#                               is exchanged.
-#   probe-missing-set-model   — respond to get_commands omitting
-#                               'set_model' so the driver fails fast.
+#   probe-ok                  — respond to get_state with a valid state
+#                               object, then exit. The session-handshake
+#                               test asserts loom proceeds past the probe;
+#                               nothing more is exchanged.
+#   probe-bad-state           — respond to get_state with malformed data
+#                               so the driver fails fast.
 #   echo-prompt               — probe ok, then echo the prompt payload
 #                               as a message_delta so the test can
 #                               assert the wire shape.
@@ -27,6 +26,9 @@
 #                               set_model) respond ok and echo the
 #                               provider/modelId pair into a later
 #                               message_delta after the prompt.
+#   set-model-reject          — probe ok; on the next command (expected
+#                               set_model) respond with success:false so
+#                               the driver hard-fails the handshake.
 #   set-thinking-level        — probe ok; on the next command (expected
 #                               set_thinking_level) respond ok and echo
 #                               the level into a later message_delta
@@ -41,7 +43,7 @@
 #                               agent_end. Used by the container smoke
 #                               and any test that wants the full
 #                               single-turn lifecycle.
-#   hang-probe                — read the get_commands line and then sleep
+#   hang-probe                — read the get_state line and then sleep
 #                               forever without responding. Drives the
 #                               HandshakeTimeout path in spawn_with_handshake.
 #   stall-mid-session         — probe ok, prompt acked with one
@@ -117,23 +119,28 @@ emit_compaction_end() {
     emit '{"type":"compaction_end","aborted":false,"reason":"threshold","willRetry":false}'
 }
 
-# Read the first command (must be get_commands) and either echo a full
-# command set, or omit set_model when the first arg is "1".
+# Read the first command (must be get_state) and echo either a valid state
+# object or malformed data when the first arg is "1".
 handle_probe() {
-    local missing_set_model="${1:-0}"
-    local probe_line probe_id data
+    local bad_state="${1:-0}"
+    local probe_line probe_id probe_type data
     IFS= read -r probe_line
     probe_id="$(extract_field id "$probe_line")"
-    if [ -z "$probe_id" ]; then
+    probe_type="$(extract_field type "$probe_line")"
+    if [[ -z "$probe_id" ]]; then
         echo "mock-pi: probe missing id field" >&2
         exit 2
     fi
-    if [ "$missing_set_model" = "1" ]; then
-        data='["prompt","steer","abort"]'
-    else
-        data='["prompt","steer","abort","set_model","compact","get_session_stats"]'
+    if [[ "$probe_type" != "get_state" ]]; then
+        emit_response_err "${probe_id:-unknown}" "${probe_type:-unknown}" "expected get_state"
+        exit 2
     fi
-    emit_response_ok "$probe_id" "get_commands" "$data"
+    if [[ "$bad_state" = "1" ]]; then
+        data='{"unexpected":true}'
+    else
+        data='{"model":null,"thinkingLevel":"medium","isStreaming":false,"isCompacting":false,"messageCount":0,"pendingMessageCount":0}'
+    fi
+    emit_response_ok "$probe_id" "get_state" "$data"
 }
 
 run_probe_ok() {
@@ -192,7 +199,7 @@ run_set_model() {
     sm_type="$(extract_field type "$set_model_line")"
     provider="$(extract_field provider "$set_model_line")"
     model_id="$(extract_field modelId "$set_model_line")"
-    if [ "$sm_type" != "set_model" ]; then
+    if [[ "$sm_type" != "set_model" ]]; then
         emit_response_err "${sm_id:-unknown}" "${sm_type:-unknown}" "expected set_model"
         return
     fi
@@ -201,6 +208,19 @@ run_set_model() {
     IFS= read -r _prompt
     emit_message_delta "model:${provider}:${model_id}"
     emit_agent_end
+}
+
+run_set_model_reject() {
+    handle_probe 0
+    local set_model_line sm_id sm_type
+    IFS= read -r set_model_line
+    sm_id="$(extract_field id "$set_model_line")"
+    sm_type="$(extract_field type "$set_model_line")"
+    if [[ "$sm_type" != "set_model" ]]; then
+        emit_response_err "${sm_id:-unknown}" "${sm_type:-unknown}" "expected set_model"
+        return
+    fi
+    emit_response_err "$sm_id" "set_model" "model unavailable"
 }
 
 run_set_thinking_level() {
@@ -268,7 +288,7 @@ case "$MODE" in
     probe-ok)
         run_probe_ok
         ;;
-    probe-missing-set-model)
+    probe-bad-state)
         handle_probe 1
         ;;
     echo-prompt)
@@ -282,6 +302,9 @@ case "$MODE" in
         ;;
     set-model)
         run_set_model
+        ;;
+    set-model-reject)
+        run_set_model_reject
         ;;
     set-thinking-level)
         run_set_thinking_level
