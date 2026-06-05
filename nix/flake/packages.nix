@@ -12,11 +12,14 @@
     }:
     {
       packages = {
-        default = sandbox.package;
-        sandbox = sandbox.package;
-        debug = debugSandbox.package;
-        loom = loomBin;
         inherit profileManifest;
+
+        default = loomBin;
+        loom = loomBin;
+
+        debug = debugSandbox.package;
+        sandbox = sandbox.package;
+
         # Pinned wrapix source, exposed so spec verifiers in this repo can
         # grep against the same `lib/sandbox/linux/entrypoint.sh` the
         # sandbox image actually runs. The wrapix source lives in a
