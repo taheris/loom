@@ -869,6 +869,7 @@ mod tests {
         let cfg = SpawnConfig {
             image_ref: "localhost/img:tag".into(),
             image_source: PathBuf::from("/nix/store/none.tar"),
+            image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![],
             mounts: vec![],

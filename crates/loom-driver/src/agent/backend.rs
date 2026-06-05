@@ -20,10 +20,15 @@ pub struct SpawnConfig {
     /// argument passed to `podman run`. Populated by loom from the
     /// profile-image manifest at dispatch time.
     pub image_ref: String,
-    /// Nix store path to a `podman load`-compatible archive that materializes
-    /// `image_ref`. The wrapper runs `podman load < image_source` before
-    /// `podman run`; the load is idempotent on the ref's hash tag.
+    /// Nix store path to an image archive stream that materializes
+    /// `image_ref`. The wrapper installs it before `podman run` when needed.
     pub image_source: PathBuf,
+    /// Optional Nix store path containing the image content digest. Modern
+    /// wrapix launchers use this to skip image installation when the same
+    /// content already exists under any tag, avoiding cold layer reloads when
+    /// only the generated ref changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_digest_path: Option<PathBuf>,
     pub workspace: PathBuf,
     pub env: Vec<(String, String)>,
     /// Per-spawn bind mounts beyond [`SpawnConfig::workspace`]. Loom uses this
@@ -314,6 +319,7 @@ mod tests {
         SpawnConfig {
             image_ref: "localhost/wrapix-test:tag".into(),
             image_source: PathBuf::from("/nix/store/zzz-wrapix-test.tar"),
+            image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRAPIX_AGENT".into(), "pi".into())],
             mounts: Vec::new(),
@@ -350,6 +356,10 @@ mod tests {
             !obj.contains_key("model"),
             "model: None must be omitted, got JSON: {json}"
         );
+        assert!(
+            !obj.contains_key("image_digest_path"),
+            "image_digest_path: None must be omitted, got JSON: {json}"
+        );
         // Seven top-level keys remain — any silent rename or drop fails here.
         let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
         for required in [
@@ -363,6 +373,20 @@ mod tests {
         ] {
             assert!(keys.contains(&required), "missing key {required}: {json}");
         }
+    }
+
+    #[test]
+    fn spawn_config_with_image_digest_path_round_trips() {
+        let mut cfg = sample_config(None);
+        cfg.image_digest_path = Some(PathBuf::from("/nix/store/ddd-wrapix-digest"));
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["image_digest_path"], "/nix/store/ddd-wrapix-digest");
+        let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            back.image_digest_path,
+            Some(PathBuf::from("/nix/store/ddd-wrapix-digest"))
+        );
     }
 
     /// `model: Some(_)` round-trips with both `provider` and `model_id`
@@ -473,6 +497,7 @@ mod tests {
         }"#;
         let cfg: SpawnConfig = serde_json::from_str(legacy).expect("legacy fixture parses");
         assert!(cfg.model.is_none());
+        assert!(cfg.image_digest_path.is_none());
         assert_eq!(cfg.image_ref, "localhost/img:tag");
         assert_eq!(cfg.image_source, PathBuf::from("/nix/store/zzz-img.tar"));
         assert_eq!(cfg.env, vec![("A".to_string(), "1".to_string())]);
@@ -519,6 +544,7 @@ mod tests {
         let json = serde_json::to_string(&cfg).expect("serialize");
         for absent in [
             "\"mounts\":",
+            "\"image_digest_path\":",
             "\"model\":",
             "\"thinking_level\":",
             "\"output_limits\":",

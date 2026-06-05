@@ -31,8 +31,8 @@ use loom_driver::agent::{
 };
 use loom_driver::clock::{Clock, SystemClock};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::process::{ChildStdin, Command};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::process::{ChildStderr, ChildStdin, Command};
 use tracing::{debug, error, info, warn};
 
 use super::messages::{PiEnvelope, PiResponse, SetThinkingLevelCommand};
@@ -63,6 +63,16 @@ const REQUIRED_STATE_FIELDS: &[&str] = &[
     "messageCount",
     "pendingMessageCount",
 ];
+
+/// Verbose wrapix stderr line emitted after image load/staging and immediately
+/// before `podman run`. Waiting for this boundary keeps image materialization
+/// out of Pi's RPC probe timeout.
+const WRAPIX_CONTAINER_START_MARKER: &str = "Starting container";
+
+/// Upper bound for wrapix image materialization + launcher setup. Separate
+/// from the Pi probe budget: a cold image load may be slow, but it is not an
+/// unresponsive Pi RPC process.
+const WRAPIX_CONTAINER_START_TIMEOUT_SECS: u64 = 600;
 
 /// Counter that distinguishes simultaneous spawn-config files inside the
 /// same loom process. The pid component handles cross-process uniqueness.
@@ -100,8 +110,11 @@ impl AgentBackend for PiBackend {
             .arg(&spawn_config_path)
             .arg("--stdio");
         apply_launcher_env(&mut cmd, &config.launcher_env);
+        // Needed for the stderr readiness boundary below. The marker is
+        // emitted by wrapix after image load/staging and before `podman run`.
+        cmd.env("WRAPIX_VERBOSE", "1");
 
-        spawn_with_handshake(
+        spawn_with_handshake_after_wrapix_start(
             cmd,
             config.model.as_ref(),
             config.thinking_level,
@@ -181,15 +194,40 @@ struct SetModelCommand<'a> {
 /// `env::set_var` unsafe, and the workspace forbids `unsafe_code`).
 /// Production callers go through [`PiBackend::spawn`].
 pub async fn spawn_with_handshake(
-    mut cmd: Command,
+    cmd: Command,
     model: Option<&ModelSelection>,
     thinking_level: Option<ThinkingLevel>,
     handshake_timeout: Duration,
     clock: &dyn Clock,
 ) -> Result<AgentSession<Idle>, ProtocolError> {
+    spawn_with_handshake_inner(cmd, model, thinking_level, handshake_timeout, clock, false).await
+}
+
+async fn spawn_with_handshake_after_wrapix_start(
+    cmd: Command,
+    model: Option<&ModelSelection>,
+    thinking_level: Option<ThinkingLevel>,
+    handshake_timeout: Duration,
+    clock: &dyn Clock,
+) -> Result<AgentSession<Idle>, ProtocolError> {
+    spawn_with_handshake_inner(cmd, model, thinking_level, handshake_timeout, clock, true).await
+}
+
+async fn spawn_with_handshake_inner(
+    mut cmd: Command,
+    model: Option<&ModelSelection>,
+    thinking_level: Option<ThinkingLevel>,
+    handshake_timeout: Duration,
+    clock: &dyn Clock,
+    wait_for_wrapix_start: bool,
+) -> Result<AgentSession<Idle>, ProtocolError> {
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::inherit());
+    if wait_for_wrapix_start {
+        cmd.stderr(Stdio::piped());
+    } else {
+        cmd.stderr(Stdio::inherit());
+    }
     cmd.kill_on_drop(true);
 
     let mut child = cmd.spawn().map_err(ProtocolError::Io)?;
@@ -201,6 +239,14 @@ pub async fn spawn_with_handshake(
         .stdout
         .take()
         .ok_or_else(|| ProtocolError::Io(io::Error::other("pi child stdout not piped")))?;
+
+    if wait_for_wrapix_start {
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| ProtocolError::Io(io::Error::other("pi child stderr not piped")))?;
+        wait_for_wrapix_container_start(stderr, clock).await?;
+    }
 
     let mut writer = BufWriter::new(stdin);
     let mut reader = JsonlReader::new(stdout);
@@ -217,6 +263,78 @@ pub async fn spawn_with_handshake(
 
     let parser = PiParser::new();
     Ok(AgentSession::new(child, writer, reader, Box::new(parser)))
+}
+
+/// Wait for wrapix to finish image materialization/staging and start the
+/// container, then continue relaying stderr in the background. This keeps cold
+/// `podman`/`skopeo` image work out of Pi's RPC probe timeout while preserving
+/// the operator-visible startup log.
+async fn wait_for_wrapix_container_start(
+    stderr: ChildStderr,
+    clock: &dyn Clock,
+) -> Result<(), ProtocolError> {
+    let wait = await_wrapix_container_start_marker(stderr);
+    let budget = Duration::from_secs(WRAPIX_CONTAINER_START_TIMEOUT_SECS);
+    let sleep = clock.sleep(budget);
+    tokio::select! {
+        result = wait => result,
+        () = sleep => {
+            warn!(
+                stage = "container_start",
+                budget_secs = budget.as_secs(),
+                "wrapix container startup timed out before Pi RPC probe",
+            );
+            Err(ProtocolError::HandshakeTimeout {
+                stage: "container_start",
+                after: budget,
+            })
+        }
+    }
+}
+
+async fn await_wrapix_container_start_marker(stderr: ChildStderr) -> Result<(), ProtocolError> {
+    let mut reader = BufReader::new(stderr);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).await?;
+        if n == 0 {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        relay_stderr_line(&line).await?;
+        if line.contains(WRAPIX_CONTAINER_START_MARKER) {
+            debug!("wrapix container start marker observed; starting Pi RPC probe");
+            tokio::spawn(relay_remaining_stderr(reader));
+            return Ok(());
+        }
+    }
+}
+
+async fn relay_remaining_stderr(mut reader: BufReader<ChildStderr>) {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) => break,
+            Ok(_) => {
+                if let Err(err) = relay_stderr_line(&line).await {
+                    warn!(error = ?err, "failed to relay wrapix stderr");
+                    break;
+                }
+            }
+            Err(err) => {
+                warn!(error = ?err, "failed to read wrapix stderr");
+                break;
+            }
+        }
+    }
+}
+
+async fn relay_stderr_line(line: &str) -> Result<(), ProtocolError> {
+    let mut stderr = tokio::io::stderr();
+    stderr.write_all(line.as_bytes()).await?;
+    stderr.flush().await?;
+    Ok(())
 }
 
 /// Send `get_state` on stdin and wait for the matching response. Events
@@ -510,6 +628,7 @@ mod tests {
         SpawnConfig {
             image_ref: "localhost/wrapix-test:pi".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrapix-test-pi.tar"),
+            image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRAPIX_AGENT".into(), "pi".into())],
             mounts: vec![],

@@ -37,8 +37,20 @@ in
         )
       ) profiles;
       images = mapAttrs (_: s: s.image) sandboxes;
+      baseManifest = wrapixLib.mkProfileImages images;
+      manifest = mapAttrs (
+        name: entry:
+        entry
+        // pkgs.lib.optionalAttrs (images.${name} ? digest) {
+          digest = "${images.${name}.digest}";
+        }
+      ) baseManifest.passthru.manifest;
     in
-    wrapixLib.mkProfileImages images;
+    pkgs.writeTextFile {
+      name = "profile-images.json";
+      text = builtins.toJSON manifest;
+      passthru = { inherit manifest; };
+    };
 
   # Wrap the raw loom binary with the matching sandbox launcher defaults, so a
   # consumer only needs the wrapped binary on PATH to run loom end-to-end.

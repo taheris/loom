@@ -402,6 +402,7 @@ mod tests {
         SpawnConfig {
             image_ref: "localhost/wrapix-test:direct".into(),
             image_source: PathBuf::from("/nix/store/zzz-test.tar"),
+            image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRAPIX_AGENT".into(), "direct".into())],
             mounts: vec![],

@@ -123,6 +123,7 @@ mod tests {
                 config: SpawnConfig {
                     image_ref: "wrapix-base:latest".into(),
                     image_source: PathBuf::from("/nix/store/zzz-wrapix-base.tar"),
+                    image_digest_path: None,
                     workspace: self.workspace.path().to_path_buf(),
                     env: vec![],
                     mounts: vec![],

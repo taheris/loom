@@ -467,20 +467,22 @@ accumulated wouldn't transfer to the loom workspace.
 ### Profile-Image Manifest
 
 The *profile-image manifest* is a JSON file produced by Nix at flake-build
-time that maps each profile name to the podman ref and Nix store path
-needed to spawn its image. Loom reads it at startup and, for each bead,
-looks up the profile label to populate `SpawnConfig.image_ref` (the podman
-ref) and `SpawnConfig.image_source` (the store path handed to
-`podman load`).
+time that maps each profile name to the podman ref, Nix store path, and
+optional content-digest path needed to spawn its image. Loom reads it at
+startup and, for each bead, looks up the profile label to populate
+`SpawnConfig.image_ref` (the podman ref), `SpawnConfig.image_source` (the
+store path handed to the launcher install step), and
+`SpawnConfig.image_digest_path` (the digest file wrapix uses to skip
+reloading already-present image content).
 
-The file is a JSON object keyed by profile name, with two string fields
-per entry:
+The file is a JSON object keyed by profile name, with two required string
+fields plus an optional `digest` string per entry:
 
 ```json
 {
-  "base":   { "ref": "localhost/wrapix-base:abc123",   "source": "/nix/store/...-image-base" },
-  "rust":   { "ref": "localhost/wrapix-rust:def456",   "source": "/nix/store/...-image-rust" },
-  "python": { "ref": "localhost/wrapix-python:ghi789", "source": "/nix/store/...-image-python" }
+  "base":   { "ref": "localhost/wrapix-base:abc123",   "source": "/nix/store/...-image-base",   "digest": "/nix/store/...-image-base-digest" },
+  "rust":   { "ref": "localhost/wrapix-rust:def456",   "source": "/nix/store/...-image-rust",   "digest": "/nix/store/...-image-rust-digest" },
+  "python": { "ref": "localhost/wrapix-python:ghi789", "source": "/nix/store/...-image-python", "digest": "/nix/store/...-image-python-digest" }
 }
 ```
 
@@ -508,8 +510,9 @@ Per-bead dispatch is:
    operator can relabel (`bd update`-shaped fix, not a `loom msg` chat
    reply — the chat session does not retag beads). Same routing as
    `infra-preflight` (see *Verdict gate* below).
-3. Build `SpawnConfig` with `image_ref = entry.ref` and `image_source =
-   entry.source`. Hand it to `wrapix spawn`.
+3. Build `SpawnConfig` with `image_ref = entry.ref`, `image_source =
+   entry.source`, and `image_digest_path = entry.digest` when present. Hand it
+   to `wrapix spawn`.
 
 Agent (claude vs pi) is selected at container start via the `WRAPIX_AGENT`
 env-allowlist entry the entrypoint switches on — see
@@ -1854,8 +1857,8 @@ everywhere downstream. No internal function re-checks or re-parses.
 6. **CLI output parsing** — `bd --json` output deserializes into typed structs
    (`Bead`, `Molecule`).
 7. **Profile-image manifest** — the JSON produced by `mkProfileImages`
-   deserializes into `BTreeMap<ProfileName, ImageEntry { ref, source }>` once
-   at loom startup. Downstream code receives `&ImageEntry`, never raw JSON.
+   deserializes into `BTreeMap<ProfileName, ImageEntry { ref, source, digest? }>`
+   once at loom startup. Downstream code receives `&ImageEntry`, never raw JSON.
 
 **Newtype IDs:**
 
@@ -2507,16 +2510,17 @@ Criteria.
       reuses container construction from existing `wrapix run`, omits TTY
   [test](wrapix_spawn_invocation_records_correct_argv)
 - `SpawnConfig` JSON shape is stable: serialization round-trip preserves
-      all fields and key names, including the `image_ref` and `image_source`
-      fields
-  [test](spawn_config_with_model_some_round_trips_both_fields)
-- `wrapix spawn` runs `podman load` from `image_source` (a Nix store
-      path) before invoking podman with `image_ref` as the ref; the load is
-      idempotent on the image's hash tag
+      all fields and key names, including the `image_ref`, `image_source`,
+      and optional `image_digest_path` fields
+  [test](spawn_config_with_image_digest_path_round_trips)
+- `wrapix spawn` installs from `image_source` (a Nix store path) before
+      invoking podman with `image_ref` as the ref; when `image_digest_path`
+      is present, wrapix skips reloading bytes if the same content already
+      exists in the local image store
   [system](nix run .#test)
 - Per-bead profile selection: two beads with different profile labels
       result in two `wrapix spawn` invocations with different `image_ref`
-      and `image_source`
+      and `image_source` (and digest paths when present)
   [test](per_bead_profile_dispatch_produces_distinct_image_refs)
 - Loom reads `LOOM_PROFILES_MANIFEST` at startup and parses it into
       `BTreeMap<ProfileName, ImageEntry>`; missing env var or missing file

@@ -579,6 +579,7 @@ agent.backend = "claude"
             SpawnConfig {
                 image_ref: "localhost/wrapix:tag".into(),
                 image_source: PathBuf::from("/nix/store/zzz-wrapix.tar"),
+                image_digest_path: None,
                 workspace: PathBuf::from("/workspace"),
                 env: vec![("WRAPIX_AGENT".into(), "direct".into())],
                 mounts: Vec::new(),

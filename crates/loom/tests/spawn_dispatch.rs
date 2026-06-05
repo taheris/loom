@@ -84,6 +84,7 @@ fn install_wrapix_shim(
              prev=\"$a\"\n\
          done\n\
          \n\
+         echo '[wrapix] Starting container (mock)...' >&2\n\
          exec '{bash}' \"$MOCK_AGENT\" \"$MOCK_AGENT_MODE\"\n",
         bash = bash.display(),
         argv = argv_file.display(),

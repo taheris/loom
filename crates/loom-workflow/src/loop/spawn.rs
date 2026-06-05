@@ -65,6 +65,7 @@ pub fn sccache_mount(cfg: &LoomTopConfig) -> Option<MountSpec> {
 fn build_spawn_config(
     image_ref: String,
     image_source: PathBuf,
+    image_digest_path: Option<PathBuf>,
     workspace: PathBuf,
     initial_prompt: String,
     scratch_dir: PathBuf,
@@ -78,6 +79,7 @@ fn build_spawn_config(
     SpawnConfig {
         image_ref,
         image_source,
+        image_digest_path,
         workspace,
         env,
         mounts,
@@ -135,6 +137,7 @@ pub fn build_spawn_config_from_manifest(
     Ok(build_spawn_config(
         entry.r#ref.clone(),
         entry.source.clone(),
+        entry.digest.clone(),
         workspace,
         initial_prompt,
         scratch_dir,
@@ -169,7 +172,7 @@ mod tests {
     fn three_profile_manifest(dir: &std::path::Path) -> ProfileImageManifest {
         let body = r#"{
           "base":   { "ref": "localhost/wrapix-base:abc",   "source": "/nix/store/aaa-image-base" },
-          "rust":   { "ref": "localhost/wrapix-rust:def",   "source": "/nix/store/bbb-image-rust" },
+          "rust":   { "ref": "localhost/wrapix-rust:def",   "source": "/nix/store/bbb-image-rust", "digest": "/nix/store/ddd-image-rust-digest" },
           "python": { "ref": "localhost/wrapix-python:ghi", "source": "/nix/store/ccc-image-python" }
         }"#;
         let path = dir.join("profile-images.json");
@@ -226,6 +229,10 @@ mod tests {
         assert_eq!(
             cfg_rust.image_source,
             PathBuf::from("/nix/store/bbb-image-rust")
+        );
+        assert_eq!(
+            cfg_rust.image_digest_path,
+            Some(PathBuf::from("/nix/store/ddd-image-rust-digest"))
         );
         assert_eq!(cfg_python.image_ref, "localhost/wrapix-python:ghi");
         assert_eq!(

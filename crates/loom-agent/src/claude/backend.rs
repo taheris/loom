@@ -295,6 +295,7 @@ mod tests {
         let cfg = SpawnConfig {
             image_ref: "localhost/wrapix-test:claude".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrapix-test-claude.tar"),
+            image_digest_path: None,
             workspace: workspace.path().to_path_buf(),
             env: vec![("WRAPIX_AGENT".into(), "claude".into())],
             mounts: vec![],

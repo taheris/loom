@@ -308,8 +308,11 @@ loom and `wrapix spawn` ship from the same flake and stay in lockstep.
 Required fields:
 
 - `image_ref` — podman image reference (e.g. `localhost/wrapix-rust:<hash>`).
-- `image_source` — Nix store path the launcher hands to `podman load`
-  to materialize that ref.
+- `image_source` — Nix store path the launcher uses to materialize that ref
+  when needed.
+- `image_digest_path` — optional Nix store path containing the image content
+  digest. Modern wrapix launchers use it to skip reloading identical image
+  content that is already present under any tag.
 - `workspace` — host path bind-mounted into the container at
   `/workspace`.
 - `env` — explicit env allowlist (table below); the host environment is
@@ -338,7 +341,7 @@ Additionally, `output_limits` (optional, Direct-only) carries
 Direct tools offload to the scratch offload directory. See [Direct Output
 Bounding](#direct-output-bounding).
 
-`image_ref` and `image_source` come from the profile-image manifest at
+`image_ref`, `image_source`, and optional `image_digest_path` come from the profile-image manifest at
 dispatch time — see [harness.md — Profile-Image
 Manifest](harness.md#profile-image-manifest).
 
@@ -412,12 +415,15 @@ further.
 ### Pi-Mono RPC Protocol
 
 Pi's `--mode rpc` uses JSONL over stdin/stdout. The protocol has no version
-negotiation or handshake. After spawning the process, the Pi backend sends a
-`get_state` probe and verifies the response has the documented state-object
-shape (`isStreaming`, `isCompacting`, `messageCount`, and
-`pendingMessageCount` are required). If the response shape is unexpected, the
-backend fails fast with a clear version-mismatch error before any workflow
-begins. After the probe succeeds, normal command flow starts.
+negotiation or handshake. After launching `wrapix spawn`, the Pi backend waits
+for wrapix's container-start stderr marker before starting the Pi RPC probe
+budget; image materialization and container staging are launcher startup, not
+agent-protocol silence. It then sends a `get_state` probe and verifies the
+response has the documented state-object shape (`isStreaming`,
+`isCompacting`, `messageCount`, and `pendingMessageCount` are required). If
+the response shape is unexpected, the backend fails fast with a clear
+version-mismatch error before any workflow begins. After the probe succeeds,
+normal command flow starts.
 
 Pi 0.73's `get_commands` does **not** enumerate built-in RPC verbs; it lists
 slash commands, prompt templates, and skills that can be invoked through
@@ -888,8 +894,8 @@ connection, network filtering, session audit logging.
   [check](cargo test -p loom-agent --test static_dispatch pi_and_claude_dispatch_through_run_agent)
 - `AgentEvent` enum covers: AgentStart, AgentEnd, TurnStart, TextDelta, TextEnd, ThinkingDelta, ThinkingEnd, ToolcallDelta, ToolCall, ToolResult, ToolProgress, TurnEnd, SessionComplete, CompactionStart, CompactionEnd, AutoRetry, Error, DriverEvent
   [check](cargo test -p loom-events --lib every_spec_variant_present)
-- `SpawnConfig` struct captures image_ref, image_source, workspace, env, initial_prompt, agent_args, scratch_dir
-  [check](cargo test -p loom-driver --lib spawn_config_with_model_none_omits_model_key)
+- `SpawnConfig` struct captures image_ref, image_source, optional image_digest_path, workspace, env, initial_prompt, agent_args, scratch_dir
+  [check](cargo test -p loom-driver --lib spawn_config_with_image_digest_path_round_trips)
 - Typestate `AgentSession<Idle>` / `AgentSession<Active>` exists ONLY as an internal mechanic of subprocess-driving backends (Pi, Claude). It does not leak through `Session` trait; Direct backend carries no typestate.
   [check](grep -q 'pub struct Idle' crates/loom-driver/src/agent/session.rs)
 - `Session` trait surface does not reference `AgentSession`, `Idle`, or `Active` types (typestate is private to subprocess backends)
@@ -899,7 +905,9 @@ connection, network filtering, session audit logging.
 
 ### Pi backend
 
-- Pi backend sends `get_state` probe on startup and proceeds when the response shape is valid
+- Pi backend waits for the wrapix container-start marker before starting the RPC probe budget
+  [test](loom_todo_pi_hang_probe_surfaces_handshake_timeout)
+- Pi backend sends `get_state` after startup and proceeds when the response shape is valid
   [test](startup_probe_succeeds_when_get_state_shape_is_valid)
 - Pi backend fails fast if the startup `get_state` response shape is invalid
   [test](startup_probe_fails_fast_when_get_state_shape_is_invalid)

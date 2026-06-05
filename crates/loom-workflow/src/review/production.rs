@@ -598,6 +598,7 @@ where
         let spawn_config = SpawnConfig {
             image_ref: entry.r#ref.clone(),
             image_source: entry.source.clone(),
+            image_digest_path: entry.digest.clone(),
             workspace: self.workspace.clone(),
             env,
             mounts: vec![],

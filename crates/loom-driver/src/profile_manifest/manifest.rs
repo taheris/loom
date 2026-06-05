@@ -11,15 +11,21 @@ use super::error::ProfileError;
 /// `wrapix.lib.${system}.mkProfileImages` at flake-build time.
 pub const ENV_VAR: &str = "LOOM_PROFILES_MANIFEST";
 
-/// One manifest entry: the podman ref to spawn and the Nix store path of the
-/// `podman load`-compatible archive that materializes it.
+/// One manifest entry: the podman ref to spawn, the Nix store path of the
+/// image archive that materializes it, and (when produced by modern wrapix)
+/// the content-digest file used to skip redundant image loads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {
     /// Podman ref (e.g. `localhost/wrapix-rust:abc123`) handed to `podman run`.
     #[serde(rename = "ref")]
     pub r#ref: String,
-    /// Nix store path of the image archive handed to `podman load`.
+    /// Nix store path of the image archive handed to the launcher install step.
     pub source: PathBuf,
+    /// Optional Nix store path containing the image content digest. The wrapix
+    /// launcher uses this for content-addressed image-cache preflight so tag
+    /// changes do not force re-streaming identical layer tarballs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<PathBuf>,
 }
 
 /// Parsed profile-image manifest: the typed `BTreeMap<ProfileName, ImageEntry>`
@@ -125,6 +131,27 @@ mod tests {
         let rust = manifest.lookup(&ProfileName::new("rust"))?;
         assert_eq!(rust.r#ref, "localhost/wrapix-rust:def");
         assert_eq!(rust.source, PathBuf::from("/nix/store/bbb-image-rust"));
+        assert_eq!(rust.digest, None);
+        Ok(())
+    }
+
+    #[test]
+    fn from_path_parses_optional_digest_path() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let body = r#"{
+          "rust": {
+            "ref": "localhost/wrapix-rust:def",
+            "source": "/nix/store/bbb-image-rust",
+            "digest": "/nix/store/ddd-image-digest"
+          }
+        }"#;
+        let path = write_manifest(dir.path(), body)?;
+        let manifest = ProfileImageManifest::from_path(&path)?;
+        let rust = manifest.lookup(&ProfileName::new("rust"))?;
+        assert_eq!(
+            rust.digest,
+            Some(PathBuf::from("/nix/store/ddd-image-digest"))
+        );
         Ok(())
     }
 
