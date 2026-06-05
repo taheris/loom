@@ -1156,8 +1156,8 @@ the rules:
    CI-only `nix run .#test-ci` app. The container smoke remains exposed
    as a separate `nix run .#test` app because it needs podman at runtime;
    its acceptance criterion is annotated `[system](nix run .#test)`.
-   Pre-push runs clippy plus targeted `loom gate check --diff` /
-   `loom gate test --diff`; composition, stage budgets, and lock
+   Pre-push runs clippy plus targeted `loom gate verify --diff` with
+   `LOOM_VERIFY_TIERS=check,test`; composition, stage budgets, and lock
    semantics live in [pre-commit.md](pre-commit.md).
 6. **Real bd** — the container smoke runs against live `bd` (not a
    mock). The integration tier may mock `bd` where the test concern

@@ -54,20 +54,12 @@ repos:
         files: '\.rs$'
         pass_filenames: false
 
-      - id: loom-gate-check-diff
-        name: loom gate check --diff
+      - id: loom-gate-verify-diff
+        name: loom gate verify --diff (check,test)
         # `@{u}..HEAD` = the push range (specs/gate.md § Scope flags).
-        entry: pre-push-checks loom gate check --diff '@{u}..HEAD'
-        language: system
-        stages: [pre-push]
-        always_run: true
-        pass_filenames: false
-
-      - id: loom-gate-test-diff
-        name: loom gate test --diff
-        # Targeted `[test]` verifiers stay on pre-push; full workspace
-        # nextest moved to the CI-only `nix run .#test-ci` app.
-        entry: pre-push-checks loom gate test --diff '@{u}..HEAD'
+        # Keep the verify orchestration on pre-push, but split `[system]`
+        # verifiers to the CI-only `nix run .#test-ci` app.
+        entry: pre-push-checks env LOOM_VERIFY_TIERS=check,test loom gate verify --diff '@{u}..HEAD'
         language: system
         stages: [pre-push]
         always_run: true
