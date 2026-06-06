@@ -1000,6 +1000,10 @@ fn scope_is_finite(args: &GateScopeArgs) -> bool {
     !args.files.is_empty() || args.diff.is_some() || args.bead.is_some()
 }
 
+fn scope_allows_missing_binary_skip(args: &GateScopeArgs) -> bool {
+    !args.files.is_empty() && args.diff.is_none() && args.bead.is_none() && !args.tree
+}
+
 /// Look up `loom.base_commit` for the open epic of `current_spec` via
 /// `bd find --type=epic --label=spec:<X> --status=open`. Returns
 /// `Ok(None)` for the unconfigured cases (no state db, no current_spec,
@@ -1341,7 +1345,7 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
         };
         let mut input_resolver = build_input_resolver(workspace, &runner_specs);
         selected = filter_by_files(&selected, &args.files, &mut input_resolver);
-        if matches!(tier, Tier::Check | Tier::System) {
+        if matches!(tier, Tier::Check | Tier::System) && scope_allows_missing_binary_skip(args) {
             let cmd_resolver = FsCommandResolver::new(workspace);
             selected
                 .retain(|ann| ann.pending || !is_missing_binary_target(&ann.target, &cmd_resolver));
@@ -1429,9 +1433,9 @@ fn partition_pending_for_forward_resolution(
 /// gate verify`) run. Honours the `--spec <label>` filter; when
 /// `--files` is non-empty (e.g. the pre-commit hook), annotations are
 /// further narrowed to those whose declared inputs intersect the file
-/// set per `specs/pre-commit.md`, and bare-binary-missing annotations
-/// silently skip so the bead-container's feedback-only commit flow is
-/// not broken by absent tooling.
+/// set per `specs/pre-commit.md`; only that explicit `--files`
+/// feedback path silently skips bare-binary-missing annotations so the
+/// bead-container's commit flow is not broken by absent tooling.
 ///
 /// Findings print to stderr in the spec-prescribed form and are
 /// **terminal**: this function returns a non-zero exit code when any
@@ -1468,8 +1472,10 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
             partition_pending_for_forward_resolution(annotations);
         annotations = filter_by_files(&candidates, &args.files, &mut input_resolver);
         annotations.extend(pending);
-        annotations
-            .retain(|ann| !is_missing_binary_target(&ann.target, &cmd_resolver) || ann.pending);
+        if scope_allows_missing_binary_skip(args) {
+            annotations
+                .retain(|ann| !is_missing_binary_target(&ann.target, &cmd_resolver) || ann.pending);
+        }
         if annotations.is_empty() {
             return Ok(0);
         }
@@ -3605,6 +3611,60 @@ mod tests {
     fn verify_tiers_for_args_uses_env_default_when_files_empty() {
         let args = empty_scope_args();
         assert_eq!(verify_tiers_for_args(&args), verify_tiers_from_env());
+    }
+
+    #[test]
+    fn missing_binary_skip_is_limited_to_explicit_files_scope() {
+        let mut files = empty_scope_args();
+        files.files = vec![PathBuf::from("src/lib.rs")];
+        assert!(scope_allows_missing_binary_skip(&files));
+
+        let mut diff = empty_scope_args();
+        diff.diff = Some("HEAD".to_owned());
+        diff.files = vec![PathBuf::from("src/lib.rs")];
+        assert!(!scope_allows_missing_binary_skip(&diff));
+
+        let mut bead = empty_scope_args();
+        bead.bead = Some("lm-1".to_owned());
+        bead.files = vec![PathBuf::from("src/lib.rs")];
+        assert!(!scope_allows_missing_binary_skip(&bead));
+    }
+
+    #[test]
+    fn integrity_gate_flags_missing_binary_under_diff_scope() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let specs = tmp.path().join("specs");
+        std::fs::create_dir_all(&specs).expect("specs dir");
+        std::fs::write(
+            specs.join("alpha.md"),
+            "## Success Criteria\n\n- broken verifier [check](definitely-no-such-loom-binary --flag)\n",
+        )
+        .expect("write spec");
+
+        let mut args = empty_scope_args();
+        args.diff = Some("HEAD".to_owned());
+        args.files = vec![tmp.path().join("src/lib.rs")];
+
+        let code = run_integrity_gate(tmp.path(), &args).expect("integrity gate runs");
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn integrity_gate_skips_missing_binary_under_explicit_files_scope() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let specs = tmp.path().join("specs");
+        std::fs::create_dir_all(&specs).expect("specs dir");
+        std::fs::write(
+            specs.join("alpha.md"),
+            "## Success Criteria\n\n- broken verifier [check](definitely-no-such-loom-binary --flag)\n",
+        )
+        .expect("write spec");
+
+        let mut args = empty_scope_args();
+        args.files = vec![tmp.path().join("src/lib.rs")];
+
+        let code = run_integrity_gate(tmp.path(), &args).expect("integrity gate runs");
+        assert_eq!(code, 0);
     }
 
     fn empty_scope_args() -> GateScopeArgs {
