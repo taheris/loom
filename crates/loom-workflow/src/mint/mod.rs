@@ -384,9 +384,6 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
     let mut summary = MintSummary::default();
     let mut resolver = LeadResolver::new(bd, head_commit);
 
-    // Per-finding lead resolution + spec filter. Findings whose lead
-    // resolution errors surface as single-finding Refused/Errored
-    // batches so the rest of the run continues.
     let mut survivors: Vec<(Finding, SpecLabel, MoleculeId)> = Vec::new();
     for finding in findings {
         let (lead_spec, lead_epic) = match resolver.resolve(&finding.bonds).await {

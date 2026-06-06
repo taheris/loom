@@ -134,9 +134,7 @@ fn unknown_walk_name_exits_two_and_names_the_walk_and_available_set() {
 
 /// Multi-arg invocation: every positional arg gets a verdict line in
 /// argv order, with the `target` field set so the gate's `json-lines`
-/// parser can map each row back to its annotation. Bead `lm-6k4j`
-/// turns this into the dominant performance win for `[check]`: one
-/// cargo invocation covering N walks instead of N cargo invocations.
+/// parser can map each row back to its annotation.
 #[test]
 fn multi_arg_invocation_emits_one_target_verdict_line_per_name_in_argv_order() {
     let ws = make_workspace();

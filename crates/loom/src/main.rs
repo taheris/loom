@@ -972,12 +972,9 @@ fn expand_diff_to_files(workspace: &Path, args: &mut GateScopeArgs) -> anyhow::R
 /// downstream sees a fully-resolved scope.
 ///
 /// After both steps, `args.files` is normalised against `workspace`
-/// (relative paths become absolute). `filter_by_files` compares paths
-/// by equality against `annotation.source_spec`, which `parse()` sets
-/// to the absolute path it walked under `workspace.join("specs")`;
-/// leaving the file list relative would silently match nothing for
-/// every annotation — both the `--diff` expansion's git output and
-/// the pre-commit hook's `pass_filenames` payload are relative.
+/// (relative paths become absolute). Downstream filters accept absolute
+/// scope files for both spec-section auto-includes and repo-relative
+/// verifier globs, matching `--diff` output and pre-commit payloads.
 fn resolve_gate_scope(workspace: &Path, args: &mut GateScopeArgs) -> anyhow::Result<()> {
     apply_default_scope(workspace, args);
     expand_diff_to_files(workspace, args)?;

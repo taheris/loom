@@ -979,6 +979,24 @@ mod tests {
         }
     }
 
+    fn wait_for_executable(path: &Path) {
+        for _ in 0..100 {
+            if Command::new(path)
+                .arg("--ready")
+                .output()
+                .is_ok_and(|out| out.status.success())
+            {
+                return;
+            }
+            std::thread::yield_now();
+        }
+        let ready = Command::new(path).arg("--ready").output();
+        assert!(
+            ready.is_ok_and(|out| out.status.success()),
+            "helper executable did not become spawnable",
+        );
+    }
+
     struct StubScope {
         map: HashMap<String, Vec<PathBuf>>,
     }
@@ -1103,7 +1121,7 @@ mod tests {
         fs::write(
             &helper,
             format!(
-                "#!/bin/sh\nif [ \"$1\" = \"--print-inputs\" ]; then\n  n=$(cat {counter_path})\n  echo $((n + 1)) > {counter_path}\n  printf '{{\"inputs\": [\"x.rs\"]}}\\n'\n  exit 0\nfi\nexit 99\n",
+                "#!/bin/sh\nif [ \"$1\" = \"--ready\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"--print-inputs\" ]; then\n  n=$(cat \"{counter_path}\")\n  echo $((n + 1)) > \"{counter_path}\"\n  printf '{{\"inputs\": [\"x.rs\"]}}\\n'\n  exit 0\nfi\nexit 99\n",
             ),
         )
         .unwrap();
@@ -1114,6 +1132,7 @@ mod tests {
             perms.set_mode(0o755);
             fs::set_permissions(&helper, perms).unwrap();
         }
+        wait_for_executable(&helper);
 
         let mut resolver = InputResolver::new(dir.path().to_path_buf());
         let target = format!("{} walks/foo", helper.display());
@@ -1998,13 +2017,13 @@ mod tests {
         let beta = ann(Tier::Check, "walk -- beta", "specs/gate.md");
         let annotations = vec![alpha, beta];
 
-        let files = vec![PathBuf::from("crates/alpha/src/lib.rs")];
+        let files = vec![dir.path().join("crates/alpha/src/lib.rs")];
         let got = filter_by_files(&annotations, &files, &mut resolver);
 
         assert_eq!(
             got.iter().map(|a| a.target.as_str()).collect::<Vec<_>>(),
             vec!["walk -- alpha"],
-            "only the runner-matched sibling whose queried glob is staged survives scope filtering",
+            "only the runner-matched sibling whose queried glob matches the absolute scoped file survives",
         );
         assert_eq!(
             fs::read_to_string(&counter).unwrap().trim(),
