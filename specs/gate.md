@@ -2095,16 +2095,24 @@ walk.
 
 ### `--files` scope handling
 
-For batched tiers, the gate filters annotations to those whose
-scope intersects `--files` before issuing the batched invocation:
+For file-filterable batched execution paths, the gate filters
+annotations to those whose scope intersects `--files` before issuing
+the batched invocation:
 
 - `[test]`-tier scope = files in `crate(test)` ∪ files in
   `crate(test)`'s transitive dependencies (Rust; computed via
   `cargo metadata`). Other toolchains supply analogous mappings.
-- For non-batched tiers (`[check]`, `[system]`), the gate passes
-  `LOOM_FILES` as env and the verifier decides whether to filter.
-  Most verifiers can be dumb (run the same way regardless); walks
-  that benefit from scope filtering read the env var.
+- Runner-matched `[check]` scope = the matched runner's per-target
+  `inputs` query result, plus the spec-section auto-include. There is
+  no cargo-metadata crate map for `[check]`; a matched runner that has
+  no `inputs` query falls back to the conservative always-run default
+  before the batch is formed. `[judge]` dispatch is batched but not
+  file-filtered under `--files`.
+- For non-batched execution paths (`[system]` and unmatched fallback
+  annotations), the gate passes `LOOM_FILES` as env and the verifier
+  decides whether to filter. Most verifiers can be dumb (run the same
+  way regardless); walks that benefit from scope filtering read the env
+  var.
 
 ### Test-tier silent-zero-match
 
@@ -3170,7 +3178,8 @@ Loop-side interpretation of these exit codes — routing `refused` to
 
 ### Dispatch — per-tier process model
 
-- `[check]` tier spawns one subprocess per annotation
+- Unmatched `[check]` annotations use the fallback path and spawn one
+  subprocess per annotation
   [test](dispatcher_spawns_one_subprocess_per_check_annotation)
 - `[system]` tier spawns one subprocess per annotation (system
   verifiers are inherently slow and self-contained; batching doesn't
