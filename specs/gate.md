@@ -2866,22 +2866,22 @@ and conservative fall-through for unowned queries.
   one of `id` (canonical finding id) or `hash` (compact finding hash);
   matching rubric-origin findings are reported as suppressed and
   removed from verdict / mint processing
-  [test?](loom_toml_suppress_entries_filter_rubric_findings_by_id_or_hash)
+  [test](loom_toml_suppress_entries_filter_rubric_findings_by_id_or_hash)
 - Suppressions do not apply to deterministic or integrity findings;
   matching `[[suppress]]` ids or hashes for those findings are
   reported as ineffective and the findings still fail / mint normally
-  [test?](suppressions_do_not_filter_deterministic_or_integrity_findings)
+  [test](suppressions_do_not_filter_deterministic_or_integrity_findings)
 - A well-formed `LOOM_CONCERN` walk whose every streamed finding is
   suppressed exits clean after emitting suppressed-status records;
   suppression does not forgive malformed stream / terminator pairing
-  [test?](all_suppressed_concern_walk_exits_clean_after_shape_validation)
+  [test](all_suppressed_concern_walk_exits_clean_after_shape_validation)
 - Inline code-comment suppressions are unsupported; the gate does not
   scan source comments for suppression directives
   [check?](cargo run -p loom-walk -- no_inline_suppression_comment_contract)
 - `LOOM_FINDING_STATUS:` driver-emitted JSON lines carry each enriched
   finding's id, hash, bd label, token, target, and action without
   requiring the LLM to emit derived identity fields
-  [test?](driver_emits_finding_status_json_with_identity_and_action)
+  [test](driver_emits_finding_status_json_with_identity_and_action)
 - At `--tree` scope, a live fix-up bead whose `finding:<hash>` labels
   are all absent from the current unsuppressed finding set is reported
   as a stale candidate, not auto-closed

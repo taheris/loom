@@ -23,6 +23,7 @@ pub mod resolve;
 pub mod review;
 pub mod spec;
 pub mod status;
+mod suppression;
 pub mod todo;
 pub mod use_spec;
 

@@ -1784,15 +1784,16 @@ fn run_gate_mint(
 ) -> anyhow::Result<()> {
     let head_commit = current_commit(workspace).unwrap_or_default();
     let spec_filter = args.scope.spec.as_deref().map(SpecLabel::new);
-    let opts = loom_workflow::mint::MintOptions {
-        dry_run: args.dry_run,
-        spec_filter,
-    };
     let scope = resolve_mint_scope(workspace, &args.scope)?;
 
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let label = resolve_spec_label(workspace, args.scope.spec.clone())?;
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
+    let opts = loom_workflow::mint::MintOptions {
+        dry_run: args.dry_run,
+        spec_filter,
+        suppressions: config.suppress.clone(),
+    };
     let selection = resolved_agent_for(&config, agent_override, Phase::Review)?;
     let phase_default = selection.profile.clone();
     let kind = selection.kind;
@@ -2977,6 +2978,7 @@ fn run_review(
     let style_rules_for_review = config.style_rules.clone();
     let integration_branch_for_review = config.loom.integration_branch.clone();
     let hook_timeout_for_review = config.loom.git_hook_timeout();
+    let suppressions_for_review = config.suppress.clone();
     let tree_scope_epics = opts
         .tree_scope_epics
         .iter()
@@ -3029,7 +3031,8 @@ fn run_review(
         .with_hook_timeout(hook_timeout_for_review)
         .with_verify_exit(opts.verify_exit)
         .with_lane(opts.lane)
-        .with_tree_scope_epics(tree_scope_epics);
+        .with_tree_scope_epics(tree_scope_epics)
+        .with_suppressions(suppressions_for_review);
         run_review_loop(&mut controller, IterationCap::default()).await
     })?;
     if !emit_stdout {
@@ -3459,10 +3462,12 @@ mod tests {
 
         let mk = |minted: usize, skipped: usize| MintSummary {
             batches: Vec::new(),
+            statuses: Vec::new(),
             minted,
             would_mint: 0,
             skipped,
             skipped_filter: 0,
+            suppressed: 0,
             refused: 0,
             errors: 0,
             findings_across_minted: 0,
@@ -3495,10 +3500,12 @@ mod tests {
 
         let mk = |refused: usize, errors: usize| MintSummary {
             batches: Vec::new(),
+            statuses: Vec::new(),
             minted: 0,
             would_mint: 0,
             skipped: 0,
             skipped_filter: 0,
+            suppressed: 0,
             refused,
             errors,
             findings_across_minted: 0,

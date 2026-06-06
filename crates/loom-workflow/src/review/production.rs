@@ -27,7 +27,7 @@ use loom_driver::agent::{
 };
 use loom_driver::bd::{BdClient, BdError, Bead, CommandRunner, ListOpts, TokioRunner, UpdateOpts};
 use loom_driver::clock::{Clock, SystemClock};
-use loom_driver::config::{LoomConfig, Phase};
+use loom_driver::config::{LoomConfig, Phase, SuppressionConfig};
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
@@ -52,6 +52,7 @@ use super::error::ReviewError;
 use super::finding::{DispatchScope, FindingValidator, TerminalSurface, WalkOutput};
 use super::phase_verdict::{GateInputs, PhaseVerdict, RecoveryCause, decide};
 use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
+use crate::suppression::suppresses_rubric_finding;
 use crate::todo::ExitSignal;
 
 /// Production validator wired into [`WalkOutput::from_stdout`] when the
@@ -147,6 +148,8 @@ where
     /// calls reuse those IDs instead of re-querying `bd find`. Empty at
     /// non-`--tree` scopes.
     tree_scope_epics: Vec<TreeScopeEpic>,
+    /// Top-level `[[suppress]]` rubric-finding allowlist entries.
+    suppressions: Vec<SuppressionConfig>,
 }
 
 impl<S, F, R: CommandRunner> ProductionReviewController<S, F, R>
@@ -197,6 +200,7 @@ where
             verify_exit: None,
             lane: ReviewLane::Both,
             tree_scope_epics: Vec::new(),
+            suppressions: Vec::new(),
         }
     }
 
@@ -258,6 +262,12 @@ where
     /// of re-querying `bd find`. Empty input is a no-op.
     pub fn with_tree_scope_epics(mut self, epics: Vec<TreeScopeEpic>) -> Self {
         self.tree_scope_epics = epics;
+        self
+    }
+
+    /// Override the rubric-finding suppressions used after walk-shape validation.
+    pub fn with_suppressions(mut self, suppressions: Vec<SuppressionConfig>) -> Self {
+        self.suppressions = suppressions;
         self
     }
 
@@ -450,14 +460,23 @@ where
 /// any walk + per-line finding errors)
 /// surface via the typed `BadWalk` variant on
 /// [`RecoveryCause::BadWalk`].
+#[cfg(test)]
 fn classify_review_phase(walk: &WalkOutput, exit_code: i32) -> ReviewOutcome {
+    classify_review_phase_with_suppressions(walk, exit_code, &[])
+}
+
+fn classify_review_phase_with_suppressions(
+    walk: &WalkOutput,
+    exit_code: i32,
+    suppressions: &[SuppressionConfig],
+) -> ReviewOutcome {
     let marker = exit_signal_from_terminal(walk.terminal());
     if matches!(marker, Some(ExitSignal::Complete | ExitSignal::Noop)) && exit_code != 0 {
         return ReviewOutcome::Incomplete {
             detail: format!("agent emitted COMPLETE/NOOP but exited code {exit_code}"),
         };
     }
-    match phase_verdict_from_walk(walk) {
+    match phase_verdict_from_walk_with_suppressions(walk, suppressions) {
         PhaseVerdict::Done => ReviewOutcome::Complete,
         PhaseVerdict::Blocked { reason } => ReviewOutcome::Incomplete {
             detail: format!("LOOM_BLOCKED: {reason}"),
@@ -506,7 +525,15 @@ fn classify_review_phase(walk: &WalkOutput, exit_code: i32) -> ReviewOutcome {
 /// well-formed findings; a malformed terminal payload paired with
 /// well-formed findings threads both into
 /// [`BadWalk::Concern { payload, parsed_findings }`].
+#[cfg(test)]
 fn phase_verdict_from_walk(walk: &WalkOutput) -> PhaseVerdict {
+    phase_verdict_from_walk_with_suppressions(walk, &[])
+}
+
+fn phase_verdict_from_walk_with_suppressions(
+    walk: &WalkOutput,
+    suppressions: &[SuppressionConfig],
+) -> PhaseVerdict {
     if !walk.finding_errors().is_empty() {
         let badwalk = loom_templates::previous_failure::BadWalk::MalformedFinding {
             errors: walk.finding_errors().to_vec(),
@@ -544,7 +571,33 @@ fn phase_verdict_from_walk(walk: &WalkOutput) -> PhaseVerdict {
             *parsed_findings = walk.findings().to_vec();
         }
     }
-    verdict
+    suppress_review_concern(verdict, suppressions)
+}
+
+fn suppress_review_concern(
+    verdict: PhaseVerdict,
+    suppressions: &[SuppressionConfig],
+) -> PhaseVerdict {
+    let PhaseVerdict::Recovery {
+        cause: RecoveryCause::ReviewConcern { summary, findings },
+    } = verdict
+    else {
+        return verdict;
+    };
+    let unsuppressed: Vec<_> = findings
+        .into_iter()
+        .filter(|finding| !suppresses_rubric_finding(suppressions, finding))
+        .collect();
+    if unsuppressed.is_empty() {
+        PhaseVerdict::Done
+    } else {
+        PhaseVerdict::Recovery {
+            cause: RecoveryCause::ReviewConcern {
+                summary,
+                findings: unsuppressed,
+            },
+        }
+    }
 }
 
 /// Reverse [`WalkOutput::terminal`] back to the per-phase [`ExitSignal`]
@@ -635,7 +688,8 @@ where
         // default empty) is structurally unrepresentable.
         let walk =
             WalkOutput::from_stdout(&stdout, DispatchScope::PerBead, &AcceptAllFindingValidator);
-        let typed_outcome = classify_review_phase(&walk, outcome.exit_code);
+        let typed_outcome =
+            classify_review_phase_with_suppressions(&walk, outcome.exit_code, &self.suppressions);
         Ok(RunReviewOutput {
             outcome: typed_outcome,
             marker,
@@ -1070,6 +1124,45 @@ mod tests {
     #[test]
     fn classify_review_phase_signature_requires_typed_walk_output() {
         let _: fn(&WalkOutput, i32) -> ReviewOutcome = classify_review_phase;
+    }
+
+    #[test]
+    fn all_suppressed_concern_walk_exits_clean_after_shape_validation() {
+        let finding_line = r#"LOOM_FINDING: {"token":"verifier-bypass","bonds":["harness"],"target":{"kind":"Annotation","target_string":"cargo test --lib sample"},"evidence":"test mocks the agent backend"}"#;
+        let concern_line = r#"LOOM_CONCERN: {"summary":"reviewer flagged a verifier-bypass"}"#;
+        let stdout = format!("{finding_line}\n{concern_line}\n");
+        let walk =
+            WalkOutput::from_stdout(&stdout, DispatchScope::PerBead, &AcceptAllFindingValidator);
+        let suppression = SuppressionConfig {
+            id: Some(walk.findings()[0].id()),
+            hash: None,
+            reason: "false positive".to_owned(),
+        };
+        assert_eq!(
+            classify_review_phase_with_suppressions(&walk, 0, &[suppression]),
+            ReviewOutcome::Complete,
+        );
+
+        let mismatched_stdout = format!("{finding_line}\nLOOM_COMPLETE\n");
+        let mismatched = WalkOutput::from_stdout(
+            &mismatched_stdout,
+            DispatchScope::PerBead,
+            &AcceptAllFindingValidator,
+        );
+        let suppression = SuppressionConfig {
+            id: Some(mismatched.findings()[0].id()),
+            hash: None,
+            reason: "false positive".to_owned(),
+        };
+        assert!(
+            matches!(
+                phase_verdict_from_walk_with_suppressions(&mismatched, &[suppression]),
+                PhaseVerdict::Recovery {
+                    cause: RecoveryCause::BadWalk(_)
+                }
+            ),
+            "suppression must not forgive malformed stream/terminator pairing",
+        );
     }
 
     /// Criterion

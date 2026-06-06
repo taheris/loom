@@ -43,13 +43,16 @@ pub use walk::{
 use std::collections::{HashMap, HashSet};
 
 use loom_driver::bd::{BdClient, CommandRunner, CreateOpts, ListOpts};
+use loom_driver::config::SuppressionConfig;
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 use loom_gate::IntegrityFinding;
 use loom_protocol::gate::options::has_well_formed_block;
+use serde::Serialize;
 
 use crate::gate_clarify::CLARIFY_WITHOUT_OPTIONS_CAUSE;
 use crate::resolve::{ResolveError, resolve_open_epic, resolve_or_mint_open_epic};
-use crate::review::{ConcernToken, Finding};
+use crate::review::{ConcernToken, Finding, FindingTarget};
+use crate::suppression::suppresses_rubric_finding;
 
 /// How a batch routes to a label class. Single-finding clarify batches
 /// whose evidence is well-formed mint with `loom:clarify`; the same
@@ -185,6 +188,47 @@ impl BatchOutcome {
     }
 }
 
+const LOOM_FINDING_STATUS_PREFIX: &str = "LOOM_FINDING_STATUS:";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FindingStatusAction {
+    Reported,
+    Minted,
+    SkippedLive,
+    Suppressed,
+    StaleCandidate,
+    PartialStaleCandidate,
+    Refused,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FindingStatusRecord {
+    pub id: String,
+    pub hash: String,
+    pub label: String,
+    pub token: ConcernToken,
+    pub target: FindingTarget,
+    pub action: FindingStatusAction,
+}
+
+impl FindingStatusRecord {
+    fn new(finding: &Finding, action: FindingStatusAction) -> Self {
+        Self {
+            id: finding.id(),
+            hash: finding.hash(),
+            label: finding_label(finding),
+            token: finding.token,
+            target: finding.target.clone(),
+            action,
+        }
+    }
+
+    fn render(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self).map(|json| format!("{LOOM_FINDING_STATUS_PREFIX} {json}"))
+    }
+}
+
 /// Options that gate writes and filter scope on a [`mint_findings`] run.
 ///
 /// Defaults match the production `loom gate mint` invocation with no
@@ -199,6 +243,9 @@ pub struct MintOptions {
     /// different spec are reported as [`BatchOutcome::SkippedFilter`]
     /// and no fix-up is minted. `None` admits every batch.
     pub spec_filter: Option<SpecLabel>,
+    /// Top-level `[[suppress]]` entries from `loom.toml`. Matching
+    /// rubric-origin findings are reported and removed before dedup.
+    pub suppressions: Vec<SuppressionConfig>,
 }
 
 /// End-of-run summary printed to stdout (no bd writes).
@@ -211,10 +258,12 @@ pub struct MintOptions {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MintSummary {
     pub batches: Vec<BatchOutcome>,
+    pub statuses: Vec<FindingStatusRecord>,
     pub minted: usize,
     pub would_mint: usize,
     pub skipped: usize,
     pub skipped_filter: usize,
+    pub suppressed: usize,
     pub refused: usize,
     pub errors: usize,
     pub findings_across_minted: usize,
@@ -222,6 +271,14 @@ pub struct MintSummary {
 }
 
 impl MintSummary {
+    fn record_status(&mut self, finding: &Finding, action: FindingStatusAction) {
+        if matches!(action, FindingStatusAction::Suppressed) {
+            self.suppressed += 1;
+        }
+        self.statuses
+            .push(FindingStatusRecord::new(finding, action));
+    }
+
     fn record(&mut self, outcome: BatchOutcome) {
         match &outcome {
             BatchOutcome::Minted { .. } => self.minted += 1,
@@ -240,11 +297,12 @@ impl MintSummary {
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = format!(
-            "minted {} batches ({} findings across {} specs), skipped {} (dedup), refused {}, errors {}",
+            "minted {} batches ({} findings across {} specs), skipped {} (dedup), suppressed {}, refused {}, errors {}",
             self.minted,
             self.findings_across_minted,
             self.specs_across_minted,
             self.skipped,
+            self.suppressed,
             self.refused,
             self.errors,
         );
@@ -258,6 +316,17 @@ impl MintSummary {
             ));
         }
         out.push('\n');
+        for status in &self.statuses {
+            match status.render() {
+                Ok(line) => {
+                    out.push_str(&line);
+                    out.push('\n');
+                }
+                Err(err) => {
+                    out.push_str(&format!("  status serialization error: {err}\n"));
+                }
+            }
+        }
         for outcome in &self.batches {
             match outcome {
                 BatchOutcome::Minted {
@@ -366,27 +435,51 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
     let mut resolver = LeadResolver::new(bd, head_commit);
 
     let mut survivors: Vec<(Finding, SpecLabel, MoleculeId)> = Vec::new();
+    let mut ids_by_hash: HashMap<String, String> = HashMap::new();
     for finding in findings {
+        let finding_hash = finding.hash();
+        let finding_id = finding.id();
+        if let Some(existing_id) = ids_by_hash.get(&finding_hash) {
+            if existing_id != &finding_id {
+                summary.record_status(finding, FindingStatusAction::Refused);
+                summary.record(BatchOutcome::Refused {
+                    fingerprint: finding_hash,
+                    reason: format!(
+                        "finding hash collision: `{existing_id}` and `{finding_id}` share one hash",
+                    ),
+                });
+                continue;
+            }
+        } else {
+            ids_by_hash.insert(finding_hash.clone(), finding_id);
+        }
+        if suppresses_rubric_finding(&opts.suppressions, finding) {
+            summary.record_status(finding, FindingStatusAction::Suppressed);
+            continue;
+        }
         match dedup_finding(bd, finding).await {
             FindingDedup::Untracked => {}
             FindingDedup::Tracked(existing_bead) => {
+                summary.record_status(finding, FindingStatusAction::SkippedLive);
                 summary.record(BatchOutcome::SkippedDedup {
-                    fingerprint: finding.hash(),
+                    fingerprint: finding_hash,
                     existing_bead,
                     findings_count: 1,
                 });
                 continue;
             }
             FindingDedup::Duplicate { reason } => {
+                summary.record_status(finding, FindingStatusAction::Refused);
                 summary.record(BatchOutcome::Refused {
-                    fingerprint: finding.hash(),
+                    fingerprint: finding_hash,
                     reason,
                 });
                 continue;
             }
             FindingDedup::Errored { message } => {
+                summary.record_status(finding, FindingStatusAction::Refused);
                 summary.record(BatchOutcome::Errored {
-                    fingerprint: finding.hash(),
+                    fingerprint: finding_hash,
                     message,
                 });
                 continue;
@@ -396,6 +489,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
             Ok(lead) => lead,
             Err(MintError::Resolve(ResolveError::InvariantViolation { label, ids })) => {
                 let fingerprint = batch_fingerprint(std::slice::from_ref(finding));
+                summary.record_status(finding, FindingStatusAction::Refused);
                 summary.record(BatchOutcome::Refused {
                     fingerprint,
                     reason: format!(
@@ -406,6 +500,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
             }
             Err(err) => {
                 let fingerprint = batch_fingerprint(std::slice::from_ref(finding));
+                summary.record_status(finding, FindingStatusAction::Refused);
                 summary.record(BatchOutcome::Errored {
                     fingerprint,
                     message: err.to_string(),
@@ -417,6 +512,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
             && &lead_spec != requested
         {
             let fingerprint = batch_fingerprint(std::slice::from_ref(finding));
+            summary.record_status(finding, FindingStatusAction::Reported);
             summary.record(BatchOutcome::SkippedFilter {
                 fingerprint,
                 lead_spec,
@@ -455,6 +551,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
                 opts,
             )
             .await;
+            record_batch_status(&mut summary, &fix_up, &outcome);
             track_minted(&outcome, &lead_spec, &mut summary, &mut minted_specs);
             summary.record(outcome);
         }
@@ -468,6 +565,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
                 opts,
             )
             .await;
+            record_batch_status(&mut summary, std::slice::from_ref(&finding), &outcome);
             track_minted(&outcome, &lead_spec, &mut summary, &mut minted_specs);
             summary.record(outcome);
         }
@@ -485,6 +583,20 @@ fn track_minted(
     if let BatchOutcome::Minted { findings_count, .. } = outcome {
         summary.findings_across_minted += findings_count;
         minted_specs.insert(lead_spec.as_str().to_owned());
+    }
+}
+
+fn record_batch_status(summary: &mut MintSummary, findings: &[Finding], outcome: &BatchOutcome) {
+    let action = match outcome {
+        BatchOutcome::Minted { .. } => FindingStatusAction::Minted,
+        BatchOutcome::WouldMint { .. } | BatchOutcome::SkippedFilter { .. } => {
+            FindingStatusAction::Reported
+        }
+        BatchOutcome::Refused { .. } | BatchOutcome::Errored { .. } => FindingStatusAction::Refused,
+        BatchOutcome::SkippedDedup { .. } => FindingStatusAction::SkippedLive,
+    };
+    for finding in findings {
+        summary.record_status(finding, action);
     }
 }
 
@@ -1047,6 +1159,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loom_toml_suppress_entries_filter_rubric_findings_by_id_or_hash() {
+        let by_id = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
+        let by_hash = contract_finding(vec![spec("gate")], "molecule-lifecycle", "evidence");
+        let runner = ScriptedRunner::new(Vec::new());
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+        let opts = MintOptions {
+            dry_run: false,
+            spec_filter: None,
+            suppressions: vec![
+                SuppressionConfig {
+                    id: Some(by_id.id()),
+                    hash: None,
+                    reason: "false positive".to_owned(),
+                },
+                SuppressionConfig {
+                    id: None,
+                    hash: Some(by_hash.hash()),
+                    reason: "false positive".to_owned(),
+                },
+            ],
+        };
+        let summary = mint_findings_with_options(&bd, &[by_id, by_hash], "head-sha", &opts).await;
+        assert_eq!(summary.suppressed, 2, "both rubric findings suppressed");
+        assert!(summary.batches.is_empty(), "nothing reaches dedup or mint");
+        assert!(
+            rendered_calls(&invocations).is_empty(),
+            "suppression happens before bd queries",
+        );
+        assert!(
+            summary
+                .statuses
+                .iter()
+                .all(|s| s.action == FindingStatusAction::Suppressed),
+            "suppressed status recorded: {summary:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn driver_emits_finding_status_json_with_identity_and_action() {
+        let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
+        let id = finding.id();
+        let hash = finding.hash();
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("lm-newfix.1\n"),
+        ]);
+        let bd = BdClient::with_runner(runner);
+        let summary = mint_findings(&bd, &[finding], "head-sha").await;
+        let render = summary.render();
+        let status_line = render
+            .lines()
+            .find(|line| line.starts_with(LOOM_FINDING_STATUS_PREFIX))
+            .expect("status line emitted");
+        let payload = status_line
+            .strip_prefix(LOOM_FINDING_STATUS_PREFIX)
+            .expect("prefix")
+            .trim();
+        let json: serde_json::Value = serde_json::from_str(payload).expect("status json");
+        assert_eq!(json["id"], id);
+        assert_eq!(json["hash"], hash);
+        assert_eq!(json["label"], format!("{FINDING_LABEL_PREFIX}{hash}"));
+        assert_eq!(json["token"], "spec-coherence-fail");
+        assert_eq!(json["target"]["kind"], "Criterion");
+        assert_eq!(json["action"], "minted");
+    }
+
+    #[tokio::test]
     async fn mint_dedup_skips_reopened_batch_still_carrying_finding_hash_label() {
         let finding = contract_finding(vec![spec("gate")], "molecule-lifecycle", "evidence");
         let hash = finding.hash();
@@ -1560,9 +1741,13 @@ mod tests {
         let render = summary.render();
         assert!(
             render.starts_with(
-                "minted 1 batches (2 findings across 1 specs), skipped 1 (dedup), refused 1, errors 0\n"
+                "minted 1 batches (2 findings across 1 specs), skipped 1 (dedup), suppressed 0, refused 1, errors 0\n"
             ),
             "header line shape: {render}",
+        );
+        assert!(
+            render.contains(LOOM_FINDING_STATUS_PREFIX),
+            "status lines are emitted: {render}",
         );
         assert!(
             render.contains(&fp_mint) && render.contains("lm-newfix.1"),
@@ -1599,6 +1784,7 @@ mod tests {
         let opts = MintOptions {
             dry_run: true,
             spec_filter: None,
+            suppressions: Vec::new(),
         };
         let summary = mint_findings_with_options(&bd, &[finding], "head-sha", &opts).await;
         assert_eq!(summary.minted, 0, "no bead minted under dry-run");
@@ -1645,6 +1831,7 @@ mod tests {
         let opts = MintOptions {
             dry_run: false,
             spec_filter: Some(spec("gate")),
+            suppressions: Vec::new(),
         };
         let summary =
             mint_findings_with_options(&bd, &[f_kept, f_dropped], "head-sha", &opts).await;

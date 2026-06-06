@@ -62,6 +62,14 @@ use crate::agent::{AgentKind, OutputLimits};
 use crate::identifier::ProfileName;
 use agent::lookup_phase_field;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct SuppressionConfig {
+    pub id: Option<String>,
+    pub hash: Option<String>,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct LoomConfig {
@@ -102,6 +110,8 @@ pub struct LoomConfig {
     /// / `[agent.duplicate_result]`). Workflow's Pi/Claude dispatch
     /// reads this to materialise the default observer chain.
     pub agent: AgentObserversConfig,
+    /// Top-level `[[suppress]]` rubric-finding allowlist entries.
+    pub suppress: Vec<SuppressionConfig>,
 }
 
 impl Default for LoomConfig {
@@ -120,6 +130,7 @@ impl Default for LoomConfig {
             security: SecurityConfig::default(),
             runner: RunnerConfig::default(),
             agent: AgentObserversConfig::default(),
+            suppress: Vec::new(),
         }
     }
 }
@@ -135,6 +146,29 @@ fn config_parent(path: &Path) -> Result<PathBuf, LoomConfigError> {
     Ok(std::env::current_dir()
         .map_err(|source| LoomConfigError::CurrentDir { source })?
         .join(parent))
+}
+
+fn validate_suppressions(entries: &[SuppressionConfig]) -> Result<(), LoomConfigError> {
+    for (index, entry) in entries.iter().enumerate() {
+        let has_id = entry.id.as_deref().is_some_and(|id| !id.trim().is_empty());
+        let has_hash = entry
+            .hash
+            .as_deref()
+            .is_some_and(|hash| !hash.trim().is_empty());
+        if has_id == has_hash {
+            return Err(LoomConfigError::InvalidSuppression {
+                index,
+                reason: "exactly one of id or hash is required",
+            });
+        }
+        if entry.reason.trim().is_empty() {
+            return Err(LoomConfigError::InvalidSuppression {
+                index,
+                reason: "reason is required",
+            });
+        }
+    }
+    Ok(())
 }
 
 impl LoomConfig {
@@ -156,6 +190,7 @@ impl LoomConfig {
                 return Err(LoomConfigError::EmptyPath { field });
             }
         }
+        validate_suppressions(&cfg.suppress)?;
         Ok(cfg)
     }
 
@@ -665,6 +700,42 @@ denied_tools = ["WebFetch", "DangerousTool"]
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
         assert_eq!(cfg.security.denied_tools, vec!["WebFetch", "DangerousTool"]);
+        Ok(())
+    }
+
+    #[test]
+    fn loom_toml_suppress_entries_require_reason_and_exactly_one_identity() -> Result<()> {
+        let cfg = LoomConfig::from_toml_str(
+            r#"
+[[suppress]]
+id = "v1:criterion:verifier-too-narrow:gate#verifier-honesty"
+reason = "False positive."
+
+[[suppress]]
+hash = "v1:abc123def456"
+reason = "Generated template noise."
+"#,
+        )?;
+        assert_eq!(cfg.suppress.len(), 2);
+        assert_eq!(
+            cfg.suppress[0].id.as_deref(),
+            Some("v1:criterion:verifier-too-narrow:gate#verifier-honesty"),
+        );
+        assert_eq!(cfg.suppress[1].hash.as_deref(), Some("v1:abc123def456"));
+
+        for src in [
+            "[[suppress]]\nreason = \"missing identity\"\n",
+            "[[suppress]]\nid = \"x\"\nhash = \"v1:abc\"\nreason = \"two identities\"\n",
+            "[[suppress]]\nid = \"x\"\n",
+        ] {
+            assert!(
+                matches!(
+                    LoomConfig::from_toml_str(src),
+                    Err(LoomConfigError::InvalidSuppression { .. })
+                ),
+                "invalid suppression should be rejected: {src}",
+            );
+        }
         Ok(())
     }
 
