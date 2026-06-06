@@ -534,7 +534,7 @@ the driver parses one line at a time.
 |---|---|
 | `spec-coherence-fail` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` |
 | `orphan-integration` | `{"kind":"Contract","id":"<contract-id>"}` |
-| `style-rule-violation` | `{"kind":"StyleRule","rule_id":"<rule-id>"}` |
+| `style-rule-violation` | `{"kind":"StyleRule","rule_id":"<rule-id>","subject":"<stable-subject>"}` |
 | `verifier-bypass` | `{"kind":"Annotation","target_string":"<target>"}` |
 | `weak-assertion` | `{"kind":"Annotation","target_string":"<target>"}` |
 | `fabricated-result` | `{"kind":"Annotation","target_string":"<target>"}` |
@@ -555,7 +555,7 @@ Example lines:
 
 ```text
 LOOM_FINDING: {"token":"spec-coherence-fail","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"The bead claims to verify live-path coverage but every annotation mocks the binary."}
-LOOM_FINDING: {"token":"style-rule-violation","bonds":["gate"],"target":{"kind":"StyleRule","rule_id":"RS-12"},"evidence":"crates/loom-gate/src/finding.rs:42-58 holds a placeholder String that consumers must overwrite — RS-12 forbids placeholder fields on production types."}
+LOOM_FINDING: {"token":"style-rule-violation","bonds":["gate"],"target":{"kind":"StyleRule","rule_id":"RS-12","subject":"crates/loom-gate/src/finding.rs#Finding"},"evidence":"crates/loom-gate/src/finding.rs:42-58 holds a placeholder String that consumers must overwrite — RS-12 forbids placeholder fields on production types."}
 LOOM_FINDING: {"token":"concurrency-untested","bonds":["harness"],"target":{"kind":"LockSite","file":"crates/loom-workflow/src/run/runner.rs","line":210},"evidence":"New Arc<Mutex<T>> introduced at runner.rs:210 has no concurrent-load test exercising contention."}
 ```
 
@@ -569,6 +569,9 @@ LOOM_FINDING: {"token":"concurrency-untested","bonds":["harness"],"target":{"kin
   target is `Criterion` (`spec-coherence-fail`,
   `verifier-too-narrow`, `judge-flag`) and the `Invariant` target
   (`invariant-clash`).
+- **`StyleRule` targets MUST include a concrete `subject`** in
+  addition to `rule_id`; a rule-only target is too broad for dedup or
+  suppression, and a bare line number is not a stable subject.
 - **`invariant-clash` findings MUST embed the canonical `## Options — …`
   block in their `evidence` field**. The driver lifts the block into
   the minted clarify bead's description; if it is missing, `loom
@@ -606,8 +609,9 @@ The remaining tokens cover the other rubric dimensions:
   concurrent-load test.
 - `judge-flag` — a `[judge]` rubric is not satisfied.
 - `style-rule-violation` — the diff violates a rule in the pinned
-  style-rules document; the `target.rule_id` names the violating rule
-  and the `evidence` cites file/line range.
+  style-rules document; the `target.rule_id` names the violating rule,
+  `target.subject` names the stable violated surface, and the
+  `evidence` cites file/line range.
 - `spec-coherence-fail` — a claim in a touched spec section is not
   realised by the code (no passing verifier and no LLM trace).
 - `orphan-integration` — a multi-component contract spans beads but

@@ -783,6 +783,7 @@ mod tests {
             token: ConcernToken::StyleRuleViolation,
             target: FindingTarget::StyleRule {
                 rule_id: rule_id.to_owned(),
+                subject: "crates/loom-workflow/src/mint/mod.rs".to_owned(),
             },
             bonds,
             evidence: evidence.to_owned(),
@@ -1513,7 +1514,7 @@ mod tests {
             "description names each canonical target form: {description}",
         );
         assert!(
-            description.contains("style:RS-19"),
+            description.contains("style:RS-19:crates/loom-workflow/src/mint/mod.rs"),
             "description names each canonical target form: {description}",
         );
         assert!(

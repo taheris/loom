@@ -34,7 +34,7 @@ use thiserror::Error;
 /// `bonds` is bonding metadata (which spec molecules the fix-up should
 /// route to); `target` is identity metadata (what the finding is
 /// about). The two are kept structurally separate so the driver can
-/// shift bonding without invalidating the fingerprint.
+/// shift bonding without invalidating the finding id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
     pub token: ConcernToken,
@@ -44,27 +44,34 @@ pub struct Finding {
 }
 
 impl Finding {
-    /// 12-char lowercase-hex stable identifier from
-    /// `blake3(token-wire || 0x1F || canonical_form(target))`.
-    /// Stability across rubric runs is the load-bearing property;
-    /// `bonds` is deliberately omitted so a bonding shift on re-walk
-    /// dedups against the existing fix-up bead instead of re-minting.
+    /// Canonical versioned semantic identity for this finding.
+    ///
+    /// The id is target-centred, lower-kebab, and excludes volatile
+    /// context such as evidence prose, bonds ordering, and line numbers.
+    #[must_use]
+    pub fn id(&self) -> String {
+        format!(
+            "{}:{}",
+            IDENTITY_VERSION,
+            self.target.identity_key(self.token)
+        )
+    }
+
+    /// Compact bd-label key derived from [`Self::id`].
+    #[must_use]
+    pub fn hash(&self) -> String {
+        finding_hash_from_id(&self.id())
+    }
+
+    /// Legacy 12-char lowercase digest retained for older batch surfaces.
     #[must_use]
     pub fn fingerprint(&self) -> String {
-        let mut input = String::new();
-        input.push_str(self.token.as_wire());
-        input.push('\u{001F}');
-        input.push_str(&self.target.canonical_form());
-        let hash = blake3::hash(input.as_bytes());
-        let hex = hash.to_hex();
-        hex.as_str()[..FINGERPRINT_HEX_LEN].to_owned()
+        finding_hash_body(&self.id())
     }
 }
 
-/// Length of the [`Finding::fingerprint`] in hex characters. Chosen to
-/// fit a bd label and to keep the fingerprint visually scannable
-/// alongside bead ids; the only invariant is stability across runs.
-const FINGERPRINT_HEX_LEN: usize = 12;
+const IDENTITY_VERSION: &str = "v1";
+const FINDING_HASH_HEX_LEN: usize = 12;
 
 /// Closed-set concern tokens emitted by the rubric walk or normalised
 /// from a deterministic verifier verdict.
@@ -129,7 +136,7 @@ pub enum ConcernToken {
 
 impl ConcernToken {
     /// Canonical wire string used in `LOOM_FINDING:` JSON, bd labels,
-    /// and fingerprint input. Matches the leftmost column in
+    /// and finding identity input. Matches the leftmost column in
     /// `specs/gate.md` §"Concern tokens and target variants".
     #[must_use]
     pub fn as_wire(self) -> &'static str {
@@ -368,6 +375,7 @@ pub enum FindingTarget {
     },
     StyleRule {
         rule_id: String,
+        subject: String,
     },
     Annotation {
         target_string: String,
@@ -425,16 +433,13 @@ impl FindingTarget {
         }
     }
 
-    /// Variant-aware canonical string fed into the fingerprint hash.
-    /// Round-trips the identity-bearing fields in a fixed shape so the
-    /// same logical finding hashes to the same digest regardless of
-    /// how the rubric phrased it.
+    /// Variant-aware canonical string for human-facing batch surfaces.
     #[must_use]
     pub fn canonical_form(&self) -> String {
         match self {
             Self::Criterion { spec, anchor } => format!("criterion:{spec}:{anchor}"),
             Self::Contract { id } => format!("contract:{id}"),
-            Self::StyleRule { rule_id } => format!("style:{rule_id}"),
+            Self::StyleRule { rule_id, subject } => format!("style:{rule_id}:{subject}"),
             Self::Annotation { target_string } => format!("annotation:{target_string}"),
             Self::TestPath { path } => format!("test:{path}"),
             Self::LockSite { file, line } => format!("lock:{file}:{line}"),
@@ -444,6 +449,71 @@ impl FindingTarget {
             Self::Template { path } => format!("template:{path}"),
         }
     }
+
+    fn identity_key(&self, token: ConcernToken) -> String {
+        match self {
+            Self::Criterion { spec, anchor } => {
+                format!(
+                    "criterion:{}:{spec}#{}",
+                    token.as_wire(),
+                    lower_kebab(anchor)
+                )
+            }
+            Self::Contract { id } => format!("contract:{}", lower_kebab(id)),
+            Self::StyleRule { rule_id, subject } => {
+                format!(
+                    "style-rule:{}:{}",
+                    lower_kebab(rule_id),
+                    lower_kebab(subject)
+                )
+            }
+            Self::Annotation { target_string } => {
+                format!(
+                    "annotation:{}:{}",
+                    token.as_wire(),
+                    lower_kebab(target_string)
+                )
+            }
+            Self::TestPath { path } => format!("test-path:{}", lower_kebab(path)),
+            Self::LockSite { file, .. } => format!("lock-site:{}", lower_kebab(file)),
+            Self::Invariant { spec, section, tag } => {
+                format!(
+                    "invariant:{spec}#{}#{}",
+                    lower_kebab(section),
+                    lower_kebab(tag),
+                )
+            }
+            Self::Template { path } => format!("template:{}", lower_kebab(path)),
+        }
+    }
+}
+
+fn finding_hash_from_id(id: &str) -> String {
+    format!("{IDENTITY_VERSION}:{}", finding_hash_body(id))
+}
+
+fn finding_hash_body(id: &str) -> String {
+    let hash = blake3::hash(id.as_bytes());
+    let hex = hash.to_hex();
+    hex.as_str()[..FINDING_HASH_HEX_LEN].to_owned()
+}
+
+fn lower_kebab(input: &str) -> String {
+    let mut out = String::new();
+    let mut previous_was_separator = true;
+    for c in input.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            out.push('-');
+            previous_was_separator = true;
+        }
+    }
+    if out.ends_with('-') {
+        out.pop();
+    }
+    out
 }
 
 /// Wire-format prefix the LLM rubric emits before each finding's JSON
@@ -528,6 +598,12 @@ pub enum FindingParseError {
         detail: String,
         raw: String,
     },
+    /// line {line_number}: StyleRule subject is not a stable concrete subject ({reason}) — `{raw}`
+    InvalidStyleRuleSubject {
+        line_number: usize,
+        reason: &'static str,
+        raw: String,
+    },
     /// line {line_number}: token `{token}` is {scope_kind} but the walk runs at {dispatch_scope} scope — `{raw}`
     TokenScopeMismatch {
         line_number: usize,
@@ -601,6 +677,16 @@ impl Finding {
             });
         }
 
+        if let FindingTarget::StyleRule { subject, .. } = &finding.target
+            && let Some(reason) = invalid_style_rule_subject_reason(subject)
+        {
+            return Err(FindingParseError::InvalidStyleRuleSubject {
+                line_number,
+                reason,
+                raw: raw_line.to_owned(),
+            });
+        }
+
         Ok(finding)
     }
 
@@ -651,6 +737,17 @@ impl Finding {
         }
         Ok(())
     }
+}
+
+fn invalid_style_rule_subject_reason(subject: &str) -> Option<&'static str> {
+    let trimmed = subject.trim();
+    if trimmed.is_empty() {
+        return Some("empty subject");
+    }
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return Some("bare line number");
+    }
+    None
 }
 
 fn target_unresolved_detail(target: &FindingTarget) -> String {
@@ -1177,25 +1274,66 @@ mod tests {
         )
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct FindingHashCollision {
+        hash: String,
+        first_id: String,
+        second_id: String,
+    }
+
+    fn finding_hash_collisions_with<H>(
+        findings: &[Finding],
+        hash_of: H,
+    ) -> Vec<FindingHashCollision>
+    where
+        H: Fn(&Finding) -> String,
+    {
+        let mut seen: Vec<(String, String)> = Vec::new();
+        let mut collisions = Vec::new();
+        for finding in findings {
+            let id = finding.id();
+            let hash = hash_of(finding);
+            if let Some((_, first_id)) = seen
+                .iter()
+                .find(|(seen_hash, seen_id)| seen_hash == &hash && seen_id != &id)
+            {
+                collisions.push(FindingHashCollision {
+                    hash,
+                    first_id: first_id.clone(),
+                    second_id: id,
+                });
+            } else if !seen
+                .iter()
+                .any(|(seen_hash, seen_id)| seen_hash == &hash && seen_id == &id)
+            {
+                seen.push((hash, id));
+            }
+        }
+        collisions
+    }
+
     #[test]
-    fn fingerprint_is_twelve_lowercase_hex_chars() {
-        let fp = sample_finding().fingerprint();
-        assert_eq!(fp.len(), 12, "fingerprint width is 12 hex chars");
+    fn finding_hash_is_versioned_twelve_lowercase_hex_chars() {
+        let hash = sample_finding().hash();
+        let Some(body) = hash.strip_prefix("v1:") else {
+            panic!("hash carries identity-version prefix: {hash}");
+        };
+        assert_eq!(body.len(), 12, "hash body width is 12 hex chars");
         assert!(
-            fp.chars()
+            body.chars()
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
-            "fingerprint is lowercase hex: {fp}",
+            "hash body is lowercase hex: {hash}",
         );
     }
 
     #[test]
-    fn fingerprint_is_stable_across_runs_for_same_finding() {
+    fn mint_computes_versioned_finding_id_excluding_volatile_context() {
         let a = finding(
             ConcernToken::SpecCoherenceFail,
             vec![spec("gate"), spec("harness")],
             FindingTarget::Criterion {
                 spec: spec("gate"),
-                anchor: "verifier-honesty".to_owned(),
+                anchor: "Verifier Honesty".to_owned(),
             },
             "first walk phrasing",
         );
@@ -1208,15 +1346,20 @@ mod tests {
             },
             "second walk phrasing, identical identity",
         );
-        assert_eq!(a.fingerprint(), b.fingerprint());
+        assert_eq!(
+            a.id(),
+            "v1:criterion:spec-coherence-fail:gate#verifier-honesty"
+        );
+        assert_eq!(a.id(), b.id());
+        assert_eq!(a.hash(), b.hash());
     }
 
     #[test]
-    fn fingerprint_excludes_bonds() {
+    fn finding_identity_excludes_bonds_for_target_centred_contracts() {
         let identity = (
             ConcernToken::OrphanIntegration,
             FindingTarget::Contract {
-                id: "molecule-lifecycle".to_owned(),
+                id: "Molecule Lifecycle".to_owned(),
             },
         );
         let single_spec = finding(identity.0, vec![spec("harness")], identity.1.clone(), "");
@@ -1226,7 +1369,27 @@ mod tests {
             identity.1,
             "",
         );
-        assert_eq!(single_spec.fingerprint(), multi_spec.fingerprint());
+        assert_eq!(single_spec.id(), "v1:contract:molecule-lifecycle");
+        assert_eq!(single_spec.id(), multi_spec.id());
+        assert_eq!(single_spec.hash(), multi_spec.hash());
+    }
+
+    #[test]
+    fn mint_refuses_finding_hash_collision() {
+        let a = sample_finding();
+        let b = finding(
+            ConcernToken::OrphanIntegration,
+            vec![spec("gate")],
+            FindingTarget::Contract {
+                id: "molecule-lifecycle".to_owned(),
+            },
+            "different finding",
+        );
+        let collisions = finding_hash_collisions_with(&[a.clone(), b], |_| "v1:forced".to_owned());
+        assert_eq!(collisions.len(), 1);
+        assert_eq!(collisions[0].hash, "v1:forced");
+        assert_eq!(collisions[0].first_id, a.id());
+        assert_ne!(collisions[0].first_id, collisions[0].second_id);
     }
 
     #[test]
@@ -1249,9 +1412,10 @@ mod tests {
         assert_eq!(
             FindingTarget::StyleRule {
                 rule_id: "RS-12".to_owned(),
+                subject: "crates/loom-gate/src/integrity.rs".to_owned(),
             }
             .canonical_form(),
-            "style:RS-12",
+            "style:RS-12:crates/loom-gate/src/integrity.rs",
         );
     }
 
@@ -2007,6 +2171,56 @@ mod tests {
     }
 
     #[test]
+    fn style_rule_finding_requires_concrete_subject() {
+        let valid_terminal = "LOOM_CONCERN: {\"summary\":\"style\"}";
+        let rule_only = finding_line(
+            "style-rule-violation",
+            &["gate"],
+            r#"{"kind":"StyleRule","rule_id":"RS-3"}"#,
+            "too broad",
+        );
+        let output = format!("{rule_only}\n{valid_terminal}\n");
+        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
+            Err(WalkOutputError::Finding(FindingParseError::Json { raw, .. })) => {
+                assert!(raw.contains("RS-3"), "raw: {raw}");
+            }
+            other => panic!("expected missing subject to fail serde, got {other:?}"),
+        }
+
+        for (subject, reason) in [("", "empty subject"), ("42", "bare line number")] {
+            let target =
+                format!(r#"{{"kind":"StyleRule","rule_id":"RS-3","subject":"{subject}"}}"#,);
+            let line = finding_line("style-rule-violation", &["gate"], &target, "bad subject");
+            let output = format!("{line}\n{valid_terminal}\n");
+            match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
+                Err(WalkOutputError::Finding(FindingParseError::InvalidStyleRuleSubject {
+                    reason: actual,
+                    raw,
+                    ..
+                })) => {
+                    assert_eq!(actual, reason);
+                    assert!(raw.contains("StyleRule"), "raw: {raw}");
+                }
+                other => panic!("expected invalid style subject `{subject}`, got {other:?}"),
+            }
+        }
+
+        let valid = finding_line(
+            "style-rule-violation",
+            &["gate"],
+            r#"{"kind":"StyleRule","rule_id":"RS-3","subject":"crates/loom-gate/src/integrity.rs#Verifier"}"#,
+            "concrete subject",
+        );
+        let output = format!("{valid}\n{valid_terminal}\n");
+        let findings = parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid)
+            .expect("style finding with concrete subject parses");
+        assert_eq!(
+            findings[0].id(),
+            "v1:style-rule:rs-3:crates-loom-gate-src-integrity-rs-verifier"
+        );
+    }
+
+    #[test]
     fn mint_rejects_criterion_target_whose_spec_is_not_in_bonds() {
         let line = finding_line(
             "spec-coherence-fail",
@@ -2084,6 +2298,7 @@ mod tests {
             },
             ConcernToken::StyleRuleViolation => FindingTarget::StyleRule {
                 rule_id: "RS-12".to_owned(),
+                subject: "crates/loom-gate/src/integrity.rs".to_owned(),
             },
             ConcernToken::VerifierBypass => FindingTarget::Annotation {
                 target_string: "cargo test --lib verifier_bypass_case".to_owned(),
@@ -2150,7 +2365,7 @@ mod tests {
     }
 
     #[test]
-    fn every_finding_round_trips_through_wire_format_with_stable_fingerprint() {
+    fn every_finding_round_trips_through_wire_format_with_stable_identity() {
         let gate = spec("gate");
         let tokens = [
             ConcernToken::SpecCoherenceFail,
@@ -2202,6 +2417,15 @@ mod tests {
                 evidence: format!("round-trip evidence for {}", token.as_wire()),
             };
             let payload = serde_json::to_string(&input).expect("serialize finding");
+            let payload_value: serde_json::Value =
+                serde_json::from_str(&payload).expect("payload is JSON");
+            let payload_object = payload_value
+                .as_object()
+                .expect("finding payload is object");
+            assert!(
+                !payload_object.contains_key("id") && !payload_object.contains_key("hash"),
+                "derived identity fields stay out of LOOM_FINDING payload: {payload}",
+            );
 
             let dispatch_scope = match token.scope_kind() {
                 ScopeKind::PerBead => DispatchScope::PerBead,
@@ -2231,9 +2455,15 @@ mod tests {
                     token.as_wire(),
                 );
                 assert_eq!(
-                    round.fingerprint(),
-                    input.fingerprint(),
-                    "fingerprint stability for {} with terminator `{terminator}`",
+                    round.id(),
+                    input.id(),
+                    "id stability for {} with terminator `{terminator}`",
+                    token.as_wire(),
+                );
+                assert_eq!(
+                    round.hash(),
+                    input.hash(),
+                    "hash stability for {} with terminator `{terminator}`",
                     token.as_wire(),
                 );
             }

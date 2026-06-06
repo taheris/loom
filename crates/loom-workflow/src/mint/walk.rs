@@ -802,7 +802,7 @@ mod tests {
                 r#"{"token":"orphan-integration","bonds":["harness"],"target":{"kind":"Contract","id":"molecule-lifecycle"},"evidence":"contract"}"#
             ),
             finding_line(
-                r#"{"token":"style-rule-violation","bonds":["gate"],"target":{"kind":"StyleRule","rule_id":"RS-19"},"evidence":"style"}"#
+                r#"{"token":"style-rule-violation","bonds":["gate"],"target":{"kind":"StyleRule","rule_id":"RS-19","subject":"crates/loom-workflow/src/mint/walk.rs"},"evidence":"style"}"#
             ),
         );
         // Two verifier-side failures across different categories — one
@@ -888,7 +888,7 @@ mod tests {
                 r#"{"token":"orphan-integration","bonds":["harness"],"target":{"kind":"Contract","id":"molecule-lifecycle"},"evidence":"second"}"#
             ),
             c = finding_line(
-                r#"{"token":"style-rule-violation","bonds":["gate"],"target":{"kind":"StyleRule","rule_id":"COM-1"},"evidence":"third"}"#
+                r#"{"token":"style-rule-violation","bonds":["gate"],"target":{"kind":"StyleRule","rule_id":"COM-1","subject":"crates/loom-workflow/src/mint/walk.rs#stream"},"evidence":"third"}"#
             ),
         );
         let mut walker = FakeWalker {
@@ -1024,6 +1024,7 @@ mod tests {
             bonds: vec![spec("gate")],
             target: FindingTarget::StyleRule {
                 rule_id: "RS-19".into(),
+                subject: "crates/loom-workflow/src/mint/walk.rs".into(),
             },
             evidence: "C".into(),
         };

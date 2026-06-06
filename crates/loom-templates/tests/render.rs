@@ -891,6 +891,7 @@ fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> 
         r#"{"kind":"Criterion","spec":"#,
         r#"{"kind":"Contract","id":"#,
         r#"{"kind":"StyleRule","rule_id":"#,
+        r#""subject":"#,
         r#"{"kind":"Annotation","target_string":"#,
         r#"{"kind":"TestPath","path":"#,
         r#"{"kind":"LockSite","file":"#,

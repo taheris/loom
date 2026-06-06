@@ -2840,15 +2840,15 @@ and conservative fall-through for unowned queries.
   validated typed finding; evidence text, options prose, line numbers,
   batch size, sibling batch membership, current bd parent, and `bonds`
   ordering do not affect the id
-  [test?](mint_computes_versioned_finding_id_excluding_volatile_context)
+  [test](mint_computes_versioned_finding_id_excluding_volatile_context)
 - The driver computes a compact finding hash from the finding id and
   refuses on hash collision instead of merging two different ids under
   one `finding:<hash>` label
-  [test?](mint_refuses_finding_hash_collision)
+  [test](mint_refuses_finding_hash_collision)
 - `StyleRule` targets include a concrete subject in addition to
   `rule_id`; a rule-id-only style target is rejected as too broad for
   dedup or suppression
-  [test?](style_rule_finding_requires_concrete_subject)
+  [test](style_rule_finding_requires_concrete_subject)
 - Mint dedups by `finding:<hash>` labels across live statuses; one
   live result skips that finding, zero live results allows minting,
   and more than one live result refuses the mint run as a structural
@@ -3064,7 +3064,7 @@ depends on.
   `serde_json::to_string` → embed in a `LOOM_FINDING:` line →
   embed in a synthetic walk output → `parse_walk_output`, with
   stable finding id and hash
-  [test?](every_finding_round_trips_through_wire_format_with_stable_identity)
+  [test](every_finding_round_trips_through_wire_format_with_stable_identity)
 - `ConcernToken::CrossSpecClash` round-trips through the wire format
   with canonical target `Criterion { spec, anchor }` and is exercised
   by the round-trip property test cell set
