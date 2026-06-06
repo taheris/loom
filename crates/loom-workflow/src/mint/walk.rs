@@ -19,9 +19,8 @@
 //! `mint_findings_with_options` and the two emit sources; it returns a
 //! single ordered `Vec<Finding>` ready for the dedup → bonding-lead → mint
 //! state machine. Idempotency vs partial failure is structural: the mint
-//! pipeline's live-status (non-closed) dedup query is what skips
-//! already-minted findings on re-run, so the walk doesn't carry state
-//! across invocations.
+//! pipeline's all-status dedup query is what skips already-minted findings
+//! on re-run, so the walk doesn't carry state across invocations.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -640,8 +639,7 @@ mod tests {
 
     use super::*;
     use crate::mint::{
-        BatchOutcome, DEDUP_LIVE_STATUSES, MintOptions, batch_fingerprint,
-        mint_findings_with_options,
+        BatchOutcome, DEDUP_STATUSES, MintOptions, batch_fingerprint, mint_findings_with_options,
     };
     use crate::review::{LOOM_FINDING_PREFIX, TargetKind};
 
@@ -983,12 +981,12 @@ mod tests {
     /// a crash mid-run leaves successfully-minted batches with their
     /// fingerprint labels; the next mint invocation's dedup query
     /// (`bd list --label=loom:fixup:<fp>
-    /// --status=open,in_progress,blocked,deferred`) matches the
+    /// --status=open,in_progress,blocked,deferred,closed`) matches the
     /// surviving batch and skips it, retrying only the batches that
     /// didn't reach `bd create` on the prior run.
     ///
     /// The walk's idempotency is structurally a property of the
-    /// mint-pipeline's live-status dedup query — not the walk
+    /// mint-pipeline's all-status dedup query — not the walk
     /// itself — so this test exercises the walk *plus* the mint pipeline
     /// end-to-end. Findings are split across two lead specs so the
     /// per-batch semantics surface two independent batches:
@@ -1113,15 +1111,13 @@ mod tests {
             create_calls, 1,
             "pass 2 retries ONLY the unfinished batch (harness): {pass2_calls:?}",
         );
-        // The dedup queries restrict to the live (non-closed) statuses so
-        // closed beads are not surfaced while every live fingerprinted
-        // bead — open, in_progress, blocked, or deferred — is found.
+        // The dedup queries cover every bd status that can retain a
+        // fingerprint label, including closed batches.
         let dedup_calls = pass2_calls
             .iter()
             .filter(|c| {
                 c.iter().any(|a| a == "list")
-                    && c.iter()
-                        .any(|a| a == &format!("--status={DEDUP_LIVE_STATUSES}"))
+                    && c.iter().any(|a| a == &format!("--status={DEDUP_STATUSES}"))
                     && c.iter().any(|a| a.starts_with("--label=loom:fixup:"))
             })
             .count();

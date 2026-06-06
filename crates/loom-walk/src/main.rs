@@ -84,16 +84,7 @@ fn main() -> ExitCode {
 fn run() -> Result<bool, DispatchError> {
     let mut args = std::env::args();
     let _bin = args.next();
-    let raw: Vec<String> = args.collect();
-    // `--print-inputs` switches the binary into collect mode: instead of
-    // running each named walk, report the file set it scans so the gate can
-    // scope it under `--files`. The runner template places the flag after
-    // the walk names (`cargo run -p loom-walk -- <name>... --print-inputs`).
-    let print_inputs = raw.iter().any(|arg| arg == PRINT_INPUTS_FLAG);
-    let names: Vec<String> = raw
-        .into_iter()
-        .filter(|arg| arg != PRINT_INPUTS_FLAG)
-        .collect();
+    let (print_inputs, names) = split_print_inputs_flag(args.collect());
     if names.is_empty() {
         return Err(DispatchError::MissingWalkName {
             available: walk::names_pretty(),
@@ -131,4 +122,13 @@ fn run() -> Result<bool, DispatchError> {
         println!("{line}");
     }
     Ok(all_pass)
+}
+
+fn split_print_inputs_flag(raw: Vec<String>) -> (bool, Vec<String>) {
+    let print_inputs = raw.iter().any(|arg| arg == PRINT_INPUTS_FLAG);
+    let names = raw
+        .into_iter()
+        .filter(|arg| arg != PRINT_INPUTS_FLAG)
+        .collect();
+    (print_inputs, names)
 }

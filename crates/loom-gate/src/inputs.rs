@@ -1958,15 +1958,20 @@ mod tests {
         fs::write(
             &responder,
             format!(
-                "#!/bin/sh\n\
-                 n=$(cat \"{counter_path}\"); echo $((n + 1)) > \"{counter_path}\"\n\
+                "#!/usr/bin/env bash\n\
+                 set -euo pipefail\n\
+                 n=$(< \"{counter_path}\")\n\
+                 printf '%s\\n' \"$((n + 1))\" > \"{counter_path}\"\n\
                  printf '{{\"inputs\":{{'\n\
                  first=1\n\
                  for arg in \"$@\"; do\n\
-                   [ \"$arg\" = \"--print-inputs\" ] && continue\n\
-                   [ \"$first\" = 1 ] || printf ','\n\
-                   printf '\"%s\":[\"crates/%s/src/**\"]' \"$arg\" \"$arg\"\n\
-                   first=0\n\
+                   [[ \"$arg\" == \"--print-inputs\" ]] && continue\n\
+                   if [[ \"$first\" -eq 1 ]]; then\n\
+                     first=0\n\
+                   else\n\
+                     printf ','\n\
+                   fi\n\
+                   printf '\"%s\":[\"crates/%s/src/*.rs\"]' \"$arg\" \"$arg\"\n\
                  done\n\
                  printf '}}}}\\n'\n",
             ),
@@ -1984,7 +1989,7 @@ mod tests {
         )
         .unwrap()
         .with_inputs(Some(format!(
-            "sh {} {{targets}} {{print_inputs}}",
+            "bash {} {{targets}} {{print_inputs}}",
             responder.display()
         )));
 

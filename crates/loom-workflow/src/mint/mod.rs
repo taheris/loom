@@ -17,11 +17,11 @@
 //!    `hash(sorted [token + canonical_form(target) per finding in
 //!    batch])[:12]`, identity-only (excludes `bonds` and `evidence`).
 //! 4. **Dedup query** — `bd list --label=loom:fixup:<fp>
-//!    --status=open,in_progress,blocked,deferred`. Any live (non-closed)
-//!    bead carrying the fingerprint counts: zero proceeds; one skips with
-//!    the existing bead id; more than one is a per-batch
-//!    [`BatchOutcome::Refused`]. A parked clarify bead (`status=blocked`)
-//!    dedups against itself, so re-detecting the same clash skips rather
+//!    --status=open,in_progress,blocked,deferred,closed`. Any bead carrying
+//!    the fingerprint counts: zero proceeds; one skips with the existing
+//!    bead id; more than one is a per-batch [`BatchOutcome::Refused`].
+//!    A parked clarify bead (`status=blocked`) and a closed batch both dedup
+//!    against themselves, so re-detecting the same finding set skips rather
 //!    than minting a duplicate.
 //! 5. **Mint the batch bead** — one `bd create --type=task
 //!    --parent=<lead-epic> --labels=loom:fixup:<fp>,spec:<X>,...`. Spec
@@ -89,21 +89,13 @@ fn classify_routing(finding: &Finding) -> FindingRouting {
 /// Bd label prefix the dedup query uses.
 ///
 /// The mint pipeline emits one such label per minted batch. Spec
-/// contract: `bd list --label=loom:fixup:<fingerprint>
-/// --status=open,in_progress,blocked,deferred` is the dedup query —
-/// any *live* (non-closed) bead carrying the fingerprint suppresses
-/// re-mint. Only `closed` is excluded, so operator silence after
-/// closure is read as decision, while a parked clarify/blocked bead
-/// (set to `status=blocked` by the loop) still dedups against itself.
+/// contract: any bead carrying `loom:fixup:<fingerprint>` suppresses
+/// re-mint until the operator removes the label or deletes the bead.
 pub const MINT_LABEL_PREFIX: &str = "loom:fixup:";
 
-/// The non-closed bd statuses a same-fingerprint bead can carry and
-/// still count as a dedup hit. `bd list --status` takes this
-/// comma-separated set; every status except `closed` suppresses
-/// re-mint so a parked clarify (`blocked`) or in-flight bead is not
-/// duplicated. Closing a batch is the only signal that lets the next
-/// run re-mint.
-const DEDUP_LIVE_STATUSES: &str = "open,in_progress,blocked,deferred";
+/// Bd statuses a same-fingerprint bead can carry and still count as a
+/// dedup hit. `bd list --status` takes this comma-separated set.
+const DEDUP_STATUSES: &str = "open,in_progress,blocked,deferred,closed";
 
 /// Construct the bd label that carries a batch's fingerprint, e.g.
 /// `loom:fixup:0123456789ab`. The mint pipeline writes this label on
@@ -525,9 +517,9 @@ async fn process_batch<R: CommandRunner>(
     let fingerprint = batch_fingerprint(findings);
     let label = mint_label(&fingerprint);
 
-    let live_with_label = match bd
+    let matching_beads = match bd
         .list(ListOpts {
-            status: Some(DEDUP_LIVE_STATUSES.to_string()),
+            status: Some(DEDUP_STATUSES.to_string()),
             label: Some(label.clone()),
             ..ListOpts::default()
         })
@@ -541,17 +533,17 @@ async fn process_batch<R: CommandRunner>(
             };
         }
     };
-    match live_with_label.len() {
+    match matching_beads.len() {
         0 => {}
         1 => {
             return BatchOutcome::SkippedDedup {
                 fingerprint,
-                existing_bead: live_with_label[0].id.clone(),
+                existing_bead: matching_beads[0].id.clone(),
                 findings_count: findings.len(),
             };
         }
         n => {
-            let ids = live_with_label
+            let ids = matching_beads
                 .iter()
                 .map(|b| b.id.as_str())
                 .collect::<Vec<_>>()
@@ -559,7 +551,7 @@ async fn process_batch<R: CommandRunner>(
             return BatchOutcome::Refused {
                 fingerprint,
                 reason: format!(
-                    "{n} live beads share mint label — close all but one before re-running (ids: {ids})",
+                    "{n} beads share mint label — remove duplicate labels or delete duplicates before re-running (ids: {ids})",
                 ),
             };
         }
@@ -909,7 +901,7 @@ mod tests {
 
     /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
     /// `mint_dedup_query_one_open_result_skips_batch`): the dedup query
-    /// returning exactly one open hit causes the batch to be skipped (no
+    /// returning exactly one hit causes the batch to be skipped (no
     /// `bd create` fires), and the outcome carries the existing bead id.
     #[tokio::test]
     async fn mint_dedup_query_one_open_result_skips_batch() {
@@ -966,7 +958,7 @@ mod tests {
         }
     }
 
-    /// Spec contract: more than one open result on the dedup query is a
+    /// Spec contract: more than one result on the dedup query is a
     /// structural violation; the batch pipeline refuses (no mint) and
     /// surfaces both conflicting bead ids in the outcome's reason.
     #[tokio::test]
@@ -999,20 +991,34 @@ mod tests {
     }
 
     /// Spec contract: a closed batch carrying the same fingerprint label
-    /// is NOT re-minted on subsequent runs. The dedup query filters the
-    /// live (non-closed) statuses, so a closed bead is not surfaced and
-    /// the operator's silence (close-and-leave-it) sticks.
+    /// is not re-minted on subsequent runs. The closed bead's label remains
+    /// the durable operator signal unless the label is removed or the bead
+    /// is deleted.
     #[tokio::test]
     async fn mint_dedup_does_not_re_mint_closed_batch_with_same_fingerprint() {
         let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
+        let fp = batch_fingerprint(std::slice::from_ref(&finding));
         let runner = ScriptedRunner::new(vec![
             ok_stdout(&epic_list("lm-gateepic", "gate")),
-            ok_stdout("[]"),
-            ok_stdout("lm-newfix.7\n"),
+            ok_stdout(&format!(
+                "[{}]",
+                fixup_row_status("lm-closed.9", &fp, "closed")
+            )),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
-        let _ = mint_findings(&bd, &[finding], "head-sha").await;
+        let summary = mint_findings(&bd, &[finding], "head-sha").await;
+
+        assert_eq!(
+            summary.skipped, 1,
+            "closed batch suppresses re-mint: {summary:?}"
+        );
+        match &summary.batches[0] {
+            BatchOutcome::SkippedDedup { existing_bead, .. } => {
+                assert_eq!(existing_bead.as_str(), "lm-closed.9");
+            }
+            other => panic!("expected SkippedDedup, got {other:?}"),
+        }
         let calls = rendered_calls(&invocations);
         let dedup_call = calls
             .iter()
@@ -1022,25 +1028,22 @@ mod tests {
                         .any(|a| a.starts_with(&format!("--label={MINT_LABEL_PREFIX}")))
             })
             .expect("dedup list call recorded");
-        let status_arg = dedup_call
-            .iter()
-            .find(|a| a.starts_with("--status="))
-            .expect("dedup query must carry a status filter");
-        assert_eq!(
-            status_arg,
-            &format!("--status={DEDUP_LIVE_STATUSES}"),
-            "dedup query filters the live (non-closed) statuses: {dedup_call:?}",
+        assert!(
+            dedup_call
+                .iter()
+                .any(|a| a == &format!("--status={DEDUP_STATUSES}")),
+            "dedup query must include closed beads in its status set: {dedup_call:?}",
         );
         assert!(
-            !status_arg.contains("closed"),
-            "dedup query MUST NOT broaden to closed beads, else operator silence re-mints: {dedup_call:?}",
+            calls.iter().all(|c| !c.iter().any(|a| a == "create")),
+            "closed same-fingerprint batch must skip without bd create: {calls:?}",
         );
     }
 
     /// Spec contract `specs/gate.md` § *Fingerprint and dedup*: a parked
     /// clarify/blocked bead carrying the same fingerprint label suppresses
     /// re-mint. `apply_clarify` flips a parked bead to `status=blocked`,
-    /// which the live-status dedup query still surfaces (one hit ⇒ skip),
+    /// which the status-scoped dedup query still surfaces (one hit ⇒ skip),
     /// so re-detecting the same clash does not mint a duplicate.
     #[tokio::test]
     async fn mint_dedup_skips_blocked_batch_with_same_fingerprint() {
@@ -1082,15 +1085,15 @@ mod tests {
         assert!(
             dedup_call
                 .iter()
-                .any(|a| a == &format!("--status={DEDUP_LIVE_STATUSES}")),
-            "dedup query must include blocked in its live-status set: {dedup_call:?}",
+                .any(|a| a == &format!("--status={DEDUP_STATUSES}")),
+            "dedup query must include blocked in its status set: {dedup_call:?}",
         );
     }
 
     /// Spec contract `specs/gate.md` § *Per-batch processing*: reopening
     /// a closed batch bead does NOT force re-mint — the reopened bead
     /// still carries the fingerprint label and so the next dedup query
-    /// matches it (one open hit ⇒ skip).
+    /// matches it (one hit ⇒ skip).
     #[tokio::test]
     async fn mint_dedup_skips_reopened_batch_still_carrying_fingerprint_label() {
         let finding = contract_finding(vec![spec("gate")], "molecule-lifecycle", "evidence");
