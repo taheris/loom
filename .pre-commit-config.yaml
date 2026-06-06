@@ -32,8 +32,7 @@ repos:
         stages: [pre-commit]
         pass_filenames: true
 
-      # loom-gate-verify-marker removed per A1 (specs/pre-commit.md): the
-      # marker is consumed by the `pre-push-checks` wrapper per-hook; a
+      # The marker is consumed by the `pre-push-checks` wrapper per-hook; a
       # standalone gating hook blocks operator-manual pushes that have no
       # marker. The wrapper still validates the marker on every slow-tier
       # hook and short-circuits on driver-loop integration pushes.

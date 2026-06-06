@@ -62,12 +62,6 @@ impl Finding {
     pub fn hash(&self) -> String {
         finding_hash_from_id(&self.id())
     }
-
-    /// Legacy 12-char lowercase digest retained for older batch surfaces.
-    #[must_use]
-    pub fn fingerprint(&self) -> String {
-        finding_hash_body(&self.id())
-    }
 }
 
 const IDENTITY_VERSION: &str = "v1";

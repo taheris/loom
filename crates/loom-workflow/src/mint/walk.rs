@@ -19,7 +19,7 @@
 //! `mint_findings_with_options` and the two emit sources; it returns a
 //! single ordered `Vec<Finding>` ready for the dedup → bonding-lead → mint
 //! state machine. Idempotency vs partial failure is structural: the mint
-//! pipeline's all-status dedup query is what skips already-minted findings
+//! pipeline's live-status dedup query is what skips already-minted findings
 //! on re-run, so the walk doesn't carry state across invocations.
 
 use std::path::{Path, PathBuf};
@@ -182,8 +182,8 @@ pub trait MintWalker: Send {
 /// stdout, and return the combined ordered vector for the mint pipeline.
 ///
 /// Order: verifier-side findings come first (in dispatch order), rubric
-/// findings come second (in stdout order). Both share the same dedup
-/// fingerprint scheme, so order only affects the end-of-run summary's
+/// findings come second (in stdout order). Both share the same finding
+/// hash scheme, so order only affects the end-of-run summary's
 /// per-finding lines — not which beads end up minted.
 pub async fn walk<W: MintWalker, V: FindingValidator + ?Sized>(
     walker: &mut W,
@@ -639,7 +639,8 @@ mod tests {
 
     use super::*;
     use crate::mint::{
-        BatchOutcome, DEDUP_STATUSES, MintOptions, batch_fingerprint, mint_findings_with_options,
+        BatchOutcome, DEDUP_STATUSES, FINDING_LABEL_PREFIX, MintOptions, batch_fingerprint,
+        mint_findings_with_options,
     };
     use crate::review::{LOOM_FINDING_PREFIX, TargetKind};
 
@@ -970,35 +971,18 @@ mod tests {
         )
     }
 
-    fn fixup_row(id: &str, fingerprint: &str) -> String {
+    fn fixup_row(id: &str, hash: &str) -> String {
         format!(
-            r#"{{"id":"{id}","title":"existing","status":"open","priority":2,"issue_type":"task","labels":["loom:fixup:{fingerprint}"]}}"#,
+            r#"{{"id":"{id}","title":"existing","status":"open","priority":2,"issue_type":"task","labels":["{FINDING_LABEL_PREFIX}{hash}"]}}"#,
         )
     }
 
     /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
     /// `mint_idempotent_after_partial_failure_retries_only_unfinished_batches`):
-    /// a crash mid-run leaves successfully-minted batches with their
-    /// fingerprint labels; the next mint invocation's dedup query
-    /// (`bd list --label=loom:fixup:<fp>
-    /// --status=open,in_progress,blocked,deferred,closed`) matches the
-    /// surviving batch and skips it, retrying only the batches that
-    /// didn't reach `bd create` on the prior run.
-    ///
-    /// The walk's idempotency is structurally a property of the
-    /// mint-pipeline's all-status dedup query — not the walk
-    /// itself — so this test exercises the walk *plus* the mint pipeline
-    /// end-to-end. Findings are split across two lead specs so the
-    /// per-batch semantics surface two independent batches:
-    ///   pass 1: findings [A on gate, B on harness, C on gate]
-    ///     - gate batch (A+C): dedup empty → epic resolves → bd create
-    ///       succeeds (lm-gate-batch)
-    ///     - harness batch (B): dedup empty → epic resolves → bd create
-    ///       FAILS (script returns an error; recorded as Errored)
-    ///   pass 2: same findings
-    ///     - gate batch (A+C): dedup returns lm-gate-batch → SkippedDedup
-    ///     - harness batch (B): dedup empty (never minted) → bd create
-    ///       succeeds
+    /// a crash mid-run leaves successfully-minted findings with their
+    /// `finding:<hash>` labels; the next mint invocation's live-status
+    /// dedup query matches those findings and skips them, retrying only
+    /// findings that did not reach `bd create` on the prior run.
     #[tokio::test]
     async fn mint_idempotent_after_partial_failure_retries_only_unfinished_batches() {
         // Three findings split across two lead specs ⇒ two batches.
@@ -1028,25 +1012,17 @@ mod tests {
             },
             evidence: "C".into(),
         };
-        // Pre-compute the two batch fingerprints (gate batch = {A,C},
-        // harness batch = {B}).
         let fp_gate_batch = batch_fingerprint(&[finding_a.clone(), finding_c.clone()]);
         let fp_harness_batch = batch_fingerprint(std::slice::from_ref(&finding_b));
         let findings = vec![finding_a.clone(), finding_b.clone(), finding_c.clone()];
 
-        // --- Pass 1 ----------------------------------------------------
-        // Per-finding lead resolution (input order = a, b, c): gate, harness, gate-cached.
-        // Group processing (BTreeMap alphabetical order): gate batch, harness batch.
-        //   gate batch (A+C): dedup empty, bd create OK.
-        //   harness batch (B): dedup empty, bd create FAILS.
         let pass1_responses: Vec<Result<RunOutput, BdError>> = vec![
+            ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("[]"),
             ok_stdout(&epic_list("lm-harnessepic", "harness")),
-            // gate batch: dedup empty → create OK
             ok_stdout("[]"),
             ok_stdout("lm-gatebatch.1\n"),
-            // harness batch: dedup empty → create FAILS
-            ok_stdout("[]"),
             Err(BdError::Spawn(std::io::Error::other(
                 "simulated mid-run crash",
             ))),
@@ -1074,19 +1050,17 @@ mod tests {
             summary1.batches,
         );
 
-        // --- Pass 2 ----------------------------------------------------
-        // gate batch carries its label → dedup returns 1 hit → skip.
-        // harness batch never minted → dedup empty → mint succeeds.
         let pass2_responses: Vec<Result<RunOutput, BdError>> = vec![
-            ok_stdout(&epic_list("lm-gateepic", "gate")),
-            ok_stdout(&epic_list("lm-harnessepic", "harness")),
-            // gate batch: dedup returns 1 hit → SkippedDedup
             ok_stdout(&format!(
                 "[{}]",
-                fixup_row("lm-gatebatch.1", &fp_gate_batch)
+                fixup_row("lm-gatebatch.1", &finding_a.hash())
             )),
-            // harness batch: dedup empty → create OK
             ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-harnessepic", "harness")),
+            ok_stdout(&format!(
+                "[{}]",
+                fixup_row("lm-gatebatch.1", &finding_c.hash())
+            )),
             ok_stdout("lm-harnessbatch.1\n"),
         ];
         let runner2 = ScriptedRunner::new(pass2_responses);
@@ -1098,7 +1072,10 @@ mod tests {
             summary2.minted, 1,
             "only harness batch mints on pass 2 (retry)"
         );
-        assert_eq!(summary2.skipped, 1, "gate batch is dedup-skipped on pass 2");
+        assert_eq!(
+            summary2.skipped, 2,
+            "gate findings are dedup-skipped on pass 2"
+        );
         assert_eq!(summary2.errors, 0, "no errors on pass 2");
         assert_eq!(summary2.refused, 0);
 
@@ -1112,23 +1089,19 @@ mod tests {
             create_calls, 1,
             "pass 2 retries ONLY the unfinished batch (harness): {pass2_calls:?}",
         );
-        // The dedup queries cover every bd status that can retain a
-        // fingerprint label, including closed batches.
         let dedup_calls = pass2_calls
             .iter()
             .filter(|c| {
                 c.iter().any(|a| a == "list")
                     && c.iter().any(|a| a == &format!("--status={DEDUP_STATUSES}"))
-                    && c.iter().any(|a| a.starts_with("--label=loom:fixup:"))
+                    && c.iter().any(|a| a.starts_with("--label=finding:"))
             })
             .count();
         assert!(
-            dedup_calls >= 2,
-            "dedup query runs once per batch on pass 2: {pass2_calls:?}",
+            dedup_calls >= 3,
+            "dedup query runs once per finding on pass 2: {pass2_calls:?}",
         );
 
-        // Cross-pass invariant: the gate-batch fingerprint is stable, so
-        // the pass-2 SkippedDedup names the original pass-1 bead id.
         let pass2_gate_skip = summary2.batches.iter().find(|o| matches!(
             o,
             BatchOutcome::SkippedDedup { existing_bead, .. } if existing_bead.as_str() == "lm-gatebatch.1"
@@ -1149,22 +1122,17 @@ mod tests {
         let parsed = walk(&mut walker_pass2, &MintScope::Tree, &AlwaysValid)
             .await
             .expect("walk parses");
-        let fingerprints: std::collections::HashSet<String> =
-            parsed.iter().map(Finding::fingerprint).collect();
-        let expected: std::collections::HashSet<String> = [
-            finding_a.fingerprint(),
-            finding_b.fingerprint(),
-            finding_c.fingerprint(),
-        ]
-        .into_iter()
-        .collect();
+        let hashes: std::collections::HashSet<String> = parsed.iter().map(Finding::hash).collect();
+        let expected: std::collections::HashSet<String> =
+            [finding_a.hash(), finding_b.hash(), finding_c.hash()]
+                .into_iter()
+                .collect();
         assert_eq!(
-            fingerprints, expected,
-            "walk emits the same per-finding fingerprints across runs — the dedup key is stable",
+            hashes, expected,
+            "walk emits the same per-finding hashes across runs — the dedup key is stable",
         );
 
-        // Pass 2 outcomes form a complete map (fingerprint → resolved bead id) — proves no batch fell through.
-        let fingerprint_to_bead: HashMap<String, BeadId> = summary2
+        let identifier_to_bead: HashMap<String, BeadId> = summary2
             .batches
             .iter()
             .filter_map(|o| match o {
@@ -1182,9 +1150,9 @@ mod tests {
             })
             .collect();
         assert_eq!(
-            fingerprint_to_bead.len(),
-            2,
-            "every batch terminates in either Minted or SkippedDedup on pass 2: {fingerprint_to_bead:?}",
+            identifier_to_bead.len(),
+            3,
+            "every finding or minted batch terminates in pass 2: {identifier_to_bead:?}",
         );
     }
 

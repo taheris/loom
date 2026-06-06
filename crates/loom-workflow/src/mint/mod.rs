@@ -13,19 +13,15 @@
 //!    yields at most one fix-up batch (non-clarify-bound findings) plus
 //!    N single-finding clarify batches (one per clarify-bound finding,
 //!    since each carries its own `## Options — …` block).
-//! 3. **Compute the batch fingerprint** via [`batch_fingerprint`] —
-//!    `hash(sorted [token + canonical_form(target) per finding in
-//!    batch])[:12]`, identity-only (excludes `bonds` and `evidence`).
-//! 4. **Dedup query** — `bd list --label=loom:fixup:<fp>
-//!    --status=open,in_progress,blocked,deferred,closed`. Any bead carrying
-//!    the fingerprint counts: zero proceeds; one skips with the existing
-//!    bead id; more than one is a per-batch [`BatchOutcome::Refused`].
-//!    A parked clarify bead (`status=blocked`) and a closed batch both dedup
-//!    against themselves, so re-detecting the same finding set skips rather
-//!    than minting a duplicate.
+//! 3. **Dedup per finding** — each finding queries live beads by its
+//!    `finding:<hash>` label. Zero proceeds; one skips that finding;
+//!    more than one refuses as a structural violation.
+//! 4. **Compute the optional batch receipt** via [`batch_fingerprint`]
+//!    from the sorted set of contained finding hashes. The receipt is
+//!    emitted as `loom:fixup:<fp>` for traceability only.
 //! 5. **Mint the batch bead** — one `bd create --type=task
-//!    --parent=<lead-epic> --labels=loom:fixup:<fp>,spec:<X>,...`. Spec
-//!    labels are the union of `bonds` over every finding in the batch.
+//!    --parent=<lead-epic> --labels=finding:<hash>,loom:fixup:<fp>,spec:<X>,...`.
+//!    Spec labels are the union of `bonds` over every finding in the batch.
 //!    The [`FindingRouting::Clarify`] carve-out for single-finding
 //!    clarify batches tacks on `loom:clarify` and trusts the rubric to
 //!    have emitted the canonical `## Options — …` block in the
@@ -86,54 +82,39 @@ fn classify_routing(finding: &Finding) -> FindingRouting {
     }
 }
 
-/// Bd label prefix the dedup query uses.
-///
-/// The mint pipeline emits one such label per minted batch. Spec
-/// contract: any bead carrying `loom:fixup:<fingerprint>` suppresses
-/// re-mint until the operator removes the label or deletes the bead.
+/// Bd label prefix for the optional batch receipt.
 pub const MINT_LABEL_PREFIX: &str = "loom:fixup:";
 
-/// Bd statuses a same-fingerprint bead can carry and still count as a
-/// dedup hit. `bd list --status` takes this comma-separated set.
-const DEDUP_STATUSES: &str = "open,in_progress,blocked,deferred,closed";
+/// Bd label prefix for the per-finding dedup key.
+pub const FINDING_LABEL_PREFIX: &str = "finding:";
 
-/// Construct the bd label that carries a batch's fingerprint, e.g.
-/// `loom:fixup:0123456789ab`. The mint pipeline writes this label on
-/// every minted batch and queries it during dedup.
+/// Live bd statuses that count as a per-finding dedup hit.
+const DEDUP_STATUSES: &str = "open,in_progress,blocked,deferred";
+
+/// Construct the bd label that carries a batch receipt, e.g.
+/// `loom:fixup:0123456789ab`.
 #[must_use]
 pub fn mint_label(fingerprint: &str) -> String {
     format!("{MINT_LABEL_PREFIX}{fingerprint}")
 }
 
-/// Compute the per-batch fingerprint from a batch's findings.
-///
-/// Per `specs/gate.md` § *Fingerprint and dedup*:
-/// `hash(sorted [token-wire || 0x1F || canonical_form(target) per
-/// finding in batch])[:12]`. `bonds` and `evidence` are deliberately
-/// excluded so bonding shifts and prose tweaks do not re-mint a stable
-/// batch.
-///
-/// For a single-element batch the result reduces to the per-finding
-/// fingerprint from [`Finding::fingerprint`].
+/// Construct the bd label that carries a finding hash.
+#[must_use]
+pub fn finding_label(finding: &Finding) -> String {
+    format!("{FINDING_LABEL_PREFIX}{}", finding.hash())
+}
+
+/// Compute the optional batch receipt from a batch's finding hashes.
 #[must_use]
 pub fn batch_fingerprint(findings: &[Finding]) -> String {
-    let mut tuples: Vec<String> = findings
-        .iter()
-        .map(|f| {
-            let mut s = String::new();
-            s.push_str(f.token.as_wire());
-            s.push('\u{001F}');
-            s.push_str(&f.target.canonical_form());
-            s
-        })
-        .collect();
-    tuples.sort();
+    let mut hashes: Vec<String> = findings.iter().map(Finding::hash).collect();
+    hashes.sort();
     let mut input = String::new();
-    for (i, t) in tuples.iter().enumerate() {
+    for (i, hash) in hashes.iter().enumerate() {
         if i > 0 {
             input.push('\u{001E}');
         }
-        input.push_str(t);
+        input.push_str(hash);
     }
     let hash = blake3::hash(input.as_bytes());
     let hex = hash.to_hex();
@@ -161,8 +142,8 @@ pub enum BatchOutcome {
         lead_spec: SpecLabel,
         findings_count: usize,
     },
-    /// An open batch already exists for this fingerprint; nothing
-    /// minted. `existing_bead` is the dedup query's single hit.
+    /// A live bead already tracks this finding hash; nothing minted.
+    /// `existing_bead` is the dedup query's single hit.
     SkippedDedup {
         fingerprint: String,
         existing_bead: BeadId,
@@ -176,8 +157,8 @@ pub enum BatchOutcome {
         requested: SpecLabel,
         findings_count: usize,
     },
-    /// Structural violation — either multiple open beads share the
-    /// fingerprint label, or the lead spec has more than one open epic.
+    /// Structural violation — either multiple live beads share the
+    /// finding label, or the lead spec has more than one open epic.
     /// `reason` carries the conflicting ids so the operator can resolve
     /// before re-running.
     Refused { fingerprint: String, reason: String },
@@ -367,11 +348,11 @@ pub async fn mint_integrity_recovery<R: CommandRunner>(
 
 /// Walk a sequence of findings through the per-batch mint pipeline.
 ///
-/// Findings are grouped by their resolved lead-spec (first bond with an
-/// open epic, else `bonds[0]`); each lead-spec group becomes at most one
-/// fix-up batch plus N single-finding clarify batches. Each batch then
-/// runs through dedup → mint. Multi-open structural violations
-/// (dedup query returning >1 hit or
+/// Findings are first deduped by their live `finding:<hash>` labels,
+/// then grouped by resolved lead-spec (first bond with an open epic,
+/// else `bonds[0]`); each lead-spec group becomes at most one fix-up
+/// batch plus N single-finding clarify batches. Multi-open structural
+/// violations (dedup query returning >1 hit or
 /// [`ResolveError::InvariantViolation`]) become per-batch
 /// [`BatchOutcome::Refused`] so the run keeps going; other
 /// [`MintError`] variants become [`BatchOutcome::Errored`].
@@ -386,6 +367,31 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
 
     let mut survivors: Vec<(Finding, SpecLabel, MoleculeId)> = Vec::new();
     for finding in findings {
+        match dedup_finding(bd, finding).await {
+            FindingDedup::Untracked => {}
+            FindingDedup::Tracked(existing_bead) => {
+                summary.record(BatchOutcome::SkippedDedup {
+                    fingerprint: finding.hash(),
+                    existing_bead,
+                    findings_count: 1,
+                });
+                continue;
+            }
+            FindingDedup::Duplicate { reason } => {
+                summary.record(BatchOutcome::Refused {
+                    fingerprint: finding.hash(),
+                    reason,
+                });
+                continue;
+            }
+            FindingDedup::Errored { message } => {
+                summary.record(BatchOutcome::Errored {
+                    fingerprint: finding.hash(),
+                    message,
+                });
+                continue;
+            }
+        }
         let (lead_spec, lead_epic) = match resolver.resolve(&finding.bonds).await {
             Ok(lead) => lead,
             Err(MintError::Resolve(ResolveError::InvariantViolation { label, ids })) => {
@@ -499,10 +505,49 @@ fn partition_group(group: Vec<Finding>) -> (Vec<Finding>, Vec<(Finding, FindingR
     (fix_up, clarifies)
 }
 
-/// Run dedup → mint for one batch. The batch's fingerprint, labels,
-/// title, and description are computed up-front from the findings; on
-/// `dry_run`, only the read-side dedup query runs and the result is
-/// [`BatchOutcome::WouldMint`].
+enum FindingDedup {
+    Untracked,
+    Tracked(BeadId),
+    Duplicate { reason: String },
+    Errored { message: String },
+}
+
+async fn dedup_finding<R: CommandRunner>(bd: &BdClient<R>, finding: &Finding) -> FindingDedup {
+    let label = finding_label(finding);
+    let matching_beads = match bd
+        .list(ListOpts {
+            status: Some(DEDUP_STATUSES.to_string()),
+            label: Some(label),
+            ..ListOpts::default()
+        })
+        .await
+    {
+        Ok(beads) => beads,
+        Err(err) => {
+            return FindingDedup::Errored {
+                message: MintError::from(err).to_string(),
+            };
+        }
+    };
+    match matching_beads.len() {
+        0 => FindingDedup::Untracked,
+        1 => FindingDedup::Tracked(matching_beads[0].id.clone()),
+        n => {
+            let ids = matching_beads
+                .iter()
+                .map(|b| b.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            FindingDedup::Duplicate {
+                reason: format!(
+                    "{n} live beads share finding label — remove duplicate labels or close duplicates before re-running (ids: {ids})",
+                ),
+            }
+        }
+    }
+}
+
+/// Mint one batch after per-finding dedup has selected its findings.
 async fn process_batch<R: CommandRunner>(
     bd: &BdClient<R>,
     findings: &[Finding],
@@ -513,46 +558,6 @@ async fn process_batch<R: CommandRunner>(
 ) -> BatchOutcome {
     let fingerprint = batch_fingerprint(findings);
     let label = mint_label(&fingerprint);
-
-    let matching_beads = match bd
-        .list(ListOpts {
-            status: Some(DEDUP_STATUSES.to_string()),
-            label: Some(label.clone()),
-            ..ListOpts::default()
-        })
-        .await
-    {
-        Ok(beads) => beads,
-        Err(err) => {
-            return BatchOutcome::Errored {
-                fingerprint,
-                message: MintError::from(err).to_string(),
-            };
-        }
-    };
-    match matching_beads.len() {
-        0 => {}
-        1 => {
-            return BatchOutcome::SkippedDedup {
-                fingerprint,
-                existing_bead: matching_beads[0].id.clone(),
-                findings_count: findings.len(),
-            };
-        }
-        n => {
-            let ids = matching_beads
-                .iter()
-                .map(|b| b.id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            return BatchOutcome::Refused {
-                fingerprint,
-                reason: format!(
-                    "{n} beads share mint label — remove duplicate labels or delete duplicates before re-running (ids: {ids})",
-                ),
-            };
-        }
-    }
 
     if opts.dry_run {
         return BatchOutcome::WouldMint {
@@ -646,12 +651,7 @@ impl<'a, R: CommandRunner> LeadResolver<'a, R> {
     }
 }
 
-/// Compose the bd-label list for the minted batch: `loom:fixup:<fp>`,
-/// one `spec:<X>` per unique entry across the union of `bonds` over the
-/// batch's findings, plus the routing label per [`FindingRouting`] —
-/// `loom:clarify` for clarify-bound batches with a well-formed options
-/// block, `loom:blocked` for clarify-bound batches whose evidence is
-/// malformed, and nothing extra for plain fix-ups.
+/// Compose the bd-label list for the minted batch.
 fn batch_labels(findings: &[Finding], mint_label: &str, routing: FindingRouting) -> Vec<String> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut ordered: Vec<&SpecLabel> = Vec::new();
@@ -662,8 +662,11 @@ fn batch_labels(findings: &[Finding], mint_label: &str, routing: FindingRouting)
             }
         }
     }
-    let mut labels = Vec::with_capacity(ordered.len() + 2);
+    let mut labels = Vec::with_capacity(ordered.len() + findings.len() + 2);
     labels.push(mint_label.to_string());
+    let mut finding_labels: Vec<String> = findings.iter().map(finding_label).collect();
+    finding_labels.sort();
+    labels.extend(finding_labels);
     for spec in ordered {
         labels.push(format!("spec:{spec}"));
     }
@@ -703,9 +706,8 @@ fn batch_title(findings: &[Finding]) -> String {
     )
 }
 
-/// Description enumerates every finding in the batch (one item per
-/// finding: token, target's canonical form, evidence excerpt) and pins
-/// the batch fingerprint at the foot. For single-finding clarify
+/// Description enumerates every finding in the batch and pins the
+/// finding labels plus batch receipt at the foot. For single-finding clarify
 /// batches whose evidence carries a well-formed `## Options — …` block,
 /// the block is preserved verbatim per the *Options Format Contract*;
 /// for the blocked-without-options fallback the cause is prepended so
@@ -729,16 +731,24 @@ fn batch_description(findings: &[Finding], fingerprint: &str, routing: FindingRo
         out.push_str(&format!("Findings ({}):\n\n", findings.len()));
         for (_, finding) in indexed {
             out.push_str(&format!(
-                "- **{token}** — `{target}`\n  evidence: {evidence}\n",
+                "- **{token}** — `{target}`\n  id: `{id}`\n  hash: `{hash}`\n  evidence: {evidence}\n",
                 token = finding.token.as_wire(),
                 target = finding.target.canonical_form(),
+                id = finding.id(),
+                hash = finding.hash(),
                 evidence = finding.evidence.trim_end(),
             ));
         }
         out.push_str("\n---\n\n");
     }
+    let mut finding_labels: Vec<String> = findings
+        .iter()
+        .map(|finding| format!("`{}`", finding_label(finding)))
+        .collect();
+    finding_labels.sort();
+    out.push_str(&format!("Finding labels: {}\n", finding_labels.join(", ")));
     out.push_str(&format!(
-        "Fingerprint: `{MINT_LABEL_PREFIX}{fingerprint}`\n"
+        "Batch receipt: `{MINT_LABEL_PREFIX}{fingerprint}`\n"
     ));
     out
 }
@@ -880,11 +890,11 @@ mod tests {
         format!("[{}]", epic_row(id, label))
     }
 
-    fn fixup_row(id: &str, fingerprint: &str) -> String {
-        fixup_row_status(id, fingerprint, "open")
+    fn fixup_row(id: &str, hash: &str) -> String {
+        fixup_row_status(id, hash, "open")
     }
 
-    fn fixup_row_status(id: &str, fingerprint: &str, status: &str) -> String {
+    fn fixup_row_status(id: &str, hash: &str, status: &str) -> String {
         format!(
             r#"{{
                 "id": "{id}",
@@ -892,130 +902,86 @@ mod tests {
                 "status": "{status}",
                 "priority": 2,
                 "issue_type": "task",
-                "labels": ["{MINT_LABEL_PREFIX}{fingerprint}"]
+                "labels": ["{FINDING_LABEL_PREFIX}{hash}"]
             }}"#,
         )
     }
 
-    /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
-    /// `mint_dedup_query_one_open_result_skips_batch`): the dedup query
-    /// returning exactly one hit causes the batch to be skipped (no
-    /// `bd create` fires), and the outcome carries the existing bead id.
     #[tokio::test]
-    async fn mint_dedup_query_one_open_result_skips_batch() {
-        let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
-        let fp = batch_fingerprint(std::slice::from_ref(&finding));
+    async fn mint_dedups_per_finding_hash_label_across_live_statuses() {
+        let skipped = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
+        let minted = contract_finding(vec![spec("gate")], "molecule-lifecycle", "evidence");
+        let refused = style_finding(vec![spec("gate")], "RS-19", "evidence");
+        let skipped_hash = skipped.hash();
+        let minted_receipt = batch_fingerprint(std::slice::from_ref(&minted));
+        let refused_hash = refused.hash();
+        let dedup_response = format!(
+            "[{},{}]",
+            fixup_row("lm-dup.1", &refused_hash),
+            fixup_row("lm-dup.2", &refused_hash),
+        );
         let runner = ScriptedRunner::new(vec![
-            ok_stdout(&epic_list("lm-gateepic", "gate")),
-            ok_stdout(&format!("[{}]", fixup_row("lm-existing.1", &fp))),
-        ]);
-        let bd = BdClient::with_runner(runner);
-        let summary = mint_findings(&bd, &[finding], "head-sha").await;
-        assert_eq!(summary.skipped, 1, "exactly one batch skipped: {summary:?}");
-        match &summary.batches[0] {
-            BatchOutcome::SkippedDedup {
-                fingerprint,
-                existing_bead,
-                findings_count,
-            } => {
-                assert_eq!(fingerprint, &fp);
-                assert_eq!(existing_bead.as_str(), "lm-existing.1");
-                assert_eq!(*findings_count, 1);
-            }
-            other => panic!("expected SkippedDedup, got {other:?}"),
-        }
-    }
-
-    /// Spec contract: the dedup query returning zero results proceeds
-    /// to mint.
-    #[tokio::test]
-    async fn mint_dedup_query_zero_results_proceeds_to_mint() {
-        let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
-        let fp = batch_fingerprint(std::slice::from_ref(&finding));
-        let runner = ScriptedRunner::new(vec![
-            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout(&format!("[{}]", fixup_row("lm-existing.1", &skipped_hash))),
             ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout(&dedup_response),
             ok_stdout("lm-newfix.1\n"),
         ]);
         let bd = BdClient::with_runner(runner);
-        let summary = mint_findings(&bd, &[finding], "head-sha").await;
-        assert_eq!(summary.minted, 1, "one batch minted: {summary:?}");
-        match &summary.batches[0] {
-            BatchOutcome::Minted {
-                fingerprint,
-                bead_id,
-                lead_spec,
-                findings_count,
-            } => {
-                assert_eq!(fingerprint, &fp);
-                assert_eq!(bead_id.as_str(), "lm-newfix.1");
-                assert_eq!(lead_spec.as_str(), "gate");
-                assert_eq!(*findings_count, 1);
-            }
-            other => panic!("expected Minted, got {other:?}"),
-        }
-    }
-
-    /// Spec contract: more than one result on the dedup query is a
-    /// structural violation; the batch pipeline refuses (no mint) and
-    /// surfaces both conflicting bead ids in the outcome's reason.
-    #[tokio::test]
-    async fn mint_dedup_query_multiple_open_results_refuses_as_structural_violation() {
-        let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
-        let fp = batch_fingerprint(std::slice::from_ref(&finding));
-        let dedup_response = format!(
-            "[{},{}]",
-            fixup_row("lm-dup.1", &fp),
-            fixup_row("lm-dup.2", &fp),
+        let summary = mint_findings(&bd, &[skipped, minted, refused], "head-sha").await;
+        assert_eq!(summary.skipped, 1, "one live finding skipped: {summary:?}");
+        assert_eq!(
+            summary.minted, 1,
+            "one untracked finding minted: {summary:?}"
         );
-        let runner = ScriptedRunner::new(vec![
-            ok_stdout(&epic_list("lm-gateepic", "gate")),
-            ok_stdout(&dedup_response),
-        ]);
-        let bd = BdClient::with_runner(runner);
-        let summary = mint_findings(&bd, &[finding], "head-sha").await;
-        assert_eq!(summary.refused, 1, "refused on dup: {summary:?}");
-        match &summary.batches[0] {
-            BatchOutcome::Refused {
-                fingerprint,
-                reason,
-            } => {
-                assert_eq!(fingerprint, &fp);
-                assert!(reason.contains("lm-dup.1"), "reason={reason}");
-                assert!(reason.contains("lm-dup.2"), "reason={reason}");
-            }
-            other => panic!("expected Refused, got {other:?}"),
-        }
+        assert_eq!(
+            summary.refused, 1,
+            "duplicate live finding refused: {summary:?}"
+        );
+        assert!(summary.batches.iter().any(|outcome| matches!(
+            outcome,
+            BatchOutcome::SkippedDedup { fingerprint, existing_bead, .. }
+                if fingerprint == &skipped_hash && existing_bead.as_str() == "lm-existing.1"
+        )));
+        assert!(summary.batches.iter().any(|outcome| matches!(
+            outcome,
+            BatchOutcome::Minted { fingerprint, bead_id, .. }
+                if fingerprint == &minted_receipt && bead_id.as_str() == "lm-newfix.1"
+        )));
+        assert!(summary.batches.iter().any(|outcome| matches!(
+            outcome,
+            BatchOutcome::Refused { fingerprint, reason }
+                if fingerprint == &refused_hash && reason.contains("lm-dup.1") && reason.contains("lm-dup.2")
+        )));
     }
 
-    /// Spec contract: a closed batch carrying the same fingerprint label
-    /// is not re-minted on subsequent runs. The closed bead's label remains
-    /// the durable operator signal unless the label is removed or the bead
-    /// is deleted.
     #[tokio::test]
-    async fn mint_dedup_does_not_re_mint_closed_batch_with_same_fingerprint() {
+    async fn closed_finding_hash_label_does_not_suppress_current_finding() {
         let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
-        let fp = batch_fingerprint(std::slice::from_ref(&finding));
+        let receipt = batch_fingerprint(std::slice::from_ref(&finding));
         let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
-            ok_stdout(&format!(
-                "[{}]",
-                fixup_row_status("lm-closed.9", &fp, "closed")
-            )),
+            ok_stdout("lm-newfix.1\n"),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
         let summary = mint_findings(&bd, &[finding], "head-sha").await;
 
         assert_eq!(
-            summary.skipped, 1,
-            "closed batch suppresses re-mint: {summary:?}"
+            summary.minted, 1,
+            "closed beads are outside live dedup: {summary:?}"
         );
         match &summary.batches[0] {
-            BatchOutcome::SkippedDedup { existing_bead, .. } => {
-                assert_eq!(existing_bead.as_str(), "lm-closed.9");
+            BatchOutcome::Minted {
+                fingerprint,
+                bead_id,
+                ..
+            } => {
+                assert_eq!(fingerprint, &receipt);
+                assert_eq!(bead_id.as_str(), "lm-newfix.1");
             }
-            other => panic!("expected SkippedDedup, got {other:?}"),
+            other => panic!("expected Minted, got {other:?}"),
         }
         let calls = rendered_calls(&invocations);
         let dedup_call = calls
@@ -1023,28 +989,23 @@ mod tests {
             .find(|c| {
                 c.iter().any(|a| a == "list")
                     && c.iter()
-                        .any(|a| a.starts_with(&format!("--label={MINT_LABEL_PREFIX}")))
+                        .any(|a| a.starts_with(&format!("--label={FINDING_LABEL_PREFIX}")))
             })
             .expect("dedup list call recorded");
         assert!(
             dedup_call
                 .iter()
                 .any(|a| a == &format!("--status={DEDUP_STATUSES}")),
-            "dedup query must include closed beads in its status set: {dedup_call:?}",
+            "dedup query must be live-only: {dedup_call:?}",
         );
         assert!(
-            calls.iter().all(|c| !c.iter().any(|a| a == "create")),
-            "closed same-fingerprint batch must skip without bd create: {calls:?}",
+            !dedup_call.iter().any(|a| a.contains("closed")),
+            "closed beads must not be in the dedup status filter: {dedup_call:?}",
         );
     }
 
-    /// Spec contract `specs/gate.md` § *Fingerprint and dedup*: a parked
-    /// clarify/blocked bead carrying the same fingerprint label suppresses
-    /// re-mint. `apply_clarify` flips a parked bead to `status=blocked`,
-    /// which the status-scoped dedup query still surfaces (one hit ⇒ skip),
-    /// so re-detecting the same clash does not mint a duplicate.
     #[tokio::test]
-    async fn mint_dedup_skips_blocked_batch_with_same_fingerprint() {
+    async fn blocked_clarify_bead_dedups_same_finding_hash() {
         let finding = invariant_clash_finding(
             vec![spec("gate")],
             spec("gate"),
@@ -1052,12 +1013,9 @@ mod tests {
             "loom-runs-podman",
             "## Options — pick one\n\n### Option 1 — keep it\nkeep.\n",
         );
-        let fp = batch_fingerprint(std::slice::from_ref(&finding));
-        let dedup_response = format!("[{}]", fixup_row_status("lm-parked.5", &fp, "blocked"));
-        let runner = ScriptedRunner::new(vec![
-            ok_stdout(&epic_list("lm-gateepic", "gate")),
-            ok_stdout(&dedup_response),
-        ]);
+        let hash = finding.hash();
+        let dedup_response = format!("[{}]", fixup_row_status("lm-parked.5", &hash, "blocked"));
+        let runner = ScriptedRunner::new(vec![ok_stdout(&dedup_response)]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
         let summary = mint_findings(&bd, &[finding], "head-sha").await;
@@ -1077,7 +1035,7 @@ mod tests {
             .iter()
             .find(|c| {
                 c.iter()
-                    .any(|a| a.starts_with(&format!("--label={MINT_LABEL_PREFIX}")))
+                    .any(|a| a.starts_with(&format!("--label={FINDING_LABEL_PREFIX}")))
             })
             .expect("dedup list call recorded");
         assert!(
@@ -1088,19 +1046,12 @@ mod tests {
         );
     }
 
-    /// Spec contract `specs/gate.md` § *Per-batch processing*: reopening
-    /// a closed batch bead does NOT force re-mint — the reopened bead
-    /// still carries the fingerprint label and so the next dedup query
-    /// matches it (one hit ⇒ skip).
     #[tokio::test]
-    async fn mint_dedup_skips_reopened_batch_still_carrying_fingerprint_label() {
+    async fn mint_dedup_skips_reopened_batch_still_carrying_finding_hash_label() {
         let finding = contract_finding(vec![spec("gate")], "molecule-lifecycle", "evidence");
-        let fp = batch_fingerprint(std::slice::from_ref(&finding));
-        let dedup_response = format!("[{}]", fixup_row("lm-reopened.3", &fp));
-        let runner = ScriptedRunner::new(vec![
-            ok_stdout(&epic_list("lm-gateepic", "gate")),
-            ok_stdout(&dedup_response),
-        ]);
+        let hash = finding.hash();
+        let dedup_response = format!("[{}]", fixup_row("lm-reopened.3", &hash));
+        let runner = ScriptedRunner::new(vec![ok_stdout(&dedup_response)]);
         let bd = BdClient::with_runner(runner);
         let summary = mint_findings(&bd, &[finding], "head-sha").await;
         match &summary.batches[0] {
@@ -1111,38 +1062,33 @@ mod tests {
         }
     }
 
-    /// Spec contract `specs/gate.md` § *Per-batch processing*: the batch
-    /// fingerprint hash is stable across rubric runs for the same
-    /// finding set, regardless of stream order, bonds ordering, or
-    /// which spec wins lead-selection. Sorted `(token,
-    /// canonical_form(target))` per finding → same hash.
     #[test]
-    fn mint_fingerprint_is_stable_across_rubric_runs_for_same_finding_set() {
+    fn mint_batch_receipt_is_stable_across_rubric_runs_for_same_finding_set() {
         let a = coherence_finding(vec![spec("gate")], "verifier-honesty", "first prose");
         let b = contract_finding(vec![spec("gate")], "molecule-lifecycle", "first prose");
         let c = style_finding(vec![spec("gate")], "RS-19", "first prose");
 
-        // Same set, different stream order — fingerprint unchanged.
+        // Same set, different stream order.
         let fp_abc = batch_fingerprint(&[a.clone(), b.clone(), c.clone()]);
         let fp_cba = batch_fingerprint(&[c.clone(), b.clone(), a.clone()]);
         assert_eq!(
             fp_abc, fp_cba,
-            "stream order MUST NOT shift fingerprint: {fp_abc} vs {fp_cba}",
+            "stream order MUST NOT shift batch receipt: {fp_abc} vs {fp_cba}",
         );
 
-        // Same set, different bonds order on one finding — fingerprint unchanged.
+        // Same set, different bonds order on one finding.
         let a_reordered_bonds = Finding {
             bonds: vec![spec("harness"), spec("gate")],
             ..a.clone()
         };
-        // Patching bonds doesn't change identity tuples, so fp is the same.
+        // Patching bonds doesn't change finding hashes, so fp is the same.
         let fp_with_other_bonds = batch_fingerprint(&[a_reordered_bonds, b.clone(), c.clone()]);
         assert_eq!(
             fp_abc, fp_with_other_bonds,
-            "bonds shifts MUST NOT change fingerprint",
+            "bonds shifts MUST NOT change batch receipt",
         );
 
-        // Same set, evidence prose tweaked — fingerprint unchanged.
+        // Same set, evidence prose tweaked.
         let a_diff_prose = Finding {
             evidence: "tweaked prose".into(),
             ..a.clone()
@@ -1150,16 +1096,15 @@ mod tests {
         let fp_diff_prose = batch_fingerprint(&[a_diff_prose, b, c]);
         assert_eq!(
             fp_abc, fp_diff_prose,
-            "evidence prose MUST NOT change fingerprint"
+            "evidence prose MUST NOT change batch receipt"
         );
 
-        // Width is the spec-pinned 12 chars.
-        assert_eq!(fp_abc.len(), 12, "12-character fingerprint: {fp_abc}");
+        assert_eq!(fp_abc.len(), 12, "12-character batch receipt: {fp_abc}");
     }
 
-    /// Spec contract `specs/gate.md` § *Per-batch processing* step 8:
+    /// Spec contract `specs/gate.md` § *Per-batch processing*:
     /// the minted batch bead is `--parent`-ed to the lead spec's open
-    /// epic and carries the `loom:fixup:<fingerprint>` label plus one
+    /// epic and carries one `finding:<hash>` label per finding plus one
     /// `spec:<X>` label per unique entry across the union of `bonds`
     /// over the batch's findings.
     #[tokio::test]
@@ -1171,9 +1116,12 @@ mod tests {
         );
         let f2 = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence-2");
         let f3 = style_finding(vec![spec("gate"), spec("templates")], "RS-19", "evidence-3");
+        let finding_labels = [finding_label(&f1), finding_label(&f2), finding_label(&f3)];
         let fp = batch_fingerprint(&[f1.clone(), f2.clone(), f3.clone()]);
         let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("[]"),
             ok_stdout("[]"),
             ok_stdout("lm-batch.1\n"),
         ]);
@@ -1200,8 +1148,14 @@ mod tests {
         let labels = &create[labels_idx + 1];
         assert!(
             labels.contains(&format!("{MINT_LABEL_PREFIX}{fp}")),
-            "labels missing fingerprint: {labels}",
+            "labels missing batch receipt: {labels}",
         );
+        for finding_label in finding_labels {
+            assert!(
+                labels.contains(&finding_label),
+                "labels missing finding hash label {finding_label}: {labels}",
+            );
+        }
         assert!(
             labels.contains("spec:gate"),
             "labels missing spec:gate: {labels}",
@@ -1240,6 +1194,7 @@ mod tests {
         // (same list) immediately hit `gate` via the cache.
         let runner = ScriptedRunner::new(vec![
             ok_stdout("[]"),
+            ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
             ok_stdout("[]"),
             ok_stdout("lm-batch.1\n"),
@@ -1269,15 +1224,15 @@ mod tests {
     async fn mint_tree_scope_resolves_lead_spec_via_single_tier_query() {
         let finding = coherence_finding(vec![spec("alpha")], "x", "evidence");
         let runner = ScriptedRunner::new(vec![
-            ok_stdout(&epic_list("lm-alphaepic", "alpha")),
             ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-alphaepic", "alpha")),
             ok_stdout("lm-fix.1\n"),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
         let _ = mint_findings(&bd, &[finding], "deadbeef").await;
         let calls = rendered_calls(&invocations);
-        let lead_query = &calls[0];
+        let lead_query = &calls[1];
         assert!(
             lead_query.iter().any(|a| a == "list"),
             "lead resolution must be a single `bd list` query: {lead_query:?}",
@@ -1303,8 +1258,8 @@ mod tests {
     async fn mint_tree_scope_per_spec_resolution_does_not_clobber_existing_epics() {
         let finding = coherence_finding(vec![spec("alpha")], "x", "evidence");
         let runner = ScriptedRunner::new(vec![
-            ok_stdout(&epic_list("lm-alphaexist", "alpha")),
             ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-alphaexist", "alpha")),
             ok_stdout("lm-fix.1\n"),
         ]);
         let invocations = runner.invocations_handle();
@@ -1332,8 +1287,8 @@ mod tests {
     }
 
     /// Spec contract: clarify-bound findings mint as single-finding
-    /// beads (not bundled into the spec's fix-up batch) carrying both
-    /// `loom:fixup:<fp>` and `loom:clarify` labels, with the description
+    /// beads (not bundled into the spec's fix-up batch) carrying
+    /// `finding:<hash>`, `loom:fixup:<fp>`, and `loom:clarify` labels, with the description
     /// embedding the `## Options — …` block from the finding's evidence.
     #[tokio::test]
     async fn mint_clarify_bound_finding_creates_single_bead_with_clarify_label_and_options_block() {
@@ -1353,8 +1308,8 @@ mod tests {
         );
         let fp = batch_fingerprint(std::slice::from_ref(&finding));
         let runner = ScriptedRunner::new(vec![
-            ok_stdout(&epic_list("lm-harnessepic", "harness")),
             ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-harnessepic", "harness")),
             ok_stdout("lm-clarify.1\n"),
         ]);
         let invocations = runner.invocations_handle();
@@ -1374,7 +1329,7 @@ mod tests {
         let labels = &create[labels_idx + 1];
         assert!(
             labels.contains(&format!("{MINT_LABEL_PREFIX}{fp}")),
-            "labels missing fingerprint: {labels}",
+            "labels missing batch receipt: {labels}",
         );
         assert!(
             labels.contains("loom:clarify"),
@@ -1396,7 +1351,7 @@ mod tests {
         );
         assert!(
             description.contains(&format!("{MINT_LABEL_PREFIX}{fp}")),
-            "description must cite the fingerprint: {description}",
+            "description must cite the batch receipt: {description}",
         );
     }
 
@@ -1417,8 +1372,8 @@ mod tests {
         );
         let fp = batch_fingerprint(std::slice::from_ref(&finding));
         let runner = ScriptedRunner::new(vec![
-            ok_stdout(&epic_list("lm-harnessepic", "harness")),
             ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-harnessepic", "harness")),
             ok_stdout("lm-blocked.1\n"),
         ]);
         let invocations = runner.invocations_handle();
@@ -1438,7 +1393,7 @@ mod tests {
         let labels = &create[labels_idx + 1];
         assert!(
             labels.contains(&format!("{MINT_LABEL_PREFIX}{fp}")),
-            "labels missing fingerprint: {labels}",
+            "labels missing batch receipt: {labels}",
         );
         assert!(
             labels.contains("loom:blocked"),
@@ -1473,7 +1428,9 @@ mod tests {
 
         // First ordering: [f1, f2, f3].
         let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("[]"),
             ok_stdout("[]"),
             ok_stdout("lm-batch.1\n"),
         ]);
@@ -1534,7 +1491,9 @@ mod tests {
         // deterministic from sorted finding tuples — same set produces
         // the same title.
         let runner2 = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("[]"),
             ok_stdout("[]"),
             ok_stdout("lm-batch.2\n"),
         ]);
@@ -1559,40 +1518,32 @@ mod tests {
 
     /// Spec contract `specs/gate.md` § *Per-batch processing* end-of-run
     /// shape: the summary lists minted batches (with finding count per
-    /// batch), skipped-dedup, refused, and errored counts with per-batch
-    /// fingerprint and resulting bead id.
+    /// batch), skipped-dedup, refused, and errored counts with identifiers
+    /// and resulting bead id.
     #[tokio::test]
     async fn mint_end_of_run_summary_reports_per_batch_outcomes() {
         // Three lead-specs ⇒ three batches: one minted (gate), one
         // skipped-dedup (harness), one refused (alpha, duplicate
-        // fingerprint label).
+        // finding label).
         let f_mint_1 = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence-A");
         let f_mint_2 = style_finding(vec![spec("gate")], "RS-19", "evidence-B");
         let f_skip = contract_finding(vec![spec("harness")], "contract-x", "evidence-C");
         let f_refuse = contract_finding(vec![spec("alpha")], "contract-y", "evidence-D");
         let fp_mint = batch_fingerprint(&[f_mint_1.clone(), f_mint_2.clone()]);
-        let fp_skip = batch_fingerprint(std::slice::from_ref(&f_skip));
-        let fp_refuse = batch_fingerprint(std::slice::from_ref(&f_refuse));
+        let fp_skip = f_skip.hash();
+        let fp_refuse = f_refuse.hash();
 
-        // Order of per-finding lead resolution is the input order.
-        // BTreeMap iteration order on lead-spec is alphabetical: alpha,
-        // gate, harness. Script the responses accordingly.
         let responses = vec![
-            // Per-finding lead resolution (input order = mint1, mint2, skip, refuse).
-            ok_stdout(&epic_list("lm-gateepic", "gate")), // mint1: gate epic open
-            // mint2: gate is cached.
-            ok_stdout(&epic_list("lm-harnessepic", "harness")), // skip: harness epic open
-            ok_stdout(&epic_list("lm-alphaepic", "alpha")),     // refuse: alpha epic open
-            // Group processing in alphabetical order of lead spec:
-            //   alpha (refuse batch), gate (mint), harness (skip).
+            ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("[]"),
+            ok_stdout(&format!("[{}]", fixup_row("lm-existing.2", &fp_skip))),
             ok_stdout(&format!(
                 "[{},{}]",
                 fixup_row("lm-dup.1", &fp_refuse),
                 fixup_row("lm-dup.2", &fp_refuse),
             )),
-            ok_stdout("[]"),
             ok_stdout("lm-newfix.1\n"),
-            ok_stdout(&format!("[{}]", fixup_row("lm-existing.2", &fp_skip))),
         ];
         let runner = ScriptedRunner::new(responses);
         let bd = BdClient::with_runner(runner);
@@ -1615,17 +1566,17 @@ mod tests {
         );
         assert!(
             render.contains(&fp_mint) && render.contains("lm-newfix.1"),
-            "minted line names fingerprint + new bead id: {render}",
+            "minted line names batch receipt + new bead id: {render}",
         );
         assert!(
             render.contains(&fp_skip) && render.contains("lm-existing.2"),
-            "skip line names fingerprint + existing bead id: {render}",
+            "skip line names finding hash + existing bead id: {render}",
         );
         assert!(
             render.contains(&fp_refuse)
                 && render.contains("lm-dup.1")
                 && render.contains("lm-dup.2"),
-            "refuse line names fingerprint + conflicting ids: {render}",
+            "refuse line names finding hash + conflicting ids: {render}",
         );
     }
 
@@ -1640,8 +1591,8 @@ mod tests {
         let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
         let fp = batch_fingerprint(std::slice::from_ref(&finding));
         let runner = ScriptedRunner::new(vec![
-            ok_stdout(&epic_list("lm-gateepic", "gate")),
             ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-gateepic", "gate")),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
@@ -1683,11 +1634,10 @@ mod tests {
         let f_kept = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence-a");
         let f_dropped = contract_finding(vec![spec("harness")], "molecule-lifecycle", "evidence-b");
         let runner = ScriptedRunner::new(vec![
-            // Per-finding lead resolution: gate, harness.
-            ok_stdout(&epic_list("lm-gateepic", "gate")),
-            ok_stdout(&epic_list("lm-harnessepic", "harness")),
-            // Group processing: gate dedup + create. harness dropped by filter pre-group.
             ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-harnessepic", "harness")),
             ok_stdout("lm-fix.1\n"),
         ]);
         let invocations = runner.invocations_handle();

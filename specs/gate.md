@@ -2853,15 +2853,15 @@ and conservative fall-through for unowned queries.
   live result skips that finding, zero live results allows minting,
   and more than one live result refuses the mint run as a structural
   violation
-  [test?](mint_dedups_per_finding_hash_label_across_live_statuses)
+  [test](mint_dedups_per_finding_hash_label_across_live_statuses)
 - Closed beads carrying `finding:<hash>` are historical context only;
   they do not suppress a newly observed current finding with the same
   id/hash
-  [test?](closed_finding_hash_label_does_not_suppress_current_finding)
+  [test](closed_finding_hash_label_does_not_suppress_current_finding)
 - A blocked clarify bead carrying `finding:<hash>` dedups the same
   clarify-bound finding while it remains live, so unresolved
   `loom:clarify` decisions do not remint endlessly
-  [test?](blocked_clarify_bead_dedups_same_finding_hash)
+  [test](blocked_clarify_bead_dedups_same_finding_hash)
 - `[[suppress]]` entries in `loom.toml` require `reason` and exactly
   one of `id` (canonical finding id) or `hash` (compact finding hash);
   matching rubric-origin findings are reported as suppressed and

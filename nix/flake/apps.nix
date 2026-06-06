@@ -55,7 +55,7 @@ _:
           loom.toolchain
         ];
         text = ''
-          if [ "$#" -eq 0 ]; then
+          if [[ "$#" -eq 0 ]]; then
             echo "usage: nix run .#fuzz-loom -- <fuzz-target> [cargo-fuzz args...]" >&2
             exit 64
           fi
