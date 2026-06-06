@@ -2992,7 +2992,11 @@ fn run_review(
         .iter()
         .map(loom_workflow::resolve::tree_scope_epic_from_resolved)
         .collect::<Vec<_>>();
-    let _ = opts.tree;
+    let dispatch_scope = if opts.tree {
+        DispatchScope::Tree
+    } else {
+        DispatchScope::PerBead
+    };
     let captured_review_stdout = Arc::new(Mutex::new(String::new()));
     let stdout_capture_for_spawn = Arc::clone(&captured_review_stdout);
     let result = runtime.block_on(async move {
@@ -3038,6 +3042,7 @@ fn run_review(
         .with_verify_exit(opts.verify_exit)
         .with_lane(opts.lane)
         .with_tree_scope_epics(tree_scope_epics)
+        .with_dispatch_scope(dispatch_scope)
         .with_suppressions(suppressions_for_review);
         run_review_loop(&mut controller, IterationCap::default()).await
     })?;
@@ -3045,7 +3050,7 @@ fn run_review(
         .lock()
         .map_err(|_| anyhow::anyhow!("review stdout capture poisoned"))?
         .clone();
-    emit_review_finding_statuses(&review_stdout, &config.suppress)?;
+    emit_review_finding_statuses(&review_stdout, dispatch_scope, &config.suppress)?;
     if emit_stdout {
         print!("{review_stdout}");
     } else {
@@ -3056,9 +3061,10 @@ fn run_review(
 
 fn emit_review_finding_statuses(
     review_stdout: &str,
+    dispatch_scope: DispatchScope,
     suppressions: &[loom_driver::config::SuppressionConfig],
 ) -> anyhow::Result<()> {
-    for record in review_finding_status_records(review_stdout, suppressions) {
+    for record in review_finding_status_records(review_stdout, dispatch_scope, suppressions) {
         println!("{}", record.render()?);
     }
     Ok(())
@@ -3066,13 +3072,10 @@ fn emit_review_finding_statuses(
 
 fn review_finding_status_records(
     review_stdout: &str,
+    dispatch_scope: DispatchScope,
     suppressions: &[loom_driver::config::SuppressionConfig],
 ) -> Vec<FindingStatusRecord> {
-    let walk = WalkOutput::from_stdout(
-        review_stdout,
-        DispatchScope::PerBead,
-        &AcceptAllFindingValidator,
-    );
+    let walk = WalkOutput::from_stdout(review_stdout, dispatch_scope, &AcceptAllFindingValidator);
     walk.findings()
         .iter()
         .map(|finding| {
@@ -3729,13 +3732,36 @@ mod tests {
             reason: "false positive".to_owned(),
         }];
 
-        let records = review_finding_status_records(&stdout, &suppressions);
+        let records = review_finding_status_records(&stdout, DispatchScope::PerBead, &suppressions);
 
         assert!(records.iter().any(|record| {
             record.id == reported.id() && record.action == FindingStatusAction::Reported
         }));
         assert!(records.iter().any(|record| {
             record.id == suppressed.id() && record.action == FindingStatusAction::Suppressed
+        }));
+    }
+
+    #[test]
+    fn review_status_records_report_tree_scope_only_findings_at_tree_scope() {
+        let finding = loom_workflow::review::Finding {
+            token: loom_workflow::review::ConcernToken::CrossSpecClash,
+            bonds: vec![SpecLabel::new("gate")],
+            target: loom_workflow::review::FindingTarget::Criterion {
+                spec: SpecLabel::new("gate"),
+                anchor: "standing-safety-net-checks".to_owned(),
+            },
+            evidence: "tree-scope cross-spec clash".to_owned(),
+        };
+        let stdout = format!(
+            "LOOM_FINDING: {}\nLOOM_CONCERN: {{\"summary\":\"tree finding\"}}\n",
+            serde_json::to_string(&finding).expect("finding json"),
+        );
+
+        let records = review_finding_status_records(&stdout, DispatchScope::Tree, &[]);
+
+        assert!(records.iter().any(|record| {
+            record.id == finding.id() && record.action == FindingStatusAction::Reported
         }));
     }
 

@@ -441,30 +441,14 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
     head_commit: &str,
     opts: &MintOptions,
 ) -> MintSummary {
-    mint_findings_with_fingerprints(bd, findings, head_commit, opts, |finding| {
-        (finding.id(), finding.hash())
-    })
-    .await
-}
-
-async fn mint_findings_with_fingerprints<R, F>(
-    bd: &BdClient<R>,
-    findings: &[Finding],
-    head_commit: &str,
-    opts: &MintOptions,
-    fingerprint_of: F,
-) -> MintSummary
-where
-    R: CommandRunner,
-    F: Fn(&Finding) -> (String, String),
-{
     let mut summary = MintSummary::default();
     let mut resolver = LeadResolver::new(bd, head_commit);
 
     let mut fingerprints = Vec::with_capacity(findings.len());
     let mut ids_by_hash: HashMap<String, String> = HashMap::new();
     for finding in findings {
-        let (finding_id, finding_hash) = fingerprint_of(finding);
+        let finding_id = finding.id();
+        let finding_hash = finding.hash();
         if let Some(existing_id) = ids_by_hash.get(&finding_hash) {
             if existing_id != &finding_id {
                 summary.record_status(finding, FindingStatusAction::Refused);
@@ -1027,13 +1011,35 @@ mod tests {
     }
 
     fn deterministic_finding(bonds: Vec<SpecLabel>, target_string: &str) -> Finding {
+        annotation_finding(
+            ConcernToken::VerifierFailed,
+            bonds,
+            target_string,
+            "deterministic verifier failed",
+        )
+    }
+
+    fn verifier_bypass_finding(
+        bonds: Vec<SpecLabel>,
+        target_string: &str,
+        evidence: &str,
+    ) -> Finding {
+        annotation_finding(ConcernToken::VerifierBypass, bonds, target_string, evidence)
+    }
+
+    fn annotation_finding(
+        token: ConcernToken,
+        bonds: Vec<SpecLabel>,
+        target_string: &str,
+        evidence: &str,
+    ) -> Finding {
         Finding {
-            token: ConcernToken::VerifierFailed,
+            token,
             target: FindingTarget::Annotation {
                 target_string: target_string.to_owned(),
             },
             bonds,
-            evidence: "deterministic verifier failed".to_owned(),
+            evidence: evidence.to_owned(),
         }
     }
 
@@ -1137,8 +1143,10 @@ mod tests {
 
     #[tokio::test]
     async fn mint_refuses_finding_hash_collision() {
-        let first = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
-        let second = contract_finding(vec![spec("gate")], "molecule-lifecycle", "evidence");
+        let first =
+            verifier_bypass_finding(vec![spec("gate")], "collision-target-10837099", "evidence");
+        let second =
+            verifier_bypass_finding(vec![spec("gate")], "collision-target-21582999", "evidence");
         let first_id = first.id();
         let first_hash = first.hash();
         let second_id = second.id();
@@ -1146,27 +1154,18 @@ mod tests {
             first_id, second_id,
             "fixture must represent distinct findings"
         );
+        assert_eq!(
+            first_hash,
+            second.hash(),
+            "fixture must be an actual Finding::hash collision",
+        );
         let runner = ScriptedRunner::new(Vec::new());
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
-        let colliding_hash = first_hash.clone();
-        let colliding_id = second_id.clone();
 
-        let summary = mint_findings_with_fingerprints(
-            &bd,
-            &[first, second],
-            "head-sha",
-            &MintOptions::default(),
-            |finding| {
-                let hash = if finding.id() == colliding_id {
-                    colliding_hash.clone()
-                } else {
-                    finding.hash()
-                };
-                (finding.id(), hash)
-            },
-        )
-        .await;
+        let summary =
+            mint_findings_with_options(&bd, &[first, second], "head-sha", &MintOptions::default())
+                .await;
 
         assert_eq!(summary.refused, 1);
         assert!(summary.batches.iter().any(|outcome| matches!(
@@ -1609,9 +1608,6 @@ mod tests {
             "verifier-honesty",
             "second",
         );
-        // First finding: harness has no epic, gate has one ⇒ lead=gate.
-        // Cached lead resolution means the second finding's bonds
-        // (same list) immediately hit `gate` via the cache.
         let runner = ScriptedRunner::new(vec![
             ok_stdout("[]"),
             ok_stdout("[]"),

@@ -148,6 +148,7 @@ where
     /// calls reuse those IDs instead of re-querying `bd find`. Empty at
     /// non-`--tree` scopes.
     tree_scope_epics: Vec<TreeScopeEpic>,
+    dispatch_scope: DispatchScope,
     /// Top-level `[[suppress]]` rubric-finding allowlist entries.
     suppressions: Vec<SuppressionConfig>,
     effective_review_marker: Option<ExitSignal>,
@@ -202,6 +203,7 @@ where
             verify_exit: None,
             lane: ReviewLane::Both,
             tree_scope_epics: Vec::new(),
+            dispatch_scope: DispatchScope::PerBead,
             suppressions: Vec::new(),
             effective_review_marker: None,
             suppressed_review_concern: false,
@@ -266,6 +268,12 @@ where
     /// of re-querying `bd find`. Empty input is a no-op.
     pub fn with_tree_scope_epics(mut self, epics: Vec<TreeScopeEpic>) -> Self {
         self.tree_scope_epics = epics;
+        self
+    }
+
+    /// Select the finding-token scope used while parsing reviewer stdout.
+    pub fn with_dispatch_scope(mut self, scope: DispatchScope) -> Self {
+        self.dispatch_scope = scope;
         self
     }
 
@@ -722,7 +730,7 @@ where
         // caller passing raw `&str` and leaving `streamed_findings` at
         // default empty) is structurally unrepresentable.
         let walk =
-            WalkOutput::from_stdout(&stdout, DispatchScope::PerBead, &AcceptAllFindingValidator);
+            WalkOutput::from_stdout(&stdout, self.dispatch_scope, &AcceptAllFindingValidator);
         let suppressed_findings = suppressed_findings(&walk, &self.suppressions);
         let ineffective_suppression_matches =
             ineffective_suppression_matches(&walk, &self.suppressions);
@@ -1039,6 +1047,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::review::finding::{ConcernToken, Finding, FindingTarget};
     use crate::review::runner::ReviewController;
     use loom_driver::identifier::MoleculeId;
     use loom_driver::state::ActiveMolecule;
@@ -2156,6 +2165,72 @@ mod tests {
             ),
             "expected Complete, got {result:?}",
         );
+    }
+
+    #[tokio::test]
+    async fn run_review_tree_scope_admits_tree_only_findings() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        seed_empty_spec(&workspace, "gate");
+        let state = empty_state(&workspace);
+        let manifest = stub_manifest(&workspace);
+        let finding = Finding {
+            token: ConcernToken::TemplateSpecDrift,
+            bonds: vec![SpecLabel::new("gate")],
+            target: FindingTarget::Template {
+                path: "crates/loom-templates/templates/review.md".to_owned(),
+            },
+            evidence: "tree-scope template drift".to_owned(),
+        };
+        let stdout = format!(
+            "LOOM_FINDING: {}\nLOOM_CONCERN: {{\"summary\":\"tree drift\"}}\n",
+            serde_json::to_string(&finding).expect("finding json"),
+        );
+        let mut ctrl = ProductionReviewController::new(
+            BdClient::new(),
+            SpecLabel::new("gate"),
+            PathBuf::from("/usr/bin/loom"),
+            workspace,
+            state,
+            manifest,
+            ProfileName::new("base"),
+            move |_cfg: SpawnConfig| {
+                let stdout = stdout.clone();
+                async move {
+                    Ok((
+                        SessionOutcome {
+                            exit_code: 0,
+                            cost_usd: None,
+                        },
+                        Some(ExitSignal::Concern {
+                            summary: "tree drift".to_owned(),
+                        }),
+                        stdout,
+                    ))
+                }
+            },
+        )
+        .with_dispatch_scope(DispatchScope::Tree);
+        let result = ctrl.run_review().await;
+        if let Err(ReviewError::Bd(_)) = result {
+            return;
+        }
+        match result {
+            Ok(RunReviewOutput {
+                outcome: ReviewOutcome::Incomplete { detail },
+                ..
+            }) => {
+                assert!(
+                    detail.contains("template-spec-drift"),
+                    "tree-only finding must survive review parsing: {detail}",
+                );
+                assert!(
+                    !detail.contains("scope mismatch"),
+                    "tree-scope review must not parse as per-bead scope: {detail}",
+                );
+            }
+            other => panic!("expected Incomplete, got {other:?}"),
+        }
     }
 
     #[tokio::test]
