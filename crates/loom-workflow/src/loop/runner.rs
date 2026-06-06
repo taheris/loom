@@ -1522,6 +1522,7 @@ mod tests {
             review_exit: Some(0),
             review_marker: Some(ExitSignal::Complete),
             review_log_path: Some(log_path),
+            suppressed_review_concern: false,
         });
         let outcome_success = run_loop(
             &mut success,
@@ -1567,6 +1568,7 @@ mod tests {
             review_exit: Some(0),
             review_marker: Some(ExitSignal::Complete),
             review_log_path: Some(path.clone()),
+            suppressed_review_concern: false,
         });
         let outcome = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
         let receipt = match outcome.gate {

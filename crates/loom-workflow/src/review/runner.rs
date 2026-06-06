@@ -2,6 +2,7 @@ use loom_driver::bd::{Bead, Label};
 use loom_driver::identifier::BeadId;
 use loom_events::DriverKind;
 use loom_gate::IntegrityFinding;
+use loom_protocol::gate::Finding;
 
 use super::error::ReviewError;
 use super::iteration::IterationCap;
@@ -215,13 +216,13 @@ pub trait ReviewController: Send {
 }
 
 /// Reviewer agent run result. Carries the typed [`ReviewOutcome`]
-/// alongside the parsed exit marker so the push-gate verdict can
-/// inspect the marker (refusing on `LOOM_CONCERN`) without re-parsing
-/// the agent output.
+/// alongside the effective exit marker and suppression decisions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunReviewOutput {
     pub outcome: ReviewOutcome,
     pub marker: Option<ExitSignal>,
+    pub suppressed_findings: Vec<Finding>,
+    pub ineffective_suppression_matches: Vec<Finding>,
 }
 
 /// What the reviewer agent produced. The driver only branches on
@@ -275,7 +276,17 @@ pub async fn review_loop<C: ReviewController>(
     let pre = controller.list_spec_beads().await?;
     let pre_ids: Vec<BeadId> = pre.iter().map(|b| b.id.clone()).collect();
 
-    let RunReviewOutput { outcome, marker } = controller.run_review().await?;
+    let RunReviewOutput {
+        outcome,
+        marker,
+        suppressed_findings,
+        ineffective_suppression_matches,
+    } = controller.run_review().await?;
+    emit_suppression_summary(
+        controller,
+        &suppressed_findings,
+        &ineffective_suppression_matches,
+    );
     match outcome {
         ReviewOutcome::Complete => {}
         ReviewOutcome::Incomplete { detail } => {
@@ -313,6 +324,38 @@ pub async fn review_loop<C: ReviewController>(
     )
     .await?;
     apply_verdict(controller, verdict, &post).await
+}
+
+fn emit_suppression_summary<C: ReviewController>(
+    controller: &mut C,
+    suppressed_findings: &[Finding],
+    ineffective_suppression_matches: &[Finding],
+) {
+    if suppressed_findings.is_empty() && ineffective_suppression_matches.is_empty() {
+        return;
+    }
+    let finding_payload = |finding: &Finding| {
+        serde_json::json!({
+            "id": finding.id(),
+            "hash": finding.hash(),
+            "token": finding.token,
+        })
+    };
+    controller.emit_driver_event(
+        DriverKind::Other("finding_suppression".to_string()),
+        &format!(
+            "finding suppressions: {} suppressed, {} ineffective",
+            suppressed_findings.len(),
+            ineffective_suppression_matches.len(),
+        ),
+        serde_json::json!({
+            "suppressed": suppressed_findings.iter().map(finding_payload).collect::<Vec<_>>(),
+            "ineffective": ineffective_suppression_matches
+                .iter()
+                .map(finding_payload)
+                .collect::<Vec<_>>(),
+        }),
+    );
 }
 
 /// Walk up from every spec-bead parent, closing each epic whose direct
@@ -616,11 +659,15 @@ fn verdict_label(verdict: &ReviewVerdict) -> &'static str {
 mod tests {
     use super::*;
     use loom_driver::bd::Bead;
+    use loom_driver::identifier::SpecLabel;
+    use loom_protocol::gate::{ConcernToken, FindingTarget};
 
     #[derive(Default)]
     struct FakeController {
         review: Option<ReviewOutcome>,
         review_marker: Option<ExitSignal>,
+        suppressed_findings: Vec<Finding>,
+        ineffective_suppression_matches: Vec<Finding>,
         pre_beads: Vec<Bead>,
         post_beads: Vec<Bead>,
         list_calls: u32,
@@ -659,6 +706,8 @@ mod tests {
             Ok(RunReviewOutput {
                 outcome: self.review.clone().unwrap_or(ReviewOutcome::Complete),
                 marker: self.review_marker.clone(),
+                suppressed_findings: self.suppressed_findings.clone(),
+                ineffective_suppression_matches: self.ineffective_suppression_matches.clone(),
             })
         }
 
@@ -839,6 +888,36 @@ mod tests {
     /// must also stop short of `mint_marker` (specs/harness.md § Verdict
     /// Gate — mint is the immediate predecessor of the push, not a
     /// standalone side effect).
+    #[tokio::test]
+    async fn review_loop_emits_suppression_summary_event() -> Result<(), ReviewError> {
+        let spec = SpecLabel::new("gate");
+        let finding = Finding {
+            token: ConcernToken::SpecCoherenceFail,
+            bonds: vec![spec.clone()],
+            target: FindingTarget::Criterion {
+                spec,
+                anchor: "suppression".to_owned(),
+            },
+            evidence: "false positive".to_owned(),
+        };
+        let mut c = FakeController {
+            suppressed_findings: vec![finding],
+            ..FakeController::default()
+        };
+        let _ = review_loop(&mut c, IterationCap::default()).await?;
+        let event = c
+            .driver_events
+            .iter()
+            .find(|(kind, _, _)| kind == "finding_suppression")
+            .expect("suppression summary event emitted");
+        assert!(
+            event.1.contains("1 suppressed"),
+            "summary carries suppressed count: {event:?}",
+        );
+        assert_eq!(event.2["suppressed"].as_array().expect("array").len(), 1);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn push_blocked_does_not_mint_marker() -> Result<(), ReviewError> {
         let mut c = FakeController {

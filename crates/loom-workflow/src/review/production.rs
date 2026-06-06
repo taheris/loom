@@ -52,7 +52,7 @@ use super::error::ReviewError;
 use super::finding::{DispatchScope, FindingValidator, TerminalSurface, WalkOutput};
 use super::phase_verdict::{GateInputs, PhaseVerdict, RecoveryCause, decide};
 use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
-use crate::suppression::suppresses_rubric_finding;
+use crate::suppression::{has_ineffective_suppression_match, suppresses_rubric_finding};
 use crate::todo::ExitSignal;
 
 /// Production validator wired into [`WalkOutput::from_stdout`] when the
@@ -150,6 +150,8 @@ where
     tree_scope_epics: Vec<TreeScopeEpic>,
     /// Top-level `[[suppress]]` rubric-finding allowlist entries.
     suppressions: Vec<SuppressionConfig>,
+    effective_review_marker: Option<ExitSignal>,
+    suppressed_review_concern: bool,
 }
 
 impl<S, F, R: CommandRunner> ProductionReviewController<S, F, R>
@@ -201,6 +203,8 @@ where
             lane: ReviewLane::Both,
             tree_scope_epics: Vec::new(),
             suppressions: Vec::new(),
+            effective_review_marker: None,
+            suppressed_review_concern: false,
         }
     }
 
@@ -574,6 +578,37 @@ fn phase_verdict_from_walk_with_suppressions(
     suppress_review_concern(verdict, suppressions)
 }
 
+fn suppressed_findings(
+    walk: &WalkOutput,
+    suppressions: &[SuppressionConfig],
+) -> Vec<loom_protocol::gate::Finding> {
+    walk.findings()
+        .iter()
+        .filter(|finding| suppresses_rubric_finding(suppressions, finding))
+        .cloned()
+        .collect()
+}
+
+fn ineffective_suppression_matches(
+    walk: &WalkOutput,
+    suppressions: &[SuppressionConfig],
+) -> Vec<loom_protocol::gate::Finding> {
+    walk.findings()
+        .iter()
+        .filter(|finding| has_ineffective_suppression_match(suppressions, finding))
+        .cloned()
+        .collect()
+}
+
+fn all_findings_suppressed(walk: &WalkOutput, suppressions: &[SuppressionConfig]) -> bool {
+    matches!(walk.terminal(), TerminalSurface::Concern { .. })
+        && !walk.findings().is_empty()
+        && walk
+            .findings()
+            .iter()
+            .all(|finding| suppresses_rubric_finding(suppressions, finding))
+}
+
 fn suppress_review_concern(
     verdict: PhaseVerdict,
     suppressions: &[SuppressionConfig],
@@ -688,11 +723,25 @@ where
         // default empty) is structurally unrepresentable.
         let walk =
             WalkOutput::from_stdout(&stdout, DispatchScope::PerBead, &AcceptAllFindingValidator);
+        let suppressed_findings = suppressed_findings(&walk, &self.suppressions);
+        let ineffective_suppression_matches =
+            ineffective_suppression_matches(&walk, &self.suppressions);
+        let suppressed_review_concern = all_findings_suppressed(&walk, &self.suppressions);
         let typed_outcome =
             classify_review_phase_with_suppressions(&walk, outcome.exit_code, &self.suppressions);
+        let effective_marker =
+            if matches!(typed_outcome, ReviewOutcome::Complete) && suppressed_review_concern {
+                Some(ExitSignal::Complete)
+            } else {
+                marker.clone()
+            };
+        self.effective_review_marker = effective_marker.clone();
+        self.suppressed_review_concern = suppressed_review_concern;
         Ok(RunReviewOutput {
             outcome: typed_outcome,
-            marker,
+            marker: effective_marker,
+            suppressed_findings,
+            ineffective_suppression_matches,
         })
     }
 
@@ -813,8 +862,12 @@ where
         let evidence = HandoffEvidence {
             verify_exit: self.verify_exit,
             review_exit: Some(0),
-            review_marker: Some(ExitSignal::Complete),
+            review_marker: self
+                .effective_review_marker
+                .clone()
+                .or(Some(ExitSignal::Complete)),
             review_log_path: self.resolve_review_log_for_marker(),
+            suppressed_review_concern: self.suppressed_review_concern,
         };
         let success = match GateSuccess::new(&evidence, 1) {
             Ok(success) => success,

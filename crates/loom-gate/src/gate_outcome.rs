@@ -28,6 +28,7 @@ pub struct HandoffEvidence {
     pub review_exit: Option<i32>,
     pub review_marker: Option<ExitSignal>,
     pub review_log_path: Option<PathBuf>,
+    pub suppressed_review_concern: bool,
 }
 
 /// Successful push-gate receipt.
@@ -61,7 +62,8 @@ impl GateSuccess {
     /// Asserts: `verify_exit == 0`, `review_exit == 0`,
     /// `review_marker == ExitSignal::Complete`, `review_log_path` exists,
     /// file size > 0, the file's last non-empty line carries
-    /// `LOOM_COMPLETE`, and `total_handoffs >= 1`. Any failed condition
+    /// `LOOM_COMPLETE` or an all-suppressed `LOOM_CONCERN`, and
+    /// `total_handoffs >= 1`. Any failed condition
     /// returns `Err(GateFail)` with the matching `GateFailReason` and the
     /// evidence carried verbatim for triage.
     #[expect(
@@ -101,6 +103,9 @@ impl GateSuccess {
         };
         let review_marker = match evidence.review_marker.clone() {
             Some(ExitSignal::Complete) => ExitSignal::Complete,
+            Some(ExitSignal::Concern { .. }) if evidence.suppressed_review_concern => {
+                ExitSignal::Complete
+            }
             Some(ExitSignal::Noop) => return Err(fail(GateFailReason::EmptyDiffNoop)),
             Some(ExitSignal::Concern { summary }) => {
                 return Err(fail(GateFailReason::ReviewConcern { summary }));
@@ -122,7 +127,7 @@ impl GateSuccess {
             Ok(s) => s,
             Err(_) => return Err(fail(GateFailReason::ReviewEvidenceMissing)),
         };
-        if !last_line_carries_complete_marker(&contents) {
+        if !last_line_carries_success_marker(&contents, evidence.suppressed_review_concern) {
             return Err(fail(GateFailReason::ReviewEvidenceMissing));
         }
 
@@ -212,12 +217,15 @@ pub struct LoopOutcome {
     pub gate: GateOutcome,
 }
 
-fn last_line_carries_complete_marker(contents: &str) -> bool {
+fn last_line_carries_success_marker(contents: &str, suppressed_review_concern: bool) -> bool {
     contents
         .lines()
         .rev()
         .find(|line| !line.trim().is_empty())
-        .is_some_and(|line| line.contains("LOOM_COMPLETE"))
+        .is_some_and(|line| {
+            line.contains("LOOM_COMPLETE")
+                || (suppressed_review_concern && line.contains("LOOM_CONCERN"))
+        })
 }
 
 #[cfg(test)]
@@ -238,6 +246,7 @@ mod tests {
             review_exit: Some(0),
             review_marker: Some(ExitSignal::Complete),
             review_log_path: Some(log.path().to_path_buf()),
+            suppressed_review_concern: false,
         }
     }
 
@@ -393,6 +402,31 @@ mod tests {
             last.contains("LOOM_COMPLETE"),
             "last log line must carry LOOM_COMPLETE: {last:?}",
         );
+    }
+
+    #[test]
+    fn gate_success_accepts_all_suppressed_concern_log_evidence() {
+        let log = write_log(
+            r#"LOOM_FINDING: {"token":"verifier-bypass"}
+LOOM_CONCERN: {"summary":"suppressed false positive"}
+"#,
+        );
+        let mut evidence = complete_evidence(&log);
+        evidence.review_marker = Some(ExitSignal::Concern {
+            summary: "suppressed false positive".to_owned(),
+        });
+        evidence.suppressed_review_concern = true;
+        let success = GateSuccess::new(&evidence, 1).expect("suppressed concern mints success");
+        assert_eq!(success.review_marker, ExitSignal::Complete);
+
+        evidence.suppressed_review_concern = false;
+        match GateSuccess::new(&evidence, 1) {
+            Err(GateFail {
+                reason: GateFailReason::ReviewConcern { summary },
+                ..
+            }) => assert_eq!(summary, "suppressed false positive"),
+            other => panic!("expected ReviewConcern, got {other:?}"),
+        }
     }
 
     #[test]

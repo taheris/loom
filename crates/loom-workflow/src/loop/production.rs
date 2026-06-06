@@ -23,7 +23,7 @@ use loom_driver::bd::{
     BdClient, Bead, CommandRunner, ListOpts, ReadyOpts, TokioRunner, UpdateOpts,
 };
 use loom_driver::clock::{Clock, SystemClock};
-use loom_driver::config::{LoomTopConfig, Phase};
+use loom_driver::config::{LoomConfig, LoomTopConfig, Phase};
 use loom_driver::git::{CreatedWorktree, GitClient, GitOid, RebaseOutcome};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
@@ -48,6 +48,7 @@ use crate::review::{
     AcceptAllFindingValidator, DispatchScope, GateInputs, PhaseVerdict, RecoveryCause, WalkOutput,
     decide,
 };
+use crate::suppression::suppresses_rubric_finding;
 use crate::todo::{ExitSignal, parse_exit_signal};
 use loom_templates::previous_failure::{TerminalSurface, VerifierFailure};
 use loom_templates::run::PreviousFailure;
@@ -783,7 +784,7 @@ where
             "loom loop: molecule handoff — loom gate review --diff finished",
         );
         let review_stdout = String::from_utf8_lossy(&review_output.stdout);
-        let review_marker = parse_exit_signal(&review_stdout);
+        let raw_review_marker = parse_exit_signal(&review_stdout);
         // Parse the typed walk product once: streamed `LOOM_FINDING:`
         // lines + the terminal marker shape. When the terminal is a
         // well-formed `LOOM_CONCERN` AND at least one finding rode
@@ -799,7 +800,20 @@ where
             DispatchScope::PerBead,
             &AcceptAllFindingValidator,
         );
-        if let TerminalSurface::Concern { summary } = walk.terminal()
+        let config = LoomConfig::load(LoomConfig::resolve_path(&self.workspace))?;
+        let suppressed_review_concern = matches!(walk.terminal(), TerminalSurface::Concern { .. })
+            && !walk.findings().is_empty()
+            && walk
+                .findings()
+                .iter()
+                .all(|finding| suppresses_rubric_finding(&config.suppress, finding));
+        let review_marker = if suppressed_review_concern {
+            Some(ExitSignal::Complete)
+        } else {
+            raw_review_marker
+        };
+        if !suppressed_review_concern
+            && let TerminalSurface::Concern { summary } = walk.terminal()
             && !walk.findings().is_empty()
         {
             self.stashed_review_concern = Some(PreviousFailure::ReviewConcern {
@@ -817,6 +831,7 @@ where
             review_exit: review_status.code(),
             review_marker,
             review_log_path,
+            suppressed_review_concern,
         })
     }
 
@@ -910,10 +925,9 @@ where
 
 /// Parse the mint summary stdout printed by `run_gate_mint` and translate
 /// the `refused` / `errors` counts into a [`PerBeadGateOutcome`] per
-/// `specs/gate.md` Decision 7. Header shape:
-/// `minted M, skipped K (dedup), refused R, errors E` (see
-/// `MintSummary::render`). The conflicting `bd` ids surface in the
-/// per-finding `refused {fingerprint}: {reason}` lines and ride out in
+/// `specs/gate.md` Decision 7. Header includes `refused R, errors E`
+/// fields (see `MintSummary::render`). The conflicting `bd` ids surface
+/// in the per-finding `refused {fingerprint}: {reason}` lines and ride out in
 /// the `StructuralViolation::detail` field; the error detail similarly
 /// rides out as `Recovery::detail` so the next agent attempt sees it as
 /// `previous_failure`.

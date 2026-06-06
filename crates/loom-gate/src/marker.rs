@@ -548,6 +548,7 @@ mod tests {
             review_exit: Some(0),
             review_marker: Some(loom_protocol::gate::ExitSignal::Complete),
             review_log_path: Some(log.path().to_path_buf()),
+            suppressed_review_concern: false,
         };
         let success = GateSuccess::new(&evidence, 1).expect("good evidence mints success");
         (log, success)

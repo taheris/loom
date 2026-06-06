@@ -52,7 +52,7 @@ use serde::Serialize;
 use crate::gate_clarify::CLARIFY_WITHOUT_OPTIONS_CAUSE;
 use crate::resolve::{ResolveError, resolve_open_epic, resolve_or_mint_open_epic};
 use crate::review::{ConcernToken, Finding, FindingTarget};
-use crate::suppression::suppresses_rubric_finding;
+use crate::suppression::{has_ineffective_suppression_match, suppresses_rubric_finding};
 
 /// How a batch routes to a label class. Single-finding clarify batches
 /// whose evidence is well-formed mint with `loom:clarify`; the same
@@ -197,6 +197,7 @@ pub enum FindingStatusAction {
     Minted,
     SkippedLive,
     Suppressed,
+    IneffectiveSuppression,
     StaleCandidate,
     PartialStaleCandidate,
     Refused,
@@ -252,7 +253,8 @@ pub struct MintOptions {
 ///
 /// Tallies match `specs/gate.md` § *Per-batch processing* end-of-run
 /// shape: `minted M batches (F findings across S specs), skipped K
-/// (dedup), refused R, errors E`. The `--dry-run` and `--spec` filter
+/// (dedup), suppressed S, ineffective suppressions I, refused R, errors E`.
+/// The `--dry-run` and `--spec` filter
 /// pseudo-outcomes carry their own tallies so summaries from those
 /// modes remain self-describing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -264,6 +266,7 @@ pub struct MintSummary {
     pub skipped: usize,
     pub skipped_filter: usize,
     pub suppressed: usize,
+    pub ineffective_suppressions: usize,
     pub refused: usize,
     pub errors: usize,
     pub findings_across_minted: usize,
@@ -272,8 +275,15 @@ pub struct MintSummary {
 
 impl MintSummary {
     fn record_status(&mut self, finding: &Finding, action: FindingStatusAction) {
-        if matches!(action, FindingStatusAction::Suppressed) {
-            self.suppressed += 1;
+        match action {
+            FindingStatusAction::Suppressed => self.suppressed += 1,
+            FindingStatusAction::IneffectiveSuppression => self.ineffective_suppressions += 1,
+            FindingStatusAction::Reported
+            | FindingStatusAction::Minted
+            | FindingStatusAction::SkippedLive
+            | FindingStatusAction::StaleCandidate
+            | FindingStatusAction::PartialStaleCandidate
+            | FindingStatusAction::Refused => {}
         }
         self.statuses
             .push(FindingStatusRecord::new(finding, action));
@@ -297,12 +307,13 @@ impl MintSummary {
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = format!(
-            "minted {} batches ({} findings across {} specs), skipped {} (dedup), suppressed {}, refused {}, errors {}",
+            "minted {} batches ({} findings across {} specs), skipped {} (dedup), suppressed {}, ineffective suppressions {}, refused {}, errors {}",
             self.minted,
             self.findings_across_minted,
             self.specs_across_minted,
             self.skipped,
             self.suppressed,
+            self.ineffective_suppressions,
             self.refused,
             self.errors,
         );
@@ -456,6 +467,9 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
         if suppresses_rubric_finding(&opts.suppressions, finding) {
             summary.record_status(finding, FindingStatusAction::Suppressed);
             continue;
+        }
+        if has_ineffective_suppression_match(&opts.suppressions, finding) {
+            summary.record_status(finding, FindingStatusAction::IneffectiveSuppression);
         }
         match dedup_finding(bd, finding).await {
             FindingDedup::Untracked => {}
@@ -931,6 +945,17 @@ mod tests {
         }
     }
 
+    fn deterministic_finding(bonds: Vec<SpecLabel>, target_string: &str) -> Finding {
+        Finding {
+            token: ConcernToken::VerifierFailed,
+            target: FindingTarget::Annotation {
+                target_string: target_string.to_owned(),
+            },
+            bonds,
+            evidence: "deterministic verifier failed".to_owned(),
+        }
+    }
+
     struct ScriptedRunner {
         responses: Mutex<Vec<RunOutput>>,
         invocations: Arc<Mutex<Vec<Vec<OsString>>>>,
@@ -1194,6 +1219,44 @@ mod tests {
                 .iter()
                 .all(|s| s.action == FindingStatusAction::Suppressed),
             "suppressed status recorded: {summary:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn suppressions_do_not_filter_deterministic_or_integrity_findings() {
+        let finding = deterministic_finding(vec![spec("gate")], "cargo test --lib failing");
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("lm-newfix.1\n"),
+        ]);
+        let bd = BdClient::with_runner(runner);
+        let opts = MintOptions {
+            dry_run: false,
+            spec_filter: None,
+            suppressions: vec![SuppressionConfig {
+                id: Some(finding.id()),
+                hash: None,
+                reason: "must not suppress deterministic failures".to_owned(),
+            }],
+        };
+        let summary = mint_findings_with_options(&bd, &[finding], "head-sha", &opts).await;
+        assert_eq!(summary.suppressed, 0, "deterministic finding remains live");
+        assert_eq!(summary.ineffective_suppressions, 1);
+        assert_eq!(summary.minted, 1, "deterministic finding still mints");
+        assert!(
+            summary
+                .statuses
+                .iter()
+                .any(|s| s.action == FindingStatusAction::IneffectiveSuppression),
+            "ignored suppression status recorded: {summary:?}",
+        );
+        assert!(
+            summary
+                .statuses
+                .iter()
+                .any(|s| s.action == FindingStatusAction::Minted),
+            "actionable deterministic status recorded: {summary:?}",
         );
     }
 
@@ -1741,7 +1804,7 @@ mod tests {
         let render = summary.render();
         assert!(
             render.starts_with(
-                "minted 1 batches (2 findings across 1 specs), skipped 1 (dedup), suppressed 0, refused 1, errors 0\n"
+                "minted 1 batches (2 findings across 1 specs), skipped 1 (dedup), suppressed 0, ineffective suppressions 0, refused 1, errors 0\n"
             ),
             "header line shape: {render}",
         );

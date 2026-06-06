@@ -5,10 +5,23 @@ pub(crate) fn suppresses_rubric_finding(
     suppressions: &[SuppressionConfig],
     finding: &Finding,
 ) -> bool {
-    is_rubric_suppressible(finding.token)
-        && suppressions
-            .iter()
-            .any(|entry| suppression_matches(entry, finding))
+    is_rubric_suppressible(finding.token) && matching_suppression(suppressions, finding).is_some()
+}
+
+pub(crate) fn has_ineffective_suppression_match(
+    suppressions: &[SuppressionConfig],
+    finding: &Finding,
+) -> bool {
+    !is_rubric_suppressible(finding.token) && matching_suppression(suppressions, finding).is_some()
+}
+
+pub(crate) fn matching_suppression<'a>(
+    suppressions: &'a [SuppressionConfig],
+    finding: &Finding,
+) -> Option<&'a SuppressionConfig> {
+    suppressions
+        .iter()
+        .find(|entry| suppression_matches(entry, finding))
 }
 
 pub(crate) fn suppression_matches(entry: &SuppressionConfig, finding: &Finding) -> bool {

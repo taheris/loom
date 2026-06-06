@@ -3,6 +3,7 @@ use thiserror::Error;
 
 use loom_driver::agent::ProtocolError;
 use loom_driver::bd::BdError;
+use loom_driver::config::LoomConfigError;
 use loom_driver::git::GitError;
 use loom_driver::logging::LogError;
 use loom_driver::profile_manifest::ProfileError;
@@ -31,6 +32,9 @@ pub enum LoopError {
 
     /// profile-image manifest dispatch failed during `loom loop`
     Profile(#[from] ProfileError),
+
+    /// config load failed during `loom loop`
+    Config(#[from] LoomConfigError),
 
     /// state.db access failure during `loom loop`
     State(#[from] StateError),
