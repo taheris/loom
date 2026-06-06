@@ -197,7 +197,6 @@ pub enum FindingStatusAction {
     Minted,
     SkippedLive,
     Suppressed,
-    IneffectiveSuppression,
     StaleCandidate,
     PartialStaleCandidate,
     Refused,
@@ -277,7 +276,6 @@ impl MintSummary {
     fn record_status(&mut self, finding: &Finding, action: FindingStatusAction) {
         match action {
             FindingStatusAction::Suppressed => self.suppressed += 1,
-            FindingStatusAction::IneffectiveSuppression => self.ineffective_suppressions += 1,
             FindingStatusAction::Reported
             | FindingStatusAction::Minted
             | FindingStatusAction::SkippedLive
@@ -469,7 +467,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
             continue;
         }
         if has_ineffective_suppression_match(&opts.suppressions, finding) {
-            summary.record_status(finding, FindingStatusAction::IneffectiveSuppression);
+            summary.ineffective_suppressions += 1;
         }
         match dedup_finding(bd, finding).await {
             FindingDedup::Untracked => {}
@@ -1354,11 +1352,11 @@ mod tests {
         assert_eq!(summary.ineffective_suppressions, 1);
         assert_eq!(summary.minted, 1, "deterministic finding still mints");
         assert!(
-            summary
+            !summary
                 .statuses
                 .iter()
-                .any(|s| s.action == FindingStatusAction::IneffectiveSuppression),
-            "ignored suppression status recorded: {summary:?}",
+                .any(|s| s.action == FindingStatusAction::Suppressed),
+            "ignored suppression must not emit a suppressed status: {summary:?}",
         );
         assert!(
             summary

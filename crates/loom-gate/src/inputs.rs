@@ -1423,17 +1423,12 @@ mod tests {
         let pattern = format!("^{} (\\S+)$", regex::escape(&head));
         let a = ann(Tier::Check, &target, "specs/gate.md");
 
-        // Control: with no runner, the bare command IS probed — tokens[0]
-        // answers `--print-inputs`, so the verifier declares its own inputs.
         let mut bare = InputResolver::new(dir.path().to_path_buf());
         assert!(
             !bare.declares_no_inputs(&a),
             "control: the command head answers --print-inputs when probed literally",
         );
 
-        // With the matched runner (no inputs query), the probe is suppressed:
-        // the runner owns the annotation and yields the conservative
-        // always-run default even though the head would answer if probed.
         let spec = RunnerSpec::compile(
             "walk",
             Some(pattern.as_str()),
