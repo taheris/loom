@@ -42,7 +42,7 @@ pub use walk::{
 
 use std::collections::{HashMap, HashSet};
 
-use loom_driver::bd::{BdClient, CommandRunner, CreateOpts, ListOpts};
+use loom_driver::bd::{BdClient, Bead, CommandRunner, CreateOpts, ListOpts};
 use loom_driver::config::SuppressionConfig;
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 use loom_gate::IntegrityFinding;
@@ -657,7 +657,21 @@ async fn dedup_finding<R: CommandRunner>(bd: &BdClient<R>, finding: &Finding) ->
     };
     match matching_beads.len() {
         0 => FindingDedup::Untracked,
-        1 => FindingDedup::Tracked(matching_beads[0].id.clone()),
+        1 => {
+            let bead = &matching_beads[0];
+            if let Some(conflicting_id) = live_bead_conflicting_finding_id(bead, finding) {
+                return FindingDedup::Duplicate {
+                    reason: format!(
+                        "live bead `{}` carries `{}` for different finding id `{}` (current id `{}`) — refuse hash collision",
+                        bead.id,
+                        finding_label(finding),
+                        conflicting_id,
+                        finding.id(),
+                    ),
+                };
+            }
+            FindingDedup::Tracked(bead.id.clone())
+        }
         n => {
             let ids = matching_beads
                 .iter()
@@ -671,6 +685,38 @@ async fn dedup_finding<R: CommandRunner>(bd: &BdClient<R>, finding: &Finding) ->
             }
         }
     }
+}
+
+fn live_bead_conflicting_finding_id(bead: &Bead, finding: &Finding) -> Option<String> {
+    let current_hash = finding.hash();
+    let current_id = finding.id();
+    finding_identity_pairs(&bead.description)
+        .into_iter()
+        .find_map(|(id, hash)| (hash == current_hash && id != current_id).then_some(id))
+}
+
+fn finding_identity_pairs(description: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    let mut pending_id: Option<String> = None;
+    for line in description.lines().map(str::trim) {
+        if let Some(id) = markdown_code_value(line, "id: ") {
+            pending_id = Some(id);
+            continue;
+        }
+        if let Some(hash) = markdown_code_value(line, "hash: ")
+            && let Some(id) = pending_id.take()
+        {
+            pairs.push((id, hash));
+        }
+    }
+    pairs
+}
+
+fn markdown_code_value(line: &str, prefix: &str) -> Option<String> {
+    line.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('`'))
+        .and_then(|rest| rest.split_once('`'))
+        .map(|(value, _)| value.to_owned())
 }
 
 /// Mint one batch after per-finding dedup has selected its findings.
@@ -847,26 +893,9 @@ fn batch_description(findings: &[Finding], fingerprint: &str, routing: FindingRo
     if matches!(routing, FindingRouting::Clarify) {
         out.push_str(findings[0].evidence.trim_end());
         out.push_str("\n\n---\n\n");
-    } else {
-        let mut indexed: Vec<(usize, &Finding)> = findings.iter().enumerate().collect();
-        indexed.sort_by(|(_, a), (_, b)| {
-            let ka = (a.token.as_wire(), a.target.canonical_form());
-            let kb = (b.token.as_wire(), b.target.canonical_form());
-            ka.cmp(&kb)
-        });
-        out.push_str(&format!("Findings ({}):\n\n", findings.len()));
-        for (_, finding) in indexed {
-            out.push_str(&format!(
-                "- **{token}** — `{target}`\n  id: `{id}`\n  hash: `{hash}`\n  evidence: {evidence}\n",
-                token = finding.token.as_wire(),
-                target = finding.target.canonical_form(),
-                id = finding.id(),
-                hash = finding.hash(),
-                evidence = finding.evidence.trim_end(),
-            ));
-        }
-        out.push_str("\n---\n\n");
     }
+    append_findings_section(&mut out, findings);
+    out.push_str("\n---\n\n");
     let mut finding_labels: Vec<String> = findings
         .iter()
         .map(|finding| format!("`{}`", finding_label(finding)))
@@ -877,6 +906,38 @@ fn batch_description(findings: &[Finding], fingerprint: &str, routing: FindingRo
         "Batch receipt: `{MINT_LABEL_PREFIX}{fingerprint}`\n"
     ));
     out
+}
+
+fn append_findings_section(out: &mut String, findings: &[Finding]) {
+    let mut indexed: Vec<(usize, &Finding)> = findings.iter().enumerate().collect();
+    indexed.sort_by(|(_, a), (_, b)| {
+        let ka = (a.token.as_wire(), a.target.canonical_form());
+        let kb = (b.token.as_wire(), b.target.canonical_form());
+        ka.cmp(&kb)
+    });
+    out.push_str(&format!("Findings ({}):\n\n", findings.len()));
+    for (_, finding) in indexed {
+        out.push_str(&format!(
+            "- **{token}** — `{target}`\n  id: `{id}`\n  hash: `{hash}`\n  evidence: {evidence}\n",
+            token = finding.token.as_wire(),
+            target = finding.target.canonical_form(),
+            id = finding.id(),
+            hash = finding.hash(),
+            evidence = evidence_excerpt(&finding.evidence),
+        ));
+    }
+}
+
+fn evidence_excerpt(evidence: &str) -> String {
+    const LIMIT: usize = 240;
+    let flattened = evidence.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = flattened.chars();
+    let excerpt: String = chars.by_ref().take(LIMIT).collect();
+    if chars.next().is_none() {
+        excerpt
+    } else {
+        format!("{excerpt}…")
+    }
 }
 
 #[cfg(test)]
@@ -1032,10 +1093,20 @@ mod tests {
     }
 
     fn fixup_row_status(id: &str, hash: &str, status: &str) -> String {
+        fixup_row_status_description(id, hash, status, "")
+    }
+
+    fn fixup_row_status_description(
+        id: &str,
+        hash: &str,
+        status: &str,
+        description: &str,
+    ) -> String {
         format!(
             r#"{{
                 "id": "{id}",
                 "title": "existing fix-up",
+                "description": {description:?},
                 "status": "{status}",
                 "priority": 2,
                 "issue_type": "task",
@@ -1139,6 +1210,44 @@ mod tests {
             !dedup_call.iter().any(|a| a.contains("closed")),
             "closed beads must not be in the dedup status filter: {dedup_call:?}",
         );
+    }
+
+    #[tokio::test]
+    async fn mint_refuses_live_finding_hash_collision() {
+        let current = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
+        let other = contract_finding(vec![spec("gate")], "molecule-lifecycle", "old evidence");
+        let conflicting_description = format!(
+            "Findings (1):\n\n- **{}** — `{}`\n  id: `{}`\n  hash: `{}`\n  evidence: old\n",
+            other.token.as_wire(),
+            other.target.canonical_form(),
+            other.id(),
+            current.hash(),
+        );
+        let runner = ScriptedRunner::new(vec![ok_stdout(&format!(
+            "[{}]",
+            fixup_row_status_description(
+                "lm-collision.1",
+                &current.hash(),
+                "open",
+                &conflicting_description,
+            ),
+        ))]);
+        let bd = BdClient::with_runner(runner);
+        let summary = mint_findings(&bd, &[current], "head-sha").await;
+        assert_eq!(summary.refused, 1, "live id/hash collision refuses");
+        match &summary.batches[0] {
+            BatchOutcome::Refused { reason, .. } => {
+                assert!(
+                    reason.contains("lm-collision.1"),
+                    "reason names bead: {reason}"
+                );
+                assert!(
+                    reason.contains("refuse hash collision"),
+                    "reason names collision: {reason}"
+                );
+            }
+            other => panic!("expected Refused, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1665,7 +1774,7 @@ mod tests {
     /// excerpt); the title is stable across runs for the same batch
     /// (deterministic from the sorted finding tuples).
     #[tokio::test]
-    async fn mint_batch_description_enumerates_findings_and_title_is_stable() {
+    async fn mint_batch_description_enumerates_finding_identity_and_title_is_stable() {
         let f1 = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence-A");
         let f2 = contract_finding(vec![spec("gate")], "molecule-lifecycle", "evidence-B");
         let f3 = style_finding(vec![spec("gate")], "RS-19", "evidence-C");
@@ -1730,6 +1839,16 @@ mod tests {
             description.contains("evidence-C"),
             "description includes per-finding evidence excerpt: {description}",
         );
+        for finding in [&f1, &f2, &f3] {
+            assert!(
+                description.contains(&format!("id: `{}`", finding.id())),
+                "description enumerates finding id: {description}",
+            );
+            assert!(
+                description.contains(&format!("hash: `{}`", finding.hash())),
+                "description enumerates finding hash: {description}",
+            );
+        }
 
         // Second ordering of the same set: [f3, f1, f2]. Title is
         // deterministic from sorted finding tuples — same set produces
@@ -1825,6 +1944,43 @@ mod tests {
                 && render.contains("lm-dup.1")
                 && render.contains("lm-dup.2"),
             "refuse line names finding hash + conflicting ids: {render}",
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_idempotent_after_partial_failure_retries_only_unfinished_findings() {
+        let already_minted = coherence_finding(vec![spec("gate")], "verifier-honesty", "done");
+        let unfinished = contract_finding(vec![spec("gate")], "molecule-lifecycle", "retry");
+        let already_hash = already_minted.hash();
+        let unfinished_label = finding_label(&unfinished);
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout(&format!("[{}]", fixup_row("lm-finished.1", &already_hash))),
+            ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("lm-retry.1\n"),
+        ]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+        let summary = mint_findings(&bd, &[already_minted, unfinished], "head-sha").await;
+        assert_eq!(summary.skipped, 1, "finished finding is skipped");
+        assert_eq!(summary.minted, 1, "unfinished finding is retried");
+        let calls = rendered_calls(&invocations);
+        let create = calls
+            .iter()
+            .find(|c| c.iter().any(|a| a == "create"))
+            .expect("unfinished finding minted");
+        let labels_idx = create
+            .iter()
+            .position(|a| a == "--labels")
+            .expect("--labels");
+        let labels = &create[labels_idx + 1];
+        assert!(
+            labels.contains(&unfinished_label),
+            "retry batch carries unfinished finding label: {labels}",
+        );
+        assert!(
+            !labels.contains(&format!("{FINDING_LABEL_PREFIX}{already_hash}")),
+            "retry batch omits already-minted finding label: {labels}",
         );
     }
 

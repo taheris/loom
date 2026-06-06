@@ -2926,7 +2926,7 @@ and conservative fall-through for unowned queries.
   (one item per finding: finding id, hash, token, target's canonical
   form, evidence excerpt); the title is stable across runs for the
   same contained finding-hash set
-  [test?](mint_batch_description_enumerates_finding_identity_and_title_is_stable)
+  [test](mint_batch_description_enumerates_finding_identity_and_title_is_stable)
 - A fix-up batch carrying multiple findings exposes worker
   discretion to fix all and close, fix a subset and split the
   remainder into sibling fix-up beads under the molecule epic via
@@ -2947,7 +2947,7 @@ and conservative fall-through for unowned queries.
   successfully-minted findings with their `finding:<hash>` labels; a
   re-run's per-finding dedup query skips those hashes and retries only
   the unfinished findings
-  [test?](mint_idempotent_after_partial_failure_retries_only_unfinished_findings)
+  [test](mint_idempotent_after_partial_failure_retries_only_unfinished_findings)
 - `mint --dry-run` walks the rubric, prints proposed bd writes to
   stdout, and makes zero bd writes
   [test](mint_dry_run_makes_no_bd_writes)
