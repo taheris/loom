@@ -326,6 +326,11 @@ pub struct RunnerSpec {
     /// Repo-relative cwd override. Resolution against the workspace root
     /// happens in the dispatcher.
     pub cwd: Option<PathBuf>,
+    /// Tier this runner belongs to. `None` is reserved for tests that
+    /// construct runner specs directly; production-compiled runners carry
+    /// their tier so integrity and input-query paths cannot cross-claim a
+    /// sibling tier's annotation.
+    pub tier: Option<Tier>,
     /// Optional command template for the runner's input-query. A
     /// `{print_inputs}` placement marks where the `--print-inputs` flag
     /// lands in the verifier's own argv; omitting it appends the flag after
@@ -368,8 +373,16 @@ impl RunnerSpec {
             join: join.into(),
             parse,
             cwd,
+            tier: None,
             inputs: None,
         })
+    }
+
+    /// Attach the owning annotation tier, chained after [`Self::compile`].
+    #[must_use]
+    pub fn with_tier(mut self, tier: Tier) -> Self {
+        self.tier = Some(tier);
+        self
     }
 
     /// Attach the input-query template (the `inputs` schema field),
@@ -388,6 +401,11 @@ impl RunnerSpec {
         self.match_regex
             .as_ref()
             .is_none_or(|re| re.is_match(target))
+    }
+
+    /// Whether this runner may own an annotation in `tier`.
+    pub fn applies_to(&self, tier: Tier) -> bool {
+        self.tier.is_none_or(|owning_tier| owning_tier == tier)
     }
 }
 
@@ -411,6 +429,7 @@ pub fn builtin_loom_walk_runner() -> Result<RunnerSpec, RunnerError> {
         BuiltinParser::JsonLines,
         None,
     )?
+    .with_tier(Tier::Check)
     .with_inputs(Some(
         "cargo run -p loom-walk -- {targets} {print_inputs}".to_string(),
     )))
@@ -457,13 +476,22 @@ pub fn compile_tier_runners(
     config: &LoomConfig,
     tier: &str,
 ) -> Result<Vec<RunnerSpec>, RunnerError> {
+    let owning_tier = Tier::from_wire(tier);
     let mut specs = Vec::new();
     if let Some(tier_block) = config.runner.tier(tier) {
         for (name, entry) in &tier_block.runners {
-            specs.push(compile_runner_entry(name, entry)?);
+            let spec = match owning_tier {
+                Some(t) => compile_runner_entry(name, entry)?.with_tier(t),
+                None => compile_runner_entry(name, entry)?,
+            };
+            specs.push(spec);
         }
         if let Some(default_entry) = tier_block.default_runner() {
-            specs.push(compile_runner_entry("default", &default_entry)?);
+            let spec = match owning_tier {
+                Some(t) => compile_runner_entry("default", &default_entry)?.with_tier(t),
+                None => compile_runner_entry("default", &default_entry)?,
+            };
+            specs.push(spec);
         }
     }
     Ok(specs)
@@ -471,13 +499,10 @@ pub fn compile_tier_runners(
 
 /// Resolve the runner specs the integrity gate's forward-resolution
 /// consults. The gate checks every annotation regardless of tier, so it
-/// needs the union of the builtin loom-walk batcher plus `[check]`- and
-/// `[system]`-tier runners: a `[system](target)` matched by a
-/// `[runner.system.<name>]` block must resolve by runner ownership exactly
-/// as a `[check]` target matched by `[runner.check.<name>]` does
-/// (`specs/gate.md` § Target resolution). RunnerSpec matching keys on
-/// target shape, not tier, so the union never cross-resolves a check target
-/// against a system runner or vice versa.
+/// receives the tagged union of the builtin loom-walk batcher plus
+/// `[check]`- and `[system]`-tier runners. Matching remains tier-specific:
+/// a `[check]` annotation can be owned only by a `[runner.check.*]` runner,
+/// and a `[system]` annotation only by `[runner.system.*]`.
 pub fn integrity_runner_specs(config: &LoomConfig) -> Result<Vec<RunnerSpec>, RunnerError> {
     let mut specs = vec![builtin_loom_walk_runner()?];
     specs.extend(compile_tier_runners(config, "check")?);
@@ -520,7 +545,7 @@ pub fn group_by_runner<'s, 'a>(
     for annotation in annotations {
         let mut placed = false;
         for group in &mut groups {
-            if group.spec.matches(&annotation.target) {
+            if group.spec.applies_to(annotation.tier) && group.spec.matches(&annotation.target) {
                 let rendered_target = render_target(group.spec, &annotation.target);
                 group.matched.push(MatchedAnnotation {
                     annotation,
@@ -1625,13 +1650,62 @@ parse   = "nix-build-status"
         let config = config_with_check_and_system_runners();
         let specs = integrity_runner_specs(&config).unwrap();
         assert!(
-            specs.iter().any(|s| s.matches("grep -q X file")),
+            specs
+                .iter()
+                .any(|s| s.applies_to(Tier::Check) && s.matches("grep -q X file")),
             "a [check] target must resolve through its [runner.check.<name>] runner",
         );
         assert!(
-            specs.iter().any(|s| s.matches("nix run .#test-loom")),
+            specs
+                .iter()
+                .any(|s| s.applies_to(Tier::System) && s.matches("nix run .#test-loom")),
             "a [system] target must resolve through its [runner.system.<name>] runner",
         );
+    }
+
+    #[test]
+    fn group_by_runner_does_not_cross_claim_sibling_tier_runner() {
+        let check_runner = RunnerSpec::compile(
+            "check-default",
+            None,
+            "check {targets}",
+            "{name}",
+            " ",
+            BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_tier(Tier::Check);
+        let system_runner = RunnerSpec::compile(
+            "system-default",
+            None,
+            "system {targets}",
+            "{name}",
+            " ",
+            BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_tier(Tier::System);
+        let system = Annotation {
+            tier: Tier::System,
+            target: "nix run .#test-loom".to_owned(),
+            pending: false,
+            source_spec: PathBuf::from("specs/gate.md"),
+            line: 1,
+            criterion_line: 1,
+        };
+
+        let specs = [check_runner, system_runner];
+        let annotations = [system];
+        let (groups, unmatched) = group_by_runner(&specs, &annotations);
+
+        assert!(
+            unmatched.is_empty(),
+            "system runner should claim the target"
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].spec.name, "system-default");
     }
 
     #[test]

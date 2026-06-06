@@ -1279,44 +1279,6 @@ mod tests {
         )
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct FindingHashCollision {
-        hash: String,
-        first_id: String,
-        second_id: String,
-    }
-
-    fn finding_hash_collisions_with<H>(
-        findings: &[Finding],
-        hash_of: H,
-    ) -> Vec<FindingHashCollision>
-    where
-        H: Fn(&Finding) -> String,
-    {
-        let mut seen: Vec<(String, String)> = Vec::new();
-        let mut collisions = Vec::new();
-        for finding in findings {
-            let id = finding.id();
-            let hash = hash_of(finding);
-            if let Some((_, first_id)) = seen
-                .iter()
-                .find(|(seen_hash, seen_id)| seen_hash == &hash && seen_id != &id)
-            {
-                collisions.push(FindingHashCollision {
-                    hash,
-                    first_id: first_id.clone(),
-                    second_id: id,
-                });
-            } else if !seen
-                .iter()
-                .any(|(seen_hash, seen_id)| seen_hash == &hash && seen_id == &id)
-            {
-                seen.push((hash, id));
-            }
-        }
-        collisions
-    }
-
     #[test]
     fn finding_hash_is_versioned_twelve_lowercase_hex_chars() {
         let hash = sample_finding().hash();
@@ -1377,24 +1339,6 @@ mod tests {
         assert_eq!(single_spec.id(), "v1:contract:molecule-lifecycle");
         assert_eq!(single_spec.id(), multi_spec.id());
         assert_eq!(single_spec.hash(), multi_spec.hash());
-    }
-
-    #[test]
-    fn mint_refuses_finding_hash_collision() {
-        let a = sample_finding();
-        let b = finding(
-            ConcernToken::OrphanIntegration,
-            vec![spec("gate")],
-            FindingTarget::Contract {
-                id: "molecule-lifecycle".to_owned(),
-            },
-            "different finding",
-        );
-        let collisions = finding_hash_collisions_with(&[a.clone(), b], |_| "v1:forced".to_owned());
-        assert_eq!(collisions.len(), 1);
-        assert_eq!(collisions[0].hash, "v1:forced");
-        assert_eq!(collisions[0].first_id, a.id());
-        assert_ne!(collisions[0].first_id, collisions[0].second_id);
     }
 
     #[test]

@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -35,12 +35,14 @@ use loom_workflow::r#loop::{
     GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
     REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV, RetryPolicy, SessionResult, run_loop,
 };
+use loom_workflow::mint::{FindingStatusAction, FindingStatusRecord};
 use loom_workflow::msg::{
     DISMISS_NOTE, build_rows, compose_option_note, compose_resolved_notes, filter_msg_beads,
     kind_of, resolve_target, spec_label_of,
 };
 use loom_workflow::review::{
-    IterationCap, ProductionReviewController, ReviewLane, review_loop as run_review_loop,
+    AcceptAllFindingValidator, DispatchScope, IterationCap, ProductionReviewController, ReviewLane,
+    WalkOutput, review_loop as run_review_loop,
 };
 use loom_workflow::todo::{
     ExitSignal, ProductionTodoController, TodoError, parse_exit_signal, run as run_todo_workflow,
@@ -2991,6 +2993,8 @@ fn run_review(
         .map(loom_workflow::resolve::tree_scope_epic_from_resolved)
         .collect::<Vec<_>>();
     let _ = opts.tree;
+    let captured_review_stdout = Arc::new(Mutex::new(String::new()));
+    let stdout_capture_for_spawn = Arc::clone(&captured_review_stdout);
     let result = runtime.block_on(async move {
         let bd = BdClient::new();
         let mut controller = ProductionReviewController::new(
@@ -3004,6 +3008,7 @@ fn run_review(
             move |spawn_cfg: SpawnConfig| {
                 let logs_root = logs_root_for_spawn.clone();
                 let label = label_for_sink.clone();
+                let stdout_capture = Arc::clone(&stdout_capture_for_spawn);
                 async move {
                     let sink =
                         LogSink::open_phase_at(&logs_root, &label, "review", None, phase_when)
@@ -3018,14 +3023,9 @@ fn run_review(
                     )
                     .await?;
                     let marker = parse_exit_signal(&output);
-                    if emit_stdout {
-                        // Surface the agent's combined output verbatim so
-                        // `loom loop`'s `exec_review` can re-run
-                        // `parse_exit_signal` and route `LOOM_FINDING:`
-                        // lines into recovery. Final non-empty line is
-                        // the agent's terminal marker.
-                        print!("{output}");
-                    }
+                    *stdout_capture.lock().map_err(|_| {
+                        ProtocolError::Io(std::io::Error::other("review stdout capture poisoned"))
+                    })? = output.clone();
                     Ok((outcome, marker, output))
                 }
             },
@@ -3041,10 +3041,60 @@ fn run_review(
         .with_suppressions(suppressions_for_review);
         run_review_loop(&mut controller, IterationCap::default()).await
     })?;
-    if !emit_stdout {
+    let review_stdout = captured_review_stdout
+        .lock()
+        .map_err(|_| anyhow::anyhow!("review stdout capture poisoned"))?
+        .clone();
+    emit_review_finding_statuses(&review_stdout, &config.suppress)?;
+    if emit_stdout {
+        print!("{review_stdout}");
+    } else {
         println!("loom review: {result:?}");
     }
     Ok(())
+}
+
+fn emit_review_finding_statuses(
+    review_stdout: &str,
+    suppressions: &[loom_driver::config::SuppressionConfig],
+) -> anyhow::Result<()> {
+    for record in review_finding_status_records(review_stdout, suppressions) {
+        println!("{}", record.render()?);
+    }
+    Ok(())
+}
+
+fn review_finding_status_records(
+    review_stdout: &str,
+    suppressions: &[loom_driver::config::SuppressionConfig],
+) -> Vec<FindingStatusRecord> {
+    let walk = WalkOutput::from_stdout(
+        review_stdout,
+        DispatchScope::PerBead,
+        &AcceptAllFindingValidator,
+    );
+    walk.findings()
+        .iter()
+        .map(|finding| {
+            let action = if suppression_matches_finding(suppressions, finding) {
+                FindingStatusAction::Suppressed
+            } else {
+                FindingStatusAction::Reported
+            };
+            FindingStatusRecord::new(finding, action)
+        })
+        .collect()
+}
+
+fn suppression_matches_finding(
+    suppressions: &[loom_driver::config::SuppressionConfig],
+    finding: &loom_workflow::review::Finding,
+) -> bool {
+    let id = finding.id();
+    let hash = finding.hash();
+    suppressions.iter().any(|entry| {
+        entry.id.as_deref() == Some(id.as_str()) || entry.hash.as_deref() == Some(hash.as_str())
+    })
 }
 
 /// Parse a parent-pinned `phase_when` from
@@ -3647,6 +3697,67 @@ mod tests {
 
         let code = run_integrity_gate(tmp.path(), &args).expect("integrity gate runs");
         assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn review_status_records_report_unsuppressed_and_suppressed_findings() {
+        let reported = loom_workflow::review::Finding {
+            token: loom_workflow::review::ConcernToken::SpecCoherenceFail,
+            bonds: vec![SpecLabel::new("gate")],
+            target: loom_workflow::review::FindingTarget::Criterion {
+                spec: SpecLabel::new("gate"),
+                anchor: "finding-status-output".to_owned(),
+            },
+            evidence: "live finding".to_owned(),
+        };
+        let suppressed = loom_workflow::review::Finding {
+            token: loom_workflow::review::ConcernToken::VerifierBypass,
+            bonds: vec![SpecLabel::new("gate")],
+            target: loom_workflow::review::FindingTarget::Annotation {
+                target_string: "cargo test --lib sample".to_owned(),
+            },
+            evidence: "suppressed finding".to_owned(),
+        };
+        let stdout = format!(
+            "LOOM_FINDING: {}\nLOOM_FINDING: {}\nLOOM_CONCERN: {{\"summary\":\"two findings\"}}\n",
+            serde_json::to_string(&reported).expect("finding json"),
+            serde_json::to_string(&suppressed).expect("finding json"),
+        );
+        let suppressions = vec![loom_driver::config::SuppressionConfig {
+            id: Some(suppressed.id()),
+            hash: None,
+            reason: "false positive".to_owned(),
+        }];
+
+        let records = review_finding_status_records(&stdout, &suppressions);
+
+        assert!(records.iter().any(|record| {
+            record.id == reported.id() && record.action == FindingStatusAction::Reported
+        }));
+        assert!(records.iter().any(|record| {
+            record.id == suppressed.id() && record.action == FindingStatusAction::Suppressed
+        }));
+    }
+
+    #[test]
+    fn pending_forward_resolution_survives_finite_scope_filter() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let specs = tmp.path().join("specs");
+        std::fs::create_dir_all(&specs).expect("specs dir");
+        std::fs::write(
+            specs.join("alpha.md"),
+            "## Success Criteria\n\n- stale pending verifier [check?](true)\n",
+        )
+        .expect("write spec");
+
+        let mut args = empty_scope_args();
+        args.files = vec![PathBuf::from("src/lib.rs")];
+
+        let code = run_integrity_gate(tmp.path(), &args).expect("integrity gate runs");
+        assert_eq!(
+            code, 1,
+            "the resolved pending marker must still fire even when --files excludes its spec",
+        );
     }
 
     #[test]

@@ -213,7 +213,8 @@ pub struct FindingStatusRecord {
 }
 
 impl FindingStatusRecord {
-    fn new(finding: &Finding, action: FindingStatusAction) -> Self {
+    #[must_use]
+    pub fn new(finding: &Finding, action: FindingStatusAction) -> Self {
         Self {
             id: finding.id(),
             hash: finding.hash(),
@@ -224,7 +225,7 @@ impl FindingStatusRecord {
         }
     }
 
-    fn render(&self) -> Result<String, serde_json::Error> {
+    pub fn render(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self).map(|json| format!("{LOOM_FINDING_STATUS_PREFIX} {json}"))
     }
 }
@@ -440,14 +441,30 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
     head_commit: &str,
     opts: &MintOptions,
 ) -> MintSummary {
+    mint_findings_with_fingerprints(bd, findings, head_commit, opts, |finding| {
+        (finding.id(), finding.hash())
+    })
+    .await
+}
+
+async fn mint_findings_with_fingerprints<R, F>(
+    bd: &BdClient<R>,
+    findings: &[Finding],
+    head_commit: &str,
+    opts: &MintOptions,
+    fingerprint_of: F,
+) -> MintSummary
+where
+    R: CommandRunner,
+    F: Fn(&Finding) -> (String, String),
+{
     let mut summary = MintSummary::default();
     let mut resolver = LeadResolver::new(bd, head_commit);
 
-    let mut survivors: Vec<(Finding, SpecLabel, MoleculeId)> = Vec::new();
+    let mut fingerprints = Vec::with_capacity(findings.len());
     let mut ids_by_hash: HashMap<String, String> = HashMap::new();
     for finding in findings {
-        let finding_hash = finding.hash();
-        let finding_id = finding.id();
+        let (finding_id, finding_hash) = fingerprint_of(finding);
         if let Some(existing_id) = ids_by_hash.get(&finding_hash) {
             if existing_id != &finding_id {
                 summary.record_status(finding, FindingStatusAction::Refused);
@@ -457,11 +474,16 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
                         "finding hash collision: `{existing_id}` and `{finding_id}` share one hash",
                     ),
                 });
-                continue;
+                return summary;
             }
         } else {
             ids_by_hash.insert(finding_hash.clone(), finding_id);
         }
+        fingerprints.push((finding, finding_hash));
+    }
+
+    let mut survivors: Vec<(Finding, SpecLabel, MoleculeId)> = Vec::new();
+    for (finding, finding_hash) in fingerprints {
         if suppresses_rubric_finding(&opts.suppressions, finding) {
             summary.record_status(finding, FindingStatusAction::Suppressed);
             continue;
@@ -1111,6 +1133,53 @@ mod tests {
                 "labels": ["{FINDING_LABEL_PREFIX}{hash}"]
             }}"#,
         )
+    }
+
+    #[tokio::test]
+    async fn mint_refuses_finding_hash_collision() {
+        let first = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
+        let second = contract_finding(vec![spec("gate")], "molecule-lifecycle", "evidence");
+        let first_id = first.id();
+        let first_hash = first.hash();
+        let second_id = second.id();
+        assert_ne!(
+            first_id, second_id,
+            "fixture must represent distinct findings"
+        );
+        let runner = ScriptedRunner::new(Vec::new());
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+        let colliding_hash = first_hash.clone();
+        let colliding_id = second_id.clone();
+
+        let summary = mint_findings_with_fingerprints(
+            &bd,
+            &[first, second],
+            "head-sha",
+            &MintOptions::default(),
+            |finding| {
+                let hash = if finding.id() == colliding_id {
+                    colliding_hash.clone()
+                } else {
+                    finding.hash()
+                };
+                (finding.id(), hash)
+            },
+        )
+        .await;
+
+        assert_eq!(summary.refused, 1);
+        assert!(summary.batches.iter().any(|outcome| matches!(
+            outcome,
+            BatchOutcome::Refused { fingerprint, reason }
+                if fingerprint == &first_hash
+                    && reason.contains(&first_id)
+                    && reason.contains(&second_id)
+        )));
+        assert!(
+            rendered_calls(&invocations).is_empty(),
+            "collision refusal happens before dedup or mint bd queries",
+        );
     }
 
     #[tokio::test]

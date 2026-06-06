@@ -801,24 +801,26 @@ where
             &AcceptAllFindingValidator,
         );
         let config = LoomConfig::load(LoomConfig::resolve_path(&self.workspace))?;
+        let unsuppressed_findings = walk
+            .findings()
+            .iter()
+            .filter(|finding| !suppresses_rubric_finding(&config.suppress, finding))
+            .cloned()
+            .collect::<Vec<_>>();
         let suppressed_review_concern = matches!(walk.terminal(), TerminalSurface::Concern { .. })
             && !walk.findings().is_empty()
-            && walk
-                .findings()
-                .iter()
-                .all(|finding| suppresses_rubric_finding(&config.suppress, finding));
+            && unsuppressed_findings.is_empty();
         let review_marker = if suppressed_review_concern {
             Some(ExitSignal::Complete)
         } else {
             raw_review_marker
         };
-        if !suppressed_review_concern
-            && let TerminalSurface::Concern { summary } = walk.terminal()
-            && !walk.findings().is_empty()
+        if let TerminalSurface::Concern { summary } = walk.terminal()
+            && !unsuppressed_findings.is_empty()
         {
             self.stashed_review_concern = Some(PreviousFailure::ReviewConcern {
                 summary: summary.clone(),
-                findings: walk.findings().to_vec(),
+                findings: unsuppressed_findings,
             });
         }
         let review_log_path = self
@@ -2105,6 +2107,100 @@ mod tests {
             body.contains("review-start"),
             "log file body must be non-empty: {body:?}",
         );
+    }
+
+    /// `specs/gate.md` § Rubric suppression registry: molecule handoff
+    /// re-parses review findings after shape validation and removes
+    /// suppressed rubric findings from recovery context while keeping
+    /// unsuppressed siblings live.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn molecule_completion_review_stashes_only_unsuppressed_findings() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_manifest(dir.path());
+        let label = SpecLabel::new("alpha");
+        let workspace = dir.path().to_path_buf();
+        let suppressed = crate::review::Finding {
+            token: crate::review::ConcernToken::VerifierBypass,
+            bonds: vec![label.clone()],
+            target: crate::review::FindingTarget::Annotation {
+                target_string: "cargo test --lib suppressed".to_owned(),
+            },
+            evidence: "suppressed finding".to_owned(),
+        };
+        let unsuppressed = crate::review::Finding {
+            token: crate::review::ConcernToken::VerifierBypass,
+            bonds: vec![label.clone()],
+            target: crate::review::FindingTarget::Annotation {
+                target_string: "cargo test --lib live".to_owned(),
+            },
+            evidence: "live finding".to_owned(),
+        };
+        std::fs::write(
+            workspace.join("loom.toml"),
+            format!(
+                "[[suppress]]\nid = {:?}\nreason = \"false positive\"\n",
+                suppressed.id()
+            ),
+        )
+        .unwrap();
+        let stub = dir.path().join("loom-stub.sh");
+        let suppressed_payload = serde_json::to_string(&suppressed).unwrap();
+        let unsuppressed_payload = serde_json::to_string(&unsuppressed).unwrap();
+        let concern_payload = r#"{"summary":"reviewer flagged mixed findings"}"#;
+        let stub_body = format!(
+            "#!/bin/sh\n\
+             case \"$1 $2\" in\n  \
+               'gate review')\n    \
+                 printf 'LOOM_FINDING: {suppressed_payload}\nLOOM_FINDING: {unsuppressed_payload}\nLOOM_CONCERN: {concern_payload}\n'\n    \
+                 ;;\n\
+             esac\n\
+             exit 0\n",
+        );
+        std::fs::write(&stub, stub_body).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let bd = BdClient::with_runner(molecule_lookup_script(
+            dir.path(),
+            "alpha",
+            "lm-mol.1",
+            "deadbeef",
+        ));
+        let git = git_workspace(&workspace);
+        let mut controller = ProductionAgentLoopController::new(
+            bd,
+            label,
+            stub,
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        );
+
+        controller.exec_review().await.expect("exec_review ok");
+
+        let stashed = controller
+            .stashed_review_concern
+            .as_ref()
+            .expect("unsuppressed finding keeps review concern live");
+        match stashed {
+            PreviousFailure::ReviewConcern { findings, .. } => {
+                assert_eq!(findings.len(), 1);
+                assert_eq!(findings[0].id(), unsuppressed.id());
+            }
+            other => panic!("expected ReviewConcern, got {other:?}"),
+        }
     }
 
     /// `specs/harness.md`

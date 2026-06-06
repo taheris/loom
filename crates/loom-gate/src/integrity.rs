@@ -1125,7 +1125,7 @@ pub fn check_forward(
         }
         let resolved = match ann.tier {
             Tier::Check | Tier::System => {
-                runner_owns_target(runner_specs, &ann.target)
+                runner_owns_target(runner_specs, ann.tier, &ann.target)
                     || resolves_command(&ann.target, command_resolver)
             }
             Tier::Test => test_resolver.resolves(&ann.target),
@@ -1237,15 +1237,18 @@ pub fn check_atomic_acceptance(annotations: &[Annotation]) -> Vec<IntegrityFindi
     out
 }
 
-/// True iff some runner in `specs` `match`es `target` — the runner owns
-/// the annotation, so forward-resolution succeeds because a runner claims
-/// it, not because `tokens[0]` is on PATH. Reuses [`RunnerSpec::matches`]
-/// (the same compiled match regex `dispatch::group_by_runner` keys on) so
-/// resolution and dispatch agree on ownership. An unmatched target falls
+/// True iff some runner in `specs` belongs to `tier` and `match`es
+/// `target` — the runner owns the annotation, so forward-resolution
+/// succeeds because a runner claims it, not because `tokens[0]` is on PATH.
+/// Reuses [`RunnerSpec::matches`] (the same compiled match regex
+/// `dispatch::group_by_runner` keys on) so resolution and dispatch agree
+/// on ownership. An unmatched target falls
 /// through to the [`resolves_command`] `tokens[0]`-on-PATH check per
 /// `specs/gate.md` § Runners — *Runner-owned resolution*.
-fn runner_owns_target(specs: &[RunnerSpec], target: &str) -> bool {
-    specs.iter().any(|spec| spec.matches(target))
+fn runner_owns_target(specs: &[RunnerSpec], tier: Tier, target: &str) -> bool {
+    specs
+        .iter()
+        .any(|spec| spec.applies_to(tier) && spec.matches(target))
 }
 
 fn resolves_command(target: &str, command_resolver: &dyn CommandResolver) -> bool {
