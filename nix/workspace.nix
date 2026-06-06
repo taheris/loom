@@ -58,7 +58,6 @@ let
     "specs" = "${src}/specs";
     "docs" = "${src}/docs";
     "nix/flake" = "${src}/nix/flake";
-    "nix/pi-mono" = "${src}/nix/pi-mono";
     "scripts" = "${src}/scripts";
     ".pre-commit-config.yaml" = "${src}/.pre-commit-config.yaml";
   };

@@ -72,7 +72,7 @@ in
     }:
     let
       wrixLib = inputs'.wrix.legacyPackages.lib;
-      pi-mono = pkgs.callPackage ../pi-mono { };
+      piCodingAgent = pkgs.pi-coding-agent;
 
       # The same file + hash pin the toolchain for the wrix sandbox
       # profile, the loom workspace build, and the devshell.
@@ -99,7 +99,7 @@ in
       sandbox = wrixLib.mkSandbox {
         profile = rustProfile;
         agent = "pi";
-        agentPkg = pi-mono;
+        agentPkg = piCodingAgent;
         packages = [
           loom.bin
           pkgs.cargo-nextest
@@ -109,7 +109,7 @@ in
       debugSandbox = wrixLib.mkSandbox {
         profile = rustProfile;
         agent = "pi";
-        agentPkg = pi-mono;
+        agentPkg = piCodingAgent;
         packages = [
           loom.bin
           pkgs.cargo-nextest
@@ -120,7 +120,7 @@ in
       profileManifest = loomLib.mkProfileManifest {
         inherit pkgs wrixLib;
         loomBin = loom.bin;
-        agentPkg = pi-mono;
+        agentPkg = piCodingAgent;
       };
 
       loomBin = loomLib.mkLoomBin {
