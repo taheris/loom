@@ -44,17 +44,22 @@ pub fn dolt_socket_mount(loom_workspace: &Path) -> Option<MountSpec> {
 ///
 /// Returns `Some(MountSpec)` when [`LoomTopConfig::sccache_dir`] is set;
 /// `None` otherwise (the feature is disabled and every cargo invocation
-/// pays the full cold-build cost). `read_only = false` because sccache
-/// clients write through the cache. See `specs/harness.md` § Bead dispatch
-/// — `sccache_mount_present_when_configured` /
+/// pays the full cold-build cost). The host cache directory is created
+/// before dispatch so the bind source exists and is writable. `read_only =
+/// false` because sccache clients write through the cache. See
+/// `specs/harness.md` § Bead dispatch —
+/// `sccache_mount_present_when_configured` /
 /// `sccache_mount_omitted_when_unset`.
-pub fn sccache_mount(cfg: &LoomTopConfig) -> Option<MountSpec> {
-    let host_path = cfg.sccache_dir.clone()?;
-    Some(MountSpec {
+pub fn sccache_mount(cfg: &LoomTopConfig) -> std::io::Result<Option<MountSpec>> {
+    let Some(host_path) = cfg.sccache_dir.clone() else {
+        return Ok(None);
+    };
+    std::fs::create_dir_all(&host_path)?;
+    Ok(Some(MountSpec {
         host_path,
         container_path: cfg.sccache_container_path.clone(),
         read_only: false,
-    })
+    }))
 }
 
 /// Internal helper. The public dispatch surface is
@@ -457,8 +462,11 @@ mod tests {
             sccache_container_path: PathBuf::from("/sccache"),
             ..LoomTopConfig::default()
         };
-        let mount = sccache_mount(&cfg).expect("sccache configured → mount");
+        let mount = sccache_mount(&cfg)
+            .expect("cache directory is created")
+            .expect("sccache configured → mount");
         assert_eq!(mount.host_path, host_cache);
+        assert!(host_cache.is_dir(), "sccache mount source must exist");
         assert_eq!(mount.container_path, PathBuf::from("/sccache"));
         assert!(
             !mount.read_only,
@@ -517,7 +525,9 @@ mod tests {
             sccache_container_path: PathBuf::from("/var/sccache"),
             ..LoomTopConfig::default()
         };
-        let mount = sccache_mount(&cfg).expect("configured → mount");
+        let mount = sccache_mount(&cfg)
+            .expect("cache directory is created")
+            .expect("configured → mount");
         assert_eq!(mount.host_path, host_cache);
         assert_eq!(mount.container_path, PathBuf::from("/var/sccache"));
         let env = cfg.container_sccache_env();
@@ -536,7 +546,9 @@ mod tests {
     fn sccache_mount_omitted_when_unset() {
         let cfg = LoomTopConfig::default();
         assert!(
-            sccache_mount(&cfg).is_none(),
+            sccache_mount(&cfg)
+                .expect("unset sccache does not touch filesystem")
+                .is_none(),
             "default config must not emit an sccache mount",
         );
         assert!(
@@ -558,7 +570,10 @@ mod tests {
             dir.path().join("scratch"),
             cfg.container_sccache_env(),
             vec![],
-            sccache_mount(&cfg).into_iter().collect(),
+            sccache_mount(&cfg)
+                .expect("unset sccache does not touch filesystem")
+                .into_iter()
+                .collect(),
             vec![],
         )
         .expect("dispatch");

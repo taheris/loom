@@ -257,6 +257,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         let mut env = self.loom_cfg.container_sccache_env();
         set_loom_inside(&mut env);
         let mounts = crate::r#loop::sccache_mount(&self.loom_cfg)
+            .map_err(|source| TodoError::Protocol(loom_driver::agent::ProtocolError::Io(source)))?
             .into_iter()
             .collect();
         Ok(TodoSession {

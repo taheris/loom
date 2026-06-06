@@ -124,6 +124,19 @@ impl Default for LoomConfig {
     }
 }
 
+fn config_parent(path: &Path) -> Result<PathBuf, LoomConfigError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if parent.is_absolute() {
+        return Ok(parent.to_path_buf());
+    }
+    Ok(std::env::current_dir()
+        .map_err(|source| LoomConfigError::CurrentDir { source })?
+        .join(parent))
+}
+
 impl LoomConfig {
     /// Parse a `LoomConfig` from a TOML string. An empty string yields the
     /// full default config.
@@ -215,13 +228,30 @@ impl LoomConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, LoomConfigError> {
         let path = path.as_ref();
         match std::fs::read_to_string(path) {
-            Ok(s) => Self::from_toml_str(&s),
+            Ok(s) => {
+                let mut cfg = Self::from_toml_str(&s)?;
+                cfg.resolve_paths_relative_to(path)?;
+                Ok(cfg)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(source) => Err(LoomConfigError::Read {
                 path: path.to_path_buf(),
                 source,
             }),
         }
+    }
+
+    fn resolve_paths_relative_to(&mut self, path: &Path) -> Result<(), LoomConfigError> {
+        if let Some(dir) = self
+            .loom
+            .sccache_dir
+            .as_mut()
+            .filter(|dir| dir.is_relative())
+        {
+            let base = config_parent(path)?;
+            *dir = base.join(dir.as_path());
+        }
+        Ok(())
     }
 }
 
@@ -653,6 +683,59 @@ denied_tools = ["WebFetch", "DangerousTool"]
         std::fs::write(&path, "pinned_context = \"AGENTS.md\"\n")?;
         let cfg = LoomConfig::load(&path)?;
         assert_eq!(cfg.pinned_context, "AGENTS.md");
+        Ok(())
+    }
+
+    #[test]
+    fn load_resolves_relative_sccache_dir_against_config_file() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("config").join("loom.toml");
+        std::fs::create_dir_all(path.parent().expect("config path has parent"))?;
+        std::fs::write(&path, "[loom]\nsccache_dir = \".loom/sccache\"\n")?;
+        let cfg = LoomConfig::load(&path)?;
+        assert_eq!(
+            cfg.loom.sccache_dir,
+            Some(dir.path().join("config/.loom/sccache"))
+        );
+        assert_eq!(
+            cfg.loom.host_sccache_env(),
+            vec![
+                (
+                    "SCCACHE_DIR".to_string(),
+                    dir.path()
+                        .join("config/.loom/sccache")
+                        .display()
+                        .to_string(),
+                ),
+                ("RUSTC_WRAPPER".to_string(), "sccache".to_string()),
+            ],
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repo_loom_toml_enables_shared_sccache_for_this_workspace() -> Result<()> {
+        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let workspace = crate_dir
+            .ancestors()
+            .find(|path| path.join("loom.toml").is_file())
+            .expect("workspace root with loom.toml");
+        let cfg = LoomConfig::load(workspace.join("loom.toml"))?;
+        assert_eq!(cfg.loom.sccache_dir, Some(workspace.join(".loom/sccache")));
+        assert!(
+            cfg.loom
+                .container_sccache_env()
+                .iter()
+                .any(|(key, value)| key == "SCCACHE_DIR" && value == "/sccache"),
+            "container env must include SCCACHE_DIR=/sccache",
+        );
+        assert!(
+            cfg.loom
+                .container_sccache_env()
+                .iter()
+                .any(|(key, value)| key == "RUSTC_WRAPPER" && value == "sccache"),
+            "container env must include RUSTC_WRAPPER=sccache",
+        );
         Ok(())
     }
 

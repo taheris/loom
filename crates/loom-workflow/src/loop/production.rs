@@ -401,7 +401,9 @@ where
             }
         };
         let mut mounts: Vec<_> = dolt_socket_mount(&self.workspace).into_iter().collect();
-        if let Some(spec) = sccache_mount(&self.loom_cfg) {
+        if let Some(spec) = sccache_mount(&self.loom_cfg)
+            .map_err(|source| LoopError::Protocol(ProtocolError::Io(source)))?
+        {
             mounts.push(spec);
         }
         let extra_env = self.loom_cfg.container_sccache_env();

@@ -2609,7 +2609,7 @@ async fn dispatch_for_slot(
     })?;
     let scratch = ScratchSession::open(&slot.worktree.path, &key, &initial_prompt, &banner)?;
     let mut mounts: Vec<_> = dolt_socket_mount(loom_workspace).into_iter().collect();
-    if let Some(spec) = sccache_mount(loom_cfg) {
+    if let Some(spec) = sccache_mount(loom_cfg)? {
         mounts.push(spec);
     }
     let extra_env = loom_cfg.container_sccache_env();

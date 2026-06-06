@@ -14,6 +14,12 @@ pub enum LoomConfigError {
         source: io::Error,
     },
 
+    /// failed to resolve current directory while loading config
+    CurrentDir {
+        #[source]
+        source: io::Error,
+    },
+
     /// failed to parse loom config
     Parse(#[from] toml::de::Error),
 

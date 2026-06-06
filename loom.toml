@@ -1,3 +1,6 @@
+[loom]
+sccache_dir = ".loom/sccache"
+
 [phase.default]
 profile = "rust"
 agent.backend = "pi"
