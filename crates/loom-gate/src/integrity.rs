@@ -2687,9 +2687,10 @@ fn delta_helper() {
     }
 
     /// A `[check]` runner that declares an `inputs` query whose responder
-    /// either exits non-zero or emits a non-JSON document, plus a `[judge]`
-    /// whose collect mode errors at source time. All three are opted in, so
-    /// the inputs-protocol direction flags each as `InputsProtocolError`.
+    /// fails to spawn, exits non-zero, or emits a non-JSON document, plus a
+    /// `[judge]` whose collect mode errors at source time. All four are
+    /// opted in, so the inputs-protocol direction flags each as
+    /// `InputsProtocolError`.
     #[test]
     fn opted_in_input_query_failure_flagged_inputs_protocol_error() {
         let dir = tempdir().unwrap();
@@ -2727,20 +2728,35 @@ fn delta_helper() {
                 responder.display()
             )))
         };
+        let spawn_failed_runner = RunnerSpec::compile(
+            "missing",
+            Some(r"^missing -- (\S+)$"),
+            "missing -- {targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(
+            "/definitely/not/a/real/input-query-binary-9f3 {targets} {print_inputs}".to_owned(),
+        ));
         let runners = vec![
             runner("nonzero", &exit_nonzero),
             runner("malformed", &malformed),
+            spawn_failed_runner,
         ];
 
         let annotations = vec![
             ann(Tier::Check, "nonzero -- foo", "specs/a.md", 10, 9),
             ann(Tier::Check, "malformed -- bar", "specs/a.md", 12, 11),
+            ann(Tier::Check, "missing -- baz", "specs/a.md", 14, 13),
             ann(
                 Tier::Judge,
                 "../tests/judges/broken.sh#judge_x",
                 "specs/a.md",
-                14,
-                13,
+                16,
+                15,
             ),
         ];
         let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(runners);
@@ -2748,7 +2764,7 @@ fn delta_helper() {
 
         assert_eq!(
             findings.len(),
-            3,
+            4,
             "each opted-in failing query is flagged: {findings:?}"
         );
         assert!(

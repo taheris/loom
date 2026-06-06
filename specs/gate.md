@@ -3180,7 +3180,7 @@ Loop-side interpretation of these exit codes — routing `refused` to
 
 - Unmatched `[check]` annotations use the fallback path and spawn one
   subprocess per annotation
-  [test](dispatcher_spawns_one_subprocess_per_check_annotation)
+  [test](dispatcher_spawns_one_subprocess_per_unmatched_check_annotation)
 - `[system]` tier spawns one subprocess per annotation (system
   verifiers are inherently slow and self-contained; batching doesn't
   help)

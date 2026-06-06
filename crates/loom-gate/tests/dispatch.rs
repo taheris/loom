@@ -79,14 +79,11 @@ fn fixture_dir() -> TempDir {
 }
 
 #[test]
-fn dispatcher_spawns_one_subprocess_per_check_annotation() {
+fn dispatcher_spawns_one_subprocess_per_unmatched_check_annotation() {
     let dir = fixture_dir();
     let counter = dir.path().join("spawns.txt");
     fs::write(&counter, "").unwrap();
     let counter_path = counter.display();
-    // Each verifier appends a line on spawn, so the line count is the
-    // observed subprocess count: 2 lines pins per-annotation spawn and
-    // rules out a single batched subprocess emitting 2 verdict rows.
     let pass_script = write_script(
         dir.path(),
         "a.sh",
@@ -118,10 +115,10 @@ fn dispatcher_spawns_one_subprocess_per_check_annotation() {
     assert!(!second.verdict.pass);
     assert_eq!(second.verdict.evidence, "b-fail");
 
-    let spawns = fs::read_to_string(&counter).unwrap().lines().count();
+    let observed_subprocess_count = fs::read_to_string(&counter).unwrap().lines().count();
     assert_eq!(
-        spawns, 2,
-        "one subprocess spawned per [check] annotation, not a single batched spawn",
+        observed_subprocess_count, 2,
+        "one fallback subprocess spawned per unmatched [check] annotation",
     );
 }
 
@@ -434,11 +431,10 @@ fn judge_tier_ignores_files_scope_unlike_test_tier() {
 
 /// Per `specs/gate.md` § Pending modifier — *Dispatch-side skip*:
 /// `[check?]` annotations are filtered out before subprocess spawn.
-/// The acceptance for bead `lm-amd3` pins this so plan sessions can
-/// author `[check?](cargo run -p not-yet-built)` without breaking
-/// their own `loom gate verify` lane. Target points at a path that
-/// would emit `DispatchError::Spawn` if dispatched; the test passes
-/// when the dispatcher returns an empty result vec.
+/// Plan sessions can author `[check?](cargo run -p not-yet-built)`
+/// without breaking their own `loom gate verify` lane. Target points at
+/// a path that would emit `DispatchError::Spawn` if dispatched; the test
+/// passes when the dispatcher returns an empty result vec.
 #[test]
 fn dispatcher_skips_check_pending_annotation() {
     let dir = fixture_dir();
@@ -1004,15 +1000,20 @@ fn run_with_runners_exit_code_parser_shares_verdict_across_group() {
 /// `run_check` routes through the matched runner when one claims the
 /// targets: a single stub spawn covers both annotations and the
 /// `json-lines` parser maps per-target verdicts back to the original
-/// annotations. This is the contract that makes bead `lm-6k4j`
-/// payoff: 62 walks → 1 cargo invocation.
+/// annotations. This is the contract that collapses many walk checks
+/// into one cargo invocation.
 #[test]
 fn run_check_batches_loom_walk_shaped_targets_through_one_runner_spawn() {
     let dir = fixture_dir();
+    let counter = dir.path().join("walk-batch-spawns.txt");
+    fs::write(&counter, "").unwrap();
+    let counter_path = counter.display();
     let runner = write_script(
         dir.path(),
         "walk-batch.sh",
-        "#!/bin/sh\n# Stand-in for `cargo run -p loom-walk -- {targets}`: one\n# verdict line per positional arg, with the target field set so the\n# `json-lines` parser maps each row back to its annotation.\nfor t in \"$@\"; do\n  printf '{\"target\":\"%s\",\"pass\":true,\"evidence\":\"%s-ok\"}\\n' \"$t\" \"$t\"\ndone\n",
+        &format!(
+            "#!/bin/sh\nprintf 'x\\n' >> \"{counter_path}\"\n# Stand-in for `cargo run -p loom-walk -- {{targets}}`: one\n# verdict line per positional arg, with the target field set so the\n# `json-lines` parser maps each row back to its annotation.\nfor t in \"$@\"; do\n  printf '{{\"target\":\"%s\",\"pass\":true,\"evidence\":\"%s-ok\"}}\\n' \"$t\" \"$t\"\ndone\n"
+        ),
     );
     let spec = RunnerSpec::compile(
         "loom-walk",
@@ -1041,6 +1042,12 @@ fn run_check_batches_loom_walk_shaped_targets_through_one_runner_spawn() {
     assert!(second.verdict.pass);
     assert_eq!(second.verdict.evidence, "beta-ok");
     assert_eq!(second.annotations[0].target, "walk -- beta");
+
+    let observed_subprocess_count = fs::read_to_string(&counter).unwrap().lines().count();
+    assert_eq!(
+        observed_subprocess_count, 1,
+        "matched [check] runner batch should spawn once for both annotations",
+    );
 }
 
 /// Mixed batch — annotations the runner regex claims go through one

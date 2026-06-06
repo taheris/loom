@@ -67,9 +67,8 @@ pub struct VerifierInputs {
 pub enum InputQueryProbe {
     /// loom does not own this verifier's input-query contract — an
     /// unregistered literal command, a matched runner with no `inputs`
-    /// query, a `[test]` annotation, or an opted-in query that could not
-    /// be spawned at all (missing-binary tolerance). The verifier falls
-    /// through to the conservative always-run default; never a finding.
+    /// query, or a `[test]` annotation. The verifier falls through to the
+    /// conservative always-run default; never a finding.
     NotOptedIn,
     /// An opted-in query ran and emitted a well-formed inputs document —
     /// possibly the deliberate-narrow empty `{"inputs":[]}`. Honoured
@@ -281,9 +280,9 @@ impl InputResolver {
     /// harness preamble owns its collect mode) or a `[check]` / `[system]`
     /// whose matched runner declares an `inputs` query. Everything else —
     /// unregistered commands, runners without an `inputs` query, `[test]`
-    /// annotations, and queries that cannot be spawned — resolves to
-    /// [`InputQueryProbe::NotOptedIn`] and is never faulted. An opted-in
-    /// query that exits non-zero or returns a malformed document is
+    /// annotations — resolves to [`InputQueryProbe::NotOptedIn`] and is
+    /// never faulted. An opted-in query that fails to spawn, exits
+    /// non-zero, or returns a malformed document is
     /// [`InputQueryProbe::Errored`].
     pub fn probe_input_query(&mut self, annotation: &Annotation) -> InputQueryProbe {
         match annotation.tier {
@@ -332,7 +331,9 @@ impl InputResolver {
             }
         };
         let Some(command) = command_query_command(&self.repo_root, &query) else {
-            return InputQueryProbe::NotOptedIn;
+            return InputQueryProbe::Errored {
+                detail: "input-query command could not be parsed".to_owned(),
+            };
         };
         classify_query_run(run_query_capturing(command), &query)
     }
@@ -812,11 +813,10 @@ fn run_query_capturing(mut cmd: Command) -> QueryRun {
 }
 
 /// Map a captured input-query run to an [`InputQueryProbe`] verdict. A
-/// spawn failure is the missing-binary tolerance (silent always-run); a
-/// non-zero exit, or stdout that parses as neither the single
-/// (`{"inputs":[...]}`) nor the batch (`{"inputs":{...}}`) document, is the
-/// loud `inputs-protocol-error`. A well-formed (possibly empty) document is
-/// honoured.
+/// spawn failure, a non-zero exit, or stdout that parses as neither the
+/// single (`{"inputs":[...]}`) nor batch (`{"inputs":{...}}`) document is
+/// the loud `inputs-protocol-error`. A well-formed document is honoured,
+/// including the deliberate narrow `{"inputs":[]}` shape.
 fn classify_query_run(run: QueryRun, command: &str) -> InputQueryProbe {
     match run {
         QueryRun::SpawnFailed { source } => {
@@ -824,8 +824,10 @@ fn classify_query_run(run: QueryRun, command: &str) -> InputQueryProbe {
                 command: command.to_string(),
                 source,
             };
-            tracing::warn!(err = ?err, "opted-in input-query spawn failed; conservative always-run default applies");
-            InputQueryProbe::NotOptedIn
+            tracing::warn!(err = ?err, "opted-in input-query spawn failed");
+            InputQueryProbe::Errored {
+                detail: "input-query failed to spawn".to_owned(),
+            }
         }
         QueryRun::Ran { success: false, .. } => InputQueryProbe::Errored {
             detail: "input-query exited non-zero".to_owned(),

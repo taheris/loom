@@ -1,8 +1,9 @@
 //! Per-tier dispatcher.
 //!
 //! Routes each [`Annotation`] to its verifier per the verifier-runner
-//! contract in `specs/gate.md`. `[check]` and `[system]` annotations
-//! each spawn one subprocess; `[test]` annotations collect into a single
+//! contract in `specs/gate.md`. `[check]` annotations use matched-runner
+//! batching with per-annotation fallback; `[system]` annotations spawn one
+//! subprocess per annotation; `[test]` annotations collect into a single
 //! batched runner invocation (filtered against `--files` scope via the
 //! [`TestScope`] trait); `[judge]` annotations collect into a single
 //! batched runner invocation (no scope filter — judges are LLM-driven
@@ -174,10 +175,9 @@ impl TestScope for EmptyScope {
 /// order.
 ///
 /// The batched path is the one that pays for itself on real specs:
-/// 62 `cargo run -p loom-walk` invocations collapse to one when the
-/// default `[runner.check]` claims them all (bead `lm-6k4j`). Targets
-/// no spec matches still spawn their own process via the
-/// [`run_with_runners`] fallback.
+/// many `cargo run -p loom-walk` invocations collapse to one when the
+/// default `[runner.check]` claims them all. Targets no spec matches
+/// still spawn their own process via the [`run_with_runners`] fallback.
 pub fn run_check(
     annotations: &[Annotation],
     specs: &[RunnerSpec],
