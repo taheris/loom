@@ -3178,6 +3178,9 @@ Loop-side interpretation of these exit codes — routing `refused` to
 
 ### Dispatch — per-tier process model
 
+- Runner-matched `[check]` annotations batch into one subprocess per
+  runner
+  [test](run_check_batches_loom_walk_shaped_targets_through_one_runner_spawn)
 - Unmatched `[check]` annotations use the fallback path and spawn one
   subprocess per annotation
   [test](dispatcher_spawns_one_subprocess_per_unmatched_check_annotation)
