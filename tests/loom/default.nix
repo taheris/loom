@@ -49,6 +49,8 @@ let
     # genai builds a reqwest TLS client eagerly; sandbox needs a CA bundle.
     preCheck = ''
       export HOME=$(mktemp -d)
+      export GIT_CONFIG_GLOBAL="$PWD/tests/fixtures/git/test-gitconfig"
+      export GIT_CONFIG_SYSTEM=/dev/null
       export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
     '';
     # `--tree` (every verifier, no file filter) is the explicit scope for a

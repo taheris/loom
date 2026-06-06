@@ -55,6 +55,7 @@ let
     "tests/default.nix" = "${src}/tests/default.nix";
     "tests/run-tests.sh" = "${src}/tests/run-tests.sh";
     "tests/judges" = "${src}/tests/judges";
+    "tests/fixtures" = "${src}/tests/fixtures";
     "specs" = "${src}/specs";
     "docs" = "${src}/docs";
     "nix/flake" = "${src}/nix/flake";
@@ -105,6 +106,8 @@ let
       # genai builds a reqwest TLS client eagerly; sandbox needs a CA bundle.
       preCheck = ''
         export HOME=$(mktemp -d)
+        export GIT_CONFIG_GLOBAL="$PWD/tests/fixtures/git/test-gitconfig"
+        export GIT_CONFIG_SYSTEM=/dev/null
         export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
       '';
     }
