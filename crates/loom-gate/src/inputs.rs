@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use displaydoc::Display;
-use glob::Pattern;
+use glob::{MatchOptions, Pattern};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -651,18 +651,132 @@ pub fn filter_by_files(
 }
 
 fn inputs_intersect_files(inputs: &[PathBuf], files: &[PathBuf], repo_root: &Path) -> bool {
-    inputs.iter().any(|input| {
-        files
-            .iter()
-            .any(|file| input_matches_file(input, file, repo_root))
-    })
+    let input_set = GitignoreInputSet::new(inputs);
+    files
+        .iter()
+        .map(|file| repo_relative_file(file, repo_root))
+        .any(|file| input_set.matches(&file))
 }
 
-fn input_matches_file(input: &Path, file: &Path, repo_root: &Path) -> bool {
-    let scoped = repo_relative_file(file, repo_root);
-    input == scoped.as_path()
-        || Pattern::new(&slash_path(input))
-            .is_ok_and(|pattern| pattern.matches(&slash_path(&scoped)))
+struct GitignoreInputSet {
+    patterns: Vec<GitignoreInputPattern>,
+}
+
+impl GitignoreInputSet {
+    fn new(inputs: &[PathBuf]) -> Self {
+        Self {
+            patterns: inputs
+                .iter()
+                .filter_map(|input| GitignoreInputPattern::new(&slash_path(input)))
+                .collect(),
+        }
+    }
+
+    fn matches(&self, file: &Path) -> bool {
+        let path = slash_path(file);
+        let mut included = false;
+        for pattern in &self.patterns {
+            if pattern.matches(&path) {
+                included = !pattern.negated;
+            }
+        }
+        included
+    }
+}
+
+struct GitignoreInputPattern {
+    matcher: PatternMatcher,
+    negated: bool,
+    directory_only: bool,
+    basename_only: bool,
+}
+
+impl GitignoreInputPattern {
+    fn new(raw: &str) -> Option<Self> {
+        let (negated, body) = split_gitignore_negation(raw);
+        let anchored = body.starts_with('/');
+        let body = body.trim_start_matches('/');
+        let directory_only = body.ends_with('/');
+        let body = body.trim_end_matches('/');
+        if body.is_empty() {
+            return None;
+        }
+        Some(Self {
+            matcher: PatternMatcher::new(body),
+            negated,
+            directory_only,
+            basename_only: !anchored && !body.contains('/'),
+        })
+    }
+
+    fn matches(&self, path: &str) -> bool {
+        if self.directory_only {
+            return self.matches_directory(path);
+        }
+        if self.basename_only {
+            return path
+                .split('/')
+                .filter(|component| !component.is_empty())
+                .any(|component| self.matcher.matches(component));
+        }
+        self.matcher.matches(path)
+    }
+
+    fn matches_directory(&self, path: &str) -> bool {
+        let components = path
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .collect::<Vec<_>>();
+        let directory_count = components.len().saturating_sub(1);
+        (1..=directory_count).any(|end| self.matches_components(&components[..end]))
+    }
+
+    fn matches_components(&self, components: &[&str]) -> bool {
+        if self.basename_only {
+            return components
+                .last()
+                .is_some_and(|component| self.matcher.matches(component));
+        }
+        self.matcher.matches(&components.join("/"))
+    }
+}
+
+fn split_gitignore_negation(raw: &str) -> (bool, &str) {
+    if let Some(rest) = raw.strip_prefix('\\')
+        && rest.starts_with('!')
+    {
+        return (false, rest);
+    }
+    if let Some(rest) = raw.strip_prefix('!') {
+        return (true, rest);
+    }
+    (false, raw)
+}
+
+enum PatternMatcher {
+    Glob(Pattern),
+    Literal(String),
+}
+
+impl PatternMatcher {
+    fn new(pattern: &str) -> Self {
+        Pattern::new(pattern).map_or_else(|_| Self::Literal(pattern.to_owned()), Self::Glob)
+    }
+
+    fn matches(&self, candidate: &str) -> bool {
+        match self {
+            Self::Glob(pattern) => pattern.matches_with(candidate, gitignore_match_options()),
+            Self::Literal(literal) => literal == candidate,
+        }
+    }
+}
+
+fn gitignore_match_options() -> MatchOptions {
+    MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: false,
+    }
 }
 
 fn repo_relative_file(file: &Path, repo_root: &Path) -> PathBuf {
@@ -1921,6 +2035,57 @@ mod tests {
             got.is_empty(),
             "declaring annotation with inputs disjoint from staged files is dropped"
         );
+    }
+
+    #[test]
+    fn gitignore_double_star_input_matches_staged_file_under_files_scope() {
+        let inputs = vec![PathBuf::from("docs/**/*.md")];
+        let files = vec![PathBuf::from("docs/gate/overview.md")];
+
+        assert!(inputs_intersect_files(&inputs, &files, Path::new("/repo")));
+    }
+
+    #[test]
+    fn gitignore_recursive_crate_input_matches_staged_src_file() {
+        let inputs = vec![PathBuf::from("crates/*/src/**")];
+        let files = vec![PathBuf::from("crates/loom-gate/src/inputs.rs")];
+
+        assert!(inputs_intersect_files(&inputs, &files, Path::new("/repo")));
+    }
+
+    #[test]
+    fn gitignore_star_input_does_not_cross_directory_separator() {
+        let inputs = vec![PathBuf::from("crates/*/src/*.rs")];
+        let files = vec![PathBuf::from("crates/loom-gate/src/bin/main.rs")];
+
+        assert!(!inputs_intersect_files(&inputs, &files, Path::new("/repo")));
+    }
+
+    #[test]
+    fn gitignore_directory_input_matches_staged_file_below_directory() {
+        let inputs = vec![PathBuf::from("docs/")];
+        let files = vec![PathBuf::from("docs/reference/gate.md")];
+
+        assert!(inputs_intersect_files(&inputs, &files, Path::new("/repo")));
+    }
+
+    #[test]
+    fn gitignore_root_anchored_directory_input_does_not_match_nested_directory() {
+        let inputs = vec![PathBuf::from("/docs/")];
+        let files = vec![PathBuf::from("crates/loom-gate/docs/reference.md")];
+
+        assert!(!inputs_intersect_files(&inputs, &files, Path::new("/repo")));
+    }
+
+    #[test]
+    fn gitignore_negated_input_excludes_staged_file() {
+        let inputs = vec![
+            PathBuf::from("crates/**"),
+            PathBuf::from("!crates/private/**"),
+        ];
+        let files = vec![PathBuf::from("crates/private/src/lib.rs")];
+
+        assert!(!inputs_intersect_files(&inputs, &files, Path::new("/repo")));
     }
 
     #[test]
