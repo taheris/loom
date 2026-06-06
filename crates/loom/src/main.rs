@@ -858,30 +858,15 @@ fn run_gate(
                 args.verify_exit,
                 agent_override,
                 ReviewLane::Both,
-                Vec::new(),
             )
         }
         Some(GateSubcommand::Judge(mut args)) => {
             resolve_gate_scope(workspace, &mut args)?;
-            run_gate_review(
-                workspace,
-                args,
-                None,
-                agent_override,
-                ReviewLane::Judge,
-                Vec::new(),
-            )
+            run_gate_review(workspace, args, None, agent_override, ReviewLane::Judge)
         }
         Some(GateSubcommand::Rubric(mut args)) => {
             resolve_gate_scope(workspace, &mut args)?;
-            run_gate_review(
-                workspace,
-                args,
-                None,
-                agent_override,
-                ReviewLane::Rubric,
-                Vec::new(),
-            )
+            run_gate_review(workspace, args, None, agent_override, ReviewLane::Rubric)
         }
         Some(GateSubcommand::Mint(mut args)) => {
             resolve_gate_scope(workspace, &mut args.scope)?;
@@ -1716,66 +1701,6 @@ fn current_commit(workspace: &Path) -> anyhow::Result<String> {
     Ok(oid.to_string())
 }
 
-/// Resolve (or mint) the bonding target for each spec in scope at
-/// `--tree` audit time, per `specs/gate.md` § *Standing-safety-net
-/// bonding*: zero open epics → mint molecule + epic; one → reuse it;
-/// more than one → refuse with the conflicting IDs. Returns `Ok(empty)`
-/// when the args are not `--tree`-scoped so the non-tree audit paths
-/// stay unchanged. The single-spec form (`--tree --spec <X>`) resolves
-/// just that spec; the all-specs sweep (bare `--tree`) walks every
-/// `specs/<label>.md` markdown file in the workspace.
-fn resolve_tree_scope_bonding_targets(
-    workspace: &Path,
-    args: &GateScopeArgs,
-) -> anyhow::Result<Vec<loom_workflow::resolve::ResolvedEpic>> {
-    if !args.tree {
-        return Ok(Vec::new());
-    }
-    let labels = match args.spec.as_deref() {
-        Some(label) => vec![SpecLabel::new(label)],
-        None => spec_labels_in_workspace(workspace)?,
-    };
-    if labels.is_empty() {
-        return Ok(Vec::new());
-    }
-    let head = current_commit(workspace).unwrap_or_default();
-    let runtime = tokio::runtime::Runtime::new()?;
-    let resolved = runtime.block_on(async move {
-        let bd = BdClient::new();
-        loom_workflow::resolve::resolve_or_mint_open_epics(&bd, &labels, &head).await
-    })?;
-    for entry in &resolved {
-        if entry.was_minted {
-            println!(
-                "loom gate audit: minted recovery epic {epic} for spec {label} (no open epic existed)",
-                epic = entry.molecule_id.as_str(),
-                label = entry.label.as_str(),
-            );
-        }
-    }
-    Ok(resolved)
-}
-
-/// Enumerate every `specs/<label>.md` in the workspace as a [`SpecLabel`].
-/// Drives the all-specs sweep of `loom gate audit --tree`.
-fn spec_labels_in_workspace(workspace: &Path) -> anyhow::Result<Vec<SpecLabel>> {
-    let specs_dir = workspace.join("specs");
-    if !specs_dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut labels = Vec::new();
-    for entry in std::fs::read_dir(&specs_dir)? {
-        let path = entry?.path();
-        if path.extension().is_some_and(|e| e == "md")
-            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-        {
-            labels.push(SpecLabel::new(stem));
-        }
-    }
-    labels.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-    Ok(labels)
-}
-
 /// `loom gate mint` CLI arm. Owns arg parsing, scope resolution
 /// (delegated to [`apply_default_scope`] in `run_gate`), the
 /// `LOOM_INSIDE` guard (delegated to the top-level main check via
@@ -1923,7 +1848,6 @@ fn run_gate_audit(
     args: GateScopeArgs,
     agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
-    let tree_scope_epics = resolve_tree_scope_bonding_targets(workspace, &args)?;
     let verify_result = run_gate_verify(workspace, &args);
     // Audit fuses verify+review in one process; pass the verify subcommand's
     // exit code into the review step so the push gate's four-condition AND
@@ -1938,7 +1862,6 @@ fn run_gate_audit(
         verify_exit,
         agent_override,
         ReviewLane::Both,
-        tree_scope_epics,
     );
     verify_result.and(review_result)
 }
@@ -1949,7 +1872,6 @@ fn run_gate_review(
     verify_exit: Option<i32>,
     agent_override: Option<AgentKind>,
     lane: ReviewLane,
-    tree_scope_epics: Vec<loom_workflow::resolve::ResolvedEpic>,
 ) -> anyhow::Result<()> {
     run_review(
         workspace,
@@ -1961,7 +1883,6 @@ fn run_gate_review(
             tree: args.tree,
             verify_exit,
             lane,
-            tree_scope_epics,
         },
     )
 }
@@ -2944,10 +2865,6 @@ struct ReviewOpts {
     /// `Judge`/`Rubric` for the focused single-lane re-runs surfaced by
     /// `loom gate judge` / `loom gate rubric`.
     lane: ReviewLane,
-    /// Per-spec bonding targets the audit orchestrator pre-resolved (or
-    /// minted) before this controller ran. Threaded into the reviewer
-    /// prompt at `--tree` scope; empty otherwise.
-    tree_scope_epics: Vec<loom_workflow::resolve::ResolvedEpic>,
 }
 
 fn run_review(
@@ -2987,11 +2904,6 @@ fn run_review(
     let integration_branch_for_review = config.loom.integration_branch.clone();
     let hook_timeout_for_review = config.loom.git_hook_timeout();
     let suppressions_for_review = config.suppress.clone();
-    let tree_scope_epics = opts
-        .tree_scope_epics
-        .iter()
-        .map(loom_workflow::resolve::tree_scope_epic_from_resolved)
-        .collect::<Vec<_>>();
     let dispatch_scope = if opts.tree {
         DispatchScope::Tree
     } else {
@@ -3041,7 +2953,6 @@ fn run_review(
         .with_hook_timeout(hook_timeout_for_review)
         .with_verify_exit(opts.verify_exit)
         .with_lane(opts.lane)
-        .with_tree_scope_epics(tree_scope_epics)
         .with_dispatch_scope(dispatch_scope)
         .with_suppressions(suppressions_for_review);
         run_review_loop(&mut controller, IterationCap::default()).await
@@ -3944,86 +3855,6 @@ mod tests {
         assert!(args.scope.bead.is_none());
         assert!(!args.scope.tree);
         assert!(args.scope.files.is_empty());
-    }
-
-    /// Spec contract `specs/gate.md` § *Standing-safety-net bonding*
-    /// (criterion `audit_tree_scope_makes_no_bd_writes`): `loom gate
-    /// audit --tree` is inspection-only. Pins the property at the
-    /// resolver layer the audit path consumes: when every scoped spec
-    /// already has exactly one open epic, [`resolve_or_mint_open_epics`]
-    /// issues only `bd list` calls — never `bd create`. The audit arm
-    /// in `run_gate_audit` calls this resolver, so locking its read-only
-    /// behavior here is the regression test for the no-bd-writes
-    /// invariant under the steady-state operator scenario.
-    #[tokio::test]
-    async fn audit_tree_scope_makes_no_bd_writes() {
-        use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
-        use std::ffi::OsString;
-        use std::sync::{Arc, Mutex};
-        use std::time::Duration;
-
-        struct ScriptedRunner {
-            responses: Mutex<Vec<RunOutput>>,
-            invocations: Arc<Mutex<Vec<Vec<OsString>>>>,
-        }
-        impl CommandRunner for ScriptedRunner {
-            async fn run(&self, args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
-                self.invocations.lock().expect("not poisoned").push(args);
-                let mut responses = self.responses.lock().expect("not poisoned");
-                assert!(!responses.is_empty(), "no scripted response left");
-                Ok(responses.remove(0))
-            }
-        }
-
-        let epic_row = |id: &str, label: &str| -> String {
-            format!(
-                r#"{{"id":"{id}","title":"{label}","status":"open","priority":2,"issue_type":"epic","labels":["spec:{label}"]}}"#,
-            )
-        };
-
-        let labels = vec![SpecLabel::new("alpha"), SpecLabel::new("beta")];
-        let invocations = Arc::new(Mutex::new(Vec::new()));
-        let runner = ScriptedRunner {
-            responses: Mutex::new(vec![
-                RunOutput {
-                    status: 0,
-                    stdout: format!("[{}]", epic_row("lm-alpha", "alpha")).into_bytes(),
-                    stderr: Vec::new(),
-                },
-                RunOutput {
-                    status: 0,
-                    stdout: format!("[{}]", epic_row("lm-beta", "beta")).into_bytes(),
-                    stderr: Vec::new(),
-                },
-            ]),
-            invocations: Arc::clone(&invocations),
-        };
-        let bd = BdClient::with_runner(runner);
-        let resolved = loom_workflow::resolve::resolve_or_mint_open_epics(&bd, &labels, "head-sha")
-            .await
-            .expect("resolve ok");
-        assert_eq!(resolved.len(), 2);
-        for entry in &resolved {
-            assert!(
-                !entry.was_minted,
-                "no epic should be minted when one already exists: {entry:?}",
-            );
-        }
-        let calls = invocations.lock().expect("not poisoned");
-        for argv in calls.iter() {
-            let rendered: Vec<String> = argv
-                .iter()
-                .map(|s| s.to_string_lossy().into_owned())
-                .collect();
-            assert!(
-                !rendered.iter().any(|a| a == "create"),
-                "audit --tree bonding-target resolution must NOT invoke bd create: {rendered:?}",
-            );
-            assert!(
-                rendered.iter().any(|a| a == "list"),
-                "every recorded bd call must be a read (list): {rendered:?}",
-            );
-        }
     }
 
     /// [`mint_via_walker`] must obtain its `Vec<Finding>` from

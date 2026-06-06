@@ -2472,17 +2472,14 @@ mod tests {
         );
     }
 
-    /// `loom gate audit --tree` resolves each spec's bonding target up
-    /// front (via `loom-workflow::resolve::resolve_or_mint_open_epics`)
-    /// and threads the resulting (spec → epic) mapping into the
-    /// `ReviewContext` as driver-side bonding metadata. Under the
-    /// inspection-only review contract, the rendered prompt no longer
-    /// surfaces those epic IDs — the driver-side `loom gate mint`
-    /// consumes them to bond fix-ups itself. The agent's prompt only
-    /// needs to stream `LOOM_FINDING:` lines naming the spec via
-    /// `bonds`. This test pins that the `with_tree_scope_epics` plumbing
-    /// still flows into the build, but the rendered output is free of
-    /// `bd find` / `bd create --parent` recovery shell instructions.
+    /// `loom gate audit --tree` is inspection-only, so bonding targets
+    /// are not minted or surfaced to the reviewer. The driver-side
+    /// `loom gate mint` command consumes findings and bonds fix-ups
+    /// itself. The agent's prompt only needs to stream `LOOM_FINDING:`
+    /// lines naming the spec via `bonds`. This test pins that the
+    /// `with_tree_scope_epics` plumbing still flows into the build, but
+    /// the rendered output is free of `bd find` / `bd create --parent`
+    /// recovery shell instructions.
     #[tokio::test]
     async fn tree_scope_review_prompt_omits_bd_recovery_block_under_inspection_only_contract() {
         let dir = tempfile::tempdir().unwrap();

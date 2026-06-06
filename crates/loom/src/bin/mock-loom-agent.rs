@@ -33,6 +33,8 @@
 //!   (`PushGateRefuseCause::ReviewConcern`). The bead's `spec:<label>`
 //!   label is read from `$LOOM_TEST_CONCERN_SPEC` (default: `pushconcern`)
 //!   so a test driving a different spec can override.
+//! - `finding-concern` — emit one `LOOM_FINDING:` JSON line followed by
+//!   `LOOM_CONCERN: {"summary": "…"}` without mutating bd state.
 //! - `concern-then-complete` — emit `LOOM_CONCERN: {"summary": "…"}` then
 //!   `LOOM_COMPLETE` on a later line. The final-line parser must pick
 //!   the trailing `LOOM_COMPLETE`; this is the literal May-19 sequence.
@@ -53,6 +55,7 @@ const MODE_CLARIFY: &str = "clarify-marker";
 const MODE_COMPLETE: &str = "complete-marker";
 const MODE_NO_MARKER: &str = "no-marker";
 const MODE_CONCERN: &str = "concern-marker";
+const MODE_FINDING_CONCERN: &str = "finding-concern";
 const MODE_CONCERN_THEN_COMPLETE: &str = "concern-then-complete";
 
 const BLOCKED_REASON: &str = "spec section is missing the schema for this bead";
@@ -60,6 +63,16 @@ const CLARIFY_QUESTION: &str = "which deploy-key path should the runner image mo
 const CONCERN_LINE: &str = concat!(
     "LOOM_CONCERN: ",
     r#"{"summary": "verifier-bypass: the only [verify] mocks the agent backend"}"#,
+);
+const FINDING_LINE: &str = concat!(
+    "LOOM_FINDING: ",
+    r#"{"token":"spec-coherence-fail","bonds":["acme"],"#,
+    r#""target":{"kind":"Criterion","spec":"acme","anchor":"finding-status-output"},"#,
+    r#""evidence":"status output fixture"}"#,
+);
+const FINDING_CONCERN_LINE: &str = concat!(
+    "LOOM_CONCERN: ",
+    r#"{"summary": "spec-coherence-fail: status output fixture"}"#,
 );
 
 fn main() -> ExitCode {
@@ -113,6 +126,10 @@ fn main() -> ExitCode {
         MODE_CONCERN => {
             stamp_concern_fixup_bead();
             emit_message_delta(&mut stdout, CONCERN_LINE);
+        }
+        MODE_FINDING_CONCERN => {
+            emit_message_delta(&mut stdout, &format!("{FINDING_LINE}\n"));
+            emit_message_delta(&mut stdout, FINDING_CONCERN_LINE);
         }
         MODE_CONCERN_THEN_COMPLETE => {
             // The May-19 sequence: a `LOOM_CONCERN: …` line followed by a

@@ -1436,7 +1436,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn driver_emits_finding_status_json_with_identity_and_action() {
+    async fn mint_summary_emits_finding_status_json_with_identity_and_action() {
         let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
         let id = finding.id();
         let hash = finding.hash();
@@ -1487,38 +1487,38 @@ mod tests {
         let b = contract_finding(vec![spec("gate")], "molecule-lifecycle", "first prose");
         let c = style_finding(vec![spec("gate")], "RS-19", "first prose");
 
-        // Same set, different stream order.
-        let fp_abc = batch_fingerprint(&[a.clone(), b.clone(), c.clone()]);
-        let fp_cba = batch_fingerprint(&[c.clone(), b.clone(), a.clone()]);
+        let original_order = batch_fingerprint(&[a.clone(), b.clone(), c.clone()]);
+        let reversed_stream_order = batch_fingerprint(&[c.clone(), b.clone(), a.clone()]);
         assert_eq!(
-            fp_abc, fp_cba,
-            "stream order MUST NOT shift batch receipt: {fp_abc} vs {fp_cba}",
+            original_order, reversed_stream_order,
+            "stream order MUST NOT shift batch receipt: {original_order} vs {reversed_stream_order}",
         );
 
-        // Same set, different bonds order on one finding.
-        let a_reordered_bonds = Finding {
+        let reordered_bonds = Finding {
             bonds: vec![spec("harness"), spec("gate")],
             ..a.clone()
         };
-        // Patching bonds doesn't change finding hashes, so fp is the same.
-        let fp_with_other_bonds = batch_fingerprint(&[a_reordered_bonds, b.clone(), c.clone()]);
+        let with_reordered_bonds = batch_fingerprint(&[reordered_bonds, b.clone(), c.clone()]);
         assert_eq!(
-            fp_abc, fp_with_other_bonds,
+            original_order, with_reordered_bonds,
             "bonds shifts MUST NOT change batch receipt",
         );
 
-        // Same set, evidence prose tweaked.
-        let a_diff_prose = Finding {
+        let tweaked_evidence = Finding {
             evidence: "tweaked prose".into(),
             ..a.clone()
         };
-        let fp_diff_prose = batch_fingerprint(&[a_diff_prose, b, c]);
+        let with_tweaked_evidence = batch_fingerprint(&[tweaked_evidence, b, c]);
         assert_eq!(
-            fp_abc, fp_diff_prose,
+            original_order, with_tweaked_evidence,
             "evidence prose MUST NOT change batch receipt"
         );
 
-        assert_eq!(fp_abc.len(), 12, "12-character batch receipt: {fp_abc}");
+        assert_eq!(
+            original_order.len(),
+            12,
+            "12-character batch receipt: {original_order}",
+        );
     }
 
     /// Spec contract `specs/gate.md` § *Per-batch processing*:
