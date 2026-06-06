@@ -27,8 +27,8 @@ use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::StateDb;
 use loom_gate::{
-    self, CacheRow, CargoMetadataScope, DispatchOptions, DispatchPendingExecutor, EmptyScope,
-    FsCommandResolver, InputResolver, RunnerSpec, StatusCache, Tier, TierCwds, Verdict,
+    self, CacheRow, CargoMetadataScope, DispatchOptions, DispatchPendingExecutor,
+    FsCommandResolver, InputResolver, RunnerSpec, StatusCache, TestScope, Tier, TierCwds, Verdict,
     filter_by_files, is_missing_binary_target, render_report, row_for,
 };
 use loom_workflow::r#loop::{
@@ -1060,6 +1060,17 @@ fn build_input_resolver(workspace: &Path, runners: &[RunnerSpec]) -> InputResolv
     }
 }
 
+/// Scope for annotations already retained by the CLI-level input resolver.
+struct SelectedTestScope {
+    files: Vec<PathBuf>,
+}
+
+impl TestScope for SelectedTestScope {
+    fn scope_for(&self, _annotation: &loom_gate::Annotation) -> Vec<PathBuf> {
+        self.files.clone()
+    }
+}
+
 fn filter_annotations(
     annotations: &[loom_gate::Annotation],
     tier: Tier,
@@ -1372,7 +1383,10 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
         }
         Tier::Test => {
             let template = resolve_test_runner_template(workspace)?;
-            match loom_gate::run_test(&selected, &options, &template, &EmptyScope) {
+            let scope = SelectedTestScope {
+                files: options.files.clone(),
+            };
+            match loom_gate::run_test(&selected, &options, &template, &scope) {
                 Ok(Some(outcome)) => {
                     let verdict = if outcome.verdict.skipped {
                         Verdict::Skipped

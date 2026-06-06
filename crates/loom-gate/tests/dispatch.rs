@@ -297,7 +297,7 @@ fn test_tier_batches_all_targets_into_one_runner_subprocess() {
 }
 
 #[test]
-fn test_tier_filters_targets_by_files_scope_intersection() {
+fn run_test_filters_targets_by_files_scope_intersection() {
     let dir = fixture_dir();
     let runner = write_script(
         dir.path(),

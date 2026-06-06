@@ -39,11 +39,12 @@
 //! state and [`filter_by_files`] honours it by always retaining such a
 //! verifier under any finite scope.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use displaydoc::Display;
+use glob::Pattern;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -638,15 +639,43 @@ pub fn filter_by_files(
         return annotations.to_vec();
     }
     resolver.prime_runner_inputs(annotations);
-    let file_set: HashSet<&Path> = files.iter().map(PathBuf::as_path).collect();
+    let repo_root = resolver.repo_root.clone();
     annotations
         .iter()
         .filter(|ann| {
             let (inputs, declared_own) = resolver.resolve_with_provenance(ann);
-            !declared_own || inputs.paths.iter().any(|p| file_set.contains(p.as_path()))
+            !declared_own || inputs_intersect_files(&inputs.paths, files, &repo_root)
         })
         .cloned()
         .collect()
+}
+
+fn inputs_intersect_files(inputs: &[PathBuf], files: &[PathBuf], repo_root: &Path) -> bool {
+    inputs.iter().any(|input| {
+        files
+            .iter()
+            .any(|file| input_matches_file(input, file, repo_root))
+    })
+}
+
+fn input_matches_file(input: &Path, file: &Path, repo_root: &Path) -> bool {
+    let scoped = repo_relative_file(file, repo_root);
+    input == scoped.as_path()
+        || Pattern::new(&slash_path(input))
+            .is_ok_and(|pattern| pattern.matches(&slash_path(&scoped)))
+}
+
+fn repo_relative_file(file: &Path, repo_root: &Path) -> PathBuf {
+    if file.is_absolute()
+        && let Ok(stripped) = file.strip_prefix(repo_root)
+    {
+        return stripped.to_path_buf();
+    }
+    file.to_path_buf()
+}
+
+fn slash_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn push_unique(buf: &mut Vec<PathBuf>, path: PathBuf) {
@@ -971,11 +1000,15 @@ mod tests {
 
     impl TestScope for StubScope {
         fn scope_for(&self, a: &Annotation) -> Vec<PathBuf> {
-            // Match by the first `::` segment so the heuristic's
-            // synthetic `<crate>::__heuristic` target still hits.
-            let key = a.target.split("::").next().unwrap_or("");
-            self.map.get(key).cloned().unwrap_or_default()
+            self.map
+                .get(crate_key(&a.target))
+                .cloned()
+                .unwrap_or_default()
         }
+    }
+
+    fn crate_key(target: &str) -> &str {
+        target.split("::").next().unwrap_or("")
     }
 
     #[test]
@@ -1932,7 +1965,7 @@ mod tests {
                  for arg in \"$@\"; do\n\
                    [ \"$arg\" = \"--print-inputs\" ] && continue\n\
                    [ \"$first\" = 1 ] || printf ','\n\
-                   printf '\"%s\":[\"crates/%s/src.rs\"]' \"$arg\" \"$arg\"\n\
+                   printf '\"%s\":[\"crates/%s/src/**\"]' \"$arg\" \"$arg\"\n\
                    first=0\n\
                  done\n\
                  printf '}}}}\\n'\n",
@@ -1960,7 +1993,7 @@ mod tests {
         let beta = ann(Tier::Check, "walk -- beta", "specs/gate.md");
         let annotations = vec![alpha, beta];
 
-        let files = vec![PathBuf::from("crates/alpha/src.rs")];
+        let files = vec![PathBuf::from("crates/alpha/src/lib.rs")];
         let got = filter_by_files(&annotations, &files, &mut resolver);
 
         assert_eq!(

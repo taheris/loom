@@ -2626,6 +2626,7 @@ name = "loom-gate"
 version = "0.1.0"
 dependencies = [
  "displaydoc",
+ "glob",
  "loom-driver",
  "loom-events",
  "loom-protocol",
