@@ -838,14 +838,6 @@ where
     }
 
     async fn exec_per_bead_gate(&mut self, bead: &BeadId) -> Result<PerBeadGateOutcome, LoopError> {
-        // Per-diff stage (`specs/gate.md` § *Per-diff stage checks*): the
-        // run-phase agent's `LOOM_COMPLETE` is *necessary but not
-        // sufficient* — `loom gate verify --bead <id>` runs deterministic
-        // audits, then `loom gate mint --bead <id>` walks the LLM rubric
-        // and mints typed fix-ups. Routing per Decision 7 collapses two
-        // recovery paths (verify failure, mint errors) into one
-        // `PerBeadGateOutcome::Recovery` variant; `refused > 0` is the
-        // only path that surfaces as a structural-violation block.
         let verify_output = Command::new(&self.loom_bin)
             .current_dir(&self.workspace)
             .arg("gate")
@@ -925,14 +917,11 @@ where
     }
 }
 
-/// Parse the mint summary stdout printed by `run_gate_mint` and translate
-/// the `refused` / `errors` counts into a [`PerBeadGateOutcome`] per
-/// `specs/gate.md` Decision 7. Header includes `refused R, errors E`
-/// fields (see `MintSummary::render`). The conflicting `bd` ids surface
-/// in the per-finding `refused {fingerprint}: {reason}` lines and ride out in
-/// the `StructuralViolation::detail` field; the error detail similarly
-/// rides out as `Recovery::detail` so the next agent attempt sees it as
-/// `previous_failure`.
+/// Parse mint summary stdout and translate the `refused` / `errors`
+/// counts into the per-bead gate outcome.
+///
+/// Conflicting `bd` ids surface in `StructuralViolation::detail`; error
+/// detail surfaces in `Recovery::detail` for the next agent attempt.
 fn classify_mint_summary(exit_code: i32, stdout: &str) -> PerBeadGateOutcome {
     let (refused, errors) = parse_mint_counts(stdout);
     if refused > 0 {
@@ -2849,9 +2838,7 @@ mod tests {
 
     /// Mint summary parser routes `refused > 0` to
     /// [`PerBeadGateOutcome::StructuralViolation`] with the conflicting
-    /// `bd` ids surfaced verbatim from the summary's refused lines —
-    /// per Decision 7, this is the structural-violation path that
-    /// surfaces as a labelled bead the operator unblocks.
+    /// `bd` ids surfaced verbatim from the summary's refused lines.
     #[test]
     fn classify_mint_summary_refused_routes_to_structural_violation_with_conflicting_ids() {
         let stdout = "minted 0, skipped 0 (dedup), refused 1, errors 0\n\

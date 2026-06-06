@@ -131,17 +131,12 @@ pub trait AgentLoopController: Send {
         &mut self,
     ) -> impl std::future::Future<Output = Result<HandoffEvidence, LoopError>> + Send;
 
-    /// Per-bead gate (per `specs/gate.md` § *Per-diff stage checks*).
-    /// Invoked after the run-phase agent signals
-    /// [`AgentOutcome::Success`]; spawns `loom gate verify --bead <id>`
-    /// then `loom gate mint --bead <id>` as subprocesses, parses the
-    /// mint summary's `refused` / `errors` counts, and returns a typed
-    /// [`PerBeadGateOutcome`] the runner routes on per Decision 7:
-    /// `Clean` → [`BeadResult::Done`]; `StructuralViolation` →
-    /// [`BeadResult::Blocked`] with cause
-    /// [`MINT_STRUCTURAL_VIOLATION_CAUSE`]; `Recovery` → recovery loop
-    /// (consumes one `RetryPolicy::max_retries` slot, threads the
-    /// gate's error detail as `previous_failure`).
+    /// Per-bead gate invoked after the run-phase agent signals
+    /// [`AgentOutcome::Success`].
+    ///
+    /// Spawns the verify and mint subcommands, parses the mint summary's
+    /// `refused` / `errors` counts, and returns a typed
+    /// [`PerBeadGateOutcome`] the runner maps to done, blocked, or recovery.
     fn exec_per_bead_gate(
         &mut self,
         bead: &BeadId,
