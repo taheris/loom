@@ -174,6 +174,47 @@ fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::pro
         .expect("spawn loom")
 }
 
+fn enable_workspace_sccache(workspace: &Path) -> PathBuf {
+    let host_cache = workspace.join(".loom/sccache");
+    std::fs::write(
+        workspace.join("loom.toml"),
+        "[loom]\nsccache_dir = \".loom/sccache\"\n",
+    )
+    .expect("write loom config");
+    host_cache
+}
+
+fn assert_spawn_config_uses_sccache(spawn_copy: &Path, host_cache: &Path) {
+    let bytes = std::fs::read(spawn_copy).expect("shim should copy spawn-config aside");
+    let cfg: loom_driver::agent::SpawnConfig =
+        serde_json::from_slice(&bytes).expect("spawn-config must deserialize");
+    let mount = cfg
+        .mounts
+        .iter()
+        .find(|mount| mount.container_path.as_path() == Path::new("/sccache"))
+        .unwrap_or_else(|| panic!("spawn config missing /sccache mount: {:?}", cfg.mounts));
+    assert_eq!(mount.host_path, host_cache);
+    assert!(
+        host_cache.is_dir(),
+        "host sccache dir must exist before spawn"
+    );
+    assert!(!mount.read_only, "sccache mount must be writable");
+    assert!(
+        cfg.env
+            .iter()
+            .any(|(key, value)| key == "SCCACHE_DIR" && value == "/sccache"),
+        "spawn env missing SCCACHE_DIR=/sccache: {:?}",
+        cfg.env,
+    );
+    assert!(
+        cfg.env
+            .iter()
+            .any(|(key, value)| key == "RUSTC_WRAPPER" && value == "sccache"),
+        "spawn env missing RUSTC_WRAPPER=sccache: {:?}",
+        cfg.env,
+    );
+}
+
 /// Install [`install_bd_bead_stub`] with `bead_json` and return a PATH
 /// value with the stub's bin dir prepended. `loom todo` / `loom loop`
 /// drive bd through `tokio::process::Command::new("bd")`, which is not
@@ -315,6 +356,38 @@ fn wrix_spawn_invocation_records_correct_argv() {
         "initial prompt should reference the spec label. prompt={}",
         cfg.initial_prompt,
     );
+}
+
+#[test]
+fn wrix_spawn_config_includes_configured_sccache_mount_and_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let host_cache = enable_workspace_sccache(workspace);
+
+    let shim_dir = dir.path().join("shim");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    let argv_file = shim_dir.join("argv.txt");
+    let stdin_info = shim_dir.join("stdin-info.txt");
+    let spawn_copy = shim_dir.join("spawn-config.json");
+    let shim = install_wrix_shim(
+        &shim_dir,
+        &argv_file,
+        &stdin_info,
+        &spawn_copy,
+        &mock_pi_path(),
+        "happy-path",
+    );
+
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let output = drive_loom_todo_pi(workspace, &shim, loom_bin);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "loom todo --agent pi must exit 0 against the mock pi shim. stdout={stdout} stderr={stderr}",
+    );
+    assert_spawn_config_uses_sccache(&spawn_copy, &host_cache);
 }
 
 /// The run-time promise from `specs/harness.md` *Run UX & Logging*

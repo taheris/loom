@@ -21,7 +21,7 @@ integration_branch = "main"
 # every cargo invocation pays full cold-build cost.
 # `sccache_container_path` defaults to `/sccache` and is consulted only
 # when `sccache_dir` is set.
-# sccache_dir = "~/.cache/loom-sccache"
+# sccache_dir = ".loom/sccache"
 # sccache_container_path = "/sccache"
 
 [loop]
