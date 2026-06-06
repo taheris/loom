@@ -170,14 +170,12 @@ impl TestScope for EmptyScope {
 /// the matched-runner / per-annotation fallback composition described
 /// in `specs/gate.md` § Runners. `specs` is the resolved
 /// `[runner.check]` table; an empty slice degrades to per-annotation
-/// spawn for every entry (today's behaviour with no `[runner.check]`
-/// config). Returns one result per Check-tier annotation in input
-/// order.
+/// spawn for every entry. Returns one result per Check-tier annotation
+/// in input order.
 ///
-/// The batched path is the one that pays for itself on real specs:
-/// many `cargo run -p loom-walk` invocations collapse to one when the
-/// default `[runner.check]` claims them all. Targets no spec matches
-/// still spawn their own process via the [`run_with_runners`] fallback.
+/// When a runner claims several `cargo run -p loom-walk` targets, they
+/// collapse to one subprocess. Targets no spec matches still spawn
+/// their own process via the [`run_with_runners`] fallback.
 pub fn run_check(
     annotations: &[Annotation],
     specs: &[RunnerSpec],

@@ -272,7 +272,7 @@ fn test_tier_batches_all_targets_into_one_runner_subprocess() {
     let runner = write_script(
         dir.path(),
         "runner.sh",
-        "#!/bin/sh\n# Echo the rendered argv back as evidence so the test can\n# assert the dispatcher collected every target into one call.\nprintf '{\"pass\": true, \"evidence\": \"argv=%s\"}\\n' \"$*\"\n",
+        "#!/bin/sh\nprintf '{\"pass\": true, \"evidence\": \"argv=%s\"}\\n' \"$*\"\n",
     );
 
     let template = RunnerTemplate::new(format!("{runner} {{paths}}"));
@@ -663,7 +663,7 @@ fn run_with_runners_dispatch_fails_targets_missing_from_batch_output() {
     let runner = write_script(
         dir.path(),
         "partial.sh",
-        "#!/bin/sh\n# Only emit a row for the first target; others are silently dropped.\nfirst=\"$1\"\nprintf '{\"target\":\"%s\",\"pass\":true,\"evidence\":\"ok\"}\\n' \"$first\"\n",
+        "#!/bin/sh\nfirst=\"$1\"\nprintf '{\"target\":\"%s\",\"pass\":true,\"evidence\":\"ok\"}\\n' \"$first\"\n",
     );
     let spec = RunnerSpec::compile(
         "partial",
@@ -1012,12 +1012,12 @@ fn run_check_batches_loom_walk_shaped_targets_through_one_runner_spawn() {
         dir.path(),
         "walk-batch.sh",
         &format!(
-            "#!/bin/sh\nprintf 'x\\n' >> \"{counter_path}\"\n# Stand-in for `cargo run -p loom-walk -- {{targets}}`: one\n# verdict line per positional arg, with the target field set so the\n# `json-lines` parser maps each row back to its annotation.\nfor t in \"$@\"; do\n  printf '{{\"target\":\"%s\",\"pass\":true,\"evidence\":\"%s-ok\"}}\\n' \"$t\" \"$t\"\ndone\n"
+            "#!/bin/sh\nprintf 'x\\n' >> \"{counter_path}\"\nfor t in \"$@\"; do\n  printf '{{\"target\":\"%s\",\"pass\":true,\"evidence\":\"%s-ok\"}}\\n' \"$t\" \"$t\"\ndone\n"
         ),
     );
     let spec = RunnerSpec::compile(
         "loom-walk",
-        Some(r"^walk -- (\S+)$"),
+        Some(r"^cargo run -p loom-walk -- (\S+)$"),
         format!("{runner} {{targets}}"),
         "{capture_1}",
         " ",
@@ -1026,8 +1026,8 @@ fn run_check_batches_loom_walk_shaped_targets_through_one_runner_spawn() {
     )
     .unwrap();
     let inputs = vec![
-        ann(Tier::Check, "walk -- alpha"),
-        ann(Tier::Check, "walk -- beta"),
+        ann(Tier::Check, "cargo run -p loom-walk -- alpha"),
+        ann(Tier::Check, "cargo run -p loom-walk -- beta"),
     ];
     let opts = DispatchOptions::default();
     let results = run_check(&inputs, &[spec], &opts, dir.path(), &TierCwds::default());
@@ -1036,12 +1036,18 @@ fn run_check_batches_loom_walk_shaped_targets_through_one_runner_spawn() {
     let first = results[0].as_ref().unwrap();
     assert!(first.verdict.pass);
     assert_eq!(first.verdict.evidence, "alpha-ok");
-    assert_eq!(first.annotations[0].target, "walk -- alpha");
+    assert_eq!(
+        first.annotations[0].target,
+        "cargo run -p loom-walk -- alpha"
+    );
 
     let second = results[1].as_ref().unwrap();
     assert!(second.verdict.pass);
     assert_eq!(second.verdict.evidence, "beta-ok");
-    assert_eq!(second.annotations[0].target, "walk -- beta");
+    assert_eq!(
+        second.annotations[0].target,
+        "cargo run -p loom-walk -- beta"
+    );
 
     let observed_subprocess_count = fs::read_to_string(&counter).unwrap().lines().count();
     assert_eq!(
@@ -1052,9 +1058,7 @@ fn run_check_batches_loom_walk_shaped_targets_through_one_runner_spawn() {
 
 /// Mixed batch — annotations the runner regex claims go through one
 /// batched spawn; everything else falls through to per-annotation
-/// dispatch (today's behaviour for non-walk `[check]` shapes like
-/// grep/bash). Verifies the bead's "1 batched runner + N fallback
-/// spawns" composition.
+/// dispatch for non-walk `[check]` shapes like grep/bash.
 #[test]
 fn run_check_mixes_runner_batch_with_per_annotation_fallback() {
     let dir = fixture_dir();
@@ -1071,7 +1075,7 @@ fn run_check_mixes_runner_batch_with_per_annotation_fallback() {
 
     let spec = RunnerSpec::compile(
         "loom-walk",
-        Some(r"^walk -- (\S+)$"),
+        Some(r"^cargo run -p loom-walk -- (\S+)$"),
         format!("{runner} {{targets}}"),
         "{capture_1}",
         " ",
@@ -1080,9 +1084,9 @@ fn run_check_mixes_runner_batch_with_per_annotation_fallback() {
     )
     .unwrap();
     let inputs = vec![
-        ann(Tier::Check, "walk -- alpha"),
+        ann(Tier::Check, "cargo run -p loom-walk -- alpha"),
         ann(Tier::Check, &fallback),
-        ann(Tier::Check, "walk -- beta"),
+        ann(Tier::Check, "cargo run -p loom-walk -- beta"),
     ];
     let opts = DispatchOptions::default();
     let results = run_check(&inputs, &[spec], &opts, dir.path(), &TierCwds::default());
@@ -1090,7 +1094,10 @@ fn run_check_mixes_runner_batch_with_per_annotation_fallback() {
 
     let batched_a = results[0].as_ref().unwrap();
     assert_eq!(batched_a.verdict.evidence, "batched");
-    assert_eq!(batched_a.annotations[0].target, "walk -- alpha");
+    assert_eq!(
+        batched_a.annotations[0].target,
+        "cargo run -p loom-walk -- alpha"
+    );
 
     let fallback_result = results[1].as_ref().unwrap();
     assert_eq!(
@@ -1100,12 +1107,15 @@ fn run_check_mixes_runner_batch_with_per_annotation_fallback() {
 
     let batched_b = results[2].as_ref().unwrap();
     assert_eq!(batched_b.verdict.evidence, "batched");
-    assert_eq!(batched_b.annotations[0].target, "walk -- beta");
+    assert_eq!(
+        batched_b.annotations[0].target,
+        "cargo run -p loom-walk -- beta"
+    );
 }
 
 /// Empty `specs` slice degrades cleanly to per-annotation spawn for
-/// every `[check]` entry — the pre-bead behaviour. Other-tier
-/// annotations in the input are filtered out before dispatch.
+/// every `[check]` entry. Other-tier annotations in the input are
+/// filtered out before dispatch.
 #[test]
 fn run_check_with_empty_specs_falls_back_to_per_annotation_for_every_target() {
     let dir = fixture_dir();
