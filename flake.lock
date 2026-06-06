@@ -171,10 +171,10 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1780698113,
-        "narHash": "sha256-24v1MqSqguuuGVRHHtoNdCwgH1yewpuYXfiu1YjrEm0=",
+        "lastModified": 1780744800,
+        "narHash": "sha256-n5wk+a5aA1YRqyuk53EjbqQRK/5rFJ6USp3U9+I2siI=",
         "ref": "main",
-        "rev": "84dd7eb9c094d6cd3b621690babb770b8a07ddd4",
+        "rev": "cbc187ce00aa197e153469392db893bc12773553",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrix.git"

@@ -981,10 +981,13 @@ cause `post-integrate-fail`. On audit-pass, the bead's integration
 is durable and the lock is released — any findings mint emits
 become bonded fix-up beads in the molecule and are picked up by
 the next `loom loop` iteration; they do not trigger rollback. A
-structural mint failure (dispatch error, duplicate fingerprint
+structural mint failure (dispatch error, duplicate stable finding
 label, conflicting epic state) refuses the mint and surfaces the
-conflicting bead ids; integration stays durable, the operator
-clears the conflict before re-running.
+conflicting bead ids; integration stays durable. The completed bead
+is parked as `loom:blocked` with cause `mint-structural-violation`,
+never re-clarified unless a separate options-shaped clarify finding
+was actually minted. The operator clears the conflict before
+re-running.
 
 Molecule-completion push gate runs at the **loom workspace** after
 all beads in the molecule have integrated: full audit
@@ -1135,17 +1138,29 @@ when the bead's own exit signals were clean:
 | Signature verification pass 1 (fetched commits) | `signature-verification-failed` | side = `worker` | `loom:blocked` — operator investigates wrix container signing setup |
 | Rebase | `integration-conflict` | `{ files, new_base_sha }` | one agent-retry pass; second failure escalates to `loom:clarify` (same cause) |
 | Signature verification pass 2 (rewritten commits) | `signature-verification-failed` | side = `driver` | `loom:blocked` — operator investigates loom-workspace gitconfig + key resolution |
-| Audit (`prek run --hook-stage pre-push` + verify) | `post-integrate-fail` | `Vec<VerifierFailure>` | rollback via `git reset --hard HEAD~1`; route to recovery so next iteration sees the cross-bead breakage |
+| Audit (`prek run --hook-stage pre-push` + verify) | `post-integrate-fail` | `{ failures: Vec<VerifierFailure>, gate_log_path }` | rollback via `git reset --hard HEAD~1`; route to recovery so next iteration sees the cross-bead breakage |
 
 `post-integrate-fail` covers cross-bead interactions (bead A's API
 change breaks tests bead B introduced earlier in the molecule),
 rebase-induced breakage, and integration-tree state that no
-bead-workspace verify could anticipate. The recovery prompt
-includes the audit's specific failures (verify failures, review
-concern, or both) so the next iteration can address the cross-bead
-interaction. Other beads in the molecule that haven't integrated
-yet continue to be dispatched; their integrations queue at
-`index.lock` after recovery resolves.
+bead-workspace verify could anticipate. The recovery prompt includes
+the audit's specific verifier failures so the next iteration can
+address the cross-bead interaction.
+Other beads in the molecule that haven't integrated yet continue to
+be dispatched; their integrations queue at `index.lock` after
+recovery resolves.
+
+**Durable post-integrate gate logs.** Every post-integration gate
+invocation that can fail after the bead branch was ff-merged writes a
+durable gate log before rollback or cleanup. The log is preserved
+under `.loom/logs/gate/` (or an equivalent gate-log root) and records:
+command argv, scope flag, exit code, stdout, stderr, parsed terminal
+marker when applicable, integration SHA, bead id, retry attempt,
+rollback state, and the log path. The corresponding `driver_event`
+payload and rendered summary name the log path so `loom msg` and
+operators can inspect the exact failing verifier output without
+reconstructing the rolled-back integration state. Retry attempts use
+distinct log files.
 
 `integration-conflict` carries the conflict file list and the new
 integration tip SHA so the agent's next dispatch can rebase its
@@ -1339,13 +1354,13 @@ capped, total truncated to `PREVIOUS_FAILURE_MAX_LEN = 4000` chars):
 | `tree-not-clean` | `TreeNotClean { dirty_paths: Vec<String> }` | "Working tree was not clean after the bead committed: <N> uncommitted path(s). Stage them into a follow-up commit or revert them." Path list is capped at 30 entries; the truncation suffix names the overflow count. |
 | `observer-abort` | `DriverNotice` | "Session aborted by `<observer name>`: `<reason>`." |
 | `verify-fail` | `VerifyFailures(Vec<VerifierFailure>)` | One `VerifierFailure { target, exit_code, stderr_tail }` per failing `[check]` / `[test]` / `[system]` verifier. All failing verifiers are included; the budget is split across them with later failures truncated first; each `stderr_tail` is capped at ~1500 chars before split. If `review` also raised a concern, its reasoning is set as `review_notes` (separate ~1000-char budget) rendered under a `Review notes:` heading. |
-| `review-concern` | `ReviewConcern { summary: String, findings: Vec<Finding> }` | Summary is the parsed `summary` field from the terminal `LOOM_CONCERN: {"summary": "..."}` marker. `findings` is the buffered list of `LOOM_FINDING:` records the walk streamed before the terminator (per the typed `Finding` record in [gate.md § Findings and Minting](gate.md#findings-and-minting)). Per-finding tokens drive `mint`'s routing: clarify-bound findings mint as single-finding clarify beads (one per finding), all other findings bundle into per-spec fix-up batches (one batch per lead-spec). The recovery prompt renders the summary plus a one-line-per-finding `evidence` digest. The in-code recovery cause is `RecoveryCause::ReviewConcern`. |
+| `review-concern` | `ReviewConcern { summary: String, findings: Vec<Finding> }` | Summary is the parsed `summary` field from the terminal `LOOM_CONCERN: {"summary": "..."}` marker. `findings` is the buffered list of unsuppressed `LOOM_FINDING:` records after rubric suppression filtering (per the typed `Finding` record in [gate.md § Findings and Minting](gate.md#findings-and-minting)); a well-formed concern whose findings are all suppressed becomes a clean effective review, not this cause. Per-finding tokens drive `mint`'s routing: clarify-bound findings mint as single-finding clarify beads (one per finding), all other findings bundle into per-spec fix-up batches (one batch per lead-spec). The recovery prompt renders the summary plus a one-line-per-finding `evidence` digest. The in-code recovery cause is `RecoveryCause::ReviewConcern`. |
 | `bad-walk` (concern-malformed) | `BadWalk(BadWalk::Concern { payload: String, parsed_findings: Vec<Finding> })` | "Your `LOOM_CONCERN:` payload did not parse as `{"summary": "<non-empty>"}`. Literal payload after the marker: `<payload>`." When `parsed_findings` is non-empty, append a per-finding digest so the agent's diagnosis from the well-formed streamed findings is not lost. Wrapped-enum pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)`. |
 | `bad-walk` (concern-without-findings) | `BadWalk(BadWalk::ConcernWithoutFindings { summary: String })` | "You emitted `LOOM_CONCERN` with summary `<summary>` but no `LOOM_FINDING:` lines streamed. Either emit findings before the terminator or terminate with `LOOM_COMPLETE`." |
 | `bad-walk` (findings-without-concern) | `BadWalk(BadWalk::FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> })` | "You streamed `<finding_count>` `LOOM_FINDING:` line(s) but terminated with `LOOM_COMPLETE`. Use `LOOM_CONCERN: {"summary": "..."}` when findings are emitted." Per-finding digest of `findings` is appended so the agent's next iteration sees the diagnosis it just emitted. |
 | `bad-walk` (malformed-finding) | `BadWalk(BadWalk::MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface })` | "One or more `LOOM_FINDING:` lines failed parse." Per-line errors are enumerated; the well-formed terminal is rendered alongside so the agent fixes the malformation (typically: drop the surrounding markdown fence) without losing the surrounding well-formed context. This is the variant that fires on backtick-wrapped finding lines whose JSON otherwise would have parsed. |
 | `integration-conflict` | `IntegrationConflict { files: Vec<PathBuf>, new_base_sha: GitOid }` | "Your bead branch could not be rebased onto integration — files conflict: <files>. The new integration tip is <new_base_sha>. Rebase your bead workspace onto the new tip, resolve, and re-commit." Single-retry cap (not full `[loop] max_retries`); a second rebase-conflict escalates the bead to `loom:clarify` with the same cause. The `signature-verification-failed` cause does **not** appear in this table because it routes to `loom:blocked` immediately without an agent-retry pass — there is no next dispatch and thus no `PreviousFailure` context. |
-| `post-integrate-fail` | `PostIntegrateFail { failures: Vec<VerifierFailure> }` | "After your bead was rebased onto the integration branch and ff'd, the post-integration verify failed at the loom workspace. The integration was rolled back. Specific failure: <verifier-failure blocks>." Used for cross-bead interaction breakage where the bead-workspace verify passed but the integrated tree's verify failed. Per-bead does not run `loom gate review` (per the per-bead step composition described above), so review-style concerns are not a `post-integrate-fail` cause — they fire at the molecule-completion push gate via `GateFailReason`. Capped at the shared `PREVIOUS_FAILURE_MAX_LEN` budget. |
+| `post-integrate-fail` | `PostIntegrateFail { failures: Vec<VerifierFailure>, gate_log_path: PathBuf }` | "After your bead was rebased onto the integration branch and ff'd, the post-integration verify failed at the loom workspace. The integration was rolled back. Gate log: <path>. Specific failure: <verifier-failure blocks>." Used for cross-bead interaction breakage where the bead-workspace verify passed but the integrated tree's verify failed. Per-bead does not run `loom gate review` (per the per-bead step composition described above), so review-style concerns are not a `post-integrate-fail` cause — they fire at the molecule-completion push gate via `GateFailReason`. Capped at the shared `PREVIOUS_FAILURE_MAX_LEN` budget; the path is outside the truncation budget. |
 | `agent-retry` | `AgentRetry { reason: String }` | "Previous attempt requested retry: <reason>. A fresh dispatch was scheduled." `reason` is the verbatim prose the agent wrote on the line preceding `LOOM_RETRY` (environmental detail or stuck-on-approach summary). Consumes one `[loop] max_retries` slot; on exhaustion the molecule escalates to `loom:blocked` with cause `retry-exhausted`. The recovery prompt instructs the retry attempt to escalate to `LOOM_BLOCKED` (no candidate resolutions) or `LOOM_CLARIFY` (with `## Options — …`) if the same problem persists rather than emitting `LOOM_RETRY` again. |
 
 When `previous_failure.is_some() && attempt > 0`, the `loop.md`
@@ -1604,18 +1619,21 @@ its `pub` visibility.
 pub struct GateSuccess {
     pub verify_exit: i32,            // always 0 by construction
     pub review_exit: i32,            // always 0
-    pub review_marker: ExitSignal,   // always ExitSignal::Complete
+    pub review_marker: ExitSignal,   // effective marker after suppression;
+                                     //   always ExitSignal::Complete
     pub review_log_path: PathBuf,    // file exists, non-empty, last line
-                                     //   is a terminal AgentEvent matching marker
+                                     //   is terminal evidence for the effective marker
     pub total_handoffs: u32,         // >= 1
     _private: (),                    // structural seal — no struct-literal path
 }
 
 impl GateSuccess {
     /// Asserts: verify_exit == 0, review_exit == 0,
-    /// review_marker == ExitSignal::Complete, review_log_path exists,
-    /// file size > 0, last line parses as a terminal AgentEvent whose
-    /// marker matches review_marker, total_handoffs >= 1.
+    /// effective review_marker == ExitSignal::Complete after rubric
+    /// suppression filtering, review_log_path exists, file size > 0,
+    /// last line parses as a terminal AgentEvent that is valid evidence
+    /// for the effective marker (raw Complete, or raw Concern whose
+    /// findings all suppress), total_handoffs >= 1.
     /// Any failure returns Err(GateFail::new(...)).
     pub fn new(...) -> Result<Self, GateFail> { ... }
 }
@@ -2996,11 +3014,12 @@ Criteria.
   [test](loom_loop_exit_code_is_function_of_gate_outcome_variant)
 - `GateSuccess` is constructible only by the gate-invocation code
       (`pub(crate)` constructor, no struct-literal path) and only
-      when verify_exit == 0, review_exit == 0, review_marker ==
+      when verify_exit == 0, review_exit == 0, the effective
+      review_marker after rubric suppression filtering is
       ExitSignal::Complete, review_log_path exists, file is
-      non-empty, and last line is a terminal AgentEvent matching
-      review_marker; any condition failing returns `GateFail`
-      instead
+      non-empty, and last line is terminal evidence for that effective
+      marker (raw Complete, or raw Concern whose findings all
+      suppress); any condition failing returns `GateFail` instead
   [test](gate_success_constructor_asserts_every_evidence_condition)
 - Every `loom loop` returning `LoopOutcome { gate: Success(r), .. }`
       produces a non-empty `review-*.jsonl` at `r.review_log_path`,
@@ -3041,20 +3060,40 @@ Criteria.
       `GateFail` variant per [Loop Outcome
       Types](#loop-outcome-types)
   [test](handoff_evidence_populates_marker_and_log_path)
-- When the molecule-completion review produces ≥1 streamed
-      `LOOM_FINDING:` line and a `LOOM_CONCERN:` terminator, the
-      parsed `Vec<Finding>` rides through `PreviousFailure::ReviewConcern
-      { summary, findings }` into the next bead-attempt's recovery
-      prompt. Mint does NOT fire at molecule completion (per
-      [gate.md § Stages](gate.md#stages) — push is `audit`,
-      inspection-only); fix-ups are minted at the per-bead step only
-  [test](molecule_completion_review_threads_findings_into_previous_failure_review_concern)
+- When the molecule-completion review produces ≥1 unsuppressed
+      streamed `LOOM_FINDING:` line and a `LOOM_CONCERN:` terminator,
+      the parsed `Vec<Finding>` rides through
+      `PreviousFailure::ReviewConcern { summary, findings }` into the
+      next bead-attempt's recovery prompt. If every streamed finding is
+      suppressed, the effective review marker is Complete and no
+      recovery prompt is produced. Mint does NOT fire at molecule
+      completion (per [gate.md § Stages](gate.md#stages) — push is
+      `audit`, inspection-only); fix-ups are minted at the per-bead
+      step only
+  [test?](molecule_completion_review_threads_unsuppressed_findings_only)
 - A per-bead `loom gate mint --bead <id>` exit with `refused > 0`
       causes the loop to route the bead to `loom:blocked` with cause
       `mint-structural-violation` and the conflicting `bd` ids in the
       cause detail; the bead's loop-phase commit is not unwound (the
       integration is already durable)
   [test](loop_per_bead_routes_mint_refused_to_loom_blocked_with_structural_cause)
+- A cleanly merged bead whose per-bead verify passed is never
+      re-labelled `loom:clarify` solely because `loom gate mint --bead`
+      exits non-zero; structural mint refusal parks it as blocked, and
+      transient mint errors route through bounded recovery / blocked
+      exhaustion
+  [test?](clean_merged_bead_not_reclarified_on_per_bead_mint_failure)
+- A synthetic post-integrate audit failure writes a durable gate log
+      under `.loom/logs/gate/` (or equivalent) containing command argv,
+      scope, exit code, stdout, stderr, terminal marker when present,
+      integration SHA, bead id, retry attempt, rollback state, and log
+      path
+  [test?](post_integrate_audit_failure_writes_durable_gate_log)
+- The `driver_event` emitted for `post-integrate-fail` names the gate
+      log path in its payload / rendered summary, and retry attempts
+      produce distinct log paths while successful integration flow is
+      unchanged
+  [test?](post_integrate_fail_driver_event_names_gate_log_path)
 - A per-bead `loom gate mint --bead <id>` exit with `errors > 0`
       threads the mint summary's error detail into `PreviousFailure`
       and re-runs through the existing per-bead recovery loop bounded
