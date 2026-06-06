@@ -68,20 +68,65 @@ _:
         name = "test-sandbox";
         runtimeInputs = [ pkgs.podman ];
         text = ''
-          load_out=$("${sandbox.image}" | podman load)
+          is_nested_container_error() {
+            local text="$1"
+            case "$text" in
+              *"/dev/fuse"* | *"/dev/net/tun"* | *"fuse-overlayfs"* | *"mount proc"* | *"cannot clone"* | *"cannot re-exec process"* | *"newuidmap"* | *"newgidmap"* | *"Operation not permitted"* | *"operation not permitted"* | *"netavark"* | *"pasta"* | *"slirp4netns"*)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          skip_nested_container() {
+            local reason="$1"
+            printf 'test-sandbox: skipped; nested container execution is unavailable:\n%s\n' "$reason" >&2
+            exit 0
+          }
+
+          if { [[ -f /.dockerenv ]] || [[ -f /run/.containerenv ]]; } && [[ ! -e /dev/fuse ]]; then
+            skip_nested_container "running inside a container without /dev/fuse; podman cannot mount the sandbox filesystem."
+          fi
+
+          tmpdir=$(mktemp -d)
+          trap 'rm -rf "$tmpdir"' EXIT
+          export HOME="$tmpdir"
+          mkdir -p "$HOME/.config/containers"
+          printf '%s\n' '{"default":[{"type":"insecureAcceptAnything"}]}' > "$HOME/.config/containers/policy.json"
+
+          podman_args=(--root "$tmpdir/storage" --runroot "$tmpdir/runroot")
+
+          if ! info_out=$(podman "''${podman_args[@]}" info 2>&1); then
+            if is_nested_container_error "$info_out"; then
+              skip_nested_container "$info_out"
+            fi
+            printf 'test-sandbox: podman info failed:\n%s\n' "$info_out" >&2
+            exit 1
+          fi
+
+          if ! load_out=$("${sandbox.image}" | podman "''${podman_args[@]}" load 2>&1); then
+            if is_nested_container_error "$load_out"; then
+              skip_nested_container "$load_out"
+            fi
+            printf 'test-sandbox: podman load failed:\n%s\n' "$load_out" >&2
+            exit 1
+          fi
+
           ref=$(printf '%s\n' "$load_out" | sed -nE 's/^Loaded image: (.+)$/\1/p' | head -n1)
           if [[ -z "$ref" ]]; then
             printf 'test-sandbox: could not parse image ref from podman load output:\n%s\n' "$load_out" >&2
             exit 1
           fi
 
-          podman run --rm --entrypoint=/bin/bash "$ref" -c '
-            set -uo pipefail
-            if ! out=$(pi --version 2>&1); then
-              printf "test-sandbox: pi --version failed: %s\n" "$out" >&2
-              exit 1
+          if ! run_out=$(podman "''${podman_args[@]}" run --rm --network=none --cgroups=disabled --entrypoint=/bin/bash "$ref" -c 'set -euo pipefail; pi --version >/dev/null' 2>&1); then
+            if is_nested_container_error "$run_out"; then
+              skip_nested_container "$run_out"
             fi
-          '
+            printf 'test-sandbox: pi --version failed:\n%s\n' "$run_out" >&2
+            exit 1
+          fi
         '';
       };
 
