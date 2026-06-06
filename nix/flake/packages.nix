@@ -19,6 +19,7 @@
 
         debug = debugSandbox.package;
         sandbox = sandbox.package;
+        sandbox-image = sandbox.image;
 
         # Pinned wrix source, exposed so spec verifiers in this repo can
         # grep against the same `lib/sandbox/linux/entrypoint.sh` the
