@@ -194,15 +194,11 @@ pub fn run_check(
 }
 
 /// Dispatch every `[system]`-tier annotation in `annotations`. One
-/// subprocess per annotation — `[system]` execution stays per-annotation
-/// per `specs/gate.md` § Runners (system verifiers are slow and
-/// self-contained, so batching does not pay). A matched runner does not
-/// batch execution, but its `cwd` still resolves the per-spawn working
-/// directory: the matched-runner > tier-default > repo-root chain (§
-/// Runners) applies to `[system]` exactly as to `[check]`, since that
-/// section carves `[system]` out only for batching and input-query, never
-/// for cwd. The annotation's literal target is spawned (never the runner's
-/// `command` template).
+/// subprocess spawns per annotation — `[system]` execution stays
+/// per-annotation per `specs/gate.md` § Runners (system verifiers are slow
+/// and self-contained, so batching does not pay). A matched runner owns
+/// invocation construction via its `command` template, but the template is
+/// rendered for exactly one target per spawn.
 pub fn run_system(
     annotations: &[Annotation],
     specs: &[RunnerSpec],
@@ -210,17 +206,60 @@ pub fn run_system(
     repo_root: &Path,
     tier_cwds: &TierCwds,
 ) -> Vec<Result<DispatchOutcome, DispatchError>> {
-    annotations
+    let system_only: Vec<Annotation> = annotations
         .iter()
         .filter(|a| a.tier == Tier::System && !a.pending)
-        .map(|a| {
-            let runner_cwd = specs
-                .iter()
-                .find(|s| s.matches(&a.target))
-                .and_then(|s| s.cwd.as_deref());
-            let cwd = resolve_cwd(runner_cwd, tier_cwds.for_tier(Tier::System), repo_root);
-            run_single_in(a, options, cwd.as_deref())
-        })
+        .cloned()
+        .collect();
+    run_system_with_runners(&system_only, specs, options, repo_root, tier_cwds)
+}
+
+fn run_system_with_runners(
+    annotations: &[Annotation],
+    specs: &[RunnerSpec],
+    options: &DispatchOptions,
+    repo_root: &Path,
+    tier_cwds: &TierCwds,
+) -> Vec<Result<DispatchOutcome, DispatchError>> {
+    let (groups, unmatched) = group_by_runner(specs, annotations);
+    let mut per_index: Vec<Option<Result<DispatchOutcome, DispatchError>>> =
+        (0..annotations.len()).map(|_| None).collect();
+    let position_of: std::collections::HashMap<*const Annotation, usize> = annotations
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (a as *const Annotation, i))
+        .collect();
+
+    for group in groups {
+        for matched in &group.matched {
+            let single = RunnerGroup {
+                spec: group.spec,
+                matched: vec![matched.clone()],
+            };
+            let result = dispatch_group(&single, options, repo_root, tier_cwds)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| {
+                    Err(DispatchError::MissingFromBatchOutput {
+                        runner: group.spec.name.clone(),
+                        target: matched.rendered_target.clone(),
+                    })
+                });
+            if let Some(&idx) = position_of.get(&(matched.annotation as *const Annotation)) {
+                per_index[idx] = Some(result);
+            }
+        }
+    }
+    for ann in unmatched {
+        if let Some(&idx) = position_of.get(&(ann as *const Annotation)) {
+            let cwd = resolve_cwd(None, tier_cwds.for_tier(ann.tier), repo_root);
+            per_index[idx] = Some(run_single_in(ann, options, cwd.as_deref()));
+        }
+    }
+
+    per_index
+        .into_iter()
+        .map(|slot| slot.unwrap_or(Err(DispatchError::EmptyTarget { tier: Tier::System })))
         .collect()
 }
 

@@ -863,31 +863,74 @@ fn run_system_resolves_tier_default_cwd() {
 }
 
 /// A `[runner.system.<name>]` block that matches a `[system]` target owns
-/// its `cwd` (step 1 of the matched-runner > tier-default > repo-root
-/// chain). Execution stays per-annotation: the annotation's literal target
-/// is spawned, the runner's `command` template is ignored — only its cwd
-/// applies.
+/// invocation construction. Execution stays per-annotation, so the
+/// runner's command template is rendered once per matched annotation.
+#[test]
+fn run_system_renders_matched_runner_command_per_annotation() {
+    let dir = fixture_dir();
+    let counter = dir.path().join("system-runner-spawns.txt");
+    fs::write(&counter, "").unwrap();
+    let counter_path = counter.display();
+    let runner = dir.path().join("system-runner.sh");
+    fs::write(
+        &runner,
+        format!(
+            "#!/usr/bin/env bash\nset -euo pipefail\ntarget=\"$1\"\nprintf 'x\\n' >> \"{counter_path}\"\nprintf '{{\"target\":\"%s\",\"pass\":true,\"evidence\":\"%s\"}}\\n' \"$target\" \"$target\"\n"
+        ),
+    )
+    .unwrap();
+    let spec = RunnerSpec::compile(
+        "sys",
+        Some(r"^sys:(\S+)$"),
+        format!("bash {} {{targets}}", runner.display()),
+        "{capture_1}",
+        " ",
+        BuiltinParser::JsonLines,
+        None,
+    )
+    .unwrap();
+    let inputs = vec![
+        ann(Tier::System, "sys:alpha"),
+        ann(Tier::System, "sys:beta"),
+    ];
+    let opts = DispatchOptions::default();
+    let results = run_system(&inputs, &[spec], &opts, dir.path(), &TierCwds::default());
+    assert_eq!(results.len(), 2);
+
+    let first = results[0].as_ref().unwrap();
+    assert!(first.verdict.pass);
+    assert_eq!(first.verdict.evidence, "alpha");
+
+    let second = results[1].as_ref().unwrap();
+    assert!(second.verdict.pass);
+    assert_eq!(second.verdict.evidence, "beta");
+
+    let spawns = fs::read_to_string(&counter).unwrap().lines().count();
+    assert_eq!(spawns, 2, "system runner must spawn once per annotation");
+}
+
 #[test]
 fn run_system_resolves_matched_runner_cwd() {
     let dir = fixture_dir();
     let subdir_name = "sys-runner-cwd";
     std::fs::create_dir(dir.path().join(subdir_name)).unwrap();
-    let probe = write_script(
-        dir.path(),
-        "sys-runner-probe.sh",
-        "#!/bin/sh\nprintf '{\"pass\": true, \"evidence\": \"%s\"}\\n' \"$PWD\"\n",
-    );
+    let runner = dir.path().join("system-runner-cwd.sh");
+    fs::write(
+        &runner,
+        "#!/usr/bin/env bash\nset -euo pipefail\ntarget=\"$1\"\nprintf '{\"target\":\"%s\",\"pass\":true,\"evidence\":\"%s\"}\\n' \"$target\" \"$PWD\"\n",
+    )
+    .unwrap();
     let spec = RunnerSpec::compile(
         "sys",
-        Some(r"^sh "),
-        "this-command-template-is-never-executed-for-system {targets}",
-        "{name}",
+        Some(r"^sys:(\S+)$"),
+        format!("bash {} {{targets}}", runner.display()),
+        "{capture_1}",
         " ",
         BuiltinParser::JsonLines,
         Some(PathBuf::from(subdir_name)),
     )
     .unwrap();
-    let inputs = vec![ann(Tier::System, &probe)];
+    let inputs = vec![ann(Tier::System, "sys:alpha")];
     let opts = DispatchOptions::default();
     let results = run_system(&inputs, &[spec], &opts, dir.path(), &TierCwds::default());
     let outcome = results[0].as_ref().unwrap();
