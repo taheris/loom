@@ -201,11 +201,11 @@ impl ConcernToken {
     /// tokens and target variants* and § *Scope-dependent walk*:
     ///
     /// - `template-spec-drift` / `verifier-failed` / `dispatch-error` /
-    ///   `unresolved-annotation` / `stub-pointing` /
-    ///   `multiple-annotations` / `unneeded-pending-marker` /
-    ///   `inputs-protocol-error` are emitted only at `--tree` scope
-    ///   (deterministic verifier dispatch and integrity-gate sources
-    ///   run only there).
+    ///   `multiple-annotations` are emitted only at `--tree` scope.
+    /// - `unresolved-annotation` / `stub-pointing` /
+    ///   `unneeded-pending-marker` / `inputs-protocol-error` are emitted
+    ///   at standing `--tree` scope and molecule-completion push-gate
+    ///   scope.
     /// - `scope-creep` / `scope-shortfall` are per-bead-only — the
     ///   tree-scope walk never emits them.
     /// - Everything else is admissible at any scope.
@@ -217,11 +217,11 @@ impl ConcernToken {
             | Self::SpecConventionsViolation
             | Self::VerifierFailed
             | Self::DispatchError
-            | Self::UnresolvedAnnotation
+            | Self::MultipleAnnotations => ScopeKind::TreeOnly,
+            Self::UnresolvedAnnotation
             | Self::StubPointing
-            | Self::MultipleAnnotations
             | Self::UnneededPendingMarker
-            | Self::InputsProtocolError => ScopeKind::TreeOnly,
+            | Self::InputsProtocolError => ScopeKind::TreeAndPushGate,
             Self::ScopeCreep | Self::ScopeShortfall => ScopeKind::PerBead,
             Self::SpecCoherenceFail
             | Self::OrphanIntegration
@@ -239,18 +239,23 @@ impl ConcernToken {
     }
 }
 
-/// Dispatch scope the parse pipeline ran under — `--bead` / `--diff` /
-/// `--files` collapse to [`Self::PerBead`]; `--tree` is [`Self::Tree`].
-/// Threaded into [`Finding::parse_payload`], [`WalkOutput::from_stdout`],
-/// and [`parse_walk_output`] so token-scope alignment is enforced at the
-/// wire boundary per `specs/gate.md` § *Concern tokens and target
-/// variants* (criterion `tree_scope_only_tokens_rejected_at_non_tree_scope`).
+/// Dispatch scope the parse pipeline ran under — `--bead` / regular
+/// `--diff` / `--files` collapse to [`Self::PerBead`]; `--tree` is
+/// [`Self::Tree`]; molecule-completion integrity recovery uses
+/// [`Self::PushGate`]. Threaded into [`Finding::parse_payload`],
+/// [`WalkOutput::from_stdout`], and [`parse_walk_output`] so token-scope
+/// alignment is enforced at the wire boundary per `specs/gate.md` §
+/// *Concern tokens and target variants*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchScope {
-    /// `--bead <id>` / `--diff <range>` / `--files <paths>` — the
-    /// per-bead walks. Tree-scope-only tokens (verifier / integrity
-    /// surfaces, template-spec-drift, etc.) are rejected.
+    /// `--bead <id>` / ordinary `--diff <range>` / `--files <paths>` —
+    /// the per-bead walks. Tree/push-gate integrity tokens and tree-only
+    /// rubric tokens are rejected.
     PerBead,
+    /// Molecule-completion push-gate integrity recovery. Admits the
+    /// integrity tokens that also run at standing tree scope, but rejects
+    /// tree-only rubric/verifier tokens and per-bead-only tokens.
+    PushGate,
     /// `--tree` — the standing-safety-net walk. Per-bead-only tokens
     /// (`scope-creep`, `scope-shortfall`) are rejected.
     Tree,
@@ -262,6 +267,7 @@ impl DispatchScope {
     pub fn label(self) -> &'static str {
         match self {
             Self::PerBead => "per-bead",
+            Self::PushGate => "push-gate",
             Self::Tree => "tree",
         }
     }
@@ -275,9 +281,12 @@ pub enum ScopeKind {
     /// `--files`); rejected at `--tree`.
     PerBead,
     /// Emitted only at `--tree` dispatch scope (deterministic verifier
-    /// dispatch, integrity-gate surfaces, tree-only rubric checks);
-    /// rejected at per-bead scopes.
+    /// dispatch and tree-only rubric checks); rejected at per-bead and
+    /// push-gate scopes.
     TreeOnly,
+    /// Emitted at standing `--tree` scope and molecule-completion
+    /// push-gate scope; rejected at regular per-bead review scopes.
+    TreeAndPushGate,
     /// Admissible at any dispatch scope.
     AnyScope,
 }
@@ -290,10 +299,11 @@ impl ScopeKind {
         match (self, scope) {
             (Self::AnyScope, _)
             | (Self::PerBead, DispatchScope::PerBead)
-            | (Self::TreeOnly, DispatchScope::Tree) => true,
-            (Self::PerBead, DispatchScope::Tree) | (Self::TreeOnly, DispatchScope::PerBead) => {
-                false
-            }
+            | (Self::TreeOnly, DispatchScope::Tree)
+            | (Self::TreeAndPushGate, DispatchScope::Tree | DispatchScope::PushGate) => true,
+            (Self::PerBead, DispatchScope::Tree | DispatchScope::PushGate)
+            | (Self::TreeOnly, DispatchScope::PerBead | DispatchScope::PushGate)
+            | (Self::TreeAndPushGate, DispatchScope::PerBead) => false,
         }
     }
 
@@ -303,6 +313,7 @@ impl ScopeKind {
         match self {
             Self::PerBead => "per-bead-only",
             Self::TreeOnly => "tree-only",
+            Self::TreeAndPushGate => "tree-and-push-gate",
             Self::AnyScope => "any-scope",
         }
     }
@@ -2424,6 +2435,7 @@ mod tests {
             let dispatch_scope = match token.scope_kind() {
                 ScopeKind::PerBead => DispatchScope::PerBead,
                 ScopeKind::TreeOnly | ScopeKind::AnyScope => DispatchScope::Tree,
+                ScopeKind::TreeAndPushGate => DispatchScope::PushGate,
             };
             for terminator in terminators {
                 let output = format!(
@@ -2469,10 +2481,10 @@ mod tests {
     /// tokens whose [`ConcernToken::scope_kind`] is
     /// [`ScopeKind::TreeOnly`] surface a typed
     /// [`FindingParseError::TokenScopeMismatch`] when parsed at
-    /// per-bead dispatch scope, and per-bead-only tokens
+    /// non-tree dispatch scopes, and per-bead-only tokens
     /// (`scope-creep` / `scope-shortfall`) surface the same error at
-    /// tree dispatch scope. Anywhere-admissible tokens pass at both
-    /// scopes.
+    /// tree and push-gate dispatch scopes. Anywhere-admissible tokens
+    /// pass at all scopes.
     #[test]
     fn tree_scope_only_tokens_rejected_at_non_tree_scope() {
         let gate = spec("gate");
@@ -2484,11 +2496,7 @@ mod tests {
             ConcernToken::SpecConventionsViolation,
             ConcernToken::VerifierFailed,
             ConcernToken::DispatchError,
-            ConcernToken::UnresolvedAnnotation,
-            ConcernToken::StubPointing,
             ConcernToken::MultipleAnnotations,
-            ConcernToken::UnneededPendingMarker,
-            ConcernToken::InputsProtocolError,
         ];
         for token in tree_only {
             assert_eq!(token.scope_kind(), ScopeKind::TreeOnly, "{token:?}");
@@ -2502,21 +2510,24 @@ mod tests {
             let payload = serde_json::to_string(&finding).expect("serialize");
             let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\n{terminator}\n");
 
-            match parse_walk_output(&output, DispatchScope::PerBead, &AlwaysValid) {
-                Err(WalkOutputError::Finding(FindingParseError::TokenScopeMismatch {
-                    token: bad_token,
-                    scope_kind,
-                    dispatch_scope,
-                    ..
-                })) => {
-                    assert_eq!(bad_token, token.as_wire());
-                    assert_eq!(scope_kind, "tree-only");
-                    assert_eq!(dispatch_scope, "per-bead");
+            for scope in [DispatchScope::PerBead, DispatchScope::PushGate] {
+                match parse_walk_output(&output, scope, &AlwaysValid) {
+                    Err(WalkOutputError::Finding(FindingParseError::TokenScopeMismatch {
+                        token: bad_token,
+                        scope_kind,
+                        dispatch_scope,
+                        ..
+                    })) => {
+                        assert_eq!(bad_token, token.as_wire());
+                        assert_eq!(scope_kind, "tree-only");
+                        assert_eq!(dispatch_scope, scope.label());
+                    }
+                    other => panic!(
+                        "expected TokenScopeMismatch for tree-only token `{}` at {} scope, got {other:?}",
+                        token.as_wire(),
+                        scope.label(),
+                    ),
                 }
-                other => panic!(
-                    "expected TokenScopeMismatch for tree-only token `{}` at per-bead scope, got {other:?}",
-                    token.as_wire(),
-                ),
             }
 
             parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid).unwrap_or_else(|e| {
@@ -2540,21 +2551,24 @@ mod tests {
             let payload = serde_json::to_string(&finding).expect("serialize");
             let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\n{terminator}\n");
 
-            match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
-                Err(WalkOutputError::Finding(FindingParseError::TokenScopeMismatch {
-                    token: bad_token,
-                    scope_kind,
-                    dispatch_scope,
-                    ..
-                })) => {
-                    assert_eq!(bad_token, token.as_wire());
-                    assert_eq!(scope_kind, "per-bead-only");
-                    assert_eq!(dispatch_scope, "tree");
+            for scope in [DispatchScope::Tree, DispatchScope::PushGate] {
+                match parse_walk_output(&output, scope, &AlwaysValid) {
+                    Err(WalkOutputError::Finding(FindingParseError::TokenScopeMismatch {
+                        token: bad_token,
+                        scope_kind,
+                        dispatch_scope,
+                        ..
+                    })) => {
+                        assert_eq!(bad_token, token.as_wire());
+                        assert_eq!(scope_kind, "per-bead-only");
+                        assert_eq!(dispatch_scope, scope.label());
+                    }
+                    other => panic!(
+                        "expected TokenScopeMismatch for per-bead-only token `{}` at {} scope, got {other:?}",
+                        token.as_wire(),
+                        scope.label(),
+                    ),
                 }
-                other => panic!(
-                    "expected TokenScopeMismatch for per-bead-only token `{}` at tree scope, got {other:?}",
-                    token.as_wire(),
-                ),
             }
 
             parse_walk_output(&output, DispatchScope::PerBead, &AlwaysValid).unwrap_or_else(|e| {
@@ -2576,10 +2590,64 @@ mod tests {
         };
         let payload = serde_json::to_string(&any_scope_finding).expect("serialize");
         let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\n{terminator}\n");
-        for scope in [DispatchScope::PerBead, DispatchScope::Tree] {
+        for scope in [
+            DispatchScope::PerBead,
+            DispatchScope::PushGate,
+            DispatchScope::Tree,
+        ] {
             parse_walk_output(&output, scope, &AlwaysValid).unwrap_or_else(|e| {
                 panic!("AnyScope token must parse at {} scope: {e}", scope.label())
             });
+        }
+    }
+
+    #[test]
+    fn integrity_tokens_parse_at_tree_and_push_gate_but_not_per_bead_scope() {
+        let gate = spec("gate");
+        let terminator = "LOOM_CONCERN: {\"summary\":\"integrity scope\"}";
+        let integrity_tokens = [
+            ConcernToken::UnresolvedAnnotation,
+            ConcernToken::StubPointing,
+            ConcernToken::UnneededPendingMarker,
+            ConcernToken::InputsProtocolError,
+        ];
+
+        for token in integrity_tokens {
+            assert_eq!(token.scope_kind(), ScopeKind::TreeAndPushGate, "{token:?}");
+            let finding = Finding {
+                token,
+                bonds: vec![gate.clone()],
+                target: canonical_target(token, &gate),
+                evidence: "integrity fixture".to_owned(),
+            };
+            let payload = serde_json::to_string(&finding).expect("serialize");
+            let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\n{terminator}\n");
+
+            match parse_walk_output(&output, DispatchScope::PerBead, &AlwaysValid) {
+                Err(WalkOutputError::Finding(FindingParseError::TokenScopeMismatch {
+                    token: bad_token,
+                    scope_kind,
+                    dispatch_scope,
+                    ..
+                })) => {
+                    assert_eq!(bad_token, token.as_wire());
+                    assert_eq!(scope_kind, "tree-and-push-gate");
+                    assert_eq!(dispatch_scope, "per-bead");
+                }
+                other => panic!(
+                    "expected TokenScopeMismatch for integrity token `{}` at per-bead scope, got {other:?}",
+                    token.as_wire(),
+                ),
+            }
+            for scope in [DispatchScope::Tree, DispatchScope::PushGate] {
+                parse_walk_output(&output, scope, &AlwaysValid).unwrap_or_else(|e| {
+                    panic!(
+                        "integrity token `{}` must parse cleanly at {} scope: {e}",
+                        token.as_wire(),
+                        scope.label(),
+                    )
+                });
+            }
         }
     }
 
@@ -2643,14 +2711,14 @@ mod tests {
     /// variants* — the `inputs-protocol-error` integrity-gate token
     /// round-trips byte-equal through `serde_json` and
     /// `parse_walk_output` with canonical target
-    /// `Annotation { target_string }`, and is a tree-scope-only token
-    /// (emitted by the integrity gate's inputs-protocol check).
+    /// `Annotation { target_string }`, and is a tree-and-push-gate token
+    /// emitted by the integrity gate's inputs-protocol check.
     #[test]
     fn concern_token_inputs_protocol_error_round_trips_with_annotation_target() {
         let token = ConcernToken::InputsProtocolError;
         assert_eq!(token.as_wire(), "inputs-protocol-error");
         assert_eq!(token.expected_target_kind(), TargetKind::Annotation);
-        assert_eq!(token.scope_kind(), ScopeKind::TreeOnly);
+        assert_eq!(token.scope_kind(), ScopeKind::TreeAndPushGate);
 
         let gate = spec("gate");
         let target = canonical_target(token, &gate);
@@ -2664,8 +2732,9 @@ mod tests {
         };
         let payload = serde_json::to_string(&finding).expect("serialize");
         let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_COMPLETE\n");
-        let parsed = parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid)
-            .expect("round-trip parse");
-        assert_eq!(parsed, vec![finding]);
+        for scope in [DispatchScope::Tree, DispatchScope::PushGate] {
+            let parsed = parse_walk_output(&output, scope, &AlwaysValid).expect("round-trip parse");
+            assert_eq!(parsed, vec![finding.clone()]);
+        }
     }
 }
