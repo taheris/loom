@@ -2705,7 +2705,7 @@ and conservative fall-through for unowned queries.
   `agent-retry` per [harness.md § Verdict Gate](harness.md#verdict-gate);
   consumes one `[loop] max_retries` slot; exhaustion escalates to
   `loom:blocked` with cause `retry-exhausted`
-  [test?](mint_walk_loom_retry_terminator_routes_to_agent_retry_recovery)
+  [test](retry_marker_routes_to_agent_retry_recovery_cause)
 - `LOOM_CONCERN:` payload parses as JSON `{"summary": "<non-empty
   string>"}` via the same `serde_json` pipeline that consumes
   `LOOM_FINDING:` lines; the parsed summary becomes the verdict-log
@@ -2814,13 +2814,13 @@ and conservative fall-through for unowned queries.
   epic and carries one `finding:<hash>` label per contained finding
   plus one `spec:<X>` label per unique entry across the union of
   `bonds` over the batch's findings
-  [test?](mint_creates_batch_with_parent_epic_finding_hash_labels_and_union_spec_labels)
+  [test](mint_creates_batch_with_parent_epic_finding_hash_labels_and_union_spec_labels)
 - The bonding lead is the first element of each finding's `bonds`
   array whose spec has an open epic; if none of the bonds have an
   open epic, the lead is `bonds[0]` and mint creates a molecule +
   epic for it. Findings sharing a lead may bundle into the same
   per-spec remediation batch without changing their finding ids or hashes
-  [test?](mint_bonding_lead_groups_findings_without_affecting_identity)
+  [test](mint_bonding_lead_groups_findings_without_affecting_identity)
 - For target variants that carry a spec field (currently
   `Criterion` and `Invariant`), `target.spec` MUST appear in that
   finding's `bonds`; a finding that violates this is rejected with
@@ -2831,7 +2831,7 @@ and conservative fall-through for unowned queries.
   batch) carrying `finding:<hash>` and `loom:clarify` labels, with
   the description embedding the `## Options — …` block extracted from
   the finding's `evidence` per the *Options Format Contract*
-  [test?](mint_clarify_bound_finding_creates_single_bead_with_finding_hash_label_and_options_block)
+  [test](mint_clarify_bound_finding_creates_single_bead_with_finding_hash_label_and_options_block)
 - Any clarify-route finding whose `evidence` lacks a well-formed
   `## Options — <summary>` heading with at least one `### Option
   <N> — <title>` subsection falls back to a remediation bead carrying

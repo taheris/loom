@@ -1473,6 +1473,18 @@ mod tests {
             .collect()
     }
 
+    fn flag_arg<'a>(args: &'a [String], flag: &str) -> &'a str {
+        let idx = args
+            .iter()
+            .position(|arg| arg == flag)
+            .expect("flag present");
+        &args[idx + 1]
+    }
+
+    fn labels_arg(args: &[String]) -> Vec<&str> {
+        flag_arg(args, "--labels").split(',').collect()
+    }
+
     impl CommandRunner for ScriptedRunner {
         async fn run(&self, args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
             self.invocations.lock().expect("not poisoned").push(args);
@@ -2243,13 +2255,13 @@ reason = "false positive"
         );
     }
 
-    /// Spec contract `specs/gate.md` § *Per-batch processing*:
+    /// Spec contract `specs/gate.md` § *Findings and Minting*:
     /// the minted batch bead is `--parent`-ed to the lead spec's open
     /// epic and carries one `finding:<hash>` label per finding plus one
     /// `spec:<X>` label per unique entry across the union of `bonds`
     /// over the batch's findings.
     #[tokio::test]
-    async fn mint_creates_batch_with_parent_epic_fingerprint_and_union_spec_labels() {
+    async fn mint_creates_batch_with_parent_epic_finding_hash_labels_and_union_spec_labels() {
         let f1 = contract_finding(
             vec![spec("gate"), spec("harness")],
             "molecule-lifecycle",
@@ -2258,7 +2270,6 @@ reason = "false positive"
         let f2 = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence-2");
         let f3 = style_finding(vec![spec("gate"), spec("templates")], "RS-19", "evidence-3");
         let finding_labels = [finding_label(&f1), finding_label(&f2), finding_label(&f3)];
-        let fp = batch_fingerprint(&[f1.clone(), f2.clone(), f3.clone()]);
         let runner = ScriptedRunner::new(vec![
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
@@ -2276,50 +2287,38 @@ reason = "false positive"
             .find(|c| c.iter().any(|a| a == "create"))
             .expect("bd create recorded");
 
-        let parent_idx = create
-            .iter()
-            .position(|a| a == "--parent")
-            .expect("--parent flag");
-        assert_eq!(create[parent_idx + 1], "lm-gateepic");
+        assert_eq!(flag_arg(create, "--parent"), "lm-gateepic");
 
-        let labels_idx = create
+        let labels = labels_arg(create);
+        let finding_label_count = labels
             .iter()
-            .position(|a| a == "--labels")
-            .expect("--labels flag");
-        let labels = &create[labels_idx + 1];
-        assert!(
-            labels.contains(&format!("{MINT_LABEL_PREFIX}{fp}")),
-            "labels missing batch receipt: {labels}",
+            .filter(|label| label.starts_with(FINDING_LABEL_PREFIX))
+            .count();
+        assert_eq!(
+            finding_label_count,
+            finding_labels.len(),
+            "labels: {labels:?}"
         );
         for finding_label in finding_labels {
             assert!(
-                labels.contains(&finding_label),
-                "labels missing finding hash label {finding_label}: {labels}",
+                labels.contains(&finding_label.as_str()),
+                "labels missing finding hash label {finding_label}: {labels:?}",
             );
         }
-        assert!(
-            labels.contains("spec:gate"),
-            "labels missing spec:gate: {labels}",
-        );
-        assert!(
-            labels.contains("spec:harness"),
-            "labels missing spec:harness (union over bonds): {labels}",
-        );
-        assert!(
-            labels.contains("spec:templates"),
-            "labels missing spec:templates (union over bonds): {labels}",
-        );
+        for spec_label in ["spec:gate", "spec:harness", "spec:templates"] {
+            assert!(
+                labels.contains(&spec_label),
+                "labels missing union spec label {spec_label}: {labels:?}",
+            );
+        }
 
-        let type_idx = create.iter().position(|a| a == "--type").expect("--type");
-        assert_eq!(create[type_idx + 1], "task");
+        assert_eq!(flag_arg(create, "--type"), "task");
     }
 
-    /// Spec contract: the bonding lead is the first element of each
-    /// finding's `bonds` array whose spec has an open epic. Findings
-    /// sharing a lead bundle into the same per-spec fix-up batch.
+    /// Spec contract: lead selection and batching are placement choices;
+    /// they do not rewrite the id/hash identity of contained findings.
     #[tokio::test]
-    async fn mint_bonding_lead_is_first_bonds_element_with_open_epic_findings_with_same_lead_share_batch()
-     {
+    async fn mint_bonding_lead_groups_findings_without_affecting_identity() {
         let f1 = contract_finding(
             vec![spec("harness"), spec("gate")],
             "molecule-lifecycle",
@@ -2330,6 +2329,10 @@ reason = "false positive"
             "verifier-honesty",
             "second",
         );
+        let expected_identity = [
+            (f1.id(), f1.hash(), finding_label(&f1)),
+            (f2.id(), f2.hash(), finding_label(&f2)),
+        ];
         let runner = ScriptedRunner::new(vec![
             ok_stdout("[]"),
             ok_stdout("[]"),
@@ -2337,6 +2340,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout("lm-batch.1\n"),
         ]);
+        let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
         let summary = mint_findings(&bd, &[f1, f2], "head-sha").await;
         assert_eq!(summary.minted, 1, "two findings → one batch: {summary:?}");
@@ -2350,6 +2354,26 @@ reason = "false positive"
                 assert_eq!(*findings_count, 2);
             }
             other => panic!("expected Minted, got {other:?}"),
+        }
+
+        let calls = rendered_calls(&invocations);
+        let create = calls
+            .iter()
+            .find(|c| c.iter().any(|a| a == "create"))
+            .expect("bd create recorded");
+        assert_eq!(flag_arg(create, "--parent"), "lm-gateepic");
+        let labels = labels_arg(create);
+        let description = flag_arg(create, "--description");
+        for (id, hash, label) in expected_identity {
+            assert!(labels.contains(&label.as_str()), "labels: {labels:?}");
+            assert!(
+                description.contains(&format!("id: `{id}`")),
+                "{description}"
+            );
+            assert!(
+                description.contains(&format!("hash: `{hash}`")),
+                "{description}"
+            );
         }
     }
 
@@ -2426,10 +2450,11 @@ reason = "false positive"
 
     /// Spec contract: clarify-bound findings mint as single-finding
     /// beads (not bundled into the spec's fix-up batch) carrying
-    /// `finding:<hash>`, `loom:fixup:<fp>`, and `loom:clarify` labels, with the description
+    /// `finding:<hash>` and `loom:clarify` labels, with the description
     /// embedding the `## Options — …` block from the finding's evidence.
     #[tokio::test]
-    async fn mint_clarify_bound_finding_creates_single_bead_with_clarify_label_and_options_block() {
+    async fn mint_clarify_bound_finding_creates_single_bead_with_finding_hash_label_and_options_block()
+     {
         let options_block = "## Options — keep loom out of podman\n\n\
                              ### Option 1 — Preserve the invariant\n\
                              rework podman call to delegate to wrix.\n\n\
@@ -2444,7 +2469,7 @@ reason = "false positive"
             "loom-runs-podman",
             options_block,
         );
-        let fp = batch_fingerprint(std::slice::from_ref(&finding));
+        let finding_hash_label = finding_label(&finding);
         let runner = ScriptedRunner::new(vec![
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-harnessepic", "harness")),
@@ -2460,36 +2485,20 @@ reason = "false positive"
             .find(|c| c.iter().any(|a| a == "create"))
             .expect("create");
 
-        let labels_idx = create
-            .iter()
-            .position(|a| a == "--labels")
-            .expect("--labels");
-        let labels = &create[labels_idx + 1];
+        let labels = labels_arg(create);
         assert!(
-            labels.contains(&format!("{MINT_LABEL_PREFIX}{fp}")),
-            "labels missing batch receipt: {labels}",
+            labels.contains(&finding_hash_label.as_str()),
+            "labels missing finding hash label {finding_hash_label}: {labels:?}",
         );
         assert!(
-            labels.contains("loom:clarify"),
-            "invariant-clash must carry loom:clarify: {labels}",
+            labels.contains(&"loom:clarify"),
+            "invariant-clash must carry loom:clarify: {labels:?}",
         );
 
-        let desc_idx = create
-            .iter()
-            .position(|a| a == "--description")
-            .expect("--description");
-        let description = &create[desc_idx + 1];
+        let description = flag_arg(create, "--description");
         assert!(
-            description.contains("## Options"),
-            "description must embed the Options block: {description}",
-        );
-        assert!(
-            description.contains("### Option 1"),
-            "description must preserve the Options block headings verbatim: {description}",
-        );
-        assert!(
-            description.contains(&format!("{MINT_LABEL_PREFIX}{fp}")),
-            "description must cite the batch receipt: {description}",
+            description.contains(options_block.trim_end()),
+            "description must preserve the Options block verbatim: {description}",
         );
     }
 
