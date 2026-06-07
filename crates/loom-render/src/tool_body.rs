@@ -230,35 +230,16 @@ fn task_summary(params: &Value) -> String {
 /// Compute `(added, removed)` line counts between two strings via
 /// imara-diff. Used by Edit summary cells.
 pub fn diff_counts(old: &str, new: &str) -> (usize, usize) {
-    use imara_diff::intern::InternedInput;
-    use imara_diff::sink::Sink;
-    use imara_diff::{Algorithm, diff};
-
-    /// Accumulates added/removed line counts across every hunk.
-    struct CountingSink {
-        added: usize,
-        removed: usize,
-    }
-    impl Sink for CountingSink {
-        type Out = (usize, usize);
-        fn process_change(&mut self, before: std::ops::Range<u32>, after: std::ops::Range<u32>) {
-            self.added += (after.end - after.start) as usize;
-            self.removed += (before.end - before.start) as usize;
-        }
-        fn finish(self) -> Self::Out {
-            (self.added, self.removed)
-        }
-    }
+    use imara_diff::{Algorithm, Diff, InternedInput};
 
     let input = InternedInput::new(old, new);
-    diff(
-        Algorithm::Histogram,
-        &input,
-        CountingSink {
-            added: 0,
-            removed: 0,
-        },
-    )
+    let diff = Diff::compute(Algorithm::Histogram, &input);
+    diff.hunks().fold((0, 0), |(added, removed), hunk| {
+        (
+            added + (hunk.after.end - hunk.after.start) as usize,
+            removed + (hunk.before.end - hunk.before.start) as usize,
+        )
+    })
 }
 
 /// Truncate `s` to `max` chars, appending `…` if it exceeded.

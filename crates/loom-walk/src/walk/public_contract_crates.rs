@@ -22,8 +22,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
             violations.push(format!("{manifest_rel}:1 manifest not found"));
             continue;
         };
-        let parsed: Result<toml::Value, _> = body.parse();
-        let Ok(value) = parsed else {
+        let Ok(value) = toml::from_str::<toml::Value>(&body) else {
             violations.push(format!("{manifest_rel}:1 manifest not valid TOML"));
             continue;
         };
