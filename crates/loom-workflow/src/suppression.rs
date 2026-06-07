@@ -42,6 +42,7 @@ fn is_rubric_suppressible(token: ConcernToken) -> bool {
             | ConcernToken::MultipleAnnotations
             | ConcernToken::UnneededPendingMarker
             | ConcernToken::InputsProtocolError
+            | ConcernToken::PendingMarkerResolved
     )
 }
 

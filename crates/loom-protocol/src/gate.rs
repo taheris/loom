@@ -126,6 +126,8 @@ pub enum ConcernToken {
     ScopeCreep,
     #[serde(rename = "scope-shortfall")]
     ScopeShortfall,
+    #[serde(rename = "pending-marker-resolved")]
+    PendingMarkerResolved,
 }
 
 impl ConcernToken {
@@ -159,6 +161,7 @@ impl ConcernToken {
             Self::InputsProtocolError => "inputs-protocol-error",
             Self::ScopeCreep => "scope-creep",
             Self::ScopeShortfall => "scope-shortfall",
+            Self::PendingMarkerResolved => "pending-marker-resolved",
         }
     }
 
@@ -177,6 +180,7 @@ impl ConcernToken {
             | Self::SpecConventionsViolation
             | Self::ScopeCreep
             | Self::ScopeShortfall => TargetKind::Criterion,
+            Self::PendingMarkerResolved => TargetKind::MatrixCell,
             Self::OrphanIntegration => TargetKind::Contract,
             Self::StyleRuleViolation => TargetKind::StyleRule,
             Self::VerifierBypass
@@ -194,6 +198,15 @@ impl ConcernToken {
             Self::InvariantClash => TargetKind::Invariant,
             Self::TemplateSpecDrift => TargetKind::Template,
         }
+    }
+
+    /// True iff `actual` is an allowed target variant for this token.
+    #[must_use]
+    pub fn allows_target_kind(self, actual: TargetKind) -> bool {
+        if self == Self::PendingMarkerResolved {
+            return matches!(actual, TargetKind::MatrixCell | TargetKind::SurfaceElement);
+        }
+        self.expected_target_kind() == actual
     }
 
     /// Scope class for the token — which dispatch scopes the parse
@@ -234,7 +247,8 @@ impl ConcernToken {
             | Self::VerifierTooNarrow
             | Self::ConcurrencyUntested
             | Self::JudgeFlag
-            | Self::InvariantClash => ScopeKind::AnyScope,
+            | Self::InvariantClash
+            | Self::PendingMarkerResolved => ScopeKind::AnyScope,
         }
     }
 }
@@ -334,6 +348,8 @@ pub enum TargetKind {
     LockSite,
     Invariant,
     Template,
+    MatrixCell,
+    SurfaceElement,
 }
 
 impl TargetKind {
@@ -351,6 +367,8 @@ impl TargetKind {
             Self::LockSite => "LockSite",
             Self::Invariant => "Invariant",
             Self::Template => "Template",
+            Self::MatrixCell => "MatrixCell",
+            Self::SurfaceElement => "SurfaceElement",
         }
     }
 }
@@ -400,6 +418,16 @@ pub enum FindingTarget {
     Template {
         path: String,
     },
+    MatrixCell {
+        spec: SpecLabel,
+        partial: String,
+        template: String,
+    },
+    SurfaceElement {
+        spec: SpecLabel,
+        element_kind: String,
+        name: String,
+    },
 }
 
 impl FindingTarget {
@@ -417,6 +445,8 @@ impl FindingTarget {
             Self::LockSite { .. } => TargetKind::LockSite,
             Self::Invariant { .. } => TargetKind::Invariant,
             Self::Template { .. } => TargetKind::Template,
+            Self::MatrixCell { .. } => TargetKind::MatrixCell,
+            Self::SurfaceElement { .. } => TargetKind::SurfaceElement,
         }
     }
 
@@ -428,7 +458,10 @@ impl FindingTarget {
     #[must_use]
     pub fn spec(&self) -> Option<&SpecLabel> {
         match self {
-            Self::Criterion { spec, .. } | Self::Invariant { spec, .. } => Some(spec),
+            Self::Criterion { spec, .. }
+            | Self::Invariant { spec, .. }
+            | Self::MatrixCell { spec, .. }
+            | Self::SurfaceElement { spec, .. } => Some(spec),
             Self::Contract { .. }
             | Self::StyleRule { .. }
             | Self::Annotation { .. }
@@ -452,6 +485,16 @@ impl FindingTarget {
                 format!("invariant:{spec}:{section}:{tag}")
             }
             Self::Template { path } => format!("template:{path}"),
+            Self::MatrixCell {
+                spec,
+                partial,
+                template,
+            } => format!("matrix-cell:{spec}:{partial}:{template}"),
+            Self::SurfaceElement {
+                spec,
+                element_kind,
+                name,
+            } => format!("surface-element:{spec}:{element_kind}:{name}"),
         }
     }
 
@@ -489,6 +532,24 @@ impl FindingTarget {
                 )
             }
             Self::Template { path } => format!("template:{}", lower_kebab(path)),
+            Self::MatrixCell {
+                spec,
+                partial,
+                template,
+            } => format!(
+                "matrix-cell:{spec}#{}#{}",
+                lower_kebab(partial),
+                lower_kebab(template),
+            ),
+            Self::SurfaceElement {
+                spec,
+                element_kind,
+                name,
+            } => format!(
+                "surface-element:{spec}#{}#{}",
+                lower_kebab(element_kind),
+                lower_kebab(name),
+            ),
         }
     }
 }
@@ -650,7 +711,7 @@ impl Finding {
 
         let expected_kind = finding.token.expected_target_kind();
         let actual_kind = finding.target.kind();
-        if expected_kind != actual_kind {
+        if !finding.token.allows_target_kind(actual_kind) {
             return Err(FindingParseError::TokenVariantMismatch {
                 line_number,
                 token: finding.token.as_wire(),
@@ -731,7 +792,10 @@ impl Finding {
             FindingTarget::Invariant { spec, section, tag } => {
                 validator.invariant_resolves(spec, section, tag)
             }
-            FindingTarget::Contract { .. } | FindingTarget::StyleRule { .. } => true,
+            FindingTarget::Contract { .. }
+            | FindingTarget::StyleRule { .. }
+            | FindingTarget::MatrixCell { .. }
+            | FindingTarget::SurfaceElement { .. } => true,
         };
         if !resolved {
             return Err(FindingParseError::UnresolvedTarget {
@@ -771,6 +835,18 @@ fn target_unresolved_detail(target: &FindingTarget) -> String {
         }
         FindingTarget::Invariant { spec, section, tag } => {
             format!("invariant `{tag}` in section `{section}` not present in spec `{spec}`",)
+        }
+        FindingTarget::MatrixCell {
+            spec,
+            partial,
+            template,
+        } => format!("matrix cell `{partial}` / `{template}` not present in spec `{spec}`"),
+        FindingTarget::SurfaceElement {
+            spec,
+            element_kind,
+            name,
+        } => {
+            format!("surface element `{element_kind}` / `{name}` not present in spec `{spec}`")
         }
         FindingTarget::Contract { .. } | FindingTarget::StyleRule { .. } => {
             "no resolver registered for this variant".to_owned()
@@ -1403,6 +1479,24 @@ mod tests {
             .canonical_form(),
             "style:RS-12:crates/loom-gate/src/integrity.rs",
         );
+        assert_eq!(
+            FindingTarget::MatrixCell {
+                spec: spec("gate"),
+                partial: "findings_walk".to_owned(),
+                template: "review".to_owned(),
+            }
+            .canonical_form(),
+            "matrix-cell:gate:findings_walk:review",
+        );
+        assert_eq!(
+            FindingTarget::SurfaceElement {
+                spec: spec("gate"),
+                element_kind: "command".to_owned(),
+                name: "loom gate verify".to_owned(),
+            }
+            .canonical_form(),
+            "surface-element:gate:command:loom gate verify",
+        );
     }
 
     #[test]
@@ -1458,9 +1552,19 @@ mod tests {
             (ConcernToken::InputsProtocolError, TargetKind::Annotation),
             (ConcernToken::ScopeCreep, TargetKind::Criterion),
             (ConcernToken::ScopeShortfall, TargetKind::Criterion),
+            (ConcernToken::PendingMarkerResolved, TargetKind::MatrixCell),
         ] {
             assert_eq!(token.expected_target_kind(), expected, "{token:?}");
         }
+    }
+
+    #[test]
+    fn pending_marker_resolved_allows_matrix_cell_and_surface_element_targets() {
+        let token = ConcernToken::PendingMarkerResolved;
+        assert_eq!(token.as_wire(), "pending-marker-resolved");
+        assert!(token.allows_target_kind(TargetKind::MatrixCell));
+        assert!(token.allows_target_kind(TargetKind::SurfaceElement));
+        assert!(!token.allows_target_kind(TargetKind::Annotation));
     }
 
     /// Field-private seal pin per
@@ -2382,6 +2486,11 @@ mod tests {
                 spec: gate.clone(),
                 anchor: "scope-appropriateness".to_owned(),
             },
+            ConcernToken::PendingMarkerResolved => FindingTarget::MatrixCell {
+                spec: gate.clone(),
+                partial: "findings_walk".to_owned(),
+                template: "review".to_owned(),
+            },
         }
     }
 
@@ -2413,14 +2522,14 @@ mod tests {
             ConcernToken::InputsProtocolError,
             ConcernToken::ScopeCreep,
             ConcernToken::ScopeShortfall,
+            ConcernToken::PendingMarkerResolved,
         ];
         let terminators = ["LOOM_CONCERN: {\"summary\":\"round-trip\"}"];
 
         for token in tokens {
             let target = canonical_target(token, &gate);
-            assert_eq!(
-                token.expected_target_kind(),
-                target.kind(),
+            assert!(
+                token.allows_target_kind(target.kind()),
                 "canonical pairing self-check for {}",
                 token.as_wire(),
             );
@@ -2754,6 +2863,53 @@ mod tests {
         for scope in [DispatchScope::Tree, DispatchScope::PushGate] {
             let parsed = parse_walk_output(&output, scope, &AlwaysValid).expect("round-trip parse");
             assert_eq!(parsed, vec![finding.clone()]);
+        }
+    }
+
+    /// Spec contract `specs/gate.md` § *Concern tokens and target
+    /// variants* — the `pending-marker-resolved` sweeping-walker token
+    /// accepts both matrix-cell and surface-element target variants.
+    #[test]
+    fn concern_token_pending_marker_resolved_round_trips_with_walker_targets() {
+        let token = ConcernToken::PendingMarkerResolved;
+        assert_eq!(token.as_wire(), "pending-marker-resolved");
+        assert_eq!(token.scope_kind(), ScopeKind::AnyScope);
+
+        let gate = spec("gate");
+        let targets = [
+            FindingTarget::MatrixCell {
+                spec: gate.clone(),
+                partial: "findings_walk".to_owned(),
+                template: "review".to_owned(),
+            },
+            FindingTarget::SurfaceElement {
+                spec: gate.clone(),
+                element_kind: "command".to_owned(),
+                name: "loom gate verify".to_owned(),
+            },
+        ];
+
+        for target in targets {
+            assert!(token.allows_target_kind(target.kind()));
+            let finding = Finding {
+                token,
+                bonds: vec![gate.clone()],
+                target,
+                evidence: "pending marker resolved".to_owned(),
+            };
+            let payload = serde_json::to_string(&finding).expect("serialize");
+            let output = format!(
+                "preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_CONCERN: {{\"summary\":\"round-trip\"}}\n"
+            );
+            for scope in [
+                DispatchScope::PerBead,
+                DispatchScope::PushGate,
+                DispatchScope::Tree,
+            ] {
+                let parsed =
+                    parse_walk_output(&output, scope, &AlwaysValid).expect("round-trip parse");
+                assert_eq!(parsed, vec![finding.clone()]);
+            }
         }
     }
 }
