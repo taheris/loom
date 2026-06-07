@@ -113,24 +113,33 @@ enum GateSubcommand {
     /// Run only the rubric walk over the diff — skips
     /// criterion-attached judges.
     Rubric(GateScopeArgs),
-    /// Walk the rubric and mint a fix-up bead per finding (the act
-    /// surface paired with the inspection-only `audit`).
+    /// Materialize gate findings into remediation work.
     Mint(GateMintArgs),
     /// Validate `.loom/marker.json` against the workspace's HEAD tree
     /// and porcelain — prek's pre-push short-circuit.
     VerifyMarker,
 }
 
-/// `loom gate mint` arg surface. Extends [`GateScopeArgs`] with the
-/// `--dry-run` flag that suppresses `bd create` calls while still
-/// running the read-side dedup + lead-resolution queries.
+/// `loom gate mint` arg surface. Mint is an act command, so its scope
+/// surface is intentionally narrower than inspection subcommands.
 #[derive(Debug, clap::Args)]
+#[command(group(
+    ArgGroup::new("mint_scope")
+        .args(["molecule", "tree"])
+        .multiple(false)
+        .required(false),
+))]
 struct GateMintArgs {
-    #[command(flatten)]
-    scope: GateScopeArgs,
-    /// Walk the rubric and print proposed bd writes to stdout without
-    /// invoking `bd create`. Read-side queries (dedup + lead
-    /// resolution) still run.
+    /// Promote deferred remediation beads for one molecule.
+    #[arg(long, short = 'm', value_name = "ID")]
+    molecule: Option<String>,
+    /// Run the standing safety-net sweep across the workspace.
+    #[arg(long)]
+    tree: bool,
+    /// Filter tree-scope minting to one spec's findings.
+    #[arg(long, short = 's', value_name = "LABEL")]
+    spec: Option<String>,
+    /// Preview proposed mint writes without changing bd state.
     #[arg(long)]
     dry_run: bool,
 }
@@ -868,10 +877,7 @@ fn run_gate(
             resolve_gate_scope(workspace, &mut args)?;
             run_gate_review(workspace, args, None, agent_override, ReviewLane::Rubric)
         }
-        Some(GateSubcommand::Mint(mut args)) => {
-            resolve_gate_scope(workspace, &mut args.scope)?;
-            run_gate_mint(workspace, args, agent_override)
-        }
+        Some(GateSubcommand::Mint(args)) => run_gate_mint(workspace, args, agent_override),
         Some(GateSubcommand::VerifyMarker) => run_gate_verify_marker(workspace),
     }
 }
@@ -1704,78 +1710,98 @@ fn current_commit(workspace: &Path) -> anyhow::Result<String> {
     Ok(oid.to_string())
 }
 
-/// `loom gate mint` CLI arm. Owns arg parsing, scope resolution
-/// (delegated to [`apply_default_scope`] in `run_gate`), the
+/// `loom gate mint` CLI arm. Owns act-scope resolution, the
 /// `LOOM_INSIDE` guard (delegated to the top-level main check via
 /// [`Command::refused_inside_loom`]), filter passthrough, and exit-code
-/// mapping. Findings are produced by dispatching the resolved
-/// [`MintScope`] through the production [`ProductionMintWalker`] per
-/// `specs/gate.md` § *Production walker wiring*; the rubric (and, at
-/// `--tree` scope, the deterministic verifier set + integrity gate) are
-/// the only paths findings reach the mint pipeline.
+/// mapping. Tree-scope findings are produced by dispatching
+/// [`MintScope::Tree`] through the production [`ProductionMintWalker`];
+/// molecule scope promotes existing deferred remediation beads.
 fn run_gate_mint(
     workspace: &Path,
     args: GateMintArgs,
     agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
     let head_commit = current_commit(workspace).unwrap_or_default();
-    let spec_filter = args.scope.spec.as_deref().map(SpecLabel::new);
-    let scope = resolve_mint_scope(workspace, &args.scope)?;
-
-    let manifest = Arc::new(ProfileImageManifest::from_env()?);
-    let label = resolve_spec_label(workspace, args.scope.spec.clone())?;
-    let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
-    let opts = loom_workflow::mint::MintOptions {
-        dry_run: args.dry_run,
-        spec_filter,
-        suppressions: config.suppress.clone(),
-    };
-    let selection = resolved_agent_for(&config, agent_override, Phase::Review)?;
-    let phase_default = selection.profile.clone();
-    let kind = selection.kind;
-    let shutdown_grace = resolve_shutdown_grace(&selection);
-    let state = Arc::new(StateDb::open(workspace.join(".loom/state.db"))?);
-    let style_rules = config.style_rules.clone();
-    let workspace_buf = workspace.to_path_buf();
-    let logs_root = workspace.join(".loom/logs");
-    let label_for_sink = label.clone();
-    let phase_when = phase_when_from_env().unwrap_or_else(|| SystemClock::new().wall_now());
-    let logs_root_for_spawn = logs_root.clone();
+    let scope = resolve_mint_scope(workspace, &args)?;
 
     let runtime = tokio::runtime::Runtime::new()?;
-    let summary = runtime.block_on(async move {
-        let bd = BdClient::new();
-        let mut walker = loom_workflow::mint::ProductionMintWalker::new(
-            BdClient::new(),
-            label.clone(),
-            workspace_buf,
-            state,
-            manifest,
-            phase_default,
-            move |spawn_cfg: SpawnConfig| {
-                let logs_root = logs_root_for_spawn.clone();
-                let label = label_for_sink.clone();
-                async move {
-                    let sink = LogSink::open_phase_at(&logs_root, &label, "mint", None, phase_when)
-                        .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))?;
-                    let mut output = String::new();
-                    let outcome = dispatch(
-                        kind,
-                        spawn_cfg,
-                        shutdown_grace,
-                        Some(sink),
-                        Some(&mut output),
-                    )
-                    .await?;
-                    let marker = parse_exit_signal(&output);
-                    Ok((outcome, marker, output))
-                }
-            },
-        )
-        .with_style_rules(style_rules);
-        let validator = WorkspaceFindingValidator::new(workspace);
-        mint_via_walker(&mut walker, &scope, &validator, &bd, &head_commit, &opts).await
-    })?;
+    let summary = match scope {
+        ResolvedMintScope::Molecule(molecule) => {
+            let dry_run = args.dry_run;
+            runtime.block_on(async move {
+                let bd = BdClient::new();
+                Ok::<_, anyhow::Error>(
+                    loom_workflow::mint::promote_deferred(&bd, &molecule, dry_run).await,
+                )
+            })?
+        }
+        ResolvedMintScope::Tree => {
+            let spec_filter = args.spec.as_deref().map(SpecLabel::new);
+            let manifest = Arc::new(ProfileImageManifest::from_env()?);
+            let label = resolve_spec_label(workspace, args.spec.clone())?;
+            let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
+            let opts = loom_workflow::mint::MintOptions {
+                dry_run: args.dry_run,
+                spec_filter,
+                suppressions: config.suppress.clone(),
+            };
+            let selection = resolved_agent_for(&config, agent_override, Phase::Review)?;
+            let phase_default = selection.profile.clone();
+            let kind = selection.kind;
+            let shutdown_grace = resolve_shutdown_grace(&selection);
+            let state = Arc::new(StateDb::open(workspace.join(".loom/state.db"))?);
+            let style_rules = config.style_rules.clone();
+            let workspace_buf = workspace.to_path_buf();
+            let logs_root = workspace.join(".loom/logs");
+            let label_for_sink = label.clone();
+            let phase_when = phase_when_from_env().unwrap_or_else(|| SystemClock::new().wall_now());
+            let logs_root_for_spawn = logs_root.clone();
+
+            runtime.block_on(async move {
+                let bd = BdClient::new();
+                let mut walker = loom_workflow::mint::ProductionMintWalker::new(
+                    BdClient::new(),
+                    label.clone(),
+                    workspace_buf,
+                    state,
+                    manifest,
+                    phase_default,
+                    move |spawn_cfg: SpawnConfig| {
+                        let logs_root = logs_root_for_spawn.clone();
+                        let label = label_for_sink.clone();
+                        async move {
+                            let sink = LogSink::open_phase_at(
+                                &logs_root, &label, "mint", None, phase_when,
+                            )
+                            .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))?;
+                            let mut output = String::new();
+                            let outcome = dispatch(
+                                kind,
+                                spawn_cfg,
+                                shutdown_grace,
+                                Some(sink),
+                                Some(&mut output),
+                            )
+                            .await?;
+                            let marker = parse_exit_signal(&output);
+                            Ok((outcome, marker, output))
+                        }
+                    },
+                )
+                .with_style_rules(style_rules);
+                let validator = WorkspaceFindingValidator::new(workspace);
+                mint_via_walker(
+                    &mut walker,
+                    &loom_workflow::mint::MintScope::Tree,
+                    &validator,
+                    &bd,
+                    &head_commit,
+                    &opts,
+                )
+                .await
+            })?
+        }
+    };
     print!("{}", summary.render());
     if mint_summary_exit_code(&summary) != 0 {
         std::process::exit(1);
@@ -1783,11 +1809,9 @@ fn run_gate_mint(
     Ok(())
 }
 
-/// Per `specs/gate.md` § *Per-bead mint summary semantics*:
-/// `loom gate mint --bead <id>` (and every other scope) exits 0 when
-/// `refused == 0 && errors == 0` — minted/skipped counts are
-/// irrelevant. Non-zero only when `refused > 0` or `errors > 0`, so
-/// the loop's per-bead path can route on the typed exit.
+/// Per `specs/gate.md` § *Molecule mint summary semantics*, mint exits
+/// 0 when `refused == 0 && errors == 0`; minted, promoted, and skipped
+/// counts do not affect the process status.
 #[must_use]
 fn mint_summary_exit_code(summary: &loom_workflow::mint::MintSummary) -> i32 {
     if summary.refused > 0 || summary.errors > 0 {
@@ -1925,30 +1949,39 @@ where
     Ok(loom_workflow::mint::mint_findings_with_options(bd, &findings, head_commit, opts).await)
 }
 
-/// Translate the CLI's resolved [`GateScopeArgs`] into the [`MintScope`]
-/// the production walker dispatches on. Mirrors `apply_default_scope`'s
-/// scope precedence (`--bead` > `--diff` > `--files` > `--tree`); since
-/// `apply_default_scope` populates `args.diff` for bare invocations,
-/// reaching the `MintScope::Tree` fallback requires the operator to
-/// have passed `--tree` explicitly.
-fn resolve_mint_scope(
-    _workspace: &Path,
-    args: &GateScopeArgs,
-) -> anyhow::Result<loom_workflow::mint::MintScope> {
-    if let Some(bead_str) = &args.bead {
-        let bead = BeadId::new(bead_str)?;
-        return Ok(loom_workflow::mint::MintScope::Bead(bead));
-    }
-    if let Some(diff) = &args.diff {
-        return Ok(loom_workflow::mint::MintScope::Diff(diff.clone()));
-    }
-    if !args.files.is_empty() {
-        return Ok(loom_workflow::mint::MintScope::Files(args.files.clone()));
-    }
+#[derive(Debug)]
+enum ResolvedMintScope {
+    Tree,
+    Molecule(loom_driver::identifier::MoleculeId),
+}
+
+fn resolve_mint_scope(workspace: &Path, args: &GateMintArgs) -> anyhow::Result<ResolvedMintScope> {
     if args.tree {
-        return Ok(loom_workflow::mint::MintScope::Tree);
+        return Ok(ResolvedMintScope::Tree);
     }
-    Ok(loom_workflow::mint::MintScope::Diff("HEAD".to_string()))
+    if let Some(molecule) = &args.molecule {
+        return Ok(ResolvedMintScope::Molecule(molecule.parse()?));
+    }
+    let Some(molecule) = active_molecule_id(workspace)? else {
+        return Err(anyhow::anyhow!(
+            "loom gate mint requires --tree or -m/--molecule when no active molecule exists",
+        ));
+    };
+    Ok(ResolvedMintScope::Molecule(molecule))
+}
+
+fn active_molecule_id(
+    workspace: &Path,
+) -> anyhow::Result<Option<loom_driver::identifier::MoleculeId>> {
+    let db_path = workspace.join(".loom/state.db");
+    if !db_path.exists() {
+        return Ok(None);
+    }
+    let db = StateDb::open(db_path)?;
+    let Some(label) = db.current_spec()? else {
+        return Ok(None);
+    };
+    Ok(db.molecule_for_spec(&label)?.map(|row| row.id))
 }
 
 fn run_gate_audit(
@@ -3528,21 +3561,20 @@ mod tests {
         }
     }
 
-    /// Spec contract `specs/gate.md` § *Per-bead mint summary semantics*
-    /// (criterion `mint_bead_scope_exits_zero_on_clean_summary`):
-    /// `loom gate mint --bead <id>` exits 0 when `refused == 0 &&
-    /// errors == 0`, regardless of `minted`/`skipped` counts. Drives
-    /// every clean shape through the same exit-code helper that
-    /// `run_gate_mint` routes on.
+    /// Spec contract `specs/gate.md` § *Molecule mint summary semantics*:
+    /// `loom gate mint -m/--molecule <id>` exits 0 when promotion
+    /// succeeds, including a no-op or promoted-deferred summary.
     #[test]
-    fn mint_bead_scope_exits_zero_on_clean_summary() {
+    fn mint_molecule_exits_zero_on_successful_promotion_summary() {
         use loom_workflow::mint::MintSummary;
 
-        let mk = |minted: usize, skipped: usize| MintSummary {
+        let mk = |minted: usize, promoted_deferred: usize, skipped: usize| MintSummary {
             batches: Vec::new(),
             statuses: Vec::new(),
             minted,
             would_mint: 0,
+            promoted_deferred,
+            would_promote_deferred: 0,
             skipped,
             skipped_filter: 0,
             suppressed: 0,
@@ -3553,28 +3585,31 @@ mod tests {
             specs_across_minted: 0,
         };
 
-        // Every clean shape (refused==0, errors==0) routes to exit 0.
         for (label, summary) in [
-            ("empty", mk(0, 0)),
-            ("minted-only", mk(3, 0)),
-            ("skipped-only", mk(0, 2)),
-            ("mixed minted+skipped", mk(2, 4)),
+            ("empty", mk(0, 0, 0)),
+            ("minted-only", mk(3, 0, 0)),
+            ("promoted-only", mk(0, 2, 0)),
+            ("skipped-only", mk(0, 0, 2)),
+            ("mixed minted+promoted+skipped", mk(2, 1, 4)),
         ] {
             assert_eq!(
                 mint_summary_exit_code(&summary),
                 0,
                 "{label}: refused/errors == 0 → exit 0: {summary:?}",
             );
+            assert!(
+                summary.render().contains("promoted"),
+                "summary names promoted count: {}",
+                summary.render(),
+            );
         }
     }
 
-    /// Spec contract `specs/gate.md` § *Per-bead mint summary semantics*
-    /// (criterion `mint_bead_scope_exits_nonzero_on_refused_or_errors`):
-    /// `loom gate mint --bead <id>` exits non-zero when `refused > 0`
-    /// or `errors > 0`. The summary header lists the non-zero counts
-    /// so the loop's per-bead path can route on the typed exit.
+    /// Spec contract `specs/gate.md` § *Molecule mint summary semantics*:
+    /// `loom gate mint -m/--molecule <id>` exits non-zero when
+    /// promotion reports structural conflicts or bd write errors.
     #[test]
-    fn mint_bead_scope_exits_nonzero_on_refused_or_errors() {
+    fn mint_molecule_exits_nonzero_on_structural_or_write_errors() {
         use loom_workflow::mint::MintSummary;
 
         let mk = |refused: usize, errors: usize| MintSummary {
@@ -3582,6 +3617,8 @@ mod tests {
             statuses: Vec::new(),
             minted: 0,
             would_mint: 0,
+            promoted_deferred: 0,
+            would_promote_deferred: 0,
             skipped: 0,
             skipped_filter: 0,
             suppressed: 0,
@@ -3982,7 +4019,9 @@ mod tests {
     #[test]
     fn mint_refuses_when_loom_inside_env_is_set() {
         let mint_args = GateMintArgs {
-            scope: empty_scope_args(),
+            molecule: None,
+            tree: true,
+            spec: None,
             dry_run: false,
         };
         let cmd = Command::Gate {
@@ -3994,26 +4033,54 @@ mod tests {
         );
     }
 
-    /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
-    /// `mint_bare_invocation_defaults_to_active_molecule_diff`): bare
-    /// `loom gate mint` (no scope flag) defaults to
-    /// `--diff <molecule.base_commit>..HEAD` when the active spec has
-    /// an open epic, else `--diff HEAD`. This pins the bare-invocation
-    /// branch on a fresh workspace (no state db, no current spec) →
-    /// `--diff HEAD`, mirroring `apply_default_scope`'s fallback for
-    /// the other gate subcommands.
     #[test]
-    fn mint_bare_invocation_defaults_to_active_molecule_diff() {
+    fn mint_bare_invocation_defaults_to_active_molecule_or_errors() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mut args = GateMintArgs {
-            scope: empty_scope_args(),
+        for rejected in ["-b", "--diff", "--files"] {
+            let parsed = Cli::try_parse_from(["loom", "gate", "mint", rejected, "value"]);
+            assert!(
+                parsed.is_err(),
+                "mint must reject inspection-only scope flag {rejected}",
+            );
+        }
+
+        let args = GateMintArgs {
+            molecule: None,
+            tree: false,
+            spec: None,
             dry_run: false,
         };
-        apply_default_scope(tmp.path(), &mut args.scope);
-        assert_eq!(args.scope.diff.as_deref(), Some("HEAD"));
-        assert!(args.scope.bead.is_none());
-        assert!(!args.scope.tree);
-        assert!(args.scope.files.is_empty());
+        let err = resolve_mint_scope(tmp.path(), &args)
+            .expect_err("fresh workspace has no active molecule");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("--tree"),
+            "diagnostic names --tree: {rendered}"
+        );
+        assert!(
+            rendered.contains("-m/--molecule"),
+            "diagnostic names -m/--molecule: {rendered}",
+        );
+
+        std::fs::create_dir_all(tmp.path().join("specs")).expect("specs dir");
+        std::fs::write(tmp.path().join("specs/gate.md"), "# Gate\n").expect("spec file");
+        let db = StateDb::open(tmp.path().join(".loom/state.db")).expect("state db");
+        let label = SpecLabel::new("gate");
+        db.rebuild(
+            tmp.path(),
+            &[loom_driver::state::ActiveMolecule {
+                id: loom_driver::identifier::MoleculeId::new("lm-active"),
+                spec_label: label.clone(),
+                base_commit: None,
+            }],
+        )
+        .expect("state rebuild");
+        db.set_current_spec(&label).expect("current spec");
+
+        match resolve_mint_scope(tmp.path(), &args).expect("active molecule resolves") {
+            ResolvedMintScope::Molecule(id) => assert_eq!(id.as_str(), "lm-active"),
+            ResolvedMintScope::Tree => panic!("bare mint must not default to tree"),
+        }
     }
 
     /// `loom gate mint` validates finding bonds and targets against the
@@ -4095,7 +4162,7 @@ mod tests {
 
         let err = mint_via_walker(
             &mut walker,
-            &MintScope::Diff("HEAD".to_owned()),
+            &MintScope::Tree,
             &validator,
             &bd,
             "abc123",
@@ -4168,7 +4235,7 @@ mod tests {
             scopes_seen: Arc::clone(&scopes_seen),
             rubric_stdout: "LOOM_COMPLETE\n".to_string(),
         };
-        let scope = MintScope::Diff("HEAD".to_string());
+        let scope = MintScope::Tree;
         let validator = AcceptAllFindingValidator;
         let bd = BdClient::with_runner(PanicOnBdCall);
         let opts = MintOptions::default();
@@ -4192,8 +4259,8 @@ mod tests {
         );
         assert_eq!(
             *verifier_calls.lock().expect("not poisoned"),
-            0,
-            "non-Tree scope must not dispatch verifiers",
+            1,
+            "tree scope dispatches verifiers before rubric",
         );
         assert!(
             summary.batches.is_empty(),

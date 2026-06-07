@@ -42,7 +42,7 @@ pub use walk::{
 
 use std::collections::{HashMap, HashSet};
 
-use loom_driver::bd::{BdClient, Bead, CommandRunner, CreateOpts, ListOpts};
+use loom_driver::bd::{BdClient, Bead, CommandRunner, CreateOpts, ListOpts, UpdateOpts};
 use loom_driver::config::SuppressionConfig;
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 use loom_gate::IntegrityFinding;
@@ -90,6 +90,8 @@ pub const MINT_LABEL_PREFIX: &str = "loom:fixup:";
 
 /// Bd label prefix for the per-finding dedup key.
 pub const FINDING_LABEL_PREFIX: &str = "finding:";
+
+const DEFERRED_LABEL: &str = "loom:deferred";
 
 /// Live bd statuses that count as a per-finding dedup hit.
 const DEDUP_STATUSES: &str = "open,in_progress,blocked,deferred";
@@ -165,6 +167,16 @@ pub enum BatchOutcome {
     /// `reason` carries the conflicting ids so the operator can resolve
     /// before re-running.
     Refused { fingerprint: String, reason: String },
+    /// A molecule-local deferred bead was promoted to ready work.
+    PromotedDeferred {
+        bead_id: BeadId,
+        findings_count: usize,
+    },
+    /// `--dry-run` mode: a deferred bead would have been promoted.
+    WouldPromoteDeferred {
+        bead_id: BeadId,
+        findings_count: usize,
+    },
     /// Unexpected failure (bd CLI failure, parse failure, …) — the
     /// batch could not be processed but the run continued.
     Errored {
@@ -183,6 +195,8 @@ impl BatchOutcome {
             Self::SkippedDedup { .. } => "skipped-dedup",
             Self::SkippedFilter { .. } => "skipped-filter",
             Self::Refused { .. } => "refused",
+            Self::PromotedDeferred { .. } => "promoted-deferred",
+            Self::WouldPromoteDeferred { .. } => "would-promote-deferred",
             Self::Errored { .. } => "errored",
         }
     }
@@ -263,6 +277,8 @@ pub struct MintSummary {
     pub statuses: Vec<FindingStatusRecord>,
     pub minted: usize,
     pub would_mint: usize,
+    pub promoted_deferred: usize,
+    pub would_promote_deferred: usize,
     pub skipped: usize,
     pub skipped_filter: usize,
     pub suppressed: usize,
@@ -292,6 +308,8 @@ impl MintSummary {
         match &outcome {
             BatchOutcome::Minted { .. } => self.minted += 1,
             BatchOutcome::WouldMint { .. } => self.would_mint += 1,
+            BatchOutcome::PromotedDeferred { .. } => self.promoted_deferred += 1,
+            BatchOutcome::WouldPromoteDeferred { .. } => self.would_promote_deferred += 1,
             BatchOutcome::SkippedDedup { .. } => self.skipped += 1,
             BatchOutcome::SkippedFilter { .. } => self.skipped_filter += 1,
             BatchOutcome::Refused { .. } => self.refused += 1,
@@ -306,10 +324,11 @@ impl MintSummary {
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = format!(
-            "minted {} batches ({} findings across {} specs), skipped {} (dedup), suppressed {}, ineffective suppressions {}, refused {}, errors {}",
+            "minted {} batches ({} findings across {} specs), promoted {} deferred, skipped {} (dedup), suppressed {}, ineffective suppressions {}, refused {}, errors {}",
             self.minted,
             self.findings_across_minted,
             self.specs_across_minted,
+            self.promoted_deferred,
             self.skipped,
             self.suppressed,
             self.ineffective_suppressions,
@@ -323,6 +342,12 @@ impl MintSummary {
             out.push_str(&format!(
                 ", skipped {} (--spec filter)",
                 self.skipped_filter
+            ));
+        }
+        if self.would_promote_deferred > 0 {
+            out.push_str(&format!(
+                ", would-promote {} deferred (dry-run)",
+                self.would_promote_deferred
             ));
         }
         out.push('\n');
@@ -383,6 +408,22 @@ impl MintSummary {
                 } => {
                     out.push_str(&format!("  refused {fingerprint}: {reason}\n"));
                 }
+                BatchOutcome::PromotedDeferred {
+                    bead_id,
+                    findings_count,
+                } => {
+                    out.push_str(&format!(
+                        "  promoted deferred {bead_id} ({findings_count} findings)\n",
+                    ));
+                }
+                BatchOutcome::WouldPromoteDeferred {
+                    bead_id,
+                    findings_count,
+                } => {
+                    out.push_str(&format!(
+                        "  would-promote deferred {bead_id} ({findings_count} findings)\n",
+                    ));
+                }
                 BatchOutcome::Errored {
                     fingerprint,
                     message,
@@ -423,6 +464,121 @@ pub async fn mint_integrity_recovery<R: CommandRunner>(
         .filter_map(IntegrityFinding::to_finding)
         .collect();
     mint_findings_with_options(bd, &typed, head_commit, &MintOptions::default()).await
+}
+
+/// Promote one molecule's deferred remediation beads to ready work.
+pub async fn promote_deferred<R: CommandRunner>(
+    bd: &BdClient<R>,
+    molecule: &MoleculeId,
+    dry_run: bool,
+) -> MintSummary {
+    let mut summary = MintSummary::default();
+    let molecule_bead = match BeadId::new(molecule.as_str()) {
+        Ok(id) => id,
+        Err(err) => {
+            summary.record(BatchOutcome::Errored {
+                fingerprint: molecule.to_string(),
+                message: format!("molecule id `{molecule}` is not a bead id: {err}"),
+            });
+            return summary;
+        }
+    };
+    if let Err(err) = bd.show(&molecule_bead).await {
+        summary.record(BatchOutcome::Errored {
+            fingerprint: molecule.to_string(),
+            message: format!("missing molecule epic `{molecule}` or bd read failed: {err}"),
+        });
+        return summary;
+    }
+    let children = match bd
+        .list(ListOpts {
+            parent: Some(molecule_bead),
+            ..ListOpts::default()
+        })
+        .await
+    {
+        Ok(children) => children,
+        Err(err) => {
+            summary.record(BatchOutcome::Errored {
+                fingerprint: molecule.to_string(),
+                message: format!("bd list failed for molecule `{molecule}`: {err}"),
+            });
+            return summary;
+        }
+    };
+    if let Some(reason) = duplicate_live_finding_reason(&children) {
+        summary.record(BatchOutcome::Refused {
+            fingerprint: molecule.to_string(),
+            reason,
+        });
+        return summary;
+    }
+    for bead in children.into_iter().filter(is_deferred_remediation) {
+        let findings_count = finding_label_count(&bead);
+        if dry_run {
+            summary.record(BatchOutcome::WouldPromoteDeferred {
+                bead_id: bead.id,
+                findings_count,
+            });
+            continue;
+        }
+        match bd
+            .update(
+                &bead.id,
+                UpdateOpts {
+                    status: Some("open".to_string()),
+                    remove_labels: vec![DEFERRED_LABEL.to_string()],
+                    description: Some(bead.description.clone()),
+                    ..UpdateOpts::default()
+                },
+            )
+            .await
+        {
+            Ok(()) => summary.record(BatchOutcome::PromotedDeferred {
+                bead_id: bead.id,
+                findings_count,
+            }),
+            Err(err) => summary.record(BatchOutcome::Errored {
+                fingerprint: bead.id.to_string(),
+                message: format!("bd update failed while promoting deferred bead: {err}"),
+            }),
+        }
+    }
+    summary
+}
+
+fn duplicate_live_finding_reason(children: &[Bead]) -> Option<String> {
+    let mut seen: HashMap<&str, &BeadId> = HashMap::new();
+    for bead in children.iter().filter(|bead| bead.status != "closed") {
+        for label in bead
+            .labels
+            .iter()
+            .filter_map(|label| label.as_str().strip_prefix(FINDING_LABEL_PREFIX))
+        {
+            if let Some(existing) = seen.insert(label, &bead.id) {
+                return Some(format!(
+                    "duplicate live finding hash `{label}` on beads `{existing}` and `{}`",
+                    bead.id,
+                ));
+            }
+        }
+    }
+    None
+}
+
+fn is_deferred_remediation(bead: &Bead) -> bool {
+    bead.status == "deferred"
+        && bead
+            .labels
+            .iter()
+            .any(|label| label.as_str() == DEFERRED_LABEL)
+}
+
+fn finding_label_count(bead: &Bead) -> usize {
+    bead.labels
+        .iter()
+        .filter(|label| label.as_str().starts_with(FINDING_LABEL_PREFIX))
+        .count()
 }
 
 /// Walk a sequence of findings through the per-batch mint pipeline.
@@ -616,6 +772,9 @@ fn record_batch_status(summary: &mut MintSummary, findings: &[Finding], outcome:
         }
         BatchOutcome::Refused { .. } | BatchOutcome::Errored { .. } => FindingStatusAction::Refused,
         BatchOutcome::SkippedDedup { .. } => FindingStatusAction::SkippedLive,
+        BatchOutcome::PromotedDeferred { .. } | BatchOutcome::WouldPromoteDeferred { .. } => {
+            FindingStatusAction::Reported
+        }
     };
     for finding in findings {
         summary.record_status(finding, action);
@@ -1157,6 +1316,126 @@ mod tests {
                 "labels": ["{FINDING_LABEL_PREFIX}{hash}"]
             }}"#,
         )
+    }
+
+    fn deferred_row(id: &str, hash: &str, status: &str, deferred_label: bool) -> String {
+        let deferred = if deferred_label {
+            format!(", \"{DEFERRED_LABEL}\"")
+        } else {
+            String::new()
+        };
+        format!(
+            r#"{{
+                "id": "{id}",
+                "title": "deferred fix-up",
+                "description": "deferred evidence",
+                "status": "{status}",
+                "priority": 2,
+                "issue_type": "task",
+                "labels": ["{FINDING_LABEL_PREFIX}{hash}"{deferred}]
+            }}"#,
+        )
+    }
+
+    fn err_stderr(body: &str) -> RunOutput {
+        RunOutput {
+            status: 1,
+            stdout: Vec::new(),
+            stderr: body.as_bytes().to_vec(),
+        }
+    }
+
+    #[tokio::test]
+    async fn promote_deferred_updates_existing_beads_without_minting_findings() {
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout(&format!("[{}]", epic_row("lm-mol", "gate"))),
+            ok_stdout(&format!(
+                "[{}]",
+                deferred_row("lm-mol.1", "hash-a", "deferred", true),
+            )),
+            ok_stdout(""),
+        ]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+
+        let summary = promote_deferred(&bd, &MoleculeId::new("lm-mol"), false).await;
+
+        assert_eq!(summary.promoted_deferred, 1);
+        assert_eq!(
+            summary.minted, 0,
+            "promotion must not create a finding batch"
+        );
+        assert!(summary.render().contains("promoted 1 deferred"));
+        let calls = rendered_calls(&invocations);
+        assert!(
+            calls
+                .iter()
+                .any(|call| call == &["show", "lm-mol", "--json"]),
+            "promotion verifies the molecule epic exists: {calls:?}",
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|call| call == &["list", "--json", "--parent=lm-mol"]),
+            "promotion lists existing children instead of fabricating findings: {calls:?}",
+        );
+        assert!(
+            calls.iter().any(|call| call
+                == &[
+                    "update",
+                    "lm-mol.1",
+                    "--status",
+                    "open",
+                    "--remove-label",
+                    DEFERRED_LABEL,
+                    "--description",
+                    "deferred evidence",
+                ]),
+            "promotion opens the deferred bead and removes loom:deferred: {calls:?}",
+        );
+        assert!(
+            calls
+                .iter()
+                .all(|call| call.first().is_none_or(|arg| arg != "create")),
+            "promotion is a state transition, not bead creation: {calls:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn promote_deferred_reports_duplicate_live_findings_and_write_errors() {
+        let duplicate_runner = ScriptedRunner::new(vec![
+            ok_stdout(&format!("[{}]", epic_row("lm-mol", "gate"))),
+            ok_stdout(&format!(
+                "[{},{}]",
+                deferred_row("lm-mol.1", "same", "deferred", true),
+                deferred_row("lm-mol.2", "same", "open", false),
+            )),
+        ]);
+        let duplicate_bd = BdClient::with_runner(duplicate_runner);
+        let duplicate = promote_deferred(&duplicate_bd, &MoleculeId::new("lm-mol"), false).await;
+        assert_eq!(duplicate.refused, 1);
+        assert!(
+            duplicate.render().contains("duplicate live finding hash"),
+            "structural conflict is named: {}",
+            duplicate.render(),
+        );
+
+        let write_runner = ScriptedRunner::new(vec![
+            ok_stdout(&format!("[{}]", epic_row("lm-mol", "gate"))),
+            ok_stdout(&format!(
+                "[{}]",
+                deferred_row("lm-mol.3", "hash-b", "deferred", true),
+            )),
+            err_stderr("permission denied"),
+        ]);
+        let write_bd = BdClient::with_runner(write_runner);
+        let write = promote_deferred(&write_bd, &MoleculeId::new("lm-mol"), false).await;
+        assert_eq!(write.errors, 1);
+        assert!(
+            write.render().contains("bd update failed"),
+            "write failure is named: {}",
+            write.render(),
+        );
     }
 
     #[tokio::test]
@@ -2007,7 +2286,7 @@ reason = "false positive"
         let render = summary.render();
         assert!(
             render.starts_with(
-                "minted 1 batches (2 findings across 1 specs), skipped 1 (dedup), suppressed 0, ineffective suppressions 0, refused 1, errors 0\n"
+                "minted 1 batches (2 findings across 1 specs), promoted 0 deferred, skipped 1 (dedup), suppressed 0, ineffective suppressions 0, refused 1, errors 0\n"
             ),
             "header line shape: {render}",
         );

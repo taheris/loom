@@ -144,6 +144,10 @@ impl<R: CommandRunner> BdClient<R> {
             args.push("--remove-label".into());
             args.push(label.into());
         }
+        if let Some(description) = opts.description {
+            args.push("--description".into());
+            args.push(description.into());
+        }
         if let Some(notes) = opts.notes {
             args.push("--notes".into());
             args.push(notes.into());
@@ -298,6 +302,8 @@ pub struct UpdateOpts {
     pub priority: Option<u8>,
     pub add_labels: Vec<String>,
     pub remove_labels: Vec<String>,
+    /// Full issue body forwarded to `bd update --description <text>`.
+    pub description: Option<String>,
     /// Free-text body forwarded to `bd update --notes <text>`. Used by the
     /// run-loop infra-failure path to record `infra-preflight` /
     /// `infra-repeated` causes alongside the `loom:blocked` label.

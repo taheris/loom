@@ -2,11 +2,10 @@
 //! `MintWalker`.
 //!
 //! Pins `specs/gate.md` § *Production walker wiring* criterion
-//! `run_gate_mint_dispatches_through_production_walker_not_empty_vec`:
-//! the CLI arm must obtain its `Vec<Finding>` from
-//! `mint::walk::walk(walker, scope, validator)` and never short-circuit
-//! to `Vec::<Finding>::new()` (unconditionally or behind a never-true
-//! guard). The walker is the only path findings reach the mint pipeline.
+//! `run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion`:
+//! the CLI arm must dispatch `--tree` through `mint::walk::walk` and
+//! dispatch `-m/--molecule` through deferred promotion rather than a
+//! fabricated empty finding vector.
 //!
 //! Invokes the compiled `loom` binary as a subprocess against a fixture
 //! workspace whose profile manifest cannot resolve the default profile.
@@ -55,11 +54,11 @@ fn pinned_path(bin_dir: &Path) -> std::ffi::OsString {
     std::env::join_paths(entries).expect("join PATH")
 }
 
-/// Run `loom --workspace <ws> gate mint --diff HEAD --spec <SPEC_LABEL>`
+/// Run `loom --workspace <ws> gate mint --tree --spec <SPEC_LABEL>`
 /// with the bd shim on PATH and an empty profile manifest. Returns the
 /// subprocess output and the bd-shim invocation log path so callers can
 /// inspect both.
-fn run_gate_mint_subprocess(workspace: &Path) -> (std::process::Output, PathBuf) {
+fn run_gate_mint_tree_subprocess(workspace: &Path) -> (std::process::Output, PathBuf) {
     let bin_dir = install_bd_shim(workspace);
     let state_dir = workspace.join("bd-state");
     std::fs::create_dir_all(&state_dir).expect("mkdir bd-state");
@@ -71,7 +70,7 @@ fn run_gate_mint_subprocess(workspace: &Path) -> (std::process::Output, PathBuf)
     let output = Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
-        .args(["gate", "mint", "--diff", "HEAD", "--spec", SPEC_LABEL])
+        .args(["gate", "mint", "--tree", "--spec", SPEC_LABEL])
         .env("PATH", pinned_path(&bin_dir))
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("BD_STATE_DIR", &state_dir)
@@ -83,11 +82,8 @@ fn run_gate_mint_subprocess(workspace: &Path) -> (std::process::Output, PathBuf)
     (output, state_dir.join(".invocations.log"))
 }
 
-/// Initialise the fixture workspace as a git repo with one commit so the
-/// `--diff HEAD` scope resolves. `resolve_gate_scope` fails loudly when a
-/// `--diff` range can't be parsed (e.g. outside a git repo), so the
-/// walker-wiring fixture must be a real git workspace — the same shape
-/// mint runs against in production.
+/// Initialise the fixture workspace as a git repo with one commit so
+/// `current_commit` resolves the same shape mint uses in production.
 fn git_init_workspace(workspace: &Path) {
     let run = |args: &[&str]| {
         let ok = Command::new("git")
@@ -134,20 +130,60 @@ fn invocation_log_records_spec_label_list(log: &str) -> bool {
     })
 }
 
+fn write_bead(state_dir: &Path, id: &str, status: &str, issue_type: &str, labels: &[&str]) {
+    let dir = state_dir.join(id);
+    std::fs::create_dir_all(&dir).expect("mkdir bead");
+    std::fs::write(dir.join("title"), id).expect("title");
+    std::fs::write(dir.join("description"), "deferred evidence").expect("description");
+    std::fs::write(dir.join("status"), status).expect("status");
+    std::fs::write(dir.join("priority"), "2").expect("priority");
+    std::fs::write(dir.join("issue_type"), issue_type).expect("issue_type");
+    std::fs::write(dir.join("labels"), labels.join("\n")).expect("labels");
+}
+
+fn write_child_parent(state_dir: &Path, id: &str, parent: &str) {
+    std::fs::write(state_dir.join(id).join("parent"), parent).expect("parent");
+}
+
+fn run_gate_mint_molecule_subprocess(workspace: &Path) -> (std::process::Output, PathBuf) {
+    let bin_dir = install_bd_shim(workspace);
+    let state_dir = workspace.join("bd-state");
+    std::fs::create_dir_all(&state_dir).expect("mkdir bd-state");
+    write_bead(&state_dir, "lm-mol", "open", "epic", &["spec:walker_pin"]);
+    write_bead(
+        &state_dir,
+        "lm-mol.1",
+        "deferred",
+        "task",
+        &["loom:deferred", "finding:hash-a", "spec:walker_pin"],
+    );
+    write_child_parent(&state_dir, "lm-mol.1", "lm-mol");
+
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let output = Command::new(loom_bin)
+        .arg("--workspace")
+        .arg(workspace)
+        .args(["gate", "mint", "-m", "lm-mol"])
+        .env("PATH", pinned_path(&bin_dir))
+        .env("BD_STATE_DIR", &state_dir)
+        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        .env_remove("LOOM_INSIDE")
+        .output()
+        .expect("spawn loom");
+    (output, state_dir.join(".invocations.log"))
+}
+
 /// Spec contract: `specs/gate.md` § *Production walker wiring* —
-/// `run_gate_mint` MUST dispatch through the production `MintWalker`
-/// to obtain its `Vec<Finding>`, never via an unconditional
-/// `Vec::<Finding>::new()` shortcut. A regression that constructed the
-/// walker but bypassed its dispatch — including behind an always-false
-/// guard — would leave the bd-shim invocation log empty.
+/// `run_gate_mint` dispatches `--tree` through the production
+/// `MintWalker` and `-m/--molecule` through deferred promotion.
 #[test]
-fn run_gate_mint_dispatches_through_production_walker_not_empty_vec() {
+fn run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion() {
     let dir = tempfile::tempdir().expect("tempdir");
     let workspace = dir.path();
     git_init_workspace(workspace);
     write_fixture_spec(workspace);
 
-    let (output, log_path) = run_gate_mint_subprocess(workspace);
+    let (output, log_path) = run_gate_mint_tree_subprocess(workspace);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let log = std::fs::read_to_string(&log_path).unwrap_or_default();
@@ -167,5 +203,37 @@ fn run_gate_mint_dispatches_through_production_walker_not_empty_vec() {
          lookup failed; an empty invocation log proves run_gate_mint \
          bypassed mint_via_walker (e.g. via Vec::<Finding>::new()). \
          bd-invocations:\n{log}\nstderr:\n{stderr}",
+    );
+
+    let molecule_workspace = tempfile::tempdir().expect("molecule tempdir");
+    git_init_workspace(molecule_workspace.path());
+    write_fixture_spec(molecule_workspace.path());
+    let (molecule_output, molecule_log_path) =
+        run_gate_mint_molecule_subprocess(molecule_workspace.path());
+    let molecule_stdout = String::from_utf8_lossy(&molecule_output.stdout);
+    let molecule_stderr = String::from_utf8_lossy(&molecule_output.stderr);
+    let molecule_log = std::fs::read_to_string(&molecule_log_path).unwrap_or_default();
+
+    assert!(
+        molecule_output.status.success(),
+        "molecule promotion succeeds without constructing or walking findings. \
+         status={:?}\nstdout={molecule_stdout}\nstderr={molecule_stderr}\nlog:\n{molecule_log}",
+        molecule_output.status,
+    );
+    assert!(
+        molecule_stdout.contains("promoted 1 deferred"),
+        "molecule summary names promoted deferred count: {molecule_stdout}",
+    );
+    assert!(
+        molecule_log.lines().any(|line| {
+            line == "update lm-mol.1 --status open --remove-label loom:deferred --description 'deferred evidence'"
+        }),
+        "molecule promotion must update the existing deferred bead: {molecule_log}",
+    );
+    assert!(
+        molecule_log
+            .lines()
+            .all(|line| !line.starts_with("create ")),
+        "molecule promotion must not mint a placeholder finding batch: {molecule_log}",
     );
 }

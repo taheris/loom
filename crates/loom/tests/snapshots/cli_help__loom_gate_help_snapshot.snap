@@ -17,7 +17,7 @@ Commands:
   review         Run the LLM rubric — criterion-attached judges plus the rubric walk over the diff. Expensive
   judge          Run only criterion-attached `[judge]` verifiers — skips the rubric walk
   rubric         Run only the rubric walk over the diff — skips criterion-attached judges
-  mint           Walk the rubric and mint a fix-up bead per finding (the act surface paired with the inspection-only `audit`)
+  mint           Materialize gate findings into remediation work
   verify-marker  Validate `.loom/marker.json` against the workspace's HEAD tree and porcelain — prek's pre-push short-circuit
   help           Print this message or the help of the given subcommand(s)
 

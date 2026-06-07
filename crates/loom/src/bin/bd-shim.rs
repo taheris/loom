@@ -20,10 +20,10 @@
 //! Supported subcommands (the subset `loom loop` / `loom gate` /
 //! `loom msg` actually invoke):
 //!
-//! - `bd list --json [--label-any=<L> …]`
+//! - `bd list --json [--label-any=<L> …] [--parent=<id>]`
 //! - `bd ready --json [--limit=N] [--label=<L>] [--exclude-label=<L> …]`
 //! - `bd show <id> --json`
-//! - `bd update <id> [--notes <t>] [--remove-label <l>] [--add-label <l>] [--status <s>] [--priority <n>] [--claim]`
+//! - `bd update <id> [--description <t>] [--notes <t>] [--remove-label <l>] [--add-label <l>] [--status <s>] [--priority <n>] [--claim]`
 //! - `bd close <id>` — sets status to closed; recorded in the invocation log
 //!   so the verdict-gate "no driver-side bd close" assertion can find it
 //!
@@ -135,7 +135,18 @@ fn bead_to_json(state_dir: &Path, id: &str) -> serde_json::Value {
         "issue_type": read_field(state_dir, id, "issue_type"),
         "notes": read_field(state_dir, id, "notes"),
         "labels": read_labels(state_dir, id),
+        "parent": parent_json(state_dir, id),
     })
+}
+
+fn parent_json(state_dir: &Path, id: &str) -> serde_json::Value {
+    let parent = read_field(state_dir, id, "parent");
+    let trimmed = parent.trim();
+    if trimmed.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(trimmed.to_owned())
+    }
 }
 
 fn list_bead_ids(state_dir: &Path) -> Vec<String> {
@@ -158,6 +169,7 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
     let mut status_filter: Option<String> = None;
     let mut label_eq: Option<String> = None;
     let mut type_filter: Option<String> = None;
+    let mut parent_filter: Option<String> = None;
     let mut want_json = false;
     let mut i = 0;
     while i < args.len() {
@@ -174,6 +186,9 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
         } else if let Some(v) = a.strip_prefix("--type=") {
             type_filter = Some(v.to_string());
             i += 1;
+        } else if let Some(v) = a.strip_prefix("--parent=") {
+            parent_filter = Some(v.to_string());
+            i += 1;
         } else if a == "--json" {
             want_json = true;
             i += 1;
@@ -188,6 +203,9 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
             i += 2;
         } else if a == "--type" {
             type_filter = Some(args.get(i + 1).cloned().unwrap_or_default());
+            i += 2;
+        } else if a == "--parent" {
+            parent_filter = Some(args.get(i + 1).cloned().unwrap_or_default());
             i += 2;
         } else {
             eprintln!("bd-shim: list: unsupported flag {a}");
@@ -216,6 +234,11 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
         }
         if let Some(want) = &type_filter
             && read_field(state_dir, &id, "issue_type").trim() != want
+        {
+            continue;
+        }
+        if let Some(want) = &parent_filter
+            && read_field(state_dir, &id, "parent").trim() != want
         {
             continue;
         }
@@ -334,6 +357,11 @@ fn cmd_update(state_dir: &Path, args: &[String]) -> ExitCode {
     while i < args.len() {
         let flag = &args[i];
         match flag.as_str() {
+            "--description" => {
+                let val = args.get(i + 1).cloned().unwrap_or_default();
+                fs::write(bead_dir.join("description"), val).expect("write description");
+                i += 2;
+            }
             "--notes" => {
                 let val = args.get(i + 1).cloned().unwrap_or_default();
                 fs::write(bead_dir.join("notes"), val).expect("write notes");

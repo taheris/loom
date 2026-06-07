@@ -2874,7 +2874,7 @@ and conservative fall-through for unowned queries.
 - Bare `loom gate mint` defaults to `-m/--molecule <active-molecule>`
   when one exists; without an active molecule it errors and asks for
   `--tree` or `-m/--molecule` explicitly
-  [test?](mint_bare_invocation_defaults_to_active_molecule_or_errors)
+  [test](mint_bare_invocation_defaults_to_active_molecule_or_errors)
 - The end-of-run summary lists blocking findings, deferred findings
   merged, deferred beads promoted, ready remediation batches created or
   updated, clarify findings raised, skipped live finding hashes,
@@ -3077,7 +3077,7 @@ deferred bd findings and does not fabricate a new `Vec<Finding>`.
   `Vec<Finding>` it passes to the minting pipeline; `-m/--molecule`
   calls the deferred-promotion path and never constructs a placeholder
   empty findings vector
-  [test?](run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion)
+  [test](run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion)
 - `loom loop`'s per-bead path routes a loop-phase `Success` outcome
   through exactly one per-bead gate call on the typed
   `PerBeadGateOutcome`; a `Clean` outcome routes the bead to `Done`
@@ -3099,12 +3099,12 @@ deferred bd findings and does not fabricate a new `Vec<Finding>`.
 - `loom gate mint -m/--molecule <id>` exits 0 when it successfully
   promotes zero or more deferred remediation beads; the summary lists
   promoted counts and any reobserved closed findings
-  [test?](mint_molecule_exits_zero_on_successful_promotion_summary)
+  [test](mint_molecule_exits_zero_on_successful_promotion_summary)
 - `loom gate mint -m/--molecule <id>` exits non-zero when promotion
   sees a structural conflict (duplicate live finding hashes, missing
   molecule epic, or bd write failure), and the summary names the
   conflicting bead ids or bd error
-  [test?](mint_molecule_exits_nonzero_on_structural_or_write_errors)
+  [test](mint_molecule_exits_nonzero_on_structural_or_write_errors)
 
 Loop-side interpretation of these exit codes — retrying transient
 promotion errors or blocking on structural bd state — is owned by

@@ -1,19 +1,12 @@
 //! Walk orchestration that drives the mint pipeline's two Finding sources.
 //!
-//! Per `specs/gate.md` § *Findings and Minting* and § *Scope-dependent walk*
-//! the mint walk varies by scope:
-//!
-//! - `--bead <id>` / `--diff <range>` / `--files <paths>` — invoke ONLY the
-//!   LLM rubric agent process. Deterministic verifier failures are NOT
-//!   normalised into Finding records at these scopes; the loop's preceding
-//!   `verify --bead <id>` step has already handled them as `previous_failure`
-//!   recovery context.
-//! - `--tree` — invoke the deterministic verifier dispatcher first,
-//!   collecting failed verdicts; then invoke the LLM rubric. Both sources
-//!   flow into the same per-Finding pipeline. There is no shell-level
-//!   `LOOM_FINDING` line for verify-side findings — only the in-driver
-//!   record, normalised per the mapping table at `specs/gate.md` § *Emit
-//!   shape* (verifier outcome → token/target/bonds).
+//! Per `specs/gate.md` § *Findings and Minting* and § *Scope-dependent walk*,
+//! the production mint walk is the `--tree` safety-net sweep: invoke the
+//! deterministic verifier dispatcher first, collecting failed verdicts; then
+//! invoke the LLM rubric. Both sources flow into the same per-Finding pipeline.
+//! There is no shell-level `LOOM_FINDING` line for verify-side findings — only
+//! the in-driver record, normalised per the mapping table at `specs/gate.md` §
+//! *Emit shape* (verifier outcome → token/target/bonds).
 //!
 //! The orchestration layer is the seam between [`crate::mint`]'s
 //! `mint_findings_with_options` and the two emit sources; it returns a
@@ -32,7 +25,7 @@ use loom_driver::agent::{
 };
 use loom_driver::bd::{BdClient, CommandRunner, ListOpts, TokioRunner};
 use loom_driver::config::{LoomConfig, Phase};
-use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
+use loom_driver::identifier::{ProfileName, SpecLabel};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
 use loom_driver::state::StateDb;
@@ -50,37 +43,18 @@ use crate::review::{
 };
 use crate::todo::ExitSignal;
 
-/// Resolved mint walk scope. Mirrors the `--bead` / `--diff` / `--files` /
-/// `--tree` CLI flag the operator passed to `loom gate mint`; the
-/// orchestration layer dispatches per variant. The CLI is responsible
-/// for resolving defaults (per `specs/gate.md` § *Default for bare
-/// invocation*) before constructing this value.
+/// Resolved mint walk scope for the standing safety-net sweep.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MintScope {
-    Bead(BeadId),
-    Diff(String),
-    Files(Vec<PathBuf>),
     Tree,
 }
 
 impl MintScope {
-    /// True iff the scope walks deterministic verifiers in addition to the
-    /// LLM rubric. Only `--tree` does (per `specs/gate.md` § *Scope-
-    /// dependent walk*).
+    /// Project to the wire-level [`DispatchScope`] the parse pipeline uses.
     #[must_use]
-    pub fn runs_verifiers(&self) -> bool {
-        matches!(self, Self::Tree)
-    }
-
-    /// Project to the wire-level [`DispatchScope`] the parse pipeline
-    /// uses for token-scope enforcement. `--bead` / `--diff` / `--files`
-    /// collapse to [`DispatchScope::PerBead`]; `--tree` is
-    /// [`DispatchScope::Tree`].
-    #[must_use]
-    pub fn dispatch_scope(&self) -> DispatchScope {
+    pub const fn dispatch_scope(&self) -> DispatchScope {
         match self {
             Self::Tree => DispatchScope::Tree,
-            Self::Bead(_) | Self::Diff(_) | Self::Files(_) => DispatchScope::PerBead,
         }
     }
 }
@@ -191,11 +165,9 @@ pub async fn walk<W: MintWalker, V: FindingValidator + ?Sized>(
     validator: &V,
 ) -> Result<Vec<Finding>, WalkError> {
     let mut findings = Vec::new();
-    if scope.runs_verifiers() {
-        let failures = walker.run_verifiers(scope).await?;
-        for failure in failures {
-            findings.push(verifier_failure_to_finding(failure)?);
-        }
+    let failures = walker.run_verifiers(scope).await?;
+    for failure in failures {
+        findings.push(verifier_failure_to_finding(failure)?);
     }
     let rubric_stdout = walker.run_rubric(scope).await?;
     let parsed = parse_walk_output(&rubric_stdout, scope.dispatch_scope(), validator)?;
@@ -821,76 +793,6 @@ mod tests {
         format!("{LOOM_FINDING_PREFIX} {payload}")
     }
 
-    /// Spec contract `specs/gate.md` § *Scope-dependent walk*
-    /// (criterion `mint_bead_scope_walks_llm_rubric_only_not_verifiers`):
-    /// at `--bead <id>` / `--diff <range>` /
-    /// `--files <paths>` scope, the walk runs ONLY the LLM rubric agent;
-    /// the deterministic verifier dispatcher MUST NOT fire because the
-    /// loop's preceding `verify --bead <id>` step has already handled
-    /// verify-side failures as `previous_failure` recovery context.
-    ///
-    /// Pinning the no-call here is what makes the scope-dependent
-    /// behaviour structural: if a future refactor accidentally always
-    /// invoked the verifier dispatcher, this test catches it before
-    /// per-bead findings start double-reporting.
-    #[tokio::test]
-    async fn mint_bead_scope_walks_llm_rubric_only_not_verifiers() {
-        let rubric = format!(
-            "preamble\n{}\nLOOM_CONCERN: {{\"summary\":\"found one\"}}\n",
-            finding_line(
-                r#"{"token":"spec-coherence-fail","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"e"}"#
-            ),
-        );
-        let mut walker = FakeWalker {
-            rubric_stdout: rubric,
-            // verifier_failures must NEVER reach the per-Finding loop on
-            // bead scope — populate the slot anyway so the assertion
-            // proves the dispatcher was skipped (not just empty).
-            verifier_failures: vec![VerifierFailure {
-                annotation: annotation(Tier::Check, "would-not-fire", "specs/gate.md"),
-                kind: VerifierFailureKind::Failed,
-                evidence: "should not appear".into(),
-            }],
-            ..FakeWalker::default()
-        };
-        let scope = MintScope::Bead(BeadId::new("lm-loop.1").expect("valid"));
-        let findings = walk(&mut walker, &scope, &AlwaysValid)
-            .await
-            .expect("walk succeeds");
-        assert_eq!(walker.rubric_calls, 1, "rubric ran exactly once");
-        assert_eq!(
-            walker.verifier_calls, 0,
-            "deterministic verifiers MUST NOT run on bead scope",
-        );
-        assert_eq!(
-            findings.len(),
-            1,
-            "only the rubric finding reaches the mint pipeline: {findings:?}",
-        );
-        assert_eq!(findings[0].token, ConcernToken::SpecCoherenceFail);
-
-        // The same property holds for --diff and --files scopes.
-        for scope in [
-            MintScope::Diff("HEAD".into()),
-            MintScope::Files(vec![PathBuf::from("src/lib.rs")]),
-        ] {
-            let mut w = FakeWalker {
-                rubric_stdout: "no findings\n".into(),
-                verifier_failures: vec![VerifierFailure {
-                    annotation: annotation(Tier::Check, "x", "specs/gate.md"),
-                    kind: VerifierFailureKind::Failed,
-                    evidence: "y".into(),
-                }],
-                ..FakeWalker::default()
-            };
-            let _ = walk(&mut w, &scope, &AlwaysValid).await.expect("walk");
-            assert_eq!(
-                w.verifier_calls, 0,
-                "non-tree scope skips verifiers: {scope:?}"
-            );
-        }
-    }
-
     /// Spec contract `specs/gate.md` § *Scope-dependent walk* (criterion
     /// `mint_tree_scope_walks_verifiers_and_rubric_emitting_findings_from_both`):
     /// at `--tree` scope, the walk invokes BOTH the
@@ -1000,7 +902,7 @@ mod tests {
             rubric_stdout: rubric,
             ..FakeWalker::default()
         };
-        let findings = walk(&mut walker, &MintScope::Diff("HEAD".into()), &AlwaysValid)
+        let findings = walk(&mut walker, &MintScope::Tree, &AlwaysValid)
             .await
             .expect("walk succeeds");
 
