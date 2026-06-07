@@ -2772,7 +2772,7 @@ and conservative fall-through for unowned queries.
   only within the same owning molecule; closed matches outside the
   molecule are historical context only and do not suppress newly
   observed current findings
-  [test?](closed_finding_hash_label_suppresses_remint_only_within_same_molecule)
+  [test](closed_finding_hash_label_suppresses_remint_only_within_same_molecule)
 - A blocked clarify bead carrying `finding:<hash>` dedups the same
   clarify-route finding while it remains live, so unresolved
   `loom:clarify` decisions do not remint endlessly
@@ -2800,11 +2800,11 @@ and conservative fall-through for unowned queries.
 - At `--tree` scope, a live remediation bead whose `finding:<hash>` labels
   are all absent from the current unsuppressed finding set is reported
   as a stale candidate, not auto-closed
-  [test?](mint_tree_reports_stale_candidates_without_closing)
+  [test](mint_tree_reports_stale_candidates_without_closing)
 - At `--tree` scope, a live batch whose finding labels are partially
   stale is reported as a partially-stale candidate with current and
   absent finding ids, not auto-superseded
-  [test?](mint_tree_reports_partially_stale_batches_without_superseding)
+  [test](mint_tree_reports_partially_stale_batches_without_superseding)
 - `--bead`, `--diff`, and `--files` mint scopes do not report stale
   candidates because those scopes cannot prove a missing finding is
   absent from the whole tree

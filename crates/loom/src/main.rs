@@ -1744,6 +1744,8 @@ fn run_gate_mint(
                 dry_run: args.dry_run,
                 spec_filter,
                 suppressions: config.suppress.clone(),
+                suppress_closed_same_molecule: true,
+                report_stale: true,
             };
             let selection = resolved_agent_for(&config, agent_override, Phase::Review)?;
             let phase_default = selection.profile.clone();
@@ -3579,6 +3581,8 @@ mod tests {
             skipped_filter: 0,
             suppressed: 0,
             ineffective_suppressions: 0,
+            stale_candidates: 0,
+            partial_stale_candidates: 0,
             refused: 0,
             errors: 0,
             findings_across_minted: 0,
@@ -3623,6 +3627,8 @@ mod tests {
             skipped_filter: 0,
             suppressed: 0,
             ineffective_suppressions: 0,
+            stale_candidates: 0,
+            partial_stale_candidates: 0,
             refused,
             errors,
             findings_across_minted: 0,

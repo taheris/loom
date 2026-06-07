@@ -177,6 +177,24 @@ pub enum BatchOutcome {
         bead_id: BeadId,
         findings_count: usize,
     },
+    /// A closed bead in the same molecule already processed this finding.
+    SkippedClosed {
+        fingerprint: String,
+        existing_bead: BeadId,
+        findings_count: usize,
+    },
+    /// A live remediation bead has no finding labels in the current tree
+    /// finding set.
+    StaleCandidate {
+        bead_id: BeadId,
+        absent_hashes: Vec<String>,
+    },
+    /// A live remediation bead carries both current and absent finding labels.
+    PartialStaleCandidate {
+        bead_id: BeadId,
+        current_hashes: Vec<String>,
+        absent_hashes: Vec<String>,
+    },
     /// Unexpected failure (bd CLI failure, parse failure, …) — the
     /// batch could not be processed but the run continued.
     Errored {
@@ -197,6 +215,9 @@ impl BatchOutcome {
             Self::Refused { .. } => "refused",
             Self::PromotedDeferred { .. } => "promoted-deferred",
             Self::WouldPromoteDeferred { .. } => "would-promote-deferred",
+            Self::SkippedClosed { .. } => "skipped-closed",
+            Self::StaleCandidate { .. } => "stale-candidate",
+            Self::PartialStaleCandidate { .. } => "partial-stale-candidate",
             Self::Errored { .. } => "errored",
         }
     }
@@ -261,6 +282,12 @@ pub struct MintOptions {
     /// Top-level `[[suppress]]` entries from `loom.toml`. Matching
     /// rubric-origin findings are reported and removed before dedup.
     pub suppressions: Vec<SuppressionConfig>,
+    /// Treat closed beads under the resolved molecule epic as already
+    /// processed findings instead of automatically reminting them.
+    pub suppress_closed_same_molecule: bool,
+    /// Report live remediation beads whose finding labels are absent or
+    /// partially absent from the current tree-scope finding set.
+    pub report_stale: bool,
 }
 
 /// End-of-run summary printed to stdout (no bd writes).
@@ -283,6 +310,8 @@ pub struct MintSummary {
     pub skipped_filter: usize,
     pub suppressed: usize,
     pub ineffective_suppressions: usize,
+    pub stale_candidates: usize,
+    pub partial_stale_candidates: usize,
     pub refused: usize,
     pub errors: usize,
     pub findings_across_minted: usize,
@@ -314,6 +343,9 @@ impl MintSummary {
             BatchOutcome::SkippedFilter { .. } => self.skipped_filter += 1,
             BatchOutcome::Refused { .. } => self.refused += 1,
             BatchOutcome::Errored { .. } => self.errors += 1,
+            BatchOutcome::StaleCandidate { .. } => self.stale_candidates += 1,
+            BatchOutcome::PartialStaleCandidate { .. } => self.partial_stale_candidates += 1,
+            BatchOutcome::SkippedClosed { .. } => self.skipped += 1,
         }
         self.batches.push(outcome);
     }
@@ -348,6 +380,15 @@ impl MintSummary {
             out.push_str(&format!(
                 ", would-promote {} deferred (dry-run)",
                 self.would_promote_deferred
+            ));
+        }
+        if self.stale_candidates > 0 {
+            out.push_str(&format!(", stale candidates {}", self.stale_candidates));
+        }
+        if self.partial_stale_candidates > 0 {
+            out.push_str(&format!(
+                ", partial-stale candidates {}",
+                self.partial_stale_candidates
             ));
         }
         out.push('\n');
@@ -429,6 +470,35 @@ impl MintSummary {
                     message,
                 } => {
                     out.push_str(&format!("  error {fingerprint}: {message}\n"));
+                }
+                BatchOutcome::SkippedClosed {
+                    fingerprint,
+                    existing_bead,
+                    findings_count,
+                } => {
+                    out.push_str(&format!(
+                        "  skipped {fingerprint} (closed same-molecule {existing_bead}, {findings_count} findings)\n",
+                    ));
+                }
+                BatchOutcome::StaleCandidate {
+                    bead_id,
+                    absent_hashes,
+                } => {
+                    out.push_str(&format!(
+                        "  stale-candidate {bead_id} (absent findings: {})\n",
+                        absent_hashes.join(", ")
+                    ));
+                }
+                BatchOutcome::PartialStaleCandidate {
+                    bead_id,
+                    current_hashes,
+                    absent_hashes,
+                } => {
+                    out.push_str(&format!(
+                        "  partial-stale-candidate {bead_id} (current: {}; absent: {})\n",
+                        current_hashes.join(", "),
+                        absent_hashes.join(", ")
+                    ));
                 }
             }
         }
@@ -623,15 +693,21 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
     }
 
     let mut survivors: Vec<(Finding, SpecLabel, Option<MoleculeId>)> = Vec::new();
+    let mut current_hashes: HashSet<String> = HashSet::new();
+    let mut current_specs: HashSet<String> = HashSet::new();
     for (finding, finding_hash) in fingerprints {
         if suppresses_rubric_finding(&opts.suppressions, finding) {
             summary.record_status(finding, FindingStatusAction::Suppressed);
             continue;
         }
+        current_hashes.insert(finding_hash.clone());
+        for bond in &finding.bonds {
+            current_specs.insert(bond.as_str().to_owned());
+        }
         if has_ineffective_suppression_match(&opts.suppressions, finding) {
             summary.ineffective_suppressions += 1;
         }
-        match dedup_finding(bd, finding).await {
+        match dedup_live_finding(bd, finding).await {
             FindingDedup::Untracked => {}
             FindingDedup::Tracked(existing_bead) => {
                 summary.record_status(finding, FindingStatusAction::SkippedLive);
@@ -658,6 +734,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
                 });
                 continue;
             }
+            FindingDedup::Closed { .. } => {}
         }
         let (lead_spec, lead_epic) = match resolver.resolve(&finding.bonds, opts.dry_run).await {
             Ok(lead) => lead,
@@ -694,6 +771,39 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
                 findings_count: 1,
             });
             continue;
+        }
+        if opts.suppress_closed_same_molecule
+            && let Some(epic) = lead_epic.as_ref()
+        {
+            match dedup_closed_same_molecule(bd, finding, epic).await {
+                FindingDedup::Untracked => {}
+                FindingDedup::Closed(existing_bead) => {
+                    summary.record_status(finding, FindingStatusAction::Reported);
+                    summary.record(BatchOutcome::SkippedClosed {
+                        fingerprint: finding_hash,
+                        existing_bead,
+                        findings_count: 1,
+                    });
+                    continue;
+                }
+                FindingDedup::Duplicate { reason } => {
+                    summary.record_status(finding, FindingStatusAction::Refused);
+                    summary.record(BatchOutcome::Refused {
+                        fingerprint: finding_hash,
+                        reason,
+                    });
+                    continue;
+                }
+                FindingDedup::Errored { message } => {
+                    summary.record_status(finding, FindingStatusAction::Refused);
+                    summary.record(BatchOutcome::Errored {
+                        fingerprint: finding_hash,
+                        message,
+                    });
+                    continue;
+                }
+                FindingDedup::Tracked(_) => {}
+            }
         }
         survivors.push((finding.clone(), lead_spec, lead_epic));
     }
@@ -733,6 +843,16 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
         }
     }
     summary.specs_across_minted = minted_specs.len();
+    if opts.report_stale {
+        report_stale_candidates(
+            bd,
+            &mut summary,
+            &current_hashes,
+            &current_specs,
+            opts.spec_filter.as_ref(),
+        )
+        .await;
+    }
     summary
 }
 
@@ -750,6 +870,70 @@ fn group_survivors_by_lead_spec(
     }
     by_spec.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
     by_spec
+}
+
+async fn report_stale_candidates<R: CommandRunner>(
+    bd: &BdClient<R>,
+    summary: &mut MintSummary,
+    current_hashes: &HashSet<String>,
+    current_specs: &HashSet<String>,
+    spec_filter: Option<&SpecLabel>,
+) {
+    let specs: Vec<SpecLabel> = match spec_filter {
+        Some(spec) => vec![spec.clone()],
+        None => current_specs.iter().map(SpecLabel::new).collect(),
+    };
+    for spec in specs {
+        let beads = match bd
+            .list(ListOpts {
+                status: Some(DEDUP_STATUSES.to_string()),
+                label: Some(format!("spec:{spec}")),
+                ..ListOpts::default()
+            })
+            .await
+        {
+            Ok(beads) => beads,
+            Err(err) => {
+                summary.record(BatchOutcome::Errored {
+                    fingerprint: format!("stale:{spec}"),
+                    message: MintError::from(err).to_string(),
+                });
+                continue;
+            }
+        };
+        for bead in beads {
+            let labels = finding_hash_labels(&bead);
+            if labels.is_empty() {
+                continue;
+            }
+            let (current, absent): (Vec<String>, Vec<String>) = labels
+                .into_iter()
+                .partition(|hash| current_hashes.contains(hash));
+            if current.is_empty() {
+                summary.record(BatchOutcome::StaleCandidate {
+                    bead_id: bead.id,
+                    absent_hashes: absent,
+                });
+            } else if !absent.is_empty() {
+                summary.record(BatchOutcome::PartialStaleCandidate {
+                    bead_id: bead.id,
+                    current_hashes: current,
+                    absent_hashes: absent,
+                });
+            }
+        }
+    }
+}
+
+fn finding_hash_labels(bead: &Bead) -> Vec<String> {
+    let mut hashes = bead
+        .labels
+        .iter()
+        .filter_map(|label| label.as_str().strip_prefix(FINDING_LABEL_PREFIX))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    hashes.sort();
+    hashes
 }
 
 fn track_minted(
@@ -772,9 +956,11 @@ fn record_batch_status(summary: &mut MintSummary, findings: &[Finding], outcome:
         }
         BatchOutcome::Refused { .. } | BatchOutcome::Errored { .. } => FindingStatusAction::Refused,
         BatchOutcome::SkippedDedup { .. } => FindingStatusAction::SkippedLive,
-        BatchOutcome::PromotedDeferred { .. } | BatchOutcome::WouldPromoteDeferred { .. } => {
-            FindingStatusAction::Reported
-        }
+        BatchOutcome::SkippedClosed { .. }
+        | BatchOutcome::PromotedDeferred { .. }
+        | BatchOutcome::WouldPromoteDeferred { .. }
+        | BatchOutcome::StaleCandidate { .. }
+        | BatchOutcome::PartialStaleCandidate { .. } => FindingStatusAction::Reported,
     };
     for finding in findings {
         summary.record_status(finding, action);
@@ -801,11 +987,12 @@ fn partition_group(group: Vec<Finding>) -> (Vec<Finding>, Vec<(Finding, FindingR
 enum FindingDedup {
     Untracked,
     Tracked(BeadId),
+    Closed(BeadId),
     Duplicate { reason: String },
     Errored { message: String },
 }
 
-async fn dedup_finding<R: CommandRunner>(bd: &BdClient<R>, finding: &Finding) -> FindingDedup {
+async fn dedup_live_finding<R: CommandRunner>(bd: &BdClient<R>, finding: &Finding) -> FindingDedup {
     let label = finding_label(finding);
     let matching_beads = match bd
         .list(ListOpts {
@@ -848,6 +1035,54 @@ async fn dedup_finding<R: CommandRunner>(bd: &BdClient<R>, finding: &Finding) ->
             FindingDedup::Duplicate {
                 reason: format!(
                     "{n} live beads share finding label — remove duplicate labels or close duplicates before re-running (ids: {ids})",
+                ),
+            }
+        }
+    }
+}
+
+async fn dedup_closed_same_molecule<R: CommandRunner>(
+    bd: &BdClient<R>,
+    finding: &Finding,
+    molecule: &MoleculeId,
+) -> FindingDedup {
+    let parent = match BeadId::new(molecule.as_str()) {
+        Ok(id) => id,
+        Err(source) => {
+            return FindingDedup::Errored {
+                message: format!("molecule id `{molecule}` is not a bead id: {source}"),
+            };
+        }
+    };
+    let label = finding_label(finding);
+    let matching_beads = match bd
+        .list(ListOpts {
+            status: Some("closed".to_string()),
+            label: Some(label),
+            parent: Some(parent),
+            ..ListOpts::default()
+        })
+        .await
+    {
+        Ok(beads) => beads,
+        Err(err) => {
+            return FindingDedup::Errored {
+                message: MintError::from(err).to_string(),
+            };
+        }
+    };
+    match matching_beads.len() {
+        0 => FindingDedup::Untracked,
+        1 => FindingDedup::Closed(matching_beads[0].id.clone()),
+        n => {
+            let ids = matching_beads
+                .iter()
+                .map(|b| b.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            FindingDedup::Duplicate {
+                reason: format!(
+                    "{n} closed beads in the same molecule share finding label (ids: {ids})",
                 ),
             }
         }
@@ -1305,6 +1540,20 @@ mod tests {
         status: &str,
         description: &str,
     ) -> String {
+        fixup_row_with_labels(
+            id,
+            status,
+            &[&format!("{FINDING_LABEL_PREFIX}{hash}")],
+            description,
+        )
+    }
+
+    fn fixup_row_with_labels(id: &str, status: &str, labels: &[&str], description: &str) -> String {
+        let labels_json = labels
+            .iter()
+            .map(|label| format!("{label:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         format!(
             r#"{{
                 "id": "{id}",
@@ -1313,7 +1562,7 @@ mod tests {
                 "status": "{status}",
                 "priority": 2,
                 "issue_type": "task",
-                "labels": ["{FINDING_LABEL_PREFIX}{hash}"]
+                "labels": [{labels_json}]
             }}"#,
         )
     }
@@ -1527,51 +1776,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closed_finding_hash_label_does_not_suppress_current_finding() {
+    async fn closed_finding_hash_label_suppresses_remint_only_within_same_molecule() {
         let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
-        let receipt = batch_fingerprint(std::slice::from_ref(&finding));
+        let hash = finding.hash();
         let runner = ScriptedRunner::new(vec![
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
-            ok_stdout("lm-newfix.1\n"),
+            ok_stdout(&format!(
+                "[{}]",
+                fixup_row_status("lm-closed.1", &hash, "closed"),
+            )),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
-        let summary = mint_findings(&bd, &[finding], "head-sha").await;
+        let opts = MintOptions {
+            dry_run: false,
+            spec_filter: None,
+            suppressions: Vec::new(),
+            suppress_closed_same_molecule: true,
+            report_stale: false,
+        };
+        let summary = mint_findings_with_options(&bd, &[finding], "head-sha", &opts).await;
 
-        assert_eq!(
-            summary.minted, 1,
-            "closed beads are outside live dedup: {summary:?}"
-        );
+        assert_eq!(summary.minted, 0, "closed same-molecule hit suppresses");
+        assert_eq!(summary.skipped, 1, "closed hit records a skipped finding");
         match &summary.batches[0] {
-            BatchOutcome::Minted {
-                fingerprint,
-                bead_id,
-                ..
-            } => {
-                assert_eq!(fingerprint, &receipt);
-                assert_eq!(bead_id.as_str(), "lm-newfix.1");
+            BatchOutcome::SkippedClosed { existing_bead, .. } => {
+                assert_eq!(existing_bead.as_str(), "lm-closed.1");
             }
-            other => panic!("expected Minted, got {other:?}"),
+            other => panic!("expected SkippedClosed, got {other:?}"),
         }
         let calls = rendered_calls(&invocations);
-        let dedup_call = calls
-            .iter()
-            .find(|c| {
-                c.iter().any(|a| a == "list")
-                    && c.iter()
-                        .any(|a| a.starts_with(&format!("--label={FINDING_LABEL_PREFIX}")))
-            })
-            .expect("dedup list call recorded");
         assert!(
-            dedup_call
-                .iter()
-                .any(|a| a == &format!("--status={DEDUP_STATUSES}")),
-            "dedup query must be live-only: {dedup_call:?}",
+            calls.iter().any(|call| call
+                == &[
+                    "list",
+                    "--json",
+                    "--status=closed",
+                    &format!("--label={FINDING_LABEL_PREFIX}{hash}"),
+                    "--parent=lm-gateepic",
+                ]),
+            "closed suppression query must be scoped to the owning molecule: {calls:?}",
         );
         assert!(
-            !dedup_call.iter().any(|a| a.contains("closed")),
-            "closed beads must not be in the dedup status filter: {dedup_call:?}",
+            calls
+                .iter()
+                .all(|call| call.first().is_none_or(|arg| arg != "create")),
+            "closed same-molecule hit must not remint: {calls:?}",
         );
     }
 
@@ -1680,6 +1931,8 @@ reason = "false positive"
             dry_run: false,
             spec_filter: None,
             suppressions: config.suppress,
+            suppress_closed_same_molecule: false,
+            report_stale: false,
         };
         let summary = mint_findings_with_options(&bd, &[by_id, by_hash], "head-sha", &opts).await;
         assert_eq!(summary.suppressed, 2, "both rubric findings suppressed");
@@ -1714,6 +1967,8 @@ reason = "false positive"
                 hash: None,
                 reason: "must not suppress deterministic failures".to_owned(),
             }],
+            suppress_closed_same_molecule: false,
+            report_stale: false,
         };
         let summary = mint_findings_with_options(&bd, &[finding], "head-sha", &opts).await;
         assert_eq!(summary.suppressed, 0, "deterministic finding remains live");
@@ -1732,6 +1987,106 @@ reason = "false positive"
                 .iter()
                 .any(|s| s.action == FindingStatusAction::Minted),
             "actionable deterministic status recorded: {summary:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_tree_reports_stale_candidates_without_closing() {
+        let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
+        let stale_hash = "v1:stalehash000";
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("lm-newfix.1\n"),
+            ok_stdout(&format!(
+                "[{}]",
+                fixup_row_with_labels(
+                    "lm-stale.1",
+                    "open",
+                    &[&format!("{FINDING_LABEL_PREFIX}{stale_hash}"), "spec:gate"],
+                    "stale evidence",
+                ),
+            )),
+        ]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+        let opts = MintOptions {
+            dry_run: false,
+            spec_filter: Some(spec("gate")),
+            suppressions: Vec::new(),
+            suppress_closed_same_molecule: false,
+            report_stale: true,
+        };
+        let summary = mint_findings_with_options(&bd, &[finding], "head-sha", &opts).await;
+
+        assert_eq!(summary.stale_candidates, 1);
+        assert!(summary.render().contains("stale-candidate lm-stale.1"));
+        let calls = rendered_calls(&invocations);
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.iter().any(|arg| arg == "--label=spec:gate")
+                    && call
+                        .iter()
+                        .any(|arg| arg == &format!("--status={DEDUP_STATUSES}"))),
+            "stale reporting must list live remediation beads for the spec: {calls:?}",
+        );
+        assert!(
+            calls
+                .iter()
+                .all(|call| call.first().is_none_or(|arg| arg != "close")),
+            "stale reporting must not auto-close candidates: {calls:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_tree_reports_partially_stale_batches_without_superseding() {
+        let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
+        let current_hash = finding.hash();
+        let absent_hash = "v1:absent000000";
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("lm-newfix.1\n"),
+            ok_stdout(&format!(
+                "[{}]",
+                fixup_row_with_labels(
+                    "lm-partial.1",
+                    "open",
+                    &[
+                        &format!("{FINDING_LABEL_PREFIX}{current_hash}"),
+                        &format!("{FINDING_LABEL_PREFIX}{absent_hash}"),
+                        "spec:gate",
+                    ],
+                    "partial evidence",
+                ),
+            )),
+        ]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+        let opts = MintOptions {
+            dry_run: false,
+            spec_filter: Some(spec("gate")),
+            suppressions: Vec::new(),
+            suppress_closed_same_molecule: false,
+            report_stale: true,
+        };
+        let summary = mint_findings_with_options(&bd, &[finding], "head-sha", &opts).await;
+
+        assert_eq!(summary.partial_stale_candidates, 1);
+        assert!(
+            summary
+                .render()
+                .contains("partial-stale-candidate lm-partial.1")
+        );
+        assert!(summary.render().contains(&current_hash));
+        assert!(summary.render().contains(absent_hash));
+        let calls = rendered_calls(&invocations);
+        assert!(
+            calls
+                .iter()
+                .all(|call| call.first().is_none_or(|arg| arg != "update")),
+            "partial-stale reporting must not supersede or split automatically: {calls:?}",
         );
     }
 
@@ -2364,6 +2719,8 @@ reason = "false positive"
             dry_run: true,
             spec_filter: None,
             suppressions: Vec::new(),
+            suppress_closed_same_molecule: false,
+            report_stale: false,
         };
         let summary = mint_findings_with_options(&bd, &[finding], "head-sha", &opts).await;
         assert_eq!(summary.minted, 0, "no bead minted under dry-run");
@@ -2412,6 +2769,8 @@ reason = "false positive"
             dry_run: false,
             spec_filter: Some(spec("gate")),
             suppressions: Vec::new(),
+            suppress_closed_same_molecule: false,
+            report_stale: false,
         };
         let summary =
             mint_findings_with_options(&bd, &[f_kept, f_dropped], "head-sha", &opts).await;

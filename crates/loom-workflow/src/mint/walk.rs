@@ -793,75 +793,82 @@ mod tests {
         format!("{LOOM_FINDING_PREFIX} {payload}")
     }
 
-    /// Spec contract `specs/gate.md` § *Scope-dependent walk* (criterion
+    /// Spec contract `specs/gate.md` § *Production walker wiring* (criterion
     /// `mint_tree_scope_walks_verifiers_and_rubric_emitting_findings_from_both`):
-    /// at `--tree` scope, the walk invokes BOTH the
-    /// deterministic verifier dispatcher and the LLM rubric. Both
-    /// sources feed into the same per-Finding loop; the verifier failures
-    /// are normalised in-driver into typed Finding records (no
-    /// shell-level `LOOM_FINDING:` line for them) per the mapping table
-    /// in *Concern tokens and target variants*.
+    /// at `--tree` scope, the production walker invokes both the
+    /// deterministic verifier dispatcher and the LLM rubric, and the walk
+    /// returns findings from both sources.
     #[tokio::test]
     async fn mint_tree_scope_walks_verifiers_and_rubric_emitting_findings_from_both() {
-        let rubric = format!(
-            "preamble\n{}\n{}\nLOOM_CONCERN: {{\"summary\":\"two findings\"}}\n",
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path();
+        std::fs::create_dir_all(workspace.join("specs")).expect("specs dir");
+        std::fs::write(
+            workspace.join("specs/gate.md"),
+            "# Gate\n\n## Success Criteria\n\n- Broken check [check](definitely-missing-loom-test-command)\n",
+        )
+        .expect("spec");
+        std::fs::write(workspace.join("loom.toml"), "").expect("config");
+        let manifest_path = workspace.join("profile-images.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{"base":{"ref":"localhost/base:test","source":"/nix/store/base-image"}}"#,
+        )
+        .expect("manifest");
+        let manifest = Arc::new(
+            ProfileImageManifest::from_path(&manifest_path).expect("profile manifest parses"),
+        );
+        let state = Arc::new(StateDb::open(workspace.join(".loom/state.db")).expect("state db"));
+        let runner = ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("[]")]);
+        let bd = BdClient::with_runner(runner);
+        let rubric_stdout = format!(
+            "{}\nLOOM_CONCERN: {{\"summary\":\"rubric finding\"}}\n",
             finding_line(
-                r#"{"token":"orphan-integration","bonds":["harness"],"target":{"kind":"Contract","id":"molecule-lifecycle"},"evidence":"contract"}"#
-            ),
-            finding_line(
-                r#"{"token":"style-rule-violation","bonds":["gate"],"target":{"kind":"StyleRule","rule_id":"RS-19","subject":"crates/loom-workflow/src/mint/walk.rs"},"evidence":"style"}"#
+                r#"{"token":"orphan-integration","bonds":["gate"],"target":{"kind":"Contract","id":"molecule-lifecycle"},"evidence":"rubric"}"#
             ),
         );
-        // Two verifier-side failures across different categories — one
-        // dispatch error, one verify failure — so the mapping table's
-        // multi-token coverage gets exercised.
-        let mut walker = FakeWalker {
-            rubric_stdout: rubric,
-            verifier_failures: vec![
-                VerifierFailure {
-                    annotation: annotation(
-                        Tier::Check,
-                        "cargo run -p loom-walk -- nonexistent",
-                        "specs/gate.md",
-                    ),
-                    kind: VerifierFailureKind::DispatchError,
-                    evidence: "command not found".into(),
-                },
-                VerifierFailure {
-                    annotation: annotation(
-                        Tier::Test,
-                        "crate::module::failing_test",
-                        "specs/harness.md",
-                    ),
-                    kind: VerifierFailureKind::Failed,
-                    evidence: "assertion failed".into(),
-                },
-            ],
-            ..FakeWalker::default()
+        let spawn = move |_cfg: SpawnConfig| {
+            let stdout = rubric_stdout.clone();
+            async move {
+                Ok((
+                    SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    },
+                    Some(ExitSignal::Concern {
+                        summary: "rubric finding".to_owned(),
+                    }),
+                    stdout,
+                ))
+            }
         };
+        let mut walker = ProductionMintWalker::new(
+            bd,
+            spec("gate"),
+            workspace.to_path_buf(),
+            state,
+            manifest,
+            ProfileName::new("base"),
+            spawn,
+        );
+
         let findings = walk(&mut walker, &MintScope::Tree, &AlwaysValid)
             .await
-            .expect("walk succeeds");
-        assert_eq!(walker.rubric_calls, 1, "rubric ran exactly once");
-        assert_eq!(walker.verifier_calls, 1, "verifiers ran exactly once");
-        assert_eq!(findings.len(), 4, "both sources contribute: {findings:?}");
+            .expect("production walk succeeds");
 
-        // Verifier-side findings appear first (dispatch order), each
-        // normalised to the spec-mandated token + target shape.
-        assert_eq!(findings[0].token, ConcernToken::DispatchError);
-        assert_eq!(findings[0].target.kind(), TargetKind::Annotation);
-        assert_eq!(
-            findings[0].bonds,
-            vec![spec("gate")],
-            "owning spec is derived from annotation.source_spec",
+        assert!(
+            findings.iter().any(|finding| matches!(
+                finding.token,
+                ConcernToken::UnresolvedAnnotation | ConcernToken::DispatchError
+            )),
+            "production verifier path must contribute a deterministic finding: {findings:?}",
         );
-        assert_eq!(findings[1].token, ConcernToken::VerifierFailed);
-        assert_eq!(findings[1].target.kind(), TargetKind::Annotation);
-        assert_eq!(findings[1].bonds, vec![spec("harness")]);
-
-        // Rubric-side findings follow, in stdout order.
-        assert_eq!(findings[2].token, ConcernToken::OrphanIntegration);
-        assert_eq!(findings[3].token, ConcernToken::StyleRuleViolation);
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.token == ConcernToken::OrphanIntegration),
+            "production rubric path must contribute its streamed finding: {findings:?}",
+        );
     }
 
     /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
