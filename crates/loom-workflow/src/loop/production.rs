@@ -276,6 +276,14 @@ where
         .await?;
         Ok(reason.map(|detail| AgentOutcome::SignatureVerificationFailed { detail }))
     }
+
+    async fn rollback_if_bead_advanced_integration(&mut self) -> Result<bool, LoopError> {
+        let advanced = self.pre_integration_tip.take().is_some();
+        if advanced {
+            self.git.rollback_integration().await?;
+        }
+        Ok(advanced)
+    }
 }
 
 impl<S, F, R: CommandRunner> AgentLoopController for ProductionAgentLoopController<S, F, R>
@@ -862,15 +870,7 @@ where
                 "loom gate verify --bead {bead} exited {verify_exit}\n\
                  stdout:\n{stdout_tail}\nstderr:\n{stderr_tail}",
             );
-            // Audit-fail rolls the ff-merge back one commit and threads the
-            // failing verifier into the next dispatch (specs/harness.md
-            // § Verdict Gate — post-integrate-fail). The rollback only fires
-            // when this bead's ff actually advanced the integration tip — a
-            // bead that committed nothing leaves nothing to unwind.
-            let rolled_back = self.pre_integration_tip.take().is_some();
-            if rolled_back {
-                self.git.rollback_integration().await?;
-            }
+            let rolled_back = self.rollback_if_bead_advanced_integration().await?;
             self.stashed_previous_failure = Some(PreviousFailure::PostIntegrateFail {
                 failures: vec![VerifierFailure::new(
                     format!("loom gate verify --bead {bead}"),

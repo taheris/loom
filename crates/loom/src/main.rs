@@ -1325,6 +1325,7 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
     let specs_dir = workspace.join("specs");
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
     let mut selected = filter_annotations(&parsed.annotations, tier, args);
+    selected.retain(|ann| !ann.pending);
     if scope_is_finite(args) {
         let runner_specs = match tier {
             Tier::Check | Tier::System => resolve_runner_context(workspace, tier)?.0,
@@ -1334,13 +1335,17 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
         selected = filter_by_files(&selected, &args.files, &mut input_resolver);
         if matches!(tier, Tier::Check | Tier::System) && scope_allows_missing_binary_skip(args) {
             let cmd_resolver = FsCommandResolver::new(workspace);
-            selected
-                .retain(|ann| ann.pending || !is_missing_binary_target(&ann.target, &cmd_resolver));
+            selected.retain(|ann| !is_missing_binary_target(&ann.target, &cmd_resolver));
         }
+    }
+
+    let mut combined: i32 = 0;
+    if tier == Tier::Check {
+        combined = combined.max(run_integrity_gate(workspace, args)?);
     }
     if selected.is_empty() {
         eprintln!("loom gate [{tier}]: no annotations matched");
-        return Ok(0);
+        return Ok(combined);
     }
     let options = gate_dispatch_options(args);
     let cache_path = workspace.join(".loom/gate-cache.sqlite");
@@ -1352,10 +1357,8 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
         .as_millis() as i64;
     let commit = current_commit(workspace).unwrap_or_default();
 
-    let mut combined: i32 = 0;
     match tier {
         Tier::Check => {
-            combined = combined.max(run_integrity_gate(workspace, args)?);
             let (specs, tier_cwds) = resolve_runner_context(workspace, Tier::Check)?;
             combined = run_check_with_progress(
                 &selected, &options, &specs, workspace, &tier_cwds, &cache, now_ms, &commit,
@@ -3694,6 +3697,57 @@ mod tests {
         assert_eq!(
             code, 1,
             "the resolved pending marker must still fire even when --files excludes its spec",
+        );
+    }
+
+    #[test]
+    fn dispatch_tier_skips_pending_annotations_before_scope_input_queries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let specs = tmp.path().join("specs");
+        std::fs::create_dir_all(&specs).expect("specs dir");
+        std::fs::write(
+            specs.join("alpha.md"),
+            "## Success Criteria\n\n- deferred verifier [check?](pending)\n",
+        )
+        .expect("write spec");
+        let counter = tmp.path().join("inputs-count.txt");
+        std::fs::write(&counter, "0").expect("write counter");
+        let responder = tmp.path().join("inputs.sh");
+        std::fs::write(
+            &responder,
+            format!(
+                "#!/usr/bin/env bash\n\
+                 set -euo pipefail\n\
+                 n=$(< {:?})\n\
+                 printf '%s\\n' \"$((n + 1))\" > {:?}\n\
+                 printf '{{\"inputs\":[\"src/lib.rs\"]}}\\n'\n",
+                counter, counter,
+            ),
+        )
+        .expect("write responder");
+        std::fs::write(
+            tmp.path().join("loom.toml"),
+            format!(
+                "[runner.check.pending]\n\
+                 match = '^pending$'\n\
+                 command = 'false'\n\
+                 inputs = 'bash {} {{print_inputs}} {{targets}}'\n",
+                responder.display(),
+            ),
+        )
+        .expect("write loom config");
+
+        let mut args = empty_scope_args();
+        args.files = vec![PathBuf::from("src/lib.rs")];
+
+        let code = dispatch_tier(tmp.path(), &args, Tier::Check).expect("check tier dispatch runs");
+        assert_eq!(code, 0, "unresolved pending marker remains silent");
+        assert_eq!(
+            std::fs::read_to_string(&counter)
+                .expect("read counter")
+                .trim(),
+            "0",
+            "pending dispatch skip avoids runner input-query side effects",
         );
     }
 
