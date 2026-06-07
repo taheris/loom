@@ -448,7 +448,7 @@ decided by `loom gate mint`.
 - `BadWalk(Concern { payload, parsed_findings })` → `"Your LOOM_CONCERN payload did not parse as {\"summary\": \"<non-empty>\"}. Literal payload: {payload}"`, followed (when `parsed_findings` is non-empty) by `"\n\n{N} finding(s) parsed cleanly before the malformed terminator:\n{per-finding digest: token + first line of evidence}"` so the agent's diagnosis from the streamed findings is not lost when only the terminal was malformed.
 - `BadWalk(ConcernWithoutFindings { summary })` → `"You emitted LOOM_CONCERN ({summary}) but no LOOM_FINDING: lines streamed. Either emit findings before the terminator or use LOOM_COMPLETE."`
 - `BadWalk(FindingsWithoutConcern { finding_count, findings })` → `"You streamed {finding_count} LOOM_FINDING line(s) but terminated with LOOM_COMPLETE. Use LOOM_CONCERN: {\"summary\": \"...\"} when findings are emitted."`, followed by `"\n\nFindings streamed:\n{per-finding digest}"` so the agent's next iteration sees the diagnosis it just emitted.
-- `BadWalk(MalformedFinding { errors, terminal })` → `"One or more LOOM_FINDING: lines failed parse:\n{per-line: 'Line N: <reason> — raw: <line text>'}\n\nYour terminal was: {terminal-rendered}"`. The terminal rendering uses the typed `TerminalSurface` variant: `Complete` → `"LOOM_COMPLETE"`, `Concern { summary }` → `"LOOM_CONCERN: {summary}"`, `Malformed { payload }` → `"LOOM_CONCERN: <malformed: {payload}>"`, `Missing` → `"(no terminal on the final non-empty line)"`. Surfacing both pieces lets the agent fix the malformed lines (typically: drop the surrounding markdown fence) without losing the well-formed context.
+- `BadWalk(MalformedFinding { errors, terminal })` → `"One or more LOOM_FINDING: lines failed strict validation. Re-emit each finding as a single line: `LOOM_FINDING: {\"token\":\"...\",\"route\":\"blocking|deferred|clarify\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}`.\n{per-line: 'Line N: <reason> — raw: <line text>'}\n\nYour terminal was: {terminal-rendered}"`. The terminal rendering uses the typed `TerminalSurface` variant: `Complete` → `"LOOM_COMPLETE"`, `Concern { summary }` → `"LOOM_CONCERN: {summary}"`, `Malformed { payload }` → `"LOOM_CONCERN: <malformed: {payload}>"`, `Missing` → `"(no terminal on the final non-empty line)"`. Surfacing both pieces lets the agent fix the malformed lines (typically: add the missing `route` field or drop the surrounding markdown fence) without losing the well-formed context.
 - `BuildFailure` → `"Build failed at {stage}:\n{output}"`
 - `TreeNotClean` → `"Working tree was not clean after the bead committed:\n\n{path list, one per line}\n\nStage these into a follow-up commit or revert them."` with a `"+N more"` suffix line when the list is truncated to 30 entries
 - `PostIntegrateFail { failures }` → `"After rebasing onto the integration branch, the post-integration verify failed:\n\n{N blocks: target + exit + stderr}\n\nReconcile the cross-bead interaction — your bead's verify passed at its own workspace; the failure is in the integrated tree."`
@@ -612,7 +612,7 @@ one line per finding, identified as the walk proceeds, with a JSON
 payload after the prefix:
 
 ```
-LOOM_FINDING: {"token": "...", "bonds": ["..."], "target": {"kind": "...", ...}, "evidence": "..."}
+LOOM_FINDING: {"token": "...", "route": "blocking|deferred|clarify", "bonds": ["..."], "target": {"kind": "...", ...}, "evidence": "..."}
 ```
 
 Followed by exactly one terminal marker:
@@ -637,14 +637,15 @@ review template `{% include %}`s it rather than restating, and a
 `[check]`-tier anti-drift verifier enforces this mechanically per
 [gate.md § Findings and Minting](gate.md#findings-and-minting).
 
-The `bonds` array on each `LOOM_FINDING:` names the spec(s) the
-fix-up should bond to (bonding info); the `target` carries
-identity-bearing fields specific to the variant. JSON was chosen
-over pipe-delimited shapes because LLM emit is more reliable on
-JSON, and the tagged-union encoding of `target` is naturally
-JSON-shaped. The terminator's `summary` is a verdict-log entry
-only — per-finding routing is decided by `loom gate mint` on the
-streamed lines, not on the terminal token.
+The `route` field on each `LOOM_FINDING:` drives per-finding
+workflow (`blocking`, `deferred`, or `clarify`). The `bonds` array
+names the spec(s) the fix-up should bond to (bonding info); the
+`target` carries identity-bearing fields specific to the variant.
+JSON was chosen over pipe-delimited shapes because LLM emit is more
+reliable on JSON, and the tagged-union encoding of `target` is
+naturally JSON-shaped. The terminator's `summary` is a verdict-log
+entry only — per-finding routing is decided from the streamed line's
+`route`, not from the terminal token.
 
 **The review template makes no bd writes.** Earlier revisions of
 this spec authorized `bd create` / `bd update` / `bd mol bond` from
@@ -1047,7 +1048,7 @@ documents in front of the agent with zero configuration.
 - `partial/findings_walk.md` is the single source of truth for the
   `LOOM_FINDING: <json>` streaming wire format and the terminal
   `LOOM_CONCERN: {"summary": "..."}` JSON shape. The partial
-  documents the `{"token","bonds","target","evidence"}` finding
+  documents the `{"token","route","bonds","target","evidence"}` finding
   payload with tagged `target` variants, the JSON CONCERN
   terminator, and the streaming + terminator pairing rule
   [check](grep -q 'LOOM_FINDING:' crates/loom-templates/templates/partial/findings_walk.md)
