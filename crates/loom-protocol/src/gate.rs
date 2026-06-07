@@ -21,6 +21,7 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
     pub token: ConcernToken,
+    pub route: FindingRoute,
     pub bonds: Vec<SpecLabel>,
     pub target: FindingTarget,
     pub evidence: String,
@@ -49,6 +50,29 @@ impl Finding {
 
 const IDENTITY_VERSION: &str = "v1";
 const FINDING_HASH_HEX_LEN: usize = 12;
+
+/// Workflow route carried by each rubric-origin finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FindingRoute {
+    #[serde(rename = "blocking")]
+    Blocking,
+    #[serde(rename = "deferred")]
+    Deferred,
+    #[serde(rename = "clarify")]
+    Clarify,
+}
+
+impl FindingRoute {
+    /// Canonical wire string used in `LOOM_FINDING:` JSON.
+    #[must_use]
+    pub const fn as_wire(self) -> &'static str {
+        match self {
+            Self::Blocking => "blocking",
+            Self::Deferred => "deferred",
+            Self::Clarify => "clarify",
+        }
+    }
+}
 
 /// Closed-set concern tokens emitted by the rubric walk or normalised
 /// from a deterministic verifier verdict.
@@ -661,6 +685,13 @@ pub enum FindingParseError {
         dispatch_scope: &'static str,
         raw: String,
     },
+    /// line {line_number}: route `{route}` is not valid at {dispatch_scope} scope — `{raw}`
+    RouteScopeMismatch {
+        line_number: usize,
+        route: &'static str,
+        dispatch_scope: &'static str,
+        raw: String,
+    },
 }
 
 impl Finding {
@@ -710,6 +741,15 @@ impl Finding {
                 line_number,
                 token: finding.token.as_wire(),
                 scope_kind: scope_kind.label(),
+                dispatch_scope: scope.label(),
+                raw: raw_line.to_owned(),
+            });
+        }
+
+        if finding.route == FindingRoute::Blocking && scope != DispatchScope::PerBead {
+            return Err(FindingParseError::RouteScopeMismatch {
+                line_number,
+                route: finding.route.as_wire(),
                 dispatch_scope: scope.label(),
                 raw: raw_line.to_owned(),
             });
@@ -1362,6 +1402,7 @@ mod tests {
     ) -> Finding {
         Finding {
             token,
+            route: FindingRoute::Deferred,
             bonds,
             target,
             evidence: evidence.to_owned(),
@@ -1992,7 +2033,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            r#"{{"token":"{token}","bonds":[{bonds_json}],"target":{target_json},"evidence":"{evidence}"}}"#,
+            r#"{{"token":"{token}","route":"deferred","bonds":[{bonds_json}],"target":{target_json},"evidence":"{evidence}"}}"#,
         )
     }
 
@@ -2575,6 +2616,7 @@ mod tests {
             };
             let input = Finding {
                 token,
+                route: FindingRoute::Deferred,
                 bonds,
                 target,
                 evidence: format!("round-trip evidence for {}", token.as_wire()),
@@ -2661,6 +2703,7 @@ mod tests {
 
             let finding = Finding {
                 token,
+                route: FindingRoute::Deferred,
                 bonds: vec![gate.clone()],
                 target: canonical_target(token, &gate),
                 evidence: "scope mismatch fixture".to_owned(),
@@ -2702,6 +2745,7 @@ mod tests {
 
             let finding = Finding {
                 token,
+                route: FindingRoute::Deferred,
                 bonds: vec![gate.clone()],
                 target: canonical_target(token, &gate),
                 evidence: "scope mismatch fixture".to_owned(),
@@ -2739,6 +2783,7 @@ mod tests {
 
         let any_scope_finding = Finding {
             token: ConcernToken::SpecCoherenceFail,
+            route: FindingRoute::Deferred,
             bonds: vec![gate.clone()],
             target: FindingTarget::Criterion {
                 spec: gate.clone(),
@@ -2760,6 +2805,44 @@ mod tests {
     }
 
     #[test]
+    fn blocking_route_rejected_outside_per_bead_scope() {
+        let gate = spec("gate");
+        let finding = Finding {
+            token: ConcernToken::SpecCoherenceFail,
+            route: FindingRoute::Blocking,
+            bonds: vec![gate.clone()],
+            target: FindingTarget::Criterion {
+                spec: gate,
+                anchor: "verifier-honesty".to_owned(),
+            },
+            evidence: "blocking only has a current bead at per-bead scope".to_owned(),
+        };
+        let payload = serde_json::to_string(&finding).expect("serialize");
+        let output = format!(
+            "preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_CONCERN: {{\"summary\":\"blocking route\"}}\n"
+        );
+
+        for scope in [DispatchScope::Tree, DispatchScope::PushGate] {
+            match single_malformed_finding_error(&output, scope, &AlwaysValid).0 {
+                FindingParseError::RouteScopeMismatch {
+                    route,
+                    dispatch_scope,
+                    ..
+                } => {
+                    assert_eq!(route, "blocking");
+                    assert_eq!(dispatch_scope, scope.label());
+                }
+                other => panic!(
+                    "expected RouteScopeMismatch for blocking route at {} scope, got {other:?}",
+                    scope.label(),
+                ),
+            }
+        }
+        parse_walk_output(&output, DispatchScope::PerBead, &AlwaysValid)
+            .expect("blocking route parses with current bead scope");
+    }
+
+    #[test]
     fn integrity_tokens_parse_at_tree_and_push_gate_but_not_per_bead_scope() {
         let gate = spec("gate");
         let terminator = "LOOM_CONCERN: {\"summary\":\"integrity scope\"}";
@@ -2774,6 +2857,7 @@ mod tests {
             assert_eq!(token.scope_kind(), ScopeKind::TreeAndPushGate, "{token:?}");
             let finding = Finding {
                 token,
+                route: FindingRoute::Deferred,
                 bonds: vec![gate.clone()],
                 target: canonical_target(token, &gate),
                 evidence: "integrity fixture".to_owned(),
@@ -2826,6 +2910,7 @@ mod tests {
 
         let finding = Finding {
             token,
+            route: FindingRoute::Deferred,
             bonds: vec![gate.clone()],
             target,
             evidence: "cross-spec-clash round-trip".to_owned(),
@@ -2856,6 +2941,7 @@ mod tests {
 
         let finding = Finding {
             token,
+            route: FindingRoute::Deferred,
             bonds: vec![gate.clone()],
             target,
             evidence: "spec-conventions-violation round-trip".to_owned(),
@@ -2888,6 +2974,7 @@ mod tests {
 
         let finding = Finding {
             token,
+            route: FindingRoute::Deferred,
             bonds: vec![gate.clone()],
             target,
             evidence: "inputs-protocol-error round-trip".to_owned(),
@@ -2929,6 +3016,7 @@ mod tests {
             assert!(token.allows_target_kind(target.kind()));
             let finding = Finding {
                 token,
+                route: FindingRoute::Deferred,
                 bonds: vec![gate.clone()],
                 target,
                 evidence: "pending marker resolved".to_owned(),

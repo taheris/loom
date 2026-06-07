@@ -30,8 +30,8 @@ pub mod todo;
 
 pub use criterion_status::{CriterionResult, CriterionStatus};
 pub use finding::{
-    ConcernToken, Finding, FindingParseError, FindingTarget, FindingValidator, LOOM_FINDING_PREFIX,
-    TargetKind,
+    ConcernToken, Finding, FindingParseError, FindingRoute, FindingTarget, FindingValidator,
+    LOOM_FINDING_PREFIX, TargetKind,
 };
 pub use msg::{ClarifyBead, ClarifyOption, MsgContext};
 pub use plan::{PlanNewContext, PlanUpdateContext};

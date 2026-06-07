@@ -467,7 +467,7 @@ fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::finding::{ConcernToken, FindingParseError, FindingTarget};
+    use crate::finding::{ConcernToken, FindingParseError, FindingRoute, FindingTarget};
     use loom_events::identifier::SpecLabel;
 
     fn spec_label(s: &str) -> SpecLabel {
@@ -477,6 +477,7 @@ mod tests {
     fn sample_finding(token: ConcernToken, evidence: &str) -> Finding {
         Finding {
             token,
+            route: FindingRoute::Deferred,
             bonds: vec![spec_label("gate")],
             target: FindingTarget::Annotation {
                 target_string: "cargo test --lib sample".into(),

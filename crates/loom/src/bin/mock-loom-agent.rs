@@ -66,7 +66,7 @@ const CONCERN_LINE: &str = concat!(
 );
 const FINDING_LINE: &str = concat!(
     "LOOM_FINDING: ",
-    r#"{"token":"spec-coherence-fail","bonds":["acme"],"#,
+    r#"{"token":"spec-coherence-fail","route":"deferred","bonds":["acme"],"#,
     r#""target":{"kind":"Criterion","spec":"acme","anchor":"finding-status-output"},"#,
     r#""evidence":"status output fixture"}"#,
 );

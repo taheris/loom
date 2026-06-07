@@ -1264,7 +1264,7 @@ mod tests {
 
     #[test]
     fn all_suppressed_concern_walk_exits_clean_after_shape_validation() {
-        let finding_line = r#"LOOM_FINDING: {"token":"verifier-bypass","bonds":["harness"],"target":{"kind":"Annotation","target_string":"cargo test --lib sample"},"evidence":"test mocks the agent backend"}"#;
+        let finding_line = r#"LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["harness"],"target":{"kind":"Annotation","target_string":"cargo test --lib sample"},"evidence":"test mocks the agent backend"}"#;
         let concern_line = r#"LOOM_CONCERN: {"summary":"reviewer flagged a verifier-bypass"}"#;
         let stdout = format!("{finding_line}\n{concern_line}\n");
         let walk =
@@ -1316,7 +1316,7 @@ mod tests {
     /// `ConcernWithoutFindings` BadWalk variant.
     #[test]
     fn classify_review_phase_invokes_parse_walk_output_and_threads_findings_through_gate_inputs() {
-        let finding_line = r#"LOOM_FINDING: {"token":"verifier-bypass","bonds":["harness"],"target":{"kind":"Annotation","target_string":"cargo test --lib sample"},"evidence":"test mocks the agent backend"}"#;
+        let finding_line = r#"LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["harness"],"target":{"kind":"Annotation","target_string":"cargo test --lib sample"},"evidence":"test mocks the agent backend"}"#;
         let concern_line = r#"LOOM_CONCERN: {"summary":"reviewer flagged a verifier-bypass"}"#;
         let stdout = format!("{finding_line}\n{concern_line}\n");
         let walk =
@@ -1563,8 +1563,8 @@ mod tests {
         }
     }
 
-    const FINDING_F1_LINE: &str = r#"LOOM_FINDING: {"token":"verifier-bypass","bonds":["gate"],"target":{"kind":"Annotation","target_string":"cargo test --lib f1"},"evidence":"first finding"}"#;
-    const FINDING_F2_LINE: &str = r#"LOOM_FINDING: {"token":"weak-assertion","bonds":["gate"],"target":{"kind":"Annotation","target_string":"cargo test --lib f2"},"evidence":"second finding"}"#;
+    const FINDING_F1_LINE: &str = r#"LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["gate"],"target":{"kind":"Annotation","target_string":"cargo test --lib f1"},"evidence":"first finding"}"#;
+    const FINDING_F2_LINE: &str = r#"LOOM_FINDING: {"token":"weak-assertion","route":"deferred","bonds":["gate"],"target":{"kind":"Annotation","target_string":"cargo test --lib f2"},"evidence":"second finding"}"#;
     const BACKTICK_BAD_FINDING_LINE_A: &str = "`LOOM_FINDING: {not valid json A}`";
     const BACKTICK_BAD_FINDING_LINE_B: &str = "`LOOM_FINDING: {not valid json B}`";
 
@@ -2252,6 +2252,7 @@ mod tests {
         let findings = [
             Finding {
                 token: ConcernToken::TemplateSpecDrift,
+                route: crate::review::FindingRoute::Deferred,
                 bonds: vec![gate.clone()],
                 target: FindingTarget::Template {
                     path: "crates/loom-templates/templates/review.md".to_owned(),
@@ -2260,6 +2261,7 @@ mod tests {
             },
             Finding {
                 token: ConcernToken::CrossSpecClash,
+                route: crate::review::FindingRoute::Deferred,
                 bonds: vec![gate.clone()],
                 target: FindingTarget::Criterion {
                     spec: gate.clone(),
@@ -2269,6 +2271,7 @@ mod tests {
             },
             Finding {
                 token: ConcernToken::SpecConventionsViolation,
+                route: crate::review::FindingRoute::Deferred,
                 bonds: vec![gate.clone()],
                 target: FindingTarget::Criterion {
                     spec: gate,
@@ -2351,6 +2354,7 @@ mod tests {
         let gate = SpecLabel::new("gate");
         let finding = Finding {
             token: ConcernToken::SpecCoherenceFail,
+            route: crate::review::FindingRoute::Deferred,
             bonds: vec![gate.clone()],
             target: FindingTarget::Criterion {
                 spec: gate,

@@ -220,12 +220,13 @@ mod tests {
     use crate::review::phase_verdict::ReviewConcern;
     use crate::review::verify_fail::VerifyFailure;
     use loom_events::identifier::SpecLabel;
-    use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
+    use loom_templates::finding::{ConcernToken, Finding, FindingRoute, FindingTarget};
     use loom_templates::run::BadWalk;
 
     fn finding_with_token(token: ConcernToken) -> Finding {
         Finding {
             token,
+            route: FindingRoute::Deferred,
             bonds: vec![SpecLabel::new("gate")],
             target: FindingTarget::Annotation {
                 target_string: "cargo test --lib sample".into(),

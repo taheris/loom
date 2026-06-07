@@ -893,6 +893,7 @@ mod tests {
         let spec = SpecLabel::new("gate");
         let finding = Finding {
             token: ConcernToken::SpecCoherenceFail,
+            route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec.clone()],
             target: FindingTarget::Criterion {
                 spec,

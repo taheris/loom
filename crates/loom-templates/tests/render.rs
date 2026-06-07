@@ -480,6 +480,7 @@ fn previous_failure_renders_review_concern_with_summary_and_findings() {
         summary: "mock under test".into(),
         findings: vec![Finding {
             token: ConcernToken::MockDiscipline,
+            route: loom_protocol::gate::FindingRoute::Deferred,
             bonds: vec![SpecLabel::new("harness")],
             target: FindingTarget::TestPath {
                 path: "tests/example.rs".into(),
@@ -874,10 +875,11 @@ fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> 
     );
     assert!(
         out.contains(r#""token""#)
+            && out.contains(r#""route""#)
             && out.contains(r#""bonds""#)
             && out.contains(r#""target""#)
             && out.contains(r#""evidence""#),
-        "LOOM_FINDING JSON shape (token/bonds/target/evidence) must be documented: {out}",
+        "LOOM_FINDING JSON shape (token/route/bonds/target/evidence) must be documented: {out}",
     );
 
     for variant_shape in [

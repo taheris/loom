@@ -2146,6 +2146,7 @@ mod tests {
         seed_spec(&workspace, "alpha");
         let suppressed = crate::review::Finding {
             token: crate::review::ConcernToken::VerifierBypass,
+            route: crate::review::FindingRoute::Deferred,
             bonds: vec![label.clone()],
             target: crate::review::FindingTarget::Annotation {
                 target_string: "cargo test --lib suppressed".to_owned(),
@@ -2154,6 +2155,7 @@ mod tests {
         };
         let unsuppressed = crate::review::Finding {
             token: crate::review::ConcernToken::VerifierBypass,
+            route: crate::review::FindingRoute::Deferred,
             bonds: vec![label.clone()],
             target: crate::review::FindingTarget::Annotation {
                 target_string: "cargo test --lib live".to_owned(),
@@ -2254,7 +2256,7 @@ mod tests {
         // `Command::output` and runs `WalkOutput::from_stdout` on it.
         let argv_log = dir.path().join("argv.log");
         let stub = dir.path().join("loom-stub.sh");
-        let finding_payload = r#"{"token":"verifier-bypass","bonds":["alpha"],"target":{"kind":"Annotation","target_string":"cargo test --lib sample"},"evidence":"test mocks the agent backend"}"#;
+        let finding_payload = r#"{"token":"verifier-bypass","route":"deferred","bonds":["alpha"],"target":{"kind":"Annotation","target_string":"cargo test --lib sample"},"evidence":"test mocks the agent backend"}"#;
         let concern_payload = r#"{"summary":"reviewer flagged a verifier-bypass"}"#;
         let stub_body = format!(
             "#!/bin/sh\n\
@@ -2865,7 +2867,7 @@ mod tests {
     }
 
     fn review_finding_stdout() -> String {
-        r#"LOOM_FINDING: {"token":"verifier-bypass","bonds":["gate"],"target":{"kind":"Annotation","target_string":"cargo test -p loom"},"evidence":"review flagged bypass"}
+        r#"LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["gate"],"target":{"kind":"Annotation","target_string":"cargo test -p loom"},"evidence":"review flagged bypass"}
 LOOM_CONCERN: {"summary":"review flagged bypass"}
 "#
         .to_string()

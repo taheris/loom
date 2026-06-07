@@ -35,7 +35,7 @@ use loom_workflow::r#loop::{
     GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
     REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV, RetryPolicy, SessionResult, run_loop,
 };
-use loom_workflow::mint::{FindingStatusAction, FindingStatusRecord};
+use loom_workflow::mint::{FindingStatusAction, FindingStatusRecord, MintWalker};
 use loom_workflow::msg::{
     DISMISS_NOTE, build_rows, compose_option_note, compose_resolved_notes, filter_msg_beads,
     kind_of, resolve_target, spec_label_of,
@@ -1738,7 +1738,7 @@ fn run_gate_mint(
         ResolvedMintScope::Tree => {
             let spec_filter = args.spec.as_deref().map(SpecLabel::new);
             let manifest = Arc::new(ProfileImageManifest::from_env()?);
-            let label = resolve_spec_label(workspace, args.spec.clone())?;
+            let labels = resolve_tree_mint_labels(workspace, args.spec.as_deref())?;
             let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
             let opts = loom_workflow::mint::MintOptions {
                 dry_run: args.dry_run,
@@ -1755,52 +1755,124 @@ fn run_gate_mint(
             let style_rules = config.style_rules.clone();
             let workspace_buf = workspace.to_path_buf();
             let logs_root = workspace.join(".loom/logs");
-            let label_for_sink = label.clone();
             let phase_when = phase_when_from_env().unwrap_or_else(|| SystemClock::new().wall_now());
-            let logs_root_for_spawn = logs_root.clone();
 
             runtime.block_on(async move {
                 let bd = BdClient::new();
-                let mut walker = loom_workflow::mint::ProductionMintWalker::new(
-                    BdClient::new(),
-                    label.clone(),
-                    workspace_buf,
-                    state,
-                    manifest,
-                    phase_default,
-                    move |spawn_cfg: SpawnConfig| {
-                        let logs_root = logs_root_for_spawn.clone();
-                        let label = label_for_sink.clone();
-                        async move {
-                            let sink = LogSink::open_phase_at(
-                                &logs_root, &label, "mint", None, phase_when,
-                            )
-                            .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))?;
-                            let mut output = String::new();
-                            let outcome = dispatch(
-                                kind,
-                                spawn_cfg,
-                                shutdown_grace,
-                                Some(sink),
-                                Some(&mut output),
-                            )
-                            .await?;
-                            let marker = parse_exit_signal(&output);
-                            Ok((outcome, marker, output))
-                        }
-                    },
-                )
-                .with_style_rules(style_rules);
+                let scope = loom_workflow::mint::MintScope::Tree;
                 let validator = WorkspaceFindingValidator::new(workspace);
-                mint_via_walker(
-                    &mut walker,
-                    &loom_workflow::mint::MintScope::Tree,
-                    &validator,
+                if labels.len() == 1 {
+                    let label = labels.into_iter().next().ok_or_else(|| {
+                        anyhow::anyhow!("loom gate mint --tree found no specs to walk")
+                    })?;
+                    let label_for_sink = label.clone();
+                    let logs_root_for_spawn = logs_root.clone();
+                    let mut walker = loom_workflow::mint::ProductionMintWalker::new(
+                        BdClient::new(),
+                        label,
+                        workspace_buf,
+                        state,
+                        manifest,
+                        phase_default,
+                        move |spawn_cfg: SpawnConfig| {
+                            let logs_root = logs_root_for_spawn.clone();
+                            let label = label_for_sink.clone();
+                            async move {
+                                let sink = LogSink::open_phase_at(
+                                    &logs_root, &label, "mint", None, phase_when,
+                                )
+                                .map_err(|e| {
+                                    ProtocolError::Io(std::io::Error::other(e.to_string()))
+                                })?;
+                                let mut output = String::new();
+                                let outcome = dispatch(
+                                    kind,
+                                    spawn_cfg,
+                                    shutdown_grace,
+                                    Some(sink),
+                                    Some(&mut output),
+                                )
+                                .await?;
+                                let marker = parse_exit_signal(&output);
+                                Ok((outcome, marker, output))
+                            }
+                        },
+                    )
+                    .with_style_rules(style_rules);
+                    return mint_via_walker(
+                        &mut walker,
+                        &scope,
+                        &validator,
+                        &bd,
+                        &head_commit,
+                        &opts,
+                    )
+                    .await;
+                }
+
+                let mut findings = Vec::new();
+                for (index, label) in labels.into_iter().enumerate() {
+                    let label_for_sink = label.clone();
+                    let logs_root_for_spawn = logs_root.clone();
+                    let workspace_for_walker = workspace_buf.clone();
+                    let state_for_walker = Arc::clone(&state);
+                    let manifest_for_walker = Arc::clone(&manifest);
+                    let phase_default_for_walker = phase_default.clone();
+                    let style_rules_for_walker = style_rules.clone();
+                    let mut walker = loom_workflow::mint::ProductionMintWalker::new(
+                        BdClient::new(),
+                        label,
+                        workspace_for_walker,
+                        state_for_walker,
+                        manifest_for_walker,
+                        phase_default_for_walker,
+                        move |spawn_cfg: SpawnConfig| {
+                            let logs_root = logs_root_for_spawn.clone();
+                            let label = label_for_sink.clone();
+                            async move {
+                                let sink = LogSink::open_phase_at(
+                                    &logs_root, &label, "mint", None, phase_when,
+                                )
+                                .map_err(|e| {
+                                    ProtocolError::Io(std::io::Error::other(e.to_string()))
+                                })?;
+                                let mut output = String::new();
+                                let outcome = dispatch(
+                                    kind,
+                                    spawn_cfg,
+                                    shutdown_grace,
+                                    Some(sink),
+                                    Some(&mut output),
+                                )
+                                .await?;
+                                let marker = parse_exit_signal(&output);
+                                Ok((outcome, marker, output))
+                            }
+                        },
+                    )
+                    .with_style_rules(style_rules_for_walker);
+                    if index == 0 {
+                        for failure in walker.run_verifiers(&scope).await? {
+                            findings.push(loom_workflow::mint::walk::verifier_failure_to_finding(
+                                failure,
+                            )?);
+                        }
+                    }
+                    let stdout = walker.run_rubric(&scope).await?;
+                    let parsed = loom_workflow::review::parse_walk_output(
+                        &stdout,
+                        scope.dispatch_scope(),
+                        &validator,
+                    )?;
+                    findings.extend(parsed);
+                }
+                Ok(loom_workflow::mint::mint_findings_with_options(
                     &bd,
+                    &findings,
                     &head_commit,
                     &opts,
                 )
-                .await
+                .await)
             })?
         }
     };
@@ -3492,6 +3564,39 @@ fn resolve_spec_label(workspace: &Path, spec: Option<String>) -> anyhow::Result<
     })
 }
 
+fn resolve_tree_mint_labels(
+    workspace: &Path,
+    spec: Option<&str>,
+) -> anyhow::Result<Vec<SpecLabel>> {
+    if let Some(label) = spec {
+        return Ok(vec![SpecLabel::new(label)]);
+    }
+
+    let specs_dir = workspace.join("specs");
+    let mut labels = Vec::new();
+    for entry in std::fs::read_dir(&specs_dir)
+        .with_context(|| format!("read specs directory `{}`", specs_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        labels.push(SpecLabel::new(stem));
+    }
+    labels.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    if labels.is_empty() {
+        return Err(anyhow::anyhow!(
+            "loom gate mint --tree found no specs under `{}`",
+            specs_dir.display(),
+        ));
+    }
+    Ok(labels)
+}
+
 fn current_loom_bin() -> anyhow::Result<PathBuf> {
     if let Some(bin) = std::env::var_os("LOOM_BIN") {
         return Ok(PathBuf::from(bin));
@@ -3561,6 +3666,26 @@ mod tests {
                 opts.add_labels,
             );
         }
+    }
+
+    /// Spec contract `specs/gate.md` § *Standing-safety-net checks*:
+    /// bare `mint --tree` walks the full spec tree rather than resolving
+    /// a single active spec label.
+    #[test]
+    fn mint_tree_without_spec_filter_resolves_every_workspace_spec() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let specs_dir = tmp.path().join("specs");
+        std::fs::create_dir_all(&specs_dir).expect("mkdir specs");
+        std::fs::write(specs_dir.join("harness.md"), "# Harness\n").expect("write harness");
+        std::fs::write(specs_dir.join("gate.md"), "# Gate\n").expect("write gate");
+        std::fs::write(specs_dir.join("notes.txt"), "ignored\n").expect("write non-md");
+
+        let labels = resolve_tree_mint_labels(tmp.path(), None).expect("resolve labels");
+        assert_eq!(
+            labels,
+            vec![SpecLabel::new("gate"), SpecLabel::new("harness")],
+            "tree-scope mint must enumerate every markdown spec in lexical order",
+        );
     }
 
     /// Spec contract `specs/gate.md` § *Molecule mint summary semantics*:
@@ -3768,6 +3893,7 @@ mod tests {
     fn review_status_records_report_unsuppressed_and_suppressed_findings() {
         let reported = loom_workflow::review::Finding {
             token: loom_workflow::review::ConcernToken::SpecCoherenceFail,
+            route: loom_workflow::review::FindingRoute::Deferred,
             bonds: vec![SpecLabel::new("gate")],
             target: loom_workflow::review::FindingTarget::Criterion {
                 spec: SpecLabel::new("gate"),
@@ -3777,6 +3903,7 @@ mod tests {
         };
         let suppressed = loom_workflow::review::Finding {
             token: loom_workflow::review::ConcernToken::VerifierBypass,
+            route: loom_workflow::review::FindingRoute::Deferred,
             bonds: vec![SpecLabel::new("gate")],
             target: loom_workflow::review::FindingTarget::Annotation {
                 target_string: "cargo test --lib sample".to_owned(),
@@ -3808,6 +3935,7 @@ mod tests {
     fn review_status_records_report_tree_scope_only_findings_at_tree_scope() {
         let finding = loom_workflow::review::Finding {
             token: loom_workflow::review::ConcernToken::CrossSpecClash,
+            route: loom_workflow::review::FindingRoute::Deferred,
             bonds: vec![SpecLabel::new("gate")],
             target: loom_workflow::review::FindingTarget::Criterion {
                 spec: SpecLabel::new("gate"),
@@ -4151,6 +4279,7 @@ mod tests {
         std::fs::write(tmp.path().join("specs/gate.md"), "# Gate\n").expect("write spec");
         let finding = loom_workflow::review::Finding {
             token: loom_workflow::review::ConcernToken::SpecCoherenceFail,
+            route: loom_workflow::review::FindingRoute::Deferred,
             bonds: vec![SpecLabel::new("gate")],
             target: loom_workflow::review::FindingTarget::Criterion {
                 spec: SpecLabel::new("gate"),

@@ -49,6 +49,7 @@ fn loom_templates_re_exports_finding_contract_from_loom_protocol() {
 
     let proto_finding = loom_protocol::gate::Finding {
         token: loom_protocol::gate::ConcernToken::SpecCoherenceFail,
+        route: loom_protocol::gate::FindingRoute::Deferred,
         bonds: vec![spec.clone()],
         target: loom_protocol::gate::FindingTarget::Criterion {
             spec: spec.clone(),

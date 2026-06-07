@@ -473,6 +473,7 @@ mod tests {
     fn streamed_finding(token: ConcernToken) -> Finding {
         Finding {
             token,
+            route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec_label("gate")],
             target: FindingTarget::Annotation {
                 target_string: "cargo test --lib sample".into(),

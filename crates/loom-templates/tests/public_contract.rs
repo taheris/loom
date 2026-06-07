@@ -79,6 +79,7 @@ fn typed_retry_context_round_trips_through_public_re_exports() {
         summary: "spec coherence wobble".into(),
         findings: vec![Finding {
             token: ConcernToken::SpecCoherenceFail,
+            route: loom_protocol::gate::FindingRoute::Deferred,
             bonds: vec![loom_events::identifier::SpecLabel::new("gate")],
             target: FindingTarget::Criterion {
                 spec: loom_events::identifier::SpecLabel::new("gate"),

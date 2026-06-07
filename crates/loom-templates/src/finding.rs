@@ -11,6 +11,6 @@
 //! crate threads it through without re-declaring the type.
 
 pub use loom_protocol::gate::{
-    ConcernToken, Finding, FindingParseError, FindingTarget, FindingValidator, LOOM_FINDING_PREFIX,
-    TargetKind,
+    ConcernToken, Finding, FindingParseError, FindingRoute, FindingTarget, FindingValidator,
+    LOOM_FINDING_PREFIX, TargetKind,
 };

@@ -51,7 +51,7 @@ use serde::Serialize;
 
 use crate::gate_clarify::CLARIFY_WITHOUT_OPTIONS_CAUSE;
 use crate::resolve::{ResolveError, resolve_open_epic, resolve_or_mint_open_epic};
-use crate::review::{ConcernToken, Finding, FindingTarget};
+use crate::review::{ConcernToken, Finding, FindingRoute, FindingTarget};
 use crate::suppression::{has_ineffective_suppression_match, suppresses_rubric_finding};
 
 /// How a batch routes to a label class. Single-finding clarify batches
@@ -71,11 +71,9 @@ enum FindingRouting {
 }
 
 /// Classify a single finding for routing — fix-up vs clarify vs
-/// blocked-clarify. Today the clarify-bound subset is `{ InvariantClash }`;
-/// the predicate flips to a per-token method when new clarify-bound
-/// tokens land, so the carve-out stays out of this module.
+/// blocked-clarify.
 fn classify_routing(finding: &Finding) -> FindingRouting {
-    if finding.token != ConcernToken::InvariantClash {
+    if finding.route != FindingRoute::Clarify {
         return FindingRouting::Fixup;
     }
     if has_well_formed_block(&finding.evidence) {
@@ -1373,6 +1371,7 @@ mod tests {
     fn coherence_finding(bonds: Vec<SpecLabel>, anchor: &str, evidence: &str) -> Finding {
         Finding {
             token: ConcernToken::SpecCoherenceFail,
+            route: crate::review::FindingRoute::Deferred,
             target: FindingTarget::Criterion {
                 spec: bonds[0].clone(),
                 anchor: anchor.to_owned(),
@@ -1385,6 +1384,7 @@ mod tests {
     fn contract_finding(bonds: Vec<SpecLabel>, id: &str, evidence: &str) -> Finding {
         Finding {
             token: ConcernToken::OrphanIntegration,
+            route: crate::review::FindingRoute::Deferred,
             target: FindingTarget::Contract { id: id.to_owned() },
             bonds,
             evidence: evidence.to_owned(),
@@ -1394,6 +1394,7 @@ mod tests {
     fn style_finding(bonds: Vec<SpecLabel>, rule_id: &str, evidence: &str) -> Finding {
         Finding {
             token: ConcernToken::StyleRuleViolation,
+            route: crate::review::FindingRoute::Deferred,
             target: FindingTarget::StyleRule {
                 rule_id: rule_id.to_owned(),
                 subject: "crates/loom-workflow/src/mint/mod.rs".to_owned(),
@@ -1412,6 +1413,7 @@ mod tests {
     ) -> Finding {
         Finding {
             token: ConcernToken::InvariantClash,
+            route: crate::review::FindingRoute::Clarify,
             target: FindingTarget::Invariant {
                 spec,
                 section: section.to_owned(),
@@ -1447,6 +1449,7 @@ mod tests {
     ) -> Finding {
         Finding {
             token,
+            route: FindingRoute::Deferred,
             target: FindingTarget::Annotation {
                 target_string: target_string.to_owned(),
             },

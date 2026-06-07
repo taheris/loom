@@ -266,6 +266,7 @@ fn run_snapshot_review_concern() {
             summary: "test mocks the agent backend instead of running the live driver".into(),
             findings: vec![Finding {
                 token: ConcernToken::VerifierBypass,
+                route: loom_protocol::gate::FindingRoute::Deferred,
                 bonds: vec![SpecLabel::new("harness")],
                 target: FindingTarget::Annotation {
                     target_string: "cargo test --lib parse_walks_all_md_files".into(),

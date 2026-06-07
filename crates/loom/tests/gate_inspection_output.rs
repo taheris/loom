@@ -87,6 +87,7 @@ fn run_gate_command(workspace: &Path, args: &[&str]) -> (std::process::Output, S
 fn expected_finding() -> Finding {
     Finding {
         token: ConcernToken::SpecCoherenceFail,
+        route: loom_workflow::review::FindingRoute::Deferred,
         bonds: vec![SpecLabel::new(SPEC_LABEL)],
         target: FindingTarget::Criterion {
             spec: SpecLabel::new(SPEC_LABEL),

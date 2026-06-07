@@ -9,11 +9,15 @@ agent never invokes `bd create` / `bd update` / `bd mol bond`.
 ### Emit shape
 
 ```text
-LOOM_FINDING: {"token":"<token>","bonds":["<spec>",...],"target":<target>,"evidence":"<evidence>"}
+LOOM_FINDING: {"token":"<token>","route":"blocking|deferred|clarify","bonds":["<spec>",...],"target":<target>,"evidence":"<evidence>"}
 ```
 
 - **`token`** — concern identifier from the closed-set enum listed
   under *Concern tokens* below.
+- **`route`** — workflow route for this finding: `blocking` retries
+  the current bead, `deferred` records remediation outside the current
+  bead's hot path, and `clarify` creates human-decision work with an
+  options block.
 - **`bonds`** — array of spec labels the fix-up should bond to.
   Always present, always at least one element. The driver picks the
   bonding lead from this array.
@@ -54,9 +58,9 @@ and `spec-conventions-violation` apply at `--tree` scope only (see
 Example lines:
 
 ```text
-LOOM_FINDING: {"token":"spec-coherence-fail","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"The bead claims to verify live-path coverage but every annotation mocks the binary."}
-LOOM_FINDING: {"token":"style-rule-violation","bonds":["gate"],"target":{"kind":"StyleRule","rule_id":"RS-12","subject":"crates/loom-gate/src/finding.rs#Finding"},"evidence":"crates/loom-gate/src/finding.rs:42-58 holds a placeholder String that consumers must overwrite — RS-12 forbids placeholder fields on production types."}
-LOOM_FINDING: {"token":"concurrency-untested","bonds":["harness"],"target":{"kind":"LockSite","file":"crates/loom-workflow/src/run/runner.rs","line":210},"evidence":"New Arc<Mutex<T>> introduced at runner.rs:210 has no concurrent-load test exercising contention."}
+LOOM_FINDING: {"token":"spec-coherence-fail","route":"blocking","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"The bead claims to verify live-path coverage but every annotation mocks the binary."}
+LOOM_FINDING: {"token":"style-rule-violation","route":"deferred","bonds":["gate"],"target":{"kind":"StyleRule","rule_id":"RS-12","subject":"crates/loom-gate/src/finding.rs#Finding"},"evidence":"crates/loom-gate/src/finding.rs:42-58 holds a placeholder String that consumers must overwrite — RS-12 forbids placeholder fields on production types."}
+LOOM_FINDING: {"token":"concurrency-untested","route":"deferred","bonds":["harness"],"target":{"kind":"LockSite","file":"crates/loom-workflow/src/run/runner.rs","line":210},"evidence":"New Arc<Mutex<T>> introduced at runner.rs:210 has no concurrent-load test exercising contention."}
 ```
 
 ### Validation rules
@@ -154,8 +158,8 @@ The driver parses the payload with the same `serde_json` pipeline
 that consumes `LOOM_FINDING:` lines. Parse failures — invalid JSON,
 missing `summary`, empty `summary` — surface as the typed
 `BadWalk::Concern { payload }` recovery cause. The summary is for the
-verdict log only; per-finding routing is decided by `loom gate mint`
-on each finding's token, not on the terminal marker.
+verdict log only; per-finding routing is decided from each streamed
+finding's `route`, not from the terminal marker.
 
 | Findings streamed | Terminator | Verdict |
 |---|---|---|

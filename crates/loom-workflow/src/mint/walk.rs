@@ -38,8 +38,9 @@ use loom_templates::review::{ReviewContext, ReviewLane};
 use thiserror::Error;
 
 use crate::review::{
-    ConcernToken, DispatchScope, Finding, FindingTarget, FindingValidator, WalkOutputError,
-    beads_summary, default_profile_for_spec, load_review_sources, parse_walk_output,
+    ConcernToken, DispatchScope, Finding, FindingRoute, FindingTarget, FindingValidator,
+    WalkOutputError, beads_summary, default_profile_for_spec, load_review_sources,
+    parse_walk_output,
 };
 use crate::todo::ExitSignal;
 
@@ -220,6 +221,7 @@ pub fn verifier_failure_to_finding(failure: VerifierFailure) -> Result<Finding, 
     };
     Ok(Finding {
         token,
+        route: FindingRoute::Deferred,
         bonds: vec![owning],
         target,
         evidence: failure.evidence,
@@ -824,7 +826,7 @@ mod tests {
         let rubric_stdout = format!(
             "{}\nLOOM_CONCERN: {{\"summary\":\"rubric finding\"}}\n",
             finding_line(
-                r#"{"token":"orphan-integration","bonds":["gate"],"target":{"kind":"Contract","id":"molecule-lifecycle"},"evidence":"rubric"}"#
+                r#"{"token":"orphan-integration","route":"deferred","bonds":["gate"],"target":{"kind":"Contract","id":"molecule-lifecycle"},"evidence":"rubric"}"#
             ),
         );
         let spawn = move |_cfg: SpawnConfig| {
@@ -896,13 +898,13 @@ mod tests {
              trailing summary\n\
              LOOM_CONCERN: {{\"summary\":\"three findings\"}}\n",
             a = finding_line(
-                r#"{"token":"spec-coherence-fail","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"first"}"#
+                r#"{"token":"spec-coherence-fail","route":"deferred","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"first"}"#
             ),
             b = finding_line(
-                r#"{"token":"orphan-integration","bonds":["harness"],"target":{"kind":"Contract","id":"molecule-lifecycle"},"evidence":"second"}"#
+                r#"{"token":"orphan-integration","route":"deferred","bonds":["harness"],"target":{"kind":"Contract","id":"molecule-lifecycle"},"evidence":"second"}"#
             ),
             c = finding_line(
-                r#"{"token":"style-rule-violation","bonds":["gate"],"target":{"kind":"StyleRule","rule_id":"COM-1","subject":"crates/loom-workflow/src/mint/walk.rs#stream"},"evidence":"third"}"#
+                r#"{"token":"style-rule-violation","route":"deferred","bonds":["gate"],"target":{"kind":"StyleRule","rule_id":"COM-1","subject":"crates/loom-workflow/src/mint/walk.rs#stream"},"evidence":"third"}"#
             ),
         );
         let mut walker = FakeWalker {
@@ -1001,6 +1003,7 @@ mod tests {
         // Three findings split across two lead specs ⇒ two batches.
         let finding_a = Finding {
             token: ConcernToken::SpecCoherenceFail,
+            route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec("gate")],
             target: FindingTarget::Criterion {
                 spec: spec("gate"),
@@ -1010,6 +1013,7 @@ mod tests {
         };
         let finding_b = Finding {
             token: ConcernToken::OrphanIntegration,
+            route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec("harness")],
             target: FindingTarget::Contract {
                 id: "molecule-lifecycle".into(),
@@ -1018,6 +1022,7 @@ mod tests {
         };
         let finding_c = Finding {
             token: ConcernToken::StyleRuleViolation,
+            route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec("gate")],
             target: FindingTarget::StyleRule {
                 rule_id: "RS-19".into(),

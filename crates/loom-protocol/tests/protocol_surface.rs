@@ -136,6 +136,7 @@ fn loom_protocol_wire_format_does_not_carry_protocol_version_field() {
     let spec: SpecLabel = "gate".parse().expect("valid spec label");
     let finding = Finding {
         token: ConcernToken::SpecCoherenceFail,
+        route: loom_protocol::gate::FindingRoute::Deferred,
         bonds: vec![spec.clone()],
         target: FindingTarget::Criterion {
             spec,

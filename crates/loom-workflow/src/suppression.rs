@@ -59,6 +59,7 @@ mod tests {
     fn rubric_finding() -> Finding {
         Finding {
             token: ConcernToken::SpecCoherenceFail,
+            route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec("gate")],
             target: FindingTarget::Criterion {
                 spec: spec("gate"),
@@ -71,6 +72,7 @@ mod tests {
     fn deterministic_finding() -> Finding {
         Finding {
             token: ConcernToken::VerifierFailed,
+            route: crate::review::FindingRoute::Deferred,
             bonds: vec![spec("gate")],
             target: FindingTarget::Annotation {
                 target_string: "cargo test --lib failing_verifier".to_owned(),
