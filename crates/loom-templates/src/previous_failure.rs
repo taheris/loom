@@ -73,9 +73,9 @@ pub enum PreviousFailure {
     /// Bead-workspace verify passed, but the loom-workspace per-bead
     /// integration step's `loom gate verify` against the integrated tree
     /// failed (cross-bead interaction, rebase-induced breakage). The
-    /// integration was rolled back via `git reset --hard HEAD~1`. Per-bead
-    /// does not run `loom gate review`, so review concerns are not a
-    /// possible cause here.
+    /// integration was rolled back via `git reset --hard HEAD~1`. Focused
+    /// review runs only after this verify succeeds, so review concerns use
+    /// `ReviewConcern` or `BadWalk` instead.
     PostIntegrateFail { failures: Vec<VerifierFailure> },
     /// The driver-side rebase of the bead branch onto the integration
     /// branch hit a textual conflict that `git rerere` could not replay,

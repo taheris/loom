@@ -319,11 +319,9 @@ pub enum PreviousFailure {
     /// integration-tree state no bead-workspace verify could
     /// anticipate). The integration was rolled back via
     /// `git reset --hard HEAD~1`. Carries the verifier-failure list
-    /// directly; the per-bead step does not run `loom gate review`,
-    /// so review concerns are not a possible cause here (they fire
-    /// at the molecule-completion push gate per
-    /// [harness.md § Verdict Gate](harness.md#verdict-gate), which
-    /// routes through `GateFailReason`, not `PreviousFailure`).
+    /// directly; focused review runs only after this verify succeeds,
+    /// so review concerns route through `ReviewConcern` or `BadWalk`
+    /// rather than this variant.
     PostIntegrateFail { failures: Vec<VerifierFailure> },
 
     /// Worker phase emitted `LOOM_RETRY` — the agent self-reported
