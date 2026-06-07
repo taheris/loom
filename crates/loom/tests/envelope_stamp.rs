@@ -66,13 +66,21 @@ fn write_minimal_manifest(dir: &Path) -> PathBuf {
 
 /// Install a stub `loom` shim that exits 0 for any args. Threaded via
 /// `LOOM_BIN` so the per-bead gate's `loom gate verify --bead` /
-/// `loom gate mint --bead` subprocesses (per `specs/gate.md` § *Per-diff
+/// `loom gate review --bead` subprocesses (per `specs/gate.md` § *Per-diff
 /// stage checks*) are no-ops in tests that exercise only the run-phase
-/// envelope-stamping path; without it the mint subprocess spawns a
-/// review-agent backend the test fixtures don't fully wire.
+/// envelope-stamping path; without it the review subprocess spawns an
+/// agent backend the test fixtures don't fully wire.
 fn install_loom_noop_stub(dir: &Path) -> PathBuf {
     let stub = dir.join("loom-noop-stub.sh");
-    std::fs::write(&stub, "#!/bin/sh\nexit 0\n").expect("write loom stub");
+    std::fs::write(
+        &stub,
+        "#!/usr/bin/env bash\n\
+         set -euo pipefail\n\
+         if [[ \"${2:-}\" == \"review\" ]]; then\n\
+             echo 'LOOM_COMPLETE'\n\
+         fi\n",
+    )
+    .expect("write loom stub");
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
         .expect("chmod loom stub");
     stub
@@ -108,7 +116,7 @@ fn run_loom_loop_once(
         .env("LOOM_WRIX_BIN", mock_agent)
         .env("LOOM_TEST_AGENT_MODE", agent_mode)
         // Point `LOOM_BIN` at a no-op shim so the per-bead gate's
-        // `loom gate verify --bead` + `loom gate mint --bead` calls
+        // `loom gate verify --bead` + `loom gate review --bead` calls
         // exit 0 silently — this test asserts envelope stamping on
         // the run-phase path, not gate dispatch.
         .env("LOOM_BIN", &loom_noop_stub)

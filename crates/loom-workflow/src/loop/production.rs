@@ -888,25 +888,34 @@ where
             return Ok(PerBeadGateOutcome::Recovery { detail });
         }
 
-        let mint_output = Command::new(&self.loom_bin)
+        let review_output = Command::new(&self.loom_bin)
             .current_dir(&self.workspace)
+            .env(REVIEW_EMIT_STDOUT_ENV, "1")
             .arg("gate")
-            .arg("mint")
+            .arg("review")
             .arg("--bead")
             .arg(bead.as_str())
             .arg("-s")
             .arg(self.label.as_str())
             .output()
             .await?;
-        let mint_exit = mint_output.status.code().unwrap_or(1);
-        let mint_stdout = String::from_utf8_lossy(&mint_output.stdout).to_string();
+        let review_exit = review_output.status.code().unwrap_or(1);
+        let review_stdout = String::from_utf8_lossy(&review_output.stdout).to_string();
+        let review_stderr = String::from_utf8_lossy(&review_output.stderr).to_string();
         info!(
             bead = %bead,
             spec = %self.label.as_str(),
-            exit_code = mint_exit,
-            "loom loop: per-bead gate — loom gate mint --bead finished",
+            exit_code = review_exit,
+            "loom loop: per-bead gate — loom gate review --bead finished",
         );
-        Ok(classify_mint_summary(mint_exit, &mint_stdout))
+        let config = LoomConfig::load(LoomConfig::resolve_path(&self.workspace))?;
+        Ok(classify_review_output(
+            review_exit,
+            &review_stdout,
+            &review_stderr,
+            &config.suppress,
+            &self.workspace,
+        ))
     }
 
     fn emit_driver_event(&mut self, kind: DriverKind, summary: &str, payload: serde_json::Value) {
@@ -914,71 +923,90 @@ where
     }
 }
 
-/// Parse mint summary stdout and translate the `refused` / `errors`
-/// counts into the per-bead gate outcome.
-///
-/// Conflicting `bd` ids surface in `StructuralViolation::detail`; error
-/// detail surfaces in `Recovery::detail` for the next agent attempt.
-fn classify_mint_summary(exit_code: i32, stdout: &str) -> PerBeadGateOutcome {
-    let (refused, errors) = parse_mint_counts(stdout);
-    if refused > 0 {
-        return PerBeadGateOutcome::StructuralViolation {
-            detail: extract_lines_with_prefix(stdout, "refused ").unwrap_or_else(|| stdout.into()),
-        };
-    }
-    if errors > 0 || exit_code != 0 {
+/// Classify the focused per-bead review subprocess. The child emits the
+/// review agent's raw stdout under [`REVIEW_EMIT_STDOUT_ENV`], so this
+/// consumes the same typed walk product as the molecule-completion handoff.
+fn classify_review_output(
+    exit_code: i32,
+    stdout: &str,
+    stderr: &str,
+    suppressions: &[loom_driver::config::SuppressionConfig],
+    workspace: &std::path::Path,
+) -> PerBeadGateOutcome {
+    let validator = WorkspaceReviewFindingValidator::new(workspace);
+    let walk = WalkOutput::from_stdout(stdout, DispatchScope::PerBead, &validator);
+    if !walk.finding_errors().is_empty() {
         return PerBeadGateOutcome::Recovery {
-            detail: extract_lines_with_prefix(stdout, "error ").unwrap_or_else(|| stdout.into()),
+            detail: review_detail(
+                "loom gate review emitted malformed findings",
+                stdout,
+                stderr,
+            ),
         };
     }
-    PerBeadGateOutcome::Clean
+    let unsuppressed = walk
+        .findings()
+        .iter()
+        .filter(|finding| !suppresses_rubric_finding(suppressions, finding))
+        .collect::<Vec<_>>();
+    match walk.terminal() {
+        TerminalSurface::Concern { summary } if !unsuppressed.is_empty() => {
+            PerBeadGateOutcome::Recovery {
+                detail: review_detail(
+                    &format!("loom gate review reported concern: {summary}"),
+                    stdout,
+                    stderr,
+                ),
+            }
+        }
+        TerminalSurface::Concern { summary } if walk.findings().is_empty() => {
+            PerBeadGateOutcome::Recovery {
+                detail: review_detail(
+                    &format!(
+                        "loom gate review emitted LOOM_CONCERN without LOOM_FINDING: {summary}"
+                    ),
+                    stdout,
+                    stderr,
+                ),
+            }
+        }
+        TerminalSurface::Concern { .. } => PerBeadGateOutcome::Clean,
+        TerminalSurface::Complete | TerminalSurface::Noop
+            if unsuppressed.is_empty() && exit_code == 0 =>
+        {
+            PerBeadGateOutcome::Clean
+        }
+        TerminalSurface::Complete | TerminalSurface::Noop => PerBeadGateOutcome::Recovery {
+            detail: review_detail("loom gate review exited uncleanly", stdout, stderr),
+        },
+        TerminalSurface::Malformed { .. } => PerBeadGateOutcome::Recovery {
+            detail: review_detail(
+                "loom gate review emitted malformed LOOM_CONCERN",
+                stdout,
+                stderr,
+            ),
+        },
+        TerminalSurface::Missing => PerBeadGateOutcome::Recovery {
+            detail: review_detail(
+                "loom gate review emitted no terminal marker",
+                stdout,
+                stderr,
+            ),
+        },
+        TerminalSurface::Blocked { .. }
+        | TerminalSurface::Clarify { .. }
+        | TerminalSurface::Retry { .. } => PerBeadGateOutcome::Recovery {
+            detail: review_detail(
+                "loom gate review emitted a worker self-report marker",
+                stdout,
+                stderr,
+            ),
+        },
+    }
 }
 
-/// Extract `refused` and `errors` counts from the mint summary header
-/// line. Tolerant: a header that does not parse returns `(0, 0)`; the
-/// caller falls back on the exit code to decide between Clean and
-/// Recovery.
-fn parse_mint_counts(stdout: &str) -> (usize, usize) {
-    let header = stdout.lines().next().unwrap_or("");
-    let mut refused = 0usize;
-    let mut errors = 0usize;
-    for part in header.split(',') {
-        let part = part.trim();
-        if let Some(rest) = part.strip_prefix("refused ") {
-            refused = rest
-                .split_whitespace()
-                .next()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-        } else if let Some(rest) = part.strip_prefix("errors ") {
-            errors = rest
-                .split_whitespace()
-                .next()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-        }
-    }
-    (refused, errors)
-}
-
-/// Collect summary body lines whose first non-whitespace token starts
-/// with `prefix` (e.g. `"refused "` or `"error "`) into one
-/// newline-joined block — the conflicting `bd` ids / error reasons
-/// surface verbatim for `bd update --notes` and `previous_failure`.
-/// Returns `None` if no matching line is present so the caller can fall
-/// back on the full summary.
-fn extract_lines_with_prefix(stdout: &str, prefix: &str) -> Option<String> {
-    let mut out: Vec<&str> = Vec::new();
-    for line in stdout.lines() {
-        if line.trim_start().starts_with(prefix) {
-            out.push(line.trim_start());
-        }
-    }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out.join("\n"))
-    }
+fn review_detail(summary: &str, stdout: &str, stderr: &str) -> String {
+    format!("{summary}\nstdout:\n{stdout}\nstderr:\n{stderr}")
 }
 
 /// Render the operator-facing note body for the `unknown-profile`
@@ -2829,83 +2857,66 @@ mod tests {
         );
     }
 
-    /// Mint summary parser routes a clean header (`refused 0, errors
-    /// 0`) to [`PerBeadGateOutcome::Clean`] regardless of `minted` /
-    /// `skipped` counts, per `specs/gate.md` § *Per-bead mint summary
-    /// semantics*.
-    #[test]
-    fn classify_mint_summary_clean_header_routes_to_clean() {
-        let stdout = "minted 2, skipped 1 (dedup), refused 0, errors 0\n\
-                      minted abcd1234 → lm-fix.7 (spec:gate)\n\
-                      skipped efgh5678 (existing lm-fix.4)\n";
-        assert_eq!(classify_mint_summary(0, stdout), PerBeadGateOutcome::Clean,);
+    fn seed_review_workspace(workspace: &std::path::Path) {
+        std::fs::create_dir_all(workspace.join("specs")).expect("mkdir specs");
+        std::fs::write(workspace.join("specs/gate.md"), "# Gate\n").expect("write spec");
     }
 
-    /// Mint summary parser routes `refused > 0` to
-    /// [`PerBeadGateOutcome::StructuralViolation`] with the conflicting
-    /// `bd` ids surfaced verbatim from the summary's refused lines.
-    #[test]
-    fn classify_mint_summary_refused_routes_to_structural_violation_with_conflicting_ids() {
-        let stdout = "minted 0, skipped 0 (dedup), refused 1, errors 0\n\
-                      refused fp-aabb: more than one open epic for spec `gate` — \
-                      close all but one before re-running (ids: lm-mol.4, lm-mol.7)\n";
-        match classify_mint_summary(1, stdout) {
-            PerBeadGateOutcome::StructuralViolation { detail } => {
-                assert!(
-                    detail.contains("lm-mol.4") && detail.contains("lm-mol.7"),
-                    "detail must carry conflicting bd ids: {detail:?}",
-                );
-            }
-            other => panic!("expected StructuralViolation, got {other:?}"),
-        }
+    fn review_finding_stdout() -> String {
+        r#"LOOM_FINDING: {"token":"verifier-bypass","bonds":["gate"],"target":{"kind":"Annotation","target_string":"cargo test -p loom"},"evidence":"review flagged bypass"}
+LOOM_CONCERN: {"summary":"review flagged bypass"}
+"#
+        .to_string()
     }
 
-    /// Mint summary parser routes `errors > 0` to
-    /// [`PerBeadGateOutcome::Recovery`] so the runner threads the error
-    /// detail into `previous_failure` and re-runs the agent through the
-    /// existing per-bead recovery loop.
     #[test]
-    fn classify_mint_summary_errors_routes_to_recovery_with_error_detail() {
-        let stdout = "minted 0, skipped 0 (dedup), refused 0, errors 1\n\
-                      error fp-ccdd: bd create exited 2 (dolt socket timeout)\n";
-        match classify_mint_summary(1, stdout) {
-            PerBeadGateOutcome::Recovery { detail } => {
-                assert!(
-                    detail.contains("fp-ccdd"),
-                    "detail must carry the error fingerprint: {detail:?}",
-                );
-            }
+    fn classify_review_output_complete_routes_to_clean() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        seed_review_workspace(dir.path());
+        assert_eq!(
+            classify_review_output(0, "LOOM_COMPLETE\n", "", &[], dir.path()),
+            PerBeadGateOutcome::Clean,
+        );
+    }
+
+    #[test]
+    fn classify_review_output_concern_routes_to_recovery() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        seed_review_workspace(dir.path());
+        let stdout = review_finding_stdout();
+        match classify_review_output(0, &stdout, "", &[], dir.path()) {
+            PerBeadGateOutcome::Recovery { detail } => assert!(
+                detail.contains("review flagged bypass"),
+                "review concern detail must reach the retry prompt: {detail}",
+            ),
             other => panic!("expected Recovery, got {other:?}"),
         }
     }
 
-    /// `refused > 0` AND `errors > 0` simultaneously routes to
-    /// [`PerBeadGateOutcome::StructuralViolation`] — structural
-    /// violations take precedence over recoverable errors because the
-    /// agent cannot fix duplicate-epic conflicts from inside the loop.
     #[test]
-    fn classify_mint_summary_refused_wins_over_errors() {
-        let stdout = "minted 0, skipped 0 (dedup), refused 1, errors 1\n\
-                      refused fp-aabb: duplicate mint label (ids: lm-x, lm-y)\n\
-                      error fp-ccdd: transient bd failure\n";
-        assert!(matches!(
-            classify_mint_summary(1, stdout),
-            PerBeadGateOutcome::StructuralViolation { .. },
-        ));
+    fn classify_review_output_suppressed_concern_routes_to_clean() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        seed_review_workspace(dir.path());
+        let stdout = review_finding_stdout();
+        let validator = WorkspaceReviewFindingValidator::new(dir.path());
+        let walk = WalkOutput::from_stdout(&stdout, DispatchScope::PerBead, &validator);
+        let suppression = loom_driver::config::SuppressionConfig {
+            id: Some(walk.findings()[0].id()),
+            hash: None,
+            reason: "accepted known finding".into(),
+        };
+        assert_eq!(
+            classify_review_output(0, &stdout, "", &[suppression], dir.path()),
+            PerBeadGateOutcome::Clean,
+        );
     }
 
-    /// Spec criterion (`specs/gate.md` § *Production walker wiring*):
-    /// the production `exec_per_bead_gate` invokes `loom gate verify
-    /// --bead <id> -s <spec>` then `loom gate mint --bead <id> -s
-    /// <spec>` as real subprocesses against `loom_bin`. The
-    /// mock-controller test in `runner.rs` covers the runner-side
-    /// routing on `PerBeadGateOutcome`; this pins the subprocess
-    /// shape the mock bypasses by pointing `loom_bin` at a stub
-    /// that records each invocation's argv and emits a clean mint
-    /// summary so the real `classify_mint_summary` parser
-    /// roundtrips to `Clean`.
+    /// Spec criterion (`specs/gate.md` § *Scope-dependent walk*): the
+    /// production `exec_per_bead_gate` invokes `loom gate verify --bead
+    /// <id> -s <spec>` then focused `loom gate review --bead <id> -s
+    /// <spec>` as real subprocesses against `loom_bin`.
     #[tokio::test]
-    async fn exec_per_bead_gate_invokes_loom_gate_verify_then_mint_subprocesses() {
+    async fn per_bead_gate_uses_review_not_mint() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
@@ -2918,7 +2929,7 @@ mod tests {
              set -euo pipefail\n\
              echo \"$*\" >> \"$PWD/argv.log\"\n\
              case \"$2\" in\n\
-                 mint) echo 'minted 0, skipped 0 (dedup), refused 0, errors 0' ;;\n\
+                 review) echo 'LOOM_COMPLETE' ;;\n\
              esac\n\
              exit 0\n",
         )
@@ -2959,15 +2970,15 @@ mod tests {
             "first subprocess argv must be `loom gate verify --bead <id> -s <spec>`",
         );
         assert_eq!(
-            calls[1], "gate mint --bead lm-1 -s gate",
-            "second subprocess argv must be `loom gate mint --bead <id> -s <spec>` after verify",
+            calls[1], "gate review --bead lm-1 -s gate",
+            "second subprocess argv must be `loom gate review --bead <id> -s <spec>` after verify",
         );
     }
 
     /// A non-zero `loom gate verify --bead` against the integrated tree is
     /// the `post-integrate-fail` audit failure: the integration is rolled
     /// back (`git reset --hard HEAD~1`), `PreviousFailure::PostIntegrateFail`
-    /// is stashed for the next dispatch, the mint step never runs, and the
+    /// is stashed for the next dispatch, the review step never runs, and the
     /// bead routes to recovery (specs/harness.md § Verdict Gate).
     #[tokio::test]
     async fn exec_per_bead_gate_verify_fail_rolls_back_and_stashes_post_integrate_fail() {
@@ -2998,7 +3009,7 @@ mod tests {
              set -euo pipefail\n\
              case \"$2\" in\n\
                  verify) echo 'verifier failed: cargo test' >&2; exit 1 ;;\n\
-                 mint) echo 'mint must not run after verify-fail' ; exit 99 ;;\n\
+                 review) echo 'review must not run after verify-fail' ; exit 99 ;;\n\
              esac\n\
              exit 0\n",
         )

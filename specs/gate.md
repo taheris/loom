@@ -2853,7 +2853,7 @@ and conservative fall-through for unowned queries.
 - `review -b/--bead <id>` walks the focused LLM rubric after
   `verify -b/--bead <id>`; `mint` is not invoked on the per-bead hot
   path
-  [test?](per_bead_gate_uses_review_not_mint)
+  [test](per_bead_gate_uses_review_not_mint)
 - `mint --tree` walks both the deterministic verifiers and the LLM
   rubric, emitting `LOOM_FINDING:` lines for findings from either
   source

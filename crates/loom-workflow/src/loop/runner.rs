@@ -134,9 +134,9 @@ pub trait AgentLoopController: Send {
     /// Per-bead gate invoked after the run-phase agent signals
     /// [`AgentOutcome::Success`].
     ///
-    /// Spawns the verify and mint subcommands, parses the mint summary's
-    /// `refused` / `errors` counts, and returns a typed
-    /// [`PerBeadGateOutcome`] the runner maps to done, blocked, or recovery.
+    /// Spawns the verify and focused review subcommands, parses the
+    /// review walk output, and returns a typed [`PerBeadGateOutcome`] the
+    /// runner maps to done, blocked, or recovery.
     fn exec_per_bead_gate(
         &mut self,
         bead: &BeadId,
@@ -171,14 +171,12 @@ pub const AGENT_BLOCKED_CAUSE: &str = "agent-blocked";
 /// `process_one_bead` exhaustion path on a single label string.
 pub use crate::review::RETRY_EXHAUSTED_CAUSE;
 
-/// Spec-table cause string written to `bd update --notes` when a per-bead
-/// `loom gate mint --bead <id>` exits with `refused > 0` — the mint
-/// pipeline detected a structural invariant violation (e.g. more than one
-/// open epic for the bonding lead's spec, or multiple open beads sharing a
-/// mint label) that the agent cannot resolve from inside the loop. The
-/// bead's run-phase commit is NOT unwound — the integration is already
-/// durable; the structural violation surfaces as a labelled bead the
-/// operator unblocks via `loom msg`.
+/// Spec-table cause string written to `bd update --notes` when a
+/// driver-side per-bead gate detects a structural invariant violation
+/// the agent cannot resolve from inside the loop. The bead's run-phase
+/// commit is NOT unwound — the integration is already durable; the
+/// structural violation surfaces as a labelled bead the operator
+/// unblocks via `loom msg`.
 pub const MINT_STRUCTURAL_VIOLATION_CAUSE: &str = "mint-structural-violation";
 
 /// Spec-table cause string written to `bd update --notes` when the
@@ -262,23 +260,20 @@ pub fn synthesize_integration_conflict_options(
 /// `previous_failure`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PerBeadGateOutcome {
-    /// `loom gate verify --bead <id>` exited 0 AND
-    /// `loom gate mint --bead <id>` exited 0 (`refused == 0 &&
-    /// errors == 0`). The bead is done.
+    /// `loom gate verify --bead <id>` exited 0 AND the focused
+    /// `loom gate review --bead <id>` emitted no unsuppressed findings.
+    /// The bead is done.
     Clean,
-    /// `loom gate mint --bead <id>` exited non-zero with `refused > 0`.
-    /// The mint pipeline saw a structural invariant violation (e.g.
-    /// duplicate mint labels, more than one open epic for a spec) that
-    /// the agent cannot resolve from inside the loop. Routes to
+    /// The per-bead gate saw a structural invariant violation that the
+    /// agent cannot resolve from inside the loop. Routes to
     /// [`BeadResult::Blocked`] with cause
     /// [`MINT_STRUCTURAL_VIOLATION_CAUSE`]; the bead's run-phase commit
     /// is NOT unwound — the integration is already durable. `detail`
-    /// carries the conflicting `bd` ids surfaced by the mint summary
-    /// so `bd update --notes` greps cleanly.
+    /// carries operator-facing diagnostics for `bd update --notes`.
     StructuralViolation { detail: String },
-    /// `loom gate verify --bead <id>` exited non-zero, OR `loom gate
-    /// mint --bead <id>` exited non-zero with `errors > 0`. Both cases
-    /// route through the existing per-bead recovery loop bounded by
+    /// `loom gate verify --bead <id>` exited non-zero, or focused
+    /// `loom gate review --bead <id>` reported a recoverable concern.
+    /// Both cases route through the existing per-bead recovery loop bounded by
     /// `RetryPolicy::max_retries`: `detail` is threaded as
     /// `previous_failure` into the next agent attempt; exhaustion
     /// routes to [`BeadResult::Clarified`] with the accumulated error
@@ -1628,13 +1623,12 @@ mod tests {
     /// Spec criterion 2891 (`specs/harness.md` § Functional): after each
     /// per-bead agent run signals `Success` and the bead's branch is
     /// rebased + ff'd at the loom workspace, the loop invokes the per-bead
-    /// gate (`loom gate verify --bead <id>` then `loom gate mint --bead
-    /// <id>`). This pins the run-phase-Success → per-bead-gate edge; the
-    /// verify→mint subprocess order + production `MintWalker` wiring
-    /// (not a `Vec::new()` shortcut) is pinned by the production test
-    /// `exec_per_bead_gate_invokes_loom_gate_verify_then_mint_subprocesses`.
+    /// gate (`loom gate verify --bead <id>` then focused `loom gate
+    /// review --bead <id>`). This pins the run-phase-Success →
+    /// per-bead-gate edge; the verify→review subprocess order is pinned
+    /// by the production test `per_bead_gate_uses_review_not_mint`.
     #[tokio::test]
-    async fn per_bead_path_invokes_verify_then_mint_after_run_phase_success()
+    async fn per_bead_path_invokes_verify_then_review_after_run_phase_success()
     -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("lm-1", &[]));
@@ -1794,21 +1788,19 @@ mod tests {
         );
     }
 
-    /// Spec criterion (`specs/harness.md` § Functional): a per-bead
-    /// `loom gate mint --bead <id>` exit with `refused > 0` routes
-    /// the bead to `loom:blocked` with cause
-    /// [`MINT_STRUCTURAL_VIOLATION_CAUSE`] and the conflicting `bd`
-    /// ids in the notes detail. The bead's run-phase commit is NOT
-    /// unwound — the integration is already durable.
+    /// Spec criterion (`specs/harness.md` § Functional): a structural
+    /// per-bead gate violation routes the bead to `loom:blocked` with
+    /// cause [`MINT_STRUCTURAL_VIOLATION_CAUSE`] and operator-facing
+    /// diagnostics in the notes detail. The bead's run-phase commit is
+    /// NOT unwound — the integration is already durable.
     #[tokio::test]
-    async fn loop_per_bead_routes_mint_refused_to_loom_blocked_with_structural_cause()
+    async fn loop_per_bead_routes_structural_gate_violation_to_loom_blocked()
     -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("lm-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::Success);
-        // The conflicting bd ids the mint summary surfaced verbatim —
-        // production wires these from `MintSummary` refused lines.
-        let detail = "refused abcd1234: more than one open epic for spec `gate` — close all but one before re-running (ids: lm-mol.4, lm-mol.7)".to_string();
+        let detail =
+            "structural gate violation: conflicting bd ids (ids: lm-mol.4, lm-mol.7)".to_string();
         c.per_bead_gate_outcomes
             .push_back(PerBeadGateOutcome::StructuralViolation {
                 detail: detail.clone(),
@@ -1835,27 +1827,26 @@ mod tests {
         Ok(())
     }
 
-    /// Spec criterion (`specs/harness.md` § Functional): a per-bead
-    /// `loom gate mint --bead <id>` exit with `errors > 0` threads
-    /// the mint summary's error detail into `previous_failure` and
-    /// re-runs through the existing per-bead recovery loop bounded by
-    /// `RetryPolicy::max_retries`. After exhaustion the bead routes
+    /// Spec criterion (`specs/harness.md` § Functional): a recoverable
+    /// per-bead gate concern threads its detail into `previous_failure`
+    /// and re-runs through the existing per-bead recovery loop bounded
+    /// by `RetryPolicy::max_retries`. After exhaustion the bead routes
     /// to `loom:clarify` with the accumulated error context (the
     /// existing `RetryDecision::GiveUp` path).
     #[tokio::test]
-    async fn loop_per_bead_routes_mint_errors_through_recovery_loop_bounded_by_max_retries()
+    async fn loop_per_bead_routes_review_concern_through_recovery_loop_bounded_by_max_retries()
     -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("lm-1", &[]));
         // max_retries = 2 → initial attempt + 2 retries = 3 Success +
-        // 3 mint-errors → clarify with the last error body.
+        // 3 review concerns → clarify with the last error body.
         for _ in 0..3 {
             c.agent_outcomes.push_back(AgentOutcome::Success);
         }
         for i in 0..3 {
             c.per_bead_gate_outcomes
                 .push_back(PerBeadGateOutcome::Recovery {
-                    detail: format!("error fp-{i}: bd create failed (transient)"),
+                    detail: format!("review concern {i}: fix requested"),
                 });
         }
 
@@ -1867,27 +1858,27 @@ mod tests {
             "agent re-runs through the existing retry loop: initial + 2 retries",
         );
         // First attempt: no previous_failure. Subsequent attempts thread
-        // the prior mint-error detail verbatim into `previous_failure`.
+        // the prior review-concern detail verbatim into `previous_failure`.
         assert_eq!(c.run_calls[0].1, None);
         assert_eq!(
             c.run_calls[1].1.as_deref(),
-            Some("error fp-0: bd create failed (transient)"),
+            Some("review concern 0: fix requested"),
         );
         assert_eq!(
             c.run_calls[2].1.as_deref(),
-            Some("error fp-1: bd create failed (transient)"),
+            Some("review concern 1: fix requested"),
         );
         // The gate fired once per agent attempt.
         assert_eq!(c.per_bead_gate_calls.len(), 3);
         // Exhausted retries → clarify with the last failure body.
         assert!(
             c.blocked.is_empty(),
-            "errors must not block — only refused does"
+            "recoverable review concerns must not block"
         );
         assert_eq!(c.clarified.len(), 1);
         assert_eq!(c.clarified[0].0, BeadId::new("lm-1").expect("valid"));
         assert!(
-            c.clarified[0].1.contains("error fp-1"),
+            c.clarified[0].1.contains("review concern 1"),
             "clarify note must carry the accumulated error detail: {:?}",
             c.clarified[0].1,
         );

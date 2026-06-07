@@ -5,9 +5,8 @@
 //! `verify-marker`) is inspection-only.
 //!
 //! The mint pipeline lives in `crates/loom-workflow/src/mint/` and is
-//! dispatched from `crates/loom/src/main.rs` — the `run_gate_mint` arm
-//! that serves both standalone `loom gate mint` and `loom loop`'s
-//! per-bead `mint --bead` step. The walker scans production sources
+//! dispatched from `crates/loom/src/main.rs` through the `run_gate_mint`
+//! arm. The walker scans production sources
 //! (`crates/*/src/**/*.rs`) for `mint_findings` / `mint_finding_with_options`
 //! invocations and flags any caller outside those two locations so a
 //! future change cannot reintroduce a hidden mint side-effect under an
