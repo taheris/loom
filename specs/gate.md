@@ -2808,7 +2808,7 @@ and conservative fall-through for unowned queries.
 - `--bead`, `--diff`, and `--files` mint scopes do not report stale
   candidates because those scopes cannot prove a missing finding is
   absent from the whole tree
-  [test?](mint_non_tree_scopes_do_not_report_stale_candidates)
+  [test](mint_non_tree_scopes_do_not_report_stale_candidates)
 - Each minted batch bead is `--parent`-ed to the lead spec's open
   epic and carries one `finding:<hash>` label per contained finding
   plus one `spec:<X>` label per unique entry across the union of

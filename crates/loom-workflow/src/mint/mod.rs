@@ -692,16 +692,12 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
 
     let mut survivors: Vec<(Finding, SpecLabel, Option<MoleculeId>)> = Vec::new();
     let mut current_hashes: HashSet<String> = HashSet::new();
-    let mut current_specs: HashSet<String> = HashSet::new();
     for (finding, finding_hash) in fingerprints {
         if suppresses_rubric_finding(&opts.suppressions, finding) {
             summary.record_status(finding, FindingStatusAction::Suppressed);
             continue;
         }
         current_hashes.insert(finding_hash.clone());
-        for bond in &finding.bonds {
-            current_specs.insert(bond.as_str().to_owned());
-        }
         if has_ineffective_suppression_match(&opts.suppressions, finding) {
             summary.ineffective_suppressions += 1;
         }
@@ -842,14 +838,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
     }
     summary.specs_across_minted = minted_specs.len();
     if opts.report_stale {
-        report_stale_candidates(
-            bd,
-            &mut summary,
-            &current_hashes,
-            &current_specs,
-            opts.spec_filter.as_ref(),
-        )
-        .await;
+        report_stale_candidates(bd, &mut summary, &current_hashes, opts.spec_filter.as_ref()).await;
     }
     summary
 }
@@ -874,51 +863,46 @@ async fn report_stale_candidates<R: CommandRunner>(
     bd: &BdClient<R>,
     summary: &mut MintSummary,
     current_hashes: &HashSet<String>,
-    current_specs: &HashSet<String>,
     spec_filter: Option<&SpecLabel>,
 ) {
-    let specs: Vec<SpecLabel> = match spec_filter {
-        Some(spec) => vec![spec.clone()],
-        None => current_specs.iter().map(SpecLabel::new).collect(),
+    let beads = match bd
+        .list(ListOpts {
+            status: Some(DEDUP_STATUSES.to_string()),
+            label: spec_filter.map(|spec| format!("spec:{spec}")),
+            ..ListOpts::default()
+        })
+        .await
+    {
+        Ok(beads) => beads,
+        Err(err) => {
+            let fingerprint =
+                spec_filter.map_or_else(|| "stale:tree".to_owned(), |spec| format!("stale:{spec}"));
+            summary.record(BatchOutcome::Errored {
+                fingerprint,
+                message: MintError::from(err).to_string(),
+            });
+            return;
+        }
     };
-    for spec in specs {
-        let beads = match bd
-            .list(ListOpts {
-                status: Some(DEDUP_STATUSES.to_string()),
-                label: Some(format!("spec:{spec}")),
-                ..ListOpts::default()
-            })
-            .await
-        {
-            Ok(beads) => beads,
-            Err(err) => {
-                summary.record(BatchOutcome::Errored {
-                    fingerprint: format!("stale:{spec}"),
-                    message: MintError::from(err).to_string(),
-                });
-                continue;
-            }
-        };
-        for bead in beads {
-            let labels = finding_hash_labels(&bead);
-            if labels.is_empty() {
-                continue;
-            }
-            let (current, absent): (Vec<String>, Vec<String>) = labels
-                .into_iter()
-                .partition(|hash| current_hashes.contains(hash));
-            if current.is_empty() {
-                summary.record(BatchOutcome::StaleCandidate {
-                    bead_id: bead.id,
-                    absent_hashes: absent,
-                });
-            } else if !absent.is_empty() {
-                summary.record(BatchOutcome::PartialStaleCandidate {
-                    bead_id: bead.id,
-                    current_hashes: current,
-                    absent_hashes: absent,
-                });
-            }
+    for bead in beads {
+        let labels = finding_hash_labels(&bead);
+        if labels.is_empty() {
+            continue;
+        }
+        let (current, absent): (Vec<String>, Vec<String>) = labels
+            .into_iter()
+            .partition(|hash| current_hashes.contains(hash));
+        if current.is_empty() {
+            summary.record(BatchOutcome::StaleCandidate {
+                bead_id: bead.id,
+                absent_hashes: absent,
+            });
+        } else if !absent.is_empty() {
+            summary.record(BatchOutcome::PartialStaleCandidate {
+                bead_id: bead.id,
+                current_hashes: current,
+                absent_hashes: absent,
+            });
         }
     }
 }
@@ -1780,15 +1764,21 @@ mod tests {
 
     #[tokio::test]
     async fn closed_finding_hash_label_suppresses_remint_only_within_same_molecule() {
-        let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
-        let hash = finding.hash();
+        let same_molecule = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
+        let outside_history =
+            contract_finding(vec![spec("gate")], "molecule-lifecycle", "evidence");
+        let same_hash = same_molecule.hash();
+        let outside_hash = outside_history.hash();
         let runner = ScriptedRunner::new(vec![
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
             ok_stdout(&format!(
                 "[{}]",
-                fixup_row_status("lm-closed.1", &hash, "closed"),
+                fixup_row_status("lm-closed.1", &same_hash, "closed"),
             )),
+            ok_stdout("[]"),
+            ok_stdout("[]"),
+            ok_stdout("lm-newfix.1\n"),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
@@ -1799,34 +1789,41 @@ mod tests {
             suppress_closed_same_molecule: true,
             report_stale: false,
         };
-        let summary = mint_findings_with_options(&bd, &[finding], "head-sha", &opts).await;
+        let summary =
+            mint_findings_with_options(&bd, &[same_molecule, outside_history], "head-sha", &opts)
+                .await;
 
-        assert_eq!(summary.minted, 0, "closed same-molecule hit suppresses");
-        assert_eq!(summary.skipped, 1, "closed hit records a skipped finding");
-        match &summary.batches[0] {
-            BatchOutcome::SkippedClosed { existing_bead, .. } => {
-                assert_eq!(existing_bead.as_str(), "lm-closed.1");
-            }
-            other => panic!("expected SkippedClosed, got {other:?}"),
-        }
+        assert_eq!(
+            summary.minted, 1,
+            "outside-molecule history remains actionable"
+        );
+        assert_eq!(
+            summary.skipped, 1,
+            "closed same-molecule hit records a skip"
+        );
+        assert!(summary.batches.iter().any(|outcome| matches!(
+            outcome,
+            BatchOutcome::SkippedClosed { existing_bead, .. }
+                if existing_bead.as_str() == "lm-closed.1"
+        )));
+        assert!(summary.batches.iter().any(|outcome| matches!(
+            outcome,
+            BatchOutcome::Minted { bead_id, .. } if bead_id.as_str() == "lm-newfix.1"
+        )));
         let calls = rendered_calls(&invocations);
-        assert!(
-            calls.iter().any(|call| call
-                == &[
-                    "list",
-                    "--json",
-                    "--status=closed",
-                    &format!("--label={FINDING_LABEL_PREFIX}{hash}"),
-                    "--parent=lm-gateepic",
-                ]),
-            "closed suppression query must be scoped to the owning molecule: {calls:?}",
-        );
-        assert!(
-            calls
-                .iter()
-                .all(|call| call.first().is_none_or(|arg| arg != "create")),
-            "closed same-molecule hit must not remint: {calls:?}",
-        );
+        for hash in [same_hash, outside_hash] {
+            assert!(
+                calls.iter().any(|call| call
+                    == &[
+                        "list",
+                        "--json",
+                        "--status=closed",
+                        &format!("--label={FINDING_LABEL_PREFIX}{hash}"),
+                        "--parent=lm-gateepic",
+                    ]),
+                "closed suppression query must be scoped to the owning molecule: {calls:?}",
+            );
+        }
     }
 
     #[tokio::test]
@@ -2090,6 +2087,73 @@ reason = "false positive"
                 .iter()
                 .all(|call| call.first().is_none_or(|arg| arg != "update")),
             "partial-stale reporting must not supersede or split automatically: {calls:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_tree_reports_stale_candidates_without_current_findings() {
+        let stale_hash = "v1:stalehash000";
+        let runner = ScriptedRunner::new(vec![ok_stdout(&format!(
+            "[{}]",
+            fixup_row_with_labels(
+                "lm-stale.1",
+                "open",
+                &[&format!("{FINDING_LABEL_PREFIX}{stale_hash}"), "spec:gate"],
+                "stale evidence",
+            ),
+        ))]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+        let opts = MintOptions {
+            dry_run: false,
+            spec_filter: None,
+            suppressions: Vec::new(),
+            suppress_closed_same_molecule: false,
+            report_stale: true,
+        };
+        let summary = mint_findings_with_options(&bd, &[], "head-sha", &opts).await;
+
+        assert_eq!(summary.stale_candidates, 1);
+        assert!(summary.render().contains("stale-candidate lm-stale.1"));
+        let calls = rendered_calls(&invocations);
+        assert!(
+            calls
+                .iter()
+                .any(|call| call == &["list", "--json", &format!("--status={DEDUP_STATUSES}")]),
+            "unfiltered tree stale reporting must list all live candidates: {calls:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_non_tree_scopes_do_not_report_stale_candidates() {
+        let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("lm-newfix.1\n"),
+        ]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+        let opts = MintOptions {
+            dry_run: false,
+            spec_filter: None,
+            suppressions: Vec::new(),
+            suppress_closed_same_molecule: false,
+            report_stale: false,
+        };
+        let summary = mint_findings_with_options(&bd, &[finding], "head-sha", &opts).await;
+
+        assert_eq!(summary.stale_candidates, 0);
+        assert_eq!(summary.partial_stale_candidates, 0);
+        let calls = rendered_calls(&invocations);
+        assert!(
+            calls.iter().all(|call| {
+                !call
+                    .iter()
+                    .any(|arg| arg == &format!("--status={DEDUP_STATUSES}"))
+                    || !call.iter().any(|arg| arg.starts_with("--label=spec:"))
+            }),
+            "non-tree mint must not perform stale-candidate scans: {calls:?}",
         );
     }
 
