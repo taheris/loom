@@ -732,7 +732,7 @@ mod tests {
     #[tokio::test]
     async fn mint_bead_scope_walks_llm_rubric_only_not_verifiers() {
         let rubric = format!(
-            "preamble\n{}\nLOOM_CONCERN: spec-coherence-fail -- found one\n",
+            "preamble\n{}\nLOOM_CONCERN: {{\"summary\":\"found one\"}}\n",
             finding_line(
                 r#"{"token":"spec-coherence-fail","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"e"}"#
             ),
@@ -798,7 +798,7 @@ mod tests {
     #[tokio::test]
     async fn mint_tree_scope_walks_verifiers_and_rubric_emitting_findings_from_both() {
         let rubric = format!(
-            "preamble\n{}\n{}\nLOOM_CONCERN: orphan-integration -- two findings\n",
+            "preamble\n{}\n{}\nLOOM_CONCERN: {{\"summary\":\"two findings\"}}\n",
             finding_line(
                 r#"{"token":"orphan-integration","bonds":["harness"],"target":{"kind":"Contract","id":"molecule-lifecycle"},"evidence":"contract"}"#
             ),
@@ -881,7 +881,7 @@ mod tests {
              still more prose\n\
              {c}\n\
              trailing summary\n\
-             LOOM_CONCERN: spec-coherence-fail -- three findings\n",
+             LOOM_CONCERN: {{\"summary\":\"three findings\"}}\n",
             a = finding_line(
                 r#"{"token":"spec-coherence-fail","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"first"}"#
             ),
@@ -1160,9 +1160,7 @@ mod tests {
         let line_a = finding_line(&serde_json::to_string(a).expect("serialize"));
         let line_b = finding_line(&serde_json::to_string(b).expect("serialize"));
         let line_c = finding_line(&serde_json::to_string(c).expect("serialize"));
-        format!(
-            "{line_a}\n{line_b}\n{line_c}\nLOOM_CONCERN: orphan-integration -- three findings\n"
-        )
+        format!("{line_a}\n{line_b}\n{line_c}\nLOOM_CONCERN: {{\"summary\":\"three findings\"}}\n")
     }
 
     /// `verifier_failure_to_finding` covers every spec-mandated mapping

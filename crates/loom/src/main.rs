@@ -27,7 +27,7 @@ use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::StateDb;
 use loom_gate::{
-    self, CacheRow, CargoMetadataScope, DispatchOptions, DispatchPendingExecutor,
+    self, CacheRow, CargoMetadataScope, CommandResolver, DispatchOptions, DispatchPendingExecutor,
     FsCommandResolver, InputResolver, RunnerSpec, StatusCache, TestScope, Tier, TierCwds, Verdict,
     filter_by_files, is_missing_binary_target, render_report, row_for,
 };
@@ -41,8 +41,8 @@ use loom_workflow::msg::{
     kind_of, resolve_target, spec_label_of,
 };
 use loom_workflow::review::{
-    AcceptAllFindingValidator, DispatchScope, IterationCap, ProductionReviewController, ReviewLane,
-    WalkOutput, review_loop as run_review_loop,
+    AcceptAllFindingValidator, DispatchScope, FindingValidator, IterationCap,
+    ProductionReviewController, ReviewLane, WalkOutput, review_loop as run_review_loop,
 };
 use loom_workflow::todo::{
     ExitSignal, ProductionTodoController, TodoError, parse_exit_signal, run as run_todo_workflow,
@@ -1773,7 +1773,7 @@ fn run_gate_mint(
             },
         )
         .with_style_rules(style_rules);
-        let validator = loom_workflow::review::AcceptAllFindingValidator;
+        let validator = WorkspaceFindingValidator::new(workspace);
         mint_via_walker(&mut walker, &scope, &validator, &bd, &head_commit, &opts).await
     })?;
     print!("{}", summary.render());
@@ -1795,6 +1795,111 @@ fn mint_summary_exit_code(summary: &loom_workflow::mint::MintSummary) -> i32 {
     } else {
         0
     }
+}
+
+struct WorkspaceFindingValidator {
+    workspace: PathBuf,
+}
+
+impl WorkspaceFindingValidator {
+    fn new(workspace: &Path) -> Self {
+        Self {
+            workspace: workspace.to_path_buf(),
+        }
+    }
+
+    fn spec_path(&self, label: &SpecLabel) -> PathBuf {
+        self.workspace.join("specs").join(format!("{label}.md"))
+    }
+
+    fn selector_path(target: &str) -> &str {
+        let without_hash = target.split_once('#').map_or(target, |(path, _)| path);
+        without_hash
+            .split_once("::")
+            .map_or(without_hash, |(path, _)| path)
+    }
+
+    fn target_path_exists(&self, target: &str) -> bool {
+        let path = Self::selector_path(target.trim());
+        if path.is_empty() {
+            return false;
+        }
+        let candidate = Path::new(path);
+        if candidate.is_absolute() {
+            candidate.exists()
+        } else {
+            self.workspace.join(candidate).exists()
+        }
+    }
+}
+
+impl FindingValidator for WorkspaceFindingValidator {
+    fn spec_label_is_known(&self, label: &SpecLabel) -> bool {
+        self.spec_path(label).is_file()
+    }
+
+    fn criterion_anchor_resolves(&self, spec: &SpecLabel, anchor: &str) -> bool {
+        let Ok(body) = std::fs::read_to_string(self.spec_path(spec)) else {
+            return false;
+        };
+        body.lines()
+            .filter_map(markdown_heading_anchor)
+            .any(|candidate| candidate == anchor)
+    }
+
+    fn annotation_resolves(&self, target_string: &str) -> bool {
+        if self.target_path_exists(target_string) {
+            return true;
+        }
+        let Some(first_token) = target_string.split_whitespace().next() else {
+            return false;
+        };
+        FsCommandResolver::new(&self.workspace).resolves(first_token)
+    }
+
+    fn file_exists(&self, path: &str) -> bool {
+        self.target_path_exists(path)
+    }
+
+    fn invariant_resolves(&self, spec: &SpecLabel, section: &str, tag: &str) -> bool {
+        let Ok(body) = std::fs::read_to_string(self.spec_path(spec)) else {
+            return false;
+        };
+        let section_anchor = markdown_slug(section);
+        let tag_anchor = markdown_slug(tag);
+        body.lines()
+            .filter_map(markdown_heading_anchor)
+            .any(|candidate| candidate == section_anchor)
+            && markdown_slug(&body).contains(&tag_anchor)
+    }
+}
+
+fn markdown_heading_anchor(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let text = trimmed.strip_prefix('#')?.trim_start_matches('#').trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(markdown_slug(text))
+    }
+}
+
+fn markdown_slug(input: &str) -> String {
+    let mut out = String::new();
+    let mut previous_was_separator = true;
+    for c in input.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            out.push('-');
+            previous_was_separator = true;
+        }
+    }
+    if out.ends_with('-') {
+        out.pop();
+    }
+    out
 }
 
 /// Walk-then-mint pipeline seam. `run_gate_mint` constructs the
@@ -3909,6 +4014,100 @@ mod tests {
         assert!(args.scope.bead.is_none());
         assert!(!args.scope.tree);
         assert!(args.scope.files.is_empty());
+    }
+
+    /// `loom gate mint` validates finding bonds and targets against the
+    /// workspace before minting.
+    #[test]
+    fn workspace_finding_validator_checks_spec_anchor_and_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("specs")).expect("specs dir");
+        std::fs::create_dir_all(tmp.path().join("tests")).expect("tests dir");
+        std::fs::write(
+            tmp.path().join("specs/gate.md"),
+            "# Gate\n\n### Findings and Minting\n\n## Out of Scope\n\nloom-runs-podman is not part of this spec.\n",
+        )
+        .expect("write spec");
+        std::fs::write(tmp.path().join("tests/gate.rs"), "#[test] fn live() {}\n")
+            .expect("write test");
+        let validator = WorkspaceFindingValidator::new(tmp.path());
+        let gate = SpecLabel::new("gate");
+
+        assert!(validator.spec_label_is_known(&gate));
+        assert!(validator.criterion_anchor_resolves(&gate, "findings-and-minting"));
+        assert!(validator.file_exists("tests/gate.rs::live"));
+        assert!(validator.invariant_resolves(&gate, "Out of Scope", "loom-runs-podman"));
+        assert!(!validator.spec_label_is_known(&SpecLabel::new("harness")));
+        assert!(!validator.criterion_anchor_resolves(&gate, "missing-anchor"));
+        assert!(!validator.file_exists("tests/missing.rs::live"));
+    }
+
+    #[tokio::test]
+    async fn mint_via_walker_rejects_unresolved_workspace_finding_target() {
+        use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
+        use loom_workflow::mint::{MintOptions, MintScope, MintWalker, VerifierFailure, WalkError};
+        use std::ffi::OsString;
+        use std::time::Duration;
+
+        struct OneFindingWalker {
+            stdout: String,
+        }
+
+        impl MintWalker for OneFindingWalker {
+            async fn run_rubric(&mut self, _scope: &MintScope) -> Result<String, WalkError> {
+                Ok(self.stdout.clone())
+            }
+
+            async fn run_verifiers(
+                &mut self,
+                _scope: &MintScope,
+            ) -> Result<Vec<VerifierFailure>, WalkError> {
+                Ok(Vec::new())
+            }
+        }
+
+        struct PanicOnBdCall;
+        impl CommandRunner for PanicOnBdCall {
+            async fn run(&self, args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
+                panic!("bd must not be invoked when parsing refuses the finding: {args:?}");
+            }
+        }
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("specs")).expect("specs dir");
+        std::fs::write(tmp.path().join("specs/gate.md"), "# Gate\n").expect("write spec");
+        let finding = loom_workflow::review::Finding {
+            token: loom_workflow::review::ConcernToken::SpecCoherenceFail,
+            bonds: vec![SpecLabel::new("gate")],
+            target: loom_workflow::review::FindingTarget::Criterion {
+                spec: SpecLabel::new("gate"),
+                anchor: "missing-anchor".to_owned(),
+            },
+            evidence: "missing anchor".to_owned(),
+        };
+        let stdout = format!(
+            "LOOM_FINDING: {}\nLOOM_CONCERN: {{\"summary\":\"missing\"}}\n",
+            serde_json::to_string(&finding).expect("finding json"),
+        );
+        let mut walker = OneFindingWalker { stdout };
+        let validator = WorkspaceFindingValidator::new(tmp.path());
+        let bd = BdClient::with_runner(PanicOnBdCall);
+
+        let err = mint_via_walker(
+            &mut walker,
+            &MintScope::Diff("HEAD".to_owned()),
+            &validator,
+            &bd,
+            "abc123",
+            &MintOptions::default(),
+        )
+        .await
+        .expect_err("unresolved target must refuse before minting");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("criterion `missing-anchor` not present in spec `gate`"),
+            "unexpected error: {rendered}",
+        );
     }
 
     /// [`mint_via_walker`] must obtain its `Vec<Finding>` from

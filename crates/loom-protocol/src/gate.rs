@@ -1090,6 +1090,8 @@ fn reason_for(marker: &str, line: &str, prior: &[&str]) -> Option<String> {
 pub enum WalkOutputError {
     /// walk output contained an invalid LOOM_FINDING line
     Finding(#[from] FindingParseError),
+    /// walk output violated the LOOM_FINDING / terminal-marker pairing rule: {bad_walk:?}
+    BadWalk { bad_walk: BadWalk },
     /// walk emitted {findings_count} LOOM_FINDING line(s) but no terminal marker (LOOM_COMPLETE / LOOM_CONCERN / LOOM_BLOCKED / LOOM_CLARIFY)
     MissingTerminalMarker { findings_count: usize },
 }
@@ -1210,11 +1212,11 @@ fn terminal_surface_from_stdout(output: &str) -> TerminalSurface {
 }
 
 /// Scan `output` for `LOOM_FINDING:` lines, parse and fully-validate
-/// each (Layers 1–5 plus the `target.spec ∈ bonds` rule), and enforce
-/// the terminal-marker rule: an output that emits one or more findings
-/// but no terminal marker (`LOOM_COMPLETE` / `LOOM_CONCERN` /
-/// `LOOM_BLOCKED` / `LOOM_CLARIFY`) is rejected with
-/// [`WalkOutputError::MissingTerminalMarker`].
+/// each (Layers 1–5 plus the `target.spec ∈ bonds` rule), then enforce
+/// the review-walk pairing rule before returning findings to mint.
+/// Findings may reach mint only when the raw stream and terminal agree:
+/// zero findings with `LOOM_COMPLETE` is clean, and one or more
+/// findings require a well-formed `LOOM_CONCERN` terminal.
 ///
 /// Findings interleave with markers in stdout order — the returned
 /// vector preserves emission order, and the terminal-marker check
@@ -1226,23 +1228,58 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
     scope: DispatchScope,
     validator: &V,
 ) -> Result<Vec<Finding>, WalkOutputError> {
-    let mut findings = Vec::new();
-    for (idx, line) in output.lines().enumerate() {
-        let line_number = idx + 1;
-        let Some(payload_start) = line.find(LOOM_FINDING_PREFIX) else {
-            continue;
-        };
-        let payload = line[payload_start + LOOM_FINDING_PREFIX.len()..].trim_start();
-        let finding = Finding::parse_payload(payload, line_number, line, scope)?;
-        finding.validate(line_number, line, validator)?;
-        findings.push(finding);
+    let walk = WalkOutput::from_stdout(output, scope, validator);
+    if let Some(error) = walk.finding_errors().first() {
+        return Err(WalkOutputError::Finding(error.clone()));
     }
-    if !findings.is_empty() && parse_exit_signal(output).is_none() {
-        return Err(WalkOutputError::MissingTerminalMarker {
-            findings_count: findings.len(),
-        });
+
+    match walk.terminal() {
+        TerminalSurface::Concern { summary } if walk.findings().is_empty() => {
+            Err(WalkOutputError::BadWalk {
+                bad_walk: BadWalk::ConcernWithoutFindings {
+                    summary: summary.clone(),
+                },
+            })
+        }
+        TerminalSurface::Concern { .. } => Ok(walk.findings().to_vec()),
+        TerminalSurface::Malformed { payload } => Err(WalkOutputError::BadWalk {
+            bad_walk: BadWalk::Concern {
+                payload: payload.clone(),
+                parsed_findings: walk.findings().to_vec(),
+            },
+        }),
+        TerminalSurface::Complete | TerminalSurface::Noop if !walk.findings().is_empty() => {
+            Err(WalkOutputError::BadWalk {
+                bad_walk: BadWalk::FindingsWithoutConcern {
+                    finding_count: walk.findings().len(),
+                    findings: walk.findings().to_vec(),
+                },
+            })
+        }
+        TerminalSurface::Blocked { .. }
+        | TerminalSurface::Clarify { .. }
+        | TerminalSurface::Retry { .. }
+            if !walk.findings().is_empty() =>
+        {
+            Err(WalkOutputError::BadWalk {
+                bad_walk: BadWalk::FindingsWithoutConcern {
+                    finding_count: walk.findings().len(),
+                    findings: walk.findings().to_vec(),
+                },
+            })
+        }
+        TerminalSurface::Missing if !walk.findings().is_empty() => {
+            Err(WalkOutputError::MissingTerminalMarker {
+                findings_count: walk.findings().len(),
+            })
+        }
+        TerminalSurface::Missing
+        | TerminalSurface::Complete
+        | TerminalSurface::Noop
+        | TerminalSurface::Blocked { .. }
+        | TerminalSurface::Clarify { .. }
+        | TerminalSurface::Retry { .. } => Ok(Vec::new()),
     }
-    Ok(findings)
 }
 
 #[cfg(test)]
@@ -1947,7 +1984,7 @@ mod tests {
             "second finding",
         );
         let output = format!(
-            "preamble\n{line_a}\nintermediate prose\n{line_b}\nLOOM_CONCERN: verifier-bypass -- two findings"
+            "preamble\n{line_a}\nintermediate prose\n{line_b}\nLOOM_CONCERN: {{\"summary\":\"two findings\"}}"
         );
         let findings =
             parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid).expect("parses cleanly");
@@ -1984,17 +2021,52 @@ mod tests {
     }
 
     #[test]
-    fn mint_walk_accepts_each_terminal_marker_variant() {
+    fn findings_streamed_with_complete_terminator_routes_to_badwalk_findings_without_concern() {
         let line = finding_line(
             "orphan-integration",
             &["harness"],
             r#"{"kind":"Contract","id":"x"}"#,
             "",
         );
-        for terminal in ["LOOM_COMPLETE", "LOOM_BLOCKED", "LOOM_CLARIFY"] {
-            let output = format!("{line}\nreason for {terminal}\n{terminal}\n");
-            parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid)
-                .unwrap_or_else(|e| panic!("{terminal} should accept: {e}"));
+        let output = format!("{line}\nLOOM_COMPLETE\n");
+
+        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
+            Err(WalkOutputError::BadWalk {
+                bad_walk:
+                    BadWalk::FindingsWithoutConcern {
+                        finding_count,
+                        findings,
+                    },
+            }) => {
+                assert_eq!(finding_count, 1);
+                assert_eq!(findings[0].token, ConcernToken::OrphanIntegration);
+            }
+            other => panic!("expected FindingsWithoutConcern, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_concern_payload_preserves_parsed_findings_in_walk_parser() {
+        let line = finding_line(
+            "orphan-integration",
+            &["harness"],
+            r#"{"kind":"Contract","id":"x"}"#,
+            "",
+        );
+        let output = format!("{line}\nLOOM_CONCERN: orphan-integration -- legacy\n");
+
+        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
+            Err(WalkOutputError::BadWalk {
+                bad_walk:
+                    BadWalk::Concern {
+                        payload,
+                        parsed_findings,
+                    },
+            }) => {
+                assert_eq!(payload, "orphan-integration -- legacy");
+                assert_eq!(parsed_findings[0].token, ConcernToken::OrphanIntegration);
+            }
+            other => panic!("expected BadWalk::Concern, got {other:?}"),
         }
     }
 
@@ -2006,7 +2078,7 @@ mod tests {
             r#"{"kind":"Contract","id":"molecule-lifecycle"}"#,
             "contract is dangling",
         );
-        let output = format!("{line}\nLOOM_CONCERN: orphan-integration -- found one\n");
+        let output = format!("{line}\nLOOM_CONCERN: {{\"summary\":\"found one\"}}\n");
         let findings =
             parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid).expect("parses cleanly");
         let [parsed] = findings.as_slice() else {
@@ -2022,7 +2094,7 @@ mod tests {
 
     #[test]
     fn mint_malformed_loom_finding_fails_run_with_typed_error() {
-        let valid_terminal = "LOOM_CONCERN: orphan-integration -- summary";
+        let valid_terminal = r#"LOOM_CONCERN: {"summary":"summary"}"#;
 
         let line = format!("{LOOM_FINDING_PREFIX} {{not valid json");
         let output = format!("{line}\n{valid_terminal}\n");
@@ -2177,7 +2249,7 @@ mod tests {
             r#"{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"}"#,
             "criterion belongs to gate but bonds names harness only",
         );
-        let output = format!("{line}\nLOOM_CONCERN: spec-coherence-fail -- bad bonds\n");
+        let output = format!("{line}\nLOOM_CONCERN: {{\"summary\":\"bad bonds\"}}\n");
         match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
             Err(WalkOutputError::Finding(FindingParseError::TargetSpecNotInBonds {
                 line_number,
@@ -2199,7 +2271,7 @@ mod tests {
             r#"{"kind":"Invariant","spec":"harness","section":"Out of Scope","tag":"loom-runs-podman"}"#,
             "invariant target spec missing from bonds",
         );
-        let output = format!("{line}\nLOOM_CONCERN: invariant-clash -- bad bonds\n");
+        let output = format!("{line}\nLOOM_CONCERN: {{\"summary\":\"bad bonds\"}}\n");
         match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
             Err(WalkOutputError::Finding(FindingParseError::TargetSpecNotInBonds {
                 spec: missing,
@@ -2216,7 +2288,7 @@ mod tests {
             r#"{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"}"#,
             "criterion belongs to gate, bonds names both",
         );
-        let output = format!("{line}\nLOOM_CONCERN: spec-coherence-fail -- ok\n");
+        let output = format!("{line}\nLOOM_CONCERN: {{\"summary\":\"ok\"}}\n");
         let findings =
             parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid).expect("should parse");
         assert_eq!(findings.len(), 1);
@@ -2342,10 +2414,7 @@ mod tests {
             ConcernToken::ScopeCreep,
             ConcernToken::ScopeShortfall,
         ];
-        let terminators = [
-            "LOOM_COMPLETE",
-            "LOOM_CONCERN: {\"summary\":\"round-trip\"}",
-        ];
+        let terminators = ["LOOM_CONCERN: {\"summary\":\"round-trip\"}"];
 
         for token in tokens {
             let target = canonical_target(token, &gate);
@@ -2617,7 +2686,9 @@ mod tests {
             evidence: "cross-spec-clash round-trip".to_owned(),
         };
         let payload = serde_json::to_string(&finding).expect("serialize");
-        let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_COMPLETE\n");
+        let output = format!(
+            "preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_CONCERN: {{\"summary\":\"round-trip\"}}\n"
+        );
         let parsed = parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid)
             .expect("round-trip parse");
         assert_eq!(parsed, vec![finding]);
@@ -2645,7 +2716,9 @@ mod tests {
             evidence: "spec-conventions-violation round-trip".to_owned(),
         };
         let payload = serde_json::to_string(&finding).expect("serialize");
-        let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_COMPLETE\n");
+        let output = format!(
+            "preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_CONCERN: {{\"summary\":\"round-trip\"}}\n"
+        );
         let parsed = parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid)
             .expect("round-trip parse");
         assert_eq!(parsed, vec![finding]);
@@ -2675,7 +2748,9 @@ mod tests {
             evidence: "inputs-protocol-error round-trip".to_owned(),
         };
         let payload = serde_json::to_string(&finding).expect("serialize");
-        let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_COMPLETE\n");
+        let output = format!(
+            "preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_CONCERN: {{\"summary\":\"round-trip\"}}\n"
+        );
         for scope in [DispatchScope::Tree, DispatchScope::PushGate] {
             let parsed = parse_walk_output(&output, scope, &AlwaysValid).expect("round-trip parse");
             assert_eq!(parsed, vec![finding.clone()]);
