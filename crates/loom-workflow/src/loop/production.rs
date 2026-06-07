@@ -97,7 +97,7 @@ where
     cli_profile: Option<ProfileName>,
     phase_default: ProfileName,
     spawn: S,
-    /// Spec lock dropped before exec'ing `loom review` so the child can take it.
+    /// Spec lock dropped before exec'ing child `loom gate` commands.
     lock: Option<LockGuard>,
     /// Workspace-relative path to the style-rules document pinned in the
     /// run prompt. Sourced from `LoomConfig.style_rules` at construction
@@ -205,10 +205,14 @@ where
     }
 
     /// Hand the spec lock to the controller so `exec_review` can drop it
-    /// before spawning the `loom review` child (which acquires the same lock).
+    /// before spawning child `loom gate` commands that acquire the same lock.
     pub fn with_handoff_lock(mut self, guard: LockGuard) -> Self {
         self.lock = Some(guard);
         self
+    }
+
+    fn release_handoff_lock_for_child_gate(&mut self) {
+        self.lock.take();
     }
 
     /// Override the style-rules pin used in the rendered run prompt.
@@ -725,7 +729,7 @@ where
         // Release the spec lock before spawning the child — `loom gate
         // verify` and `loom gate review` acquire the same lock and would
         // otherwise time out behind us.
-        self.lock.take();
+        self.release_handoff_lock_for_child_gate();
         // Molecule-completion handoff (FR1 / FR9): scope the verify and
         // review children to the molecule's own diff
         // (`<molecule.base_commit>..HEAD`) so push-gate cost is
@@ -843,6 +847,7 @@ where
     }
 
     async fn exec_per_bead_gate(&mut self, bead: &BeadId) -> Result<PerBeadGateOutcome, LoopError> {
+        self.release_handoff_lock_for_child_gate();
         let verify_output = Command::new(&self.loom_bin)
             .current_dir(&self.workspace)
             .arg("gate")
@@ -1789,7 +1794,7 @@ mod tests {
     }
 
     /// Regression: `loom loop` used to hold the spec lock for its whole
-    /// lifetime, so the `loom review` child it spawned at the molecule-complete
+    /// lifetime, so the `loom gate review` child it spawned at the molecule-complete
     /// handoff timed out trying to acquire the same lock. `exec_review` must
     /// drop the held [`LockGuard`] before spawning, leaving the kernel-level
     /// `flock(2)` available to the child. Verified end-to-end: after a stub
@@ -2976,6 +2981,65 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
             calls[1], "gate review -b lm-1 -s gate --verify-exit 0",
             "second subprocess argv must be `loom gate review -b <id> -s <spec> --verify-exit 0` after verify",
         );
+    }
+
+    #[tokio::test]
+    async fn exec_per_bead_gate_releases_lock_before_spawning_children() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let label = SpecLabel::new("gate");
+        let mgr = loom_driver::lock::LockManager::with_state_home(&workspace, dir.path())
+            .expect("lock manager");
+        let clock = loom_driver::clock::SystemClock::new();
+        let guard = mgr
+            .acquire_spec_async(&label, &clock)
+            .await
+            .expect("first acquire");
+        let lock_path = mgr.locks_dir().join("gate.lock");
+        let stub = dir.path().join("loom-stub.sh");
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/usr/bin/env bash\n\
+                 set -euo pipefail\n\
+                 exec 9>\"{}\"\n\
+                 flock -n 9\n\
+                 if [[ \"$2\" == \"review\" ]]; then\n\
+                     echo 'LOOM_COMPLETE'\n\
+                 fi\n\
+                 exit 0\n",
+                lock_path.display(),
+            ),
+        )
+        .expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod stub");
+
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            label,
+            stub,
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                panic!("spawn closure must not fire during exec_per_bead_gate");
+            },
+        )
+        .with_handoff_lock(guard);
+
+        let bead_id = BeadId::new("lm-1").expect("valid bead id");
+        let outcome = controller
+            .exec_per_bead_gate(&bead_id)
+            .await
+            .expect("exec_per_bead_gate ok");
+        assert_eq!(outcome, PerBeadGateOutcome::Clean);
     }
 
     /// A non-zero `loom gate verify --bead` against the integrated tree is
