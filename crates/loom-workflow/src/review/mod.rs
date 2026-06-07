@@ -49,6 +49,7 @@ pub use phase_verdict::{
     GateInputs, PhaseKind, PhaseVerdict, RecoveryCause, ReviewConcern, ReviewFlag, decide,
     decide_for_phase,
 };
+pub(crate) use production::WorkspaceReviewFindingValidator;
 pub use production::{AcceptAllFindingValidator, ProductionReviewController};
 pub use recovery::{
     RETRY_EXHAUSTED_CAUSE, RecoveryResolution, cause_to_previous_failure,

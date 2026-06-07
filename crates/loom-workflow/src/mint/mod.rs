@@ -466,7 +466,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
         fingerprints.push((finding, finding_hash));
     }
 
-    let mut survivors: Vec<(Finding, SpecLabel, MoleculeId)> = Vec::new();
+    let mut survivors: Vec<(Finding, SpecLabel, Option<MoleculeId>)> = Vec::new();
     for (finding, finding_hash) in fingerprints {
         if suppresses_rubric_finding(&opts.suppressions, finding) {
             summary.record_status(finding, FindingStatusAction::Suppressed);
@@ -503,7 +503,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
                 continue;
             }
         }
-        let (lead_spec, lead_epic) = match resolver.resolve(&finding.bonds).await {
+        let (lead_spec, lead_epic) = match resolver.resolve(&finding.bonds, opts.dry_run).await {
             Ok(lead) => lead,
             Err(MintError::Resolve(ResolveError::InvariantViolation { label, ids })) => {
                 let fingerprint = batch_fingerprint(std::slice::from_ref(finding));
@@ -552,7 +552,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
                 bd,
                 &fix_up,
                 &lead_spec,
-                &lead_epic,
+                lead_epic.as_ref(),
                 FindingRouting::Fixup,
                 opts,
             )
@@ -566,7 +566,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
                 bd,
                 std::slice::from_ref(&finding),
                 &lead_spec,
-                &lead_epic,
+                lead_epic.as_ref(),
                 routing,
                 opts,
             )
@@ -582,9 +582,9 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
 
 /// Group mint survivors by lead spec with stable alphabetical output order.
 fn group_survivors_by_lead_spec(
-    survivors: Vec<(Finding, SpecLabel, MoleculeId)>,
-) -> Vec<(SpecLabel, MoleculeId, Vec<Finding>)> {
-    let mut by_spec: Vec<(SpecLabel, MoleculeId, Vec<Finding>)> = Vec::new();
+    survivors: Vec<(Finding, SpecLabel, Option<MoleculeId>)>,
+) -> Vec<(SpecLabel, Option<MoleculeId>, Vec<Finding>)> {
+    let mut by_spec: Vec<(SpecLabel, Option<MoleculeId>, Vec<Finding>)> = Vec::new();
     for (finding, lead_spec, lead_epic) in survivors {
         if let Some(slot) = by_spec.iter_mut().find(|(s, _, _)| *s == lead_spec) {
             slot.2.push(finding);
@@ -732,7 +732,7 @@ async fn process_batch<R: CommandRunner>(
     bd: &BdClient<R>,
     findings: &[Finding],
     lead_spec: &SpecLabel,
-    lead_epic: &MoleculeId,
+    lead_epic: Option<&MoleculeId>,
     routing: FindingRouting,
     opts: &MintOptions,
 ) -> BatchOutcome {
@@ -750,6 +750,12 @@ async fn process_batch<R: CommandRunner>(
     let labels = batch_labels(findings, &label, routing);
     let title = batch_title(findings);
     let description = batch_description(findings, &fingerprint, routing);
+    let Some(lead_epic) = lead_epic else {
+        return BatchOutcome::Errored {
+            fingerprint,
+            message: "lead epic missing outside dry-run".to_owned(),
+        };
+    };
     let parent = match BeadId::new(lead_epic.as_str()) {
         Ok(p) => p,
         Err(source) => {
@@ -806,28 +812,35 @@ impl<'a, R: CommandRunner> LeadResolver<'a, R> {
         }
     }
 
-    async fn resolve(&mut self, bonds: &[SpecLabel]) -> Result<(SpecLabel, MoleculeId), MintError> {
+    async fn resolve(
+        &mut self,
+        bonds: &[SpecLabel],
+        dry_run: bool,
+    ) -> Result<(SpecLabel, Option<MoleculeId>), MintError> {
         for spec in bonds {
             let key = spec.as_str().to_owned();
             if let Some((s, epic)) = self.cache.get(&key) {
-                return Ok((s.clone(), epic.clone()));
+                return Ok((s.clone(), Some(epic.clone())));
             }
             if self.explored.contains(&key) {
                 continue;
             }
             if let Some(epic) = resolve_open_epic(self.bd, spec).await? {
                 self.cache.insert(key, (spec.clone(), epic.clone()));
-                return Ok((spec.clone(), epic));
+                return Ok((spec.clone(), Some(epic)));
             }
             self.explored.insert(key);
         }
         let lead = bonds[0].clone();
+        if dry_run {
+            return Ok((lead, None));
+        }
         let resolved = resolve_or_mint_open_epic(self.bd, &lead, self.head_commit).await?;
         self.cache.insert(
             lead.as_str().to_owned(),
             (lead.clone(), resolved.molecule_id.clone()),
         );
-        Ok((lead, resolved.molecule_id))
+        Ok((lead, Some(resolved.molecule_id)))
     }
 }
 
@@ -2057,18 +2070,15 @@ reason = "false positive"
 
     /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
     /// `mint_dry_run_makes_no_bd_writes`): with `--dry-run`, the
-    /// pipeline runs every read-side query and resolves the bonding
-    /// lead, but suppresses `bd create`. The outcome is `WouldMint`
-    /// instead of `Minted`, and the only argv recorded by the runner
-    /// are `list` calls — never `create`.
+    /// pipeline runs read-side queries to choose the bonding lead, but
+    /// performs no bd writes even when no open epic exists. The outcome
+    /// is `WouldMint` instead of `Minted`, and the only argv recorded by
+    /// the runner are `list` calls.
     #[tokio::test]
     async fn mint_dry_run_makes_no_bd_writes() {
         let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
         let fp = batch_fingerprint(std::slice::from_ref(&finding));
-        let runner = ScriptedRunner::new(vec![
-            ok_stdout("[]"),
-            ok_stdout(&epic_list("lm-gateepic", "gate")),
-        ]);
+        let runner = ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("[]")]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
         let opts = MintOptions {
@@ -2093,9 +2103,10 @@ reason = "false positive"
         }
         let calls = rendered_calls(&invocations);
         for call in &calls {
-            assert!(
-                !call.iter().any(|a| a == "create"),
-                "dry-run MUST NOT invoke bd create: {call:?}",
+            assert_eq!(
+                call.first().map(String::as_str),
+                Some("list"),
+                "dry-run MUST only invoke read-side bd list calls: {call:?}",
             );
         }
     }

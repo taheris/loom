@@ -17,7 +17,7 @@
 //! is a no-op in that case so the Clean push path is unaffected on a
 //! freshly-init'd workspace.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -38,9 +38,9 @@ use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::StateDb;
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
 use loom_gate::{
-    DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateSuccess, HandoffEvidence,
-    InputResolver, IntegrityFinding, MarkerProof, TierCwds, annotation, compose_clarify_options,
-    integrity,
+    CommandResolver, DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateSuccess,
+    HandoffEvidence, InputResolver, IntegrityFinding, MarkerProof, TierCwds, annotation,
+    compose_clarify_options, integrity,
 };
 use loom_templates::previous_failure::PreviousFailure;
 use loom_templates::review::{ReviewContext, ReviewLane};
@@ -55,14 +55,7 @@ use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
 use crate::suppression::{has_ineffective_suppression_match, suppresses_rubric_finding};
 use crate::todo::ExitSignal;
 
-/// Production validator wired into [`WalkOutput::from_stdout`] when the
-/// review-phase classifier parses agent stdout. Layers 1, 2, 4 and the
-/// `target.spec ∈ bonds` rule are enforced by `Finding::parse_payload`
-/// itself; this validator opts out of the I/O-bearing layers (Layer 3
-/// — spec-label resolution; Layer 5 — target content resolution),
-/// admitting every spec label and every target so the classifier
-/// preserves the maximum well-formed context for the recovery prompt.
-/// The mint pipeline runs its own workspace-backed validator.
+/// Non-I/O validator used by matrix tests that isolate stream-shape routing.
 pub struct AcceptAllFindingValidator;
 
 impl FindingValidator for AcceptAllFindingValidator {
@@ -81,6 +74,111 @@ impl FindingValidator for AcceptAllFindingValidator {
     fn invariant_resolves(&self, _spec: &SpecLabel, _section: &str, _tag: &str) -> bool {
         true
     }
+}
+
+pub(crate) struct WorkspaceReviewFindingValidator {
+    workspace: PathBuf,
+}
+
+impl WorkspaceReviewFindingValidator {
+    pub(crate) fn new(workspace: &Path) -> Self {
+        Self {
+            workspace: workspace.to_path_buf(),
+        }
+    }
+
+    fn spec_path(&self, label: &SpecLabel) -> PathBuf {
+        self.workspace.join("specs").join(format!("{label}.md"))
+    }
+
+    fn selector_path(target: &str) -> &str {
+        let without_hash = target.split_once('#').map_or(target, |(path, _)| path);
+        without_hash
+            .split_once("::")
+            .map_or(without_hash, |(path, _)| path)
+    }
+
+    fn target_path_exists(&self, target: &str) -> bool {
+        let path = Self::selector_path(target.trim());
+        if path.is_empty() {
+            return false;
+        }
+        let candidate = Path::new(path);
+        if candidate.is_absolute() {
+            candidate.exists()
+        } else {
+            self.workspace.join(candidate).exists()
+        }
+    }
+}
+
+impl FindingValidator for WorkspaceReviewFindingValidator {
+    fn spec_label_is_known(&self, label: &SpecLabel) -> bool {
+        self.spec_path(label).is_file()
+    }
+
+    fn criterion_anchor_resolves(&self, spec: &SpecLabel, anchor: &str) -> bool {
+        let Ok(body) = std::fs::read_to_string(self.spec_path(spec)) else {
+            return false;
+        };
+        body.lines()
+            .filter_map(markdown_heading_anchor)
+            .any(|candidate| candidate == anchor)
+    }
+
+    fn annotation_resolves(&self, target_string: &str) -> bool {
+        if self.target_path_exists(target_string) {
+            return true;
+        }
+        let Some(first_token) = target_string.split_whitespace().next() else {
+            return false;
+        };
+        FsCommandResolver::new(&self.workspace).resolves(first_token)
+    }
+
+    fn file_exists(&self, path: &str) -> bool {
+        self.target_path_exists(path)
+    }
+
+    fn invariant_resolves(&self, spec: &SpecLabel, section: &str, tag: &str) -> bool {
+        let Ok(body) = std::fs::read_to_string(self.spec_path(spec)) else {
+            return false;
+        };
+        let section_anchor = markdown_slug(section);
+        let tag_anchor = markdown_slug(tag);
+        body.lines()
+            .filter_map(markdown_heading_anchor)
+            .any(|candidate| candidate == section_anchor)
+            && markdown_slug(&body).contains(&tag_anchor)
+    }
+}
+
+fn markdown_heading_anchor(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let text = trimmed.strip_prefix('#')?.trim_start_matches('#').trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(markdown_slug(text))
+    }
+}
+
+fn markdown_slug(input: &str) -> String {
+    let mut out = String::new();
+    let mut previous_was_separator = true;
+    for c in input.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            out.push('-');
+            previous_was_separator = true;
+        }
+    }
+    if out.ends_with('-') {
+        out.pop();
+    }
+    out
 }
 
 pub struct ProductionReviewController<S, F, R: CommandRunner = TokioRunner>
@@ -705,8 +803,8 @@ where
         let result = (self.spawn)(spawn_config).await;
         drop(scratch);
         let (outcome, marker, stdout) = result?;
-        let walk =
-            WalkOutput::from_stdout(&stdout, self.dispatch_scope, &AcceptAllFindingValidator);
+        let validator = WorkspaceReviewFindingValidator::new(&self.workspace);
+        let walk = WalkOutput::from_stdout(&stdout, self.dispatch_scope, &validator);
         let suppressed_findings = suppressed_findings(&walk, &self.suppressions);
         let ineffective_suppression_matches =
             ineffective_suppression_matches(&walk, &self.suppressions);
@@ -2237,6 +2335,86 @@ mod tests {
                 assert!(
                     !detail.contains("scope mismatch"),
                     "tree-scope review must not parse as per-bead scope: {detail}",
+                );
+            }
+            other => panic!("expected Incomplete, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_review_rejects_unresolved_finding_anchor_as_malformed_bad_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        seed_empty_spec(&workspace, "gate");
+        let state = empty_state(&workspace);
+        let manifest = stub_manifest(&workspace);
+        let gate = SpecLabel::new("gate");
+        let finding = Finding {
+            token: ConcernToken::SpecCoherenceFail,
+            bonds: vec![gate.clone()],
+            target: FindingTarget::Criterion {
+                spec: gate,
+                anchor: "missing-anchor".to_owned(),
+            },
+            evidence: "anchor does not resolve".to_owned(),
+        };
+        let stdout = format!(
+            "LOOM_FINDING: {}\nLOOM_CONCERN: {{\"summary\":\"bad anchor\"}}\n",
+            serde_json::to_string(&finding).expect("finding json"),
+        );
+        let scripted = ScriptedBd::new([
+            loom_driver::bd::RunOutput {
+                status: 0,
+                stdout: b"[]".to_vec(),
+                stderr: Vec::new(),
+            },
+            loom_driver::bd::RunOutput {
+                status: 0,
+                stdout: b"[]".to_vec(),
+                stderr: Vec::new(),
+            },
+        ]);
+        let bd = BdClient::with_runner(scripted);
+        let mut ctrl = ProductionReviewController::new(
+            bd,
+            SpecLabel::new("gate"),
+            PathBuf::from("/usr/bin/loom"),
+            workspace,
+            state,
+            manifest,
+            ProfileName::new("base"),
+            move |_cfg: SpawnConfig| {
+                let stdout = stdout.clone();
+                async move {
+                    Ok((
+                        SessionOutcome {
+                            exit_code: 0,
+                            cost_usd: None,
+                        },
+                        Some(ExitSignal::Concern {
+                            summary: "bad anchor".to_owned(),
+                        }),
+                        stdout,
+                    ))
+                }
+            },
+        );
+        match ctrl.run_review().await {
+            Ok(RunReviewOutput {
+                outcome: ReviewOutcome::Incomplete { detail },
+                ..
+            }) => {
+                assert!(
+                    detail.contains("strict validation"),
+                    "unresolved anchor must route to BadWalk::MalformedFinding: {detail}",
+                );
+                assert!(
+                    detail.contains("missing-anchor"),
+                    "parse error detail must name unresolved anchor: {detail}",
+                );
+                assert!(
+                    detail.contains("LOOM_CONCERN"),
+                    "well-formed terminal must be preserved: {detail}",
                 );
             }
             other => panic!("expected Incomplete, got {other:?}"),

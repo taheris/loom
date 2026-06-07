@@ -45,8 +45,8 @@ use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_
 use super::tree_clean::dirty_paths_from_porcelain;
 use super::verify::{VerifyPass, verify_pass};
 use crate::review::{
-    AcceptAllFindingValidator, DispatchScope, GateInputs, PhaseVerdict, RecoveryCause, WalkOutput,
-    decide,
+    DispatchScope, GateInputs, PhaseVerdict, RecoveryCause, WalkOutput,
+    WorkspaceReviewFindingValidator, decide,
 };
 use crate::suppression::suppresses_rubric_finding;
 use crate::todo::{ExitSignal, parse_exit_signal};
@@ -803,11 +803,8 @@ where
         // § *molecule_completion_review_threads_findings_into_previous_failure_review_concern*.
         // The mint path is NOT fired here — push-stage is `audit`,
         // inspection-only per `specs/gate.md` § *Stages*.
-        let walk = WalkOutput::from_stdout(
-            &review_stdout,
-            DispatchScope::PerBead,
-            &AcceptAllFindingValidator,
-        );
+        let validator = WorkspaceReviewFindingValidator::new(&self.workspace);
+        let walk = WalkOutput::from_stdout(&review_stdout, DispatchScope::PerBead, &validator);
         let config = LoomConfig::load(LoomConfig::resolve_path(&self.workspace))?;
         let unsuppressed_findings = walk
             .findings()
@@ -1224,6 +1221,12 @@ mod tests {
             stdout: stdout.to_vec(),
             stderr: Vec::new(),
         }
+    }
+
+    fn seed_spec(workspace: &std::path::Path, label: &str) {
+        let path = workspace.join(format!("specs/{label}.md"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!("# {label}\n")).unwrap();
     }
 
     /// Return a `ScriptedBd` matching the two `bd` calls
@@ -2110,6 +2113,7 @@ mod tests {
         let manifest = write_manifest(dir.path());
         let label = SpecLabel::new("alpha");
         let workspace = dir.path().to_path_buf();
+        seed_spec(&workspace, "alpha");
         let suppressed = crate::review::Finding {
             token: crate::review::ConcernToken::VerifierBypass,
             bonds: vec![label.clone()],
@@ -2212,6 +2216,7 @@ mod tests {
         let manifest = write_manifest(dir.path());
         let label = SpecLabel::new("alpha");
         let workspace = dir.path().to_path_buf();
+        seed_spec(&workspace, "alpha");
 
         // Stub: `gate verify` is a no-op (exit 0); `gate review` emits one
         // streamed `LOOM_FINDING:` line and a well-formed `LOOM_CONCERN:`
