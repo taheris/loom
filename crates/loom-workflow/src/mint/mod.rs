@@ -948,6 +948,7 @@ fn evidence_excerpt(evidence: &str) -> String {
 mod tests {
     use super::*;
     use loom_driver::bd::{BdError, RunOutput};
+    use loom_driver::config::LoomConfig;
     use std::ffi::OsString;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -1362,24 +1363,27 @@ mod tests {
     async fn loom_toml_suppress_entries_filter_rubric_findings_by_id_or_hash() {
         let by_id = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence");
         let by_hash = contract_finding(vec![spec("gate")], "molecule-lifecycle", "evidence");
+        let config = LoomConfig::from_toml_str(&format!(
+            r#"
+[[suppress]]
+id = {:?}
+reason = "false positive"
+
+[[suppress]]
+hash = {:?}
+reason = "false positive"
+"#,
+            by_id.id(),
+            by_hash.hash(),
+        ))
+        .expect("valid loom.toml suppressions");
         let runner = ScriptedRunner::new(Vec::new());
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
         let opts = MintOptions {
             dry_run: false,
             spec_filter: None,
-            suppressions: vec![
-                SuppressionConfig {
-                    id: Some(by_id.id()),
-                    hash: None,
-                    reason: "false positive".to_owned(),
-                },
-                SuppressionConfig {
-                    id: None,
-                    hash: Some(by_hash.hash()),
-                    reason: "false positive".to_owned(),
-                },
-            ],
+            suppressions: config.suppress,
         };
         let summary = mint_findings_with_options(&bd, &[by_id, by_hash], "head-sha", &opts).await;
         assert_eq!(summary.suppressed, 2, "both rubric findings suppressed");

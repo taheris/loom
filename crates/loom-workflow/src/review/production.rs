@@ -1276,8 +1276,8 @@ mod tests {
         }
     }
 
-    /// Behavioral matrix (D7 layer 2) per `specs/gate.md` §
-    /// *Verification surface*: the 24-cell (stream-shape ×
+    /// Behavioral matrix for the verification surface: the 24-cell
+    /// (stream-shape ×
     /// terminal-shape) cross-product is the load-bearing class
     /// coverage for the wire-format pipeline. Every cell asserts
     /// (a) the typed [`PhaseVerdict`] variant, (b) the maximum-context
@@ -2174,18 +2174,46 @@ mod tests {
         seed_empty_spec(&workspace, "gate");
         let state = empty_state(&workspace);
         let manifest = stub_manifest(&workspace);
-        let finding = Finding {
-            token: ConcernToken::TemplateSpecDrift,
-            bonds: vec![SpecLabel::new("gate")],
-            target: FindingTarget::Template {
-                path: "crates/loom-templates/templates/review.md".to_owned(),
+        let gate = SpecLabel::new("gate");
+        let findings = [
+            Finding {
+                token: ConcernToken::TemplateSpecDrift,
+                bonds: vec![gate.clone()],
+                target: FindingTarget::Template {
+                    path: "crates/loom-templates/templates/review.md".to_owned(),
+                },
+                evidence: "tree-scope template drift".to_owned(),
             },
-            evidence: "tree-scope template drift".to_owned(),
-        };
-        let stdout = format!(
-            "LOOM_FINDING: {}\nLOOM_CONCERN: {{\"summary\":\"tree drift\"}}\n",
-            serde_json::to_string(&finding).expect("finding json"),
-        );
+            Finding {
+                token: ConcernToken::CrossSpecClash,
+                bonds: vec![gate.clone()],
+                target: FindingTarget::Criterion {
+                    spec: gate.clone(),
+                    anchor: "standing-safety-net-checks".to_owned(),
+                },
+                evidence: "tree-scope cross-spec clash".to_owned(),
+            },
+            Finding {
+                token: ConcernToken::SpecConventionsViolation,
+                bonds: vec![gate.clone()],
+                target: FindingTarget::Criterion {
+                    spec: gate,
+                    anchor: "standing-safety-net-checks".to_owned(),
+                },
+                evidence: "tree-scope spec convention violation".to_owned(),
+            },
+        ];
+        let finding_lines = findings
+            .iter()
+            .map(|finding| {
+                format!(
+                    "LOOM_FINDING: {}",
+                    serde_json::to_string(finding).expect("finding json"),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let stdout = format!("{finding_lines}\nLOOM_CONCERN: {{\"summary\":\"tree drift\"}}\n");
         let mut ctrl = ProductionReviewController::new(
             BdClient::new(),
             SpecLabel::new("gate"),
@@ -2220,10 +2248,16 @@ mod tests {
                 outcome: ReviewOutcome::Incomplete { detail },
                 ..
             }) => {
-                assert!(
-                    detail.contains("template-spec-drift"),
-                    "tree-only finding must survive review parsing: {detail}",
-                );
+                for token in [
+                    "template-spec-drift",
+                    "cross-spec-clash",
+                    "spec-conventions-violation",
+                ] {
+                    assert!(
+                        detail.contains(token),
+                        "tree-only finding must survive review parsing: {detail}",
+                    );
+                }
                 assert!(
                     !detail.contains("scope mismatch"),
                     "tree-scope review must not parse as per-bead scope: {detail}",
