@@ -43,7 +43,7 @@ use loom_gate::{
     integrity,
 };
 use loom_templates::previous_failure::PreviousFailure;
-use loom_templates::review::{ReviewContext, ReviewLane, TreeScopeEpic};
+use loom_templates::review::{ReviewContext, ReviewLane};
 use tokio::process::Command;
 use tracing::{info, warn};
 
@@ -142,12 +142,6 @@ where
     /// `loom gate review` path; `Judge`/`Rubric` are the focused single-
     /// lane re-runs surfaced by `loom gate judge` / `loom gate rubric`.
     lane: ReviewLane,
-    /// At `--tree` scope, the per-spec bonding targets the orchestrator
-    /// resolved (or minted) before this controller ran. Threaded into the
-    /// rendered review prompt so the agent's `bd create --parent <epic>`
-    /// calls reuse those IDs instead of re-querying `bd find`. Empty at
-    /// non-`--tree` scopes.
-    tree_scope_epics: Vec<TreeScopeEpic>,
     dispatch_scope: DispatchScope,
     /// Top-level `[[suppress]]` rubric-finding allowlist entries.
     suppressions: Vec<SuppressionConfig>,
@@ -202,7 +196,6 @@ where
             hook_timeout: Duration::from_secs(loom_driver::config::default_git_hook_timeout_secs()),
             verify_exit: None,
             lane: ReviewLane::Both,
-            tree_scope_epics: Vec::new(),
             dispatch_scope: DispatchScope::PerBead,
             suppressions: Vec::new(),
             effective_review_marker: None,
@@ -259,15 +252,6 @@ where
     /// `loom gate rubric`.
     pub fn with_lane(mut self, lane: ReviewLane) -> Self {
         self.lane = lane;
-        self
-    }
-
-    /// Thread the orchestrator's pre-resolved per-spec bonding targets
-    /// into the review prompt. Used at `--tree` scope so the agent's
-    /// `bd create --parent <epic>` calls reuse the resolved IDs instead
-    /// of re-querying `bd find`. Empty input is a no-op.
-    pub fn with_tree_scope_epics(mut self, epics: Vec<TreeScopeEpic>) -> Self {
-        self.tree_scope_epics = epics;
         self
     }
 
@@ -447,7 +431,6 @@ where
             scratchpad_path,
             style_rules: self.style_rules.clone(),
             lane: self.lane,
-            tree_scope_epics: self.tree_scope_epics.clone(),
         };
         Ok(ctx.render()?)
     }
@@ -2510,10 +2493,7 @@ mod tests {
     /// are not minted or surfaced to the reviewer. The driver-side
     /// `loom gate mint` command consumes findings and bonds fix-ups
     /// itself. The agent's prompt only needs to stream `LOOM_FINDING:`
-    /// lines naming the spec via `bonds`. This test pins that the
-    /// `with_tree_scope_epics` plumbing still flows into the build, but
-    /// the rendered output is free of `bd find` / `bd create --parent`
-    /// recovery shell instructions.
+    /// lines naming the spec via `bonds`.
     #[tokio::test]
     async fn tree_scope_review_prompt_omits_bd_recovery_block_under_inspection_only_contract() {
         let dir = tempfile::tempdir().unwrap();
@@ -2531,17 +2511,7 @@ mod tests {
             manifest,
             ProfileName::new("base"),
             noop_spawn,
-        )
-        .with_tree_scope_epics(vec![
-            TreeScopeEpic {
-                label: SpecLabel::new("alpha"),
-                molecule_id: MoleculeId::new("lm-alpha-epic"),
-            },
-            TreeScopeEpic {
-                label: SpecLabel::new("beta"),
-                molecule_id: MoleculeId::new("lm-beta-epic"),
-            },
-        ]);
+        );
         let prompt = match ctrl.build_review_prompt().await {
             Ok(p) => p,
             Err(ReviewError::Bd(_)) => return,
@@ -2554,10 +2524,6 @@ mod tests {
         assert!(
             !prompt.contains("```bash"),
             "review prompt must contain no bash code blocks under the inspection-only contract: {prompt}",
-        );
-        assert!(
-            !prompt.contains("lm-alpha-epic") && !prompt.contains("lm-beta-epic"),
-            "review prompt must not render the resolved epic IDs — they are driver-side bonding metadata: {prompt}",
         );
         assert!(
             prompt.contains("LOOM_FINDING:"),
@@ -2741,11 +2707,7 @@ mod tests {
         }
     }
 
-    /// Build a `Bead` snapshot directly without going through `bd-shim` —
-    /// the post-run capture tests below operate on the pre/post snapshots
-    /// `loom gate audit --tree` already feeds into
-    /// `record_recovery_epics`. Mirroring the `runner.rs` `bead()` helper
-    /// keeps the labels typed instead of as raw strings.
+    /// Build a `Bead` snapshot directly without going through `bd-shim`.
     /// specs/gate.md § "Persistence boundary: agent narrates, agent persists":
     /// when the bead under dispatch carries a well-formed `## Options — …`
     /// block, the review controller's `apply_clarify` only stamps the

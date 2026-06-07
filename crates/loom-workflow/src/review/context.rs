@@ -5,7 +5,7 @@ use std::path::Path;
 use loom_driver::bd::Bead;
 use loom_driver::identifier::{MoleculeId, ProfileName, SpecLabel};
 use loom_gate::annotation::{Annotation, Tier, parse_content};
-use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource, TreeScopeEpic};
+use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
 
 use crate::spec::{SpecError, target_file_path};
 
@@ -31,15 +31,8 @@ pub struct ReviewContextInputs {
     /// Which lane(s) of the review the reviewer agent is being asked to
     /// run; gates the template sections that only one lane needs.
     pub lane: ReviewLane,
-    /// At `--tree` scope, the per-spec resolved (or freshly minted) epic
-    /// IDs the orchestrator threads in as bonding targets. Empty at
-    /// non-`--tree` scopes.
-    pub tree_scope_epics: Vec<TreeScopeEpic>,
-    /// Default profile label applied to fix-up and clarify beads the
-    /// reviewer mints under this spec. Threaded into the rendered
-    /// `bd create --labels="…,profile:<default>"` examples so the bead's
-    /// dispatch picks up a toolchain that can actually run the spec's
-    /// verifiers (e.g. `profile:rust` for cargo-bound specs).
+    /// Default profile label for driver-minted fix-up and clarify beads
+    /// under this spec.
     pub default_profile: ProfileName,
 }
 
@@ -58,7 +51,6 @@ pub fn build_review_context(inputs: ReviewContextInputs) -> ReviewContext {
         scratchpad_path: inputs.scratchpad_path,
         style_rules: inputs.style_rules,
         lane: inputs.lane,
-        tree_scope_epics: inputs.tree_scope_epics,
         default_profile: inputs.default_profile,
     }
 }
@@ -242,7 +234,6 @@ mod tests {
             scratchpad_path: "/workspace/.loom/scratch/harness/scratch.md".into(),
             style_rules: "docs/style-rules.md".into(),
             lane: ReviewLane::Both,
-            tree_scope_epics: Vec::new(),
             default_profile: default_profile_for_spec(&SpecLabel::new("harness")),
         }
     }

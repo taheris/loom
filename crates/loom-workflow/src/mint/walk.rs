@@ -41,7 +41,7 @@ use loom_gate::{
     IntegrityFinding, Tier, TierCwds, annotation as gate_annotation, integrity, run_check,
     run_system, run_test,
 };
-use loom_templates::review::{ReviewContext, ReviewLane, TreeScopeEpic};
+use loom_templates::review::{ReviewContext, ReviewLane};
 use thiserror::Error;
 
 use crate::review::{
@@ -384,7 +384,6 @@ where
             scratchpad_path,
             style_rules: self.style_rules.clone(),
             lane: ReviewLane::Rubric,
-            tree_scope_epics: Vec::<TreeScopeEpic>::new(),
         };
         ctx.render().map_err(|e| WalkError::Rubric(e.to_string()))
     }

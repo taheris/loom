@@ -12,7 +12,6 @@ use thiserror::Error;
 
 use loom_driver::bd::{BdClient, BdError, CommandRunner, CreateOpts, ListOpts};
 use loom_driver::identifier::{MoleculeId, SpecLabel};
-use loom_templates::review::TreeScopeEpic;
 
 /// Failures from [`resolve_open_epic`].
 #[derive(Debug, Display, Error)]
@@ -68,16 +67,7 @@ pub struct ResolvedEpic {
     pub was_minted: bool,
 }
 
-/// Project a [`ResolvedEpic`] into the template-facing [`TreeScopeEpic`]
-/// shape. Keeps `loom_templates` out of the binary's direct imports.
-pub fn tree_scope_epic_from_resolved(r: &ResolvedEpic) -> TreeScopeEpic {
-    TreeScopeEpic {
-        label: r.label.clone(),
-        molecule_id: r.molecule_id.clone(),
-    }
-}
-
-/// Per-spec resolve-or-mint loop for `loom gate audit --tree`. Calls
+/// Per-spec resolve-or-mint loop for `loom gate mint --tree`. Calls
 /// [`resolve_or_mint_open_epic`] for every label in `labels` and returns
 /// the resolved epics in the same order. Stops on the first
 /// [`ResolveError::InvariantViolation`] so the operator sees the
@@ -94,7 +84,7 @@ pub async fn resolve_or_mint_open_epics<R: CommandRunner>(
     Ok(resolved)
 }
 
-/// Single-tier bonding-target resolver for `loom gate audit --tree`.
+/// Single-tier bonding-target resolver for `loom gate mint --tree`.
 ///
 /// Runs the same `bd find --type=epic --label=spec:<X> --status=open`
 /// query as [`resolve_open_epic`]; on zero results, mints a fresh epic
@@ -230,13 +220,13 @@ mod tests {
         }
     }
 
-    /// `loom gate audit --tree` (all-specs sweep) mints a fresh epic per
+    /// `loom gate mint --tree` (all-specs sweep) mints a fresh epic per
     /// spec when the single-tier resolution returns zero open epics. Pins
     /// the safety property from `specs/gate.md` § *Standing-safety-net
     /// bonding*: concerns about a spec with no active work get a fresh
     /// container, not silently dropped. The orchestrator is the
     /// `loom-workflow::resolve` helper that walks `labels` and resolves
-    /// each spec independently — every spec the audit visits must mint
+    /// each spec independently — every spec the mint visits must mint
     /// its own molecule + epic when the bd query returns zero.
     #[tokio::test]
     async fn tree_scope_auto_creates_epics_for_missing_current_molecule_specs() {
@@ -276,7 +266,7 @@ mod tests {
         );
     }
 
-    /// `loom gate audit --tree` MUST NOT clobber an existing open epic for
+    /// `loom gate mint --tree` MUST NOT clobber an existing open epic for
     /// a spec: when the single-tier resolution returns one result, the
     /// orchestrator bonds fix-ups to that molecule without minting a new
     /// one. Pins `specs/gate.md` § *Standing-safety-net bonding*'s
@@ -304,7 +294,7 @@ mod tests {
         assert_eq!(resolved[0].molecule_id, MoleculeId::new("lm-existing"));
         assert!(
             !resolved[0].was_minted,
-            "existing epic must NOT be reported as minted — the audit bonds fix-ups to it",
+            "existing epic must NOT be reported as minted — mint bonds fix-ups to it",
         );
 
         let calls = invocations.lock().unwrap().clone();

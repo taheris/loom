@@ -329,7 +329,6 @@ fn review_snapshot() {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
-        tree_scope_epics: Vec::new(),
         default_profile: ProfileName::new("rust"),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
