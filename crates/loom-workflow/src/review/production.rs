@@ -705,13 +705,6 @@ where
         let result = (self.spawn)(spawn_config).await;
         drop(scratch);
         let (outcome, marker, stdout) = result?;
-        // Per `specs/gate.md` § *Structural enforcement*, the classifier
-        // consumes a typed `WalkOutput` (not raw `&str`); the
-        // `pub(crate)` constructor runs `parse_walk_output` once and
-        // populates the typed terminal surface + streamed findings +
-        // per-line parse errors, so the silent-loss class (production
-        // caller passing raw `&str` and leaving `streamed_findings` at
-        // default empty) is structurally unrepresentable.
         let walk =
             WalkOutput::from_stdout(&stdout, self.dispatch_scope, &AcceptAllFindingValidator);
         let suppressed_findings = suppressed_findings(&walk, &self.suppressions);
