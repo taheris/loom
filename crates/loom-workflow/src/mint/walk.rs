@@ -920,11 +920,12 @@ mod tests {
             3,
             "every LOOM_FINDING line becomes one Finding: {findings:?}",
         );
-        // Stable stdout order — first finding emitted is findings[0].
         assert_eq!(findings[0].evidence, "first");
         assert_eq!(findings[1].evidence, "second");
         assert_eq!(findings[2].evidence, "third");
-        // Tagged-target enum deserialised by `kind`.
+        assert_eq!(findings[0].route, FindingRoute::Deferred);
+        assert_eq!(findings[1].route, FindingRoute::Deferred);
+        assert_eq!(findings[2].route, FindingRoute::Deferred);
         assert_eq!(findings[0].target.kind(), TargetKind::Criterion);
         assert_eq!(findings[1].target.kind(), TargetKind::Contract);
         assert_eq!(findings[2].target.kind(), TargetKind::StyleRule);

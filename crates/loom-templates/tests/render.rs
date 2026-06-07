@@ -768,8 +768,8 @@ fn review_renders_single_marker_instruction_with_concern_xor_complete() -> Resul
 }
 
 /// Pins the Options Format Contract: the agent embeds the canonical
-/// `## Options — …` block inside the `evidence` field of an
-/// `invariant-clash` `LOOM_FINDING:` line; the driver lifts it into
+/// `## Options — …` block inside the `evidence` field of any
+/// `route="clarify"` `LOOM_FINDING:` line; the driver lifts it into
 /// the minted clarify bead's description. The contract is universal
 /// (applies to every clarify-worthy decision, not just invariant
 /// clashes) and never directs the reviewer to bd-write.
@@ -797,8 +797,8 @@ fn review_renders_options_format_contract_embedded_in_evidence() -> Result<()> {
         "Options Format Contract section missing: {out}",
     );
     assert!(
-        out.contains("`evidence`") && out.contains("invariant-clash"),
-        "contract must direct the agent to embed Options block in the invariant-clash finding's evidence field: {out}",
+        out.contains("`evidence`") && out.contains("route=\"clarify\""),
+        "contract must direct the agent to embed Options block in each clarify-route finding's evidence field: {out}",
     );
     assert!(
         out.contains("clarify situation"),

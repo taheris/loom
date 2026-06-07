@@ -2692,7 +2692,8 @@ and conservative fall-through for unowned queries.
 - The walk emits `LOOM_FINDING: <json>` lines on stdout, one
   JSON object per finding, streamed as findings are identified
   (not batched at end-of-walk). The JSON shape is `{"token": ...,
-  "bonds": [...], "target": {"kind": ..., ...}, "evidence": ...}`
+  "route": "blocking|deferred|clarify", "bonds": [...], "target":
+  {"kind": ..., ...}, "evidence": ...}`
   [test](mint_walk_emits_loom_finding_json_lines_streamed_per_finding)
 - The walk terminates with exactly one of `LOOM_COMPLETE`,
   `LOOM_CONCERN: {"summary": "..."}`, `LOOM_RETRY`, `LOOM_BLOCKED`,

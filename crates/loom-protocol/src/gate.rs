@@ -2174,8 +2174,10 @@ mod tests {
             parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid).expect("parses cleanly");
         assert_eq!(findings.len(), 2);
         assert_eq!(findings[0].token, ConcernToken::SpecCoherenceFail);
+        assert_eq!(findings[0].route, FindingRoute::Deferred);
         assert_eq!(findings[0].evidence, "first finding");
         assert_eq!(findings[1].token, ConcernToken::OrphanIntegration);
+        assert_eq!(findings[1].route, FindingRoute::Deferred);
         assert_eq!(findings[1].evidence, "second finding");
     }
 

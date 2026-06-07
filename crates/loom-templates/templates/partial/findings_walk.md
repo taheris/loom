@@ -25,7 +25,7 @@ LOOM_FINDING: {"token":"<token>","route":"blocking|deferred|clarify","bonds":["<
   the variant per the table below; carries identity-bearing fields
   specific to the variant.
 - **`evidence`** — your reasoning string, stored verbatim on the
-  minted fix-up bead's description. For `invariant-clash` findings,
+  minted fix-up bead's description. For `route="clarify"` findings,
   this **MUST** embed the canonical `## Options — …` block per the
   Options Format Contract.
 
@@ -76,10 +76,10 @@ LOOM_FINDING: {"token":"concurrency-untested","route":"deferred","bonds":["harne
 - **`StyleRule` targets MUST include a concrete `subject`** in
   addition to `rule_id`; a rule-only target is too broad for dedup or
   suppression, and a bare line number is not a stable subject.
-- **`invariant-clash` findings MUST embed the canonical `## Options — …`
+- **`route="clarify"` findings MUST embed the canonical `## Options — …`
   block in their `evidence` field**. The driver lifts the block into
-  the minted clarify bead's description; if it is missing, `loom
-  msg`'s queue stays empty even though the finding minted a bead.
+  the minted clarify bead's description; if it is missing, mint falls
+  back to `loom:blocked` with cause `clarify-without-options`.
 - **Malformed lines fail the run.** A `LOOM_FINDING:` line that does
   not parse — invalid JSON, unknown token, a `bonds` element that
   does not resolve to a workspace spec, a `target` variant
@@ -122,11 +122,12 @@ The remaining tokens cover the other rubric dimensions:
   the closure is not complete in the molecule's diff or bonded
   siblings.
 - `invariant-clash` — a load-bearing invariant in the touched spec
-  set is silently contradicted by the diff. **Embed the canonical
-  `## Options — …` block in `evidence`** using the exact heading
-  shape below (prose `Recommended:` / `Alternative:` headings do
-  NOT count and degrade the minted bead to `loom:blocked` with
-  cause `clarify-without-options`):
+  set is silently contradicted by the diff. This token defaults to
+  `route="clarify"`; **embed the canonical `## Options — …` block in
+  `evidence`** using the exact heading shape below (prose
+  `Recommended:` / `Alternative:` headings do NOT count and degrade
+  the minted bead to `loom:blocked` with cause
+  `clarify-without-options`):
 
 {% include "partial/options_format.md" %}
 
