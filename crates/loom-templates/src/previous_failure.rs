@@ -352,7 +352,7 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
             let mut out = String::from(
                 "One or more LOOM_FINDING: lines failed strict validation. \
                  Re-emit each finding as a single line: \
-                 `LOOM_FINDING: {\"token\":\"...\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}`.",
+                 `LOOM_FINDING: {\"token\":\"...\",\"route\":\"blocking|deferred|clarify\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}`.",
             );
             for err in errors {
                 out.push_str("\n\n");
@@ -892,6 +892,10 @@ mod tests {
             },
         });
         let rendered = pf.to_string();
+        assert!(
+            rendered.contains("\"route\":\"blocking|deferred|clarify\""),
+            "malformed-finding guidance must include route field: {rendered}",
+        );
         assert!(
             rendered.contains("line 4"),
             "first error line-number missing: {rendered}",
