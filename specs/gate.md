@@ -6,9 +6,9 @@ The umbrella concept covering all four stages (plan / per-diff /
 push / standing safety net) and one command tree (`loom gate
 <subcommand>`).
 `loom gate verify` runs deterministic verifiers; `loom gate review`
-runs the LLM rubric (inspection-only); `loom gate mint` walks the
-rubric and produces fix-up beads — the only subcommand that
-mutates bd state. Distinct from the *Verdict Gate* execution layer
+runs the LLM rubric (inspection-only); `loom gate mint` materializes
+molecule-deferred or tree-sweep findings into bd remediation work —
+the only subcommand that mutates bd state. Distinct from the *Verdict Gate* execution layer
 in [harness.md](harness.md) — that section owns the per-bead
 mechanics that wrap the gate; this spec owns the rubric, the
 invariants, the lanes, and the stages.
@@ -111,8 +111,8 @@ failure detected, not by stage or scope.
   (`[check]`, `[test]`, or `[system]`) that asserts a specific
   behavioural claim returns failure. There is no legitimate
   "keep this on top" path. The gate fails the check; per-stage
-  recovery (recovery loop at per-diff, push refused at push, fix-up
-  bead at standing) drives the response, all converging on *fix the
+  recovery (recovery loop at per-diff, push refused at push,
+  remediation bead at standing) drives the response, all converging on *fix the
   code*.
 
 - **Clarify (invariant clash).** Code (or a proposed spec change)
@@ -152,13 +152,14 @@ selecting the audit scope:
 | **`loom gate review`** | LLM judge, inspection | Runs the LLM rubric — conformance trace, contract closure, verifier honesty, mock discipline, invariant-clash scan. **Inspection-only**: emits `LOOM_FINDING:` lines + terminal marker to stdout, makes no bd writes. Run selectively (bead completion, on demand, scheduled). Consumes `verify` results as input. Includes `[judge]`-tier criterion verifiers and the rubric walk over the diff. |
 | **`loom gate judge`** | LLM judge, one lane | Runs only criterion-attached `[judge]` verifiers — skips the rubric walk. Inspection-only, like `review`. |
 | **`loom gate rubric`** | LLM judge, one lane | Runs only the rubric walk over the diff — skips criterion-attached judges. Inspection-only, like `review`. |
-| **`loom gate mint`** | Act | Walks the rubric (per-`--bead`/`--diff`/`--files` scope: LLM rubric only; per-`--tree` scope: deterministic verifiers + LLM rubric) and mints fix-up batches — one per lead-spec per mint run, bundling that spec's findings — bonded via the molecule lifecycle. Clarify-bound findings (today only `invariant-clash`) mint as one bead per finding so each carries its own `## Options — …` block; all other findings bundle into their spec's fix-up batch. The sole driver-side mint chokepoint and the actor in `loom loop`'s per-bead path. See [*Findings and Minting*](#findings-and-minting). |
+| **`loom gate mint`** | Act | Materializes findings into bd work. `loom gate mint -m/--molecule <id>` promotes that molecule's deferred remediation batches after original work drains; `loom gate mint --tree` runs the standing safety-net sweep and creates or updates ready remediation batches. `mint` is not a per-bead review command: `-b/--bead` is invalid for `mint`, and `loom loop` uses `review -b/--bead <id>` for hot-path LLM judgement. Clarify-route findings still materialize as one `loom:clarify` bead per finding so each carries one `## Options — …` block. See [*Findings and Minting*](#findings-and-minting). |
 | **`loom gate verify-marker`** | Trust check | Reads `.loom/marker.json` from the current workspace, deserializes a typed `MarkerProof`, computes the current workspace fingerprint (tree OID at HEAD + porcelain-clean precondition), and exits 0 iff the marker validates against the current fingerprint. Invoked by the `pre-push-checks` wrapper (which wraps each slow-tier prek hook) to short-circuit redundant work on driver-loop integration pushes. **Not itself registered as a prek hook** — a standalone gating hook would block operator-manual pushes that legitimately have no marker. Diagnostic use (`loom gate verify-marker` on the CLI to inspect the current marker's state) remains valid. See [*Marker*](#marker). |
 
 ### Scope flags
 
-All gate subcommands take exactly one scope flag (mutually
-exclusive), plus optional filters. The scope flag defines the
+Gate inspection subcommands take exactly one scope flag (mutually
+exclusive), plus optional filters. `mint` accepts only `-m/--molecule`
+or `--tree` because it is an act surface. The scope flag defines the
 **input set** — the files the gate is being asked about. A verifier
 whose inputs the gate can derive runs iff those inputs intersect the
 input set (see *Verifier inputs* below); a verifier whose inputs
@@ -167,9 +168,10 @@ an undeterminable input set is never grounds to skip.
 
 | Flag | Input set | Typical caller |
 |---|---|---|
-| `--bead <id>` | The bead's success-criteria input files + the bead's own diff | `loom loop` per-bead verdict gate |
+| `-b`, `--bead <id>` | The bead's success-criteria input files + the bead's own diff | `loom loop` per-bead `verify` / focused `review` verdict gate |
 | `--diff <range>` | `git diff <range> --name-only` (committed + working tree in the range) | push gate (molecule.base_commit..HEAD); CI scoped to a PR; bare interactive `loom gate verify` |
 | `--files <paths>` | Explicit path list | pre-commit hooks (`loom gate verify --files $(git diff --cached --name-only)`) |
+| `-m`, `--molecule <id>` | The molecule's deferred finding set plus its cumulative diff | `loom gate mint` stabilization; not valid for per-bead `verify` |
 | `--tree` | Every file in the workspace | nightly CI safety net; manual debugging; **not used by push gate** |
 
 A `--diff <range>` that git itself rejects — an unknown commit, or
@@ -183,31 +185,32 @@ never verified. A *valid* range that simply matches no files (e.g.
 
 Filters compose with any scope flag:
 
-- `--spec <label>` — narrow to one spec's criteria
+- `-s`, `--spec <label>` — narrow to one spec's criteria
 - `<selector>` (positional) — run one specific verifier by its
   annotation target
 
-**Default for bare invocation.** When a gate subcommand is invoked
-without a scope flag, the gate defaults to `--diff
+**Default for bare invocation.** When an inspection subcommand is
+invoked without a scope flag, the gate defaults to `--diff
 <molecule.base_commit>..HEAD` if the active spec has an open epic
 (single-query resolution; the "what would fail if I pushed now?"
 question); else `--diff HEAD` (working-tree dirty changes vs HEAD).
-This applies uniformly across subcommands that take scope flags
-(`status`, `verify`, `audit`, `review`, `mint`, the tier subcommands,
-…). Bare `loom gate audit` never silently expands to `--tree` —
-users who want the full safety-net sweep type `--tree` explicitly.
-(Bare `loom gate` with no subcommand prints subcommand help, per
-*Commands* above.)
+Bare `loom gate mint` instead defaults to `-m/--molecule
+<active-molecule>` when one exists, otherwise errors and asks for
+`--tree` or `-m/--molecule` explicitly. Bare `loom gate audit` never
+silently expands to `--tree` — users who want the full safety-net
+sweep type `--tree` explicitly. (Bare `loom gate` with no subcommand
+prints subcommand help, per *Commands* above.)
 
 | Stage | Default invocation | Scope |
 |---|---|---|
 | Pre-commit hook | `loom gate verify --files $(git diff --cached --name-only)` | `--files` |
-| `loom loop` per-bead (verify) | `loom gate verify --bead <id>` | `--bead` |
-| `loom loop` per-bead (mint, runs on verify pass) | `loom gate mint --bead <id>` | `--bead` |
+| `loom loop` per-bead (deterministic) | `loom gate verify -b <id>` | `--bead` |
+| `loom loop` per-bead (focused LLM inspection) | `loom gate review -b <id>` | `--bead` |
+| `loom loop` stabilization promotion | `loom gate mint -m <molecule-id>` | `--molecule` |
 | `loom loop` molecule completion (receipt construction) | `loom gate audit --diff <molecule.base_commit>..HEAD` | `--diff` |
 | Interactive bare `loom gate verify` / `loom gate status` | implicit `--diff <molecule.base_commit>..HEAD` if active spec has an open epic; else `--diff HEAD` | `--diff` |
 | Nightly CI / on-demand inspection | `loom gate audit --tree` | `--tree` |
-| Nightly CI / on-demand mint | `loom gate mint --tree` | `--tree` |
+| Nightly CI / on-demand standing sweep | `loom gate mint --tree` | `--tree` |
 
 **Why push gate isn't `--tree`.** A `--tree` sweep runs every
 verifier against every spec; on a non-trivial workspace this takes
@@ -229,24 +232,26 @@ mint`, which walks and writes; see [*Findings and Minting*](#findings-and-mintin
 
 ## Stages
 
-Same gate, four points. Scope and cost-of-failure differ; the
-underlying check is the same.
+Same gate, four review points plus one stabilization act. Scope and
+cost-of-failure differ; the underlying check is the same.
 
 | Stage | Where | Scope | Cost-of-failure | Primary catches |
 |---|---|---|---|---|
 | **Plan** | `loom plan -n` / `loom plan -u` | Spec under interview | Lowest — no code yet | Missing claims, weak claims, missing verifier surfaces, invariant clashes in proposed spec changes |
-| **Per-diff** | In `loom loop`: `loom gate verify --bead <id>` then `loom gate mint --bead <id>`. For ad-hoc inspection: `loom gate audit --bead <id>` (verify + review, no minting) | Spec sections the diff touches; the diff itself; tests in the diff | Medium — one bead's worth | Conformance gaps in diff, lint violations, weak verifiers, contract gaps inside one diff's reach, invariant clashes in proposed code changes |
+| **Per-diff** | In `loom loop`: `loom gate verify -b <id>` then focused `loom gate review -b <id>`; no per-bead mint. For ad-hoc inspection: `loom gate audit -b <id>` (verify + review, no bd writes) | The bead's declared intent, touched spec sections, touched code, and tests/verifiers added or changed by the bead | Medium — one bead's worth | Whether the implemented bead is acceptable; blocking findings retry the same bead, deferred findings accumulate for molecule stabilization, clarify findings route to human decision |
+| **Stabilization** | `loom gate mint -m <molecule-id>` after no original non-deferred work remains ready | The molecule's `loom:deferred` remediation beads and cumulative diff | Medium — amortized over a molecule, not one tiny finding | Promotes deferred remediation batches so the loop drains them before push; coalesces repeated finding hashes instead of reminting tiny beads |
 | **Push** | `loom gate audit --diff <molecule.base_commit>..HEAD` (unconditionally on `loom loop` molecule completion — see [harness.md FR1 + FR9](harness.md#functional)) | The molecule's own diff (files it touched) × every verifier the diff could affect (derived inputs intersect the diff, plus every verifier whose inputs can't be derived — see *Verifier inputs* § Conservative default) | Highest — **blocks push**, gate verdict encoded in [`GateOutcome`](harness.md#loop-outcome-types) (`Success`/`Fail`/`NoGate`). `GateSuccess` is constructible only when all four FR9 conditions hold *and* on-disk review-log evidence is present; the struct's private `_private: ()` field seals struct-literal construction so `GateSuccess::new` is the sole minting path and asserts each condition. Silent gate-skip is structurally unrepresentable | Conformance gaps in the molecule, integrity-gate findings (unresolved annotations, stub tests) within the molecule's diff, review concerns, dispatch errors |
-| **Standing safety net** | `loom gate audit --tree` for inspection; `loom gate mint --tree` to act (on-demand, nightly CI, scheduled). The mint path is the only one that creates fix-up beads — see [*Findings and Minting*](#findings-and-minting) | Entire spec tree × entire implementation | Catches **verifier-input under-reporting** — any verifier the push-gate's `--diff` scope would have skipped because its derived input set was too narrow is surfaced here (the `--tree` sweep runs every verifier regardless of scope). Findings surface as regular fix-up beads via mint; `invariant-clash` findings additionally carry `loom:clarify` for human resolution | Cross-file incoherence the molecule's diff didn't surface, contracts orphaned across PRs, accumulated style/test regressions, template-vs-spec drift (Invariant 3), surface drift, verifier-reported input sets that are too narrow |
+| **Standing safety net** | `loom gate audit --tree` for inspection; `loom gate mint --tree` to act (on-demand, nightly CI, scheduled). The mint path is the only one that creates or updates remediation beads — see [*Findings and Minting*](#findings-and-minting) | Entire spec tree × entire implementation | Catches **verifier-input under-reporting** — any verifier the push-gate's `--diff` scope would have skipped because its derived input set was too narrow is surfaced here (the `--tree` sweep runs every verifier regardless of scope). Findings surface as ready remediation batches via mint; clarify-route findings additionally carry `loom:clarify` for human resolution | Cross-file incoherence the molecule's diff didn't surface, contracts orphaned across PRs, accumulated style/test regressions, template-vs-spec drift (Invariant 3), surface drift, verifier-reported input sets that are too narrow |
 
 The plan stage has no separate command invocation — the agent runs
 the rubric inline during the planning interview, and `loom plan` is
-the surface that opens that interview. The remaining three stages
-compose gate subcommands per the table above: per-diff in the
-`loom loop` path runs `verify` then `mint`; push runs `audit`
-(`verify` + `review`) for inspection only; the standing safety net
-triad of `verify` / `review` / `mint` runs at tree scope, with
-`mint` the act surface and `verify` / `review` (or composed via
+the surface that opens that interview. The remaining stages compose
+gate subcommands per the table above: per-diff in the `loom loop` path
+runs `verify` then focused `review`; stabilization runs `mint -m` to
+promote deferred remediation batches after original work drains; push
+runs `audit` (`verify` + `review`) for inspection only; the standing
+safety net triad of `verify` / `review` / `mint` runs at tree scope,
+with `mint` the act surface and `verify` / `review` (or composed via
 `audit`) the inspection surfaces.
 
 The push stage is **non-optional and load-bearing across every
@@ -312,137 +317,85 @@ template-vs-spec drift happens at the standing safety net instead.)
 
 ### Per-diff stage checks
 
-The per-diff stage in `loom loop` composes `loom gate verify` and
-`loom gate mint` in sequence. `loom gate audit --bead <id>` (which
-composes `verify` + `review`) is the inspection-only alternative for
-ad-hoc human review; the loop never runs `review` directly.
+The per-diff stage in `loom loop` composes deterministic acceptance
+and focused LLM judgement: `loom gate verify -b <id>` followed by
+`loom gate review -b <id>`. The loop **does not** run `loom gate mint
+-b <id>`; `mint` has no per-bead act surface. Ad-hoc human inspection
+uses the same inspection-only composition via `loom gate audit -b <id>`.
 
 **Agent self-check before marker emit.** In `loom loop`'s bead
 container, the worker runs `loom gate verify --diff HEAD` before
-emitting `LOOM_COMPLETE` and resolves any findings in-session.
+emitting `LOOM_COMPLETE`. This is fast feedback for the agent, not
+the authoritative gate receipt. The prompt requires the agent to fix
+failures before completion; the driver still performs the authoritative
+post-integration `verify -b/--bead` in the loom workspace after the
+bead branch has landed on the integration branch.
 
-This is the middle layer of a three-layer belt-and-braces audit:
-the bead-container pre-commit hook catches findings at commit time
-(per [pre-commit.md](pre-commit.md)); the agent preflight catches
-them at marker-emit; the driver-side push-gate audit catches them
-at push (and is the authoritative gate). The preflight is an
-optimization that reduces driver→agent bounces — failure modes it
-catches (typically integrity findings the agent forgot to address,
-e.g. stale `?` markers after the implementing diff landed) are
-caught by the driver-side audit anyway and recover via the push-gate
-recovery branch (per *Integrity gate* below).
-
-The contract is prompt-level — the agent narrates the verify run
-as part of its turn; the driver does not separately gate on the
-preflight's presence.
-
-**Production wiring.** `loom gate mint`'s walk is dispatched via the
-[`MintWalker`](#scope-dependent-walk) trait (defined in
-`loom-workflow::mint::walk`). The trait's `run_rubric` method spawns
-the reviewer agent subprocess (same dispatch the per-bead `review`
-controller uses, against the rubric prompt rendered by the
-`loom-templates::review` context) and returns its raw stdout; its
-`run_verifiers` method dispatches the deterministic verifiers and the
-integrity gate's forward-resolution check at `--tree` scope only
-(per *Scope-dependent walk* below). The CLI arm `run_gate_mint`
-constructs the production walker, calls `mint::walk::walk(...)`, and
-feeds the resulting `Vec<Finding>` into `mint_findings_with_options`.
-The walker is the only path findings reach the mint pipeline — a
-CLI arm that constructs an empty finding vector unconditionally is
-a structural defect. The production `MintWalker` implementation
-lives alongside the trait in `loom-workflow::mint::walk` and is
-exercised by the CLI arm and by `loom loop`'s per-bead path.
-
-**`loom gate verify --bead <id>`** runs all deterministic audits.
+**`loom gate verify -b/--bead <id>`** runs all deterministic audits.
 Marker parsing, `bd-closed` lookup, diff non-empty / empty, every
 deterministic verifier (`[check]` / `[test]` / `[system]`) attached
 to the bead's criteria (none short-circuits another), style linters
-(`cargo clippy -- -D warnings`, `nix fmt --check`, `shellcheck`),
 and any `[check]`-tier walks the consumer has registered for
 cross-cutting structural audits.
 
 Any `verify` failure routes into the existing hard-fail recovery
-loop (`previous_failure` + `[loop] max_iterations`). Recovery doesn't
-run `loom gate mint` for the same iteration — mechanical failure is
-sufficient grounds.
+loop (`previous_failure` + `[loop] max_retries`). Mechanical failure
+is sufficient grounds; the focused LLM review is skipped for that
+attempt.
 
-**`loom gate mint --bead <id>`** walks the LLM rubric and mints
-typed findings per the [*Findings and Minting*](#findings-and-minting)
-contract. At per-diff scope the walk runs the LLM rubric only;
-verify-side *failures* have already been handled as recovery context
-by the loop above (they do not become Finding records at per-diff
-scope — only at tree scope, where there's no recovery alternative).
-Its inputs are:
+**`loom gate review -b/--bead <id>`** runs a focused rubric over the
+implemented bead. Its inputs are:
 
-- the diff
+- the bead's diff
 - the bead's intent (title, description, success criteria)
-- the *full* touched spec sections (not only the bullets the diff lines map to)
-- the diffs and criteria of sibling beads bonded to the same molecule
-- deterministic-verifier sources (`[check]` walk implementations, `[test]` function bodies, `[system]` scripts)
-- `[judge]` rubric texts
+- the touched spec sections (not only the bullets the diff lines map to)
+- deterministic-verifier sources added or modified by the bead
+  (`[check]` walk implementations, `[test]` function bodies,
+  `[system]` scripts)
+- `[judge]` rubric texts attached to the bead
 - `loom gate verify` results from the immediately-prior run
 
-Rubric checks. The **Concern token** column lists the value the
-reviewer emits as the `token` field in a `LOOM_FINDING: <json>`
-line when the check fails (per [*Findings and
-Minting*](#findings-and-minting)). The terminal `LOOM_CONCERN`
-marker is emitted at end-of-walk if any findings were emitted (per
-[harness.md § Verdict Gate](harness.md#verdict-gate)); it carries no
-per-finding payload of its own. The `invariant-clash` token routes
-to `loom:clarify` instead of recovery — see *Verdict* below. The
-`scope-creep` / `scope-shortfall` tokens are per-bead only; the
-tree-scope walk does not emit them.
+The per-bead rubric is an **acceptance gate**, not a standing safety
+net. It checks bead intent / acceptance-criteria match, touched-spec
+conformance, style rules on touched code, test/verifier honesty for
+verifiers added or changed by the bead, and obvious scope
+creep/shortfall. It does not run tree-scope template-vs-spec drift,
+broad cross-spec clash, whole-repo spec-conventions, or unrelated
+pre-existing drift walks.
 
-| Check | Dimension | Lane | Concern token |
-|---|---|---|---|
-| **Conformance trace** — for every claim in touched spec sections, find a true code path (verifier-pass *or* LLM trace through current code). Scope includes the *full* touched spec sections — command-set tables, interface specs, decision tables, prose constraints — not only the bullets a diff line maps to. | Conformance | Hard fail | `spec-coherence-fail: <claim>` |
-| **Contract closure** — for every multi-component contract the diff touches, verify completion in this diff or in bonded sibling diffs | Conformance | Hard fail | `orphan-integration: <contract>` |
-| **Style-rule conformance** — diff complies with every rule in the consumer's pinned `{{ style_rules }}` document that linters cannot enforce mechanically. The judge discovers rule families from the document itself (no fixed prefix list — adapts to whatever convention the consuming project uses) and cites the rule id + file/line for each violation. | Style | Hard fail | `style-rule-violation: <rule-id>` |
-| **Verifier honesty** — each deterministic verifier the diff adds or modifies (`[check]`, `[test]`, `[system]`) must support the claim it cites. Decomposed into four sub-checks; a verifier is honest iff it satisfies all four. (a) **verifier-bypass** — does the verifier actually exercise the live path? (b) **fabricated-result** — does the verifier's pass rely on a value the test itself synthesized? (c) **weak-assertion** — does the assertion meaningfully constrain the result, or does it tautologically pass? (d) **coincidental-pass** — does the verifier pass for the right reason, or because of an unrelated property of the system? The standing safety net re-checks existing verifiers against current spec/code to detect drift. **Pending-marked annotations (`[tier?](target)`) are exempt** — there is no verifier yet to be honest or dishonest about; honesty is re-evaluated the moment the implementing diff drops the `?`. | Test quality | Hard fail | `verifier-bypass: <verifier>` / `fabricated-result: <verifier>` / `weak-assertion: <verifier>` / `coincidental-pass: <verifier>` |
-| **Mock discipline** — mocks have a discernible reason; mock isn't the thing under test | Test quality | Hard fail | `mock-discipline: <test>` |
-| **Cross-component verifier sufficiency** — multi-component contracts need a verifier that exercises the seam, not one side | Test quality | Hard fail | `verifier-too-narrow: <criterion>` |
-| **Concurrency coverage** — production code introducing or modifying `Mutex`/`RwLock`/`Arc<Mutex<T>>` etc. needs at least one concurrent-load test | Test quality | Hard fail | `concurrency-untested: <lock-site>` |
-| **Scope appropriateness** — diff matches the bead's stated intent (title, description, success criteria) and the spec sections it claims to implement; touching files unrelated to that intent is creep, missing files necessary to satisfy the criteria is shortfall | Conformance | Hard fail | `scope-creep` / `scope-shortfall` |
-| **`[judge]` rubrics** — work satisfies each LLM-judgement criterion on the bead | Conformance | Hard fail | `judge-flag: <criterion>` |
-| **Invariant clash** — for each touched spec section (anchor + sibling), scan for load-bearing invariants the diff contradicts. The judge uses spec conventions as anchors (`## Out of Scope` and `## Non-Functional` sections, imperative-keyword sentences, architectural claims like *"X never calls Y"*, schema / data-structure declarations) and also catches prose-only invariants that lack a structural anchor. | (cross-cutting) | **Clarify** (three paths) | `invariant-clash: <invariant>` |
+Rubric findings carry an explicit `route` field in addition to the
+concern token (see *Emit shape*):
 
-The style-rule-conformance check is the load-bearing defense for any
-rule that cannot be expressed as a clippy / lint pattern. Most rules
-in a typical `style-rules.md` are prose; the LLM judge is what
-enforces them. The rubric requires walking the document concretely —
-for every rule discovered in the pinned `{{ style_rules }}` document,
-the judge either finds the supporting code or flags the violation
-with the rule id. "Style looks fine" is not an acceptable answer; the
-output must enumerate which rules were checked. The rule-family
-prefixes vary per consuming project; the judge must adapt to whatever
-the document uses rather than expecting a fixed set.
+| Route | Meaning | Driver action |
+|---|---|---|
+| `blocking` | The bead's own declared work is not acceptable: acceptance criteria unsatisfied, touched code violates style/test-quality rules, verifier added or changed by the bead is dishonest/too narrow, or the bead regressed deterministic verify. | Retry the same bead with the finding set rendered as `previous_failure`; no bd remediation bead is created. |
+| `deferred` | The finding is real but broader than the bead's declared work: adjacent or pre-existing drift, whole-molecule integration gap, cross-spec / standing-safety-net issue, or cleanup outside the touched surface. | Merge the finding into the molecule's `loom:deferred` remediation bead for the lead spec; do not make it ready until stabilization. |
+| `clarify` | Human intent is required, typically an invariant clash with multiple valid resolution paths. | Create or update one `loom:clarify` bead for the finding hash, preserving the required `## Options — …` block. |
 
-Verdict: any hard-fail finding → reviewer emits one `LOOM_FINDING:
-<json>` line per finding + terminal `LOOM_CONCERN: {"summary":
-"<one sentence>"}` → driver mints fix-up beads from the findings
-(per [*Findings and Minting*](#findings-and-minting)) → verdict
-gate routes to recovery loop with cause `review-concern`. The
-terminal marker's payload is a JSON object with a single `summary`
-field; routing is per-finding via the streamed `LOOM_FINDING:`
-tokens, never via the terminal marker. **Clarify-bound findings**
-— `invariant-clash` and any future clarify-bound token enumerated
-in *Concern tokens and target variants* — produce a fix-up bead
-labelled `loom:clarify` whose description embeds the `## Options
-— …` block from the finding's `evidence` per the Options Format
-Contract. A clarify-bound finding whose evidence lacks a
-well-formed options block falls back to a fix-up bead carrying
-`loom:blocked` with cause `clarify-without-options` rather than a
-stranded clarify. The clarified bead is skipped by `bd ready` on
-subsequent ticks; non-dependent beads in the molecule continue
-running. Push is held until the clarify is resolved via `loom msg`
-(see push-gate semantics in [harness.md](harness.md#functional)).
+The **Concern token** still names the issue class (`spec-coherence-fail`,
+`style-rule-violation`, `verifier-bypass`, `invariant-clash`, …) and
+determines the target variant. The route determines hot-path workflow
+behaviour. Token alone is too coarse: for example,
+`spec-coherence-fail` is blocking when it invalidates the bead's own
+criterion, but deferred when it identifies adjacent drift outside the
+bead's declared scope.
+
+The terminal `LOOM_CONCERN` marker is emitted at end-of-walk if any
+findings were emitted (per [harness.md § Verdict Gate](harness.md#verdict-gate));
+it carries no per-finding payload of its own. The terminal marker's
+payload is a JSON object with a single `summary` field; routing is
+per-finding via each streamed finding's `route`, never via the
+terminal marker. A clarify-route finding whose evidence lacks a
+well-formed options block falls back to `loom:blocked` with cause
+`clarify-without-options` rather than a stranded clarify. Push is held
+until clarify beads in the molecule are resolved via `loom msg`.
 
 ### Standing-safety-net checks
 
 `loom gate verify --tree`, `loom gate review --tree`, and `loom gate
 mint --tree` form the standing-safety-net triad. The first two are
 inspection-only and run independently (or compose via `loom gate
-audit --tree`); the third is the act surface that produces fix-up
+audit --tree`); the third is the act surface that produces remediation
 beads. Mechanical-only inspection is fast and frequent; the full
 sweep + mint is rarer.
 
@@ -491,19 +444,19 @@ checks:
 
 `loom gate mint --tree` walks both the deterministic verifiers
 (`verify` side) and the LLM rubric (`review` side), then mints typed
-findings from both into fix-up beads. The walk semantics are
+findings from both into remediation beads. The walk semantics are
 identical to `verify --tree` + `review --tree` running together; the
 act is what `mint` adds. Standing-stage findings route per-spec via
 the molecule lifecycle in
 [harness.md](harness.md#molecule-lifecycle):
 
-- **One open epic for the owning spec** — bond the fix-up bead to
+- **One open epic for the owning spec** — bond the remediation bead to
   that epic. If the epic is part of an in-flight molecule, the
-  fix-up extends it; iteration counters and base_commit cursors are
+  remediation extends it; iteration counters and base_commit cursors are
   unaffected.
 - **No open epic** — mint molecule + epic (`bd create --type=epic
   --title="<X>" --labels="spec:<X>" --metadata
-  "loom.base_commit=<HEAD>"`), then bond the fix-up. Each
+  "loom.base_commit=<HEAD>"`), then bond the remediation. Each
   auto-create surfaces on stdout naming the spec and new epic ID.
   This is the safety property — findings about a spec with no
   active work get a fresh container, not silently dropped.
@@ -514,7 +467,7 @@ the molecule lifecycle in
   before re-running.
 
 See [*Findings and Minting*](#findings-and-minting) for the full
-per-batch processing flow, dedup mechanism, and emit shape.
+deferred remediation processing flow, dedup mechanism, and emit shape.
 
 This behaviour is uniform whether `mint --tree` is invoked
 workspace-wide, narrowed to one spec via `--spec <X>`, or
@@ -547,7 +500,7 @@ grouping — nothing about how they describe themselves.
 ## Findings and Minting
 
 `loom gate mint` is the gate's sole driver-side mint surface — the
-one command that walks the rubric and produces fix-up beads. Every
+one command that walks the rubric and produces remediation beads. Every
 other gate subcommand is inspection-only (no bd writes). Mint is
 what makes the rubric's concerns actionable.
 
@@ -681,14 +634,14 @@ to land alongside the broad forward-resolution change under
 [*Pending modifier*](#pending-modifier) below) by scanning
 production sources for `mint_findings` / `mint_finding_with_options`
 invocations outside `loom-workflow::mint` and outside `loom loop`'s
-per-bead `mint --bead` dispatch path.
+verdict-gate routing path.
 [check](cargo run -p loom-walk -- audit_makes_no_bd_writes_outside_mint_module)
 
 The driver's `loom loop` per-bead path is the **operator-level
-composition** of `verify --bead` + `mint --bead` per the *Default
+composition** of `verify -b/--bead` + focused `review -b/--bead` per the *Default
 for bare invocation* table above; it is not a side-effect of any
 inspection subcommand. The molecule-completion push gate runs
-`audit` (verify + review) deliberately without minting fix-ups —
+`audit` (verify + review) deliberately without minting remediations —
 findings ride through the review-log file and through the typed
 `PreviousFailure::ReviewConcern { summary, findings }` recovery
 surface; an operator (or a subsequent `loom gate mint` invocation)
@@ -723,19 +676,19 @@ finding lines).
 
 ### Scope-dependent walk
 
-Mint's walk varies by scope flag:
+`mint` is the act surface, so its scopes are intentionally narrower
+than inspection commands:
 
-| Scope | Walks | Why |
+| Scope | Walks / consumes | Why |
 |---|---|---|
-| `--bead <id>` | LLM rubric only | Deterministic failures on this bead's diff have already been handled by the preceding `verify --bead <id>` step in the loop (they route to recovery as `previous_failure` context, not Finding records). |
-| `--diff <range>` | LLM rubric only | Symmetric with `--bead`; verify-side failures on a diff are the recovery loop's concern, not mint's. |
-| `--files <paths>` | LLM rubric only | Same. |
-| `--tree` | Deterministic verifiers + LLM rubric | No current bead to recover into; deterministic failures have no other home, so mint normalizes them into Finding records and mints fix-up beads from them. |
+| `-m`, `--molecule <id>` | Consumes the molecule's deferred finding beads and promotes them to ready remediation work. It may run a molecule-scoped audit first when invoked by the loop's stabilization step. | Stabilization is molecule-local; original implementation work drains before deferred findings become ready. |
+| `--tree` | Deterministic verifiers + LLM rubric over the full workspace, then creates or updates ready remediation batches. | Standing safety-net runs have no current bead to recover into; deterministic failures have no other home. |
 
-Bare `loom gate mint` (no scope flag) defaults to `--diff
-<molecule.base_commit>..HEAD` if the active spec has an open epic;
-else `--diff HEAD`. Same default as `audit` / `verify` / `review`
-(`gate.md` *Scope flags* above).
+`mint` rejects `-b/--bead`, `--diff`, and `--files`; those scopes are
+inspection-only (`review` / `audit`) or deterministic-only (`verify`).
+Bare `loom gate mint` resolves to `--molecule <active-molecule>` when
+the active spec has an open molecule; otherwise it errors and asks for
+`--tree` or `-m/--molecule` explicitly.
 
 ### LOOM_INSIDE guard
 
@@ -752,38 +705,42 @@ Every finding carries a typed `target` whose variant is determined
 by the `token`. The driver canonicalizes the variant when computing
 the finding id (under *Finding id, finding hash, suppression, and
 dedup* below) so the same finding hashes the same way across rubric
-runs.
+runs. Rubric-origin findings also carry the explicit `route` field
+from *Per-diff stage checks*; the table below names the default route
+when no bead-local classification applies. At tree scope,
+`route="deferred"` still materializes ready remediation because
+`loom gate mint --tree` is an explicit standing-safety-net act.
 
-| Token | Source | Target variant | Routes to |
+| Token | Source | Target variant | Default route |
 |---|---|---|---|
-| `spec-coherence-fail` | Rubric (conformance trace) | `Criterion { spec, anchor }` | fix-up |
-| `orphan-integration` | Rubric (contract closure) | `Contract { id }` | fix-up |
-| `style-rule-violation` | Rubric (style-rule walk) | `StyleRule { rule_id, subject }` | fix-up |
-| `verifier-bypass` / `weak-assertion` / `fabricated-result` / `coincidental-pass` | Rubric (verifier-honesty walk) | `Annotation { target_string }` | fix-up |
-| `mock-discipline` | Rubric | `TestPath { path }` | fix-up |
-| `verifier-too-narrow` | Rubric | `Criterion { spec, anchor }` | fix-up |
-| `concurrency-untested` | Rubric | `LockSite { file, line }` | fix-up |
-| `judge-flag` | Rubric (`[judge]` criterion) | `Criterion { spec, anchor }` | fix-up |
-| `invariant-clash` | Rubric (invariant-clash scan) | `Invariant { spec, section, tag }` | **clarify** (evidence MUST embed `## Options — …`; mint falls back to blocked otherwise — see *Per-batch processing* step 4) |
-| `template-spec-drift` | Rubric (tree-scope only) | `Template { path }` | fix-up |
-| `cross-spec-clash` | Rubric (tree-scope only) | `Criterion { spec, anchor }` | fix-up |
-| `spec-conventions-violation` | Rubric (tree-scope only) | `Criterion { spec, anchor }` | fix-up |
-| `verifier-failed` | Deterministic verifier exit ≠ 0 (tree-scope only) | `Annotation { target_string }` | fix-up |
-| `dispatch-error` | Verifier exit 2 — command not found / missing prereq (tree-scope only) | `Annotation { target_string }` | fix-up |
-| `unresolved-annotation` | Integrity gate forward-resolution (tree-scope and push-gate scope) | `Annotation { target_string }` | fix-up |
-| `stub-pointing` | Integrity gate stub-pointing (tree-scope and push-gate scope) | `Annotation { target_string }` | fix-up |
-| `unneeded-pending-marker` | Integrity gate stale pending modifier (tree-scope and push-gate scope) | `Annotation { target_string }` | fix-up |
-| `inputs-protocol-error` | Integrity gate inputs-protocol check (tree-scope and push-gate scope) — an opted-in input-query (a `[judge]` collect mode, or a `[check]` / `[system]` runner that declares an `inputs` query) exited non-zero or emitted a malformed inputs document | `Annotation { target_string }` | fix-up |
-| `multiple-annotations` | Integrity gate atomic-acceptance (tree-scope only) | `Criterion { spec, anchor }` | fix-up |
-| `pending-marker-resolved` | Sweeping walker (any scope) — a pending element (`?` or `~`) in structured spec input has resolved against the pending direction (`?` + present, or `~` + absent), so the author must drop the marker to its resolved value | `MatrixCell { spec, partial, template }` / `SurfaceElement { spec, kind, name }` / per-walker variant | fix-up |
+| `spec-coherence-fail` | Rubric (conformance trace) | `Criterion { spec, anchor }` | deferred |
+| `orphan-integration` | Rubric (contract closure) | `Contract { id }` | deferred |
+| `style-rule-violation` | Rubric (style-rule walk) | `StyleRule { rule_id, subject }` | deferred |
+| `verifier-bypass` / `weak-assertion` / `fabricated-result` / `coincidental-pass` | Rubric (verifier-honesty walk) | `Annotation { target_string }` | deferred |
+| `mock-discipline` | Rubric | `TestPath { path }` | deferred |
+| `verifier-too-narrow` | Rubric | `Criterion { spec, anchor }` | deferred |
+| `concurrency-untested` | Rubric | `LockSite { file, line }` | deferred |
+| `judge-flag` | Rubric (`[judge]` criterion) | `Criterion { spec, anchor }` | deferred |
+| `invariant-clash` | Rubric (invariant-clash scan) | `Invariant { spec, section, tag }` | **clarify** (evidence MUST embed `## Options — …`; mint falls back to blocked otherwise — see *Deferred remediation processing*) |
+| `template-spec-drift` | Rubric (tree-scope only) | `Template { path }` | deferred |
+| `cross-spec-clash` | Rubric (tree-scope only) | `Criterion { spec, anchor }` | deferred |
+| `spec-conventions-violation` | Rubric (tree-scope only) | `Criterion { spec, anchor }` | deferred |
+| `verifier-failed` | Deterministic verifier exit ≠ 0 (tree-scope only) | `Annotation { target_string }` | deferred |
+| `dispatch-error` | Verifier exit 2 — command not found / missing prereq (tree-scope only) | `Annotation { target_string }` | deferred |
+| `unresolved-annotation` | Integrity gate forward-resolution (tree-scope and push-gate scope) | `Annotation { target_string }` | deferred |
+| `stub-pointing` | Integrity gate stub-pointing (tree-scope and push-gate scope) | `Annotation { target_string }` | deferred |
+| `unneeded-pending-marker` | Integrity gate stale pending modifier (tree-scope and push-gate scope) | `Annotation { target_string }` | deferred |
+| `inputs-protocol-error` | Integrity gate inputs-protocol check (tree-scope and push-gate scope) — an opted-in input-query (a `[judge]` collect mode, or a `[check]` / `[system]` runner that declares an `inputs` query) exited non-zero or emitted a malformed inputs document | `Annotation { target_string }` | deferred |
+| `multiple-annotations` | Integrity gate atomic-acceptance (tree-scope only) | `Criterion { spec, anchor }` | deferred |
+| `pending-marker-resolved` | Sweeping walker (any scope) — a pending element (`?` or `~`) in structured spec input has resolved against the pending direction (`?` + present, or `~` + absent), so the author must drop the marker to its resolved value | `MatrixCell { spec, partial, template }` / `SurfaceElement { spec, kind, name }` / per-walker variant | deferred |
 
-**Clarify-bound subset.** Today only `invariant-clash` routes to
-`loom:clarify`; the rest bundle into their lead-spec's fix-up
-batch (per *Per-batch processing*). The "Routes to" column is the
-canonical enumeration mint consults when deciding whether to apply
-the evidence-must-have-options check at step 4 — adding a future
-clarify-bound token is a one-row table edit + the new token's enum
-entry; no per-token carve-out in the mint pipeline.
+**Clarify-route subset.** Today only `invariant-clash` defaults to
+`clarify`; the rest default to `deferred`. At per-bead scope the
+explicit `route` field may classify any non-clarify token as
+`blocking` or `deferred` depending on whether it invalidates the
+bead's own work or identifies broader drift. Adding a future default-
+clarify token is a one-row table edit + the new token's enum entry; no
+per-token carve-out in the mint pipeline.
 
 `scope-creep` and `scope-shortfall` are per-bead tokens; the
 tree-scope walk does not emit them, and mint never receives them
@@ -801,26 +758,31 @@ from the agent's subprocess. Each line is a `LOOM_FINDING:` prefix
 followed by a JSON payload:
 
 ```
-LOOM_FINDING: {"token":"<token>","bonds":["<spec>",...],"target":<target>,"evidence":"<evidence>"}
+LOOM_FINDING: {"token":"<token>","route":"blocking|deferred|clarify","bonds":["<spec>",...],"target":<target>,"evidence":"<evidence>"}
 ```
 
 - **`token`** — concern identifier from the closed-set enum in
   *Concern tokens and target variants* above.
-- **`bonds`** — array of spec labels the fix-up should bond to.
+- **`route`** — rubric-origin workflow route. `blocking` retries the
+  current bead, `deferred` merges into a `loom:deferred` remediation
+  bead for molecule stabilization, and `clarify` materializes a
+  human-decision bead with options. Tree-scope deterministic findings
+  normalized by the driver do not come from LLM wire output; the driver
+  assigns `deferred` at molecule/push scope and materializes ready
+  remediation directly at tree scope.
+- **`bonds`** — array of spec labels the remediation should bond to.
   Always present, always at least one element. The driver picks the
   bonding lead from this array via *Multi-spec findings* below.
 - **`target`** — tagged JSON object whose `kind` discriminator
   selects the variant per the table above; carries
   identity-bearing fields specific to the variant.
 - **`evidence`** — the rubric's reasoning, stored verbatim on the
-  minted fix-up bead's description. For **clarify-bound findings**
-  (any token whose mint routes to `loom:clarify` — `invariant-clash`
-  today, plus any future clarify-bound tokens enumerated in
-  *Concern tokens and target variants*), the evidence MUST embed
-  the canonical `## Options — …` block per the *Options Format
-  Contract*. Mint validates this at parse time and falls back to
+  remediation bead's description or same-bead recovery context. For
+  `route="clarify"`, evidence MUST embed the canonical
+  `## Options — …` block per the *Options Format Contract*. Gate
+  routing validates this at parse time and falls back to
   `loom:blocked` with cause `clarify-without-options` when the
-  options block is absent — see *Per-batch processing* below.
+  options block is absent — see *Deferred remediation processing* below.
 
 `bonds` is *bonding* metadata; `target` is *identity* metadata. The
 two are kept separate so the driver can shift bonding (e.g., as
@@ -1112,25 +1074,29 @@ finding ids produce the same finding hash in one mint run or against
 live bd state, mint refuses with a structural collision instead of
 merging them.
 
-Before minting a finding, the driver queries bd:
+Before creating or updating remediation, the driver queries bd within
+the owning molecule for every bead carrying `finding:<finding-hash>`.
+The query includes live workflow states (`open`, `in_progress`,
+`blocked`, `deferred`) and the `loom:blocked` / `loom:clarify` /
+`loom:deferred` labels; closed matches are fetched separately as
+same-molecule history.
 
-```text
-bd query "label=finding:<finding-hash> AND status IN (open, in_progress, blocked, deferred)"
-```
+- **Zero live results, zero closed same-molecule results** — the
+  finding is untracked and may enter a new batch.
+- **One live result** — update that bead in place or skip minting this
+  finding; the run summary names the existing bead id.
+- **More than one live result** — structural violation; refuse the run
+  and surface the conflicting bead ids.
+- **Closed same-molecule result** — treat the finding as already
+  processed for this molecule. Record it as reobserved in the summary
+  / deferred-batch evidence, but do not create a new bead
+  automatically.
 
-- **Zero results** — the finding is untracked and may enter a new
-  batch.
-- **One result** — skip minting this finding; a live bead already
-  tracks it. The run summary names the existing bead id.
-- **More than one** — structural violation; refuse the mint run and
-  surface the conflicting bead ids.
-
-Closed beads are history, not suppression. A closed bead carrying
-`finding:<finding-hash>` does not suppress a newly observed current
-finding; if the same finding reappears, mint treats it as actionable
-current evidence. The summary may mention matching closed beads for
-context, but mint does not parse close reasons or require a bd
-resolution schema.
+Closed beads outside the owning molecule are history, not suppression:
+if the same finding reappears in a later molecule or tree sweep, mint
+treats it as actionable current evidence. The summary may mention
+matching closed beads for operator context, but outside history cannot
+mask present drift.
 
 `StyleRule` targets must include a concrete subject in addition to
 the rule id. A target of only `rule_id` is too broad: suppressing or
@@ -1162,7 +1128,7 @@ finding hash for long command/path identities. `reason` is required
 human context and is never parsed for routing.
 
 Suppression applies only to rubric-origin findings (`LOOM_FINDING:`
-records emitted by the LLM walk, including clarify-bound tokens such
+records emitted by the LLM walk, including clarify-route tokens such
 as `invariant-clash`). It never suppresses deterministic or integrity
 findings normalized by the driver, including `verifier-failed`,
 `dispatch-error`, `unresolved-annotation`, `stub-pointing`,
@@ -1213,7 +1179,7 @@ and tooling.
 #### Stale and partially-stale reporting
 
 At `--tree` scope, mint has the whole current finding set for the
-selected spec(s), so it reports existing live fix-up beads in scope
+selected spec(s), so it reports existing live remediation beads in scope
 whose `finding:<hash>` labels no longer align with current
 unsuppressed findings:
 
@@ -1229,156 +1195,102 @@ rubric runs can miss or rephrase findings, so closing bd state from a
 single absence would be brittle. The report names stale / partial
 candidate bead ids, current finding ids, and absent finding ids.
 Operators or later explicit cleanup commands decide whether to close
-or split them. The reporting pass does not run at `--bead`, `--diff`,
+or split them. The reporting pass does not run at `-b/--bead`, `--diff`,
 or `--files` scope because those scopes cannot prove a missing finding
 is absent from the whole tree.
 
-### Per-batch processing
+### Deferred remediation processing
 
-The driver buffers the streamed `LOOM_FINDING:` lines until the
-terminator and, at tree scope, appends deterministic / integrity
-findings normalized into the same typed `Finding` shape. It then
-processes the combined set as one mint run. The processing order is
-identity-first:
+Per-bead review, molecule-final audit, and tree sweep all produce the
+same typed Finding records, but they materialize differently depending
+on route and scope. `route="blocking"` is valid only when a current
+bead exists (`-b/--bead`); at molecule-final audit and tree scope the
+walker emits `deferred` or `clarify`, and a `blocking` route is a
+malformed finding.
 
 1. **Parse** each `LOOM_FINDING:` line into typed fields:
-   `{ token, bonds, target, evidence }`. Per-line parse errors
+   `{ token, route, bonds, target, evidence }`. Per-line parse errors
    surface as `BadWalk::MalformedFinding` (see *Emit shape*) and the
-   mint run is refused; the walk's recovery cause carries the
-   well-formed remainder so a re-run can fix the malformation.
+   run is refused; the recovery cause carries the well-formed remainder
+   so a re-run can fix the malformation.
 
 2. **Compute ids / hashes and apply suppressions.** Each validated
    finding gets a finding id and finding hash per *Finding id, finding
    hash, suppression, and dedup* above. Rubric-origin findings whose
    id or hash appears in `[[suppress]]` are counted in the summary,
    receive `LOOM_FINDING_STATUS` action `suppressed`, and are removed
-   from verdict / mint processing. Suppression entries matching
+   from verdict / materialization. Suppression entries matching
    deterministic or integrity findings are ignored and reported as
    ineffective.
 
-3. **Report stale candidates at tree scope.** For `--tree`, report
-   stale / partially-stale live beads per *Stale and partially-stale
-   reporting* above. No scope auto-closes stale beads.
+3. **Route per finding.** `blocking` findings return to the same bead's
+   recovery loop as `previous_failure` and never create bd remediation
+   work. A `blocking` finding outside bead scope refuses the run as a
+   malformed route. `deferred` findings merge into a molecule-local
+   deferred bead at molecule scope, or ready remediation at tree scope.
+   `clarify` findings create or update one human-decision bead per
+   finding hash.
 
-4. **Dedup per finding.** Query bd by `finding:<finding-hash>` across
-   live statuses. Findings with exactly one live tracker are skipped;
-   findings with zero live trackers continue; duplicate live trackers
-   refuse the mint run as a structural violation.
+4. **Dedup within the molecule.** Query bd by `finding:<finding-hash>`
+   across every non-closed child bead in the molecule, including
+   `deferred`, `open`, `in_progress`, `blocked`, and `clarify`. A live
+   match is updated in place; more than one live match refuses the run
+   as a structural violation. A closed bead in the same molecule counts
+   as a seen finding: if the same hash reappears, record it as
+   reobserved on the molecule/deferred summary but do not mint another
+   bead automatically.
 
-5. **Group untracked findings by lead-spec.** For each remaining
+5. **Group by lead spec.** For each remaining deferred/remediation
    finding, pick the lead via *Multi-spec findings* below — first
    element of `bonds` whose spec has an open epic, else `bonds[0]`.
-   Findings with the same lead group into the same per-spec candidate.
-   Multi-spec findings join only their lead-spec's group; cross-spec
-   visibility comes from `spec:<X>` labels on the resulting bead.
+   One molecule-local deferred bead exists per lead spec. If a lead
+   spec's batch grows too large, split by concern family
+   (`spec-coherence`, `style`, `verifier-quality`, etc.), never by
+   individual finding unless it is the only finding for that lead.
 
-6. **Partition by routing within each group.** Each lead-spec group
-   yields at most one fix-up batch containing every non-clarify-bound
-   finding for that spec, plus one single-finding clarify bead for each
-   clarify-bound finding. Clarify-bound findings cannot share a bead
-   because each carries its own options block and `loom msg` consumes
-   one block per bead.
+6. **Store deferred findings in bd.** Deferred beads are ordinary child
+   tasks under the molecule epic with `status=deferred`, label
+   `loom:deferred`, one `spec:<X>` label per bonded spec, and one
+   `finding:<hash>` label per contained finding. No `loom:fixup` label
+   is used; a bead carrying `finding:<hash>` labels is already
+   identifiable as gate-originated remediation work. bd's `deferred`
+   status keeps the bead out of `bd ready` by default.
 
-7. **Validate clarify-bound coupling.** For each clarify-bound
-   finding, scan `evidence` for the canonical `## Options — <summary>`
-   heading followed by at least one `### Option <N> — <title>`
-   subsection. If absent or malformed, route that finding as a
-   single-finding blocked fix-up bead with cause
-   `clarify-without-options` instead of applying `loom:clarify`.
+7. **Validate clarify coupling.** For each `route="clarify"` finding,
+   scan `evidence` for the canonical `## Options — <summary>` heading
+   followed by at least one `### Option <N> — <title>` subsection. If
+   absent or malformed, route that finding as a single-finding blocked
+   bead with cause `clarify-without-options` instead of applying
+   `loom:clarify`.
 
-8. **Compute an optional batch receipt.** A batch receipt id may be
-   computed from the sorted set of contained finding hashes and
-   persisted as `loom:fixup:<batch-id>` for traceability. It is not
-   consulted for dedup; per-finding hashes are the only dedup key.
+8. **Promote stabilization work.** `loom gate mint -m/--molecule <id>`
+   updates each deferred bead's description with the latest merged
+   evidence, removes `loom:deferred`, sets `status=open`, and leaves
+   `finding:<hash>` / `spec:<label>` labels intact. If no deferred
+   beads exist, molecule mint is a no-op success. Promotion is a state
+   transition, not creation of another bead.
 
-9. **Resolve the lead's molecule** via the single-tier query from
-   [harness.md — Molecule lifecycle](harness.md#molecule-lifecycle):
-   ```
-   bd query "type=epic AND label=spec:<lead> AND status=open"
-   ```
-   - One result → use that epic.
-   - Zero results → mint molecule + epic with `bd create
-     --type=epic --title="<lead>" --labels="spec:<lead>"
-     --metadata "loom.base_commit=<HEAD>"`.
-   - More than one → structural violation, refuse.
+9. **Tree sweep materialization.** `loom gate mint --tree` creates or
+   updates ready remediation beads directly; it does not use
+   `loom:deferred` because the operator explicitly requested the
+   standing safety-net work. Clarify-route findings still create or
+   update one `loom:clarify` bead per finding hash.
 
-10. **Mint the batch bead** with labels including
-    `finding:<finding-hash>` for every contained finding, one
-    `spec:<X>` label per unique entry across the union of `bonds`,
-    and the optional `loom:fixup:<batch-id>` receipt. The description
-    enumerates every finding in the batch (finding id, hash, token,
-    target's canonical form, evidence excerpt), and the title is
-    stable across runs for the same contained finding-hash set.
-    Single-finding clarify batches whose evidence contains a
-    well-formed `## Options — …` block also carry `loom:clarify`;
-    fallback blocked beads carry `loom:blocked` with cause
-    `clarify-without-options`.
+End-of-run summary (printed to stdout) lists blocking findings,
+deferred findings merged, deferred beads promoted, ready remediation
+batches created or updated, clarify findings raised, suppressed rubric
+findings, stale candidates, refused structural conflicts, and transient
+errors, with `LOOM_FINDING_STATUS:` JSON lines carrying the parseable
+per-finding details.
 
-End-of-run summary (printed to stdout) lists minted batches, skipped
-live finding hashes, suppressed rubric findings, stale candidates,
-partially-stale candidates, refused structural conflicts, and
-transient errors, with `LOOM_FINDING_STATUS:` JSON lines carrying the
-parseable per-finding details.
-
-**Worker discretion on a minted fix-up batch.** The agent dispatched
-against a fix-up batch reads the description's enumerated findings
-and decides:
-
-- Fix every finding in one diff and close the batch.
-- Fix a subset and split the remainder into sibling fix-up beads
-  under the molecule epic via `bd create --parent=<molecule-epic-id>`
-  for deferred work, then close the batch. (Parent is the molecule
-  epic, not the batch — the molecule lifecycle expects fix-ups
-  bonded as direct epic children.)
-- Emit `LOOM_CLARIFY` if no progress is possible (routed via the
-  standard per-bead clarify path).
-
-Closing a batch is the agent's signal about that batch only; if any
-finding id remains present in a future tree audit and is not
-suppressed, mint re-surfaces it as current actionable work.
-
-### Per-bead mint summary semantics
-
-`loom gate mint --bead <id>` exits non-zero when `refused > 0` or
-`errors > 0`; otherwise exit 0 even on `minted > 0` (creating
-fix-up batches is a successful run). The driver — primarily
-`loom loop`'s per-bead path — interprets the exit code and
-summary together:
-
-- **Clean exit (refused == 0, errors == 0, any minted count).** The
-  bead's work is done; whatever batches were minted surface on the
-  next outer-loop pass via `bd ready`. Per-bead path returns Done.
-- **`refused > 0` — structural bd violation.** Refusal means
-  either the per-finding dedup query (*Per-batch processing* step 4)
-  returned >1 live bead for the same finding hash, or the
-  lead-resolution query (step 9) returned >1 open epic for the spec.
-  Both are operator-resolvable bd states, not transient failures. The
-  per-bead path routes the bead to `loom:blocked` with cause
-  `mint-structural-violation` and the conflicting bead ids in the
-  detail. Next `loom loop` pass after cleanup picks up where it left
-  off via dedup re-resolve.
-- **`errors > 0` — transient.** Unexpected failure during mint
-  itself: bd CLI fault, subprocess timeout, or a `bd create` /
-  `bd list` invocation that returned an unexpected shape. The
-  per-bead path threads the summary's error detail into
-  `PreviousFailure` and re-runs through the existing recovery loop
-  bounded by `[loop] max_retries`. After the retry budget exhausts,
-  the bead routes to `loom:blocked` with cause `retry-exhausted`
-  and the accumulated error context in notes — same recovery-
-  exhaustion path the loop-phase uses. (Previously this routed to
-  `loom:clarify`, but the driver cannot synthesize the `## Options
-  — …` block from raw mint errors, so per the Options Format
-  Contract the correct terminal label is `loom:blocked`; `msg -c`
-  walks the human through candidate resolutions in-session.)
-
-The bead's underlying work (the agent's loop-phase) is unaffected by
-this routing; mint runs *after* the agent signals Success per
-*Per-diff stage checks* above. A `refused` mint outcome does not
-unwind the agent's commit and never reclassifies the completed bead as
-`loom:clarify` unless a separate clarify-bound finding with a
-well-formed options block was actually minted. Structural mint failures
-park the bead as blocked so the operator can resolve the bd-state issue
-without losing the integrated work.
+**Worker discretion on a promoted remediation batch.** The agent
+dispatched against a promoted batch reads the description's enumerated
+findings and decides whether to fix every finding in one diff, fix a
+coherent subset and leave the remaining finding labels on the same
+molecule's deferred bead, or emit `LOOM_CLARIFY` if no progress is
+possible. A stabilization bead that produces new deferred findings
+merges them back into the same molecule's deferred set rather than
+spawning tiny child beads.
 
 ### Multi-spec findings
 
@@ -1395,7 +1307,7 @@ treats the rubric's ordering as authoritative for primacy while
 preferring existing molecules over creating new ones.
 
 **Batching follows the lead.** A multi-spec finding joins its
-lead-spec's batch (per *Per-batch processing* step 5) — never
+lead-spec's batch (per *Deferred remediation processing* step 5) — never
 duplicates across multiple specs' batches. The resulting batch
 bead is `--parent`-ed to the lead spec's epic and carries one
 `spec:<X>` label per unique entry across the **union of `bonds`
@@ -1416,7 +1328,7 @@ field (`Criterion` and `Invariant`), `target.spec` MUST appear in
 that finding's `bonds` — the rubric cannot cite a criterion or
 invariant in spec X while bonding only to spec Y. Validation
 failure rejects the finding with a typed parse error and refuses
-the mint run (per *Per-batch processing* step 1).
+the mint run (per *Deferred remediation processing* step 1).
 
 ## Marker
 
@@ -1544,7 +1456,7 @@ state at HEAD; it does not rebase. The mint sequence is:
 1. Push gate acquires `index.lock`.
 2. Runs full audit against the integrated tree:
    `prek run --hook-stage pre-push --all-files` +
-   `loom gate review --diff <molecule.base_commit>..HEAD`.
+   `loom gate audit --diff <molecule.base_commit>..HEAD`.
 3. On audit-pass, constructs `GateSuccess`; calls
    `MarkerProof::from_gate_success(success, loom_workspace)`;
    `write_to(".loom/marker.json")`.
@@ -1788,7 +1700,7 @@ tolerated while the underlying condition holds; the moment the
 condition resolves, the marker *itself* becomes the finding. The
 implementer who lands the verifier must drop the `?` in the same
 diff or the push gate refuses on `UnneededPendingMarker`
-(recoverable: the finding mints into a fix-up batch and the loop
+(recoverable: the finding mints into a remediation batch and the loop
 re-enters until the cap exhausts; see *Integrity gate*). This
 forces co-incidence between *"target now resolves"* and
 *"marker now removed,"* so the spec tree never carries stale
@@ -1890,7 +1802,7 @@ pending direction. Target variant depends on the walker emitting
 it (the matrix walker uses `MatrixCell`, the surface walker uses
 `SurfaceElement`, etc. — each sweeping walker defines a target
 variant naming the specific element that should be resolved).
-Routes to fix-up bead (not clarify) — the resolution is mechanical,
+Routes to remediation bead (not clarify) — the resolution is mechanical,
 not judgment-requiring.
 
 **Adoption convention.** Every sweeping walker added to loom MUST
@@ -2115,7 +2027,7 @@ An opted-in verifier that exits non-zero or emits a malformed inputs
 document is a loud `inputs-protocol-error` finding (see *Concern
 tokens and target variants*) — deterministic, emitted by the
 integrity gate during `loom gate verify` / `check`, exiting non-zero
-at the push gate and minting as a fix-up at tree scope. This is the
+at the push gate and minting as a remediation at tree scope. This is the
 integrity gate's fourth direction; see *Integrity gate*, Direction 4.
 Because the
 opt-in is explicit, loudness never mis-fires: a verifier whose
@@ -2283,19 +2195,19 @@ Failure output (one per finding):
 - `<spec>:<line>: annotation [tier](<target>) — input-query errored / emitted a malformed inputs document`
 
 **Integrity findings at the push gate are recoverable up to the
-molecule's iteration cap.** When `loom gate verify --diff
-<molecule.base_commit>..HEAD` (the molecule-completion audit)
-produces one or more `UnresolvedAnnotation`, `StubTestFunction`,
-`UnneededPendingMarker`, or `inputs-protocol-error` findings within
-the molecule's diff scope, the verdict gate normalizes each into a
-typed `Finding` per
-the mapping in *Findings and Minting — Concern tokens and target
-variants* and dispatches them through the standard mint pipeline
-(per *Per-batch processing*). The findings bundle into one fix-up
-batch per lead-spec, carrying all integrity findings the audit
-emitted for it. The push is refused for this iteration, the
-iteration counter is incremented, and the outer loop re-enters so
-the worker can address the batch.
+molecule's iteration cap.** When `loom gate audit --diff
+<molecule.base_commit>..HEAD` produces one or more
+`UnresolvedAnnotation`, `StubTestFunction`, `UnneededPendingMarker`, or
+`inputs-protocol-error` findings within the molecule's diff scope, the
+verdict gate normalizes each into a typed `Finding` per the mapping in
+*Findings and Minting — Concern tokens and target variants* and merges
+them into the molecule's deferred remediation set (per *Deferred
+remediation processing*). The findings coalesce into one remediation
+batch per lead-spec / concern family, carrying all integrity findings
+the audit emitted for it. The push is refused for this iteration, the
+iteration counter is incremented, `loom gate mint -m/--molecule`
+promotes the batch, and the outer loop re-enters so the worker can
+address it.
 
 **Cap-exhausted fallback.** The recovery branch is bounded by the
 molecule's iteration cap. When the counter exhausts, the verdict
@@ -2331,7 +2243,7 @@ clarify-shaped."
 **Per-kind auto-options templates.** The templates below are the
 building blocks the composition draws from. Two consumption sites:
 
-- **Recovery branch (cap not exhausted).** The worker's fix-up
+- **Recovery branch (cap not exhausted).** The worker's remediation
   batch description embeds the kind-appropriate template alongside
   each finding as a suggested mechanical resolution.
 - **Cap-exhausted fallback.** The gate composes one primary option
@@ -2459,7 +2371,7 @@ mode* on absence are uniform:
 
 | Path | Writer of the options block | Where the block lives | Validator | Failure mode |
 |---|---|---|---|---|
-| **Mint-from-finding** (worker phase emits `LOOM_FINDING` with a clarify-bound token) | Rubric agent — embeds the block inside `evidence` | Mint extracts from `evidence` into the minted bead's description | `loom gate mint` (per *Per-batch processing* step 4) | Fall back to `loom:blocked` cause `clarify-without-options` |
+| **Mint-from-finding** (worker phase emits `LOOM_FINDING` with a clarify-route token) | Rubric agent — embeds the block inside `evidence` | Mint extracts from `evidence` into the minted bead's description | `loom gate mint` (per *Deferred remediation processing* step 4) | Fall back to `loom:blocked` cause `clarify-without-options` |
 | **Direct-emit `LOOM_CLARIFY`** (worker phase emits the marker; target bead is the bead under dispatch for `loop` / `review`, the molecule epic for `todo_*` per [templates.md — Decomposition Discipline](templates.md#decomposition-discipline)) | The worker agent itself, via `bd update --notes` / `bd update --description` against the target bead before emitting the marker | The target bead's notes or description | Verdict gate (per [harness.md § Verdict Gate](harness.md#verdict-gate) marker definitions) | Fall back to `loom:blocked` cause `clarify-without-options` |
 | **Existing-bead promotion** (chat agent in `msg -c` upgrades a `loom:blocked` bead) | The chat agent, with human authorization | The bead's notes (added via `bd update --notes` before `bd update --add-label=loom:clarify`) | None — the chat agent has bd-write authority and the human authorizes each turn (per [harness.md § Msg Modes](harness.md#msg-modes)) | n/a (no automatic validation; if the chat agent skips the options write, the human catches it next turn) |
 
@@ -2510,26 +2422,36 @@ and git commits already provide the durable record:
 
 - **Per-diff verify failures** drive the existing recovery loop
   with `previous_failure` context. They do not produce Finding
-  records or fix-up batches.
-- **Unsuppressed rubric findings** (per-diff via `mint --bead`),
-  **deterministic + unsuppressed rubric findings** (tree scope via
-  `mint --tree`), and **push-gate integrity findings** (per
-  *Integrity gate*'s recovery branch) bundle into fix-up batches —
-  one batch per lead-spec per mint run after per-finding dedup —
-  bonded via the molecule lifecycle (see [*Findings and Minting*](#findings-and-minting)).
+  records or remediation batches.
+- **Per-bead rubric findings** route by their explicit `route` field:
+  `blocking` findings drive same-bead recovery, `deferred` findings
+  merge into molecule-local `loom:deferred` beads, and `clarify`
+  findings materialize one human-decision bead per finding hash.
   Suppressed rubric findings are reported in summaries but do not
   affect verdicts or bd state.
-- **Clarify-bound findings** (currently `invariant-clash`; future
-  clarify-bound tokens follow the same path automatically) mint as
-  single-finding beads — one bead per finding, never bundled —
-  carrying `loom:clarify` with the `## Options — …` block from the
-  finding's `evidence` rendered into the bead's description per the
-  Options Format Contract. The per-finding (not bundled) shape is
-  load-bearing because `loom msg` cannot consume a bead carrying
-  multiple options blocks. Clarify-bound findings whose evidence
-  lacks a well-formed options block fall back to `loom:blocked`
-  with cause `clarify-without-options` rather than minting a
-  stranded clarify bead.
+- **Molecule-final audit rubric findings** use `deferred` or `clarify`
+  routes only. Deferred findings merge into the molecule's deferred
+  remediation set and cause another stabilization pass within the
+  molecule iteration cap; clarify findings hold the molecule for human
+  resolution.
+- **Tree-scope deterministic + unsuppressed rubric findings** (`mint
+  --tree`) materialize as ready remediation batches — one batch per
+  lead-spec / concern family after per-finding dedup — bonded via the
+  molecule lifecycle (see [*Findings and Minting*](#findings-and-minting)).
+- **Push-gate integrity findings** (per *Integrity gate*'s recovery
+  branch) merge into the molecule's deferred remediation set and are
+  promoted by `loom gate mint -m/--molecule <id>` during stabilization.
+- **Clarify-route findings** (currently defaulted only by
+  `invariant-clash`; future default-clarify tokens follow the same
+  path automatically) mint as single-finding beads — one bead per
+  finding, never bundled — carrying `loom:clarify` with the
+  `## Options — …` block from the finding's `evidence` rendered into
+  the bead's description per the Options Format Contract. The
+  per-finding shape is load-bearing because `loom msg` cannot consume
+  a bead carrying multiple options blocks. Clarify-route findings whose
+  evidence lacks a well-formed options block fall back to
+  `loom:blocked` with cause `clarify-without-options` rather than
+  minting a stranded clarify bead.
 
 Past gate runs are not persisted; *past passes don't grant immunity
 from re-evaluation*. Conformance is a property of the current
@@ -2544,33 +2466,25 @@ Per-stage flag handling:
 - **Plan** — interview held until the spec is amended (claim
   surfaced, clash resolved, or explicitly out-of-scope'd). User
   authorisation required to ship a spec with unresolved gaps.
-- **Per-diff** — hard-fail flags enter the existing recovery loop
-  bounded by `[loop] max_iterations` with `previous_failure`
-  rendered into the next prompt. All iterations except the last
-  are same-agent retries with cumulative `previous_failure`; the
-  final iteration uses a **fresh agent**: new container, new agent
-  process, blank scratchpad; receives the spec, the bead's
-  criteria, the cumulative `previous_failure`, and the current
-  state of the worktree — but *not* the prior session's transcript
-  or in-memory context. Rationale: same-agent retry has a low
-  recovery rate and a high re-fail rate; the final attempt gets
-  failure evidence without the failed approach. Invariant clashes
-  follow a different path: mint creates a new fix-up bead carrying
-  `loom:clarify` (per *Findings and Minting*), and `bd ready`
-  skips that fix-up bead on subsequent ticks while non-dependent
-  beads in the molecule continue running. `loom msg` resolves the
-  clarify on the fix-up bead. Clashes never trigger fresh-agent
-  retry of the bead that surfaced them.
+- **Per-diff** — deterministic hard-fail flags and `route="blocking"`
+  review findings enter the existing same-bead recovery loop with
+  `previous_failure` rendered into the next prompt. `route="deferred"`
+  findings are stored on `status=deferred` / `loom:deferred` molecule
+  remediation beads and are not returned by `bd ready` until
+  stabilization promotes them. `route="clarify"` findings create or
+  update one `loom:clarify` bead per finding hash; `loom msg` resolves
+  the clarify. Clashes never trigger fresh-agent retry of the bead that
+  surfaced them.
 - **Standing** — `loom gate mint --tree` walks the deterministic
-  verifiers and the LLM rubric, mints typed findings as one fix-up
-  batch per spec (plus single-finding clarify beads for any
-  clarify-bound findings) bonded to each owning spec's open epic
-  (resolved via single bd query per *Standing-safety-net checks*
-  above); a fresh molecule + epic is minted when no open epic
-  exists for the spec. Invariant clashes surface via `loom:clarify`
-  on the minted single-finding clarify bead; resolved in the next
-  `loom msg` walk. See [*Findings and Minting*](#findings-and-minting)
-  for the per-batch processing flow.
+  verifiers and the LLM rubric, materializes typed findings as ready
+  remediation batches per lead spec / concern family (plus
+  single-finding clarify beads for any clarify-route findings) bonded
+  to each owning spec's open epic (resolved via single bd query per
+  *Standing-safety-net checks* above); a fresh molecule + epic is
+  minted when no open epic exists for the spec. Invariant clashes
+  surface via `loom:clarify` on the minted single-finding clarify bead;
+  resolved in the next `loom msg` walk. See [*Findings and Minting*](#findings-and-minting)
+  for the deferred remediation processing flow.
 
 ### Post-hoc recovery — when the push gate was skipped
 
@@ -2587,14 +2501,14 @@ include unrelated downstream commits.
 or multi-spec. The standing-safety-net scope is exactly what's
 needed — walk the full spec(s) against the full implementation, no
 diff math, no dependence on a still-valid `loom.base_commit`, with
-fix-up beads minted per-spec as findings emerge.
+remediation beads minted per-spec as findings emerge.
 
 ```bash
 # Single spec
-loom gate mint --tree --spec <label>   # standing walk; mints fix-ups to the
+loom gate mint --tree --spec <label>   # standing walk; mints remediations to the
                                        #   spec's open epic, or mints molecule+
                                        #   epic if absent
-loom loop                              # process the resulting fix-up beads; gate
+loom loop                              # process the resulting remediation beads; gate
                                        #   fires structurally on completion
 
 # Across every spec in the workspace
@@ -2752,8 +2666,8 @@ and conservative fall-through for unowned queries.
 - `loom gate mint --tree --spec <X>` resolves the bonding target
   via single bd query (per [harness.md — Molecule
   lifecycle](harness.md#molecule-lifecycle)); zero results → mints
-  molecule + epic and bonds fix-ups to the new molecule; one result
-  → bonds fix-ups to its molecule; more than one → structural
+  molecule + epic and bonds remediations to the new molecule; one result
+  → bonds remediations to its molecule; more than one → structural
   invariant violation, refuses to proceed and surfaces the
   conflicting epic IDs
   [test](mint_tree_scope_resolves_lead_spec_via_single_tier_query)
@@ -2854,12 +2768,13 @@ and conservative fall-through for unowned queries.
   and more than one live result refuses the mint run as a structural
   violation
   [test](mint_dedups_per_finding_hash_label_across_live_statuses)
-- Closed beads carrying `finding:<hash>` are historical context only;
-  they do not suppress a newly observed current finding with the same
-  id/hash
-  [test](closed_finding_hash_label_does_not_suppress_current_finding)
+- Closed beads carrying `finding:<hash>` suppress automatic reminting
+  only within the same owning molecule; closed matches outside the
+  molecule are historical context only and do not suppress newly
+  observed current findings
+  [test?](closed_finding_hash_label_suppresses_remint_only_within_same_molecule)
 - A blocked clarify bead carrying `finding:<hash>` dedups the same
-  clarify-bound finding while it remains live, so unresolved
+  clarify-route finding while it remains live, so unresolved
   `loom:clarify` decisions do not remint endlessly
   [test](blocked_clarify_bead_dedups_same_finding_hash)
 - `[[suppress]]` entries in `loom.toml` require `reason` and exactly
@@ -2882,7 +2797,7 @@ and conservative fall-through for unowned queries.
   finding's id, hash, bd label, token, target, and action without
   requiring the LLM to emit derived identity fields
   [test](driver_emits_finding_status_json_with_identity_and_action)
-- At `--tree` scope, a live fix-up bead whose `finding:<hash>` labels
+- At `--tree` scope, a live remediation bead whose `finding:<hash>` labels
   are all absent from the current unsuppressed finding set is reported
   as a stale candidate, not auto-closed
   [test?](mint_tree_reports_stale_candidates_without_closing)
@@ -2903,7 +2818,7 @@ and conservative fall-through for unowned queries.
   array whose spec has an open epic; if none of the bonds have an
   open epic, the lead is `bonds[0]` and mint creates a molecule +
   epic for it. Findings sharing a lead may bundle into the same
-  per-spec fix-up batch without changing their finding ids or hashes
+  per-spec remediation batch without changing their finding ids or hashes
   [test?](mint_bonding_lead_groups_findings_without_affecting_identity)
 - For target variants that carry a spec field (currently
   `Criterion` and `Invariant`), `target.spec` MUST appear in that
@@ -2911,14 +2826,14 @@ and conservative fall-through for unowned queries.
   a typed parse error and the containing mint run is refused
   [test](mint_rejects_criterion_target_whose_spec_is_not_in_bonds)
 - Clarify-bound findings mint as single-finding beads (one bead
-  per clarify-bound finding, not bundled into the spec's fix-up
+  per clarify-route finding, not bundled into the spec's remediation
   batch) carrying `finding:<hash>` and `loom:clarify` labels, with
   the description embedding the `## Options — …` block extracted from
   the finding's `evidence` per the *Options Format Contract*
   [test?](mint_clarify_bound_finding_creates_single_bead_with_finding_hash_label_and_options_block)
-- Any clarify-bound finding whose `evidence` lacks a well-formed
+- Any clarify-route finding whose `evidence` lacks a well-formed
   `## Options — <summary>` heading with at least one `### Option
-  <N> — <title>` subsection falls back to a fix-up bead carrying
+  <N> — <title>` subsection falls back to a remediation bead carrying
   `loom:blocked` with cause `clarify-without-options` — never a
   stranded clarify bead the chat-drafter cannot resolve
   [test](mint_clarify_bound_finding_without_options_falls_back_to_blocked)
@@ -2927,18 +2842,18 @@ and conservative fall-through for unowned queries.
   form, evidence excerpt); the title is stable across runs for the
   same contained finding-hash set
   [test](mint_batch_description_enumerates_finding_identity_and_title_is_stable)
-- A fix-up batch carrying multiple findings exposes worker
+- A remediation batch carrying multiple findings exposes worker
   discretion to fix all and close, fix a subset and split the
-  remainder into sibling fix-up beads under the molecule epic via
+  remainder into sibling remediation beads under the molecule epic via
   `bd create --parent=<molecule-epic-id>` for deferred work, or
   emit `LOOM_CLARIFY` for no-progress cases; the bead's acceptance
   criterion is "agent processed the batch", not "every finding
   individually resolved"
-  [judge](../tests/judges/loom.sh#judge_fixup_batch_acceptance)
-- `mint --bead <id>` walks the LLM rubric only, not the deterministic
-  verifiers; verify-side findings have already been handled by the
-  preceding `verify --bead <id>` step in the loop
-  [test](mint_bead_scope_walks_llm_rubric_only_not_verifiers)
+  [judge](../tests/judges/loom.sh#judge_remediation_batch_acceptance)
+- `review -b/--bead <id>` walks the focused LLM rubric after
+  `verify -b/--bead <id>`; `mint` is not invoked on the per-bead hot
+  path
+  [test?](per_bead_gate_uses_review_not_mint)
 - `mint --tree` walks both the deterministic verifiers and the LLM
   rubric, emitting `LOOM_FINDING:` lines for findings from either
   source
@@ -2948,32 +2863,35 @@ and conservative fall-through for unowned queries.
   re-run's per-finding dedup query skips those hashes and retries only
   the unfinished findings
   [test](mint_idempotent_after_partial_failure_retries_only_unfinished_findings)
-- `mint --dry-run` walks the rubric, prints proposed bd writes to
-  stdout, and makes zero bd writes
+- `mint --dry-run` prints proposed bd writes and makes zero bd writes;
+  at `--tree` it still walks the rubric/verifiers, and at
+  `-m/--molecule` it previews deferred-promotion changes
   [test](mint_dry_run_makes_no_bd_writes)
-- `mint --spec <X>` filters findings to those whose lead-spec
-  resolves to `<X>` after multi-spec lead selection; findings
-  routing to other specs are reported as skipped
+- `mint --tree --spec <X>` filters findings to those whose lead-spec
+  resolves to `<X>` after multi-spec lead selection; findings routing
+  to other specs are reported as skipped
   [test](mint_spec_filter_drops_findings_routing_to_other_specs)
-- Bare `loom gate mint` (no scope flag) defaults to `--diff
-  <molecule.base_commit>..HEAD` when the active spec has an open
-  epic, else `--diff HEAD` — same default policy as `audit` /
-  `verify` / `review`
-  [test](mint_bare_invocation_defaults_to_active_molecule_diff)
-- The end-of-run summary lists minted batches, skipped live finding
-  hashes, suppressed rubric findings, stale candidates, partially-stale
+- Bare `loom gate mint` defaults to `-m/--molecule <active-molecule>`
+  when one exists; without an active molecule it errors and asks for
+  `--tree` or `-m/--molecule` explicitly
+  [test?](mint_bare_invocation_defaults_to_active_molecule_or_errors)
+- The end-of-run summary lists blocking findings, deferred findings
+  merged, deferred beads promoted, ready remediation batches created or
+  updated, clarify findings raised, skipped live finding hashes,
+  suppressed rubric findings, stale candidates, partially-stale
   candidates, refused structural conflicts, and transient errors, with
   `LOOM_FINDING_STATUS:` JSON carrying per-finding details
   [test?](mint_end_of_run_summary_reports_finding_lifecycle_outcomes)
-- Push-gate integrity findings recover via the standard mint
-  pipeline until the molecule's iteration counter exhausts: the
-  verdict gate normalizes `UnresolvedAnnotation`, `StubTestFunction`,
-  and `UnneededPendingMarker` into typed `Finding`s, dispatches
-  through `loom gate mint`, refuses the push, increments the
-  counter, and re-enters the loop. On cap exhaustion, the gate
-  falls back to terminal `loom:clarify` on the molecule's epic
-  with one composed auto-generated `## Options — …` block
-  (kind-grouped resolutions per *Integrity gate* above)
+- Push-gate integrity findings recover via deferred remediation until
+  the molecule's iteration counter exhausts: the verdict gate
+  normalizes `UnresolvedAnnotation`, `StubTestFunction`, and
+  `UnneededPendingMarker` into typed `Finding`s, merges them into the
+  molecule's deferred remediation set, promotes them with
+  `loom gate mint -m/--molecule`, refuses the push, increments the
+  counter, and re-enters the loop. On cap exhaustion, the gate falls
+  back to terminal `loom:clarify` on the molecule's epic with one
+  composed auto-generated `## Options — …` block (kind-grouped
+  resolutions per *Integrity gate* above)
   [test](push_gate_recovers_integrity_findings_until_cap_then_clarifies)
 - The bead-container worker runs `loom gate verify --diff HEAD`
   before emitting `LOOM_COMPLETE` and resolves findings in-session;
@@ -3137,60 +3055,59 @@ the `parse_walk_output` / `WalkOutput::from_stdout` /
 
 ### Production walker wiring
 
-The seam between `loom gate mint`'s CLI arm and the underlying walker
-is the `MintWalker` trait. The CLI arm dispatches through the trait
-so findings reach the mint pipeline from a real walk. A CLI arm
-that constructs an empty finding vector unconditionally — bypassing
-the walker — is a structural defect; the walker is the only path
-findings reach mint.
+The seam between `loom gate mint --tree`'s CLI arm and the underlying
+walker is the `MintWalker` trait. The tree-sweep CLI arm dispatches
+through the trait so findings reach the mint pipeline from a real walk.
+A tree-sweep arm that constructs an empty finding vector
+unconditionally — bypassing the walker — is a structural defect. The
+`-m/--molecule` arm is different: it promotes already-recorded
+deferred bd findings and does not fabricate a new `Vec<Finding>`.
 
 - A production `MintWalker` implementation exists in
   `loom-workflow::mint::walk` (alongside the trait). Its `run_rubric`
   spawns the reviewer agent subprocess against the rendered review
-  prompt and returns the agent's combined stdout; its
-  `run_verifiers` (called only at `MintScope::Tree`) dispatches the
-  deterministic verifier set + the integrity gate forward-resolution
-  check and returns one `VerifierFailure` per failed dispatch
-  outcome
+  prompt and returns the agent's combined stdout; its `run_verifiers`
+  dispatches the deterministic verifier set + the integrity gate
+  forward-resolution check and returns one `VerifierFailure` per failed
+  dispatch outcome. Both methods are used only for `MintScope::Tree`
   [test](production_mint_walker_exists_and_dispatches_rubric_and_verifiers)
-- `run_gate_mint` in the loom CLI binary constructs the production
-  walker and calls `mint::walk::walk(walker, scope, validator)` to
-  obtain the `Vec<Finding>` it passes to `mint_findings_with_options`.
-  No code path in `run_gate_mint` constructs `Vec::<Finding>::new()`
-  unconditionally
-  [test](run_gate_mint_dispatches_through_production_walker_not_empty_vec)
+- `run_gate_mint` in the loom CLI binary dispatches by scope:
+  `--tree` constructs the production walker and calls
+  `mint::walk::walk(walker, scope, validator)` to obtain the
+  `Vec<Finding>` it passes to the minting pipeline; `-m/--molecule`
+  calls the deferred-promotion path and never constructs a placeholder
+  empty findings vector
+  [test?](run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion)
 - `loom loop`'s per-bead path routes a loop-phase `Success` outcome
-  through exactly one `exec_per_bead_gate` call per bead on the typed
+  through exactly one per-bead gate call on the typed
   `PerBeadGateOutcome`; a `Clean` outcome routes the bead to `Done`
   (neither clarified nor blocked). The bullet below pins the
-  subprocess shape `exec_per_bead_gate` resolves to; fix-up beads
-  minted by that subprocess pair become ready on the next outer-loop
-  pass via `bd ready` per *Per-bead mint summary semantics* above
+  subprocess shape that per-bead gate resolves to; deferred remediation
+  beads are not made ready until the molecule stabilization step
+  promotes them
   [test](loop_per_bead_routes_run_phase_success_through_exec_per_bead_gate)
-- The production `exec_per_bead_gate` implementation actually spawns
-  those subprocesses against `loom_bin` — argv shape `gate verify
-  --bead <id> -s <spec>` then (only on verify exit 0) `gate mint
-  --bead <id> -s <spec>`. The bullet above covers the runner-side
-  routing on the typed `PerBeadGateOutcome`; this pins the
-  subprocess seam itself so a regression that hard-codes an empty
-  argv, reorders verify/mint, or drops the bead/spec flags is caught
-  at the production controller, not just at the mock boundary
-  [test](exec_per_bead_gate_invokes_loom_gate_verify_then_mint_subprocesses)
+- The production per-bead gate implementation actually spawns
+  subprocesses against `loom_bin` — argv shape `gate verify -b <id>
+  -s <spec>` then (only on verify exit 0) `gate review -b <id>
+  -s <spec> --verify-exit 0`. A regression that invokes `gate mint
+  -b`, reorders review before verify, or drops the bead/spec flags is
+  caught at the production controller
+  [test?](exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses)
 
-### Per-bead mint summary semantics
+### Molecule mint summary semantics
 
-- `loom gate mint --bead <id>` exits 0 when `refused == 0 && errors
-  == 0`, regardless of `minted`/`skipped` counts. The mint summary
-  is printed to stdout unchanged
-  [test](mint_bead_scope_exits_zero_on_clean_summary)
-- `loom gate mint --bead <id>` exits non-zero when `refused > 0` or
-  `errors > 0`, and the summary header lists the non-zero counts so
-  the loop's per-bead path can route on the typed exit
-  [test](mint_bead_scope_exits_nonzero_on_refused_or_errors)
+- `loom gate mint -m/--molecule <id>` exits 0 when it successfully
+  promotes zero or more deferred remediation beads; the summary lists
+  promoted counts and any reobserved closed findings
+  [test?](mint_molecule_exits_zero_on_successful_promotion_summary)
+- `loom gate mint -m/--molecule <id>` exits non-zero when promotion
+  sees a structural conflict (duplicate live finding hashes, missing
+  molecule epic, or bd write failure), and the summary names the
+  conflicting bead ids or bd error
+  [test?](mint_molecule_exits_nonzero_on_structural_or_write_errors)
 
-Loop-side interpretation of these exit codes — routing `refused` to
-`loom:blocked` with cause `mint-structural-violation`, threading
-`errors` through the recovery loop — is owned by
+Loop-side interpretation of these exit codes — retrying transient
+promotion errors or blocking on structural bd state — is owned by
 [harness.md § Functional](harness.md#functional).
 
 ### Commands surface — bare gate and status
@@ -3401,7 +3318,7 @@ The gate enforces; it does not own:
   across source crates, or are shell scripts is the consumer's
   choice. The gate dispatches whatever annotation says, however the
   consumer chooses to back it.
-- Workflow events (push, merge, bead lifecycle, fix-up bonding,
+- Workflow events (push, merge, bead lifecycle, remediation bonding,
   molecule progress). Those are downstream of the gate's verdict, not
   properties the gate evaluates.
 - The `loom:clarify` resolution channel itself — `loom msg` is the
