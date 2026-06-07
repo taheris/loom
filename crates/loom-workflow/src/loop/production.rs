@@ -847,7 +847,7 @@ where
             .current_dir(&self.workspace)
             .arg("gate")
             .arg("verify")
-            .arg("--bead")
+            .arg("-b")
             .arg(bead.as_str())
             .arg("-s")
             .arg(self.label.as_str())
@@ -893,10 +893,12 @@ where
             .env(REVIEW_EMIT_STDOUT_ENV, "1")
             .arg("gate")
             .arg("review")
-            .arg("--bead")
+            .arg("-b")
             .arg(bead.as_str())
             .arg("-s")
             .arg(self.label.as_str())
+            .arg("--verify-exit")
+            .arg("0")
             .output()
             .await?;
         let review_exit = review_output.status.code().unwrap_or(1);
@@ -2911,12 +2913,11 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
         );
     }
 
-    /// Spec criterion (`specs/gate.md` § *Scope-dependent walk*): the
-    /// production `exec_per_bead_gate` invokes `loom gate verify --bead
-    /// <id> -s <spec>` then focused `loom gate review --bead <id> -s
-    /// <spec>` as real subprocesses against `loom_bin`.
+    /// Spec criterion (`specs/gate.md` § *Production walker wiring*):
+    /// the production per-bead gate invokes deterministic verify then
+    /// focused review as real subprocesses against `loom_bin`.
     #[tokio::test]
-    async fn per_bead_gate_uses_review_not_mint() {
+    async fn exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
@@ -2925,7 +2926,7 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
         let stub = dir.path().join("loom-stub.sh");
         std::fs::write(
             &stub,
-            "#!/bin/sh\n\
+            "#!/usr/bin/env bash\n\
              set -euo pipefail\n\
              echo \"$*\" >> \"$PWD/argv.log\"\n\
              case \"$2\" in\n\
@@ -2966,12 +2967,12 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
             "exec_per_bead_gate must spawn exactly two subprocesses: {calls:?}",
         );
         assert_eq!(
-            calls[0], "gate verify --bead lm-1 -s gate",
-            "first subprocess argv must be `loom gate verify --bead <id> -s <spec>`",
+            calls[0], "gate verify -b lm-1 -s gate",
+            "first subprocess argv must be `loom gate verify -b <id> -s <spec>`",
         );
         assert_eq!(
-            calls[1], "gate review --bead lm-1 -s gate",
-            "second subprocess argv must be `loom gate review --bead <id> -s <spec>` after verify",
+            calls[1], "gate review -b lm-1 -s gate --verify-exit 0",
+            "second subprocess argv must be `loom gate review -b <id> -s <spec> --verify-exit 0` after verify",
         );
     }
 

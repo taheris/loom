@@ -3039,7 +3039,7 @@ Criteria.
       workspace (inside `index.lock`), the loop invokes `loom gate
       verify -b <id>` followed by focused `loom gate review -b <id>`.
       The per-bead hot path never invokes `mint` with bead scope
-  [test?](exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses)
+  [test](exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses)
 - The molecule-completion handoff's `HandoffEvidence` is populated
       from the audit subprocess's actual outputs: `verify_exit` and
       `review_exit` from the lane exit codes, `review_marker` from

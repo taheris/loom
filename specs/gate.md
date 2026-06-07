@@ -2853,7 +2853,7 @@ and conservative fall-through for unowned queries.
 - `review -b/--bead <id>` walks the focused LLM rubric after
   `verify -b/--bead <id>`; `mint` is not invoked on the per-bead hot
   path
-  [test](per_bead_gate_uses_review_not_mint)
+  [test](exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses)
 - `mint --tree` walks both the deterministic verifiers and the LLM
   rubric, emitting `LOOM_FINDING:` lines for findings from either
   source
@@ -3092,7 +3092,7 @@ deferred bd findings and does not fabricate a new `Vec<Finding>`.
   -s <spec> --verify-exit 0`. A regression that invokes `gate mint
   -b`, reorders review before verify, or drops the bead/spec flags is
   caught at the production controller
-  [test?](exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses)
+  [test](exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses)
 
 ### Molecule mint summary semantics
 

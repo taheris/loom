@@ -1589,7 +1589,7 @@ mod tests {
     /// resolves the bead to `BeadResult::Done` (neither clarified nor
     /// blocked). The subprocess shape `exec_per_bead_gate` resolves to
     /// is pinned by the production test
-    /// `exec_per_bead_gate_invokes_loom_gate_verify_then_mint_subprocesses`.
+    /// `exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses`.
     #[tokio::test]
     async fn loop_per_bead_routes_run_phase_success_through_exec_per_bead_gate()
     -> Result<(), LoopError> {
@@ -1620,13 +1620,13 @@ mod tests {
         Ok(())
     }
 
-    /// Spec criterion 2891 (`specs/harness.md` § Functional): after each
+    /// Spec criterion (`specs/harness.md` § Functional): after each
     /// per-bead agent run signals `Success` and the bead's branch is
     /// rebased + ff'd at the loom workspace, the loop invokes the per-bead
-    /// gate (`loom gate verify --bead <id>` then focused `loom gate
-    /// review --bead <id>`). This pins the run-phase-Success →
-    /// per-bead-gate edge; the verify→review subprocess order is pinned
-    /// by the production test `per_bead_gate_uses_review_not_mint`.
+    /// gate (`loom gate verify -b <id>` then focused `loom gate review -b
+    /// <id>`). This pins the run-phase-Success → per-bead-gate edge; the
+    /// verify→review subprocess order is pinned by the production test
+    /// `exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses`.
     #[tokio::test]
     async fn per_bead_path_invokes_verify_then_review_after_run_phase_success()
     -> Result<(), LoopError> {
