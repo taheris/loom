@@ -161,3 +161,24 @@ fn driver_emits_finding_status_json_with_identity_and_action() {
     assert_eq!(json["target"]["anchor"], "finding-status-output");
     assert_eq!(json["action"], "reported");
 }
+
+#[test]
+fn rubric_tree_scope_emits_reported_finding_status() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workspace = dir.path();
+    let (output, log) = run_gate_command(
+        workspace,
+        &["gate", "rubric", "--tree", "--spec", SPEC_LABEL],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let json = status_payload(&stdout);
+
+    assert!(
+        output.status.success(),
+        "loom gate rubric --tree must surface reported finding statuses. status={:?}\nstdout={stdout}\nstderr={stderr}\nbd log:\n{log}",
+        output.status,
+    );
+    assert_eq!(json["action"], "reported");
+    assert_eq!(json["target"]["anchor"], "finding-status-output");
+}

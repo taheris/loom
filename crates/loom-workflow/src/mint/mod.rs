@@ -542,19 +542,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
         survivors.push((finding.clone(), lead_spec, lead_epic));
     }
 
-    // Group by lead-spec. Iteration order is alphabetical on the
-    // spec's wire label so the resulting summary lines are stable
-    // across runs (matters for snapshot tests, log audits, and human
-    // scan).
-    let mut by_spec: Vec<(SpecLabel, MoleculeId, Vec<Finding>)> = Vec::new();
-    for (finding, lead_spec, lead_epic) in survivors {
-        if let Some(slot) = by_spec.iter_mut().find(|(s, _, _)| *s == lead_spec) {
-            slot.2.push(finding);
-        } else {
-            by_spec.push((lead_spec, lead_epic, vec![finding]));
-        }
-    }
-    by_spec.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    let by_spec = group_survivors_by_lead_spec(survivors);
 
     let mut minted_specs: HashSet<String> = HashSet::new();
     for (lead_spec, lead_epic, group) in by_spec {
@@ -590,6 +578,22 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
     }
     summary.specs_across_minted = minted_specs.len();
     summary
+}
+
+/// Group mint survivors by lead spec with stable alphabetical output order.
+fn group_survivors_by_lead_spec(
+    survivors: Vec<(Finding, SpecLabel, MoleculeId)>,
+) -> Vec<(SpecLabel, MoleculeId, Vec<Finding>)> {
+    let mut by_spec: Vec<(SpecLabel, MoleculeId, Vec<Finding>)> = Vec::new();
+    for (finding, lead_spec, lead_epic) in survivors {
+        if let Some(slot) = by_spec.iter_mut().find(|(s, _, _)| *s == lead_spec) {
+            slot.2.push(finding);
+        } else {
+            by_spec.push((lead_spec, lead_epic, vec![finding]));
+        }
+    }
+    by_spec.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    by_spec
 }
 
 fn track_minted(
