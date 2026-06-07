@@ -1,25 +1,8 @@
-//! Typed wire-format contract for `loom gate`'s findings / concern
-//! surface, per `specs/gate.md` § *Canonical contract location*.
+//! Typed wire-format contract for `loom gate` findings and review-walk
+//! terminals.
 //!
-//! This module is the single Rust home for the [`Finding`] record + the
-//! closed [`ConcernToken`] enum + [`FindingTarget`] / [`TargetKind`] /
-//! [`FindingValidator`] / [`FindingParseError`] + [`BadWalk`] /
-//! [`TerminalSurface`] + [`WalkOutput`] / [`WalkOutputError`] +
-//! [`ExitSignal`] + the [`parse_walk_output`] /
-//! [`WalkOutput::from_stdout`] / [`parse_exit_signal`] parsers + the
-//! [`LOOM_FINDING_PREFIX`] constant. Consumers re-export the types via
-//! `pub use` and never re-declare them — the `finding_no_duplicate_definitions`
-//! walker enforces this workspace-wide.
-//!
-//! # Field-private `WalkOutput`
-//!
-//! The silent-loss failure class — production caller constructs
-//! [`WalkOutput`] with bogus fields and the typed terminal/finding
-//! pipeline is bypassed — is structurally unrepresentable because the
-//! struct's fields are private at the `loom-protocol` crate boundary.
-//! [`WalkOutput::from_stdout`] is the only construction path; consumers
-//! read state through [`WalkOutput::terminal`] / [`WalkOutput::findings`]
-//! / [`WalkOutput::finding_errors`] accessors.
+//! Consumers construct walk output through [`WalkOutput::from_stdout`]
+//! and route findings via the validated [`Finding`] / [`BadWalk`] types.
 
 pub mod options;
 
@@ -1305,8 +1288,13 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
     validator: &V,
 ) -> Result<Vec<Finding>, WalkOutputError> {
     let walk = WalkOutput::from_stdout(output, scope, validator);
-    if let Some(error) = walk.finding_errors().first() {
-        return Err(WalkOutputError::Finding(error.clone()));
+    if !walk.finding_errors().is_empty() {
+        return Err(WalkOutputError::BadWalk {
+            bad_walk: BadWalk::MalformedFinding {
+                errors: walk.finding_errors().to_vec(),
+                terminal: walk.terminal().clone(),
+            },
+        });
     }
 
     match walk.terminal() {
@@ -2016,6 +2004,24 @@ mod tests {
         )
     }
 
+    fn single_malformed_finding_error(
+        output: &str,
+        scope: DispatchScope,
+        validator: &dyn FindingValidator,
+    ) -> (FindingParseError, TerminalSurface) {
+        match parse_walk_output(output, scope, validator) {
+            Err(WalkOutputError::BadWalk {
+                bad_walk: BadWalk::MalformedFinding { errors, terminal },
+            }) => {
+                let [error] = errors.as_slice() else {
+                    panic!("expected one malformed finding error, got {errors:?}");
+                };
+                (error.clone(), terminal)
+            }
+            other => panic!("expected MalformedFinding bad walk, got {other:?}"),
+        }
+    }
+
     #[test]
     fn backtick_wrapped_loom_finding_line_routes_to_bad_walk_malformed_finding_with_terminal_preserved()
      {
@@ -2053,6 +2059,39 @@ mod tests {
             &TerminalSurface::Complete,
             "well-formed terminator survives the per-line error",
         );
+    }
+
+    #[test]
+    fn parse_walk_output_malformed_findings_preserves_all_errors_and_terminal() {
+        let bad_json = format!("{LOOM_FINDING_PREFIX} {{not valid json");
+        let bad_target = finding_line(
+            "orphan-integration",
+            &["gate"],
+            r#"{"kind":"Criterion","spec":"gate","anchor":"x"}"#,
+            "",
+        );
+        let output =
+            format!("{bad_json}\n{bad_target}\nLOOM_CONCERN: {{\"summary\":\"bad findings\"}}\n");
+
+        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
+            Err(WalkOutputError::BadWalk {
+                bad_walk: BadWalk::MalformedFinding { errors, terminal },
+            }) => {
+                assert_eq!(errors.len(), 2);
+                assert!(matches!(errors[0], FindingParseError::Json { .. }));
+                assert!(matches!(
+                    errors[1],
+                    FindingParseError::TokenVariantMismatch { .. }
+                ));
+                assert_eq!(
+                    terminal,
+                    TerminalSurface::Concern {
+                        summary: "bad findings".to_owned()
+                    }
+                );
+            }
+            other => panic!("expected all malformed finding errors, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2202,10 +2241,10 @@ mod tests {
 
         let line = format!("{LOOM_FINDING_PREFIX} {{not valid json");
         let output = format!("{line}\n{valid_terminal}\n");
-        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
-            Err(WalkOutputError::Finding(FindingParseError::Json {
+        match single_malformed_finding_error(&output, DispatchScope::Tree, &AlwaysValid).0 {
+            FindingParseError::Json {
                 line_number, raw, ..
-            })) => {
+            } => {
                 assert_eq!(line_number, 1);
                 assert!(raw.contains("not valid json"), "raw: {raw}");
             }
@@ -2219,10 +2258,10 @@ mod tests {
             "",
         );
         let output = format!("{line}\n{valid_terminal}\n");
-        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
-            Err(WalkOutputError::Finding(FindingParseError::Json {
+        match single_malformed_finding_error(&output, DispatchScope::Tree, &AlwaysValid).0 {
+            FindingParseError::Json {
                 line_number, raw, ..
-            })) => {
+            } => {
                 assert_eq!(line_number, 1);
                 assert!(raw.contains("not-a-known-token"), "raw: {raw}");
             }
@@ -2237,12 +2276,12 @@ mod tests {
         );
         let output = format!("{line}\n{valid_terminal}\n");
         let known = KnownSpecs(&["gate", "harness"]);
-        match parse_walk_output(&output, DispatchScope::Tree, &known) {
-            Err(WalkOutputError::Finding(FindingParseError::UnknownBondSpec {
+        match single_malformed_finding_error(&output, DispatchScope::Tree, &known).0 {
+            FindingParseError::UnknownBondSpec {
                 line_number,
                 spec: bad,
                 raw,
-            })) => {
+            } => {
                 assert_eq!(line_number, 1);
                 assert_eq!(bad, "not-a-real-spec");
                 assert!(raw.contains("not-a-real-spec"));
@@ -2257,14 +2296,14 @@ mod tests {
             "",
         );
         let output = format!("{line}\n{valid_terminal}\n");
-        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
-            Err(WalkOutputError::Finding(FindingParseError::TokenVariantMismatch {
+        match single_malformed_finding_error(&output, DispatchScope::Tree, &AlwaysValid).0 {
+            FindingParseError::TokenVariantMismatch {
                 line_number,
                 token,
                 expected,
                 actual,
                 raw,
-            })) => {
+            } => {
                 assert_eq!(line_number, 1);
                 assert_eq!(token, "orphan-integration");
                 assert_eq!(expected, TargetKind::Contract);
@@ -2281,12 +2320,12 @@ mod tests {
             "",
         );
         let output = format!("{line}\n{valid_terminal}\n");
-        match parse_walk_output(&output, DispatchScope::Tree, &NothingResolves) {
-            Err(WalkOutputError::Finding(FindingParseError::UnresolvedTarget {
+        match single_malformed_finding_error(&output, DispatchScope::Tree, &NothingResolves).0 {
+            FindingParseError::UnresolvedTarget {
                 line_number,
                 detail,
                 raw,
-            })) => {
+            } => {
                 assert_eq!(line_number, 1);
                 assert!(detail.contains("missing-anchor"), "detail: {detail}");
                 assert!(raw.contains("missing-anchor"));
@@ -2305,8 +2344,8 @@ mod tests {
             "too broad",
         );
         let output = format!("{rule_only}\n{valid_terminal}\n");
-        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
-            Err(WalkOutputError::Finding(FindingParseError::Json { raw, .. })) => {
+        match single_malformed_finding_error(&output, DispatchScope::Tree, &AlwaysValid).0 {
+            FindingParseError::Json { raw, .. } => {
                 assert!(raw.contains("RS-3"), "raw: {raw}");
             }
             other => panic!("expected missing subject to fail serde, got {other:?}"),
@@ -2317,12 +2356,12 @@ mod tests {
                 format!(r#"{{"kind":"StyleRule","rule_id":"RS-3","subject":"{subject}"}}"#,);
             let line = finding_line("style-rule-violation", &["gate"], &target, "bad subject");
             let output = format!("{line}\n{valid_terminal}\n");
-            match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
-                Err(WalkOutputError::Finding(FindingParseError::InvalidStyleRuleSubject {
+            match single_malformed_finding_error(&output, DispatchScope::Tree, &AlwaysValid).0 {
+                FindingParseError::InvalidStyleRuleSubject {
                     reason: actual,
                     raw,
                     ..
-                })) => {
+                } => {
                     assert_eq!(actual, reason);
                     assert!(raw.contains("StyleRule"), "raw: {raw}");
                 }
@@ -2354,13 +2393,13 @@ mod tests {
             "criterion belongs to gate but bonds names harness only",
         );
         let output = format!("{line}\nLOOM_CONCERN: {{\"summary\":\"bad bonds\"}}\n");
-        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
-            Err(WalkOutputError::Finding(FindingParseError::TargetSpecNotInBonds {
+        match single_malformed_finding_error(&output, DispatchScope::Tree, &AlwaysValid).0 {
+            FindingParseError::TargetSpecNotInBonds {
                 line_number,
                 spec: missing,
                 bonds,
                 raw,
-            })) => {
+            } => {
                 assert_eq!(line_number, 1);
                 assert_eq!(missing, "gate");
                 assert_eq!(bonds, vec!["harness".to_owned()]);
@@ -2376,11 +2415,8 @@ mod tests {
             "invariant target spec missing from bonds",
         );
         let output = format!("{line}\nLOOM_CONCERN: {{\"summary\":\"bad bonds\"}}\n");
-        match parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid) {
-            Err(WalkOutputError::Finding(FindingParseError::TargetSpecNotInBonds {
-                spec: missing,
-                ..
-            })) => {
+        match single_malformed_finding_error(&output, DispatchScope::Tree, &AlwaysValid).0 {
+            FindingParseError::TargetSpecNotInBonds { spec: missing, .. } => {
                 assert_eq!(missing, "harness");
             }
             other => panic!("expected TargetSpecNotInBonds, got {other:?}"),
@@ -2633,13 +2669,13 @@ mod tests {
             let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\n{terminator}\n");
 
             for scope in [DispatchScope::PerBead, DispatchScope::PushGate] {
-                match parse_walk_output(&output, scope, &AlwaysValid) {
-                    Err(WalkOutputError::Finding(FindingParseError::TokenScopeMismatch {
+                match single_malformed_finding_error(&output, scope, &AlwaysValid).0 {
+                    FindingParseError::TokenScopeMismatch {
                         token: bad_token,
                         scope_kind,
                         dispatch_scope,
                         ..
-                    })) => {
+                    } => {
                         assert_eq!(bad_token, token.as_wire());
                         assert_eq!(scope_kind, "tree-only");
                         assert_eq!(dispatch_scope, scope.label());
@@ -2674,13 +2710,13 @@ mod tests {
             let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\n{terminator}\n");
 
             for scope in [DispatchScope::Tree, DispatchScope::PushGate] {
-                match parse_walk_output(&output, scope, &AlwaysValid) {
-                    Err(WalkOutputError::Finding(FindingParseError::TokenScopeMismatch {
+                match single_malformed_finding_error(&output, scope, &AlwaysValid).0 {
+                    FindingParseError::TokenScopeMismatch {
                         token: bad_token,
                         scope_kind,
                         dispatch_scope,
                         ..
-                    })) => {
+                    } => {
                         assert_eq!(bad_token, token.as_wire());
                         assert_eq!(scope_kind, "per-bead-only");
                         assert_eq!(dispatch_scope, scope.label());
@@ -2745,13 +2781,13 @@ mod tests {
             let payload = serde_json::to_string(&finding).expect("serialize");
             let output = format!("preamble\n{LOOM_FINDING_PREFIX} {payload}\n{terminator}\n");
 
-            match parse_walk_output(&output, DispatchScope::PerBead, &AlwaysValid) {
-                Err(WalkOutputError::Finding(FindingParseError::TokenScopeMismatch {
+            match single_malformed_finding_error(&output, DispatchScope::PerBead, &AlwaysValid).0 {
+                FindingParseError::TokenScopeMismatch {
                     token: bad_token,
                     scope_kind,
                     dispatch_scope,
                     ..
-                })) => {
+                } => {
                     assert_eq!(bad_token, token.as_wire());
                     assert_eq!(scope_kind, "tree-and-push-gate");
                     assert_eq!(dispatch_scope, "per-bead");

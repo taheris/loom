@@ -35,7 +35,8 @@ pub use cache::{
 };
 pub use dispatch::{
     DispatchError, DispatchOptions, DispatchOutcome, EmptyScope, SKIP_EXIT_CODE, TestScope,
-    TierCwds, VerifierVerdict, run_check, run_judge, run_system, run_test, run_with_runners,
+    TierCwds, VerifierVerdict, run_check, run_judge, run_system, run_test, run_test_in,
+    run_with_runners,
 };
 pub use gate_outcome::{
     GateFail, GateFailReason, GateOutcome, GateSuccess, HandoffEvidence, LoopOutcome, NoGateReason,

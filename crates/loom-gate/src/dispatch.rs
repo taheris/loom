@@ -272,6 +272,17 @@ pub fn run_test(
     template: &RunnerTemplate,
     scope: &dyn TestScope,
 ) -> Result<Option<DispatchOutcome>, DispatchError> {
+    run_test_in(annotations, options, template, scope, None)
+}
+
+/// Dispatch every `[test]` annotation with an explicit runner cwd.
+pub fn run_test_in(
+    annotations: &[Annotation],
+    options: &DispatchOptions,
+    template: &RunnerTemplate,
+    scope: &dyn TestScope,
+    cwd: Option<&Path>,
+) -> Result<Option<DispatchOutcome>, DispatchError> {
     let candidates: Vec<&Annotation> = annotations
         .iter()
         .filter(|a| a.tier == Tier::Test && !a.pending)
@@ -282,7 +293,7 @@ pub fn run_test(
     }
     let targets: Vec<&str> = filtered.iter().map(|a| a.target.as_str()).collect();
     let command = template.render(&targets);
-    let verdict = run_with_fallback(&command, options, true, None)?;
+    let verdict = run_with_fallback(&command, options, true, cwd)?;
     Ok(Some(DispatchOutcome {
         annotations: filtered.into_iter().cloned().collect(),
         verdict,

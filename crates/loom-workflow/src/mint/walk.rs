@@ -39,7 +39,7 @@ use loom_driver::state::StateDb;
 use loom_gate::{
     Annotation, DispatchOptions, DispatchPendingExecutor, EmptyScope, FsCommandResolver,
     IntegrityFinding, Tier, TierCwds, annotation as gate_annotation, integrity, run_check,
-    run_system, run_test,
+    run_system, run_test_in,
 };
 use loom_templates::review::{ReviewContext, ReviewLane};
 use thiserror::Error;
@@ -263,6 +263,47 @@ fn spec_label_from_path(path: &std::path::Path) -> Result<SpecLabel, WalkError> 
         })
 }
 
+fn tier_cwds_from_config(config: &LoomConfig) -> TierCwds {
+    TierCwds {
+        check: tier_cwd(config, "check"),
+        test: tier_cwd(config, "test"),
+        system: tier_cwd(config, "system"),
+        judge: tier_cwd(config, "judge"),
+    }
+}
+
+fn tier_cwd(config: &LoomConfig, tier: &str) -> Option<PathBuf> {
+    config
+        .runner
+        .tier(tier)
+        .and_then(|t| t.cwd.clone())
+        .map(PathBuf::from)
+}
+
+fn test_runner_template(
+    config: &LoomConfig,
+    workspace: &Path,
+) -> Result<Option<loom_gate::RunnerTemplate>, WalkError> {
+    if let Some(tier) = config.runner.tier("test")
+        && let Some(command) = tier.command.as_deref()
+    {
+        return Ok(Some(loom_gate::RunnerTemplate::new(command)));
+    }
+    match loom_gate::runner::discover(workspace, Tier::Test) {
+        Ok(template) => Ok(Some(template)),
+        Err(loom_gate::RunnerError::UnknownToolchain { .. }) => Ok(None),
+        Err(e) => Err(WalkError::Verifiers(e.to_string())),
+    }
+}
+
+fn resolved_cwd(cwd: Option<&Path>, workspace: &Path) -> PathBuf {
+    match cwd {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => workspace.join(path),
+        None => workspace.to_path_buf(),
+    }
+}
+
 /// Production [`MintWalker`] used by the `loom gate mint` CLI arm.
 ///
 /// `run_rubric` mirrors the [`crate::review::ProductionReviewController`]
@@ -460,7 +501,7 @@ where
         let runner_specs = loom_gate::runner::integrity_runner_specs(&config)
             .map_err(|e| WalkError::Verifiers(e.to_string()))?;
         let options = DispatchOptions::default();
-        let tier_cwds = TierCwds::default();
+        let tier_cwds = tier_cwds_from_config(&config);
         let pending_executor = DispatchPendingExecutor::new(
             &runner_specs,
             options.clone(),
@@ -477,7 +518,7 @@ where
             &pending_executor,
         );
         for finding in integrity_findings {
-            if let Some(failure) = integrity_to_verifier_failure(&finding, &annotations) {
+            if let Some(failure) = integrity_to_verifier_failure(&finding, &annotations)? {
                 failures.push(failure);
             }
         }
@@ -499,8 +540,15 @@ where
         ) {
             failures.extend(dispatch_outcome_to_failures(outcome));
         }
-        if let Ok(template) = loom_gate::runner::discover(&self.workspace, Tier::Test) {
-            match run_test(&annotations, &options, &template, &EmptyScope) {
+        if let Some(template) = test_runner_template(&config, &self.workspace)? {
+            let test_cwd = resolved_cwd(tier_cwds.for_tier(Tier::Test), &self.workspace);
+            match run_test_in(
+                &annotations,
+                &options,
+                &template,
+                &EmptyScope,
+                Some(&test_cwd),
+            ) {
                 Ok(Some(outcome)) => failures.extend(dispatch_outcome_to_failures(Ok(outcome))),
                 Ok(None) => {}
                 Err(e) => return Err(WalkError::Verifiers(e.to_string())),
@@ -517,50 +565,78 @@ where
 fn integrity_to_verifier_failure(
     finding: &IntegrityFinding,
     annotations: &[Annotation],
-) -> Option<VerifierFailure> {
+) -> Result<Option<VerifierFailure>, WalkError> {
     match finding {
         IntegrityFinding::UnresolvedAnnotation {
             spec, line, target, ..
-        } => match_annotation(annotations, spec, *line, target).map(|annotation| VerifierFailure {
-            annotation,
-            kind: VerifierFailureKind::UnresolvedAnnotation,
-            evidence: finding.to_string(),
-        }),
+        } => Ok(
+            match_annotation(annotations, spec, *line, target).map(|annotation| VerifierFailure {
+                annotation,
+                kind: VerifierFailureKind::UnresolvedAnnotation,
+                evidence: finding.to_string(),
+            }),
+        ),
         IntegrityFinding::StubTestFunction {
             spec, line, target, ..
-        } => match_annotation(annotations, spec, *line, target).map(|annotation| VerifierFailure {
-            annotation,
-            kind: VerifierFailureKind::StubPointing,
-            evidence: finding.to_string(),
-        }),
+        } => Ok(
+            match_annotation(annotations, spec, *line, target).map(|annotation| VerifierFailure {
+                annotation,
+                kind: VerifierFailureKind::StubPointing,
+                evidence: finding.to_string(),
+            }),
+        ),
         IntegrityFinding::UnneededPendingMarker {
             spec, line, target, ..
-        } => match_annotation(annotations, spec, *line, target).map(|annotation| VerifierFailure {
-            annotation,
-            kind: VerifierFailureKind::UnneededPendingMarker,
-            evidence: finding.to_string(),
-        }),
+        } => Ok(
+            match_annotation(annotations, spec, *line, target).map(|annotation| VerifierFailure {
+                annotation,
+                kind: VerifierFailureKind::UnneededPendingMarker,
+                evidence: finding.to_string(),
+            }),
+        ),
         IntegrityFinding::InputsProtocolError {
             spec, line, target, ..
-        } => match_annotation(annotations, spec, *line, target).map(|annotation| VerifierFailure {
-            annotation,
-            kind: VerifierFailureKind::InputsProtocolError,
-            evidence: finding.to_string(),
-        }),
+        } => Ok(
+            match_annotation(annotations, spec, *line, target).map(|annotation| VerifierFailure {
+                annotation,
+                kind: VerifierFailureKind::InputsProtocolError,
+                evidence: finding.to_string(),
+            }),
+        ),
         IntegrityFinding::MultipleAnnotations { spec, line, count } => annotations
             .iter()
             .find(|a| a.source_spec == *spec && a.criterion_line == *line)
             .cloned()
-            .map(|annotation| VerifierFailure {
-                annotation,
-                kind: VerifierFailureKind::MultipleAnnotations {
-                    count: *count,
-                    criterion_anchor: line.to_string(),
-                },
-                evidence: finding.to_string(),
-            }),
-        IntegrityFinding::UnresolvedCargoTestName { .. } => None,
+            .map(|annotation| {
+                Ok(VerifierFailure {
+                    kind: VerifierFailureKind::MultipleAnnotations {
+                        count: *count,
+                        criterion_anchor: multiple_annotations_anchor(&annotation, *line)?,
+                    },
+                    annotation,
+                    evidence: finding.to_string(),
+                })
+            })
+            .transpose(),
+        IntegrityFinding::UnresolvedCargoTestName { .. } => Ok(None),
     }
+}
+
+fn multiple_annotations_anchor(
+    annotation: &Annotation,
+    criterion_line: u32,
+) -> Result<String, WalkError> {
+    if !annotation.source_spec.is_file() {
+        return Ok(criterion_line_anchor(&annotation.target));
+    }
+    let body = std::fs::read_to_string(&annotation.source_spec)
+        .map_err(|e| WalkError::Verifiers(e.to_string()))?;
+    Ok(body
+        .lines()
+        .nth(criterion_line.saturating_sub(1) as usize)
+        .map(criterion_line_anchor)
+        .filter(|anchor| !anchor.is_empty())
+        .unwrap_or_else(|| criterion_line_anchor(&annotation.target)))
 }
 
 fn match_annotation(
@@ -573,6 +649,35 @@ fn match_annotation(
         .iter()
         .find(|a| a.source_spec == spec && a.line == line && a.target == target)
         .cloned()
+}
+
+fn criterion_line_anchor(line: &str) -> String {
+    let marker_index = ["[check", "[test", "[system", "[judge"]
+        .into_iter()
+        .filter_map(|marker| line.find(marker))
+        .min()
+        .unwrap_or(line.len());
+    let prefix = line[..marker_index].trim();
+    let candidate = if prefix.is_empty() { line } else { prefix };
+    lower_kebab(candidate)
+}
+
+fn lower_kebab(input: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !out.is_empty() && !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
 }
 
 /// Convert one dispatcher outcome into the [`VerifierFailure`]s the mint
@@ -1232,36 +1337,43 @@ mod tests {
     /// gate: atomic-acceptance violation"): an
     /// [`IntegrityFinding::MultipleAnnotations`] normalises into a
     /// [`VerifierFailure`] carrying [`VerifierFailureKind::MultipleAnnotations`]
-    /// with the criterion's line as the anchor and the integrity
-    /// finding's `Display` text as the evidence. Without this row's
-    /// wiring, atomic-acceptance violations detected at tree scope
-    /// silently drop instead of minting fix-ups, even though the spec
-    /// table mandates the mapping.
+    /// with a stable criterion-text anchor and the integrity finding's
+    /// `Display` text as evidence.
     #[test]
-    fn integrity_multiple_annotations_maps_to_verifier_failure() {
+    fn integrity_multiple_annotations_maps_to_stable_criterion_anchor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let specs = dir.path().join("specs");
+        std::fs::create_dir_all(&specs).expect("specs dir");
+        let spec_path = specs.join("gate.md");
+        std::fs::write(
+            &spec_path,
+            "# Gate\n\n- Finding id finding hash suppression and dedup [check](cargo run -p a) [test](crate::t::b)\n",
+        )
+        .expect("spec");
         let ann_a = Annotation {
             tier: Tier::Check,
             target: "cargo run -p a".into(),
-            source_spec: PathBuf::from("specs/gate.md"),
-            line: 101,
-            criterion_line: 100,
+            source_spec: spec_path.clone(),
+            line: 3,
+            criterion_line: 3,
             pending: false,
         };
         let ann_b = Annotation {
             tier: Tier::Test,
             target: "crate::t::b".into(),
-            source_spec: PathBuf::from("specs/gate.md"),
-            line: 102,
-            criterion_line: 100,
+            source_spec: spec_path.clone(),
+            line: 3,
+            criterion_line: 3,
             pending: false,
         };
         let finding = IntegrityFinding::MultipleAnnotations {
-            spec: PathBuf::from("specs/gate.md"),
-            line: 100,
+            spec: spec_path,
+            line: 3,
             count: 2,
         };
 
         let failure = integrity_to_verifier_failure(&finding, &[ann_a.clone(), ann_b])
+            .expect("normalisation succeeds")
             .expect("MultipleAnnotations integrity finding produces a VerifierFailure");
         match &failure.kind {
             VerifierFailureKind::MultipleAnnotations {
@@ -1269,7 +1381,10 @@ mod tests {
                 criterion_anchor,
             } => {
                 assert_eq!(*count, 2);
-                assert_eq!(criterion_anchor, "100");
+                assert_eq!(
+                    criterion_anchor,
+                    "finding-id-finding-hash-suppression-and-dedup"
+                );
             }
             other => panic!("expected MultipleAnnotations kind, got {other:?}"),
         }
@@ -1282,10 +1397,14 @@ mod tests {
         match &typed.target {
             FindingTarget::Criterion { spec: s, anchor } => {
                 assert_eq!(s, &spec("gate"));
-                assert_eq!(anchor, "100");
+                assert_eq!(anchor, "finding-id-finding-hash-suppression-and-dedup");
             }
             other => panic!("expected Criterion target, got {other:?}"),
         }
+        assert_eq!(
+            typed.id(),
+            "v1:criterion:multiple-annotations:gate#finding-id-finding-hash-suppression-and-dedup"
+        );
     }
 
     /// Spec contract `specs/gate.md` § *Production walker wiring*
@@ -1299,15 +1418,9 @@ mod tests {
     /// resolution check.
     ///
     /// Behavioral assertion: at `--tree` scope, the production walker's
-    /// spawn closure is invoked (rubric path) **and** the verifier
-    /// dispatch path actually runs against the spec's annotation set —
-    /// an unresolved `[check]` annotation flows through `integrity::check`
-    /// and emits a [`ConcernToken::UnresolvedAnnotation`] finding tagged
-    /// with the fixture target. Without exercising a non-empty annotation
-    /// set the dispatch path's early-return makes the test indistinguishable
-    /// from a no-op. The compile-time function-pointer assignment at the
-    /// bottom is the load-bearing trait-bound pin — if a future refactor
-    /// drops the `MintWalker` impl, that line fails to compile.
+    /// spawn closure is invoked, an unresolved `[check]` emits a typed
+    /// integrity finding, and the configured `[runner.test]` command runs
+    /// from its configured cwd.
     #[tokio::test]
     async fn production_mint_walker_exists_and_dispatches_rubric_and_verifiers() {
         use loom_driver::profile_manifest::ProfileImageManifest;
@@ -1319,11 +1432,23 @@ mod tests {
         const UNRESOLVED_TARGET: &str = "loom-verifier-bypass-fixture-9b8d-does-not-exist";
 
         std::fs::create_dir_all(workspace.join("specs")).expect("specs dir");
+        std::fs::create_dir_all(workspace.join("verifier-cwd")).expect("cwd dir");
+        std::fs::write(workspace.join("verifier-cwd/cwd-sentinel"), "ok").expect("sentinel");
         std::fs::write(
             workspace.join("specs/test-mint.md"),
-            format!("# test-mint\n\n- exercise verifier dispatch [check]({UNRESOLVED_TARGET})\n"),
+            format!(
+                "# test-mint\n\n- exercise verifier dispatch [check]({UNRESOLVED_TARGET})\n- exercise configured test runner [test](crate::configured::runner)\n"
+            ),
         )
         .expect("spec");
+        std::fs::write(
+            workspace.join("loom.toml"),
+            r#"[runner.test]
+command = "bash -c 'test -f cwd-sentinel && printf ok > ran.txt'"
+cwd = "verifier-cwd"
+"#,
+        )
+        .expect("loom.toml");
         let manifest_path = workspace.join("profile-images.json");
         std::fs::write(
             &manifest_path,
@@ -1406,6 +1531,11 @@ mod tests {
             unresolved[0].bonds,
             vec![spec("test-mint")],
             "unresolved-annotation finding must bond to its owning spec",
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("verifier-cwd/ran.txt"))
+                .expect("configured test runner wrote cwd marker"),
+            "ok",
         );
 
         // Compile-time trait-bound pin: `ProductionMintWalker<...>` MUST
