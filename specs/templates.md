@@ -319,10 +319,13 @@ pub enum PreviousFailure {
     /// integration-tree state no bead-workspace verify could
     /// anticipate). The integration was rolled back via
     /// `git reset --hard HEAD~1`. Carries the verifier-failure list
-    /// directly; focused review runs only after this verify succeeds,
-    /// so review concerns route through `ReviewConcern` or `BadWalk`
-    /// rather than this variant.
-    PostIntegrateFail { failures: Vec<VerifierFailure> },
+    /// and durable gate-log path directly; focused review runs only
+    /// after this verify succeeds, so review concerns route through
+    /// `ReviewConcern` or `BadWalk` rather than this variant.
+    PostIntegrateFail {
+        failures: Vec<VerifierFailure>,
+        gate_log_path: PathBuf,
+    },
 
     /// Worker phase emitted `LOOM_RETRY` — the agent self-reported
     /// that this attempt could not finish but a fresh dispatch is
@@ -451,7 +454,7 @@ decided by `loom gate mint`.
 - `BadWalk(MalformedFinding { errors, terminal })` → `"One or more LOOM_FINDING: lines failed strict validation. Re-emit each finding as a single line: `LOOM_FINDING: {\"token\":\"...\",\"route\":\"blocking|deferred|clarify\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}`.\n{per-line: 'Line N: <reason> — raw: <line text>'}\n\nYour terminal was: {terminal-rendered}"`. The terminal rendering uses the typed `TerminalSurface` variant: `Complete` → `"LOOM_COMPLETE"`, `Concern { summary }` → `"LOOM_CONCERN: {summary}"`, `Malformed { payload }` → `"LOOM_CONCERN: <malformed: {payload}>"`, `Missing` → `"(no terminal on the final non-empty line)"`. Surfacing both pieces lets the agent fix the malformed lines (typically: add the missing `route` field or drop the surrounding markdown fence) without losing the well-formed context.
 - `BuildFailure` → `"Build failed at {stage}:\n{output}"`
 - `TreeNotClean` → `"Working tree was not clean after the bead committed:\n\n{path list, one per line}\n\nStage these into a follow-up commit or revert them."` with a `"+N more"` suffix line when the list is truncated to 30 entries
-- `PostIntegrateFail { failures }` → `"After rebasing onto the integration branch, the post-integration verify failed:\n\n{N blocks: target + exit + stderr}\n\nReconcile the cross-bead interaction — your bead's verify passed at its own workspace; the failure is in the integrated tree."`
+- `PostIntegrateFail { failures, gate_log_path }` → `"After rebasing onto the integration branch, the post-integration verify failed.\n\nGate log: {gate_log_path}\n\n{N blocks: target + exit + stderr}\n\nReconcile the cross-bead interaction — your bead's verify passed at its own workspace; the failure is in the integrated tree."`
 - `AgentRetry { reason }` → `"Previous attempt requested retry — reason: {reason}\n\nIf the same problem persists after this attempt, escalate to LOOM_BLOCKED (no candidate resolutions) or LOOM_CLARIFY (with a structured Options block) rather than emitting LOOM_RETRY again."`
 - `review_notes` (when set, after the primary block) → heading `"Review notes:"` then content
 
@@ -1174,13 +1177,12 @@ documents in front of the agent with zero configuration.
   at 30 entries by the driver before construction
   [check](grep -q 'TreeNotClean' crates/loom-templates/src/previous_failure.rs)
 - `PostIntegrateFail` variant carries `failures: Vec<VerifierFailure>`
-  directly; populated when the loom-workspace per-bead integration
-  step's verify against the integrated tree fails after the bead's
-  own verify passed at its bead workspace. Per-bead does not run
-  `loom gate review`, so review concerns are not a possible cause —
-  they fire at the molecule-completion push gate via
-  `GateFailReason` per [harness.md § Verdict Gate](harness.md#verdict-gate)
-  [check](grep -q 'PostIntegrateFail' crates/loom-templates/src/previous_failure.rs)
+  and `gate_log_path: PathBuf` directly; populated when the
+  loom-workspace per-bead integration step's verify against the
+  integrated tree fails after the bead's own verify passed at its
+  bead workspace. Review concerns are not a possible cause — they
+  route through `ReviewConcern` / `BadWalk` after verify succeeds.
+  [check](grep -q 'gate_log_path' crates/loom-templates/src/previous_failure.rs)
 - `DriverNoticeCause` enum covers `SwallowedMarker`,
   `IncompleteSignaling`, `ZeroProgress`, `ObserverAbort`,
   `RetryExhausted`, `UnbondedOrigin`
@@ -1205,7 +1207,7 @@ documents in front of the agent with zero configuration.
   malformation, `BuildFailure` → "Build failed at ...:",
   `TreeNotClean` → "Working tree was not clean after the bead
   committed:", `PostIntegrateFail` → "After rebasing onto the
-  integration branch, the post-integration audit failed at …")
+  integration branch, the post-integration verify failed.")
   [test](previous_failure_variant_framings_match_spec)
 - `TreeNotClean` renders the dirty-path list one-per-line and
   appends a `"+N more"` suffix line when the upstream driver

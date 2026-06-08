@@ -19,7 +19,7 @@
 //!   exceeds budget.
 
 use std::fmt::{self, Display};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::finding::Finding;
 
@@ -76,7 +76,10 @@ pub enum PreviousFailure {
     /// integration was rolled back via `git reset --hard HEAD~1`. Focused
     /// review runs only after this verify succeeds, so review concerns use
     /// `ReviewConcern` or `BadWalk` instead.
-    PostIntegrateFail { failures: Vec<VerifierFailure> },
+    PostIntegrateFail {
+        failures: Vec<VerifierFailure>,
+        gate_log_path: PathBuf,
+    },
     /// The driver-side rebase of the bead branch onto the integration
     /// branch hit a textual conflict that `git rerere` could not replay,
     /// so the rebase was aborted (`git rebase --abort`) and the loom
@@ -188,7 +191,10 @@ fn render_body(failure: &PreviousFailure) -> String {
             format!("Build failed at {stage}:\n{output}")
         }
         PreviousFailure::TreeNotClean { dirty_paths } => render_tree_not_clean(dirty_paths),
-        PreviousFailure::PostIntegrateFail { failures } => render_post_integrate_fail(failures),
+        PreviousFailure::PostIntegrateFail {
+            failures,
+            gate_log_path,
+        } => render_post_integrate_fail(failures, gate_log_path),
         PreviousFailure::IntegrationConflict {
             files,
             new_base_sha,
@@ -230,12 +236,15 @@ fn render_integration_conflict(files: &[PathBuf], new_base_sha: &GitOid) -> Stri
     out
 }
 
-fn render_post_integrate_fail(failures: &[VerifierFailure]) -> String {
-    let heading = "After rebasing onto the integration branch, \
-                   the post-integration verify failed:\n\n";
+fn render_post_integrate_fail(failures: &[VerifierFailure], gate_log_path: &Path) -> String {
+    let heading = format!(
+        "After rebasing onto the integration branch, \
+         the post-integration verify failed.\n\nGate log: {}\n\n",
+        gate_log_path.display(),
+    );
     let footer = "\nReconcile the cross-bead interaction — your bead's verify passed \
                   at its own workspace; the failure is in the integrated tree.";
-    let mut out = String::from(heading);
+    let mut out = heading;
     // Reserve the footer + outer-truncation marker so the later-truncated-first
     // rule respects the same total cap as `VerifyFailures` even when many
     // failures stream through.
@@ -657,11 +666,12 @@ mod tests {
 
         let post_integrate = PreviousFailure::PostIntegrateFail {
             failures: vec![VerifierFailure::new("cargo test -p loom-gate", 1, "fail\n")],
+            gate_log_path: PathBuf::from(".loom/logs/gate/gate/lm-1.json"),
         }
         .to_string();
         assert!(
             post_integrate.starts_with(
-                "After rebasing onto the integration branch, the post-integration verify failed:"
+                "After rebasing onto the integration branch, the post-integration verify failed."
             ),
             "{post_integrate}",
         );
@@ -755,6 +765,7 @@ mod tests {
     /// own verify already passed at its workspace.
     #[test]
     fn post_integrate_fail_display_renders_blocks_and_reconciliation_hint() {
+        let gate_log_path = PathBuf::from(".loom/logs/gate/gate/lm-1-attempt-0.json");
         let pf = PreviousFailure::PostIntegrateFail {
             failures: vec![
                 VerifierFailure::new(
@@ -764,13 +775,18 @@ mod tests {
                 ),
                 VerifierFailure::new("tests/run-tests.sh", 1, "assertion failed\n"),
             ],
+            gate_log_path: gate_log_path.clone(),
         };
         let rendered = pf.to_string();
         assert!(
             rendered.starts_with(
-                "After rebasing onto the integration branch, the post-integration verify failed:"
+                "After rebasing onto the integration branch, the post-integration verify failed."
             ),
             "framing prefix missing: {rendered}",
+        );
+        assert!(
+            rendered.contains(&format!("Gate log: {}", gate_log_path.display())),
+            "gate log path missing: {rendered}",
         );
         assert!(
             rendered.contains("cargo test -p loom-gate --lib mint::tests::ok"),

@@ -35,14 +35,13 @@ bd dep add <issue> <depends-on>   # Add dependency
 ## Workspace Protection
 
 For bead work, `/workspace` is the operator checkout; do not mutate it.
-Make changes only in `.loom/beads/<id>/` on branch `loom/<id>`, commit
-there, and stop. Do not push or copy changes back.
+Work only in the per-bead clone at `.loom/beads/<id>/` on branch
+`loom/<id>`, commit there, and stop. Loom uses regular clones here, not
+git worktrees; `.loom/integration/` fetches the bead clone by path,
+rebases, gates, and fast-forwards.
 
-The driver owns integration from `.loom/integration/`: it fetches the
-bead workspace by path, rebases, gates, and fast-forwards.
-
-For non-bead work, mutate only the worktree the user explicitly names.
-If the target worktree has unrelated local changes, stop and ask.
+For non-bead work, mutate only the checkout the user explicitly names.
+If it has unrelated local changes, stop and ask.
 
 ## Session Protocol
 

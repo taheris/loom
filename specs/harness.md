@@ -3083,12 +3083,12 @@ Criteria.
       scope, exit code, stdout, stderr, terminal marker when present,
       integration SHA, bead id, retry attempt, rollback state, and log
       path
-  [test?](post_integrate_audit_failure_writes_durable_gate_log)
+  [test](post_integrate_audit_failure_writes_durable_gate_log)
 - The `driver_event` emitted for `post-integrate-fail` names the gate
       log path in its payload / rendered summary, and retry attempts
       produce distinct log paths while successful integration flow is
       unchanged
-  [test?](post_integrate_fail_driver_event_names_gate_log_path)
+  [test](post_integrate_fail_driver_event_names_gate_log_path)
 - Transient errors while recording deferred or clarify findings thread
       their detail into `PreviousFailure` and re-run through the
       existing per-bead recovery loop bounded by `[loop] max_retries`;

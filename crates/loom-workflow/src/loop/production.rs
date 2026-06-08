@@ -145,6 +145,9 @@ where
     /// skipped rather than unwinding a prior bead's commit
     /// (`specs/harness.md` § Verdict Gate — `post-integrate-fail`).
     pre_integration_tip: Option<GitOid>,
+    /// Attempt number rendered into the current bead's prompt and copied
+    /// into durable post-integrate gate logs.
+    current_attempt: u32,
 }
 
 impl<S, F, R: CommandRunner> ProductionAgentLoopController<S, F, R>
@@ -182,6 +185,7 @@ where
             current_emit: None,
             loom_cfg: LoomTopConfig::default(),
             pre_integration_tip: None,
+            current_attempt: 0,
         }
     }
 
@@ -380,6 +384,7 @@ where
                 .to_string_lossy()
                 .into_owned();
         let attempt = u32::from(is_retry);
+        self.current_attempt = attempt;
         let initial_prompt = match render_loop_prompt(LoopContextInputs {
             label: self.label.clone(),
             spec_path: format!("specs/{}.md", self.label.as_str()),
@@ -848,14 +853,17 @@ where
 
     async fn exec_per_bead_gate(&mut self, bead: &BeadId) -> Result<PerBeadGateOutcome, LoopError> {
         self.release_handoff_lock_for_child_gate();
+        let verify_args = vec![
+            "gate".to_string(),
+            "verify".to_string(),
+            "-b".to_string(),
+            bead.as_str().to_string(),
+            "-s".to_string(),
+            self.label.as_str().to_string(),
+        ];
         let verify_output = Command::new(&self.loom_bin)
             .current_dir(&self.workspace)
-            .arg("gate")
-            .arg("verify")
-            .arg("-b")
-            .arg(bead.as_str())
-            .arg("-s")
-            .arg(self.label.as_str())
+            .args(&verify_args)
             .output()
             .await?;
         let verify_exit = verify_output.status.code().unwrap_or(1);
@@ -868,9 +876,36 @@ where
         if verify_exit != 0 {
             let stderr_tail = String::from_utf8_lossy(&verify_output.stderr).to_string();
             let stdout_tail = String::from_utf8_lossy(&verify_output.stdout).to_string();
+            let integration_sha = self.git.integration_commit_sha().await?.to_string();
+            let rollback_planned = self.pre_integration_tip.is_some();
+            let rollback_state = if rollback_planned {
+                "pending"
+            } else {
+                "skipped-no-integration-advance"
+            };
+            let gate_log_dir =
+                gate_log_root(self.logs_root.as_deref(), &self.workspace).join(self.label.as_str());
+            let gate_log_path = write_post_integrate_gate_log(
+                gate_log_dir,
+                PostIntegrateGateLog {
+                    argv: verify_args,
+                    scope_flag: "-b",
+                    scope: bead.as_str().to_string(),
+                    exit_code: verify_exit,
+                    stdout: stdout_tail.clone(),
+                    stderr: stderr_tail.clone(),
+                    terminal_marker: parse_exit_signal(&stdout_tail)
+                        .map(|m| terminal_marker_json(&m)),
+                    integration_sha,
+                    bead_id: bead.clone(),
+                    retry_attempt: self.current_attempt,
+                    rollback_state: rollback_state.to_string(),
+                },
+            )?;
+            let gate_log = gate_log_path.to_string_lossy().to_string();
             let detail = format!(
                 "loom gate verify --bead {bead} exited {verify_exit}\n\
-                 stdout:\n{stdout_tail}\nstderr:\n{stderr_tail}",
+                 gate log: {gate_log}\nstdout:\n{stdout_tail}\nstderr:\n{stderr_tail}",
             );
             let rolled_back = self.rollback_if_bead_advanced_integration().await?;
             self.stashed_previous_failure = Some(PreviousFailure::PostIntegrateFail {
@@ -879,15 +914,19 @@ where
                     verify_exit,
                     format!("{stdout_tail}\n{stderr_tail}"),
                 )],
+                gate_log_path: gate_log_path.clone(),
             });
             self.emit_to_log(
                 DriverKind::VerdictGate,
-                &format!("post-integrate-fail: integration audit failed for bead {bead}"),
+                &format!(
+                    "post-integrate-fail: integration audit failed for bead {bead}; gate log: {gate_log}"
+                ),
                 serde_json::json!({
                     "bead_id": bead.to_string(),
                     "cause": "post-integrate-fail",
                     "verify_exit": verify_exit,
                     "rolled_back": rolled_back,
+                    "gate_log_path": gate_log,
                 }),
             );
             return Ok(PerBeadGateOutcome::Recovery { detail });
@@ -927,6 +966,106 @@ where
 
     fn emit_driver_event(&mut self, kind: DriverKind, summary: &str, payload: serde_json::Value) {
         self.emit_to_log(kind, summary, payload);
+    }
+}
+
+fn gate_log_root(logs_root: Option<&std::path::Path>, workspace: &std::path::Path) -> PathBuf {
+    logs_root.map_or_else(
+        || workspace.join(".loom/logs/gate"),
+        |root| root.join("gate"),
+    )
+}
+
+fn write_post_integrate_gate_log(
+    dir: PathBuf,
+    record: PostIntegrateGateLog,
+) -> Result<PathBuf, LoopError> {
+    use std::io::Write as _;
+
+    std::fs::create_dir_all(&dir)?;
+    let clock = SystemClock::new();
+    let stamp = clock
+        .wall_now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let stem = format!(
+        "{}-attempt-{}-{stamp}",
+        record.bead_id.as_str(),
+        record.retry_attempt,
+    );
+    for suffix in 0..1000_u16 {
+        let file_name = if suffix == 0 {
+            format!("{stem}.json")
+        } else {
+            format!("{stem}-{suffix}.json")
+        };
+        let path = dir.join(file_name);
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(LoopError::Io(err)),
+        };
+        let log_path = path.to_string_lossy().to_string();
+        let body = serde_json::json!({
+            "argv": record.argv,
+            "scope_flag": record.scope_flag,
+            "scope": record.scope,
+            "exit_code": record.exit_code,
+            "stdout": record.stdout,
+            "stderr": record.stderr,
+            "terminal_marker": record.terminal_marker,
+            "integration_sha": record.integration_sha,
+            "bead_id": record.bead_id.to_string(),
+            "retry_attempt": record.retry_attempt,
+            "rollback_state": record.rollback_state,
+            "log_path": log_path,
+        });
+        serde_json::to_writer_pretty(&mut file, &body).map_err(std::io::Error::other)?;
+        writeln!(&mut file)?;
+        file.sync_all()?;
+        return Ok(path);
+    }
+    Err(LoopError::Io(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate unique post-integrate gate log path",
+    )))
+}
+
+struct PostIntegrateGateLog {
+    argv: Vec<String>,
+    scope_flag: &'static str,
+    scope: String,
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+    terminal_marker: Option<serde_json::Value>,
+    integration_sha: String,
+    bead_id: BeadId,
+    retry_attempt: u32,
+    rollback_state: String,
+}
+
+fn terminal_marker_json(marker: &ExitSignal) -> serde_json::Value {
+    match marker {
+        ExitSignal::Complete => serde_json::json!({ "kind": "complete" }),
+        ExitSignal::Noop => serde_json::json!({ "kind": "noop" }),
+        ExitSignal::Blocked { reason } => {
+            serde_json::json!({ "kind": "blocked", "reason": reason })
+        }
+        ExitSignal::Clarify { question } => {
+            serde_json::json!({ "kind": "clarify", "question": question })
+        }
+        ExitSignal::Retry { reason } => serde_json::json!({ "kind": "retry", "reason": reason }),
+        ExitSignal::Concern { summary } => {
+            serde_json::json!({ "kind": "concern", "summary": summary })
+        }
+        ExitSignal::BadWalk(badwalk) => {
+            serde_json::json!({ "kind": "bad-walk", "detail": format!("{badwalk:?}") })
+        }
     }
 }
 
@@ -1208,7 +1347,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::ffi::OsString;
     use std::sync::Mutex;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     /// Replays a scripted sequence of `bd` responses so the controller's
     /// `exec_review` can resolve the active molecule's `loom.base_commit`
@@ -3048,7 +3187,7 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
     /// is stashed for the next dispatch, the review step never runs, and the
     /// bead routes to recovery (specs/harness.md § Verdict Gate).
     #[tokio::test]
-    async fn exec_per_bead_gate_verify_fail_rolls_back_and_stashes_post_integrate_fail() {
+    async fn post_integrate_audit_failure_writes_durable_gate_log() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
@@ -3061,10 +3200,9 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
         // has a commit to unwind back to the pre-merge tip.
         std::fs::write(loom_ws.join("integrated.txt"), "merged\n").expect("write");
         loom_driver::git::commit_all_in(&loom_ws, "integrated bead").expect("commit");
+        let merged_tip = loom_driver::git::sync_head_commit_sha(&loom_ws).expect("ff'd sha");
         assert_ne!(
-            loom_driver::git::sync_head_commit_sha(&loom_ws)
-                .expect("ff'd sha")
-                .to_string(),
+            merged_tip.to_string(),
             base_tip.to_string(),
             "the ff-merge stand-in must advance the integration branch",
         );
@@ -3126,7 +3264,10 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
             "reset --hard must drop the rolled-back commit's content",
         );
         match controller.stashed_previous_failure {
-            Some(PreviousFailure::PostIntegrateFail { ref failures }) => {
+            Some(PreviousFailure::PostIntegrateFail {
+                ref failures,
+                ref gate_log_path,
+            }) => {
                 assert_eq!(failures.len(), 1, "one verifier-failure block expected");
                 assert_eq!(failures[0].exit_code, 1);
                 assert!(
@@ -3134,9 +3275,123 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
                     "failure block names the failing verifier: {:?}",
                     failures[0].target,
                 );
+                assert!(
+                    gate_log_path.exists(),
+                    "durable gate log must exist before rollback: {gate_log_path:?}",
+                );
+                let gate_log = std::fs::read_to_string(gate_log_path).expect("gate log readable");
+                let gate_log_json: serde_json::Value =
+                    serde_json::from_str(&gate_log).expect("gate log json");
+                assert_eq!(
+                    gate_log_json["argv"],
+                    serde_json::json!(["gate", "verify", "-b", "lm-1", "-s", "gate"])
+                );
+                assert_eq!(gate_log_json["scope_flag"], "-b");
+                assert_eq!(gate_log_json["exit_code"], 1);
+                assert_eq!(gate_log_json["integration_sha"], merged_tip.to_string());
+                assert_eq!(gate_log_json["rollback_state"], "pending");
+                assert_eq!(
+                    gate_log_json["log_path"],
+                    serde_json::json!(gate_log_path.to_string_lossy())
+                );
+                assert!(
+                    gate_log_json["stderr"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("cargo test")
+                );
             }
             other => panic!("expected stashed PostIntegrateFail, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn post_integrate_fail_driver_event_names_gate_log_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let label = SpecLabel::new("gate");
+        let bead_id = BeadId::new("lm-1").expect("valid bead id");
+        let logs_root = dir.path().join("logs");
+        let mut sink = loom_driver::logging::LogSink::open_in_at(
+            &logs_root,
+            &label,
+            &bead_id,
+            None,
+            SystemTime::UNIX_EPOCH,
+        )
+        .expect("open bead log");
+        let bead_log_path = sink.log_path().to_path_buf();
+        sink.finish(loom_driver::logging::BeadOutcome::Done)
+            .expect("finish bead log");
+
+        let stub = dir.path().join("loom-stub.sh");
+        std::fs::write(
+            &stub,
+            "#!/usr/bin/env bash\n\
+             set -euo pipefail\n\
+             case \"$2\" in\n\
+                 verify) echo 'verify stdout'; echo 'verify stderr' >&2; exit 2 ;;\n\
+             esac\n\
+             exit 0\n",
+        )
+        .expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod stub");
+
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            label,
+            stub,
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                panic!("spawn closure must not fire during exec_per_bead_gate");
+            },
+        )
+        .with_phase_log_root(logs_root);
+        controller.prepare_emit_state(&bead_id);
+
+        let outcome = controller
+            .exec_per_bead_gate(&bead_id)
+            .await
+            .expect("exec_per_bead_gate ok");
+        assert!(
+            matches!(outcome, PerBeadGateOutcome::Recovery { .. }),
+            "verify-fail must route to Recovery, got {outcome:?}",
+        );
+        let Some(PreviousFailure::PostIntegrateFail { gate_log_path, .. }) =
+            controller.stashed_previous_failure
+        else {
+            panic!("expected PostIntegrateFail with gate_log_path");
+        };
+        let gate_log = gate_log_path.to_string_lossy().to_string();
+        let body = std::fs::read_to_string(bead_log_path).expect("driver event log readable");
+        let events: Vec<serde_json::Value> = body
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("driver event json"))
+            .collect();
+        let event = events
+            .iter()
+            .find(|event| event["payload"].get("gate_log_path").is_some())
+            .unwrap_or_else(|| panic!("driver_event payload must name gate_log_path: {body}"));
+        assert_eq!(
+            event["payload"]["gate_log_path"],
+            serde_json::json!(gate_log)
+        );
+        assert!(
+            event["summary"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&format!("gate log: {gate_log}")),
+            "driver_event summary must render gate log path {gate_log}: {body}",
+        );
     }
 
     /// A verify-fail on a bead whose ff advanced nothing
