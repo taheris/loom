@@ -42,6 +42,23 @@ use loom_workflow::review::DEFAULT_MAX_ITERATIONS;
 // Workspace + state setup
 // -------------------------------------------------------------------
 
+/// Return an executable fake `wrix.prekHooks` directory for push-gate tests.
+fn fake_prek_hooks(workspace: &Path) -> PathBuf {
+    let hooks = workspace.join(".loom-test-prek-hooks");
+    std::fs::create_dir_all(&hooks).expect("mkdir fake prek hooks");
+    for hook in ["pre-commit", "pre-push"] {
+        let script = hooks.join(hook);
+        std::fs::write(&script, "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n")
+            .expect("write fake hook");
+        let mut perm = std::fs::metadata(&script)
+            .expect("stat fake hook")
+            .permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&script, perm).expect("chmod fake hook");
+    }
+    hooks
+}
+
 /// Initialise `workspace` as a real git repo + bare origin + loom-owned
 /// integration workspace at `.loom/integration/`, then commit the
 /// caller-provided seed content (any `specs/` files written before this
@@ -134,6 +151,8 @@ fn init_workspace_repo(workspace: &Path) -> String {
             .expect("git spawn");
         assert!(status.success(), "loom git {args:?} failed: {status}");
     }
+    let hooks = fake_prek_hooks(workspace);
+    loom_driver::git::write_hooks_config(&loom_workspace, &hooks).expect("write hooks config");
 
     let out = Command::new("git")
         .arg("-C")
@@ -306,6 +325,7 @@ fn run_loom_gate_review(
         .env("LOOM_TEST_AGENT_MODE", agent_mode)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", manifest)
+        .env("WRIX_PREK_HOOKS", fake_prek_hooks(workspace))
         .env("BD_STATE_DIR", state_dir)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         .env_remove("LOOM_INSIDE")
