@@ -875,6 +875,11 @@ where
         if verify_exit != 0 {
             let stderr_tail = String::from_utf8_lossy(&verify_output.stderr).to_string();
             let stdout_tail = String::from_utf8_lossy(&verify_output.stdout).to_string();
+            let failure = VerifierFailure::new(
+                format!("loom gate verify --diff {diff_range}"),
+                verify_exit,
+                format!("{stdout_tail}\n{stderr_tail}"),
+            );
             let integration_sha = self.git.integration_commit_sha().await?.to_string();
             let rollback_planned = self.pre_integration_tip.is_some();
             let rollback_state = if rollback_planned {
@@ -899,6 +904,7 @@ where
                     bead_id: bead.clone(),
                     retry_attempt: self.current_attempt,
                     rollback_state: rollback_state.to_string(),
+                    failures: vec![failure.clone()],
                 },
             )?;
             let gate_log = gate_log_path.to_string_lossy().to_string();
@@ -908,11 +914,7 @@ where
             );
             let rolled_back = self.rollback_if_bead_advanced_integration().await?;
             self.stashed_previous_failure = Some(PreviousFailure::PostIntegrateFail {
-                failures: vec![VerifierFailure::new(
-                    format!("loom gate verify --diff {diff_range}"),
-                    verify_exit,
-                    format!("{stdout_tail}\n{stderr_tail}"),
-                )],
+                failures: vec![failure],
                 gate_log_path: gate_log_path.clone(),
             });
             self.emit_to_log(
@@ -965,9 +967,9 @@ fn write_post_integrate_gate_log(
     );
     for suffix in 0..1000_u16 {
         let file_name = if suffix == 0 {
-            format!("{stem}.json")
+            format!("{stem}.jsonl")
         } else {
-            format!("{stem}-{suffix}.json")
+            format!("{stem}-{suffix}.jsonl")
         };
         let path = dir.join(file_name);
         let mut file = match std::fs::OpenOptions::new()
@@ -980,7 +982,19 @@ fn write_post_integrate_gate_log(
             Err(err) => return Err(LoopError::Io(err)),
         };
         let log_path = path.to_string_lossy().to_string();
+        let failures = record
+            .failures
+            .iter()
+            .map(|failure| {
+                serde_json::json!({
+                    "target": failure.target,
+                    "exit_code": failure.exit_code,
+                    "stderr_tail": failure.stderr_tail,
+                })
+            })
+            .collect::<Vec<_>>();
         let body = serde_json::json!({
+            "kind": "post_integrate_gate",
             "argv": record.argv,
             "scope_flag": record.scope_flag,
             "scope": record.scope,
@@ -992,9 +1006,10 @@ fn write_post_integrate_gate_log(
             "bead_id": record.bead_id.to_string(),
             "retry_attempt": record.retry_attempt,
             "rollback_state": record.rollback_state,
+            "failures": failures,
             "log_path": log_path,
         });
-        serde_json::to_writer_pretty(&mut file, &body).map_err(std::io::Error::other)?;
+        serde_json::to_writer(&mut file, &body).map_err(std::io::Error::other)?;
         writeln!(&mut file)?;
         file.sync_all()?;
         return Ok(path);
@@ -1017,6 +1032,7 @@ struct PostIntegrateGateLog {
     bead_id: BeadId,
     retry_attempt: u32,
     rollback_state: String,
+    failures: Vec<VerifierFailure>,
 }
 
 fn terminal_marker_json(marker: &ExitSignal) -> serde_json::Value {
@@ -2893,7 +2909,7 @@ mod tests {
     /// the production per-bead gate invokes deterministic verify as the
     /// only real subprocess against `loom_bin`.
     #[tokio::test]
-    async fn exec_per_bead_gate_invokes_only_loom_gate_verify_subprocess() {
+    async fn exec_per_bead_gate_invokes_post_integration_verify_only() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
@@ -2905,10 +2921,9 @@ mod tests {
             "#!/usr/bin/env bash\n\
              set -euo pipefail\n\
              echo \"$*\" >> \"$PWD/argv.log\"\n\
-             if [[ \"$2\" == \"review\" ]]; then\n\
-                 echo 'review must not run in the per-bead hot path' >&2\n\
-                 exit 99\n\
-             fi\n\
+             case \"$2\" in\n\
+                 review|mint) echo \"$2 must not run in the per-bead hot path\" >&2; exit 99 ;;\n\
+             esac\n\
              exit 0\n",
         )
         .expect("write stub");
@@ -2930,6 +2945,9 @@ mod tests {
         );
 
         let bead_id = BeadId::new("lm-1").expect("valid bead id");
+        let pre_tip = loom_driver::git::sync_head_commit_sha(&controller.git.loom_workspace())
+            .expect("pre-integration sha");
+        controller.pre_integration_tip = Some(pre_tip.clone());
         let outcome = controller
             .exec_per_bead_gate(&bead_id)
             .await
@@ -2944,8 +2962,9 @@ mod tests {
             "exec_per_bead_gate must spawn exactly one subprocess: {calls:?}",
         );
         assert_eq!(
-            calls[0], "gate verify --diff HEAD..HEAD",
-            "first subprocess argv must be `loom gate verify --diff <range>`",
+            calls[0],
+            format!("gate verify --diff {pre_tip}..HEAD"),
+            "subprocess argv must be exactly `loom gate verify --diff <pre-integration-head>..HEAD`",
         );
     }
 
@@ -3014,7 +3033,7 @@ mod tests {
     /// is stashed for the next dispatch, the review step never runs, and the
     /// bead routes to recovery (specs/harness.md § Verdict Gate).
     #[tokio::test]
-    async fn post_integrate_audit_failure_writes_durable_gate_log() {
+    async fn post_integrate_verify_failure_writes_durable_gate_log() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
@@ -3037,11 +3056,11 @@ mod tests {
         let stub = dir.path().join("loom-stub.sh");
         std::fs::write(
             &stub,
-            "#!/bin/sh\n\
+            "#!/usr/bin/env bash\n\
              set -euo pipefail\n\
              case \"$2\" in\n\
                  verify) echo 'verifier failed: cargo test' >&2; exit 1 ;;\n\
-                 review) echo 'review must not run after verify-fail' ; exit 99 ;;\n\
+                 review|mint) echo \"$2 must not run after verify-fail\" ; exit 99 ;;\n\
              esac\n\
              exit 0\n",
         )
@@ -3106,9 +3125,20 @@ mod tests {
                     gate_log_path.exists(),
                     "durable gate log must exist before rollback: {gate_log_path:?}",
                 );
+                assert_eq!(
+                    gate_log_path.extension().and_then(|ext| ext.to_str()),
+                    Some("jsonl"),
+                    "durable post-integrate log must be JSONL: {gate_log_path:?}",
+                );
                 let gate_log = std::fs::read_to_string(gate_log_path).expect("gate log readable");
-                let gate_log_json: serde_json::Value =
-                    serde_json::from_str(&gate_log).expect("gate log json");
+                let gate_log_json: serde_json::Value = serde_json::from_str(
+                    gate_log
+                        .lines()
+                        .next()
+                        .expect("gate log contains one JSONL event"),
+                )
+                .expect("gate log json");
+                assert_eq!(gate_log_json["kind"], "post_integrate_gate");
                 assert_eq!(
                     gate_log_json["argv"],
                     serde_json::json!(["gate", "verify", "--diff", format!("{}..HEAD", base_tip)])
@@ -3117,6 +3147,11 @@ mod tests {
                 assert_eq!(gate_log_json["exit_code"], 1);
                 assert_eq!(gate_log_json["integration_sha"], merged_tip.to_string());
                 assert_eq!(gate_log_json["rollback_state"], "pending");
+                assert_eq!(gate_log_json["failures"][0]["exit_code"], 1);
+                assert_eq!(
+                    gate_log_json["failures"][0]["target"],
+                    serde_json::json!(format!("loom gate verify --diff {}..HEAD", base_tip))
+                );
                 assert_eq!(
                     gate_log_json["log_path"],
                     serde_json::json!(gate_log_path.to_string_lossy())
@@ -3194,31 +3229,63 @@ mod tests {
             "verify-fail must route to Recovery, got {outcome:?}",
         );
         let Some(PreviousFailure::PostIntegrateFail { gate_log_path, .. }) =
-            controller.stashed_previous_failure
+            &controller.stashed_previous_failure
         else {
             panic!("expected PostIntegrateFail with gate_log_path");
         };
-        let gate_log = gate_log_path.to_string_lossy().to_string();
+        let first_gate_log_path = gate_log_path.clone();
+        controller.current_attempt = 1;
+        let second_outcome = controller
+            .exec_per_bead_gate(&bead_id)
+            .await
+            .expect("second exec_per_bead_gate ok");
+        assert!(
+            matches!(second_outcome, PerBeadGateOutcome::Recovery { .. }),
+            "second verify-fail must route to Recovery, got {second_outcome:?}",
+        );
+        let Some(PreviousFailure::PostIntegrateFail {
+            gate_log_path: second_gate_log_path,
+            ..
+        }) = &controller.stashed_previous_failure
+        else {
+            panic!("expected second PostIntegrateFail with gate_log_path");
+        };
+        assert_ne!(
+            &first_gate_log_path, second_gate_log_path,
+            "retry attempts must write distinct durable gate logs",
+        );
+        let first_gate_log = first_gate_log_path.to_string_lossy().to_string();
+        let second_gate_log = second_gate_log_path.to_string_lossy().to_string();
         let body = std::fs::read_to_string(bead_log_path).expect("driver event log readable");
         let events: Vec<serde_json::Value> = body
             .lines()
             .map(|line| serde_json::from_str(line).expect("driver event json"))
             .collect();
-        let event = events
+        let gate_events = events
             .iter()
-            .find(|event| event["payload"].get("gate_log_path").is_some())
-            .unwrap_or_else(|| panic!("driver_event payload must name gate_log_path: {body}"));
+            .filter(|event| event["payload"].get("gate_log_path").is_some())
+            .collect::<Vec<_>>();
         assert_eq!(
-            event["payload"]["gate_log_path"],
-            serde_json::json!(gate_log)
+            gate_events.len(),
+            2,
+            "each verify-fail retry must emit a driver_event carrying gate_log_path: {body}",
         );
-        assert!(
-            event["summary"]
-                .as_str()
-                .unwrap_or_default()
-                .contains(&format!("gate log: {gate_log}")),
-            "driver_event summary must render gate log path {gate_log}: {body}",
-        );
+        for gate_log in [first_gate_log, second_gate_log] {
+            let expected = serde_json::json!(&gate_log);
+            let event = gate_events
+                .iter()
+                .find(|event| event["payload"]["gate_log_path"] == expected)
+                .unwrap_or_else(|| {
+                    panic!("driver_event payload must name gate_log_path {gate_log}: {body}")
+                });
+            assert!(
+                event["summary"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains(&format!("gate log: {gate_log}")),
+                "driver_event summary must render gate log path {gate_log}: {body}",
+            );
+        }
     }
 
     /// A verify-fail on a bead whose ff advanced nothing
@@ -3241,7 +3308,7 @@ mod tests {
         let stub = dir.path().join("loom-stub.sh");
         std::fs::write(
             &stub,
-            "#!/bin/sh\n\
+            "#!/usr/bin/env bash\n\
              set -euo pipefail\n\
              case \"$2\" in\n\
                  verify) echo 'verifier failed' >&2; exit 1 ;;\n\

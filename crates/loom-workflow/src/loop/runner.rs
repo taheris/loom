@@ -259,8 +259,7 @@ pub fn synthesize_integration_conflict_options(
 /// `previous_failure`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PerBeadGateOutcome {
-    /// `loom gate verify --diff <range>` exited 0 AND the focused
-    /// `loom gate review --diff <range> --bead <id>` emitted no unsuppressed findings.
+    /// `loom gate verify --diff <pre-integration-head>..HEAD` exited 0.
     /// The bead is done.
     Clean,
     /// The per-bead gate saw a structural invariant violation that the
@@ -270,13 +269,12 @@ pub enum PerBeadGateOutcome {
     /// is NOT unwound — the integration is already durable. `detail`
     /// carries operator-facing diagnostics for `bd update --notes`.
     StructuralViolation { detail: String },
-    /// `loom gate verify --diff <range>` exited non-zero, or focused
-    /// `loom gate review --diff <range> --bead <id>` reported a recoverable concern.
-    /// Both cases route through the existing per-bead recovery loop bounded by
+    /// `loom gate verify --diff <pre-integration-head>..HEAD` exited non-zero.
+    /// The failure routes through the existing per-bead recovery loop bounded by
     /// `RetryPolicy::max_retries`: `detail` is threaded as
     /// `previous_failure` into the next agent attempt; exhaustion
-    /// routes to [`BeadResult::Clarified`] with the accumulated error
-    /// context per the existing `RetryDecision::GiveUp` path.
+    /// routes to [`BeadResult::Blocked`] with the `retry-exhausted`
+    /// cause.
     Recovery { detail: String },
 }
 
@@ -468,6 +466,7 @@ async fn process_one_bead<C: AgentLoopController>(
                     });
                 }
                 PerBeadGateOutcome::Recovery { detail } => {
+                    let exhausted_detail = detail.clone();
                     match policy.decide(retries_used, detail) {
                         RetryDecision::Retry {
                             previous_failure: pf,
@@ -489,8 +488,9 @@ async fn process_one_bead<C: AgentLoopController>(
                             previous_failure = Some(pf);
                         }
                         RetryDecision::GiveUp => {
-                            return Ok(BeadResult::Clarified {
-                                note: previous_failure.unwrap_or_default(),
+                            return Ok(BeadResult::Blocked {
+                                cause: RETRY_EXHAUSTED_CAUSE.to_string(),
+                                error: exhausted_detail,
                             });
                         }
                     }
@@ -1588,7 +1588,7 @@ mod tests {
     /// resolves the bead to `BeadResult::Done` (neither clarified nor
     /// blocked). The subprocess shape `exec_per_bead_gate` resolves to
     /// is pinned by the production test
-    /// `exec_per_bead_gate_invokes_only_loom_gate_verify_subprocess`.
+    /// `exec_per_bead_gate_invokes_post_integration_verify_only`.
     #[tokio::test]
     async fn loop_per_bead_routes_run_phase_success_through_exec_per_bead_gate()
     -> Result<(), LoopError> {
@@ -1625,7 +1625,7 @@ mod tests {
     /// gate (`loom gate verify --diff <range>` only). This pins the
     /// run-phase-Success → per-bead-gate edge; the subprocess shape is
     /// pinned by the production test
-    /// `exec_per_bead_gate_invokes_only_loom_gate_verify_subprocess`.
+    /// `exec_per_bead_gate_invokes_post_integration_verify_only`.
     #[tokio::test]
     async fn per_bead_path_invokes_verify_only_after_run_phase_success() -> Result<(), LoopError> {
         let mut c = FakeController::default();
@@ -1826,25 +1826,27 @@ mod tests {
     }
 
     /// Spec criterion (`specs/harness.md` § Functional): a recoverable
-    /// per-bead gate concern threads its detail into `previous_failure`
-    /// and re-runs through the existing per-bead recovery loop bounded
-    /// by `RetryPolicy::max_retries`. After exhaustion the bead routes
-    /// to `loom:clarify` with the accumulated error context (the
-    /// existing `RetryDecision::GiveUp` path).
+    /// post-integration gate failure threads its gate-log detail into
+    /// `previous_failure` and re-runs through the existing per-bead
+    /// recovery loop bounded by `RetryPolicy::max_retries`. After
+    /// exhaustion the bead routes to `loom:blocked` with cause
+    /// `retry-exhausted` and the current gate-log detail.
     #[tokio::test]
-    async fn loop_per_bead_routes_review_concern_through_recovery_loop_bounded_by_max_retries()
+    async fn loop_per_bead_routes_gate_recording_errors_through_recovery_loop_bounded_by_max_retries()
     -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("lm-1", &[]));
         // max_retries = 2 → initial attempt + 2 retries = 3 Success +
-        // 3 review concerns → clarify with the last error body.
+        // 3 post-integrate failures → blocked with the last error body.
         for _ in 0..3 {
             c.agent_outcomes.push_back(AgentOutcome::Success);
         }
         for i in 0..3 {
             c.per_bead_gate_outcomes
                 .push_back(PerBeadGateOutcome::Recovery {
-                    detail: format!("review concern {i}: fix requested"),
+                    detail: format!(
+                        "post-integrate-fail {i}: gate log: .loom/logs/gate/harness/lm-1-attempt-{i}.jsonl",
+                    ),
                 });
         }
 
@@ -1856,29 +1858,28 @@ mod tests {
             "agent re-runs through the existing retry loop: initial + 2 retries",
         );
         // First attempt: no previous_failure. Subsequent attempts thread
-        // the prior review-concern detail verbatim into `previous_failure`.
+        // the prior post-integrate gate detail verbatim into
+        // `previous_failure`, including the durable gate log path.
         assert_eq!(c.run_calls[0].1, None);
         assert_eq!(
             c.run_calls[1].1.as_deref(),
-            Some("review concern 0: fix requested"),
+            Some("post-integrate-fail 0: gate log: .loom/logs/gate/harness/lm-1-attempt-0.jsonl"),
         );
         assert_eq!(
             c.run_calls[2].1.as_deref(),
-            Some("review concern 1: fix requested"),
+            Some("post-integrate-fail 1: gate log: .loom/logs/gate/harness/lm-1-attempt-1.jsonl"),
         );
         // The gate fired once per agent attempt.
         assert_eq!(c.per_bead_gate_calls.len(), 3);
-        // Exhausted retries → clarify with the last failure body.
+        // Exhausted retries → blocked with the current failure body.
+        assert!(c.clarified.is_empty(), "gate exhaustion must not clarify");
+        assert_eq!(c.blocked.len(), 1);
+        assert_eq!(c.blocked[0].0, BeadId::new("lm-1").expect("valid"));
+        assert_eq!(c.blocked[0].1, RETRY_EXHAUSTED_CAUSE);
         assert!(
-            c.blocked.is_empty(),
-            "recoverable review concerns must not block"
-        );
-        assert_eq!(c.clarified.len(), 1);
-        assert_eq!(c.clarified[0].0, BeadId::new("lm-1").expect("valid"));
-        assert!(
-            c.clarified[0].1.contains("review concern 1"),
-            "clarify note must carry the accumulated error detail: {:?}",
-            c.clarified[0].1,
+            c.blocked[0].2.contains("lm-1-attempt-2.jsonl"),
+            "blocked note must carry the current gate-log detail: {:?}",
+            c.blocked[0].2,
         );
         // `retry_dispatch` driver events fire on each recovery hop.
         let kinds: Vec<&str> = c.driver_events.iter().map(|(k, _, _)| k.as_str()).collect();
@@ -1887,7 +1888,7 @@ mod tests {
             vec!["retry_dispatch", "retry_dispatch"],
             "two recovery hops → two retry_dispatch events",
         );
-        assert_eq!(summary.beads_clarified, 1);
+        assert_eq!(summary.beads_blocked, 1);
         Ok(())
     }
 }

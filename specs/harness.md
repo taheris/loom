@@ -3130,7 +3130,7 @@ Criteria.
       workspace (inside `index.lock`), the loop invokes exactly
       `loom gate verify --diff <pre-integration-head>..HEAD`. The
       per-bead hot path never invokes focused LLM review or `mint`
-  [test?](exec_per_bead_gate_invokes_post_integration_verify_only)
+  [test](exec_per_bead_gate_invokes_post_integration_verify_only)
 - The molecule-completion handoff evidence is populated from typed
       `GateRun`, `VerifiedScope`, and `ReviewedScope` values parsed
       from actual gate JSONL logs. No trust field is left at default
@@ -3169,7 +3169,7 @@ Criteria.
       per-lane hook/verifier results, exit code, stdout/stderr tails,
       integration SHA, bead id, retry attempt, rollback state, and log
       path
-  [test?](post_integrate_verify_failure_writes_durable_gate_log)
+  [test](post_integrate_verify_failure_writes_durable_gate_log)
 - The `driver_event` emitted for `post-integrate-fail` names the gate
       log path in its payload / rendered summary, and retry attempts
       produce distinct log paths while successful integration flow is
@@ -3180,7 +3180,7 @@ Criteria.
       existing per-bead recovery loop bounded by `[loop] max_retries`;
       after exhaustion the bead routes to `loom:blocked` with cause
       `retry-exhausted`
-  [test?](loop_per_bead_routes_gate_recording_errors_through_recovery_loop_bounded_by_max_retries)
+  [test](loop_per_bead_routes_gate_recording_errors_through_recovery_loop_bounded_by_max_retries)
 - `loom loop`'s outer loop, after original non-deferred work drains,
       invokes `loom gate mint -m <molecule-id>` to promote deferred
       remediation beads, re-polls `bd ready`, and processes promoted
@@ -3429,7 +3429,7 @@ Criteria.
       mechanical verify failure routes directly to `verify-fail` /
       `post-integrate-fail` with gate-log evidence, while molecule-
       completion review runs only after deterministic pre-push success
-  [test?](per_bead_verify_failure_skips_focused_review_and_carries_gate_log)
+  [test](post_integrate_verify_failure_writes_durable_gate_log)
 - Review's primary concern is live-path coverage: relevant
       `[check]` / `[test]` / `[system]` verifiers on the reviewed range
       must exercise the live path (same binary, same argv shape, same

@@ -2831,7 +2831,7 @@ and conservative fall-through for unowned queries.
   `loom gate verify --diff <pre-integration-head>..HEAD` after
   integration and does not invoke focused LLM review or `mint` by
   default
-  [test?](exec_per_bead_gate_invokes_post_integration_verify_only)
+  [test](exec_per_bead_gate_invokes_post_integration_verify_only)
 - `mint --tree` walks both the deterministic verifiers and the LLM
   rubric, normalizing findings from either source into the same typed
   mint flow
@@ -3101,7 +3101,7 @@ deferred bd findings and does not fabricate a new `Vec<Finding>`.
   that invokes `gate mint`, passes `--bead` / `--spec`, invokes
   `--verify-exit`, or starts a focused review session on the per-bead
   hot path is caught at the production controller
-  [test?](exec_per_bead_gate_invokes_post_integration_verify_only)
+  [test](exec_per_bead_gate_invokes_post_integration_verify_only)
 
 ### Molecule mint summary semantics
 
