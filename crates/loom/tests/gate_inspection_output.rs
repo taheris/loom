@@ -10,7 +10,8 @@ use loom_driver::identifier::SpecLabel;
 use loom_workflow::review::{ConcernToken, Finding, FindingTarget};
 
 const SPEC_LABEL: &str = "acme";
-const AGENT_MODE: &str = "finding-concern";
+const FINDING_AGENT_MODE: &str = "finding-concern";
+const COMPLETE_AGENT_MODE: &str = "complete-marker";
 
 fn install_bd_shim(dir: &Path) -> PathBuf {
     let bin_dir = dir.join("bd-bin");
@@ -48,14 +49,26 @@ fn write_profile_manifest(workspace: &Path) -> PathBuf {
     manifest_path
 }
 
-fn write_spec(workspace: &Path) {
+fn write_specs(workspace: &Path, labels: &[&str]) {
     let specs_dir = workspace.join("specs");
     std::fs::create_dir_all(&specs_dir).expect("mkdir specs");
-    std::fs::write(specs_dir.join(format!("{SPEC_LABEL}.md")), "# Acme\n").expect("write spec");
+    for label in labels {
+        let title = label.replace('-', " ");
+        std::fs::write(
+            specs_dir.join(format!("{label}.md")),
+            format!("# {title}\n"),
+        )
+        .expect("write spec");
+    }
 }
 
-fn run_gate_command(workspace: &Path, args: &[&str]) -> (std::process::Output, String) {
-    write_spec(workspace);
+fn run_gate_command_with_agent(
+    workspace: &Path,
+    args: &[&str],
+    labels: &[&str],
+    agent_mode: &str,
+) -> (std::process::Output, String) {
+    write_specs(workspace, labels);
     let bin_dir = install_bd_shim(workspace);
     let state_dir = workspace.join("bd-state");
     std::fs::create_dir_all(&state_dir).expect("mkdir bd-state");
@@ -71,7 +84,7 @@ fn run_gate_command(workspace: &Path, args: &[&str]) -> (std::process::Output, S
         .args(args)
         .env("PATH", pinned_path(&bin_dir))
         .env("LOOM_WRIX_BIN", mock_agent)
-        .env("LOOM_TEST_AGENT_MODE", AGENT_MODE)
+        .env("LOOM_TEST_AGENT_MODE", agent_mode)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", manifest)
         .env("LOOM_VERIFY_TIERS", "check")
@@ -82,6 +95,10 @@ fn run_gate_command(workspace: &Path, args: &[&str]) -> (std::process::Output, S
         .expect("spawn loom");
     let log = std::fs::read_to_string(state_dir.join(".invocations.log")).unwrap_or_default();
     (output, log)
+}
+
+fn run_gate_command(workspace: &Path, args: &[&str]) -> (std::process::Output, String) {
+    run_gate_command_with_agent(workspace, args, &[SPEC_LABEL], FINDING_AGENT_MODE)
 }
 
 fn expected_finding() -> Finding {
@@ -133,6 +150,33 @@ fn audit_tree_scope_makes_no_bd_writes() {
         stdout.contains("LOOM_FINDING_STATUS:"),
         "audit should still report finding status JSON. stdout:\n{stdout}",
     );
+}
+
+#[test]
+fn mint_tree_without_spec_filter_walks_every_workspace_spec() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workspace = dir.path();
+    let (output, log) = run_gate_command_with_agent(
+        workspace,
+        &["gate", "mint", "--tree", "--dry-run"],
+        &["alpha", "beta"],
+        COMPLETE_AGENT_MODE,
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "loom gate mint --tree must complete the workspace sweep. status={:?}\nstdout={stdout}\nstderr={stderr}\nbd log:\n{log}",
+        output.status,
+    );
+    for label in ["spec:alpha", "spec:beta"] {
+        assert!(
+            log.lines()
+                .any(|line| line.contains("list") && line.contains(label)),
+            "mint --tree must build a rubric prompt for {label}. bd log:\n{log}",
+        );
+    }
 }
 
 #[test]

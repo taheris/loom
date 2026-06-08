@@ -2064,6 +2064,27 @@ mod tests {
     }
 
     #[test]
+    fn finding_without_route_field_routes_to_bad_walk_malformed_finding() {
+        let output = concat!(
+            r#"LOOM_FINDING: {"token":"spec-coherence-fail","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"missing route"}"#,
+            "\nLOOM_CONCERN: {\"summary\":\"missing route\"}\n",
+        );
+        let (error, terminal) =
+            single_malformed_finding_error(output, DispatchScope::Tree, &AlwaysValid);
+        match error {
+            FindingParseError::Json { message, raw, .. } => {
+                assert!(
+                    message.contains("missing field `route`"),
+                    "missing route should be a serde shape error, got: {message}",
+                );
+                assert!(raw.contains(r#""token":"spec-coherence-fail""#));
+            }
+            other => panic!("expected Json error for missing route field, got {other:?}"),
+        }
+        assert!(matches!(terminal, TerminalSurface::Concern { .. }));
+    }
+
+    #[test]
     fn backtick_wrapped_loom_finding_line_routes_to_bad_walk_malformed_finding_with_terminal_preserved()
      {
         let good_line = finding_line(
