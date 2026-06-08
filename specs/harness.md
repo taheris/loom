@@ -2910,7 +2910,7 @@ Criteria.
 - Origin push of the integration branch retries non-fast-forward
       errors by fetching and re-rebasing onto
       `origin/<integration-branch>`
-  [test](origin_push_retries_non_fast_forward)
+  [test](clean_review_reruns_loop_when_origin_push_races)
 - On rebase abort, audit-fail rollback, signature-verification
       failure, agent failure, retry, tree-not-clean recovery, block,
       or clarify, the bead workspace persists (the default
