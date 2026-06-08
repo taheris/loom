@@ -44,14 +44,17 @@ const COMMENT_SCANNER_TOKENS: &[&str] = &[
 ];
 
 pub fn run(input: &WalkInput) -> Verdict {
-    let root = workspace_root();
-    let scope = narrow_to_loom_files(contract_scope(&root), input, &root);
+    run_with_root(input, &workspace_root())
+}
+
+fn run_with_root(input: &WalkInput, root: &Path) -> Verdict {
+    let scope = narrow_to_loom_files(contract_scope(root), input, root);
     let mut violations = Vec::new();
     for path in scope {
         let Some(body) = read_to_string(&path) else {
             continue;
         };
-        let rel_path = rel(&root, &path);
+        let rel_path = rel(root, &path);
         let test_mask = cfg_test_mask(&body);
         for (lineno, line) in body.lines().enumerate() {
             if test_mask.get(lineno).copied().unwrap_or(false) || is_comment(line) {
@@ -65,7 +68,8 @@ pub fn run(input: &WalkInput) -> Verdict {
 }
 
 fn contract_scope(root: &Path) -> Vec<PathBuf> {
-    let mut out = rs_files_recursive(&root.join("crates/loom-driver/src"));
+    let mut out = rs_files_recursive(&root.join("crates/loom/src"));
+    out.extend(rs_files_recursive(&root.join("crates/loom-driver/src")));
     out.extend(rs_files_recursive(&root.join("crates/loom-workflow/src")));
     out
 }
@@ -173,5 +177,66 @@ fn collect_comment_scanner_violations(
                 "{rel_path}:{line_no} scans comment syntax while handling suppression via `{token}`"
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::fs;
+    use std::path::Path;
+
+    use super::*;
+
+    fn write(path: &Path, body: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn fails_when_loom_cli_suppression_path_scans_source_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("crates/loom/src/main.rs"),
+            r#"
+pub fn suppressed(lines: &[&str]) -> bool {
+    lines.iter().any(|line| line.trim_start().starts_with("//") && line.contains("loom-suppress"))
+}
+"#,
+        );
+
+        let verdict = run_with_root(&WalkInput::default(), dir.path());
+
+        assert!(!verdict.pass, "comment suppression scanner must fail");
+        assert!(
+            verdict.evidence.contains("crates/loom/src/main.rs"),
+            "evidence names the live CLI suppression surface: {}",
+            verdict.evidence,
+        );
+    }
+
+    #[test]
+    fn passes_for_top_level_loom_toml_suppression_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("loom.toml"),
+            r#"
+[[suppress]]
+id = "v1:criterion:verifier-too-narrow:gate#verifier-honesty"
+reason = "fixture"
+"#,
+        );
+        write(
+            &dir.path().join("crates/loom/src/main.rs"),
+            "pub fn configured_count(config: &Config) -> usize { config.suppress.len() }\n",
+        );
+
+        let verdict = run_with_root(&WalkInput::default(), dir.path());
+
+        assert!(
+            verdict.pass,
+            "top-level loom.toml suppressions are supported"
+        );
     }
 }

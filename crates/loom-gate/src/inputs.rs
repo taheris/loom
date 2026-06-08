@@ -31,13 +31,14 @@
 //!    command tokens. Recognises `grep`-style file arguments and
 //!    `cargo test -p <crate>` patterns.
 //!
-//! A verifier that declares no inputs of its own — every source above
-//! yielded nothing — is not an error. Per `specs/gate.md` § Verifier
-//! inputs (*Conservative default*) an undeterminable input set is never
-//! grounds to skip: "inputs unknown" resolves to *run*, not to narrow to
-//! the spec section. [`InputResolver::declares_no_inputs`] reports that
-//! state and [`filter_by_files`] honours it by always retaining such a
-//! verifier under any finite scope.
+//! A verifier whose inputs are unknown is not an error. Per
+//! `specs/gate.md` § Verifier inputs (*Conservative default*) an
+//! undeterminable input set is never grounds to skip: "inputs unknown"
+//! resolves to *run*, not to narrow to the spec section. A successful
+//! empty `--print-inputs` document is different: it is a deliberate
+//! narrow input declaration. [`InputResolver::declares_no_inputs`]
+//! reports the unknown state and [`filter_by_files`] honours it by always
+//! retaining such a verifier under any finite scope.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -115,6 +116,25 @@ struct PrintInputsDoc {
 #[derive(Debug, Deserialize)]
 struct PrintInputsBatchDoc {
     inputs: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InputDeclaration {
+    Unknown,
+    Known(Vec<PathBuf>),
+}
+
+impl InputDeclaration {
+    fn is_known(&self) -> bool {
+        matches!(self, Self::Known(_))
+    }
+
+    fn into_paths(self) -> Vec<PathBuf> {
+        match self {
+            Self::Unknown => Vec::new(),
+            Self::Known(paths) => paths,
+        }
+    }
 }
 
 /// Shell preamble that makes a judge rubric script runnable in *collect
@@ -249,14 +269,16 @@ impl InputResolver {
     }
 
     /// Resolve declared inputs and report whether the verifier declared
-    /// any of its own (`true` in the second field iff at least one
-    /// declaration source yielded a path before the spec-section
-    /// auto-include). Walks the declaration chain once, so callers that
-    /// need both the resolved set and the *Conservative default* signal
-    /// pay for resolution a single time.
+    /// any of its own (`true` in the second field iff a declaration source
+    /// succeeded before the spec-section auto-include, even when that
+    /// source deliberately returned an empty path set). Walks the
+    /// declaration chain once, so callers that need both the resolved set
+    /// and the *Conservative default* signal pay for resolution a single
+    /// time.
     pub fn resolve_with_provenance(&mut self, annotation: &Annotation) -> (VerifierInputs, bool) {
-        let mut paths: Vec<PathBuf> = self.collect_declared(annotation);
-        let declared_own = !paths.is_empty();
+        let declaration = self.collect_declared(annotation);
+        let declared_own = declaration.is_known();
+        let mut paths = declaration.into_paths();
         let spec = annotation.source_spec.clone();
         if !paths.iter().any(|p| p == &spec) {
             paths.push(spec);
@@ -272,7 +294,7 @@ impl InputResolver {
     /// such a verifier always runs; [`filter_by_files`] consumes this to
     /// retain it under any finite scope rather than skip it.
     pub fn declares_no_inputs(&mut self, annotation: &Annotation) -> bool {
-        self.collect_declared(annotation).is_empty()
+        !self.collect_declared(annotation).is_known()
     }
 
     /// Probe one annotation's input-query for the integrity gate's
@@ -339,7 +361,7 @@ impl InputResolver {
         classify_query_run(run_query_capturing(command), &query)
     }
 
-    fn collect_declared(&mut self, annotation: &Annotation) -> Vec<PathBuf> {
+    fn collect_declared(&mut self, annotation: &Annotation) -> InputDeclaration {
         match annotation.tier {
             Tier::Test => self.declared_for_test(annotation),
             Tier::Judge => self.declared_for_judge(annotation),
@@ -356,32 +378,32 @@ impl InputResolver {
     /// the paths its `judge_files` calls examine. One batch spawn maps every
     /// rubric the script defines; entries are cached per session keyed by
     /// `<script>#<fn>` so N criteria on one script spawn the harness once.
-    /// A rubric that calls no `judge_files` declares nothing of its own, so
-    /// it falls through to the *Conservative default* (always runs) per
-    /// [`filter_by_files`].
-    fn declared_for_judge(&mut self, annotation: &Annotation) -> Vec<PathBuf> {
+    /// A rubric that calls no `judge_files` still emits a well-formed empty
+    /// collect-mode entry, so it is honoured as a deliberate narrow input
+    /// declaration rather than the unknown-input default.
+    fn declared_for_judge(&mut self, annotation: &Annotation) -> InputDeclaration {
         let Some(script) = crate::integrity::resolve_spec_relative_script_path(
             &annotation.target,
             &annotation.source_spec,
             &self.repo_root,
         ) else {
-            return Vec::new();
+            return InputDeclaration::Unknown;
         };
         if !script.is_file() {
-            return Vec::new();
+            return InputDeclaration::Unknown;
         }
         let Some(function) = target_selector(&annotation.target) else {
-            return Vec::new();
+            return InputDeclaration::Unknown;
         };
         let cache_key = judge_cache_key(&script, function);
         if let Some(cached) = self.print_inputs_cache.get(&cache_key) {
-            return cached.clone();
+            return InputDeclaration::Known(cached.clone());
         }
         let Some(stdout) = run_judge_collect(&self.repo_root, &script, None) else {
-            return Vec::new();
+            return InputDeclaration::Unknown;
         };
         let Some(batch) = parse_inputs_batch_json(&stdout) else {
-            return Vec::new();
+            return InputDeclaration::Unknown;
         };
         for (rubric, paths) in batch {
             self.print_inputs_cache
@@ -390,44 +412,55 @@ impl InputResolver {
         self.print_inputs_cache
             .get(&cache_key)
             .cloned()
-            .unwrap_or_default()
+            .map(InputDeclaration::Known)
+            .unwrap_or(InputDeclaration::Unknown)
     }
 
-    fn declared_for_test(&mut self, annotation: &Annotation) -> Vec<PathBuf> {
+    fn declared_for_test(&mut self, annotation: &Annotation) -> InputDeclaration {
         if let Some(command) = self.inputs_for_test_command.clone()
             && let Some(paths) = self.invoke_inputs_helper(&command, &annotation.target)
         {
-            return paths;
+            return InputDeclaration::Known(paths);
         }
-        self.test_scope
-            .as_ref()
-            .map(|scope| scope.scope_for(annotation))
-            .unwrap_or_default()
+        let Some(scope) = self.test_scope.as_ref() else {
+            return InputDeclaration::Unknown;
+        };
+        let paths = scope.scope_for(annotation);
+        if paths.is_empty() {
+            InputDeclaration::Unknown
+        } else {
+            InputDeclaration::Known(paths)
+        }
     }
 
-    fn declared_for_command(&mut self, annotation: &Annotation) -> Vec<PathBuf> {
+    fn declared_for_command(&mut self, annotation: &Annotation) -> InputDeclaration {
         let target = annotation.target.trim();
         let Some(tokens) = shlex::split(target) else {
-            return Vec::new();
+            return InputDeclaration::Unknown;
         };
         if tokens.is_empty() {
-            return Vec::new();
+            return InputDeclaration::Unknown;
         }
 
-        if let Some(paths) = self.runner_owned_inputs(annotation) {
-            return paths;
+        if let Some(declaration) = self.runner_owned_inputs(annotation) {
+            return declaration;
         }
 
         let cache_key = target.to_string();
         if let Some(cached) = self.print_inputs_cache.get(&cache_key) {
-            return cached.clone();
+            return InputDeclaration::Known(cached.clone());
         }
         if let Some(paths) = self.invoke_print_inputs(&tokens) {
             self.print_inputs_cache.insert(cache_key, paths.clone());
-            return paths;
+            return InputDeclaration::Known(paths);
         }
 
-        self.heuristic_extract(&tokens)
+        let paths = self.heuristic_extract(&tokens);
+        if paths.is_empty() {
+            InputDeclaration::Unknown
+        } else {
+            InputDeclaration::Known(paths)
+        }
     }
 
     /// Resolve a runner-matched `[check]` / `[system]` target's inputs
@@ -436,8 +469,8 @@ impl InputResolver {
     /// argv-mangling or heuristic fallback) when a runner matches the
     /// target, `None` when none does (the caller falls through to
     /// literal-command semantics). A matched runner with no `inputs` query
-    /// yields `Some(empty)`: the conservative always-run default, never a
-    /// `tokens[0]` probe.
+    /// yields [`InputDeclaration::Unknown`]: the conservative always-run
+    /// default, never a `tokens[0]` probe.
     ///
     /// This is the per-annotation path: it renders the query for one
     /// annotation and serves the primed cache without re-querying. The
@@ -447,7 +480,7 @@ impl InputResolver {
     /// `[check]` group — is issued up front by
     /// [`Self::prime_runner_inputs`]; a sibling whose group was primed hits
     /// the cache here and never spawns.
-    fn runner_owned_inputs(&mut self, annotation: &Annotation) -> Option<Vec<PathBuf>> {
+    fn runner_owned_inputs(&mut self, annotation: &Annotation) -> Option<InputDeclaration> {
         let (runner_name, rendered_target, query) = {
             let (groups, _) = group_by_runner(&self.runners, std::slice::from_ref(annotation));
             let group = groups.into_iter().next()?;
@@ -460,13 +493,13 @@ impl InputResolver {
         };
         let cache_key = runner_cache_key(&runner_name, &rendered_target);
         if let Some(cached) = self.print_inputs_cache.get(&cache_key) {
-            return Some(cached.clone());
+            return Some(InputDeclaration::Known(cached.clone()));
         }
         let Some(query) = query else {
-            return Some(Vec::new());
+            return Some(InputDeclaration::Unknown);
         };
         let Some(stdout) = run_command_query(&self.repo_root, &query) else {
-            return Some(Vec::new());
+            return Some(InputDeclaration::Unknown);
         };
         if let Some(batch) = parse_inputs_batch_json(&stdout) {
             for (target, paths) in batch {
@@ -480,7 +513,8 @@ impl InputResolver {
             self.print_inputs_cache
                 .get(&cache_key)
                 .cloned()
-                .unwrap_or_default(),
+                .map(InputDeclaration::Known)
+                .unwrap_or(InputDeclaration::Unknown),
         )
     }
 
@@ -1447,6 +1481,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn explicit_empty_runner_inputs_are_a_declared_narrow_input_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let responder = dir.path().join("empty-responder.sh");
+        fs::write(
+            &responder,
+            "#!/usr/bin/env bash\n\
+             set -euo pipefail\n\
+             for arg in \"$@\"; do\n\
+               if [[ \"$arg\" == \"--print-inputs\" ]]; then\n\
+                 printf '{\"inputs\":[]}\\n'\n\
+                 exit 0\n\
+               fi\n\
+             done\n\
+             exit 1\n",
+        )
+        .unwrap();
+
+        let spec = RunnerSpec::compile(
+            "walk",
+            Some(r"^walk -- (\S+)$"),
+            "walk -- {targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(format!(
+            "bash {} {{targets}} {{print_inputs}}",
+            responder.display()
+        )));
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![spec]);
+        let a = ann(Tier::Check, "walk -- empty", "specs/gate.md");
+
+        assert!(
+            !resolver.declares_no_inputs(&a),
+            "well-formed empty inputs are declared, not the unknown-input default",
+        );
+    }
+
     /// The runner input-query seam (`render_inputs_query` →
     /// `run_command_query` → `parse_inputs_batch_json` cache-prime) batches
     /// across siblings: a batch response (`{"inputs":{"<target>":[...]}}`)
@@ -1728,11 +1804,10 @@ mod tests {
     }
 
     #[test]
-    fn judge_tier_without_judge_files_declares_no_inputs() {
+    fn judge_tier_without_judge_files_declares_empty_inputs() {
         let dir = tempfile::tempdir().unwrap();
         let script_dir = dir.path().join("tests/judges");
         fs::create_dir_all(&script_dir).unwrap();
-        // Script exists and resolves, but the rubric calls no judge_files.
         fs::write(
             script_dir.join("loom.sh"),
             "#!/usr/bin/env bash\njudge_x() { judge_criterion \"no files examined\"; }\n",
@@ -1746,8 +1821,8 @@ mod tests {
             "specs/harness.md",
         );
         assert!(
-            resolver.declares_no_inputs(&a),
-            "judge rubric calling no judge_files relies on the spec auto-include alone",
+            !resolver.declares_no_inputs(&a),
+            "judge collect-mode emitted a well-formed empty inputs document",
         );
     }
 
@@ -1917,6 +1992,7 @@ mod tests {
             perms.set_mode(0o755);
             fs::set_permissions(&helper, perms).unwrap();
         }
+        wait_for_executable(&helper);
 
         let scope = Box::new(StubScope::new(&[(
             "loom_gate",
@@ -2098,6 +2174,44 @@ mod tests {
             got.len(),
             1,
             "an undeclared-input verifier always runs under a finite scope",
+        );
+    }
+
+    #[test]
+    fn filter_by_files_honours_explicit_empty_inputs_as_narrow() {
+        let dir = tempfile::tempdir().unwrap();
+        let responder = dir.path().join("empty-scope-responder.sh");
+        fs::write(
+            &responder,
+            "#!/usr/bin/env bash\n\
+             set -euo pipefail\n\
+             printf '{\"inputs\":{\"empty\":[]}}\\n'\n",
+        )
+        .unwrap();
+
+        let spec = RunnerSpec::compile(
+            "walk",
+            Some(r"^walk -- (\S+)$"),
+            "walk -- {targets}",
+            "{capture_1}",
+            " ",
+            crate::runner::BuiltinParser::JsonLines,
+            None,
+        )
+        .unwrap()
+        .with_inputs(Some(format!(
+            "bash {} {{targets}} {{print_inputs}}",
+            responder.display()
+        )));
+
+        let mut resolver = InputResolver::new(dir.path().to_path_buf()).with_runners(vec![spec]);
+        let annotations = vec![ann(Tier::Check, "walk -- empty", "specs/gate.md")];
+        let files = vec![PathBuf::from(".pre-commit-config.yaml")];
+        let got = filter_by_files(&annotations, &files, &mut resolver);
+
+        assert!(
+            got.is_empty(),
+            "explicit empty inputs narrow to the spec auto-include and drop for unrelated files",
         );
     }
 
