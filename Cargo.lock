@@ -2424,6 +2424,7 @@ dependencies = [
 name = "loom-agent"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "displaydoc",
  "glob",
  "loom-driver",

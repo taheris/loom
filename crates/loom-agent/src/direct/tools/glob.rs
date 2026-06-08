@@ -8,10 +8,18 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::task;
 
-use super::{parse_args, schema_for};
+use super::{ToolContext, parse_args, schema_for};
 
-/// Zero-sized Glob tool.
-pub struct Glob;
+/// Glob tool bound to a session context.
+pub struct Glob {
+    ctx: ToolContext,
+}
+
+impl Glob {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Args {
@@ -39,6 +47,7 @@ impl Tool for Glob {
 
     fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
         Box::pin(async move {
+            let _ctx = &self.ctx;
             let parsed: Args = parse_args(args)?;
             let out = task::spawn_blocking(move || expand(parsed))
                 .await
@@ -82,7 +91,11 @@ mod tests {
 
     use super::*;
     use serde_json::json;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
+
+    fn glob_with(dir: &TempDir) -> Glob {
+        Glob::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
+    }
 
     #[tokio::test]
     async fn glob_lists_files_matching_extension() {
@@ -91,7 +104,7 @@ mod tests {
         std::fs::write(dir.path().join("b.rs"), "").unwrap();
         std::fs::write(dir.path().join("c.txt"), "").unwrap();
 
-        let out = Glob
+        let out = glob_with(&dir)
             .invoke(json!({ "pattern": "*.rs", "path": dir.path() }))
             .await
             .expect("invoke");
@@ -112,7 +125,7 @@ mod tests {
         std::fs::write(dir.path().join("sub/mid.rs"), "").unwrap();
         std::fs::write(dir.path().join("sub/deep/bot.rs"), "").unwrap();
 
-        let out = Glob
+        let out = glob_with(&dir)
             .invoke(json!({ "pattern": "**/*.rs", "path": dir.path() }))
             .await
             .expect("invoke");
@@ -125,7 +138,7 @@ mod tests {
     #[tokio::test]
     async fn glob_no_matches_returns_empty_content() {
         let dir = tempdir().unwrap();
-        let out = Glob
+        let out = glob_with(&dir)
             .invoke(json!({ "pattern": "*.never", "path": dir.path() }))
             .await
             .expect("invoke");
@@ -135,7 +148,8 @@ mod tests {
 
     #[tokio::test]
     async fn glob_invalid_pattern_returns_tool_error() {
-        let out = Glob
+        let dir = tempdir().unwrap();
+        let out = glob_with(&dir)
             .invoke(json!({ "pattern": "[unclosed" }))
             .await
             .expect("invoke");

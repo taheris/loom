@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::fs;
 
-use super::{parse_args, schema_for};
+use super::{ToolContext, parse_args, schema_for};
 
 /// Heuristic threshold for binary detection: bytes scanned from the
 /// start of the file for NUL (0x00). The same value `git diff` uses
@@ -21,9 +21,16 @@ use super::{parse_args, schema_for};
 /// bounded on huge binaries.
 const BINARY_SCAN_BYTES: usize = 8 * 1024;
 
-/// Zero-sized Read tool. State-free; one instance services every call
-/// the conversation loop dispatches.
-pub struct Read;
+/// Read tool bound to a session context.
+pub struct Read {
+    ctx: ToolContext,
+}
+
+impl Read {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Args {
@@ -54,12 +61,12 @@ impl Tool for Read {
     fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
         Box::pin(async move {
             let parsed: Args = parse_args(args)?;
-            Ok(read_file(parsed).await)
+            Ok(read_file(parsed, self.ctx.clone()).await)
         })
     }
 }
 
-async fn read_file(args: Args) -> ToolOutput {
+async fn read_file(args: Args, ctx: ToolContext) -> ToolOutput {
     let bytes = match fs::read(&args.file_path).await {
         Ok(bytes) => bytes,
         Err(err) => return error(format!("read {}: {err}", args.file_path.display())),
@@ -79,7 +86,7 @@ async fn read_file(args: Args) -> ToolOutput {
 
     let sliced = slice_lines(&text, args.offset, args.limit);
     ToolOutput {
-        content: Value::String(sliced),
+        content: ctx.cap_or_offload(sliced),
         is_error: false,
     }
 }
@@ -114,7 +121,11 @@ mod tests {
 
     use super::*;
     use serde_json::json;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
+
+    fn read_with(dir: &TempDir, cap: usize) -> Read {
+        Read::new(ToolContext::new(dir.path().join("offload"), cap))
+    }
 
     #[tokio::test]
     async fn read_returns_full_content_when_no_slice() {
@@ -122,7 +133,7 @@ mod tests {
         let path = dir.path().join("hello.txt");
         fs::write(&path, "alpha\nbeta\ngamma").await.unwrap();
 
-        let out = Read
+        let out = read_with(&dir, usize::MAX)
             .invoke(json!({ "file_path": path }))
             .await
             .expect("invoke");
@@ -138,7 +149,7 @@ mod tests {
             .await
             .unwrap();
 
-        let out = Read
+        let out = read_with(&dir, usize::MAX)
             .invoke(json!({ "file_path": path, "offset": 2, "limit": 2 }))
             .await
             .expect("invoke");
@@ -152,7 +163,7 @@ mod tests {
         let path = dir.path().join("bin.dat");
         fs::write(&path, b"hello\x00world").await.unwrap();
 
-        let out = Read
+        let out = read_with(&dir, usize::MAX)
             .invoke(json!({ "file_path": path }))
             .await
             .expect("invoke");
@@ -163,7 +174,8 @@ mod tests {
 
     #[tokio::test]
     async fn read_missing_file_returns_tool_error_not_protocol_error() {
-        let out = Read
+        let dir = tempdir().unwrap();
+        let out = read_with(&dir, usize::MAX)
             .invoke(json!({ "file_path": "/nonexistent/path/x" }))
             .await
             .expect("invoke");
@@ -172,7 +184,8 @@ mod tests {
 
     #[tokio::test]
     async fn read_input_schema_describes_file_path_required() {
-        let schema = Read.input_schema();
+        let dir = tempdir().unwrap();
+        let schema = read_with(&dir, usize::MAX).input_schema();
         let required = schema["required"]
             .as_array()
             .expect("required array")
@@ -182,17 +195,121 @@ mod tests {
         assert!(required.contains(&"file_path"), "schema: {schema}");
     }
 
-    /// Spec contract (`specs/agent.md` § Direct backend, L761–762):
-    /// inside the container the workspace is bind-mounted at
-    /// `/workspace/...`, and Direct tools resolve absolute paths through
-    /// the same kernel filesystem APIs as on the host. This test stands
-    /// in for the container by rooting a fake workspace mount under a
-    /// tempdir and confirming that an absolute path nested under it —
-    /// the same path-shape `/workspace/<dir>/<file>` the agent receives
-    /// in production — round-trips through the Read tool. A regression
-    /// that introduces sandbox-side path translation, prefix stripping,
-    /// or sandbox-internal virtual filesystems would silently change the
-    /// contract; this test trips on it.
+    #[tokio::test]
+    async fn read_over_cap_offloads_full_payload_and_returns_head_reference() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("large.txt");
+        let body = "alpha\nbeta\ngamma\ndelta\n";
+        fs::write(&path, body).await.unwrap();
+
+        let out = read_with(&dir, "alpha\nbeta\n".len())
+            .invoke(json!({ "file_path": path }))
+            .await
+            .expect("invoke");
+
+        assert!(!out.is_error);
+        assert_eq!(out.content["offloaded"], json!(true));
+        assert_eq!(out.content["total_bytes"], json!(body.len()));
+        assert_eq!(out.content["total_lines"], json!(4));
+        assert_eq!(out.content["head_lines"], json!(2));
+        let head = out.content["head"].as_str().expect("head string");
+        assert!(head.starts_with("alpha\nbeta\n"), "{head}");
+        assert!(head.contains("[truncated:"), "{head}");
+        let offload_path = out.content["path"].as_str().expect("offload path");
+        assert_eq!(fs::read_to_string(offload_path).await.unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn cap_measured_on_raw_utf8_byte_length_not_serialized() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("quoted.txt");
+        fs::write(&path, "\"").await.unwrap();
+
+        let out = read_with(&dir, 1)
+            .invoke(json!({ "file_path": path }))
+            .await
+            .expect("invoke");
+
+        assert!(!out.is_error);
+        assert_eq!(out.content, Value::String("\"".to_string()));
+    }
+
+    #[tokio::test]
+    async fn offloaded_file_round_trips_through_read_via_head_lines_offset() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("source.txt");
+        let body = "one\ntwo\nthree\nfour";
+        fs::write(&path, body).await.unwrap();
+
+        let out = read_with(&dir, "one\ntwo\n".len())
+            .invoke(json!({ "file_path": path }))
+            .await
+            .expect("invoke");
+        let offload_path = out.content["path"].as_str().expect("offload path");
+        let head_lines = usize::try_from(out.content["head_lines"].as_u64().expect("head_lines"))
+            .expect("head_lines fits usize");
+
+        let tail = read_with(&dir, usize::MAX)
+            .invoke(json!({ "file_path": offload_path, "offset": head_lines + 1 }))
+            .await
+            .expect("tail read");
+        assert!(!tail.is_error);
+        let prefix = body.lines().take(head_lines).collect::<Vec<_>>().join("\n");
+        let reconstructed = format!("{prefix}\n{}", tail.content.as_str().unwrap());
+        assert_eq!(reconstructed, body);
+    }
+
+    #[tokio::test]
+    async fn distinct_content_offloads_to_distinct_deterministic_paths() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("first.txt");
+        let second = dir.path().join("second.txt");
+        fs::write(&first, "aaaa\nbbbb\n").await.unwrap();
+        fs::write(&second, "aaaa\ncccc\n").await.unwrap();
+
+        let first_out = read_with(&dir, 5)
+            .invoke(json!({ "file_path": first }))
+            .await
+            .expect("first read");
+        let second_out = read_with(&dir, 5)
+            .invoke(json!({ "file_path": second }))
+            .await
+            .expect("second read");
+        let first_again = read_with(&dir, 5)
+            .invoke(json!({ "file_path": dir.path().join("first.txt") }))
+            .await
+            .expect("first reread");
+
+        let first_path = first_out.content["path"].as_str().expect("first path");
+        let second_path = second_out.content["path"].as_str().expect("second path");
+        assert_ne!(first_path, second_path);
+        assert_eq!(
+            first_path,
+            first_again.content["path"].as_str().expect("repeat path"),
+        );
+        assert!(first_path.ends_with(".txt"), "{first_path}");
+    }
+
+    #[tokio::test]
+    async fn offload_write_failure_degrades_to_inline_truncation() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("large.txt");
+        let blocker = dir.path().join("blocker");
+        fs::write(&source, "alpha\nbeta\ngamma\n").await.unwrap();
+        fs::write(&blocker, "not a directory").await.unwrap();
+        let ctx = ToolContext::new(blocker.join("offload"), "alpha\n".len());
+
+        let out = Read::new(ctx)
+            .invoke(json!({ "file_path": source }))
+            .await
+            .expect("invoke");
+
+        assert!(!out.is_error);
+        let text = out.content.as_str().expect("path-less truncation string");
+        assert!(text.starts_with("alpha\n"), "{text}");
+        assert!(text.contains("[truncated: showing 1 of 3 lines]"), "{text}");
+    }
+
     #[tokio::test]
     async fn direct_tools_read_against_container_workspace_mount() {
         let workspace_mount = tempfile::tempdir().expect("workspace mount tempdir");
@@ -210,7 +327,7 @@ mod tests {
             target.display(),
         );
 
-        let out = Read
+        let out = read_with(&workspace_mount, usize::MAX)
             .invoke(json!({ "file_path": target }))
             .await
             .expect("invoke");

@@ -9,10 +9,18 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::fs;
 
-use super::{parse_args, schema_for};
+use super::{ToolContext, parse_args, schema_for};
 
-/// Zero-sized Write tool.
-pub struct Write;
+/// Write tool bound to a session context.
+pub struct Write {
+    ctx: ToolContext,
+}
+
+impl Write {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Args {
@@ -38,6 +46,7 @@ impl Tool for Write {
 
     fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
         Box::pin(async move {
+            let _ctx = &self.ctx;
             let parsed: Args = parse_args(args)?;
             Ok(write_file(parsed).await)
         })
@@ -73,14 +82,18 @@ mod tests {
 
     use super::*;
     use serde_json::json;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
+
+    fn write_with(dir: &TempDir) -> Write {
+        Write::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
+    }
 
     #[tokio::test]
     async fn write_creates_file_and_parent_directories() {
         let dir = tempdir().unwrap();
         let target = dir.path().join("nested/deep/file.txt");
 
-        let out = Write
+        let out = write_with(&dir)
             .invoke(json!({ "file_path": target, "content": "hello" }))
             .await
             .expect("invoke");
@@ -96,7 +109,7 @@ mod tests {
         let target = dir.path().join("over.txt");
         fs::write(&target, "old").await.unwrap();
 
-        let out = Write
+        let out = write_with(&dir)
             .invoke(json!({ "file_path": target, "content": "new" }))
             .await
             .expect("invoke");
@@ -106,7 +119,8 @@ mod tests {
 
     #[tokio::test]
     async fn write_unwritable_path_returns_tool_error() {
-        let out = Write
+        let dir = tempdir().unwrap();
+        let out = write_with(&dir)
             .invoke(json!({
                 "file_path": "/proc/cannot-create",
                 "content": "x",
@@ -118,7 +132,8 @@ mod tests {
 
     #[tokio::test]
     async fn write_input_schema_requires_file_path_and_content() {
-        let schema = Write.input_schema();
+        let dir = tempdir().unwrap();
+        let schema = write_with(&dir).input_schema();
         let required: Vec<&str> = schema["required"]
             .as_array()
             .unwrap()

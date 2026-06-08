@@ -11,13 +11,21 @@ use serde_json::{Value, json};
 use tokio::process::Command;
 use tokio::time;
 
-use super::{parse_args, schema_for};
+use super::{ToolContext, parse_args, schema_for};
 
 /// Per-invocation timeout when the agent does not pass `timeout_ms`.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Zero-sized Bash tool.
-pub struct Bash;
+/// Bash tool bound to a session context.
+pub struct Bash {
+    ctx: ToolContext,
+}
+
+impl Bash {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Args {
@@ -44,6 +52,7 @@ impl Tool for Bash {
 
     fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
         Box::pin(async move {
+            let _ctx = &self.ctx;
             let parsed: Args = parse_args(args)?;
             Ok(run_command(parsed).await)
         })
@@ -94,10 +103,16 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+    use tempfile::{TempDir, tempdir};
+
+    fn bash_with(dir: &TempDir) -> Bash {
+        Bash::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
+    }
 
     #[tokio::test]
     async fn bash_captures_stdout_for_successful_command() {
-        let out = Bash
+        let dir = tempdir().unwrap();
+        let out = bash_with(&dir)
             .invoke(json!({ "command": "printf hello" }))
             .await
             .expect("invoke");
@@ -108,7 +123,8 @@ mod tests {
 
     #[tokio::test]
     async fn bash_marks_nonzero_exit_as_tool_error() {
-        let out = Bash
+        let dir = tempdir().unwrap();
+        let out = bash_with(&dir)
             .invoke(json!({ "command": "exit 7" }))
             .await
             .expect("invoke");
@@ -118,7 +134,8 @@ mod tests {
 
     #[tokio::test]
     async fn bash_timeout_kills_long_running_command() {
-        let out = Bash
+        let dir = tempdir().unwrap();
+        let out = bash_with(&dir)
             .invoke(json!({ "command": "sleep 5", "timeout_ms": 50 }))
             .await
             .expect("invoke");
@@ -129,7 +146,8 @@ mod tests {
 
     #[tokio::test]
     async fn bash_captures_stderr_separately_from_stdout() {
-        let out = Bash
+        let dir = tempdir().unwrap();
+        let out = bash_with(&dir)
             .invoke(json!({ "command": "printf err 1>&2" }))
             .await
             .expect("invoke");

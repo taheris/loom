@@ -11,10 +11,18 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::fs;
 
-use super::{parse_args, schema_for};
+use super::{ToolContext, parse_args, schema_for};
 
-/// Zero-sized Edit tool.
-pub struct Edit;
+/// Edit tool bound to a session context.
+pub struct Edit {
+    ctx: ToolContext,
+}
+
+impl Edit {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Args {
@@ -45,6 +53,7 @@ impl Tool for Edit {
 
     fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
         Box::pin(async move {
+            let _ctx = &self.ctx;
             let parsed: Args = parse_args(args)?;
             Ok(edit_file(parsed).await)
         })
@@ -98,7 +107,11 @@ mod tests {
 
     use super::*;
     use serde_json::json;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
+
+    fn edit_with(dir: &TempDir) -> Edit {
+        Edit::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
+    }
 
     #[tokio::test]
     async fn edit_replaces_single_unique_occurrence() {
@@ -106,7 +119,7 @@ mod tests {
         let path = dir.path().join("file.txt");
         fs::write(&path, "hello world").await.unwrap();
 
-        let out = Edit
+        let out = edit_with(&dir)
             .invoke(json!({
                 "file_path": path,
                 "old_string": "world",
@@ -124,7 +137,7 @@ mod tests {
         let path = dir.path().join("dup.txt");
         fs::write(&path, "foo foo foo").await.unwrap();
 
-        let out = Edit
+        let out = edit_with(&dir)
             .invoke(json!({
                 "file_path": path,
                 "old_string": "foo",
@@ -142,7 +155,7 @@ mod tests {
         let path = dir.path().join("dup.txt");
         fs::write(&path, "foo foo foo").await.unwrap();
 
-        let out = Edit
+        let out = edit_with(&dir)
             .invoke(json!({
                 "file_path": path,
                 "old_string": "foo",
@@ -161,7 +174,7 @@ mod tests {
         let path = dir.path().join("file.txt");
         fs::write(&path, "hello").await.unwrap();
 
-        let out = Edit
+        let out = edit_with(&dir)
             .invoke(json!({
                 "file_path": path,
                 "old_string": "absent",

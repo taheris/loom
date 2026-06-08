@@ -16,3 +16,4 @@ pub mod backend;
 pub mod tools;
 
 pub use backend::DirectBackend;
+pub use tools::ToolContext;

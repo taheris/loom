@@ -20,7 +20,7 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use loom_agent::direct::backend::{DirectCommand, DirectEvent};
-use loom_agent::direct::tools::{Bash, Edit, Glob, Grep, Read, Write};
+use loom_agent::direct::tools::{Bash, Edit, Glob, Grep, Read, ToolContext, Write};
 use loom_driver::agent::SpawnConfig;
 use loom_events::identifier::ToolCallId;
 use loom_llm::api_key::ApiKey;
@@ -46,17 +46,20 @@ const PROMPT_CACHE_TTL: CacheTtl = CacheTtl::Hours1;
 /// Default Conversation model when the [`SpawnConfig`] omits one.
 const DEFAULT_MODEL: ModelId = ModelId::Anthropic(AnthropicModel::ClaudeSonnet46);
 
+/// Default inline content cap when an older spawn config omits output limits.
+const DEFAULT_MAX_INLINE_BYTES: usize = 16_384;
+
 /// Build the canonical six-tool registry the Direct backend registers
 /// with every Conversation. Order matches the spec's tool list (`Read`,
 /// `Write`, `Edit`, `Bash`, `Grep`, `Glob`).
-pub fn six_tools() -> Vec<Box<dyn Tool>> {
+pub fn six_tools(ctx: ToolContext) -> Vec<Box<dyn Tool>> {
     vec![
-        Box::new(Read),
-        Box::new(Write),
-        Box::new(Edit),
-        Box::new(Bash),
-        Box::new(Grep),
-        Box::new(Glob),
+        Box::new(Read::new(ctx.clone())),
+        Box::new(Write::new(ctx.clone())),
+        Box::new(Edit::new(ctx.clone())),
+        Box::new(Bash::new(ctx.clone())),
+        Box::new(Grep::new(ctx.clone())),
+        Box::new(Glob::new(ctx)),
     ]
 }
 
@@ -70,11 +73,19 @@ pub fn build_conversation(config: &SpawnConfig) -> Result<Conversation, Conversa
         .model
         .as_ref()
         .map_or(DEFAULT_MODEL, |sel| ModelId::from_str(&sel.model_id));
+    let ctx = tool_context(config);
     let mut conv = Conversation::new(model)?;
-    for tool in six_tools() {
+    for tool in six_tools(ctx) {
         conv = conv.register_boxed(tool);
     }
     Ok(conv)
+}
+
+fn tool_context(config: &SpawnConfig) -> ToolContext {
+    let max_inline_bytes = config
+        .output_limits
+        .map_or(DEFAULT_MAX_INLINE_BYTES, |limits| limits.max_inline_bytes);
+    ToolContext::new(config.scratch_dir.join("offload"), max_inline_bytes)
 }
 
 /// Resolve the configured model's schema, read the matching credential
@@ -497,7 +508,7 @@ mod tests {
     /// order documented in `specs/agent.md` § Direct Backend.
     #[test]
     fn direct_runner_registers_canonical_six_tools() {
-        let tools = six_tools();
+        let tools = six_tools(tool_context(&sample_config(None)));
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert_eq!(names, vec!["Read", "Write", "Edit", "Bash", "Grep", "Glob"]);
     }

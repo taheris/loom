@@ -21,10 +21,165 @@ pub use grep::Grep;
 pub use read::Read;
 pub use write::Write;
 
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 use loom_llm::LlmError;
 use schemars::{JsonSchema, SchemaGenerator};
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{Value, json};
+
+/// Per-session capabilities available to Direct tool handlers.
+#[derive(Clone)]
+pub struct ToolContext {
+    capabilities: Arc<Capabilities>,
+}
+
+struct Capabilities {
+    offload: OffloadSink,
+}
+
+struct OffloadSink {
+    dir: PathBuf,
+    max_inline_bytes: usize,
+}
+
+struct Head {
+    content: String,
+    lines: usize,
+}
+
+impl ToolContext {
+    /// Create a Direct tool context rooted at the session's offload directory.
+    pub fn new(offload_dir: PathBuf, max_inline_bytes: usize) -> Self {
+        Self {
+            capabilities: Arc::new(Capabilities {
+                offload: OffloadSink {
+                    dir: offload_dir,
+                    max_inline_bytes,
+                },
+            }),
+        }
+    }
+
+    /// Return `content` inline when it fits, otherwise offload the full payload.
+    pub fn cap_or_offload(&self, content: String) -> Value {
+        self.capabilities.offload.cap_or_offload(&content)
+    }
+}
+
+impl OffloadSink {
+    fn cap_or_offload(&self, content: &str) -> Value {
+        let total_bytes = content.len();
+        if total_bytes <= self.max_inline_bytes {
+            return Value::String(content.to_string());
+        }
+
+        let total_lines = content.lines().count();
+        let head = head_within_cap(content, self.max_inline_bytes);
+        match self.write(content) {
+            Ok(path) => {
+                let path = path.display().to_string();
+                let head_lines = head.lines;
+                let head = append_marker(
+                    head.content,
+                    &format!(
+                        "[truncated: showing {head_lines} of {total_lines} lines; full output at {path}; Read with offset {} to continue]",
+                        head_lines + 1,
+                    ),
+                );
+                json!({
+                    "offloaded": true,
+                    "path": path,
+                    "total_bytes": total_bytes,
+                    "total_lines": total_lines,
+                    "head_lines": head_lines,
+                    "head": head,
+                })
+            }
+            Err(_) => Value::String(append_marker(
+                head.content,
+                &format!("[truncated: showing {} of {total_lines} lines]", head.lines,),
+            )),
+        }
+    }
+
+    fn write(&self, content: &str) -> io::Result<PathBuf> {
+        std::fs::create_dir_all(&self.dir)?;
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let path = self.dir.join(format!("{hash}.txt"));
+        if path.is_file() {
+            return Ok(path);
+        }
+        let tmp = temp_path(&self.dir, &hash);
+        std::fs::write(&tmp, content)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(path)
+    }
+}
+
+fn temp_path(dir: &Path, hash: &str) -> PathBuf {
+    dir.join(format!("{hash}.tmp"))
+}
+
+fn head_within_cap(content: &str, cap: usize) -> Head {
+    let mut bytes = 0;
+    let mut lines = 0;
+    for line in content.split_inclusive('\n') {
+        let next = bytes + line.len();
+        if next <= cap {
+            bytes = next;
+            lines += 1;
+            continue;
+        }
+
+        if let Some(line_content) = line.strip_suffix('\n') {
+            let next_without_newline = bytes + line_content.len();
+            if next_without_newline <= cap {
+                bytes = next_without_newline;
+                lines += 1;
+            }
+        }
+        break;
+    }
+
+    if lines == 0 {
+        Head {
+            content: char_prefix_within_bytes(content, cap).to_string(),
+            lines,
+        }
+    } else {
+        Head {
+            content: content[..bytes].to_string(),
+            lines,
+        }
+    }
+}
+
+fn char_prefix_within_bytes(content: &str, cap: usize) -> &str {
+    if cap >= content.len() {
+        return content;
+    }
+
+    let mut end = 0;
+    for (idx, ch) in content.char_indices() {
+        let next = idx + ch.len_utf8();
+        if next > cap {
+            break;
+        }
+        end = next;
+    }
+    &content[..end]
+}
+
+fn append_marker(mut head: String, marker: &str) -> String {
+    if !head.is_empty() && !head.ends_with('\n') {
+        head.push('\n');
+    }
+    head.push_str(marker);
+    head
+}
 
 /// Generate a JSON-Schema value for the tool's argument struct. Each
 /// tool's [`Tool::input_schema`](loom_llm::Tool::input_schema) calls

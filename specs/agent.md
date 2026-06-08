@@ -979,25 +979,25 @@ connection, network filtering, session audit logging.
 ### Direct output bounding
 
 - `Read` whose returned content exceeds `max_inline_bytes` returns an `{ offloaded, path, total_bytes, total_lines, head_lines, head }` reference whose `head` is a whole-line prefix within the cap; the full payload is written to the offload file
-  [test?](read_over_cap_offloads_full_payload_and_returns_head_reference)
+  [test](read_over_cap_offloads_full_payload_and_returns_head_reference)
 - The cap is measured on the raw UTF-8 byte length of the tool's content string (per stream for `Bash`), not the JSON-serialized size of `ToolOutput.content`
-  [test?](cap_measured_on_raw_utf8_byte_length_not_serialized)
+  [test](cap_measured_on_raw_utf8_byte_length_not_serialized)
 - `Bash` caps `stdout` and `stderr` independently and always keeps `exit_code` inline; an oversized stream is offloaded while an under-cap stream stays verbatim
   [test?](bash_caps_streams_independently_keeps_exit_code_inline)
 - `Grep` and `Glob` string output exceeding `max_inline_bytes` is offloaded and replaced with a reference
   [test?](grep_and_glob_offload_string_output_over_cap)
 - The agent recovers the tail by issuing `Read` against the offload `path` with `offset = head_lines + 1`, reconstructing the full original content (offload round-trips)
-  [test?](offloaded_file_round_trips_through_read_via_head_lines_offset)
+  [test](offloaded_file_round_trips_through_read_via_head_lines_offset)
 - Two results with distinct content offload to distinct paths; the file name is a deterministic content hash for fixed input
-  [test?](distinct_content_offloads_to_distinct_deterministic_paths)
+  [test](distinct_content_offloads_to_distinct_deterministic_paths)
 - When the offload write fails, the tool degrades to an inline truncation (head + marker, no `path`) rather than erroring
-  [test?](offload_write_failure_degrades_to_inline_truncation)
+  [test](offload_write_failure_degrades_to_inline_truncation)
 - Every offload emits a `driver_event` (offload `driver_kind`) carrying the tool name and offloaded byte count
   [test?](offload_emits_driver_event_with_tool_and_byte_count)
 - `[direct].max_inline_bytes` resolves from `loom.toml` into `SpawnConfig.output_limits`, defaulting to 16384 when absent
   [test](direct_max_inline_bytes_resolves_from_config_default_16384)
 - `ToolContext` is shaped so a future delegate tool can carry an `LlmClient` + `ModelId` through it without changing `six_tools`'s signature or the `loom-llm::Tool` trait
-  [judge?](specs/agent.md#direct-output-bounding)
+  [judge](../tests/judges/loom.sh#judge_tool_context_shape)
 
 ### Backend selection
 

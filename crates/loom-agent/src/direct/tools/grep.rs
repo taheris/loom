@@ -11,15 +11,23 @@ use serde_json::Value;
 use tokio::task;
 use walkdir::WalkDir;
 
-use super::{parse_args, schema_for};
+use super::{ToolContext, parse_args, schema_for};
 
 /// Default cap so a runaway match set does not blow up the agent's
 /// transcript. Hard limit; the agent re-issues with a tighter pattern
 /// when truncated.
 const DEFAULT_MAX_MATCHES: usize = 1000;
 
-/// Zero-sized Grep tool.
-pub struct Grep;
+/// Grep tool bound to a session context.
+pub struct Grep {
+    ctx: ToolContext,
+}
+
+impl Grep {
+    pub fn new(ctx: ToolContext) -> Self {
+        Self { ctx }
+    }
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Args {
@@ -54,6 +62,7 @@ impl Tool for Grep {
 
     fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
         Box::pin(async move {
+            let _ctx = &self.ctx;
             let parsed: Args = parse_args(args)?;
             let out = task::spawn_blocking(move || search(parsed))
                 .await
@@ -134,7 +143,11 @@ mod tests {
 
     use super::*;
     use serde_json::json;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
+
+    fn grep_with(dir: &TempDir) -> Grep {
+        Grep::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
+    }
 
     #[tokio::test]
     async fn grep_finds_matching_lines_in_directory() {
@@ -142,7 +155,7 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "alpha\nbeta\ngamma").unwrap();
         std::fs::write(dir.path().join("b.txt"), "zeta\nbeta").unwrap();
 
-        let out = Grep
+        let out = grep_with(&dir)
             .invoke(json!({ "pattern": "beta", "path": dir.path() }))
             .await
             .expect("invoke");
@@ -159,7 +172,7 @@ mod tests {
         std::fs::write(dir.path().join("a.rs"), "hit").unwrap();
         std::fs::write(dir.path().join("b.txt"), "hit").unwrap();
 
-        let out = Grep
+        let out = grep_with(&dir)
             .invoke(json!({ "pattern": "hit", "path": dir.path(), "glob": "*.rs" }))
             .await
             .expect("invoke");
@@ -170,7 +183,8 @@ mod tests {
 
     #[tokio::test]
     async fn grep_invalid_regex_returns_tool_error() {
-        let out = Grep
+        let dir = tempdir().unwrap();
+        let out = grep_with(&dir)
             .invoke(json!({ "pattern": "(unclosed", "path": "." }))
             .await
             .expect("invoke");
@@ -183,7 +197,7 @@ mod tests {
         let lines: String = (0..10).map(|i| format!("match {i}\n")).collect();
         std::fs::write(dir.path().join("big.txt"), lines).unwrap();
 
-        let out = Grep
+        let out = grep_with(&dir)
             .invoke(json!({
                 "pattern": "match",
                 "path": dir.path(),
