@@ -1263,10 +1263,10 @@ documents in front of the agent with zero configuration.
   `loom gate verify --diff <bead-base>..HEAD` (or `@{u}..HEAD` only
   when upstream is that base) before emitting `LOOM_COMPLETE`; it does
   not name `loom gate verify --diff HEAD` as the final self-check
-  [test?](run_template_uses_injected_self_check_range_not_head_shorthand)
+  [test](run_template_uses_injected_self_check_range_not_head_shorthand)
 - `loop.md` tells the worker to rerun the self-check after any later
   commit or hook-generated file change
-  [test?](run_template_requires_self_check_rerun_after_post_check_changes)
+  [test](run_template_requires_self_check_rerun_after_post_check_changes)
 - `loop.md` requires prompt-level self-review before the final marker:
   re-read criteria, inspect the final diff, check style/spec fit, and
   fix issues or emit `LOOM_RETRY` / `LOOM_CLARIFY` / `LOOM_BLOCKED`

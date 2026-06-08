@@ -1,6 +1,5 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
-assertion_line: 281
 expression: ctx.render().unwrap()
 ---
 # Implementation Step
@@ -173,7 +172,9 @@ Before outputting LOOM_COMPLETE:
 - Changes staged (`git add`)
 - Spec verification test files created for relevant criteria
 - Bead closed (`bd close lm-3hhwq.10`)
-- Preflight self-check: run `loom gate verify --diff HEAD` and resolve any findings in-session before emitting `LOOM_COMPLETE` — do not defer findings to a follow-up bead.
+- Preflight self-check: run `loom gate verify --diff <bead-base>..HEAD` using the exact bead base injected for this dispatch. If the branch upstream is that injected base, `loom gate verify --diff @{u}..HEAD` is acceptable. Resolve any findings in-session before emitting `LOOM_COMPLETE` — do not defer findings to a follow-up bead.
+- Rerun the self-check after any later commit, formatter or hook tree change, or other change that could invalidate the prior run.
+- Prompt-level self-review: before the final marker, re-read the issue criteria, inspect the committed diff, verify style/spec fit, and either fix issues or emit `LOOM_RETRY`, `LOOM_CLARIFY`, or `LOOM_BLOCKED` with the required self-report framing.
 
 Post-step hooks verify compliance automatically.
 

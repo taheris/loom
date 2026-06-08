@@ -1319,6 +1319,84 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn run_template_uses_injected_self_check_range_not_head_shorthand() -> Result<()> {
+    let ctx = LoopContext {
+        pinned_context: "PIN".into(),
+        label: SpecLabel::new("demo"),
+        spec_path: "specs/demo.md".into(),
+        companion_paths: vec![],
+        molecule_id: Some(MoleculeId::new("lm-mol")),
+        issue_id: Some(BeadId::new("lm-mol.1")?),
+        title: Some("the title".into()),
+        description: Some("the description".into()),
+        previous_failure: None,
+        review_notes: None,
+        attempt: 0,
+        scratchpad_path: "/workspace/.loom/scratch/lm-mol.1/scratch.md".into(),
+        style_rules: "docs/style-rules.md".into(),
+    };
+    let out = ctx.render()?;
+
+    assert!(
+        out.contains("loom gate verify --diff <bead-base>..HEAD"),
+        "loop prompt must name the injected bead-base diff command: {out}",
+    );
+    assert!(
+        out.contains("loom gate verify --diff @{u}..HEAD"),
+        "loop prompt must allow upstream shorthand only for the injected base: {out}",
+    );
+    assert!(
+        !out.contains("loom gate verify --diff HEAD"),
+        "loop prompt must not use the HEAD shorthand as completion contract: {out}",
+    );
+    let preflight = out
+        .find("Preflight self-check")
+        .expect("preflight instruction present");
+    let progress_markers = out
+        .find("## Progress Markers")
+        .expect("progress markers present");
+    assert!(
+        preflight < progress_markers,
+        "self-check instruction must precede final-marker instructions: {out}",
+    );
+    Ok(())
+}
+
+#[test]
+fn run_template_requires_self_check_rerun_after_post_check_changes() -> Result<()> {
+    let ctx = LoopContext {
+        pinned_context: "PIN".into(),
+        label: SpecLabel::new("demo"),
+        spec_path: "specs/demo.md".into(),
+        companion_paths: vec![],
+        molecule_id: Some(MoleculeId::new("lm-mol")),
+        issue_id: Some(BeadId::new("lm-mol.1")?),
+        title: Some("the title".into()),
+        description: Some("the description".into()),
+        previous_failure: None,
+        review_notes: None,
+        attempt: 0,
+        scratchpad_path: "/workspace/.loom/scratch/lm-mol.1/scratch.md".into(),
+        style_rules: "docs/style-rules.md".into(),
+    };
+    let out = ctx.render()?;
+
+    assert!(
+        out.contains("Rerun the self-check after any later commit"),
+        "loop prompt must require rerun after later commits: {out}",
+    );
+    assert!(
+        out.contains("formatter or hook tree change"),
+        "loop prompt must require rerun after formatter/hook tree changes: {out}",
+    );
+    assert!(
+        out.contains("invalidate the prior run"),
+        "loop prompt must cover other invalidating changes: {out}",
+    );
+    Ok(())
+}
+
 /// Returns true when `needle` falls inside any `<agent-output>...</agent-output>`
 /// span in `haystack`. Used to assert that each agent-supplied field is
 /// delimited by the markers, not merely that the markers appear somewhere in
