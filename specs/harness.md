@@ -156,16 +156,17 @@ warm; `.git/` and `.wrix/` (extra-mount staging) survive.
 exists → reuse; missing → clone fresh from the loom workspace.
 
 **Garbage collection.** At `loom loop` startup, under the spec
-advisory lock, loom enumerates `.loom/beads/` and drops
-every bead workspace whose bead is `closed`. The sweep is workspace-global
-(not spec-scoped) — a closed bead cannot be in flight, so the sweep
-is safe regardless of which spec is being loop'd. In-loop, every
-bead the current loom dispatches owns its own removal: on the bead
-transitioning to `closed` the dispatch path reaps the workspace
-inline as part of post-session cleanup. The startup sweep catches
-orphans from crashed prior runs, not the happy path. No timer
-threshold; no operator-explicit GC. A `loom gc` command is an
-additive follow-up if hoarding ever materializes.
+advisory lock, loom enumerates `.loom/beads/` and drops closed bead
+workspaces only when the bead is parented by the molecule this loop
+owns. Closed workspaces from other molecules may still be in use by a
+concurrently running loop, so they are left for that molecule's own
+startup sweep or inline cleanup. In-loop, every bead the current loom
+dispatches owns its own removal: on the bead transitioning to
+`closed` the dispatch path reaps the workspace inline as part of
+post-session cleanup. The startup sweep catches orphans from crashed
+prior runs, not the happy path. No timer threshold; no
+operator-explicit GC. A `loom gc` command is an additive follow-up if
+hoarding ever materializes.
 
 **Bead branch flow.** Bead branch `loom/<id>` is created in the
 bead workspace at first dispatch via `git checkout -b`. The agent
@@ -2754,9 +2755,12 @@ Criteria.
       rather than the pre-reconciliation local base
   [test](bead_clone_branches_off_published_head_not_stale_base)
 - `loom loop` startup drops every bead workspace under
-      `.loom/beads/` whose bead is `closed`, under the spec
-      advisory lock
-  [test](loop_startup_gc_drops_closed_bead_workspaces)
+      `.loom/beads/` whose bead is `closed` and parented by the
+      current molecule, under the spec advisory lock
+  [test](loop_startup_gc_drops_closed_bead_workspaces_for_current_molecule)
+- `loom loop` startup leaves closed bead workspaces from other
+      molecules alone
+  [test](loop_startup_gc_skips_closed_bead_workspaces_from_other_molecules)
 - `loom loop` startup leaves bead workspaces alone whose bead is in
       any non-closed state
   [test](loop_startup_gc_skips_open_bead_workspaces)

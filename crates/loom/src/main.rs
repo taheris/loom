@@ -20,7 +20,7 @@ use loom_driver::bd::{BdClient, ListOpts, UpdateOpts};
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{AgentObserversConfig, LoomConfig, Phase};
 use loom_driver::git::GitClient;
-use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
+use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::lock::LockManager;
 use loom_driver::logging::{LogSink, sweep_retention_at};
 use loom_driver::profile_manifest::ProfileImageManifest;
@@ -2044,9 +2044,7 @@ fn resolve_mint_scope(workspace: &Path, args: &GateMintArgs) -> anyhow::Result<R
     Ok(ResolvedMintScope::Molecule(molecule))
 }
 
-fn active_molecule_id(
-    workspace: &Path,
-) -> anyhow::Result<Option<loom_driver::identifier::MoleculeId>> {
+fn active_molecule_id(workspace: &Path) -> anyhow::Result<Option<MoleculeId>> {
     let db_path = workspace.join(".loom/state.db");
     if !db_path.exists() {
         return Ok(None);
@@ -2282,28 +2280,34 @@ fn run_loop_cmd(
     let runtime = tokio::runtime::Runtime::new()?;
 
     // Per-bead-close GC. Under the spec advisory lock (held via `guard`),
-    // reap bead workspaces under `.loom/beads/` whose bead is
-    // `closed`. Workspace-global — closed beads cannot be in flight, so
-    // the sweep is safe regardless of which spec is being loop'd. Errors
-    // are log-and-continue; a stuck sweep must not block dispatch.
+    // reap closed bead workspaces only for the molecule this loop owns.
+    // Errors are log-and-continue; a stuck sweep must not block dispatch.
     let gc_git = GitClient::open(workspace)?;
     let gc_workspace = workspace.to_path_buf();
-    runtime.block_on(async move {
+    let gc_molecule = runtime.block_on(async {
         let bd = BdClient::new();
-        match gc_git.sweep_orphan_bead_clones(&bd).await {
-            Ok(removed) if !removed.is_empty() => tracing::info!(
-                count = removed.len(),
-                workspace = %gc_workspace.display(),
-                "loom loop startup: reaped closed bead workspaces",
-            ),
-            Ok(_) => {}
-            Err(error) => tracing::warn!(
-                %error,
-                workspace = %gc_workspace.display(),
-                "loom loop startup: orphan-clone sweep failed — continuing",
-            ),
-        }
-    });
+        loom_workflow::resolve::resolve_open_epic(&bd, &label).await
+    })?;
+    if let Some(gc_molecule) = gc_molecule {
+        runtime.block_on(async move {
+            let bd = BdClient::new();
+            match gc_git.sweep_orphan_bead_clones(&bd, &gc_molecule).await {
+                Ok(removed) if !removed.is_empty() => tracing::info!(
+                    count = removed.len(),
+                    workspace = %gc_workspace.display(),
+                    molecule = %gc_molecule.as_str(),
+                    "loom loop startup: reaped closed bead workspaces",
+                ),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    %error,
+                    workspace = %gc_workspace.display(),
+                    molecule = %gc_molecule.as_str(),
+                    "loom loop startup: orphan-clone sweep failed — continuing",
+                ),
+            }
+        });
+    }
 
     // Reconcile the integration line with published HEAD before any bead
     // clone is materialized, so `loom/<id>` always branches off

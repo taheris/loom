@@ -25,7 +25,7 @@ use loom_driver::git::{
     FastForwardOutcome, GitClient, GitError, MergeResult, RebaseOutcome, SignatureCheck,
     StatusKind, write_signing_config,
 };
-use loom_driver::identifier::{BeadId, SpecLabel};
+use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 use tempfile::TempDir;
 
 fn git(repo: &Path, args: &[&str]) -> Result<()> {
@@ -1505,8 +1505,9 @@ fn capture_rev(repo: &Path, rev: &str) -> Result<String> {
 }
 
 /// Fake [`CommandRunner`] that answers `bd show <id> --json` from a fixed
-/// map of bead-id → status. Unknown ids yield a `not found`-shaped failure
-/// so the sweep exercises the `bd show failed → skip` branch.
+/// map of bead-id → status. The parent is inferred from dotted ids. Unknown
+/// ids yield a `not found`-shaped failure so the sweep exercises the
+/// `bd show failed → skip` branch.
 struct ScriptedBd {
     by_id: Mutex<HashMap<String, String>>,
 }
@@ -1536,7 +1537,13 @@ impl CommandRunner for ScriptedBd {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match map.get(&id) {
             Some(status) => {
-                let body = format!("[{{\"id\":\"{id}\",\"title\":\"\",\"status\":\"{status}\"}}]",);
+                let parent = id
+                    .split_once('.')
+                    .map(|(molecule, _)| format!(",\"parent\":\"{molecule}\""))
+                    .unwrap_or_default();
+                let body = format!(
+                    "[{{\"id\":\"{id}\",\"title\":\"\",\"status\":\"{status}\"{parent}}}]",
+                );
                 Ok(RunOutput {
                     status: 0,
                     stdout: body.into_bytes(),
@@ -1560,26 +1567,55 @@ fn make_bead_clone_dir(workspace: &Path, name: &str) -> Result<std::path::PathBu
 }
 
 /// Spec gate (`specs/harness.md` § Garbage collection): `loom loop` startup
-/// MUST drop every directory under `.loom/beads/` whose bead is
-/// `closed`. The sweep runs workspace-global (not spec-scoped) under the
-/// spec advisory lock — closed beads cannot be in flight, so the sweep is
-/// safe regardless of which spec is being loop'd.
+/// MUST drop directories under `.loom/beads/` whose bead is closed and
+/// parented by the current molecule.
 #[tokio::test]
-async fn loop_startup_gc_drops_closed_bead_workspaces() -> Result<()> {
+async fn loop_startup_gc_drops_closed_bead_workspaces_for_current_molecule() -> Result<()> {
     let repo = init_repo()?;
     let path = repo.path();
     let client = GitClient::open(path)?;
-    let bd = BdClient::with_runner(ScriptedBd::new([("lm-closed", "closed")]));
+    let molecule = MoleculeId::new("lm-current");
+    let bd = BdClient::with_runner(ScriptedBd::new([("lm-current.1", "closed")]));
 
-    let dir = make_bead_clone_dir(path, "lm-closed")?;
+    let dir = make_bead_clone_dir(path, "lm-current.1")?;
     assert!(dir.exists(), "precondition: workspace exists");
 
-    let removed = client.sweep_orphan_bead_clones(&bd).await?;
+    let removed = client.sweep_orphan_bead_clones(&bd, &molecule).await?;
 
     assert_eq!(removed, vec![dir.clone()]);
     assert!(
         !dir.exists(),
         "closed-bead workspace must be removed: {dir:?}",
+    );
+    Ok(())
+}
+
+/// Closed workspaces from a different molecule may still be active under a
+/// concurrently running loop, so startup GC must leave them alone.
+#[tokio::test]
+async fn loop_startup_gc_skips_closed_bead_workspaces_from_other_molecules() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let client = GitClient::open(path)?;
+    let molecule = MoleculeId::new("lm-current");
+    let bd = BdClient::with_runner(ScriptedBd::new([
+        ("lm-current.1", "closed"),
+        ("lm-other.1", "closed"),
+    ]));
+
+    let current = make_bead_clone_dir(path, "lm-current.1")?;
+    let other = make_bead_clone_dir(path, "lm-other.1")?;
+
+    let removed = client.sweep_orphan_bead_clones(&bd, &molecule).await?;
+
+    assert_eq!(removed, vec![current.clone()]);
+    assert!(
+        !current.exists(),
+        "current molecule closed workspace is reaped"
+    );
+    assert!(
+        other.exists(),
+        "other molecule workspace must survive: {other:?}"
     );
     Ok(())
 }
@@ -1592,17 +1628,18 @@ async fn loop_startup_gc_skips_open_bead_workspaces() -> Result<()> {
     let repo = init_repo()?;
     let path = repo.path();
     let client = GitClient::open(path)?;
+    let molecule = MoleculeId::new("lm-current");
     let bd = BdClient::with_runner(ScriptedBd::new([
-        ("lm-open", "open"),
-        ("lm-progress", "in_progress"),
-        ("lm-blocked", "blocked"),
+        ("lm-current.1", "open"),
+        ("lm-current.2", "in_progress"),
+        ("lm-current.3", "blocked"),
     ]));
 
-    let open = make_bead_clone_dir(path, "lm-open")?;
-    let progress = make_bead_clone_dir(path, "lm-progress")?;
-    let blocked = make_bead_clone_dir(path, "lm-blocked")?;
+    let open = make_bead_clone_dir(path, "lm-current.1")?;
+    let progress = make_bead_clone_dir(path, "lm-current.2")?;
+    let blocked = make_bead_clone_dir(path, "lm-current.3")?;
 
-    let removed = client.sweep_orphan_bead_clones(&bd).await?;
+    let removed = client.sweep_orphan_bead_clones(&bd, &molecule).await?;
 
     assert!(
         removed.is_empty(),
@@ -1630,15 +1667,16 @@ async fn loop_startup_gc_logs_and_skips_corrupt_orphans() -> Result<()> {
     let repo = init_repo()?;
     let path = repo.path();
     let client = GitClient::open(path)?;
-    // `lm-closed` is closed; `lm-unknown` has no bd record (lookup fails);
-    // `not a bead id` does not parse as a `BeadId` at all.
-    let bd = BdClient::with_runner(ScriptedBd::new([("lm-closed", "closed")]));
+    // `lm-current.1` is closed; `lm-unknown.1` has no bd record (lookup
+    // fails); `not a bead id` does not parse as a `BeadId` at all.
+    let molecule = MoleculeId::new("lm-current");
+    let bd = BdClient::with_runner(ScriptedBd::new([("lm-current.1", "closed")]));
 
     let invalid = make_bead_clone_dir(path, "not a bead id")?;
-    let unknown = make_bead_clone_dir(path, "lm-unknown")?;
-    let closed = make_bead_clone_dir(path, "lm-closed")?;
+    let unknown = make_bead_clone_dir(path, "lm-unknown.1")?;
+    let closed = make_bead_clone_dir(path, "lm-current.1")?;
 
-    let removed = client.sweep_orphan_bead_clones(&bd).await?;
+    let removed = client.sweep_orphan_bead_clones(&bd, &molecule).await?;
 
     assert_eq!(
         removed,
@@ -1663,9 +1701,10 @@ async fn loop_startup_gc_logs_and_skips_corrupt_orphans() -> Result<()> {
 async fn loop_startup_gc_no_op_when_base_dir_missing() -> Result<()> {
     let repo = init_repo()?;
     let client = GitClient::open(repo.path())?;
+    let molecule = MoleculeId::new("lm-current");
     let bd = BdClient::with_runner(ScriptedBd::new([]));
 
-    let removed = client.sweep_orphan_bead_clones(&bd).await?;
+    let removed = client.sweep_orphan_bead_clones(&bd, &molecule).await?;
 
     assert!(removed.is_empty());
     Ok(())

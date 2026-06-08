@@ -9,7 +9,7 @@ use tracing::{info, warn};
 
 use crate::bd::{BdClient, CommandRunner};
 use crate::clock::{Clock, SystemClock};
-use crate::identifier::{BeadId, SpecLabel};
+use crate::identifier::{BeadId, MoleculeId, SpecLabel};
 
 use loom_protocol::oid::GitOid;
 
@@ -504,11 +504,9 @@ impl GitClient {
     }
 
     /// Enumerate `.loom/beads/` and remove each bead workspace whose
-    /// bead is `closed` per `bd show`. Called at `loom loop` startup, under
-    /// the spec advisory lock, to reap orphans from crashed prior runs.
-    /// Workspace-global, not spec-scoped — a closed bead cannot be in
-    /// flight, so the sweep is safe regardless of which spec is being
-    /// loop'd.
+    /// bead is closed and parented by `molecule`. Called at `loom loop`
+    /// startup, under the spec advisory lock, to reap orphans from crashed
+    /// prior runs without touching another molecule's active workers.
     ///
     /// Failure modes are log-and-skip rather than abort, so a single
     /// corrupt orphan (unparsable directory name, `bd` lookup error,
@@ -524,6 +522,7 @@ impl GitClient {
     pub async fn sweep_orphan_bead_clones<R: CommandRunner>(
         &self,
         bd: &BdClient<R>,
+        molecule: &MoleculeId,
     ) -> Result<Vec<PathBuf>, GitError> {
         let base = self.workdir.join(WORKTREE_BASE);
         let entries = match std::fs::read_dir(&base) {
@@ -589,7 +588,11 @@ impl GitClient {
                     continue;
                 }
             };
-            if bead.status != "closed" {
+            let in_current_molecule = bead
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.as_str() == molecule.as_str());
+            if bead.status != "closed" || !in_current_molecule {
                 continue;
             }
             match std::fs::remove_dir_all(&path) {
