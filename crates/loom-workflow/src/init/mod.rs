@@ -22,7 +22,8 @@ use loom_driver::bd::{BdClient, CommandRunner, ListOpts, UpdateOpts};
 use loom_driver::config::LoomConfig;
 use loom_driver::git::{
     clone_loom_workspace, enable_rerere, fast_forward_loom_workspace_to_origin, read_origin_url,
-    resolve_prek_hooks_path, resolve_signing_key, write_hooks_config, write_signing_config,
+    resolve_prek_hooks_path_for_workspace, resolve_signing_key, write_hooks_config,
+    write_signing_config,
 };
 use loom_driver::identifier::MoleculeId;
 use loom_driver::lock::LockManager;
@@ -86,7 +87,7 @@ pub fn run(
         opts,
         molecules,
         resolve_signing_key,
-        resolve_prek_hooks_path,
+        resolve_prek_hooks_path_for_workspace,
     )
 }
 
@@ -95,7 +96,7 @@ fn run_with_resolvers(
     opts: InitOpts,
     molecules: &[ActiveMolecule],
     resolve: impl Fn(&Path) -> Result<Option<PathBuf>, loom_driver::git::GitError>,
-    resolve_hooks: impl Fn() -> Result<PathBuf, loom_driver::git::GitError>,
+    resolve_hooks: impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
 ) -> Result<InitReport, InitError> {
     let lock_mgr = LockManager::new(workspace)?;
     let _guard = lock_mgr.acquire_workspace()?;
@@ -160,7 +161,7 @@ fn materialize_integration_workspace(
     workspace: &Path,
     config_path: &Path,
     resolve: &impl Fn(&Path) -> Result<Option<PathBuf>, loom_driver::git::GitError>,
-    resolve_hooks: &impl Fn() -> Result<PathBuf, loom_driver::git::GitError>,
+    resolve_hooks: &impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
 ) -> Result<Option<MaterializedIntegration>, InitError> {
     let dest = workspace.join(".loom/integration");
     if dest.exists() {
@@ -182,7 +183,7 @@ fn materialize_integration_workspace(
         if let Some(key) = resolve(&dest)? {
             write_signing_config(&dest, &key)?;
         }
-        let hooks_path = resolve_hooks()?;
+        let hooks_path = resolve_hooks(workspace)?;
         write_hooks_config(&dest, &hooks_path)?;
         return Ok(Some(MaterializedIntegration {
             path: dest,
@@ -203,7 +204,7 @@ fn materialize_integration_workspace(
     if let Some(key) = resolve(&dest)? {
         write_signing_config(&dest, &key)?;
     }
-    let hooks_path = resolve_hooks()?;
+    let hooks_path = resolve_hooks(workspace)?;
     write_hooks_config(&dest, &hooks_path)?;
 
     Ok(Some(MaterializedIntegration {
@@ -385,6 +386,14 @@ mod tests {
         Ok(dir)
     }
 
+    fn temp_child_workspace(root: &Path, label: &str) -> PathBuf {
+        let unique = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("tmp");
+        root.join(format!("{label}-{unique}"))
+    }
+
     fn fake_prek_hooks(root: &Path) -> Result<PathBuf> {
         let hooks = root.join("fake-prek-hooks");
         std::fs::create_dir_all(&hooks)?;
@@ -400,7 +409,7 @@ mod tests {
             InitOpts::default(),
             &[],
             |_dir| Ok(None),
-            || Ok(hooks.clone()),
+            |_workspace| Ok(hooks.clone()),
         )
     }
 
@@ -413,7 +422,7 @@ mod tests {
     #[test]
     fn loom_init_materializes_loom_workspace() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let workspace = tmp.path().join("loom-init-materialize-ws");
+        let workspace = temp_child_workspace(tmp.path(), "loom-init-materialize-ws");
         loom_driver::git::init_test_repo(&workspace)?;
         let hooks = fake_prek_hooks(tmp.path())?;
 
@@ -444,7 +453,7 @@ mod tests {
     #[test]
     fn loom_init_configures_integration_hooks_path_from_wrix_prekhooks() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let workspace = tmp.path().join("loom-init-hooks-ws");
+        let workspace = temp_child_workspace(tmp.path(), "loom-init-hooks-ws");
         loom_driver::git::init_test_repo(&workspace)?;
         let hooks = fake_prek_hooks(tmp.path())?;
 
@@ -462,7 +471,7 @@ mod tests {
     #[test]
     fn loom_init_fails_loud_when_prek_hooks_path_cannot_be_resolved() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let workspace = tmp.path().join("loom-init-hooks-missing-ws");
+        let workspace = temp_child_workspace(tmp.path(), "loom-init-hooks-missing-ws");
         loom_driver::git::init_test_repo(&workspace)?;
 
         let err = run_with_resolvers(
@@ -470,7 +479,7 @@ mod tests {
             InitOpts::default(),
             &[],
             |_dir| Ok(None),
-            || Err(loom_driver::git::GitError::PrekHooksUnresolved),
+            |_workspace| Err(loom_driver::git::GitError::PrekHooksUnresolved),
         )
         .expect_err("unresolved hooks must fail init");
         assert!(matches!(
@@ -483,7 +492,7 @@ mod tests {
     #[test]
     fn loom_init_is_idempotent_when_integration_exists() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let workspace = tmp.path().join("loom-init-idempotent-ws");
+        let workspace = temp_child_workspace(tmp.path(), "loom-init-idempotent-ws");
         loom_driver::git::init_test_repo(&workspace)?;
         let hooks = fake_prek_hooks(tmp.path())?;
 
@@ -552,7 +561,7 @@ mod tests {
     #[test]
     fn loom_init_writes_signing_gitconfig() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let workspace = tmp.path().join("loom-init-signing-ws");
+        let workspace = temp_child_workspace(tmp.path(), "loom-init-signing-ws");
         loom_driver::git::init_test_repo(&workspace)?;
         let key = gen_ssh_key(tmp.path());
         let hooks = fake_prek_hooks(tmp.path())?;
@@ -562,7 +571,7 @@ mod tests {
             InitOpts::default(),
             &[],
             |_dir| Ok(Some(key.clone())),
-            || Ok(hooks.clone()),
+            |_workspace| Ok(hooks.clone()),
         )?;
         let integ = report
             .integration_workspace
@@ -600,7 +609,7 @@ mod tests {
     #[test]
     fn loom_init_reinit_upgrades_signing_gitconfig() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let workspace = tmp.path().join("loom-init-reinit-signing-ws");
+        let workspace = temp_child_workspace(tmp.path(), "loom-init-reinit-signing-ws");
         loom_driver::git::init_test_repo(&workspace)?;
         let key = gen_ssh_key(tmp.path());
         let hooks = fake_prek_hooks(tmp.path())?;
@@ -611,7 +620,7 @@ mod tests {
             InitOpts::default(),
             &[],
             |_dir| Ok(None),
-            || Ok(hooks.clone()),
+            |_workspace| Ok(hooks.clone()),
         )?
         .integration_workspace
         .ok_or_else(|| anyhow!("first init must materialize integration workspace"))?;
@@ -630,7 +639,7 @@ mod tests {
             InitOpts::default(),
             &[],
             |_dir| Ok(Some(key.clone())),
-            || Ok(hooks.clone()),
+            |_workspace| Ok(hooks.clone()),
         )?
         .integration_workspace
         .ok_or_else(|| anyhow!("second init must report the existing workspace"))?;
@@ -657,7 +666,7 @@ mod tests {
     #[test]
     fn loom_init_enables_rerere_in_loom_workspace_gitconfig() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let workspace = tmp.path().join("loom-init-rerere-ws");
+        let workspace = temp_child_workspace(tmp.path(), "loom-init-rerere-ws");
         loom_driver::git::init_test_repo(&workspace)?;
         let hooks = fake_prek_hooks(tmp.path())?;
 
@@ -692,7 +701,7 @@ mod tests {
             return Ok(());
         }
         let tmp = tempfile::tempdir()?;
-        let workspace = tmp.path().join("loom-init-nokey-ws");
+        let workspace = temp_child_workspace(tmp.path(), "loom-init-nokey-ws");
         loom_driver::git::init_test_repo(&workspace)?;
         let hooks = fake_prek_hooks(tmp.path())?;
 

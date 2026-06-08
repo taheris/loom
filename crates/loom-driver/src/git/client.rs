@@ -221,12 +221,12 @@ impl GitClient {
             super::hooks::ensure_prek_hooks_dir(&test_hooks)?;
             return Ok(test_hooks);
         }
-        super::hooks::resolve_prek_hooks_path()
+        super::hooks::resolve_prek_hooks_path_for_workspace(&self.workdir)
     }
 
     #[cfg(not(any(test, feature = "test-support")))]
     fn resolve_default_prek_hooks_path(&self) -> Result<PathBuf, GitError> {
-        super::hooks::resolve_prek_hooks_path()
+        super::hooks::resolve_prek_hooks_path_for_workspace(&self.workdir)
     }
 
     /// Name of the integration branch this client targets (the branch

@@ -15,6 +15,15 @@ const REQUIRED_HOOKS: &[&str] = &["pre-commit", "pre-push"];
 pub fn resolve_prek_hooks_path() -> Result<PathBuf, GitError> {
     resolve_from(&ResolveInputs {
         env_hooks: std::env::var_os(WRIX_PREK_HOOKS_ENV),
+        config_hooks: None,
+    })
+}
+
+/// Resolve the canonical wrix `prekHooks` directory for `workspace`.
+pub fn resolve_prek_hooks_path_for_workspace(workspace: &Path) -> Result<PathBuf, GitError> {
+    resolve_from(&ResolveInputs {
+        env_hooks: std::env::var_os(WRIX_PREK_HOOKS_ENV),
+        config_hooks: sync_git_config_get(workspace, "core.hooksPath")?,
     })
 }
 
@@ -58,13 +67,17 @@ pub fn validate_hooks_config(target_dir: &Path, expected: &Path) -> Result<(), G
 
 struct ResolveInputs {
     env_hooks: Option<OsString>,
+    config_hooks: Option<String>,
 }
 
 fn resolve_from(inputs: &ResolveInputs) -> Result<PathBuf, GitError> {
-    let Some(raw) = &inputs.env_hooks else {
-        return Err(GitError::PrekHooksUnresolved);
-    };
-    let path = PathBuf::from(raw);
+    let path = inputs
+        .env_hooks
+        .as_ref()
+        .map(PathBuf::from)
+        .or_else(|| inputs.config_hooks.as_ref().map(PathBuf::from))
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or(GitError::PrekHooksUnresolved)?;
     ensure_prek_hooks_dir(&path)?;
     Ok(path)
 }
@@ -123,15 +136,46 @@ mod tests {
         let hooks = fake_hooks(tmp.path())?;
         let resolved = resolve_from(&ResolveInputs {
             env_hooks: Some(hooks.clone().into_os_string()),
+            config_hooks: None,
         })?;
         assert_eq!(resolved, hooks);
         Ok(())
     }
 
     #[test]
+    fn resolver_returns_git_config_hooks_path_when_env_missing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let hooks = fake_hooks(tmp.path())?;
+        let resolved = resolve_from(&ResolveInputs {
+            env_hooks: None,
+            config_hooks: Some(hooks.display().to_string()),
+        })?;
+        assert_eq!(resolved, hooks);
+        Ok(())
+    }
+
+    #[test]
+    fn resolver_prefers_wrix_prek_hooks_env_over_git_config()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let env_hooks = fake_hooks(&tmp.path().join("env"))?;
+        let config_hooks = fake_hooks(&tmp.path().join("config"))?;
+        let resolved = resolve_from(&ResolveInputs {
+            env_hooks: Some(env_hooks.clone().into_os_string()),
+            config_hooks: Some(config_hooks.display().to_string()),
+        })?;
+        assert_eq!(resolved, env_hooks);
+        Ok(())
+    }
+
+    #[test]
     fn resolver_fails_loud_when_wrix_prek_hooks_env_missing()
     -> Result<(), Box<dyn std::error::Error>> {
-        let err = match resolve_from(&ResolveInputs { env_hooks: None }) {
+        let err = match resolve_from(&ResolveInputs {
+            env_hooks: None,
+            config_hooks: None,
+        }) {
             Ok(path) => return Err(format!("missing env resolved unexpectedly: {path:?}").into()),
             Err(err) => err,
         };
@@ -146,6 +190,7 @@ mod tests {
         let missing = tmp.path().join("missing-hooks");
         let err = match resolve_from(&ResolveInputs {
             env_hooks: Some(missing.clone().into_os_string()),
+            config_hooks: None,
         }) {
             Ok(path) => return Err(format!("missing path resolved unexpectedly: {path:?}").into()),
             Err(err) => err,

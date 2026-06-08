@@ -52,7 +52,7 @@ pub enum GitError {
     /// $WRIX_DEPLOY_KEY points at a non-existent file: {path}
     DeployKeyMissing { path: PathBuf },
 
-    /// $WRIX_PREK_HOOKS is unset — cannot resolve canonical wrix.prekHooks hooks directory
+    /// cannot resolve canonical wrix.prekHooks hooks directory — set $WRIX_PREK_HOOKS or enter a wrix devshell that configures core.hooksPath
     PrekHooksUnresolved,
 
     /// $WRIX_PREK_HOOKS does not point at a directory containing canonical prek hooks: {path}

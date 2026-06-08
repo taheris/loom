@@ -24,7 +24,8 @@ pub use client::{
 };
 pub use error::GitError;
 pub use hooks::{
-    WRIX_PREK_HOOKS_ENV, resolve_prek_hooks_path, validate_hooks_config, write_hooks_config,
+    WRIX_PREK_HOOKS_ENV, resolve_prek_hooks_path, resolve_prek_hooks_path_for_workspace,
+    validate_hooks_config, write_hooks_config,
 };
 // `GitOid` lives in the public-contract leaf `loom-protocol::oid` so the
 // typed retry-context surface in `loom-templates`
