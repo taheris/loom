@@ -133,11 +133,6 @@ struct GateMintArgs {
     dry_run: bool,
 }
 
-/// `loom gate review` arg surface. Extends [`GateScopeArgs`] with the
-/// `--verify-exit` flag the molecule-completion handoff uses to thread
-/// the parent `loom loop`'s `loom gate verify` exit code into the child
-/// (FR9 production wiring requirement — the push gate's four-condition
-/// AND must consume the actual verify exit, not the default `None`).
 #[derive(Debug, clap::Args)]
 struct GateReviewArgs {
     #[command(flatten)]
@@ -145,12 +140,6 @@ struct GateReviewArgs {
     /// Attach review context to an explicit diff scope.
     #[arg(long, short = 'b', value_name = "ID")]
     bead: Option<String>,
-    /// Exit code of a prior `loom gate verify --diff <range>` run.
-    /// Threaded from `loom loop`'s molecule-completion handoff so the
-    /// push gate's four-condition AND can refuse on a non-zero verify
-    /// exit per FR9 condition 2.
-    #[arg(long, value_name = "CODE")]
-    verify_exit: Option<i32>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -878,7 +867,6 @@ fn run_gate(
                 workspace,
                 args.scope,
                 args.bead,
-                args.verify_exit,
                 agent_override,
                 ReviewLane::Both,
             )
@@ -889,14 +877,7 @@ fn run_gate(
             }
             resolve_gate_scope(workspace, &mut args)?;
             validate_target_for_tier(workspace, &args, Tier::Judge)?;
-            run_gate_review(
-                workspace,
-                args,
-                None,
-                None,
-                agent_override,
-                ReviewLane::Judge,
-            )
+            run_gate_review(workspace, args, None, agent_override, ReviewLane::Judge)
         }
         Some(GateSubcommand::Rubric(mut args)) => {
             if !has_scope(&args) {
@@ -904,14 +885,7 @@ fn run_gate(
             }
             validate_diff_or_tree_scope(&args, "rubric")?;
             resolve_gate_scope(workspace, &mut args)?;
-            run_gate_review(
-                workspace,
-                args,
-                None,
-                None,
-                agent_override,
-                ReviewLane::Rubric,
-            )
+            run_gate_review(workspace, args, None, agent_override, ReviewLane::Rubric)
         }
         Some(GateSubcommand::Mint(args)) => {
             if !args.tree && args.molecule.is_none() {
@@ -2125,21 +2099,7 @@ fn run_gate_audit(
     agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
     let verify_result = run_gate_verify(workspace, &args);
-    // Audit fuses verify+review in one process; pass the verify subcommand's
-    // exit code into the review step so the push gate's four-condition AND
-    // consumes condition 2 even on the human-invoked audit path.
-    let verify_exit = match verify_result.as_ref() {
-        Ok(()) => Some(0),
-        Err(_) => Some(1),
-    };
-    let review_result = run_gate_review(
-        workspace,
-        args,
-        None,
-        verify_exit,
-        agent_override,
-        ReviewLane::Both,
-    );
+    let review_result = run_gate_review(workspace, args, None, agent_override, ReviewLane::Both);
     verify_result.and(review_result)
 }
 
@@ -2147,7 +2107,6 @@ fn run_gate_review(
     workspace: &Path,
     args: GateScopeArgs,
     bead: Option<String>,
-    verify_exit: Option<i32>,
     agent_override: Option<AgentKind>,
     lane: ReviewLane,
 ) -> anyhow::Result<()> {
@@ -2159,7 +2118,6 @@ fn run_gate_review(
             bead,
             diff: args.diff,
             tree: args.tree,
-            verify_exit,
             lane,
         },
     )
@@ -3140,11 +3098,6 @@ struct ReviewOpts {
     bead: Option<String>,
     diff: Option<String>,
     tree: bool,
-    /// Exit code threaded from `loom loop`'s molecule-completion handoff
-    /// (via `loom gate review --verify-exit <CODE>`). `None` when the
-    /// gate is invoked standalone; the push gate's other three
-    /// conditions still gate the push.
-    verify_exit: Option<i32>,
     /// Which lane(s) of the review to run — `Both` for `loom gate review`,
     /// `Judge`/`Rubric` for the focused single-lane re-runs surfaced by
     /// `loom gate judge` / `loom gate rubric`.
@@ -3235,7 +3188,7 @@ fn run_review(
         .with_style_rules(style_rules_for_review)
         .with_integration_branch(integration_branch_for_review)
         .with_hook_timeout(hook_timeout_for_review)
-        .with_verify_exit(opts.verify_exit)
+        .with_push_range(opts.diff.clone())
         .with_lane(opts.lane)
         .with_dispatch_scope(dispatch_scope)
         .with_suppressions(suppressions_for_review);

@@ -39,7 +39,9 @@ pub use dispatch::{
     run_with_runners,
 };
 pub use gate_outcome::{
-    GateFail, GateFailReason, GateOutcome, GateSuccess, HandoffEvidence, LoopOutcome, NoGateReason,
+    GateFail, GateFailReason, GateOutcome, GatePhase, GateRun, GateRunStatus, GateSuccess,
+    HandoffEvidence, LoopOutcome, NoGateReason, PrePushCoverage, ReviewedScope, VerifiedScope,
+    parse_gate_runs_from_jsonl,
 };
 pub use inputs::{InputQueryProbe, InputResolver, InputsError, VerifierInputs, filter_by_files};
 pub use integrity::{

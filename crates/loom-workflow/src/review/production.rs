@@ -38,9 +38,9 @@ use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::StateDb;
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
 use loom_gate::{
-    CommandResolver, DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateSuccess,
-    HandoffEvidence, InputResolver, IntegrityFinding, MarkerProof, TierCwds, annotation,
-    compose_clarify_options, integrity,
+    CommandResolver, DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateRun,
+    GateSuccess, HandoffEvidence, InputResolver, IntegrityFinding, MarkerProof, TierCwds,
+    annotation, compose_clarify_options, integrity, parse_gate_runs_from_jsonl,
 };
 use loom_templates::previous_failure::PreviousFailure;
 use loom_templates::review::{ReviewContext, ReviewLane};
@@ -181,6 +181,49 @@ fn markdown_slug(input: &str) -> String {
     out
 }
 
+fn append_gate_run_event(path: &Path, run: &GateRun) -> Result<(), ReviewError> {
+    use std::io::Write as _;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let phase = match run.phase {
+        loom_gate::GatePhase::Verify => "verify",
+        loom_gate::GatePhase::Review => "review",
+    };
+    let status = match run.status {
+        loom_gate::GateRunStatus::Success => "success",
+        loom_gate::GateRunStatus::Failed => "failed",
+    };
+    let marker = match run.marker.as_ref() {
+        Some(ExitSignal::Complete) => Some("complete".to_string()),
+        Some(ExitSignal::Noop) => Some("noop".to_string()),
+        Some(ExitSignal::Concern { summary }) => Some(format!("concern:{summary}")),
+        Some(_) | None => None,
+    };
+    let event = serde_json::json!({
+        "kind": "driver_event",
+        "driver_kind": "gate_run_end",
+        "payload": {
+            "phase": phase,
+            "push_range": &run.push_range,
+            "tree_oid": &run.tree_oid,
+            "log_path": path.to_string_lossy(),
+            "exit_code": run.exit_code,
+            "status": status,
+            "marker": marker,
+            "covered_hooks": &run.covered_hooks,
+        }
+    });
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    serde_json::to_writer(&mut file, &event).map_err(std::io::Error::other)?;
+    writeln!(&mut file)?;
+    Ok(())
+}
+
 pub struct ProductionReviewController<S, F, R: CommandRunner = TokioRunner>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
@@ -229,13 +272,7 @@ where
     /// via [`Self::with_hook_timeout`]. Defaults to the same 600s the
     /// `GitClient` uses so tests skipping the builder keep prior behavior.
     hook_timeout: Duration,
-    /// Exit code of the molecule-final `loom gate verify --diff
-    /// <base>..HEAD` run, threaded from `loom loop`'s handoff via the
-    /// `--verify-exit` flag on `loom gate review`. Defaults to `None`
-    /// when the gate is invoked standalone; the push gate's
-    /// four-condition AND treats `None` as "no verify run in scope" so
-    /// the remaining three conditions still apply.
-    verify_exit: Option<i32>,
+    push_range: Option<String>,
     /// Which lane(s) of the review this controller drives. `Both` is the
     /// `loom gate review` path; `Judge`/`Rubric` are the focused single-
     /// lane re-runs surfaced by `loom gate judge` / `loom gate rubric`.
@@ -292,7 +329,7 @@ where
             style_rules: "docs/style-rules.md".to_string(),
             integration_branch: "main".to_string(),
             hook_timeout: Duration::from_secs(loom_driver::config::default_git_hook_timeout_secs()),
-            verify_exit: None,
+            push_range: None,
             lane: ReviewLane::Both,
             dispatch_scope: DispatchScope::PerBead,
             suppressions: Vec::new(),
@@ -332,15 +369,8 @@ where
         self
     }
 
-    /// Wire the verify-phase exit code that the push gate's
-    /// four-condition AND consumes for FR9 condition 2. `loom loop`'s
-    /// molecule-completion handoff captures `loom gate verify`'s exit
-    /// status and threads it through the `--verify-exit` flag on
-    /// `loom gate review`; `main.rs::run_review` plumbs that value here.
-    /// `None` means no verify run is in scope and condition 2 is treated
-    /// as passing.
-    pub fn with_verify_exit(mut self, code: Option<i32>) -> Self {
-        self.verify_exit = code;
+    pub fn with_push_range(mut self, range: Option<String>) -> Self {
+        self.push_range = range;
         self
     }
 
@@ -880,10 +910,6 @@ where
         self.molecule_integrity_findings().await
     }
 
-    async fn verify_exit(&mut self) -> Result<Option<i32>, ReviewError> {
-        Ok(self.verify_exit)
-    }
-
     async fn apply_integrity_clarify(
         &mut self,
         findings: &[IntegrityFinding],
@@ -941,16 +967,40 @@ where
     async fn mint_marker(&mut self) -> Result<(), ReviewError> {
         // Best-effort: specs/harness.md § Verdict Gate — mint failures fall
         // through to prek's slow tier, never abort the push.
-        let evidence = HandoffEvidence {
-            verify_exit: self.verify_exit,
-            review_exit: Some(0),
-            review_marker: self
+        let review_log_path = self.resolve_review_log_for_marker();
+        if let (Some(path), Some(range)) = (review_log_path.as_deref(), self.push_range.as_ref()) {
+            let tree =
+                loom_driver::git::head_tree_oid_sync(&self.workspace.join(".loom/integration"))
+                    .map(|oid| oid.to_string())
+                    .unwrap_or_else(|_| String::new());
+            let marker = self
                 .effective_review_marker
                 .clone()
-                .or(Some(ExitSignal::Complete)),
-            review_log_path: self.resolve_review_log_for_marker(),
-            suppressed_review_concern: self.suppressed_review_concern,
-        };
+                .unwrap_or(ExitSignal::Complete);
+            append_gate_run_event(
+                path,
+                &GateRun::successful_review(range.clone(), tree, path.to_path_buf(), marker),
+            )?;
+        }
+        let mut evidence = review_log_path
+            .as_deref()
+            .map(parse_gate_runs_from_jsonl)
+            .map(HandoffEvidence::from_runs)
+            .unwrap_or_default();
+        evidence.review_marker = self
+            .effective_review_marker
+            .clone()
+            .or(Some(ExitSignal::Complete));
+        evidence.review_exit = Some(0);
+        evidence.suppressed_review_concern = self.suppressed_review_concern;
+        if let Some(path) = review_log_path.filter(|p| p.exists())
+            && !evidence
+                .gate_log_paths
+                .iter()
+                .any(|candidate| candidate == &path)
+        {
+            evidence.gate_log_paths.push(path);
+        }
         let success = match GateSuccess::new(&evidence, 1) {
             Ok(success) => success,
             Err(fail) => {
@@ -1123,6 +1173,7 @@ mod tests {
     use super::*;
     use crate::review::finding::{ConcernToken, Finding, FindingTarget};
     use crate::review::runner::ReviewController;
+    use loom_driver::bd::RunOutput;
     use loom_driver::identifier::MoleculeId;
     use loom_driver::state::ActiveMolecule;
     use std::ffi::OsStr;
@@ -1914,6 +1965,40 @@ mod tests {
         Arc::new(db)
     }
 
+    fn epic_body(id: &str, label: &str) -> Vec<u8> {
+        format!(
+            r#"[{{"id":"{id}","title":"molecule","status":"open","priority":2,"issue_type":"epic","description":"","labels":["spec:{label}"]}}]"#,
+        )
+        .into_bytes()
+    }
+
+    fn ok_stdout(stdout: Vec<u8>) -> RunOutput {
+        RunOutput {
+            status: 0,
+            stdout,
+            stderr: Vec::new(),
+        }
+    }
+
+    fn scripted_controller(
+        workspace: PathBuf,
+        label: &str,
+        state: Arc<StateDb>,
+        responses: impl IntoIterator<Item = Vec<u8>>,
+    ) -> ProductionReviewController<NoopSpawn, SpawnFuture, ScriptedBd> {
+        let manifest = stub_manifest(&workspace);
+        ProductionReviewController::new(
+            BdClient::with_runner(ScriptedBd::new(responses.into_iter().map(ok_stdout))),
+            SpecLabel::new(label),
+            PathBuf::from("/usr/bin/loom"),
+            workspace,
+            state,
+            manifest,
+            ProfileName::new("base"),
+            noop_spawn,
+        )
+    }
+
     fn controller(workspace: PathBuf) -> NoopController {
         let state = empty_state(&workspace);
         let manifest = stub_manifest(&workspace);
@@ -1947,85 +2032,6 @@ mod tests {
             "no extra args; `bd dolt push` would surface as program=bd args=[dolt, push]: argv={argv:?}",
         );
         assert_eq!(std_cmd.get_current_dir(), Some(dir.path()));
-    }
-
-    /// FR9 condition 2 production wiring: `ProductionReviewController`
-    /// MUST surface the threaded verify exit code so the push gate's
-    /// four-condition AND can refuse on a non-zero verify. The default
-    /// trait impl returns `None`, which let `loom loop`'s handoff
-    /// silently push despite a failing verifier — the bug lm-e6c8r.25
-    /// pinned this test against.
-    #[tokio::test]
-    async fn verify_exit_returns_value_threaded_through_with_verify_exit() {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path().to_path_buf();
-        let state = empty_state(&workspace);
-        let manifest = stub_manifest(&workspace);
-        let mut ctrl = ProductionReviewController::new(
-            BdClient::new(),
-            SpecLabel::new("harness"),
-            PathBuf::from("/usr/bin/loom"),
-            workspace,
-            state,
-            manifest,
-            ProfileName::new("base"),
-            noop_spawn,
-        )
-        .with_verify_exit(Some(1));
-        assert_eq!(ctrl.verify_exit().await.unwrap(), Some(1));
-    }
-
-    /// Default state — no `with_verify_exit` call — preserves the
-    /// historical `None` so direct human invocations of `loom gate
-    /// review` (no parent `loom loop`) still work; FR9 condition 2 is
-    /// vacuously satisfied and the remaining three conditions gate the
-    /// push.
-    #[tokio::test]
-    async fn verify_exit_defaults_to_none_without_with_verify_exit() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ctrl = controller(dir.path().to_path_buf());
-        assert_eq!(ctrl.verify_exit().await.unwrap(), None);
-    }
-
-    /// Replay scripted bd-list responses so iteration tests can drive
-    /// the controller without invoking the real `bd` binary on PATH.
-    /// Each entry feeds one `BdClient` call in order.
-    fn scripted_controller(
-        workspace: PathBuf,
-        label: &str,
-        state: Arc<StateDb>,
-        bd_responses: impl IntoIterator<Item = Vec<u8>>,
-    ) -> ProductionReviewController<NoopSpawn, SpawnFuture, ScriptedBd> {
-        let manifest = stub_manifest(&workspace);
-        let runner = ScriptedBd::new(bd_responses.into_iter().map(|stdout| RunOutput {
-            status: 0,
-            stdout,
-            stderr: Vec::new(),
-        }));
-        ProductionReviewController::new(
-            BdClient::with_runner(runner),
-            SpecLabel::new(label),
-            PathBuf::from("/usr/bin/loom"),
-            workspace,
-            state,
-            manifest,
-            ProfileName::new("base"),
-            noop_spawn,
-        )
-    }
-
-    fn epic_body(mol_id: &str, label: &str) -> Vec<u8> {
-        format!(
-            r#"[{{
-                "id": "{mol_id}",
-                "title": "{label}: epic",
-                "status": "open",
-                "priority": 2,
-                "issue_type": "epic",
-                "labels": ["spec:{label}"]
-            }}]"#,
-        )
-        .into_bytes()
     }
 
     #[tokio::test]
@@ -2839,7 +2845,6 @@ mod tests {
             .expect("lock must be reacquirable after exec_run");
     }
 
-    use loom_driver::bd::RunOutput;
     use std::collections::VecDeque;
     use std::ffi::OsString;
     use std::sync::Mutex as StdMutex;

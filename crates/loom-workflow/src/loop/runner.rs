@@ -636,7 +636,6 @@ async fn process_one_bead<C: AgentLoopController>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::todo::ExitSignal;
     use loom_driver::bd::{Bead, Label};
     use loom_driver::identifier::BeadId;
     use loom_gate::GateFailReason;
@@ -684,6 +683,40 @@ mod tests {
         /// post-Success step actually fired for a given bead.
         per_bead_gate_calls: Vec<BeadId>,
         driver_events: Vec<(String, String, serde_json::Value)>,
+    }
+
+    fn write_gate_log(path: &std::path::Path) {
+        use std::io::Write as _;
+
+        let event = |phase: &str, hooks: &[&str]| {
+            serde_json::json!({
+                "kind": "driver_event",
+                "driver_kind": "gate_run_end",
+                "payload": {
+                    "phase": phase,
+                    "push_range": "origin/main..HEAD",
+                    "tree_oid": "tree-a",
+                    "log_path": path.to_string_lossy(),
+                    "exit_code": 0,
+                    "status": "success",
+                    "marker": "complete",
+                    "covered_hooks": hooks,
+                }
+            })
+            .to_string()
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("open gate log");
+        writeln!(file, "{}", event("verify", &["pre-push"])).expect("write verify event");
+        writeln!(file, "{}", event("review", &[])).expect("write review event");
+    }
+
+    fn typed_evidence(path: &std::path::Path) -> HandoffEvidence {
+        let runs = loom_gate::parse_gate_runs_from_jsonl(path);
+        HandoffEvidence::from_runs(runs)
     }
 
     impl AgentLoopController for FakeController {
@@ -1457,7 +1490,6 @@ mod tests {
     /// so as long as this test holds, the exit code does too.
     #[tokio::test]
     async fn loom_loop_exit_code_is_function_of_gate_outcome_variant() -> Result<(), LoopError> {
-        use std::io::Write;
         use tempfile::NamedTempFile;
 
         let mut empty = FakeController::default();
@@ -1501,18 +1533,13 @@ mod tests {
             other => panic!("expected Fail(StalledMaxIterations), got {other:?}"),
         }
 
-        let mut log = NamedTempFile::new().expect("tempfile");
-        log.write_all(b"event-1\nevent-2\nLOOM_COMPLETE\n").unwrap();
-        let log_path = log.path().to_path_buf();
+        let log = NamedTempFile::new().expect("tempfile");
+        write_gate_log(log.path());
 
         let mut success = FakeController::default();
-        success.review_evidence.push_back(HandoffEvidence {
-            verify_exit: Some(0),
-            review_exit: Some(0),
-            review_marker: Some(ExitSignal::Complete),
-            review_log_path: Some(log_path),
-            suppressed_review_concern: false,
-        });
+        success
+            .review_evidence
+            .push_back(typed_evidence(log.path()));
         let outcome_success = run_loop(
             &mut success,
             LoopMode::Continuous,
@@ -1522,9 +1549,8 @@ mod tests {
         .await?;
         match outcome_success.gate {
             GateOutcome::Success(receipt) => {
-                assert_eq!(receipt.verify_exit, 0);
-                assert_eq!(receipt.review_exit, 0);
-                assert_eq!(receipt.review_marker, ExitSignal::Complete);
+                assert_eq!(receipt.push_range, "origin/main..HEAD");
+                assert_eq!(receipt.tree_oid, "tree-a");
                 assert!(receipt.total_handoffs >= 1);
             }
             other => panic!("expected Success(_), got {other:?}"),
@@ -1533,49 +1559,30 @@ mod tests {
     }
 
     /// Spec criterion (`specs/harness.md` § Loop Outcome Types): every
-    /// successful `loom loop` invocation produces a non-empty
-    /// `review-*.jsonl` at `r.review_log_path` ending in a terminal
-    /// `AgentEvent` whose marker equals `r.review_marker`. The sealed
-    /// constructor enforces this structurally — any caller that holds a
-    /// `GateSuccess` has, by definition, evidence that the on-disk log
-    /// exists and ends with `LOOM_COMPLETE`. This test exercises the
-    /// guarantee end-to-end through `run_loop`.
+    /// successful `loom loop` invocation references non-empty JSONL logs
+    /// carrying typed successful gate-run events.
     #[tokio::test]
     async fn every_successful_loom_loop_writes_a_review_log_with_terminal_marker()
     -> Result<(), LoopError> {
-        use std::io::Write;
         use tempfile::NamedTempFile;
 
-        let mut log = NamedTempFile::new().expect("tempfile");
-        log.write_all(b"{\"kind\":\"text_delta\"}\nLOOM_COMPLETE\n")
-            .unwrap();
+        let log = NamedTempFile::new().expect("tempfile");
         let path = log.path().to_path_buf();
+        write_gate_log(&path);
 
         let mut c = FakeController::default();
-        c.review_evidence.push_back(HandoffEvidence {
-            verify_exit: Some(0),
-            review_exit: Some(0),
-            review_marker: Some(ExitSignal::Complete),
-            review_log_path: Some(path.clone()),
-            suppressed_review_concern: false,
-        });
+        c.review_evidence.push_back(typed_evidence(&path));
         let outcome = run_loop(&mut c, LoopMode::Continuous, RetryPolicy::default(), 10).await?;
         let receipt = match outcome.gate {
             GateOutcome::Success(r) => r,
             other => panic!("expected Success, got {other:?}"),
         };
-        assert_eq!(receipt.review_log_path, path);
-        let contents = std::fs::read_to_string(&receipt.review_log_path).expect("log readable");
-        let last = contents
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .expect("non-empty line");
+        assert_eq!(receipt.gate_log_paths, vec![path.clone()]);
+        let contents = std::fs::read_to_string(&path).expect("log readable");
         assert!(
-            last.contains("LOOM_COMPLETE"),
-            "last log line must carry LOOM_COMPLETE: {last:?}",
+            contents.contains("gate_run_end"),
+            "log must carry typed gate events: {contents:?}",
         );
-        assert_eq!(receipt.review_marker, ExitSignal::Complete);
         Ok(())
     }
 

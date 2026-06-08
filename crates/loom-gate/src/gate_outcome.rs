@@ -1,83 +1,231 @@
 //! Typed outcomes of one `loom loop` invocation.
-//!
-//! `LoopOutcome` is the typed return of every successful `loom loop`. The
-//! `gate` field carries `GateOutcome`, a three-variant enum whose `Success`
-//! arm wraps the sealed [`GateSuccess`] receipt. Construction of
-//! [`GateSuccess`] routes exclusively through [`GateSuccess::new`], whose
-//! evidence-asserting checks plus the `_private: ()` field-literal seal
-//! make "a code path yielded `Ok(GateSuccess)` without the FR9
-//! four-condition AND" structurally unrepresentable.
-//!
-//! The crate home is `loom-gate` so that `MarkerProof::from_gate_success`
-//! (the sole marker mint authority — see [`crate::marker`]) can accept a
-//! sealed `GateSuccess` by value without forming a `loom-gate ↔
-//! loom-workflow` cycle.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use loom_protocol::gate::ExitSignal;
 
-/// Raw evidence collected from one molecule-completion handoff.
-///
-/// Threaded into [`GateSuccess::new`] to mint the typed receipt. Absence
-/// of any field surfaces as a [`GateFail`] variant in the constructor,
-/// not a panic.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HandoffEvidence {
-    pub verify_exit: Option<i32>,
-    pub review_exit: Option<i32>,
+    pub gate_runs: Vec<GateRun>,
+    pub verified: Option<VerifiedScope>,
+    pub reviewed: Option<ReviewedScope>,
+    pub pre_push: Option<PrePushCoverage>,
+    pub push_range: Option<String>,
+    pub tree_oid: Option<String>,
+    pub gate_log_paths: Vec<PathBuf>,
     pub review_marker: Option<ExitSignal>,
-    pub review_log_path: Option<PathBuf>,
+    pub review_exit: Option<i32>,
     pub suppressed_review_concern: bool,
 }
 
-/// Successful push-gate receipt.
-///
-/// Construction asserts every condition the FR9 four-condition AND covers
-/// *plus* on-disk evidence that the gate's child processes actually ran.
-/// Field shapes are non-`Option`: absence of any value is a failure path
-/// that constructs [`GateFail`] instead. The `_private` zero-sized field
-/// makes struct-literal construction unrepresentable outside `loom-gate`
-/// — [`GateSuccess::new`] is the sole minting path.
+impl HandoffEvidence {
+    #[must_use]
+    pub fn from_runs(runs: Vec<GateRun>) -> Self {
+        let verified = runs.iter().find_map(VerifiedScope::from_run);
+        let reviewed = runs.iter().find_map(ReviewedScope::from_run);
+        let pre_push = verified.as_ref().map(VerifiedScope::pre_push_coverage);
+        let push_range = verified
+            .as_ref()
+            .map(|scope| scope.run.push_range.clone())
+            .or_else(|| reviewed.as_ref().map(|scope| scope.run.push_range.clone()));
+        let tree_oid = verified
+            .as_ref()
+            .map(|scope| scope.run.tree_oid.clone())
+            .or_else(|| reviewed.as_ref().map(|scope| scope.run.tree_oid.clone()));
+        let mut gate_log_paths = Vec::new();
+        for run in &runs {
+            if !gate_log_paths.iter().any(|path| path == &run.log_path) {
+                gate_log_paths.push(run.log_path.clone());
+            }
+        }
+        let review_marker = reviewed.as_ref().and_then(|scope| scope.run.marker.clone());
+        let review_exit = reviewed.as_ref().and_then(|scope| scope.run.exit_code);
+        Self {
+            gate_runs: runs,
+            verified,
+            reviewed,
+            pre_push,
+            push_range,
+            tree_oid,
+            gate_log_paths,
+            review_marker,
+            review_exit,
+            suppressed_review_concern: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateRun {
+    pub phase: GatePhase,
+    pub push_range: String,
+    pub tree_oid: String,
+    pub log_path: PathBuf,
+    pub exit_code: Option<i32>,
+    pub status: GateRunStatus,
+    pub marker: Option<ExitSignal>,
+    pub covered_hooks: Vec<String>,
+}
+
+impl GateRun {
+    #[must_use]
+    pub fn successful_verify(
+        push_range: String,
+        tree_oid: String,
+        log_path: PathBuf,
+        covered_hooks: Vec<String>,
+    ) -> Self {
+        Self {
+            phase: GatePhase::Verify,
+            push_range,
+            tree_oid,
+            log_path,
+            exit_code: Some(0),
+            status: GateRunStatus::Success,
+            marker: Some(ExitSignal::Complete),
+            covered_hooks,
+        }
+    }
+
+    #[must_use]
+    pub fn successful_review(
+        push_range: String,
+        tree_oid: String,
+        log_path: PathBuf,
+        marker: ExitSignal,
+    ) -> Self {
+        Self {
+            phase: GatePhase::Review,
+            push_range,
+            tree_oid,
+            log_path,
+            exit_code: Some(0),
+            status: GateRunStatus::Success,
+            marker: Some(marker),
+            covered_hooks: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        self.status == GateRunStatus::Success && self.exit_code == Some(0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GatePhase {
+    Verify,
+    Review,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateRunStatus {
+    Success,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedScope {
+    run: GateRun,
+    _private: (),
+}
+
+impl VerifiedScope {
+    #[must_use]
+    pub fn from_run(run: &GateRun) -> Option<Self> {
+        if run.phase == GatePhase::Verify && run.is_success() && !run.covered_hooks.is_empty() {
+            Some(Self {
+                run: run.clone(),
+                _private: (),
+            })
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn pre_push_coverage(&self) -> PrePushCoverage {
+        PrePushCoverage {
+            hook_ids: self.run.covered_hooks.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn push_range(&self) -> &str {
+        &self.run.push_range
+    }
+
+    #[must_use]
+    pub fn tree_oid(&self) -> &str {
+        &self.run.tree_oid
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewedScope {
+    run: GateRun,
+    _private: (),
+}
+
+impl ReviewedScope {
+    #[must_use]
+    pub fn from_run(run: &GateRun) -> Option<Self> {
+        if run.phase == GatePhase::Review
+            && run.is_success()
+            && matches!(run.marker, Some(ExitSignal::Complete))
+        {
+            Some(Self {
+                run: run.clone(),
+                _private: (),
+            })
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub fn push_range(&self) -> &str {
+        &self.run.push_range
+    }
+
+    #[must_use]
+    pub fn tree_oid(&self) -> &str {
+        &self.run.tree_oid
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrePushCoverage {
+    pub hook_ids: Vec<String>,
+}
+
 #[expect(
     clippy::manual_non_exhaustive,
-    reason = "spec mandates a structural seal stricter than #[non_exhaustive]: \
-              GateSuccess must be unconstructable via struct literal even from \
-              within loom-gate, so callers cannot bypass the \
-              evidence-asserting constructor"
+    reason = "spec mandates a structural seal stricter than #[non_exhaustive]"
 )]
 #[derive(Debug, Clone)]
 pub struct GateSuccess {
-    pub verify_exit: i32,
-    pub review_exit: i32,
-    pub review_marker: ExitSignal,
-    pub review_log_path: PathBuf,
+    pub verified: VerifiedScope,
+    pub reviewed: ReviewedScope,
+    pub pre_push: PrePushCoverage,
+    pub tree_oid: String,
+    pub push_range: String,
+    pub gate_log_paths: Vec<PathBuf>,
     pub total_handoffs: u32,
     _private: (),
 }
 
 impl GateSuccess {
-    /// Mint a sealed `GateSuccess` from raw evidence.
-    ///
-    /// Asserts: `verify_exit == 0`, `review_exit == 0`,
-    /// `review_marker == ExitSignal::Complete`, `review_log_path` exists,
-    /// file size > 0, the file's last non-empty line carries
-    /// `LOOM_COMPLETE` or an all-suppressed `LOOM_CONCERN`, and
-    /// `total_handoffs >= 1`. Any failed condition
-    /// returns `Err(GateFail)` with the matching `GateFailReason` and the
-    /// evidence carried verbatim for triage.
     #[expect(
         clippy::result_large_err,
-        reason = "GateFail carries the verbatim evidence (verify_exit, review_marker, review_log_path) for triage; \
-                  wrapping in Box would obscure the failure shape at the call sites that pattern-match on the variants"
+        reason = "GateFail carries the verbatim evidence for triage"
     )]
     pub fn new(evidence: &HandoffEvidence, total_handoffs: u32) -> Result<Self, GateFail> {
         let fail = |reason: GateFailReason| GateFail {
             reason,
-            verify_exit: evidence.verify_exit,
-            review_exit: evidence.review_exit,
+            gate_runs: evidence.gate_runs.clone(),
             review_marker: evidence.review_marker.clone(),
-            review_log_path: evidence.review_log_path.clone(),
+            review_log_path: evidence.gate_log_paths.last().cloned(),
             total_handoffs,
             stalled_at_max_iterations: false,
             _private: (),
@@ -86,76 +234,102 @@ impl GateSuccess {
         if total_handoffs == 0 {
             return Err(fail(GateFailReason::ReviewEvidenceMissing));
         }
-        let verify_exit = match evidence.verify_exit {
-            Some(0) => 0,
-            Some(_) => return Err(fail(GateFailReason::VerifierFailed)),
-            None => return Err(fail(GateFailReason::SignalKilled)),
-        };
-        let review_exit = match evidence.review_exit {
-            Some(0) => 0,
-            Some(_) => {
-                if let Some(ExitSignal::Concern { summary }) = evidence.review_marker.clone() {
-                    return Err(fail(GateFailReason::ReviewConcern { summary }));
-                }
+        if evidence
+            .gate_runs
+            .iter()
+            .any(|run| run.phase == GatePhase::Verify && !run.is_success())
+        {
+            return Err(fail(GateFailReason::VerifierFailed));
+        }
+        if evidence
+            .gate_runs
+            .iter()
+            .any(|run| run.phase == GatePhase::Review && !run.is_success())
+        {
+            return Err(fail(GateFailReason::ReviewEvidenceMissing));
+        }
+        let verified = evidence
+            .verified
+            .clone()
+            .ok_or_else(|| fail(GateFailReason::ReviewEvidenceMissing))?;
+        let reviewed =
+            evidence
+                .reviewed
+                .clone()
+                .ok_or_else(|| match evidence.review_marker.clone() {
+                    Some(ExitSignal::Concern { summary }) => {
+                        fail(GateFailReason::ReviewConcern { summary })
+                    }
+                    Some(ExitSignal::Noop) => fail(GateFailReason::EmptyDiffNoop),
+                    _ => fail(GateFailReason::ReviewEvidenceMissing),
+                })?;
+        let pre_push = evidence
+            .pre_push
+            .clone()
+            .ok_or_else(|| fail(GateFailReason::MarkerCoverageMissing))?;
+        if pre_push.hook_ids.is_empty() {
+            return Err(fail(GateFailReason::MarkerCoverageMissing));
+        }
+        if verified.push_range() != reviewed.push_range() {
+            return Err(fail(GateFailReason::ReviewEvidenceMissing));
+        }
+        if verified.tree_oid() != reviewed.tree_oid() {
+            return Err(fail(GateFailReason::ReviewEvidenceMissing));
+        }
+        if evidence
+            .push_range
+            .as_ref()
+            .is_some_and(|range| range != verified.push_range())
+        {
+            return Err(fail(GateFailReason::ReviewEvidenceMissing));
+        }
+        if evidence
+            .tree_oid
+            .as_ref()
+            .is_some_and(|tree| tree != verified.tree_oid())
+        {
+            return Err(fail(GateFailReason::ReviewEvidenceMissing));
+        }
+        if evidence.gate_log_paths.is_empty() {
+            return Err(fail(GateFailReason::ReviewEvidenceMissing));
+        }
+        for path in &evidence.gate_log_paths {
+            if !log_contains_successful_gate_run(path) {
                 return Err(fail(GateFailReason::ReviewEvidenceMissing));
             }
-            None => return Err(fail(GateFailReason::SignalKilled)),
-        };
-        let review_marker = match evidence.review_marker.clone() {
-            Some(ExitSignal::Complete) => ExitSignal::Complete,
-            Some(ExitSignal::Concern { .. }) if evidence.suppressed_review_concern => {
-                ExitSignal::Complete
-            }
-            Some(ExitSignal::Noop) => return Err(fail(GateFailReason::EmptyDiffNoop)),
-            Some(ExitSignal::Concern { summary }) => {
-                return Err(fail(GateFailReason::ReviewConcern { summary }));
-            }
-            Some(_) | None => return Err(fail(GateFailReason::ReviewEvidenceMissing)),
-        };
-        let review_log_path = match evidence.review_log_path.clone() {
-            Some(p) => p,
-            None => return Err(fail(GateFailReason::ReviewEvidenceMissing)),
-        };
-        let metadata = match std::fs::metadata(&review_log_path) {
-            Ok(m) => m,
-            Err(_) => return Err(fail(GateFailReason::ReviewEvidenceMissing)),
-        };
-        if metadata.len() == 0 {
-            return Err(fail(GateFailReason::ReviewEvidenceMissing));
-        }
-        let contents = match std::fs::read_to_string(&review_log_path) {
-            Ok(s) => s,
-            Err(_) => return Err(fail(GateFailReason::ReviewEvidenceMissing)),
-        };
-        if !last_line_carries_success_marker(&contents, evidence.suppressed_review_concern) {
-            return Err(fail(GateFailReason::ReviewEvidenceMissing));
         }
 
-        Ok(GateSuccess {
-            verify_exit,
-            review_exit,
-            review_marker,
-            review_log_path,
+        Ok(Self {
+            verified,
+            reviewed,
+            pre_push,
+            tree_oid: evidence.tree_oid.clone().unwrap_or_else(|| {
+                evidence
+                    .verified
+                    .as_ref()
+                    .map_or_else(String::new, |scope| scope.tree_oid().to_owned())
+            }),
+            push_range: evidence.push_range.clone().unwrap_or_else(|| {
+                evidence
+                    .verified
+                    .as_ref()
+                    .map_or_else(String::new, |scope| scope.push_range().to_owned())
+            }),
+            gate_log_paths: evidence.gate_log_paths.clone(),
             total_handoffs,
             _private: (),
         })
     }
 }
 
-/// Failure receipt. Carries the failure reason explicitly so CLI / log
-/// summaries and the next outer-loop iteration consume it directly,
-/// without reverse-engineering from exit codes.
 #[expect(
     clippy::manual_non_exhaustive,
-    reason = "spec mandates a structural seal stricter than #[non_exhaustive]: \
-              GateFail is paired with GateSuccess as the only output of the \
-              sealed constructor, so callers cannot fabricate a failure receipt"
+    reason = "spec mandates a structural seal stricter than #[non_exhaustive]"
 )]
 #[derive(Debug, Clone)]
 pub struct GateFail {
     pub reason: GateFailReason,
-    pub verify_exit: Option<i32>,
-    pub review_exit: Option<i32>,
+    pub gate_runs: Vec<GateRun>,
     pub review_marker: Option<ExitSignal>,
     pub review_log_path: Option<PathBuf>,
     pub total_handoffs: u32,
@@ -164,12 +338,11 @@ pub struct GateFail {
 }
 
 impl GateFail {
-    /// Mint a `GateFail` whose `reason` is `StalledMaxIterations`.
+    #[must_use]
     pub fn stalled(total_handoffs: u32) -> Self {
-        GateFail {
+        Self {
             reason: GateFailReason::StalledMaxIterations,
-            verify_exit: None,
-            review_exit: None,
+            gate_runs: Vec::new(),
             review_marker: None,
             review_log_path: None,
             total_handoffs,
@@ -182,11 +355,14 @@ impl GateFail {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateFailReason {
     VerifierFailed,
+    PrePushHookFailed,
     ReviewConcern { summary: String },
+    BadWalk,
     EmptyDiffNoop,
     StalledMaxIterations,
     SignalKilled,
     ReviewEvidenceMissing,
+    MarkerCoverageMissing,
     IntegrityFinding,
 }
 
@@ -197,6 +373,10 @@ pub enum NoGateReason {
 }
 
 #[must_use]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "GateOutcome is a public value surface consumed by pattern matching; boxing would obscure the sealed receipt shape"
+)]
 #[derive(Debug, Clone)]
 pub enum GateOutcome {
     Success(GateSuccess),
@@ -217,15 +397,85 @@ pub struct LoopOutcome {
     pub gate: GateOutcome,
 }
 
-fn last_line_carries_success_marker(contents: &str, suppressed_review_concern: bool) -> bool {
+#[must_use]
+pub fn parse_gate_runs_from_jsonl(path: &Path) -> Vec<GateRun> {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
     contents
         .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .is_some_and(|line| {
-            line.contains("LOOM_COMPLETE")
-                || (suppressed_review_concern && line.contains("LOOM_CONCERN"))
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|value| {
+            value.get("kind").and_then(serde_json::Value::as_str) == Some("driver_event")
         })
+        .filter(|value| {
+            value.get("driver_kind").and_then(serde_json::Value::as_str) == Some("gate_run_end")
+        })
+        .filter_map(|value| gate_run_from_payload(value.get("payload")?, path))
+        .collect()
+}
+
+fn gate_run_from_payload(payload: &serde_json::Value, fallback_path: &Path) -> Option<GateRun> {
+    let phase = match payload.get("phase")?.as_str()? {
+        "verify" => GatePhase::Verify,
+        "review" => GatePhase::Review,
+        _ => return None,
+    };
+    let status = match payload.get("status")?.as_str()? {
+        "success" => GateRunStatus::Success,
+        "failed" => GateRunStatus::Failed,
+        _ => return None,
+    };
+    let marker = payload
+        .get("marker")
+        .and_then(serde_json::Value::as_str)
+        .and_then(marker_from_str);
+    let covered_hooks = payload
+        .get("covered_hooks")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Some(GateRun {
+        phase,
+        push_range: payload.get("push_range")?.as_str()?.to_owned(),
+        tree_oid: payload.get("tree_oid")?.as_str()?.to_owned(),
+        log_path: payload
+            .get("log_path")
+            .and_then(serde_json::Value::as_str)
+            .map_or_else(|| fallback_path.to_path_buf(), PathBuf::from),
+        exit_code: payload
+            .get("exit_code")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|code| i32::try_from(code).ok()),
+        status,
+        marker,
+        covered_hooks,
+    })
+}
+
+fn marker_from_str(marker: &str) -> Option<ExitSignal> {
+    match marker {
+        "complete" => Some(ExitSignal::Complete),
+        "noop" => Some(ExitSignal::Noop),
+        _ => marker
+            .strip_prefix("concern:")
+            .map(|summary| ExitSignal::Concern {
+                summary: summary.to_owned(),
+            }),
+    }
+}
+
+fn log_contains_successful_gate_run(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0)
+        && parse_gate_runs_from_jsonl(path)
+            .into_iter()
+            .any(|run| run.is_success())
 }
 
 #[cfg(test)]
@@ -234,198 +484,130 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    fn write_log(contents: &str) -> NamedTempFile {
-        let mut f = NamedTempFile::new().expect("tempfile");
-        f.write_all(contents.as_bytes()).expect("write");
-        f
+    fn write_log(lines: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().expect("tempfile");
+        file.write_all(lines.as_bytes()).expect("write");
+        file
     }
 
-    fn complete_evidence(log: &NamedTempFile) -> HandoffEvidence {
-        HandoffEvidence {
-            verify_exit: Some(0),
-            review_exit: Some(0),
-            review_marker: Some(ExitSignal::Complete),
-            review_log_path: Some(log.path().to_path_buf()),
-            suppressed_review_concern: false,
-        }
-    }
-
-    /// FR9 — the sealed constructor must refuse to mint a `GateSuccess`
-    /// when ANY evidence condition fails. Each branch under test pokes a
-    /// single condition and asserts the constructor returns `GateFail`
-    /// with the matching reason — no `Ok(GateSuccess)` slips through.
-    #[test]
-    fn gate_success_constructor_asserts_every_evidence_condition() {
-        let log = write_log("event-1\nevent-2\nLOOM_COMPLETE\n");
-        let good = complete_evidence(&log);
-        assert!(GateSuccess::new(&good, 1).is_ok());
-
-        match GateSuccess::new(&good, 0) {
-            Err(GateFail {
-                reason: GateFailReason::ReviewEvidenceMissing,
-                ..
-            }) => {}
-            other => panic!("expected ReviewEvidenceMissing, got {other:?}"),
-        }
-
-        let mut e = good.clone();
-        e.verify_exit = Some(1);
-        match GateSuccess::new(&e, 1) {
-            Err(GateFail {
-                reason: GateFailReason::VerifierFailed,
-                ..
-            }) => {}
-            other => panic!("expected VerifierFailed, got {other:?}"),
-        }
-
-        let mut e = good.clone();
-        e.verify_exit = None;
-        match GateSuccess::new(&e, 1) {
-            Err(GateFail {
-                reason: GateFailReason::SignalKilled,
-                ..
-            }) => {}
-            other => panic!("expected SignalKilled, got {other:?}"),
-        }
-
-        let mut e = good.clone();
-        e.review_exit = Some(1);
-        match GateSuccess::new(&e, 1) {
-            Err(GateFail {
-                reason: GateFailReason::ReviewEvidenceMissing,
-                ..
-            }) => {}
-            other => panic!("expected ReviewEvidenceMissing, got {other:?}"),
-        }
-
-        let mut e = good.clone();
-        e.review_exit = Some(1);
-        e.review_marker = Some(ExitSignal::Concern {
-            summary: "tests mock too hard".into(),
-        });
-        match GateSuccess::new(&e, 1) {
-            Err(GateFail {
-                reason: GateFailReason::ReviewConcern { summary },
-                ..
-            }) => {
-                assert_eq!(summary, "tests mock too hard");
+    fn event(phase: &str, range: &str, tree: &str, marker: &str, hooks: &[&str]) -> String {
+        serde_json::json!({
+            "kind": "driver_event",
+            "driver_kind": "gate_run_end",
+            "payload": {
+                "phase": phase,
+                "push_range": range,
+                "tree_oid": tree,
+                "log_path": "unused",
+                "exit_code": 0,
+                "status": "success",
+                "marker": marker,
+                "covered_hooks": hooks,
             }
-            other => panic!("expected ReviewConcern, got {other:?}"),
-        }
-
-        let mut e = good.clone();
-        e.review_marker = Some(ExitSignal::Noop);
-        match GateSuccess::new(&e, 1) {
-            Err(GateFail {
-                reason: GateFailReason::EmptyDiffNoop,
-                ..
-            }) => {}
-            other => panic!("expected EmptyDiffNoop, got {other:?}"),
-        }
-
-        let mut e = good.clone();
-        e.review_marker = None;
-        match GateSuccess::new(&e, 1) {
-            Err(GateFail {
-                reason: GateFailReason::ReviewEvidenceMissing,
-                ..
-            }) => {}
-            other => panic!("expected ReviewEvidenceMissing, got {other:?}"),
-        }
-
-        let mut e = good.clone();
-        e.review_log_path = None;
-        match GateSuccess::new(&e, 1) {
-            Err(GateFail {
-                reason: GateFailReason::ReviewEvidenceMissing,
-                ..
-            }) => {}
-            other => panic!("expected ReviewEvidenceMissing, got {other:?}"),
-        }
-
-        let mut e = good.clone();
-        e.review_log_path = Some(PathBuf::from("/nonexistent/path/that/cannot/exist/asdf"));
-        match GateSuccess::new(&e, 1) {
-            Err(GateFail {
-                reason: GateFailReason::ReviewEvidenceMissing,
-                ..
-            }) => {}
-            other => panic!("expected ReviewEvidenceMissing for missing file, got {other:?}"),
-        }
-
-        let empty = NamedTempFile::new().expect("tempfile");
-        let mut e = good.clone();
-        e.review_log_path = Some(empty.path().to_path_buf());
-        match GateSuccess::new(&e, 1) {
-            Err(GateFail {
-                reason: GateFailReason::ReviewEvidenceMissing,
-                ..
-            }) => {}
-            other => panic!("expected ReviewEvidenceMissing for empty file, got {other:?}"),
-        }
-
-        let bad_marker = write_log("event-1\nevent-2\nno marker here\n");
-        let mut e = good.clone();
-        e.review_log_path = Some(bad_marker.path().to_path_buf());
-        match GateSuccess::new(&e, 1) {
-            Err(GateFail {
-                reason: GateFailReason::ReviewEvidenceMissing,
-                ..
-            }) => {}
-            other => panic!("expected ReviewEvidenceMissing for stale log, got {other:?}"),
-        }
+        })
+        .to_string()
     }
 
-    /// A successful receipt's `review_log_path` MUST point at a non-empty
-    /// file whose last line carries `LOOM_COMPLETE`. Constructor-level
-    /// counterpart of the end-to-end `every_successful_loom_loop_writes_*`
-    /// test in `runner.rs`: any caller that gets `Ok(GateSuccess)` back has,
-    /// by construction, written such a file.
-    #[test]
-    fn gate_success_receipt_carries_non_empty_review_log_with_terminal_marker() {
-        let log = write_log("first\nsecond\nLOOM_COMPLETE");
-        let good = complete_evidence(&log);
-        let success = GateSuccess::new(&good, 3).expect("good evidence mints success");
-        assert_eq!(success.verify_exit, 0);
-        assert_eq!(success.review_exit, 0);
-        assert_eq!(success.review_marker, ExitSignal::Complete);
-        assert_eq!(success.total_handoffs, 3);
-        let metadata = std::fs::metadata(&success.review_log_path).expect("log exists");
-        assert!(metadata.len() > 0, "log file must be non-empty");
-        let contents = std::fs::read_to_string(&success.review_log_path).expect("log readable");
-        let last = contents
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .expect("non-empty line");
-        assert!(
-            last.contains("LOOM_COMPLETE"),
-            "last log line must carry LOOM_COMPLETE: {last:?}",
+    fn evidence(log: &Path) -> HandoffEvidence {
+        let verify = GateRun::successful_verify(
+            "origin/main..HEAD".to_owned(),
+            "tree-a".to_owned(),
+            log.to_path_buf(),
+            vec!["pre-push".to_owned(), "loom-gate-verify".to_owned()],
         );
+        let review = GateRun::successful_review(
+            "origin/main..HEAD".to_owned(),
+            "tree-a".to_owned(),
+            log.to_path_buf(),
+            ExitSignal::Complete,
+        );
+        HandoffEvidence::from_runs(vec![verify, review])
     }
 
     #[test]
-    fn gate_success_accepts_all_suppressed_concern_log_evidence() {
-        let log = write_log(
-            r#"LOOM_FINDING: {"token":"verifier-bypass"}
-LOOM_CONCERN: {"summary":"suppressed false positive"}
-"#,
-        );
-        let mut evidence = complete_evidence(&log);
-        evidence.review_marker = Some(ExitSignal::Concern {
-            summary: "suppressed false positive".to_owned(),
-        });
-        evidence.suppressed_review_concern = true;
-        let success = GateSuccess::new(&evidence, 1).expect("suppressed concern mints success");
-        assert_eq!(success.review_marker, ExitSignal::Complete);
+    fn gate_jsonl_parses_typed_gate_runs() {
+        let log = write_log(&format!(
+            "{}\n{}\n",
+            event(
+                "verify",
+                "origin/main..HEAD",
+                "tree-a",
+                "complete",
+                &["pre-push"]
+            ),
+            event("review", "origin/main..HEAD", "tree-a", "complete", &[]),
+        ));
+        let runs = parse_gate_runs_from_jsonl(log.path());
+        assert_eq!(runs.len(), 2);
+        assert!(VerifiedScope::from_run(&runs[0]).is_some());
+        assert!(ReviewedScope::from_run(&runs[1]).is_some());
+    }
 
-        evidence.suppressed_review_concern = false;
+    #[test]
+    fn gate_success_constructor_requires_typed_scope_and_coverage_evidence() {
+        let log = write_log(&format!(
+            "{}\n{}\n",
+            event(
+                "verify",
+                "origin/main..HEAD",
+                "tree-a",
+                "complete",
+                &["pre-push"]
+            ),
+            event("review", "origin/main..HEAD", "tree-a", "complete", &[]),
+        ));
+        let mut evidence = evidence(log.path());
+        evidence.gate_log_paths = vec![log.path().to_path_buf()];
+        let success = GateSuccess::new(&evidence, 1).expect("typed evidence mints success");
+        assert_eq!(success.push_range, "origin/main..HEAD");
+        assert_eq!(success.tree_oid, "tree-a");
+        assert_eq!(success.gate_log_paths.len(), 1);
+
+        let mut missing_scope = evidence.clone();
+        missing_scope.verified = None;
+        match GateSuccess::new(&missing_scope, 1) {
+            Err(GateFail {
+                reason: GateFailReason::ReviewEvidenceMissing,
+                ..
+            }) => {}
+            other => panic!("expected missing typed scope to fail, got {other:?}"),
+        }
+
+        let mut missing_coverage = evidence.clone();
+        missing_coverage.pre_push = Some(PrePushCoverage { hook_ids: vec![] });
+        match GateSuccess::new(&missing_coverage, 1) {
+            Err(GateFail {
+                reason: GateFailReason::MarkerCoverageMissing,
+                ..
+            }) => {}
+            other => panic!("expected missing coverage to fail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gate_success_refuses_mismatched_range_or_tree() {
+        let log = write_log(&format!(
+            "{}\n{}\n",
+            event(
+                "verify",
+                "origin/main..HEAD",
+                "tree-a",
+                "complete",
+                &["pre-push"]
+            ),
+            event("review", "origin/main..HEAD", "tree-a", "complete", &[]),
+        ));
+        let mut evidence = evidence(log.path());
+        evidence.gate_log_paths = vec![log.path().to_path_buf()];
+        let mut review = evidence.reviewed.clone().expect("reviewed");
+        review.run.push_range = "origin/main..other".to_owned();
+        evidence.reviewed = Some(review);
         match GateSuccess::new(&evidence, 1) {
             Err(GateFail {
-                reason: GateFailReason::ReviewConcern { summary },
+                reason: GateFailReason::ReviewEvidenceMissing,
                 ..
-            }) => assert_eq!(summary, "suppressed false positive"),
-            other => panic!("expected ReviewConcern, got {other:?}"),
+            }) => {}
+            other => panic!("expected mismatched range to fail, got {other:?}"),
         }
     }
 

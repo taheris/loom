@@ -34,7 +34,7 @@ use loom_events::DriverKind;
 use tokio::process::Command;
 use tracing::{info, warn};
 
-use loom_gate::HandoffEvidence;
+use loom_gate::{GateRun, HandoffEvidence, parse_gate_runs_from_jsonl};
 
 use super::context::{LoopContextInputs, render_loop_prompt};
 use super::driver_emit::BeadEmit;
@@ -731,53 +731,35 @@ where
     }
 
     async fn exec_review(&mut self) -> Result<HandoffEvidence, LoopError> {
-        // Release the spec lock before spawning the child — `loom gate
-        // verify` and `loom gate review` acquire the same lock and would
-        // otherwise time out behind us.
         self.release_handoff_lock_for_child_gate();
-        // Molecule-completion handoff (FR1 / FR9): scope the verify and
-        // review children to the molecule's own diff
-        // (`<molecule.base_commit>..HEAD`) so push-gate cost is
-        // proportional to the molecule's work rather than `--tree`.
-        // Deterministic verify first then LLM review; non-zero exit
-        // codes are NOT fatal to `run_loop` (they drive fix-up beads on
-        // the next outer-loop pass), but spawn failures and missing
-        // molecule metadata DO surface as `LoopError`.
-        self.git.validate_loom_hooks_path_configured().await?;
-        let base = fetch_molecule_base_commit(&self.bd, &self.workspace, &self.label).await?;
-        let diff_range = format!("{base}..HEAD");
-        let verify_status = Command::new(&self.loom_bin)
-            .current_dir(&self.workspace)
-            .arg("gate")
-            .arg("verify")
-            .arg("--diff")
-            .arg(&diff_range)
-            .status()
-            .await?;
-        info!(
-            spec = %self.label.as_str(),
-            diff = %diff_range,
-            exit_code = verify_status.code().unwrap_or(-1),
-            "loom loop: molecule handoff — loom gate verify --diff finished",
-        );
-        // Thread the verify exit into the child via `--verify-exit <CODE>`
-        // so the push gate's four-condition AND (FR9 condition 2) consumes
-        // it. Signal-terminated children surface `None`; the spec treats no
-        // exit code as "no clean success" — use a non-zero sentinel so the
-        // gate routes through `verifier-failed` rather than skipping the
-        // condition.
-        let verify_exit_arg = verify_status.code().unwrap_or(1);
-        // Pin `phase_when` and pass it to the child so both sides
-        // resolve the same JSONL log path under
-        // `<logs_root>/<label>/review-<utc>.jsonl`. The child opts in to
-        // emitting the agent's combined stdout to its own stdout via
-        // `LOOM_REVIEW_EMIT_STDOUT` so the parent can `parse_exit_signal`
-        // the captured output.
+        let actual = self.git.prepare_actual_push_range().await?;
+        let diff_range = actual.range.clone();
         let phase_when = SystemClock::new().wall_now();
         let phase_when_millis = phase_when
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0);
+        let review_log_path = self
+            .logs_root
+            .as_deref()
+            .map(|root| phase_log_path(root, &self.label, "review", phase_when));
+        self.git.run_pre_push_chain().await?;
+        if let Some(path) = review_log_path.as_deref() {
+            append_gate_run_event(
+                path,
+                &GateRun::successful_verify(
+                    diff_range.clone(),
+                    actual.tree_oid.to_string(),
+                    path.to_path_buf(),
+                    vec!["pre-push".to_string(), "loom-gate-verify".to_string()],
+                ),
+            )?;
+        }
+        info!(
+            spec = %self.label.as_str(),
+            diff = %diff_range,
+            "loom loop: molecule handoff — pre-push chain finished",
+        );
         let review_output = Command::new(&self.loom_bin)
             .current_dir(&self.workspace)
             .env(REVIEW_PHASE_WHEN_ENV, phase_when_millis.to_string())
@@ -786,8 +768,6 @@ where
             .arg("review")
             .arg("--diff")
             .arg(&diff_range)
-            .arg("--verify-exit")
-            .arg(verify_exit_arg.to_string())
             .output()
             .await?;
         let review_status = review_output.status;
@@ -834,18 +814,37 @@ where
                 findings: unsuppressed_findings,
             });
         }
-        let review_log_path = self
-            .logs_root
+        if let Some(path) = review_log_path.as_deref() {
+            let marker = review_marker.clone().unwrap_or(ExitSignal::Complete);
+            append_gate_run_event(
+                path,
+                &GateRun::successful_review(
+                    diff_range.clone(),
+                    actual.tree_oid.to_string(),
+                    path.to_path_buf(),
+                    marker,
+                ),
+            )?;
+        }
+        let mut evidence = review_log_path
             .as_deref()
-            .map(|root| phase_log_path(root, &self.label, "review", phase_when))
-            .filter(|p| p.exists());
-        Ok(HandoffEvidence {
-            verify_exit: verify_status.code(),
-            review_exit: review_status.code(),
-            review_marker,
-            review_log_path,
-            suppressed_review_concern,
-        })
+            .map(parse_gate_runs_from_jsonl)
+            .map(HandoffEvidence::from_runs)
+            .unwrap_or_default();
+        evidence.push_range = Some(diff_range);
+        evidence.tree_oid = Some(actual.tree_oid.to_string());
+        evidence.review_marker = review_marker;
+        evidence.review_exit = review_status.code();
+        evidence.suppressed_review_concern = suppressed_review_concern;
+        if let Some(path) = review_log_path.filter(|p| p.exists())
+            && !evidence
+                .gate_log_paths
+                .iter()
+                .any(|candidate| candidate == &path)
+        {
+            evidence.gate_log_paths.push(path);
+        }
+        Ok(evidence)
     }
 
     async fn exec_per_bead_gate(&mut self, bead: &BeadId) -> Result<PerBeadGateOutcome, LoopError> {
@@ -865,19 +864,19 @@ where
             .args(&verify_args)
             .output()
             .await?;
-        let verify_exit = verify_output.status.code().unwrap_or(1);
+        let verify_code = verify_output.status.code().unwrap_or(1);
         info!(
             bead = %bead,
             spec = %self.label.as_str(),
-            exit_code = verify_exit,
+            exit_code = verify_code,
             "loom loop: per-bead gate — loom gate verify --diff finished",
         );
-        if verify_exit != 0 {
+        if verify_code != 0 {
             let stderr_tail = String::from_utf8_lossy(&verify_output.stderr).to_string();
             let stdout_tail = String::from_utf8_lossy(&verify_output.stdout).to_string();
             let failure = VerifierFailure::new(
                 format!("loom gate verify --diff {diff_range}"),
-                verify_exit,
+                verify_code,
                 format!("{stdout_tail}\n{stderr_tail}"),
             );
             let integration_sha = self.git.integration_commit_sha().await?.to_string();
@@ -895,7 +894,7 @@ where
                     argv: verify_args,
                     scope_flag: "--diff",
                     scope: diff_range.clone(),
-                    exit_code: verify_exit,
+                    exit_code: verify_code,
                     stdout: stdout_tail.clone(),
                     stderr: stderr_tail.clone(),
                     terminal_marker: parse_exit_signal(&stdout_tail)
@@ -909,7 +908,7 @@ where
             )?;
             let gate_log = gate_log_path.to_string_lossy().to_string();
             let detail = format!(
-                "loom gate verify --diff {diff_range} exited {verify_exit}\n\
+                "loom gate verify --diff {diff_range} exited {verify_code}\n\
                  gate log: {gate_log}\nstdout:\n{stdout_tail}\nstderr:\n{stderr_tail}",
             );
             let rolled_back = self.rollback_if_bead_advanced_integration().await?;
@@ -925,7 +924,7 @@ where
                 serde_json::json!({
                     "bead_id": bead.to_string(),
                     "cause": "post-integrate-fail",
-                    "verify_exit": verify_exit,
+                    "verify_code": verify_code,
                     "rolled_back": rolled_back,
                     "gate_log_path": gate_log,
                 }),
@@ -946,6 +945,50 @@ fn gate_log_root(logs_root: Option<&std::path::Path>, workspace: &std::path::Pat
         || workspace.join(".loom/logs/gate"),
         |root| root.join("gate"),
     )
+}
+
+fn append_gate_run_event(path: &std::path::Path, run: &GateRun) -> Result<(), LoopError> {
+    use std::io::Write as _;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let covered_hooks = run.covered_hooks.clone();
+    let phase = match run.phase {
+        loom_gate::GatePhase::Verify => "verify",
+        loom_gate::GatePhase::Review => "review",
+    };
+    let status = match run.status {
+        loom_gate::GateRunStatus::Success => "success",
+        loom_gate::GateRunStatus::Failed => "failed",
+    };
+    let marker = match run.marker.as_ref() {
+        Some(ExitSignal::Complete) => Some("complete".to_string()),
+        Some(ExitSignal::Noop) => Some("noop".to_string()),
+        Some(ExitSignal::Concern { summary }) => Some(format!("concern:{summary}")),
+        Some(_) | None => None,
+    };
+    let event = serde_json::json!({
+        "kind": "driver_event",
+        "driver_kind": "gate_run_end",
+        "payload": {
+            "phase": phase,
+            "push_range": &run.push_range,
+            "tree_oid": &run.tree_oid,
+            "log_path": path.to_string_lossy(),
+            "exit_code": run.exit_code,
+            "status": status,
+            "marker": marker,
+            "covered_hooks": covered_hooks,
+        }
+    });
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    serde_json::to_writer(&mut file, &event).map_err(std::io::Error::other)?;
+    writeln!(&mut file)?;
+    Ok(())
 }
 
 fn write_post_integrate_gate_log(
@@ -1073,47 +1116,6 @@ pub fn format_unknown_profile_error(
         format!("manifest declares: {}", declared.join(", "))
     };
     format!("requested profile:{requested} not declared; {declared_part}")
-}
-
-/// Resolve the spec's open epic via `bd find` and return its
-/// `loom.base_commit` metadata. Used by `exec_review` to scope the
-/// molecule-completion handoff to the molecule's own diff rather than
-/// `--tree`. Delegates metadata resolution to
-/// [`crate::init::resolve_base_commit`] so the run-phase and rebuild-phase
-/// resolutions share parent inheritance + write-back behaviour verbatim.
-async fn fetch_molecule_base_commit<R: CommandRunner>(
-    bd: &BdClient<R>,
-    _workspace: &std::path::Path,
-    label: &SpecLabel,
-) -> Result<String, LoopError> {
-    let mol_id = crate::resolve::resolve_open_epic(bd, label)
-        .await?
-        .ok_or_else(|| LoopError::NoActiveMolecule {
-            label: label.to_string(),
-        })?;
-    let bead_id =
-        BeadId::new(mol_id.as_str()).map_err(loom_driver::bd::BdError::CreateInvalidId)?;
-    let detail = bd.show(&bead_id).await?;
-    crate::init::resolve_base_commit(bd, &detail)
-        .await
-        .map_err(|e| {
-            use crate::init::InitError;
-            match e {
-                InitError::Bd(e) => LoopError::Bd(e),
-                InitError::MoleculeMissingBaseCommit { id } => {
-                    LoopError::MoleculeMissingBaseCommit { id }
-                }
-                InitError::MoleculeMissingBaseCommitNoParentMetadata { id, parent } => {
-                    LoopError::MoleculeMissingBaseCommitNoParentMetadata { id, parent }
-                }
-                other => LoopError::Bug {
-                    context: format!(
-                        "resolve_base_commit emits only Bd / MoleculeMissingBaseCommit / \
-                         MoleculeMissingBaseCommitNoParentMetadata; got {other:?}",
-                    ),
-                },
-            }
-        })
 }
 
 /// Translate a `(SessionResult, Option<ExitSignal>)` pair into an
@@ -1330,13 +1332,6 @@ mod tests {
             ok_stdout(body.as_bytes()), // bd list (resolve_open_epic)
             ok_stdout(body.as_bytes()), // bd show
         ])
-    }
-
-    /// `ScriptedBd` returning an empty list for `resolve_open_epic` —
-    /// the spec has no open epic so the caller surfaces
-    /// [`LoopError::NoActiveMolecule`].
-    fn empty_open_epic_script() -> ScriptedBd {
-        ScriptedBd::new([ok_stdout(b"[]")])
     }
 
     /// FR12 — `loom loop`'s per-bead exit MUST route the agent's marker
@@ -1900,15 +1895,10 @@ mod tests {
             .expect("lock must be reacquirable after exec_review");
     }
 
-    /// FR1: the molecule-completion handoff invokes `loom gate verify
-    /// --diff <molecule.base_commit>..HEAD` THEN `loom gate review --diff
-    /// <molecule.base_commit>..HEAD` — both scoped to the molecule's
-    /// own diff (proportional to the molecule's work, not `--tree`), in
-    /// that order, and both with the spec label threaded through `-s`.
-    /// The stub script records each invocation so the test can assert
-    /// on the exact argv sequence the production controller emits.
+    /// Molecule-completion handoff computes the origin-synchronized push
+    /// range and invokes review without scalar handoff flags.
     #[tokio::test(flavor = "multi_thread")]
-    async fn exec_review_invokes_gate_verify_then_gate_review_with_molecule_diff() {
+    async fn molecule_push_gate_verifies_and_reviews_actual_push_range() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1958,105 +1948,9 @@ mod tests {
         let recorded = std::fs::read_to_string(&argv_log).expect("argv log readable");
         let lines: Vec<&str> = recorded.lines().collect();
         assert_eq!(
-            lines.len(),
-            2,
-            "exec_review must spawn exactly two children (gate verify then gate review): {recorded:?}",
-        );
-        assert_eq!(
-            lines[0], "gate verify --diff deadbeef..HEAD",
-            "first child must be `loom gate verify --diff <base>..HEAD`",
-        );
-        assert_eq!(
-            lines[1], "gate review --diff deadbeef..HEAD --verify-exit 0",
-            "second child must be `loom gate review --diff <base>..HEAD --verify-exit <code>` \
-             (FR9 condition 2: push gate consumes verify exit, not the default None)",
-        );
-    }
-
-    /// FR1: non-zero exit from `loom gate verify` MUST NOT abort the
-    /// handoff — it signals concerns that the outer loop drives toward
-    /// via fix-up beads on the next pass. The production controller
-    /// still spawns `loom gate review --diff <base>..HEAD` after verify
-    /// fails, and `exec_review` returns `Ok` so `run_loop` can re-poll
-    /// `bd ready` rather than tearing down the whole `loom loop`.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn exec_review_continues_to_review_when_verify_exits_nonzero() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let manifest = write_manifest(dir.path());
-        let label = SpecLabel::new("beta");
-
-        // Stub: `gate verify` exits 1 (concerns), every other invocation
-        // exits 0. The first two argv tokens (`gate verify`) select the
-        // branch.
-        let argv_log = dir.path().join("argv.log");
-        let stub = dir.path().join("loom-stub.sh");
-        let stub_body = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {log}\n\
-             case \"$1 $2\" in\n  'gate verify') exit 1 ;;\n  *) exit 0 ;;\nesac\n",
-            log = argv_log.to_string_lossy(),
-        );
-        std::fs::write(&stub, stub_body).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let bd = BdClient::with_runner(molecule_lookup_script(
-            dir.path(),
-            "beta",
-            "lm-mol.7",
-            "cafef00d",
-        ));
-        let git = git_workspace(dir.path());
-        let mut controller = ProductionAgentLoopController::new(
-            bd,
-            label.clone(),
-            stub,
-            dir.path().to_path_buf(),
-            git,
-            manifest,
-            None,
-            ProfileName::new("base"),
-            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
-                (
-                    SessionResult::Complete(SessionOutcome {
-                        exit_code: 0,
-                        cost_usd: None,
-                    }),
-                    Some(ExitSignal::Complete),
-                )
-            },
-        );
-
-        let handoff = controller
-            .exec_review()
-            .await
-            .expect("non-zero verify exit must not produce LoopError");
-
-        let recorded = std::fs::read_to_string(&argv_log).expect("argv log readable");
-        let lines: Vec<&str> = recorded.lines().collect();
-        assert_eq!(
             lines,
-            vec![
-                "gate verify --diff cafef00d..HEAD",
-                "gate review --diff cafef00d..HEAD --verify-exit 1"
-            ],
-            "review must still run even when verify signals concerns — and the \
-             verify exit code rides through to the child's push gate via \
-             `--verify-exit` per FR9 condition 2",
-        );
-
-        // FR9 four-condition AND wiring: the verify exit must ride out
-        // through `HandoffEvidence` so the push-gate verdict can refuse
-        // the push on `Some(n)` with `n != 0`.
-        assert_eq!(
-            handoff.verify_exit,
-            Some(1),
-            "verify child exit code threaded through HandoffEvidence",
-        );
-        assert_eq!(
-            handoff.review_exit,
-            Some(0),
-            "review child exit code threaded through HandoffEvidence",
+            vec!["gate review --diff origin/main..HEAD"],
+            "review must run over the actual origin push range with no scalar handoff flag: {recorded:?}",
         );
     }
 
@@ -2078,13 +1972,8 @@ mod tests {
         let workspace = dir.path().to_path_buf();
         let logs_root = workspace.join(".loom/logs");
 
-        // Stub: `gate verify` is a no-op; `gate review` emits the
-        // agent's terminal marker on stdout and lands a non-empty JSONL
-        // log under `<logs_root>/<label>/review-<utc>.jsonl` keyed to
-        // the parent-pinned `LOOM_REVIEW_PHASE_WHEN_MILLIS`. The stub
-        // mirrors the production child's contract (env var threaded
-        // timestamp + emit-stdout signalling) so the test exercises the
-        // real two-process resolution path.
+        // Stub: `gate review` emits the agent's terminal marker on stdout
+        // and appends to the pinned review JSONL log.
         let argv_log = dir.path().join("argv.log");
         let stub = dir.path().join("loom-stub.sh");
         let stub_body = format!(
@@ -2141,15 +2030,13 @@ mod tests {
             .await
             .expect("exec_review must succeed with populated evidence");
 
-        assert_eq!(
-            handoff.verify_exit,
-            Some(0),
-            "verify exit threaded through HandoffEvidence",
+        assert!(
+            handoff.verified.is_some(),
+            "verified scope must be parsed from gate JSONL evidence",
         );
-        assert_eq!(
-            handoff.review_exit,
-            Some(0),
-            "review exit threaded through HandoffEvidence",
+        assert!(
+            handoff.reviewed.is_some(),
+            "reviewed scope must be parsed from gate JSONL evidence",
         );
         assert_eq!(
             handoff.review_marker,
@@ -2157,9 +2044,9 @@ mod tests {
             "review_marker MUST be parsed from the child's stdout — not left at None",
         );
         let log_path = handoff
-            .review_log_path
-            .as_ref()
-            .expect("review_log_path MUST be populated from the JSONL file the child wrote");
+            .gate_log_paths
+            .first()
+            .expect("gate_log_paths MUST reference the JSONL file the child wrote");
         assert!(
             log_path.starts_with(&logs_root),
             "log path lives under the per-spec logs root: {log_path:?}",
@@ -2170,8 +2057,8 @@ mod tests {
         );
         let body = std::fs::read_to_string(log_path).expect("log readable");
         assert!(
-            body.contains("review-start"),
-            "log file body must be non-empty: {body:?}",
+            body.contains("gate_run_end"),
+            "log file body must carry typed gate events: {body:?}",
         );
     }
 
@@ -2420,254 +2307,6 @@ mod tests {
     /// spec, `exec_review` MUST surface `NoActiveMolecule` rather than
     /// silently falling back to `--tree` — the push-gate scope is
     /// load-bearing and a missing molecule means the run is
-    /// misconfigured, not "scope unknown, push the whole tree".
-    #[tokio::test(flavor = "multi_thread")]
-    async fn exec_review_errors_when_no_active_molecule_for_spec() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let manifest = write_manifest(dir.path());
-        // bd find returns an empty list → no open epic → NoActiveMolecule.
-        let bd = BdClient::with_runner(empty_open_epic_script());
-        let git = git_workspace(dir.path());
-        let mut controller = ProductionAgentLoopController::new(
-            bd,
-            SpecLabel::new("orphan-spec"),
-            PathBuf::from("/nonexistent/loom"),
-            dir.path().to_path_buf(),
-            git,
-            manifest,
-            None,
-            ProfileName::new("base"),
-            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
-                (
-                    SessionResult::Complete(SessionOutcome {
-                        exit_code: 0,
-                        cost_usd: None,
-                    }),
-                    Some(ExitSignal::Complete),
-                )
-            },
-        );
-        let err = controller
-            .exec_review()
-            .await
-            .expect_err("exec_review must error when no active molecule");
-        match err {
-            LoopError::NoActiveMolecule { label } => assert_eq!(label, "orphan-spec"),
-            other => panic!("expected NoActiveMolecule, got {other:?}"),
-        }
-    }
-
-    /// FR1 negative: when `bd find` returns an open epic whose bead
-    /// lacks `loom.base_commit` metadata and no parent to inherit from,
-    /// `exec_review` MUST surface `MoleculeMissingBaseCommit` rather than
-    /// fabricate a diff range. The metadata key is set unconditionally on
-    /// every molecule `loom todo` creates; the absence is a bd corruption
-    /// signal worth surfacing loudly.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn exec_review_errors_when_molecule_missing_base_commit_metadata() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let manifest = write_manifest(dir.path());
-        let body = br#"[{
-            "id": "lm-mol.99",
-            "title": "gamma: pending decomposition",
-            "status": "open",
-            "priority": 2,
-            "issue_type": "epic",
-            "labels": ["spec:gamma"],
-            "metadata": {}
-        }]"#;
-        let bd = BdClient::with_runner(ScriptedBd::new([ok_stdout(body), ok_stdout(body)]));
-        let git = git_workspace(dir.path());
-        let mut controller = ProductionAgentLoopController::new(
-            bd,
-            SpecLabel::new("gamma"),
-            PathBuf::from("/nonexistent/loom"),
-            dir.path().to_path_buf(),
-            git,
-            manifest,
-            None,
-            ProfileName::new("base"),
-            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
-                (
-                    SessionResult::Complete(SessionOutcome {
-                        exit_code: 0,
-                        cost_usd: None,
-                    }),
-                    Some(ExitSignal::Complete),
-                )
-            },
-        );
-        let err = controller
-            .exec_review()
-            .await
-            .expect_err("exec_review must error when molecule lacks base_commit");
-        match err {
-            LoopError::MoleculeMissingBaseCommit { id } => assert_eq!(id, "lm-mol.99"),
-            other => panic!("expected MoleculeMissingBaseCommit, got {other:?}"),
-        }
-    }
-
-    /// An epic returned by `bd find` may lack its own `loom.base_commit`
-    /// metadata if it was created out-of-band. `fetch_molecule_base_commit`
-    /// MUST mirror `init::fetch_active_molecules`'s self-heal: read the
-    /// parent's `loom.base_commit`, persist it on the epic via
-    /// `bd update --set-metadata`, and continue the molecule-completion
-    /// handoff using the inherited value.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn exec_review_inherits_base_commit_from_parent_when_child_lacks_metadata() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let manifest = write_manifest(dir.path());
-        let label = SpecLabel::new("delta");
-
-        let argv_log = dir.path().join("argv.log");
-        let stub = dir.path().join("loom-stub.sh");
-        let stub_body = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {log}\nexit 0\n",
-            log = argv_log.to_string_lossy(),
-        );
-        std::fs::write(&stub, stub_body).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let epic_show = br#"[{
-            "id": "lm-child.7",
-            "title": "delta follow-up",
-            "status": "open",
-            "priority": 2,
-            "issue_type": "epic",
-            "labels": ["spec:delta"],
-            "parent": "lm-epicd",
-            "metadata": {}
-        }]"#;
-        let parent_show = br#"[{
-            "id": "lm-epicd",
-            "title": "delta: pending decomposition",
-            "status": "open",
-            "priority": 2,
-            "issue_type": "epic",
-            "labels": ["spec:delta"],
-            "metadata": {"loom.base_commit": "feed0042"}
-        }]"#;
-        let bd = BdClient::with_runner(ScriptedBd::new([
-            ok_stdout(epic_show),   // bd list (resolve_open_epic)
-            ok_stdout(epic_show),   // bd show (fetch detail)
-            ok_stdout(parent_show), // bd show parent
-            ok_stdout(b""),         // bd update --set-metadata
-        ]));
-        let git = git_workspace(dir.path());
-        let mut controller = ProductionAgentLoopController::new(
-            bd,
-            label,
-            stub,
-            dir.path().to_path_buf(),
-            git,
-            manifest,
-            None,
-            ProfileName::new("base"),
-            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
-                (
-                    SessionResult::Complete(SessionOutcome {
-                        exit_code: 0,
-                        cost_usd: None,
-                    }),
-                    Some(ExitSignal::Complete),
-                )
-            },
-        );
-
-        controller
-            .exec_review()
-            .await
-            .expect("exec_review must succeed when base_commit is inheritable from parent");
-
-        let recorded = std::fs::read_to_string(&argv_log).expect("argv log readable");
-        let lines: Vec<&str> = recorded.lines().collect();
-        assert_eq!(
-            lines.len(),
-            2,
-            "exec_review must still spawn verify + review after inheritance: {recorded:?}",
-        );
-        assert_eq!(
-            lines[0], "gate verify --diff feed0042..HEAD",
-            "verify child must use the inherited base_commit",
-        );
-        assert_eq!(
-            lines[1], "gate review --diff feed0042..HEAD --verify-exit 0",
-            "review child must use the inherited base_commit",
-        );
-    }
-
-    /// When neither the child nor its parent carries `loom.base_commit`,
-    /// `fetch_molecule_base_commit` surfaces the distinct
-    /// `MoleculeMissingBaseCommitNoParentMetadata` variant so the error
-    /// text can name the parent — the operator's first repair hop is to
-    /// fix the epic, not the child.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn exec_review_errors_when_parent_also_lacks_base_commit_metadata() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let manifest = write_manifest(dir.path());
-        let epic_show = br#"[{
-            "id": "lm-child.8",
-            "title": "epsilon follow-up",
-            "status": "open",
-            "priority": 2,
-            "issue_type": "epic",
-            "labels": ["spec:epsilon"],
-            "parent": "lm-epice",
-            "metadata": {}
-        }]"#;
-        let parent_show = br#"[{
-            "id": "lm-epice",
-            "title": "epsilon: pending decomposition",
-            "status": "open",
-            "priority": 2,
-            "issue_type": "epic",
-            "labels": ["spec:epsilon"]
-        }]"#;
-        let bd = BdClient::with_runner(ScriptedBd::new([
-            ok_stdout(epic_show),   // bd list (resolve_open_epic)
-            ok_stdout(epic_show),   // bd show
-            ok_stdout(parent_show), // bd show parent
-        ]));
-        let git = git_workspace(dir.path());
-        let mut controller = ProductionAgentLoopController::new(
-            bd,
-            SpecLabel::new("epsilon"),
-            PathBuf::from("/nonexistent/loom"),
-            dir.path().to_path_buf(),
-            git,
-            manifest,
-            None,
-            ProfileName::new("base"),
-            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
-                (
-                    SessionResult::Complete(SessionOutcome {
-                        exit_code: 0,
-                        cost_usd: None,
-                    }),
-                    Some(ExitSignal::Complete),
-                )
-            },
-        );
-        let err = controller
-            .exec_review()
-            .await
-            .expect_err("exec_review must error when both child and parent lack base_commit");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("bd update lm-child.8 --set-metadata loom.base_commit="),
-            "error must surface the fix command: {msg}",
-        );
-        match err {
-            LoopError::MoleculeMissingBaseCommitNoParentMetadata { id, parent } => {
-                assert_eq!(id, "lm-child.8");
-                assert_eq!(parent, "lm-epice");
-            }
-            other => panic!("expected MoleculeMissingBaseCommitNoParentMetadata, got {other:?}"),
-        }
-    }
-
     /// specs/gate.md § "Persistence boundary: agent narrates, agent persists":
     /// when the bead under dispatch carries a well-formed `## Options — …`
     /// block, the runner's `apply_clarify` only stamps the `loom:clarify`

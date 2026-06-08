@@ -7,12 +7,11 @@ Run criterion-attached judges and the LLM rubric
 Usage: loom gate review [OPTIONS]
 
 Options:
-      --files <PATH>...     Scope to verifiers whose declared inputs intersect this file set
-  -w, --workspace <PATH>    Workspace root. Defaults to the current working directory
-  -A, --agent <BACKEND>     Override the agent backend for this invocation [possible values: claude, pi]
-      --target <TARGET>     Run annotations whose target exactly matches this string
-      --diff <RANGE>        Scope to a git diff range
-      --tree                Scope to every file in the workspace
-  -b, --bead <ID>           Attach review context to an explicit diff scope
-      --verify-exit <CODE>  Exit code of a prior `loom gate verify --diff <range>` run. Threaded from `loom loop`'s molecule-completion handoff so the push gate's four-condition AND can refuse on a non-zero verify exit per FR9 condition 2
-  -h, --help                Print help
+      --files <PATH>...   Scope to verifiers whose declared inputs intersect this file set
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi]
+      --target <TARGET>   Run annotations whose target exactly matches this string
+      --diff <RANGE>      Scope to a git diff range
+      --tree              Scope to every file in the workspace
+  -b, --bead <ID>         Attach review context to an explicit diff scope
+  -h, --help              Print help

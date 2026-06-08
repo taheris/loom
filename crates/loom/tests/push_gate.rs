@@ -280,10 +280,7 @@ fn seed_active_molecule(workspace: &Path, label: &str, mol_id: &str, base_sha: &
 }
 
 /// Drive `loom gate review --diff <range>` against the wired stubs and
-/// return the captured `Output`. `verify_exit` adds `--verify-exit <CODE>`
-/// to the child argv when `Some`, mirroring how `loom loop`'s
-/// molecule-completion handoff threads the verify exit into the push
-/// gate's four-condition AND (FR9 condition 2).
+/// return the captured `Output`.
 fn run_loom_gate_review(
     workspace: &Path,
     bin_dir: &Path,
@@ -291,7 +288,6 @@ fn run_loom_gate_review(
     manifest: &Path,
     agent_mode: &str,
     spec_label: &str,
-    verify_exit: Option<i32>,
 ) -> std::process::Output {
     let db = StateDb::open(workspace.join(".loom/state.db")).expect("open state db");
     let base = db
@@ -317,9 +313,6 @@ fn run_loom_gate_review(
         .arg("review")
         .arg("--diff")
         .arg(diff_range);
-    if let Some(code) = verify_exit {
-        cmd.arg("--verify-exit").arg(code.to_string());
-    }
     cmd.env("PATH", new_path)
         .env("LOOM_WRIX_BIN", mock_agent)
         .env("LOOM_TEST_AGENT_MODE", agent_mode)
@@ -462,7 +455,6 @@ fn push_gate_refuses_on_review_concern_via_live_path() {
         &manifest,
         "concern-marker",
         label,
-        None,
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -553,7 +545,6 @@ fn push_gate_refuses_on_integrity_finding_via_live_path() {
         &manifest,
         "complete-marker",
         label,
-        None,
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -667,7 +658,6 @@ fn push_gate_fires_clean_when_all_conditions_pass_via_live_path() {
         &manifest,
         "complete-marker",
         label,
-        Some(0),
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -747,7 +737,6 @@ fn concern_then_complete_live_path_resolves_to_clean_push() {
         &manifest,
         "concern-then-complete",
         label,
-        Some(0),
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -775,155 +764,5 @@ fn concern_then_complete_live_path_resolves_to_clean_push() {
         !kinds.contains(&"push_gate_refuse"),
         "final-line LOOM_COMPLETE must NOT route to push_gate_refuse. \
          kinds={kinds:?}",
-    );
-}
-
-// -------------------------------------------------------------------
-// Scenario 5 — verifier-failed via the threaded --verify-exit flag
-// -------------------------------------------------------------------
-
-/// FR9 condition 2 production wiring (lm-e6c8r.25): when `loom loop`'s
-/// molecule-completion handoff captures a non-zero `loom gate verify`
-/// exit and threads it into `loom gate review --verify-exit <CODE>`,
-/// `ProductionReviewController::verify_exit()` MUST return that value
-/// and the push gate MUST refuse with cause `verifier-failed` — even
-/// though the reviewer agent emits `LOOM_COMPLETE` and no other input
-/// fails. The earlier wiring discarded the parent's verify exit and
-/// returned the default `None`, collapsing the four-condition AND to a
-/// three-condition one; this test pins the live binary against that
-/// regression.
-#[test]
-fn push_gate_refuses_when_verify_exit_flag_is_nonzero_via_live_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path();
-    let label = "pushverify";
-
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(
-        workspace.join(format!("specs/{label}.md")),
-        "## Success Criteria\n\n",
-    )
-    .unwrap();
-    let base_sha = init_workspace_repo(workspace);
-
-    let state_dir = workspace.join("bd-state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    seed_bead(
-        &state_dir,
-        "lm-mol",
-        "molecule epic",
-        "Epic for push-gate verifier-failed test.\n",
-        &["spec:pushverify"],
-    );
-    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
-
-    let bin_dir = install_path_shims(workspace, false);
-    let manifest = write_minimal_manifest(workspace);
-
-    // `complete-marker` → reviewer would otherwise vote clean. The only
-    // failing input is the threaded verify exit, so push_gate_refuse
-    // tagged `verifier-failed` proves the flag wired through.
-    let output = run_loom_gate_review(
-        workspace,
-        &bin_dir,
-        &state_dir,
-        &manifest,
-        "complete-marker",
-        label,
-        Some(1),
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let log = read_invocation_log(&state_dir);
-    let events = read_driver_events(workspace, label);
-
-    assert!(
-        output.status.success(),
-        "loom gate review must exit 0 on a refused push.\n\
-         stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
-    );
-    assert_eq!(
-        refuse_cause(&events).as_deref(),
-        Some("verifier-failed"),
-        "push_gate_refuse must tag cause=verifier-failed when --verify-exit \
-         delivers a non-zero code. events:\n{events:#?}\n\
-         stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
-    );
-    // No remote is configured; a refused push must NOT shell out to
-    // `git push` (which would surface as `GitPushFailed` in stderr).
-    assert!(
-        !stderr.contains("GitPushFailed"),
-        "push must NOT have been attempted on a verifier-failed verdict. \
-         stderr={stderr}\nbd-shim log:\n{log}",
-    );
-}
-
-/// Companion to the non-zero case: `--verify-exit 0` MUST satisfy FR9
-/// condition 2 and let the push gate reach `push_gate_clean` when every
-/// other input passes. This pins the inverse contract — the
-/// `verifier-failed` branch is reached on non-zero *only*, not on every
-/// `Some(_)` value. (`Some(0)` is the dominant case: `loom loop` threads
-/// `0` on every clean verify pass.)
-#[test]
-fn push_gate_fires_clean_when_verify_exit_flag_is_zero_via_live_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path();
-    let label = "pushverifyzero";
-
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(
-        workspace.join(format!("specs/{label}.md")),
-        "## Success Criteria\n\n",
-    )
-    .unwrap();
-    let base_sha = init_workspace_repo(workspace);
-
-    let state_dir = workspace.join("bd-state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    seed_bead(
-        &state_dir,
-        "lm-mol",
-        "molecule epic",
-        "Epic for push-gate verifier-zero test.\n",
-        &["spec:pushverifyzero"],
-    );
-    seed_active_molecule(workspace, label, "lm-mol", &base_sha);
-
-    let bin_dir = install_path_shims(workspace, true);
-    let manifest = write_minimal_manifest(workspace);
-
-    let output = run_loom_gate_review(
-        workspace,
-        &bin_dir,
-        &state_dir,
-        &manifest,
-        "complete-marker",
-        label,
-        Some(0),
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let log = read_invocation_log(&state_dir);
-    let events = read_driver_events(workspace, label);
-
-    assert!(
-        output.status.success(),
-        "loom gate review must exit 0 on the clean-push branch with \
-         --verify-exit 0.\nstdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
-    );
-    let kinds: Vec<&str> = events
-        .iter()
-        .filter_map(|e| e["driver_kind"].as_str())
-        .collect();
-    assert!(
-        kinds.contains(&"push_gate_clean"),
-        "--verify-exit 0 must satisfy FR9 condition 2; clean push expected. \
-         kinds={kinds:?}\nevents:\n{events:#?}\nstderr={stderr}",
-    );
-    assert!(
-        !kinds.contains(&"push_gate_refuse"),
-        "zero verify exit must NOT trigger push_gate_refuse. kinds={kinds:?}",
     );
 }

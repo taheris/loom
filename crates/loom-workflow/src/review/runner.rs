@@ -121,20 +121,6 @@ pub trait ReviewController: Send {
     ) {
     }
 
-    /// Exit code from the molecule-final `loom gate verify --diff
-    /// <molecule.base_commit>..HEAD` invocation, or `None` when no
-    /// verify run is in scope for this push-gate evaluation. The
-    /// four-condition AND refuses the push when this is `Some(n)` with
-    /// `n != 0`. The default impl returns `None` so test fakes and
-    /// pre-wiring production callers compile; the production controller
-    /// overrides this with the actual verify exit threaded from the
-    /// parent `loom loop`.
-    fn verify_exit(
-        &mut self,
-    ) -> impl std::future::Future<Output = Result<Option<i32>, ReviewError>> + Send {
-        async { Ok(None) }
-    }
-
     /// Integrity-gate findings across the molecule's diff scope. The
     /// four-condition AND refuses the push on any non-empty result. The
     /// default impl returns the empty list so test fakes and pre-wiring
@@ -310,13 +296,11 @@ pub async fn review_loop<C: ReviewController>(
         .map(|b| b.id.clone())
         .collect();
 
-    let verify_exit = controller.verify_exit().await?;
     let integrity_findings = controller.integrity_findings().await?;
     let verdict = decide_verdict(
         &new_ids,
         &blocked_ids,
         &clarify_ids,
-        verify_exit,
         marker.as_ref(),
         &integrity_findings,
         cap,
@@ -423,19 +407,12 @@ async fn auto_close_completed_epics<C: ReviewController>(
 }
 
 /// Pure-ish branch picker: resolves the verdict shape from the snapshot
-/// diff plus the four push-gate inputs (bead labels, verify exit, review
-/// marker, integrity findings) and the persisted iteration counter.
-///
-/// The four-condition AND refuses the push as soon as any one input
-/// fails; the order of checks pins the refusal cause but otherwise has
-/// no behavioural effect — every refusing input yields a `PushBlocked`
-/// verdict tagged with its own [`PushGateRefuseCause`].
-#[expect(clippy::too_many_arguments, reason = "push-gate input surface")]
+/// diff plus bead labels, review marker, integrity findings, and the
+/// persisted iteration counter.
 async fn decide_verdict<C: ReviewController>(
     new_ids: &[BeadId],
     blocked_ids: &[BeadId],
     clarify_ids: &[BeadId],
-    verify_exit: Option<i32>,
     review_marker: Option<&ExitSignal>,
     integrity_findings: &[IntegrityFinding],
     cap: IterationCap,
@@ -446,15 +423,6 @@ async fn decide_verdict<C: ReviewController>(
             cause: PushGateRefuseCause::BeadNotDone,
             blocked_ids: blocked_ids.to_vec(),
             clarify_ids: clarify_ids.to_vec(),
-            integrity_findings: vec![],
-        });
-    }
-
-    if matches!(verify_exit, Some(code) if code != 0) {
-        return Ok(ReviewVerdict::PushBlocked {
-            cause: PushGateRefuseCause::VerifierFailed,
-            blocked_ids: vec![],
-            clarify_ids: vec![],
             integrity_findings: vec![],
         });
     }
@@ -545,7 +513,20 @@ async fn apply_verdict<C: ReviewController>(
             // is the immediate predecessor of `git_push`, with no
             // HEAD-mutating step in between.
             controller.mint_marker().await?;
-            controller.git_push().await?;
+            if let Err(err) = controller.git_push().await {
+                if let ReviewError::GitPushFailed(detail) = &err
+                    && is_non_fast_forward_push(detail)
+                {
+                    controller.emit_driver_event(
+                        DriverKind::PushGateRefuse,
+                        "verdict push-race — origin advanced, re-entering loom loop",
+                        serde_json::json!({ "cause": "push-race" }),
+                    );
+                    controller.exec_run().await?;
+                    return Ok(ReviewResult::AutoIterated { next_iteration: 0 });
+                }
+                return Err(err);
+            }
             controller.beads_push().await?;
             // Auto-close every epic whose direct children are all closed.
             // Runs *after* both pushes succeed so a push failure cannot
@@ -642,6 +623,11 @@ async fn apply_verdict<C: ReviewController>(
     }
 }
 
+fn is_non_fast_forward_push(detail: &str) -> bool {
+    detail.contains("! [rejected]")
+        && (detail.contains("non-fast-forward") || detail.contains("fetch first"))
+}
+
 /// Compact label describing the verdict shape — used as the `verdict`
 /// field on the leading `push_gate_walk` event so a replay can tell at
 /// a glance which branch the gate took.
@@ -679,6 +665,7 @@ mod tests {
         mint_integrity_findings_calls: Vec<Vec<IntegrityFinding>>,
         mint_marker_calls: u32,
         git_push_calls: u32,
+        git_push_error: Option<String>,
         beads_push_calls: u32,
         exec_run_calls: u32,
         /// Ordered log of the push-gate side effects that must stay
@@ -689,7 +676,6 @@ mod tests {
         /// `emit_driver_event` so tests can pin the verdict-gate
         /// emission sequence.
         driver_events: Vec<(String, String, serde_json::Value)>,
-        verify_exit: Option<i32>,
         integrity_findings: Vec<IntegrityFinding>,
         /// Bead store used by `show_bead` / `list_children` to simulate
         /// the epic ancestry walk. Children are derived from each
@@ -709,10 +695,6 @@ mod tests {
                 suppressed_findings: self.suppressed_findings.clone(),
                 ineffective_suppression_matches: self.ineffective_suppression_matches.clone(),
             })
-        }
-
-        async fn verify_exit(&mut self) -> Result<Option<i32>, ReviewError> {
-            Ok(self.verify_exit)
         }
 
         async fn integrity_findings(&mut self) -> Result<Vec<IntegrityFinding>, ReviewError> {
@@ -775,6 +757,9 @@ mod tests {
         async fn git_push(&mut self) -> Result<(), ReviewError> {
             self.git_push_calls += 1;
             self.push_order.push("git_push");
+            if let Some(detail) = self.git_push_error.clone() {
+                return Err(ReviewError::GitPushFailed(detail));
+            }
             Ok(())
         }
 
@@ -880,6 +865,31 @@ mod tests {
             kinds,
             vec!["push_gate_walk", "verdict_gate", "push_gate_clean"],
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn clean_review_reruns_loop_when_origin_push_races() -> Result<(), ReviewError> {
+        let mut c = FakeController {
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
+            post_beads: vec![bead("lm-1", &["spec:harness"])],
+            git_push_error: Some(
+                "! [rejected] main -> main (fetch first)\nerror: failed to push some refs"
+                    .to_string(),
+            ),
+            ..FakeController::default()
+        };
+        let result = review_loop(&mut c, IterationCap::default()).await?;
+        assert_eq!(result, ReviewResult::AutoIterated { next_iteration: 0 });
+        assert_eq!(c.git_push_calls, 1);
+        assert_eq!(c.beads_push_calls, 0);
+        assert_eq!(c.exec_run_calls, 1);
+        let refuse = c
+            .driver_events
+            .iter()
+            .find(|(kind, _, _)| kind == "push_gate_refuse")
+            .expect("push-race refuse event");
+        assert_eq!(refuse.2["cause"].as_str(), Some("push-race"));
         Ok(())
     }
 
@@ -1223,67 +1233,31 @@ mod tests {
         }
     }
 
-    /// FR9 — push-gate verifier branch: a non-zero `loom gate verify`
-    /// exit refuses the push with cause `verifier-failed`, even when
-    /// every bead in the molecule is otherwise done.
-    #[tokio::test]
-    async fn push_gate_refuses_when_verify_exit_is_nonzero() -> Result<(), ReviewError> {
-        let mut c = FakeController {
-            pre_beads: vec![bead("lm-1", &["spec:harness"])],
-            post_beads: vec![bead("lm-1", &["spec:harness"])],
-            verify_exit: Some(1),
-            ..FakeController::default()
-        };
-        let result = review_loop(&mut c, IterationCap::default()).await?;
-        assert!(matches!(result, ReviewResult::PushBlocked { .. }));
-        assert_eq!(c.git_push_calls, 0, "verify failure must refuse push");
-        let refuse = c
-            .driver_events
-            .iter()
-            .find(|(k, _, _)| k == "push_gate_refuse")
-            .expect("refuse event present");
-        assert_eq!(refuse.2["cause"].as_str(), Some("verifier-failed"));
-        Ok(())
-    }
-
-    /// FR9.2 — verify-tier dispatch errors (exit code 2 = unknown verifier,
-    /// command not found) must refuse the push with cause `verifier-failed`,
-    /// i.e. count as fails rather than skips. Exit codes 1 (verifier ran
-    /// and said "no") and 2 (verifier could not run at all) collapse onto
-    /// the same push-gate refusal so a broken verifier never tunnels a
-    /// silent pass through the four-condition AND.
+    /// FR9 — verifier dispatch errors are typed failed gate runs, not skips.
     #[tokio::test]
     async fn push_blocked_on_verify_dispatch_error() -> Result<(), ReviewError> {
-        let mut c = FakeController {
-            pre_beads: vec![bead("lm-1", &["spec:harness"])],
-            post_beads: vec![bead("lm-1", &["spec:harness"])],
-            verify_exit: Some(2),
-            ..FakeController::default()
+        let log = tempfile::NamedTempFile::new()?;
+        let failed = loom_gate::GateRun {
+            phase: loom_gate::GatePhase::Verify,
+            push_range: "origin/main..HEAD".to_string(),
+            tree_oid: "tree-a".to_string(),
+            log_path: log.path().to_path_buf(),
+            exit_code: Some(2),
+            status: loom_gate::GateRunStatus::Failed,
+            marker: None,
+            covered_hooks: vec!["pre-push".to_string()],
         };
-        let result = review_loop(&mut c, IterationCap::default()).await?;
-        assert!(
-            matches!(result, ReviewResult::PushBlocked { .. }),
-            "dispatch error (exit 2) must refuse push, not pass through: {result:?}",
-        );
-        assert_eq!(
-            c.git_push_calls, 0,
-            "dispatch error must NOT push — counts as fail, not skip",
-        );
-        let refuse = c
-            .driver_events
-            .iter()
-            .find(|(k, _, _)| k == "push_gate_refuse")
-            .expect("refuse event present");
-        assert_eq!(
-            refuse.2["cause"].as_str(),
-            Some("verifier-failed"),
-            "dispatch error must route through verifier-failed cause",
-        );
-        assert_eq!(
-            c.apply_integrity_clarify_calls.len(),
-            0,
-            "verify-fail branch must not invoke the integrity-clarify writer",
-        );
+        let evidence = loom_gate::HandoffEvidence {
+            gate_runs: vec![failed],
+            ..loom_gate::HandoffEvidence::default()
+        };
+        match loom_gate::GateSuccess::new(&evidence, 1) {
+            Err(loom_gate::GateFail {
+                reason: loom_gate::GateFailReason::VerifierFailed,
+                ..
+            }) => {}
+            other => panic!("dispatch error must refuse as verifier-failed: {other:?}"),
+        }
         Ok(())
     }
 
@@ -1532,7 +1506,6 @@ mod tests {
                 FakeController {
                     pre_beads: vec![bead("lm-1", &["spec:harness"])],
                     post_beads: vec![bead("lm-1", &["spec:harness"])],
-                    verify_exit: Some(1),
                     ..FakeController::default()
                 },
             ),
@@ -1588,10 +1561,10 @@ mod tests {
         Ok(())
     }
 
-    /// FR9 four-condition AND — every push-gate input must pass for
-    /// `Clean`. Each of the four inputs that fails routes to its own
-    /// `PushBlocked` cause; this test pins the truth table by toggling
-    /// one input at a time and asserting the cause string.
+    /// FR9 typed-evidence AND — every push-gate input must pass for
+    /// `Clean`. Review-runner visible inputs route to their own
+    /// `PushBlocked` cause; typed verifier evidence is covered by
+    /// `push_blocked_on_verify_dispatch_error`.
     #[tokio::test]
     async fn push_gate_evaluates_all_four_conditions() -> Result<(), ReviewError> {
         // Baseline: every input passes → push fires clean.
@@ -1611,15 +1584,6 @@ mod tests {
                 FakeController {
                     pre_beads: vec![bead("lm-1", &["spec:harness"])],
                     post_beads: vec![bead("lm-1", &["spec:harness", "loom:blocked"])],
-                    ..FakeController::default()
-                },
-            ),
-            (
-                "verifier-failed",
-                FakeController {
-                    pre_beads: vec![bead("lm-1", &["spec:harness"])],
-                    post_beads: vec![bead("lm-1", &["spec:harness"])],
-                    verify_exit: Some(2),
                     ..FakeController::default()
                 },
             ),

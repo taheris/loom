@@ -3093,7 +3093,7 @@ Criteria.
       matching tree/config/range fingerprints, and existing gate logs
       containing successful `GateRun` end events; any condition failing
       returns `GateFail` instead
-  [test?](gate_success_constructor_requires_typed_scope_and_coverage_evidence)
+  [test](gate_success_constructor_requires_typed_scope_and_coverage_evidence)
 - Every `loom loop` returning `LoopOutcome { gate: Success(r), .. }`
       references non-empty gate JSONL logs in `r.gate_log_paths`; each
       log contains a `gate_run_start` and matching successful
@@ -3124,7 +3124,7 @@ Criteria.
       pre-push chain for that range, then runs
       `loom gate review --diff <actual-push-range>` only after
       deterministic success
-  [test?](molecule_push_gate_verifies_and_reviews_actual_push_range)
+  [test](molecule_push_gate_verifies_and_reviews_actual_push_range)
 - After each per-bead agent run signals Success and the bead's branch
       is rebased onto the integration branch + ff'd at the loom
       workspace (inside `index.lock`), the loop invokes exactly

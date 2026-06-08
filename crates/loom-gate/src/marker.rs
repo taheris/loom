@@ -542,14 +542,28 @@ mod tests {
     fn good_gate_success() -> (tempfile::NamedTempFile, GateSuccess) {
         use std::io::Write;
         let mut log = tempfile::NamedTempFile::new().expect("tempfile");
-        log.write_all(b"event-1\nLOOM_COMPLETE\n").expect("write");
-        let evidence = crate::gate_outcome::HandoffEvidence {
-            verify_exit: Some(0),
-            review_exit: Some(0),
-            review_marker: Some(loom_protocol::gate::ExitSignal::Complete),
-            review_log_path: Some(log.path().to_path_buf()),
-            suppressed_review_concern: false,
+        let log_path = log.path().to_string_lossy().to_string();
+        let event = |phase: &str, hooks: &[&str]| {
+            serde_json::json!({
+                "kind": "driver_event",
+                "driver_kind": "gate_run_end",
+                "payload": {
+                    "phase": phase,
+                    "push_range": "origin/main..HEAD",
+                    "tree_oid": "tree-a",
+                    "log_path": log_path,
+                    "exit_code": 0,
+                    "status": "success",
+                    "marker": "complete",
+                    "covered_hooks": hooks,
+                }
+            })
+            .to_string()
         };
+        writeln!(log, "{}", event("verify", &["pre-push"])).expect("write");
+        writeln!(log, "{}", event("review", &[])).expect("write");
+        let runs = crate::gate_outcome::parse_gate_runs_from_jsonl(log.path());
+        let evidence = crate::gate_outcome::HandoffEvidence::from_runs(runs);
         let success = GateSuccess::new(&evidence, 1).expect("good evidence mints success");
         (log, success)
     }

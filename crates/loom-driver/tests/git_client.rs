@@ -1504,14 +1504,11 @@ async fn integration_branch_setting_honored_by_loop() -> Result<()> {
     Ok(())
 }
 
-/// Spec contract (`specs/harness.md` § Success Criteria · Bead dispatch):
-/// Origin push of the integration branch retries on non-fast-forward by
-/// fetching `origin/<integration-branch>`, rebasing the loom workspace's
-/// local branch onto it, and re-pushing. After the retry succeeds,
-/// `origin` carries both the cross-spec commit and the loom workspace's
-/// own commit on linear history.
+/// Origin push reports a non-fast-forward race without rebasing under the
+/// already-minted push evidence; the caller reruns the push gate over the
+/// new actual range.
 #[tokio::test]
-async fn origin_push_retries_non_fast_forward() -> Result<()> {
+async fn origin_push_reports_non_fast_forward_without_rebasing() -> Result<()> {
     let repo = init_repo()?;
     let path = repo.path();
     let loom = loom_path(path);
@@ -1541,7 +1538,14 @@ async fn origin_push_retries_non_fast_forward() -> Result<()> {
     git(&loom, &["commit", "-q", "-m", "loom commit"])?;
 
     let client = GitClient::open(path)?;
-    client.push().await?;
+    let err = client
+        .push()
+        .await
+        .expect_err("non-fast-forward must surface");
+    assert!(
+        err.to_string().contains("fetch first") || err.to_string().contains("non-fast-forward"),
+        "error must name the push race: {err:#}",
+    );
 
     let origin_tree = String::from_utf8(
         std::process::Command::new("git")
@@ -1556,21 +1560,8 @@ async fn origin_push_retries_non_fast_forward() -> Result<()> {
         "origin must retain the cross-spec commit's file after retry: {origin_tree}",
     );
     assert!(
-        origin_tree.contains("loom-side.txt"),
-        "origin must carry the loom workspace's commit after retry: {origin_tree}",
-    );
-
-    let merges = String::from_utf8(
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(&loom)
-            .args(["log", "--merges", "--format=%H"])
-            .output()?
-            .stdout,
-    )?;
-    assert!(
-        merges.trim().is_empty(),
-        "non-ff retry must rebase (linear history), not merge — got: {merges:?}",
+        !origin_tree.contains("loom-side.txt"),
+        "stale push evidence must not update origin after a race: {origin_tree}",
     );
 
     Ok(())

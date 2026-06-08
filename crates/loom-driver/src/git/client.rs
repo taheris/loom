@@ -33,12 +33,6 @@ const BRANCH_PREFIX: &str = "loom";
 /// cwd / clone source so bead integration never touches the operator's
 /// working tree.
 const LOOM_WORKSPACE_REL: &str = ".loom/integration";
-/// Number of times [`GitClient::push`] retries an integration-branch push
-/// to `origin` against a non-fast-forward rejection (fetch + rebase +
-/// re-push) before surfacing [`GitError::GitCli`]. Bounded so a wedged
-/// remote does not loop forever; large enough that realistic cross-spec
-/// loom contention resolves within the budget.
-const PUSH_NON_FF_RETRIES: u32 = 5;
 /// Number of times an index-mutating git invocation in the loom workspace
 /// retries against git lock-file contention before surfacing
 /// [`GitError::IndexLocked`]. Cross-spec `loom loop` invocations share one
@@ -62,6 +56,13 @@ const INDEX_LOCK_BACKOFF: Duration = Duration::from_millis(20);
 /// `LoomConfig`; only test fixtures and one-shot CLI utilities take the
 /// default.
 const DEFAULT_INTEGRATION_BRANCH: &str = "main";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActualPushRange {
+    pub range: String,
+    pub tree_oid: GitOid,
+    pub remote_ref: String,
+}
 
 /// Single typed surface for git operations.
 ///
@@ -214,18 +215,12 @@ impl GitClient {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     fn resolve_default_prek_hooks_path(&self) -> Result<PathBuf, GitError> {
         let test_hooks = self.workdir.join(".loom/test-prek-hooks");
         if test_hooks.exists() {
             super::hooks::ensure_prek_hooks_dir(&test_hooks)?;
             return Ok(test_hooks);
         }
-        super::hooks::resolve_prek_hooks_path_for_workspace(&self.workdir)
-    }
-
-    #[cfg(not(any(test, feature = "test-support")))]
-    fn resolve_default_prek_hooks_path(&self) -> Result<PathBuf, GitError> {
         super::hooks::resolve_prek_hooks_path_for_workspace(&self.workdir)
     }
 
@@ -769,47 +764,87 @@ impl GitClient {
     /// because the remote's pre-push hook (or loom's own pre-push hook on
     /// the GitHub publish) runs the workspace's pre-push CI stage.
     pub async fn push(&self) -> Result<(), GitError> {
+        self.push_once().await
+    }
+
+    pub async fn prepare_actual_push_range(&self) -> Result<ActualPushRange, GitError> {
         self.validate_loom_hooks_path_configured().await?;
         let workdir = self.loom_workspace();
         let integration_branch = self.integration_branch.as_str();
         let remote_ref = format!("origin/{integration_branch}");
-        let mut last_err: Option<GitError> = None;
-        for _ in 0..=PUSH_NON_FF_RETRIES {
-            let output = run_git_raw_with_timeout(
-                &workdir,
-                self.clock.as_ref(),
-                self.hook_timeout,
-                ["push", "origin", integration_branch],
-                None,
-            )
-            .await?;
-            if output.status.success() {
-                return Ok(());
-            }
-            let err = cli_error(&output);
-            if !is_non_fast_forward(&output) {
-                return Err(err);
-            }
-            last_err = Some(err);
-            run_git(
-                &workdir,
-                self.clock.as_ref(),
-                ["fetch", "--quiet", "origin", integration_branch],
-                None,
-            )
-            .await?;
-            let rebase_output =
-                run_git_raw(&workdir, self.clock.as_ref(), ["rebase", &remote_ref], None).await?;
-            if !rebase_output.status.success() {
-                let _ =
-                    run_git_raw(&workdir, self.clock.as_ref(), ["rebase", "--abort"], None).await?;
-                return Err(cli_error(&rebase_output));
-            }
+        run_git(
+            &workdir,
+            self.clock.as_ref(),
+            ["fetch", "--quiet", "origin", integration_branch],
+            None,
+        )
+        .await?;
+        let rebase_output =
+            run_git_index_mut(&workdir, self.clock.as_ref(), ["rebase", &remote_ref], None).await?;
+        if !rebase_output.status.success() {
+            let _ = run_git_raw(&workdir, self.clock.as_ref(), ["rebase", "--abort"], None).await?;
+            return Err(cli_error(&rebase_output));
         }
-        Err(last_err.unwrap_or_else(|| GitError::GitCli {
-            status: -1,
-            stderr: "push retry budget exhausted with no captured error".to_string(),
-        }))
+        let tree_oid = self.rev_parse_in_loom("HEAD^{tree}").await?;
+        Ok(ActualPushRange {
+            range: format!("{remote_ref}..HEAD"),
+            tree_oid,
+            remote_ref,
+        })
+    }
+
+    pub async fn run_pre_push_chain(&self) -> Result<(), GitError> {
+        self.validate_loom_hooks_path_configured().await?;
+        let workdir = self.loom_workspace();
+        let output = run_git_raw_with_timeout(
+            &workdir,
+            self.clock.as_ref(),
+            self.hook_timeout,
+            [
+                "push",
+                "--dry-run",
+                "origin",
+                self.integration_branch.as_str(),
+            ],
+            None,
+        )
+        .await?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(cli_error(&output))
+    }
+
+    pub async fn push_once(&self) -> Result<(), GitError> {
+        self.validate_loom_hooks_path_configured().await?;
+        let workdir = self.loom_workspace();
+        let output = run_git_raw_with_timeout(
+            &workdir,
+            self.clock.as_ref(),
+            self.hook_timeout,
+            ["push", "origin", self.integration_branch.as_str()],
+            None,
+        )
+        .await?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(cli_error(&output))
+    }
+
+    async fn rev_parse_in_loom(&self, rev: &str) -> Result<GitOid, GitError> {
+        let output = run_git_raw(
+            &self.loom_workspace(),
+            self.clock.as_ref(),
+            ["rev-parse", "--verify", rev],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(cli_error(&output));
+        }
+        let raw = String::from_utf8(output.stdout)?;
+        Ok(GitOid::new(raw.trim())?)
     }
 
     /// `git rev-parse --verify <rev>^{commit}` — true iff `rev` resolves to
@@ -1885,21 +1920,6 @@ where
 /// hook-driven push failures bottom out at the one-line git wrapper and
 /// the actual cause is lost. Trailing whitespace is stripped per-line;
 /// fully-empty leading/trailing lines are dropped.
-/// Classify a failed `git push` output as a non-fast-forward rejection.
-/// Git emits `! [rejected]` and either `non-fast-forward` or
-/// `fetch first` in `stderr` for that branch; other rejections (deny
-/// of force, pre-push hook failure, network) do not carry those
-/// markers, so the [`GitClient::push`] retry loop is bounded to the
-/// rejection the spec calls out.
-fn is_non_fast_forward(output: &std::process::Output) -> bool {
-    if output.status.success() {
-        return false;
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    stderr.contains("! [rejected]")
-        && (stderr.contains("non-fast-forward") || stderr.contains("fetch first"))
-}
-
 /// Classify a failed git invocation as loom-workspace lock contention.
 /// When a concurrent process holds `index.lock`, git refuses to start the
 /// index-mutating command and writes `fatal: Unable to create

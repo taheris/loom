@@ -16,9 +16,9 @@ mod hooks;
 mod signing;
 
 pub use client::{
-    CreatedWorktree, FastForwardOutcome, GitClient, MergeResult, RebaseOutcome, SignatureCheck,
-    StatusEntry, StatusKind, WorktreeInfo, bare_origin_path, clone_loom_workspace, commit_all_in,
-    fast_forward_loom_workspace_to_origin, head_tree_oid_sync, init_test_repo,
+    ActualPushRange, CreatedWorktree, FastForwardOutcome, GitClient, MergeResult, RebaseOutcome,
+    SignatureCheck, StatusEntry, StatusKind, WorktreeInfo, bare_origin_path, clone_loom_workspace,
+    commit_all_in, fast_forward_loom_workspace_to_origin, head_tree_oid_sync, init_test_repo,
     init_test_repo_with_integration, init_test_repo_with_integration_branch, read_origin_url,
     status_porcelain_sync, sync_head_commit_sha, sync_rev_parse,
 };
