@@ -207,6 +207,40 @@ fn gate_verify_files_fires_unneeded_pending_marker_for_plain_test_leaf_when_spec
 }
 
 #[test]
+fn gate_verify_tree_ignores_loom_verify_tiers_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let specs_dir = workspace.join("specs");
+    std::fs::create_dir_all(&specs_dir).unwrap();
+    std::fs::write(
+        specs_dir.join("env_ignored.md"),
+        "## Success Criteria\n\n- system still runs [system](false)\n",
+    )
+    .unwrap();
+
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let output = Command::new(loom_bin)
+        .arg("--workspace")
+        .arg(workspace)
+        .args(["gate", "verify", "--tree"])
+        .env("LOOM_VERIFY_TIERS", "check")
+        .env_remove("LOOM_INSIDE")
+        .env("PATH", pinned_path())
+        .output()
+        .expect("spawn loom");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "tree verify must run [system] from scope, ignoring LOOM_VERIFY_TIERS. stderr={stderr}",
+    );
+    assert!(
+        stderr.contains("loom gate [system] FAIL: false"),
+        "stderr must show system tier ran despite env override: {stderr}",
+    );
+}
+
+#[test]
 fn gate_check_is_silent_when_every_annotation_resolves() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();

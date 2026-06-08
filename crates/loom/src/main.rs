@@ -20,7 +20,7 @@ use loom_driver::bd::{BdClient, ListOpts, UpdateOpts};
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{AgentObserversConfig, LoomConfig, Phase};
 use loom_driver::git::GitClient;
-use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
+use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockManager;
 use loom_driver::logging::{LogSink, sweep_retention_at};
 use loom_driver::profile_manifest::ProfileImageManifest;
@@ -87,31 +87,23 @@ impl From<AgentBackendArg> for AgentKind {
 
 #[derive(Debug, Subcommand)]
 enum GateSubcommand {
-    /// Read the cached results from the last `verify` / `review` /
-    /// `audit` run and print a fast status report — no verifiers run.
+    /// Read cached gate results for an explicit scope.
     Status(GateScopeArgs),
-    /// Run every deterministic verifier followed by the LLM rubric
-    /// (`verify` then `review`). The full PR-gate path.
+    /// Run deterministic verification followed by LLM review.
     Audit(GateScopeArgs),
-    /// Run every `[check]` / `[test]` / `[system]` verifier — cheap
-    /// relative to review, expensive relative to status.
+    /// Run scope-derived deterministic verifier lanes.
     Verify(GateScopeArgs),
-    /// Run only `[check]`-tier verifiers (static analysis). Fastest tier.
+    /// Run only `[check]`-tier annotations.
     Check(GateScopeArgs),
-    /// Run only `[test]`-tier verifiers, batched into one runner
-    /// subprocess.
+    /// Run only `[test]`-tier annotations.
     Test(GateScopeArgs),
-    /// Run only `[system]`-tier verifiers (containers, packaging,
-    /// end-to-end). Slow.
+    /// Run only `[system]`-tier annotations.
     System(GateScopeArgs),
-    /// Run the LLM rubric — criterion-attached judges plus the rubric
-    /// walk over the diff. Expensive.
+    /// Run criterion-attached judges and the LLM rubric.
     Review(GateReviewArgs),
-    /// Run only criterion-attached `[judge]` verifiers — skips the
-    /// rubric walk.
+    /// Run only criterion-attached `[judge]` verifiers.
     Judge(GateScopeArgs),
-    /// Run only the rubric walk over the diff — skips
-    /// criterion-attached judges.
+    /// Run only the rubric walk.
     Rubric(GateScopeArgs),
     /// Materialize gate findings into remediation work.
     Mint(GateMintArgs),
@@ -136,9 +128,6 @@ struct GateMintArgs {
     /// Run the standing safety-net sweep across the workspace.
     #[arg(long)]
     tree: bool,
-    /// Filter tree-scope minting to one spec's findings.
-    #[arg(long, short = 's', value_name = "LABEL")]
-    spec: Option<String>,
     /// Preview proposed mint writes without changing bd state.
     #[arg(long)]
     dry_run: bool,
@@ -153,6 +142,9 @@ struct GateMintArgs {
 struct GateReviewArgs {
     #[command(flatten)]
     scope: GateScopeArgs,
+    /// Attach review context to an explicit diff scope.
+    #[arg(long, short = 'b', value_name = "ID")]
+    bead: Option<String>,
     /// Exit code of a prior `loom gate verify --diff <range>` run.
     /// Threaded from `loom loop`'s molecule-completion handoff so the
     /// push gate's four-condition AND can refuse on a non-zero verify
@@ -164,7 +156,7 @@ struct GateReviewArgs {
 #[derive(Debug, clap::Args)]
 #[command(group(
     ArgGroup::new("gate_scope")
-        .args(["files", "bead", "diff", "tree"])
+        .args(["files", "diff", "tree", "target"])
         .multiple(false)
         .required(false),
 ))]
@@ -172,22 +164,13 @@ struct GateScopeArgs {
     /// Scope to verifiers whose declared inputs intersect this file set.
     #[arg(long, value_name = "PATH", value_delimiter = ',', num_args = 1..)]
     files: Vec<PathBuf>,
-    /// Filter to one spec's criteria. Defaults to `current_spec` when
-    /// applicable to the subcommand.
-    #[arg(long, short = 's', value_name = "LABEL")]
-    spec: Option<String>,
-    /// Run one specific verifier by its annotation target (e.g. a
-    /// command string for `[check]` / `[system]`, a test path for
-    /// `[test]`, a rubric path for `[judge]`).
-    selector: Option<String>,
-    /// Scope to one bead's success-criteria inputs and the bead's own diff.
-    #[arg(long, short = 'b', value_name = "ID")]
-    bead: Option<String>,
-    /// Scope to a git diff range. Default when no scope flag is set:
-    /// `<molecule.base_commit>..HEAD` for the active molecule, else `HEAD`.
+    /// Run annotations whose target exactly matches this string.
+    #[arg(long, value_name = "TARGET")]
+    target: Option<String>,
+    /// Scope to a git diff range.
     #[arg(long, value_name = "RANGE")]
     diff: Option<String>,
-    /// Scope to every file in the workspace (nightly safety net).
+    /// Scope to every file in the workspace.
     #[arg(long)]
     tree: bool,
 }
@@ -838,48 +821,179 @@ fn run_gate(
                 }
             }
         }
-        Some(GateSubcommand::Status(_args)) => run_gate_status(workspace),
+        Some(GateSubcommand::Status(mut args)) => {
+            if !has_scope(&args) {
+                return print_gate_subcommand_help("status");
+            }
+            validate_status_scope(&args)?;
+            resolve_gate_scope(workspace, &mut args)?;
+            run_gate_status(workspace)
+        }
         Some(GateSubcommand::Verify(mut args)) => {
+            if !has_scope(&args) {
+                return print_gate_subcommand_help("verify");
+            }
             resolve_gate_scope(workspace, &mut args)?;
             run_gate_verify(workspace, &args)
         }
         Some(GateSubcommand::Check(mut args)) => {
+            if !has_scope(&args) {
+                return print_gate_subcommand_help("check");
+            }
             resolve_gate_scope(workspace, &mut args)?;
+            validate_target_for_tier(workspace, &args, Tier::Check)?;
             run_gate_single_tier(workspace, &args, Tier::Check)
         }
         Some(GateSubcommand::Test(mut args)) => {
+            if !has_scope(&args) {
+                return print_gate_subcommand_help("test");
+            }
             resolve_gate_scope(workspace, &mut args)?;
+            validate_target_for_tier(workspace, &args, Tier::Test)?;
             run_gate_single_tier(workspace, &args, Tier::Test)
         }
         Some(GateSubcommand::System(mut args)) => {
+            if !has_scope(&args) {
+                return print_gate_subcommand_help("system");
+            }
             resolve_gate_scope(workspace, &mut args)?;
+            validate_target_for_tier(workspace, &args, Tier::System)?;
             run_gate_single_tier(workspace, &args, Tier::System)
         }
         Some(GateSubcommand::Audit(mut args)) => {
+            if !has_scope(&args) {
+                return print_gate_subcommand_help("audit");
+            }
+            validate_diff_or_tree_scope(&args, "audit")?;
             resolve_gate_scope(workspace, &mut args)?;
             run_gate_audit(workspace, args, agent_override)
         }
         Some(GateSubcommand::Review(mut args)) => {
+            if !has_scope(&args.scope) {
+                return print_gate_subcommand_help("review");
+            }
+            validate_review_scope(&args.scope, args.bead.as_deref())?;
             resolve_gate_scope(workspace, &mut args.scope)?;
             run_gate_review(
                 workspace,
                 args.scope,
+                args.bead,
                 args.verify_exit,
                 agent_override,
                 ReviewLane::Both,
             )
         }
         Some(GateSubcommand::Judge(mut args)) => {
+            if !has_scope(&args) {
+                return print_gate_subcommand_help("judge");
+            }
             resolve_gate_scope(workspace, &mut args)?;
-            run_gate_review(workspace, args, None, agent_override, ReviewLane::Judge)
+            validate_target_for_tier(workspace, &args, Tier::Judge)?;
+            run_gate_review(
+                workspace,
+                args,
+                None,
+                None,
+                agent_override,
+                ReviewLane::Judge,
+            )
         }
         Some(GateSubcommand::Rubric(mut args)) => {
+            if !has_scope(&args) {
+                return print_gate_subcommand_help("rubric");
+            }
+            validate_diff_or_tree_scope(&args, "rubric")?;
             resolve_gate_scope(workspace, &mut args)?;
-            run_gate_review(workspace, args, None, agent_override, ReviewLane::Rubric)
+            run_gate_review(
+                workspace,
+                args,
+                None,
+                None,
+                agent_override,
+                ReviewLane::Rubric,
+            )
         }
-        Some(GateSubcommand::Mint(args)) => run_gate_mint(workspace, args, agent_override),
+        Some(GateSubcommand::Mint(args)) => {
+            if !args.tree && args.molecule.is_none() {
+                return print_gate_subcommand_help("mint");
+            }
+            run_gate_mint(workspace, args, agent_override)
+        }
         Some(GateSubcommand::VerifyMarker) => run_gate_verify_marker(workspace),
     }
+}
+
+fn print_gate_subcommand_help(name: &str) -> anyhow::Result<()> {
+    match Cli::try_parse_from(["loom", "gate", name, "--help"]) {
+        Ok(_) => Err(anyhow::anyhow!(
+            "clap returned Ok for `--help`; expected DisplayHelp error",
+        )),
+        Err(err) => {
+            err.print()?;
+            Ok(())
+        }
+    }
+}
+
+fn has_scope(args: &GateScopeArgs) -> bool {
+    !args.files.is_empty() || args.diff.is_some() || args.tree || args.target.is_some()
+}
+
+fn validate_status_scope(args: &GateScopeArgs) -> anyhow::Result<()> {
+    if args.target.is_some() {
+        anyhow::bail!("loom gate status does not accept --target");
+    }
+    Ok(())
+}
+
+fn validate_diff_or_tree_scope(args: &GateScopeArgs, subcommand: &str) -> anyhow::Result<()> {
+    if args.target.is_some() || !args.files.is_empty() {
+        anyhow::bail!("loom gate {subcommand} requires --diff <range> or --tree");
+    }
+    if args.diff.is_none() && !args.tree {
+        anyhow::bail!("loom gate {subcommand} requires --diff <range> or --tree");
+    }
+    Ok(())
+}
+
+fn validate_review_scope(args: &GateScopeArgs, bead: Option<&str>) -> anyhow::Result<()> {
+    if bead.is_some() && args.diff.is_none() {
+        anyhow::bail!("loom gate review --bead requires --diff <range>");
+    }
+    if args.target.is_some() || !args.files.is_empty() {
+        anyhow::bail!("loom gate review requires --diff <range> or --tree");
+    }
+    if args.diff.is_none() && !args.tree {
+        anyhow::bail!("loom gate review requires --diff <range> or --tree");
+    }
+    Ok(())
+}
+
+fn validate_target_for_tier(
+    workspace: &Path,
+    args: &GateScopeArgs,
+    tier: Tier,
+) -> anyhow::Result<()> {
+    let Some(target) = args.target.as_deref() else {
+        return Ok(());
+    };
+    let matches = target_matches(workspace, target)?;
+    if !matches.contains(&tier) {
+        anyhow::bail!(
+            "no [{tier}] annotation target exactly matched `{target}`; run `loom spec <label> --targets` to list exact targets",
+        );
+    }
+    Ok(())
+}
+
+fn target_matches(workspace: &Path, target: &str) -> anyhow::Result<Vec<Tier>> {
+    let parsed = loom_gate::annotation::parse(&workspace.join("specs"))?;
+    Ok(parsed
+        .annotations
+        .into_iter()
+        .filter(|ann| ann.target == target)
+        .map(|ann| ann.tier)
+        .collect())
 }
 
 fn run_gate_verify_marker(workspace: &Path) -> anyhow::Result<()> {
@@ -887,33 +1001,6 @@ fn run_gate_verify_marker(workspace: &Path) -> anyhow::Result<()> {
         Ok(_) => Ok(()),
         Err(err) => Err(anyhow::anyhow!("{err}")),
     }
-}
-
-/// Resolve the default scope for bare `loom gate <sub>` invocations per
-/// `specs/gate.md` § *Default for bare invocation*. When the user
-/// supplied none of `--files` / `--bead` / `--diff` / `--tree`, expand
-/// to `--diff <molecule.base_commit>..HEAD` for the active molecule
-/// bonded to `current_spec`, else `--diff HEAD`. Failure modes
-/// (missing state db, missing molecule, `bd` subprocess error) degrade
-/// to `HEAD` with a single-line warning so a bare gate invocation
-/// remains usable on a fresh workspace.
-fn apply_default_scope(workspace: &Path, args: &mut GateScopeArgs) {
-    if !args.files.is_empty() || args.bead.is_some() || args.diff.is_some() || args.tree {
-        return;
-    }
-    let base = match active_molecule_base_commit(workspace) {
-        Ok(value) => value,
-        Err(err) => {
-            eprintln!(
-                "loom gate: could not resolve active molecule ({err:#}); defaulting to --diff HEAD",
-            );
-            None
-        }
-    };
-    args.diff = Some(match base {
-        Some(commit) => format!("{commit}..HEAD"),
-        None => "HEAD".to_owned(),
-    });
 }
 
 /// Convert `args.diff` into a populated `args.files` via
@@ -960,16 +1047,13 @@ fn expand_diff_to_files(workspace: &Path, args: &mut GateScopeArgs) -> anyhow::R
     Ok(())
 }
 
-/// `apply_default_scope` then `expand_diff_to_files` in one call.
-/// Every gate subcommand goes through this pair, so the dispatcher
-/// downstream sees a fully-resolved scope.
+/// Expand a diff scope into files and normalise file paths.
 ///
-/// After both steps, `args.files` is normalised against `workspace`
+/// After expansion, `args.files` is normalised against `workspace`
 /// (relative paths become absolute). Downstream filters accept absolute
 /// scope files for both spec-section auto-includes and repo-relative
 /// verifier globs, matching `--diff` output and pre-commit payloads.
 fn resolve_gate_scope(workspace: &Path, args: &mut GateScopeArgs) -> anyhow::Result<()> {
-    apply_default_scope(workspace, args);
     expand_diff_to_files(workspace, args)?;
     for path in &mut args.files {
         if path.is_relative() {
@@ -990,47 +1074,17 @@ fn resolve_gate_scope(workspace: &Path, args: &mut GateScopeArgs) -> anyhow::Res
 /// contract is that every finite scope flag defines an input set and
 /// verifiers run iff their declared inputs intersect.
 fn scope_is_finite(args: &GateScopeArgs) -> bool {
-    !args.files.is_empty() || args.diff.is_some() || args.bead.is_some()
+    !args.files.is_empty() || args.diff.is_some()
 }
 
 fn scope_allows_missing_binary_skip(args: &GateScopeArgs) -> bool {
-    !args.files.is_empty() && args.diff.is_none() && args.bead.is_none() && !args.tree
-}
-
-/// Look up `loom.base_commit` for the open epic of `current_spec` via
-/// `bd find --type=epic --label=spec:<X> --status=open`. Returns
-/// `Ok(None)` for the unconfigured cases (no state db, no current_spec,
-/// no open epic, missing metadata key) — those are expected on a fresh
-/// workspace, not errors. Subprocess and parse failures propagate.
-fn active_molecule_base_commit(workspace: &Path) -> anyhow::Result<Option<String>> {
-    let db_path = workspace.join(".loom/state.db");
-    if !db_path.exists() {
-        return Ok(None);
-    }
-    let db = StateDb::open(db_path)?;
-    let Some(label) = db.current_spec()? else {
-        return Ok(None);
-    };
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async move {
-        let bd = BdClient::new();
-        let Some(epic) = loom_workflow::resolve::resolve_open_epic(&bd, &label).await? else {
-            return Ok(None);
-        };
-        let bead_id = BeadId::new(epic.as_str())?;
-        let detail = bd.show(&bead_id).await?;
-        Ok(detail
-            .metadata
-            .get("loom.base_commit")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned))
-    })
+    !args.files.is_empty() && args.diff.is_none() && !args.tree
 }
 
 fn gate_dispatch_options(args: &GateScopeArgs) -> DispatchOptions {
     DispatchOptions {
         files: args.files.clone(),
-        spec: args.spec.clone(),
+        spec: None,
     }
 }
 
@@ -1074,14 +1128,10 @@ fn filter_annotations(
         .iter()
         .filter(|a| a.tier == tier)
         .filter(|a| {
-            args.spec.as_deref().is_none_or(|label| {
-                a.source_spec
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|s| s == label)
-            })
+            args.target
+                .as_deref()
+                .is_none_or(|target| a.target == target)
         })
-        .filter(|a| args.selector.as_deref().is_none_or(|sel| a.target == sel))
         .filter(|a| !is_allowlisted_check_annotation(a))
         .cloned()
         .collect()
@@ -1187,8 +1237,12 @@ fn print_gate_status(report: &loom_gate::Report) {
 }
 
 fn run_gate_verify(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<()> {
-    let mut combined: i32 = 0;
-    for tier in verify_tiers_for_args(args) {
+    if nested_diff_gate_skip(args) {
+        eprintln!("loom gate verify --files: skipped under parent --diff gate");
+        return Ok(());
+    }
+    let mut combined = run_project_hook_lane(workspace, args)?;
+    for tier in verify_tiers_for_args(workspace, args)? {
         eprintln!("--- loom gate verify [{tier}] ---");
         match dispatch_tier(workspace, args, tier) {
             Ok(0) => {}
@@ -1205,43 +1259,79 @@ fn run_gate_verify(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Tier loop for `loom gate verify`. An explicit `--files` invocation
-/// is the pre-commit-stage entry whose spec contract is `integrity
-/// gate + [check]-tier verifiers whose declared inputs intersect
-/// staged files` (per `specs/pre-commit.md` § Stage composition);
-/// skipping `[test]` and `[system]` keeps the hook on its ~1s
-/// wall-time target and avoids spawning slow input-resolution probes
-/// (e.g. `nix --print-inputs ...`) for tiers that don't apply. Other
-/// scopes (`--diff` / `--bead` / `--tree` / bare) honour
-/// `LOOM_VERIFY_TIERS` (the Nix `tests` derivation sets this to skip
-/// `[system]` inside the build sandbox). Explicit-`--files`
-/// detection requires `args.diff` to be unset: post-
-/// `resolve_gate_scope`, `--diff` invocations also populate
-/// `args.files` (with the diff's file list), so `args.diff.is_none()`
-/// is the disambiguator.
-fn verify_tiers_for_args(args: &GateScopeArgs) -> Vec<Tier> {
-    if !args.files.is_empty() && args.diff.is_none() {
-        return vec![Tier::Check];
-    }
-    verify_tiers_from_env()
-}
-
-fn verify_tiers_from_env() -> Vec<Tier> {
-    parse_verify_tiers(std::env::var("LOOM_VERIFY_TIERS").ok().as_deref())
-}
-
-fn parse_verify_tiers(raw: Option<&str>) -> Vec<Tier> {
-    let default = || vec![Tier::Check, Tier::Test, Tier::System];
-    match raw {
-        Some(s) if !s.trim().is_empty() => {
-            let parsed: Vec<Tier> = s
-                .split(',')
-                .filter_map(|t| Tier::from_wire(t.trim()))
-                .collect();
-            if parsed.is_empty() { default() } else { parsed }
+fn verify_tiers_for_args(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<Vec<Tier>> {
+    if let Some(target) = args.target.as_deref() {
+        let matches = target_matches(workspace, target)?;
+        if matches.is_empty() {
+            anyhow::bail!(
+                "no annotation target exactly matched `{target}`; run `loom spec <label> --targets` to list exact targets",
+            );
         }
-        _ => default(),
+        let first = matches[0];
+        if matches.iter().any(|tier| *tier != first) {
+            anyhow::bail!(
+                "target `{target}` matches annotations in multiple tiers; run `loom gate <check|test|system|judge> --target {target:?}`",
+            );
+        }
+        return Ok(vec![first]);
     }
+    if args.tree {
+        return Ok(vec![Tier::Check, Tier::Test, Tier::System]);
+    }
+    Ok(vec![Tier::Check, Tier::Test])
+}
+
+fn nested_diff_gate_skip(args: &GateScopeArgs) -> bool {
+    std::env::var_os("LOOM_PARENT_DIFF_GATE").is_some()
+        && !args.files.is_empty()
+        && args.diff.is_none()
+        && args.target.is_none()
+        && !args.tree
+}
+
+fn run_project_hook_lane(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<i32> {
+    let Some(range) = args.diff.as_deref() else {
+        return Ok(0);
+    };
+    if args.target.is_some() {
+        return Ok(0);
+    }
+    let (from_ref, to_ref) = concrete_diff_refs(workspace, range)?;
+    let status = std::process::Command::new("prek")
+        .current_dir(workspace)
+        .env("LOOM_PARENT_DIFF_GATE", "1")
+        .args([
+            "run",
+            "--hook-stage",
+            "pre-commit",
+            "--from-ref",
+            &from_ref,
+            "--to-ref",
+            &to_ref,
+        ])
+        .status()
+        .with_context(|| "run prek pre-commit lane for loom gate verify --diff")?;
+    Ok(status.code().unwrap_or(1))
+}
+
+fn concrete_diff_refs(workspace: &Path, range: &str) -> anyhow::Result<(String, String)> {
+    let (base, head) = if let Some((base, head)) = range.split_once("...") {
+        (base, if head.is_empty() { "HEAD" } else { head })
+    } else if let Some((base, head)) = range.split_once("..") {
+        (base, if head.is_empty() { "HEAD" } else { head })
+    } else {
+        (range, "HEAD")
+    };
+    Ok((
+        git_rev_parse(workspace, base)?,
+        git_rev_parse(workspace, head)?,
+    ))
+}
+
+fn git_rev_parse(workspace: &Path, rev: &str) -> anyhow::Result<String> {
+    Ok(loom_driver::git::sync_rev_parse(workspace, rev)
+        .with_context(|| format!("resolve git ref `{rev}`"))?
+        .to_string())
 }
 
 fn run_gate_single_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::Result<()> {
@@ -1346,7 +1436,7 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
     }
 
     let mut combined: i32 = 0;
-    if tier == Tier::Check {
+    if tier == Tier::Check && args.target.is_none() {
         combined = combined.max(run_integrity_gate(workspace, args)?);
     }
     if selected.is_empty() {
@@ -1426,10 +1516,10 @@ fn partition_pending_for_forward_resolution(
 /// Run the annotation integrity gate. The gate is itself a `[check]`-tier
 /// verifier per `specs/gate.md` § Integrity gate — its findings
 /// surface alongside every `loom gate check` (and therefore every `loom
-/// gate verify`) run. Honours the `--spec <label>` filter; when
-/// `--files` is non-empty (e.g. the pre-commit hook), annotations are
-/// further narrowed to those whose declared inputs intersect the file
-/// set per `specs/pre-commit.md`; only that explicit `--files`
+/// gate verify`) run. When `--files` is non-empty (e.g. the
+/// pre-commit hook), annotations are further narrowed to those whose
+/// declared inputs intersect the file set per `specs/pre-commit.md`;
+/// only that explicit `--files`
 /// feedback path silently skips bare-binary-missing annotations so the
 /// bead-container's commit flow is not broken by absent tooling.
 ///
@@ -1445,18 +1535,7 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
         return Ok(0);
     }
     let parsed = loom_gate::annotation::parse(&specs_dir)?;
-    let mut annotations: Vec<loom_gate::Annotation> = parsed
-        .annotations
-        .into_iter()
-        .filter(|a| {
-            args.spec.as_deref().is_none_or(|label| {
-                a.source_spec
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|s| s == label)
-            })
-        })
-        .collect();
+    let mut annotations: Vec<loom_gate::Annotation> = parsed.annotations;
     if annotations.is_empty() {
         return Ok(0);
     }
@@ -1479,7 +1558,7 @@ fn run_integrity_gate(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<
     let (test_resolver, stub_scanner) = loom_gate::integrity::scan_workspace_pair(workspace)?;
     let options = DispatchOptions {
         files: args.files.clone(),
-        spec: args.spec.clone(),
+        spec: None,
     };
     let pending_executor = DispatchPendingExecutor::new(&specs, options, workspace, tier_cwds);
     let findings = loom_gate::integrity::check(
@@ -1736,13 +1815,12 @@ fn run_gate_mint(
             })?
         }
         ResolvedMintScope::Tree => {
-            let spec_filter = args.spec.as_deref().map(SpecLabel::new);
             let manifest = Arc::new(ProfileImageManifest::from_env()?);
-            let labels = resolve_tree_mint_labels(workspace, args.spec.as_deref())?;
+            let labels = resolve_tree_mint_labels(workspace, None)?;
             let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
             let opts = loom_workflow::mint::MintOptions {
                 dry_run: args.dry_run,
-                spec_filter,
+                spec_filter: None,
                 suppressions: config.suppress.clone(),
                 suppress_closed_same_molecule: true,
                 report_stale: true,
@@ -2029,31 +2107,16 @@ enum ResolvedMintScope {
     Molecule(loom_driver::identifier::MoleculeId),
 }
 
-fn resolve_mint_scope(workspace: &Path, args: &GateMintArgs) -> anyhow::Result<ResolvedMintScope> {
+fn resolve_mint_scope(_workspace: &Path, args: &GateMintArgs) -> anyhow::Result<ResolvedMintScope> {
     if args.tree {
         return Ok(ResolvedMintScope::Tree);
     }
     if let Some(molecule) = &args.molecule {
         return Ok(ResolvedMintScope::Molecule(molecule.parse()?));
     }
-    let Some(molecule) = active_molecule_id(workspace)? else {
-        return Err(anyhow::anyhow!(
-            "loom gate mint requires --tree or -m/--molecule when no active molecule exists",
-        ));
-    };
-    Ok(ResolvedMintScope::Molecule(molecule))
-}
-
-fn active_molecule_id(workspace: &Path) -> anyhow::Result<Option<MoleculeId>> {
-    let db_path = workspace.join(".loom/state.db");
-    if !db_path.exists() {
-        return Ok(None);
-    }
-    let db = StateDb::open(db_path)?;
-    let Some(label) = db.current_spec()? else {
-        return Ok(None);
-    };
-    Ok(db.molecule_for_spec(&label)?.map(|row| row.id))
+    Err(anyhow::anyhow!(
+        "loom gate mint requires --tree or -m/--molecule",
+    ))
 }
 
 fn run_gate_audit(
@@ -2072,6 +2135,7 @@ fn run_gate_audit(
     let review_result = run_gate_review(
         workspace,
         args,
+        None,
         verify_exit,
         agent_override,
         ReviewLane::Both,
@@ -2082,16 +2146,17 @@ fn run_gate_audit(
 fn run_gate_review(
     workspace: &Path,
     args: GateScopeArgs,
+    bead: Option<String>,
     verify_exit: Option<i32>,
     agent_override: Option<AgentKind>,
     lane: ReviewLane,
 ) -> anyhow::Result<()> {
     run_review(
         workspace,
-        args.spec,
+        None,
         agent_override,
         ReviewOpts {
-            bead: args.bead,
+            bead,
             diff: args.diff,
             tree: args.tree,
             verify_exit,
@@ -3562,10 +3627,18 @@ fn resolve_spec_label(workspace: &Path, spec: Option<String>) -> anyhow::Result<
     if let Some(s) = spec {
         return Ok(SpecLabel::new(s));
     }
-    let db = StateDb::open(workspace.join(".loom/state.db"))?;
-    db.current_spec()?.ok_or_else(|| {
-        anyhow::anyhow!("no active spec — pass -s <label> or run `loom use <label>`")
-    })
+    let db_path = workspace.join(".loom/state.db");
+    if db_path.exists() {
+        let db = StateDb::open(db_path)?;
+        if let Some(label) = db.current_spec()? {
+            return Ok(label);
+        }
+    }
+    let labels = resolve_tree_mint_labels(workspace, None)?;
+    labels
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no spec files found under specs/"))
 }
 
 fn resolve_tree_mint_labels(
@@ -3800,61 +3873,93 @@ mod tests {
     }
 
     #[test]
-    fn parse_verify_tiers_defaults_to_all_three_when_unset() {
-        assert_eq!(
-            parse_verify_tiers(None),
-            vec![Tier::Check, Tier::Test, Tier::System]
-        );
-    }
-
-    #[test]
-    fn parse_verify_tiers_defaults_to_all_three_when_empty() {
-        assert_eq!(
-            parse_verify_tiers(Some("")),
-            vec![Tier::Check, Tier::Test, Tier::System]
-        );
-        assert_eq!(
-            parse_verify_tiers(Some("   ")),
-            vec![Tier::Check, Tier::Test, Tier::System]
-        );
-    }
-
-    #[test]
-    fn parse_verify_tiers_scopes_to_named_tiers() {
-        assert_eq!(
-            parse_verify_tiers(Some("check,test")),
-            vec![Tier::Check, Tier::Test]
-        );
-        assert_eq!(parse_verify_tiers(Some("system")), vec![Tier::System]);
-    }
-
-    #[test]
-    fn parse_verify_tiers_ignores_whitespace_around_names() {
-        assert_eq!(
-            parse_verify_tiers(Some("  check , test ")),
-            vec![Tier::Check, Tier::Test]
-        );
-    }
-
-    #[test]
-    fn parse_verify_tiers_falls_back_to_default_when_all_names_unknown() {
-        assert_eq!(
-            parse_verify_tiers(Some("Check,Bogus")),
-            vec![Tier::Check, Tier::Test, Tier::System]
-        );
-    }
-
-    #[test]
-    fn verify_tiers_for_args_scopes_to_check_when_files_present() {
+    fn verify_tiers_for_args_scopes_files_to_check_and_test() {
+        let tmp = tempfile::tempdir().expect("tempdir");
         let mut args = empty_scope_args();
         args.files.push(PathBuf::from(".pre-commit-config.yaml"));
-        assert_eq!(verify_tiers_for_args(&args), vec![Tier::Check]);
+        assert_eq!(
+            verify_tiers_for_args(tmp.path(), &args).expect("tiers"),
+            vec![Tier::Check, Tier::Test],
+        );
     }
 
     #[test]
-    fn verify_tiers_for_args_uses_env_default_when_files_empty() {
-        let args = empty_scope_args();
-        assert_eq!(verify_tiers_for_args(&args), verify_tiers_from_env());
+    fn verify_tiers_for_args_scopes_tree_to_all_deterministic_tiers() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut args = empty_scope_args();
+        args.tree = true;
+        assert_eq!(
+            verify_tiers_for_args(tmp.path(), &args).expect("tiers"),
+            vec![Tier::Check, Tier::Test, Tier::System],
+        );
+    }
+
+    #[test]
+    fn verify_tiers_for_args_scopes_diff_to_check_and_test() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut args = empty_scope_args();
+        args.diff = Some("HEAD".to_owned());
+        assert_eq!(
+            verify_tiers_for_args(tmp.path(), &args).expect("tiers"),
+            vec![Tier::Check, Tier::Test],
+        );
+    }
+
+    #[test]
+    fn verify_target_rejects_cross_tier_ambiguity() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let specs = tmp.path().join("specs");
+        std::fs::create_dir_all(&specs).expect("specs dir");
+        std::fs::write(
+            specs.join("alpha.md"),
+            "## Success Criteria\n\n- check [check](same-target)\n- test [test](same-target)\n",
+        )
+        .expect("write spec");
+        let mut args = empty_scope_args();
+        args.target = Some("same-target".to_owned());
+        let err = verify_tiers_for_args(tmp.path(), &args).expect_err("ambiguous target fails");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("multiple tiers"),
+            "diagnostic suggests tier-specific target rerun: {rendered}",
+        );
+    }
+
+    #[test]
+    fn verify_target_accepts_same_tier_duplicates() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let specs = tmp.path().join("specs");
+        std::fs::create_dir_all(&specs).expect("specs dir");
+        std::fs::write(
+            specs.join("alpha.md"),
+            "## Success Criteria\n\n- one [check](same-target)\n- two [check](same-target)\n",
+        )
+        .expect("write spec");
+        let mut args = empty_scope_args();
+        args.target = Some("same-target".to_owned());
+        assert_eq!(
+            verify_tiers_for_args(tmp.path(), &args).expect("same-tier target"),
+            vec![Tier::Check],
+        );
+    }
+
+    #[test]
+    fn target_check_does_not_run_integrity_gate_for_other_annotations() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let specs = tmp.path().join("specs");
+        std::fs::create_dir_all(&specs).expect("specs dir");
+        std::fs::write(
+            specs.join("alpha.md"),
+            "## Success Criteria\n\n- selected [check](true)\n- unrelated [check](definitely-missing-target-check)\n",
+        )
+        .expect("write spec");
+        let mut args = empty_scope_args();
+        args.target = Some("true".to_owned());
+        let code = dispatch_tier(tmp.path(), &args, Tier::Check).expect("target dispatch");
+        assert_eq!(
+            code, 0,
+            "unrelated unresolved annotations stay outside --target"
+        );
     }
 
     #[test]
@@ -3867,11 +3972,6 @@ mod tests {
         diff.diff = Some("HEAD".to_owned());
         diff.files = vec![PathBuf::from("src/lib.rs")];
         assert!(!scope_allows_missing_binary_skip(&diff));
-
-        let mut bead = empty_scope_args();
-        bead.bead = Some("lm-1".to_owned());
-        bead.files = vec![PathBuf::from("src/lib.rs")];
-        assert!(!scope_allows_missing_binary_skip(&bead));
     }
 
     #[test]
@@ -4052,62 +4152,10 @@ mod tests {
     fn empty_scope_args() -> GateScopeArgs {
         GateScopeArgs {
             files: Vec::new(),
-            spec: None,
-            selector: None,
-            bead: None,
+            target: None,
             diff: None,
             tree: false,
         }
-    }
-
-    #[test]
-    fn apply_default_scope_falls_back_to_head_on_fresh_workspace() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let mut args = empty_scope_args();
-        apply_default_scope(tmp.path(), &mut args);
-        assert_eq!(args.diff.as_deref(), Some("HEAD"));
-        assert!(args.bead.is_none());
-        assert!(!args.tree);
-        assert!(args.files.is_empty());
-    }
-
-    #[test]
-    fn apply_default_scope_is_noop_when_bead_set() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let mut args = empty_scope_args();
-        args.bead = Some("lm-1".into());
-        apply_default_scope(tmp.path(), &mut args);
-        assert!(args.diff.is_none());
-        assert_eq!(args.bead.as_deref(), Some("lm-1"));
-    }
-
-    #[test]
-    fn apply_default_scope_is_noop_when_diff_set() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let mut args = empty_scope_args();
-        args.diff = Some("HEAD~3..HEAD".into());
-        apply_default_scope(tmp.path(), &mut args);
-        assert_eq!(args.diff.as_deref(), Some("HEAD~3..HEAD"));
-    }
-
-    #[test]
-    fn apply_default_scope_is_noop_when_tree_set() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let mut args = empty_scope_args();
-        args.tree = true;
-        apply_default_scope(tmp.path(), &mut args);
-        assert!(args.diff.is_none());
-        assert!(args.tree);
-    }
-
-    #[test]
-    fn apply_default_scope_is_noop_when_files_set() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let mut args = empty_scope_args();
-        args.files = vec![PathBuf::from("src/lib.rs")];
-        apply_default_scope(tmp.path(), &mut args);
-        assert!(args.diff.is_none());
-        assert_eq!(args.files, vec![PathBuf::from("src/lib.rs")]);
     }
 
     /// An unparseable `--diff` range (here a ref that does not exist, the
@@ -4159,7 +4207,6 @@ mod tests {
         let mint_args = GateMintArgs {
             molecule: None,
             tree: true,
-            spec: None,
             dry_run: false,
         };
         let cmd = Command::Gate {
@@ -4172,9 +4219,9 @@ mod tests {
     }
 
     #[test]
-    fn mint_bare_invocation_defaults_to_active_molecule_or_errors() {
+    fn mint_bare_invocation_requires_explicit_scope() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        for rejected in ["-b", "--diff", "--files"] {
+        for rejected in ["-b", "--diff", "--files", "--spec", "--target"] {
             let parsed = Cli::try_parse_from(["loom", "gate", "mint", rejected, "value"]);
             assert!(
                 parsed.is_err(),
@@ -4185,11 +4232,10 @@ mod tests {
         let args = GateMintArgs {
             molecule: None,
             tree: false,
-            spec: None,
             dry_run: false,
         };
-        let err = resolve_mint_scope(tmp.path(), &args)
-            .expect_err("fresh workspace has no active molecule");
+        let err =
+            resolve_mint_scope(tmp.path(), &args).expect_err("bare mint has no default molecule");
         let rendered = format!("{err:#}");
         assert!(
             rendered.contains("--tree"),
@@ -4199,26 +4245,6 @@ mod tests {
             rendered.contains("-m/--molecule"),
             "diagnostic names -m/--molecule: {rendered}",
         );
-
-        std::fs::create_dir_all(tmp.path().join("specs")).expect("specs dir");
-        std::fs::write(tmp.path().join("specs/gate.md"), "# Gate\n").expect("spec file");
-        let db = StateDb::open(tmp.path().join(".loom/state.db")).expect("state db");
-        let label = SpecLabel::new("gate");
-        db.rebuild(
-            tmp.path(),
-            &[loom_driver::state::ActiveMolecule {
-                id: loom_driver::identifier::MoleculeId::new("lm-active"),
-                spec_label: label.clone(),
-                base_commit: None,
-            }],
-        )
-        .expect("state rebuild");
-        db.set_current_spec(&label).expect("current spec");
-
-        match resolve_mint_scope(tmp.path(), &args).expect("active molecule resolves") {
-            ResolvedMintScope::Molecule(id) => assert_eq!(id.as_str(), "lm-active"),
-            ResolvedMintScope::Tree => panic!("bare mint must not default to tree"),
-        }
     }
 
     /// `loom gate mint` validates finding bonds and targets against the

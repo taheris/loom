@@ -255,10 +255,12 @@ fn seed_active_molecule(workspace: &Path, label: &str, mol_id: &str, base_sha: &
         }],
     )
     .expect("rebuild state.db");
+    db.set_current_spec(&SpecLabel::new(label))
+        .expect("set current spec");
     drop(db);
 }
 
-/// Drive `loom gate review -s <label>` against the wired stubs and
+/// Drive `loom gate review --diff <range>` against the wired stubs and
 /// return the captured `Output`. `verify_exit` adds `--verify-exit <CODE>`
 /// to the child argv when `Some`, mirroring how `loom loop`'s
 /// molecule-completion handoff threads the verify exit into the push
@@ -272,6 +274,13 @@ fn run_loom_gate_review(
     spec_label: &str,
     verify_exit: Option<i32>,
 ) -> std::process::Output {
+    let db = StateDb::open(workspace.join(".loom/state.db")).expect("open state db");
+    let base = db
+        .molecule_for_spec(&SpecLabel::new(spec_label))
+        .expect("molecule lookup")
+        .and_then(|row| row.base_commit)
+        .expect("base commit");
+    let diff_range = format!("{base}..HEAD");
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let mut entries: Vec<PathBuf> = vec![bin_dir.to_path_buf()];
     entries.extend(std::env::split_paths(&path_var));
@@ -287,8 +296,8 @@ fn run_loom_gate_review(
         .arg("pi")
         .arg("gate")
         .arg("review")
-        .arg("-s")
-        .arg(spec_label);
+        .arg("--diff")
+        .arg(diff_range);
     if let Some(code) = verify_exit {
         cmd.arg("--verify-exit").arg(code.to_string());
     }

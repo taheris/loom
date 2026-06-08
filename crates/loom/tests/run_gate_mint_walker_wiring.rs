@@ -54,8 +54,8 @@ fn pinned_path(bin_dir: &Path) -> std::ffi::OsString {
     std::env::join_paths(entries).expect("join PATH")
 }
 
-/// Run `loom --workspace <ws> gate mint --tree --spec <SPEC_LABEL>`
-/// with the bd shim on PATH and an empty profile manifest. Returns the
+/// Run `loom --workspace <ws> gate mint --tree` with the bd shim on PATH
+/// and an empty profile manifest. Returns the
 /// subprocess output and the bd-shim invocation log path so callers can
 /// inspect both.
 fn run_gate_mint_tree_subprocess(workspace: &Path) -> (std::process::Output, PathBuf) {
@@ -70,7 +70,7 @@ fn run_gate_mint_tree_subprocess(workspace: &Path) -> (std::process::Output, Pat
     let output = Command::new(loom_bin)
         .arg("--workspace")
         .arg(workspace)
-        .args(["gate", "mint", "--tree", "--spec", SPEC_LABEL])
+        .args(["gate", "mint", "--tree"])
         .env("PATH", pinned_path(&bin_dir))
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("BD_STATE_DIR", &state_dir)

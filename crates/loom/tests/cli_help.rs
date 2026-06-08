@@ -220,10 +220,15 @@ fn loom_check_is_removed_from_top_level() {
 fn loom_gate_scope_flags_are_mutually_exclusive() {
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     for args in [
-        vec!["gate", "verify", "--bead", "lm-1", "--diff", "HEAD~1..HEAD"],
-        vec!["gate", "check", "--bead", "lm-1", "--tree"],
         vec!["gate", "test", "--diff", "HEAD~1..HEAD", "--tree"],
-        vec!["gate", "verify", "--files", "src/lib.rs", "--bead", "lm-1"],
+        vec![
+            "gate",
+            "verify",
+            "--target",
+            "cargo test",
+            "--diff",
+            "HEAD~1..HEAD",
+        ],
         vec![
             "gate",
             "audit",
@@ -256,9 +261,9 @@ fn loom_gate_scope_flags_are_mutually_exclusive() {
 
 /// `loom gate verify --files <PATH>...` must accept variadic paths in
 /// the shape pre-commit's `pass_filenames: true` emits: each staged
-/// file passed as a separate positional value after `--files`. Without
+/// file passed as a separate value after `--files`. Without
 /// `num_args = 1..` on the field, clap stops after the first value and
-/// the trailing paths are misparsed as the positional `selector`.
+/// treats the trailing paths as unexpected arguments.
 #[test]
 fn loom_gate_verify_files_accepts_variadic_paths() {
     let loom_bin = env!("CARGO_BIN_EXE_loom");
@@ -283,6 +288,54 @@ fn loom_gate_verify_files_accepts_variadic_paths() {
         !stderr.contains("unexpected argument") && !stderr.contains("which wasn't expected"),
         "variadic --files must not surface as 'unexpected argument', got: {stderr}",
     );
+}
+
+#[test]
+fn loom_gate_removed_scope_surfaces_are_rejected() {
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    for args in [
+        vec!["gate", "verify", "--spec", "gate"],
+        vec!["gate", "verify", "--bead", "lm-1", "--diff", "HEAD~1..HEAD"],
+        vec!["gate", "verify", "cargo test --lib"],
+        vec!["gate", "mint", "--tree", "--spec", "gate"],
+    ] {
+        let output = Command::new(loom_bin)
+            .args(&args)
+            .env("COLUMNS", "100")
+            .env("CLAP_TERM_WIDTH", "100")
+            .output()
+            .expect("spawn loom");
+        assert!(
+            !output.status.success(),
+            "loom {args:?} must reject removed gate scope surface",
+        );
+    }
+}
+
+#[test]
+fn loom_gate_bare_inspection_subcommands_print_help() {
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    for subcommand in [
+        "verify", "status", "audit", "review", "judge", "rubric", "mint",
+    ] {
+        let output = Command::new(loom_bin)
+            .args(["gate", subcommand])
+            .env("COLUMNS", "100")
+            .env("CLAP_TERM_WIDTH", "100")
+            .env_remove("LOOM_INSIDE")
+            .output()
+            .expect("spawn loom");
+        assert!(
+            output.status.success(),
+            "bare gate {subcommand} prints help and exits 0: stderr={}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let stdout = String::from_utf8(output.stdout).expect("utf-8");
+        assert!(
+            stdout.contains("Usage: loom gate"),
+            "bare gate {subcommand} must print subcommand help: {stdout}",
+        );
+    }
 }
 
 #[test]

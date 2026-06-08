@@ -19,7 +19,7 @@ pub use client::{
     StatusEntry, StatusKind, WorktreeInfo, bare_origin_path, clone_loom_workspace, commit_all_in,
     fast_forward_loom_workspace_to_origin, head_tree_oid_sync, init_test_repo,
     init_test_repo_with_integration, init_test_repo_with_integration_branch, read_origin_url,
-    status_porcelain_sync, sync_head_commit_sha,
+    status_porcelain_sync, sync_head_commit_sha, sync_rev_parse,
 };
 pub use error::GitError;
 // `GitOid` lives in the public-contract leaf `loom-protocol::oid` so the

@@ -1154,7 +1154,7 @@ impl GitClient {
     /// Roll the integration branch back one commit (`git reset --hard
     /// HEAD~1`) in the loom workspace.
     ///
-    /// The per-bead audit (`loom gate verify --bead`) runs after the
+    /// The per-bead audit (`loom gate verify --diff`) runs after the
     /// ff-merge but before any origin push; an audit failure undoes the
     /// just-merged commit so the integration line returns to its
     /// pre-merge tip and the next iteration sees the cross-bead breakage
@@ -1613,7 +1613,12 @@ pub fn head_tree_oid_sync(workspace: &Path) -> Result<GitOid, GitError> {
 /// commit SHA stamped onto a freshly minted [`crate::marker`] proof
 /// (the load-bearing fingerprint is the tree OID, not the commit SHA).
 pub fn sync_head_commit_sha(workspace: &Path) -> Result<GitOid, GitError> {
-    let raw = sync_git_capture(workspace, &["rev-parse", "HEAD"])?;
+    sync_rev_parse(workspace, "HEAD")
+}
+
+/// Synchronous `git -C <workspace> rev-parse --verify <rev>`.
+pub fn sync_rev_parse(workspace: &Path, rev: &str) -> Result<GitOid, GitError> {
+    let raw = sync_git_capture(workspace, &["rev-parse", "--verify", rev])?;
     Ok(GitOid::new(raw.trim())?)
 }
 

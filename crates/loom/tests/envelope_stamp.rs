@@ -65,8 +65,8 @@ fn write_minimal_manifest(dir: &Path) -> PathBuf {
 }
 
 /// Install a stub `loom` shim that exits 0 for any args. Threaded via
-/// `LOOM_BIN` so the per-bead gate's `loom gate verify --bead` /
-/// `loom gate review --bead` subprocesses (per `specs/gate.md` § *Per-diff
+/// `LOOM_BIN` so the per-bead gate's `loom gate verify --diff` /
+/// `loom gate review --diff --bead` subprocesses (per `specs/gate.md` § *Per-diff
 /// stage checks*) are no-ops in tests that exercise only the run-phase
 /// envelope-stamping path; without it the review subprocess spawns an
 /// agent backend the test fixtures don't fully wire.
@@ -116,7 +116,7 @@ fn run_loom_loop_once(
         .env("LOOM_WRIX_BIN", mock_agent)
         .env("LOOM_TEST_AGENT_MODE", agent_mode)
         // Point `LOOM_BIN` at a no-op shim so the per-bead gate's
-        // `loom gate verify --bead` + `loom gate review --bead` calls
+        // `loom gate verify --diff` + `loom gate review --diff --bead` calls
         // exit 0 silently — this test asserts envelope stamping on
         // the run-phase path, not gate dispatch.
         .env("LOOM_BIN", &loom_noop_stub)

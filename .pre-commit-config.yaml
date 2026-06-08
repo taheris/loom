@@ -54,11 +54,8 @@ repos:
         pass_filenames: false
 
       - id: loom-gate-verify-diff
-        name: loom gate verify --diff (check,test)
-        # `@{u}..HEAD` = the push range (specs/gate.md § Scope flags).
-        # Keep the verify orchestration on pre-push, but split `[system]`
-        # verifiers to the CI-only `nix run .#test-ci` app.
-        entry: pre-push-checks env LOOM_VERIFY_TIERS=check,test loom gate verify --diff '@{u}..HEAD'
+        name: loom gate verify --diff
+        entry: pre-push-checks loom gate verify --diff '@{u}..HEAD'
         language: system
         stages: [pre-push]
         always_run: true

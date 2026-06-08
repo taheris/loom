@@ -260,8 +260,8 @@ pub fn synthesize_integration_conflict_options(
 /// `previous_failure`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PerBeadGateOutcome {
-    /// `loom gate verify --bead <id>` exited 0 AND the focused
-    /// `loom gate review --bead <id>` emitted no unsuppressed findings.
+    /// `loom gate verify --diff <range>` exited 0 AND the focused
+    /// `loom gate review --diff <range> --bead <id>` emitted no unsuppressed findings.
     /// The bead is done.
     Clean,
     /// The per-bead gate saw a structural invariant violation that the
@@ -271,8 +271,8 @@ pub enum PerBeadGateOutcome {
     /// is NOT unwound — the integration is already durable. `detail`
     /// carries operator-facing diagnostics for `bd update --notes`.
     StructuralViolation { detail: String },
-    /// `loom gate verify --bead <id>` exited non-zero, or focused
-    /// `loom gate review --bead <id>` reported a recoverable concern.
+    /// `loom gate verify --diff <range>` exited non-zero, or focused
+    /// `loom gate review --diff <range> --bead <id>` reported a recoverable concern.
     /// Both cases route through the existing per-bead recovery loop bounded by
     /// `RetryPolicy::max_retries`: `detail` is threaded as
     /// `previous_failure` into the next agent attempt; exhaustion
@@ -1623,7 +1623,7 @@ mod tests {
     /// Spec criterion (`specs/harness.md` § Functional): after each
     /// per-bead agent run signals `Success` and the bead's branch is
     /// rebased + ff'd at the loom workspace, the loop invokes the per-bead
-    /// gate (`loom gate verify -b <id>` then focused `loom gate review -b
+    /// gate (`loom gate verify --diff <range>` then focused `loom gate review --diff <range> --bead <id>`
     /// <id>`). This pins the run-phase-Success → per-bead-gate edge; the
     /// verify→review subprocess order is pinned by the production test
     /// `exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses`.

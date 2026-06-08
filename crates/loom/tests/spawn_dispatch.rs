@@ -264,8 +264,8 @@ fn init_workspace_repo(workspace: &Path) {
 }
 
 /// Install a stub `loom` shim that exits 0 for any args. Threaded via
-/// `LOOM_BIN` so the per-bead gate's `loom gate verify --bead` /
-/// `loom gate review --bead` subprocesses (per `specs/gate.md` § *Per-diff
+/// `LOOM_BIN` so the per-bead gate's `loom gate verify --diff` /
+/// `loom gate review --diff --bead` subprocesses (per `specs/gate.md` § *Per-diff
 /// stage checks*) are no-ops in tests that exercise only the run-phase
 /// path; without it the review subprocess spawns an agent backend the
 /// test fixtures don't fully wire.
@@ -549,7 +549,7 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &shim)
         // Point `LOOM_BIN` at a no-op shim so the per-bead gate's
-        // `loom gate verify --bead` + `loom gate review --bead` calls
+        // `loom gate verify --diff` + `loom gate review --diff --bead` calls
         // exit 0 silently — this test asserts run-phase JSONL log
         // writes, not gate dispatch.
         .env("LOOM_BIN", &loom_noop_stub)
@@ -668,6 +668,14 @@ fn loom_gate_review_writes_phase_jsonl_log() {
         "happy-path",
     );
 
+    {
+        use loom_driver::identifier::SpecLabel;
+        use loom_driver::state::StateDb;
+        let db = StateDb::open(workspace.join(".loom/state.db")).expect("open state db");
+        db.set_current_spec(&SpecLabel::new("agent"))
+            .expect("set current spec");
+    }
+
     // `loom:clarify` on the post-snapshot bead → ReviewVerdict::PushBlocked →
     // ReviewResult::PushBlocked, no push gates fire.
     let bead_json = r#"[{"id":"lm-reviewtest","title":"review gate bead","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","loom:clarify"]}]"#;
@@ -686,8 +694,8 @@ fn loom_gate_review_writes_phase_jsonl_log() {
         .arg("pi")
         .arg("gate")
         .arg("review")
-        .arg("-s")
-        .arg("agent")
+        .arg("--diff")
+        .arg("HEAD..HEAD")
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &shim)
         .env("LOOM_BIN", loom_bin)

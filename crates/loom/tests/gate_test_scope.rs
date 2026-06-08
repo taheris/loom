@@ -47,7 +47,7 @@ fn test_tier_filters_targets_by_files_scope_intersection() {
     let dir = write_fixture();
     let output = Command::new(loom_bin())
         .current_dir(dir.path())
-        .args(["gate", "test", "--files", "src/lib.rs", "--spec", "gate"])
+        .args(["gate", "test", "--files", "src/lib.rs"])
         .output()
         .unwrap();
 

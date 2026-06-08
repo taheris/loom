@@ -87,7 +87,6 @@ fn run_gate_command_with_agent(
         .env("LOOM_TEST_AGENT_MODE", agent_mode)
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", manifest)
-        .env("LOOM_VERIFY_TIERS", "check")
         .env("BD_STATE_DIR", &state_dir)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
         .env_remove("LOOM_INSIDE")
@@ -127,10 +126,7 @@ fn status_payload(stdout: &str) -> serde_json::Value {
 fn audit_tree_scope_makes_no_bd_writes() {
     let dir = tempfile::tempdir().expect("tempdir");
     let workspace = dir.path();
-    let (output, log) = run_gate_command(
-        workspace,
-        &["gate", "audit", "--tree", "--spec", SPEC_LABEL],
-    );
+    let (output, log) = run_gate_command(workspace, &["gate", "audit", "--tree"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -183,10 +179,7 @@ fn mint_tree_without_spec_filter_walks_every_workspace_spec() {
 fn driver_emits_finding_status_json_with_identity_and_action() {
     let dir = tempfile::tempdir().expect("tempdir");
     let workspace = dir.path();
-    let (output, log) = run_gate_command(
-        workspace,
-        &["gate", "review", "--tree", "--spec", SPEC_LABEL],
-    );
+    let (output, log) = run_gate_command(workspace, &["gate", "review", "--tree"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let finding = expected_finding();
@@ -211,10 +204,7 @@ fn driver_emits_finding_status_json_with_identity_and_action() {
 fn rubric_tree_scope_emits_reported_finding_status() {
     let dir = tempfile::tempdir().expect("tempdir");
     let workspace = dir.path();
-    let (output, log) = run_gate_command(
-        workspace,
-        &["gate", "rubric", "--tree", "--spec", SPEC_LABEL],
-    );
+    let (output, log) = run_gate_command(workspace, &["gate", "rubric", "--tree"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let json = status_payload(&stdout);

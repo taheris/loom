@@ -3127,35 +3127,35 @@ promotion errors or blocking on structural bd state — is owned by
   [test](bare_loom_gate_prints_subcommand_help)
 - Bare `loom gate verify` prints the verify subcommand help and runs no
   verifier, project hook, cache lookup, bd write, or marker check
-  [test?](bare_loom_gate_verify_prints_help_and_runs_nothing)
+  [test](bare_loom_gate_verify_prints_help_and_runs_nothing)
 - `loom gate verify` rejects a positional selector; exact target
   selection uses `--target <annotation target>`
-  [test?](gate_verify_rejects_positional_selector)
+  [test](gate_verify_rejects_positional_selector)
 - `--target` is mutually exclusive with `--files`, `--diff`, and
   `--tree`; zero matches fail loudly; cross-tier matches under
   `verify --target` fail and suggest a tier subcommand; multiple
   criteria sharing the same target inside one tier are accepted
-  [test?](gate_target_exact_match_and_ambiguity_rules)
+  [test](gate_target_exact_match_and_ambiguity_rules)
 - `loom gate verify --diff <base>..<head>` runs the project pre-commit
   lane via prek for the resolved range before the spec annotation lane;
   if a hook modifies the working tree the run exits non-zero with a
   tree-modified-by-hook failure
-  [test?](verify_diff_runs_prek_pre_commit_lane_before_annotations)
+  [test](verify_diff_runs_prek_pre_commit_lane_before_annotations)
 - A nested `loom gate verify --files` invoked under a parent
   `verify --diff` records a skipped gate event with reason
   `parent-diff-gate` and exits 0; correctness does not depend on the
   project's hook id
-  [test?](nested_verify_files_under_parent_diff_gate_records_skip)
+  [test](nested_verify_files_under_parent_diff_gate_records_skip)
 - Scope-derived tier policy has no `LOOM_VERIFY_TIERS` override:
   `verify --files` runs affected `[check]`/`[test]`, `verify --diff`
   runs project pre-commit plus affected `[check]`/`[test]`, and
   `verify --tree` runs full `[check]`/`[test]`/`[system]`
-  [test?](verify_tier_policy_is_scope_derived_without_env_override)
+  [test](verify_tier_policy_is_scope_derived_without_env_override)
 - `loom gate status --diff <range>` / `--files <paths...>` / `--tree`
   reads the sqlite status cache and prints the report per
   `Status cache` above; status without an explicit scope prints help
   and runs no cache lookup
-  [test?](loom_gate_status_requires_explicit_scope)
+  [test](loom_gate_status_requires_explicit_scope)
 - `loom gate status` is `refused_inside_loom() == false`; running
   under `LOOM_INSIDE=1` is allowed because the cache read is local
   and read-only

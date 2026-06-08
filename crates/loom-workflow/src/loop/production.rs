@@ -751,8 +751,6 @@ where
             .arg("verify")
             .arg("--diff")
             .arg(&diff_range)
-            .arg("-s")
-            .arg(self.label.as_str())
             .status()
             .await?;
         info!(
@@ -787,8 +785,6 @@ where
             .arg("review")
             .arg("--diff")
             .arg(&diff_range)
-            .arg("-s")
-            .arg(self.label.as_str())
             .arg("--verify-exit")
             .arg(verify_exit_arg.to_string())
             .output()
@@ -853,13 +849,15 @@ where
 
     async fn exec_per_bead_gate(&mut self, bead: &BeadId) -> Result<PerBeadGateOutcome, LoopError> {
         self.release_handoff_lock_for_child_gate();
+        let diff_range = self
+            .pre_integration_tip
+            .as_ref()
+            .map_or_else(|| "HEAD..HEAD".to_owned(), |tip| format!("{tip}..HEAD"));
         let verify_args = vec![
             "gate".to_string(),
             "verify".to_string(),
-            "-b".to_string(),
-            bead.as_str().to_string(),
-            "-s".to_string(),
-            self.label.as_str().to_string(),
+            "--diff".to_string(),
+            diff_range.clone(),
         ];
         let verify_output = Command::new(&self.loom_bin)
             .current_dir(&self.workspace)
@@ -871,7 +869,7 @@ where
             bead = %bead,
             spec = %self.label.as_str(),
             exit_code = verify_exit,
-            "loom loop: per-bead gate — loom gate verify --bead finished",
+            "loom loop: per-bead gate — loom gate verify --diff finished",
         );
         if verify_exit != 0 {
             let stderr_tail = String::from_utf8_lossy(&verify_output.stderr).to_string();
@@ -889,8 +887,8 @@ where
                 gate_log_dir,
                 PostIntegrateGateLog {
                     argv: verify_args,
-                    scope_flag: "-b",
-                    scope: bead.as_str().to_string(),
+                    scope_flag: "--diff",
+                    scope: diff_range.clone(),
                     exit_code: verify_exit,
                     stdout: stdout_tail.clone(),
                     stderr: stderr_tail.clone(),
@@ -904,13 +902,13 @@ where
             )?;
             let gate_log = gate_log_path.to_string_lossy().to_string();
             let detail = format!(
-                "loom gate verify --bead {bead} exited {verify_exit}\n\
+                "loom gate verify --diff {diff_range} exited {verify_exit}\n\
                  gate log: {gate_log}\nstdout:\n{stdout_tail}\nstderr:\n{stderr_tail}",
             );
             let rolled_back = self.rollback_if_bead_advanced_integration().await?;
             self.stashed_previous_failure = Some(PreviousFailure::PostIntegrateFail {
                 failures: vec![VerifierFailure::new(
-                    format!("loom gate verify --bead {bead}"),
+                    format!("loom gate verify --diff {diff_range}"),
                     verify_exit,
                     format!("{stdout_tail}\n{stderr_tail}"),
                 )],
@@ -937,10 +935,10 @@ where
             .env(REVIEW_EMIT_STDOUT_ENV, "1")
             .arg("gate")
             .arg("review")
-            .arg("-b")
+            .arg("--diff")
+            .arg(&diff_range)
+            .arg("--bead")
             .arg(bead.as_str())
-            .arg("-s")
-            .arg(self.label.as_str())
             .arg("--verify-exit")
             .arg("0")
             .output()
@@ -952,7 +950,7 @@ where
             bead = %bead,
             spec = %self.label.as_str(),
             exit_code = review_exit,
-            "loom loop: per-bead gate — loom gate review --bead finished",
+            "loom loop: per-bead gate — loom gate review --diff finished",
         );
         let config = LoomConfig::load(LoomConfig::resolve_path(&self.workspace))?;
         Ok(classify_review_output(
@@ -2063,12 +2061,12 @@ mod tests {
             "exec_review must spawn exactly two children (gate verify then gate review): {recorded:?}",
         );
         assert_eq!(
-            lines[0], "gate verify --diff deadbeef..HEAD -s alpha",
-            "first child must be `loom gate verify --diff <base>..HEAD -s <label>`",
+            lines[0], "gate verify --diff deadbeef..HEAD",
+            "first child must be `loom gate verify --diff <base>..HEAD`",
         );
         assert_eq!(
-            lines[1], "gate review --diff deadbeef..HEAD -s alpha --verify-exit 0",
-            "second child must be `loom gate review --diff <base>..HEAD -s <label> --verify-exit <code>` \
+            lines[1], "gate review --diff deadbeef..HEAD --verify-exit 0",
+            "second child must be `loom gate review --diff <base>..HEAD --verify-exit <code>` \
              (FR9 condition 2: push gate consumes verify exit, not the default None)",
         );
     }
@@ -2137,8 +2135,8 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "gate verify --diff cafef00d..HEAD -s beta",
-                "gate review --diff cafef00d..HEAD -s beta --verify-exit 1"
+                "gate verify --diff cafef00d..HEAD",
+                "gate review --diff cafef00d..HEAD --verify-exit 1"
             ],
             "review must still run even when verify signals concerns — and the \
              verify exit code rides through to the child's push gate via \
@@ -2689,11 +2687,11 @@ mod tests {
             "exec_review must still spawn verify + review after inheritance: {recorded:?}",
         );
         assert_eq!(
-            lines[0], "gate verify --diff feed0042..HEAD -s delta",
+            lines[0], "gate verify --diff feed0042..HEAD",
             "verify child must use the inherited base_commit",
         );
         assert_eq!(
-            lines[1], "gate review --diff feed0042..HEAD -s delta --verify-exit 0",
+            lines[1], "gate review --diff feed0042..HEAD --verify-exit 0",
             "review child must use the inherited base_commit",
         );
     }
@@ -3113,12 +3111,12 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
             "exec_per_bead_gate must spawn exactly two subprocesses: {calls:?}",
         );
         assert_eq!(
-            calls[0], "gate verify -b lm-1 -s gate",
-            "first subprocess argv must be `loom gate verify -b <id> -s <spec>`",
+            calls[0], "gate verify --diff HEAD..HEAD",
+            "first subprocess argv must be `loom gate verify --diff <range>`",
         );
         assert_eq!(
-            calls[1], "gate review -b lm-1 -s gate --verify-exit 0",
-            "second subprocess argv must be `loom gate review -b <id> -s <spec> --verify-exit 0` after verify",
+            calls[1], "gate review --diff HEAD..HEAD --bead lm-1 --verify-exit 0",
+            "second subprocess argv must be `loom gate review --diff <range> --bead <id> --verify-exit 0` after verify",
         );
     }
 
@@ -3181,7 +3179,7 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
         assert_eq!(outcome, PerBeadGateOutcome::Clean);
     }
 
-    /// A non-zero `loom gate verify --bead` against the integrated tree is
+    /// A non-zero `loom gate verify --diff` against the integrated tree is
     /// the `post-integrate-fail` audit failure: the integration is rolled
     /// back (`git reset --hard HEAD~1`), `PreviousFailure::PostIntegrateFail`
     /// is stashed for the next dispatch, the review step never runs, and the
@@ -3271,7 +3269,7 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
                 assert_eq!(failures.len(), 1, "one verifier-failure block expected");
                 assert_eq!(failures[0].exit_code, 1);
                 assert!(
-                    failures[0].target.contains("loom gate verify --bead lm-1"),
+                    failures[0].target.contains("loom gate verify --diff"),
                     "failure block names the failing verifier: {:?}",
                     failures[0].target,
                 );
@@ -3284,9 +3282,9 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
                     serde_json::from_str(&gate_log).expect("gate log json");
                 assert_eq!(
                     gate_log_json["argv"],
-                    serde_json::json!(["gate", "verify", "-b", "lm-1", "-s", "gate"])
+                    serde_json::json!(["gate", "verify", "--diff", format!("{}..HEAD", base_tip)])
                 );
-                assert_eq!(gate_log_json["scope_flag"], "-b");
+                assert_eq!(gate_log_json["scope_flag"], "--diff");
                 assert_eq!(gate_log_json["exit_code"], 1);
                 assert_eq!(gate_log_json["integration_sha"], merged_tip.to_string());
                 assert_eq!(gate_log_json["rollback_state"], "pending");

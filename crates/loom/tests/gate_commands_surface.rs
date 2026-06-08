@@ -1,11 +1,11 @@
 //! Spec verification tests for `specs/gate.md` § *Commands surface — bare
-//! gate and status*. The Commands table pins bare `loom gate` as a help
-//! surface (no verifiers, no cache read) and `loom gate status` as the
-//! cache-read subcommand inheriting the bare-invocation scope default.
+//! gate and status*. The Commands table pins bare `loom gate` and bare
+//! inspection subcommands as help surfaces with no verifier or cache work.
 //!
 //! Spec targets covered:
 //! - `bare_loom_gate_prints_subcommand_help`
-//! - `loom_gate_status_subcommand_reads_cache_with_default_scope`
+//! - `bare_loom_gate_verify_prints_help_and_runs_nothing`
+//! - `loom_gate_status_requires_explicit_scope`
 //! - `loom_gate_status_is_allowed_under_loom_inside_env`
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -51,14 +51,38 @@ fn bare_loom_gate_prints_subcommand_help() {
     );
 }
 
-/// `loom gate status` runs against an empty workspace cache and prints
-/// the "no cached verifier runs yet" line — confirming the subcommand
-/// reads the sqlite cache instead of routing somewhere else. The default
-/// scope path is exercised (no scope flag passed); the bare-invocation
-/// scope-default helper degrades to `--diff HEAD` on a fresh workspace,
-/// which is the contract for this case.
 #[test]
-fn loom_gate_status_subcommand_reads_cache_with_default_scope() {
+fn bare_loom_gate_verify_prints_help_and_runs_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    std::fs::create_dir_all(workspace.join(".loom")).unwrap();
+    std::fs::create_dir_all(workspace.join("specs")).unwrap();
+    std::fs::write(workspace.join("specs/dummy.md"), "# dummy\n").unwrap();
+
+    let out = Command::new(loom_bin())
+        .arg("--workspace")
+        .arg(workspace)
+        .args(["gate", "verify"])
+        .output()
+        .expect("spawn loom gate verify");
+    assert!(
+        out.status.success(),
+        "bare `loom gate verify` must exit 0, got stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf-8");
+    assert!(
+        stdout.contains("Usage: loom gate verify"),
+        "bare verify must print subcommand help, got:\n{stdout}",
+    );
+    assert!(
+        !workspace.join(".loom/gate-cache.sqlite").exists(),
+        "bare verify must not open the gate cache",
+    );
+}
+
+#[test]
+fn loom_gate_status_requires_explicit_scope() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     std::fs::create_dir_all(workspace.join(".loom")).unwrap();
@@ -73,17 +97,17 @@ fn loom_gate_status_subcommand_reads_cache_with_default_scope() {
         .expect("spawn loom gate status");
     assert!(
         out.status.success(),
-        "`loom gate status` must exit 0 on a fresh workspace, got stderr={}",
+        "bare `loom gate status` must print help and exit 0, got stderr={}",
         String::from_utf8_lossy(&out.stderr),
     );
     let stdout = String::from_utf8(out.stdout).expect("utf-8");
     assert!(
-        stdout.contains("no cached verifier runs yet"),
-        "`loom gate status` on a fresh workspace must report an empty cache, got:\n{stdout}",
+        stdout.contains("Usage: loom gate status"),
+        "bare status must print help, got:\n{stdout}",
     );
     assert!(
-        workspace.join(".loom/gate-cache.sqlite").exists(),
-        "`loom gate status` must open (and so create) the sqlite cache file",
+        !workspace.join(".loom/gate-cache.sqlite").exists(),
+        "bare status must not open the gate cache",
     );
 }
 
@@ -100,7 +124,7 @@ fn loom_gate_status_is_allowed_under_loom_inside_env() {
     let out = Command::new(loom_bin())
         .arg("--workspace")
         .arg(workspace)
-        .args(["gate", "status"])
+        .args(["gate", "status", "--tree"])
         .env("LOOM_INSIDE", "1")
         .env_remove("LOOM_PROFILES_MANIFEST")
         .output()
