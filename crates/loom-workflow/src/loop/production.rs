@@ -930,36 +930,7 @@ where
             return Ok(PerBeadGateOutcome::Recovery { detail });
         }
 
-        let review_output = Command::new(&self.loom_bin)
-            .current_dir(&self.workspace)
-            .env(REVIEW_EMIT_STDOUT_ENV, "1")
-            .arg("gate")
-            .arg("review")
-            .arg("--diff")
-            .arg(&diff_range)
-            .arg("--bead")
-            .arg(bead.as_str())
-            .arg("--verify-exit")
-            .arg("0")
-            .output()
-            .await?;
-        let review_exit = review_output.status.code().unwrap_or(1);
-        let review_stdout = String::from_utf8_lossy(&review_output.stdout).to_string();
-        let review_stderr = String::from_utf8_lossy(&review_output.stderr).to_string();
-        info!(
-            bead = %bead,
-            spec = %self.label.as_str(),
-            exit_code = review_exit,
-            "loom loop: per-bead gate — loom gate review --diff finished",
-        );
-        let config = LoomConfig::load(LoomConfig::resolve_path(&self.workspace))?;
-        Ok(classify_review_output(
-            review_exit,
-            &review_stdout,
-            &review_stderr,
-            &config.suppress,
-            &self.workspace,
-        ))
+        Ok(PerBeadGateOutcome::Clean)
     }
 
     fn emit_driver_event(&mut self, kind: DriverKind, summary: &str, payload: serde_json::Value) {
@@ -1065,92 +1036,6 @@ fn terminal_marker_json(marker: &ExitSignal) -> serde_json::Value {
             serde_json::json!({ "kind": "bad-walk", "detail": format!("{badwalk:?}") })
         }
     }
-}
-
-/// Classify the focused per-bead review subprocess. The child emits the
-/// review agent's raw stdout under [`REVIEW_EMIT_STDOUT_ENV`], so this
-/// consumes the same typed walk product as the molecule-completion handoff.
-fn classify_review_output(
-    exit_code: i32,
-    stdout: &str,
-    stderr: &str,
-    suppressions: &[loom_driver::config::SuppressionConfig],
-    workspace: &std::path::Path,
-) -> PerBeadGateOutcome {
-    let validator = WorkspaceReviewFindingValidator::new(workspace);
-    let walk = WalkOutput::from_stdout(stdout, DispatchScope::PerBead, &validator);
-    if !walk.finding_errors().is_empty() {
-        return PerBeadGateOutcome::Recovery {
-            detail: review_detail(
-                "loom gate review emitted malformed findings",
-                stdout,
-                stderr,
-            ),
-        };
-    }
-    let unsuppressed = walk
-        .findings()
-        .iter()
-        .filter(|finding| !suppresses_rubric_finding(suppressions, finding))
-        .collect::<Vec<_>>();
-    match walk.terminal() {
-        TerminalSurface::Concern { summary } if !unsuppressed.is_empty() => {
-            PerBeadGateOutcome::Recovery {
-                detail: review_detail(
-                    &format!("loom gate review reported concern: {summary}"),
-                    stdout,
-                    stderr,
-                ),
-            }
-        }
-        TerminalSurface::Concern { summary } if walk.findings().is_empty() => {
-            PerBeadGateOutcome::Recovery {
-                detail: review_detail(
-                    &format!(
-                        "loom gate review emitted LOOM_CONCERN without LOOM_FINDING: {summary}"
-                    ),
-                    stdout,
-                    stderr,
-                ),
-            }
-        }
-        TerminalSurface::Concern { .. } => PerBeadGateOutcome::Clean,
-        TerminalSurface::Complete | TerminalSurface::Noop
-            if unsuppressed.is_empty() && exit_code == 0 =>
-        {
-            PerBeadGateOutcome::Clean
-        }
-        TerminalSurface::Complete | TerminalSurface::Noop => PerBeadGateOutcome::Recovery {
-            detail: review_detail("loom gate review exited uncleanly", stdout, stderr),
-        },
-        TerminalSurface::Malformed { .. } => PerBeadGateOutcome::Recovery {
-            detail: review_detail(
-                "loom gate review emitted malformed LOOM_CONCERN",
-                stdout,
-                stderr,
-            ),
-        },
-        TerminalSurface::Missing => PerBeadGateOutcome::Recovery {
-            detail: review_detail(
-                "loom gate review emitted no terminal marker",
-                stdout,
-                stderr,
-            ),
-        },
-        TerminalSurface::Blocked { .. }
-        | TerminalSurface::Clarify { .. }
-        | TerminalSurface::Retry { .. } => PerBeadGateOutcome::Recovery {
-            detail: review_detail(
-                "loom gate review emitted a worker self-report marker",
-                stdout,
-                stderr,
-            ),
-        },
-    }
-}
-
-fn review_detail(summary: &str, stdout: &str, stderr: &str) -> String {
-    format!("{summary}\nstdout:\n{stdout}\nstderr:\n{stderr}")
 }
 
 /// Render the operator-facing note body for the `unknown-profile`
@@ -3003,65 +2888,11 @@ mod tests {
         );
     }
 
-    fn seed_review_workspace(workspace: &std::path::Path) {
-        std::fs::create_dir_all(workspace.join("specs")).expect("mkdir specs");
-        std::fs::write(workspace.join("specs/gate.md"), "# Gate\n").expect("write spec");
-    }
-
-    fn review_finding_stdout() -> String {
-        r#"LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["gate"],"target":{"kind":"Annotation","target_string":"cargo test -p loom"},"evidence":"review flagged bypass"}
-LOOM_CONCERN: {"summary":"review flagged bypass"}
-"#
-        .to_string()
-    }
-
-    #[test]
-    fn classify_review_output_complete_routes_to_clean() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        seed_review_workspace(dir.path());
-        assert_eq!(
-            classify_review_output(0, "LOOM_COMPLETE\n", "", &[], dir.path()),
-            PerBeadGateOutcome::Clean,
-        );
-    }
-
-    #[test]
-    fn classify_review_output_concern_routes_to_recovery() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        seed_review_workspace(dir.path());
-        let stdout = review_finding_stdout();
-        match classify_review_output(0, &stdout, "", &[], dir.path()) {
-            PerBeadGateOutcome::Recovery { detail } => assert!(
-                detail.contains("review flagged bypass"),
-                "review concern detail must reach the retry prompt: {detail}",
-            ),
-            other => panic!("expected Recovery, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn classify_review_output_suppressed_concern_routes_to_clean() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        seed_review_workspace(dir.path());
-        let stdout = review_finding_stdout();
-        let validator = WorkspaceReviewFindingValidator::new(dir.path());
-        let walk = WalkOutput::from_stdout(&stdout, DispatchScope::PerBead, &validator);
-        let suppression = loom_driver::config::SuppressionConfig {
-            id: Some(walk.findings()[0].id()),
-            hash: None,
-            reason: "accepted known finding".into(),
-        };
-        assert_eq!(
-            classify_review_output(0, &stdout, "", &[suppression], dir.path()),
-            PerBeadGateOutcome::Clean,
-        );
-    }
-
     /// Spec criterion (`specs/gate.md` § *Production walker wiring*):
-    /// the production per-bead gate invokes deterministic verify then
-    /// focused review as real subprocesses against `loom_bin`.
+    /// the production per-bead gate invokes deterministic verify as the
+    /// only real subprocess against `loom_bin`.
     #[tokio::test]
-    async fn exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses() {
+    async fn exec_per_bead_gate_invokes_only_loom_gate_verify_subprocess() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
@@ -3073,9 +2904,10 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
             "#!/usr/bin/env bash\n\
              set -euo pipefail\n\
              echo \"$*\" >> \"$PWD/argv.log\"\n\
-             case \"$2\" in\n\
-                 review) echo 'LOOM_COMPLETE' ;;\n\
-             esac\n\
+             if [[ \"$2\" == \"review\" ]]; then\n\
+                 echo 'review must not run in the per-bead hot path' >&2\n\
+                 exit 99\n\
+             fi\n\
              exit 0\n",
         )
         .expect("write stub");
@@ -3107,16 +2939,12 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
         let calls: Vec<&str> = log.lines().collect();
         assert_eq!(
             calls.len(),
-            2,
-            "exec_per_bead_gate must spawn exactly two subprocesses: {calls:?}",
+            1,
+            "exec_per_bead_gate must spawn exactly one subprocess: {calls:?}",
         );
         assert_eq!(
             calls[0], "gate verify --diff HEAD..HEAD",
             "first subprocess argv must be `loom gate verify --diff <range>`",
-        );
-        assert_eq!(
-            calls[1], "gate review --diff HEAD..HEAD --bead lm-1 --verify-exit 0",
-            "second subprocess argv must be `loom gate review --diff <range> --bead <id> --verify-exit 0` after verify",
         );
     }
 
@@ -3146,7 +2974,7 @@ LOOM_CONCERN: {"summary":"review flagged bypass"}
                  exec 9>\"{}\"\n\
                  flock -n 9\n\
                  if [[ \"$2\" == \"review\" ]]; then\n\
-                     echo 'LOOM_COMPLETE'\n\
+                     exit 99\n\
                  fi\n\
                  exit 0\n",
                 lock_path.display(),

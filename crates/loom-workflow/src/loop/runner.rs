@@ -134,9 +134,8 @@ pub trait AgentLoopController: Send {
     /// Per-bead gate invoked after the run-phase agent signals
     /// [`AgentOutcome::Success`].
     ///
-    /// Spawns the verify and focused review subcommands, parses the
-    /// review walk output, and returns a typed [`PerBeadGateOutcome`] the
-    /// runner maps to done, blocked, or recovery.
+    /// Spawns the deterministic verify subcommand and returns a typed
+    /// [`PerBeadGateOutcome`] the runner maps to done, blocked, or recovery.
     fn exec_per_bead_gate(
         &mut self,
         bead: &BeadId,
@@ -1589,7 +1588,7 @@ mod tests {
     /// resolves the bead to `BeadResult::Done` (neither clarified nor
     /// blocked). The subprocess shape `exec_per_bead_gate` resolves to
     /// is pinned by the production test
-    /// `exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses`.
+    /// `exec_per_bead_gate_invokes_only_loom_gate_verify_subprocess`.
     #[tokio::test]
     async fn loop_per_bead_routes_run_phase_success_through_exec_per_bead_gate()
     -> Result<(), LoopError> {
@@ -1623,13 +1622,12 @@ mod tests {
     /// Spec criterion (`specs/harness.md` § Functional): after each
     /// per-bead agent run signals `Success` and the bead's branch is
     /// rebased + ff'd at the loom workspace, the loop invokes the per-bead
-    /// gate (`loom gate verify --diff <range>` then focused `loom gate review --diff <range> --bead <id>`
-    /// <id>`). This pins the run-phase-Success → per-bead-gate edge; the
-    /// verify→review subprocess order is pinned by the production test
-    /// `exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses`.
+    /// gate (`loom gate verify --diff <range>` only). This pins the
+    /// run-phase-Success → per-bead-gate edge; the subprocess shape is
+    /// pinned by the production test
+    /// `exec_per_bead_gate_invokes_only_loom_gate_verify_subprocess`.
     #[tokio::test]
-    async fn per_bead_path_invokes_verify_then_review_after_run_phase_success()
-    -> Result<(), LoopError> {
+    async fn per_bead_path_invokes_verify_only_after_run_phase_success() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("lm-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::Success);
