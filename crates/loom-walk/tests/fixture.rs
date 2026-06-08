@@ -2843,6 +2843,22 @@ fn no_inline_suppression_comment_contract_ignores_cfg_test_fixtures() {
     assert_pass(&out);
 }
 
+#[test]
+fn no_inline_suppression_comment_contract_checks_after_one_line_cfg_test_item() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-workflow/src/suppression.rs",
+        "#[cfg(test)]\nfn fixture() {}\nfn from_comment(line: &str) -> bool { line.trim_start().starts_with(\"//\") && line.contains(\"loom-suppress\") }\n",
+    );
+    let out = invoke(
+        &["no_inline_suppression_comment_contract"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "crates/loom-workflow/src/suppression.rs:3");
+}
+
 // ---------------------------------------------------------------------------
 // templates_no_removed_surface
 // ---------------------------------------------------------------------------

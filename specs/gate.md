@@ -2856,8 +2856,8 @@ and conservative fall-through for unowned queries.
   path
   [test](exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses)
 - `mint --tree` walks both the deterministic verifiers and the LLM
-  rubric, emitting `LOOM_FINDING:` lines for findings from either
-  source
+  rubric, normalizing findings from either source into the same typed
+  mint flow
   [test](mint_tree_scope_walks_verifiers_and_rubric_emitting_findings_from_both)
 - Mint is idempotent against partial failure: a crash mid-run leaves
   successfully-minted findings with their `finding:<hash>` labels; a

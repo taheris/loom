@@ -72,34 +72,61 @@ fn contract_scope(root: &Path) -> Vec<PathBuf> {
 
 fn cfg_test_mask(source: &str) -> Vec<bool> {
     let mut mask = Vec::new();
-    let mut depth: i32 = 0;
-    let mut pending = false;
+    let mut state = CfgTestMask::Inactive;
     for raw in source.lines() {
-        if depth > 0 {
-            depth += brace_delta(raw);
+        if let Some(suffix) = cfg_test_suffix(raw) {
             mask.push(true);
-            if depth <= 0 {
-                depth = 0;
+            state = state_after_test_item_line(suffix);
+            continue;
+        }
+        match state {
+            CfgTestMask::Inactive => mask.push(false),
+            CfgTestMask::PendingItem => {
+                mask.push(true);
+                state = state_after_test_item_line(raw);
             }
-            continue;
-        }
-        if pending {
-            mask.push(true);
-            let delta = brace_delta(raw);
-            if delta > 0 {
-                depth = delta;
-                pending = false;
+            CfgTestMask::BracedItem(depth) => {
+                mask.push(true);
+                state = state_after_braced_item_line(depth, raw);
             }
-            continue;
         }
-        if raw.trim_start().starts_with("#[cfg(test)]") {
-            pending = true;
-            mask.push(true);
-            continue;
-        }
-        mask.push(false);
     }
     mask
+}
+
+#[derive(Clone, Copy)]
+enum CfgTestMask {
+    Inactive,
+    PendingItem,
+    BracedItem(i32),
+}
+
+fn cfg_test_suffix(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix("#[cfg(test)]")
+}
+
+fn state_after_test_item_line(line: &str) -> CfgTestMask {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return CfgTestMask::PendingItem;
+    }
+    let delta = brace_delta(line);
+    if delta > 0 {
+        return CfgTestMask::BracedItem(delta);
+    }
+    if line.contains('{') || line.contains(';') {
+        return CfgTestMask::Inactive;
+    }
+    CfgTestMask::PendingItem
+}
+
+fn state_after_braced_item_line(depth: i32, line: &str) -> CfgTestMask {
+    let next = depth + brace_delta(line);
+    if next > 0 {
+        CfgTestMask::BracedItem(next)
+    } else {
+        CfgTestMask::Inactive
+    }
 }
 
 fn brace_delta(line: &str) -> i32 {
