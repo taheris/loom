@@ -2766,6 +2766,84 @@ fn template_wire_format_restatement_fails_on_loom_concern_outside_partial() {
 }
 
 // ---------------------------------------------------------------------------
+// no_inline_suppression_comment_contract
+// ---------------------------------------------------------------------------
+
+#[test]
+fn no_inline_suppression_comment_contract_passes_top_level_toml_registry_path() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "loom.toml",
+        "[[suppress]]\nid = \"v1:criterion:verifier-too-narrow:gate#x\"\nreason = \"false positive\"\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-driver/src/config/mod.rs",
+        "pub struct SuppressionConfig { pub id: Option<String>, pub hash: Option<String>, pub reason: String }\npub struct LoomConfig { pub suppress: Vec<SuppressionConfig> }\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-workflow/src/suppression.rs",
+        "fn suppression_matches(id: &str, finding: &str) -> bool { id == finding }\n",
+    );
+    let out = invoke(
+        &["no_inline_suppression_comment_contract"],
+        Some(ws.path()),
+        None,
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn no_inline_suppression_comment_contract_fails_on_comment_directive_scanner() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-workflow/src/suppression.rs",
+        "fn from_comment(line: &str) -> bool {\n    line.trim_start().starts_with(\"//\") && line.contains(\"loom-suppress\")\n}\n",
+    );
+    let out = invoke(
+        &["no_inline_suppression_comment_contract"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "crates/loom-workflow/src/suppression.rs:2");
+}
+
+#[test]
+fn no_inline_suppression_comment_contract_honours_loom_files_scope() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-workflow/src/suppression.rs",
+        "fn from_comment(line: &str) -> bool { line.contains(\"inline_suppress\") }\n",
+    );
+    let out = invoke(
+        &["no_inline_suppression_comment_contract"],
+        Some(ws.path()),
+        Some("crates/loom-driver/src/config/mod.rs"),
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn no_inline_suppression_comment_contract_ignores_cfg_test_fixtures() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-workflow/src/suppression.rs",
+        "fn production_path() -> bool { false }\n#[cfg(test)]\nmod tests {\n    const FIXTURE: &str = \"// loom-suppress false positive\";\n}\n",
+    );
+    let out = invoke(
+        &["no_inline_suppression_comment_contract"],
+        Some(ws.path()),
+        None,
+    );
+    assert_pass(&out);
+}
+
+// ---------------------------------------------------------------------------
 // templates_no_removed_surface
 // ---------------------------------------------------------------------------
 

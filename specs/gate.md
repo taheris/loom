@@ -2793,7 +2793,7 @@ and conservative fall-through for unowned queries.
   [test](all_suppressed_concern_walk_exits_clean_after_shape_validation)
 - Inline code-comment suppressions are unsupported; the gate does not
   scan source comments for suppression directives
-  [check?](cargo run -p loom-walk -- no_inline_suppression_comment_contract)
+  [check](cargo run -p loom-walk -- no_inline_suppression_comment_contract)
 - `LOOM_FINDING_STATUS:` driver-emitted JSON lines carry each enriched
   finding's id, hash, bd label, token, target, and action without
   requiring the LLM to emit derived identity fields

@@ -43,6 +43,7 @@ mod nix_flake_check_excludes_workspace_compile;
 mod no_allow_dead_code;
 mod no_derive_from_on_newtypes;
 mod no_hardcoded_tmp_paths;
+mod no_inline_suppression_comment_contract;
 mod no_panics_in_production;
 mod no_real_clock_outside_system_clock;
 mod no_sync_or_tune_command;
@@ -247,6 +248,10 @@ pub static REGISTRY: &[Walk] = &[
         run: no_hardcoded_tmp_paths::run,
     },
     Walk {
+        name: "no_inline_suppression_comment_contract",
+        run: no_inline_suppression_comment_contract::run,
+    },
+    Walk {
         name: "no_panics_in_production",
         run: no_panics_in_production::run,
     },
@@ -432,6 +437,7 @@ mod tests {
             "loom_templates_snapshots_no_crate_root_allow",
             "loom_templates_workflow_templates_not_exported",
             "no_hardcoded_tmp_paths",
+            "no_inline_suppression_comment_contract",
             "no_thread_sleep",
             "no_tokio_sleep_outside_clock",
             "no_tokio_timeout_outside_clock",

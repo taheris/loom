@@ -96,6 +96,7 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         | "loom_does_not_invoke_podman"
         | "no_allow_dead_code"
         | "no_derive_from_on_newtypes"
+        | "no_inline_suppression_comment_contract"
         | "no_panics_in_production"
         | "no_real_clock_outside_system_clock"
         | "no_thread_sleep"
