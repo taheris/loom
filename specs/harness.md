@@ -2789,7 +2789,7 @@ Criteria.
 - `loom init` configures `.loom/integration` with the canonical
       `wrix.prekHooks` `core.hooksPath`; it does not rely on the
       operator checkout's `.git/config` hook path
-  [test?](loom_init_configures_integration_hooks_path_from_wrix_prekhooks)
+  [test](loom_init_configures_integration_hooks_path_from_wrix_prekhooks)
 - `loom loop` never touches the operator's working tree at
       `/workspace`; all dispatch runs against the loom workspace
   [test?](loom_loop_does_not_touch_operator_workspace)
@@ -2806,7 +2806,7 @@ Criteria.
       `wrix.prekHooks` `core.hooksPath` before the agent receives it;
       if the hook path is missing or drifted on redispatch, the driver
       repairs it before spawning the container
-  [test?](bead_workspace_configures_and_repairs_hooks_path)
+  [test](bead_workspace_configures_and_repairs_hooks_path)
 - Bead workspaces persist across attempts, recovery iterations,
       and `loom loop` invocations until the bead's first attempt
       after `bd close`
@@ -3116,7 +3116,7 @@ Criteria.
       `.loom/integration` has the canonical `wrix.prekHooks`
       `core.hooksPath` configured and fails loudly if the expected path
       cannot be resolved
-  [test?](push_gate_requires_integration_hooks_path_configured)
+  [test](push_gate_requires_integration_hooks_path_configured)
 - On molecule completion, after stabilization has drained promoted
       remediation, `loom loop` fetches/rebases against
       `origin/<integration-branch>`, computes the actual push range

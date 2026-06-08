@@ -52,6 +52,19 @@ pub enum GitError {
     /// $WRIX_DEPLOY_KEY points at a non-existent file: {path}
     DeployKeyMissing { path: PathBuf },
 
+    /// $WRIX_PREK_HOOKS is unset — cannot resolve canonical wrix.prekHooks hooks directory
+    PrekHooksUnresolved,
+
+    /// $WRIX_PREK_HOOKS does not point at a directory containing canonical prek hooks: {path}
+    PrekHooksMissing { path: PathBuf },
+
+    /// core.hooksPath in {workdir} is not the canonical wrix.prekHooks path: expected {expected}, found {actual}
+    HooksPathInvalid {
+        workdir: PathBuf,
+        expected: String,
+        actual: String,
+    },
+
     /// `ssh-keygen -y` failed deriving the public half of {key}: {stderr}
     SshKeygen { key: PathBuf, stderr: String },
 

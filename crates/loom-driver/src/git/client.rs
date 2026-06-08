@@ -91,6 +91,8 @@ pub struct GitClient {
     /// from production builds (RS-14).
     #[cfg(any(test, feature = "test-support"))]
     signing_key_override: Option<PathBuf>,
+    #[cfg(any(test, feature = "test-support"))]
+    prek_hooks_path_override: Option<PathBuf>,
 }
 
 impl GitClient {
@@ -144,6 +146,8 @@ impl GitClient {
             hook_timeout: GIT_HOOK_TIMEOUT,
             #[cfg(any(test, feature = "test-support"))]
             signing_key_override: None,
+            #[cfg(any(test, feature = "test-support"))]
+            prek_hooks_path_override: None,
         })
     }
 
@@ -165,6 +169,15 @@ impl GitClient {
         self.signing_key_override = Some(key);
     }
 
+    /// Test-only: force [`Self::create_worktree`] / push-gate hook
+    /// validation to use `path` instead of resolving `$WRIX_PREK_HOOKS`.
+    /// Gated behind `cfg(test)` / the `test-support` feature (RS-14).
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn set_prek_hooks_path_override(&mut self, path: PathBuf) {
+        self.prek_hooks_path_override = Some(path);
+    }
+
     /// The signing-key override set via [`Self::set_signing_key_override`],
     /// or `None`. Production builds (where the seam is compiled out) always
     /// return `None`, so the signing key resolves from the environment +
@@ -179,6 +192,41 @@ impl GitClient {
     #[cfg(not(any(test, feature = "test-support")))]
     fn signing_override(&self) -> Option<PathBuf> {
         None
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn prek_hooks_override(&self) -> Option<PathBuf> {
+        self.prek_hooks_path_override.clone()
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn prek_hooks_override(&self) -> Option<PathBuf> {
+        None
+    }
+
+    fn resolve_prek_hooks_path(&self) -> Result<PathBuf, GitError> {
+        match self.prek_hooks_override() {
+            Some(path) => {
+                super::hooks::ensure_prek_hooks_dir(&path)?;
+                Ok(path)
+            }
+            None => self.resolve_default_prek_hooks_path(),
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn resolve_default_prek_hooks_path(&self) -> Result<PathBuf, GitError> {
+        let test_hooks = self.workdir.join(".loom/test-prek-hooks");
+        if test_hooks.exists() {
+            super::hooks::ensure_prek_hooks_dir(&test_hooks)?;
+            return Ok(test_hooks);
+        }
+        super::hooks::resolve_prek_hooks_path()
+    }
+
+    #[cfg(not(any(test, feature = "test-support")))]
+    fn resolve_default_prek_hooks_path(&self) -> Result<PathBuf, GitError> {
+        super::hooks::resolve_prek_hooks_path()
     }
 
     /// Name of the integration branch this client targets (the branch
@@ -326,6 +374,7 @@ impl GitClient {
         let rel = PathBuf::from(WORKTREE_BASE).join(bead_id.as_str());
         let path = self.workdir.join(&rel);
         if path.exists() {
+            self.repair_bead_hooks_path(&path).await?;
             return Ok(CreatedWorktree { path, branch });
         }
         if let Some(parent) = path.parent() {
@@ -388,6 +437,7 @@ impl GitClient {
         .await?;
 
         ensure_wrix_mount_dir(&path)?;
+        self.repair_bead_hooks_path(&path).await?;
 
         // No signing block is written into the bead clone. The clone is the
         // workspace wrix bind-mounts into the bead container, where the
@@ -484,6 +534,36 @@ impl GitClient {
             None,
         )
         .await
+    }
+
+    /// Configure a bead clone's local `core.hooksPath` from wrix's
+    /// canonical prek hooks directory.
+    pub async fn repair_bead_hooks_path(&self, path: &Path) -> Result<(), GitError> {
+        let hooks_path = self.resolve_prek_hooks_path()?;
+        let value = hooks_path.to_string_lossy().into_owned();
+        run_git(
+            path,
+            self.clock.as_ref(),
+            ["config", "core.hooksPath", &value],
+            None,
+        )
+        .await
+    }
+
+    /// Validate the loom integration workspace's local `core.hooksPath`.
+    pub async fn validate_loom_hooks_path_configured(&self) -> Result<(), GitError> {
+        let expected = self.resolve_prek_hooks_path()?;
+        let workdir = self.loom_workspace();
+        let actual = read_config_value(&workdir, self.clock.as_ref(), "core.hooksPath").await?;
+        let expected_value = expected.to_string_lossy().into_owned();
+        if actual.as_deref() == Some(expected_value.as_str()) {
+            return Ok(());
+        }
+        Err(GitError::HooksPathInvalid {
+            workdir,
+            expected: expected_value,
+            actual: actual.unwrap_or_else(|| "<unset>".to_string()),
+        })
     }
 
     /// Remove a per-bead workspace directory.
@@ -689,6 +769,7 @@ impl GitClient {
     /// because the remote's pre-push hook (or loom's own pre-push hook on
     /// the GitHub publish) runs the workspace's pre-push CI stage.
     pub async fn push(&self) -> Result<(), GitError> {
+        self.validate_loom_hooks_path_configured().await?;
         let workdir = self.loom_workspace();
         let integration_branch = self.integration_branch.as_str();
         let remote_ref = format!("origin/{integration_branch}");
@@ -1484,7 +1565,21 @@ pub fn init_test_repo_with_integration_branch(
     )?;
     run_test_git(&loom_workspace, &["config", "user.name", "Test"])?;
     run_test_git(&loom_workspace, &["config", "commit.gpgsign", "false"])?;
+    let hooks = ensure_test_prek_hooks(path)?;
+    super::hooks::write_hooks_config(&loom_workspace, &hooks)?;
     GitClient::open_with_integration_branch(path, branch.to_string())
+}
+
+fn ensure_test_prek_hooks(path: &Path) -> Result<PathBuf, GitError> {
+    use std::os::unix::fs::PermissionsExt;
+    let hooks = path.join(".loom/test-prek-hooks");
+    std::fs::create_dir_all(&hooks)?;
+    for hook in ["pre-commit", "pre-push"] {
+        let script = hooks.join(hook);
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n")?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(hooks)
 }
 
 fn init_bare_test_repo(path: &Path, branch: &str) -> Result<GitClient, GitError> {

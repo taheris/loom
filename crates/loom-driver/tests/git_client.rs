@@ -50,6 +50,92 @@ fn loom_path(repo: &Path) -> std::path::PathBuf {
     repo.join(".loom/integration")
 }
 
+fn fake_prek_hooks(repo: &Path) -> Result<std::path::PathBuf> {
+    let hooks = repo.join("fake-prek-hooks");
+    std::fs::create_dir_all(&hooks)?;
+    for hook in ["pre-commit", "pre-push"] {
+        std::fs::write(hooks.join(hook), "#!/bin/sh\n")?;
+    }
+    Ok(hooks)
+}
+
+fn git_config_get(repo: &Path, key: &str) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["config", "--get", key])
+        .output()
+        .with_context(|| format!("spawn git config --get {key}"))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "git config --get {key} exited with {}",
+        output.status,
+    );
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+#[tokio::test]
+async fn bead_workspace_configures_and_repairs_hooks_path() -> Result<()> {
+    let repo = init_repo()?;
+    let hooks = fake_prek_hooks(repo.path())?;
+    let mut client = GitClient::open(repo.path())?;
+    client.set_prek_hooks_path_override(hooks.clone());
+
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("lm-hooks.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+    assert_eq!(
+        git_config_get(&created.path, "core.hooksPath")?,
+        hooks.display().to_string()
+    );
+
+    let drifted = repo.path().join("drifted-hooks").display().to_string();
+    git(&created.path, &["config", "core.hooksPath", &drifted])?;
+    let repaired = client.create_worktree(&label, &bead).await?;
+    assert_eq!(repaired.path, created.path);
+    assert_eq!(
+        git_config_get(&created.path, "core.hooksPath")?,
+        hooks.display().to_string()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn push_gate_requires_integration_hooks_path_configured() -> Result<()> {
+    let repo = init_repo()?;
+    let hooks = fake_prek_hooks(repo.path())?;
+    let mut client = GitClient::open(repo.path())?;
+    client.set_prek_hooks_path_override(hooks.clone());
+    git(
+        &loom_path(repo.path()),
+        &["config", "--unset", "core.hooksPath"],
+    )?;
+
+    let err = client
+        .validate_loom_hooks_path_configured()
+        .await
+        .expect_err("missing hooksPath must fail");
+    assert!(matches!(err, GitError::HooksPathInvalid { actual, .. } if actual == "<unset>"));
+
+    let drifted = repo.path().join("drifted-hooks").display().to_string();
+    git(
+        &loom_path(repo.path()),
+        &["config", "core.hooksPath", &drifted],
+    )?;
+    let err = client
+        .push()
+        .await
+        .expect_err("push gate must fail before pre-push when hooksPath drifts");
+    assert!(matches!(err, GitError::HooksPathInvalid { actual, .. } if actual == drifted));
+
+    git(
+        &loom_path(repo.path()),
+        &["config", "core.hooksPath", &hooks.display().to_string()],
+    )?;
+    client.validate_loom_hooks_path_configured().await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn create_and_remove_worktree_round_trip() -> Result<()> {
     let repo = init_repo()?;

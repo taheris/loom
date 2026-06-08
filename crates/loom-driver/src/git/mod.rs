@@ -12,6 +12,7 @@
 
 mod client;
 mod error;
+mod hooks;
 mod signing;
 
 pub use client::{
@@ -22,6 +23,9 @@ pub use client::{
     status_porcelain_sync, sync_head_commit_sha, sync_rev_parse,
 };
 pub use error::GitError;
+pub use hooks::{
+    WRIX_PREK_HOOKS_ENV, resolve_prek_hooks_path, validate_hooks_config, write_hooks_config,
+};
 // `GitOid` lives in the public-contract leaf `loom-protocol::oid` so the
 // typed retry-context surface in `loom-templates`
 // (`PreviousFailure::IntegrationConflict { new_base_sha: GitOid }`) can

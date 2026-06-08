@@ -743,6 +743,7 @@ where
         // codes are NOT fatal to `run_loop` (they drive fix-up beads on
         // the next outer-loop pass), but spawn failures and missing
         // molecule metadata DO surface as `LoopError`.
+        self.git.validate_loom_hooks_path_configured().await?;
         let base = fetch_molecule_base_commit(&self.bd, &self.workspace, &self.label).await?;
         let diff_range = format!("{base}..HEAD");
         let verify_status = Command::new(&self.loom_bin)
