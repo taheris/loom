@@ -36,12 +36,12 @@ One template per phase, plus per-mode variants:
 - `todo_new.md`, `todo_update.md`
 - `loop.md`, `review.md`, `msg.md`
 
-`loom gate verify` is deterministic — it runs verifiers, audits,
-and linters without rendering any agent prompt — so it has no
-template. `loom gate review` is the LLM-judged counterpart and
-has its own template, distinct from `loop.md` because the review
-session has different inputs (diff, bead intent, sibling diffs,
-prior `loom gate verify` results) and a rubric-walk objective
+`loom gate verify` is deterministic — it runs project hooks,
+verifiers, audits, and linters without rendering any agent prompt — so
+it has no template. `loom gate review` is the LLM-judged counterpart
+and has its own template, distinct from `loop.md` because the review
+session has different inputs (diff, molecule/bead context, sibling
+diffs, typed deterministic gate evidence) and a rubric-walk objective
 rather than an implement-the-bead objective.
 
 Each template has a matching `#[derive(Template)]` context struct
@@ -73,7 +73,7 @@ Current set:
 | `decomposition_discipline.md` | Pin the audit-before-fan-out rule on `todo_new` / `todo_update`: every bead must correspond to evidence-confirmed missing work, not a spec criterion in the abstract — see *Decomposition Discipline* below |
 | `plan_stage_rubric.md` | Gate the planning interview on completeness / coherence / invariant-clash before any commit. Carries the **pending-modifier discipline** prominently — see *Planning-Rubric Pending Discipline* below for what the partial body must spell out, including the "modified annotations" case the rule must explicitly cover (not only newly-added ones). |
 | `invariant_clash.md` | Describe the invariant-clash awareness scan (included transitively via `plan_stage_rubric.md`) |
-| `review_rubric.md` | Per-diff review rubric — see [gate.md](gate.md) |
+| `review_rubric.md` | Finite-diff / push-range review rubric — see [gate.md](gate.md) |
 | `sibling_spec_editing.md` | Authorize cross-spec edits during a planning session |
 
 ### Style-Rules Partial
@@ -313,14 +313,14 @@ pub enum PreviousFailure {
     /// entries by the driver before construction.
     TreeNotClean { dirty_paths: Vec<String> },
 
-    /// Bead-workspace verify passed, but the loom-workspace per-bead
-    /// integration step's `loom gate verify` against the integrated
-    /// tree failed (cross-bead interaction, rebase-induced breakage,
-    /// integration-tree state no bead-workspace verify could
+    /// Bead-workspace self-check may have passed, but the loom-workspace
+    /// per-bead integration step's `loom gate verify` against the
+    /// integrated tree failed (cross-bead interaction, rebase-induced
+    /// breakage, integration-tree state no bead-workspace verify could
     /// anticipate). The integration was rolled back via
     /// `git reset --hard HEAD~1`. Carries the verifier-failure list
-    /// and durable gate-log path directly; focused review runs only
-    /// after this verify succeeds, so review concerns route through
+    /// and durable gate-log path directly. Review concerns are produced
+    /// by the molecule-completion review and route through
     /// `ReviewConcern` or `BadWalk` rather than this variant.
     PostIntegrateFail {
         failures: Vec<VerifierFailure>,
@@ -493,6 +493,21 @@ This single generic reframe forces the agent to acknowledge the
 prior failure as actionable input rather than skim past it. The
 per-variant framing (above) carries the cause-specific detail; the
 top-of-prompt reframe just establishes the directive.
+
+### Loop completion self-check and self-review
+
+`loop.md`'s quality-gate block instructs the worker to finish by
+verifying the exact injected bead range, not by relying on a working-
+tree shorthand. The rendered command names
+`loom gate verify --diff <bead-base>..HEAD` (or `@{u}..HEAD` only when
+the upstream is the injected base), and tells the agent to rerun the
+self-check after any later commit or hook-generated file change. The
+prompt also requires a structured self-review before the final marker:
+re-read the bead's criteria, inspect the final diff, check style/spec
+fit, and either fix the issue or emit the appropriate worker self-report
+marker. This is prompt-level feedback discipline; the driver-side trust
+boundary remains the post-integration verify and molecule push gate in
+[harness.md](harness.md).
 
 ### Agent-Output Markers
 
@@ -1241,6 +1256,21 @@ documents in front of the agent with zero configuration.
 - Reframe wording is generic (one form regardless of variant);
   per-variant detail lives inside the previous-failure block itself
   [check](grep -q 'Re-read the previous failure block above' crates/loom-templates/templates/loop.md)
+
+### Loop completion self-check and self-review
+
+- `loop.md` instructs the worker to run
+  `loom gate verify --diff <bead-base>..HEAD` (or `@{u}..HEAD` only
+  when upstream is that base) before emitting `LOOM_COMPLETE`; it does
+  not name `loom gate verify --diff HEAD` as the final self-check
+  [test?](run_template_uses_injected_self_check_range_not_head_shorthand)
+- `loop.md` tells the worker to rerun the self-check after any later
+  commit or hook-generated file change
+  [test?](run_template_requires_self_check_rerun_after_post_check_changes)
+- `loop.md` requires prompt-level self-review before the final marker:
+  re-read criteria, inspect the final diff, check style/spec fit, and
+  fix issues or emit `LOOM_RETRY` / `LOOM_CLARIFY` / `LOOM_BLOCKED`
+  [judge](../tests/judges/loom.sh#judge_loop_self_review_before_complete)
 
 ### Public surface
 

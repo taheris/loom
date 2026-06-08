@@ -130,7 +130,7 @@ loom/
 
 tests/
   loom/
-    default.nix               # Nix derivation: `loom gate verify`
+    default.nix               # Nix derivation: explicit `loom gate` tiers
     run-tests.sh              # Container smoke harness (single happy-path)
     mock-pi/pi.sh             # Mock pi (scoped scenario modes)
     mock-claude/claude.sh     # Mock claude (scoped scenario modes)
@@ -504,10 +504,11 @@ let
   inherit (loomPackage) craneLib;
 in
 {
-  # Deterministic verifiers — invokes `loom gate verify` which dispatches
+  # Deterministic verifiers — invokes explicit tier subcommands:
   # `[check]` (one subprocess per `cargo run -p loom-walk -- …` annotation)
   # and `[test]` (one batched `cargo nextest run -E 'test(…)'` over every
-  # annotated test path). `[system]` is excluded via LOOM_VERIFY_TIERS
+  # annotated test path). `[system]` is excluded by composing explicit
+  # tier subcommands (`loom gate check --tree` + `loom gate test --tree`)
   # because its verifiers shell out to `nix build`, `nix run`, and
   # `podman`, none of which exist inside the nix build sandbox. The
   # craneLib custom-derivation pattern threads cargoArtifacts, staged
@@ -525,7 +526,8 @@ in
       loom --version
     '';
     checkPhaseCargoCommand = ''
-      LOOM_VERIFY_TIERS=check,test loom gate verify
+      loom gate check --tree
+      loom gate test --tree
     '';
   };
 
@@ -551,7 +553,7 @@ workspace test as a wide safety net. Grep-tier `[check]` annotations
 across specs use paths relative to the staged-source root (which mirrors
 the `loom/` workspace flattened to `$out/` plus host files like
 `lib/sandbox/linux/entrypoint.sh` mirrored under their host paths), so
-the verify loop runs unscoped — no `--spec` filter.
+the explicit tier commands run at tree scope with no `--spec` filter.
 `loom-smoke` is exposed as an app on Linux only.
 
 ## Success Criteria
@@ -716,10 +718,11 @@ the rules:
 
 ### CI integration
 
-- `tests` derivation is exposed for `nix build` and invokes
-      `loom gate verify` (which batches `cargo nextest run` for the
-      `[test]` tier and dispatches per-annotation subprocesses for
-      `[check]`); it joins the flake `checks` set under `rustChecks`
+- `tests` derivation is exposed for `nix build` and invokes explicit
+      `loom gate check --tree` / `loom gate test --tree` tier commands
+      (batching `cargo nextest run` for `[test]` and dispatching
+      per-annotation subprocesses for `[check]`); it joins the flake
+      `checks` set under `rustChecks`
   [check](grep -q 'loom-tests = loomDeriv.loomTests' tests/default.nix)
 - `nix run .#test` exists as a `writeShellApplication` exposed
       on Linux platforms
@@ -1156,8 +1159,9 @@ the rules:
    CI-only `nix run .#test-ci` app. The container smoke remains exposed
    as a separate `nix run .#test` app because it needs podman at runtime;
    its acceptance criterion is annotated `[system](nix run .#test)`.
-   Pre-push runs clippy plus targeted `loom gate verify --diff` with
-   `LOOM_VERIFY_TIERS=check,test`; composition, stage budgets, and lock
+   Pre-push runs clippy plus targeted `loom gate verify --diff`; scope-
+   derived gate policy excludes `[system]` from finite diff verification
+   while project-specific hook composition, stage budgets, and lock
    semantics live in [pre-commit.md](pre-commit.md).
 6. **Real bd** — the container smoke runs against live `bd` (not a
    mock). The integration tier may mock `bd` where the test concern

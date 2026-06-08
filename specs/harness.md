@@ -591,9 +591,10 @@ origin push:
 - Concurrent rebase + ff into the integration branch is serialized
   by git's own `index.lock` in the loom workspace; the losing
   process surfaces a clear error and retries.
-- Concurrent `git push` from `loom gate verify` to
-  `origin/<integration-branch>` produces non-fast-forward on the
-  second push; the gate's push gate re-fetches and retries.
+- Concurrent driver push gates pushing to `origin/<integration-branch>`
+  produce non-fast-forward on the second push; the losing push gate
+  re-fetches, rebases, reruns verification/review for the new actual
+  push range, and retries.
 
 These are accepted, recoverable failure modes — not silent corruption —
 which is why a workspace-wide lock is *not* required for `loop` /
@@ -614,11 +615,18 @@ error: loom cannot run inside a loom-managed container
   spec) are still available.
 ```
 
-**Refused inside container:** `loop`, `init`, `plan`, `gate`, `todo`,
-`msg`, `use`.
+**Refused inside container:** driver/workspace-mutating or managed-
+session-spawning surfaces: `loop`, `init`, `plan`, `todo`, `msg`,
+`use`, `loom gate mint`, and LLM-spawning gate subcommands (`review`,
+`judge`, `rubric`, `audit`).
 
-**Allowed inside container:** `status`, `logs`, `spec` (read-only;
-useful for an agent inspecting bead history during its own task).
+**Allowed inside container:** `status`, `logs`, `spec`, and deterministic
+gate inspection subcommands (`loom gate verify`, `check`, `test`,
+`system`, `status`, `verify-marker`). The bead workspace is the agent's
+worktree, so self-check commands such as
+`loom gate verify --diff <base>..HEAD` are part of normal
+implementation feedback; driver-spawning, LLM-spawning, and bd-mutating
+surfaces are banned.
 
 The guard is mechanical, not advisory: a single env-var check at CLI
 entry, before any subcommand dispatch.
@@ -681,6 +689,14 @@ a single file. Per-event flush is mandatory so downstream consumers
 (`tail -f`, SSE bridges, CI ingest) see events at emit time, not at
 OS-buffer cadence. The path is logged at `info!` when the spawn
 starts.
+
+Gate invocations that run outside an agent session write their own raw
+JSONL logs under `.loom/logs/gate/<scope-or-bead>-<utc>.jsonl` using
+the same `AgentEvent` stream and flush contract. A parent bead/session
+log records the gate log path as a breadcrumb rather than sharing the
+same file, so concurrent gate subprocesses never interleave. A
+gate-run `start` event without a matching `end` event is an incomplete
+or interrupted gate, not a success.
 
 **Retention.** Logs older than `[logs] retention_days` (default 14)
 are deleted on `loom loop` startup. `retention_days = 0` disables
@@ -770,17 +786,25 @@ an invariant structurally:
   `match` plus graceful unknown-handling.
 
 **Driver events.** `driver_event` carries a `driver_kind` string
-discriminator (`verdict_gate`, `retry_dispatch`, `push_gate_walk`,
+discriminator plus a free-form `summary` and structured `payload`. The
+Rust producer surface uses the typed `DriverKind` enum (with
+`Other(String)` for unknown wire values), so producing code cannot typo
+kind strings while consumers remain forward-compatible. The closed
+producer set includes verdict / retry / push / container / infra /
+observer variants (`verdict_gate`, `retry_dispatch`, `push_gate_walk`,
 `push_gate_refuse`, `push_gate_clean`, `container_spawn`,
 `container_oom`, `infra_failure`, `doom_loop_tripped`,
-`duplicate_tool_result`, `token_usage`, …) plus a free-form `summary`
-and structured `payload`. Adding a new producing variant is additive
-on the wire — older consumers fall through to a generic render via
-`DriverKind::Other`. The observer-emitted variants
-(`doom_loop_tripped`, `duplicate_tool_result`, `token_usage`)
-originate in `llm` rather than `loom-driver`, so they fire on
-both Loom-binary runs and external consumer-driven `Conversation`
-runs.
+`duplicate_tool_result`, `token_usage`) plus gate and routing variants:
+`gate_run_start`, `gate_run_scope`, `gate_run_lane`, `gate_run_end`,
+`gate_run_skipped`, `marker_routed`, `clarify_downgraded`,
+`bd_state_transition`, and `epic_auto_closed`. Payloads are typed at
+producing/consuming sites
+that Loom relies on (`GateRun`, marker routing, clarify downgrade, bd
+transition); render-only consumers may treat them as generic JSON. The
+observer-emitted variants (`doom_loop_tripped`,
+`duplicate_tool_result`, `token_usage`) originate in `llm` rather than
+`loom-driver`, so they fire on both Loom-binary runs and external
+consumer-driven `Conversation` runs.
 
 **Schema versioning.** `agent_start` carries `schema_version: u32`
 (currently `1`). Adding new variants, new fields on existing
@@ -907,14 +931,15 @@ mental model already in muscle memory.
 
 ### Verdict Gate
 
-After every agent phase ends, the verdict gate evaluates the result
-before the bead's state can advance. The gate runs in two passes:
-`loom gate verify` (deterministic — mechanical signals, `[check]` /
-`[test]` / `[system]` verifiers, style linters) followed by `loom
-gate review` (LLM-judged rubric). The review rubric, inputs, and
-concerns are defined in [gate.md](gate.md); this section
-retains the execution layer — the decision table, recovery mechanics,
-markers, labels, and infra-failure handling.
+After every worker agent phase ends, the verdict gate classifies the
+agent's terminal marker and mechanical state before the bead's state can
+advance. Implementation beads then pass a deterministic post-integration
+`loom gate verify --diff <pre-integration-head>..HEAD` at the loom
+workspace before their integration is durable. LLM review is the
+molecule-completion push-range step, not a default per-bead pass. The
+review rubric, inputs, and concerns are defined in [gate.md](gate.md);
+this section retains the execution layer — the decision table, recovery
+mechanics, markers, labels, and infra-failure handling.
 
 **Where the gate runs — two stages at the loom workspace.**
 
@@ -961,45 +986,45 @@ atomic under the lock:
    "pass 1" (worker-side signing broken) from "pass 2"
    (driver-side signing broken) so the operator knows where to
    look.
-5. **FF-merge** the bead branch into the integration branch and
-   run `prek run --hook-stage pre-push --all-files` against the
-   integrated tree (cargo + clippy + nextest + `loom gate
-   verify`). On verify-pass, run focused LLM inspection with
-   `loom gate review -b <id>` (see [gate.md § Stages](gate.md#stages)).
-   Blocking findings retry the same bead; deferred findings are merged
-   into `loom:deferred` remediation beads; clarify findings materialize
-   a human-decision bead. No per-bead `loom gate mint`, no marker mint,
-   no push.
+5. **FF-merge** the bead branch into the integration branch and run
+   deterministic post-integration verification:
+   `loom gate verify --diff <pre-integration-head>..HEAD`. The run
+   executes the project pre-commit lane via prek plus affected
+   `[check]` / `[test]` annotations. On failure, roll back the
+   integration branch and retry/reopen the same bead with the gate log
+   path in `previous_failure`. No per-bead focused LLM review, no
+   per-bead `loom gate mint`, no marker mint, no push.
 6. **Delete the transient `loom/<id>` ref** with `git branch -D`,
    unconditionally — whether the path exited cleanly, rolled
    back from audit-fail, or aborted from rebase conflict. The
    bead clone keeps its copy of the branch until the bead's
    workspace is reaped on `bd close`.
 
-On audit-fail, the integration is rolled back via
-`git reset --hard HEAD~1` and the bead routes to recovery with
-cause `post-integrate-fail`. On audit-pass, the bead's integration
-is durable and the lock is released. Focused review findings do not
-spawn ready child beads in the hot path: blocking findings retry the
-same bead, deferred findings stay hidden under `status=deferred` /
-`loom:deferred`, and clarify findings block only the human-decision
-path. Structural bd conflicts while recording deferred or clarify
-findings park the completed bead as `loom:blocked` with cause
-`gate-routing-structural-violation`; integration stays durable.
+On deterministic verify failure, the integration is rolled back to the
+pre-integration head and the bead routes to recovery with cause
+`post-integrate-fail`. On verify-pass, the bead's integration is
+durable and the lock is released. Stage-2 failures discovered later at
+molecule completion create or reuse same-molecule remediation beads;
+they do not reopen already-integrated original beads. When attribution
+is possible, the remediation detail records whether the failure appears
+stage1-eligible, push-only, or unknown.
 
-Molecule-completion push gate runs at the **loom workspace** after
-all beads in the molecule have integrated and deferred remediation has
-stabilized: full audit (`prek run --hook-stage pre-push --all-files` +
-`loom gate audit --diff <molecule.base_commit>..HEAD`), mint
-`MarkerProof`, then
+Molecule-completion push gate runs at the **loom workspace** after all
+beads in the molecule have integrated and deferred remediation has
+stabilized. The driver fetches origin, rebases local integration commits
+when `origin/<integration-branch>` advanced, computes the actual push
+range `origin/<integration-branch>..HEAD`, runs the actual prek pre-push
+chain for that range, runs `loom gate review --diff <actual-push-range>`
+only after deterministic pre-push success, mints `MarkerProof`, then
 `git push origin <integration-branch>`. The critical section spans
-**audit + mint + push** atomically — releasing the lock between
-mint and push would let another verdict gate's rebase mutate HEAD,
-invalidating the just-minted marker. prek's pre-push hook chain
-fires on the push; the `pre-push-checks` wrapper around each
-slow-tier hook reads the just-minted marker (via `loom gate
-verify-marker` or equivalent marker-validation logic) and
-short-circuits the slow tier on a valid marker.
+**fetch/rebase + pre-push verify + review + mint + push** atomically —
+releasing the lock between mint and push would let another verdict
+gate's rebase mutate HEAD, invalidating the just-minted marker. If
+origin advances again and push becomes non-fast-forward, the old gate
+evidence is invalid and the driver fetches/rebases/reruns the gate.
+prek's pre-push hook chain fires on the push; the `pre-push-checks`
+wrapper around each hook reads the just-minted marker and short-
+circuits only hooks covered by the marker.
 
 Both stages at the loom workspace are load-bearing for
 parallel-agent correctness: the marker bound to HEAD's tree OID
@@ -1015,46 +1040,47 @@ molecule remediation has had a chance to drain.
 
 **Cost and queue depth.** Parallel beads complete in their bead
 containers concurrently, but their loom-workspace integration
-steps serialize. Each per-bead pass pays deterministic verify plus a
-focused LLM review; broad remediation is amortized in the molecule
-stabilization step instead of reminting tiny per-bead work. The
-per-molecule push gate adds ~30–90s (review LLM call). At high
-parallelism (N beads landing simultaneously),
+steps serialize. Each per-bead pass pays deterministic verify only;
+broad LLM review and remediation are amortized in the molecule
+stabilization/push step instead of reminting tiny per-bead work. The
+per-molecule push gate adds the pre-push deterministic chain plus one
+review LLM call. At high parallelism (N beads landing simultaneously),
 queue depth × per-pass time is the integration tail. For typical
 workloads (N ≤ 4) this is sub-5min; for higher N, the queue is
 the bottleneck and the throughput gain from per-bead-container
 parallelism caps.
 
-**Bead-container self-verify is feedback only.** The bead workspace
-inherits `core.hooksPath` from the loom workspace's `wrix.prekHooks`
-installation (see [pre-commit.md § Agent self-verify in the bead
-container](pre-commit.md)), so prek fires on the agent's commits,
-catching treefmt drift, integrity findings, and obvious cargo
-failures in-session. It is **not** the
-trust source for the marker. The driver's verdict gate at the loom
-workspace runs its own independent audit; the agent cannot mint a
-`MarkerProof` and cannot bypass driver verification by emitting a
-structured "I verified" report. The agent's hook chain is a
-feedback layer that reduces wasted recovery iterations, not an
-authorization mechanism.
+**Bead-container self-verify is feedback only.** The driver configures
+the bead workspace's `core.hooksPath` to the canonical
+`wrix.prekHooks` installation (see [pre-commit.md § Agent self-verify
+in the bead container](pre-commit.md)), so prek fires on the agent's
+commits, catching treefmt drift, integrity findings, and project hook
+failures in-session. It is **not** the trust source for the marker. The
+driver's verdict gate at the loom
+workspace runs its own independent deterministic integration gate and
+push-range review; the agent cannot mint a `MarkerProof` and cannot
+bypass driver verification by emitting a structured "I verified" report.
+The agent's hook chain is a feedback layer that reduces wasted recovery
+iterations, not an authorization mechanism.
 
 **Marker mint at the molecule-completion push gate.** Per
 [gate.md § Marker](gate.md#marker), the mint trigger is the
-molecule-completion push gate's audit-pass: the gate constructs
-`GateSuccess`, calls
-`MarkerProof::from_gate_success(success, loom_workspace)`, writes
-the sealed marker atomically to `.loom/marker.json`, then
-runs the integration push — all inside the same critical section.
-prek's pre-push hook chain fires on the push; the `pre-push-checks`
-wrapper around each slow-tier hook reads the just-minted marker and
-short-circuits the underlying command (per
+molecule-completion push gate's typed `GateSuccess`: the gate verifies
+and reviews the actual push range, constructs `GateSuccess`, calls
+`MarkerProof::from_gate_success(success, loom_workspace)`, writes the
+sealed marker atomically to `.loom/marker.json`, then runs the
+integration push — all inside the same critical section. prek's
+pre-push hook chain fires on the push; the `pre-push-checks` wrapper
+around each hook reads the just-minted marker and short-circuits only
+when that hook is covered by the marker (per
 [pre-commit.md § Marker integration](pre-commit.md#marker-integration)).
-There is no standalone `loom gate verify-marker` hook gating the
-chain; the wrapper is the marker's only push-time consumer, and
-marker absence is a fall-through condition (operator-manual push),
-not a push failure. Per-bead integration steps do not mint markers
-(they do not push); the marker is one per molecule, covering the
-cumulative integrated state. The marker's content-addressed
+There is no standalone `loom gate verify-marker` hook gating the chain;
+the wrapper is the marker's only push-time consumer, and marker absence
+is a fall-through condition (operator-manual push), not a push failure.
+Per-bead integration steps do not mint markers (they do not push); the
+marker is one per push-range gate, covering the cumulative integrated
+state and the exact origin range being pushed. The marker's
+content-addressed
 validation is what makes the push fast in the warm-driver-loop
 case without trusting an unverified stamp.
 
@@ -1100,35 +1126,30 @@ is consulted.
 
 **Decision table** (worker sessions only — interactive sessions
 short-circuit before this table is consulted, per *Interactive vs
-worker sessions* above). The gate inspects five signals — the
-agent's exit marker, whether the bead was bd-closed, whether the
-bead-branch diff is empty (no commits since dispatch), whether the
-working tree is clean (`git status --porcelain` empty), and the
-review verdict — and produces one of four outcomes (`done`,
-`blocked`, `clarify`, or `recovery` with a cause):
+worker sessions* above). The gate inspects four signals — the agent's
+exit marker, whether the bead was bd-closed, whether the bead-branch
+diff is empty (no commits since dispatch), and whether the working tree
+is clean (`git status --porcelain` empty). It produces `blocked`,
+`clarify`, `recovery` with a cause, or a clean worker result that may
+then enter post-integration verification:
 
-| Marker | bd-closed | Diff | Tree clean | Review | Outcome |
-|--------|-----------|------|------------|--------|---------|
-| `LOOM_BLOCKED` | — | — | — | — | `blocked` |
-| `LOOM_CLARIFY` | — | — | — | — | `clarify` |
-| `LOOM_RETRY` | — | — | — | — | recovery (`agent-retry`) |
-| (none) | — | — | — | — | recovery (`swallowed-marker` OR `observer-abort`; see below) |
-| `LOOM_COMPLETE` | no | — | — | — | recovery (`incomplete-signaling`) |
-| `LOOM_COMPLETE` | yes | empty | — | — | recovery (`zero-progress`) |
-| `LOOM_COMPLETE` | yes | non-empty | no | — | recovery (`tree-not-clean`) |
-| `LOOM_COMPLETE` | yes | non-empty | yes | verify-fail (review may also raise a concern) | recovery (`verify-fail`; review notes appended if any) |
-| `LOOM_COMPLETE` | yes | non-empty | yes | verify-pass + review-concern | recovery (`review-concern`) |
-| `LOOM_COMPLETE` | yes | non-empty | yes | verify-pass + review-bad-walk | recovery (`bad-walk`) |
-| `LOOM_COMPLETE` | yes | non-empty | yes | verify-pass + review-pass | `done` |
-| `LOOM_NOOP` | yes | * | no | — | recovery (`tree-not-clean`) |
-| `LOOM_NOOP` | yes | * | yes | verify-fail (review may also raise a concern) | recovery (`verify-fail`; review notes appended if any) |
-| `LOOM_NOOP` | yes | * | yes | verify-pass + review-concern | recovery (`review-concern`) |
-| `LOOM_NOOP` | yes | * | yes | verify-pass + review-bad-walk | recovery (`bad-walk`) |
-| `LOOM_NOOP` | yes | * | yes | verify-pass + review-pass | `done` |
+| Marker | bd-closed | Diff | Tree clean | Outcome |
+|--------|-----------|------|------------|---------|
+| `LOOM_BLOCKED` | — | — | — | `blocked` |
+| `LOOM_CLARIFY` | — | — | — | `clarify` |
+| `LOOM_RETRY` | — | — | — | recovery (`agent-retry`) |
+| (none) | — | — | — | recovery (`swallowed-marker` OR `observer-abort`; see below) |
+| `LOOM_COMPLETE` | no | — | — | recovery (`incomplete-signaling`) |
+| `LOOM_COMPLETE` | yes | empty | — | recovery (`zero-progress`) |
+| `LOOM_COMPLETE` | yes | non-empty | no | recovery (`tree-not-clean`) |
+| `LOOM_COMPLETE` | yes | non-empty | yes | clean worker result; proceed to post-integration verify |
+| `LOOM_NOOP` | no | — | — | recovery (`incomplete-signaling`) |
+| `LOOM_NOOP` | yes | * | no | recovery (`tree-not-clean`) |
+| `LOOM_NOOP` | yes | empty | yes | `done` (intentional no-work result) |
 
 In the table above, `—` means the signal isn't inspected because an
-earlier signal already determined the outcome (e.g. an agent self-report
-short-circuits before review runs); `*` means any value is accepted.
+earlier signal already determined the outcome; `*` means any value is
+accepted.
 
 **Loom-workspace integration outcomes.** The decision table covers
 the per-bead exit signals. Independently, the per-bead integration
@@ -1246,24 +1267,30 @@ because a promoted remediation bead getting picked up *is* a molecule
 pass — the two concepts collapse onto one molecule-level counter, with
 in-session retry left to `[loop] max_retries` (default 2).
 
-**Mechanical vs review.** Marker parsing, bd-closed lookup, and diff
-inspection are deterministic. The gate then runs **every**
-`[check]` / `[test]` / `[system]` verifier attached to the bead's
-success criteria (see [gate.md](gate.md)) — none
-short-circuit each other. Per verifier, the gate captures pass/fail
-+ stderr.
+**Mechanical integration gate.** Marker parsing, bd-closed lookup,
+diff inspection, and tree cleanliness are deterministic. After the bead
+rebases and fast-forwards into `.loom/integration`, the driver runs
+`loom gate verify --diff <pre-integration-head>..HEAD` against the
+integrated tree. That verify run executes the project pre-commit lane
+through prek and the affected `[check]` / `[test]` annotation lane per
+[gate.md](gate.md); `[system]` is not part of the finite diff default.
+Per verifier/hook, the gate captures pass/fail, stderr tail, and gate
+log path.
 
-**Focused review runs after deterministic success.** If verify fails,
-mechanical failure is sufficient grounds for same-bead recovery and the
-focused review is skipped for that attempt. When verify passes,
-`loom gate review -b <id>` runs the focused rubric against the bead's
-accepted deterministic diff.
+Mechanical failure is sufficient grounds for same-bead recovery. The
+integration branch is rolled back to `<pre-integration-head>`, the
+worker's provisional `bd close` is reopened/retried according to the
+existing recovery policy, and `PreviousFailure::PostIntegrateFail`
+carries the durable gate log path. The default per-bead hot path does
+not spawn a focused LLM reviewer session; the implementation prompt
+requires worker self-review before `LOOM_COMPLETE`, and authoritative
+LLM review runs once at molecule completion over the actual push range.
 
-A `LOOM_CONCERN` marker from the review phase carries the parsed
+A `LOOM_CONCERN` marker from a review phase carries the parsed
 `{"summary": "..."}` payload plus the buffered `LOOM_FINDING:` records
 the walk streamed. Per-finding routing is decided by each finding's
-`route`: `blocking` enters same-bead recovery with cause
-`review-concern`, `deferred` merges into a `status=deferred` /
+`route`: `blocking` refuses the push and creates or reuses same-
+molecule remediation work, `deferred` merges into a `status=deferred` /
 `loom:deferred` molecule remediation bead, and `clarify` raises one
 `loom:clarify` bead per finding hash with the `## Options — …` block
 extracted from `evidence`. A clarify-route finding whose evidence lacks
@@ -1300,11 +1327,15 @@ markers route distinctly:
   / `LOOM_CLARIFY` directly if the same problem persists rather than
   re-emitting `LOOM_RETRY`.
 
-**Driver-detected causes flow through recovery.** Swallowed marker,
-incomplete signaling, zero-progress, tree-not-clean, verify-fail,
-blocking review-concern, and bad-walk all enter the same-bead recovery
-loop. Deferred review findings do not create ready work immediately;
-they merge into deferred remediation beads.
+**Driver-detected causes flow through the stage's recovery surface.**
+Worker-session causes (swallowed marker, incomplete signaling, zero-
+progress, tree-not-clean, verify-fail, observer-abort, agent-retry, and
+post-integrate-fail) enter same-bead recovery. Push-range review
+concerns or bad walks refuse the push and route through same-molecule
+remediation or human-resolution paths; already-integrated original
+beads are not reopened solely because molecule review failed. Deferred
+review findings do not create ready work immediately; they merge into
+deferred remediation beads.
 
 **Remediation beads bond to the originating molecule.** Every deferred,
 promoted, tree-sweep, or clarify remediation bead created by the gate is
@@ -1346,14 +1377,14 @@ capped, total truncated to `PREVIOUS_FAILURE_MAX_LEN = 4000` chars):
 | `zero-progress` | `DriverNotice` | "Marker `LOOM_COMPLETE` emitted with empty diff. Use `LOOM_NOOP` if no work was needed." |
 | `tree-not-clean` | `TreeNotClean { dirty_paths: Vec<String> }` | "Working tree was not clean after the bead committed: <N> uncommitted path(s). Stage them into a follow-up commit or revert them." Path list is capped at 30 entries; the truncation suffix names the overflow count. |
 | `observer-abort` | `DriverNotice` | "Session aborted by `<observer name>`: `<reason>`." |
-| `verify-fail` | `VerifyFailures(Vec<VerifierFailure>)` | One `VerifierFailure { target, exit_code, stderr_tail }` per failing `[check]` / `[test]` / `[system]` verifier. All failing verifiers are included; the budget is split across them with later failures truncated first; each `stderr_tail` is capped at ~1500 chars before split. If `review` also raised a concern, its reasoning is set as `review_notes` (separate ~1000-char budget) rendered under a `Review notes:` heading. |
+| `verify-fail` | `VerifyFailures(Vec<VerifierFailure>)` | One `VerifierFailure { target, exit_code, stderr_tail }` per failing project hook or spec verifier in the relevant gate scope. Diff-scope per-bead verification includes project pre-commit plus affected `[check]` / `[test]`; tree/system scopes may include `[system]`. All failing verifiers are included; the budget is split across them with later failures truncated first; each `stderr_tail` is capped at ~1500 chars before split. If a separate review phase also raised a concern, its reasoning is set as `review_notes` (separate ~1000-char budget) rendered under a `Review notes:` heading. |
 | `review-concern` | `ReviewConcern { summary: String, findings: Vec<Finding> }` | Summary is the parsed `summary` field from the terminal `LOOM_CONCERN: {"summary": "..."}` marker. `findings` is the buffered list of unsuppressed `LOOM_FINDING:` records after rubric suppression filtering (per the typed `Finding` record in [gate.md § Findings and Minting](gate.md#findings-and-minting)); a well-formed concern whose findings are all suppressed becomes a clean effective review, not this cause. Per-finding tokens drive `mint`'s routing: clarify-route findings mint as single-finding clarify beads (one per finding), all other findings bundle into per-spec remediation batches (one batch per lead-spec). The recovery prompt renders the summary plus a one-line-per-finding `evidence` digest. The in-code recovery cause is `RecoveryCause::ReviewConcern`. |
 | `bad-walk` (concern-malformed) | `BadWalk(BadWalk::Concern { payload: String, parsed_findings: Vec<Finding> })` | "Your `LOOM_CONCERN:` payload did not parse as `{"summary": "<non-empty>"}`. Literal payload after the marker: `<payload>`." When `parsed_findings` is non-empty, append a per-finding digest so the agent's diagnosis from the well-formed streamed findings is not lost. Wrapped-enum pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)`. |
 | `bad-walk` (concern-without-findings) | `BadWalk(BadWalk::ConcernWithoutFindings { summary: String })` | "You emitted `LOOM_CONCERN` with summary `<summary>` but no `LOOM_FINDING:` lines streamed. Either emit findings before the terminator or terminate with `LOOM_COMPLETE`." |
 | `bad-walk` (findings-without-concern) | `BadWalk(BadWalk::FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> })` | "You streamed `<finding_count>` `LOOM_FINDING:` line(s) but terminated with `LOOM_COMPLETE`. Use `LOOM_CONCERN: {"summary": "..."}` when findings are emitted." Per-finding digest of `findings` is appended so the agent's next iteration sees the diagnosis it just emitted. |
 | `bad-walk` (malformed-finding) | `BadWalk(BadWalk::MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface })` | "One or more `LOOM_FINDING:` lines failed parse." Per-line errors are enumerated; the well-formed terminal is rendered alongside so the agent fixes the malformation (typically: drop the surrounding markdown fence) without losing the surrounding well-formed context. This is the variant that fires on backtick-wrapped finding lines whose JSON otherwise would have parsed. |
 | `integration-conflict` | `IntegrationConflict { files: Vec<PathBuf>, new_base_sha: GitOid }` | "Your bead branch could not be rebased onto integration — files conflict: <files>. The new integration tip is <new_base_sha>. Rebase your bead workspace onto the new tip, resolve, and re-commit." Single-retry cap (not full `[loop] max_retries`); a second rebase-conflict escalates the bead to `loom:clarify` with the same cause. The `signature-verification-failed` cause does **not** appear in this table because it routes to `loom:blocked` immediately without an agent-retry pass — there is no next dispatch and thus no `PreviousFailure` context. |
-| `post-integrate-fail` | `PostIntegrateFail { failures: Vec<VerifierFailure>, gate_log_path: PathBuf }` | "After your bead was rebased onto the integration branch and ff'd, the post-integration verify failed at the loom workspace. The integration was rolled back. Gate log: <path>. Specific failure: <verifier-failure blocks>." Used for cross-bead interaction breakage where the bead-workspace verify passed but the integrated tree's verify failed. Focused review runs only after this verify succeeds, so review-style findings route via `review-concern` / `bad-walk` rather than `post-integrate-fail`. Capped at the shared `PREVIOUS_FAILURE_MAX_LEN` budget; the path is outside the truncation budget. |
+| `post-integrate-fail` | `PostIntegrateFail { failures: Vec<VerifierFailure>, gate_log_path: PathBuf }` | "After your bead was rebased onto the integration branch and ff'd, the post-integration verify failed at the loom workspace. The integration was rolled back. Gate log: <path>. Specific failure: <verifier-failure blocks>." Used for cross-bead deterministic breakage where the bead-workspace self-check may have passed but the integrated tree's verify failed. The default per-bead hot path has no focused review session, so review-style findings route at molecule completion via `review-concern` / `bad-walk` rather than `post-integrate-fail`. Capped at the shared `PREVIOUS_FAILURE_MAX_LEN` budget; the path is outside the truncation budget. |
 | `agent-retry` | `AgentRetry { reason: String }` | "Previous attempt requested retry: <reason>. A fresh dispatch was scheduled." `reason` is the verbatim prose the agent wrote on the line preceding `LOOM_RETRY` (environmental detail or stuck-on-approach summary). Consumes one `[loop] max_retries` slot; on exhaustion the molecule escalates to `loom:blocked` with cause `retry-exhausted`. The recovery prompt instructs the retry attempt to escalate to `LOOM_BLOCKED` (no candidate resolutions) or `LOOM_CLARIFY` (with `## Options — …`) if the same problem persists rather than emitting `LOOM_RETRY` again. |
 
 When `previous_failure.is_some() && attempt > 0`, the `loop.md`
@@ -1419,6 +1450,20 @@ its own session log if it needs prior tool-call context.
   `clarify-without-options`) is preserved in the bead's notes.
   Per-cause sub-labels can be stacked on top later if filtering
   becomes important; the gate's terminal label stays `loom:blocked`.
+- Closing a bead does not automatically remove stale `loom:blocked` or
+  `loom:clarify` labels. `loom msg` filters out closed beads regardless
+  of labels, so label cleanup is not a prerequisite for hiding resolved
+  work from the human queue.
+
+**Routing observability.** Every terminal-marker/finding route emits a
+`DriverKind::MarkerRouted` event. A clarify-bound route that falls back
+to blocked because its options block is missing or malformed emits
+`DriverKind::ClarifyDowngraded` with the source route, marker/finding
+identity, options parse result, evidence/reason hash + excerpt, gate log
+path, and event sequence. Each bd mutation the driver applies emits
+`DriverKind::BdStateTransition`, and clarify downgrades also write a
+compact bd-note breadcrumb carrying cause `clarify-without-options` so
+operators can diagnose the downgrade without replaying the whole log.
 
 **Marker definitions.** The agent ends every phase by emitting exactly
 **one** marker on its own line, as the final output of the session.
@@ -1579,9 +1624,9 @@ pub struct LoopOutcome {
 ```
 
 **`GateOutcome`** — three terminal variants. `Success` and `Fail`
-both require a receipt minted only by gate-invocation code; `NoGate`
-is the only legitimate "gate did not fire" terminal and carries the
-reason so the human-readable summary names it:
+both require typed gate evidence constructed only by gate-invocation
+code; `NoGate` is the only legitimate "gate did not fire" terminal and
+carries the reason so the human-readable summary names it:
 
 ```rust
 #[must_use]
@@ -1598,39 +1643,45 @@ pub enum NoGateReason {
 ```
 
 **`GateSuccess`** — the bulletproof variant. Construction asserts
-every condition the FR9 four-condition AND covers *plus* on-disk
-evidence that the gate's child processes actually ran. Field shapes
-are non-`Option`: absence of any value is a failure path that
-constructs `GateFail` instead. The constructor lives in `loom-gate`
-(alongside `MarkerProof::from_gate_success`, the mint authority that
-consumes a sealed `GateSuccess`); the `_private: ()` field is the
-structural seal that prevents struct-literal construction outside the
-crate, so `GateSuccess::new` is the sole minting path regardless of
-its `pub` visibility.
+matching typed gate evidence for the final pushable state *plus* on-
+disk evidence that the relevant gate child processes actually ran.
+Field shapes are non-`Option`: absence of any value is a failure path
+that constructs `GateFail` instead. The constructor lives in
+`loom-gate` (alongside `MarkerProof::from_gate_success`, the mint
+authority that consumes a sealed `GateSuccess`); the `_private: ()`
+field is the structural seal that prevents struct-literal construction
+outside the crate, so `GateSuccess::new` is the sole minting path
+regardless of its `pub` visibility.
 
 ```rust
 pub struct GateSuccess {
-    pub verify_exit: i32,            // always 0 by construction
-    pub review_exit: i32,            // always 0
-    pub review_marker: ExitSignal,   // effective marker after suppression;
-                                     //   always ExitSignal::Complete
-    pub review_log_path: PathBuf,    // file exists, non-empty, last line
-                                     //   is terminal evidence for the effective marker
-    pub total_handoffs: u32,         // >= 1
-    _private: (),                    // structural seal — no struct-literal path
+    pub verified: VerifiedScope,        // deterministic success for exact range
+    pub reviewed: ReviewedScope,        // review success for same exact range
+    pub pre_push: PrePushCoverage,      // hook ids / entries proven passed
+    pub tree_oid: GitOid,               // current clean HEAD tree
+    pub push_range: ResolvedDiffRange,  // origin/<branch>..HEAD at push time
+    pub gate_log_paths: Vec<PathBuf>,   // evidence files exist and contain end events
+    _private: (),                       // structural seal — no struct-literal path
 }
 
 impl GateSuccess {
-    /// Asserts: verify_exit == 0, review_exit == 0,
-    /// effective review_marker == ExitSignal::Complete after rubric
-    /// suppression filtering, review_log_path exists, file size > 0,
-    /// last line parses as a terminal AgentEvent that is valid evidence
-    /// for the effective marker (raw Complete, or raw Concern whose
-    /// findings all suppress), total_handoffs >= 1.
-    /// Any failure returns Err(GateFail::new(...)).
+    /// Asserts: deterministic and review evidence refer to the same
+    /// resolved range and tree; pre-push coverage includes every hook
+    /// the marker may authorize; relevant config digests match;
+    /// gate_log_paths exist and contain successful GateRun end events;
+    /// the workspace is porcelain-clean at the tree_oid. Any failure
+    /// returns Err(GateFail::new(...)).
     pub fn new(...) -> Result<Self, GateFail> { ... }
 }
 ```
+
+**Gate evidence types.** `GateRun` is the typed record for any gate
+invocation (success, failure, skip, or abort). `VerifiedScope` is a
+sealed deterministic-success value derived only from a successful
+`GateRun`. `ReviewedScope` is a sealed review-success value derived
+only from a successful review run. These types are architecture-bearing:
+review and marker minting consume typed evidence, never a scalar such
+as `--verify-exit 0`.
 
 **`GateFail`** — carries the failure reason explicitly so CLI/log
 summaries and the next outer-loop iteration consume it directly,
@@ -1639,8 +1690,7 @@ without reverse-engineering from exit codes:
 ```rust
 pub struct GateFail {
     pub reason: GateFailReason,
-    pub verify_exit: Option<i32>,
-    pub review_exit: Option<i32>,
+    pub gate_runs: Vec<GateRun>,
     pub review_marker: Option<ExitSignal>,
     pub review_log_path: Option<PathBuf>,
     pub total_handoffs: u32,
@@ -1649,13 +1699,15 @@ pub struct GateFail {
 }
 
 pub enum GateFailReason {
-    VerifierFailed,                          // verify_exit != 0
+    VerifierFailed,                          // deterministic GateRun failed
+    PrePushHookFailed,                       // pre-push stage failed before review
     ReviewConcern { summary, finding_count },// marker is LOOM_CONCERN; per-finding detail in mint output
     BadWalk(BadWalk),                        // review walk terminator malformed or mismatched
     EmptyDiffNoop,                           // marker is LOOM_NOOP — no reviewable work
     StalledMaxIterations,                    // outer-loop counter exhausted
     SignalKilled,                            // child terminated by signal
     ReviewEvidenceMissing,                   // log file absent / empty / mismatched marker
+    MarkerCoverageMissing,                   // marker would not cover one or more hooks
     IntegrityFinding,                        // unresolved annotation / stub test / unneeded pending marker — cap-exhausted; recoverable cases land via mint pipeline, not as a GateFail
 }
 
@@ -1722,9 +1774,11 @@ addressing schemes for the same target). `-c` is mutually exclusive with
 all other action flags except `-s`.
 
 **Cross-spec by default.** Bare `loom msg` lists every outstanding
-`loom:blocked` and `loom:clarify` bead across all specs, regardless of
-the `current_spec` meta value. `-s <label>` is the only narrowing path.
-The `current_spec` is not consulted for any msg mode.
+open `loom:blocked` and `loom:clarify` bead across all specs,
+regardless of the `current_spec` meta value. Closed beads are excluded
+from list/chat queues even if their labels remain on the bead. `-s
+<label>` is the only narrowing path. The `current_spec` is not consulted
+for any msg mode.
 
 **Chat session shape.** `loom msg -c` (optionally with `-s <label>`)
 launches the base profile via `wrix spawn`, runs Claude with the
@@ -2577,12 +2631,16 @@ Criteria.
 - Driver sets `LOOM_INSIDE=1` in every bead container's env via the
       `SpawnConfig.env` allowlist
   [test](spawn_config_env_includes_loom_inside_marker)
-- With `LOOM_INSIDE=1`, mutating subcommands (`loop`, `init`, `plan`,
-      `check`, `todo`, `msg`, `use`) refuse with a clear error
-  [test](mutating_subcommands_refuse_with_loom_inside_set)
-- With `LOOM_INSIDE=1`, read-only subcommands (`status`, `logs`,
-      `spec`) still run normally
-  [test](readonly_subcommands_run_under_loom_inside_set)
+- With `LOOM_INSIDE=1`, driver/workspace-mutating or LLM-spawning
+      subcommands (`loop`, `init`, `plan`, `todo`, `msg`, `use`,
+      `loom gate mint`, `loom gate review`, `loom gate judge`,
+      `loom gate rubric`, and `loom gate audit`) refuse with a clear
+      error
+  [test?](mutating_and_llm_spawning_subcommands_refuse_with_loom_inside_set)
+- With `LOOM_INSIDE=1`, read-only/deterministic inspection subcommands
+      (`status`, `logs`, `spec`, and deterministic `loom gate`
+      subcommands such as `verify`) still run normally
+  [test?](readonly_and_deterministic_gate_subcommands_run_under_loom_inside_set)
 
 ### Loop UX & logging
 
@@ -2618,7 +2676,10 @@ Criteria.
 
 - `driver_event` variants emit with `source: "driver"` discriminator and render with `→` glyph
   [test](driver_event_renders_arrow_glyph)
-- Verdict gate, retry dispatch, push gate walk/refuse/clean, container spawn/oom all emit `driver_event`
+- Verdict gate, retry dispatch, push gate walk/refuse/clean, container
+  spawn/oom, gate-run lifecycle, marker routing, clarify downgrade, and
+  bd state transitions all emit `driver_event` with typed `DriverKind`
+  producer variants
   [test](driver_kinds_present_for_spec_emission_sites)
 - Unknown `driver_kind` values render as generic `→ <kind>: <summary>` (additive without schema bump)
   [test](driver_event_accepts_unknown_driver_kind)
@@ -2697,6 +2758,14 @@ Criteria.
   [test](log_retention_disabled)
 - Sweep failures (permission denied, in-use file) do not abort the run
   [test](log_retention_failure_tolerance)
+- Gate invocations outside an agent session write separate JSONL logs
+      under `.loom/logs/gate/` using the same `AgentEvent` stream; parent
+      bead/session logs record the gate log path as a breadcrumb
+  [test?](gate_invocations_write_separate_jsonl_logs_with_parent_breadcrumb)
+- A gate log with `gate_run_start` and no matching `gate_run_end` is
+      classified as incomplete/interrupted evidence and cannot construct
+      `VerifiedScope`, `ReviewedScope`, or `GateSuccess`
+  [test?](incomplete_gate_log_cannot_construct_scope_evidence)
 
 **Crate boundary**
 
@@ -2717,6 +2786,10 @@ Criteria.
       `.loom/integration/` (one-shot clone from origin) — the
       workspace is separate from the operator's `/workspace`
   [test](loom_init_materializes_loom_workspace)
+- `loom init` configures `.loom/integration` with the canonical
+      `wrix.prekHooks` `core.hooksPath`; it does not rely on the
+      operator checkout's `.git/config` hook path
+  [test?](loom_init_configures_integration_hooks_path_from_wrix_prekhooks)
 - `loom loop` never touches the operator's working tree at
       `/workspace`; all dispatch runs against the loom workspace
   [test?](loom_loop_does_not_touch_operator_workspace)
@@ -2729,6 +2802,11 @@ Criteria.
       workspace via `git clone --local`; bead ids are globally unique
       so no spec partition appears in the path
   [test](bead_dispatch_creates_clone_under_loom_beads)
+- Every created bead workspace is configured with the canonical
+      `wrix.prekHooks` `core.hooksPath` before the agent receives it;
+      if the hook path is missing or drifted on redispatch, the driver
+      repairs it before spawning the container
+  [test?](bead_workspace_configures_and_repairs_hooks_path)
 - Bead workspaces persist across attempts, recovery iterations,
       and `loom loop` invocations until the bead's first attempt
       after `bd close`
@@ -3009,50 +3087,57 @@ Criteria.
       (`Success` → 0, `Fail` → non-zero, `NoGate` → 0)
   [test](loom_loop_exit_code_is_function_of_gate_outcome_variant)
 - `GateSuccess` is constructible only by the gate-invocation code
-      (`pub(crate)` constructor, no struct-literal path) and only
-      when verify_exit == 0, review_exit == 0, the effective
-      review_marker after rubric suppression filtering is
-      ExitSignal::Complete, review_log_path exists, file is
-      non-empty, and last line is terminal evidence for that effective
-      marker (raw Complete, or raw Concern whose findings all
-      suppress); any condition failing returns `GateFail` instead
-  [test](gate_success_constructor_asserts_every_evidence_condition)
+      (`pub(crate)` constructor, no struct-literal path) and only from
+      matching typed evidence: successful `VerifiedScope`, successful
+      `ReviewedScope`, pre-push hook coverage for the actual push range,
+      matching tree/config/range fingerprints, and existing gate logs
+      containing successful `GateRun` end events; any condition failing
+      returns `GateFail` instead
+  [test?](gate_success_constructor_requires_typed_scope_and_coverage_evidence)
 - Every `loom loop` returning `LoopOutcome { gate: Success(r), .. }`
-      produces a non-empty `review-*.jsonl` at `r.review_log_path`,
-      ending in a terminal `AgentEvent` whose marker equals
-      `r.review_marker`. Holds for all execution modes (`--once`,
-      `--parallel`, default continuous, `--all-specs`)
-  [test](every_successful_loom_loop_writes_a_review_log_with_terminal_marker)
+      references non-empty gate JSONL logs in `r.gate_log_paths`; each
+      log contains a `gate_run_start` and matching successful
+      `gate_run_end`, and the review evidence contains a terminal
+      `AgentEvent` whose effective marker is complete. Holds for all
+      execution modes (`--once`, `--parallel`, default continuous,
+      `--all-specs`)
+  [test?](every_successful_loom_loop_references_completed_gate_logs)
 - `run_parallel_loop` returns `Result<LoopOutcome, LoopError>` —
-      identical type to the sequential codepath; parallel mode
-      invokes the same `exec_review` chokepoint after the batch
-      drains, constructs `GateOutcome` from the receipt, and
-      returns. There is no parallel-specific summary type
+      identical type to the sequential codepath; parallel mode invokes
+      the same molecule push-gate chokepoint after the batch drains,
+      constructs `GateOutcome` from typed gate evidence, and returns.
+      There is no parallel-specific summary type
   [test](parallel_codepath_returns_loop_outcome_with_gate_field)
 - `loom loop` reads profile from bead label and spawns correct container
   [test](resolve_profile_reads_label)
 - `loom loop` retries failed beads with previous error context
   [test](default_policy_is_two_retries)
+- Before molecule push verification, the driver verifies that
+      `.loom/integration` has the canonical `wrix.prekHooks`
+      `core.hooksPath` configured and fails loudly if the expected path
+      cannot be resolved
+  [test?](push_gate_requires_integration_hooks_path_configured)
 - On molecule completion, after stabilization has drained promoted
-      remediation, `loom loop` invokes `loom gate audit --diff
-      <molecule.base_commit>..HEAD` (scope = molecule's own diff,
-      proportional to its work — not `--tree`)
-  [test?](exec_review_invokes_gate_audit_with_molecule_diff)
+      remediation, `loom loop` fetches/rebases against
+      `origin/<integration-branch>`, computes the actual push range
+      `origin/<integration-branch>..HEAD`, runs the actual prek
+      pre-push chain for that range, then runs
+      `loom gate review --diff <actual-push-range>` only after
+      deterministic success
+  [test?](molecule_push_gate_verifies_and_reviews_actual_push_range)
 - After each per-bead agent run signals Success and the bead's branch
       is rebased onto the integration branch + ff'd at the loom
-      workspace (inside `index.lock`), the loop invokes `loom gate
-      verify -b <id>` followed by focused `loom gate review -b <id>`.
-      The per-bead hot path never invokes `mint` with bead scope
-  [test](exec_per_bead_gate_invokes_loom_gate_verify_then_review_subprocesses)
-- The molecule-completion handoff's `HandoffEvidence` is populated
-      from the audit subprocess's actual outputs: `verify_exit` and
-      `review_exit` from the lane exit codes, `review_marker` from
-      `ExitSignal` parsing the agent's stdout, `review_log_path` from
-      the LogSink. No field is left at default `None` when the child
-      process produced a parseable run; absence surfaces as a
-      `GateFail` variant per [Loop Outcome
+      workspace (inside `index.lock`), the loop invokes exactly
+      `loom gate verify --diff <pre-integration-head>..HEAD`. The
+      per-bead hot path never invokes focused LLM review or `mint`
+  [test?](exec_per_bead_gate_invokes_post_integration_verify_only)
+- The molecule-completion handoff evidence is populated from typed
+      `GateRun`, `VerifiedScope`, and `ReviewedScope` values parsed
+      from actual gate JSONL logs. No trust field is left at default
+      `None` when a child process produced a parseable run; absence
+      surfaces as a `GateFail` variant per [Loop Outcome
       Types](#loop-outcome-types)
-  [test](handoff_evidence_populates_marker_and_log_path)
+  [test?](handoff_evidence_populates_typed_gate_scope_values)
 - When the molecule-completion audit review produces ≥1 unsuppressed
       streamed `LOOM_FINDING:` line and a `LOOM_CONCERN:` terminator,
       `route="deferred"` findings merge into the molecule's deferred
@@ -3064,26 +3149,27 @@ Criteria.
       per-bead hot path; deferred findings are promoted by
       `loom gate mint -m <molecule-id>` during stabilization
   [test?](molecule_completion_review_routes_findings_to_stabilization_or_clarify)
-- A per-bead focused review finding with `route="blocking"` causes
-      the loop to retry the same bead with review findings rendered as
-      `previous_failure`; no bd remediation bead is created
-  [test?](loop_per_bead_blocking_review_finding_retries_same_bead)
-- A per-bead focused review finding with `route="deferred"` merges
+- A molecule-completion review finding with `route="blocking"` refuses
+      the push and creates or reuses same-molecule remediation work;
+      already-integrated original beads are not reopened solely because
+      the push-stage review found a concern
+  [test?](molecule_review_blocking_finding_creates_same_molecule_remediation)
+- A molecule-completion review finding with `route="deferred"` merges
       into a molecule child bead with `status=deferred` and label
       `loom:deferred`; `bd ready` does not return it until molecule
       stabilization promotes it
-  [test?](loop_per_bead_deferred_review_finding_creates_deferred_bead)
+  [test?](molecule_review_deferred_finding_creates_deferred_bead)
 - Structural bd conflicts while recording deferred or clarify findings
-      route the completed bead to `loom:blocked` with cause
-      `gate-routing-structural-violation`; the integrated commit is not
-      unwound
-  [test?](loop_per_bead_routes_gate_routing_structural_conflict_to_blocked)
-- A synthetic post-integrate audit failure writes a durable gate log
-      under `.loom/logs/gate/` (or equivalent) containing command argv,
-      scope, exit code, stdout, stderr, terminal marker when present,
+      route the molecule to `loom:blocked` with cause
+      `gate-routing-structural-violation`; already-integrated commits
+      are not unwound
+  [test?](molecule_routes_gate_routing_structural_conflict_to_blocked)
+- A synthetic post-integrate verify failure writes a durable gate log
+      under `.loom/logs/gate/` containing command argv, resolved scope,
+      per-lane hook/verifier results, exit code, stdout/stderr tails,
       integration SHA, bead id, retry attempt, rollback state, and log
       path
-  [test](post_integrate_audit_failure_writes_durable_gate_log)
+  [test?](post_integrate_verify_failure_writes_durable_gate_log)
 - The `driver_event` emitted for `post-integrate-fail` names the gate
       log path in its payload / rendered summary, and retry attempts
       produce distinct log paths while successful integration flow is
@@ -3103,28 +3189,26 @@ Criteria.
       cleanly on push success, a fully-stuck molecule, or counter
       exhaustion
   [test?](continuous_outer_loop_promotes_deferred_remediation_then_exits_on_stall)
-- Push gate is a **four-condition AND**: bead labels, verify exit,
-      review exit, integrity findings. Failure on any one input
-      refuses the push. The integrity-findings input is **recoverable
-      within the molecule's iteration cap** (per [gate.md § Integrity
-      gate](gate.md#integrity-gate)); the other three are terminal. The
-      verdict is encoded as `GateOutcome` (`Success` when all four
+- Push gate is a typed-evidence AND: no unresolved blocked/clarify/
+      deferred molecule state, successful deterministic pre-push
+      `GateRun`/`VerifiedScope`, successful `ReviewedScope`, no
+      terminal integrity finding, and marker coverage for the hooks the
+      push will encounter. Failure on any input refuses the push. The
+      verdict is encoded as `GateOutcome` (`Success` when all inputs
       hold, `Fail { reason }` otherwise); the constructor for
       `GateSuccess` asserts each condition structurally — see
       [Loop Outcome Types](#loop-outcome-types)
-  [test](push_gate_evaluates_all_four_conditions)
+  [test?](push_gate_evaluates_typed_evidence_and_marker_coverage)
 - On a **clean** push gate the `MarkerProof` is minted to
       `.loom/marker.json` **immediately before** `git push`, inside
-      the gate's critical section, so prek's pre-push hook chain reads
-      the just-minted marker and short-circuits the slow tier. The mint
-      is the immediate predecessor of the push with no HEAD-mutating
-      step between them; a **refused** push (blocked/clarify bead,
-      verify-fail, review-concern, integrity finding) mints nothing,
-      because the marker authorizes a push that does not happen. The
-      mint is best-effort — a missing or invalid marker falls the
-      pre-push consumer through to the slow tier rather than failing
-      the push
-  [test](clean_review_pushes_and_resets_counter)
+      the gate's critical section, after deterministic pre-push and
+      review have both covered the actual push range. A **refused**
+      push (blocked/clarify/deferred bead, pre-push failure,
+      verify-fail, review-concern, integrity finding, or missing
+      marker coverage) mints nothing. A missing or invalid marker falls
+      the pre-push consumer through to running hooks rather than failing
+      the push by itself
+  [test?](clean_push_mints_marker_after_covered_verify_and_review)
 - Push gate refuses when `loom gate review`'s `--diff`-scoped
       invocation emits `LOOM_CONCERN`; molecule routes to recovery
       with cause `review-concern`
@@ -3161,10 +3245,11 @@ Criteria.
       `loom -h`, and `loom help` — clap's flat default-help fallback
       is not produced for any top-level invocation
   [test](loom_help_groups_workflow_inspection_state_in_order)
-- Bare `loom msg` lists every outstanding `loom:blocked` and
+- Bare `loom msg` lists every outstanding open `loom:blocked` and
       `loom:clarify` bead across all specs (cross-spec default); the
-      `current_spec` meta value is not consulted
-  [test](filter_keeps_only_clarify_labelled_beads)
+      `current_spec` meta value is not consulted, and closed beads are
+      excluded even when labels remain
+  [test?](msg_list_excludes_closed_blocked_or_clarify_beads)
 - `loom msg -s <label>` (alias `--spec`) filters the list to
       clarifies carrying the `spec:<label>` bead label
   [test](msg_spec_filter_narrows_list_to_matching_spec)
@@ -3243,12 +3328,16 @@ Criteria.
       `[check]`/`[system]` command strings in the active spec, printing
       the required nixpkgs
   [test](deps_for_label_walks_file_targets_and_command_strings)
+- `loom spec <label> --targets` prints one annotation per line as
+      `[tier] target`; `--tier <tier>` narrows to that tier; `--plain`
+      prints exact target strings without the `[tier] ` prefix
+  [test?](spec_targets_lists_annotation_targets_with_tier_and_plain_modes)
 
 ### Verdict gate
 
-- After every agent phase, `loom gate verify` evaluates the result
-      against the verdict-gate decision table; mechanical signals
-      (marker, bd-closed, diff) make no LLM call
+- After every worker agent phase, the verdict-gate decision table
+      classifies the terminal marker plus mechanical signals
+      (bd-closed, diff, tree cleanliness) without an LLM call
   [test](recovery_cause_labels_match_spec_strings)
 - `phase_verdict::decide()` is invoked from `loom loop`'s per-bead
       exit AND from `loom gate review`'s phase-end; no production
@@ -3275,6 +3364,10 @@ Criteria.
       falls back to `loom:blocked` with cause `clarify-without-options`
       — no stranded clarify bead reaches `loom msg`
   [test?](direct_emit_clarify_without_options_block_falls_back_to_blocked)
+- Clarify downgrades emit `DriverKind::ClarifyDowngraded`, write a bd
+      note breadcrumb with cause `clarify-without-options`, and pair the
+      resulting bd label/status mutation with `DriverKind::BdStateTransition`
+  [test?](clarify_downgrade_emits_driver_events_and_bd_breadcrumb)
 - `LOOM_RETRY` agent marker → recovery with cause `agent-retry`,
       `previous_failure` populated with `AgentRetry { reason }` from
       the prose preceding the marker; one `[loop] max_retries` slot
@@ -3303,13 +3396,14 @@ Criteria.
 - `LOOM_COMPLETE` + closed + empty diff → recovery with cause
       `zero-progress`
   [test](complete_with_empty_diff_routes_to_zero_progress)
-- `LOOM_NOOP` + closed + empty diff → review runs (legitimate no-op
-      proceeds to semantic review rather than zero-progress)
-  [test](noop_with_empty_diff_and_clean_review_is_done_not_zero_progress)
+- `LOOM_NOOP` + closed + empty diff → accepted as intentional no-work
+      output rather than zero-progress; no post-integration verify runs
+      for an empty bead diff
+  [test?](noop_with_empty_diff_is_done_not_zero_progress)
 - `LOOM_COMPLETE` + closed + non-empty diff + dirty working tree
       (`git status --porcelain` non-empty) → recovery with cause
-      `tree-not-clean`; verify and review are NOT run (recovery
-      precedes them so verifiers don't execute against a half-staged
+      `tree-not-clean`; post-integration verify is NOT run (recovery
+      precedes it so verifiers don't execute against a half-staged
       tree); `previous_failure` lists the dirty paths capped at 30
   [test](complete_with_dirty_tree_routes_to_tree_not_clean_before_verify)
 - `LOOM_NOOP` + closed + dirty working tree → recovery with cause
@@ -3321,22 +3415,25 @@ Criteria.
       staged-but-uncommitted, and untracked outside the gitignore set)
       capped at 30 entries with a "+N more" suffix when truncated
   [test](tree_not_clean_detail_enumerates_and_caps_dirty_paths)
-- All `[check]` / `[test]` / `[system]` verifiers on the bead's
-      success criteria run; none short-circuit each other; per-verifier
-      pass/fail + stderr is captured
-  [test](complete_with_verify_fail_routes_to_verify_fail)
+- Post-integration per-bead verify runs the project pre-commit lane and
+      every affected `[check]` / `[test]` verifier for
+      `<pre-integration-head>..HEAD`; `[system]` is excluded from the
+      finite diff default; none of the eligible lanes short-circuit each
+      other, and per-hook/verifier pass/fail + stderr is captured
+  [test?](post_integration_verify_runs_project_precommit_and_affected_check_test)
 - One or more `loom gate verify` failures → recovery with cause
       `verify-fail`; `previous_failure` carries every failure (not just
       the first), with a 4000-char budget split across them
   [test](verify_fail_carries_every_failure_block_for_previous_failure)
-- Review (LLM step) runs regardless of `loom gate verify` result; on
-      verify-fail, review's concern reasoning is appended to
-      `previous_failure` under `Review notes:`
-  [test](complete_with_verify_fail_routes_to_verify_fail)
-- Review's primary concern is live-path coverage: at least one
-      `[check]` / `[test]` / `[system]` verifier on the bead must
-      exercise the live path (same binary, same argv shape, same env).
-      All-mock verifier sets raise a `LOOM_CONCERN`
+- Per-bead focused review does not run after post-integration verify;
+      mechanical verify failure routes directly to `verify-fail` /
+      `post-integrate-fail` with gate-log evidence, while molecule-
+      completion review runs only after deterministic pre-push success
+  [test?](per_bead_verify_failure_skips_focused_review_and_carries_gate_log)
+- Review's primary concern is live-path coverage: relevant
+      `[check]` / `[test]` / `[system]` verifiers on the reviewed range
+      must exercise the live path (same binary, same argv shape, same
+      env). All-mock verifier sets raise a `LOOM_CONCERN`
   [judge](../tests/judges/loom.sh#judge_live_path_coverage)
 - Review raises a `LOOM_CONCERN` on mocks that stand in for the very
       thing the test claims to test (e.g. mocking the agent backend in
@@ -3397,11 +3494,11 @@ Criteria.
       `loom:blocked` with cause `unbonded-origin` to surface the
       upstream inconsistency
   [test](refused_outcome_applies_unbonded_origin_blocked_to_origin)
-- `loom gate verify` push gate walks `bd mol progress <id>` and
-      refuses to push when any bead in the molecule — including bonded
-      remediation beads — carries `loom:blocked`, `loom:clarify`, or
-      `loom:deferred`; an orphan remediation bead would slip past this
-      check, so the bond invariant is what makes the gate sound
+- The push gate walks `bd mol progress <id>` and refuses to push when
+      any bead in the molecule — including bonded remediation beads —
+      carries `loom:blocked`, `loom:clarify`, or `loom:deferred`; an
+      orphan remediation bead would slip past this check, so the bond
+      invariant is what makes the gate sound
   [test?](remediation_beads_under_cap_auto_iterate)
 - Recovery iter ≥ max_iterations → applies `loom:blocked` with cause
       in `bd update --notes`
@@ -3427,8 +3524,8 @@ Criteria.
 - Infra-retry counter is driver-memory only; resets on a fresh
       `loom loop` invocation; does not consume `[loop] max_iterations`
   [test](infra_retry_counter_does_not_consume_max_retries)
-- `loom gate verify` push gate refuses to push while any bead in
-      the molecule carries `loom:blocked` or `loom:clarify`
+- The push gate refuses to push while any bead in the molecule carries
+      `loom:blocked` or `loom:clarify`
   [test](clarify_present_stops_without_pushing)
 - Observer-driven abort (`EventSink::react()` returning
       `SessionCommand::Abort`) classifies as recovery cause
@@ -3709,10 +3806,10 @@ two agent-loop observers.
      of the N concurrent beads does not cancel the others. **On
      molecule completion** (the spec's open epic has no remaining
      ready children and stabilization has drained deferred remediation),
-     the driver invokes `loom gate audit --diff
-     <molecule.base_commit>..HEAD` (scope is the molecule's own diff —
-     not `--tree` — so push-gate cost is proportional to the molecule's
-     work), then evaluates the push gate per FR9. The outer loop
+     the driver fetches/rebases against `origin/<integration-branch>`,
+     verifies the actual push range via the prek pre-push chain, runs
+     `loom gate review --diff <actual-push-range>`, then evaluates the
+     push gate per FR9. The outer loop
      iterates over molecule passes (initial pass + each promoted
      remediation pass) bounded by `[loop] max_iterations`. **`loom loop` returns a typed
      [`LoopOutcome`](#loop-outcome-types) whose `gate: GateOutcome`
@@ -3726,22 +3823,20 @@ two agent-loop observers.
    - `loom gate` — quality gate (annotation-dispatched verifiers +
      LLM rubric). Subcommands per [gate.md](gate.md)
      Commands table: bare `loom gate` prints subcommand help;
-     `loom gate status` reads the status cache; `loom gate audit` runs
-     verify then review; `loom gate verify`
-     runs every `[check]` / `[test]` / `[system]` verifier; per-tier
-     subcommands (`loom gate check`, `loom gate test`,
-     `loom gate system`) run one tier in isolation;
-     `loom gate review` runs the LLM rubric;
-     `loom gate judge` / `loom gate rubric` run one lane each.
-     Inspection subcommands accept `-s/--spec <label>`, a positional
-     `<selector>`, and one of `-b/--bead <id>` / `--diff <range>` /
-     `--files <paths>` / `--tree`; `mint` accepts only
-     `-m/--molecule <id>` or `--tree` (mutually exclusive; bare
-     inspection defaults to `--diff <molecule.base_commit>..HEAD` when
-     the active spec has an open epic, else `--diff HEAD` — see
-     [gate.md](gate.md) for the scope-flag contract).
-     The surface-conformance walk (FR13) ships as a `[check]`-tier
-     verifier dispatched by `loom gate check`.
+     `loom gate status` reads the status cache for an explicit scope;
+     `loom gate audit` runs verify then review for explicit `--diff` or
+     `--tree`; `loom gate verify` runs scope-derived deterministic
+     lanes; per-tier subcommands (`loom gate check`, `loom gate test`,
+     `loom gate system`) run one tier in isolation; `loom gate review`
+     runs the LLM rubric; `loom gate judge` / `loom gate rubric` run one
+     lane each. Inspection subcommands require explicit `--files`,
+     `--diff`, `--tree`, or exact `--target` where valid; no gate
+     subcommand accepts `--spec` or a positional selector. `--bead` is
+     review context only and must be paired with `--diff`; deterministic
+     trust paths use explicit diffs. `mint` accepts only
+     `-m/--molecule <id>` or `--tree` and has no bare default. The
+     surface-conformance walk (FR13) ships as a `[check]`-tier verifier
+     dispatched by `loom gate check`.
    - `loom msg` — clarify resolution
 
    **Inspection** — read-only views over state and logs:
@@ -3752,7 +3847,9 @@ two agent-loop observers.
      `loom loop`. Full flag set in [Logs UX](#logs-ux).
    - `loom spec` — query spec annotations; supports `--deps` to print
      nixpkgs required by the spec's `[check]` / `[test]` / `[system]`
-     / `[judge]` verifier targets
+     / `[judge]` verifier targets, and `loom spec <label> --targets`
+     to print annotation targets (`--tier <tier>` narrows; `--plain`
+     prints exact target strings for piping)
 
    **State** — workspace lifecycle and persisted state:
    - `loom init` — create `.loom/` config + state DB. `--rebuild`
@@ -3831,80 +3928,80 @@ two agent-loop observers.
    Configurable max retries per bead (default 2; `LOOM_RETRY` consumes
    one slot per emission). After in-session retries exhaust, the phase
    ends; the verdict is delegated to the [Verdict Gate](#verdict-gate).
-8. **Verdict gate per phase** — `loom gate verify` (deterministic)
-   followed by `loom gate review` (LLM) evaluates each phase's result
-   before the bead's state can advance. See [Verdict Gate](#verdict-gate)
-   for the execution layer (decision table, recovery mechanics,
-   markers, labels) and [gate.md](gate.md) for the review
-   rubric. Driver-detected gate failures and `LOOM_RETRY` self-reports
-   enter a bounded recovery loop; agent self-reports `LOOM_BLOCKED` /
-   `LOOM_CLARIFY` escalate directly to the human via `loom msg`. The
-   verdict gate applies to **worker sessions only** (`loop`, `todo_*`,
-   `review`); interactive sessions (`plan_*`, `msg`) are agent-
-   and-human authoritative — the driver does not mutate bd state as
-   a consequence of an interactive session. See [Verdict Gate §
+8. **Verdict gate per phase** — worker sessions are classified by the
+   verdict-gate decision table after the agent emits its terminal marker.
+   For implementation beads, the driver then runs deterministic
+   post-integration verification (`loom gate verify --diff
+   <pre-integration-head>..HEAD`) before the bead's integration is
+   durable. LLM review is not part of the default per-bead hot path;
+   the worker prompt requires self-review, and authoritative LLM review
+   runs at molecule completion over the actual push range. See
+   [Verdict Gate](#verdict-gate) for the execution layer (decision table,
+   recovery mechanics, markers, labels) and [gate.md](gate.md) for the
+   review rubric. Driver-detected gate failures and `LOOM_RETRY` self-
+   reports enter a bounded recovery loop; agent self-reports
+   `LOOM_BLOCKED` / `LOOM_CLARIFY` escalate directly to the human via
+   `loom msg`. The verdict gate applies to **worker sessions only**
+   (`loop`, `todo_*`, `review`); interactive sessions (`plan_*`, `msg`)
+   are agent-and-human authoritative — the driver does not mutate bd
+   state as a consequence of an interactive session. See [Verdict Gate §
    Interactive vs worker sessions](#verdict-gate) for the full
    no-reconciliation contract.
-9. **Push gate — four-condition AND, structurally enforced.** Push
-   fires only when **all four** of the following hold; failure on any
-   one refuses push. The driver computes each input explicitly — no
-   implicit short-circuit, no `&&` chaining that could mask a failure.
-   The push verdict is encoded in the typed
-   [`GateOutcome`](#loop-outcome-types) variant: `Success(GateSuccess)`
-   when all four hold, `Fail(GateFail { reason, .. })` on any
-   failure. **`GateSuccess` is constructible only inside the
-   gate-invocation code and only when every condition below is
-   satisfied** — the constructor (`pub(crate)`, no struct-literal
-   path) asserts each condition before returning. There is no
-   code path that yields `GateSuccess` without the gate actually
-   firing clean. Combined with FR1's worker-queue filter (epics never
-   reach worker dispatch) and the existing close-on-Clean walk
-   (`auto_close_completed_epics` runs only inside `apply_verdict`'s
-   `ReviewVerdict::Clean` branch), this composes "epic close is
-   reachable only via a `GateSuccess`" as a structural invariant —
-   no separate enforcement code required.
+9. **Push gate — typed-evidence AND, structurally enforced.** Push
+   fires only when every required input below holds; failure on any one
+   refuses push. The driver computes each input explicitly — no implicit
+   short-circuit, no `&&` chaining that could mask a failure. The push
+   verdict is encoded in the typed [`GateOutcome`](#loop-outcome-types)
+   variant: `Success(GateSuccess)` when all inputs hold,
+   `Fail(GateFail { reason, .. })` on any failure. **`GateSuccess` is
+   constructible only inside the gate-invocation code and only when
+   every condition below is satisfied** — the constructor
+   (`pub(crate)`, no struct-literal path) asserts each condition before
+   returning. There is no code path that yields `GateSuccess` without
+   the gate actually firing clean. Combined with FR1's worker-queue
+   filter (epics never reach worker dispatch) and the existing close-
+   on-Clean walk, this composes "epic close is reachable only via a
+   `GateSuccess`" as a structural invariant.
 
-   1. **Bead labels.** Every bead in the molecule has reached
+   1. **Molecule state.** Every bead in the molecule has reached
       `[done]` — no `loom:blocked`, `loom:clarify`, or `loom:deferred`
       outstanding.
-   2. **Verify exit.** The verify lane inside `loom gate audit --diff
-      <molecule.base_commit>..HEAD` reports zero failing verifiers
-      across `[check]` / `[test]` / `[system]` tiers. **Dispatch errors
-      (exit code 2: unknown verifier, command not found, etc.) count as
-      fails, not skips.**
-   3. **Review exit.** The review lane inside `loom gate audit --diff
-      <molecule.base_commit>..HEAD` ends with `LOOM_COMPLETE`. Any
-      other marker refuses the push,
-      routed per the marker's semantics: `LOOM_CONCERN` → recovery
-      with cause `review-concern` (per [Verdict Gate](#verdict-gate));
-      `LOOM_BLOCKED` → `loom:blocked` on the molecule's epic, human
-      resolution via `loom msg`; `LOOM_CLARIFY` → `loom:clarify` on
-      the molecule's epic, structured-options resolution via `loom msg`.
-   4. **Integrity gate.** Zero push-gate-terminal integrity findings
-      across the molecule's diff scope, where the push-gate-terminal
-      finding set is the one defined by [gate.md § Integrity
-      gate](gate.md#integrity-gate); FR9 consumes whatever it emits
-      rather than re-enumerating the variants here. Integrity findings are
-      **recoverable within the molecule's iteration cap** (per
-      [gate.md § Integrity gate](gate.md#integrity-gate)): while
-      below cap, the verdict gate normalizes findings to typed
+   2. **Origin-synchronized push range.** The driver has fetched origin,
+      rebased local integration commits if needed, and resolved the
+      actual range `origin/<integration-branch>..HEAD` that `git push`
+      will update.
+   3. **Deterministic pre-push evidence.** The actual prek pre-push
+      chain has passed for that range. The resulting `GateRun` /
+      `VerifiedScope` includes the project pre-push hooks, the nested
+      `loom gate verify --diff <range>` hook, and affected `[check]` /
+      `[test]` annotations per [gate.md](gate.md). Dispatch errors
+      count as fails, not skips.
+   4. **Review evidence.** `loom gate review --diff <actual-push-range>`
+      has produced a successful `ReviewedScope` for the same resolved
+      range/tree as the deterministic evidence. Any non-complete marker
+      refuses the push and routes per marker semantics.
+   5. **Integrity findings.** Zero push-gate-terminal integrity findings
+      across the actual push range, where the finding set is defined by
+      [gate.md § Integrity gate](gate.md#integrity-gate). Integrity
+      findings are recoverable within the molecule's iteration cap:
+      while below cap, the verdict gate normalizes findings to typed
       `Finding`s, merges them into deferred remediation batches,
       refuses the push, increments the counter, promotes them with
-      `loom gate mint -m`, and re-enters the loop. On cap
-      exhaustion, the gate falls back to terminal escalation —
-      `loom:clarify` on the molecule's epic with the integrity
-      gate's auto-generated `## Options — …` block (Options Format
-      Contract — see [gate.md](gate.md)).
+      `loom gate mint -m`, and re-enters the loop. On cap exhaustion,
+      the gate falls back to terminal escalation — `loom:clarify` on
+      the molecule's epic with the integrity gate's auto-generated
+      `## Options — …` block.
+   6. **Marker coverage.** The marker to be minted can prove same clean
+      tree, same `.pre-commit-config.yaml` digest, same resolved push
+      range, pre-push hook coverage, and matching `VerifiedScope` /
+      `ReviewedScope` so the subsequent pre-push wrapper may
+      short-circuit only covered hooks.
 
    **Production wiring requirement.** The push-gate verdict MUST
-   consume the exit codes of the verify and review invocations and
-   the integrity gate's findings — not just bead labels. An earlier
-   revision of the driver computed the verdict from labels alone
-   and discarded the verify/review exit codes; a molecule pushed
-   despite the reviewer raising `LOOM_CONCERN: spec-conventions-violation`
-   (then named `LOOM_REVIEW_FLAG`). The four-condition AND is the
-   load-bearing contract: any path that pushes without evaluating
-   all four inputs is a bug.
+   consume typed `GateRun` / `VerifiedScope` / `ReviewedScope` evidence,
+   marker coverage, and integrity findings — not just bead labels or
+   scalar exit codes. Any path that pushes without evaluating all inputs
+   is a bug.
 
    Per FR1, auto-iteration on promoted deferred remediation beads is
    owned by `loom loop`'s outer loop, bounded by `[loop]
@@ -3940,8 +4037,12 @@ two agent-loop observers.
     push/pull` handoff. Loom on the host reads the same state
     through the same socket. The legacy `.beads/issues.jsonl` path
     is not used — beads no longer supports it.
-11. **Spec resolution** — `--spec <name>` flag or fallback to the
-    `current_spec` key in the state database.
+11. **Spec resolution** — workflow commands that are explicitly
+    spec-scoped parse spec labels into `SpecLabel` values at the CLI
+    boundary; when such a command permits omission, it falls back to
+    the `current_spec` key in the state database. `loom gate` is not a
+    spec-scoped surface; gate affectedness comes from work scopes and
+    target discovery uses `loom spec <label> --targets`.
 12. **Verdict-gate production wiring** — the verdict-gate decision
     function is the single source of truth for marker → outcome
     routing. Production MUST invoke it from `loom loop`'s per-bead
