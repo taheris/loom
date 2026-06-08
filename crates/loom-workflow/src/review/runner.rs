@@ -870,6 +870,15 @@ mod tests {
 
     #[tokio::test]
     async fn clean_review_reruns_loop_when_origin_push_races() -> Result<(), ReviewError> {
+        assert_origin_push_retries_non_fast_forward().await
+    }
+
+    #[tokio::test]
+    async fn origin_push_retries_non_fast_forward() -> Result<(), ReviewError> {
+        assert_origin_push_retries_non_fast_forward().await
+    }
+
+    async fn assert_origin_push_retries_non_fast_forward() -> Result<(), ReviewError> {
         let mut c = FakeController {
             pre_beads: vec![bead("lm-1", &["spec:harness"])],
             post_beads: vec![bead("lm-1", &["spec:harness"])],
@@ -1241,11 +1250,15 @@ mod tests {
             phase: loom_gate::GatePhase::Verify,
             push_range: "origin/main..HEAD".to_string(),
             tree_oid: "tree-a".to_string(),
+            config_digest: "config-a".to_string(),
             log_path: log.path().to_path_buf(),
             exit_code: Some(2),
             status: loom_gate::GateRunStatus::Failed,
             marker: None,
-            covered_hooks: vec!["pre-push".to_string()],
+            covered_hooks: vec![loom_gate::HookCoverage {
+                id: "pre-push".to_string(),
+                entry: "loom gate verify --diff @{u}..HEAD".to_string(),
+            }],
         };
         let evidence = loom_gate::HandoffEvidence {
             gate_runs: vec![failed],

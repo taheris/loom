@@ -40,8 +40,8 @@ pub use dispatch::{
 };
 pub use gate_outcome::{
     GateFail, GateFailReason, GateOutcome, GatePhase, GateRun, GateRunStatus, GateSuccess,
-    HandoffEvidence, LoopOutcome, NoGateReason, PrePushCoverage, ReviewedScope, VerifiedScope,
-    parse_gate_runs_from_jsonl,
+    HandoffEvidence, HookCoverage, LoopOutcome, NoGateReason, PrePushCoverage, ReviewedScope,
+    VerifiedScope, parse_gate_runs_from_jsonl,
 };
 pub use inputs::{InputQueryProbe, InputResolver, InputsError, VerifierInputs, filter_by_files};
 pub use integrity::{
@@ -49,7 +49,10 @@ pub use integrity::{
     PendingCommandExecutor, RustWorkspaceStubScanner, RustWorkspaceTestResolver, StubScanner,
     TestPathResolver, check_inputs_protocol, compose_clarify_options, is_missing_binary_target,
 };
-pub use marker::{MARKER_PATH, MarkerError, MarkerProof, MintError, verify_marker};
+pub use marker::{
+    MARKER_PATH, MarkerError, MarkerProof, MarkerValidationRequest, MintError, verify_marker,
+    verify_marker_for_hook,
+};
 pub use runner::{
     BuiltinParser, MatchedAnnotation, ParsedVerdict, RunnerError, RunnerGroup, RunnerKind,
     RunnerSpec, RunnerTemplate, check_zero_match, group_by_runner, parse_runner_output,

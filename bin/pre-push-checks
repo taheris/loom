@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    echo "pre-push-checks: usage: pre-push-checks --hook-id <id> --hook-entry <entry> [--push-range <range>] -- <command> [args…]" >&2
+}
+
+hook_id=""
+hook_entry=""
+push_range=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --hook-id)
+            if [[ $# -lt 2 ]]; then
+                usage
+                exit 2
+            fi
+            hook_id="$2"
+            shift 2
+            ;;
+        --hook-entry)
+            if [[ $# -lt 2 ]]; then
+                usage
+                exit 2
+            fi
+            hook_entry="$2"
+            shift 2
+            ;;
+        --push-range)
+            if [[ $# -lt 2 ]]; then
+                usage
+                exit 2
+            fi
+            push_range="$2"
+            shift 2
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [[ $# -eq 0 ]]; then
+    usage
+    exit 2
+fi
+
+if [[ ! -f .loom/marker.json ]]; then
+    exec "$@"
+fi
+
+if [[ -z "$hook_id" || -z "$hook_entry" ]]; then
+    exec "$@"
+fi
+
+if [[ -z "$push_range" ]]; then
+    if upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null); then # best-effort: workspaces without upstream fall through to the literal range.
+        push_range="${upstream}..HEAD"
+    else
+        push_range='@{u}..HEAD'
+    fi
+fi
+
+if ! command -v loom >/dev/null; then
+    exec "$@"
+fi
+
+if loom gate verify-marker --hook-id "$hook_id" --hook-entry "$hook_entry" --push-range "$push_range"; then
+    exit 0
+fi
+
+exec "$@"

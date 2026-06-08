@@ -181,6 +181,16 @@ fn markdown_slug(input: &str) -> String {
     out
 }
 
+fn pre_commit_config_digest(workspace: &Path) -> Result<String, ReviewError> {
+    let path = workspace.join(".pre-commit-config.yaml");
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
 fn append_gate_run_event(path: &Path, run: &GateRun) -> Result<(), ReviewError> {
     use std::io::Write as _;
 
@@ -208,6 +218,7 @@ fn append_gate_run_event(path: &Path, run: &GateRun) -> Result<(), ReviewError> 
             "phase": phase,
             "push_range": &run.push_range,
             "tree_oid": &run.tree_oid,
+            "config_digest": &run.config_digest,
             "log_path": path.to_string_lossy(),
             "exit_code": run.exit_code,
             "status": status,
@@ -977,9 +988,16 @@ where
                 .effective_review_marker
                 .clone()
                 .unwrap_or(ExitSignal::Complete);
+            let config_digest = pre_commit_config_digest(&self.workspace)?;
             append_gate_run_event(
                 path,
-                &GateRun::successful_review(range.clone(), tree, path.to_path_buf(), marker),
+                &GateRun::successful_review(
+                    range.clone(),
+                    tree,
+                    config_digest,
+                    path.to_path_buf(),
+                    marker,
+                ),
             )?;
         }
         let mut evidence = review_log_path

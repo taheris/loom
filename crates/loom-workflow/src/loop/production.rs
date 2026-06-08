@@ -744,14 +744,16 @@ where
             .as_deref()
             .map(|root| phase_log_path(root, &self.label, "review", phase_when));
         self.git.run_pre_push_chain().await?;
+        let config_digest = pre_commit_config_digest(&self.workspace)?;
         if let Some(path) = review_log_path.as_deref() {
             append_gate_run_event(
                 path,
                 &GateRun::successful_verify(
                     diff_range.clone(),
                     actual.tree_oid.to_string(),
+                    config_digest.clone(),
                     path.to_path_buf(),
-                    vec!["pre-push".to_string(), "loom-gate-verify".to_string()],
+                    pre_push_hook_coverage(),
                 ),
             )?;
         }
@@ -821,6 +823,7 @@ where
                 &GateRun::successful_review(
                     diff_range.clone(),
                     actual.tree_oid.to_string(),
+                    config_digest.clone(),
                     path.to_path_buf(),
                     marker,
                 ),
@@ -947,6 +950,37 @@ fn gate_log_root(logs_root: Option<&std::path::Path>, workspace: &std::path::Pat
     )
 }
 
+fn pre_push_hook_coverage() -> Vec<loom_gate::HookCoverage> {
+    [
+        ("nix-flake-check", "skip-if-missing nix -- nix flake check"),
+        (
+            "cargo-clippy",
+            "cargo clippy --workspace --all-targets -- -D warnings",
+        ),
+        (
+            "loom-gate-verify-diff",
+            "loom gate verify --diff @{u}..HEAD",
+        ),
+        ("container-smoke", "skip-if-missing nix -- nix run .#test"),
+    ]
+    .into_iter()
+    .map(|(id, entry)| loom_gate::HookCoverage {
+        id: id.to_owned(),
+        entry: entry.to_owned(),
+    })
+    .collect()
+}
+
+fn pre_commit_config_digest(workspace: &std::path::Path) -> Result<String, LoopError> {
+    let path = workspace.join(".pre-commit-config.yaml");
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
 fn append_gate_run_event(path: &std::path::Path, run: &GateRun) -> Result<(), LoopError> {
     use std::io::Write as _;
 
@@ -975,6 +1009,7 @@ fn append_gate_run_event(path: &std::path::Path, run: &GateRun) -> Result<(), Lo
             "phase": phase,
             "push_range": &run.push_range,
             "tree_oid": &run.tree_oid,
+            "config_digest": &run.config_digest,
             "log_path": path.to_string_lossy(),
             "exit_code": run.exit_code,
             "status": status,

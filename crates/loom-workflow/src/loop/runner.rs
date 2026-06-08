@@ -688,7 +688,11 @@ mod tests {
     fn write_gate_log(path: &std::path::Path) {
         use std::io::Write as _;
 
-        let event = |phase: &str, hooks: &[&str]| {
+        let event = |phase: &str, hooks: &[(&str, &str)]| {
+            let covered_hooks = hooks
+                .iter()
+                .map(|(id, entry)| serde_json::json!({ "id": id, "entry": entry }))
+                .collect::<Vec<_>>();
             serde_json::json!({
                 "kind": "driver_event",
                 "driver_kind": "gate_run_end",
@@ -696,11 +700,12 @@ mod tests {
                     "phase": phase,
                     "push_range": "origin/main..HEAD",
                     "tree_oid": "tree-a",
+                    "config_digest": "config-a",
                     "log_path": path.to_string_lossy(),
                     "exit_code": 0,
                     "status": "success",
                     "marker": "complete",
-                    "covered_hooks": hooks,
+                    "covered_hooks": covered_hooks,
                 }
             })
             .to_string()
@@ -710,7 +715,15 @@ mod tests {
             .append(true)
             .open(path)
             .expect("open gate log");
-        writeln!(file, "{}", event("verify", &["pre-push"])).expect("write verify event");
+        writeln!(
+            file,
+            "{}",
+            event(
+                "verify",
+                &[("pre-push", "loom gate verify --diff @{u}..HEAD")]
+            )
+        )
+        .expect("write verify event");
         writeln!(file, "{}", event("review", &[])).expect("write review event");
     }
 

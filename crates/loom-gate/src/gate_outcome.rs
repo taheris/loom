@@ -2,6 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use loom_protocol::gate::ExitSignal;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -23,7 +25,10 @@ impl HandoffEvidence {
     pub fn from_runs(runs: Vec<GateRun>) -> Self {
         let verified = runs.iter().find_map(VerifiedScope::from_run);
         let reviewed = runs.iter().find_map(ReviewedScope::from_run);
-        let pre_push = verified.as_ref().map(VerifiedScope::pre_push_coverage);
+        let pre_push = verified
+            .as_ref()
+            .zip(reviewed.as_ref())
+            .map(|(verified, reviewed)| verified.pre_push_coverage(reviewed));
         let push_range = verified
             .as_ref()
             .map(|scope| scope.run.push_range.clone())
@@ -60,11 +65,12 @@ pub struct GateRun {
     pub phase: GatePhase,
     pub push_range: String,
     pub tree_oid: String,
+    pub config_digest: String,
     pub log_path: PathBuf,
     pub exit_code: Option<i32>,
     pub status: GateRunStatus,
     pub marker: Option<ExitSignal>,
-    pub covered_hooks: Vec<String>,
+    pub covered_hooks: Vec<HookCoverage>,
 }
 
 impl GateRun {
@@ -72,13 +78,15 @@ impl GateRun {
     pub fn successful_verify(
         push_range: String,
         tree_oid: String,
+        config_digest: String,
         log_path: PathBuf,
-        covered_hooks: Vec<String>,
+        covered_hooks: Vec<HookCoverage>,
     ) -> Self {
         Self {
             phase: GatePhase::Verify,
             push_range,
             tree_oid,
+            config_digest,
             log_path,
             exit_code: Some(0),
             status: GateRunStatus::Success,
@@ -91,6 +99,7 @@ impl GateRun {
     pub fn successful_review(
         push_range: String,
         tree_oid: String,
+        config_digest: String,
         log_path: PathBuf,
         marker: ExitSignal,
     ) -> Self {
@@ -98,6 +107,7 @@ impl GateRun {
             phase: GatePhase::Review,
             push_range,
             tree_oid,
+            config_digest,
             log_path,
             exit_code: Some(0),
             status: GateRunStatus::Success,
@@ -144,10 +154,20 @@ impl VerifiedScope {
     }
 
     #[must_use]
-    pub fn pre_push_coverage(&self) -> PrePushCoverage {
+    pub fn pre_push_coverage(&self, reviewed: &ReviewedScope) -> PrePushCoverage {
         PrePushCoverage {
-            hook_ids: self.run.covered_hooks.clone(),
+            hooks: self.run.covered_hooks.clone(),
+            config_digest: self.run.config_digest.clone(),
+            push_range: self.run.push_range.clone(),
+            tree_oid: self.run.tree_oid.clone(),
+            verified_scope_fingerprint: scope_fingerprint(&self.run),
+            reviewed_scope_fingerprint: scope_fingerprint(&reviewed.run),
         }
+    }
+
+    #[must_use]
+    pub fn config_digest(&self) -> &str {
+        &self.run.config_digest
     }
 
     #[must_use]
@@ -192,11 +212,27 @@ impl ReviewedScope {
     pub fn tree_oid(&self) -> &str {
         &self.run.tree_oid
     }
+
+    #[must_use]
+    pub fn config_digest(&self) -> &str {
+        &self.run.config_digest
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookCoverage {
+    pub id: String,
+    pub entry: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrePushCoverage {
-    pub hook_ids: Vec<String>,
+    pub hooks: Vec<HookCoverage>,
+    pub config_digest: String,
+    pub push_range: String,
+    pub tree_oid: String,
+    pub verified_scope_fingerprint: String,
+    pub reviewed_scope_fingerprint: String,
 }
 
 #[expect(
@@ -267,7 +303,15 @@ impl GateSuccess {
             .pre_push
             .clone()
             .ok_or_else(|| fail(GateFailReason::MarkerCoverageMissing))?;
-        if pre_push.hook_ids.is_empty() {
+        if pre_push.hooks.is_empty()
+            || pre_push
+                .hooks
+                .iter()
+                .any(|hook| hook.id.is_empty() || hook.entry.is_empty())
+            || pre_push.config_digest.is_empty()
+            || pre_push.verified_scope_fingerprint.is_empty()
+            || pre_push.reviewed_scope_fingerprint.is_empty()
+        {
             return Err(fail(GateFailReason::MarkerCoverageMissing));
         }
         if verified.push_range() != reviewed.push_range() {
@@ -275,6 +319,17 @@ impl GateSuccess {
         }
         if verified.tree_oid() != reviewed.tree_oid() {
             return Err(fail(GateFailReason::ReviewEvidenceMissing));
+        }
+        if verified.config_digest() != reviewed.config_digest() {
+            return Err(fail(GateFailReason::ReviewEvidenceMissing));
+        }
+        if pre_push.push_range != verified.push_range()
+            || pre_push.tree_oid != verified.tree_oid()
+            || pre_push.config_digest != verified.config_digest()
+            || pre_push.verified_scope_fingerprint != scope_fingerprint(&verified.run)
+            || pre_push.reviewed_scope_fingerprint != scope_fingerprint(&reviewed.run)
+        {
+            return Err(fail(GateFailReason::MarkerCoverageMissing));
         }
         if evidence
             .push_range
@@ -436,8 +491,7 @@ fn gate_run_from_payload(payload: &serde_json::Value, fallback_path: &Path) -> O
         .map(|items| {
             items
                 .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::to_owned)
+                .filter_map(hook_coverage_from_json)
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -445,6 +499,11 @@ fn gate_run_from_payload(payload: &serde_json::Value, fallback_path: &Path) -> O
         phase,
         push_range: payload.get("push_range")?.as_str()?.to_owned(),
         tree_oid: payload.get("tree_oid")?.as_str()?.to_owned(),
+        config_digest: payload
+            .get("config_digest")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
         log_path: payload
             .get("log_path")
             .and_then(serde_json::Value::as_str)
@@ -457,6 +516,46 @@ fn gate_run_from_payload(payload: &serde_json::Value, fallback_path: &Path) -> O
         marker,
         covered_hooks,
     })
+}
+
+fn hook_coverage_from_json(value: &serde_json::Value) -> Option<HookCoverage> {
+    if let Some(id) = value.as_str() {
+        return Some(HookCoverage {
+            id: id.to_owned(),
+            entry: String::new(),
+        });
+    }
+    let object = value.as_object()?;
+    Some(HookCoverage {
+        id: object.get("id")?.as_str()?.to_owned(),
+        entry: object.get("entry")?.as_str()?.to_owned(),
+    })
+}
+
+fn scope_fingerprint(run: &GateRun) -> String {
+    let phase = match run.phase {
+        GatePhase::Verify => "verify",
+        GatePhase::Review => "review",
+    };
+    let marker = match run.marker.as_ref() {
+        Some(ExitSignal::Complete) => "complete",
+        Some(ExitSignal::Noop) => "noop",
+        Some(ExitSignal::Concern { .. }) => "concern",
+        Some(_) | None => "other",
+    };
+    blake3::hash(
+        format!(
+            "{phase}\0{}\0{}\0{}\0{}\0{}",
+            run.push_range,
+            run.tree_oid,
+            run.config_digest,
+            run.exit_code.unwrap_or(-1),
+            marker,
+        )
+        .as_bytes(),
+    )
+    .to_hex()
+    .to_string()
 }
 
 fn marker_from_str(marker: &str) -> Option<ExitSignal> {
@@ -490,7 +589,14 @@ mod tests {
         file
     }
 
-    fn event(phase: &str, range: &str, tree: &str, marker: &str, hooks: &[&str]) -> String {
+    fn hook(id: &str, entry: &str) -> HookCoverage {
+        HookCoverage {
+            id: id.to_owned(),
+            entry: entry.to_owned(),
+        }
+    }
+
+    fn event(phase: &str, range: &str, tree: &str, marker: &str, hooks: &[HookCoverage]) -> String {
         serde_json::json!({
             "kind": "driver_event",
             "driver_kind": "gate_run_end",
@@ -498,6 +604,7 @@ mod tests {
                 "phase": phase,
                 "push_range": range,
                 "tree_oid": tree,
+                "config_digest": "config-a",
                 "log_path": "unused",
                 "exit_code": 0,
                 "status": "success",
@@ -512,12 +619,17 @@ mod tests {
         let verify = GateRun::successful_verify(
             "origin/main..HEAD".to_owned(),
             "tree-a".to_owned(),
+            "config-a".to_owned(),
             log.to_path_buf(),
-            vec!["pre-push".to_owned(), "loom-gate-verify".to_owned()],
+            vec![
+                hook("pre-push", "loom gate verify --diff @{u}..HEAD"),
+                hook("loom-gate-verify", "loom gate verify --diff @{u}..HEAD"),
+            ],
         );
         let review = GateRun::successful_review(
             "origin/main..HEAD".to_owned(),
             "tree-a".to_owned(),
+            "config-a".to_owned(),
             log.to_path_buf(),
             ExitSignal::Complete,
         );
@@ -533,7 +645,7 @@ mod tests {
                 "origin/main..HEAD",
                 "tree-a",
                 "complete",
-                &["pre-push"]
+                &[hook("pre-push", "loom gate verify --diff @{u}..HEAD")]
             ),
             event("review", "origin/main..HEAD", "tree-a", "complete", &[]),
         ));
@@ -552,7 +664,7 @@ mod tests {
                 "origin/main..HEAD",
                 "tree-a",
                 "complete",
-                &["pre-push"]
+                &[hook("pre-push", "loom gate verify --diff @{u}..HEAD")]
             ),
             event("review", "origin/main..HEAD", "tree-a", "complete", &[]),
         ));
@@ -574,7 +686,7 @@ mod tests {
         }
 
         let mut missing_coverage = evidence.clone();
-        missing_coverage.pre_push = Some(PrePushCoverage { hook_ids: vec![] });
+        missing_coverage.pre_push = None;
         match GateSuccess::new(&missing_coverage, 1) {
             Err(GateFail {
                 reason: GateFailReason::MarkerCoverageMissing,
@@ -593,7 +705,7 @@ mod tests {
                 "origin/main..HEAD",
                 "tree-a",
                 "complete",
-                &["pre-push"]
+                &[hook("pre-push", "loom gate verify --diff @{u}..HEAD")]
             ),
             event("review", "origin/main..HEAD", "tree-a", "complete", &[]),
         ));

@@ -39,7 +39,7 @@ repos:
 
       - id: nix-flake-check
         name: nix flake check
-        entry: skip-if-missing nix -- pre-push-checks nix flake check
+        entry: pre-push-checks --hook-id nix-flake-check --hook-entry 'skip-if-missing nix -- nix flake check' -- skip-if-missing nix -- nix flake check
         language: system
         stages: [pre-push]
         always_run: true
@@ -47,7 +47,7 @@ repos:
 
       - id: cargo-clippy
         name: cargo clippy --workspace --all-targets -- -D warnings
-        entry: pre-push-checks cargo clippy --workspace --all-targets -- -D warnings
+        entry: pre-push-checks --hook-id cargo-clippy --hook-entry 'cargo clippy --workspace --all-targets -- -D warnings' -- cargo clippy --workspace --all-targets -- -D warnings
         language: system
         stages: [pre-push]
         files: '\.rs$'
@@ -55,7 +55,7 @@ repos:
 
       - id: loom-gate-verify-diff
         name: loom gate verify --diff
-        entry: pre-push-checks loom gate verify --diff '@{u}..HEAD'
+        entry: pre-push-checks --hook-id loom-gate-verify-diff --hook-entry 'loom gate verify --diff @{u}..HEAD' -- loom gate verify --diff '@{u}..HEAD'
         language: system
         stages: [pre-push]
         always_run: true
@@ -63,7 +63,7 @@ repos:
 
       - id: container-smoke
         name: nix run .#test (container smoke)
-        entry: pre-push-checks skip-if-missing nix -- nix run .#test
+        entry: pre-push-checks --hook-id container-smoke --hook-entry 'skip-if-missing nix -- nix run .#test' -- skip-if-missing nix -- nix run .#test
         language: system
         stages: [pre-push]
         files: '^crates/[^/]+/tests/properties.rs$'

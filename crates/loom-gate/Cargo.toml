@@ -11,6 +11,7 @@ publish.workspace = true
 # depends on this crate; further consumers should not be added without
 # a spec change.
 [dependencies]
+blake3 = { workspace = true }
 displaydoc = { workspace = true }
 glob = { workspace = true }
 loom-driver = { workspace = true }

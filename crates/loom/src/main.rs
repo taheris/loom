@@ -109,7 +109,7 @@ enum GateSubcommand {
     Mint(GateMintArgs),
     /// Validate `.loom/marker.json` against the workspace's HEAD tree
     /// and porcelain — prek's pre-push short-circuit.
-    VerifyMarker,
+    VerifyMarker(GateVerifyMarkerArgs),
 }
 
 /// `loom gate mint` arg surface. Mint is an act command, so its scope
@@ -140,6 +140,19 @@ struct GateReviewArgs {
     /// Attach review context to an explicit diff scope.
     #[arg(long, short = 'b', value_name = "ID")]
     bead: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+struct GateVerifyMarkerArgs {
+    /// Pre-push hook id for coverage validation.
+    #[arg(long, requires = "hook_entry", requires = "push_range")]
+    hook_id: Option<String>,
+    /// Pre-push hook entry command for coverage validation.
+    #[arg(long, requires = "hook_id", requires = "push_range")]
+    hook_entry: Option<String>,
+    /// Resolved push range for coverage validation.
+    #[arg(long, requires = "hook_id", requires = "hook_entry")]
+    push_range: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -409,7 +422,7 @@ impl Command {
                 subcommand: Some(GateSubcommand::System(_)),
             }
             | Command::Gate {
-                subcommand: Some(GateSubcommand::VerifyMarker),
+                subcommand: Some(GateSubcommand::VerifyMarker(_)),
             } => false,
             Command::Init { .. }
             | Command::UseSpec { .. }
@@ -893,7 +906,7 @@ fn run_gate(
             }
             run_gate_mint(workspace, args, agent_override)
         }
-        Some(GateSubcommand::VerifyMarker) => run_gate_verify_marker(workspace),
+        Some(GateSubcommand::VerifyMarker(args)) => run_gate_verify_marker(workspace, args),
     }
 }
 
@@ -970,8 +983,20 @@ fn target_matches(workspace: &Path, target: &str) -> anyhow::Result<Vec<Tier>> {
         .collect())
 }
 
-fn run_gate_verify_marker(workspace: &Path) -> anyhow::Result<()> {
-    match loom_gate::verify_marker(workspace) {
+fn run_gate_verify_marker(workspace: &Path, args: GateVerifyMarkerArgs) -> anyhow::Result<()> {
+    let result = match (args.hook_id, args.hook_entry, args.push_range) {
+        (Some(hook_id), Some(hook_entry), Some(push_range)) => {
+            let request = loom_gate::MarkerValidationRequest {
+                hook_id,
+                hook_entry,
+                push_range,
+            };
+            loom_gate::verify_marker_for_hook(workspace, &request)
+        }
+        (None, None, None) => loom_gate::verify_marker(workspace),
+        _ => anyhow::bail!("--hook-id, --hook-entry, and --push-range must be supplied together",),
+    };
+    match result {
         Ok(_) => Ok(()),
         Err(err) => Err(anyhow::anyhow!("{err}")),
     }

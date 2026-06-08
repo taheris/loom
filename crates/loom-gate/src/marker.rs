@@ -31,11 +31,11 @@ use loom_driver::git::{self, GitError as DriverGitError, GitOid};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::gate_outcome::GateSuccess;
+use crate::gate_outcome::{GateSuccess, HookCoverage};
 
 /// Marker schema version this binary understands. Higher versions are
 /// rejected with `MarkerError::UnsupportedSchema`.
-const CURRENT_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = 2;
 
 /// Canonical marker location relative to the workspace root, per
 /// `specs/gate.md` § Marker — *File location and lifecycle*.
@@ -52,7 +52,19 @@ pub struct MarkerProof {
     version: u32,
     commit_sha: GitOid,
     tree_oid: GitOid,
+    pre_commit_config_digest: String,
+    push_range: String,
+    covered_hooks: Vec<HookCoverage>,
+    verified_scope_fingerprint: String,
+    reviewed_scope_fingerprint: String,
     minted_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkerValidationRequest {
+    pub hook_id: String,
+    pub hook_entry: String,
+    pub push_range: String,
 }
 
 impl MarkerProof {
@@ -64,12 +76,29 @@ impl MarkerProof {
     /// `_private: ()` field on [`GateSuccess`]) is the load-bearing
     /// forgery defense per `specs/gate.md` § *Forgery resistance*.
     pub(crate) fn from_gate_success(
-        _success: GateSuccess,
+        success: GateSuccess,
         workspace: &Path,
         clock: &dyn Clock,
     ) -> Result<Self, MintError> {
         let commit_sha = git::sync_head_commit_sha(workspace)?;
+        if !git::status_porcelain_sync(workspace)?.is_empty() {
+            return Err(MintError::PorcelainDirty);
+        }
         let tree_oid = git_tree_oid_of_head(workspace)?;
+        if tree_oid.to_string() != success.tree_oid {
+            return Err(MintError::TreeMismatch {
+                marker_tree: success.tree_oid,
+                head_tree: tree_oid,
+            });
+        }
+        let pre_commit_config_digest = pre_commit_config_digest(workspace)
+            .map_err(|source| MintError::ConfigDigestRead { source })?;
+        if pre_commit_config_digest != success.pre_push.config_digest {
+            return Err(MintError::ConfigDigestMismatch {
+                marker_digest: success.pre_push.config_digest,
+                current_digest: pre_commit_config_digest,
+            });
+        }
         let minted_at_ms = clock
             .wall_now()
             .duration_since(UNIX_EPOCH)
@@ -79,6 +108,11 @@ impl MarkerProof {
             version: CURRENT_VERSION,
             commit_sha,
             tree_oid,
+            pre_commit_config_digest,
+            push_range: success.push_range,
+            covered_hooks: success.pre_push.hooks,
+            verified_scope_fingerprint: success.pre_push.verified_scope_fingerprint,
+            reviewed_scope_fingerprint: success.pre_push.reviewed_scope_fingerprint,
             minted_at_ms,
         })
     }
@@ -157,6 +191,43 @@ impl MarkerProof {
                 head_tree: current_tree,
             });
         }
+        let current_digest = pre_commit_config_digest(workspace)
+            .map_err(|source| MarkerError::ConfigDigestRead { source })?;
+        if current_digest != marker.pre_commit_config_digest {
+            return Err(MarkerError::ConfigDigestMismatch {
+                marker_digest: marker.pre_commit_config_digest.clone(),
+                current_digest,
+            });
+        }
+        if marker.covered_hooks.is_empty()
+            || marker.verified_scope_fingerprint.is_empty()
+            || marker.reviewed_scope_fingerprint.is_empty()
+        {
+            return Err(MarkerError::ScopeEvidenceMissing);
+        }
+        Ok(marker)
+    }
+
+    pub fn read_and_validate_for_hook(
+        path: &Path,
+        workspace: &Path,
+        request: &MarkerValidationRequest,
+    ) -> Result<Self, MarkerError> {
+        let marker = Self::read_and_validate(path, workspace)?;
+        if marker.push_range != request.push_range {
+            return Err(MarkerError::CoverageMismatch {
+                reason: "push range".to_owned(),
+            });
+        }
+        if !marker
+            .covered_hooks
+            .iter()
+            .any(|hook| hook.id == request.hook_id && hook.entry == request.hook_entry)
+        {
+            return Err(MarkerError::CoverageMismatch {
+                reason: "hook id/entry".to_owned(),
+            });
+        }
         Ok(marker)
     }
 
@@ -175,6 +246,18 @@ impl MarkerProof {
     pub fn tree_oid(&self) -> &GitOid {
         &self.tree_oid
     }
+
+    pub fn pre_commit_config_digest(&self) -> &str {
+        &self.pre_commit_config_digest
+    }
+
+    pub fn push_range(&self) -> &str {
+        &self.push_range
+    }
+
+    pub fn covered_hooks(&self) -> &[HookCoverage] {
+        &self.covered_hooks
+    }
 }
 
 /// Validate the marker file at `<workspace>/.loom/marker.json` against
@@ -183,6 +266,14 @@ impl MarkerProof {
 pub fn verify_marker(workspace: &Path) -> Result<MarkerProof, MarkerError> {
     let path = workspace.join(MARKER_PATH);
     MarkerProof::read_and_validate(&path, workspace)
+}
+
+pub fn verify_marker_for_hook(
+    workspace: &Path,
+    request: &MarkerValidationRequest,
+) -> Result<MarkerProof, MarkerError> {
+    let path = workspace.join(MARKER_PATH);
+    MarkerProof::read_and_validate_for_hook(&path, workspace, request)
 }
 
 /// Failure modes of [`MarkerProof::mint`] / [`MarkerProof::from_gate_success`].
@@ -198,6 +289,23 @@ pub enum MintError {
     Clock {
         #[source]
         source: std::time::SystemTimeError,
+    },
+    /// workspace porcelain is not clean at marker mint time
+    PorcelainDirty,
+    /// gate success tree `{marker_tree}` does not match workspace tree `{head_tree}`
+    TreeMismatch {
+        marker_tree: String,
+        head_tree: GitOid,
+    },
+    /// failed to read `.pre-commit-config.yaml` for marker minting: {source}
+    ConfigDigestRead {
+        #[source]
+        source: io::Error,
+    },
+    /// gate success config digest `{marker_digest}` does not match workspace digest `{current_digest}`
+    ConfigDigestMismatch {
+        marker_digest: String,
+        current_digest: String,
     },
     /// failed to atomically write marker to `{path}`: {source}
     Write {
@@ -245,6 +353,20 @@ pub enum MarkerError {
         marker_tree: GitOid,
         head_tree: GitOid,
     },
+    /// failed to read `.pre-commit-config.yaml` for marker validation: {source}
+    ConfigDigestRead {
+        #[source]
+        source: io::Error,
+    },
+    /// `.pre-commit-config.yaml` digest `{current_digest}` does not match marker's `{marker_digest}`
+    ConfigDigestMismatch {
+        marker_digest: String,
+        current_digest: String,
+    },
+    /// marker is missing verify/review scope evidence
+    ScopeEvidenceMissing,
+    /// marker does not cover the current hook invocation: {reason}
+    CoverageMismatch { reason: String },
     /// failed to read workspace git state
     Git(#[from] DriverGitError),
 }
@@ -261,6 +383,11 @@ fn git_tree_oid_of_head(workspace: &Path) -> Result<GitOid, DriverGitError> {
     git::head_tree_oid_sync(workspace)
 }
 
+fn pre_commit_config_digest(workspace: &Path) -> Result<String, io::Error> {
+    let bytes = fs::read(workspace.join(".pre-commit-config.yaml"))?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,9 +395,21 @@ mod tests {
     use std::process::Command as Cmd;
     use tempfile::TempDir;
 
+    const HOOK_ID: &str = "loom-gate-verify-diff";
+    const HOOK_ENTRY: &str = "loom gate verify --diff @{u}..HEAD";
+    const PUSH_RANGE: &str = "origin/main..HEAD";
+
     fn init_test_workspace() -> TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         loom_driver::git::init_test_repo(dir.path()).expect("init test repo");
+        std::fs::write(
+            dir.path().join(".pre-commit-config.yaml"),
+            "repos: []
+",
+        )
+        .expect("write pre-commit config");
+        loom_driver::git::commit_all_in(dir.path(), "add pre-commit config")
+            .expect("commit config");
         dir
     }
 
@@ -289,16 +428,40 @@ mod tests {
         fs::write(&path, bytes).expect("write marker");
     }
 
+    fn hook() -> HookCoverage {
+        HookCoverage {
+            id: HOOK_ID.to_owned(),
+            entry: HOOK_ENTRY.to_owned(),
+        }
+    }
+
+    fn request() -> MarkerValidationRequest {
+        MarkerValidationRequest {
+            hook_id: HOOK_ID.to_owned(),
+            hook_entry: HOOK_ENTRY.to_owned(),
+            push_range: PUSH_RANGE.to_owned(),
+        }
+    }
+
+    fn marker_for_workspace(workspace: &Path) -> MarkerProof {
+        MarkerProof {
+            version: CURRENT_VERSION,
+            commit_sha: head_sha(workspace),
+            tree_oid: head_tree(workspace),
+            pre_commit_config_digest: pre_commit_config_digest(workspace).expect("config digest"),
+            push_range: PUSH_RANGE.to_owned(),
+            covered_hooks: vec![hook()],
+            verified_scope_fingerprint: "verified-scope".to_owned(),
+            reviewed_scope_fingerprint: "reviewed-scope".to_owned(),
+            minted_at_ms: 0,
+        }
+    }
+
     #[test]
     fn verify_marker_exits_zero_on_match() {
         let dir = init_test_workspace();
         let workspace = dir.path();
-        let marker = MarkerProof {
-            version: 1,
-            commit_sha: head_sha(workspace),
-            tree_oid: head_tree(workspace),
-            minted_at_ms: 0,
-        };
+        let marker = marker_for_workspace(workspace);
         write_marker_at(workspace, &marker);
         let result = verify_marker(workspace);
         assert!(
@@ -322,12 +485,9 @@ mod tests {
     fn verify_marker_exits_nonzero_on_tree_mismatch() {
         let dir = init_test_workspace();
         let workspace = dir.path();
-        let marker = MarkerProof {
-            version: 1,
-            commit_sha: head_sha(workspace),
-            tree_oid: GitOid::new("deadbeefcafe1234567890abcdef0123456789ab").expect("tree oid"),
-            minted_at_ms: 0,
-        };
+        let mut marker = marker_for_workspace(workspace);
+        marker.tree_oid =
+            GitOid::new("deadbeefcafe1234567890abcdef0123456789ab").expect("tree oid");
         write_marker_at(workspace, &marker);
         let result = verify_marker(workspace);
         match result {
@@ -340,12 +500,7 @@ mod tests {
     fn verify_marker_exits_nonzero_on_dirty_tree() {
         let dir = init_test_workspace();
         let workspace = dir.path();
-        let marker = MarkerProof {
-            version: 1,
-            commit_sha: head_sha(workspace),
-            tree_oid: head_tree(workspace),
-            minted_at_ms: 0,
-        };
+        let marker = marker_for_workspace(workspace);
         write_marker_at(workspace, &marker);
         std::fs::write(workspace.join("README.md"), "dirty contents\n").expect("dirty edit");
         let result = verify_marker(workspace);
@@ -353,6 +508,73 @@ mod tests {
             Err(MarkerError::PorcelainDirty) => {}
             other => panic!("expected PorcelainDirty, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn verify_marker_rejects_same_tree_wrong_config_digest() {
+        let dir = init_test_workspace();
+        let workspace = dir.path();
+        let mut marker = marker_for_workspace(workspace);
+        marker.pre_commit_config_digest = "wrong-config".to_owned();
+        write_marker_at(workspace, &marker);
+        match verify_marker_for_hook(workspace, &request()) {
+            Err(MarkerError::ConfigDigestMismatch { .. }) => {}
+            other => panic!("expected ConfigDigestMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_marker_rejects_wrong_push_range() {
+        let dir = init_test_workspace();
+        let workspace = dir.path();
+        write_marker_at(workspace, &marker_for_workspace(workspace));
+        let mut req = request();
+        req.push_range = "origin/other..HEAD".to_owned();
+        match verify_marker_for_hook(workspace, &req) {
+            Err(MarkerError::CoverageMismatch { reason }) if reason == "push range" => {}
+            other => panic!("expected push range mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_marker_rejects_wrong_hook_id_or_entry() {
+        let dir = init_test_workspace();
+        let workspace = dir.path();
+        write_marker_at(workspace, &marker_for_workspace(workspace));
+        let mut wrong_id = request();
+        wrong_id.hook_id = "cargo-clippy".to_owned();
+        match verify_marker_for_hook(workspace, &wrong_id) {
+            Err(MarkerError::CoverageMismatch { reason }) if reason == "hook id/entry" => {}
+            other => panic!("expected hook id mismatch, got {other:?}"),
+        }
+        let mut wrong_entry = request();
+        wrong_entry.hook_entry = "loom gate verify --diff origin/main..HEAD".to_owned();
+        match verify_marker_for_hook(workspace, &wrong_entry) {
+            Err(MarkerError::CoverageMismatch { reason }) if reason == "hook id/entry" => {}
+            other => panic!("expected hook entry mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_marker_rejects_missing_review_evidence() {
+        let dir = init_test_workspace();
+        let workspace = dir.path();
+        let mut marker = marker_for_workspace(workspace);
+        marker.reviewed_scope_fingerprint.clear();
+        write_marker_at(workspace, &marker);
+        match verify_marker_for_hook(workspace, &request()) {
+            Err(MarkerError::ScopeEvidenceMissing) => {}
+            other => panic!("expected ScopeEvidenceMissing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_marker_accepts_valid_covered_hook() {
+        let dir = init_test_workspace();
+        let workspace = dir.path();
+        write_marker_at(workspace, &marker_for_workspace(workspace));
+        let validated = verify_marker_for_hook(workspace, &request()).expect("covered hook");
+        assert_eq!(validated.push_range(), PUSH_RANGE);
     }
 
     fn install_executable(bin_dir: &Path, name: &str, body: &str) {
@@ -383,7 +605,16 @@ mod tests {
         entries.extend(std::env::split_paths(&path_var));
         let new_path = std::env::join_paths(entries).expect("join PATH");
         Cmd::new("pre-push-checks")
-            .arg("sentinel")
+            .args([
+                "--hook-id",
+                HOOK_ID,
+                "--hook-entry",
+                HOOK_ENTRY,
+                "--push-range",
+                PUSH_RANGE,
+                "--",
+                "sentinel",
+            ])
             .current_dir(workspace)
             .env("PATH", new_path)
             .output()
@@ -508,7 +739,7 @@ mod tests {
         }
         let dir = init_test_workspace();
         let workspace = dir.path();
-        let (_log, success) = good_gate_success();
+        let (_log, success) = good_gate_success(workspace);
         let clock = loom_driver::clock::SystemClock::new();
         MarkerProof::mint(success, workspace, &clock).expect("mint succeeds");
         assert!(
@@ -539,18 +770,21 @@ mod tests {
         );
     }
 
-    fn good_gate_success() -> (tempfile::NamedTempFile, GateSuccess) {
+    fn good_gate_success(workspace: &Path) -> (tempfile::NamedTempFile, GateSuccess) {
         use std::io::Write;
         let mut log = tempfile::NamedTempFile::new().expect("tempfile");
         let log_path = log.path().to_string_lossy().to_string();
-        let event = |phase: &str, hooks: &[&str]| {
+        let tree = head_tree(workspace).to_string();
+        let config_digest = pre_commit_config_digest(workspace).expect("config digest");
+        let event = |phase: &str, hooks: &[HookCoverage]| {
             serde_json::json!({
                 "kind": "driver_event",
                 "driver_kind": "gate_run_end",
                 "payload": {
                     "phase": phase,
-                    "push_range": "origin/main..HEAD",
-                    "tree_oid": "tree-a",
+                    "push_range": PUSH_RANGE,
+                    "tree_oid": tree,
+                    "config_digest": config_digest,
                     "log_path": log_path,
                     "exit_code": 0,
                     "status": "success",
@@ -560,7 +794,7 @@ mod tests {
             })
             .to_string()
         };
-        writeln!(log, "{}", event("verify", &["pre-push"])).expect("write");
+        writeln!(log, "{}", event("verify", &[hook()])).expect("write");
         writeln!(log, "{}", event("review", &[])).expect("write");
         let runs = crate::gate_outcome::parse_gate_runs_from_jsonl(log.path());
         let evidence = crate::gate_outcome::HandoffEvidence::from_runs(runs);
@@ -576,7 +810,7 @@ mod tests {
     fn mint_round_trips_through_read_and_validate() {
         let dir = init_test_workspace();
         let workspace = dir.path();
-        let (_log, success) = good_gate_success();
+        let (_log, success) = good_gate_success(workspace);
         let clock = loom_driver::clock::SystemClock::new();
         let minted = MarkerProof::mint(success, workspace, &clock).expect("mint succeeds");
         assert_eq!(minted.version, CURRENT_VERSION);
@@ -598,7 +832,7 @@ mod tests {
         std::fs::create_dir_all(&loom_dir).expect("mkdir .loom");
         std::fs::write(loom_dir.join("marker.json.tmp"), b"stale\n").expect("seed stale tmp");
 
-        let (_log, success) = good_gate_success();
+        let (_log, success) = good_gate_success(workspace);
         let clock = loom_driver::clock::SystemClock::new();
         let minted = MarkerProof::mint(success, workspace, &clock).expect("mint succeeds");
 
@@ -616,8 +850,9 @@ mod tests {
     /// repository — without git we cannot compute `HEAD`'s tree OID.
     #[test]
     fn mint_errors_when_workspace_has_no_git() {
+        let evidence_dir = init_test_workspace();
         let dir = tempfile::tempdir().expect("tempdir");
-        let (_log, success) = good_gate_success();
+        let (_log, success) = good_gate_success(evidence_dir.path());
         let clock = loom_driver::clock::SystemClock::new();
         let result = MarkerProof::mint(success, dir.path(), &clock);
         assert!(matches!(result, Err(MintError::Git(_))), "got {result:?}");
