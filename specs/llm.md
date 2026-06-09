@@ -1,17 +1,18 @@
 # Loom-LLM
 
-Typed multi-provider LLM primitives, Conversation with built-in
-tool-use loop, and agent-loop observers for both Loom's binary and
-external Rust consumers.
+Typed multi-provider LLM primitives, multimodal request content,
+Conversation with built-in tool-use loop, and agent-loop observers
+for both Loom's binary and external Rust consumers.
 
 ## Problem Statement
 
 Loom's Direct backend needs typed multi-provider LLM access with
-per-call model selection within a schema, typed prompt-cache
-markers, structured-output deserialization, and typed
-transport-failure classification so consumers can drive their own
-retry policies. The same primitives are useful to external Rust
-crates (e.g. RAG pipelines, domain-specific review tools, on-prem
+per-call model selection within a schema, typed multimodal content
+parts, typed prompt-cache markers, structured-output
+deserialization, and typed transport-failure classification so
+consumers can drive their own retry policies. The same primitives
+are useful to external Rust crates (e.g. RAG pipelines,
+domain-specific review tools, on-prem
 deployments backed by customer-hosted models reached via an
 OpenAI-compatible endpoint) that want typed LLM calls without
 taking on Loom's CLI / workflow / beads surface.
@@ -170,7 +171,8 @@ additive under `#[non_exhaustive]`).
 ### `CompletionRequest`
 
 Builder shape; messages typed; cache control typed per content
-block:
+part. Existing text-only builders stay source-compatible and
+append text content parts:
 
 ```rust
 let req = CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
@@ -180,9 +182,55 @@ let req = CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet
     .max_tokens(2048);
 ```
 
+Messages are ordered lists of typed content parts rather than raw
+provider JSON:
+
+```rust
+pub enum MessageContent {
+    Text(String),
+    Binary(BinaryContent),
+}
+
+pub struct BinaryContent {
+    pub mime_type: MimeType,
+    pub bytes: bytes::Bytes,
+    pub name: Option<String>,
+}
+```
+
+Binary payloads are bytes in the public request model. Provider
+clients base64-encode at the transport boundary when the native
+wire format requires it; consumers do not pass provider-specific
+inline-data, document-block, image-block, or file-part structs.
+`name` is optional caller metadata used as a provider filename
+when the native wire shape has one; if a provider requires a
+filename and `name` is absent, the client synthesizes a safe generic
+filename from the MIME type. `BinaryContent`'s `Debug` output
+redacts bytes and prints only MIME type, optional name, and byte
+length.
+
+`MimeType` is a validated public newtype with associated constants
+for the built-in set (`APPLICATION_PDF`, `IMAGE_PNG`, `IMAGE_JPEG`,
+`IMAGE_WEBP`) plus a fallible parser for additional syntactically
+valid MIME types. No public binary-content API accepts a bare
+unvalidated string for MIME type.
+
+Convenience builders preserve the simple text API while adding
+multipart ergonomics. Role-specific binary builders append to the
+most recent message for that role when one exists; otherwise they
+start a new message for that role:
+
+```rust
+let req = CompletionRequest::new(ModelId::Gemini(GeminiModel::Gemini15Pro))
+    .system("Answer from the uploaded document")
+    .user("Summarize this PDF")
+    .user_binary(MimeType::APPLICATION_PDF, pdf_bytes)
+    .user_binary_named(MimeType::IMAGE_PNG, image_bytes, "diagram.png");
+```
+
 Each `Message::*` and `Message::*_cached` constructor produces a
-typed content block; consumers compose blocks via the builder
-rather than handing in JSON objects.
+typed content part; consumers compose parts via the builder rather
+than handing in JSON objects.
 
 ### Client Types
 
@@ -246,9 +294,9 @@ pub enum CacheControl {
 pub enum CacheTtl { Minutes5, Hours1, Hours24 }
 ```
 
-Per-content-block granularity via `Message::*_cached(content,
+Per-content-part granularity via `Message::*_cached(content,
 CacheControl)`. The TTL set matches Anthropic's prompt-cache
-breakpoint API. Providers that do not support typed per-block
+breakpoint API. Providers that do not support typed per-part
 cache markers (e.g. OpenAI today) no-op the marker without error.
 
 ### Structured Output
@@ -262,10 +310,40 @@ bound `T: DeserializeOwned + JsonSchema` means the type carries
 its own schema via `schemars`. Consumers never write
 provider-specific code or see the mechanism difference; switching
 providers swaps both the Client type and the `ModelId` variant,
-with the call shape unchanged. Failure modes surface as typed
-`LlmError` variants — `MalformedJson` for non-JSON or
-parse-failure responses, `SchemaViolation` for parsed-but-invalid
-responses (see [LlmError](#llmerror)).
+with the call shape unchanged. Multimodal content parts are
+preserved for structured-output requests; adding binary parts does
+not force consumers onto a separate structured-output API. Failure
+modes surface as typed `LlmError` variants — `MalformedJson` for
+non-JSON or parse-failure responses, `SchemaViolation` for
+parsed-but-invalid responses (see [LlmError](#llmerror)).
+
+### Multimodal Provider Mapping
+
+Provider clients translate `MessageContent::Binary` to native
+provider wire shapes:
+
+- **Gemini:** serializes each binary part as
+  `{ inline_data: { mime_type, data: <base64> } }` in the same
+  ordered message content as adjacent text parts.
+- **Anthropic:** serializes supported document and image MIME types
+  to native content blocks (`document` for `application/pdf`,
+  `image` for supported image types) with
+  `source: { type: "base64", media_type, data }`. Unsupported MIME
+  types fail before network I/O with `LlmError::UnsupportedCapability`.
+- **OpenAI:** official `OpenAiClient` serializes PDFs/files through
+  OpenAI Responses `input_file` content with `filename` and
+  `file_data: "data:<mime>;base64,<payload>"`; supported images use
+  native image content (`input_image` or Chat-Completions
+  `image_url`) with data URLs. The public API does not expose which
+  OpenAI endpoint is used for a given request.
+- **OpenAI-compatible:** no portable multimodal contract is promised.
+  Binary parts fail before network I/O with
+  `LlmError::UnsupportedCapability`; text-only Chat-Completions
+  compatibility remains unchanged.
+
+Invalid binary request shapes that are provider-independent (for
+example, an empty binary payload) fail before network I/O with
+`LlmError::IncompatibleRequest`.
 
 ### `TokenUsage`
 
@@ -312,9 +390,15 @@ pub enum LlmError {
 
     // Client-side
     IncompatibleModel { model: ModelId, expected: SchemaKind },
+    UnsupportedCapability { provider: SchemaKind, capability: LlmCapability },
+    IncompatibleRequest { reason: String },
 
     // Fallback
     Provider { message: String },                 // genuinely unclassified
+}
+
+pub enum LlmCapability {
+    MultimodalBinary { mime_type: MimeType },
 }
 
 pub enum RetryAdvice {
@@ -336,7 +420,7 @@ Classification is canonical and lives in `loom-llm`:
 | `RateLimited { retry_after }` | `RetryAfter(retry_after)` |
 | `MalformedJson`, `SchemaViolation` | `Retryable` |
 | `ProviderHttp { status, .. }` | `Retryable` iff `status >= 500`, else `NonRetryable` |
-| `AuthFailed`, `IncompatibleModel`, `Provider` | `NonRetryable` |
+| `AuthFailed`, `IncompatibleModel`, `UnsupportedCapability`, `IncompatibleRequest`, `Provider` | `NonRetryable` |
 
 `loom-llm` does not retry. The method returns *advice*; the
 consumer composes its own backoff, jitter, and budget policy.
@@ -348,8 +432,8 @@ Client family: the three genai-backed Clients classify every
 that do not map cleanly.
 
 `#[non_exhaustive]` so future variants (new HTTP-status carve-outs,
-provider-specific error families) land additively without
-breaking consumer matchers.
+provider-specific error families, new capability classes) land
+additively without breaking consumer matchers.
 
 ### `Conversation` and the Built-in Tool-Use Loop
 
@@ -536,6 +620,45 @@ and `--no-default-features` to catch feature-gating regressions.
 - `complete*` calls emit `DriverKind::TokenUsage` event into the active `EventSink` chain (so SaaS billing pipelines tail the same AgentEvent stream and compute cost from token counts using their own rate tables)
   [test](complete_emits_token_usage_driver_event)
 
+### Multimodal content
+
+- Existing text-only builders (`system`, `user`, cached variants) remain source-compatible and continue to create text-only requests without forcing callers to construct `MessageContent` manually
+  [test?](completion_request_text_only_api_remains_compatible)
+- `CompletionRequest` can carry ordered multipart user content containing both text and a PDF binary part with MIME type `application/pdf`
+  [test?](completion_request_accepts_text_and_pdf_binary_parts)
+- Role-specific binary builders append to the most recent message for that role when present, preserving text-plus-binary ordering inside one multipart message
+  [test?](binary_builders_append_to_existing_role_message)
+- Binary content APIs require validated `MimeType` values; no public binary-content constructor or builder accepts a bare unvalidated MIME-type string
+  [check?](cargo run -p loom-walk -- loom_llm_mime_type_no_raw_strings)
+- `MimeType` exposes built-in constants for supported common types and its parser accepts only syntactically valid MIME strings
+  [test?](mime_type_parser_accepts_valid_and_rejects_invalid)
+- Public multimodal types (`MessageContent`, `BinaryContent`, `MimeType`) are defined in `llm`; no public multimodal signature references Gemini, Anthropic, OpenAI, or genai wire structs
+  [check?](cargo run -p loom-walk -- loom_llm_multimodal_no_provider_wire_types)
+- `BinaryContent` debug formatting redacts payload bytes/base64 while still exposing MIME type, optional name, and byte length
+  [test?](binary_content_debug_redacts_payload)
+- Default logging does not emit binary bytes, base64 payloads, prompt bodies, or response bodies; MIME type and byte length are safe to log
+  [judge](../tests/judges/loom.sh#judge_llm_multimodal_logging_redaction)
+- `GeminiClient` serializes PDF binary parts to Gemini `inline_data` with `mime_type: "application/pdf"` and base64 `data`
+  [test?](gemini_multimodal_serializes_pdf_inline_data)
+- `AnthropicClient` serializes PDF binary parts to native Anthropic `document` content blocks with `source: { type: "base64", media_type: "application/pdf", data }`, not prompt text
+  [test?](anthropic_multimodal_serializes_pdf_document_block)
+- `AnthropicClient` serializes supported image binary parts to native Anthropic `image` content blocks with `source: { type: "base64", media_type, data }`, not prompt text
+  [test?](anthropic_multimodal_serializes_image_block)
+- `OpenAiClient` serializes PDF binary parts to OpenAI Responses `input_file` content with `filename` and `file_data` data URI, not prompt text
+  [test?](openai_multimodal_serializes_pdf_input_file)
+- `OpenAiClient` serializes supported image binary parts to OpenAI-native image content with a data URL, not prompt text
+  [test?](openai_multimodal_serializes_image_data_url)
+- Providers that require a filename synthesize a safe generic filename from `MimeType` when `BinaryContent::name` is absent
+  [test?](provider_filename_synthesized_when_binary_name_absent)
+- `OpenAiCompatClient` rejects binary parts with `LlmError::UnsupportedCapability` before network I/O while preserving text-only Chat-Completions compatibility
+  [test?](openai_compat_multimodal_returns_unsupported_without_network)
+- Unsupported multimodal MIME/provider combinations return typed `LlmError::UnsupportedCapability` and never panic
+  [test?](unsupported_multimodal_request_returns_typed_error_not_panic)
+- Empty binary payloads return `LlmError::IncompatibleRequest` before network I/O
+  [test?](empty_binary_payload_returns_incompatible_request)
+- `complete_structured::<T>` accepts requests containing multimodal content parts using the same call shape as text-only structured output
+  [test?](complete_structured_accepts_multimodal_messages)
+
 ### Client types
 
 - Four Client types ship in `loom-llm` mapping 1:1 to `SchemaKind`: `AnthropicClient`, `OpenAiClient`, `GeminiClient` (unconditional), `OpenAiCompatClient` (under `openai-compat` feature)
@@ -568,10 +691,10 @@ and `--no-default-features` to catch feature-gating regressions.
 
 ### `LlmError`
 
-- `LlmError` is `#[non_exhaustive]` and carries the documented variants: `Transport`, `Timeout`, `RateLimited`, `AuthFailed`, `ProviderHttp`, `MalformedJson`, `SchemaViolation`, `IncompatibleModel`, `Provider`
-  [check](cargo run -p loom-walk -- loom_llm_error_variant_set)
-- `LlmError::retry_advice(&self)` returns the classification documented in [LlmError](#llmerror) for every variant
-  [test](llm_error_retry_advice_matches_classification_table)
+- `LlmError` is `#[non_exhaustive]` and carries the documented variants: `Transport`, `Timeout`, `RateLimited`, `AuthFailed`, `ProviderHttp`, `MalformedJson`, `SchemaViolation`, `IncompatibleModel`, `UnsupportedCapability`, `IncompatibleRequest`, `Provider`
+  [check?](cargo run -p loom-walk -- loom_llm_error_variant_set_multimodal)
+- `LlmError::retry_advice(&self)` returns the classification documented in [LlmError](#llmerror) for every variant, including `UnsupportedCapability` and `IncompatibleRequest` as `NonRetryable`
+  [test?](llm_error_retry_advice_includes_multimodal_client_errors)
 - `RateLimited { retry_after }` is populated from the `Retry-After` HTTP header (seconds or HTTP-date) when the provider returns 429; missing header falls back to a documented default
   [test](rate_limited_parses_retry_after_header)
 - `ProviderHttp { status, body }` carries the raw status and response body for unclassified non-success responses; `retry_advice` returns `Retryable` for `status >= 500`, `NonRetryable` otherwise
@@ -664,18 +787,22 @@ and `--no-default-features` to catch feature-gating regressions.
    `complete_structured::<T>(req)`. Per-call model selection via
    required positional `ModelId` on the request. Schema is fixed
    at Client construction; per-call selection varies the model
-   within that schema. No `embed` in v1.
+   within that schema. Requests carry typed text and binary
+   content parts without exposing provider-specific structs. No
+   `embed` in v1.
 2. **Typed `CacheControl`.** `Ephemeral(CacheTtl)` with
    `CacheTtl::{Minutes5, Hours1, Hours24}` matching Anthropic's
-   prompt-cache breakpoint API. Per-content-block granularity.
+   prompt-cache breakpoint API. Per-content-part granularity.
    Other providers no-op the marker.
 3. **Provider-mechanism-hidden structured output.**
    `complete_structured::<T: DeserializeOwned + JsonSchema>(req)`
    is one method; internally picks the right underlying mechanism
    per provider (synthetic forced-tool / `response_format` /
-   `response_schema`) and deserializes into `T`. Schema-violation
-   failures surface as `LlmError::SchemaViolation`; malformed
-   JSON as `LlmError::MalformedJson`.
+   `response_schema`) and deserializes into `T`. Multimodal
+   content parts remain compatible with this call shape.
+   Schema-violation failures surface as
+   `LlmError::SchemaViolation`; malformed JSON as
+   `LlmError::MalformedJson`.
 4. **`TokenUsage` on every response — raw counts only.**
    `CompletionResponse.usage` carries
    `{ input, output, cache_read, cache_write }`. No `cost_cents`;
@@ -714,7 +841,8 @@ and `--no-default-features` to catch feature-gating regressions.
    config (`[agent.doom_loop]` / `[agent.duplicate_result]`) or
    per-`Conversation` via the builder.
 10. **Wrapper, not re-export.** Public surface
-    (`LlmClient`, `CompletionRequest`, `Message`, `ModelId`,
+    (`LlmClient`, `CompletionRequest`, `Message`,
+    `MessageContent`, `BinaryContent`, `MimeType`, `ModelId`,
     `SchemaKind`, `CacheControl`, `Tool`, `Conversation`,
     `LlmError`, `RetryAdvice`, per-schema Client types) is
     defined in `llm`. The underlying multi-provider crate is an
@@ -746,29 +874,49 @@ and `--no-default-features` to catch feature-gating regressions.
     `base_url`, with an optional `ApiKey`. Targets local
     runners (vLLM, llama.cpp, LM Studio, Ollama via its `/v1`
     endpoint), API-shaped proxies (LiteLLM), and
-    commercial OpenAI-compatible providers. No retries, rate
-    limiting, or fallback — that is the consumer's job.
-14. **Typed `LlmError` variants.** `#[non_exhaustive]` enum
+    commercial OpenAI-compatible providers. No portable
+    multimodal contract is promised for this adapter: binary
+    parts return `LlmError::UnsupportedCapability` before
+    network I/O. No retries, rate limiting, or fallback — that
+    is the consumer's job.
+14. **Typed multimodal request content.** `CompletionRequest`
+    messages are ordered lists of `MessageContent::Text` and
+    `MessageContent::Binary` parts. Binary parts carry validated
+    `MimeType`, bytes, and optional name/filename metadata.
+    Existing `.system("...")`, `.user("...")`, and cached text
+    builders remain source-compatible. New binary builders append
+    binary parts without requiring consumers to construct provider
+    JSON.
+15. **Native multimodal provider support.** `GeminiClient`
+    serializes binary parts as `inline_data`; `AnthropicClient`
+    serializes supported PDFs/images as native document/image
+    blocks with base64 source objects; official `OpenAiClient`
+    serializes PDFs/files as Responses `input_file` parts and
+    images as native image content with data URLs. Unsupported
+    MIME/provider combinations fail before network I/O with typed
+    errors and never degrade into base64 prompt text.
+16. **Typed `LlmError` variants.** `#[non_exhaustive]` enum
     distinguishing transport, timeout, rate-limit (with
     `Retry-After`), auth, classified-HTTP, malformed-JSON,
-    schema-violation, incompatible-model, and a `Provider`
-    fallback. `LlmError::retry_advice(&self) -> RetryAdvice`
-    encodes the canonical retry-class table (5xx retryable,
-    4xx non-retryable except 429-with-delay, transport/timeout
-    retryable, auth/incompatible-model non-retryable).
-    `loom-llm` classifies; consumers compose their own
-    backoff/budget on top. Upstream error → `LlmError`
-    mapping is exhaustive for each Client family
-    (`genai::Error` for the genai-backed Clients,
+    schema-violation, incompatible-model, unsupported-capability,
+    incompatible-request, and a `Provider` fallback.
+    `LlmError::retry_advice(&self) -> RetryAdvice` encodes the
+    canonical retry-class table (5xx retryable, 4xx
+    non-retryable except 429-with-delay, transport/timeout
+    retryable, auth/incompatible-model/unsupported-capability/
+    incompatible-request non-retryable). `loom-llm` classifies;
+    consumers compose their own backoff/budget on top. Upstream
+    error → `LlmError` mapping is exhaustive for each Client
+    family (`genai::Error` for the genai-backed Clients,
     `reqwest::Error` plus parsed HTTP status for
     `OpenAiCompatClient`).
-15. **`IncompatibleModel` check is synchronous and
+17. **`IncompatibleModel` check is synchronous and
     network-free.** `LlmClient::complete` returns
     `LlmError::IncompatibleModel { model, expected }` without
     issuing a network call when `model.schema() != self.schema()`.
     Consumers can pre-validate allowed-model sets via
     `LlmClient::supports(&ModelId)`.
-16. **Feature-gated adapters.** Optional adapters are in-crate
+18. **Feature-gated adapters.** Optional adapters are in-crate
     Cargo features, default-off. Today: `openai-compat`. Future
     regulated providers (`bedrock`, `azure`, `vertex`) slot into
     the same pattern without further architectural changes. CI
@@ -786,7 +934,11 @@ and `--no-default-features` to catch feature-gating regressions.
 2. **Dep-graph leaf.** `llm` depends on `loom-events` only
    among internal crates. No `loom-driver`, `agent`, or
    `loom-workflow` imports.
-3. **Style.** Follows the team's
+3. **Sensitive-data logging.** Default logs and debug output do
+   not include prompt bodies, response bodies, binary bytes, or
+   base64-encoded payloads. MIME type, optional name, and byte
+   length are safe diagnostics.
+4. **Style.** Follows the team's
    [`docs/style-rules.md`](../docs/style-rules.md).
 
 ## Out of Scope
@@ -816,6 +968,12 @@ and `--no-default-features` to catch feature-gating regressions.
   `Conversation` to preserve observer composition, typed
   `CacheControl`, and per-call `ModelId` ergonomics. Re-hosting on
   a different agent-loop crate is a tracked option, not a default.
+- **OpenAI-compatible multimodal portability.** The
+  `OpenAiCompatClient` contract remains text-only
+  Chat-Completions-shaped JSON. Local runners and proxy servers
+  diverge on binary/file support, so multimodal compatibility for
+  that adapter is out of scope until a concrete server contract is
+  specified.
 - **Regulated-provider adapters (Bedrock, Azure OpenAI, Vertex
   AI).** Deferred follow-up. Each slots into the in-crate
   feature-flag pattern established by `openai-compat`: one Cargo
