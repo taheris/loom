@@ -577,6 +577,7 @@ impl TerminalRenderer {
                     | DriverKind::ContainerOom
                     | DriverKind::InfraFailure
                     | DriverKind::TokenUsage
+                    | DriverKind::Offload
                     | DriverKind::DuplicateToolResult
                     | DriverKind::DoomLoopTripped
                     | DriverKind::EpicAutoClosed

@@ -23,7 +23,7 @@ pub use write::Write;
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use loom_llm::LlmError;
 use schemars::{JsonSchema, SchemaGenerator};
@@ -38,6 +38,7 @@ pub struct ToolContext {
 
 struct Capabilities {
     offload: OffloadSink,
+    records: Mutex<Vec<OffloadRecord>>,
 }
 
 struct OffloadSink {
@@ -50,6 +51,18 @@ struct Head {
     lines: usize,
 }
 
+struct CapOutcome {
+    value: Value,
+    total_bytes: Option<usize>,
+}
+
+/// Successful Direct tool output offload recorded at the cap point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OffloadRecord {
+    pub tool: String,
+    pub total_bytes: usize,
+}
+
 impl ToolContext {
     /// Create a Direct tool context rooted at the session's offload directory.
     pub fn new(offload_dir: PathBuf, max_inline_bytes: usize) -> Self {
@@ -59,21 +72,46 @@ impl ToolContext {
                     dir: offload_dir,
                     max_inline_bytes,
                 },
+                records: Mutex::new(Vec::new()),
             }),
         }
     }
 
     /// Return `content` inline when it fits, otherwise offload the full payload.
-    pub fn cap_or_offload(&self, content: String) -> Value {
-        self.capabilities.offload.cap_or_offload(&content)
+    pub fn cap_or_offload(&self, tool: &str, content: String) -> Value {
+        let outcome = self.capabilities.offload.cap_or_offload(&content);
+        if let Some(total_bytes) = outcome.total_bytes {
+            self.capabilities
+                .records
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .push(OffloadRecord {
+                    tool: tool.to_string(),
+                    total_bytes,
+                });
+        }
+        outcome.value
+    }
+
+    /// Drain successful offloads recorded since the prior drain.
+    pub fn drain_offloads(&self) -> Vec<OffloadRecord> {
+        let mut records = self
+            .capabilities
+            .records
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        std::mem::take(&mut *records)
     }
 }
 
 impl OffloadSink {
-    fn cap_or_offload(&self, content: &str) -> Value {
+    fn cap_or_offload(&self, content: &str) -> CapOutcome {
         let total_bytes = content.len();
         if total_bytes <= self.max_inline_bytes {
-            return Value::String(content.to_string());
+            return CapOutcome {
+                value: Value::String(content.to_string()),
+                total_bytes: None,
+            };
         }
 
         let total_lines = content.lines().count();
@@ -89,19 +127,25 @@ impl OffloadSink {
                         head_lines + 1,
                     ),
                 );
-                json!({
-                    "offloaded": true,
-                    "path": path,
-                    "total_bytes": total_bytes,
-                    "total_lines": total_lines,
-                    "head_lines": head_lines,
-                    "head": head,
-                })
+                CapOutcome {
+                    value: json!({
+                        "offloaded": true,
+                        "path": path,
+                        "total_bytes": total_bytes,
+                        "total_lines": total_lines,
+                        "head_lines": head_lines,
+                        "head": head,
+                    }),
+                    total_bytes: Some(total_bytes),
+                }
             }
-            Err(_) => Value::String(append_marker(
-                head.content,
-                &format!("[truncated: showing {} of {total_lines} lines]", head.lines,),
-            )),
+            Err(_) => CapOutcome {
+                value: Value::String(append_marker(
+                    head.content,
+                    &format!("[truncated: showing {} of {total_lines} lines]", head.lines,),
+                )),
+                total_bytes: None,
+            },
         }
     }
 

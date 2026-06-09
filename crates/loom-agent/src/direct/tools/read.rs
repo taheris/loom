@@ -86,7 +86,7 @@ async fn read_file(args: Args, ctx: ToolContext) -> ToolOutput {
 
     let sliced = slice_lines(&text, args.offset, args.limit);
     ToolOutput {
-        content: ctx.cap_or_offload(sliced),
+        content: ctx.cap_or_offload("Read", sliced),
         is_error: false,
     }
 }

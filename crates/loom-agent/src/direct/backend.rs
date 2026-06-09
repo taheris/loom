@@ -231,6 +231,12 @@ pub enum DirectEvent {
         cache_read: u32,
         cache_write: u32,
     },
+    /// Successful Direct tool output offload. Host-side parser lifts
+    /// this into a `DriverKind::Offload` `AgentEvent::DriverEvent`.
+    Offload {
+        tool: String,
+        total_bytes: usize,
+    },
 }
 
 impl DirectEvent {
@@ -283,6 +289,7 @@ impl DirectEvent {
                 cache_read,
                 cache_write,
             },
+            Self::Offload { tool, total_bytes } => ParsedAgentEvent::Offload { tool, total_bytes },
         }
     }
 }
@@ -481,6 +488,21 @@ mod tests {
                 assert_eq!(*cache_write, 50);
             }
             other => panic!("expected TokenUsage, got {other:?}"),
+        }
+        assert!(parsed.response.is_none());
+    }
+
+    #[test]
+    fn parser_decodes_offload_into_parsed_event() {
+        let line = r#"{"type":"offload","tool":"Read","total_bytes":42}"#;
+        let parsed = DirectParser.parse_line(line).expect("parse");
+        assert_eq!(parsed.events.len(), 1);
+        match &parsed.events[0] {
+            ParsedAgentEvent::Offload { tool, total_bytes } => {
+                assert_eq!(tool, "Read");
+                assert_eq!(*total_bytes, 42);
+            }
+            other => panic!("expected Offload, got {other:?}"),
         }
         assert!(parsed.response.is_none());
     }

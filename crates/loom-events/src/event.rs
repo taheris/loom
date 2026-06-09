@@ -24,6 +24,9 @@ pub enum DriverKind {
     /// `complete*` so SaaS billing pipelines tail the live event stream
     /// instead of re-parsing provider responses.
     TokenUsage,
+    /// Direct tool output was written to the per-session offload sink.
+    /// Payload fields: `tool`, `total_bytes`.
+    Offload,
     /// Observability signal emitted by `llm`'s
     /// `DuplicateResultObserver` when an agent's tool result payload
     /// byte-equals an earlier result in the same session. Payload
@@ -94,6 +97,7 @@ impl DriverKind {
             DriverKind::ContainerOom => "container_oom",
             DriverKind::InfraFailure => "infra_failure",
             DriverKind::TokenUsage => "token_usage",
+            DriverKind::Offload => "offload",
             DriverKind::DuplicateToolResult => "duplicate_tool_result",
             DriverKind::DoomLoopTripped => "doom_loop_tripped",
             DriverKind::EpicAutoClosed => "epic_auto_closed",
@@ -121,6 +125,7 @@ impl DriverKind {
             "container_oom" => DriverKind::ContainerOom,
             "infra_failure" => DriverKind::InfraFailure,
             "token_usage" => DriverKind::TokenUsage,
+            "offload" => DriverKind::Offload,
             "duplicate_tool_result" => DriverKind::DuplicateToolResult,
             "doom_loop_tripped" => DriverKind::DoomLoopTripped,
             "epic_auto_closed" => DriverKind::EpicAutoClosed,
@@ -514,6 +519,21 @@ impl AgentEvent {
                     payload,
                 }
             }
+            ParsedAgentEvent::Offload { tool, total_bytes } => {
+                let mut env = envelope;
+                env.source = Source::Driver;
+                let summary = format!("{tool} offloaded {total_bytes} bytes");
+                let payload = serde_json::json!({
+                    "tool": tool,
+                    "total_bytes": total_bytes,
+                });
+                AgentEvent::DriverEvent {
+                    envelope: env,
+                    driver_kind: DriverKind::Offload,
+                    summary,
+                    payload,
+                }
+            }
         }
     }
 }
@@ -524,11 +544,11 @@ impl AgentEvent {
 /// per-spawn [`EventEnvelope`] via [`AgentEvent::from_parsed`].
 ///
 /// `AgentStart` is driver-emitted and never appears here. The Direct
-/// backend's runner is uniquely positioned to surface
-/// [`DriverKind::TokenUsage`] alongside agent-emitted events, so
-/// `TokenUsage` is the one driver-event-equivalent variant the parser
-/// layer carries; `from_parsed` lifts it into [`AgentEvent::DriverEvent`]
-/// with `Source::Driver` regardless of the envelope's configured source.
+/// backend's runner is uniquely positioned to surface driver facts such
+/// as [`DriverKind::TokenUsage`] alongside agent-emitted events, so the
+/// parser carries driver-event-equivalent variants; `from_parsed` lifts
+/// them into [`AgentEvent::DriverEvent`] with `Source::Driver` regardless
+/// of the envelope's configured source.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedAgentEvent {
     AgentEnd,
@@ -590,6 +610,13 @@ pub enum ParsedAgentEvent {
         output: u32,
         cache_read: u32,
         cache_write: u32,
+    },
+    /// Successful Direct tool output offload emitted by the runner.
+    /// Lifted to `AgentEvent::DriverEvent` with
+    /// `driver_kind: DriverKind::Offload` and `source: Source::Driver`.
+    Offload {
+        tool: String,
+        total_bytes: usize,
     },
 }
 
@@ -1004,6 +1031,7 @@ mod tests {
             "container_oom",
             "infra_failure",
             "token_usage",
+            "offload",
             "duplicate_tool_result",
             "doom_loop_tripped",
             "epic_auto_closed",
@@ -1100,6 +1128,7 @@ mod tests {
             ("container_oom", DriverKind::ContainerOom),
             ("infra_failure", DriverKind::InfraFailure),
             ("token_usage", DriverKind::TokenUsage),
+            ("offload", DriverKind::Offload),
             ("duplicate_tool_result", DriverKind::DuplicateToolResult),
             ("doom_loop_tripped", DriverKind::DoomLoopTripped),
             ("epic_auto_closed", DriverKind::EpicAutoClosed),
@@ -1200,6 +1229,36 @@ mod tests {
                     "payload must not carry cost_cents per spec: {payload}",
                 );
                 assert!(summary.contains("claude-sonnet-4-6"));
+            }
+            other => panic!("expected DriverEvent, got {other:?}"),
+        }
+    }
+
+    /// `ParsedAgentEvent::Offload` lifts into `AgentEvent::DriverEvent`
+    /// with `driver_kind: Offload`, preserving the tool name and byte
+    /// count the Direct tool context recorded at the offload point.
+    #[test]
+    fn from_parsed_offload_emits_driver_event_with_tool_and_byte_count() {
+        let mut b = builder();
+        let mut env = b.build();
+        env.source = Source::Agent;
+        let parsed = ParsedAgentEvent::Offload {
+            tool: "Read".to_string(),
+            total_bytes: 42,
+        };
+        match AgentEvent::from_parsed(parsed, env) {
+            AgentEvent::DriverEvent {
+                envelope,
+                driver_kind,
+                summary,
+                payload,
+            } => {
+                assert_eq!(driver_kind, DriverKind::Offload);
+                assert_eq!(envelope.source, Source::Driver);
+                assert_eq!(payload["tool"], "Read");
+                assert_eq!(payload["total_bytes"], 42);
+                assert!(summary.contains("Read"));
+                assert!(summary.contains("42"));
             }
             other => panic!("expected DriverEvent, got {other:?}"),
         }

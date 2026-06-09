@@ -791,10 +791,11 @@ Rust producer surface uses the typed `DriverKind` enum (with
 `Other(String)` for unknown wire values), so producing code cannot typo
 kind strings while consumers remain forward-compatible. The closed
 producer set includes verdict / retry / push / container / infra /
-observer variants (`verdict_gate`, `retry_dispatch`, `push_gate_walk`,
-`push_gate_refuse`, `push_gate_clean`, `container_spawn`,
-`container_oom`, `infra_failure`, `doom_loop_tripped`,
-`duplicate_tool_result`, `token_usage`) plus gate and routing variants:
+Direct / observer variants (`verdict_gate`, `retry_dispatch`,
+`push_gate_walk`, `push_gate_refuse`, `push_gate_clean`,
+`container_spawn`, `container_oom`, `infra_failure`,
+`doom_loop_tripped`, `duplicate_tool_result`, `token_usage`, `offload`)
+plus gate and routing variants:
 `gate_run_start`, `gate_run_scope`, `gate_run_lane`, `gate_run_end`,
 `gate_run_skipped`, `marker_routed`, `clarify_downgraded`,
 `bd_state_transition`, and `epic_auto_closed`. Payloads are typed at
@@ -804,7 +805,9 @@ transition); render-only consumers may treat them as generic JSON. The
 observer-emitted variants (`doom_loop_tripped`,
 `duplicate_tool_result`, `token_usage`) originate in `llm` rather than
 `loom-driver`, so they fire on both Loom-binary runs and external
-consumer-driven `Conversation` runs.
+consumer-driven `Conversation` runs. `offload` originates in Direct's tool
+context because Pi and Claude tool transcripts are owned by their
+subprocess agents.
 
 **Schema versioning.** `agent_start` carries `schema_version: u32`
 (currently `1`). Adding new variants, new fields on existing

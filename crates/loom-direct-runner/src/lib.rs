@@ -20,7 +20,7 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use loom_agent::direct::backend::{DirectCommand, DirectEvent};
-use loom_agent::direct::tools::{Bash, Edit, Glob, Grep, Read, ToolContext, Write};
+use loom_agent::direct::tools::{Bash, Edit, Glob, Grep, OffloadRecord, Read, ToolContext, Write};
 use loom_driver::agent::SpawnConfig;
 use loom_events::identifier::ToolCallId;
 use loom_llm::api_key::ApiKey;
@@ -69,11 +69,17 @@ pub fn six_tools(ctx: ToolContext) -> Vec<Box<dyn Tool>> {
 /// six sandbox-aware tools are registered in the canonical order, and
 /// both default observers stay enabled.
 pub fn build_conversation(config: &SpawnConfig) -> Result<Conversation, ConversationBuildError> {
+    build_conversation_with_context(config, tool_context(config))
+}
+
+fn build_conversation_with_context(
+    config: &SpawnConfig,
+    ctx: ToolContext,
+) -> Result<Conversation, ConversationBuildError> {
     let model = config
         .model
         .as_ref()
         .map_or(DEFAULT_MODEL, |sel| ModelId::from_str(&sel.model_id));
-    let ctx = tool_context(config);
     let mut conv = Conversation::new(model)?;
     for tool in six_tools(ctx) {
         conv = conv.register_boxed(tool);
@@ -138,7 +144,8 @@ where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut conv = build_conversation(&config)?;
+    let ctx = tool_context(&config);
+    let mut conv = build_conversation_with_context(&config, ctx.clone())?;
     let usages = Arc::new(Mutex::new(Vec::<UsageRecord>::new()));
     let recording = UsageRecordingClient {
         inner: client,
@@ -157,7 +164,7 @@ where
             Ok(DirectCommand::Prompt { message }) => {
                 debug!(bytes = message.len(), "received prompt");
                 if let Err(err) =
-                    run_prompt(&mut conv, &recording, &usages, &mut emitter, message).await
+                    run_prompt(&mut conv, &recording, &usages, &ctx, &mut emitter, message).await
                 {
                     warn!(error = %err, "prompt failed");
                     emitter
@@ -201,6 +208,7 @@ async fn run_prompt<C, W>(
     conv: &mut Conversation,
     client: &UsageRecordingClient<C>,
     usages: &Mutex<Vec<UsageRecord>>,
+    ctx: &ToolContext,
     emitter: &mut Emitter<W>,
     message: String,
 ) -> Result<(), RunnerError>
@@ -210,15 +218,24 @@ where
 {
     let history_pivot = conv.history_len();
     conv.user_cached(message, CacheControl::Ephemeral(PROMPT_CACHE_TTL));
-    let response = conv
-        .run(client)
-        .await
-        .map_err(|err| RunnerError::Llm(err.to_string()))?;
+    let response = match conv.run(client).await {
+        Ok(response) => response,
+        Err(err) => {
+            for record in ctx.drain_offloads() {
+                emitter.emit(&offload_event(&record)).await?;
+            }
+            return Err(RunnerError::Llm(err.to_string()));
+        }
+    };
 
     for message in conv.history_since(history_pivot) {
         for event in events_from_history(message) {
             emitter.emit(&event).await?;
         }
+    }
+
+    for record in ctx.drain_offloads() {
+        emitter.emit(&offload_event(&record)).await?;
     }
 
     if !response.text.is_empty() {
@@ -248,6 +265,13 @@ fn token_usage_event(record: &UsageRecord) -> DirectEvent {
         output: record.usage.output,
         cache_read: record.usage.cache_read,
         cache_write: record.usage.cache_write,
+    }
+}
+
+fn offload_event(record: &OffloadRecord) -> DirectEvent {
+    DirectEvent::Offload {
+        tool: record.tool.clone(),
+        total_bytes: record.total_bytes,
     }
 }
 
@@ -401,7 +425,9 @@ pub enum RunnerError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loom_driver::agent::{ModelSelection, RePinContent};
+    use loom_driver::agent::{ModelSelection, OutputLimits, RePinContent};
+    use loom_events::identifier::BeadId;
+    use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
     use loom_llm::client::{CompletionResponse, LlmError, ToolUseRequest};
     use loom_llm::request::CompletionRequest;
     use loom_llm::usage::TokenUsage;
@@ -977,6 +1003,90 @@ mod tests {
                 assert_eq!(*cache_write, 0);
             }
             other => panic!("expected TokenUsage, got {other:?}"),
+        }
+    }
+
+    /// Spec contract (`specs/agent.md` § Direct output bounding): every
+    /// successful offload emits a driver event carrying the tool name and
+    /// offloaded byte count. The test drives a real `Read` tool call over
+    /// the cap, observes the runner's `DirectEvent::Offload` frame, and
+    /// verifies the host-side lift produces a `driver_event` with
+    /// `DriverKind::Offload`.
+    #[test]
+    fn offload_emits_driver_event_with_tool_and_byte_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("large.txt");
+        let body = "alpha\nbeta\n";
+        std::fs::write(&target, body).expect("write fixture");
+
+        let with_call = CompletionResponse {
+            text: String::new(),
+            usage: TokenUsage::default(),
+            tool_calls: vec![ToolUseRequest {
+                call_id: "call-1".into(),
+                name: "Read".into(),
+                args: json!({ "file_path": target }),
+            }],
+        };
+        let client = ScriptedClient::new(vec![with_call, final_text("done")]);
+        let stdin = b"{\"type\":\"prompt\",\"message\":\"please read\"}\n".to_vec();
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut config = sample_config(Some("claude-sonnet-4-6"));
+        config.scratch_dir = dir.path().join("scratch");
+        config.output_limits = Some(OutputLimits {
+            max_inline_bytes: "alpha".len(),
+        });
+
+        tokio_test::block_on(run_session(
+            client,
+            config,
+            tokio::io::BufReader::new(&stdin[..]),
+            &mut stdout,
+        ))
+        .expect("run_session completes");
+
+        let events: Vec<DirectEvent> = std::str::from_utf8(&stdout)
+            .expect("utf-8")
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("parse"))
+            .collect();
+        let offloads: Vec<&DirectEvent> = events
+            .iter()
+            .filter(|event| matches!(event, DirectEvent::Offload { .. }))
+            .collect();
+        assert_eq!(offloads.len(), 1, "one offload event: {events:?}");
+
+        let offload = offloads[0];
+        match offload {
+            DirectEvent::Offload { tool, total_bytes } => {
+                assert_eq!(tool, "Read");
+                assert_eq!(*total_bytes, body.len());
+            }
+            other => panic!("expected Offload, got {other:?}"),
+        }
+
+        let mut builder = EnvelopeBuilder::new(
+            BeadId::new("lm-test").expect("valid id"),
+            None,
+            0,
+            Source::Agent,
+            || 1,
+        );
+        let agent_event = AgentEvent::from_parsed(offload.clone().into_parsed(), builder.build());
+        match agent_event {
+            AgentEvent::DriverEvent {
+                envelope,
+                driver_kind,
+                summary,
+                payload,
+            } => {
+                assert_eq!(envelope.source, Source::Driver);
+                assert_eq!(driver_kind, DriverKind::Offload);
+                assert_eq!(summary, format!("Read offloaded {} bytes", body.len()));
+                assert_eq!(payload["tool"], "Read");
+                assert_eq!(payload["total_bytes"], body.len());
+            }
+            other => panic!("expected DriverEvent, got {other:?}"),
         }
     }
 
