@@ -131,51 +131,35 @@ Backends carry no per-instance state — the type parameter conveys all
 information. The implementation uses native `async fn` in traits
 (edition 2024) with static dispatch, avoiding the `async-trait` crate.
 
-### Public `Session` Trait
+### Session Lifecycle Contract
 
-The public agent-driver contract is the `Session` trait, defined in
-`loom-events`. The trait shape's role as an architecture-bearing
-type — and why subprocess-driving backends keep a typestate as
-internal mechanic without exposing it — is described in
-[harness.md — Event Schema](harness.md#event-schema).
-Workflow callers hold backends as
-`Box<dyn Session<Events = EventStream>>`:
+The public agent-driver contract is behavioural: workflow code selects a
+backend for a phase, spawns a session handle, sends prompt / steer /
+cancel / mode commands through that handle, and consumes the resulting
+`AgentEvent` stream. The spec does not require type erasure, dynamic
+dispatch, or any specific Rust carrier type for that handle. The stable
+compatibility point is the command/event lifecycle, plus the shared
+`Session` interoperability surface in `loom-events` for consumers that
+need a backend-neutral trait.
 
-```rust
-pub trait Session: Send {
-    type Events: Stream<Item = AgentEvent> + Send;
+Backends surface asynchronous outcomes through the event stream:
+failures become `AgentEvent::Error` or a non-zero `exit_code` on
+`SessionComplete`; command submission remains a session operation rather
+than a separate workflow-side transport protocol. `SessionMode` is a
+closed-set mode selection surface that can grow additively, preserving
+RS-17 while allowing future modes.
 
-    fn prompt(&mut self, msg: String) -> Self::Events;
-    fn steer(&mut self, msg: String);
-    fn cancel(&mut self);
-    fn set_mode(&mut self, mode: SessionMode);
-}
-pub type EventStream = Pin<Box<dyn Stream<Item = AgentEvent> + Send>>;
-```
+### Typestate (host-side session lifecycle mechanic)
 
-The methods are sync and infallible — backends push commands onto an
-internal queue or channel; the streamed `AgentEvent`s carry any
-asynchronous outcome (including failures, via `AgentEvent::Error` and
-the `exit_code` on `SessionComplete`). The associated `Events` type
-lets each backend pick its own stream impl internally; workflow code
-pins the stream at the boundary by binding `Events = EventStream` so
-`dyn Session` is dyn-compatible. `SessionMode` is a `#[non_exhaustive]`
-enum (defined alongside `Session` in `loom-events`) so the closed-set
-discipline of RS-17 holds while future modes can land additively.
-Workflow code never sees concrete backend types.
+Host-side backends that drive a JSONL subprocess use a typestate
+`AgentSession<Idle|Active>` to enforce protocol-correctness invariants:
+a prompt cannot be sent before the session is ready, and the same active
+session cannot be re-prompted before its current run completes. Invalid
+transitions are compile errors inside the backend implementation. The
+typestate does not leak through the public `Session` interoperability
+trait.
 
-### Typestate (internal mechanic of subprocess-driving backends)
-
-The Pi and Claude backends drive subprocess agents and must
-enforce protocol-correctness invariants — a prompt cannot be sent
-to a session that hasn't completed its handshake, the same active
-session cannot be re-prompted before its current run completes,
-etc. They use a typestate `AgentSession<Idle|Active>` as an
-**internal mechanic of their impl** — invalid transitions are
-compile errors *inside the backend*. The typestate does NOT leak
-through the public `Session` trait.
-
-State-machine rules (Pi and Claude):
+State-machine rules for host-side subprocess sessions:
 
 - **Idle session** must be prompted before events can be read. The
   prompt operation consumes the idle session and yields an active one.
@@ -191,14 +175,13 @@ The session type and the parser abstraction both live in `loom-driver` —
 not in `loom-agent` — because the agent-backend trait returns a session,
 and the inverse dependency would be a cycle.
 
-The Direct backend does NOT carry this typestate: it composes
-`loom-llm::Conversation` (which manages its own multi-turn state
-internally) and wraps the result in a `Session` impl. There is no
-subprocess to drive, no handshake to gate; the typestate would be
-ceremony without invariant content. This asymmetry is *why* the
-public `Session` trait belongs on top — both shapes (subprocess-
-typestated and non-subprocess-direct) plug into the same workflow
-code without leaking their differences.
+The Direct host backend participates in the same session lifecycle: it
+launches `loom-direct-runner` as a JSONL subprocess and returns a
+host-side session handle. The part that lacks Pi / Claude handshake
+typestate is the in-container Direct conversation loop, where
+`loom-llm::Conversation` manages multi-turn state internally. This split
+keeps workflow code backend-neutral while avoiding unnecessary typestate
+inside the Direct runner's tool loop.
 
 A single inbound protocol line can yield multiple events. The session
 buffers excess events and returns one per call to `next_event`. A
@@ -894,7 +877,7 @@ connection, network filtering, session audit logging.
 
 ### Agent trait
 
-- `Session` trait defined in `loom-events` with `prompt`, `steer`, `cancel`, `set_mode` methods; `Events` associated type concretized to `Pin<Box<dyn Stream<Item = AgentEvent> + Send>>` for dyn-compatibility
+- `Session` interoperability trait defined in `loom-events` with `prompt`, `steer`, `cancel`, `set_mode` methods
   [check](grep -q 'pub trait Session' crates/loom-events/src/lib.rs)
 - `AgentBackend` trait defined in loom-driver with associated `spawn`; no `SUPPORTS_STEERING` constant (all three backends steer)
   [check](grep -q 'pub trait AgentBackend' crates/loom-driver/src/agent/backend.rs)
@@ -904,7 +887,7 @@ connection, network filtering, session audit logging.
   [check](cargo test -p loom-events --lib every_spec_variant_present)
 - `SpawnConfig` struct captures image_ref, image_source, optional image_digest_path, workspace, env, initial_prompt, agent_args, scratch_dir
   [check](cargo test -p loom-driver --lib spawn_config_with_image_digest_path_round_trips)
-- Typestate `AgentSession<Idle>` / `AgentSession<Active>` exists ONLY as an internal mechanic of subprocess-driving backends (Pi, Claude). It does not leak through `Session` trait; Direct backend carries no typestate.
+- Typestate `AgentSession<Idle>` / `AgentSession<Active>` exists as an internal host-side lifecycle mechanic for JSONL subprocess sessions. It does not leak through the `Session` interoperability trait; Direct's in-container conversation loop carries no Pi / Claude handshake typestate.
   [check](grep -q 'pub struct Idle' crates/loom-driver/src/agent/session.rs)
 - `Session` trait surface does not reference `AgentSession`, `Idle`, or `Active` types (typestate is private to subprocess backends)
   [check](cargo run -p loom-walk -- session_trait_does_not_expose_typestate)

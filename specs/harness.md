@@ -753,22 +753,20 @@ truth for per-variant fields.
 this schema and the surrounding session contract, each enforcing
 an invariant structurally:
 
-- **`Session` trait** — the public agent-driver contract, defined
-  in `loom-events`. Workflow code holds backends as
-  `Box<dyn Session>` so per-phase backend selection is a runtime
-  choice rather than a compile-time one. The trait exposes
-  `prompt(msg) -> EventStream`, `steer(msg)`, `cancel()`, and
-  `set_mode(mode)`; its `Events` associated type is concretized
-  to `Pin<Box<dyn Stream<Item = AgentEvent> + Send>>` so
-  `dyn Session` is dyn-compatible without trait-variant
-  gymnastics. Backends pick their own stream type internally; the
-  box happens at the trait boundary. Subprocess-driving backends
-  (Pi, Claude) keep a typestate (`AgentSession<Idle|Active>`) as
-  an *internal mechanic* — handshake completed, stdin attached,
-  etc. — but that typestate does not leak through `Session`.
-  Backends that don't drive a subprocess (Direct, future
-  ACP-exposed sessions) carry no typestate at all; the
-  asymmetry is *why* the trait belongs on top.
+- **Session lifecycle** — the public agent-driver contract is the
+  command/event lifecycle shared by every backend. Workflow code
+  selects a backend for a phase, spawns a session handle, sends
+  prompt / steer / cancel / mode commands, and consumes the resulting
+  `AgentEvent` stream. `loom-events` provides a `Session` trait for
+  consumers that need a backend-neutral interoperability surface, but
+  the spec does not require workflow code to erase backend types or use
+  any particular Rust carrier representation. Host-side JSONL
+  subprocess backends keep a typestate (`AgentSession<Idle|Active>`) as
+  an internal mechanic — ready to prompt, active run in progress, stdin
+  attached — but that typestate does not leak through the
+  interoperability trait. Direct uses that host-side lifecycle for its
+  runner subprocess; only its in-container `Conversation` loop lacks Pi
+  / Claude handshake typestate.
 - **ID newtypes** (`BeadId`, `MoleculeId`, `ToolCallId`, etc.) —
   `#[serde(transparent)]` wrappers over `String`. Construction
   validates at the parse boundary; downstream code receives the
@@ -1846,8 +1844,8 @@ the other five are internal organization.
 | `templates` | **public** | Askama templates + typed context structs. Consumers compose their own templates from the exposed typed building blocks (`PinnedContext`, `PreviousFailure`, `LoopContext`, partial strings). Loom's workflow templates themselves stay internal. See [templates.md](templates.md). |
 | `loom-driver` | internal | Host-side runtime — `AgentBackend` trait, `StateDb`, `Config`, `BdClient`, `Clock`, profile manifest, lock files, scratch dir, git ops, workflow-layer driver-event emission (verdict-gate, push-gate, container-spawn). |
 | `loom-render` | internal | `Renderer` trait + `Pretty` / `Plain` / `Json` / `Raw` impls; `LogSink` (impl `EventSink`) driving disk JSONL from the same event stream the renderer consumes. |
-| `agent` | internal | `AgentBackend` implementations (pi, claude, direct). Pi/Claude drive subprocess agents; `direct` composes `llm` with Loom's six sandbox-aware tools and exposes a `Session`. Adapters flatten backend wire schemas into `loom-events` variants. |
-| `loom-workflow` | internal | Workflow engine — plan, todo, run, gate, msg. Holds backends behind `Box<dyn Session>`. Owns orchestration loop, bead lifecycle, retry logic, push gate, verdict gate. |
+| `agent` | internal | `AgentBackend` implementations (pi, claude, direct). Pi/Claude drive subprocess agents; `direct` composes `llm` with Loom's six sandbox-aware tools behind the Direct runner. Adapters flatten backend wire schemas into `loom-events` variants. |
+| `loom-workflow` | internal | Workflow engine — plan, todo, run, gate, msg. Selects concrete backends per phase and drives the shared session lifecycle. Owns orchestration loop, bead lifecycle, retry logic, push gate, verdict gate. |
 
 ### Dependency Graph
 
@@ -2725,7 +2723,7 @@ Criteria.
   [check](cargo run -p loom-walk -- loom_events_minimal_deps)
 - Unknown event variants are accepted gracefully (deserialized as a fallback or skipped, never error)
   [test](unknown_variants_fail_with_a_loud_error)
-- `Session` trait defined in `loom-events` with methods `prompt`, `steer`, `cancel`, `set_mode`; `Events` associated type concretized to `Pin<Box<dyn Stream<Item = AgentEvent> + Send>>` so `Box<dyn Session>` is dyn-compatible
+- `Session` interoperability trait defined in `loom-events` with methods `prompt`, `steer`, `cancel`, `set_mode`
   [check](cargo run -p loom-walk -- session_trait_in_loom_events)
 - `EventSink` trait defined in `loom-events` with sync `emit(&AgentEvent)` and default `react() -> Vec<SessionCommand>`; `SessionCommand` enum has `Steer(String)` and `Abort(String)` variants
   [check](cargo run -p loom-walk -- event_sink_in_loom_events)
