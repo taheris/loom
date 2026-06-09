@@ -61,34 +61,39 @@ impl Tool for Read {
     fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
         Box::pin(async move {
             let parsed: Args = parse_args(args)?;
-            Ok(read_file(parsed, self.ctx.clone()).await)
+            read_file(parsed, self.ctx.clone()).await
         })
     }
 }
 
-async fn read_file(args: Args, ctx: ToolContext) -> ToolOutput {
+async fn read_file(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_llm::LlmError> {
     let bytes = match fs::read(&args.file_path).await {
         Ok(bytes) => bytes,
-        Err(err) => return error(format!("read {}: {err}", args.file_path.display())),
+        Err(err) => return Ok(error(format!("read {}: {err}", args.file_path.display()))),
     };
 
     if is_binary(&bytes) {
-        return error(format!(
+        return Ok(error(format!(
             "binary file rejected: {}",
             args.file_path.display()
-        ));
+        )));
     }
 
     let text = match String::from_utf8(bytes) {
         Ok(text) => text,
-        Err(_) => return error(format!("invalid utf-8: {}", args.file_path.display())),
+        Err(_) => {
+            return Ok(error(format!(
+                "invalid utf-8: {}",
+                args.file_path.display()
+            )));
+        }
     };
 
     let sliced = slice_lines(&text, args.offset, args.limit);
-    ToolOutput {
-        content: ctx.cap_or_offload("Read", sliced),
+    Ok(ToolOutput {
+        content: ctx.cap_or_offload("Read", sliced)?,
         is_error: false,
-    }
+    })
 }
 
 fn is_binary(bytes: &[u8]) -> bool {

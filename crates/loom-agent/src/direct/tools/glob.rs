@@ -47,36 +47,35 @@ impl Tool for Glob {
 
     fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
         Box::pin(async move {
-            let _ctx = &self.ctx;
             let parsed: Args = parse_args(args)?;
-            let out = task::spawn_blocking(move || expand(parsed))
+            let ctx = self.ctx.clone();
+            task::spawn_blocking(move || expand(parsed, ctx))
                 .await
-                .unwrap_or_else(|err| error(format!("join: {err}")));
-            Ok(out)
+                .unwrap_or_else(|err| Ok(error(format!("join: {err}"))))
         })
     }
 }
 
-fn expand(args: Args) -> ToolOutput {
+fn expand(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_llm::LlmError> {
     let pattern = match args.path {
         Some(base) => base.join(&args.pattern).to_string_lossy().into_owned(),
         None => args.pattern.clone(),
     };
     let iter = match ::glob::glob(&pattern) {
         Ok(it) => it,
-        Err(err) => return error(format!("invalid glob: {err}")),
+        Err(err) => return Ok(error(format!("invalid glob: {err}"))),
     };
     let mut paths = Vec::new();
     for entry in iter {
         match entry {
             Ok(p) => paths.push(p.display().to_string()),
-            Err(err) => return error(format!("walk: {err}")),
+            Err(err) => return Ok(error(format!("walk: {err}"))),
         }
     }
-    ToolOutput {
-        content: Value::String(paths.join("\n")),
+    Ok(ToolOutput {
+        content: ctx.cap_or_offload("Glob", paths.join("\n"))?,
         is_error: false,
-    }
+    })
 }
 
 fn error(message: String) -> ToolOutput {
@@ -95,6 +94,10 @@ mod tests {
 
     fn glob_with(dir: &TempDir) -> Glob {
         Glob::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
+    }
+
+    fn capped_glob_with(dir: &TempDir, cap: usize) -> Glob {
+        Glob::new(ToolContext::new(dir.path().join("offload"), cap))
     }
 
     #[tokio::test]
@@ -154,5 +157,24 @@ mod tests {
             .await
             .expect("invoke");
         assert!(out.is_error);
+    }
+
+    #[tokio::test]
+    async fn glob_applies_inline_byte_cap_to_result_text() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("alpha_long_name.rs"), "").unwrap();
+        std::fs::write(dir.path().join("beta_long_name.rs"), "").unwrap();
+
+        let out = capped_glob_with(&dir, 5)
+            .invoke(json!({ "pattern": "*.rs", "path": dir.path() }))
+            .await
+            .expect("invoke");
+
+        assert!(!out.is_error);
+        assert_eq!(out.content["offloaded"], json!(true));
+        let path = out.content["path"].as_str().expect("offload path");
+        let full = std::fs::read_to_string(path).unwrap();
+        assert!(full.contains("alpha_long_name.rs"), "{full}");
+        assert!(full.contains("beta_long_name.rs"), "{full}");
     }
 }

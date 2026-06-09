@@ -21,14 +21,21 @@ pub use grep::Grep;
 pub use read::Read;
 pub use write::Write;
 
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::process;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 
+use displaydoc::Display;
 use loom_llm::LlmError;
 use schemars::{JsonSchema, SchemaGenerator};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use thiserror::Error;
 
 /// Per-session capabilities available to Direct tool handlers.
 #[derive(Clone)]
@@ -56,6 +63,8 @@ struct CapOutcome {
     total_bytes: Option<usize>,
 }
 
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Successful Direct tool output offload recorded at the cap point.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OffloadRecord {
@@ -78,29 +87,44 @@ impl ToolContext {
     }
 
     /// Return `content` inline when it fits, otherwise offload the full payload.
-    pub fn cap_or_offload(&self, tool: &str, content: String) -> Value {
+    pub fn cap_or_offload(&self, tool: &str, content: String) -> Result<Value, ToolContextError> {
         let outcome = self.capabilities.offload.cap_or_offload(&content);
         if let Some(total_bytes) = outcome.total_bytes {
             self.capabilities
                 .records
                 .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
+                .map_err(|_| ToolContextError::OffloadRecordLockPoisoned)?
                 .push(OffloadRecord {
                     tool: tool.to_string(),
                     total_bytes,
                 });
         }
-        outcome.value
+        Ok(outcome.value)
     }
 
     /// Drain successful offloads recorded since the prior drain.
-    pub fn drain_offloads(&self) -> Vec<OffloadRecord> {
+    pub fn drain_offloads(&self) -> Result<Vec<OffloadRecord>, ToolContextError> {
         let mut records = self
             .capabilities
             .records
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        std::mem::take(&mut *records)
+            .map_err(|_| ToolContextError::OffloadRecordLockPoisoned)?;
+        Ok(std::mem::take(&mut *records))
+    }
+}
+
+/// Errors raised by the Direct tool session context.
+#[derive(Debug, Display, Error)]
+pub enum ToolContextError {
+    /// Direct offload record lock poisoned
+    OffloadRecordLockPoisoned,
+}
+
+impl From<ToolContextError> for LlmError {
+    fn from(err: ToolContextError) -> Self {
+        Self::Provider {
+            message: err.to_string(),
+        }
     }
 }
 
@@ -150,21 +174,44 @@ impl OffloadSink {
     }
 
     fn write(&self, content: &str) -> io::Result<PathBuf> {
-        std::fs::create_dir_all(&self.dir)?;
+        fs::create_dir_all(&self.dir)?;
         let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
         let path = self.dir.join(format!("{hash}.txt"));
         if path.is_file() {
             return Ok(path);
         }
-        let tmp = temp_path(&self.dir, &hash);
-        std::fs::write(&tmp, content)?;
-        std::fs::rename(&tmp, &path)?;
-        Ok(path)
+        let tmp = write_unique_temp(&self.dir, &hash, content)?;
+        if path.is_file() {
+            fs::remove_file(&tmp)?;
+            return Ok(path);
+        }
+        match fs::rename(&tmp, &path) {
+            Ok(()) => Ok(path),
+            Err(_err) if path.is_file() => {
+                fs::remove_file(&tmp)?;
+                Ok(path)
+            }
+            Err(err) => Err(err),
+        }
     }
 }
 
-fn temp_path(dir: &Path, hash: &str) -> PathBuf {
-    dir.join(format!("{hash}.tmp"))
+fn write_unique_temp(dir: &Path, hash: &str, content: &str) -> io::Result<PathBuf> {
+    loop {
+        let tmp = temp_path(dir, hash, TEMP_COUNTER.fetch_add(1, Ordering::Relaxed));
+        match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(mut file) => {
+                file.write_all(content.as_bytes())?;
+                return Ok(tmp);
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn temp_path(dir: &Path, hash: &str, nonce: u64) -> PathBuf {
+    dir.join(format!("{hash}.{}.{}.tmp", process::id(), nonce))
 }
 
 fn head_within_cap(content: &str, cap: usize) -> Head {
@@ -240,4 +287,45 @@ fn schema_for<T: JsonSchema>() -> Value {
 /// a tool-result.
 fn parse_args<T: DeserializeOwned>(args: Value) -> Result<T, LlmError> {
     serde_json::from_value(args).map_err(|err| LlmError::MalformedJson(err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    use super::*;
+
+    #[test]
+    fn same_content_concurrent_offloads_converge_to_one_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ctx = ToolContext::new(dir.path().join("offload"), 1);
+        let body = "alpha\nbeta\ngamma\n".to_string();
+        let barrier = Arc::new(Barrier::new(16));
+        let handles = (0..16)
+            .map(|_| {
+                let ctx = ctx.clone();
+                let body = body.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    ctx.cap_or_offload("Read", body).expect("offload")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let outputs = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread joins"))
+            .collect::<Vec<_>>();
+        let first_path = outputs[0]["path"].as_str().expect("path").to_string();
+        for output in &outputs {
+            assert_eq!(output["offloaded"], json!(true));
+            assert_eq!(output["path"], json!(first_path));
+        }
+        assert_eq!(
+            std::fs::read_to_string(first_path).expect("offload file"),
+            body
+        );
+    }
 }

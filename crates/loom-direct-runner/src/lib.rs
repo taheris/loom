@@ -20,7 +20,9 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use loom_agent::direct::backend::{DirectCommand, DirectEvent};
-use loom_agent::direct::tools::{Bash, Edit, Glob, Grep, OffloadRecord, Read, ToolContext, Write};
+use loom_agent::direct::tools::{
+    Bash, Edit, Glob, Grep, OffloadRecord, Read, ToolContext, ToolContextError, Write,
+};
 use loom_driver::agent::SpawnConfig;
 use loom_events::identifier::ToolCallId;
 use loom_llm::api_key::ApiKey;
@@ -221,7 +223,7 @@ where
     let response = match conv.run(client).await {
         Ok(response) => response,
         Err(err) => {
-            for record in ctx.drain_offloads() {
+            for record in ctx.drain_offloads().map_err(RunnerError::ToolContext)? {
                 emitter.emit(&offload_event(&record)).await?;
             }
             return Err(RunnerError::Llm(err.to_string()));
@@ -234,7 +236,7 @@ where
         }
     }
 
-    for record in ctx.drain_offloads() {
+    for record in ctx.drain_offloads().map_err(RunnerError::ToolContext)? {
         emitter.emit(&offload_event(&record)).await?;
     }
 
@@ -406,6 +408,8 @@ pub enum RunnerError {
     Llm(String),
     /// failed to build runner Conversation
     Build(#[from] ConversationBuildError),
+    /// Direct tool context failure
+    ToolContext(#[source] ToolContextError),
     /// invalid API key sourced from {var}: {source}
     ApiKey {
         /// Name of the env var the runner read.

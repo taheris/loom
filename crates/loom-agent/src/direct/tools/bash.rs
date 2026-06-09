@@ -52,14 +52,13 @@ impl Tool for Bash {
 
     fn invoke<'a>(&'a self, args: Value) -> InvokeFuture<'a> {
         Box::pin(async move {
-            let _ctx = &self.ctx;
             let parsed: Args = parse_args(args)?;
-            Ok(run_command(parsed).await)
+            run_command(parsed, self.ctx.clone()).await
         })
     }
 }
 
-async fn run_command(args: Args) -> ToolOutput {
+async fn run_command(args: Args, ctx: ToolContext) -> Result<ToolOutput, loom_llm::LlmError> {
     let timeout = args
         .timeout_ms
         .map_or(DEFAULT_TIMEOUT, Duration::from_millis);
@@ -74,20 +73,24 @@ async fn run_command(args: Args) -> ToolOutput {
 
     let child = match cmd.spawn() {
         Ok(child) => child,
-        Err(err) => return error(format!("spawn sh: {err}")),
+        Err(err) => return Ok(error(format!("spawn sh: {err}"))),
     };
 
     match time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => ToolOutput {
-            content: json!({
-                "exit_code": output.status.code(),
-                "stdout": String::from_utf8_lossy(&output.stdout),
-                "stderr": String::from_utf8_lossy(&output.stderr),
-            }),
-            is_error: !output.status.success(),
-        },
-        Ok(Err(err)) => error(format!("wait: {err}")),
-        Err(_) => error(format!("timeout after {} ms", timeout.as_millis())),
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            Ok(ToolOutput {
+                content: json!({
+                    "exit_code": output.status.code(),
+                    "stdout": ctx.cap_or_offload("Bash", stdout)?,
+                    "stderr": ctx.cap_or_offload("Bash", stderr)?,
+                }),
+                is_error: !output.status.success(),
+            })
+        }
+        Ok(Err(err)) => Ok(error(format!("wait: {err}"))),
+        Err(_) => Ok(error(format!("timeout after {} ms", timeout.as_millis()))),
     }
 }
 
@@ -107,6 +110,10 @@ mod tests {
 
     fn bash_with(dir: &TempDir) -> Bash {
         Bash::new(ToolContext::new(dir.path().join("offload"), usize::MAX))
+    }
+
+    fn capped_bash_with(dir: &TempDir, cap: usize) -> Bash {
+        Bash::new(ToolContext::new(dir.path().join("offload"), cap))
     }
 
     #[tokio::test]
@@ -153,5 +160,37 @@ mod tests {
             .expect("invoke");
         assert_eq!(out.content["stderr"].as_str(), Some("err"));
         assert_eq!(out.content["stdout"].as_str(), Some(""));
+    }
+
+    #[tokio::test]
+    async fn bash_applies_inline_cap_to_stdout() {
+        let dir = tempdir().unwrap();
+        let out = capped_bash_with(&dir, 5)
+            .invoke(json!({ "command": "printf 'alpha beta'" }))
+            .await
+            .expect("invoke");
+
+        assert!(!out.is_error);
+        assert_eq!(out.content["stdout"]["offloaded"], json!(true));
+        assert_eq!(out.content["stdout"]["total_bytes"], json!(10));
+        assert_eq!(out.content["stderr"].as_str(), Some(""));
+        let path = out.content["stdout"]["path"].as_str().expect("stdout path");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "alpha beta");
+    }
+
+    #[tokio::test]
+    async fn bash_applies_inline_cap_to_stderr() {
+        let dir = tempdir().unwrap();
+        let out = capped_bash_with(&dir, 5)
+            .invoke(json!({ "command": "printf 'alpha beta' 1>&2" }))
+            .await
+            .expect("invoke");
+
+        assert!(!out.is_error);
+        assert_eq!(out.content["stderr"]["offloaded"], json!(true));
+        assert_eq!(out.content["stderr"]["total_bytes"], json!(10));
+        assert_eq!(out.content["stdout"].as_str(), Some(""));
+        let path = out.content["stderr"]["path"].as_str().expect("stderr path");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "alpha beta");
     }
 }
