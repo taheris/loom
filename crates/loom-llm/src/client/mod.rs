@@ -17,6 +17,7 @@ pub use multi_provider::{AnthropicClient, GeminiClient, OpenAiClient};
 #[cfg(feature = "openai-compat")]
 pub use openai_compat::OpenAiCompatClient;
 
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, SystemTime};
@@ -27,7 +28,7 @@ use serde::de::DeserializeOwned;
 use thiserror::Error;
 
 use crate::model_id::{ModelId, SchemaKind};
-use crate::request::CompletionRequest;
+use crate::request::{CompletionRequest, MimeType};
 use crate::usage::TokenUsage;
 
 /// Boxed future the object-safe trait methods return. Using a boxed
@@ -41,7 +42,7 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// consumers see cache hits and cost directly; the same `TokenUsage` is
 /// fanned out as a `DriverKind::TokenUsage` `AgentEvent` for SaaS billing
 /// pipelines tailing the live event stream.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CompletionResponse {
     /// Final assistant text. Tool-use loops yield this from the last
     /// non-tool-calling turn.
@@ -52,6 +53,16 @@ pub struct CompletionResponse {
     /// produced text only. [`crate::Conversation`]'s loop iterates while
     /// this is non-empty.
     pub tool_calls: Vec<ToolUseRequest>,
+}
+
+impl fmt::Debug for CompletionResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CompletionResponse")
+            .field("text_char_len", &self.text.chars().count())
+            .field("usage", &self.usage)
+            .field("tool_call_count", &self.tool_calls.len())
+            .finish()
+    }
 }
 
 /// One tool call the model emitted on a turn. The conversation loop
@@ -71,14 +82,14 @@ pub struct ToolUseRequest {
 }
 
 /// Typed transport-failure surface returned by every fallible `llm`
-/// transport call. Variants are deliberately coarse — exactly the nine
-/// classes spec'd in `specs/llm.md` — so consumers can drive retry
+/// transport call. Variants are deliberately coarse — the classes
+/// spec'd in `specs/llm.md` — so consumers can drive retry
 /// policy via [`LlmError::retry_advice`] without parsing message
 /// strings. `#[non_exhaustive]` keeps the door open for future
 /// HTTP-status carve-outs and provider-specific error families to land
 /// additively without breaking consumer matchers.
 #[non_exhaustive]
-#[derive(Debug, Display, Error)]
+#[derive(Display, Error)]
 pub enum LlmError {
     /// transport failure: {0}
     Transport(String),
@@ -117,11 +128,87 @@ pub enum LlmError {
         /// The Client's fixed schema, set at construction time.
         expected: SchemaKind,
     },
+    /// provider {provider:?} does not support {capability:?}
+    UnsupportedCapability {
+        /// Provider schema that rejected the request capability.
+        provider: SchemaKind,
+        /// Capability the request needs.
+        capability: LlmCapability,
+    },
+    /// incompatible request: {reason}
+    IncompatibleRequest {
+        /// Provider-independent reason the request cannot be sent.
+        reason: String,
+    },
     /// underlying provider failed: {message}
     Provider {
         /// Provider-supplied diagnostic message. Documented fallback
         /// for unclassifiable cases.
         message: String,
+    },
+}
+
+impl fmt::Debug for LlmError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LlmError::Transport(message) => f
+                .debug_struct("Transport")
+                .field("message_char_len", &message.chars().count())
+                .finish(),
+            LlmError::Timeout => f.write_str("Timeout"),
+            LlmError::RateLimited { retry_after } => f
+                .debug_struct("RateLimited")
+                .field("retry_after", retry_after)
+                .finish(),
+            LlmError::AuthFailed { reason } => f
+                .debug_struct("AuthFailed")
+                .field("reason_char_len", &reason.chars().count())
+                .finish(),
+            LlmError::ProviderHttp { status, body } => f
+                .debug_struct("ProviderHttp")
+                .field("status", status)
+                .field("body_char_len", &body.chars().count())
+                .finish(),
+            LlmError::MalformedJson(message) => f
+                .debug_struct("MalformedJson")
+                .field("message_char_len", &message.chars().count())
+                .finish(),
+            LlmError::SchemaViolation(message) => f
+                .debug_struct("SchemaViolation")
+                .field("message_char_len", &message.chars().count())
+                .finish(),
+            LlmError::IncompatibleModel { model, expected } => f
+                .debug_struct("IncompatibleModel")
+                .field("model", model)
+                .field("expected", expected)
+                .finish(),
+            LlmError::UnsupportedCapability {
+                provider,
+                capability,
+            } => f
+                .debug_struct("UnsupportedCapability")
+                .field("provider", provider)
+                .field("capability", capability)
+                .finish(),
+            LlmError::IncompatibleRequest { reason } => f
+                .debug_struct("IncompatibleRequest")
+                .field("reason_char_len", &reason.chars().count())
+                .finish(),
+            LlmError::Provider { message } => f
+                .debug_struct("Provider")
+                .field("message_char_len", &message.chars().count())
+                .finish(),
+        }
+    }
+}
+
+/// LLM capability a provider may reject before network I/O.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LlmCapability {
+    /// Binary multimodal content with the supplied MIME type.
+    MultimodalBinary {
+        /// MIME type of the binary part that requires multimodal support.
+        mime_type: MimeType,
     },
 }
 
@@ -158,6 +245,8 @@ impl LlmError {
             }
             LlmError::AuthFailed { .. }
             | LlmError::IncompatibleModel { .. }
+            | LlmError::UnsupportedCapability { .. }
+            | LlmError::IncompatibleRequest { .. }
             | LlmError::Provider { .. } => RetryAdvice::NonRetryable,
         }
     }
@@ -571,9 +660,9 @@ mod tests {
     /// `[non_exhaustive]` compile error on the const slice and forces
     /// the table to grow with the enum.
     #[test]
-    fn llm_error_retry_advice_matches_classification_table() {
+    fn llm_error_retry_advice_includes_multimodal_client_errors() {
         let retry_after = Duration::from_secs(42);
-        let cases: [(LlmError, RetryAdvice); 11] = [
+        let cases: [(LlmError, RetryAdvice); 12] = [
             (LlmError::Transport("dns".into()), RetryAdvice::Retryable),
             (LlmError::Timeout, RetryAdvice::Retryable),
             (
@@ -616,12 +705,26 @@ mod tests {
                 RetryAdvice::NonRetryable,
             ),
             (
+                LlmError::UnsupportedCapability {
+                    provider: SchemaKind::OpenAi,
+                    capability: LlmCapability::MultimodalBinary {
+                        mime_type: crate::request::MimeType::APPLICATION_PDF,
+                    },
+                },
+                RetryAdvice::NonRetryable,
+            ),
+            (
+                LlmError::IncompatibleRequest {
+                    reason: "empty binary payload".into(),
+                },
+                RetryAdvice::NonRetryable,
+            ),
+            (
                 LlmError::Provider {
                     message: "unknown".into(),
                 },
                 RetryAdvice::NonRetryable,
             ),
-            (LlmError::Transport("tls".into()), RetryAdvice::Retryable),
         ];
         for (err, want) in cases {
             assert_eq!(

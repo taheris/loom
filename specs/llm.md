@@ -623,19 +623,19 @@ and `--no-default-features` to catch feature-gating regressions.
 ### Multimodal content
 
 - Existing text-only builders (`system`, `user`, cached variants) remain source-compatible and continue to create text-only requests without forcing callers to construct `MessageContent` manually
-  [test?](completion_request_text_only_api_remains_compatible)
+  [test](completion_request_text_only_api_remains_compatible)
 - `CompletionRequest` can carry ordered multipart user content containing both text and a PDF binary part with MIME type `application/pdf`
-  [test?](completion_request_accepts_text_and_pdf_binary_parts)
+  [test](completion_request_accepts_text_and_pdf_binary_parts)
 - Role-specific binary builders append to the most recent message for that role when present, preserving text-plus-binary ordering inside one multipart message
-  [test?](binary_builders_append_to_existing_role_message)
+  [test](binary_builders_append_to_existing_role_message)
 - Binary content APIs require validated `MimeType` values; no public binary-content constructor or builder accepts a bare unvalidated MIME-type string
-  [check?](cargo run -p loom-walk -- loom_llm_mime_type_no_raw_strings)
+  [check](cargo run -p loom-walk -- loom_llm_mime_type_no_raw_strings)
 - `MimeType` exposes built-in constants for supported common types and its parser accepts only syntactically valid MIME strings
-  [test?](mime_type_parser_accepts_valid_and_rejects_invalid)
+  [test](mime_type_parser_accepts_valid_and_rejects_invalid)
 - Public multimodal types (`MessageContent`, `BinaryContent`, `MimeType`) are defined in `llm`; no public multimodal signature references Gemini, Anthropic, OpenAI, or genai wire structs
-  [check?](cargo run -p loom-walk -- loom_llm_multimodal_no_provider_wire_types)
+  [check](cargo run -p loom-walk -- loom_llm_multimodal_no_provider_wire_types)
 - `BinaryContent` debug formatting redacts payload bytes/base64 while still exposing MIME type, optional name, and byte length
-  [test?](binary_content_debug_redacts_payload)
+  [test](binary_content_debug_redacts_payload)
 - Default logging does not emit binary bytes, base64 payloads, prompt bodies, or response bodies; MIME type and byte length are safe to log
   [judge](../tests/judges/loom.sh#judge_llm_multimodal_logging_redaction)
 - `GeminiClient` serializes PDF binary parts to Gemini `inline_data` with `mime_type: "application/pdf"` and base64 `data`
@@ -651,13 +651,13 @@ and `--no-default-features` to catch feature-gating regressions.
 - Providers that require a filename synthesize a safe generic filename from `MimeType` when `BinaryContent::name` is absent
   [test?](provider_filename_synthesized_when_binary_name_absent)
 - `OpenAiCompatClient` rejects binary parts with `LlmError::UnsupportedCapability` before network I/O while preserving text-only Chat-Completions compatibility
-  [test?](openai_compat_multimodal_returns_unsupported_without_network)
+  [test](openai_compat_multimodal_returns_unsupported_without_network)
 - Unsupported multimodal MIME/provider combinations return typed `LlmError::UnsupportedCapability` and never panic
   [test?](unsupported_multimodal_request_returns_typed_error_not_panic)
 - Empty binary payloads return `LlmError::IncompatibleRequest` before network I/O
-  [test?](empty_binary_payload_returns_incompatible_request)
+  [test](empty_binary_payload_returns_incompatible_request)
 - `complete_structured::<T>` accepts requests containing multimodal content parts using the same call shape as text-only structured output
-  [test?](complete_structured_accepts_multimodal_messages)
+  [test](complete_structured_accepts_multimodal_messages)
 
 ### Client types
 
@@ -692,9 +692,9 @@ and `--no-default-features` to catch feature-gating regressions.
 ### `LlmError`
 
 - `LlmError` is `#[non_exhaustive]` and carries the documented variants: `Transport`, `Timeout`, `RateLimited`, `AuthFailed`, `ProviderHttp`, `MalformedJson`, `SchemaViolation`, `IncompatibleModel`, `UnsupportedCapability`, `IncompatibleRequest`, `Provider`
-  [check?](cargo run -p loom-walk -- loom_llm_error_variant_set_multimodal)
+  [check](cargo run -p loom-walk -- loom_llm_error_variant_set_multimodal)
 - `LlmError::retry_advice(&self)` returns the classification documented in [LlmError](#llmerror) for every variant, including `UnsupportedCapability` and `IncompatibleRequest` as `NonRetryable`
-  [test?](llm_error_retry_advice_includes_multimodal_client_errors)
+  [test](llm_error_retry_advice_includes_multimodal_client_errors)
 - `RateLimited { retry_after }` is populated from the `Retry-After` HTTP header (seconds or HTTP-date) when the provider returns 429; missing header falls back to a documented default
   [test](rate_limited_parses_retry_after_header)
 - `ProviderHttp { status, body }` carries the raw status and response body for unclassified non-success responses; `retry_advice` returns `Retryable` for `status >= 500`, `NonRetryable` otherwise

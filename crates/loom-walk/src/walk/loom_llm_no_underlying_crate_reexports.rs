@@ -1,8 +1,9 @@
 //! `llm` is a typed wrapper — not a thin re-export of the
 //! underlying multi-provider LLM crate. Each public type spec'd in
 //! `specs/llm.md` (`LlmClient`, `CompletionRequest`, `Message`,
-//! `ModelId`, `SchemaKind`, `CacheControl`, `Tool`, `Conversation`,
-//! `LlmError`, `RetryAdvice`, `ApiKey`) must be **defined** inside
+//! `MessageContent`, `BinaryContent`, `MimeType`, `ModelId`,
+//! `SchemaKind`, `CacheControl`, `Tool`, `Conversation`, `LlmError`,
+//! `LlmCapability`, `RetryAdvice`, `ApiKey`) must be **defined** inside
 //! `crates/loom-llm/src/` (a `pub`/private `struct`, `enum`, or
 //! `trait` with that ident), not only re-exported from an external
 //! crate. This walk asserts every name has at least one in-crate
@@ -22,12 +23,16 @@ const REQUIRED: &[&str] = &[
     "LlmClient",
     "CompletionRequest",
     "Message",
+    "MessageContent",
+    "BinaryContent",
+    "MimeType",
     "ModelId",
     "SchemaKind",
     "CacheControl",
     "Tool",
     "Conversation",
     "LlmError",
+    "LlmCapability",
     "RetryAdvice",
     "ApiKey",
 ];

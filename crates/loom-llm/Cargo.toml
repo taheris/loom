@@ -16,7 +16,9 @@ public_contract = true
 # multi-provider crate is an internal implementation dependency consumed
 # by concrete LlmClient impls in later beads, not re-exported.
 [dependencies]
+base64 = { workspace = true }
 blake3 = { workspace = true }
+bytes = { workspace = true }
 displaydoc = { workspace = true }
 futures-core = { workspace = true }
 genai = { workspace = true }

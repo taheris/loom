@@ -1,8 +1,9 @@
 //! `llm` is a public-contract crate; its consumer-facing surface must
 //! include the typed building blocks defined in `specs/llm.md` —
-//! `LlmClient`, `CompletionRequest`, `Message`, `ModelId`,
-//! `SchemaKind`, `CacheControl`, `Tool`, `Conversation`, `LlmError`,
-//! `RetryAdvice`, `ApiKey`. Each must be publicly reachable from
+//! `LlmClient`, `CompletionRequest`, `Message`, `MessageContent`,
+//! `BinaryContent`, `MimeType`, `ModelId`, `SchemaKind`, `CacheControl`,
+//! `Tool`, `Conversation`, `LlmError`, `LlmCapability`, `RetryAdvice`,
+//! `ApiKey`. Each must be publicly reachable from
 //! `crates/loom-llm/src/` via a `pub trait`, `pub struct`, `pub enum`,
 //! or `pub use` re-export.
 
@@ -12,18 +13,22 @@ use std::path::Path;
 use super::util::{parse_rs, rs_files_recursive, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "loom_llm_public_surface — LlmClient, CompletionRequest, Message, ModelId, SchemaKind, CacheControl, Tool, Conversation, LlmError, RetryAdvice, ApiKey are publicly exposed by loom-llm";
+const RULE: &str = "loom_llm_public_surface — typed LLM public surface including multimodal content types is exposed by loom-llm";
 
 const REQUIRED: &[&str] = &[
     "LlmClient",
     "CompletionRequest",
     "Message",
+    "MessageContent",
+    "BinaryContent",
+    "MimeType",
     "ModelId",
     "SchemaKind",
     "CacheControl",
     "Tool",
     "Conversation",
     "LlmError",
+    "LlmCapability",
     "RetryAdvice",
     "ApiKey",
 ];

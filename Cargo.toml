@@ -29,7 +29,9 @@ name = "loom"
 [workspace.dependencies]
 anyhow = "1"
 askama = "0.16"
+base64 = "0.22"
 blake3 = "1"
+bytes = "1"
 clap = { version = "4", features = ["derive"] }
 colored_json = "5"
 crossterm = "0.29"

@@ -10,10 +10,12 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
+use base64::Engine;
 use genai::chat::{
     CacheControl as GenAiCacheControl, ChatMessage, ChatOptions, ChatRequest, ChatResponse,
-    ChatResponseFormat, ChatRole, JsonSpec, MessageContent, MessageOptions, Tool as GenAiTool,
-    ToolCall as GenAiToolCall, ToolResponse as GenAiToolResponse, Usage as GenAiUsage,
+    ChatResponseFormat, ChatRole, ContentPart, JsonSpec, MessageContent as GenAiMessageContent,
+    MessageOptions, Tool as GenAiTool, ToolCall as GenAiToolCall,
+    ToolResponse as GenAiToolResponse, Usage as GenAiUsage,
 };
 use loom_events::event::Source;
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, EventSink};
@@ -26,7 +28,7 @@ use crate::api_key::ApiKey;
 use crate::cache::{CacheControl, CacheTtl};
 use crate::client::{BoxFuture, CompletionResponse, LlmClient, LlmError, ToolUseRequest};
 use crate::model_id::{ModelId, SchemaKind};
-use crate::request::{CompletionRequest, Message, Role};
+use crate::request::{CompletionRequest, Message, MessageContent, Role};
 use crate::tool::ToolDef;
 use crate::usage::TokenUsage;
 
@@ -123,6 +125,9 @@ impl LlmClient for AnthropicClient {
                 })
             });
         }
+        if let Err(err) = validate_binary_payloads(&req) {
+            return Box::pin(async move { Err(err) });
+        }
         Box::pin(async move {
             let model_name = model_id_to_provider_name(&model);
             let (chat_req, options) = to_genai_chat_request(req);
@@ -153,6 +158,9 @@ impl LlmClient for AnthropicClient {
                     expected: Self::SCHEMA,
                 })
             });
+        }
+        if let Err(err) = validate_binary_payloads(&req) {
+            return Box::pin(async move { Err(err) });
         }
         Box::pin(async move {
             let model_name = model_id_to_provider_name(&model);
@@ -245,6 +253,9 @@ impl LlmClient for OpenAiClient {
                 })
             });
         }
+        if let Err(err) = validate_binary_payloads(&req) {
+            return Box::pin(async move { Err(err) });
+        }
         Box::pin(async move {
             let model_name = model_id_to_provider_name(&model);
             let (chat_req, options) = to_genai_chat_request(req);
@@ -275,6 +286,9 @@ impl LlmClient for OpenAiClient {
                     expected: Self::SCHEMA,
                 })
             });
+        }
+        if let Err(err) = validate_binary_payloads(&req) {
+            return Box::pin(async move { Err(err) });
         }
         Box::pin(async move {
             let model_name = model_id_to_provider_name(&model);
@@ -367,6 +381,9 @@ impl LlmClient for GeminiClient {
                 })
             });
         }
+        if let Err(err) = validate_binary_payloads(&req) {
+            return Box::pin(async move { Err(err) });
+        }
         Box::pin(async move {
             let model_name = model_id_to_provider_name(&model);
             let (chat_req, options) = to_genai_chat_request(req);
@@ -397,6 +414,9 @@ impl LlmClient for GeminiClient {
                     expected: Self::SCHEMA,
                 })
             });
+        }
+        if let Err(err) = validate_binary_payloads(&req) {
+            return Box::pin(async move { Err(err) });
         }
         Box::pin(async move {
             let model_name = model_id_to_provider_name(&model);
@@ -586,20 +606,51 @@ fn to_chat_message(msg: Message) -> ChatMessage {
     chat_msg
 }
 
-fn build_message_content(msg: &Message) -> MessageContent {
+fn build_message_content(msg: &Message) -> GenAiMessageContent {
     if let Some(call_id) = msg.tool_call_id.as_ref() {
-        let response = GenAiToolResponse::new(call_id.clone(), msg.content.clone());
-        return MessageContent::from(response);
+        let response = GenAiToolResponse::new(call_id.clone(), msg.text_content());
+        return GenAiMessageContent::from(response);
     }
     if !msg.tool_calls.is_empty() {
         let calls: Vec<GenAiToolCall> = msg.tool_calls.iter().map(to_genai_tool_call).collect();
-        let mut content = MessageContent::from_tool_calls(calls);
-        if !msg.content.is_empty() {
-            content.prepend(genai::chat::ContentPart::Text(msg.content.clone()));
+        let mut content = GenAiMessageContent::from_tool_calls(calls);
+        let text = msg.text_content();
+        if !text.is_empty() {
+            content.prepend(ContentPart::Text(text));
         }
         return content;
     }
-    MessageContent::from_text(msg.content.clone())
+    GenAiMessageContent::from_parts(
+        msg.content
+            .iter()
+            .map(to_genai_content_part)
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn to_genai_content_part(part: &MessageContent) -> ContentPart {
+    match part {
+        MessageContent::Text(text) => ContentPart::Text(text.clone()),
+        MessageContent::Binary(binary) => {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(binary.bytes.as_ref());
+            ContentPart::from_binary_base64(binary.mime_type.as_str(), encoded, binary.name.clone())
+        }
+    }
+}
+
+pub(crate) fn validate_binary_payloads(req: &CompletionRequest) -> Result<(), LlmError> {
+    for message in &req.messages {
+        for part in &message.content {
+            if let MessageContent::Binary(binary) = part
+                && binary.bytes.is_empty()
+            {
+                return Err(LlmError::IncompatibleRequest {
+                    reason: format!("empty binary payload for MIME type {}", binary.mime_type),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn to_genai_tool_call(call: &ToolUseRequest) -> GenAiToolCall {
@@ -979,6 +1030,48 @@ mod tests {
         assert_eq!(cache, &GenAiCacheControl::Ephemeral5m);
     }
 
+    #[test]
+    fn empty_binary_payload_returns_incompatible_request() {
+        let req = CompletionRequest::new(ModelId::Gemini(GeminiModel::Gemini31Pro))
+            .user("see attached")
+            .user_binary(crate::request::MimeType::APPLICATION_PDF, Vec::<u8>::new());
+
+        match validate_binary_payloads(&req) {
+            Err(LlmError::IncompatibleRequest { reason }) => {
+                assert!(reason.contains("empty binary payload"));
+                assert!(reason.contains("application/pdf"));
+            }
+            other => panic!("expected IncompatibleRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn complete_structured_accepts_multimodal_messages() {
+        #[derive(serde::Deserialize, schemars::JsonSchema)]
+        #[expect(
+            dead_code,
+            reason = "fields are referenced through schemars-derived schema, not by Rust code"
+        )]
+        struct SummaryShape {
+            summary: String,
+        }
+
+        let req = CompletionRequest::new(ModelId::Gemini(GeminiModel::Gemini31Pro))
+            .user("summarize")
+            .user_binary(crate::request::MimeType::APPLICATION_PDF, vec![1_u8, 2, 3]);
+        let (chat_req, options) = to_genai_structured_chat_options::<SummaryShape>(req);
+
+        assert_eq!(chat_req.messages.len(), 1);
+        let parts: Vec<&ContentPart> = (&chat_req.messages[0].content).into_iter().collect();
+        assert_eq!(parts.len(), 2);
+        assert!(matches!(parts[0], ContentPart::Text(text) if text == "summarize"));
+        assert!(matches!(parts[1], ContentPart::Binary(_)));
+        assert!(matches!(
+            options.response_format,
+            Some(ChatResponseFormat::JsonSpec(_)),
+        ));
+    }
+
     fn make_usage(prompt: i32, completion: i32, cached: i32, cache_creation: i32) -> GenAiUsage {
         GenAiUsage {
             prompt_tokens: Some(prompt),
@@ -996,7 +1089,7 @@ mod tests {
     fn make_response(usage: GenAiUsage) -> ChatResponse {
         let model = ModelIden::new(AdapterKind::Anthropic, "claude-sonnet-4-6");
         ChatResponse {
-            content: MessageContent::from_text("the answer"),
+            content: GenAiMessageContent::from_text("the answer"),
             reasoning_content: None,
             model_iden: model.clone(),
             provider_model_iden: model,
@@ -1124,7 +1217,7 @@ mod tests {
     fn make_text_response(adapter: AdapterKind, model_name: &str, text: &str) -> ChatResponse {
         let model = ModelIden::new(adapter, model_name.to_string());
         ChatResponse {
-            content: MessageContent::from_text(text),
+            content: GenAiMessageContent::from_text(text),
             reasoning_content: None,
             model_iden: model.clone(),
             provider_model_iden: model,

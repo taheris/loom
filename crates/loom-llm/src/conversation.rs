@@ -639,7 +639,7 @@ mod tests {
         assert_eq!(conv.on_iteration_exhausted_value(), LoopOutcome::ReturnLast);
         assert_eq!(conv.history.len(), 1);
         assert_eq!(conv.history[0].role, Role::User);
-        assert_eq!(conv.history[0].content, "ping");
+        assert_eq!(conv.history[0].text_content(), "ping");
         assert_eq!(conv.tools.len(), 1);
         assert_eq!(conv.tools[0].name(), "echo");
         assert_eq!(conv.system.as_deref(), Some("be terse"));
@@ -950,7 +950,7 @@ mod tests {
         let steer_turns: Vec<&Message> = conv
             .history
             .iter()
-            .filter(|m| m.role == Role::User && m.content.contains("doom-loop suspected"))
+            .filter(|m| m.role == Role::User && m.text_content().contains("doom-loop suspected"))
             .collect();
         assert_eq!(
             steer_turns.len(),

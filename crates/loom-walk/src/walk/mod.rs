@@ -28,7 +28,9 @@ mod loom_gate_check_derivation_exists;
 mod loom_llm_client_constructors_use_newtypes;
 mod loom_llm_client_types_per_schema_kind;
 mod loom_llm_deps;
-mod loom_llm_error_variant_set;
+mod loom_llm_error_variant_set_multimodal;
+mod loom_llm_mime_type_no_raw_strings;
+mod loom_llm_multimodal_no_provider_wire_types;
 mod loom_llm_no_public_genai_types;
 mod loom_llm_no_underlying_crate_reexports;
 mod loom_llm_public_surface;
@@ -188,8 +190,16 @@ pub static REGISTRY: &[Walk] = &[
         run: loom_llm_deps::run,
     },
     Walk {
-        name: "loom_llm_error_variant_set",
-        run: loom_llm_error_variant_set::run,
+        name: "loom_llm_error_variant_set_multimodal",
+        run: loom_llm_error_variant_set_multimodal::run,
+    },
+    Walk {
+        name: "loom_llm_mime_type_no_raw_strings",
+        run: loom_llm_mime_type_no_raw_strings::run,
+    },
+    Walk {
+        name: "loom_llm_multimodal_no_provider_wire_types",
+        run: loom_llm_multimodal_no_provider_wire_types::run,
     },
     Walk {
         name: "loom_llm_no_public_genai_types",
@@ -404,7 +414,9 @@ mod tests {
             "loom_llm_client_constructors_use_newtypes",
             "loom_llm_client_types_per_schema_kind",
             "loom_llm_deps",
-            "loom_llm_error_variant_set",
+            "loom_llm_error_variant_set_multimodal",
+            "loom_llm_mime_type_no_raw_strings",
+            "loom_llm_multimodal_no_provider_wire_types",
             "loom_llm_no_public_genai_types",
             "loom_llm_no_underlying_crate_reexports",
             "loom_llm_public_surface",

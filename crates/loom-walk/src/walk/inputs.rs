@@ -108,7 +108,8 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         "finding_no_duplicate_definitions" | "no_hardcoded_tmp_paths" => all_rs_files(root),
 
         // Single-crate recursive `src/` scans.
-        "loom_llm_no_public_genai_types"
+        "loom_llm_multimodal_no_provider_wire_types"
+        | "loom_llm_no_public_genai_types"
         | "loom_llm_no_underlying_crate_reexports"
         | "loom_llm_public_surface"
         | "result_hasher_single_call_site" => crate_src(root, "loom-llm"),
@@ -130,7 +131,12 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         "newtype_identifiers" => crate_src(root, "loom-driver"),
 
         // Single named source files.
-        "loom_llm_error_variant_set" => vec![root.join("crates/loom-llm/src/client/mod.rs")],
+        "loom_llm_error_variant_set_multimodal" => {
+            vec![root.join("crates/loom-llm/src/client/mod.rs")]
+        }
+        "loom_llm_mime_type_no_raw_strings" => {
+            vec![root.join("crates/loom-llm/src/request.rs")]
+        }
         "no_sync_or_tune_command" => vec![root.join("crates/loom/src/main.rs")],
         "no_todo_cursor_meta_key" => vec![root.join("crates/loom-driver/src/state/db.rs")],
         "single_event_channel" => vec![root.join("crates/loom-render/src/sink/mod.rs")],

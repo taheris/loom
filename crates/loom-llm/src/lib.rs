@@ -34,8 +34,9 @@ pub use cache::{CacheControl, CacheTtl};
 #[cfg(feature = "openai-compat")]
 pub use client::OpenAiCompatClient;
 pub use client::{
-    AnthropicClient, BoxFuture, CompletionResponse, DEFAULT_RETRY_AFTER, GeminiClient, LlmClient,
-    LlmClientExt, LlmError, OpenAiClient, RetryAdvice, ToolUseRequest, parse_retry_after,
+    AnthropicClient, BoxFuture, CompletionResponse, DEFAULT_RETRY_AFTER, GeminiClient,
+    LlmCapability, LlmClient, LlmClientExt, LlmError, OpenAiClient, RetryAdvice, ToolUseRequest,
+    parse_retry_after,
 };
 pub use conversation::{Conversation, ConversationBuildError, ConversationError, LoopOutcome};
 pub use model_id::{AnthropicModel, GeminiModel, ModelId, OpenAiModel, SchemaKind};
@@ -43,6 +44,6 @@ pub use observer::{
     DoomLoopConfig, DoomLoopObserver, DuplicateDetection, DuplicateResultConfig,
     DuplicateResultObserver,
 };
-pub use request::{CompletionRequest, Message, Role};
+pub use request::{BinaryContent, CompletionRequest, Message, MessageContent, MimeType, Role};
 pub use tool::{Tool, ToolDef, ToolOutput};
 pub use usage::TokenUsage;

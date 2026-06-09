@@ -358,7 +358,7 @@ fn events_from_history(message: &Message) -> Vec<DirectEvent> {
                 .unwrap_or_else(|| String::from("unknown"));
             vec![DirectEvent::ToolResult {
                 id: ToolCallId::new(&call_id),
-                output: tool_result_payload(&message.content),
+                output: tool_result_payload(&message.text_content()),
                 is_error: message.tool_is_error,
             }]
         }

@@ -26,11 +26,11 @@ use super::multi_provider::{
 };
 use crate::api_key::ApiKey;
 use crate::client::{
-    BoxFuture, CompletionResponse, DEFAULT_RETRY_AFTER, LlmClient, LlmError, ToolUseRequest,
-    parse_retry_after,
+    BoxFuture, CompletionResponse, DEFAULT_RETRY_AFTER, LlmCapability, LlmClient, LlmError,
+    ToolUseRequest, parse_retry_after,
 };
 use crate::model_id::{ModelId, SchemaKind};
-use crate::request::{CompletionRequest, Message, Role};
+use crate::request::{CompletionRequest, Message, MessageContent, Role};
 use crate::usage::TokenUsage;
 
 /// Client targeting [`SchemaKind::OpenAiCompat`]. Carries a
@@ -150,6 +150,17 @@ impl LlmClient for OpenAiCompatClient {
                 Err(LlmError::IncompatibleModel {
                     model,
                     expected: Self::SCHEMA,
+                })
+            });
+        }
+        if let Err(err) = super::multi_provider::validate_binary_payloads(&req) {
+            return Box::pin(async move { Err(err) });
+        }
+        if let Some(capability) = first_binary_capability(&req) {
+            return Box::pin(async move {
+                Err(LlmError::UnsupportedCapability {
+                    provider: Self::SCHEMA,
+                    capability,
                 })
             });
         }
@@ -275,9 +286,21 @@ fn message_to_wire(message: &Message) -> ChatCompletionMessage {
     };
     ChatCompletionMessage {
         role,
-        content: message.content.clone(),
+        content: message.text_content(),
         tool_call_id: message.tool_call_id.clone(),
     }
+}
+
+fn first_binary_capability(req: &CompletionRequest) -> Option<LlmCapability> {
+    req.messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .find_map(|part| match part {
+            MessageContent::Binary(binary) => Some(LlmCapability::MultimodalBinary {
+                mime_type: binary.mime_type.clone(),
+            }),
+            MessageContent::Text(_) => None,
+        })
 }
 
 fn chat_completion_to_response(parsed: ChatCompletionResponse) -> CompletionResponse {
@@ -456,6 +479,34 @@ mod tests {
                 .unwrap_or_default()
                 .is_empty(),
             "synchronous fast-path must not issue a network call",
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_compat_multimodal_returns_unsupported_without_network() {
+        let server = MockServer::start().await;
+        let client = OpenAiCompatClient::new(mock_base_url(&server), Some(test_api_key()));
+        let req = CompletionRequest::new(ModelId::OpenAiCompat("llama-3.1-70b".to_string()))
+            .user("see attached")
+            .user_binary(crate::request::MimeType::IMAGE_PNG, vec![1_u8]);
+
+        match client.complete(req).await {
+            Err(LlmError::UnsupportedCapability {
+                provider,
+                capability: LlmCapability::MultimodalBinary { mime_type },
+            }) => {
+                assert_eq!(provider, SchemaKind::OpenAiCompat);
+                assert_eq!(mime_type, crate::request::MimeType::IMAGE_PNG);
+            }
+            other => panic!("expected UnsupportedCapability, got {other:?}"),
+        }
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty(),
+            "unsupported multimodal request must not issue a network call",
         );
     }
 

@@ -2185,12 +2185,16 @@ fn loom_llm_deps_fail_when_manifest_missing() {
 const LLM_PUBLIC_SURFACE_BODY: &str = "pub trait LlmClient {}\n\
      pub struct CompletionRequest;\n\
      pub enum Message { Text }\n\
+     pub enum MessageContent { Text(String) }\n\
+     pub struct BinaryContent;\n\
+     pub struct MimeType;\n\
      pub enum ModelId { Other(String) }\n\
      pub enum SchemaKind { Anthropic }\n\
      pub enum CacheControl { None }\n\
      pub trait Tool {}\n\
      pub struct Conversation;\n\
      pub enum LlmError { Timeout }\n\
+     pub enum LlmCapability { MultimodalBinary }\n\
      pub enum RetryAdvice { Retryable }\n\
      pub struct ApiKey;\n";
 
@@ -2213,7 +2217,7 @@ fn loom_llm_public_surface_pass_when_reexported_via_pub_use() {
         ws.path(),
         "crates/loom-llm/src/lib.rs",
         "pub mod inner;\n\
-         pub use inner::{LlmClient, CompletionRequest, Message, ModelId, SchemaKind, CacheControl, Tool, Conversation, LlmError, RetryAdvice, ApiKey};\n",
+         pub use inner::{LlmClient, CompletionRequest, Message, MessageContent, BinaryContent, MimeType, ModelId, SchemaKind, CacheControl, Tool, Conversation, LlmError, LlmCapability, RetryAdvice, ApiKey};\n",
     );
     seed(
         ws.path(),
@@ -2236,6 +2240,128 @@ fn loom_llm_public_surface_fail_when_one_missing() {
     seed(ws.path(), "crates/loom-llm/src/lib.rs", body);
     let out = invoke(&["loom_llm_public_surface"], Some(ws.path()), None);
     assert_fail(&out, "Conversation");
+}
+
+// ---------------------------------------------------------------------------
+// loom_llm_mime_type_no_raw_strings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn loom_llm_mime_type_no_raw_strings_pass_when_binary_apis_use_mimetype() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/request.rs",
+        "pub struct MimeType;\n\
+         pub struct BinaryContent;\n\
+         impl BinaryContent { pub fn new(mime_type: MimeType, bytes: Vec<u8>) -> Self { Self } }\n\
+         pub struct CompletionRequest;\n\
+         impl CompletionRequest { pub fn user_binary(self, mime_type: MimeType, bytes: Vec<u8>) -> Self { self } }\n",
+    );
+    let out = invoke(
+        &["loom_llm_mime_type_no_raw_strings"],
+        Some(ws.path()),
+        None,
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn loom_llm_mime_type_no_raw_strings_fail_when_binary_api_uses_string() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/request.rs",
+        "pub struct CompletionRequest;\n\
+         impl CompletionRequest { pub fn user_binary(self, mime_type: impl Into<String>, bytes: Vec<u8>) -> Self { self } }\n",
+    );
+    let out = invoke(
+        &["loom_llm_mime_type_no_raw_strings"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "unvalidated MIME string");
+}
+
+// ---------------------------------------------------------------------------
+// loom_llm_multimodal_no_provider_wire_types
+// ---------------------------------------------------------------------------
+
+#[test]
+fn loom_llm_multimodal_no_provider_wire_types_pass_with_owned_types() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/request.rs",
+        "pub struct MimeType;\n\
+         pub struct BinaryContent { pub mime_type: MimeType, pub bytes: Vec<u8> }\n\
+         pub enum MessageContent { Binary(BinaryContent) }\n",
+    );
+    let out = invoke(
+        &["loom_llm_multimodal_no_provider_wire_types"],
+        Some(ws.path()),
+        None,
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn loom_llm_multimodal_no_provider_wire_types_fail_on_provider_wire_token() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/request.rs",
+        "pub struct BinaryContent { pub wire: genai::chat::ContentPart }\n",
+    );
+    let out = invoke(
+        &["loom_llm_multimodal_no_provider_wire_types"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "provider wire token");
+}
+
+// ---------------------------------------------------------------------------
+// loom_llm_error_variant_set_multimodal
+// ---------------------------------------------------------------------------
+
+const LLM_MULTIMODAL_ERROR_BODY: &str = "#[non_exhaustive]\n\
+     pub enum LlmError {\n\
+         Transport(String), Timeout, RateLimited, AuthFailed, ProviderHttp,\n\
+         MalformedJson, SchemaViolation, IncompatibleModel,\n\
+         UnsupportedCapability, IncompatibleRequest, Provider,\n\
+     }\n";
+
+#[test]
+fn loom_llm_error_variant_set_multimodal_pass() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/client/mod.rs",
+        LLM_MULTIMODAL_ERROR_BODY,
+    );
+    let out = invoke(
+        &["loom_llm_error_variant_set_multimodal"],
+        Some(ws.path()),
+        None,
+    );
+    assert_pass(&out);
+}
+
+#[test]
+fn loom_llm_error_variant_set_multimodal_fail_when_variant_missing() {
+    let ws = make_workspace();
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/client/mod.rs",
+        "#[non_exhaustive]\npub enum LlmError { Timeout }\n",
+    );
+    let out = invoke(
+        &["loom_llm_error_variant_set_multimodal"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "UnsupportedCapability");
 }
 
 // ---------------------------------------------------------------------------
