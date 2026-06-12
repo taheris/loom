@@ -1,2 +1,17 @@
 #!/usr/bin/env bash
-exec cargo run --bin loom --manifest-path "$(git rev-parse --show-toplevel)/Cargo.toml" -- "$@"
+set -euo pipefail
+
+top_level="$(git rev-parse --show-toplevel)"
+
+if sccache_bin="$(command -v sccache)"; then
+  export RUSTC_WRAPPER="$sccache_bin"
+  export CARGO_BUILD_RUSTC_WRAPPER="$sccache_bin"
+
+  if [[ -z "${SCCACHE_DIR:-}" || "${SCCACHE_DIR:-}" == /home/wrix/* ]]; then
+    export SCCACHE_DIR="$top_level/.loom/sccache"
+  fi
+
+  mkdir -p "$SCCACHE_DIR"
+fi
+
+exec cargo run --bin loom --manifest-path "$top_level/Cargo.toml" -- "$@"

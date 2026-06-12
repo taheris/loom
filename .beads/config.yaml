@@ -12,6 +12,6 @@ sync-branch: "beads"
 sync:
   mode: dolt-native
 
-sync.remote: "file:///home/shaun/src/github.com/taheris/loom/.git/beads-worktrees/beads/.beads/dolt-remote"
+sync.remote: ".git/beads-worktrees/beads/.beads/dolt-remote"
 
 export.auto: false

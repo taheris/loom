@@ -14,11 +14,17 @@ nix flake check        # Clippy + nextest
 ```
 
 Inside `nix develop`, the pinned Rust toolchain (`rust-toolchain.toml`),
-`cargo-nextest`, `wrix`, and the wrapped `loom` binary are on PATH:
+`cargo-nextest`, the formatter, and the host-native `loom` binary are on PATH:
 
 ```bash
 cargo build
 cargo nextest run
+```
+
+The image-backed development shell remains available explicitly:
+
+```bash
+nix develop .#wrix
 ```
 
 ## Workflow
@@ -46,9 +52,23 @@ Author specs per [`docs/spec-conventions.md`](docs/spec-conventions.md); follow
 
 ## Using Loom
 
-The flake exposes a `loom` package whose binary already has `wrix` on its
-internal PATH and `LOOM_PROFILES_MANIFEST` defaulted to a base/rust/python
-manifest. Add it to a wrix devshell and `loom plan` works end-to-end:
+The flake's default `loom` package is the host-native CLI only. It does not
+pull Wrix sandbox images or profile manifests into the package closure, so it
+is suitable for Home Manager and system profiles:
+
+```nix
+{ inputs', ... }:
+{
+  home.packages = [
+    inputs'.loom.packages.loom
+  ];
+}
+```
+
+For image-backed workflows, Loom also exposes `loom-wrix`: a wrapped binary
+with `wrix` on its internal PATH and `LOOM_PROFILES_MANIFEST` defaulted to a
+base/rust/python manifest. Add that explicit package to a wrix devshell when
+you want `loom plan` to work end-to-end without setting the env vars yourself:
 
 ```nix
 {
@@ -61,7 +81,7 @@ manifest. Add it to a wrix devshell and `loom plan` works end-to-end:
     perSystem = { inputs', ... }: {
       devShells.default = inputs'.wrix.legacyPackages.lib.mkDevShell {
         packages = [
-          inputs'.loom.packages.loom
+          inputs'.loom.packages.loom-wrix
           # ... your other dev tools
         ];
       };

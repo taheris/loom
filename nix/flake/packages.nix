@@ -6,6 +6,7 @@
       pkgs,
       sandbox,
       debugSandbox,
+      loom,
       loomBin,
       profileManifest,
       ...
@@ -14,8 +15,9 @@
       packages = {
         inherit profileManifest;
 
-        default = loomBin;
-        loom = loomBin;
+        default = loom.bin;
+        loom = loom.bin;
+        loom-wrix = loomBin;
 
         debug = debugSandbox.package;
         sandbox = sandbox.package;
