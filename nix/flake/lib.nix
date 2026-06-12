@@ -102,7 +102,6 @@ in
         agentPkg = piCodingAgent;
         packages = [
           loom.bin
-          pkgs.cargo-nextest
         ];
       };
 
@@ -112,7 +111,6 @@ in
         agentPkg = piCodingAgent;
         packages = [
           loom.bin
-          pkgs.cargo-nextest
           pkgs.podman
         ];
       };

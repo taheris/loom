@@ -4,7 +4,6 @@ _:
   perSystem =
     {
       config,
-      pkgs,
       wrixLib,
       rustProfile,
       sandbox,
@@ -25,7 +24,6 @@ _:
         packages = [
           config.treefmt.build.wrapper
           sandbox.package
-          pkgs.cargo-nextest
         ];
       };
     };
