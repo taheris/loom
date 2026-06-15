@@ -36,9 +36,8 @@ bd dep add <issue> <depends-on>   # Add dependency
 
 For bead work, `/workspace` is the operator checkout; do not mutate it.
 Work only in the per-bead clone at `.loom/beads/<id>/` on branch
-`loom/<id>`, commit there, and stop. Loom uses regular clones here, not
-git worktrees; `.loom/integration/` fetches the bead clone by path,
-rebases, gates, and fast-forwards.
+`loom/<id>`, commit there, and stop. When `LOOM_INSIDE` is set, `/workspace`
+is already that clone; do not create nested `.loom/beads` clones.
 
 For non-bead work, mutate only the checkout the user explicitly names.
 If it has unrelated local changes, stop and ask.
@@ -60,6 +59,7 @@ git push
 beads-push # beads branch sync to GitHub
 ```
 
+When `LOOM_INSIDE` is set, skip the pushes; the driver publishes.
 Work is NOT complete until both `main` and `beads` are pushed.
 
 ## Code Style

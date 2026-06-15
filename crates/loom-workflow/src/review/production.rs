@@ -52,6 +52,7 @@ use super::error::ReviewError;
 use super::finding::{DispatchScope, FindingValidator, TerminalSurface, WalkOutput};
 use super::phase_verdict::{GateInputs, PhaseVerdict, RecoveryCause, decide};
 use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
+use super::verdict::PushGateRefuseCause;
 use crate::suppression::{has_ineffective_suppression_match, suppresses_rubric_finding};
 use crate::todo::ExitSignal;
 
@@ -160,6 +161,17 @@ fn markdown_heading_anchor(line: &str) -> Option<String> {
         None
     } else {
         Some(markdown_slug(text))
+    }
+}
+
+fn push_refusal_note(existing: Option<&str>, cause: PushGateRefuseCause) -> String {
+    let note = format!(
+        "push-gate-refused: {}; local bead workspace preserved under .loom/beads for inspection",
+        cause.as_str(),
+    );
+    match existing.filter(|body| !body.trim().is_empty()) {
+        Some(body) => format!("{body}\n\n{note}"),
+        None => note,
     }
 }
 
@@ -878,6 +890,40 @@ where
             })
             .await?;
         Ok(beads)
+    }
+
+    async fn park_closed_unpushed_beads(
+        &mut self,
+        spec_beads: &[Bead],
+        cause: PushGateRefuseCause,
+    ) -> Result<Vec<BeadId>, ReviewError> {
+        let Some(molecule_id) = self.resolve_molecule_id().await? else {
+            return Ok(Vec::new());
+        };
+        let mut parked = Vec::new();
+        for bead in spec_beads {
+            let path = self.workspace.join(".loom/beads").join(bead.id.as_str());
+            let in_molecule = bead
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.as_str() == molecule_id.as_str());
+            if bead.status != "closed" || !in_molecule || !path.exists() {
+                continue;
+            }
+            self.bd
+                .update(
+                    &bead.id,
+                    UpdateOpts {
+                        status: Some("blocked".to_string()),
+                        add_labels: vec!["loom:blocked".to_string()],
+                        notes: Some(push_refusal_note(bead.notes.as_deref(), cause)),
+                        ..UpdateOpts::default()
+                    },
+                )
+                .await?;
+            parked.push(bead.id.clone());
+        }
+        Ok(parked)
     }
 
     async fn iteration_count(&mut self) -> Result<u32, ReviewError> {

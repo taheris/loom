@@ -501,6 +501,7 @@ async fn merge_back_one(
         // (`specs/harness.md` § Verdict Gate — workspace persists on all
         // failure paths).
         AgentOutcome::Failure { error }
+        | AgentOutcome::ZeroProgress { detail: error }
         | AgentOutcome::InfraPreflight { error }
         | AgentOutcome::InfraMidSession { error }
         | AgentOutcome::UnknownProfile { error } => {

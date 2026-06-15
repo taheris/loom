@@ -19,12 +19,15 @@ pub enum AgentOutcome {
     /// Terminal block: the bead is parked under `loom:blocked` and the
     /// loop continues with the next ready bead. Two paths reach this:
     /// the agent self-reports `LOOM_BLOCKED`, or the driver detects a
-    /// post-session condition that retry cannot recover (merge conflict
-    /// against the driver branch, post-merge push failure). In both
-    /// cases re-running the agent is the wrong response; the human
-    /// resolves via `loom msg` (agent-side) or by inspecting the
-    /// preserved worktree (driver-side).
+    /// post-session condition that retry cannot recover. In both cases
+    /// re-running the agent is the wrong response; the human resolves via
+    /// `loom msg` or by inspecting the preserved worktree.
     Blocked { reason: String },
+
+    /// The agent emitted success, but the fetched bead branch did not
+    /// advance the integration line. This usually means the work happened
+    /// outside the mounted bead clone or was never committed.
+    ZeroProgress { detail: String },
 
     /// Agent emitted `LOOM_CLARIFY` — self-reported it needs a human answer.
     /// Routes straight to `loom:clarify` without retry.

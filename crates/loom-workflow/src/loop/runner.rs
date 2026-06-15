@@ -194,6 +194,10 @@ pub const SIGNATURE_VERIFICATION_FAILED_CAUSE: &str = "signature-verification-fa
 /// `specs/harness.md` § Verdict Gate.
 pub const INTEGRATION_CONFLICT_CAUSE: &str = "integration-conflict";
 
+/// Cause written when an agent reports success but the outer bead branch
+/// contributes no commit to the integration line.
+pub const ZERO_PROGRESS_CAUSE: &str = "zero-progress";
+
 /// Non-terminal bead label tracking the parallel path's single
 /// integration-conflict retry budget. The serial path holds this counter
 /// in `process_one_bead`'s stack, but a one-shot `--parallel` batch has no
@@ -596,6 +600,12 @@ async fn process_one_bead<C: AgentLoopController>(
                     error: detail,
                 });
             }
+            AgentOutcome::ZeroProgress { detail } => {
+                return Ok(BeadResult::Blocked {
+                    cause: ZERO_PROGRESS_CAUSE.to_string(),
+                    error: detail,
+                });
+            }
             AgentOutcome::Blocked { reason } => {
                 return Ok(BeadResult::Blocked {
                     cause: AGENT_BLOCKED_CAUSE.to_string(),
@@ -976,6 +986,25 @@ mod tests {
             "blocked notes carry the final retry reason: {:?}",
             c.blocked[0].2,
         );
+        assert_eq!(summary.beads_blocked, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn zero_progress_blocks_without_retry() -> Result<(), LoopError> {
+        let mut c = FakeController::default();
+        c.ready_queue.push_back(bead("lm-1", &[]));
+        c.agent_outcomes.push_back(AgentOutcome::ZeroProgress {
+            detail: "preserved workspace".into(),
+        });
+
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy { max_retries: 2 }, 10).await?;
+
+        assert_eq!(c.run_calls.len(), 1, "zero-progress does not retry");
+        assert_eq!(c.blocked.len(), 1);
+        assert_eq!(c.blocked[0].0, BeadId::new("lm-1").expect("valid"));
+        assert_eq!(c.blocked[0].1, ZERO_PROGRESS_CAUSE);
+        assert_eq!(c.blocked[0].2, "preserved workspace");
         assert_eq!(summary.beads_blocked, 1);
         Ok(())
     }

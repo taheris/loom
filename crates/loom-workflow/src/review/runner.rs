@@ -146,6 +146,16 @@ pub trait ReviewController: Send {
         async { Ok(()) }
     }
 
+    /// Park locally closed beads whose code cannot be published because the
+    /// push gate refused the molecule. The default no-op keeps fakes terse.
+    fn park_closed_unpushed_beads(
+        &mut self,
+        _spec_beads: &[Bead],
+        _cause: PushGateRefuseCause,
+    ) -> impl std::future::Future<Output = Result<Vec<BeadId>, ReviewError>> + Send {
+        async { Ok(Vec::new()) }
+    }
+
     /// Normalize the molecule's integrity findings into typed `Finding`s
     /// and dispatch the batch through the standard mint pipeline, per
     /// `specs/gate.md` § *Integrity gate* (recovery branch) — the push is
@@ -551,6 +561,22 @@ async fn apply_verdict<C: ReviewController>(
                     "clarify_ids": clarify_ids.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
                 }),
             );
+            let parked_ids = controller
+                .park_closed_unpushed_beads(spec_beads, cause)
+                .await?;
+            if !parked_ids.is_empty() {
+                controller.emit_driver_event(
+                    DriverKind::Other("closed_unpushed_beads_parked".to_string()),
+                    &format!(
+                        "parked {} closed bead(s) after push refusal",
+                        parked_ids.len()
+                    ),
+                    serde_json::json!({
+                        "cause": cause.as_str(),
+                        "bead_ids": parked_ids.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+                    }),
+                );
+            }
             if cause == PushGateRefuseCause::IntegrityFinding {
                 controller
                     .apply_integrity_clarify(&integrity_findings)
@@ -662,6 +688,7 @@ mod tests {
         reset_iter_calls: u32,
         apply_clarify_calls: Vec<(BeadId, String)>,
         apply_integrity_clarify_calls: Vec<Vec<IntegrityFinding>>,
+        parked_closed_calls: Vec<(Vec<BeadId>, PushGateRefuseCause)>,
         mint_integrity_findings_calls: Vec<Vec<IntegrityFinding>>,
         mint_marker_calls: u32,
         git_push_calls: u32,
@@ -738,6 +765,20 @@ mod tests {
         ) -> Result<(), ReviewError> {
             self.apply_integrity_clarify_calls.push(findings.to_vec());
             Ok(())
+        }
+
+        async fn park_closed_unpushed_beads(
+            &mut self,
+            spec_beads: &[Bead],
+            cause: PushGateRefuseCause,
+        ) -> Result<Vec<BeadId>, ReviewError> {
+            let ids = spec_beads
+                .iter()
+                .filter(|bead| bead.status == "closed")
+                .map(|bead| bead.id.clone())
+                .collect::<Vec<_>>();
+            self.parked_closed_calls.push((ids.clone(), cause));
+            Ok(ids)
         }
 
         async fn mint_integrity_findings(
@@ -996,6 +1037,40 @@ mod tests {
                 .as_array()
                 .is_some_and(|a| a.iter().any(|v| v == "lm-3")),
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn push_blocked_parks_closed_unpushed_beads() -> Result<(), ReviewError> {
+        let mut closed = bead("lm-closed", &["spec:harness"]);
+        closed.status = "closed".into();
+        let mut c = FakeController {
+            review: Some(ReviewOutcome::Incomplete {
+                detail: "review concern".into(),
+            }),
+            review_marker: Some(ExitSignal::Concern {
+                summary: "scope".into(),
+            }),
+            pre_beads: vec![closed.clone()],
+            post_beads: vec![closed],
+            ..FakeController::default()
+        };
+
+        let result = review_loop(&mut c, IterationCap::default()).await?;
+        assert!(matches!(result, ReviewResult::PushBlocked { .. }));
+        assert_eq!(
+            c.parked_closed_calls,
+            vec![(
+                vec![BeadId::new("lm-closed").expect("valid bead id")],
+                PushGateRefuseCause::ReviewConcern,
+            )],
+        );
+        assert!(c.driver_events.iter().any(|(kind, _, payload)| {
+            kind == "closed_unpushed_beads_parked"
+                && payload["bead_ids"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "lm-closed"))
+        }));
         Ok(())
     }
 

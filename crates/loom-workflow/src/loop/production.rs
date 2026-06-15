@@ -325,6 +325,28 @@ where
                 );
                 continue;
             }
+            if bead_has_parked_state(&bead) {
+                info!(
+                    bead = %bead.id,
+                    spec = %self.label,
+                    "loom loop: skipping parked ready bead",
+                );
+                continue;
+            }
+            let parent_is_parked = if let Some(parent_id) = bead.parent.clone() {
+                let parent = self.bd.show(&parent_id).await?;
+                bead_has_parked_state(&parent)
+            } else {
+                false
+            };
+            if parent_is_parked {
+                info!(
+                    bead = %bead.id,
+                    spec = %self.label,
+                    "loom loop: skipping parked ready bead",
+                );
+                continue;
+            }
             return Ok(Some(bead));
         }
         Ok(None)
@@ -567,15 +589,33 @@ where
                     {
                         return Ok(outcome);
                     }
-                    // Capture the pre-merge integration tip so the per-bead
-                    // audit can tell whether this bead actually advanced the
-                    // line; a no-op ff (bead committed nothing) leaves the
-                    // rollback target unset so `exec_per_bead_gate` does not
-                    // unwind a prior bead's commit.
                     let pre_tip = self.git.integration_commit_sha().await?;
                     self.git.ff_merge_integration(&worktree.branch).await?;
                     let main_sha = self.git.integration_commit_sha().await?;
-                    self.pre_integration_tip = (main_sha != pre_tip).then_some(pre_tip);
+                    if main_sha == pre_tip {
+                        self.git.delete_branch(&worktree.branch).await?;
+                        let detail = format!(
+                            "{bead_id} emitted success but branch {branch} did not advance {integration_branch}; preserved workspace {path}",
+                            bead_id = bead.id,
+                            branch = worktree.branch,
+                            path = worktree.path.display(),
+                        );
+                        self.emit_to_log(
+                            DriverKind::VerdictGate,
+                            &format!(
+                                "zero-progress: bead {} did not advance integration",
+                                bead.id
+                            ),
+                            serde_json::json!({
+                                "bead_id": bead.id.to_string(),
+                                "branch": worktree.branch,
+                                "worktree_path": worktree.path.to_string_lossy(),
+                                "cause": "zero-progress",
+                            }),
+                        );
+                        return Ok(AgentOutcome::ZeroProgress { detail });
+                    }
+                    self.pre_integration_tip = Some(pre_tip);
                     self.emit_to_log(
                         DriverKind::MergeOk,
                         &format!("merge ok: {} → main", worktree.branch),
@@ -585,14 +625,13 @@ where
                             "main_sha": main_sha.to_string(),
                         }),
                     );
-                    // Per-bead integration never pushes; origin is reached
-                    // once per molecule, post-audit, by the push gate
-                    // (specs/harness.md § Verdict Gate, phase 5).
-                    self.git.remove_worktree(&worktree.path).await?;
                     self.git.delete_branch(&worktree.branch).await?;
                     self.emit_to_log(
-                        DriverKind::WorktreeCleanupOk,
-                        &format!("worktree + branch cleanup ok for bead {}", bead.id),
+                        DriverKind::Other("bead_workspace_preserved".to_string()),
+                        &format!(
+                            "bead workspace preserved until durable push for {}",
+                            bead.id
+                        ),
                         serde_json::json!({
                             "bead_id": bead.id.to_string(),
                             "branch": worktree.branch,
@@ -941,6 +980,14 @@ where
     fn emit_driver_event(&mut self, kind: DriverKind, summary: &str, payload: serde_json::Value) {
         self.emit_to_log(kind, summary, payload);
     }
+}
+
+fn bead_has_parked_state(bead: &Bead) -> bool {
+    bead.status == "blocked"
+        || bead
+            .labels
+            .iter()
+            .any(|label| label.is_blocked() || label.is_clarify())
 }
 
 fn gate_log_root(logs_root: Option<&std::path::Path>, workspace: &std::path::Path) -> PathBuf {
@@ -1550,6 +1597,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn next_ready_skips_child_of_parked_parent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let ready = br#"[{
+            "id":"lm-child",
+            "title":"child",
+            "status":"open",
+            "priority":2,
+            "issue_type":"task",
+            "labels":["spec:harness","profile:base"],
+            "parent":"lm-parent"
+        }]"#;
+        let parent = br#"[{
+            "id":"lm-parent",
+            "title":"parent",
+            "status":"open",
+            "priority":2,
+            "issue_type":"epic",
+            "labels":["spec:harness","loom:blocked"]
+        }]"#;
+        let bd = BdClient::with_runner(ScriptedBd::new([ok_stdout(ready), ok_stdout(parent)]));
+        let mut controller = ProductionAgentLoopController::new(
+            bd,
+            SpecLabel::new("harness"),
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        );
+
+        let next = controller.next_ready_bead().await.expect("ready lookup ok");
+        assert!(next.is_none(), "parked parent suppresses child dispatch");
+    }
+
+    #[tokio::test]
     async fn run_bead_invokes_dispatch_closure_with_resolved_spawn_config() {
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
@@ -1569,6 +1664,10 @@ mod tests {
             move |cfg: SpawnConfig, _bead_id: BeadId| {
                 let captured = Arc::clone(&captured_for_closure);
                 async move {
+                    std::fs::write(cfg.workspace.join("spawn.txt"), "spawned\n")
+                        .expect("write spawn file");
+                    loom_driver::git::commit_all_in(&cfg.workspace, "spawn work")
+                        .expect("commit spawn work");
                     *captured.lock().unwrap() = Some(cfg);
                     (
                         SessionResult::Complete(SessionOutcome {
@@ -1588,6 +1687,48 @@ mod tests {
         let cfg = captured.lock().unwrap().take().expect("closure called");
         assert_eq!(cfg.image_ref, "localhost/wrix-base:abc");
         assert!(cfg.initial_prompt.contains("lm-1"));
+    }
+
+    #[tokio::test]
+    async fn run_bead_blocks_success_that_does_not_advance_branch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            SpecLabel::new("spec-x"),
+            PathBuf::from("/loom/bin"),
+            workspace.clone(),
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        );
+
+        let outcome = controller
+            .run_bead(&bead("lm-zero"), None)
+            .await
+            .expect("run_bead ok");
+        match outcome {
+            AgentOutcome::ZeroProgress { detail } => {
+                assert!(detail.contains("lm-zero"), "detail names bead: {detail}");
+                assert!(
+                    workspace.join(".loom/beads/lm-zero").exists(),
+                    "workspace preserved for inspection",
+                );
+            }
+            other => panic!("expected ZeroProgress, got {other:?}"),
+        }
     }
 
     /// `loom loop` must dispatch with the rendered
