@@ -76,13 +76,13 @@ Loom's state lives under `.loom/` in the workspace:
 
 ```
 .loom/
-├── state.db          # SQLite: specs, molecules, beads, notes, companions
+├── cache.db          # SQLite: specs, work epics, notes, companions, evidence
 ├── workspace.lock    # Held by `loom init`
 ├── *.lock            # Per-spec locks, named after the SpecLabel
 ├── scratch/<key>/    # Per-session scratchpads (deleted at session end)
 └── logs/<label>/     # Session transcripts, agent JSONL, gate output
 ```
 
-The state DB is rebuildable from the workspace (`loom init --rebuild`) by
-replaying `specs/*.md`, `bd list`, and git history — so it carries no
-load-bearing information that doesn't already live in those sources.
+The cache DB is rebuildable from the workspace (`loom init --rebuild`) by
+replaying the spec index, spec files, bd epics, and git history — so it carries
+no load-bearing information that doesn't already live in those sources.

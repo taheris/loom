@@ -1818,7 +1818,7 @@ fn no_todo_cursor_meta_key_pass_when_absent() {
     seed(
         ws.path(),
         "crates/loom-driver/src/state/db.rs",
-        "pub struct StateDb;\n\npub fn current_spec() -> &'static str { \"x\" }\n",
+        "pub struct CacheDb;\n\npub fn current_spec() -> &'static str { \"x\" }\n",
     );
     let out = invoke(&["no_todo_cursor_meta_key"], Some(ws.path()), None);
     assert_pass(&out);
@@ -1830,8 +1830,8 @@ fn no_todo_cursor_meta_key_fail_when_method_present() {
     seed(
         ws.path(),
         "crates/loom-driver/src/state/db.rs",
-        "pub struct StateDb;\n\
-         impl StateDb { pub fn todo_cursor(&self) -> Option<String> { None } }\n",
+        "pub struct CacheDb;\n\
+         impl CacheDb { pub fn todo_cursor(&self) -> Option<String> { None } }\n",
     );
     let out = invoke(&["no_todo_cursor_meta_key"], Some(ws.path()), None);
     assert_fail(&out, "todo_cursor");
@@ -1843,7 +1843,7 @@ fn no_todo_cursor_meta_key_ignores_test_block() {
     seed(
         ws.path(),
         "crates/loom-driver/src/state/db.rs",
-        "pub struct StateDb;\n\
+        "pub struct CacheDb;\n\
          \n\
          #[cfg(test)]\n\
          mod tests {\n\

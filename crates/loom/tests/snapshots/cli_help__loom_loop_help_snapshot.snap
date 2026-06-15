@@ -15,13 +15,13 @@ Workflow:
   msg     Resolve outstanding `loom:clarify` and `loom:blocked` beads
 
 Inspection:
-  status  Print the active spec, current molecule, and iteration counter
+  status  Print cache health and work-epic status
   logs    Render (or tail) the most recent per-bead JSONL log
   spec    Inspect spec annotations and tooling dependencies
 
 State:
-  init    Initialize the workspace (create `.loom/` config + state DB)
-  use     Set the active spec
+  init    Initialize the workspace (create `.loom/` config + cache DB)
+  use     Validate that a spec label exists in the cache
   note    Manage notes for a spec
 
   help    Print this message or the help of the given subcommand(s)

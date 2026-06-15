@@ -3524,7 +3524,7 @@ Criteria.
       `work_epics.iteration_count`, not on individual beads) and
       survives `retry → [running]` round-trips; every promoted
       remediation pass consumes one slot of `[loop] max_iterations`
-  [test?](iteration_counter_round_trips_through_cache_db)
+  [test](iteration_counter_round_trips_through_cache_db)
 - Pre-flight infra failures (image load, container start) exit
       immediately as `loom:blocked` with cause `infra-preflight`; no retry
   [test](infra_preflight_routes_to_blocked_without_retry)
@@ -3594,11 +3594,11 @@ two agent-loop observers.
       epics, and each spec's `## Companions` section. It also folds
       gate criterion-status storage into the unified cache; there is no
       `.loom/gate-cache.sqlite`
-  [test?](rebuild_drops_and_repopulates_cache_db)
+  [test](rebuild_drops_and_repopulates_cache_db)
 - `loom status` prints the active work epic, any pending `loom:todo`
       work epic, cached iteration counts, and cache health; no active
       spec/current-spec value is displayed or read
-  [test?](status_reports_active_work_epic_not_current_spec)
+  [test](status_reports_active_work_epic_not_current_spec)
 - Bare `loom logs` pretty-renders the most recent bead's full log
       via the same `AgentEvent` renderer used by `loom loop`, then
       exits at EOF (no implicit follow); `-b <id>` (long form
@@ -3634,16 +3634,16 @@ two agent-loop observers.
 - `CacheDb::open` creates `.loom/cache.db` tables on first open
       (`specs`, `spec_epics`, `work_epics`, `companions`, `notes`,
       `criterion_status`, and `meta`)
-  [test?](cache_db_init_creates_tables)
+  [test](cache_db_init_creates_tables)
 - `CacheDb::rebuild` populates `specs` from `docs/README.md`'s spec
       index and cross-checks `specs/*.md`; unindexed spec files,
       missing indexed files, duplicate labels, and label/path mismatches
       fail loud
-  [test?](cache_rebuild_cross_checks_spec_index_and_files)
+  [test](cache_rebuild_cross_checks_spec_index_and_files)
 - `CacheDb::rebuild` mirrors exactly one `loom:spec spec:<label>` spec
       epic per indexed spec, regardless of epic status; duplicates fail
       with conflicting IDs
-  [test?](cache_rebuild_requires_one_spec_epic_per_indexed_spec)
+  [test](cache_rebuild_requires_one_spec_epic_per_indexed_spec)
 - `loom todo` creates a missing spec epic during preflight, treats the
       spec as uninitialized/changed, and blocks when an existing spec
       epic lacks `loom.todo_cursor` metadata
@@ -3699,13 +3699,13 @@ two agent-loop observers.
 - `CacheDb::rebuild` parses each spec's `## Companions` section and
       writes one `companions` row per listed path; specs without the
       section contribute zero rows (not an error)
-  [test?](cache_db_rebuild_companions)
+  [test](cache_db_rebuild_companions)
 - `CacheDb::rebuild` resets work-epic iteration counters to 0
-  [test?](cache_rebuild_resets_work_epic_counters)
+  [test](cache_rebuild_resets_work_epic_counters)
 - Corrupted cache file → `loom init --rebuild` recovers from durable
       sources or reports the exact durable inconsistency; it never
       treats cache loss as clean todo state
-  [test?](cache_corruption_recovery_never_implies_clean_todo)
+  [test](cache_corruption_recovery_never_implies_clean_todo)
 - `loom plan [labels...]` does NOT create epics and does NOT write to
       bd; plan sessions edit specs/index/notes only
   [test?](plan_does_not_create_epic_or_touch_bd)

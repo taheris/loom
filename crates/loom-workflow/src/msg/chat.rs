@@ -30,7 +30,7 @@ use loom_driver::config::{LoomConfig, Phase};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::{ImageEntry, ProfileError, ProfileImageManifest};
 use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
-use loom_driver::state::StateDb;
+use loom_driver::state::CacheDb;
 use thiserror::Error;
 use tracing::info;
 
@@ -90,8 +90,8 @@ pub enum ChatError {
     BdList(String),
     #[error("render msg.md template: {0}")]
     Render(String),
-    #[error("state db operation failed while running `loom msg --chat`")]
-    State(#[from] loom_driver::state::StateError),
+    #[error("cache db operation failed while running `loom msg --chat`")]
+    State(#[from] loom_driver::state::CacheError),
     #[error("scratch session io failed")]
     Scratch(#[from] std::io::Error),
     #[error("wrix exited with status {status}")]
@@ -233,7 +233,7 @@ fn agent_command(kind: AgentKind) -> &'static str {
     }
 }
 
-/// Aggregate companion paths from the state DB across every spec label
+/// Aggregate companion paths from the cache DB across every spec label
 /// represented in the surfaced clarify queue. `msg --chat` is cross-spec by
 /// default, so the queue may carry beads from multiple specs; under a
 /// `--spec <label>` filter the union collapses to that single spec. Returns
@@ -243,7 +243,7 @@ fn load_companion_paths(
     spec_filter: Option<&SpecLabel>,
     beads: &[&Bead],
 ) -> Result<Vec<String>, ChatError> {
-    let db = StateDb::open(workspace.join(".loom/state.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
     let mut labels: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     if let Some(label) = spec_filter {
         labels.insert(label.as_str().to_string());

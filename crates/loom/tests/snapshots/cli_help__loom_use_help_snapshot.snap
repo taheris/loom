@@ -1,8 +1,9 @@
 ---
 source: crates/loom/tests/cli_help.rs
+assertion_line: 129
 expression: "loom_help(&[\"use\"])"
 ---
-Set the active spec
+Validate that a spec label exists in the cache
 
 Usage: loom use [OPTIONS] <LABEL>
 

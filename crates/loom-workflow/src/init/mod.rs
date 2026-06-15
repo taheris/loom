@@ -1,8 +1,8 @@
-//! `loom init` — workspace bootstrap and optional state-DB rebuild.
+//! `loom init` — workspace bootstrap and optional cache-DB rebuild.
 //!
 //! Acquires the workspace lock (errors immediately if any phase or work-root
-//! lock is held), ensures `<workspace>/loom.toml` and `.loom/state.db`
-//! exist, and — when `--rebuild` is passed — drops/recreates the state DB
+//! lock is held), ensures `<workspace>/loom.toml` and `.loom/cache.db`
+//! exist, and — when `--rebuild` is passed — drops/recreates the cache DB
 //! and repopulates it from `specs/*.md` plus a caller-supplied slice of
 //! active molecules.
 //!
@@ -27,7 +27,7 @@ use loom_driver::git::{
 };
 use loom_driver::identifier::MoleculeId;
 use loom_driver::lock::LockManager;
-use loom_driver::state::{ActiveMolecule, RebuildReport, StateDb};
+use loom_driver::state::{ActiveMolecule, CacheDb, RebuildReport};
 
 pub use error::InitError;
 
@@ -39,7 +39,7 @@ pub const DEFAULT_CONFIG_TOML: &str = include_str!("default-loom.toml");
 /// Options accepted by [`run`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InitOpts {
-    /// Drop and repopulate the state DB from on-disk specs + active beads.
+    /// Drop and repopulate the cache DB from on-disk specs + active beads.
     pub rebuild: bool,
 }
 
@@ -47,7 +47,7 @@ pub struct InitOpts {
 #[derive(Debug, Clone)]
 pub struct InitReport {
     pub config_path: PathBuf,
-    pub state_db_path: PathBuf,
+    pub cache_db_path: PathBuf,
     pub config_created: bool,
     pub rebuild: Option<RebuildReport>,
     /// The loom-owned integration workspace at
@@ -74,7 +74,7 @@ pub struct MaterializedIntegration {
 ///    if any phase or work-root lock is held.
 /// 2. Creates `<workspace>/.loom/` and writes `loom.toml` if it
 ///    does not already exist (existing config files are preserved).
-/// 3. Opens `state.db` (creating the schema on first open). When
+/// 3. Opens `cache.db` (creating the schema on first open). When
 ///    `opts.rebuild` is true, the file is dropped and recreated, and the
 ///    schema is repopulated from `specs/*.md` plus `molecules`.
 pub fn run(
@@ -108,7 +108,7 @@ fn run_with_resolvers(
     })?;
 
     let config_path = LoomConfig::resolve_path(workspace);
-    let state_db_path = runtime_dir.join("state.db");
+    let cache_db_path = runtime_dir.join("cache.db");
 
     let config_created = !config_path.exists();
     if config_created {
@@ -127,10 +127,10 @@ fn run_with_resolvers(
     }
 
     let rebuild_report = if opts.rebuild {
-        let db = StateDb::recreate(&state_db_path)?;
+        let db = CacheDb::recreate(&cache_db_path)?;
         Some(db.rebuild(workspace, molecules)?)
     } else {
-        let _db = StateDb::open(&state_db_path)?;
+        let _db = CacheDb::open(&cache_db_path)?;
         None
     };
 
@@ -139,7 +139,7 @@ fn run_with_resolvers(
 
     Ok(InitReport {
         config_path,
-        state_db_path,
+        cache_db_path,
         config_created,
         rebuild: rebuild_report,
         integration_workspace,
@@ -727,12 +727,12 @@ mod tests {
     }
 
     #[test]
-    fn run_creates_config_and_state_db() -> Result<()> {
+    fn run_creates_config_and_cache_db() -> Result<()> {
         let dir = temp_workspace()?;
         let report = run(dir.path(), InitOpts::default(), &[])?;
         assert!(report.config_created, "first init must write config");
         assert!(report.config_path.exists(), "loom.toml must exist on disk");
-        assert!(report.state_db_path.exists(), "state.db must exist on disk");
+        assert!(report.cache_db_path.exists(), "cache.db must exist on disk");
         // The default body must parse cleanly and resolve through `agent_for`
         // identically to the empty-default config — the file writes the
         // built-in `[phase.default]` values explicitly for documentation,
@@ -780,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_drops_and_repopulates_state_db() -> Result<()> {
+    fn rebuild_drops_and_repopulates_cache_db() -> Result<()> {
         let dir = temp_workspace()?;
         let specs = dir.path().join("specs");
         std::fs::create_dir_all(&specs)?;
@@ -795,7 +795,7 @@ mod tests {
             spec_label: SpecLabel::new("alpha"),
             base_commit: None,
         }];
-        let db = StateDb::open(dir.path().join(".loom/state.db"))?;
+        let db = CacheDb::open(dir.path().join(".loom/cache.db"))?;
         db.rebuild(dir.path(), &molecules)?;
         let post = db.increment_iteration(&MoleculeId::new("lm-mol.1"))?;
         assert_eq!(post, 1);
@@ -814,10 +814,10 @@ mod tests {
             .rebuild
             .ok_or_else(|| anyhow::anyhow!("rebuild must produce a report"))?;
         assert_eq!(rb.specs, 2, "two spec files");
-        assert_eq!(rb.molecules, 1, "one active molecule");
+        assert_eq!(rb.work_epics, 1, "one active work epic");
 
         // Iteration counter reset to 0 after rebuild.
-        let db = StateDb::open(dir.path().join(".loom/state.db"))?;
+        let db = CacheDb::open(dir.path().join(".loom/cache.db"))?;
         let row = db
             .molecule_for_spec(&SpecLabel::new("alpha"))?
             .ok_or_else(|| anyhow::anyhow!("active molecule must exist"))?;
@@ -834,11 +834,11 @@ mod tests {
     fn run_creates_schema_with_specs_molecules_companions_meta() -> Result<()> {
         let dir = temp_workspace()?;
         let report = run(dir.path(), InitOpts::default(), &[])?;
-        let db = StateDb::open(&report.state_db_path)?;
+        let db = CacheDb::open(&report.cache_db_path)?;
         let probe = SpecLabel::new("probe");
 
         match db.spec(&probe) {
-            Err(loom_driver::state::StateError::SpecNotFound { .. }) => {}
+            Err(loom_driver::state::CacheError::SpecNotFound { .. }) => {}
             other => {
                 return Err(anyhow!(
                     "expected SpecNotFound on empty specs table, got {other:?}"
@@ -847,25 +847,21 @@ mod tests {
         }
         assert!(db.molecule_for_spec(&probe)?.is_none());
         assert!(db.companions(&probe)?.is_empty());
-        assert!(db.current_spec()?.is_none());
+        assert!(db.work_epics()?.is_empty());
         Ok(())
     }
 
-    /// Plain `loom init` (no `--rebuild`) must preserve existing
-    /// `current_spec` and molecule rows. The state DB is the source of
-    /// truth for the active spec across sessions; clobbering it on every
-    /// init would erase that pointer the moment a user (or hook) re-runs
-    /// `loom init` to refresh the config.
+    /// Plain `loom init` (no `--rebuild`) must preserve existing work-epic rows.
     #[test]
-    fn run_is_idempotent_and_preserves_current_spec_and_molecules() -> Result<()> {
+    fn run_is_idempotent_and_preserves_work_epics() -> Result<()> {
         let dir = temp_workspace()?;
         let specs = dir.path().join("specs");
         std::fs::create_dir_all(&specs)?;
         std::fs::write(specs.join("alpha.md"), "# alpha\n")?;
 
         run(dir.path(), InitOpts::default(), &[])?;
-        let db_path = dir.path().join(".loom/state.db");
-        let db = StateDb::open(&db_path)?;
+        let db_path = dir.path().join(".loom/cache.db");
+        let db = CacheDb::open(&db_path)?;
         db.rebuild(
             dir.path(),
             &[ActiveMolecule {
@@ -874,18 +870,13 @@ mod tests {
                 base_commit: Some("deadbeef".into()),
             }],
         )?;
-        db.set_current_spec(&SpecLabel::new("alpha"))?;
         let bumped = db.increment_iteration(&MoleculeId::new("lm-mol.1"))?;
         assert_eq!(bumped, 1);
         drop(db);
 
         let report = run(dir.path(), InitOpts::default(), &[])?;
         assert!(report.rebuild.is_none(), "plain init must not run rebuild");
-        let db = StateDb::open(&db_path)?;
-        let current = db
-            .current_spec()?
-            .ok_or_else(|| anyhow!("current_spec was clobbered"))?;
-        assert_eq!(current.as_str(), "alpha");
+        let db = CacheDb::open(&db_path)?;
         let row = db
             .molecule_for_spec(&SpecLabel::new("alpha"))?
             .ok_or_else(|| anyhow!("molecule row was clobbered"))?;
@@ -913,7 +904,7 @@ mod tests {
     }
 
     /// Spec contract `[test]` annotation
-    /// (`specs/harness.md` § Success Criteria · State DB):
+    /// (`specs/harness.md` § Success Criteria · Cache DB):
     /// `loom init --rebuild` populates `molecules.base_commit` from
     /// `bd show <id> --json` reading `loom.base_commit` metadata; an
     /// active molecule without the key surfaces as
@@ -1002,7 +993,7 @@ mod tests {
     }
 
     /// Spec contract `[test]` annotation
-    /// (`specs/harness.md` § Success Criteria · State DB):
+    /// (`specs/harness.md` § Success Criteria · Cache DB):
     /// An epic created via `bd create --parent=<epic>` without its own
     /// `loom.base_commit` metadata inherits the value from the parent
     /// epic. `fetch_active_molecules` writes the inherited value back via

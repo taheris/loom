@@ -5,7 +5,7 @@ use loom_driver::agent::ProtocolError;
 use loom_driver::bd::BdError;
 use loom_driver::logging::LogError;
 use loom_driver::profile_manifest::ProfileError;
-use loom_driver::state::StateError;
+use loom_driver::state::CacheError;
 
 use crate::spec::SpecError;
 
@@ -42,8 +42,8 @@ pub enum ReviewError {
     /// `loom loop` handoff for auto-iteration failed: {0}
     RunHandoff(String),
 
-    /// state-db read/write failure during `loom review`
-    State(#[from] StateError),
+    /// cache-db read/write failure during `loom review`
+    State(#[from] CacheError),
 
     /// profile-image manifest dispatch failed during `loom review`
     Profile(#[from] ProfileError),

@@ -228,27 +228,21 @@ fn bd_stub_path(workspace: &Path, bead_json: &str) -> std::ffi::OsString {
     std::env::join_paths(entries).expect("join PATH")
 }
 
-/// Initialise loom's state DB and set the active spec for the test.
-/// `loom todo` derives the active spec from `state.db.current_spec`; the
-/// `--spec` override on `Command::Todo` was removed under the at-most-
-/// one-open-epic-per-spec invariant. The spec row is seeded via
-/// [`StateDb::replace_companions`] (insert-or-ignore on `specs`), then
-/// the meta key is set via [`StateDb::set_current_spec`].
+/// Initialise loom's cache DB and seed the named spec for the test.
 fn seed_active_spec(workspace: &Path, _loom_bin: &str, label: &str) {
     use loom_driver::identifier::SpecLabel;
-    use loom_driver::state::StateDb;
+    use loom_driver::state::CacheDb;
     let spec_dir = workspace.join("specs");
     std::fs::create_dir_all(&spec_dir).expect("mkdir specs");
     std::fs::write(spec_dir.join(format!("{label}.md")), format!("# {label}\n"))
         .expect("write spec");
     let state_dir = workspace.join(".loom");
     std::fs::create_dir_all(&state_dir).expect("mkdir .loom");
-    let db = StateDb::open(state_dir.join("state.db")).expect("open state db");
+    let db = CacheDb::open(state_dir.join("cache.db")).expect("open state db");
     let spec = SpecLabel::new(label);
     // `replace_companions` is the canonical insert-or-ignore on `specs`
     // (no companions seeded here — we just need the row to exist).
     db.replace_companions(&spec, &[]).expect("seed spec row");
-    db.set_current_spec(&spec).expect("set current_spec");
 }
 
 /// Seed the workspace as a real git repo plus the loom-owned integration
@@ -670,10 +664,10 @@ fn loom_gate_review_writes_phase_jsonl_log() {
 
     {
         use loom_driver::identifier::SpecLabel;
-        use loom_driver::state::StateDb;
-        let db = StateDb::open(workspace.join(".loom/state.db")).expect("open state db");
-        db.set_current_spec(&SpecLabel::new("agent"))
-            .expect("set current spec");
+        use loom_driver::state::CacheDb;
+        let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open cache db");
+        db.upsert_spec(&SpecLabel::new("agent"), "specs/agent.md")
+            .expect("seed spec");
     }
 
     // `loom:clarify` on the post-snapshot bead → ReviewVerdict::PushBlocked →

@@ -1,7 +1,7 @@
 //! Property-based tests for `loom-driver` invariants.
 //!
 //! Per `specs/tests.md` (Architecture / Property-Based Testing), this
-//! crate owns invariants for the types it defines. The state DB is the
+//! crate owns invariants for the types it defines. The cache DB is the
 //! sole proptest target: arbitrary spec-file content never corrupts the
 //! schema, a corrupted DB always recovers via `recreate`, and round-trips
 //! through known shapes are stable.
@@ -12,7 +12,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use loom_driver::identifier::{MoleculeId, SpecLabel};
-use loom_driver::state::{ActiveMolecule, StateDb};
+use loom_driver::state::{ActiveMolecule, CacheDb};
 use loom_test_support::CI_PROPTEST_CASES;
 use proptest::prelude::*;
 
@@ -54,9 +54,16 @@ fn list_tables(db_path: &std::path::Path) -> Vec<String> {
 
 fn schema_intact(db_path: &std::path::Path) -> bool {
     let names = list_tables(db_path);
-    ["companions", "meta", "molecules", "specs"]
-        .iter()
-        .all(|expected| names.iter().any(|n| n == expected))
+    [
+        "companions",
+        "criterion_status",
+        "meta",
+        "spec_epics",
+        "specs",
+        "work_epics",
+    ]
+    .iter()
+    .all(|expected| names.iter().any(|n| n == expected))
 }
 
 proptest! {
@@ -85,8 +92,8 @@ proptest! {
             std::fs::write(&path, body).unwrap();
         }
 
-        let db_path = workspace.join(".loom/state.db");
-        let db = StateDb::open(&db_path).unwrap();
+        let db_path = workspace.join(".loom/cache.db");
+        let db = CacheDb::open(&db_path).unwrap();
 
         // Rebuild with no molecules — exercises the spec-walking codepath
         // most likely to hit the parser on arbitrary bodies.
@@ -108,10 +115,10 @@ proptest! {
         garbage in proptest::collection::vec(any::<u8>(), 0..2048),
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("state.db");
+        let db_path = dir.path().join("cache.db");
         std::fs::write(&db_path, &garbage).unwrap();
 
-        let db = StateDb::recreate(&db_path).unwrap();
+        let db = CacheDb::recreate(&db_path).unwrap();
         prop_assert!(schema_intact(&db_path));
 
         // A trivial rebuild + query still succeeds — the file is usable.
@@ -152,11 +159,11 @@ proptest! {
             })
             .collect();
 
-        let db_path = workspace.join(".loom/state.db");
-        let db = StateDb::open(&db_path).unwrap();
+        let db_path = workspace.join(".loom/cache.db");
+        let db = CacheDb::open(&db_path).unwrap();
         let report = db.rebuild(workspace, &molecules).unwrap();
         prop_assert_eq!(report.specs, unique.len());
-        prop_assert_eq!(report.molecules, molecules.len());
+        prop_assert_eq!(report.work_epics, molecules.len());
 
         for mol in &molecules {
             let row = db.molecule_for_spec(&mol.spec_label).unwrap()

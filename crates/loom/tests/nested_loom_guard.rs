@@ -71,9 +71,12 @@ fn readonly_and_deterministic_gate_subcommands_run_under_loom_inside_set() {
     std::fs::create_dir_all(workspace.join(".loom")).unwrap();
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
     std::fs::write(workspace.join("specs/dummy.md"), "# dummy\n").unwrap();
-    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db")).unwrap();
-    db.set_current_spec(&loom_driver::identifier::SpecLabel::new("dummy"))
-        .unwrap();
+    let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
+    db.upsert_spec(
+        &loom_driver::identifier::SpecLabel::new("dummy"),
+        "specs/dummy.md",
+    )
+    .unwrap();
     drop(db);
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");

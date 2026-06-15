@@ -571,7 +571,7 @@ the explicit tier commands run at tree scope with no `--spec` filter.
 - Cache database round-trip tests cover spec rows, spec epics,
       work epics, notes, and criterion evidence without any
       `current_spec` operation
-  [test?](cache_db_round_trips_specs_epics_notes_and_criteria)
+  [test](cache_db_round_trips_specs_epics_notes_and_criteria)
 - Pi RPC protocol tests cover every command and every event type
       in the pi v0.72 protocol table, asserting on every documented
       field (not just type discrimination) so a renamed field fails
@@ -618,7 +618,7 @@ in Functional #4.
       populates from the spec index, spec files, mock bd spec/work
       epics, and companions; `recreate` recovers from a corrupted file
       without treating cache loss as clean todo state
-  [test?](cache_db_rebuild_populates_specs_epics_and_companions)
+  [test](cache_db_rebuild_populates_specs_epics_and_companions)
 - Todo multi-spec regression fixture: one commit modifies a spec already
       represented in the active work epic, an existing inactive/stale spec,
       and a brand-new spec added to `docs/README.md`; `loom todo`

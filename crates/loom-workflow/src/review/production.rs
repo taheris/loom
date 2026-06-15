@@ -35,7 +35,7 @@ use loom_driver::logging::phase_log_path;
 use loom_driver::logging::{BeadOutcome, LogSink};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
-use loom_driver::state::StateDb;
+use loom_driver::state::CacheDb;
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
 use loom_gate::{
     CommandResolver, DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateRun,
@@ -258,7 +258,7 @@ where
     label: SpecLabel,
     loom_bin: PathBuf,
     workspace: PathBuf,
-    state: Arc<StateDb>,
+    state: Arc<CacheDb>,
     manifest: Arc<ProfileImageManifest>,
     phase_default: ProfileName,
     runtime: AgentRuntime,
@@ -332,7 +332,7 @@ where
         label: SpecLabel,
         loom_bin: PathBuf,
         workspace: PathBuf,
-        state: Arc<StateDb>,
+        state: Arc<CacheDb>,
         manifest: Arc<ProfileImageManifest>,
         phase_default: ProfileName,
         spawn: S,
@@ -2013,18 +2013,18 @@ mod tests {
         Arc::new(ProfileImageManifest::from_path(&path).unwrap())
     }
 
-    fn empty_state(workspace: &std::path::Path) -> Arc<StateDb> {
-        Arc::new(StateDb::open(workspace.join(".loom/state.db")).unwrap())
+    fn empty_state(workspace: &std::path::Path) -> Arc<CacheDb> {
+        Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).unwrap())
     }
 
-    fn seeded_state(workspace: &std::path::Path, label: &str, mol: &str) -> Arc<StateDb> {
+    fn seeded_state(workspace: &std::path::Path, label: &str, mol: &str) -> Arc<CacheDb> {
         std::fs::create_dir_all(workspace.join("specs")).unwrap();
         std::fs::write(
             workspace.join(format!("specs/{label}.md")),
             format!("# {label}\n"),
         )
         .unwrap();
-        let db = StateDb::open(workspace.join(".loom/state.db")).unwrap();
+        let db = CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
         db.rebuild(
             workspace,
             &[ActiveMolecule {
@@ -2055,7 +2055,7 @@ mod tests {
     fn scripted_controller(
         workspace: PathBuf,
         label: &str,
-        state: Arc<StateDb>,
+        state: Arc<CacheDb>,
         responses: impl IntoIterator<Item = Vec<u8>>,
     ) -> ProductionReviewController<NoopSpawn, SpawnFuture, ScriptedBd> {
         let manifest = stub_manifest(&workspace);
@@ -2107,7 +2107,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn iteration_counter_round_trips_through_state_db() {
+    async fn iteration_counter_round_trips_through_cache_db() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path();
         let state = seeded_state(workspace, "alpha", "lm-alpha");
@@ -2226,7 +2226,7 @@ mod tests {
         .unwrap();
         loom_driver::git::commit_all_in(&workspace, "add runner-owned spec").expect("commit");
 
-        let db = StateDb::open(workspace.join(".loom/state.db")).unwrap();
+        let db = CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
         db.rebuild(
             &workspace,
             &[ActiveMolecule {

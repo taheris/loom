@@ -23,7 +23,7 @@ use crate::todo::ExitSignal;
 ///   `AgentBackend`, tee the event stream into the log sink, parse the
 ///   exit signal
 /// - `iteration_count` / `set_iteration_count` / `reset_iteration_count` →
-///   the `iteration_count` column in `loom-driver`'s state DB
+///   the `iteration_count` column in `loom-driver`'s cache DB
 /// - `apply_clarify` → `BdClient::update --add-label loom:clarify`
 /// - `git_push` / `beads_push` → `tokio::process::Command` shell-outs
 /// - `exec_run` → `tokio::process::Command::new("loom").arg("run")…`

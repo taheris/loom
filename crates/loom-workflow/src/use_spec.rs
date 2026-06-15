@@ -1,7 +1,4 @@
-//! `loom use <label>` — set the active spec via the state DB.
-//!
-//! Acquires the planning phase lock, opens the state DB, and writes
-//! `current_spec`. Round-trips with [`super::status::load`].
+//! `loom use <label>` — validate a spec label without mutating workflow state.
 
 use std::path::Path;
 use std::time::Duration;
@@ -11,11 +8,9 @@ use thiserror::Error;
 
 use loom_driver::identifier::SpecLabel;
 use loom_driver::lock::{LockError, LockManager, PhaseLock};
-use loom_driver::state::{StateDb, StateError};
+use loom_driver::state::{CacheDb, CacheError};
 
-/// Default timeout used by [`run`]. Mirrors the lock manager's 5-second wait
-/// so the binary surfaces phase contention after the same delay as other
-/// mutating commands.
+/// Default timeout used by [`run`].
 pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Failures raised by [`run`].
@@ -24,20 +19,16 @@ pub enum UseError {
     /// lock acquisition failed
     Lock(#[from] LockError),
 
-    /// state-db operation failed
-    State(#[from] StateError),
+    /// cache-db operation failed
+    State(#[from] CacheError),
 }
 
-/// Acquire the planning lock (waiting up to [`DEFAULT_LOCK_TIMEOUT`]) and
-/// persist `current_spec = label` in the state DB. `db_path` is typically
-/// `<workspace>/.loom/state.db`; the caller is responsible for ensuring
-/// [`super::init::run`] has populated it.
+/// Acquire the planning lock and validate that `label` exists in the cache.
 pub fn run(workspace: &Path, label: &SpecLabel, db_path: &Path) -> Result<(), UseError> {
     run_with_timeout(workspace, label, db_path, DEFAULT_LOCK_TIMEOUT)
 }
 
-/// Same as [`run`] with an explicit lock-wait timeout. Tests use this to
-/// keep the contention path fast.
+/// Same as [`run`] with an explicit lock-wait timeout.
 pub fn run_with_timeout(
     workspace: &Path,
     label: &SpecLabel,
@@ -46,9 +37,8 @@ pub fn run_with_timeout(
 ) -> Result<(), UseError> {
     let lock_mgr = LockManager::new(workspace)?;
     let _guard = lock_mgr.acquire_phase_with_timeout(PhaseLock::Planning, timeout)?;
-    let db = StateDb::open(db_path)?;
+    let db = CacheDb::open(db_path)?;
     let _ = db.spec(label)?;
-    db.set_current_spec(label)?;
     Ok(())
 }
 
@@ -56,32 +46,26 @@ pub fn run_with_timeout(
 mod tests {
     use super::*;
     use anyhow::Result;
-    use loom_driver::state::{ActiveMolecule, StateError};
+    use loom_driver::state::{ActiveMolecule, CacheError};
 
     fn db_path(workspace: &std::path::Path) -> std::path::PathBuf {
-        workspace.join(".loom/state.db")
+        workspace.join(".loom/cache.db")
     }
 
-    fn seed_spec(workspace: &std::path::Path, label: &str) -> Result<StateDb> {
+    fn seed_spec(workspace: &std::path::Path, label: &str) -> Result<CacheDb> {
         let specs_dir = workspace.join("specs");
         std::fs::create_dir_all(&specs_dir)?;
         std::fs::write(specs_dir.join(format!("{label}.md")), "# x\n")?;
-        let db = StateDb::open(db_path(workspace))?;
+        let db = CacheDb::open(db_path(workspace))?;
         db.rebuild(workspace, &[] as &[ActiveMolecule])?;
         Ok(db)
     }
 
     #[test]
-    fn use_round_trips_with_status_load() -> Result<()> {
+    fn use_existing_spec_validates_without_persisting_selection() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let _seed = seed_spec(dir.path(), "harness")?;
         run(dir.path(), &SpecLabel::new("harness"), &db_path(dir.path()))?;
-
-        let db = StateDb::open(db_path(dir.path()))?;
-        let current = db
-            .current_spec()?
-            .ok_or_else(|| anyhow::anyhow!("current_spec must be set"))?;
-        assert_eq!(current.as_str(), "harness");
         Ok(())
     }
 
@@ -106,27 +90,16 @@ mod tests {
         }
     }
 
-    /// Spec contract (`specs/tests.md` § Auxiliary commands):
-    /// `loom use <unknown>` errors when no `specs` row matches the label.
-    /// Without this guard the meta table would happily point at a spec that
-    /// has never been registered, leaving `loom status` to display a label
-    /// that nothing else in the workspace knows about.
     #[test]
     fn use_unknown_spec_errors_with_spec_not_found() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let _seed = StateDb::open(db_path(dir.path()))?;
+        let _seed = CacheDb::open(db_path(dir.path()))?;
         match run(dir.path(), &SpecLabel::new("ghost"), &db_path(dir.path())) {
-            Err(UseError::State(StateError::SpecNotFound { label })) => {
+            Err(UseError::State(CacheError::SpecNotFound { label })) => {
                 assert_eq!(label, "ghost");
             }
             other => return Err(anyhow::anyhow!("expected SpecNotFound, got {other:?}")),
         }
-
-        let db = StateDb::open(db_path(dir.path()))?;
-        assert!(
-            db.current_spec()?.is_none(),
-            "current_spec must not be written for an unknown label",
-        );
         Ok(())
     }
 }

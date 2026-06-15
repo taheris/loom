@@ -7,7 +7,7 @@ use loom_driver::config::LoomConfigError;
 use loom_driver::git::GitError;
 use loom_driver::logging::LogError;
 use loom_driver::profile_manifest::ProfileError;
-use loom_driver::state::StateError;
+use loom_driver::state::CacheError;
 
 /// Errors raised by the `loom loop` driver.
 #[derive(Debug, Display, Error)]
@@ -36,8 +36,8 @@ pub enum LoopError {
     /// config load failed during `loom loop`
     Config(#[from] LoomConfigError),
 
-    /// state.db access failure during `loom loop`
-    State(#[from] StateError),
+    /// cache.db access failure during `loom loop`
+    State(#[from] CacheError),
 
     /// spec → molecule resolution failed during `loom loop`
     Resolve(#[from] crate::resolve::ResolveError),

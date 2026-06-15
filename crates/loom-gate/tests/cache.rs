@@ -8,13 +8,14 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use loom_driver::state::CacheDb;
 use loom_gate::annotation::{Annotation, Criterion, ParsedSpecs, Tier};
 use loom_gate::cache::{CacheRow, StatusCache, Verdict, render_from_rows, render_report, row_for};
 use loom_gate::integrity::IntegrityFinding;
 use tempfile::tempdir;
 
 fn cache_path(dir: &tempfile::TempDir) -> PathBuf {
-    dir.path().join("gate-cache.sqlite")
+    dir.path().join("cache.db")
 }
 
 fn cache_row(spec: &str, anchor: &str, tier: Tier, verdict: Verdict) -> CacheRow {
@@ -37,6 +38,18 @@ fn open_creates_db_file_when_missing() {
     assert!(!path.exists());
     let _cache = StatusCache::open(&path).unwrap();
     assert!(path.exists(), "open() materialised the on-disk file");
+}
+
+#[test]
+fn status_cache_open_preserves_unified_cache_db_schema_version() {
+    let dir = tempdir().unwrap();
+    let path = cache_path(&dir);
+    let _cache_db = CacheDb::open(&path).unwrap();
+
+    let _status_cache = StatusCache::open(&path).unwrap();
+    let reopened = CacheDb::open(&path).unwrap();
+
+    assert!(reopened.work_epics().unwrap().is_empty());
 }
 
 #[test]

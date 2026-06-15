@@ -25,7 +25,7 @@ use loom_driver::lock::{LockGuard, LockManager};
 use loom_driver::logging::{LogSink, sweep_retention_at};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
-use loom_driver::state::StateDb;
+use loom_driver::state::CacheDb;
 use loom_gate::{
     self, CacheRow, CargoMetadataScope, CommandResolver, DispatchOptions, DispatchPendingExecutor,
     FsCommandResolver, InputResolver, RunnerSpec, StatusCache, TestScope, Tier, TierCwds, Verdict,
@@ -235,15 +235,15 @@ enum NoteAction {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Initialize the workspace (create `.loom/` config + state DB).
+    /// Initialize the workspace (create `.loom/` config + cache DB).
     Init {
-        /// Drop and repopulate the state DB from `specs/*.md` and active beads.
+        /// Drop and repopulate the cache DB from `specs/*.md` and active beads.
         #[arg(long)]
         rebuild: bool,
     },
-    /// Print the active spec, current molecule, and iteration counter.
+    /// Print cache health and work-epic status.
     Status,
-    /// Set the active spec.
+    /// Validate that a spec label exists in the cache.
     #[command(name = "use")]
     UseSpec {
         /// Spec label (matches `<workspace>/specs/<label>.md`).
@@ -300,7 +300,7 @@ enum Command {
         /// Override the per-bead `profile:X` label resolution.
         #[arg(long, value_name = "PROFILE")]
         profile: Option<String>,
-        /// Spec label override (defaults to `current_spec`).
+        /// Spec label override.
         #[arg(long, short = 's', value_name = "LABEL")]
         spec: Option<String>,
         /// ASCII output, no color, no OSC 8. Pipe-safe. Implied when
@@ -700,7 +700,7 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
             "kept existing"
         }
     );
-    println!("  state.db: {}", report.state_db_path.display());
+    println!("  cache.db: {}", report.cache_db_path.display());
     match &report.integration_workspace {
         Some(integ) => println!(
             "  integration: {} ({})",
@@ -715,15 +715,15 @@ fn run_init(workspace: &std::path::Path, rebuild: bool) -> anyhow::Result<()> {
     }
     if let Some(rb) = report.rebuild {
         println!(
-            "  rebuilt {} spec(s), {} molecule(s), {} companion(s)",
-            rb.specs, rb.molecules, rb.companions,
+            "  rebuilt {} spec(s), {} spec epic(s), {} work epic(s), {} companion(s)",
+            rb.specs, rb.spec_epics, rb.work_epics, rb.companions,
         );
     }
     Ok(())
 }
 
 fn run_note(workspace: &std::path::Path, action: NoteAction) -> anyhow::Result<()> {
-    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db"))?;
+    let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db"))?;
     let clock = SystemClock::new();
     let now_ms = clock
         .wall_now()
@@ -1161,7 +1161,7 @@ fn is_allowlisted_check_annotation(ann: &loom_gate::Annotation) -> bool {
 }
 
 fn run_gate_status(workspace: &Path) -> anyhow::Result<()> {
-    let cache_path = workspace.join(".loom/gate-cache.sqlite");
+    let cache_path = workspace.join(".loom/cache.db");
     let cache = StatusCache::open(&cache_path)?;
     let parsed = loom_gate::annotation::parse(&workspace.join("specs"))?;
     let now_ms = SystemClock::new()
@@ -1443,7 +1443,7 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
         return Ok(combined);
     }
     let options = gate_dispatch_options(args);
-    let cache_path = workspace.join(".loom/gate-cache.sqlite");
+    let cache_path = workspace.join(".loom/cache.db");
     let cache = StatusCache::open(&cache_path)?;
     let now_ms = SystemClock::new()
         .wall_now()
@@ -1829,7 +1829,7 @@ fn run_gate_mint(
             let phase_default = selection.profile.clone();
             let kind = selection.kind;
             let shutdown_grace = resolve_shutdown_grace(&selection);
-            let state = Arc::new(StateDb::open(workspace.join(".loom/state.db"))?);
+            let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
             let style_rules = config.style_rules.clone();
             let workspace_buf = workspace.to_path_buf();
             let logs_root = workspace.join(".loom/logs");
@@ -2152,7 +2152,7 @@ fn run_gate_review(
 }
 
 fn run_status(workspace: &std::path::Path) -> anyhow::Result<()> {
-    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db"))?;
+    let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db"))?;
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     let report = status::load(&db, config.loom.integration_branch)?;
     print!("{}", status::render(&report));
@@ -2161,9 +2161,9 @@ fn run_status(workspace: &std::path::Path) -> anyhow::Result<()> {
 
 fn run_use(workspace: &std::path::Path, label: &str) -> anyhow::Result<()> {
     let label = SpecLabel::new(label);
-    let db_path = workspace.join(".loom/state.db");
+    let db_path = workspace.join(".loom/cache.db");
     use_spec::run(workspace, &label, &db_path)?;
-    println!("active spec: {label}");
+    println!("spec exists: {label}");
     Ok(())
 }
 
@@ -3159,7 +3159,7 @@ fn run_review(
     let shutdown_grace = resolve_shutdown_grace(&selection);
 
     let loom_bin = current_loom_bin()?;
-    let state = std::sync::Arc::new(StateDb::open(workspace.join(".loom/state.db"))?);
+    let state = std::sync::Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
     let workspace_buf = workspace.to_path_buf();
     let logs_root = workspace.join(".loom/logs");
     let label_for_sink = label.clone();
@@ -3555,7 +3555,7 @@ fn run_todo(
     let kind = selection.kind;
     let shutdown_grace = resolve_shutdown_grace(&selection);
 
-    let state = Arc::new(StateDb::open(workspace.join(".loom/state.db"))?);
+    let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
     let git = Arc::new(GitClient::open_with_integration_branch(
         workspace,
         config.loom.integration_branch.clone(),
@@ -3656,18 +3656,16 @@ fn resolve_spec_label(workspace: &Path, spec: Option<String>) -> anyhow::Result<
     if let Some(s) = spec {
         return Ok(SpecLabel::new(s));
     }
-    let db_path = workspace.join(".loom/state.db");
-    if db_path.exists() {
-        let db = StateDb::open(db_path)?;
-        if let Some(label) = db.current_spec()? {
-            return Ok(label);
-        }
-    }
     let labels = resolve_tree_mint_labels(workspace, None)?;
-    labels
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("no spec files found under specs/"))
+    if labels.len() == 1 {
+        return labels
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no spec files found under specs/"));
+    }
+    Err(anyhow::anyhow!(
+        "multiple specs found; pass --spec to select one explicitly"
+    ))
 }
 
 fn resolve_tree_mint_labels(
@@ -3711,10 +3709,17 @@ fn current_loom_bin() -> anyhow::Result<PathBuf> {
 }
 
 fn run_spec(workspace: &std::path::Path, deps: bool) -> anyhow::Result<()> {
-    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db"))?;
-    let label = db
-        .current_spec()?
-        .ok_or_else(|| anyhow::anyhow!("no active spec — run `loom use <label>`"))?;
+    let labels = resolve_tree_mint_labels(workspace, None)?;
+    let label = if labels.len() == 1 {
+        labels
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no spec files found under specs/"))?
+    } else {
+        return Err(anyhow::anyhow!(
+            "multiple specs found; inspect a spec by path or narrow the workspace"
+        ));
+    };
     if deps {
         let pkgs = spec::deps_for_label(workspace, &label)?;
         for pkg in pkgs {

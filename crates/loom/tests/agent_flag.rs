@@ -55,7 +55,7 @@ fn loom_rejects_unknown_agent_value() {
     // Clap's value-enum validation rejects the value before any workflow
     // code runs. The error message names the offending input and lists the
     // valid choices so users can self-correct. We pass `status` (a
-    // subcommand that does no IO besides the state DB) so clap reaches
+    // subcommand that does no IO besides the cache DB) so clap reaches
     // value-enum validation instead of short-circuiting on `--help`.
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     let output = Command::new(loom_bin)

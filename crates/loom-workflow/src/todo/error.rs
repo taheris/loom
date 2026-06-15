@@ -4,7 +4,7 @@ use displaydoc::Display;
 use loom_driver::agent::ProtocolError;
 use loom_driver::bd::BdError;
 use loom_driver::profile_manifest::ProfileError;
-use loom_driver::state::StateError;
+use loom_driver::state::CacheError;
 use thiserror::Error;
 
 /// Errors raised by the `loom todo` driver.
@@ -47,8 +47,8 @@ pub enum TodoError {
     /// agent backend protocol failure during `loom todo`
     Protocol(#[from] ProtocolError),
 
-    /// state-db read/write failure during `loom todo`
-    State(#[from] StateError),
+    /// cache-db read/write failure during `loom todo`
+    State(#[from] CacheError),
 
     /// profile-image manifest dispatch failed during `loom todo`
     Profile(#[from] ProfileError),

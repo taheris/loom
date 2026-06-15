@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use loom_driver::lock::LockError;
 use loom_driver::profile_manifest::ProfileError;
-use loom_driver::state::StateError;
+use loom_driver::state::CacheError;
 
 /// Failures raised by [`super::run`] and the helpers it composes.
 #[derive(Debug, Display, Error)]
@@ -27,8 +27,8 @@ pub enum PlanError {
     /// lock acquisition failed while running `loom plan`
     Lock(#[from] LockError),
 
-    /// state-db operation failed while running `loom plan`
-    State(#[from] StateError),
+    /// cache-db operation failed while running `loom plan`
+    State(#[from] CacheError),
 
     /// profile-image manifest lookup failed while resolving the plan phase
     Profile(#[from] ProfileError),

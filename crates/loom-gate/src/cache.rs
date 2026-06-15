@@ -22,30 +22,32 @@ use std::sync::Mutex;
 
 use displaydoc::Display;
 use rusqlite::{Connection, params};
+use serde::Deserialize;
 use thiserror::Error;
 
 use crate::annotation::{Annotation, ParsedSpecs, Tier};
 use crate::integrity::IntegrityFinding;
 
-const SCHEMA_VERSION: &str = "1";
-
 const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS gate_criteria (
-    spec_label        TEXT NOT NULL,
-    criterion_anchor  TEXT NOT NULL,
-    tier              TEXT NOT NULL,
-    annotation_target TEXT NOT NULL,
-    last_run_ts_ms    INTEGER NOT NULL,
-    last_run_commit   TEXT NOT NULL,
-    verdict           TEXT NOT NULL,
-    evidence          TEXT NOT NULL,
-    PRIMARY KEY (spec_label, criterion_anchor)
+CREATE TABLE IF NOT EXISTS specs (
+    label     TEXT PRIMARY KEY,
+    spec_path TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_gate_criteria_tier
-    ON gate_criteria(tier);
-CREATE INDEX IF NOT EXISTS idx_gate_criteria_spec
-    ON gate_criteria(spec_label);
-CREATE TABLE IF NOT EXISTS gate_meta (
+CREATE TABLE IF NOT EXISTS criterion_status (
+    spec_label        TEXT NOT NULL REFERENCES specs(label),
+    criterion_id      TEXT NOT NULL,
+    annotation_json   TEXT NOT NULL,
+    result            TEXT NOT NULL,
+    last_timestamp_ms INTEGER,
+    last_commit       TEXT,
+    evidence          TEXT,
+    PRIMARY KEY (spec_label, criterion_id)
+);
+CREATE INDEX IF NOT EXISTS idx_criterion_status_result
+    ON criterion_status(result);
+CREATE INDEX IF NOT EXISTS idx_criterion_status_spec
+    ON criterion_status(spec_label);
+CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
@@ -126,9 +128,8 @@ impl StatusCache {
             path: path.to_path_buf(),
             source,
         })?;
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 30000;")?;
         conn.execute_batch(SCHEMA)?;
-        write_schema_version(&conn, SCHEMA_VERSION)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -140,11 +141,11 @@ impl StatusCache {
     pub fn read_for_spec(&self, spec_label: &str) -> Result<Vec<CacheRow>, CacheError> {
         let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
-            "SELECT spec_label, criterion_anchor, tier, annotation_target,
-                    last_run_ts_ms, last_run_commit, verdict, evidence
-             FROM gate_criteria
+            "SELECT spec_label, criterion_id, annotation_json,
+                    last_timestamp_ms, last_commit, result, evidence
+             FROM criterion_status
              WHERE spec_label = ?1
-             ORDER BY criterion_anchor",
+             ORDER BY criterion_id",
         )?;
         let rows = stmt
             .query_map(params![spec_label], row_to_cache_row)?
@@ -161,10 +162,10 @@ impl StatusCache {
     pub fn read_all(&self) -> Result<Vec<CacheRow>, CacheError> {
         let conn = self.lock_conn()?;
         let mut stmt = conn.prepare(
-            "SELECT spec_label, criterion_anchor, tier, annotation_target,
-                    last_run_ts_ms, last_run_commit, verdict, evidence
-             FROM gate_criteria
-             ORDER BY spec_label, criterion_anchor",
+            "SELECT spec_label, criterion_id, annotation_json,
+                    last_timestamp_ms, last_commit, result, evidence
+             FROM criterion_status
+             ORDER BY spec_label, criterion_id",
         )?;
         let rows = stmt
             .query_map([], row_to_cache_row)?
@@ -180,17 +181,18 @@ impl StatusCache {
     /// Idempotent — re-upserting the same key overwrites the prior verdict.
     pub fn upsert(&self, row: &CacheRow) -> Result<(), CacheError> {
         let conn = self.lock_conn()?;
+        ensure_spec_row(&conn, &row.spec_label)?;
+        let annotation_json = annotation_json(row).map_err(|source| CacheError::Json { source })?;
         conn.execute(
             UPSERT_SQL,
             params![
-                row.spec_label,
-                row.criterion_anchor,
-                row.tier.as_wire(),
-                row.annotation_target,
-                row.last_run_ts_ms,
-                row.last_run_commit,
+                row.spec_label.as_str(),
+                row.criterion_anchor.as_str(),
+                annotation_json,
                 row.verdict.as_wire(),
-                row.evidence,
+                row.last_run_ts_ms,
+                row.last_run_commit.as_str(),
+                row.evidence.as_str(),
             ],
         )?;
         Ok(())
@@ -205,6 +207,9 @@ impl StatusCache {
         }
         let mut conn = self.lock_conn()?;
         let tx = conn.transaction()?;
+        for row in rows {
+            ensure_spec_row(&tx, &row.spec_label)?;
+        }
         {
             let mut stmt = tx.prepare_cached(UPSERT_SQL)?;
             for row in rows {
@@ -220,50 +225,82 @@ impl StatusCache {
     }
 }
 
-const UPSERT_SQL: &str = "INSERT INTO gate_criteria(
-         spec_label, criterion_anchor, tier, annotation_target,
-         last_run_ts_ms, last_run_commit, verdict, evidence
-     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-     ON CONFLICT(spec_label, criterion_anchor) DO UPDATE SET
-         tier = excluded.tier,
-         annotation_target = excluded.annotation_target,
-         last_run_ts_ms = excluded.last_run_ts_ms,
-         last_run_commit = excluded.last_run_commit,
-         verdict = excluded.verdict,
+const UPSERT_SQL: &str = "INSERT INTO criterion_status(
+         spec_label, criterion_id, annotation_json, result,
+         last_timestamp_ms, last_commit, evidence
+     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+     ON CONFLICT(spec_label, criterion_id) DO UPDATE SET
+         annotation_json = excluded.annotation_json,
+         result = excluded.result,
+         last_timestamp_ms = excluded.last_timestamp_ms,
+         last_commit = excluded.last_commit,
          evidence = excluded.evidence";
 
 fn exec_upsert(stmt: &mut rusqlite::CachedStatement<'_>, row: &CacheRow) -> rusqlite::Result<()> {
+    let annotation_json = annotation_json(row)
+        .map_err(|source| rusqlite::Error::ToSqlConversionFailure(Box::new(source)))?;
     stmt.execute(params![
-        row.spec_label,
-        row.criterion_anchor,
-        row.tier.as_wire(),
-        row.annotation_target,
-        row.last_run_ts_ms,
-        row.last_run_commit,
+        row.spec_label.as_str(),
+        row.criterion_anchor.as_str(),
+        annotation_json,
         row.verdict.as_wire(),
-        row.evidence,
+        row.last_run_ts_ms,
+        row.last_run_commit.as_str(),
+        row.evidence.as_str(),
     ])?;
     Ok(())
 }
 
-fn write_schema_version(conn: &Connection, version: &str) -> Result<(), CacheError> {
-    conn.execute(
-        "INSERT INTO gate_meta(key, value) VALUES ('schema_version', ?1)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![version],
-    )?;
-    Ok(())
+fn ensure_spec_row(conn: &Connection, spec_label: &str) -> rusqlite::Result<()> {
+    match conn.execute(
+        "INSERT OR IGNORE INTO specs(label, spec_path) VALUES (?1, ?2)",
+        params![spec_label, format!("specs/{spec_label}.md")],
+    ) {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+            if message.contains("no column named spec_path") =>
+        {
+            conn.execute(
+                "INSERT OR IGNORE INTO specs(label) VALUES (?1)",
+                params![spec_label],
+            )?;
+            Ok(())
+        }
+        Err(source) => Err(source),
+    }
+}
+
+fn annotation_json(row: &CacheRow) -> serde_json::Result<String> {
+    serde_json::to_string(&serde_json::json!({
+        "tier": row.tier.as_wire(),
+        "target": row.annotation_target,
+    }))
+}
+
+#[derive(Deserialize)]
+struct CachedAnnotation {
+    tier: String,
+    target: String,
+}
+
+fn parse_annotation_json(value: &str) -> serde_json::Result<CachedAnnotation> {
+    serde_json::from_str(value)
 }
 
 fn row_to_cache_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CacheRow, CacheError>> {
     let spec_label: String = row.get(0)?;
     let criterion_anchor: String = row.get(1)?;
-    let tier_wire: String = row.get(2)?;
-    let annotation_target: String = row.get(3)?;
-    let last_run_ts_ms: i64 = row.get(4)?;
-    let last_run_commit: String = row.get(5)?;
-    let verdict_wire: String = row.get(6)?;
-    let evidence: String = row.get(7)?;
+    let annotation_json: String = row.get(2)?;
+    let annotation = parse_annotation_json(&annotation_json).map_err(|source| {
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(source))
+    })?;
+    let last_run_ts_ms: Option<i64> = row.get(3)?;
+    let last_run_commit: Option<String> = row.get(4)?;
+    let verdict_wire: String = row.get(5)?;
+    let evidence: Option<String> = row.get(6)?;
+
+    let tier_wire = annotation.tier;
+    let annotation_target = annotation.target;
 
     let Some(tier) = Tier::from_wire(&tier_wire) else {
         return Ok(Err(CacheError::BadTier {
@@ -282,10 +319,10 @@ fn row_to_cache_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CacheRow
         criterion_anchor,
         tier,
         annotation_target,
-        last_run_ts_ms,
-        last_run_commit,
+        last_run_ts_ms: last_run_ts_ms.unwrap_or_default(),
+        last_run_commit: last_run_commit.unwrap_or_default(),
         verdict,
-        evidence,
+        evidence: evidence.unwrap_or_default(),
     }))
 }
 
@@ -307,6 +344,11 @@ pub enum CacheError {
     },
     /// sqlite error from the gate cache
     Sqlite(#[from] rusqlite::Error),
+    /// failed to encode or decode cached annotation JSON
+    Json {
+        #[source]
+        source: serde_json::Error,
+    },
     /// cache mutex poisoned by a panicked writer
     Poisoned,
     /// row {row_key} carries unknown tier {tier:?}
@@ -637,7 +679,7 @@ mod tests {
     use crate::annotation::{Annotation, Criterion};
 
     fn db_path(dir: &tempfile::TempDir) -> PathBuf {
-        dir.path().join("gate-cache.sqlite")
+        dir.path().join("cache.db")
     }
 
     fn row(spec: &str, anchor: &str, tier: Tier, verdict: Verdict, ts: i64) -> CacheRow {

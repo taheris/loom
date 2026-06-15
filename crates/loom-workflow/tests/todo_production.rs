@@ -23,7 +23,7 @@ use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{MoleculeId, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::ProfileImageManifest;
-use loom_driver::state::{ActiveMolecule, StateDb};
+use loom_driver::state::{ActiveMolecule, CacheDb};
 use loom_workflow::todo::{ExitSignal, ProductionTodoController, TodoController, TodoError};
 
 fn run_git(workspace: &Path, args: &[&str]) {
@@ -67,8 +67,8 @@ fn stub_manifest(dir: &Path) -> Arc<ProfileImageManifest> {
     Arc::new(ProfileImageManifest::from_path(&path).unwrap())
 }
 
-fn empty_state(workspace: &Path) -> Arc<StateDb> {
-    Arc::new(StateDb::open(workspace.join(".loom/state.db")).unwrap())
+fn empty_state(workspace: &Path) -> Arc<CacheDb> {
+    Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).unwrap())
 }
 
 #[derive(Clone, Default)]
@@ -223,14 +223,14 @@ fn seeded_state(
     label: &str,
     mol: &str,
     base_commit: Option<String>,
-) -> Arc<StateDb> {
+) -> Arc<CacheDb> {
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
     std::fs::write(
         workspace.join(format!("specs/{label}.md")),
         format!("# {label}\n"),
     )
     .unwrap();
-    let db = StateDb::open(workspace.join(".loom/state.db")).unwrap();
+    let db = CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
     db.rebuild(
         workspace,
         &[ActiveMolecule {

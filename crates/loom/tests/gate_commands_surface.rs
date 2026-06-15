@@ -76,7 +76,7 @@ fn bare_loom_gate_verify_prints_help_and_runs_nothing() {
         "bare verify must print subcommand help, got:\n{stdout}",
     );
     assert!(
-        !workspace.join(".loom/gate-cache.sqlite").exists(),
+        !workspace.join(".loom/cache.db").exists(),
         "bare verify must not open the gate cache",
     );
 }
@@ -106,7 +106,7 @@ fn loom_gate_status_requires_explicit_scope() {
         "bare status must print help, got:\n{stdout}",
     );
     assert!(
-        !workspace.join(".loom/gate-cache.sqlite").exists(),
+        !workspace.join(".loom/cache.db").exists(),
         "bare status must not open the gate cache",
     );
 }

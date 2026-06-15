@@ -7,7 +7,7 @@ use thiserror::Error;
 use crate::bd::BdError;
 
 #[derive(Debug, Display, Error)]
-pub enum StateError {
+pub enum CacheError {
     /// failed to open SQLite database at {path}
     OpenDb {
         path: PathBuf,
@@ -25,13 +25,13 @@ pub enum StateError {
         source: serde_json::Error,
     },
 
-    /// state-db lock was poisoned
+    /// cache-db lock was poisoned
     Poisoned,
 
     /// no spec found with label {label}
     SpecNotFound { label: String },
 
-    /// unknown state-db schema_version {version}; expected a value this build of loom can migrate from
+    /// unknown cache-db schema_version {version}; expected a value this build of loom can migrate from
     UnknownSchemaVersion { version: String },
 
     /// io failure
@@ -39,6 +39,9 @@ pub enum StateError {
 
     /// bead-metadata write inside productive-completion gate failed
     BdUpdate(#[from] BdError),
+
+    /// cache rebuild found an invalid spec index: {detail}
+    SpecIndexMismatch { detail: String },
 
     /// multiple open epics found for spec `{label}`: {ids}; close all but one before re-running rebuild
     DuplicateSpecMolecules { label: String, ids: String },

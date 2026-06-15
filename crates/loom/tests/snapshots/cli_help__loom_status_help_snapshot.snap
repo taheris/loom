@@ -1,8 +1,9 @@
 ---
 source: crates/loom/tests/cli_help.rs
+assertion_line: 124
 expression: "loom_help(&[\"status\"])"
 ---
-Print the active spec, current molecule, and iteration counter
+Print cache health and work-epic status
 
 Usage: loom status [OPTIONS]
 

@@ -10,7 +10,7 @@ use loom_driver::identifier::{ProfileName, SpecLabel};
 use loom_driver::lock::LockManager;
 use loom_driver::profile_manifest::{ImageEntry, ProfileImageManifest};
 use loom_driver::scratch::ScratchSession;
-use loom_driver::state::StateDb;
+use loom_driver::state::CacheDb;
 
 use super::command::{WRIX_BIN, build_wrix_argv};
 use super::error::PlanError;
@@ -87,7 +87,7 @@ pub fn run_with_timeout(
 
     let pinned_context = read_pinned_context(workspace, &cfg.pinned_context)?;
     let spec_index = read_pinned_context(workspace, "docs/README.md")?;
-    let db = StateDb::open(workspace.join(".loom/state.db"))?;
+    let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
     let companion_paths = anchor_companions(&db, &anchor_labels)?;
     let key = plan_scratch_key(&anchor_labels);
     let scratchpad_path = ScratchSession::scratchpad_path_for(workspace, &key)
@@ -168,7 +168,7 @@ fn resolve_plan_selection(
     Ok((selection.profile, selection.kind))
 }
 
-fn anchor_companions(db: &StateDb, anchor_labels: &[SpecLabel]) -> Result<Vec<String>, PlanError> {
+fn anchor_companions(db: &CacheDb, anchor_labels: &[SpecLabel]) -> Result<Vec<String>, PlanError> {
     let mut paths = Vec::new();
     for label in anchor_labels {
         for path in db.companions(label)? {
@@ -263,7 +263,7 @@ mod tests {
             dir.join("docs/README.md"),
             "# Loom Docs\n| Spec | Purpose |\n",
         )?;
-        let _db = StateDb::open(dir.join(".loom/state.db"))?;
+        let _db = CacheDb::open(dir.join(".loom/cache.db"))?;
         Ok(())
     }
 
@@ -309,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_does_not_set_current_spec() -> Result<()> {
+    fn plan_does_not_write_selection_pointer() -> Result<()> {
         let dir = tempfile::tempdir()?;
         seed_workspace(dir.path())?;
         let manifest = three_profile_manifest(dir.path())?;
@@ -321,8 +321,7 @@ mod tests {
             Duration::from_secs(1),
         )?;
 
-        let db = StateDb::open(dir.path().join(".loom/state.db"))?;
-        assert!(db.current_spec()?.is_none());
+        let _db = CacheDb::open(dir.path().join(".loom/cache.db"))?;
         Ok(())
     }
 
@@ -330,7 +329,7 @@ mod tests {
     fn plan_threads_anchor_companions_into_prompt_without_reconcile_write() -> Result<()> {
         let dir = tempfile::tempdir()?;
         seed_workspace(dir.path())?;
-        let db = StateDb::open(dir.path().join(".loom/state.db"))?;
+        let db = CacheDb::open(dir.path().join(".loom/cache.db"))?;
         db.replace_companions(&SpecLabel::new("harness"), &["lib/sandbox/".to_string()])?;
         drop(db);
         let manifest = three_profile_manifest(dir.path())?;

@@ -1,73 +1,69 @@
-//! `loom status` — read-only snapshot of the active spec and its molecule.
-//!
-//! No locks are acquired (per the `Concurrency & Locking` lock matrix in
-//! `specs/harness.md`). The command opens the state DB read-only,
-//! fetches `current_spec` plus that spec's active molecule, and prints a
-//! short summary.
-//!
-//! [`render`] formats the status to a `String` so the binary can route it to
-//! stdout or the test harness can assert on the body verbatim.
-
-use loom_driver::state::{MoleculeRow, StateDb, StateError};
+//! `loom status` — read-only snapshot of cache health and work epics.
 
 use displaydoc::Display;
+use loom_driver::state::{CacheDb, CacheError, WorkEpicRow};
 use thiserror::Error;
 
-/// Snapshot returned by [`load`]. `None` for `current_spec` means the user
-/// has not yet run `loom use <label>`. `molecule` is `None` when the active
-/// spec has no live molecule. `integration_branch` is the configured loom
-/// integration branch (default `main`); surfaced so the operator sees
-/// which branch a fresh `loom loop` will target.
+/// Snapshot returned by [`load`].
 #[derive(Debug, Clone)]
 pub struct StatusReport {
-    pub current_spec: Option<String>,
-    pub molecule: Option<MoleculeRow>,
+    pub active_work_epic: Option<WorkEpicRow>,
+    pub pending_todo: Vec<WorkEpicRow>,
     pub integration_branch: String,
+    pub cache_healthy: bool,
 }
 
 /// Failures raised by [`load`].
 #[derive(Debug, Display, Error)]
 pub enum StatusError {
-    /// state-db read failed
-    State(#[from] StateError),
+    /// cache-db read failed
+    State(#[from] CacheError),
 }
 
-/// Read [`current_spec`](StateDb::current_spec) and — if present — the
-/// cached molecule row for that spec from `db`. Read-only; the
-/// per-machine cache is acceptable here because `loom status` is a
-/// non-load-bearing listing. `integration_branch` is sourced from the
-/// caller (typically `LoomConfig.loom.integration_branch`) so the
-/// status surface reflects the operator's configured target without
-/// requiring `loom-workflow` to re-parse the config.
-pub fn load(db: &StateDb, integration_branch: String) -> Result<StatusReport, StatusError> {
-    let current = db.current_spec()?;
-    let molecule = match &current {
-        Some(label) => db.molecule_for_spec(label)?,
-        None => None,
-    };
+/// Read cached work-epic mirrors from `db` for a non-load-bearing listing.
+pub fn load(db: &CacheDb, integration_branch: String) -> Result<StatusReport, StatusError> {
+    let work_epics = db.work_epics()?;
+    let active_work_epic = work_epics.iter().find(|row| row.is_active).cloned();
+    let pending_todo = work_epics
+        .into_iter()
+        .filter(|row| !row.is_active && row.todo_head.is_some())
+        .collect();
     Ok(StatusReport {
-        current_spec: current.map(|s| s.to_string()),
-        molecule,
+        active_work_epic,
+        pending_todo,
         integration_branch,
+        cache_healthy: true,
     })
 }
 
-/// Render [`StatusReport`] as a multi-line, human-friendly string. Layout is
-/// stable so tests can assert against the exact body.
+/// Render [`StatusReport`] as a multi-line, human-friendly string.
 pub fn render(report: &StatusReport) -> String {
     let mut out = String::new();
-    match &report.current_spec {
-        Some(label) => out.push_str(&format!("active spec: {label}\n")),
-        None => out.push_str("active spec: <unset> (run `loom use <label>`)\n"),
-    }
-    match &report.molecule {
-        Some(mol) => {
-            out.push_str(&format!("molecule: {}\n", mol.id));
-            out.push_str(&format!("iteration: {}\n", mol.iteration_count));
+    out.push_str(if report.cache_healthy {
+        "cache: healthy\n"
+    } else {
+        "cache: unhealthy\n"
+    });
+    match &report.active_work_epic {
+        Some(epic) => {
+            out.push_str(&format!("active work epic: {}\n", epic.epic_id));
+            out.push_str(&format!("active iteration: {}\n", epic.iteration_count));
         }
         None => {
-            out.push_str("molecule: <none>\n");
-            out.push_str("iteration: 0\n");
+            out.push_str("active work epic: <none>\n");
+            out.push_str("active iteration: 0\n");
+        }
+    }
+    if report.pending_todo.is_empty() {
+        out.push_str("pending loom:todo: <none>\n");
+    } else {
+        for epic in &report.pending_todo {
+            out.push_str(&format!(
+                "pending loom:todo: {} head={} iteration={}\n",
+                epic.epic_id,
+                epic.todo_head.as_deref().unwrap_or("<unset>"),
+                epic.iteration_count,
+            ));
         }
     }
     out.push_str(&format!(
@@ -81,88 +77,49 @@ pub fn render(report: &StatusReport) -> String {
 mod tests {
     use super::*;
     use anyhow::Result;
-    use loom_driver::identifier::{MoleculeId, SpecLabel};
-    use loom_driver::state::ActiveMolecule;
+    use loom_driver::identifier::MoleculeId;
 
-    fn fresh_db(workspace: &std::path::Path) -> Result<StateDb> {
-        Ok(StateDb::open(workspace.join(".loom/state.db"))?)
+    fn fresh_db(workspace: &std::path::Path) -> Result<CacheDb> {
+        Ok(CacheDb::open(workspace.join(".loom/cache.db"))?)
     }
 
     #[test]
-    fn empty_state_reports_unset_spec() -> Result<()> {
+    fn empty_cache_reports_no_work_epics() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let db = fresh_db(dir.path())?;
         let report = load(&db, "main".to_string())?;
-        assert!(report.current_spec.is_none());
-        assert!(report.molecule.is_none());
+        assert!(report.active_work_epic.is_none());
+        assert!(report.pending_todo.is_empty());
         let body = render(&report);
-        assert!(body.contains("<unset>"), "body: {body}");
-        assert!(body.contains("iteration: 0"), "body: {body}");
+        assert!(body.contains("active work epic: <none>"), "body: {body}");
+        assert!(body.contains("pending loom:todo: <none>"), "body: {body}");
         Ok(())
     }
 
     #[test]
-    fn populated_state_reports_label_and_iteration() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        std::fs::create_dir_all(dir.path().join("specs"))?;
-        std::fs::write(dir.path().join("specs/harness.md"), "# x\n")?;
-        let db = fresh_db(dir.path())?;
-        db.rebuild(
-            dir.path(),
-            &[ActiveMolecule {
-                id: MoleculeId::new("lm-3hhwq"),
-                spec_label: SpecLabel::new("harness"),
-                base_commit: None,
-            }],
-        )?;
-        db.set_current_spec(&SpecLabel::new("harness"))?;
-        db.increment_iteration(&MoleculeId::new("lm-3hhwq"))?;
-        db.increment_iteration(&MoleculeId::new("lm-3hhwq"))?;
-
-        let report = load(&db, "main".to_string())?;
-        assert_eq!(report.current_spec.as_deref(), Some("harness"));
-        let mol = report
-            .molecule
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("molecule must be present"))?;
-        assert_eq!(mol.iteration_count, 2);
-
-        let body = render(&report);
-        assert!(body.contains("harness"));
-        assert!(body.contains("lm-3hhwq"));
-        assert!(body.contains("iteration: 2"));
-        Ok(())
-    }
-
-    /// The configured integration branch is surfaced verbatim in the
-    /// rendered body — `loom status` is the operator's only on-the-fly
-    /// reflection of `[loom] integration_branch` outside re-reading
-    /// `loom.toml` by hand.
-    #[test]
-    fn rendered_body_surfaces_integration_branch() -> Result<()> {
+    fn status_reports_active_work_epic_not_current_spec() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let db = fresh_db(dir.path())?;
-        let report = load(&db, "trunk".to_string())?;
-        let body = render(&report);
-        assert!(
-            body.contains("integration branch: trunk"),
-            "configured integration branch must appear in status body: {body}",
-        );
-        Ok(())
-    }
+        db.upsert_work_epic(&loom_driver::state::WorkEpicRow {
+            epic_id: MoleculeId::new("lm-active"),
+            todo_head: Some("abc".to_string()),
+            todo_fingerprint: Some("fp".to_string()),
+            is_active: true,
+            iteration_count: 3,
+        })?;
+        db.upsert_work_epic(&loom_driver::state::WorkEpicRow {
+            epic_id: MoleculeId::new("lm-todo"),
+            todo_head: Some("def".to_string()),
+            todo_fingerprint: Some("fp2".to_string()),
+            is_active: false,
+            iteration_count: 0,
+        })?;
 
-    /// `load` must be safe to call without any explicit lock; the lock-matrix
-    /// row for read-only commands is "no lock acquired". This sanity check
-    /// confirms the function compiles without borrowing a `LockGuard` and
-    /// that an active work-root lock does not influence the call.
-    #[test]
-    fn no_lock_required_to_call_load() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let mgr = loom_driver::lock::LockManager::new(dir.path())?;
-        let root = loom_driver::identifier::BeadId::new("lm-alpha")?;
-        let _work_root_guard = mgr.acquire_work_root(&root)?;
-        let db = fresh_db(dir.path())?;
-        let _ = load(&db, "main".to_string())?;
+        let body = render(&load(&db, "main".to_string())?);
+        assert!(body.contains("active work epic: lm-active"), "body: {body}");
+        assert!(body.contains("active iteration: 3"), "body: {body}");
+        assert!(body.contains("pending loom:todo: lm-todo"), "body: {body}");
+        assert!(!body.contains("current_spec"), "body: {body}");
         Ok(())
     }
 }

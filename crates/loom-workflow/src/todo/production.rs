@@ -24,7 +24,7 @@ use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
-use loom_driver::state::{BdUpdateFn, StateDb};
+use loom_driver::state::{BdUpdateFn, CacheDb};
 use tracing::{debug, info, warn};
 
 use super::ExitSignal;
@@ -41,7 +41,7 @@ const BASE_COMMIT_METADATA_KEY: &str = "loom.base_commit";
 pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
     label: SpecLabel,
     workspace: PathBuf,
-    state: Arc<StateDb>,
+    state: Arc<CacheDb>,
     manifest: Arc<ProfileImageManifest>,
     phase_default: ProfileName,
     runtime: AgentRuntime,
@@ -69,7 +69,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
     pub fn new(
         label: SpecLabel,
         workspace: PathBuf,
-        state: Arc<StateDb>,
+        state: Arc<CacheDb>,
         manifest: Arc<ProfileImageManifest>,
         phase_default: ProfileName,
         git: Arc<GitClient>,
@@ -198,7 +198,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
 
         match self.state.spec(&self.label) {
             Ok(_) => (),
-            Err(loom_driver::state::StateError::SpecNotFound { .. }) => (),
+            Err(loom_driver::state::CacheError::SpecNotFound { .. }) => (),
             Err(e) => return Err(TodoError::State(e)),
         }
 
@@ -222,7 +222,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             implementation_notes,
             scratchpad_path,
         };
-        let cache_path = self.workspace.join(".loom/gate-cache.sqlite");
+        let cache_path = self.workspace.join(".loom/cache.db");
         let criterion_status = build_criterion_status(
             &self.workspace,
             &cache_path,

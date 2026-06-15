@@ -83,7 +83,7 @@ async fn empty_cache_yields_no_result_for_every_criterion() {
 ";
     let spec_rel = write_spec(workspace, "alpha", body);
     let git = GitClient::open(workspace).unwrap();
-    let cache_path = workspace.join(".loom/gate-cache.sqlite");
+    let cache_path = workspace.join(".loom/cache.db");
 
     let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
     assert_eq!(rows.len(), 2);
@@ -116,7 +116,7 @@ async fn cache_hit_with_stale_commit_renders_non_zero_commits_since() {
     let parsed = parse_content(&spec_rel, body);
     let crit_line = parsed.criteria[0].line;
 
-    let cache_path = workspace.join(".loom/gate-cache.sqlite");
+    let cache_path = workspace.join(".loom/cache.db");
     let cache = StatusCache::open(&cache_path).unwrap();
     cache
         .upsert(&CacheRow {
@@ -169,7 +169,7 @@ async fn todo_populates_criterion_status_from_gate_cache() {
     let cached_line = parsed.criteria[0].line;
 
     let head = head_sha(workspace);
-    let cache_path = workspace.join(".loom/gate-cache.sqlite");
+    let cache_path = workspace.join(".loom/cache.db");
     let cache = StatusCache::open(&cache_path).unwrap();
     cache
         .upsert(&CacheRow {
@@ -221,7 +221,7 @@ async fn criterion_status_commits_since_computed_from_git_rev_list() {
     add_empty_commit(workspace, "two");
     add_empty_commit(workspace, "three");
 
-    let cache_path = workspace.join(".loom/gate-cache.sqlite");
+    let cache_path = workspace.join(".loom/cache.db");
     let cache = StatusCache::open(&cache_path).unwrap();
     cache
         .upsert(&CacheRow {
@@ -262,7 +262,7 @@ async fn criterion_status_commits_since_is_none_when_no_cache_row() {
 ";
     let spec_rel = write_spec(workspace, "alpha", body);
     let git = GitClient::open(workspace).unwrap();
-    let cache_path = workspace.join(".loom/gate-cache.sqlite");
+    let cache_path = workspace.join(".loom/cache.db");
     let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].last_result, CriterionResult::NoResult);
@@ -277,7 +277,7 @@ async fn missing_spec_file_returns_empty_vec() {
     let label = SpecLabel::new("ghost");
     let spec_rel = PathBuf::from("specs/ghost.md");
     let git = GitClient::open(workspace).unwrap();
-    let cache_path = workspace.join(".loom/gate-cache.sqlite");
+    let cache_path = workspace.join(".loom/cache.db");
     let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
     assert!(rows.is_empty());
 }

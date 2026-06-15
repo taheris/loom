@@ -28,7 +28,7 @@ use loom_driver::config::{LoomConfig, Phase};
 use loom_driver::identifier::{ProfileName, SpecLabel};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
-use loom_driver::state::StateDb;
+use loom_driver::state::CacheDb;
 use loom_gate::{
     Annotation, DispatchOptions, DispatchPendingExecutor, EmptyScope, FsCommandResolver,
     IntegrityFinding, Tier, TierCwds, annotation as gate_annotation, integrity, run_check,
@@ -302,7 +302,7 @@ where
     bd: BdClient<R>,
     label: SpecLabel,
     workspace: PathBuf,
-    state: Arc<StateDb>,
+    state: Arc<CacheDb>,
     manifest: Arc<ProfileImageManifest>,
     phase_default: ProfileName,
     runtime: AgentRuntime,
@@ -321,7 +321,7 @@ where
         bd: BdClient<R>,
         label: SpecLabel,
         workspace: PathBuf,
-        state: Arc<StateDb>,
+        state: Arc<CacheDb>,
         manifest: Arc<ProfileImageManifest>,
         phase_default: ProfileName,
         spawn: S,
@@ -828,7 +828,7 @@ mod tests {
         let manifest = Arc::new(
             ProfileImageManifest::from_path(&manifest_path).expect("profile manifest parses"),
         );
-        let state = Arc::new(StateDb::open(workspace.join(".loom/state.db")).expect("state db"));
+        let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
         let runner = ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("[]")]);
         let bd = BdClient::with_runner(runner);
         let rubric_stdout = format!(
@@ -1347,7 +1347,7 @@ mod tests {
     #[tokio::test]
     async fn production_mint_walker_exists_and_dispatches_rubric_and_verifiers() {
         use loom_driver::profile_manifest::ProfileImageManifest;
-        use loom_driver::state::StateDb;
+        use loom_driver::state::CacheDb;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().to_path_buf();
@@ -1380,7 +1380,7 @@ cwd = "verifier-cwd"
         .expect("manifest");
         let manifest =
             Arc::new(ProfileImageManifest::from_path(&manifest_path).expect("manifest parse"));
-        let state = Arc::new(StateDb::open(workspace.join(".loom/state.db")).expect("state db"));
+        let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
 
         // bd.list calls during prompt build: (1) spec-label bead summary,
         // (2) resolve_open_epic. Both return `[]` so the walker proceeds
@@ -1487,7 +1487,7 @@ cwd = "verifier-cwd"
     #[tokio::test]
     async fn mint_tree_scope_check_dispatches_runner_owned_target_without_finding() {
         use loom_driver::profile_manifest::ProfileImageManifest;
-        use loom_driver::state::StateDb;
+        use loom_driver::state::CacheDb;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().to_path_buf();
@@ -1515,7 +1515,7 @@ cwd = "verifier-cwd"
         .expect("manifest");
         let manifest =
             Arc::new(ProfileImageManifest::from_path(&manifest_path).expect("manifest parse"));
-        let state = Arc::new(StateDb::open(workspace.join(".loom/state.db")).expect("state db"));
+        let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
 
         let responses = vec![ok_stdout("[]"), ok_stdout("[]")];
         let bd = BdClient::with_runner(ScriptedRunner::new(responses));

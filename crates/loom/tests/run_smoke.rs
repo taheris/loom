@@ -4,7 +4,7 @@
 //! exit code (not unrecognized subcommand).
 //!
 //! The test installs a stub `bd` on PATH that prints `[]` for every `ready` /
-//! `list` query (emulating an empty molecule), seeds a state DB so spec
+//! `list` query (emulating an empty molecule), seeds a cache DB so spec
 //! resolution succeeds, and invokes the compiled `loom` binary. The expected
 //! path through `run_loop`:
 //!
@@ -87,12 +87,16 @@ fn loom_loop_once_against_empty_bd_exits_zero() {
     init_workspace_repo(workspace);
     std::fs::create_dir_all(workspace.join(".loom")).unwrap();
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
+    std::fs::write(workspace.join("specs/harness.md"), "# harness\n").unwrap();
 
-    // Seed state DB + active spec so resolve_spec_label returns Some(label)
+    // Seed cache DB + active spec so resolve_spec_label returns Some(label)
     // without the caller having to pass -s.
-    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db")).unwrap();
-    db.set_current_spec(&loom_driver::identifier::SpecLabel::new("harness"))
-        .unwrap();
+    let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
+    db.upsert_spec(
+        &loom_driver::identifier::SpecLabel::new("harness"),
+        "specs/harness.md",
+    )
+    .unwrap();
     drop(db);
 
     let bin_dir = install_bd_stub(workspace);
@@ -161,10 +165,14 @@ fn loom_loop_parallel_does_not_pass_exclude_label_to_bd_ready() {
     init_workspace_repo(workspace);
     std::fs::create_dir_all(workspace.join(".loom")).unwrap();
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
+    std::fs::write(workspace.join("specs/harness.md"), "# harness\n").unwrap();
 
-    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db")).unwrap();
-    db.set_current_spec(&loom_driver::identifier::SpecLabel::new("harness"))
-        .unwrap();
+    let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
+    db.upsert_spec(
+        &loom_driver::identifier::SpecLabel::new("harness"),
+        "specs/harness.md",
+    )
+    .unwrap();
     drop(db);
 
     let argv_log = workspace.join("bd-argv.log");
@@ -231,10 +239,14 @@ fn parallel_codepath_returns_loop_outcome_with_gate_field() {
     init_workspace_repo(workspace);
     std::fs::create_dir_all(workspace.join(".loom")).unwrap();
     std::fs::create_dir_all(workspace.join("specs")).unwrap();
+    std::fs::write(workspace.join("specs/harness.md"), "# harness\n").unwrap();
 
-    let db = loom_driver::state::StateDb::open(workspace.join(".loom/state.db")).unwrap();
-    db.set_current_spec(&loom_driver::identifier::SpecLabel::new("harness"))
-        .unwrap();
+    let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
+    db.upsert_spec(
+        &loom_driver::identifier::SpecLabel::new("harness"),
+        "specs/harness.md",
+    )
+    .unwrap();
     drop(db);
 
     let bin_dir = install_bd_stub(workspace);

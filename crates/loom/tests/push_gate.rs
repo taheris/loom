@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use loom_driver::identifier::{MoleculeId, SpecLabel};
-use loom_driver::state::{ActiveMolecule, StateDb};
+use loom_driver::state::{ActiveMolecule, CacheDb};
 use loom_workflow::review::DEFAULT_MAX_ITERATIONS;
 
 // -------------------------------------------------------------------
@@ -256,7 +256,7 @@ fn write_minimal_manifest(workspace: &Path) -> PathBuf {
     manifest
 }
 
-/// Seed `state.db` with one active molecule for `label` whose
+/// Seed `cache.db` with one active molecule for `label` whose
 /// `base_commit` points at `base_sha`. `ProductionReviewController`'s
 /// `integrity_findings()` short-circuits to an empty list when this row
 /// is missing, so every scenario that wants to exercise the integrity
@@ -264,7 +264,7 @@ fn write_minimal_manifest(workspace: &Path) -> PathBuf {
 /// goes through `bd find` against the bd-shim's epic bead seed.
 fn seed_active_molecule(workspace: &Path, label: &str, mol_id: &str, base_sha: &str) {
     std::fs::create_dir_all(workspace.join(".loom")).expect("mkdir state dir");
-    let db = StateDb::open(workspace.join(".loom/state.db")).expect("open state.db");
+    let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open cache.db");
     db.rebuild(
         workspace,
         &[ActiveMolecule {
@@ -273,9 +273,9 @@ fn seed_active_molecule(workspace: &Path, label: &str, mol_id: &str, base_sha: &
             base_commit: Some(base_sha.to_string()),
         }],
     )
-    .expect("rebuild state.db");
-    db.set_current_spec(&SpecLabel::new(label))
-        .expect("set current spec");
+    .expect("rebuild cache.db");
+    db.upsert_spec(&SpecLabel::new(label), &format!("specs/{label}.md"))
+        .expect("seed spec");
     drop(db);
 }
 
@@ -289,7 +289,7 @@ fn run_loom_gate_review(
     agent_mode: &str,
     spec_label: &str,
 ) -> std::process::Output {
-    let db = StateDb::open(workspace.join(".loom/state.db")).expect("open state db");
+    let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open state db");
     let base = db
         .molecule_for_spec(&SpecLabel::new(spec_label))
         .expect("molecule lookup")
@@ -607,7 +607,7 @@ fn push_gate_refuses_on_integrity_finding_via_live_path() {
 /// push-gate integrity branch escalates to the terminal `loom:clarify`
 /// fallback instead of recovering through the mint pipeline.
 fn seed_iteration_at_cap(workspace: &Path, mol_id: &str) {
-    let db = StateDb::open(workspace.join(".loom/state.db")).expect("open state.db");
+    let db = CacheDb::open(workspace.join(".loom/cache.db")).expect("open cache.db");
     db.set_iteration(&MoleculeId::new(mol_id), DEFAULT_MAX_ITERATIONS)
         .expect("set iteration to cap");
     drop(db);

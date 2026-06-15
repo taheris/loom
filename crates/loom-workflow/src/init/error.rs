@@ -8,7 +8,7 @@ use loom_driver::bd::BdError;
 use loom_driver::config::LoomConfigError;
 use loom_driver::git::GitError;
 use loom_driver::lock::LockError;
-use loom_driver::state::StateError;
+use loom_driver::state::CacheError;
 
 /// Failures raised by [`super::run`] and [`super::fetch_active_molecules`].
 #[derive(Debug, Display, Error)]
@@ -30,8 +30,8 @@ pub enum InitError {
     /// lock acquisition failed while initializing the loom workspace
     Lock(#[from] LockError),
 
-    /// state-db operation failed while initializing the loom workspace
-    State(#[from] StateError),
+    /// cache-db operation failed while initializing the loom workspace
+    State(#[from] CacheError),
 
     /// `bd` CLI invocation failed while gathering active molecules
     Bd(#[from] BdError),
