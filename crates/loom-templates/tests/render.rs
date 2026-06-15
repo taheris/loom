@@ -12,7 +12,7 @@ use loom_events::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
 use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
 use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
-use loom_templates::plan::{PlanNewContext, PlanUpdateContext};
+use loom_templates::plan::PlanContext;
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
 use loom_templates::run::{
     DriverNoticeCause, LoopContext, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, VerifierFailure,
@@ -23,127 +23,72 @@ const PINNED_CONTEXT_BODY: &str =
     "# Project Overview\n\nLoom orchestrates the spec-to-implementation workflow.";
 const SCRATCHPAD_PATH_BODY: &str = "/workspace/.loom/scratch/harness/scratch.md";
 
-#[test]
-fn plan_new_renders_partials_and_inputs() -> Result<()> {
-    let ctx = PlanNewContext {
+fn plan_ctx() -> PlanContext {
+    PlanContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
+        anchor_labels: vec![SpecLabel::new("harness")],
+        spec_index: "# Loom Docs\n| Spec | Purpose |\n| [harness](../specs/harness.md) | Harness |"
+            .to_string(),
+        companion_paths: vec![
+            "lib/sandbox/".into(),
+            "crates/loom-templates/templates/".into(),
+        ],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         spec_conventions: "docs/spec-conventions.md".to_string(),
-    };
-    let out = ctx.render()?;
+    }
+}
+
+#[test]
+fn plan_renders_partials_index_anchors_and_companions() -> Result<()> {
+    let out = plan_ctx().render()?;
 
     assert!(out.contains("# Specification Interview"));
     assert!(out.contains(PINNED_CONTEXT_BODY));
-    assert!(out.contains("Label: harness"));
-    assert!(out.contains("Spec file: specs/harness.md"));
+    assert!(out.contains("# Loom Docs"));
+    assert!(out.contains("`harness`"));
+    assert!(out.contains("- lib/sandbox/"));
+    assert!(out.contains("Anchor Context & Sibling-Spec Editing"));
     assert!(out.contains("LOOM_COMPLETE"));
     assert!(out.contains("Interview Modes"));
     Ok(())
 }
 
 #[test]
-fn plan_update_renders_partials_and_companions() -> Result<()> {
-    let ctx = PlanUpdateContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![
-            "lib/sandbox/".into(),
-            "crates/loom-templates/templates/".into(),
-        ],
-        implementation_notes: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        spec_conventions: "docs/spec-conventions.md".to_string(),
-    };
-    let out = ctx.render()?;
+fn plan_template_prohibits_bd_writes() -> Result<()> {
+    let out = plan_ctx().render()?;
 
-    assert!(out.contains("# Specification Update Interview"));
-    assert!(out.contains("- lib/sandbox/"));
-    assert!(out.contains("- crates/loom-templates/templates/"));
-    assert!(out.contains("Anchor Session & Sibling-Spec Editing"));
-    assert!(out.contains("Invariant-Clash Awareness"));
+    assert!(out.contains("Do NOT create beads, epics, bd state"));
+    assert!(out.contains("In `loom plan`, do not write bd"));
+    assert!(out.contains("loom note set"));
     Ok(())
 }
 
-/// Pins the three Plan-stage rubric checks (completeness, internal
-/// coherence, invariant-clash) into both planning templates per
-/// `specs/gate.md` § Plan-stage checks. A future refactor must not
-/// silently drop any of the three from the prompt.
 #[test]
-fn plan_templates_render_three_plan_stage_checks() -> Result<()> {
-    let new_out = PlanNewContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        spec_conventions: "docs/spec-conventions.md".to_string(),
-    }
-    .render()?;
-    let update_out = PlanUpdateContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![],
-        implementation_notes: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        spec_conventions: "docs/spec-conventions.md".to_string(),
-    }
-    .render()?;
-
-    for (name, out) in [("plan_new", &new_out), ("plan_update", &update_out)] {
-        assert!(
-            out.contains("Plan-Stage Rubric"),
-            "{name}: rubric heading missing"
-        );
-        assert!(
-            out.contains("Completeness check"),
-            "{name}: completeness check missing"
-        );
-        assert!(
-            out.contains("Internal coherence check"),
-            "{name}: internal coherence check missing"
-        );
-        assert!(
-            out.contains("Invariant-clash scan") || out.contains("Invariant-Clash Awareness"),
-            "{name}: invariant-clash check missing"
-        );
-        assert!(
-            out.contains("three-paths"),
-            "{name}: invariant-clash three-paths protocol not described"
-        );
-    }
+fn plan_template_renders_three_plan_stage_checks() -> Result<()> {
+    let out = plan_ctx().render()?;
+    assert!(out.contains("Plan-Stage Rubric"));
+    assert!(out.contains("Completeness check"));
+    assert!(out.contains("Internal coherence check"));
+    assert!(out.contains("Invariant-clash scan") || out.contains("Invariant-Clash Awareness"));
+    assert!(out.contains("three-paths"));
     Ok(())
 }
 
-/// FR14 compliance: plan_new.md must not teach `[ ]` / `[x]` checkbox
-/// syntax, must not instruct an `Affected Files` section, and must defer
-/// the spec format to `docs/spec-conventions.md` rather than re-describing
-/// it. Pins the audit findings (TA-1, TA-2, TA-7) so a refactor cannot
-/// regress them.
 #[test]
-fn plan_new_defers_spec_format_to_conventions_doc() -> Result<()> {
-    let out = PlanNewContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        spec_conventions: "docs/spec-conventions.md".to_string(),
-    }
-    .render()?;
+fn plan_defers_spec_format_to_conventions_doc() -> Result<()> {
+    let out = plan_ctx().render()?;
 
     assert!(
         out.contains("docs/spec-conventions.md"),
-        "plan_new must defer to docs/spec-conventions.md"
+        "plan must defer to docs/spec-conventions.md"
     );
     assert!(
         !out.contains("[ ] CLI") && !out.contains("[ ] Error"),
-        "plan_new must not teach `[ ]` checkbox examples"
+        "plan must not teach `[ ]` checkbox examples"
     );
     assert!(
         !out.contains("Affected files/modules") && !out.contains("Affected Files"),
-        "plan_new must not instruct an Affected Files section"
+        "plan must not instruct an Affected Files section"
     );
     Ok(())
 }
@@ -1133,16 +1078,9 @@ fn msg_renders_with_no_clarify_beads() -> Result<()> {
     Ok(())
 }
 
-/// `msg`, `plan_new`, and `plan_update` are all multi-turn templates
-/// that include `exit_signals.md`, a partial written for single-shot
-/// worker phases ("end your response with the marker"). Each must
-/// disambiguate via the `chat_marker_final_turn_only.md` partial,
-/// stating that `LOOM_COMPLETE` is emitted on the final assistant turn
-/// only — never on intermediate turns. The May-21 bug reports were the
-/// chat agent (lm-lq12o) and planning agent (lm-qzdhj) appending
-/// `LOOM_COMPLETE` to every reply mid-conversation; this test pins the
-/// clarifying clause across the entire multi-turn template set so a
-/// future edit cannot silently regress any one of them.
+/// `msg` and `plan` are multi-turn templates that include progress-marker
+/// language written for single-shot worker phases. Each must disambiguate via
+/// the `chat_marker_final_turn_only.md` partial.
 #[test]
 fn every_multi_turn_template_includes_chat_marker_partial() -> Result<()> {
     let msg_out = MsgContext {
@@ -1152,30 +1090,9 @@ fn every_multi_turn_template_includes_chat_marker_partial() -> Result<()> {
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     }
     .render()?;
-    let plan_new_out = PlanNewContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        spec_conventions: "docs/spec-conventions.md".to_string(),
-    }
-    .render()?;
-    let plan_update_out = PlanUpdateContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![],
-        implementation_notes: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        spec_conventions: "docs/spec-conventions.md".to_string(),
-    }
-    .render()?;
+    let plan_out = plan_ctx().render()?;
 
-    for (name, out) in [
-        ("msg", &msg_out),
-        ("plan_new", &plan_new_out),
-        ("plan_update", &plan_update_out),
-    ] {
+    for (name, out) in [("msg", &msg_out), ("plan", &plan_out)] {
         assert!(
             out.contains("final turn only") || out.contains("final assistant turn"),
             "{name}: chat-restrictions must name the final-turn-only rule: {out}",
@@ -1487,28 +1404,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
         Ok(())
     }
 
-    assert_stable(
-        "plan_new",
-        PlanNewContext {
-            pinned_context: PINNED_CONTEXT_BODY.to_string(),
-            label: SpecLabel::new("harness"),
-            spec_path: "specs/harness.md".to_string(),
-            scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-            spec_conventions: "docs/spec-conventions.md".to_string(),
-        },
-    )?;
-    assert_stable(
-        "plan_update",
-        PlanUpdateContext {
-            pinned_context: PINNED_CONTEXT_BODY.to_string(),
-            label: SpecLabel::new("harness"),
-            spec_path: "specs/harness.md".to_string(),
-            companion_paths: vec!["lib/sandbox/".into()],
-            implementation_notes: vec!["pin: stability check".into()],
-            scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-            spec_conventions: "docs/spec-conventions.md".to_string(),
-        },
-    )?;
+    assert_stable("plan", plan_ctx())?;
     assert_stable(
         "todo_new",
         TodoNewContext {

@@ -276,14 +276,11 @@ enum Command {
         #[arg(long)]
         deps: bool,
     },
-    /// Interactive spec interview (`-n <label>` new, `-u <label>` update).
+    /// Interactive spec interview with optional initial anchors.
     Plan {
-        /// New-spec interview for `<label>`.
-        #[arg(short = 'n', value_name = "LABEL")]
-        new: Option<String>,
-        /// Update-spec interview for `<label>`.
-        #[arg(short = 'u', value_name = "LABEL")]
-        update: Option<String>,
+        /// Initial spec anchors; existing specs are pinned and missing specs are proposed.
+        #[arg(value_name = "SPEC_LABEL")]
+        anchor_labels: Vec<String>,
         /// Override the profile resolution chain. Wins over
         /// `[phase.plan].profile` and `[phase.default].profile` in
         /// `<workspace>/loom.toml` (default `base`).
@@ -601,10 +598,11 @@ fn main() -> ExitCode {
             .map(|()| ExitCode::SUCCESS),
         Command::Spec { deps } => run_spec(&workspace, deps).map(|()| ExitCode::SUCCESS),
         Command::Plan {
-            new,
-            update,
+            anchor_labels,
             profile,
-        } => run_plan(&workspace, new, update, profile, agent_override).map(|()| ExitCode::SUCCESS),
+        } => {
+            run_plan(&workspace, anchor_labels, profile, agent_override).map(|()| ExitCode::SUCCESS)
+        }
         Command::Loop {
             once,
             parallel,
@@ -2251,30 +2249,35 @@ fn resolve_replay_mode(raw: bool, verbose: bool) -> logs_cmd::ReplayMode {
 
 fn run_plan(
     workspace: &std::path::Path,
-    new: Option<String>,
-    update: Option<String>,
+    anchor_label_args: Vec<String>,
     profile: Option<String>,
     agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
     let manifest = ProfileImageManifest::from_env()?;
-    let mode = plan::parse_mode(new, update)?;
+    let anchor_labels = plan::parse_anchor_labels(anchor_label_args)?;
     let report = plan::run(
         workspace,
         plan::PlanOpts {
-            mode,
+            anchor_labels,
             wrix_bin: std::env::var_os("LOOM_WRIX_BIN").map(PathBuf::from),
             cli_profile: profile.map(ProfileName::new),
             agent_override,
             manifest,
         },
     )?;
-    println!("loom plan: spec={}", report.spec_path.display());
+    if report.anchor_labels.is_empty() {
+        println!("loom plan: anchors=(none)");
+    } else {
+        let anchors = report
+            .anchor_labels
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("loom plan: anchors={anchors}");
+    }
     if report.companion_paths.is_empty() {
-        if report.companions_section_present {
-            println!("  companions: (none)");
-        } else {
-            println!("  companions: (none — interview did not declare companions)");
-        }
+        println!("  companions: (none)");
     } else {
         println!("  companions:");
         for path in &report.companion_paths {

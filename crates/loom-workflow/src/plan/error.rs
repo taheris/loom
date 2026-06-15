@@ -11,27 +11,11 @@ use loom_driver::state::StateError;
 /// Failures raised by [`super::run`] and the helpers it composes.
 #[derive(Debug, Display, Error)]
 pub enum PlanError {
-    /// `loom plan` requires either `-n <label>` or `-u <label>`
-    ModeRequired,
-
-    /// `-n <label>` and `-u <label>` are mutually exclusive
-    ConflictingModes,
-
-    /// spec file not found at {path} (use `-n <label>` for a new spec)
-    SpecMissing { path: PathBuf },
-
-    /// interview exited without writing the spec file at {path}
-    InterviewProducedNoSpec { path: PathBuf },
+    /// invalid plan anchor label `{label}`: expected lowercase ASCII kebab-case
+    InvalidAnchorLabel { label: String },
 
     /// failed to read pinned-context file at {path}
     ReadPinnedContext {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-
-    /// failed to read spec file at {path}
-    ReadSpec {
         path: PathBuf,
         #[source]
         source: io::Error,

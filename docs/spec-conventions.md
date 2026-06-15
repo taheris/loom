@@ -350,13 +350,13 @@ duplicate.
 
 This convention applies immediately to:
 
-- New spec sections (added in a new `loom plan -n` or `-u` session)
-- Edits to existing spec sections (changes made in `loom plan -u`
-  must produce convention-compliant text)
+- New spec sections added in a `loom plan [SPEC_LABEL ...]` session
+- Edits to existing spec sections made in a `loom plan [SPEC_LABEL ...]`
+  session
 
 Existing spec content that pre-dates this convention may be
 non-compliant. The compliance audit is incremental — each `loom
-plan -u` session is expected to bring touched sections into
+plan` session is expected to bring touched sections into
 compliance; sections not touched in a given session may remain
 non-compliant until a future session migrates them. A dedicated
 compliance-migration epic per spec tracks the remaining work

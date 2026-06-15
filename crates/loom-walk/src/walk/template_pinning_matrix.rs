@@ -5,10 +5,6 @@
 //! does not break compilation yet changes what the agent sees in that
 //! phase. This walk parses both sides and surfaces every divergent
 //! cell.
-//!
-//! Mirrors the algorithm in `loom-workflow/src/check/matrix.rs`
-//! (`loom check matrix`): transitive include resolution, then cell-by-
-//! cell diff between spec ✓ marks and the rendered include graph.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -57,24 +53,26 @@ pub fn run(_input: &WalkInput) -> Verdict {
     let mut violations = Vec::new();
     for partial in &all_partials {
         for template in &matrix.templates {
-            let spec_marked = matrix
+            let spec_cell = matrix
                 .cells
                 .get(&(partial.clone(), template.clone()))
                 .copied()
-                .unwrap_or(false);
-            let code_includes = code
-                .get(template)
-                .map(|s| s.contains(partial))
-                .unwrap_or(false);
-            match (spec_marked, code_includes) {
-                (true, false) => violations.push(format!(
+                .unwrap_or(Cell::Absent);
+            let code_includes = code.get(template).is_some_and(|s| s.contains(partial));
+            match (spec_cell, code_includes) {
+                (Cell::Present, false) => violations.push(format!(
                     "{SPEC_REL} spec marks `{partial}` ✓ for `{template}` \
                      but the template does not (transitively) include it"
                 )),
-                (false, true) => violations.push(format!(
+                (Cell::Absent, true) => violations.push(format!(
                     "{TEMPLATES_REL}/{template}.md (transitively) includes `{partial}` \
                      but the spec matrix marks the cell blank"
                 )),
+                (Cell::PendingAddition, true) | (Cell::PendingRemoval, false) => {
+                    violations.push(format!(
+                        "{SPEC_REL} pending-marker-resolved for `{partial}` / `{template}` — update the matrix cell"
+                    ));
+                }
                 _ => {}
             }
         }
@@ -84,9 +82,31 @@ pub fn run(_input: &WalkInput) -> Verdict {
 }
 
 struct PinningMatrix {
-    cells: BTreeMap<(String, String), bool>,
+    cells: BTreeMap<(String, String), Cell>,
     templates: Vec<String>,
     partials: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cell {
+    Absent,
+    Present,
+    PendingAddition,
+    PendingRemoval,
+}
+
+impl Cell {
+    fn parse(raw: &str, line: usize, partial: &str, template: &str) -> Result<Self, String> {
+        match raw.trim() {
+            "" => Ok(Self::Absent),
+            "✓" => Ok(Self::Present),
+            "?" => Ok(Self::PendingAddition),
+            "~" => Ok(Self::PendingRemoval),
+            other => Err(format!(
+                "{SPEC_REL}:{line} invalid pinning-matrix cell `{other}` for `{partial}` / `{template}`; expected blank, ✓, ?, or ~"
+            )),
+        }
+    }
 }
 
 fn locate_spec(workspace: &Path) -> PathBuf {
@@ -143,7 +163,7 @@ fn parse_pinning_matrix(spec_path: &Path) -> Result<PinningMatrix, String> {
         .collect();
 
     let mut partials: Vec<String> = Vec::new();
-    let mut cells: BTreeMap<(String, String), bool> = BTreeMap::new();
+    let mut cells: BTreeMap<(String, String), Cell> = BTreeMap::new();
 
     for (offset, line) in lines[separator_idx + 1..].iter().enumerate() {
         if !line.trim_start().starts_with('|') {
@@ -166,8 +186,10 @@ fn parse_pinning_matrix(spec_path: &Path) -> Result<PinningMatrix, String> {
             ));
         }
         for (tpl, cell) in templates.iter().zip(row[1..].iter()) {
-            let marked = cell.trim() == "✓";
-            cells.insert((partial.clone(), tpl.clone()), marked);
+            cells.insert(
+                (partial.clone(), tpl.clone()),
+                Cell::parse(cell, row_lineno, &partial, tpl)?,
+            );
         }
         partials.push(partial);
     }

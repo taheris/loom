@@ -13,9 +13,9 @@
 //! `templates` is a public-contract crate. External Rust consumers
 //! (e.g. RAG pipelines, domain-specific review tools) compose their own
 //! templates from the exposed typed building blocks
-//! ([`PinnedContext`], [`PreviousFailure`], [`LoopContext`],
-//! [`ReviewContext`]) and the `PARTIAL_*` partial-string constants
-//! below. Loom's own workflow templates (`plan_*`, `todo_*`, `loop`,
+//! ([`PinnedContext`], [`PreviousFailure`], [`PlanContext`], [`LoopContext`],
+//! [`ReviewContext`]) and the `PARTIAL_*` partial-string constants below.
+//! Loom's own workflow templates (`plan`, `todo_*`, `loop`,
 //! `review`, `msg`) are internal — consumers compose with the partials
 //! and typed contexts, not with the workflow shells.
 
@@ -34,7 +34,7 @@ pub use finding::{
     LOOM_FINDING_PREFIX, TargetKind,
 };
 pub use msg::{ClarifyBead, ClarifyOption, MsgContext};
-pub use plan::{PlanNewContext, PlanUpdateContext};
+pub use plan::PlanContext;
 pub use previous_failure::{
     BadWalk, DriverNoticeCause, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, STDERR_TAIL_PER_BLOCK,
     TerminalSurface, VerifierFailure,
@@ -66,11 +66,10 @@ pub const PARTIAL_COMPANIONS_CONTEXT: &str =
 pub const PARTIAL_CONTEXT_PINNING: &str = include_str!("../templates/partial/context_pinning.md");
 
 /// `partial/decomposition_discipline.md` — pin the audit-before-fan-out
-/// rule on `todo_new` / `todo_update`: every authored bead must
-/// correspond to evidence-confirmed missing work (read off
-/// `criterion_status` + representative implementations), or the agent
-/// emits `LOOM_CLARIFY` on the molecule epic per the *Options Format
-/// Contract* in `specs/gate.md`.
+/// rule on `todo`: every authored bead must correspond to
+/// evidence-confirmed missing work (read off `criterion_status` and
+/// representative implementations), or the agent emits `LOOM_CLARIFY` on
+/// the work epic per the *Options Format Contract* in `specs/gate.md`.
 pub const PARTIAL_DECOMPOSITION_DISCIPLINE: &str =
     include_str!("../templates/partial/decomposition_discipline.md");
 
@@ -78,7 +77,7 @@ pub const PARTIAL_DECOMPOSITION_DISCIPLINE: &str =
 /// interviews: questions and answers flow as prose, and the planning
 /// agent does not use Claude Code's structured option-picker tool
 /// (`AskUserQuestion`) or any equivalent multi-choice UI. Included only
-/// by `plan_new` and `plan_update`.
+/// by `plan`.
 pub const PARTIAL_CHAT_INTERVIEW: &str = include_str!("../templates/partial/chat_interview.md");
 
 /// `partial/findings_walk.md` — sole carrier of the `LOOM_FINDING:` /
@@ -90,27 +89,23 @@ pub const PARTIAL_FINDINGS_WALK: &str = include_str!("../templates/partial/findi
 
 /// `partial/progress_markers.md` — `LOOM_COMPLETE` / `LOOM_NOOP`,
 /// the two "work is done" terminators. Pinned by every worker /
-/// planning template (`plan_new`, `plan_update`, `todo_new`,
-/// `todo_update`, `loop`, `review`).
+/// planning template (`plan`, `todo_new`, `todo_update`, `loop`, `review`).
 pub const PARTIAL_PROGRESS_MARKERS: &str = include_str!("../templates/partial/progress_markers.md");
 
-/// `partial/self_report_markers.md` — `LOOM_BLOCKED` / `LOOM_CLARIFY`,
-/// the two "cannot finish" terminators. Pinned alongside
-/// `progress_markers.md` so each phase template surfaces the full
-/// terminator surface.
+/// `partial/self_report_markers.md` — worker-phase cannot-finish
+/// terminators (`LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`).
 pub const PARTIAL_SELF_REPORT_MARKERS: &str =
     include_str!("../templates/partial/self_report_markers.md");
 
 /// `partial/options_format.md` — canonical `## Options — <summary>` /
 /// `### Option N — <title>` markdown block consumed by `loom msg`'s
-/// chat-drafter. Pinned wherever a session may emit `LOOM_CLARIFY` or
-/// stream a clarify-bound finding: directly by `review.md` and
-/// transitively via `findings_walk.md` and `self_report_markers.md`.
+/// chat-drafter. Pinned by worker phases that may emit `LOOM_CLARIFY` or
+/// stream a clarify-bound finding.
 pub const PARTIAL_OPTIONS_FORMAT: &str = include_str!("../templates/partial/options_format.md");
 
 /// `partial/chat_marker_final_turn_only.md` — restrict `LOOM_COMPLETE`
 /// emission to the **final** assistant turn of a multi-turn chat
-/// session. Multi-turn templates (`msg`, `plan_new`, `plan_update`)
+/// session. Multi-turn templates (`msg`, `plan`)
 /// include this alongside the progress / self-report marker partials
 /// so the "end your response with the marker" instruction does not
 /// get read as "every response." One-shot worker templates (`loop`,

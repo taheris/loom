@@ -1,15 +1,17 @@
 ---
 source: crates/loom/tests/cli_help.rs
+assertion_line: 144
 expression: "loom_help(&[\"plan\"])"
 ---
-Interactive spec interview (`-n <label>` new, `-u <label>` update)
+Interactive spec interview with optional initial anchors
 
-Usage: loom plan [OPTIONS]
+Usage: loom plan [OPTIONS] [SPEC_LABEL]...
+
+Arguments:
+  [SPEC_LABEL]...  Initial spec anchors; existing specs are pinned and missing specs are proposed
 
 Options:
-  -n <LABEL>               New-spec interview for `<label>`
+      --profile <PROFILE>  Override the profile resolution chain. Wins over `[phase.plan].profile` and `[phase.default].profile` in `<workspace>/loom.toml` (default `base`)
   -w, --workspace <PATH>   Workspace root. Defaults to the current working directory
   -A, --agent <BACKEND>    Override the agent backend for this invocation [possible values: claude, pi]
-  -u <LABEL>               Update-spec interview for `<label>`
-      --profile <PROFILE>  Override the profile resolution chain. Wins over `[phase.plan].profile` and `[phase.default].profile` in `<workspace>/loom.toml` (default `base`)
   -h, --help               Print help

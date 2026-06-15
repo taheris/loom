@@ -3042,7 +3042,7 @@ Criteria.
       between, or after labels. Plan edits spec/index markdown and
       implementation notes only — no bd writes and no touched-set
       manifest
-  [test?](plan_accepts_optional_anchor_labels_and_interspersed_options)
+  [test](plan_accepts_optional_anchor_labels_and_interspersed_options)
 - `loom todo` performs deterministic changed-spec preflight from
       durable spec-epic cursors (`loom.todo_cursor`), Git, and the
       current `docs/README.md` spec index before rendering any agent
@@ -3713,7 +3713,7 @@ two agent-loop observers.
       anchor/touched specs and writes back merged arrays via
       `loom note set` (interview-driven keep/drop/add — not blind
       append, not blind replace)
-  [judge](../tests/judges/loom.sh#judge_plan_update_merges_notes)
+  [judge](../tests/judges/loom.sh#judge_plan_merges_notes)
 - `loom todo` renders implementation notes for each changed spec into
       the relevant work beads and deletes those notes only after the
       spec cursor advances during validated finalization

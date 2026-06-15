@@ -79,7 +79,7 @@ pub struct LoomConfig {
     /// `specs/templates.md` § Style-Rules Partial).
     pub style_rules: String,
     /// Workspace-relative path to the spec-authoring conventions document.
-    /// Pinned in the `plan_new` and `plan_update` phases via
+    /// Pinned in the `plan` phase via
     /// `partial/spec_conventions.md` (see `specs/templates.md`
     /// § Spec-Conventions Partial).
     pub spec_conventions: String,

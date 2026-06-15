@@ -2,8 +2,8 @@
 //! following typed building blocks are part of the consumer-facing
 //! surface and must be defined as publicly reachable `pub struct` or
 //! `pub enum` items under `crates/loom-templates/src/`: `PreviousFailure`,
-//! `VerifierFailure`, `BadWalk`, `DriverNoticeCause`, `LoopContext`,
-//! `ReviewContext`, `PinnedContext`. A `pub use` re-export from any
+//! `VerifierFailure`, `BadWalk`, `DriverNoticeCause`, `PlanContext`,
+//! `LoopContext`, `ReviewContext`, `PinnedContext`. A `pub use` re-export from any
 //! source file under that crate also counts.
 
 use std::collections::HashSet;
@@ -12,13 +12,14 @@ use std::path::Path;
 use super::util::{parse_rs, rs_files_recursive, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "loom_templates_public_types — PreviousFailure, VerifierFailure, BadWalk, DriverNoticeCause, LoopContext, ReviewContext, PinnedContext are publicly exposed by loom-templates";
+const RULE: &str = "loom_templates_public_types — PreviousFailure, VerifierFailure, BadWalk, DriverNoticeCause, PlanContext, LoopContext, ReviewContext, PinnedContext are publicly exposed by loom-templates";
 
 const REQUIRED: &[&str] = &[
     "PreviousFailure",
     "VerifierFailure",
     "BadWalk",
     "DriverNoticeCause",
+    "PlanContext",
     "LoopContext",
     "ReviewContext",
     "PinnedContext",

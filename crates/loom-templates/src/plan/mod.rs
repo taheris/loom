@@ -1,7 +1,14 @@
-//! `loom plan` templates: the new-spec interview and the update-spec interview.
+use askama::Template;
+use loom_events::identifier::SpecLabel;
 
-pub mod new;
-pub mod update;
-
-pub use new::PlanNewContext;
-pub use update::PlanUpdateContext;
+/// Context for `loom plan [SPEC_LABEL ...]`.
+#[derive(Template)]
+#[template(path = "plan.md", escape = "none")]
+pub struct PlanContext {
+    pub pinned_context: String,
+    pub anchor_labels: Vec<SpecLabel>,
+    pub spec_index: String,
+    pub companion_paths: Vec<String>,
+    pub scratchpad_path: String,
+    pub spec_conventions: String,
+}

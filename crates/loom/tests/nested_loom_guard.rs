@@ -29,7 +29,7 @@ fn mutating_subcommands_refuse_with_loom_inside_set() {
     for sub in [
         &["init"][..],
         &["use", "harness"],
-        &["plan", "-n", "tmp"],
+        &["plan", "tmp"],
         &["loop", "--once"],
         // `gate audit` triggers an LLM rubric path that spawns containers,
         // so it falls under the nested-loom guard. The deterministic
@@ -50,6 +50,23 @@ fn mutating_subcommands_refuse_with_loom_inside_set() {
             stderr.contains("loom cannot run inside a loom-managed container"),
             "expected guard error in stderr for `loom {}`, got:\n{stderr}",
             sub.join(" "),
+        );
+    }
+}
+
+#[test]
+fn plan_accepts_optional_anchor_labels_and_interspersed_options() {
+    for args in [
+        &["plan", "--profile", "base", "alpha", "beta"][..],
+        &["plan", "alpha", "--profile", "base", "beta"],
+        &["plan", "alpha", "beta", "--profile", "base"],
+    ] {
+        let out = loom_with_inside_env(args);
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("loom cannot run inside a loom-managed container"),
+            "plan args should parse and then hit the nested-loom guard, got:\n{stderr}",
         );
     }
 }

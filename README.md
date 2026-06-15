@@ -31,12 +31,11 @@ nix develop .#wrix
 
 Loom drives a five-phase pipeline per spec:
 
-1. `loom plan -n <label>` — interactive spec interview
-2. `loom plan -u <label>` — update an existing spec
-3. `loom todo <label>` — decompose the spec into beads
-4. `loom loop <label>` — execute beads one at a time through the configured agent
-5. `loom gate verify` / `loom gate review` — deterministic checks + LLM judge
-6. `loom msg <bead>` — resolve `loom:clarify` beads with the Options Format
+1. `loom plan [SPEC_LABEL ...]` — interactive spec interview with optional anchors
+2. `loom todo` — decompose changed specs into beads
+3. `loom loop [BEAD_OR_EPIC_ID ...]` — execute beads through the configured agent
+4. `loom gate verify` / `loom gate review` — deterministic checks + LLM judge
+5. `loom msg <bead>` — resolve `loom:clarify` beads with the Options Format
 
 See `specs/harness.md` for the full command surface and `specs/gate.md` for the
 verification model.

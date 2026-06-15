@@ -2,7 +2,7 @@
 
 Conduct this interactive session as a back-and-forth **chat** — natural
 prose, not a structured questionnaire. Every interactive loom session
-(`plan_new`, `plan_update`, `msg`) is conversational by design; the wrong
+(`plan`, `msg`) is conversational by design; the wrong
 instrument (a multi-choice picker, a form-style prompt, a fixed enumeration)
 collapses the user's real answer into a shape it doesn't fit.
 
@@ -23,17 +23,20 @@ collapses the user's real answer into a shape it doesn't fit.
   Z"). The user replies "B" or "B with a tweak" or "neither, do Z" —
   natural prose, no picker UI.
 - **Persistence destinations.** Session-bridging memory — decisions,
-  context, follow-ups, anything future sessions need — goes into bd
-  (`bd update <id> --notes …`, bead descriptions, or new beads via
-  `bd create`) or spec files. bd persists across machines and after
-  containers exit. Claude Code's `MEMORY.md` / auto-memory system is
-  container-local and disappears with the container; treat it as
-  working notes for the current session only, not as durable storage.
+  context, follow-ups, anything future sessions need — goes only to the
+  durable surface this phase authorizes. In `loom plan`, do not write bd:
+  persist durable planning output in spec/index markdown or implementation
+  notes via `loom note set`. In `loom msg`, bd notes/descriptions are the
+  authorized resolution surface (`bd update <id> --notes …`; new beads only
+  when the msg workflow explicitly calls for follow-up work). Claude Code's
+  `MEMORY.md` / auto-memory system is container-local and disappears with
+  the container; treat it as working notes for the current session only, not
+  as durable storage.
 - **The "one by one" sub-mode is planning-specific.** When the planning
   interview is in that sub-mode, it means *one question per chat turn*,
   not *one picker per turn* — the chat-discipline rules above still
   apply within the sub-mode. Outside the planning templates the sub-mode
   is not in play.
 
-Worker phases (`loop`, `todo_*`, `review`) are single-shot and do not
+Worker phases (`loop`, `todo`, `review`) are single-shot and do not
 interview the user, so this partial is not pinned there.

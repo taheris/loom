@@ -13,7 +13,7 @@ use loom_events::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
 use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
 use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
-use loom_templates::plan::{PlanNewContext, PlanUpdateContext};
+use loom_templates::plan::PlanContext;
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
 use loom_templates::run::{DriverNoticeCause, LoopContext, PreviousFailure, VerifierFailure};
 use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
@@ -23,30 +23,15 @@ const PINNED_CONTEXT_BODY: &str =
 const SCRATCHPAD_PATH_BODY: &str = "/workspace/.loom/scratch/harness/scratch.md";
 
 #[test]
-fn plan_new_snapshot() {
-    let ctx = PlanNewContext {
+fn plan_snapshot() {
+    let ctx = PlanContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        spec_conventions: "docs/spec-conventions.md".to_string(),
-    };
-    insta::assert_snapshot!(ctx.render().unwrap());
-}
-
-#[test]
-fn plan_update_snapshot() {
-    let ctx = PlanUpdateContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
+        anchor_labels: vec![SpecLabel::new("harness"), SpecLabel::new("future-spec")],
+        spec_index: "# Loom Docs\n| Spec | Purpose |\n| [harness](../specs/harness.md) | Harness |"
+            .to_string(),
         companion_paths: vec![
             "lib/sandbox/".into(),
             "crates/loom-templates/templates/".into(),
-        ],
-        implementation_notes: vec![
-            "Read `specs/harness.md` end-to-end before touching the parser".into(),
-            "Retry policy is described in `## Recovery & Retry`".into(),
         ],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         spec_conventions: "docs/spec-conventions.md".to_string(),

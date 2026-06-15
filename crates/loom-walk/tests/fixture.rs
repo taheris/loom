@@ -1381,20 +1381,89 @@ fn template_pinning_matrix_fail_template_includes_but_spec_blank() {
 }
 
 #[test]
+fn template_pinning_matrix_accepts_pending_cells() {
+    let ws = make_workspace();
+    seed_pinning_matrix(
+        &ws,
+        "| Partial | `plan` | `todo` |\n\
+         |---|:-:|:-:|\n\
+         | `context_pinning.md` | ? | ~ |\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/plan.md",
+        "pending addition not included yet\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/todo.md",
+        "{% include \"partial/context_pinning.md\" %}\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/partial/context_pinning.md",
+        "ctx\n",
+    );
+    let out = invoke(&["template_pinning_matrix"], Some(ws.path()), None);
+    assert_pass(&out);
+}
+
+#[test]
+fn pending_addition_marker_fires_when_template_now_includes() {
+    let ws = make_workspace();
+    seed_pinning_matrix(
+        &ws,
+        "| Partial | `plan` |\n\
+         |---|:-:|\n\
+         | `context_pinning.md` | ? |\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/plan.md",
+        "{% include \"partial/context_pinning.md\" %}\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/partial/context_pinning.md",
+        "ctx\n",
+    );
+    let out = invoke(&["template_pinning_matrix"], Some(ws.path()), None);
+    assert_fail(&out, "pending-marker-resolved");
+}
+
+#[test]
+fn pending_removal_marker_fires_when_template_no_longer_includes() {
+    let ws = make_workspace();
+    seed_pinning_matrix(
+        &ws,
+        "| Partial | `plan` |\n\
+         |---|:-:|\n\
+         | `context_pinning.md` | ~ |\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-templates/templates/plan.md",
+        "pending removal complete\n",
+    );
+    let out = invoke(&["template_pinning_matrix"], Some(ws.path()), None);
+    assert_fail(&out, "pending-marker-resolved");
+}
+
+#[test]
 fn template_pinning_matrix_resolves_transitive_includes() {
     let ws = make_workspace();
-    // Spec marks `invariant_clash.md` ✓ for `plan_new`, and the template
+    // Spec marks `invariant_clash.md` ✓ for `plan`, and the template
     // pulls it in transitively via `plan_stage_rubric.md`.
     seed_pinning_matrix(
         &ws,
-        "| Partial | `plan_new` |\n\
+        "| Partial | `plan` |\n\
          |---|:-:|\n\
          | `plan_stage_rubric.md` | ✓ |\n\
          | `invariant_clash.md` | ✓ |\n",
     );
     seed(
         ws.path(),
-        "crates/loom-templates/templates/plan_new.md",
+        "crates/loom-templates/templates/plan.md",
         "{% include \"partial/plan_stage_rubric.md\" %}\n",
     );
     seed(
@@ -1941,6 +2010,7 @@ const TEMPLATES_PUBLIC_TYPES_BODY: &str = "pub struct PreviousFailure;\n\
      pub struct VerifierFailure;\n\
      pub enum BadWalk { Concern { payload: String } }\n\
      pub enum DriverNoticeCause { RetryExhausted }\n\
+     pub struct PlanContext;\n\
      pub struct LoopContext;\n\
      pub struct ReviewContext;\n\
      pub struct PinnedContext;\n";
@@ -1964,7 +2034,7 @@ fn loom_templates_public_types_pass_when_reexported_via_pub_use() {
         ws.path(),
         "crates/loom-templates/src/lib.rs",
         "pub mod inner;\n\
-         pub use inner::{PreviousFailure, VerifierFailure, BadWalk, DriverNoticeCause, LoopContext, ReviewContext, PinnedContext};\n",
+         pub use inner::{PreviousFailure, VerifierFailure, BadWalk, DriverNoticeCause, PlanContext, LoopContext, ReviewContext, PinnedContext};\n",
     );
     seed(
         ws.path(),
@@ -1982,6 +2052,7 @@ fn loom_templates_public_types_fail_when_one_missing() {
                 pub struct VerifierFailure;\n\
                 pub enum BadWalk { Concern { payload: String } }\n\
                 pub enum DriverNoticeCause { RetryExhausted }\n\
+                pub struct PlanContext;\n\
                 pub struct LoopContext;\n\
                 pub struct ReviewContext;\n";
     seed(ws.path(), "crates/loom-templates/src/lib.rs", body);
@@ -1996,6 +2067,7 @@ fn loom_templates_public_types_fail_when_private() {
                 struct VerifierFailure;\n\
                 enum BadWalk { Concern { payload: String } }\n\
                 enum DriverNoticeCause { RetryExhausted }\n\
+                struct PlanContext;\n\
                 struct LoopContext;\n\
                 struct ReviewContext;\n\
                 struct PinnedContext;\n";
@@ -2126,19 +2198,19 @@ fn loom_templates_workflow_templates_not_exported_fail_when_pub_const_loop() {
 }
 
 #[test]
-fn loom_templates_workflow_templates_not_exported_fail_when_pub_const_plan_new() {
+fn loom_templates_workflow_templates_not_exported_fail_when_pub_const_plan() {
     let ws = make_workspace();
     seed(
         ws.path(),
         "crates/loom-templates/src/lib.rs",
-        "pub const PLAN_NEW_TEMPLATE: &str = include_str!(\"../templates/plan_new.md\");\n",
+        "pub const PLAN_TEMPLATE: &str = include_str!(\"../templates/plan.md\");\n",
     );
     let out = invoke(
         &["loom_templates_workflow_templates_not_exported"],
         Some(ws.path()),
         None,
     );
-    assert_fail(&out, "plan_new.md");
+    assert_fail(&out, "plan.md");
 }
 
 // ---------------------------------------------------------------------------
@@ -3043,8 +3115,7 @@ fn templates_no_removed_surface_pass_on_word_extension() {
 
 const TODO_CRITERION_STATUS_PASS_BODY: &str = "pub struct TodoNewContext { pub criterion_status: Vec<CriterionStatus> }\n\
      pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n\
-     pub struct PlanNewContext { pub spec_path: String }\n\
-     pub struct PlanUpdateContext { pub spec_path: String }\n\
+     pub struct PlanContext { pub spec_path: String }\n\
      pub struct LoopContext { pub spec_path: String }\n\
      pub struct ReviewContext { pub spec_path: String }\n\
      pub struct MsgContext { pub scratchpad_path: String }\n";
@@ -3073,8 +3144,7 @@ fn todo_contexts_carry_criterion_status_fail_when_todo_new_missing_field() {
         "crates/loom-templates/src/lib.rs",
         "pub struct TodoNewContext { pub spec_path: String }\n\
          pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n\
-         pub struct PlanNewContext { pub spec_path: String }\n\
-         pub struct PlanUpdateContext { pub spec_path: String }\n\
+         pub struct PlanContext { pub spec_path: String }\n\
          pub struct LoopContext { pub spec_path: String }\n\
          pub struct ReviewContext { pub spec_path: String }\n\
          pub struct MsgContext { pub scratchpad_path: String }\n",
@@ -3095,8 +3165,7 @@ fn todo_contexts_carry_criterion_status_fail_when_todo_update_field_has_wrong_ty
         "crates/loom-templates/src/lib.rs",
         "pub struct TodoNewContext { pub criterion_status: Vec<CriterionStatus> }\n\
          pub struct TodoUpdateContext { pub criterion_status: String }\n\
-         pub struct PlanNewContext { pub spec_path: String }\n\
-         pub struct PlanUpdateContext { pub spec_path: String }\n\
+         pub struct PlanContext { pub spec_path: String }\n\
          pub struct LoopContext { pub spec_path: String }\n\
          pub struct ReviewContext { pub spec_path: String }\n\
          pub struct MsgContext { pub scratchpad_path: String }\n",
@@ -3120,8 +3189,7 @@ fn todo_contexts_carry_criterion_status_fail_when_run_context_carries_field() {
         "crates/loom-templates/src/lib.rs",
         "pub struct TodoNewContext { pub criterion_status: Vec<CriterionStatus> }\n\
          pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n\
-         pub struct PlanNewContext { pub spec_path: String }\n\
-         pub struct PlanUpdateContext { pub spec_path: String }\n\
+         pub struct PlanContext { pub spec_path: String }\n\
          pub struct LoopContext { pub criterion_status: Vec<CriterionStatus> }\n\
          pub struct ReviewContext { pub spec_path: String }\n\
          pub struct MsgContext { pub scratchpad_path: String }\n",
@@ -3157,13 +3225,8 @@ fn todo_contexts_carry_criterion_status_finds_structs_split_across_files() {
     );
     seed(
         ws.path(),
-        "crates/loom-templates/src/plan/new.rs",
-        "pub struct PlanNewContext { pub spec_path: String }\n",
-    );
-    seed(
-        ws.path(),
-        "crates/loom-templates/src/plan/update.rs",
-        "pub struct PlanUpdateContext { pub spec_path: String }\n",
+        "crates/loom-templates/src/plan/mod.rs",
+        "pub struct PlanContext { pub spec_path: String }\n",
     );
     seed(
         ws.path(),

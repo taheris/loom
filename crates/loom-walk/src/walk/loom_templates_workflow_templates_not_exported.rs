@@ -1,5 +1,5 @@
-//! Loom's own workflow template bodies (`plan_new.md`, `plan_update.md`,
-//! `todo_new.md`, `todo_update.md`, `loop.md`, `review.md`, `msg.md`) are
+//! Loom's own workflow template bodies (`plan.md`, `todo_new.md`,
+//! `todo_update.md`, `loop.md`, `review.md`, `msg.md`) are
 //! internal — consumers compose with the partials and typed contexts, not
 //! with the workflow shells. The walk asserts no `pub const … =
 //! include_str!("…/<workflow>.md")` (or `&'static str`) exists in
@@ -19,8 +19,7 @@ const RULE: &str = "loom_templates_workflow_templates_not_exported — workflow 
 const SRC_DIR: &str = "crates/loom-templates/src";
 
 const WORKFLOW_TEMPLATES: &[&str] = &[
-    "plan_new.md",
-    "plan_update.md",
+    "plan.md",
     "todo_new.md",
     "todo_update.md",
     "loop.md",

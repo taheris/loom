@@ -168,7 +168,7 @@ empty, fill in the molecule ID (`{% match molecule_id %}{% when Some with (id) %
 Sibling specs touched in this session do **not** get their own molecule — their
 tasks bond to the anchor's molecule. Do **NOT** write the anchor's molecule ID
 into any sibling's README Beads column; a sibling's row stays empty until it is
-planned as its own anchor in a future `loom plan -u <sibling>` session.
+planned as its own anchor in a future `loom plan <sibling>` session.
 
 {% include "partial/progress_markers.md" %}
 

@@ -83,14 +83,14 @@ judge_mock_discipline() {
     "The review prompt (review.md) instructs the reviewer to flag mocks that stand in for the very thing under test — for example, mocking the agent backend in an agent-integration test, or stubbing the database in a test whose stated purpose is to exercise schema migrations. The rubric the reviewer applies is: identify what the test claims to validate (from its name, location, or [verify] criterion text), then check whether the test mocks that exact subsystem. When the answer is 'yes', the reviewer raises a flag, the gate resolves to RecoveryCause::ReviewConcern, and the flag detail names 'mock' as the triggering concern (mirrors how the verifier-honesty tokens are named). Mocks of unrelated dependencies are NOT in scope; only mocks of the system-under-test are flagged."
 }
 
-judge_plan_update_merges_notes() {
+judge_plan_merges_notes() {
   judge_files \
-    "crates/loom-templates/templates/plan_update.md" \
-    "crates/loom-templates/src/plan/update.rs" \
+    "crates/loom-templates/templates/plan.md" \
+    "crates/loom-templates/src/plan/mod.rs" \
     "crates/loom-workflow/src/plan/runner.rs" \
     "crates/loom-workflow/src/plan/prompt.rs"
   judge_criterion \
-    "The plan_update.md prompt renders the existing implementation-notes array from the spec's notes table (the typed PlanUpdateContext.implementation_notes field) into the interview, and explicitly instructs the agent to MERGE: keep notes still relevant, drop notes a new decision invalidates, add fresh notes, rather than blind append or blind replace. The prompt names all three operations (keep / drop / add) and frames the merge as the agent's judgement during the interview. The runner in plan/runner.rs reads the existing array via StateDb::notes_list before launching the interview and passes it into the rendered context through plan/prompt.rs. The agent persists the merged array back via 'loom note set LABEL --kind implementation --json ARRAY', which atomically replaces the prior set in a single SQLite transaction (StateDb::notes_set performs DELETE plus INSERTs in one transaction). No code path silently appends or silently replaces; the merge is mediated by the interview output, and the prompt directs the agent at the exact CLI invocation."
+    "The unified plan.md prompt preserves implementation-note persistence as the planning output path: it instructs the agent to inspect existing implementation notes for anchors or touched siblings when relevant, merge them by keeping still-relevant notes, dropping invalidated notes, and adding fresh notes, then persist the full merged array via 'loom note set LABEL --kind implementation --json ARRAY'. The typed PlanContext does not split new/update mode, and the runner renders one plan prompt without writing current_spec or bd state. No code path silently appends notes or creates plan-mode beads/epics; the merge is mediated by the interview output and the prompt directs the agent at the exact CLI invocation."
 }
 
 test_scratchpad_partial_clarity() {

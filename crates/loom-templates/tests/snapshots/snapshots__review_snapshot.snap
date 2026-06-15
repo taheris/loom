@@ -1,6 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
-assertion_line: 335
+assertion_line: 319
 expression: ctx.render().unwrap()
 ---
 # Post-Epic Review
@@ -46,11 +46,7 @@ id it is given in the document.
 
 ## Scratchpad
 
-You have a per-session scratchpad at `.loom/scratch/<key>/scratch.md`,
-where `<key>` is your session's concurrency unit — the spec label for `loom
-plan` / `loom todo` sessions, the bead ID for `loom loop` / `loom gate` /
-`loom msg` sessions. The file starts empty; append to it as the session
-progresses.
+You have a per-session scratchpad at `/workspace/.loom/scratch/harness/scratch.md`. The file starts empty; append to it as the session progresses.
 
 **Purpose.** This is a **compaction-recovery aid, not durable storage.** The
 file lives only for the lifetime of this session: the driver creates it at
@@ -842,7 +838,7 @@ clarify — file the plan directly). dead end? → BLOCKED.
 
 **Worker-phase only.** These three self-report markers are valid
 in worker phases only (`loop`, `todo_new`, `todo_update`,
-`review`). Interactive sessions (`plan_new`, `plan_update`, `msg`)
+`review`). Interactive sessions (`plan`, `msg`)
 emit `LOOM_COMPLETE` only — the human is in the room and resolves
 friction in-turn, so the cannot-finish terminators are out of
 scope for those templates.

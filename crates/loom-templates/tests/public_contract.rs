@@ -10,7 +10,8 @@ use loom_templates::{
     PARTIAL_FINDINGS_WALK, PARTIAL_INTERVIEW_MODES, PARTIAL_INVARIANT_CLASH,
     PARTIAL_PLAN_STAGE_RUBRIC, PARTIAL_PROGRESS_MARKERS, PARTIAL_REVIEW_RUBRIC, PARTIAL_SCRATCHPAD,
     PARTIAL_SELF_REPORT_MARKERS, PARTIAL_SIBLING_SPEC_EDITING, PARTIAL_SPEC_CONVENTIONS,
-    PARTIAL_SPEC_HEADER, PARTIAL_STYLE_RULES, PinnedContext, PreviousFailure, VerifierFailure,
+    PARTIAL_SPEC_HEADER, PARTIAL_STYLE_RULES, PinnedContext, PlanContext, PreviousFailure,
+    VerifierFailure,
 };
 
 #[test]
@@ -111,6 +112,18 @@ fn typed_retry_context_round_trips_through_public_re_exports() {
         findings: vec![],
     });
     assert!(bad.to_string().contains("LOOM_FINDING"));
+}
+
+#[test]
+fn plan_context_is_publicly_constructible_from_crate_root() {
+    let _ctx = PlanContext {
+        pinned_context: String::new(),
+        anchor_labels: vec![loom_events::identifier::SpecLabel::new("demo")],
+        spec_index: String::new(),
+        companion_paths: vec![],
+        scratchpad_path: String::new(),
+        spec_conventions: String::new(),
+    };
 }
 
 #[test]

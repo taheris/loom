@@ -1,9 +1,9 @@
 ## Invariant-Clash Awareness
 
-Before committing a spec change, scan the anchor spec **and any touched sibling
-specs** for **invariants** the change may clash with. A change landing in the
-anchor may contradict an invariant in a sibling; check every spec the session
-has touched, not just `specs/{{ label }}.md`. Invariant categories:
+Before committing a spec change, scan every edited spec and any sibling specs
+whose invariants the change may clash with. A change landing in one spec may
+contradict an invariant in another; do not limit the scan to the initial
+anchors. Invariant categories:
 
 - **Architectural decisions** — module boundaries, data flow, layering
 - **Data-structure choices** — file formats, schemas, key conventions

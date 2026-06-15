@@ -1,6 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
-assertion_line: 151
+assertion_line: 135
 expression: ctx.render().unwrap()
 ---
 # Add Tasks to Existing Molecule
@@ -40,11 +40,7 @@ The following companion directories are in scope. Read each one's `manifest.md` 
 
 ## Scratchpad
 
-You have a per-session scratchpad at `.loom/scratch/<key>/scratch.md`,
-where `<key>` is your session's concurrency unit — the spec label for `loom
-plan` / `loom todo` sessions, the bead ID for `loom loop` / `loom gate` /
-`loom msg` sessions. The file starts empty; append to it as the session
-progresses.
+You have a per-session scratchpad at `/workspace/.loom/scratch/harness/scratch.md`. The file starts empty; append to it as the session progresses.
 
 **Purpose.** This is a **compaction-recovery aid, not durable storage.** The
 file lives only for the lifetime of this session: the driver creates it at
@@ -298,7 +294,7 @@ empty, fill in the molecule ID (`lm-3hhwq`).
 Sibling specs touched in this session do **not** get their own molecule — their
 tasks bond to the anchor's molecule. Do **NOT** write the anchor's molecule ID
 into any sibling's README Beads column; a sibling's row stays empty until it is
-planned as its own anchor in a future `loom plan -u <sibling>` session.
+planned as its own anchor in a future `loom plan <sibling>` session.
 
 ## Progress Markers
 
@@ -425,7 +421,7 @@ clarify — file the plan directly). dead end? → BLOCKED.
 
 **Worker-phase only.** These three self-report markers are valid
 in worker phases only (`loop`, `todo_new`, `todo_update`,
-`review`). Interactive sessions (`plan_new`, `plan_update`, `msg`)
+`review`). Interactive sessions (`plan`, `msg`)
 emit `LOOM_COMPLETE` only — the human is in the room and resolves
 friction in-turn, so the cannot-finish terminators are out of
 scope for those templates.

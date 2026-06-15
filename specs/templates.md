@@ -79,7 +79,7 @@ Current set:
 | `findings_walk.md` | Sole carrier of the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed review wire format per [gate.md § Findings and Minting](gate.md#findings-and-minting). Pinned only by `review.md`; an anti-drift verifier fails any other template that restates the wire format. |
 | `chat_marker_final_turn_only.md` | Restrict `LOOM_COMPLETE` emission to the **final** assistant turn of an interactive session. Included by `plan` and `msg`. |
 | `interview_modes.md` | Describe the "one by one" / "polish the spec" interview sub-modes |
-| `chat_interview.md` | Interactive-session discipline pinned by every interactive-session template (`plan`, `msg`): conversational prose Q&A only, no Claude Code option-picker / `AskUserQuestion` widget, and bd is the durable persistence destination for anything that needs to outlive the session — see *Chat Discipline* below |
+| `chat_interview.md` | Interactive-session discipline pinned by every interactive-session template (`plan`, `msg`): conversational prose Q&A only, no Claude Code option-picker / `AskUserQuestion` widget, and phase-authorized durable destinations for anything that needs to outlive the session — see *Chat Discipline* below |
 | `decomposition_discipline.md` | Pin the audit-before-fan-out and exact-roster rule on `todo`: every changed spec from driver preflight must be represented in `LOOM_TODO`, and every bead must correspond to evidence-confirmed missing work — see *Decomposition Discipline* below |
 | `plan_stage_rubric.md` | Gate the planning interview on completeness / coherence / invariant-clash before any commit. Carries the pending-modifier discipline prominently — see *Planning-Rubric Pending Discipline* below. |
 | `invariant_clash.md` | Describe the invariant-clash awareness scan (included transitively via `plan_stage_rubric.md`) |
@@ -123,25 +123,25 @@ walker input](gate.md#pending-support-in-structured-walker-input).
 
 | Partial | `plan` | `todo` | `loop` | `review` | `msg` |
 |---|:-:|:-:|:-:|:-:|:-:|
-| `context_pinning.md` | ? | ? | ✓ | ✓ | ✓ |
+| `context_pinning.md` | ✓ | ? | ✓ | ✓ | ✓ |
 | `style_rules.md` |  |  | ✓ | ✓ |  |
-| `spec_conventions.md` | ? |  |  |  |  |
+| `spec_conventions.md` | ✓ |  |  |  |  |
 | `spec_header.md` | ? | ? | ✓ | ✓ |  |
-| `companions_context.md` | ? | ? | ✓ | ✓ | ✓ |
-| `scratchpad.md` | ? | ? | ✓ | ✓ | ✓ |
-| `progress_markers.md` | ? |  | ✓ | ✓ |  |
+| `companions_context.md` | ✓ | ? | ✓ | ✓ | ✓ |
+| `scratchpad.md` | ✓ | ? | ✓ | ✓ | ✓ |
+| `progress_markers.md` | ✓ |  | ✓ | ✓ |  |
 | `todo_success.md` |  | ? |  |  |  |
 | `self_report_markers.md` |  | ? | ✓ | ✓ |  |
 | `findings_walk.md` |  |  |  | ✓ |  |
 | `options_format.md` |  | ? | ✓ | ✓ |  |
-| `chat_marker_final_turn_only.md` | ? |  |  |  | ✓ |
-| `interview_modes.md` | ? |  |  |  |  |
-| `chat_interview.md` | ? |  |  |  | ✓ |
+| `chat_marker_final_turn_only.md` | ✓ |  |  |  | ✓ |
+| `interview_modes.md` | ✓ |  |  |  |  |
+| `chat_interview.md` | ✓ |  |  |  | ✓ |
 | `decomposition_discipline.md` |  | ? |  |  |  |
-| `plan_stage_rubric.md` | ? |  |  |  |  |
-| `invariant_clash.md` | ? |  |  |  |  |
+| `plan_stage_rubric.md` | ✓ |  |  |  |  |
+| `invariant_clash.md` | ✓ |  |  |  |  |
 | `review_rubric.md` |  |  |  | ✓ |  |
-| `sibling_spec_editing.md` | ? |  |  |  |  |
+| `sibling_spec_editing.md` | ✓ |  |  |  |  |
 
 Pending cells mark planned include-graph updates whose prompt code has
 not landed yet. The walker permits those cells while absent and reports
@@ -558,12 +558,13 @@ the loop:
   replies "B" or "B with a tweak" or "neither, do Z" — natural
   prose, no picker UI.
 - **Persistence destinations.** Session-bridging memory — decisions,
-  context, follow-ups, anything future sessions need — goes into bd
-  (`bd update <id> --notes …`, bead descriptions, or new beads via
-  `bd create`) or spec files. bd persists across machines and after
-  containers exit. Claude Code's `MEMORY.md` / auto-memory system is
-  container-local and disappears with the container; treat it as
-  working notes for the current session only, not as durable storage.
+  context, follow-ups, anything future sessions need — goes only to the
+  durable surface this phase authorizes. In `loom plan`, durable
+  planning output goes in spec/index markdown or implementation notes;
+  plan does not write bd. In `loom msg`, bd notes/descriptions are the
+  authorized resolution surface. Claude Code's `MEMORY.md` / auto-memory
+  system is container-local and disappears with the container; treat it
+  as working notes for the current session only, not as durable storage.
 - The "one by one" sub-mode (see *Interview Modes*) is planning-
   specific and lives in a separate partial; the chat-discipline rules
   above apply to every interactive session, including msg-chat.
@@ -998,13 +999,15 @@ documents in front of the agent with zero configuration.
 - The partial body names the picker prohibition explicitly so a grep for
   the rule succeeds (no rule-by-implication)
   [check](grep -qi 'option-picker\|AskUserQuestion' crates/loom-templates/templates/partial/chat_interview.md)
-- The partial body names the bd-persistence clause distinctively so a grep
-  for the rule succeeds: interactive sessions persist cross-session memory
-  via bd (notes, descriptions, new beads), not via Claude Code's
-  `MEMORY.md` system which is container-local
+- The partial body names the persistence-destination clause distinctively
+  so a grep for the rule succeeds: interactive sessions persist
+  cross-session memory via the phase-authorized durable surface, not via
+  Claude Code's `MEMORY.md` system which is container-local; plan is
+  explicitly barred from bd writes while msg can use bd notes
   [check](grep -qi 'MEMORY.md\|bd update.*--notes' crates/loom-templates/templates/partial/chat_interview.md)
 - `msg.md` rendered prompt contains the chat-interview discipline clauses
-  (picker prohibition + bd-persistence) sourced from the pinned partial
+  (picker prohibition + persistence destinations) sourced from the pinned
+  partial
   [test](msg_template_renders_chat_interview_discipline)
 
 ### Agent-output markers
@@ -1480,9 +1483,11 @@ documents in front of the agent with zero configuration.
     Options are listed inline in prose; the user replies in prose.
     The partial also carries the **persistence-destination clause**:
     session-bridging memory (decisions, context, follow-ups) goes
-    into bd (notes, descriptions, new beads) or spec files, not
-    Claude Code's `MEMORY.md` system which is container-local and
-    disappears with the container. The "one by one" sub-mode is
+    only to the durable surface the phase authorizes: `loom plan`
+    writes spec/index markdown or implementation notes and does not
+    write bd, while `loom msg` can use bd notes/descriptions for
+    resolutions. Claude Code's `MEMORY.md` system is container-local
+    and disappears with the container. The "one by one" sub-mode is
     planning-specific and lives in a separate partial; the chat-
     discipline rules above apply to every interactive session,
     including msg-chat.

@@ -58,8 +58,7 @@ orientation.
 
 | Phase | Command | Lock | Inputs | Outputs |
 |-------|---------|------|--------|---------|
-| Plan (new) | `loom plan -n <label>` | `<label>.lock` | Project context | `specs/<label>.md`, state row |
-| Plan (update) | `loom plan -u <label>` | `<label>.lock` | Existing spec, notes | Updated spec + notes |
+| Plan | `loom plan [SPEC_LABEL ...]` | `plan.lock` | Project context, spec index, optional anchors | Spec/index markdown + notes |
 | Todo | `loom todo <label>` | `<label>.lock` | Spec, molecule | New beads via `bd create` |
 | Loop | `loom loop <label>` | `<label>.lock` | Beads, agent | Code changes, bead transitions |
 | Gate (verify) | `loom gate verify` | none | Spec annotations | Deterministic pass/fail |

@@ -1,10 +1,6 @@
 ## Scratchpad
 
-You have a per-session scratchpad at `.loom/scratch/<key>/scratch.md`,
-where `<key>` is your session's concurrency unit — the spec label for `loom
-plan` / `loom todo` sessions, the bead ID for `loom loop` / `loom gate` /
-`loom msg` sessions. The file starts empty; append to it as the session
-progresses.
+You have a per-session scratchpad at `{{ scratchpad_path }}`. The file starts empty; append to it as the session progresses.
 
 **Purpose.** This is a **compaction-recovery aid, not durable storage.** The
 file lives only for the lifetime of this session: the driver creates it at
