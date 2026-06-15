@@ -635,7 +635,7 @@ in Functional #4.
       same plan/todo/bead/epic root serialize via `flock`; the second
       waits via `MockClock` advance, then errors naming the held root.
       Crashed child releases lock immediately for parent
-  [test?](second_acquire_times_out_with_work_root_busy)
+  [test](second_acquire_times_out_with_work_root_busy)
 - Logging tee: renderer and on-disk `.jsonl` log subscribe to the
       same `AgentEvent` stream — capturing both yields line-for-line
       equality on the log side

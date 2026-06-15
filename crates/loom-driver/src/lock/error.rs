@@ -1,8 +1,30 @@
+use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
 use displaydoc::Display;
 use thiserror::Error;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseLock {
+    Planning,
+    Todo,
+}
+
+impl PhaseLock {
+    pub fn file_stem(self) -> &'static str {
+        match self {
+            Self::Planning => "plan",
+            Self::Todo => "todo",
+        }
+    }
+}
+
+impl fmt::Display for PhaseLock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.file_stem())
+    }
+}
 
 #[derive(Debug, Display, Error)]
 pub enum LockError {
@@ -20,14 +42,14 @@ pub enum LockError {
         source: io::Error,
     },
 
-    /// another loom command is operating on {label}
-    SpecBusy { label: String },
+    /// another loom command is operating on {phase} phase
+    PhaseBusy { phase: PhaseLock },
 
-    /// loom init cannot run while spec lock is held: {label}
-    WorkspaceBusy { label: String },
+    /// another loom command is operating on work root {root}
+    WorkRootBusy { root: String },
 
-    /// `workspace` is reserved and cannot be used as a spec label
-    ReservedLabel,
+    /// loom init cannot run while lock is held: {root}
+    WorkspaceBusy { root: String },
 
     /// io failure while inspecting locks directory
     Io(#[from] io::Error),

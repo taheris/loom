@@ -1,7 +1,6 @@
 //! `loom use <label>` — set the active spec via the state DB.
 //!
-//! Acquires the per-spec lock for `label` (per the `Concurrency & Locking`
-//! lock matrix in `specs/harness.md`), opens the state DB, and writes
+//! Acquires the planning phase lock, opens the state DB, and writes
 //! `current_spec`. Round-trips with [`super::status::load`].
 
 use std::path::Path;
@@ -11,12 +10,12 @@ use displaydoc::Display;
 use thiserror::Error;
 
 use loom_driver::identifier::SpecLabel;
-use loom_driver::lock::{LockError, LockManager};
+use loom_driver::lock::{LockError, LockManager, PhaseLock};
 use loom_driver::state::{StateDb, StateError};
 
-/// Default timeout used by [`run`]. Mirrors `LockManager::acquire_spec`'s
-/// 5-second wait so the binary surfaces `SpecBusy` after the same delay as
-/// every other spec-scoped command.
+/// Default timeout used by [`run`]. Mirrors the lock manager's 5-second wait
+/// so the binary surfaces phase contention after the same delay as other
+/// mutating commands.
 pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Failures raised by [`run`].
@@ -29,10 +28,10 @@ pub enum UseError {
     State(#[from] StateError),
 }
 
-/// Acquire `<label>.lock` (waiting up to [`DEFAULT_LOCK_TIMEOUT`]) and
+/// Acquire the planning lock (waiting up to [`DEFAULT_LOCK_TIMEOUT`]) and
 /// persist `current_spec = label` in the state DB. `db_path` is typically
-/// `<workspace>/.loom/state.db`; the caller is responsible for
-/// ensuring [`super::init::run`] has populated it.
+/// `<workspace>/.loom/state.db`; the caller is responsible for ensuring
+/// [`super::init::run`] has populated it.
 pub fn run(workspace: &Path, label: &SpecLabel, db_path: &Path) -> Result<(), UseError> {
     run_with_timeout(workspace, label, db_path, DEFAULT_LOCK_TIMEOUT)
 }
@@ -46,7 +45,7 @@ pub fn run_with_timeout(
     timeout: Duration,
 ) -> Result<(), UseError> {
     let lock_mgr = LockManager::new(workspace)?;
-    let _guard = lock_mgr.acquire_spec_with_timeout(label, timeout)?;
+    let _guard = lock_mgr.acquire_phase_with_timeout(PhaseLock::Planning, timeout)?;
     let db = StateDb::open(db_path)?;
     let _ = db.spec(label)?;
     db.set_current_spec(label)?;
@@ -87,11 +86,11 @@ mod tests {
     }
 
     #[test]
-    fn use_acquires_per_spec_lock() -> Result<()> {
+    fn use_acquires_planning_lock() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let _seed = seed_spec(dir.path(), "alpha")?;
         let mgr = LockManager::new(dir.path())?;
-        let _hold = mgr.acquire_spec(&SpecLabel::new("alpha"))?;
+        let _hold = mgr.acquire_planning()?;
 
         match run_with_timeout(
             dir.path(),
@@ -99,11 +98,11 @@ mod tests {
             &db_path(dir.path()),
             Duration::from_millis(100),
         ) {
-            Err(UseError::Lock(LockError::SpecBusy { label })) => {
-                assert_eq!(label, "alpha");
+            Err(UseError::Lock(LockError::PhaseBusy { phase })) => {
+                assert_eq!(phase, PhaseLock::Planning);
                 Ok(())
             }
-            other => Err(anyhow::anyhow!("expected SpecBusy, got {other:?}")),
+            other => Err(anyhow::anyhow!("expected PhaseBusy(plan), got {other:?}")),
         }
     }
 

@@ -21,7 +21,7 @@ use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{AgentObserversConfig, LoomConfig, Phase};
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
-use loom_driver::lock::LockManager;
+use loom_driver::lock::{LockGuard, LockManager};
 use loom_driver::logging::{LogSink, sweep_retention_at};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
@@ -567,7 +567,7 @@ fn main() -> ExitCode {
 
     if std::env::var_os(LOOM_INSIDE_ENV).is_some() && cli.command.refused_inside_loom() {
         eprintln!(
-            "error: loom cannot run inside a loom-managed container\n  this command spawns containers or mutates workspace state, which\n  would create a nested driver. read-only commands (status, logs,\n  spec) are still available."
+            "error: loom cannot run inside a loom-managed container\n  this command spawns containers or mutates workspace state, which\n  would create a nested driver. read-only commands (status, logs,\n  spec) and deterministic gate inspection commands are still available."
         );
         return ExitCode::from(2);
     }
@@ -1803,6 +1803,7 @@ fn run_gate_mint(
     let runtime = tokio::runtime::Runtime::new()?;
     let summary = match scope {
         ResolvedMintScope::Molecule(molecule) => {
+            let _guard = acquire_work_root_lock(workspace, molecule.as_str())?;
             let dry_run = args.dry_run;
             runtime.block_on(async move {
                 let bd = BdClient::new();
@@ -2310,8 +2311,8 @@ fn run_loop_cmd(
 ) -> anyhow::Result<LoopOutcome> {
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let label = resolve_spec_label(workspace, spec)?;
-    let lock_mgr = LockManager::new(workspace)?;
-    let guard = lock_mgr.acquire_spec(&label)?;
+    let runtime = tokio::runtime::Runtime::new()?;
+    let work_root_guard = acquire_active_work_root_lock(workspace, &label, &runtime)?;
 
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     sweep_retention_at(
@@ -2328,7 +2329,6 @@ fn run_loop_cmd(
     let cli_profile = profile.map(ProfileName::new);
 
     let loom_bin = current_loom_bin()?;
-    let runtime = tokio::runtime::Runtime::new()?;
 
     let ff_git =
         GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?;
@@ -2379,6 +2379,7 @@ fn run_loop_cmd(
     }
 
     if !parallel.is_one() {
+        let _guard = work_root_guard;
         let parallel_n = parallel.get();
         let workspace_buf = workspace.to_path_buf();
         let label_for_async = label.clone();
@@ -2493,10 +2494,12 @@ fn run_loop_cmd(
                 }
             },
         )
-        .with_handoff_lock(guard)
         .with_style_rules(style_rules_for_run)
         .with_loom_config(loom_cfg_for_run)
         .with_phase_log_root(logs_root_for_controller);
+        if let Some(guard) = work_root_guard {
+            controller = controller.with_handoff_lock(guard);
+        }
         run_loop(&mut controller, mode, retry_policy, max_iterations).await
     })?;
     // The marker is minted inside the molecule-completion push gate's
@@ -3110,10 +3113,6 @@ fn resolved_agent_for(
     Ok(selection)
 }
 
-#[expect(
-    dead_code,
-    reason = "scope flags parsed by clap; consumed once per-bead/diff/tree scoping lands"
-)]
 struct ReviewOpts {
     bead: Option<String>,
     diff: Option<String>,
@@ -3132,8 +3131,9 @@ fn run_review(
 ) -> anyhow::Result<()> {
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let label = resolve_spec_label(workspace, spec)?;
-    let lock_mgr = LockManager::new(workspace)?;
-    let guard = lock_mgr.acquire_spec(&label)?;
+    let runtime = tokio::runtime::Runtime::new()?;
+    let work_root_guard =
+        acquire_review_work_root_lock(workspace, &label, opts.bead.as_deref(), &runtime)?;
 
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     let selection = resolved_agent_for(&config, agent_override, Phase::Review)?;
@@ -3143,7 +3143,6 @@ fn run_review(
 
     let loom_bin = current_loom_bin()?;
     let state = std::sync::Arc::new(StateDb::open(workspace.join(".loom/state.db"))?);
-    let runtime = tokio::runtime::Runtime::new()?;
     let workspace_buf = workspace.to_path_buf();
     let logs_root = workspace.join(".loom/logs");
     let label_for_sink = label.clone();
@@ -3202,16 +3201,19 @@ fn run_review(
                     Ok((outcome, marker, output))
                 }
             },
-        )
-        .with_handoff_lock(guard)
-        .with_phase_log(logs_root, phase_when)
-        .with_style_rules(style_rules_for_review)
-        .with_integration_branch(integration_branch_for_review)
-        .with_hook_timeout(hook_timeout_for_review)
-        .with_push_range(opts.diff.clone())
-        .with_lane(opts.lane)
-        .with_dispatch_scope(dispatch_scope)
-        .with_suppressions(suppressions_for_review);
+        );
+        if let Some(guard) = work_root_guard {
+            controller = controller.with_handoff_lock(guard);
+        }
+        let mut controller = controller
+            .with_phase_log(logs_root, phase_when)
+            .with_style_rules(style_rules_for_review)
+            .with_integration_branch(integration_branch_for_review)
+            .with_hook_timeout(hook_timeout_for_review)
+            .with_push_range(opts.diff.clone())
+            .with_lane(opts.lane)
+            .with_dispatch_scope(dispatch_scope)
+            .with_suppressions(suppressions_for_review);
         run_review_loop(&mut controller, IterationCap::default()).await
     })?;
     let review_stdout = captured_review_stdout
@@ -3297,13 +3299,7 @@ fn run_msg(
         return run_msg_chat(workspace, spec_filter, agent_override);
     }
     let _manifest = ProfileImageManifest::from_env()?;
-    if let Some(label) = &spec_filter {
-        let lock_mgr = LockManager::new(workspace)?;
-        let _guard = lock_mgr.acquire_spec(label)?;
-        run_msg_inner(number, bead, option, reply, dismiss, spec_filter)
-    } else {
-        run_msg_inner(number, bead, option, reply, dismiss, None)
-    }
+    run_msg_inner(workspace, number, bead, option, reply, dismiss, spec_filter)
 }
 
 /// `loom msg -c [-s <label>]` — interactive Drafter chat session.
@@ -3326,6 +3322,11 @@ fn run_msg_chat(
     spec_filter: Option<SpecLabel>,
     agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let _guard = match &spec_filter {
+        Some(label) => acquire_active_work_root_lock(workspace, label, &runtime)?,
+        None => None,
+    };
     let manifest = ProfileImageManifest::from_env()?;
     let opts = loom_workflow::msg::chat::ChatOpts {
         spec_filter,
@@ -3348,6 +3349,7 @@ fn run_msg_chat(
 }
 
 fn run_msg_inner(
+    workspace: &Path,
     number: Option<u32>,
     bead: Option<String>,
     option: Option<u32>,
@@ -3429,6 +3431,7 @@ fn run_msg_inner(
     let label_to_remove = kind.label().to_string();
 
     if let Some(opt_idx) = option {
+        let _guard = acquire_work_root_lock(workspace, target.as_str())?;
         // `-o <int>` strict option lookup: parse the bead's description,
         // require `### Option <int>` to exist, compose the canonical
         // `"Chose option N — title: body"` note. Validation runs before
@@ -3466,6 +3469,7 @@ fn run_msg_inner(
     }
 
     if let Some(text) = reply {
+        let _guard = acquire_work_root_lock(workspace, target.as_str())?;
         // `-r <text>` verbatim: store the raw text on the bead, drop the
         // loom:* label. Works on any bead kind regardless of Options.
         let new_notes = compose_resolved_notes(target_bead.notes.as_deref(), &text);
@@ -3492,6 +3496,7 @@ fn run_msg_inner(
     }
 
     if dismiss {
+        let _guard = acquire_work_root_lock(workspace, target.as_str())?;
         let new_notes = compose_resolved_notes(target_bead.notes.as_deref(), DISMISS_NOTE);
         let runtime = tokio::runtime::Runtime::new()?;
         let id_clone = target.clone();
@@ -3524,7 +3529,7 @@ fn run_todo(
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let label = resolve_spec_label(workspace, None)?;
     let lock_mgr = LockManager::new(workspace)?;
-    let _guard = lock_mgr.acquire_spec(&label)?;
+    let _guard = lock_mgr.acquire_todo()?;
 
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     let selection = resolved_agent_for(&config, agent_override, Phase::Todo)?;
@@ -3594,6 +3599,38 @@ fn run_todo(
         }
         Err(e) => Err(e.into()),
     }
+}
+
+fn acquire_work_root_lock(workspace: &Path, root: &str) -> anyhow::Result<LockGuard> {
+    let root = BeadId::new(root)?;
+    let lock_mgr = LockManager::new(workspace)?;
+    Ok(lock_mgr.acquire_work_root(&root)?)
+}
+
+fn acquire_active_work_root_lock(
+    workspace: &Path,
+    label: &SpecLabel,
+    runtime: &tokio::runtime::Runtime,
+) -> anyhow::Result<Option<LockGuard>> {
+    let active = runtime.block_on(async {
+        let bd = BdClient::new();
+        loom_workflow::resolve::resolve_open_epic(&bd, label).await
+    })?;
+    active
+        .map(|root| acquire_work_root_lock(workspace, root.as_str()))
+        .transpose()
+}
+
+fn acquire_review_work_root_lock(
+    workspace: &Path,
+    label: &SpecLabel,
+    bead: Option<&str>,
+    runtime: &tokio::runtime::Runtime,
+) -> anyhow::Result<Option<LockGuard>> {
+    if let Some(bead) = bead {
+        return acquire_work_root_lock(workspace, bead).map(Some);
+    }
+    acquire_active_work_root_lock(workspace, label, runtime)
 }
 
 fn resolve_spec_label(workspace: &Path, spec: Option<String>) -> anyhow::Result<SpecLabel> {

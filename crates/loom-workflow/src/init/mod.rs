@@ -1,7 +1,7 @@
 //! `loom init` — workspace bootstrap and optional state-DB rebuild.
 //!
-//! Acquires the workspace lock (errors immediately if any per-spec lock is
-//! held), ensures `<workspace>/loom.toml` and `.loom/state.db`
+//! Acquires the workspace lock (errors immediately if any phase or work-root
+//! lock is held), ensures `<workspace>/loom.toml` and `.loom/state.db`
 //! exist, and — when `--rebuild` is passed — drops/recreates the state DB
 //! and repopulates it from `specs/*.md` plus a caller-supplied slice of
 //! active molecules.
@@ -71,7 +71,7 @@ pub struct MaterializedIntegration {
 /// Run `loom init` against `workspace`.
 ///
 /// 1. Acquires the workspace lock — errors immediately with `WorkspaceBusy`
-///    if any per-spec `<label>.lock` is held.
+///    if any phase or work-root lock is held.
 /// 2. Creates `<workspace>/.loom/` and writes `loom.toml` if it
 ///    does not already exist (existing config files are preserved).
 /// 3. Opens `state.db` (creating the schema on first open). When
@@ -899,14 +899,13 @@ mod tests {
     }
 
     #[test]
-    fn workspace_lock_errors_when_spec_lock_held() -> Result<()> {
+    fn workspace_lock_errors_when_phase_lock_held() -> Result<()> {
         let dir = temp_workspace()?;
-        // Hold a per-spec lock by acquiring through a separate manager.
         let mgr = LockManager::new(dir.path())?;
-        let _spec_guard = mgr.acquire_spec(&SpecLabel::new("alpha"))?;
+        let _phase_guard = mgr.acquire_planning()?;
         match run(dir.path(), InitOpts::default(), &[]) {
-            Err(InitError::Lock(LockError::WorkspaceBusy { label })) => {
-                assert_eq!(label, "alpha");
+            Err(InitError::Lock(LockError::WorkspaceBusy { root })) => {
+                assert_eq!(root, "plan");
                 Ok(())
             }
             other => Err(anyhow::anyhow!("expected WorkspaceBusy, got {other:?}")),

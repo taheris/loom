@@ -1,9 +1,7 @@
 //! CLI guard at process entry: when `LOOM_INSIDE=1` is set in the host
 //! environment, container-spawning and workspace-mutating subcommands
-//! refuse to execute and read-only subcommands run normally.
-//!
-//! Spec: `harness.md` § Nested-Loom Guard, success criteria
-//! `test_nested_loom_guard_refuses` / `test_nested_loom_guard_allows_readonly`.
+//! refuse to execute and read-only/deterministic inspection subcommands
+//! run normally.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -20,22 +18,17 @@ fn loom_with_inside_env(args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn mutating_subcommands_refuse_with_loom_inside_set() {
-    // Each invocation appends `--help` so clap would normally exit 0 with
-    // help text; the guard must intercept before clap reaches that path.
-    // (Plain `init`/`run`/etc. would also work but might fail for other
-    // reasons in CI; the guard runs *after* parse, so the subcommand name
-    // is what we care about.)
+fn mutating_and_llm_spawning_subcommands_refuse_with_loom_inside_set() {
     for sub in [
         &["init"][..],
         &["use", "harness"],
         &["plan", "tmp"],
         &["loop", "--once"],
-        // `gate audit` triggers an LLM rubric path that spawns containers,
-        // so it falls under the nested-loom guard. The deterministic
-        // `gate` paths (bare status, `verify` / `check` / `test` /
-        // `system`) are read-only and tested in the bypass case below.
-        &["gate", "audit"],
+        &["gate", "audit", "--tree"],
+        &["gate", "mint", "--tree"],
+        &["gate", "review", "--tree"],
+        &["gate", "judge", "--tree"],
+        &["gate", "rubric", "--tree"],
         &["msg"],
         &["todo"],
     ] {
@@ -72,7 +65,7 @@ fn plan_accepts_optional_anchor_labels_and_interspersed_options() {
 }
 
 #[test]
-fn readonly_subcommands_run_under_loom_inside_set() {
+fn readonly_and_deterministic_gate_subcommands_run_under_loom_inside_set() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     std::fs::create_dir_all(workspace.join(".loom")).unwrap();
@@ -84,7 +77,18 @@ fn readonly_subcommands_run_under_loom_inside_set() {
     drop(db);
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
-    for sub in [&["status"][..], &["logs"], &["spec"], &["gate"]] {
+    for sub in [
+        &["status"][..],
+        &["logs"],
+        &["spec"],
+        &["gate"],
+        &["gate", "status", "--tree"],
+        &["gate", "verify", "--tree"],
+        &["gate", "check", "--tree"],
+        &["gate", "test", "--tree"],
+        &["gate", "system", "--tree"],
+        &["gate", "verify-marker"],
+    ] {
         let out = Command::new(loom_bin)
             .arg("--workspace")
             .arg(workspace)
@@ -95,7 +99,7 @@ fn readonly_subcommands_run_under_loom_inside_set() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             !stderr.contains("loom cannot run inside"),
-            "read-only `loom {}` should bypass nested-loom guard, got:\n{stderr}",
+            "inspection `loom {}` should bypass nested-loom guard, got:\n{stderr}",
             sub.join(" "),
         );
     }

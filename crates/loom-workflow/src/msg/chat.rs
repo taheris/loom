@@ -22,14 +22,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 use askama::Template;
 use loom_driver::agent::AgentKind;
 use loom_driver::bd::{BdClient, Bead, ListOpts};
 use loom_driver::config::{LoomConfig, Phase};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
-use loom_driver::lock::{LockGuard, LockManager};
 use loom_driver::profile_manifest::{ImageEntry, ProfileError, ProfileImageManifest};
 use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
 use loom_driver::state::StateDb;
@@ -54,8 +52,7 @@ pub const WRIX_DEFAULT_IMAGE_SOURCE: &str = "WRIX_DEFAULT_IMAGE_SOURCE";
 #[derive(Debug)]
 pub struct ChatOpts {
     /// Optional `-s <label>` filter. When `Some`, only beads carrying
-    /// `spec:<label>` are surfaced in the rendered prompt and the
-    /// per-spec lock is acquired for the duration of the session.
+    /// `spec:<label>` are surfaced in the rendered prompt.
     pub spec_filter: Option<SpecLabel>,
     /// Optional `--profile <name>` override. Wins over per-phase
     /// config and the built-in `base` default.
@@ -97,8 +94,6 @@ pub enum ChatError {
     State(#[from] loom_driver::state::StateError),
     #[error("scratch session io failed")]
     Scratch(#[from] std::io::Error),
-    #[error("lock manager: {0}")]
-    Lock(String),
     #[error("wrix exited with status {status}")]
     WrixExit { status: String },
     #[error("agent selection: {0}")]
@@ -116,20 +111,6 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     let (profile, agent_kind) =
         resolve_chat_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
     let image: &ImageEntry = opts.manifest.lookup(&profile)?;
-
-    // Lock only when a spec filter is in scope — cross-spec sessions
-    // don't take a workspace-wide lock since `loom msg --chat` is the
-    // single-writer recovery path the user runs by hand.
-    let lock_mgr = LockManager::new(workspace).map_err(|e| ChatError::Lock(e.to_string()))?;
-    let _guard: Option<LockGuard> = if let Some(label) = &opts.spec_filter {
-        Some(
-            lock_mgr
-                .acquire_spec_with_timeout(label, Duration::from_secs(5))
-                .map_err(|e| ChatError::Lock(e.to_string()))?,
-        )
-    } else {
-        None
-    };
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

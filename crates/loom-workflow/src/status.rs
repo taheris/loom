@@ -154,12 +154,13 @@ mod tests {
     /// `load` must be safe to call without any explicit lock; the lock-matrix
     /// row for read-only commands is "no lock acquired". This sanity check
     /// confirms the function compiles without borrowing a `LockGuard` and
-    /// that an active spec lock does not influence the call.
+    /// that an active work-root lock does not influence the call.
     #[test]
     fn no_lock_required_to_call_load() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let mgr = loom_driver::lock::LockManager::new(dir.path())?;
-        let _spec_guard = mgr.acquire_spec(&SpecLabel::new("alpha"))?;
+        let root = loom_driver::identifier::BeadId::new("lm-alpha")?;
+        let _work_root_guard = mgr.acquire_work_root(&root)?;
         let db = fresh_db(dir.path())?;
         let _ = load(&db, "main".to_string())?;
         Ok(())

@@ -361,7 +361,7 @@ where
         }
     }
 
-    /// Hand the spec lock to the controller so `exec_run` can drop it
+    /// Hand the work-root lock to the controller so `exec_run` can drop it
     /// before spawning the `loom loop` child (which acquires the same lock).
     pub fn with_handoff_lock(mut self, guard: LockGuard) -> Self {
         self.lock = Some(guard);
@@ -1142,7 +1142,7 @@ where
     }
 
     async fn exec_run(&mut self) -> Result<(), ReviewError> {
-        // Release the spec lock before spawning the child — `loom loop`
+        // Release the work-root lock before spawning the child — `loom loop`
         // acquires the same lock and would otherwise time out behind us.
         self.lock.take();
         let status = Command::new(&self.loom_bin)
@@ -2856,8 +2856,8 @@ mod tests {
     }
 
     /// Regression: `exec_run` (the review → run handoff for auto-iterate)
-    /// must release the spec lock before spawning, so the `loom loop` child
-    /// can acquire it. Mirror of the run-side test in `run/production.rs`.
+    /// must release the work-root lock before spawning, so the `loom loop`
+    /// child can acquire it. Mirror of the run-side test.
     #[tokio::test(flavor = "multi_thread")]
     async fn exec_run_releases_lock_before_spawning_child() {
         use loom_driver::clock::SystemClock;
@@ -2872,8 +2872,9 @@ mod tests {
         let manifest = stub_manifest(&workspace);
         let mgr = LockManager::with_state_home(&workspace, state_home.path()).unwrap();
         let label = SpecLabel::new("alpha");
+        let root = BeadId::new("lm-review").unwrap();
         let clock = SystemClock::new();
-        let guard = mgr.acquire_spec_async(&label, &clock).await.unwrap();
+        let guard = mgr.acquire_work_root_async(&root, &clock).await.unwrap();
 
         // Stand-in for the `loom` binary; /bin/true is absent on NixOS.
         let stub = dir.path().join("loom-stub.sh");
@@ -2904,7 +2905,7 @@ mod tests {
         ctrl.exec_run().await.expect("exec_run ok");
 
         let _reacquired = mgr
-            .acquire_spec_with_timeout_async(&label, &clock, Duration::from_millis(100))
+            .acquire_work_root_with_timeout_async(&root, &clock, Duration::from_millis(100))
             .await
             .expect("lock must be reacquirable after exec_run");
     }

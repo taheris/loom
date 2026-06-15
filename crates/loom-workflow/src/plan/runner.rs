@@ -24,8 +24,7 @@ pub const WRIX_DEFAULT_IMAGE_REF: &str = "WRIX_DEFAULT_IMAGE_REF";
 /// `podman load`. Mirrors `lib/sandbox/linux/default.nix`.
 pub const WRIX_DEFAULT_IMAGE_SOURCE: &str = "WRIX_DEFAULT_IMAGE_SOURCE";
 
-/// Default timeout used by [`run`] — mirrors the rest of the spec-scoped
-/// command surface (see `LockManager::acquire_spec`).
+/// Default timeout used by [`run`] — mirrors the phase-lock command surface.
 pub const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Options accepted by [`run`].
@@ -74,10 +73,10 @@ pub fn run_with_timeout(
     timeout: Duration,
 ) -> Result<PlanReport, PlanError> {
     let anchor_labels = opts.anchor_labels;
-    let plan_lock = SpecLabel::new("plan");
 
     let lock_mgr = LockManager::new(workspace)?;
-    let _guard = lock_mgr.acquire_spec_with_timeout(&plan_lock, timeout)?;
+    let _guard =
+        lock_mgr.acquire_phase_with_timeout(loom_driver::lock::PhaseLock::Planning, timeout)?;
 
     let cfg = LoomConfig::load(LoomConfig::resolve_path(workspace))
         .unwrap_or_else(|_| LoomConfig::default());

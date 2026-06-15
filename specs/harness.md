@@ -2623,22 +2623,22 @@ Criteria.
 
 - `plan.lock`, `todo.lock`, and `<bead-or-epic-id>.lock` files are
       created outside the workspace and released on process exit
-  [test?](phase_and_work_root_locks_create_expected_files)
+  [test](phase_and_work_root_locks_create_expected_files)
 - Two mutating commands for the same phase/work root serialize: the
       second waits up to 5s, then errors clearly naming the held root
-  [test?](second_acquire_times_out_with_work_root_busy)
+  [test](second_acquire_times_out_with_work_root_busy)
 - Independent work-root commands run concurrently when they address
       different bead/epic ids
-  [test?](different_work_root_locks_do_not_block)
+  [test](different_work_root_locks_do_not_block)
 - Read-only commands (`status`, `logs`, `spec`) acquire no lock and run
       during an active `loom loop`
-  [test](readonly_paths_unaffected_by_spec_lock)
+  [test](readonly_paths_unaffected_by_work_root_lock)
 - `loom init` and `loom init --rebuild` acquire the workspace lock
       and error immediately if any plan/todo/work-root lock is held
-  [test?](acquire_workspace_errors_when_phase_or_work_root_lock_held)
+  [test](acquire_workspace_errors_when_phase_or_work_root_lock_held)
 - Crashed loom process leaves no stale lock (kernel releases flock on
       exit; new invocation acquires immediately)
-  [test](crash_releases_spec_lock)
+  [test](crash_releases_work_root_lock)
 - Lock files live under `$XDG_STATE_HOME/loom/locks/<workspace-
       basename>/` (default `~/.local/state/loom/locks/<basename>/`); no
       lock files are created inside the workspace bind-mount
@@ -2655,11 +2655,11 @@ Criteria.
       `loom gate mint`, `loom gate review`, `loom gate judge`,
       `loom gate rubric`, and `loom gate audit`) refuse with a clear
       error
-  [test?](mutating_and_llm_spawning_subcommands_refuse_with_loom_inside_set)
+  [test](mutating_and_llm_spawning_subcommands_refuse_with_loom_inside_set)
 - With `LOOM_INSIDE=1`, read-only/deterministic inspection subcommands
       (`status`, `logs`, `spec`, and deterministic `loom gate`
       subcommands such as `verify`) still run normally
-  [test?](readonly_and_deterministic_gate_subcommands_run_under_loom_inside_set)
+  [test](readonly_and_deterministic_gate_subcommands_run_under_loom_inside_set)
 
 ### Loop UX & logging
 

@@ -208,7 +208,7 @@ where
         self
     }
 
-    /// Hand the spec lock to the controller so `exec_review` can drop it
+    /// Hand the work-root lock to the controller so `exec_review` can drop it
     /// before spawning child `loom gate` commands that acquire the same lock.
     pub fn with_handoff_lock(mut self, guard: LockGuard) -> Self {
         self.lock = Some(guard);
@@ -2003,7 +2003,7 @@ mod tests {
         }
     }
 
-    /// Regression: `loom loop` used to hold the spec lock for its whole
+    /// Regression: `loom loop` used to hold the work-root lock for its whole
     /// lifetime, so the `loom gate review` child it spawned at the molecule-complete
     /// handoff timed out trying to acquire the same lock. `exec_review` must
     /// drop the held [`LockGuard`] before spawning, leaving the kernel-level
@@ -2019,9 +2019,10 @@ mod tests {
         let manifest = write_manifest(dir.path());
         let mgr = LockManager::new(dir.path()).expect("lock manager");
         let label = SpecLabel::new("alpha");
+        let root = BeadId::new("lm-lock").expect("valid bead id");
         let clock = SystemClock::new();
         let guard = mgr
-            .acquire_spec_async(&label, &clock)
+            .acquire_work_root_async(&root, &clock)
             .await
             .expect("first acquire");
 
@@ -2066,7 +2067,7 @@ mod tests {
         // fast on the regression (held-lock) path: it would error in <100ms
         // rather than wait the default 5s.
         let _reacquired = mgr
-            .acquire_spec_with_timeout_async(&label, &clock, Duration::from_millis(100))
+            .acquire_work_root_with_timeout_async(&root, &clock, Duration::from_millis(100))
             .await
             .expect("lock must be reacquirable after exec_review");
     }
@@ -2792,14 +2793,15 @@ mod tests {
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
         let label = SpecLabel::new("gate");
+        let root = BeadId::new("lm-gate").expect("valid bead id");
         let mgr = loom_driver::lock::LockManager::with_state_home(&workspace, dir.path())
             .expect("lock manager");
         let clock = loom_driver::clock::SystemClock::new();
         let guard = mgr
-            .acquire_spec_async(&label, &clock)
+            .acquire_work_root_async(&root, &clock)
             .await
             .expect("first acquire");
-        let lock_path = mgr.locks_dir().join("gate.lock");
+        let lock_path = mgr.locks_dir().join("lm-gate.lock");
         let stub = dir.path().join("loom-stub.sh");
         std::fs::write(
             &stub,
