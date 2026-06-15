@@ -3,8 +3,9 @@
 //! Wires `BdClient` for bead lookup/close/clarify, a `tokio::process::Command`
 //! shell-out for `exec_review`, and a caller-provided dispatch closure for the
 //! actual agent invocation. The closure pattern keeps backend selection
-//! (`PiBackend` vs `ClaudeBackend`) inside the binary's `dispatch` match —
-//! `loom-workflow` never sees the concrete backend types, mirroring the shape
+//! (`PiBackend`, `ClaudeBackend`, or `DirectBackend`) inside the binary's
+//! `dispatch` match — `loom-workflow` never sees the concrete backend types,
+//! mirroring the shape
 //! used by `ProductionTodoController` and `run_parallel_batch`.
 //!
 //! Per-bead profile dispatch is wired through [`build_spawn_config_from_manifest`]:
@@ -18,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
-use loom_driver::agent::{ProtocolError, SpawnConfig};
+use loom_driver::agent::{AgentRuntime, ProtocolError, SpawnConfig};
 use loom_driver::bd::{
     BdClient, Bead, CommandRunner, ListOpts, ReadyOpts, TokioRunner, UpdateOpts,
 };
@@ -96,6 +97,7 @@ where
     manifest: Arc<ProfileImageManifest>,
     cli_profile: Option<ProfileName>,
     phase_default: ProfileName,
+    runtime: AgentRuntime,
     spawn: S,
     /// Spec lock dropped before exec'ing child `loom gate` commands.
     lock: Option<LockGuard>,
@@ -176,6 +178,7 @@ where
             manifest,
             cli_profile,
             phase_default,
+            runtime: AgentRuntime::Pi,
             spawn,
             lock: None,
             style_rules: "docs/style-rules.md".to_string(),
@@ -224,6 +227,11 @@ where
     /// rely on the built-in default.
     pub fn with_style_rules(mut self, path: String) -> Self {
         self.style_rules = path;
+        self
+    }
+
+    pub fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
+        self.runtime = runtime;
         self
     }
 
@@ -456,6 +464,7 @@ where
             bead,
             self.cli_profile.as_ref(),
             &self.phase_default,
+            self.runtime,
             worktree.path.clone(),
             initial_prompt,
             scratch.path().to_path_buf(),
@@ -469,6 +478,21 @@ where
                 drop(scratch);
                 return Ok(AgentOutcome::UnknownProfile {
                     error: format_unknown_profile_error(&name, &self.manifest),
+                });
+            }
+            Err(ProfileError::UnknownRuntimeForProfile {
+                profile,
+                runtime,
+                declared_runtimes,
+                ..
+            }) => {
+                drop(scratch);
+                return Ok(AgentOutcome::UnknownRuntimeForProfile {
+                    error: format_unknown_runtime_for_profile_error(
+                        &profile,
+                        runtime,
+                        &declared_runtimes,
+                    ),
                 });
             }
             Err(e) => {
@@ -1200,6 +1224,26 @@ pub fn format_unknown_profile_error(
     format!("requested profile:{requested} not declared; {declared_part}")
 }
 
+pub fn format_unknown_runtime_for_profile_error(
+    profile: &ProfileName,
+    runtime: AgentRuntime,
+    declared_runtimes: &[AgentRuntime],
+) -> String {
+    let declared: Vec<String> = declared_runtimes
+        .iter()
+        .map(|runtime| runtime.as_str().to_string())
+        .collect();
+    let declared_part = if declared.is_empty() {
+        format!("profile:{profile} declares no runtimes")
+    } else {
+        format!(
+            "profile:{profile} declares runtimes: {}",
+            declared.join(", ")
+        )
+    };
+    format!("requested profile:{profile} runtime:{runtime} not declared; {declared_part}")
+}
+
 /// Translate a `(SessionResult, Option<ExitSignal>)` pair into an
 /// [`AgentOutcome`]. Marker → outcome routing goes through the canonical
 /// [`crate::review::decide`] gate function (FR12 — single source of truth);
@@ -1566,7 +1610,7 @@ mod tests {
 
     fn write_manifest(dir: &std::path::Path) -> Arc<ProfileImageManifest> {
         let body = r#"{
-          "base": { "ref": "localhost/wrix-base:abc", "source": "/nix/store/aaa-image-base" }
+          "base": { "pi": { "ref": "localhost/wrix-base-pi:abc", "source": "/nix/store/aaa-image-base-pi" }, "claude": { "ref": "localhost/wrix-base-claude:abc", "source": "/nix/store/aaa-image-base-claude" }, "direct": { "ref": "localhost/wrix-base-direct:abc", "source": "/nix/store/aaa-image-base-direct" } }
         }"#;
         let path = dir.join("profile-images.json");
         std::fs::write(&path, body).expect("write manifest");
@@ -1685,7 +1729,7 @@ mod tests {
             .expect("run_bead ok");
         assert_eq!(outcome, AgentOutcome::Success);
         let cfg = captured.lock().unwrap().take().expect("closure called");
-        assert_eq!(cfg.image_ref, "localhost/wrix-base:abc");
+        assert_eq!(cfg.image_ref, "localhost/wrix-base-pi:abc");
         assert!(cfg.initial_prompt.contains("lm-1"));
     }
 

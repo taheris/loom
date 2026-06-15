@@ -1,3 +1,4 @@
+use loom_driver::agent::AgentRuntime;
 use loom_driver::bd::Label;
 use loom_driver::identifier::ProfileName;
 use loom_driver::profile_manifest::{ImageEntry, ProfileError, ProfileImageManifest};
@@ -48,9 +49,10 @@ pub fn resolve_profile_image<'a>(
     bead_labels: &[Label],
     override_: Option<&ProfileName>,
     phase_default: &ProfileName,
+    runtime: AgentRuntime,
 ) -> Result<&'a ImageEntry, ProfileError> {
     let name = resolve_profile(bead_labels, override_, phase_default);
-    manifest.lookup(&name)
+    manifest.lookup(&name, runtime)
 }
 
 #[cfg(test)]
@@ -74,9 +76,9 @@ mod tests {
 
     fn three_profile_manifest(dir: &std::path::Path) -> ProfileImageManifest {
         let body = r#"{
-          "base":   { "ref": "localhost/wrix-base:abc",   "source": "/nix/store/aaa-image-base" },
-          "rust":   { "ref": "localhost/wrix-rust:def",   "source": "/nix/store/bbb-image-rust" },
-          "python": { "ref": "localhost/wrix-python:ghi", "source": "/nix/store/ccc-image-python" }
+          "base":   { "pi": { "ref": "localhost/wrix-base-pi:abc",   "source": "/nix/store/aaa-image-base-pi" } },
+          "rust":   { "pi": { "ref": "localhost/wrix-rust-pi:def",   "source": "/nix/store/bbb-image-rust-pi" } },
+          "python": { "pi": { "ref": "localhost/wrix-python-pi:ghi", "source": "/nix/store/ccc-image-python-pi" } }
         }"#;
         let path = write_manifest(dir, body);
         ProfileImageManifest::from_path(&path).expect("parse manifest")
@@ -116,9 +118,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let manifest = three_profile_manifest(dir.path());
         let labels = labels(&["spec:harness", "profile:rust"]);
-        let entry = resolve_profile_image(&manifest, &labels, None, &base()).expect("resolve");
-        assert_eq!(entry.r#ref, "localhost/wrix-rust:def");
-        assert_eq!(entry.source, PathBuf::from("/nix/store/bbb-image-rust"));
+        let entry = resolve_profile_image(&manifest, &labels, None, &base(), AgentRuntime::Pi)
+            .expect("resolve");
+        assert_eq!(entry.r#ref, "localhost/wrix-rust-pi:def");
+        assert_eq!(entry.source, PathBuf::from("/nix/store/bbb-image-rust-pi"));
     }
 
     /// FR5: `--profile` beats both `profile:X` labels and the phase default.
@@ -130,16 +133,19 @@ mod tests {
         let manifest = three_profile_manifest(dir.path());
         let labels = labels(&["spec:harness", "profile:rust"]);
 
-        let no_override = resolve_profile_image(&manifest, &labels, None, &base()).expect("rust");
+        let no_override =
+            resolve_profile_image(&manifest, &labels, None, &base(), AgentRuntime::Pi)
+                .expect("rust");
         let with_override = resolve_profile_image(
             &manifest,
             &labels,
             Some(&ProfileName::new("python")),
             &base(),
+            AgentRuntime::Pi,
         )
         .expect("python");
-        assert_eq!(no_override.r#ref, "localhost/wrix-rust:def");
-        assert_eq!(with_override.r#ref, "localhost/wrix-python:ghi");
+        assert_eq!(no_override.r#ref, "localhost/wrix-rust-pi:def");
+        assert_eq!(with_override.r#ref, "localhost/wrix-python-pi:ghi");
         assert_ne!(no_override.r#ref, with_override.r#ref);
         assert_ne!(no_override.source, with_override.source);
     }
@@ -150,11 +156,11 @@ mod tests {
     #[test]
     fn resolve_profile_image_missing_entry_returns_unknown_profile() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let body = r#"{ "base": { "ref": "r", "source": "/s" } }"#;
+        let body = r#"{ "base": { "pi": { "ref": "r", "source": "/s" } } }"#;
         let path = write_manifest(dir.path(), body);
         let manifest = ProfileImageManifest::from_path(&path).expect("parse");
         let labels = labels(&["profile:rust"]);
-        let err = resolve_profile_image(&manifest, &labels, None, &base())
+        let err = resolve_profile_image(&manifest, &labels, None, &base(), AgentRuntime::Pi)
             .expect_err("expected unknown profile");
         match err {
             ProfileError::UnknownProfile {

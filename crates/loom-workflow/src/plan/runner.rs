@@ -83,7 +83,7 @@ pub fn run_with_timeout(
 
     let (profile, agent_kind) =
         resolve_plan_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
-    let image: &ImageEntry = opts.manifest.lookup(&profile)?;
+    let image: &ImageEntry = opts.manifest.lookup(&profile, agent_kind)?;
 
     let pinned_context = read_pinned_context(workspace, &cfg.pinned_context)?;
     let spec_index = read_pinned_context(workspace, "docs/README.md")?;
@@ -122,6 +122,7 @@ pub fn run_with_timeout(
         .args(&argv)
         .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
         .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
+        .env("WRIX_AGENT", agent_kind.as_str())
         .status()
         .map_err(|source| PlanError::Spawn { source })?;
     drop(scratch);
@@ -160,6 +161,9 @@ fn resolve_plan_selection(
     }
     if let Some(kind) = agent_override {
         selection.kind = kind;
+    }
+    if matches!(selection.kind, AgentKind::Direct) {
+        return Err(PlanError::DirectInteractive);
     }
     Ok((selection.profile, selection.kind))
 }
@@ -207,9 +211,9 @@ mod tests {
         let manifest_path = dir.join("profile-images.json");
         let body = format!(
             r#"{{
-              "base":   {{ "ref": "localhost/wrix-base:abc",   "source": {base:?} }},
-              "rust":   {{ "ref": "localhost/wrix-rust:def",   "source": {rust:?} }},
-              "python": {{ "ref": "localhost/wrix-python:ghi", "source": {py:?} }}
+              "base":   {{ "claude": {{ "ref": "localhost/wrix-base-claude:abc",   "source": {base:?} }}, "pi": {{ "ref": "localhost/wrix-base-pi:abc",   "source": {base:?} }} }},
+              "rust":   {{ "claude": {{ "ref": "localhost/wrix-rust-claude:def",   "source": {rust:?} }}, "pi": {{ "ref": "localhost/wrix-rust-pi:def",   "source": {rust:?} }} }},
+              "python": {{ "claude": {{ "ref": "localhost/wrix-python-claude:ghi", "source": {py:?} }}, "pi": {{ "ref": "localhost/wrix-python-pi:ghi", "source": {py:?} }} }}
             }}"#,
             base = dir.join("base.tar").display().to_string(),
             rust = dir.join("rust.tar").display().to_string(),
@@ -356,7 +360,7 @@ mod tests {
         run_with_timeout(dir.path(), opts, Duration::from_secs(1))?;
 
         let env_log = std::fs::read_to_string(dir.path().join("env.log"))?;
-        assert!(env_log.contains("localhost/wrix-rust:def"));
+        assert!(env_log.contains("localhost/wrix-rust-claude:def"));
         Ok(())
     }
 
@@ -378,7 +382,7 @@ mod tests {
         )?;
 
         let env_log = std::fs::read_to_string(dir.path().join("env.log"))?;
-        assert!(env_log.contains("localhost/wrix-python:ghi"));
+        assert!(env_log.contains("localhost/wrix-python-claude:ghi"));
         Ok(())
     }
 

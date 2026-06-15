@@ -4,15 +4,13 @@ use std::path::PathBuf;
 use displaydoc::Display;
 use thiserror::Error;
 
+use crate::agent::AgentRuntime;
 use crate::identifier::ProfileName;
 
 /// Errors raised while resolving the profile-image manifest.
 ///
 /// Loom reads the manifest path from `LOOM_PROFILES_MANIFEST` at startup and
-/// must fail fast — there is no implicit search path or fallback default. The
-/// variants mirror the four boundary failure modes:
-/// env unset, file missing, file malformed, and bead asks for a profile the
-/// manifest does not declare.
+/// must fail fast — there is no implicit search path or fallback default.
 #[derive(Debug, Display, Error)]
 pub enum ProfileError {
     /// LOOM_PROFILES_MANIFEST is not set
@@ -35,6 +33,14 @@ pub enum ProfileError {
     /// profile {name} is not declared in the manifest at {manifest_path}
     UnknownProfile {
         name: ProfileName,
+        manifest_path: PathBuf,
+    },
+
+    /// runtime {runtime} is not declared for profile {profile} in the manifest at {manifest_path}; declared runtimes: {declared_runtimes:?}
+    UnknownRuntimeForProfile {
+        profile: ProfileName,
+        runtime: AgentRuntime,
+        declared_runtimes: Vec<AgentRuntime>,
         manifest_path: PathBuf,
     },
 }

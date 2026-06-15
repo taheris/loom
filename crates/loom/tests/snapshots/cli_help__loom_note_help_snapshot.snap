@@ -16,5 +16,5 @@ Commands:
 
 Options:
   -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
-  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi]
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
   -h, --help              Print help

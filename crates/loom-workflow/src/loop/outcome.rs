@@ -90,6 +90,11 @@ pub enum AgentOutcome {
     /// profile name and the manifest's declared set so the operator can
     /// relabel from the bead's notes.
     UnknownProfile { error: String },
+
+    /// The selected agent runtime is missing under an existing profile in
+    /// the profile-image manifest. Routes straight to `loom:blocked` cause
+    /// `unknown-agent-runtime-for-profile` — no retry.
+    UnknownRuntimeForProfile { error: String },
 }
 
 /// Final state of one bead after retries have been exhausted (or the agent

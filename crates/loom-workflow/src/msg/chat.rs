@@ -110,7 +110,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         .map_err(|e| ChatError::Config(e.to_string()))?;
     let (profile, agent_kind) =
         resolve_chat_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
-    let image: &ImageEntry = opts.manifest.lookup(&profile)?;
+    let image: &ImageEntry = opts.manifest.lookup(&profile, agent_kind)?;
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -170,6 +170,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         .args(&argv)
         .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
         .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
+        .env("WRIX_AGENT", agent_kind.as_str())
         .status()
         .map_err(ChatError::Scratch)?;
     drop(scratch);
@@ -228,6 +229,7 @@ fn agent_command(kind: AgentKind) -> &'static str {
     match kind {
         AgentKind::Claude => "claude",
         AgentKind::Pi => "pi",
+        AgentKind::Direct => "loom-direct-runner",
     }
 }
 
@@ -278,6 +280,11 @@ fn resolve_chat_selection(
     }
     if let Some(kind) = agent_override {
         selection.kind = kind;
+    }
+    if matches!(selection.kind, AgentKind::Direct) {
+        return Err(ChatError::AgentSelection(
+            "direct backend cannot run interactive `loom msg --chat`".to_string(),
+        ));
     }
     Ok((selection.profile, selection.kind))
 }

@@ -167,7 +167,7 @@ fn write_minimal_manifest(dir: &Path) -> PathBuf {
     std::fs::write(&source, "").expect("write base.tar");
     let manifest = dir.join("profile-images.json");
     let body = format!(
-        r#"{{"base": {{"ref":"localhost/wrix-base:test","source":{source:?}}}}}"#,
+        r#"{{"base": {{"pi": {{"ref":"localhost/wrix-base-pi:test","source":{source:?}}}, "claude": {{"ref":"localhost/wrix-base-claude:test","source":{source:?}}}, "direct": {{"ref":"localhost/wrix-base-direct:test","source":{source:?}}}}}}}"#,
         source = source.display().to_string(),
     );
     std::fs::write(&manifest, body).expect("write manifest");
@@ -312,7 +312,7 @@ fn loom_msg_chat_launches_container() {
     // contract `loom plan` enforces.
     let env_log = std::fs::read_to_string(env.workspace.join("env.log")).unwrap_or_default();
     assert!(
-        env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-base:test"),
+        env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-base-claude:test"),
         "env.log missing image ref: {env_log}",
     );
     assert!(
@@ -392,7 +392,7 @@ fn msg_chat_passes_resolved_profile_to_wrix_run() {
 
     let env_log = std::fs::read_to_string(env.workspace.join("env.log")).expect("env.log present");
     assert!(
-        env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-base:test"),
+        env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-base-claude:test"),
         "empty-config default profile (base) must select the matching image ref \
          via env var. env.log:\n{env_log}",
     );

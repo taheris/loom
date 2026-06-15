@@ -249,7 +249,7 @@ fn write_minimal_manifest(workspace: &Path) -> PathBuf {
     std::fs::write(&source, "").expect("write base.tar");
     let manifest = workspace.join("profile-images.json");
     let body = format!(
-        r#"{{"base": {{"ref":"localhost/wrix-base:test","source":{source:?}}}}}"#,
+        r#"{{"base": {{"pi": {{"ref":"localhost/wrix-base-pi:test","source":{source:?}}}, "claude": {{"ref":"localhost/wrix-base-claude:test","source":{source:?}}}, "direct": {{"ref":"localhost/wrix-base-direct:test","source":{source:?}}}}}}}"#,
         source = source.display().to_string(),
     );
     std::fs::write(&manifest, body).expect("write manifest");

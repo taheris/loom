@@ -567,7 +567,7 @@ the explicit tier commands run at tree scope with no `--spec` filter.
   [test](serde_round_trips_as_plain_string)
 - Closed-set enum tests cover `AgentRuntime` parse/serde and reject
       unknown runtime strings before manifest lookup or Wrix spawn
-  [test?](agent_runtime_parse_serde_rejects_unknown_values)
+  [test](agent_runtime_parse_serde_rejects_unknown_values)
 - Cache database round-trip tests cover spec rows, spec epics,
       work epics, notes, and criterion evidence without any
       `current_spec` operation

@@ -12,6 +12,6 @@ Arguments:
 Options:
       --kind <KIND>       Note kind [default: implementation]
   -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
-  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi]
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
       --all-kinds         List notes across every kind
   -h, --help              Print help

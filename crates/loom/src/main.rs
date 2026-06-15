@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 
-use loom_agent::{ClaudeBackend, PiBackend};
+use loom_agent::{ClaudeBackend, DirectBackend, PiBackend};
 use loom_driver::agent::{AgentKind, LOOM_INSIDE_ENV, ProtocolError, SessionOutcome, SpawnConfig};
 use loom_driver::bd::{BdClient, ListOpts, UpdateOpts};
 use loom_driver::clock::{Clock, SystemClock};
@@ -74,6 +74,7 @@ struct Cli {
 enum AgentBackendArg {
     Claude,
     Pi,
+    Direct,
 }
 
 impl From<AgentBackendArg> for AgentKind {
@@ -81,6 +82,7 @@ impl From<AgentBackendArg> for AgentKind {
         match arg {
             AgentBackendArg::Claude => AgentKind::Claude,
             AgentBackendArg::Pi => AgentKind::Pi,
+            AgentBackendArg::Direct => AgentKind::Direct,
         }
     }
 }
@@ -1874,7 +1876,8 @@ fn run_gate_mint(
                             }
                         },
                     )
-                    .with_style_rules(style_rules);
+                    .with_style_rules(style_rules)
+                    .with_agent_runtime(kind);
                     return mint_via_walker(
                         &mut walker,
                         &scope,
@@ -1926,7 +1929,8 @@ fn run_gate_mint(
                             }
                         },
                     )
-                    .with_style_rules(style_rules_for_walker);
+                    .with_style_rules(style_rules_for_walker)
+                    .with_agent_runtime(kind);
                     if index == 0 {
                         for failure in walker.run_verifiers(&scope).await? {
                             findings.push(loom_workflow::mint::walk::verifier_failure_to_finding(
@@ -2495,6 +2499,7 @@ fn run_loop_cmd(
             },
         )
         .with_style_rules(style_rules_for_run)
+        .with_agent_runtime(kind)
         .with_loom_config(loom_cfg_for_run)
         .with_phase_log_root(logs_root_for_controller);
         if let Some(guard) = work_root_guard {
@@ -2813,6 +2818,7 @@ async fn dispatch_for_slot(
         &slot.bead,
         cli_profile,
         phase_default,
+        kind,
         slot.worktree.path.clone(),
         initial_prompt,
         scratch.path().to_path_buf(),
@@ -2876,6 +2882,7 @@ async fn dispatch(
     match kind {
         AgentKind::Pi => run_agent::<PiBackend>(&spawn, sink, text_capture).await,
         AgentKind::Claude => run_agent::<ClaudeBackend>(&spawn, sink, text_capture).await,
+        AgentKind::Direct => run_agent::<DirectBackend>(&spawn, sink, text_capture).await,
     }
 }
 
@@ -2928,6 +2935,16 @@ async fn dispatch_classified(
         }
         AgentKind::Claude => {
             run_agent_classified::<ClaudeBackend>(
+                &spawn,
+                sink,
+                observer,
+                text_capture,
+                envelope_builder,
+            )
+            .await
+        }
+        AgentKind::Direct => {
+            run_agent_classified::<DirectBackend>(
                 &spawn,
                 sink,
                 observer,
@@ -3107,7 +3124,7 @@ fn resolved_agent_for(
                 denied_tools: config.security.denied_tools.clone(),
                 post_result_grace_secs: config.claude.post_result_grace_secs,
             }),
-            AgentKind::Pi => None,
+            AgentKind::Pi | AgentKind::Direct => None,
         };
     }
     Ok(selection)
@@ -3207,6 +3224,7 @@ fn run_review(
         }
         let mut controller = controller
             .with_phase_log(logs_root, phase_when)
+            .with_agent_runtime(kind)
             .with_style_rules(style_rules_for_review)
             .with_integration_branch(integration_branch_for_review)
             .with_hook_timeout(hook_timeout_for_review)
@@ -3559,7 +3577,8 @@ fn run_todo(
             bd,
             since,
         )
-        .with_loom_config(loom_cfg_for_todo);
+        .with_loom_config(loom_cfg_for_todo)
+        .with_agent_runtime(kind);
         run_todo_workflow(&mut controller, |spawn_cfg: SpawnConfig| async move {
             let sink = LogSink::open_phase_at(
                 &logs_root,

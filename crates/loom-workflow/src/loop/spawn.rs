@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use loom_driver::agent::{MountSpec, RePinContent, SpawnConfig, set_loom_inside};
+use loom_driver::agent::{AgentRuntime, MountSpec, RePinContent, SpawnConfig, set_loom_inside};
 use loom_driver::bd::Bead;
 use loom_driver::config::LoomTopConfig;
 use loom_driver::identifier::ProfileName;
@@ -65,7 +65,7 @@ pub fn sccache_mount(cfg: &LoomTopConfig) -> std::io::Result<Option<MountSpec>> 
 /// Internal helper. The public dispatch surface is
 /// [`build_spawn_config_from_manifest`] — callers should never construct a
 /// `SpawnConfig` field-by-field, because doing so silently bypasses the
-/// profile-image resolution and the canonical claude/pi env wiring.
+/// profile-image resolution and the canonical runtime env wiring.
 #[expect(clippy::too_many_arguments, reason = "internal helper")]
 fn build_spawn_config(
     image_ref: String,
@@ -75,12 +75,17 @@ fn build_spawn_config(
     initial_prompt: String,
     scratch_dir: PathBuf,
     extra_env: Vec<(String, String)>,
+    runtime: AgentRuntime,
     agent_args: Vec<String>,
     mounts: Vec<MountSpec>,
     launcher_env: Vec<(String, String)>,
 ) -> SpawnConfig {
     let mut env = extra_env;
+    let runtime_name = runtime.as_str().to_string();
+    env.push(("WRIX_AGENT".to_string(), runtime_name.clone()));
     set_loom_inside(&mut env);
+    let mut launcher_env = launcher_env;
+    launcher_env.push(("WRIX_AGENT".to_string(), runtime_name));
     SpawnConfig {
         image_ref,
         image_source,
@@ -130,6 +135,7 @@ pub fn build_spawn_config_from_manifest(
     bead: &Bead,
     override_: Option<&ProfileName>,
     phase_default: &ProfileName,
+    runtime: AgentRuntime,
     workspace: PathBuf,
     initial_prompt: String,
     scratch_dir: PathBuf,
@@ -138,7 +144,7 @@ pub fn build_spawn_config_from_manifest(
     mounts: Vec<MountSpec>,
     launcher_env: Vec<(String, String)>,
 ) -> Result<SpawnConfig, ProfileError> {
-    let entry = resolve_profile_image(manifest, &bead.labels, override_, phase_default)?;
+    let entry = resolve_profile_image(manifest, &bead.labels, override_, phase_default, runtime)?;
     Ok(build_spawn_config(
         entry.r#ref.clone(),
         entry.source.clone(),
@@ -147,6 +153,7 @@ pub fn build_spawn_config_from_manifest(
         initial_prompt,
         scratch_dir,
         extra_env,
+        runtime,
         agent_args,
         mounts,
         launcher_env,
@@ -176,9 +183,9 @@ mod tests {
 
     fn three_profile_manifest(dir: &std::path::Path) -> ProfileImageManifest {
         let body = r#"{
-          "base":   { "ref": "localhost/wrix-base:abc",   "source": "/nix/store/aaa-image-base" },
-          "rust":   { "ref": "localhost/wrix-rust:def",   "source": "/nix/store/bbb-image-rust", "digest": "/nix/store/ddd-image-rust-digest" },
-          "python": { "ref": "localhost/wrix-python:ghi", "source": "/nix/store/ccc-image-python" }
+          "base":   { "pi": { "ref": "localhost/wrix-base-pi:abc",   "source": "/nix/store/aaa-image-base-pi" } },
+          "rust":   { "pi": { "ref": "localhost/wrix-rust-pi:def",   "source": "/nix/store/bbb-image-rust-pi", "digest": "/nix/store/ddd-image-rust-pi-digest" } },
+          "python": { "pi": { "ref": "localhost/wrix-python-pi:ghi", "source": "/nix/store/ccc-image-python-pi" } }
         }"#;
         let path = dir.join("profile-images.json");
         std::fs::write(&path, body).expect("write manifest");
@@ -206,6 +213,7 @@ mod tests {
             &rust_bead,
             None,
             &base(),
+            AgentRuntime::Pi,
             PathBuf::from("/work/lm-1"),
             "rust prompt".into(),
             dir.path().join("scratch"),
@@ -220,6 +228,7 @@ mod tests {
             &python_bead,
             None,
             &base(),
+            AgentRuntime::Pi,
             PathBuf::from("/work/lm-2"),
             "python prompt".into(),
             dir.path().join("scratch"),
@@ -230,19 +239,19 @@ mod tests {
         )
         .expect("python dispatch");
 
-        assert_eq!(cfg_rust.image_ref, "localhost/wrix-rust:def");
+        assert_eq!(cfg_rust.image_ref, "localhost/wrix-rust-pi:def");
         assert_eq!(
             cfg_rust.image_source,
-            PathBuf::from("/nix/store/bbb-image-rust")
+            PathBuf::from("/nix/store/bbb-image-rust-pi")
         );
         assert_eq!(
             cfg_rust.image_digest_path,
-            Some(PathBuf::from("/nix/store/ddd-image-rust-digest"))
+            Some(PathBuf::from("/nix/store/ddd-image-rust-pi-digest"))
         );
-        assert_eq!(cfg_python.image_ref, "localhost/wrix-python:ghi");
+        assert_eq!(cfg_python.image_ref, "localhost/wrix-python-pi:ghi");
         assert_eq!(
             cfg_python.image_source,
-            PathBuf::from("/nix/store/ccc-image-python")
+            PathBuf::from("/nix/store/ccc-image-python-pi")
         );
         assert_ne!(cfg_rust.image_ref, cfg_python.image_ref);
         assert_ne!(cfg_rust.image_source, cfg_python.image_source);
@@ -262,6 +271,7 @@ mod tests {
             &bead,
             None,
             &base(),
+            AgentRuntime::Pi,
             PathBuf::from("/work/lm-1"),
             "p".into(),
             dir.path().join("scratch"),
@@ -276,6 +286,7 @@ mod tests {
             &bead,
             Some(&ProfileName::new("python")),
             &base(),
+            AgentRuntime::Pi,
             PathBuf::from("/work/lm-1"),
             "p".into(),
             dir.path().join("scratch"),
@@ -286,8 +297,8 @@ mod tests {
         )
         .expect("python dispatch");
 
-        assert_eq!(labelled.image_ref, "localhost/wrix-rust:def");
-        assert_eq!(overridden.image_ref, "localhost/wrix-python:ghi");
+        assert_eq!(labelled.image_ref, "localhost/wrix-rust-pi:def");
+        assert_eq!(overridden.image_ref, "localhost/wrix-python-pi:ghi");
         assert_ne!(labelled.image_ref, overridden.image_ref);
     }
 
@@ -310,6 +321,7 @@ mod tests {
             &bead,
             None,
             &base(),
+            AgentRuntime::Pi,
             PathBuf::from("/repo-root"),
             prompt.clone(),
             dir.path().join("scratch"),
@@ -324,6 +336,7 @@ mod tests {
             &bead,
             None,
             &base(),
+            AgentRuntime::Pi,
             PathBuf::from("/repo-root/.loom/beads/lm-1"),
             prompt,
             dir.path().join("scratch"),
@@ -361,6 +374,7 @@ mod tests {
             &bead,
             None,
             &base(),
+            AgentRuntime::Pi,
             PathBuf::from("/work"),
             "p".into(),
             dir.path().join("scratch"),
@@ -421,6 +435,7 @@ mod tests {
             &bead,
             None,
             &base(),
+            AgentRuntime::Pi,
             bead_workspace,
             "p".into(),
             dir.path().join("scratch"),
@@ -480,6 +495,7 @@ mod tests {
             &bead,
             None,
             &base(),
+            AgentRuntime::Pi,
             PathBuf::from("/work/lm-1"),
             "p".into(),
             dir.path().join("scratch"),
@@ -565,6 +581,7 @@ mod tests {
             &bead,
             None,
             &base(),
+            AgentRuntime::Pi,
             PathBuf::from("/work/lm-1"),
             "p".into(),
             dir.path().join("scratch"),
@@ -614,6 +631,7 @@ mod tests {
             &bead,
             None,
             &base(),
+            AgentRuntime::Pi,
             PathBuf::from("/work/lm-1"),
             "p".into(),
             dir.path().join("scratch"),
@@ -624,7 +642,9 @@ mod tests {
         )
         .expect("dispatch");
 
-        assert_eq!(cfg.launcher_env, launcher_env);
+        let mut expected_launcher_env = launcher_env;
+        expected_launcher_env.push(("WRIX_AGENT".to_string(), "pi".to_string()));
+        assert_eq!(cfg.launcher_env, expected_launcher_env);
         assert!(
             !cfg.env.iter().any(|(k, _)| k == "WRIX_SIGNING_KEY"),
             "launcher keys must NOT leak into the in-container env allowlist: {:?}",
@@ -645,6 +665,7 @@ mod tests {
             &bead,
             None,
             &base(),
+            AgentRuntime::Pi,
             PathBuf::from("/work"),
             "p".into(),
             dir.path().join("scratch"),

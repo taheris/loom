@@ -33,6 +33,10 @@ pub const INFRA_REPEATED_CAUSE: &str = "infra-repeated";
 /// the loop continues with the next ready bead.
 pub const UNKNOWN_PROFILE_CAUSE: &str = "unknown-profile";
 
+/// Spec-table cause string written when a profile exists but lacks the
+/// selected agent runtime in the profile-image manifest.
+pub const UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE: &str = "unknown-agent-runtime-for-profile";
+
 /// Driver-memory budget for mid-session infra retries. Spec
 /// (`specs/harness.md` §"Verdict Gate · Infra failures bypass the gate"):
 /// "one free retry per `loom loop`". The counter is separate from
@@ -624,6 +628,12 @@ async fn process_one_bead<C: AgentLoopController>(
             AgentOutcome::UnknownProfile { error } => {
                 return Ok(BeadResult::Blocked {
                     cause: UNKNOWN_PROFILE_CAUSE.to_string(),
+                    error,
+                });
+            }
+            AgentOutcome::UnknownRuntimeForProfile { error } => {
+                return Ok(BeadResult::Blocked {
+                    cause: UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE.to_string(),
                     error,
                 });
             }

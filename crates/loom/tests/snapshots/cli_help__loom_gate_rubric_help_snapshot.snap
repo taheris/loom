@@ -9,7 +9,7 @@ Usage: loom gate rubric [OPTIONS]
 Options:
       --files <PATH>...   Scope to verifiers whose declared inputs intersect this file set
   -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
-  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi]
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
       --target <TARGET>   Run annotations whose target exactly matches this string
       --diff <RANGE>      Scope to a git diff range
       --tree              Scope to every file in the workspace

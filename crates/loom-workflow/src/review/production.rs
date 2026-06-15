@@ -4,9 +4,9 @@
 //! `tokio::process::Command` shell-outs for `git push`, `beads-push`, and
 //! the auto-iterate `loom loop` handoff, and a caller-provided dispatch
 //! closure for the reviewer agent invocation. The closure pattern keeps
-//! backend selection (`PiBackend` vs `ClaudeBackend`) inside the binary's
-//! `dispatch` match — `loom-workflow` never sees the concrete backend types,
-//! mirroring [`ProductionTodoController`](super::super::todo::ProductionTodoController)
+//! backend selection (`PiBackend`, `ClaudeBackend`, or `DirectBackend`) inside
+//! the binary's `dispatch` match — `loom-workflow` never sees the concrete
+//! backend types, mirroring [`ProductionTodoController`](super::super::todo::ProductionTodoController)
 //! and [`ProductionAgentLoopController`](super::super::run::ProductionAgentLoopController).
 //!
 //! Iteration-counter accessors read/write `molecules.iteration_count` for
@@ -23,7 +23,7 @@ use std::time::{Duration, SystemTime};
 
 use askama::Template;
 use loom_driver::agent::{
-    ProtocolError, RePinContent, SessionOutcome, SpawnConfig, set_loom_inside,
+    AgentRuntime, ProtocolError, RePinContent, SessionOutcome, SpawnConfig, set_loom_inside,
 };
 use loom_driver::bd::{BdClient, BdError, Bead, CommandRunner, ListOpts, TokioRunner, UpdateOpts};
 use loom_driver::clock::{Clock, SystemClock};
@@ -261,6 +261,7 @@ where
     state: Arc<StateDb>,
     manifest: Arc<ProfileImageManifest>,
     phase_default: ProfileName,
+    runtime: AgentRuntime,
     spawn: S,
     /// Spec lock dropped before exec'ing `loom loop` so the child can take it.
     lock: Option<LockGuard>,
@@ -344,6 +345,7 @@ where
             state,
             manifest,
             phase_default,
+            runtime: AgentRuntime::Pi,
             spawn,
             lock: None,
             phase_log_root: None,
@@ -373,6 +375,11 @@ where
     /// rely on the built-in default.
     pub fn with_style_rules(mut self, path: String) -> Self {
         self.style_rules = path;
+        self
+    }
+
+    pub fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
+        self.runtime = runtime;
         self
     }
 
@@ -817,13 +824,14 @@ where
 {
     async fn run_review(&mut self) -> Result<RunReviewOutput, ReviewError> {
         let prompt = self.build_review_prompt().await?;
-        let entry = self.manifest.lookup(&self.phase_default)?;
+        let entry = self.manifest.lookup(&self.phase_default, self.runtime)?;
         let banner = format!("loom review @ {}", self.label);
         let key = resolve_scratch_key(Phase::Review, &self.label, None);
         let scratch =
             loom_driver::scratch::ScratchSession::open(&self.workspace, &key, &prompt, &banner)
                 .map_err(|source| ReviewError::Protocol(ProtocolError::Io(source)))?;
         let mut env = Vec::new();
+        env.push(("WRIX_AGENT".to_string(), self.runtime.as_str().to_string()));
         set_loom_inside(&mut env);
         let spawn_config = SpawnConfig {
             image_ref: entry.r#ref.clone(),
@@ -846,7 +854,7 @@ where
             shutdown_grace: None,
             handshake_timeout: None,
             stall_warn_interval: None,
-            launcher_env: Vec::new(),
+            launcher_env: vec![("WRIX_AGENT".to_string(), self.runtime.as_str().to_string())],
         };
         info!(
             label = %self.label,
@@ -1998,7 +2006,7 @@ mod tests {
 
     fn stub_manifest(dir: &std::path::Path) -> Arc<ProfileImageManifest> {
         let body = r#"{
-          "base": { "ref": "localhost/wrix-base:abc", "source": "/nix/store/aaa-image-base" }
+          "base": { "pi": { "ref": "localhost/wrix-base-pi:abc", "source": "/nix/store/aaa-image-base-pi" }, "claude": { "ref": "localhost/wrix-base-claude:abc", "source": "/nix/store/aaa-image-base-claude" }, "direct": { "ref": "localhost/wrix-base-direct:abc", "source": "/nix/store/aaa-image-base-direct" } }
         }"#;
         let path = dir.join("profile-images.json");
         std::fs::write(&path, body).unwrap();

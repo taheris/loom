@@ -36,6 +36,9 @@ pub enum PlanError {
     /// agent-selection failed for `[phase.plan]`
     AgentSelection(#[from] loom_driver::config::AgentSelectionError),
 
+    /// direct backend cannot run interactive `loom plan`
+    DirectInteractive,
+
     /// failed to spawn `wrix run`
     Spawn {
         #[source]

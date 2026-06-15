@@ -2,10 +2,10 @@
 //!
 //! Two complementary surfaces:
 //!
-//! 1. **Compile-only static dispatch** — both `PiBackend` and `ClaudeBackend`
-//!    instantiate a generic `<B: AgentBackend>` helper. The verify shell
-//!    function runs `cargo build --workspace --tests`; this file failing to
-//!    compile is the assertion. The local `run_agent` helper mirrors the
+//! 1. **Compile-only static dispatch** — `PiBackend`, `ClaudeBackend`, and
+//!    `DirectBackend` instantiate a generic `<B: AgentBackend>` helper. The
+//!    verify shell function runs `cargo build --workspace --tests`; this file
+//!    failing to compile is the assertion. The local `run_agent` helper mirrors the
 //!    dispatch shape that lives in `loom-workflow` (and the spec's
 //!    Architecture section): a generic free function over `<B: AgentBackend>`
 //!    that the binary monomorphizes once per concrete backend.
@@ -41,7 +41,7 @@ async fn run_agent<B: AgentBackend>(config: &SpawnConfig) -> Result<SessionOutco
 }
 
 #[test]
-fn pi_and_claude_dispatch_through_run_agent() {
+fn pi_claude_and_direct_dispatch_through_run_agent() {
     // The bound `B: AgentBackend` is the dispatch contract — instantiating
     // it at every concrete type is what monomorphizes `run_agent` and proves
     // the trait surface accepts each backend.

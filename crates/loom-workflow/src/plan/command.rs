@@ -44,6 +44,7 @@ fn agent_command(kind: AgentKind) -> &'static str {
     match kind {
         AgentKind::Claude => "claude",
         AgentKind::Pi => "pi",
+        AgentKind::Direct => "loom-direct-runner",
     }
 }
 

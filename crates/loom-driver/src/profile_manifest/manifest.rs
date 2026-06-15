@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::AgentRuntime;
 use crate::identifier::ProfileName;
 
 use super::error::ProfileError;
@@ -16,7 +17,7 @@ pub const ENV_VAR: &str = "LOOM_PROFILES_MANIFEST";
 /// the content-digest file used to skip redundant image loads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {
-    /// Podman ref (e.g. `localhost/wrix-rust:abc123`) handed to `podman run`.
+    /// Podman ref (e.g. `localhost/wrix-rust-pi:abc123`) handed to `podman run`.
     #[serde(rename = "ref")]
     pub r#ref: String,
     /// Nix store path of the image archive handed to the launcher install step.
@@ -28,14 +29,10 @@ pub struct ImageEntry {
     pub digest: Option<PathBuf>,
 }
 
-/// Parsed profile-image manifest: the typed `BTreeMap<ProfileName, ImageEntry>`
-/// described in `specs/harness.md` § Profile-Image Manifest.
-///
-/// Constructed once at loom startup (from `LOOM_PROFILES_MANIFEST` or an
-/// explicit path) and held immutably for the rest of the process lifetime.
+/// Parsed profile-image manifest keyed by workspace profile, then runtime.
 #[derive(Debug, Clone)]
 pub struct ProfileImageManifest {
-    entries: BTreeMap<ProfileName, ImageEntry>,
+    entries: BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>,
     manifest_path: PathBuf,
 }
 
@@ -54,29 +51,36 @@ impl ProfileImageManifest {
             path: path.to_path_buf(),
             source,
         })?;
-        let raw: BTreeMap<String, ImageEntry> =
+        let entries: BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>> =
             serde_json::from_slice(&bytes).map_err(|source| ProfileError::ManifestMalformed {
                 path: path.to_path_buf(),
                 source,
             })?;
-        let entries = raw
-            .into_iter()
-            .map(|(name, entry)| (ProfileName::new(name), entry))
-            .collect();
         Ok(Self {
             entries,
             manifest_path: path.to_path_buf(),
         })
     }
 
-    /// Look up `name`. Missing keys produce a typed
-    /// [`ProfileError::UnknownProfile`] carrying the manifest path so callers
-    /// can surface it in error messages without re-threading the path.
-    pub fn lookup(&self, name: &ProfileName) -> Result<&ImageEntry, ProfileError> {
-        self.entries
-            .get(name)
+    /// Look up a profile/runtime image entry.
+    pub fn lookup(
+        &self,
+        profile: &ProfileName,
+        runtime: AgentRuntime,
+    ) -> Result<&ImageEntry, ProfileError> {
+        let runtimes = self
+            .entries
+            .get(profile)
             .ok_or_else(|| ProfileError::UnknownProfile {
-                name: name.clone(),
+                name: profile.clone(),
+                manifest_path: self.manifest_path.clone(),
+            })?;
+        runtimes
+            .get(&runtime)
+            .ok_or_else(|| ProfileError::UnknownRuntimeForProfile {
+                profile: profile.clone(),
+                runtime,
+                declared_runtimes: runtimes.keys().copied().collect(),
                 manifest_path: self.manifest_path.clone(),
             })
     }
@@ -86,12 +90,19 @@ impl ProfileImageManifest {
         &self.manifest_path
     }
 
-    /// Profile names the manifest declares, in `BTreeMap` key order. The
-    /// run-loop's `unknown-profile` blocked-cause path surfaces this set
-    /// in the operator-facing note so the human can relabel the bead to a
-    /// declared profile without re-reading the manifest.
+    /// Profile names the manifest declares, in `BTreeMap` key order.
     pub fn declared_profiles(&self) -> impl ExactSizeIterator<Item = &ProfileName> {
         self.entries.keys()
+    }
+
+    /// Runtime names declared for `profile`, in `BTreeMap` key order.
+    pub fn declared_runtimes(
+        &self,
+        profile: &ProfileName,
+    ) -> Option<impl ExactSizeIterator<Item = AgentRuntime> + '_> {
+        self.entries
+            .get(profile)
+            .map(|runtimes| runtimes.keys().copied())
     }
 
     /// Number of declared profiles (used by tests and the rebuild summary).
@@ -120,18 +131,27 @@ mod tests {
     fn from_path_parses_well_formed_manifest() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let body = r#"{
-          "base":   { "ref": "localhost/wrix-base:abc",   "source": "/nix/store/aaa-image-base" },
-          "rust":   { "ref": "localhost/wrix-rust:def",   "source": "/nix/store/bbb-image-rust" },
-          "python": { "ref": "localhost/wrix-python:ghi", "source": "/nix/store/ccc-image-python" }
+          "base": {
+            "claude": { "ref": "localhost/wrix-base-claude:abc", "source": "/nix/store/aaa-image-base-claude" },
+            "pi": { "ref": "localhost/wrix-base-pi:def", "source": "/nix/store/bbb-image-base-pi" }
+          },
+          "rust": {
+            "direct": { "ref": "localhost/wrix-rust-direct:ghi", "source": "/nix/store/ccc-image-rust-direct" }
+          }
         }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
-        assert_eq!(manifest.len(), 3);
+        assert_eq!(manifest.len(), 2);
         assert_eq!(manifest.manifest_path(), path.as_path());
-        let rust = manifest.lookup(&ProfileName::new("rust"))?;
-        assert_eq!(rust.r#ref, "localhost/wrix-rust:def");
-        assert_eq!(rust.source, PathBuf::from("/nix/store/bbb-image-rust"));
-        assert_eq!(rust.digest, None);
+        let base_pi = manifest.lookup(&ProfileName::new("base"), AgentRuntime::Pi)?;
+        assert_eq!(base_pi.r#ref, "localhost/wrix-base-pi:def");
+        assert_eq!(
+            base_pi.source,
+            PathBuf::from("/nix/store/bbb-image-base-pi")
+        );
+        assert_eq!(base_pi.digest, None);
+        let rust_direct = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Direct)?;
+        assert_eq!(rust_direct.r#ref, "localhost/wrix-rust-direct:ghi");
         Ok(())
     }
 
@@ -140,19 +160,43 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let body = r#"{
           "rust": {
-            "ref": "localhost/wrix-rust:def",
-            "source": "/nix/store/bbb-image-rust",
-            "digest": "/nix/store/ddd-image-digest"
+            "pi": {
+              "ref": "localhost/wrix-rust-pi:def",
+              "source": "/nix/store/bbb-image-rust-pi",
+              "digest": "/nix/store/ddd-image-digest"
+            }
           }
         }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
-        let rust = manifest.lookup(&ProfileName::new("rust"))?;
+        let rust = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Pi)?;
         assert_eq!(
             rust.digest,
             Some(PathBuf::from("/nix/store/ddd-image-digest"))
         );
         Ok(())
+    }
+
+    #[test]
+    fn from_path_rejects_unknown_runtime_before_lookup() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = write_manifest(
+            dir.path(),
+            r#"{ "base": { "gpt": { "ref": "r", "source": "/s" } } }"#,
+        )?;
+        let err = match ProfileImageManifest::from_path(&path) {
+            Err(e) => e,
+            Ok(_) => return Err(anyhow!("expected malformed-manifest error")),
+        };
+        if let ProfileError::ManifestMalformed {
+            path: errored_path, ..
+        } = err
+        {
+            assert_eq!(errored_path, path);
+            Ok(())
+        } else {
+            Err(anyhow!("expected ManifestMalformed, got {err:?}"))
+        }
     }
 
     #[test]
@@ -189,16 +233,13 @@ mod tests {
         }
     }
 
-    /// `declared_profiles` walks the underlying `BTreeMap` in key order so
-    /// the operator-facing `unknown-profile` blocked-cause note renders
-    /// the declared set deterministically across runs.
     #[test]
     fn declared_profiles_yields_keys_in_btreemap_order() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let body = r#"{
-          "rust":   { "ref": "r1", "source": "/s1" },
-          "base":   { "ref": "r2", "source": "/s2" },
-          "python": { "ref": "r3", "source": "/s3" }
+          "rust":   { "pi": { "ref": "r1", "source": "/s1" } },
+          "base":   { "pi": { "ref": "r2", "source": "/s2" } },
+          "python": { "pi": { "ref": "r3", "source": "/s3" } }
         }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
@@ -213,10 +254,10 @@ mod tests {
     #[test]
     fn lookup_unknown_profile_carries_manifest_path() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let body = r#"{ "base": { "ref": "r", "source": "/s" } }"#;
+        let body = r#"{ "base": { "pi": { "ref": "r", "source": "/s" } } }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
-        let err = match manifest.lookup(&ProfileName::new("rust")) {
+        let err = match manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Pi) {
             Err(e) => e,
             Ok(_) => return Err(anyhow!("expected unknown-profile error")),
         };
@@ -230,6 +271,41 @@ mod tests {
             Ok(())
         } else {
             Err(anyhow!("expected UnknownProfile, got {err:?}"))
+        }
+    }
+
+    #[test]
+    fn lookup_missing_runtime_for_profile_carries_profile_and_runtime() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let body = r#"{
+          "rust": {
+            "claude": { "ref": "r1", "source": "/s1" },
+            "pi": { "ref": "r2", "source": "/s2" }
+          }
+        }"#;
+        let path = write_manifest(dir.path(), body)?;
+        let manifest = ProfileImageManifest::from_path(&path)?;
+        let err = match manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Direct) {
+            Err(e) => e,
+            Ok(_) => return Err(anyhow!("expected unknown-runtime error")),
+        };
+        if let ProfileError::UnknownRuntimeForProfile {
+            profile,
+            runtime,
+            declared_runtimes,
+            manifest_path,
+        } = err
+        {
+            assert_eq!(profile.as_str(), "rust");
+            assert_eq!(runtime, AgentRuntime::Direct);
+            assert_eq!(
+                declared_runtimes,
+                vec![AgentRuntime::Pi, AgentRuntime::Claude]
+            );
+            assert_eq!(manifest_path, path);
+            Ok(())
+        } else {
+            Err(anyhow!("expected UnknownRuntimeForProfile, got {err:?}"))
         }
     }
 }

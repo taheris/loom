@@ -21,7 +21,7 @@ use std::sync::Arc;
 use askama::Template;
 use displaydoc::Display;
 use loom_driver::agent::{
-    ProtocolError, RePinContent, SessionOutcome, SpawnConfig, set_loom_inside,
+    AgentRuntime, ProtocolError, RePinContent, SessionOutcome, SpawnConfig, set_loom_inside,
 };
 use loom_driver::bd::{BdClient, CommandRunner, ListOpts, TokioRunner};
 use loom_driver::config::{LoomConfig, Phase};
@@ -305,6 +305,7 @@ where
     state: Arc<StateDb>,
     manifest: Arc<ProfileImageManifest>,
     phase_default: ProfileName,
+    runtime: AgentRuntime,
     spawn: S,
     style_rules: String,
 }
@@ -332,6 +333,7 @@ where
             state,
             manifest,
             phase_default,
+            runtime: AgentRuntime::Pi,
             spawn,
             style_rules: "docs/style-rules.md".to_string(),
         }
@@ -343,6 +345,11 @@ where
     #[must_use]
     pub fn with_style_rules(mut self, path: String) -> Self {
         self.style_rules = path;
+        self
+    }
+
+    pub fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
+        self.runtime = runtime;
         self
     }
 
@@ -415,13 +422,14 @@ where
         let prompt = self.build_rubric_prompt().await?;
         let entry = self
             .manifest
-            .lookup(&self.phase_default)
+            .lookup(&self.phase_default, self.runtime)
             .map_err(|e| WalkError::Rubric(e.to_string()))?;
         let banner = format!("loom gate mint @ {}", self.label);
         let key = resolve_scratch_key(Phase::Review, &self.label, None);
         let scratch = ScratchSession::open(&self.workspace, &key, &prompt, &banner)
             .map_err(|e| WalkError::Rubric(format!("scratch: {e}")))?;
         let mut env = Vec::new();
+        env.push(("WRIX_AGENT".to_string(), self.runtime.as_str().to_string()));
         set_loom_inside(&mut env);
         let spawn_config = SpawnConfig {
             image_ref: entry.r#ref.clone(),
@@ -444,7 +452,7 @@ where
             shutdown_grace: None,
             handshake_timeout: None,
             stall_warn_interval: None,
-            launcher_env: Vec::new(),
+            launcher_env: vec![("WRIX_AGENT".to_string(), self.runtime.as_str().to_string())],
         };
         let result = (self.spawn)(spawn_config).await;
         drop(scratch);
@@ -814,7 +822,7 @@ mod tests {
         let manifest_path = workspace.join("profile-images.json");
         std::fs::write(
             &manifest_path,
-            r#"{"base":{"ref":"localhost/base:test","source":"/nix/store/base-image"}}"#,
+            r#"{"base":{"pi":{"ref":"localhost/base-pi:test","source":"/nix/store/base-pi-image"},"claude":{"ref":"localhost/base-claude:test","source":"/nix/store/base-claude-image"},"direct":{"ref":"localhost/base-direct:test","source":"/nix/store/base-direct-image"}}}"#,
         )
         .expect("manifest");
         let manifest = Arc::new(
@@ -1367,7 +1375,7 @@ cwd = "verifier-cwd"
         let manifest_path = workspace.join("profile-images.json");
         std::fs::write(
             &manifest_path,
-            r#"{"base":{"ref":"localhost/wrix-base:abc","source":"/nix/store/aaa"}}"#,
+            r#"{"base":{"pi":{"ref":"localhost/wrix-base-pi:abc","source":"/nix/store/aaa-pi"},"claude":{"ref":"localhost/wrix-base-claude:abc","source":"/nix/store/aaa-claude"},"direct":{"ref":"localhost/wrix-base-direct:abc","source":"/nix/store/aaa-direct"}}}"#,
         )
         .expect("manifest");
         let manifest =
@@ -1502,7 +1510,7 @@ cwd = "verifier-cwd"
         let manifest_path = workspace.join("profile-images.json");
         std::fs::write(
             &manifest_path,
-            r#"{"base":{"ref":"localhost/wrix-base:abc","source":"/nix/store/aaa"}}"#,
+            r#"{"base":{"pi":{"ref":"localhost/wrix-base-pi:abc","source":"/nix/store/aaa-pi"},"claude":{"ref":"localhost/wrix-base-claude:abc","source":"/nix/store/aaa-claude"},"direct":{"ref":"localhost/wrix-base-direct:abc","source":"/nix/store/aaa-direct"}}}"#,
         )
         .expect("manifest");
         let manifest =

@@ -13,7 +13,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use askama::Template;
-use loom_driver::agent::{RePinContent, SessionOutcome, SpawnConfig, set_loom_inside};
+use loom_driver::agent::{
+    AgentRuntime, RePinContent, SessionOutcome, SpawnConfig, set_loom_inside,
+};
 use loom_driver::bd::{
     BdClient, BdError, CommandRunner, CreateOpts, ListOpts, TokioRunner, UpdateOpts,
 };
@@ -42,6 +44,7 @@ pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
     state: Arc<StateDb>,
     manifest: Arc<ProfileImageManifest>,
     phase_default: ProfileName,
+    runtime: AgentRuntime,
     git: Arc<GitClient>,
     bd: Arc<BdClient<R>>,
     #[expect(
@@ -79,6 +82,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             state,
             manifest,
             phase_default,
+            runtime: AgentRuntime::Pi,
             git,
             bd,
             since,
@@ -91,6 +95,11 @@ impl<R: CommandRunner> ProductionTodoController<R> {
     /// container picks up the shared sccache mount + env when configured.
     pub fn with_loom_config(mut self, cfg: LoomTopConfig) -> Self {
         self.loom_cfg = cfg;
+        self
+    }
+
+    pub fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
+        self.runtime = runtime;
         self
     }
 
@@ -238,7 +247,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         // fan-out guard. Captured before the agent spawns so a post-
         // session re-snapshot in `record_outcome` can detect new mints.
         self.pre_snapshot = Some(self.snapshot_task_beads().await?);
-        let entry = self.manifest.lookup(&self.phase_default)?;
+        let entry = self.manifest.lookup(&self.phase_default, self.runtime)?;
         let banner = format!("loom todo @ {}", self.label);
         let key = resolve_scratch_key(Phase::Todo, &self.label, None);
         let scratch =
@@ -255,6 +264,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         );
         let scratch_dir = scratch.path().to_path_buf();
         let mut env = self.loom_cfg.container_sccache_env();
+        env.push(("WRIX_AGENT".to_string(), self.runtime.as_str().to_string()));
         set_loom_inside(&mut env);
         let mounts = crate::r#loop::sccache_mount(&self.loom_cfg)
             .map_err(|source| TodoError::Protocol(loom_driver::agent::ProtocolError::Io(source)))?
@@ -282,7 +292,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
                 shutdown_grace: None,
                 handshake_timeout: None,
                 stall_warn_interval: None,
-                launcher_env: Vec::new(),
+                launcher_env: vec![("WRIX_AGENT".to_string(), self.runtime.as_str().to_string())],
             },
             scratch,
         })

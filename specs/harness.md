@@ -2612,7 +2612,7 @@ Criteria.
   [test](lookup_unknown_profile_carries_manifest_path)
 - A resolved backend runtime missing under an existing profile fails with a
       typed profile-manifest error naming the profile and runtime
-  [test?](lookup_missing_runtime_for_profile_carries_profile_and_runtime)
+  [test](lookup_missing_runtime_for_profile_carries_profile_and_runtime)
 - `--profile` CLI override takes precedence over bead labels
   [test](cli_override_swaps_resolved_image)
 - `loom plan` shells out to interactive `wrix run` (TTY attached); does

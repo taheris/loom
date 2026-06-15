@@ -27,7 +27,7 @@ fn loom_help_lists_agent_global_flag() {
         "loom --help must list --agent. stdout={stdout}",
     );
     assert!(
-        stdout.contains("claude") && stdout.contains("pi"),
+        stdout.contains("claude") && stdout.contains("pi") && stdout.contains("direct"),
         "loom --help must list backend choices. stdout={stdout}",
     );
 }
@@ -75,43 +75,27 @@ fn loom_rejects_unknown_agent_value() {
         "stderr should name the offending value. stderr={stderr}",
     );
     assert!(
-        stderr.contains("claude") && stderr.contains("pi"),
+        stderr.contains("claude") && stderr.contains("pi") && stderr.contains("direct"),
         "stderr should list valid backends. stderr={stderr}",
     );
 }
 
 #[test]
-fn loom_accepts_agent_pi() {
-    // Smoke: `loom --agent pi run --help` reaches subcommand help, proving
-    // the value-enum accepts `pi`.
+fn loom_accepts_agent_backend_values() {
     let loom_bin = env!("CARGO_BIN_EXE_loom");
-    let output = Command::new(loom_bin)
-        .arg("--agent")
-        .arg("pi")
-        .arg("loop")
-        .arg("--help")
-        .output()
-        .expect("spawn loom");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "loom --agent pi run --help must succeed. stdout={stdout} stderr={stderr}",
-    );
-}
-
-#[test]
-fn loom_accepts_agent_claude() {
-    let loom_bin = env!("CARGO_BIN_EXE_loom");
-    let output = Command::new(loom_bin)
-        .arg("--agent")
-        .arg("claude")
-        .arg("loop")
-        .arg("--help")
-        .output()
-        .expect("spawn loom");
-    assert!(
-        output.status.success(),
-        "loom --agent claude run --help must succeed",
-    );
+    for backend in ["pi", "claude", "direct"] {
+        let output = Command::new(loom_bin)
+            .arg("--agent")
+            .arg(backend)
+            .arg("loop")
+            .arg("--help")
+            .output()
+            .expect("spawn loom");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "loom --agent {backend} loop --help must succeed. stdout={stdout} stderr={stderr}",
+        );
+    }
 }

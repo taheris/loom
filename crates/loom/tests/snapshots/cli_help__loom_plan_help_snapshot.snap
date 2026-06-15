@@ -13,5 +13,5 @@ Arguments:
 Options:
       --profile <PROFILE>  Override the profile resolution chain. Wins over `[phase.plan].profile` and `[phase.default].profile` in `<workspace>/loom.toml` (default `base`)
   -w, --workspace <PATH>   Workspace root. Defaults to the current working directory
-  -A, --agent <BACKEND>    Override the agent backend for this invocation [possible values: claude, pi]
+  -A, --agent <BACKEND>    Override the agent backend for this invocation [possible values: claude, pi, direct]
   -h, --help               Print help

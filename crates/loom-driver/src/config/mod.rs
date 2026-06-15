@@ -224,7 +224,7 @@ impl LoomConfig {
                 denied_tools: self.security.denied_tools.clone(),
                 post_result_grace_secs: self.claude.post_result_grace_secs,
             }),
-            AgentKind::Pi => None,
+            AgentKind::Pi | AgentKind::Direct => None,
         };
         Ok(AgentSelection {
             profile: ProfileName::new(profile_str),
@@ -896,6 +896,21 @@ agent.thinking_level = "ultra"
             }
             other => panic!("expected UnknownThinkingLevel, got {other:?}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn agent_for_direct_backend_resolves_without_claude_settings() -> Result<()> {
+        let src = r#"
+[phase.default]
+agent.backend = "direct"
+agent.model_id = "claude-sonnet-4-6"
+"#;
+        let cfg = LoomConfig::from_toml_str(src)?;
+        let sel = cfg.agent_for(Phase::Review).expect("agent_for review");
+        assert_eq!(sel.kind, AgentKind::Direct);
+        assert_eq!(sel.model_id.as_deref(), Some("claude-sonnet-4-6"));
+        assert!(sel.claude_settings.is_none());
         Ok(())
     }
 

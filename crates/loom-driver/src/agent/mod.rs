@@ -34,7 +34,7 @@ pub use backend::{
 };
 pub use error::ProtocolError;
 pub use jsonl::{JsonlReader, MAX_LINE_BYTES};
-pub use kind::AgentKind;
+pub use kind::{AgentKind, AgentRuntime, ParseAgentRuntimeError};
 pub use parse::{LineParse, ParsedLine};
 pub use repin::RePinContent;
 pub use session::{Active, AgentSession, Idle};

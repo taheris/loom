@@ -148,7 +148,7 @@ fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::pro
     std::fs::write(&image_source, "").expect("write stub image source");
     let manifest_body = format!(
         r#"{{
-          "base": {{ "ref": "localhost/wrix-base:test", "source": {source:?} }}
+          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?} }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?} }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?} }} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -346,12 +346,12 @@ fn wrix_spawn_invocation_records_correct_argv() {
 
     // The spawn-config JSON must round-trip through SpawnConfig and carry
     // the resolved image_ref + image_source from the manifest written by
-    // `drive_loom_todo_pi` (`base` profile maps to `localhost/wrix-base:test`).
+    // `drive_loom_todo_pi` (`base` + `pi` maps to `localhost/wrix-base-pi:test`).
     let bytes = std::fs::read(&spawn_copy).expect("shim should copy spawn-config aside");
     let cfg: loom_driver::agent::SpawnConfig =
         serde_json::from_slice(&bytes).expect("spawn-config must deserialize");
     assert_eq!(
-        cfg.image_ref, "localhost/wrix-base:test",
+        cfg.image_ref, "localhost/wrix-base-pi:test",
         "spawn-config image_ref must match the resolved profile image",
     );
     assert!(
@@ -507,7 +507,7 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "ref": "localhost/wrix-base:test", "source": {source:?} }}
+          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?} }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?} }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?} }} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -648,7 +648,7 @@ fn loom_gate_review_writes_phase_jsonl_log() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "ref": "localhost/wrix-base:test", "source": {source:?} }}
+          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?} }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?} }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?} }} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -988,7 +988,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "ref": "localhost/wrix-base:test", "source": {source:?} }}
+          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?} }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?} }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?} }} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -1071,7 +1071,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "ref": "localhost/wrix-base:test", "source": {source:?} }}
+          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?} }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?} }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?} }} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -1151,7 +1151,7 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "ref": "localhost/wrix-base:test", "source": {source:?} }}
+          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?} }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?} }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?} }} }}
         }}"#,
         source = image_source.display().to_string(),
     );

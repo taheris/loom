@@ -121,7 +121,7 @@ pub struct AgentSelection {
 
 #[derive(Debug, Display, Error, PartialEq, Eq)]
 pub enum AgentSelectionError {
-    /// unknown agent backend `{name}` in config (expected `claude` or `pi`)
+    /// unknown agent backend `{name}` in config (expected `claude`, `pi`, or `direct`)
     UnknownBackend { name: String },
     /// unknown agent.thinking_level `{name}` in config (expected one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`)
     UnknownThinkingLevel { name: String },
@@ -130,13 +130,10 @@ pub enum AgentSelectionError {
 /// Convert a backend name string (from `[phase.<name>] agent.backend` or
 /// `[phase.default] agent.backend`) into the typed [`AgentKind`].
 pub fn parse_backend_name(name: &str) -> Result<AgentKind, AgentSelectionError> {
-    match name {
-        "claude" => Ok(AgentKind::Claude),
-        "pi" => Ok(AgentKind::Pi),
-        other => Err(AgentSelectionError::UnknownBackend {
-            name: other.to_string(),
-        }),
-    }
+    name.parse()
+        .map_err(|_| AgentSelectionError::UnknownBackend {
+            name: name.to_string(),
+        })
 }
 
 /// Convert a `agent.thinking_level` TOML string into the typed
@@ -200,9 +197,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_backend_name_accepts_claude_and_pi() {
+    fn parse_backend_name_accepts_claude_pi_and_direct() {
         assert_eq!(parse_backend_name("claude").unwrap(), AgentKind::Claude);
         assert_eq!(parse_backend_name("pi").unwrap(), AgentKind::Pi);
+        assert_eq!(parse_backend_name("direct").unwrap(), AgentKind::Direct);
     }
 
     #[test]

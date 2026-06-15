@@ -56,7 +56,7 @@ fn git_capture(repo: &Path, args: &[&str]) -> Result<String> {
 
 fn write_manifest(dir: &Path) -> Arc<ProfileImageManifest> {
     let body = r#"{
-      "base": { "ref": "localhost/wrix-base:abc", "source": "/nix/store/aaa-image-base" }
+      "base": { "pi": { "ref": "localhost/wrix-base-pi:abc", "source": "/nix/store/aaa-image-base-pi" }, "claude": { "ref": "localhost/wrix-base-claude:abc", "source": "/nix/store/aaa-image-base-claude" }, "direct": { "ref": "localhost/wrix-base-direct:abc", "source": "/nix/store/aaa-image-base-direct" } }
     }"#;
     let path = dir.join("profile-images.json");
     std::fs::write(&path, body).expect("write manifest");

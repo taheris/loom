@@ -1016,7 +1016,7 @@ the entrypoint run the wrong runtime.
 - Per-phase config resolves correct backend (`[phase.todo].agent.backend` overrides `[phase.default].agent.backend`)
   [test](agent_for_per_phase_resolves_override_and_default)
 - `--agent` CLI flag accepts `pi`, `claude`, and `direct` and overrides all phase config for the invocation
-  [test?](loom_accepts_agent_backend_values)
+  [test](loom_accepts_agent_backend_values)
 - Default (no phase config, no flag) selects claude
   [test](agent_for_default_is_claude_when_config_empty)
 - Invalid backend name produces clear error
