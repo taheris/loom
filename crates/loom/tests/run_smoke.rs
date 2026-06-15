@@ -80,6 +80,63 @@ fn install_bd_argv_logger(dir: &Path, argv_log: &Path) -> std::path::PathBuf {
     bin_dir
 }
 
+/// Write a stub `bd` that exposes one active work epic labelled
+/// `loom:active,spec:harness` while returning an empty ready queue. This
+/// lets a multi-spec workspace exercise bare `loom loop`'s active-epic
+/// default without dispatching a real bead.
+fn install_bd_active_epic_stub(dir: &Path, argv_log: &Path) -> std::path::PathBuf {
+    let bin_dir = dir.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let bd = bin_dir.join("bd");
+    let active = r#"[{"id":"lm-active","title":"active","status":"open","priority":2,"issue_type":"epic","labels":["loom:active","spec:harness"],"metadata":{}}]"#;
+    let script = format!(
+        r#"#!/bin/sh
+for a in "$@"; do printf '%s\t' "$a"; done >> {log}
+printf '\n' >> {log}
+
+cmd="${{1:-}}"
+has_json=0
+label_active=0
+label_harness=0
+type_epic=0
+for arg in "$@"; do
+  case "$arg" in
+    --json) has_json=1 ;;
+    --label=loom:active) label_active=1 ;;
+    --label=spec:harness) label_harness=1 ;;
+    --type=epic) type_epic=1 ;;
+  esac
+done
+
+if [ "$cmd" = "list" ] && [ "$has_json" = "1" ]; then
+  if [ "$label_active" = "1" ]; then
+    printf '%s' '{active}'
+    exit 0
+  fi
+  if [ "$label_harness" = "1" ] && [ "$type_epic" = "1" ]; then
+    printf '%s' '{active}'
+    exit 0
+  fi
+  printf '%s' '[]'
+  exit 0
+fi
+
+if [ "$has_json" = "1" ]; then
+  printf '%s' '[]'
+  exit 0
+fi
+exit 0
+"#,
+        log = argv_log.display(),
+        active = active,
+    );
+    std::fs::write(&bd, script).unwrap();
+    let mut perm = std::fs::metadata(&bd).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&bd, perm).unwrap();
+    bin_dir
+}
+
 #[test]
 fn loom_loop_once_against_empty_bd_exits_zero() {
     let dir = tempfile::tempdir().unwrap();
@@ -147,6 +204,66 @@ fn loom_loop_once_against_empty_bd_exits_zero() {
     assert!(
         stdout.contains("outer_iterations=0"),
         "--once must NOT exec review (outer_iterations stays 0). stdout={stdout}",
+    );
+}
+
+#[test]
+fn loom_loop_without_spec_uses_active_epic_in_multi_spec_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    init_workspace_repo(workspace);
+    std::fs::create_dir_all(workspace.join(".loom")).unwrap();
+    std::fs::create_dir_all(workspace.join("specs")).unwrap();
+    std::fs::write(workspace.join("specs/harness.md"), "# harness\n").unwrap();
+    std::fs::write(workspace.join("specs/gate.md"), "# gate\n").unwrap();
+
+    let argv_log = workspace.join("bd-argv.log");
+    let bin_dir = install_bd_active_epic_stub(workspace, &argv_log);
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries = vec![bin_dir];
+    path_entries.extend(std::env::split_paths(&path));
+    let new_path = std::env::join_paths(path_entries).unwrap();
+
+    let manifest_path = workspace.join("profile-images.json");
+    std::fs::write(&manifest_path, "{}").unwrap();
+
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let output = Command::new(loom_bin)
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("loop")
+        .arg("--once")
+        .env("PATH", new_path)
+        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env("LOOM_BIN", loom_bin)
+        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        .env_remove("LOOM_INSIDE")
+        .output()
+        .expect("spawn loom");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "bare loom loop must resolve the active epic instead of failing multi-spec resolution. \
+         stdout={stdout} stderr={stderr}",
+    );
+    assert!(
+        stdout.contains("gate=no-gate"),
+        "empty active work epic should produce no-gate summary. stdout={stdout}",
+    );
+
+    let log = std::fs::read_to_string(&argv_log)
+        .unwrap_or_else(|_| panic!("bd-argv log {} must exist", argv_log.display()));
+    assert!(
+        log.lines()
+            .any(|line| line.contains("list\t") && line.contains("--label=loom:active")),
+        "bare loop must query the active work epic before falling back to tree spec resolution:\n{log}",
+    );
+    assert!(
+        log.lines()
+            .any(|line| line.contains("ready\t") && line.contains("--label=spec:harness")),
+        "ready queue must use the spec label declared by the active work epic:\n{log}",
     );
 }
 

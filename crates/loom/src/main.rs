@@ -16,7 +16,7 @@ use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use loom_agent::{ClaudeBackend, DirectBackend, PiBackend};
 use loom_driver::agent::{AgentKind, LOOM_INSIDE_ENV, ProtocolError, SessionOutcome, SpawnConfig};
-use loom_driver::bd::{BdClient, ListOpts, UpdateOpts};
+use loom_driver::bd::{BdClient, Bead, CommandRunner, ListOpts, UpdateOpts};
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{AgentObserversConfig, LoomConfig, Phase};
 use loom_driver::git::GitClient;
@@ -2314,8 +2314,11 @@ fn run_loop_cmd(
     render_flags: RenderFlags,
 ) -> anyhow::Result<LoopOutcome> {
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
-    let label = resolve_spec_label(workspace, spec)?;
     let runtime = tokio::runtime::Runtime::new()?;
+    let label = runtime.block_on(async {
+        let bd = BdClient::new();
+        resolve_loop_spec_label(&bd, workspace, spec).await
+    })?;
     let work_root_guard = acquire_active_work_root_lock(workspace, &label, &runtime)?;
 
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
@@ -3652,10 +3655,79 @@ fn acquire_review_work_root_lock(
     acquire_active_work_root_lock(workspace, label, runtime)
 }
 
+async fn resolve_loop_spec_label<R: CommandRunner>(
+    bd: &BdClient<R>,
+    workspace: &Path,
+    spec: Option<String>,
+) -> anyhow::Result<SpecLabel> {
+    if let Some(s) = spec {
+        return Ok(SpecLabel::new(s));
+    }
+
+    let active = bd
+        .list(ListOpts {
+            status: Some("open".to_string()),
+            label: Some("loom:active".to_string()),
+            issue_type: Some("epic".to_string()),
+            ..ListOpts::default()
+        })
+        .await?;
+    match active.len() {
+        0 => resolve_spec_label_from_tree(workspace),
+        1 => spec_label_from_active_epic(&active[0]),
+        _ => {
+            let ids = active
+                .iter()
+                .map(|epic| epic.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(anyhow::anyhow!(
+                "multiple open loom:active epics found: {ids}; keep exactly one active work epic"
+            ))
+        }
+    }
+}
+
+fn spec_label_from_active_epic(epic: &Bead) -> anyhow::Result<SpecLabel> {
+    let mut labels = epic
+        .labels
+        .iter()
+        .filter_map(|label| label.spec_label())
+        .collect::<Vec<_>>();
+    labels.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    labels.dedup_by(|a, b| a.as_str() == b.as_str());
+
+    match labels.len() {
+        1 => labels
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("active work epic {} has no spec label", epic.id)),
+        0 => Err(anyhow::anyhow!(
+            "active work epic {} has no spec:<label> label",
+            epic.id
+        )),
+        _ => {
+            let declared = labels
+                .iter()
+                .map(SpecLabel::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(anyhow::anyhow!(
+                "active work epic {} has multiple spec labels ({declared}); pass --spec to select one explicitly",
+                epic.id
+            ))
+        }
+    }
+}
+
 fn resolve_spec_label(workspace: &Path, spec: Option<String>) -> anyhow::Result<SpecLabel> {
     if let Some(s) = spec {
         return Ok(SpecLabel::new(s));
     }
+    resolve_spec_label_from_tree(workspace)
+}
+
+fn resolve_spec_label_from_tree(workspace: &Path) -> anyhow::Result<SpecLabel> {
     let labels = resolve_tree_mint_labels(workspace, None)?;
     if labels.len() == 1 {
         return labels
@@ -3664,7 +3736,7 @@ fn resolve_spec_label(workspace: &Path, spec: Option<String>) -> anyhow::Result<
             .ok_or_else(|| anyhow::anyhow!("no spec files found under specs/"));
     }
     Err(anyhow::anyhow!(
-        "multiple specs found; pass --spec to select one explicitly"
+        "multiple specs found and no active work epic is selected; pass --spec to select one explicitly"
     ))
 }
 
