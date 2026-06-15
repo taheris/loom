@@ -13,7 +13,9 @@ use crate::identifier::ProfileName;
 /// must fail fast — there is no implicit search path or fallback default.
 #[derive(Debug, Display, Error)]
 pub enum ProfileError {
-    /// LOOM_PROFILES_MANIFEST is not set
+    /// LOOM_PROFILES_MANIFEST is not set; spawn-bound commands require a
+    /// profile-image manifest (use `nix develop .#wrix`, `nix run .#loom-wrix`,
+    /// or export LOOM_PROFILES_MANIFEST)
     ManifestEnvUnset,
 
     /// profile-image manifest not found at {path}

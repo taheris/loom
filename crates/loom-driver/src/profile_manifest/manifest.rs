@@ -128,6 +128,14 @@ mod tests {
     }
 
     #[test]
+    fn manifest_env_unset_display_names_remediation() {
+        let msg = ProfileError::ManifestEnvUnset.to_string();
+        assert!(msg.contains("spawn-bound commands require"), "{msg}");
+        assert!(msg.contains("nix develop .#wrix"), "{msg}");
+        assert!(msg.contains("nix run .#loom-wrix"), "{msg}");
+    }
+
+    #[test]
     fn from_path_parses_well_formed_manifest() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let body = r#"{

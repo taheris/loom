@@ -82,8 +82,10 @@ SPEC
 cat >"$WORKSPACE/profile-images.json" <<JSON
 {
   "base": {
-    "ref": "${LOOM_TEST_IMAGE_REF}",
-    "source": "${LOOM_TEST_IMAGE}"
+    "pi": {
+      "ref": "${LOOM_TEST_IMAGE_REF}",
+      "source": "${LOOM_TEST_IMAGE}"
+    }
   }
 }
 JSON

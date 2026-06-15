@@ -14,6 +14,7 @@
     {
       packages = {
         inherit profileManifest;
+        profile-images = profileManifest;
 
         default = loom.bin;
         loom = loom.bin;

@@ -66,7 +66,8 @@ is suitable for Home Manager and system profiles:
 
 For image-backed workflows, Loom also exposes `loom-wrix`: a wrapped binary
 with `wrix` on its internal PATH and `LOOM_PROFILES_MANIFEST` defaulted to a
-base/rust/python manifest. Add that explicit package to a wrix devshell when
+base/rust/python × claude/pi/direct manifest. Add that explicit package to a
+wrix devshell when
 you want `loom plan` to work end-to-end without setting the env vars yourself:
 
 ```nix
