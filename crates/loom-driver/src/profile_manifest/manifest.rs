@@ -131,7 +131,7 @@ mod tests {
     fn manifest_env_unset_display_names_remediation() {
         let msg = ProfileError::ManifestEnvUnset.to_string();
         assert!(msg.contains("spawn-bound commands require"), "{msg}");
-        assert!(msg.contains("nix develop .#wrix"), "{msg}");
+        assert!(msg.contains("nix develop"), "{msg}");
         assert!(msg.contains("nix run .#loom-wrix"), "{msg}");
     }
 

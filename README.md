@@ -14,17 +14,14 @@ nix flake check        # Clippy + nextest
 ```
 
 Inside `nix develop`, the pinned Rust toolchain (`rust-toolchain.toml`),
-`cargo-nextest`, the formatter, and the host-native `loom` binary are on PATH:
+`cargo-nextest`, the formatter, Wrix launcher, profile-image manifest, and
+`loom` binary are on PATH. The default shell is image-backed so `loom loop`
+works without extra environment setup:
 
 ```bash
 cargo build
 cargo nextest run
-```
-
-The image-backed development shell remains available explicitly:
-
-```bash
-nix develop .#wrix
+loom loop
 ```
 
 ## Workflow
