@@ -101,10 +101,11 @@ fn setup() -> (
 /// is a regular directory inside the bind-mounted path, so workers in
 /// the wrix container can commit. The worker never pushes; on clean
 /// agent success the driver fetches the bead branch from the workspace
-/// into the loom workspace, merges it into the integration branch, and
-/// removes the workspace + branch.
+/// into the loom workspace, merges it into the integration branch,
+/// deletes the transient branch, and preserves the workspace until the
+/// durable push gate completes.
 #[tokio::test]
-async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success() -> Result<()> {
+async fn run_bead_dispatches_into_per_bead_worktree_and_preserves_after_success() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let bead = fake_bead("lm-1");
@@ -158,8 +159,8 @@ async fn run_bead_dispatches_into_per_bead_worktree_and_merges_back_on_success()
         "agent's SpawnConfig.workspace MUST be the per-bead worktree, not the driver checkout",
     );
     assert!(
-        !expected_worktree.exists(),
-        "worktree must be removed after clean merge-back",
+        expected_worktree.exists(),
+        "worktree must be preserved after clean merge-back until durable push",
     );
     let loom = workspace.join(".loom/integration");
     let branches = git_capture(&loom, &["branch", "--list", "loom/lm-1"])?;
@@ -225,6 +226,12 @@ async fn run_bead_dirty_tree_stashes_tree_not_clean_and_threads_it_on_retry() ->
                     // dispatcher must observe this and reroute.
                     std::fs::write(expected.join("scratch.tmp"), "leftover\n")
                         .expect("write dirty file");
+                } else {
+                    std::fs::write(expected.join("retry-work.txt"), "committed retry work\n")
+                        .expect("write retry work");
+                    git(&expected, &["add", "retry-work.txt"]).expect("git add retry work");
+                    git(&expected, &["commit", "-q", "-m", "retry work"])
+                        .expect("git commit retry work");
                 }
                 (
                     SessionResult::Complete(SessionOutcome {
@@ -686,7 +693,7 @@ fn read_bead_events(
 }
 
 /// Filter `events` to driver events whose `driver_kind` matches one
-/// of the run-phase merge/push/cleanup kinds and return the wire
+/// of the run-phase merge/push/preserve kinds and return the wire
 /// kind plus the envelope seq for ordering checks.
 fn merge_window_events(events: &[serde_json::Value]) -> Vec<(String, u64)> {
     let run_phase_kinds = [
@@ -695,7 +702,7 @@ fn merge_window_events(events: &[serde_json::Value]) -> Vec<(String, u64)> {
         "merge_conflict",
         "integration_conflict",
         "signature_verification_failed",
-        "worktree_cleanup_ok",
+        "bead_workspace_preserved",
         "tree_not_clean",
     ];
     events
@@ -713,15 +720,15 @@ fn merge_window_events(events: &[serde_json::Value]) -> Vec<(String, u64)> {
 }
 
 /// Happy path: a clean agent session + tree + merge must emit
-/// `bead_branch_pushed`, `merge_ok`, `worktree_cleanup_ok` exactly once
-/// each, in that order, with strictly increasing `seq`. Per-bead
-/// integration never pushes (specs/harness.md § Verdict Gate, phase 5),
-/// so no `post_merge_push_ok` rides the window. The events must surface
-/// in the same per-bead `.jsonl` the spawn closure already wrote to so
-/// operators tailing the loop see the dispatch-to-dispatch gap as named
-/// steps.
+/// `bead_branch_pushed`, `merge_ok`, and `bead_workspace_preserved`
+/// exactly once each, in that order, with strictly increasing `seq`.
+/// Per-bead integration never pushes (specs/harness.md § Verdict Gate,
+/// phase 5), so no `post_merge_push_ok` rides the window. The events
+/// must surface in the same per-bead `.jsonl` the spawn closure already
+/// wrote to so operators tailing the loop see the dispatch-to-dispatch
+/// gap as named steps.
 #[tokio::test]
-async fn run_bead_emits_driver_events_for_happy_path_in_seq_order() -> Result<()> {
+async fn run_bead_emits_preserved_workspace_event_for_happy_path_in_seq_order() -> Result<()> {
     let (_dir, workspace, manifest, git_client) = setup();
     let label = SpecLabel::new("harness");
     let logs_root = workspace.join(".loom/logs");
@@ -768,8 +775,8 @@ async fn run_bead_emits_driver_events_for_happy_path_in_seq_order() -> Result<()
     let kinds: Vec<String> = merge_window.iter().map(|(k, _)| k.clone()).collect();
     assert_eq!(
         kinds,
-        vec!["bead_branch_pushed", "merge_ok", "worktree_cleanup_ok"],
-        "happy path must emit the three merge-window driver events in order: {events:?}",
+        vec!["bead_branch_pushed", "merge_ok", "bead_workspace_preserved"],
+        "happy path must emit the preserved-workspace driver events in order: {events:?}",
     );
     let seqs: Vec<u64> = merge_window.iter().map(|(_, s)| *s).collect();
     for window in seqs.windows(2) {
