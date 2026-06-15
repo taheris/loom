@@ -22,9 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use askama::Template;
-use loom_driver::agent::{
-    AgentRuntime, ProtocolError, RePinContent, SessionOutcome, SpawnConfig, set_loom_inside,
-};
+use loom_driver::agent::{AgentRuntime, ProtocolError, SessionOutcome, SpawnConfig};
 use loom_driver::bd::{BdClient, BdError, Bead, CommandRunner, ListOpts, TokioRunner, UpdateOpts};
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomConfig, Phase, SuppressionConfig};
@@ -830,32 +828,17 @@ where
         let scratch =
             loom_driver::scratch::ScratchSession::open(&self.workspace, &key, &prompt, &banner)
                 .map_err(|source| ReviewError::Protocol(ProtocolError::Io(source)))?;
-        let mut env = Vec::new();
-        env.push(("WRIX_AGENT".to_string(), self.runtime.as_str().to_string()));
-        set_loom_inside(&mut env);
-        let spawn_config = SpawnConfig {
-            image_ref: entry.r#ref.clone(),
-            image_source: entry.source.clone(),
-            image_digest_path: entry.digest.clone(),
-            workspace: self.workspace.clone(),
-            env,
-            mounts: vec![],
-            initial_prompt: prompt,
-            agent_args: vec![],
-            repin: RePinContent {
-                orientation: String::new(),
-                pinned_context: String::new(),
-                partial_bodies: vec![],
-            },
-            scratch_dir: scratch.path().to_path_buf(),
-            model: None,
-            thinking_level: None,
-            output_limits: None,
-            shutdown_grace: None,
-            handshake_timeout: None,
-            stall_warn_interval: None,
-            launcher_env: vec![("WRIX_AGENT".to_string(), self.runtime.as_str().to_string())],
-        };
+        let spawn_config = crate::spawn::build_spawn_config(
+            entry,
+            self.runtime,
+            self.workspace.clone(),
+            prompt,
+            scratch.path().to_path_buf(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
         info!(
             label = %self.label,
             image_ref = %spawn_config.image_ref,

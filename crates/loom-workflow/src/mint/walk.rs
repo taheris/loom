@@ -20,9 +20,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use displaydoc::Display;
-use loom_driver::agent::{
-    AgentRuntime, ProtocolError, RePinContent, SessionOutcome, SpawnConfig, set_loom_inside,
-};
+use loom_driver::agent::{AgentRuntime, ProtocolError, SessionOutcome, SpawnConfig};
 use loom_driver::bd::{BdClient, CommandRunner, ListOpts, TokioRunner};
 use loom_driver::config::{LoomConfig, Phase};
 use loom_driver::identifier::{ProfileName, SpecLabel};
@@ -428,32 +426,17 @@ where
         let key = resolve_scratch_key(Phase::Review, &self.label, None);
         let scratch = ScratchSession::open(&self.workspace, &key, &prompt, &banner)
             .map_err(|e| WalkError::Rubric(format!("scratch: {e}")))?;
-        let mut env = Vec::new();
-        env.push(("WRIX_AGENT".to_string(), self.runtime.as_str().to_string()));
-        set_loom_inside(&mut env);
-        let spawn_config = SpawnConfig {
-            image_ref: entry.r#ref.clone(),
-            image_source: entry.source.clone(),
-            image_digest_path: entry.digest.clone(),
-            workspace: self.workspace.clone(),
-            env,
-            mounts: vec![],
-            initial_prompt: prompt,
-            agent_args: vec![],
-            repin: RePinContent {
-                orientation: String::new(),
-                pinned_context: String::new(),
-                partial_bodies: vec![],
-            },
-            scratch_dir: scratch.path().to_path_buf(),
-            model: None,
-            thinking_level: None,
-            output_limits: None,
-            shutdown_grace: None,
-            handshake_timeout: None,
-            stall_warn_interval: None,
-            launcher_env: vec![("WRIX_AGENT".to_string(), self.runtime.as_str().to_string())],
-        };
+        let spawn_config = crate::spawn::build_spawn_config(
+            entry,
+            self.runtime,
+            self.workspace.clone(),
+            prompt,
+            scratch.path().to_path_buf(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
         let result = (self.spawn)(spawn_config).await;
         drop(scratch);
         let (_outcome, _marker, stdout) = result.map_err(|e| WalkError::Rubric(e.to_string()))?;

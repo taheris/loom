@@ -3031,7 +3031,7 @@ Criteria.
       `SpawnConfig.launcher_env` and the in-container
       `SpawnConfig.env` allowlist, overriding an absent or conflicting
       parent-shell value
-  [test?](wrix_spawn_child_env_sets_backend_derived_wrix_agent)
+  [test](wrix_spawn_child_env_sets_backend_derived_wrix_agent)
 
 ### Workflow commands
 

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use loom_driver::agent::{AgentRuntime, MountSpec, RePinContent, SpawnConfig, set_loom_inside};
+use loom_driver::agent::{AgentRuntime, MountSpec, SpawnConfig};
 use loom_driver::bd::Bead;
 use loom_driver::config::LoomTopConfig;
 use loom_driver::identifier::ProfileName;
@@ -62,55 +62,6 @@ pub fn sccache_mount(cfg: &LoomTopConfig) -> std::io::Result<Option<MountSpec>> 
     }))
 }
 
-/// Internal helper. The public dispatch surface is
-/// [`build_spawn_config_from_manifest`] — callers should never construct a
-/// `SpawnConfig` field-by-field, because doing so silently bypasses the
-/// profile-image resolution and the canonical runtime env wiring.
-#[expect(clippy::too_many_arguments, reason = "internal helper")]
-fn build_spawn_config(
-    image_ref: String,
-    image_source: PathBuf,
-    image_digest_path: Option<PathBuf>,
-    workspace: PathBuf,
-    initial_prompt: String,
-    scratch_dir: PathBuf,
-    extra_env: Vec<(String, String)>,
-    runtime: AgentRuntime,
-    agent_args: Vec<String>,
-    mounts: Vec<MountSpec>,
-    launcher_env: Vec<(String, String)>,
-) -> SpawnConfig {
-    let mut env = extra_env;
-    let runtime_name = runtime.as_str().to_string();
-    env.push(("WRIX_AGENT".to_string(), runtime_name.clone()));
-    set_loom_inside(&mut env);
-    let mut launcher_env = launcher_env;
-    launcher_env.push(("WRIX_AGENT".to_string(), runtime_name));
-    SpawnConfig {
-        image_ref,
-        image_source,
-        image_digest_path,
-        workspace,
-        env,
-        mounts,
-        initial_prompt,
-        agent_args,
-        repin: RePinContent {
-            orientation: String::new(),
-            pinned_context: String::new(),
-            partial_bodies: vec![],
-        },
-        scratch_dir,
-        model: None,
-        thinking_level: None,
-        output_limits: None,
-        shutdown_grace: None,
-        handshake_timeout: None,
-        stall_warn_interval: None,
-        launcher_env,
-    }
-}
-
 /// Build a [`SpawnConfig`] for `bead` by resolving its profile through the
 /// parsed [`ProfileImageManifest`].
 ///
@@ -145,15 +96,13 @@ pub fn build_spawn_config_from_manifest(
     launcher_env: Vec<(String, String)>,
 ) -> Result<SpawnConfig, ProfileError> {
     let entry = resolve_profile_image(manifest, &bead.labels, override_, phase_default, runtime)?;
-    Ok(build_spawn_config(
-        entry.r#ref.clone(),
-        entry.source.clone(),
-        entry.digest.clone(),
+    Ok(crate::spawn::build_spawn_config(
+        entry,
+        runtime,
         workspace,
         initial_prompt,
         scratch_dir,
         extra_env,
-        runtime,
         agent_args,
         mounts,
         launcher_env,
@@ -389,13 +338,13 @@ mod tests {
             "SpawnConfig.env missing LOOM_INSIDE=1: {:?}",
             cfg.env,
         );
-        // Caller-supplied env entries must survive the injection.
-        assert!(
+        assert_eq!(
             cfg.env
                 .iter()
-                .any(|(k, v)| k == "WRIX_AGENT" && v == "claude"),
-            "SpawnConfig.env dropped caller env: {:?}",
-            cfg.env,
+                .filter(|(k, _)| k == "WRIX_AGENT")
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![("WRIX_AGENT".to_string(), "pi".to_string())],
         );
     }
 

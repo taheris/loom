@@ -45,4 +45,12 @@ pub enum ProfileError {
         declared_runtimes: Vec<AgentRuntime>,
         manifest_path: PathBuf,
     },
+
+    /// manifest entry for profile {profile} is keyed by runtime {runtime_key} but declares runtime {entry_runtime} at {manifest_path}
+    RuntimeMetadataMismatch {
+        profile: ProfileName,
+        runtime_key: AgentRuntime,
+        entry_runtime: AgentRuntime,
+        manifest_path: PathBuf,
+    },
 }

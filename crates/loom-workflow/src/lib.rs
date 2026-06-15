@@ -21,6 +21,7 @@ pub mod observer;
 pub mod plan;
 pub mod resolve;
 pub mod review;
+pub mod spawn;
 pub mod spec;
 pub mod status;
 mod suppression;

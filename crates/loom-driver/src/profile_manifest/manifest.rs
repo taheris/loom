@@ -27,6 +27,11 @@ pub struct ImageEntry {
     /// changes do not force re-streaming identical layer tarballs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<PathBuf>,
+    /// Optional typed runtime metadata emitted by newer manifest builders.
+    /// When present, it must agree with the runtime key that selected this
+    /// entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<AgentRuntime>,
 }
 
 /// Parsed profile-image manifest keyed by workspace profile, then runtime.
@@ -34,6 +39,27 @@ pub struct ImageEntry {
 pub struct ProfileImageManifest {
     entries: BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>,
     manifest_path: PathBuf,
+}
+
+fn validate_runtime_metadata(
+    entries: &BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>,
+    path: &Path,
+) -> Result<(), ProfileError> {
+    for (profile, runtimes) in entries {
+        for (runtime_key, entry) in runtimes {
+            if let Some(entry_runtime) = entry.runtime
+                && entry_runtime != *runtime_key
+            {
+                return Err(ProfileError::RuntimeMetadataMismatch {
+                    profile: profile.clone(),
+                    runtime_key: *runtime_key,
+                    entry_runtime,
+                    manifest_path: path.to_path_buf(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 impl ProfileImageManifest {
@@ -56,6 +82,7 @@ impl ProfileImageManifest {
                 path: path.to_path_buf(),
                 source,
             })?;
+        validate_runtime_metadata(&entries, path)?;
         Ok(Self {
             entries,
             manifest_path: path.to_path_buf(),
@@ -158,6 +185,7 @@ mod tests {
             PathBuf::from("/nix/store/bbb-image-base-pi")
         );
         assert_eq!(base_pi.digest, None);
+        assert_eq!(base_pi.runtime, None);
         let rust_direct = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Direct)?;
         assert_eq!(rust_direct.r#ref, "localhost/wrix-rust-direct:ghi");
         Ok(())
@@ -183,6 +211,59 @@ mod tests {
             Some(PathBuf::from("/nix/store/ddd-image-digest"))
         );
         Ok(())
+    }
+
+    #[test]
+    fn from_path_accepts_matching_runtime_metadata() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let body = r#"{
+          "rust": {
+            "pi": {
+              "ref": "localhost/wrix-rust-pi:def",
+              "source": "/nix/store/bbb-image-rust-pi",
+              "runtime": "pi"
+            }
+          }
+        }"#;
+        let path = write_manifest(dir.path(), body)?;
+        let manifest = ProfileImageManifest::from_path(&path)?;
+        let rust = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Pi)?;
+        assert_eq!(rust.runtime, Some(AgentRuntime::Pi));
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_metadata_mismatch_fails_before_spawn_lookup() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let body = r#"{
+          "rust": {
+            "pi": {
+              "ref": "localhost/wrix-rust-pi:def",
+              "source": "/nix/store/bbb-image-rust-pi",
+              "runtime": "claude"
+            }
+          }
+        }"#;
+        let path = write_manifest(dir.path(), body)?;
+        let err = match ProfileImageManifest::from_path(&path) {
+            Err(e) => e,
+            Ok(_) => return Err(anyhow!("expected runtime metadata mismatch")),
+        };
+        if let ProfileError::RuntimeMetadataMismatch {
+            profile,
+            runtime_key,
+            entry_runtime,
+            manifest_path,
+        } = err
+        {
+            assert_eq!(profile, ProfileName::new("rust"));
+            assert_eq!(runtime_key, AgentRuntime::Pi);
+            assert_eq!(entry_runtime, AgentRuntime::Claude);
+            assert_eq!(manifest_path, path);
+            Ok(())
+        } else {
+            Err(anyhow!("expected RuntimeMetadataMismatch, got {err:?}"))
+        }
     }
 
     #[test]

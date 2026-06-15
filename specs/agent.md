@@ -1051,9 +1051,9 @@ the entrypoint run the wrong runtime.
       --stdio` with the correct profile/runtime image, never via `podman run` directly
   [test](wrix_spawn_invocation_records_correct_argv)
 - Every `wrix spawn` child process receives `WRIX_AGENT` from the resolved backend runtime, independent of whether the parent shell has `WRIX_AGENT` set
-  [test?](wrix_spawn_child_env_sets_backend_derived_wrix_agent)
+  [test](wrix_spawn_child_env_sets_backend_derived_wrix_agent)
 - Spawn diagnostics log `agent_backend`, `wrix_agent_env`, and `image_ref`; typed image-runtime metadata mismatches fail before spawn
-  [test?](wrix_spawn_logs_backend_runtime_and_image_ref)
+  [test](wrix_spawn_logs_backend_runtime_and_image_ref)
 - Container receives agent stdin/stdout via pipe
   [test](child_stdin_is_a_pipe_not_a_tty)
 - Entrypoint starts pi in RPC mode when `WRIX_AGENT=pi`

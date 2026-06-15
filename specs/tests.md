@@ -605,7 +605,7 @@ in Functional #4.
       with the parent shell lacking `WRIX_AGENT` and with a conflicting
       parent value; the recorded `wrix spawn` child env contains the
       backend-derived runtime (`pi`, `claude`, or `direct`)
-  [test?](wrix_spawn_child_env_sets_backend_derived_wrix_agent)
+  [test](wrix_spawn_child_env_sets_backend_derived_wrix_agent)
 - Parallel run end-to-end: `loom loop --parallel 2` with two ready
       beads dispatches two mock-agent spawns concurrently, each in its
       own worktree, then merges both branches back to driver

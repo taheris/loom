@@ -1,0 +1,188 @@
+use std::path::PathBuf;
+
+use loom_driver::agent::{AgentRuntime, MountSpec, RePinContent, SpawnConfig, set_loom_inside};
+use loom_driver::profile_manifest::ImageEntry;
+use tracing::info;
+
+const WRIX_AGENT_ENV: &str = "WRIX_AGENT";
+
+/// Structured spawn diagnostics emitted for every non-interactive Wrix spawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnDiagnostics {
+    pub agent_backend: AgentRuntime,
+    pub wrix_agent_env: String,
+    pub image_ref: String,
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit spawn construction boundary"
+)]
+pub fn build_spawn_config(
+    entry: &ImageEntry,
+    runtime: AgentRuntime,
+    workspace: PathBuf,
+    initial_prompt: String,
+    scratch_dir: PathBuf,
+    extra_env: Vec<(String, String)>,
+    agent_args: Vec<String>,
+    mounts: Vec<MountSpec>,
+    launcher_env: Vec<(String, String)>,
+) -> SpawnConfig {
+    let runtime_name = runtime.as_str().to_string();
+    let env = spawn_env(extra_env, &runtime_name);
+    let launcher_env = spawn_launcher_env(launcher_env, &runtime_name);
+    let diagnostics = log_spawn_diagnostics(runtime, &runtime_name, &entry.r#ref);
+    SpawnConfig {
+        image_ref: diagnostics.image_ref,
+        image_source: entry.source.clone(),
+        image_digest_path: entry.digest.clone(),
+        workspace,
+        env,
+        mounts,
+        initial_prompt,
+        agent_args,
+        repin: RePinContent {
+            orientation: String::new(),
+            pinned_context: String::new(),
+            partial_bodies: vec![],
+        },
+        scratch_dir,
+        model: None,
+        thinking_level: None,
+        output_limits: None,
+        shutdown_grace: None,
+        handshake_timeout: None,
+        stall_warn_interval: None,
+        launcher_env,
+    }
+}
+
+fn spawn_env(mut extra_env: Vec<(String, String)>, runtime_name: &str) -> Vec<(String, String)> {
+    set_runtime_env(&mut extra_env, runtime_name);
+    set_loom_inside(&mut extra_env);
+    extra_env
+}
+
+fn spawn_launcher_env(
+    mut launcher_env: Vec<(String, String)>,
+    runtime_name: &str,
+) -> Vec<(String, String)> {
+    set_runtime_env(&mut launcher_env, runtime_name);
+    launcher_env
+}
+
+fn set_runtime_env(env: &mut Vec<(String, String)>, runtime_name: &str) {
+    env.retain(|(key, _)| key != WRIX_AGENT_ENV);
+    env.push((WRIX_AGENT_ENV.to_string(), runtime_name.to_string()));
+}
+
+pub fn log_spawn_diagnostics(
+    runtime: AgentRuntime,
+    runtime_name: &str,
+    image_ref: &str,
+) -> SpawnDiagnostics {
+    info!(
+        agent_backend = %runtime,
+        wrix_agent_env = %runtime_name,
+        image_ref = %image_ref,
+        "wrix spawn: resolved backend runtime and image",
+    );
+    SpawnDiagnostics {
+        agent_backend: runtime,
+        wrix_agent_env: runtime_name.to_string(),
+        image_ref: image_ref.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("capture not poisoned").extend(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn entry() -> ImageEntry {
+        ImageEntry {
+            r#ref: "localhost/wrix-rust-pi:test".into(),
+            source: PathBuf::from("/nix/store/image-rust-pi"),
+            digest: Some(PathBuf::from("/nix/store/image-rust-pi-digest")),
+            runtime: Some(AgentRuntime::Pi),
+        }
+    }
+
+    #[test]
+    fn wrix_spawn_child_env_sets_backend_derived_wrix_agent() {
+        let cfg = build_spawn_config(
+            &entry(),
+            AgentRuntime::Pi,
+            PathBuf::from("/workspace"),
+            "prompt".into(),
+            PathBuf::from("/workspace/.loom/scratch/key"),
+            vec![("WRIX_AGENT".into(), "claude".into())],
+            vec![],
+            vec![],
+            vec![("WRIX_AGENT".into(), "claude".into())],
+        );
+
+        assert_eq!(
+            cfg.env
+                .iter()
+                .filter(|(key, _)| key == "WRIX_AGENT")
+                .collect::<Vec<_>>(),
+            vec![&("WRIX_AGENT".to_string(), "pi".to_string())],
+        );
+        assert_eq!(
+            cfg.launcher_env
+                .iter()
+                .filter(|(key, _)| key == "WRIX_AGENT")
+                .collect::<Vec<_>>(),
+            vec![&("WRIX_AGENT".to_string(), "pi".to_string())],
+        );
+    }
+
+    #[test]
+    fn wrix_spawn_logs_backend_runtime_and_image_ref() {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let writer_buf = Arc::clone(&buf);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || CaptureWriter(Arc::clone(&writer_buf)))
+            .finish();
+
+        let diagnostics = tracing::subscriber::with_default(subscriber, || {
+            log_spawn_diagnostics(
+                AgentRuntime::Direct,
+                AgentRuntime::Direct.as_str(),
+                "localhost/wrix-base-direct:abc",
+            )
+        });
+        let captured = String::from_utf8(buf.lock().expect("capture not poisoned").clone())
+            .expect("captured tracing output is UTF-8");
+
+        assert_eq!(diagnostics.agent_backend, AgentRuntime::Direct);
+        assert_eq!(diagnostics.wrix_agent_env, "direct");
+        assert_eq!(diagnostics.image_ref, "localhost/wrix-base-direct:abc");
+        assert!(captured.contains("agent_backend=direct"), "{captured}");
+        assert!(captured.contains("wrix_agent_env=direct"), "{captured}");
+        assert!(
+            captured.contains("image_ref=localhost/wrix-base-direct:abc")
+                || captured.contains("image_ref=\"localhost/wrix-base-direct:abc\""),
+            "{captured}",
+        );
+    }
+}

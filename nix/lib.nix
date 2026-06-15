@@ -76,6 +76,9 @@ in
         mapAttrs (
           runtime: entry:
           entry
+          // {
+            inherit runtime;
+          }
           // optionalAttrs (images.${profileName}.${runtime} ? digest) {
             digest = "${images.${profileName}.${runtime}.digest}";
           }

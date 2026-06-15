@@ -13,9 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use askama::Template;
-use loom_driver::agent::{
-    AgentRuntime, RePinContent, SessionOutcome, SpawnConfig, set_loom_inside,
-};
+use loom_driver::agent::{AgentRuntime, SessionOutcome};
 use loom_driver::bd::{
     BdClient, BdError, CommandRunner, CreateOpts, ListOpts, TokioRunner, UpdateOpts,
 };
@@ -263,39 +261,22 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             "loom todo: building spawn config",
         );
         let scratch_dir = scratch.path().to_path_buf();
-        let mut env = self.loom_cfg.container_sccache_env();
-        env.push(("WRIX_AGENT".to_string(), self.runtime.as_str().to_string()));
-        set_loom_inside(&mut env);
         let mounts = crate::r#loop::sccache_mount(&self.loom_cfg)
             .map_err(|source| TodoError::Protocol(loom_driver::agent::ProtocolError::Io(source)))?
             .into_iter()
             .collect();
-        Ok(TodoSession {
-            config: SpawnConfig {
-                image_ref: entry.r#ref.clone(),
-                image_source: entry.source.clone(),
-                image_digest_path: entry.digest.clone(),
-                workspace: self.workspace.clone(),
-                env,
-                mounts,
-                initial_prompt: prompt,
-                agent_args: vec![],
-                repin: RePinContent {
-                    orientation: String::new(),
-                    pinned_context: String::new(),
-                    partial_bodies: vec![],
-                },
-                scratch_dir,
-                model: None,
-                thinking_level: None,
-                output_limits: None,
-                shutdown_grace: None,
-                handshake_timeout: None,
-                stall_warn_interval: None,
-                launcher_env: vec![("WRIX_AGENT".to_string(), self.runtime.as_str().to_string())],
-            },
-            scratch,
-        })
+        let config = crate::spawn::build_spawn_config(
+            entry,
+            self.runtime,
+            self.workspace.clone(),
+            prompt,
+            scratch_dir,
+            self.loom_cfg.container_sccache_env(),
+            vec![],
+            mounts,
+            vec![],
+        );
+        Ok(TodoSession { config, scratch })
     }
 
     async fn record_outcome(
