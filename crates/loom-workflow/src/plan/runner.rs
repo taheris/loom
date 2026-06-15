@@ -228,11 +228,11 @@ mod tests {
         std::fs::create_dir_all(&bin_dir)?;
         let bin = bin_dir.join("wrix");
         let script = format!(
-            "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$*\" > {:?}\nprintf 'ref=%s\\nsource=%s\\n' \"${{{}:?}}\" \"${{{}:?}}\" > {:?}\n",
-            dir.join("argv.log"),
+            "#!/usr/bin/env bash\nset -euo pipefail\nargv_log={:?}\nenv_log={:?}\nfor arg in \"$@\"; do\n    printf '%s\\n' \"$arg\" >> \"$argv_log\"\ndone\nprintf 'ref=%s\\nsource=%s\\nagent=%s\\n' \"${{{}:-}}\" \"${{{}:-}}\" \"${{WRIX_AGENT:-}}\" > \"$env_log\"\n",
+            dir.join("argv.log").display().to_string(),
+            dir.join("env.log").display().to_string(),
             WRIX_DEFAULT_IMAGE_REF,
             WRIX_DEFAULT_IMAGE_SOURCE,
-            dir.join("env.log"),
         );
         std::fs::write(&bin, script)?;
         let mut perms = std::fs::metadata(&bin)?.permissions();
@@ -282,7 +282,7 @@ mod tests {
 
         assert_eq!(report.anchor_labels, vec![SpecLabel::new("harness")]);
         let argv_log = std::fs::read_to_string(dir.path().join("argv.log"))?;
-        assert!(argv_log.starts_with("run "));
+        assert!(argv_log.starts_with("run\n"));
         assert!(argv_log.contains("# Specification Interview"));
         assert!(argv_log.contains("`harness`"));
         assert!(argv_log.contains("# Loom Docs"));
@@ -364,6 +364,46 @@ mod tests {
     }
 
     #[test]
+    fn plan_runner_passes_resolved_profile_runtime_to_wrix_run() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        seed_workspace(dir.path())?;
+        std::fs::write(
+            dir.path().join("loom.toml"),
+            "[phase.default]\nprofile = \"python\"\nagent.backend = \"claude\"\n",
+        )?;
+        let manifest = three_profile_manifest(dir.path())?;
+        let bin = stub_wrix(dir.path())?;
+        let mut opts = plan_opts(vec![SpecLabel::new("harness")], bin, manifest);
+        opts.cli_profile = Some(ProfileName::new("rust"));
+        opts.agent_override = Some(AgentKind::Pi);
+
+        run_with_timeout(dir.path(), opts, Duration::from_secs(1))?;
+
+        let argv_log = std::fs::read_to_string(dir.path().join("argv.log"))?;
+        let argv: Vec<&str> = argv_log.lines().collect();
+        assert!(argv.contains(&"pi"), "expected pi argv: {argv_log}");
+        assert!(
+            !argv.contains(&"claude"),
+            "pi run must not call claude: {argv_log}"
+        );
+        assert!(
+            !argv.contains(&"--profile"),
+            "wrix run must not receive --profile: {argv_log}"
+        );
+        assert!(
+            !argv.contains(&"--dangerously-skip-permissions"),
+            "pi run must not receive claude flags: {argv_log}",
+        );
+
+        let env_log = std::fs::read_to_string(dir.path().join("env.log"))?;
+        assert!(env_log.contains("ref=localhost/wrix-rust-pi:def"));
+        assert!(env_log.contains("source="));
+        assert!(env_log.contains("rust.tar"));
+        assert!(env_log.contains("agent=pi"));
+        Ok(())
+    }
+
+    #[test]
     fn plan_phase_default_profile_alone_picks_manifest_entry() -> Result<()> {
         let dir = tempfile::tempdir()?;
         seed_workspace(dir.path())?;
@@ -399,6 +439,29 @@ mod tests {
             err,
             PlanError::Profile(ProfileError::UnknownProfile { .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn interactive_shell_out_rejects_direct_backend() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        seed_workspace(dir.path())?;
+        std::fs::write(
+            dir.path().join("loom.toml"),
+            "[phase.plan]\nagent.backend = \"direct\"\n",
+        )?;
+        let manifest = three_profile_manifest(dir.path())?;
+        let bin = stub_wrix(dir.path())?;
+
+        let err = run_with_timeout(
+            dir.path(),
+            plan_opts(vec![SpecLabel::new("harness")], bin, manifest),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, PlanError::DirectInteractive));
+        assert!(!dir.path().join("argv.log").exists());
         Ok(())
     }
 }

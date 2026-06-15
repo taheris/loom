@@ -61,8 +61,9 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
 ///
 /// 1. Logs every argv element (one per line) to `<dir>/argv.log` so the
 ///    `launches_container` test can pin the dispatch shape.
-/// 2. Logs the `WRIX_DEFAULT_IMAGE_REF` / `_SOURCE` env vars to
-///    `<dir>/env.log` so the same test can verify the launcher contract.
+/// 2. Logs the `WRIX_DEFAULT_IMAGE_REF` / `_SOURCE` and `WRIX_AGENT`
+///    env vars to `<dir>/env.log` so the same test can verify the launcher
+///    contract.
 /// 3. Optionally dumps the prompt (argv[5]) to `$WRIX_STUB_PROMPT_DUMP`.
 /// 4. Branches on `$WRIX_STUB_MODE`:
 ///    - `resolve-all` — parses the prompt for `### lm-…` lines and
@@ -77,8 +78,8 @@ fn install_wrix_stub(dir: &Path) -> PathBuf {
     let argv_log = dir.join("argv.log");
     let env_log = dir.join("env.log");
     let script = format!(
-        r#"#!/bin/sh
-set -eu
+        r#"#!/usr/bin/env bash
+set -euo pipefail
 
 argv_log={argv_log:?}
 env_log={env_log:?}
@@ -90,6 +91,7 @@ printf -- '---\n' >> "$argv_log"
 
 printf 'WRIX_DEFAULT_IMAGE_REF=%s\n' "${{WRIX_DEFAULT_IMAGE_REF:-}}" >> "$env_log"
 printf 'WRIX_DEFAULT_IMAGE_SOURCE=%s\n' "${{WRIX_DEFAULT_IMAGE_SOURCE:-}}" >> "$env_log"
+printf 'WRIX_AGENT=%s\n' "${{WRIX_AGENT:-}}" >> "$env_log"
 
 # Argv layout (per loom-workflow/src/msg/chat.rs::build_wrix_argv):
 #   $1 = "run"
@@ -100,13 +102,13 @@ printf 'WRIX_DEFAULT_IMAGE_SOURCE=%s\n' "${{WRIX_DEFAULT_IMAGE_SOURCE:-}}" >> "$
 # `wrix run` has no --profile parser; any extra tokens between the
 # workspace and agent command would be forwarded into the container as a
 # command and exit 127.
-if [ "${{3:-}}" = "pi" ]; then
+if [[ "${{3:-}}" == "pi" ]]; then
     prompt="${{4:-}}"
 else
     prompt="${{5:-}}"
 fi
 
-if [ -n "${{WRIX_STUB_PROMPT_DUMP:-}}" ]; then
+if [[ -n "${{WRIX_STUB_PROMPT_DUMP:-}}" ]]; then
     printf '%s' "$prompt" > "$WRIX_STUB_PROMPT_DUMP"
 fi
 
@@ -116,29 +118,26 @@ case "$mode" in
         # Parse the rendered msg.md prompt for `### <id> — …` lines and
         # update each bead. Same shape a real claude session would emit
         # (one `bd update` per resolved clarify).
-        ids=$(printf '%s\n' "$prompt" | awk '/^### lm-/ {{print $2}}')
-        for id in $ids; do
+        while IFS= read -r id; do
             bd update "$id" --notes "resolved via msg --chat (stub $id)" --remove-label loom:clarify
-        done
+        done < <(printf '%s\n' "$prompt" | awk '/^### lm-/ {{print $2}}')
         ;;
     notes-only)
         # The persistence-boundary contract per specs/harness.md: agent
         # only writes the resolution note; the driver runs the unblock
         # transition (--status=open + label removal) after the session.
-        ids=$(printf '%s\n' "$prompt" | awk '/^### lm-/ {{print $2}}')
-        for id in $ids; do
+        while IFS= read -r id; do
             bd update "$id" --notes "resolved via msg --chat (notes-only stub $id)"
-        done
+        done < <(printf '%s\n' "$prompt" | awk '/^### lm-/ {{print $2}}')
         ;;
     bd-close)
         # Adversarial: the agent infers `bd close` from the worker-phase
         # `LOOM_COMPLETE` framing and closes the bead. The driver must
         # still issue the canonical unblock so the bead re-opens for
         # the next implementing session.
-        ids=$(printf '%s\n' "$prompt" | awk '/^### lm-/ {{print $2}}')
-        for id in $ids; do
+        while IFS= read -r id; do
             bd close "$id"
-        done
+        done < <(printf '%s\n' "$prompt" | awk '/^### lm-/ {{print $2}}')
         ;;
     resolve-none)
         :
@@ -362,12 +361,16 @@ fn loom_msg_chat_phase_agent_pi_selects_pi_command() {
 /// the CLI override) flows to `wrix run` via the
 /// `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` env vars
 /// — not via argv. `wrix run` has no `--profile` parser; any
-/// extra tokens between the workspace and `claude` would be forwarded
-/// into the container as a command and exit 127. The empty-config
-/// default profile is `base`.
+/// extra tokens between the workspace and the agent command would be
+/// forwarded into the container as a command and exit 127.
 #[test]
-fn msg_chat_passes_resolved_profile_to_wrix_run() {
+fn msg_chat_passes_resolved_profile_runtime_to_wrix_run() {
     let env = setup_chat();
+    std::fs::write(
+        env.workspace.join("loom.toml"),
+        "[phase.msg]\nprofile = \"base\"\nagent.backend = \"pi\"\n",
+    )
+    .expect("write loom.toml");
     seed_bead(
         &env.state_dir,
         "lm-pf01",
@@ -384,17 +387,68 @@ fn msg_chat_passes_resolved_profile_to_wrix_run() {
     );
 
     let argv = std::fs::read_to_string(&env.argv_log).expect("argv.log present");
+    let lines: Vec<&str> = argv.lines().collect();
+    assert!(lines.contains(&"pi"), "expected pi argv: {argv}");
     assert!(
-        !argv.lines().any(|l| l == "--profile"),
+        !lines.contains(&"claude"),
+        "pi-backed msg chat must not call claude: {argv}",
+    );
+    assert!(
+        !lines.contains(&"--dangerously-skip-permissions"),
+        "pi-backed msg chat must not receive claude flags: {argv}",
+    );
+    assert!(
+        !lines.contains(&"--profile"),
         "wrix run has no --profile parser; the flag must not appear in argv. \
          argv.log:\n{argv}",
     );
 
     let env_log = std::fs::read_to_string(env.workspace.join("env.log")).expect("env.log present");
     assert!(
-        env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-base-claude:test"),
-        "empty-config default profile (base) must select the matching image ref \
+        env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-base-pi:test"),
+        "phase msg profile/runtime must select the matching image ref \
          via env var. env.log:\n{env_log}",
+    );
+    assert!(
+        env_log.contains("WRIX_DEFAULT_IMAGE_SOURCE=") && env_log.contains("base.tar"),
+        "phase msg profile/runtime must select the matching image source \
+         via env var. env.log:\n{env_log}",
+    );
+    assert!(
+        env_log.contains("WRIX_AGENT=pi"),
+        "phase msg runtime must set backend-derived WRIX_AGENT. env.log:\n{env_log}",
+    );
+}
+
+#[test]
+fn msg_chat_rejects_direct_backend_before_wrix_run() {
+    let env = setup_chat();
+    std::fs::write(
+        env.workspace.join("loom.toml"),
+        "[phase.msg]\nagent.backend = \"direct\"\n",
+    )
+    .expect("write loom.toml");
+    seed_bead(
+        &env.state_dir,
+        "lm-dir01",
+        "direct pin",
+        "## Options — choose\n\n### Option 1 — only\nbody\n",
+        &["loom:clarify", "spec:direct"],
+    );
+
+    let output = run_loom_msg_chat(&env, "resolve-none", &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "direct-backed msg chat must fail before spawning wrix",
+    );
+    assert!(
+        stderr.contains("direct backend cannot run interactive `loom msg --chat`"),
+        "stderr must name the unsupported interactive direct backend: {stderr}",
+    );
+    assert!(
+        !env.argv_log.exists(),
+        "wrix stub must not be invoked when direct is selected",
     );
 }
 

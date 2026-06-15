@@ -1037,13 +1037,13 @@ the entrypoint run the wrong runtime.
 ### Interactive shell-out
 
 - `loom plan` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` and backend-derived `WRIX_AGENT` to `wrix run` (no `--profile` argv flag — `wrix run` has no parser for it), with the profile/runtime image resolved through `LoomConfig::agent_for(Phase::Plan)`
-  [test?](plan_runner_passes_resolved_profile_runtime_to_wrix_run)
+  [test](plan_runner_passes_resolved_profile_runtime_to_wrix_run)
 - `loom msg --chat` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` and backend-derived `WRIX_AGENT` to `wrix run` (no `--profile` argv flag), with the profile/runtime image resolved through `LoomConfig::agent_for(Phase::Msg)`
-  [test?](msg_chat_passes_resolved_profile_runtime_to_wrix_run)
+  [test](msg_chat_passes_resolved_profile_runtime_to_wrix_run)
 - `[phase.default].profile` alone (no per-phase override, no CLI override) reaches `Phase::Plan` via the env-var hand-off
   [test](plan_phase_default_profile_alone_picks_manifest_entry)
 - Direct backend selection for `loom plan` or `loom msg --chat` fails before spawning Wrix because Direct has no interactive REPL command
-  [test?](interactive_shell_out_rejects_direct_backend)
+  [test](interactive_shell_out_rejects_direct_backend)
 
 ### Container integration
 
