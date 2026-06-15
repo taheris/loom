@@ -3670,7 +3670,7 @@ two agent-loop observers.
       `LOOM_TODO: <json>` final lines and returns typed `TodoSuccess`;
       malformed JSON, missing fields, empty `Decomposed.beads`, empty
       `NoWork.reason`, or wrong prefix fail parse
-  [test?](todo_success_marker_parses_to_typed_protocol)
+  [test](todo_success_marker_parses_to_typed_protocol)
 - `loom todo` validates `TodoSuccess.head`, `TodoFingerprint`, work
       epic id, exact changed-spec coverage, bead existence, and bead
       parentage under the work epic before finalization
