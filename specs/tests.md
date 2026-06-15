@@ -6,12 +6,13 @@ Test strategy and infrastructure for the Loom agent driver.
 
 Loom is a Rust binary that orchestrates per-bead agent sessions
 across a multi-crate workspace. Testing has to cover three things at
-once: protocol parsing across two agent backends (pi-mono RPC, Claude
-stream-json), workflow orchestration (state DB, locking, worktree
-parallelism, push gate), and host↔container plumbing (entrypoint
-branching, bind mounts, profile selection). All three need
+once: protocol parsing across subprocess agent protocols (pi-mono RPC,
+Claude stream-json, plus Direct runner JSONL compatibility), workflow
+orchestration (cache DB, locking, worktree parallelism, push gate), and
+host↔container plumbing (entrypoint branching, bind mounts,
+profile/runtime selection). All three need
 first-class coverage in a Rust-native test framework with explicit
-state-DB and protocol-parser tests.
+cache-DB and protocol-parser tests.
 
 This spec designs the test strategy across three levels — unit,
 integration, container smoke — and the design rules that make tests
@@ -42,7 +43,7 @@ loom/
     loom-driver/
       src/
         state/
-          db.rs               # StateDb impl + inline #[cfg(test)] mod tests
+          db.rs               # CacheDb impl + inline #[cfg(test)] mod tests
           rebuild.rs          # rebuild logic + inline tests
           companions.rs       # `## Companions` parser + inline tests
         bd/
@@ -52,11 +53,11 @@ loom/
           repin.rs            # RePinContent + inline tests (doc-tested)
           ...
       tests/
-        state_db.rs           # Integration: StateDb across rebuild + queries
+        cache_db.rs           # Integration: CacheDb across rebuild + queries
         lock_manager.rs       # Integration: per-spec advisory locking
         git_client.rs         # Integration: GitClient against a temp repo
         logging.rs            # Integration: shared renderer + log channel
-        properties.rs         # proptest invariants for state DB rebuild
+        properties.rs         # proptest invariants for cache DB rebuild
     loom-events/              # Public contract leaf crate — `AgentEvent`,
       src/                    #   identifier newtypes, `Session` trait. Tiny
         identifier/           #   dep surface (serde, futures-core, thiserror).
@@ -77,13 +78,13 @@ loom/
           backend.rs          # spawn / lifecycle + inline tests driving mock-claude
           messages.rs
       tests/
-        static_dispatch.rs    # Compile-time check: both backends impl AgentBackend
-        properties.rs         # proptest invariants for pi/claude protocol parsers
+        static_dispatch.rs    # Compile-time check: all concrete backends impl AgentBackend
+        properties.rs         # proptest invariants for subprocess protocol parsers
     loom-workflow/
       src/
-        run/
-          mod.rs              # run loop + inline tests for unit-level helpers
-        check/
+        loop/
+          mod.rs              # loop orchestration + inline tests for unit-level helpers
+        gate/
           mod.rs              # push gate + inline tests
         ...
       tests/
@@ -95,7 +96,7 @@ loom/
         render.rs             # Integration: every template renders with partials
     loom/
       tests/
-        run_smoke.rs          # Integration: CLI subcommand surface
+        loop_smoke.rs         # Integration: CLI subcommand surface
         agent_flag.rs         # Integration: --agent flag parsing/validation
         spawn_dispatch.rs     # Integration: shim-based wrix spawn argv
                               #   contract + stdin-pipe-not-tty assertion
@@ -252,7 +253,7 @@ so reviewers can click directly into the violation.
 | JSONL line parser | never panics on arbitrary bytes; respects `MAX_LINE_BYTES`; never emits `AgentEvent` from a malformed line |
 | Pi protocol parser | round-trip identity for known shapes; unknown shapes map to `ProtocolError::UnknownMessageType`; never panics |
 | Claude protocol parser | round-trip identity for known shapes; unknown shapes map to the `Unknown` variant via `#[serde(other)]`; never panics |
-| State DB rebuild | never panics on arbitrary spec file content; schema invariants always hold; corrupted DB always recovers via `recreate` |
+| Cache DB rebuild | never panics on arbitrary spec/index content; schema invariants always hold; corrupted cache recovers via `recreate` or reports durable-source inconsistency |
 
 **Convention.** Parsers and codecs ship with a proptest invariant —
 minimally no-panic-on-arbitrary-input and (where applicable) round-trip
@@ -396,7 +397,7 @@ gives false confidence.
 
 ```rust
 #[test]
-fn state_db_rebuild() {
+fn cache_db_rebuild() {
     let dir = tempdir().unwrap();
 
     // Seed spec files
@@ -404,7 +405,7 @@ fn state_db_rebuild() {
     std::fs::write(dir.path().join("specs/auth.md"), "# Auth\n").unwrap();
     std::fs::write(dir.path().join("specs/api.md"), "# API\n").unwrap();
 
-    let db = StateDb::open(&dir.path().join("state.db")).unwrap();
+    let db = CacheDb::open(&dir.path().join("cache.db")).unwrap();
     let report = db.rebuild(dir.path(), &mock_bd_client()).unwrap();
 
     assert_eq!(report.specs_found, 2);
@@ -415,15 +416,15 @@ fn state_db_rebuild() {
 }
 
 #[test]
-fn state_db_corruption_recovery() {
+fn cache_db_corruption_recovery() {
     let dir = tempdir().unwrap();
-    let db_path = dir.path().join("state.db");
+    let db_path = dir.path().join("cache.db");
 
     // Write garbage to the DB file
     std::fs::write(&db_path, b"not a sqlite db").unwrap();
 
     // open detects corruption, rebuild recovers
-    let db = StateDb::open(&db_path).unwrap();
+    let db = CacheDb::open(&db_path).unwrap();
     let report = db.rebuild(dir.path(), &mock_bd_client()).unwrap();
     assert_eq!(report.specs_found, 0); // no spec files in tempdir
 }
@@ -564,9 +565,13 @@ the explicit tier commands run at tree scope with no `--spec` filter.
       `SpecLabel`, `MoleculeId`, `ProfileName`, `SessionId`,
       `ToolCallId`, `RequestId`)
   [test](serde_round_trips_as_plain_string)
-- State database round-trip tests cover spec, molecule, and meta
-      operations
-  [test](state_current_spec_round_trips)
+- Closed-set enum tests cover `AgentRuntime` parse/serde and reject
+      unknown runtime strings before manifest lookup or Wrix spawn
+  [test?](agent_runtime_parse_serde_rejects_unknown_values)
+- Cache database round-trip tests cover spec rows, spec epics,
+      work epics, notes, and criterion evidence without any
+      `current_spec` operation
+  [test?](cache_db_round_trips_specs_epics_notes_and_criteria)
 - Pi RPC protocol tests cover every command and every event type
       in the pi v0.72 protocol table, asserting on every documented
       field (not just type discrimination) so a renamed field fails
@@ -596,6 +601,11 @@ in Functional #4.
       attached as a pipe (not a TTY); recorded `SpawnConfig` JSON
       matches the on-disk shape
   [test](wrix_spawn_invocation_records_correct_argv)
+- `WRIX_AGENT` launcher-env contract: command construction is exercised
+      with the parent shell lacking `WRIX_AGENT` and with a conflicting
+      parent value; the recorded `wrix spawn` child env contains the
+      backend-derived runtime (`pi`, `claude`, or `direct`)
+  [test?](wrix_spawn_child_env_sets_backend_derived_wrix_agent)
 - Parallel run end-to-end: `loom loop --parallel 2` with two ready
       beads dispatches two mock-agent spawns concurrently, each in its
       own worktree, then merges both branches back to driver
@@ -604,16 +614,28 @@ in Functional #4.
       (clean / non-conflicting / conflict variants), remove — all
       against a temp repo via the typed Rust API
   [test](create_and_remove_worktree_round_trip)
-- State DB lifecycle: `open` on fresh path creates schema;
-      `rebuild` populates from `specs/*.md` plus mock `bd` output,
-      resetting iteration counters; `recreate` recovers from a
-      corrupted file
-  [test](state_db_rebuild_populates_specs_and_molecules)
-- Per-spec advisory locking: two contending acquisitions on the
-      same `<label>.lock` serialize via `flock`; the second waits
-      via `MockClock` advance, then errors naming the held label.
+- Cache DB lifecycle: `open` on fresh path creates schema; `rebuild`
+      populates from the spec index, spec files, mock bd spec/work
+      epics, and companions; `recreate` recovers from a corrupted file
+      without treating cache loss as clean todo state
+  [test?](cache_db_rebuild_populates_specs_epics_and_companions)
+- Todo multi-spec regression fixture: one commit modifies a spec already
+      represented in the active work epic, an existing inactive/stale spec,
+      and a brand-new spec added to `docs/README.md`; `loom todo`
+      discovers all three from durable cursors regardless of `loom:active`
+  [test?](todo_preflight_discovers_active_inactive_and_new_specs)
+- Todo validation rejects an agent `LOOM_TODO` payload that omits any
+      changed spec; no spec cursor advances and no work epic becomes
+      `loom:active`
+  [test?](todo_success_missing_changed_spec_fails_without_advancing)
+- Missing criterion evidence rows in `.loom/cache.db` render as
+      `EvidenceState::Missing` and never as no criteria/no work
+  [test?](todo_missing_criterion_cache_rows_are_missing_evidence)
+- Phase/work-root advisory locking: two contending acquisitions on the
+      same plan/todo/bead/epic root serialize via `flock`; the second
+      waits via `MockClock` advance, then errors naming the held root.
       Crashed child releases lock immediately for parent
-  [test](second_acquire_times_out_with_spec_busy)
+  [test?](second_acquire_times_out_with_work_root_busy)
 - Logging tee: renderer and on-disk `.jsonl` log subscribe to the
       same `AgentEvent` stream — capturing both yields line-for-line
       equality on the log side
@@ -621,8 +643,9 @@ in Functional #4.
 
 ### Container smoke
 
-- `nix run .#test` spawns a real podman container, runs
-      `loom loop --once` against a bead with `WRIX_AGENT=pi`
+- `nix run .#test` spawns a real podman container, unsets the
+      parent-shell `WRIX_AGENT`, runs `loom loop <bead-id>` against a
+      Pi-backed bead with child env `WRIX_AGENT=pi` and
       `MOCK_PI_SCENARIO=happy-path`, exits 0 with the bead closed
   [system](nix run .#test)
 
@@ -638,7 +661,7 @@ in Functional #4.
 the rules:
 
 - `cargo clippy --workspace` is covered by the `loom-clippy` flake
-      check (shared cargoArtifacts cache); see [profiles.md](profiles.md)
+      check with a shared cargoArtifacts cache
 - No `derive(From)` / `derive(Into)` on tuple-struct newtypes
   [check](cargo run -p loom-walk -- no_derive_from_on_newtypes)
 - No `crates/*/src/{types,error}.rs` files at crate roots
@@ -687,8 +710,9 @@ the rules:
       known shapes, `Unknown` variant catches unknown types, never
       panics
   [test](claude_arbitrary_bytes_never_panic)
-- State DB rebuild proptest: arbitrary spec content never
-      corrupts schema; corrupted DB always recovers via `recreate`
+- Cache DB rebuild proptest: arbitrary spec/index content never
+      corrupts schema; corrupted cache recovers via `recreate` or reports
+      durable-source inconsistency
   [test](rebuild_never_corrupts_schema)
 - `PROPTEST_CASES=32` for CI; overridable via env var
   [check](grep -q 'pub const CI_PROPTEST_CASES: u32 = 32' crates/loom-test-support/src/lib.rs)
@@ -752,7 +776,7 @@ the rules:
      `loom gate test`.
    - **Container smoke** — one happy-path scenario that spawns a real
      podman container via `wrix spawn`, runs a mock agent *inside*
-     the container, drives `loom loop --once` against it, and asserts
+     the container, drives `loom loop <bead-id>` against it, and asserts
      the bead closes. Validates host↔container plumbing
      (entrypoint.sh, bind mounts, `WRIX_AGENT` branching, container
      teardown) — *not* protocol depth, which the integration level
@@ -784,9 +808,11 @@ the rules:
    #### loom-driver
    - Newtype construction and serde round-trips (`BeadId`, `SpecLabel`,
      `MoleculeId`, `ProfileName`)
-   - `StateDb` schema creation on first open
-   - `StateDb` query methods return typed rows (`SpecRow`, `MoleculeRow`)
-   - `StateDb::rebuild` populates from spec files and mock `bd` output
+   - `CacheDb` schema creation on first open
+   - `CacheDb` query methods return typed rows (`SpecRow`, `SpecEpicRow`,
+     `WorkEpicRow`, criterion-evidence rows)
+   - `CacheDb::rebuild` populates from the spec index, spec files, and mock
+     `bd` output
    - Companion-section parser: spec with a `## Companions` section
      containing two backtick-delimited paths yields two `companions` rows;
      spec without the section yields zero
@@ -794,8 +820,8 @@ the rules:
      bullets, multi-path bullets (skipped with warn, not error)
    - Parser is case-sensitive on the heading: `## companions` (lowercase)
      and `## Companion paths` are not recognized
-   - `current_spec` / `set_current_spec` round-trip
-   - `increment_iteration` returns updated count, starts at 0
+   - No `current_spec` / `set_current_spec` API exists
+   - `increment_iteration` for a work epic returns updated count, starts at 0
    - `bd` CLI output parsing (JSON → typed structs)
    - `bd` CLI error mapping (exit codes → error variants)
    - `bd` CLI wrapper passes every argument via `Command::arg()` — never
@@ -836,6 +862,8 @@ the rules:
    - Claude `#[serde(other)]` catches unknown event types without error
    - Per-phase backend resolution (`[phase.todo].agent.backend` overrides
      `[phase.default].agent.backend`, `--agent` flag overrides all phases)
+   - Backend runtime name mapping for Wrix launcher env: Pi → `pi`,
+     Claude → `claude`, Direct → `direct`
    - Malformed JSONL handling — specific test cases:
      - Truncated JSON (`{"type": "message_del`) → `ProtocolError::InvalidJson`
      - Valid JSON, wrong shape (`{"foo": 42}`) → `ProtocolError::UnknownMessageType`
@@ -855,7 +883,7 @@ the rules:
      map to a single event
    - `ParsedLine::response` is `None` for Pi events and Claude non-control
      events
-   - Event normalization (both backends produce identical `AgentEvent`
+   - Event normalization (all backends produce identical `AgentEvent`
      sequences for equivalent agent behavior)
    - Timeout behavior: no JSONL line for 5+ minutes → warning logged, no
      abort
@@ -874,14 +902,22 @@ the rules:
      header, companions, implementation notes)
 
    #### loom-workflow
-   - Spec resolution logic (`--spec` flag, `current_spec` DB fallback, missing
-     spec error)
-   - Profile selection from bead labels (parse, fallback to base, flag
-     override)
+   - `loom plan [SPEC_LABEL ...]` anchor parsing, including zero anchors,
+     multiple anchors, missing-label-as-new-spec, and interspersed options
+   - `loom todo` changed-spec preflight from durable spec epic cursors,
+     including active, inactive/stale, and brand-new indexed specs
+   - `LOOM_TODO:` terminal parsing/validation against the preflight roster
+     and work epic
+   - Profile/runtime selection from bead labels plus resolved backend
+     (parse, fallback to base, flag override, missing runtime failure)
+   - Interactive `plan` / chat `msg` command construction exports
+     backend-derived `WRIX_AGENT` for Pi/Claude and rejects Direct before
+     spawning Wrix
    - Retry logic (failure count tracking, `loom:clarify` label after max
      retries)
    - Push gate logic (clean completion, fix-up beads, iteration cap)
-   - Four-tier detection (git diff, molecule-based, README discovery, new)
+   - Spec/work epic lifecycle: spec epic initialization, missing-cursor
+     blocking, pending `loom:todo` reuse, and active work epic finalization
    - No per-bead `bd dolt push/pull` is invoked: assert `BdClient` exposes
      no `dolt_push`/`dolt_pull` methods and the workflow paths do not
      spawn `bd dolt …` subprocess calls (containers reach the authoritative
@@ -905,43 +941,43 @@ the rules:
    - `flock` wrapper acquires/releases an exclusive lock on a file path;
      blocking variant returns when the lock is free, try-variant returns a
      typed error if held
-   - Per-spec lock path resolution: `.loom/locks/<label>.lock` is
-     created on first acquire, parent dirs created on demand
-   - Workspace lock path: `.loom/locks/workspace.lock`
-   - Lock-class dispatch: `LockClass::None`, `LockClass::Spec(label)`,
-     `LockClass::Workspace` are derived from the parsed CLI command before
-     any side effects
-   - Two threads contending on the same per-spec lock: first wins, second
-     waits up to 5s then errors with a clear message naming the held label
+   - Phase/work-root lock path resolution: `plan.lock`, `todo.lock`, and
+     `<bead-or-epic-id>.lock` are created on first acquire, parent dirs
+     created on demand
+   - Workspace lock path: `$XDG_STATE_HOME/loom/locks/<workspace-basename>/workspace.lock`
+   - Lock-class dispatch: `LockClass::None`, `LockClass::Plan`,
+     `LockClass::Todo`, `LockClass::WorkRoot(id)`, `LockClass::Workspace`
+     are derived from the parsed CLI command before any side effects
+   - Two threads contending on the same phase/work-root lock: first wins,
+     second waits up to 5s then errors with a clear message naming the held
+     root
    - Crash test: spawn a child, have it acquire the lock, kill it; parent
      re-acquires immediately (kernel released the flock)
 
    #### Auxiliary commands (loom-workflow)
-   - `loom init` writes a default `loom.toml` and creates `state.db` with
-     the expected schema (specs, molecules, companions, meta tables)
+   - `loom init` writes a default `loom.toml` and creates `.loom/cache.db`
+     with the expected schema (specs, spec epics, work epics, companions,
+     notes, criterion status, meta tables)
    - `loom init` is idempotent: running twice does not clobber existing
-     `current_spec` or molecule rows
-   - `loom init --rebuild` drops and repopulates: spec rows from `specs/*.md`,
-     molecule rows from mock `bd list --label=loom:active`, iteration
-     counters reset to 0
-   - `loom status` prints `current_spec`, active molecule id, iteration count
-     in a stable format (parseable line-by-line)
-   - `loom status` with no `current_spec` set exits 0 with a clear message,
+     notes or cache rows that can still be validated against durable state
+   - `loom init --rebuild` drops and repopulates cache rows from the spec
+     index, `specs/*.md`, mock bd spec/work epics, and companions;
+     iteration counters reset to 0
+   - `loom status` prints active work epic, pending `loom:todo` work epic,
+     iteration count, and cache health in a stable parseable format
+   - `loom status` with no active work epic exits 0 with a clear message,
      not an error
-   - `loom use <label>` writes `current_spec` to the meta table; subsequent
-     `loom status` reflects the change
-   - `loom use <unknown>` errors when the spec row is missing
    - `loom logs` (no flags) prints the path of the most recent file
      under `.loom/logs/` and tails it
    - `loom logs --bead <id>` finds the most recent log for that bead;
      exits non-zero with a stderr message naming the bead id when no
      log exists
-   - `loom spec --deps` parses the active spec's `[check]` / `[test]`
-     / `[system]` / `[judge]` annotations, opens each referenced
+   - `loom spec <label> --deps` parses the named spec's `[check]` /
+     `[test]` / `[system]` / `[judge]` annotations, opens each referenced
      verifier source, and prints the deduplicated set of nixpkgs needed
    - CLI surface: `loom --help` lists every v1 command (`plan`,
-     `todo`, `loop`, `gate`, `msg`, `spec`, `init`, `status`, `use`,
-     `logs`, `note`)
+     `todo`, `loop`, `gate`, `msg`, `spec`, `init`, `status`, `logs`,
+     `note`)
 
    #### Loop UX renderer (loom-workflow)
    - Default mode: header line per bead, one line per tool call, no
@@ -1049,6 +1085,11 @@ the rules:
      stdin properties (TTY vs pipe), then exec's a mock agent. Asserts
      the JSON shape, the `--spawn-config <file> --stdio` argv, and that
      stdin is a pipe (not a TTY).
+   - **`WRIX_AGENT` launcher-env contract** — the same command-construction
+     shim records child environment for pi, claude, and direct backend
+     selections. Parent-shell `WRIX_AGENT` is unset in one case and set
+     to a conflicting value in another; the child env always matches the
+     resolved backend runtime.
    - **Parallel run end-to-end** — `loom loop --parallel 2` with two
      ready beads dispatches two mock-agent spawns concurrently
      (overlapping spawn timestamps captured by the mock), each in its
@@ -1058,13 +1099,19 @@ the rules:
    - **`GitClient` round-trip** — create bead clone, list, status,
      rebase + ff (clean / non-conflicting / conflict variants),
      remove — all against a temp repo via the typed Rust API.
-   - **State DB lifecycle** — `StateDb::open` on a fresh path creates
-     schema; `rebuild` populates from `specs/*.md` plus mock `bd`
-     output; `recreate` recovers from a corrupted file.
-   - **Per-spec advisory locking** — two contending acquisitions on
-     the same `<label>.lock` serialize via `flock`; the second waits
-     up to 5s (driven by `MockClock`), then errors with a clear
-     message naming the held label. Crash test: child acquires + is
+   - **Cache DB lifecycle** — `CacheDb::open` on a fresh path creates
+     schema; `rebuild` populates from the spec index, `specs/*.md`, and
+     mock bd spec/work epics; `recreate` recovers from a corrupted file.
+   - **Todo changed-spec regression** — fixture repo with one commit
+     modifying a spec already represented in the active work epic, an
+     inactive/stale spec, and a brand-new indexed spec; verifies preflight
+     includes all three, missing cache
+     rows are `EvidenceState::Missing`, omitted `LOOM_TODO` rows fail,
+     and valid finalization advances every cursor all-or-nothing.
+   - **Phase/work-root advisory locking** — two contending acquisitions
+     on the same plan/todo/bead/epic lock serialize via `flock`; the
+     second waits up to 5s (driven by `MockClock`), then errors with a
+     clear message naming the held root. Crash test: child acquires + is
      killed; parent re-acquires immediately.
    - **Logging tee** — renderer and on-disk `.jsonl` log subscribe to
      the same `AgentEvent` stream; assert line-for-line equality on
@@ -1074,11 +1121,12 @@ the rules:
    host↔container plumbing that the integration tier cannot reach: a
    temp `.beads/` is seeded with one ready bead labelled
    `profile:base`; a test image bundles `mock-pi` at a known path
-   inside the container; loom invokes `wrix spawn` with
-   `WRIX_AGENT=pi` and `MOCK_PI_SCENARIO=happy-path`; the smoke
-   asserts the container exits clean and the bead closes.
-   Workflow-level coverage (plan/todo/run/gate/msg, profile selection,
-   agent switching, runtime composition) lives in inline
+   inside the container; with parent-shell `WRIX_AGENT` unset, loom
+   invokes `wrix spawn` with `WRIX_AGENT=pi` and
+   `MOCK_PI_SCENARIO=happy-path`; the smoke asserts the container exits
+   clean and the bead closes.
+   Workflow-level coverage (plan/todo/loop/gate/msg, profile/runtime
+   selection, agent switching) lives in inline
    `#[cfg(test)] mod tests` blocks under `loom-workflow/src/` — those
    are exercised via `cargo nextest run`, not the smoke.
 
@@ -1106,7 +1154,7 @@ the rules:
 
 8. **Property-based testing** — `proptest` for invariants on four
    targets: JSONL line parser, Pi protocol parser, Claude protocol
-   parser, state DB rebuild. Properties target invariants ("never
+   parser, cache DB rebuild. Properties target invariants ("never
    panics on arbitrary input", "round-trip is identity for known
    shapes", "unknown shapes map to typed errors") rather than
    specific input/output pairs. CI runs each property at

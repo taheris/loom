@@ -30,11 +30,20 @@ owns the prompt surface itself.
 
 ### Template Files
 
-One template per phase, plus per-mode variants:
+One template per agent-bearing phase:
 
-- `plan_new.md`, `plan_update.md`
-- `todo_new.md`, `todo_update.md`
+- `plan.md`
+- `todo.md`
 - `loop.md`, `review.md`, `msg.md`
+
+`loom plan [SPEC_LABEL ...]` uses one planning template. The optional
+labels are initial context anchors; new-vs-update is inferred from the
+spec/index files the interview edits, not from separate template modes.
+
+`loom todo` uses one decomposition template. The driver performs
+changed-spec preflight, creates or reuses the `loom:todo` work epic,
+and injects the exact changed-spec roster before the template renders;
+there is no `todo_new` / `todo_update` split.
 
 `loom gate verify` is deterministic — it runs project hooks,
 verifiers, audits, and linters without rendering any agent prompt — so
@@ -44,11 +53,11 @@ session has different inputs (diff, molecule/bead context, sibling
 diffs, typed deterministic gate evidence) and a rubric-walk objective
 rather than an implement-the-bead objective.
 
-Each template has a matching `#[derive(Template)]` context struct
-in the same crate. The Askama build verifies every variable
-referenced in the template body has a matching field on its
-context struct — missing variables are compile errors, unused
-fields trigger the `unused` workspace lint.
+Each template has a matching `#[derive(Template)]` context struct in the
+same crate. The Askama build verifies every variable referenced in the
+template body has a matching field on its context struct — missing
+variables are compile errors, unused fields trigger the `unused`
+workspace lint.
 
 ### Partials
 
@@ -60,18 +69,19 @@ Current set:
 | `context_pinning.md` | Pin the project-overview file (`pinned_context`) |
 | `style_rules.md` | Pin the style-rules file (`style_rules`) — see *Style-Rules Partial* below |
 | `spec_conventions.md` | Pin the spec-conventions document — see *Spec-Conventions Partial* below |
-| `spec_header.md` | Render spec label, path, active molecule |
-| `companions_context.md` | List companion paths declared on the spec |
+| `spec_header.md` | Render spec label/work-root context supplied by the phase |
+| `companions_context.md` | List companion paths declared on the spec(s) in scope |
 | `scratchpad.md` | Pin the per-session scratchpad path |
-| `progress_markers.md` | Document the `LOOM_COMPLETE` / `LOOM_NOOP` "work is done" terminators. **Markers are mutually exclusive — exactly one per session, on the final line.** Pinned in every phase (interactive sessions emit `LOOM_COMPLETE`; worker phases emit either `LOOM_COMPLETE` or `LOOM_NOOP`); paired with `self_report_markers.md` in worker phases so each worker phase surfaces both the success and the cannot-finish terminator sets. |
-| `self_report_markers.md` | Document the worker-phase cannot-finish terminators `LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`. Each routes a distinct outcome: retry on transient failure (environmental or agent self-reset), clarify on a decision the agent can frame as `## Options — …`, blocked on a genuine dead end with no candidate resolutions. **Pinned in worker phases only** (`todo_*`, `loop`, `review`) — interactive templates (`plan_*`, `msg`) emit `LOOM_COMPLETE` only because the human is present and resolves friction in-turn, so the cannot-finish markers are out of scope for those templates. The `chat_marker_final_turn_only.md` partial reinforces the COMPLETE-only restriction for interactive sessions. |
-| `options_format.md` | Carry the canonical `## Options — <summary>` / `### Option N — <title>` markdown block consumed by `loom msg`'s chat-drafter, per [gate.md § Options Format Contract](gate.md#options-format-contract). Pinned wherever a session may emit `LOOM_CLARIFY` or stream a clarify-bound finding: directly by `review.md` and transitively via `findings_walk.md` and `self_report_markers.md`. |
-| `findings_walk.md` | Sole carrier of the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed wire format (streaming finding lines + JSON-payload terminator + pairing rule) per [gate.md § Findings and Minting](gate.md#findings-and-minting). Documents the **Options-block requirement**: every clarify-bound finding (any finding whose mint would apply `loom:clarify` to the resulting bead, not only `invariant-clash`) MUST embed a canonical `## Options — …` block inside its `evidence` payload. The driver-side mint validates the evidence at parse time and falls back to `loom:blocked` with cause `clarify-without-options` when the block is absent or malformed, per [gate.md § Options Format Contract](gate.md#options-format-contract). Pinned only by `review.md`; an anti-drift `[check]`-tier verifier fails any other template that restates the wire format. |
-| `chat_marker_final_turn_only.md` | Restrict `LOOM_COMPLETE` emission to the **final** assistant turn of an interactive session. Included by `msg`, `plan_new`, and `plan_update` to disambiguate `progress_markers.md`'s "end your response with the marker" language (which is correct for single-shot worker phases but misreads as "every response" in chat). One-shot worker phases (`loop`, `todo_*`, `review`) deliberately omit it because every response in those phases IS the final output. |
+| `progress_markers.md` | Document generic `LOOM_COMPLETE` / `LOOM_NOOP` "work is done" terminators. **Not pinned in `todo.md`** because todo success is the typed `LOOM_TODO:` payload, not a generic complete/no-op marker. |
+| `todo_success.md` | Document the todo-specific success terminator `LOOM_TODO: <json>` and the `loom-protocol::todo::TodoSuccess` shape. Pinned only by `todo.md`. |
+| `self_report_markers.md` | Document worker-phase cannot-finish terminators `LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`. Pinned in worker phases (`todo`, `loop`, `review`) only. |
+| `options_format.md` | Carry the canonical `## Options — <summary>` / `### Option N — <title>` markdown block consumed by `loom msg`'s chat-drafter, per [gate.md § Options Format Contract](gate.md#options-format-contract). |
+| `findings_walk.md` | Sole carrier of the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed review wire format per [gate.md § Findings and Minting](gate.md#findings-and-minting). Pinned only by `review.md`; an anti-drift verifier fails any other template that restates the wire format. |
+| `chat_marker_final_turn_only.md` | Restrict `LOOM_COMPLETE` emission to the **final** assistant turn of an interactive session. Included by `plan` and `msg`. |
 | `interview_modes.md` | Describe the "one by one" / "polish the spec" interview sub-modes |
-| `chat_interview.md` | Interactive-session discipline pinned by every interactive-session template (`plan_new`, `plan_update`, `msg`): conversational prose Q&A only, no Claude Code option-picker / `AskUserQuestion` widget, and bd is the durable persistence destination for anything that needs to outlive the session — see *Chat Discipline* below |
-| `decomposition_discipline.md` | Pin the audit-before-fan-out rule on `todo_new` / `todo_update`: every bead must correspond to evidence-confirmed missing work, not a spec criterion in the abstract — see *Decomposition Discipline* below |
-| `plan_stage_rubric.md` | Gate the planning interview on completeness / coherence / invariant-clash before any commit. Carries the **pending-modifier discipline** prominently — see *Planning-Rubric Pending Discipline* below for what the partial body must spell out, including the "modified annotations" case the rule must explicitly cover (not only newly-added ones). |
+| `chat_interview.md` | Interactive-session discipline pinned by every interactive-session template (`plan`, `msg`): conversational prose Q&A only, no Claude Code option-picker / `AskUserQuestion` widget, and bd is the durable persistence destination for anything that needs to outlive the session — see *Chat Discipline* below |
+| `decomposition_discipline.md` | Pin the audit-before-fan-out and exact-roster rule on `todo`: every changed spec from driver preflight must be represented in `LOOM_TODO`, and every bead must correspond to evidence-confirmed missing work — see *Decomposition Discipline* below |
+| `plan_stage_rubric.md` | Gate the planning interview on completeness / coherence / invariant-clash before any commit. Carries the pending-modifier discipline prominently — see *Planning-Rubric Pending Discipline* below. |
 | `invariant_clash.md` | Describe the invariant-clash awareness scan (included transitively via `plan_stage_rubric.md`) |
 | `review_rubric.md` | Finite-diff / push-range review rubric — see [gate.md](gate.md) |
 | `sibling_spec_editing.md` | Authorize cross-spec edits during a planning session |
@@ -107,174 +117,183 @@ narrative from drifting back into spec markdown.
 Each partial is included by an explicit set of templates. **Cell
 vocabulary**: `✓` (partial is transitively `{% include %}`'d by
 this template), blank (partial is NOT included), `?` (pending
-addition — will resolve to `✓` once the template's `{% include %}`
-graph catches up), `~` (pending removal — will resolve to blank
-once the template's `{% include %}` is dropped). Pending cells
-silent-pass during the pending window per [gate.md § Pending
-support in structured walker input](gate.md#pending-support-in-structured-walker-input);
-the walker fails — with a `pending-marker-resolved` finding —
-once the actual include state catches up to the pending direction
-so the author drops the marker to its resolved value (`✓` or
-blank) in the same diff.
+addition), `~` (pending removal). Pending cells silent-pass during
+the pending window per [gate.md § Pending support in structured
+walker input](gate.md#pending-support-in-structured-walker-input).
 
-| Partial | `plan_new` | `plan_update` | `todo_new` | `todo_update` | `loop` | `review` | `msg` |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| `context_pinning.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `style_rules.md` |  |  |  |  | ✓ | ✓ |  |
-| `spec_conventions.md` | ✓ | ✓ |  |  |  |  |  |
-| `spec_header.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |
-| `companions_context.md` |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `scratchpad.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `progress_markers.md` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  |
-| `self_report_markers.md` |  |  | ✓ | ✓ | ✓ | ✓ |  |
-| `findings_walk.md` |  |  |  |  |  | ✓ |  |
-| `options_format.md` |  |  | ✓ | ✓ | ✓ | ✓ |  |
-| `chat_marker_final_turn_only.md` | ✓ | ✓ |  |  |  |  | ✓ |
-| `interview_modes.md` | ✓ | ✓ |  |  |  |  |  |
-| `chat_interview.md` | ✓ | ✓ |  |  |  |  | ✓ |
-| `decomposition_discipline.md` |  |  | ✓ | ✓ |  |  |  |
-| `plan_stage_rubric.md` | ✓ | ✓ |  |  |  |  |  |
-| `invariant_clash.md` | ✓ | ✓ |  |  |  |  |  |
-| `review_rubric.md` |  |  |  |  |  | ✓ |  |
-| `sibling_spec_editing.md` |  | ✓ |  |  |  |  |  |
+| Partial | `plan` | `todo` | `loop` | `review` | `msg` |
+|---|:-:|:-:|:-:|:-:|:-:|
+| `context_pinning.md` | ? | ? | ✓ | ✓ | ✓ |
+| `style_rules.md` |  |  | ✓ | ✓ |  |
+| `spec_conventions.md` | ? |  |  |  |  |
+| `spec_header.md` | ? | ? | ✓ | ✓ |  |
+| `companions_context.md` | ? | ? | ✓ | ✓ | ✓ |
+| `scratchpad.md` | ? | ? | ✓ | ✓ | ✓ |
+| `progress_markers.md` | ? |  | ✓ | ✓ |  |
+| `todo_success.md` |  | ? |  |  |  |
+| `self_report_markers.md` |  | ? | ✓ | ✓ |  |
+| `findings_walk.md` |  |  |  | ✓ |  |
+| `options_format.md` |  | ? | ✓ | ✓ |  |
+| `chat_marker_final_turn_only.md` | ? |  |  |  | ✓ |
+| `interview_modes.md` | ? |  |  |  |  |
+| `chat_interview.md` | ? |  |  |  | ✓ |
+| `decomposition_discipline.md` |  | ? |  |  |  |
+| `plan_stage_rubric.md` | ? |  |  |  |  |
+| `invariant_clash.md` | ? |  |  |  |  |
+| `review_rubric.md` |  |  |  | ✓ |  |
+| `sibling_spec_editing.md` | ? |  |  |  |  |
 
-The matrix has no pending cells today; the pending vocabulary
-(`?` and `~`) and its walker-enforced self-cleaning rule remain
-documented above for future planning sessions that need to author
-matrix edits ahead of the include-graph change that lands them.
-The walker's `pending-marker-resolved` finding fires when a
-pending marker's state catches up, forcing the author to drop
-`?` to `✓` or `~` to blank in the same diff.
+Pending cells mark planned include-graph updates whose prompt code has
+not landed yet. The walker permits those cells while absent and reports
+them as stale once the include graph catches up.
 
 **`style_rules.md` is pinned only in `loop` and `review`** — the two
-phases that write or evaluate code (`loop` produces it, `review`
-judges it). Other phases (planning, decomposition, clarify
-resolution) don't write or evaluate code, so pinning the rules
-there would inflate prompt size without buying enforcement.
+phases that write or evaluate code. Other phases don't write or
+evaluate code, so pinning the rules there would inflate prompt size
+without buying enforcement.
 
-**`spec_conventions.md` is pinned only in `plan_new` and
-`plan_update`** — the two phases that author spec content. Other
-phases consume specs but don't modify them.
+**`spec_conventions.md` is pinned only in `plan`** — the phase that
+authors spec content. Other phases consume specs but don't modify them.
 
-**`decomposition_discipline.md` is pinned only in `todo_new` and
-`todo_update`** — the two phases that authorize bead creation.
-The discipline is decomposition-specific: it tells the agent to
-confirm missing work by inspection before authoring any non-audit
-bead, and to fall back to `LOOM_CLARIFY` on the molecule epic when
-coverage cannot be determined. See *Decomposition Discipline* for
-the invariant and the two acceptable session outcomes.
+**`decomposition_discipline.md` and `todo_success.md` are pinned only in
+`todo`** — the phase that authorizes bead creation. The driver has
+already computed the changed-spec set; the prompt's job is to decompose
+that exact set, report `Decomposed` or `NoWork` for every changed spec,
+and emit `LOOM_TODO:` as the success marker.
 
 ### Template Variables
 
-Each variable is bound to a typed field on the relevant context
-struct. `String`-typed values arriving from beads or config flow
-through the parse-don't-validate boundary defined in
-[harness.md](harness.md#parse-dont-validate).
+Each variable is bound to a typed field on the relevant context struct.
+`String`-typed values arriving from beads or config flow through the
+parse-don't-validate boundary defined in [harness.md](harness.md#parse-dont-validate).
 
 | Variable | Type | Used By |
 |----------|------|---------|
 | `pinned_context` | `String` | all |
 | `style_rules` | `String` | `loop`, `review` |
-| `spec_conventions` | `String` | `plan_new`, `plan_update` |
-| `label` | `SpecLabel` | all |
-| `spec_diff` | `Option<String>` | `todo_update` |
-| `existing_tasks` | `Option<String>` | `todo_update` |
-| `companion_paths` | `Vec<String>` | `plan_update`, `todo_*`, `loop`, `review`, `msg` |
+| `spec_conventions` | `String` | `plan` |
+| `anchor_labels` | `Vec<SpecLabel>` | `plan` |
+| `spec_index` | `String` | `plan`, `todo` |
+| `label` | `SpecLabel` | `loop`, `review` |
+| `changed_specs` | `Vec<TodoChangedSpec>` | `todo` |
+| `work_epic` | `BeadId` | `todo` |
+| `todo_head` | `GitSha` | `todo` |
+| `todo_fingerprint` | `TodoFingerprint` | `todo` |
+| `spec_epics` | `Vec<SpecEpicContext>` | `todo` |
+| `companion_paths` | `Vec<String>` | `plan`, `todo`, `loop`, `review`, `msg` |
+| `implementation_notes` | `Vec<SpecImplementationNotes>` | `todo` |
+| `criterion_status` | `Vec<CriterionStatus>` | `todo` (see *Criterion-Status Surface* below) |
 | `clarify_beads` | `Vec<ClarifyBead>` | `msg` |
-| `implementation_notes` | `Vec<String>` | `todo_new`, `todo_update` |
-| `molecule_id` | `Option<MoleculeId>` | `todo_update`, `loop` |
+| `molecule_id` | `Option<MoleculeId>` | `loop` |
 | `issue_id` | `Option<BeadId>` | `loop` |
 | `title` | `Option<String>` | `loop` |
 | `description` | `Option<String>` | `loop` |
 | `previous_failure` | `Option<PreviousFailure>` | `loop` (retry only; typed enum — see *Typed `PreviousFailure`* below) |
-| `review_notes` | `Option<String>` | `loop` (set only when `previous_failure` is `VerifyFailures` and review also raised a concern) |
-| `attempt` | `u32` | `loop` (in-session per-bead retry counter — see *Attempt Counter* below) |
+| `review_notes` | `Option<String>` | `loop` |
+| `attempt` | `u32` | `loop` |
 | `beads_summary` | `Option<String>` | `review` |
 | `base_commit` | `Option<String>` | `review` |
-| `criterion_status` | `Vec<CriterionStatus>` | `todo_new`, `todo_update` (see *Criterion-Status Surface* below) |
 | `scratchpad_path` | `String` | all |
 
-The newtypes (`SpecLabel`, `MoleculeId`, `BeadId`) are
-architecture-bearing types defined in
-[harness.md](harness.md#parse-dont-validate); the
-template treats them as opaque typed values.
+The newtypes (`SpecLabel`, `MoleculeId`, `BeadId`, `GitSha`,
+`TodoFingerprint`, `CriterionId`) are architecture-bearing parse-boundary
+types. `GitSha`, `TodoFingerprint`, and the todo success protocol live in
+`loom-protocol::todo`; `SpecLabel`, `MoleculeId`, and `BeadId` are defined
+in [harness.md](harness.md#parse-dont-validate). The template treats them
+as opaque typed values.
 
-`implementation_notes` is sourced from the state DB's `notes` table
+`implementation_notes` is sourced from `.loom/cache.db`'s `notes` table
 (kind = `implementation`); see *Notes lifecycle* in
-[harness.md](harness.md#sqlite-state-store).
+[harness.md](harness.md#sqlite-cache-store).
 
 ### Criterion-Status Surface
 
-`criterion_status` is the per-criterion record that gives `todo_*`
-decomposition agents evidence of which Success-Criteria bullets
-already pass before they fan out beads. Without this surface, the
-agent has only the spec text and a directory listing — the input
-shape that drives a decomposition agent to author beads for spec
-criteria whose verifiers already pass.
+`criterion_status` is the per-criterion record that gives the `todo`
+decomposition agent evidence of which Success-Criteria bullets already
+have current verifier evidence before it fans out beads. The driver builds
+it by parsing the changed specs' Success Criteria, computing typed
+criterion ids, and joining against `.loom/cache.db`'s criterion evidence
+cache. Cache absence is represented as missing evidence, never as no work.
 
 ```rust
 pub struct CriterionStatus {
-    /// Stable identifier for this criterion within the spec
-    /// (e.g. the trailing fragment of its anchor in the rendered
-    /// markdown). Format owned by the gate's status cache.
-    pub criterion_anchor: String,
+    pub spec_label: SpecLabel,
+    pub criterion_id: CriterionId,
+    pub criterion_text: String,
+    pub annotation: CriterionAnnotation,
+    pub evidence: EvidenceState,
+}
 
-    /// The annotation target as the criterion declared it
-    /// (`[check](...)`, `[test](...)`, `[system](...)`, `[judge](...)`).
-    pub annotation: String,
+pub struct CriterionId(/* opaque */);
 
-    /// Last cached verdict for this criterion's verifier.
-    pub last_result: CriterionResult,
+pub struct CriterionAnnotation {
+    pub tier: AnnotationTier,
+    pub target: AnnotationTarget,
+    pub pending: bool,
+}
 
-    /// Unix-millis timestamp of the verifier run that produced
-    /// `last_result`. `None` if no run has ever populated the cache.
-    pub last_timestamp_ms: Option<i64>,
+pub enum AnnotationTier {
+    Check,
+    Test,
+    System,
+    Judge,
+}
 
-    /// Commit hash the cached result was recorded against. `None`
-    /// when `last_result` is `NoResult`.
-    pub last_commit: Option<String>,
+pub struct AnnotationTarget(/* opaque */);
 
-    /// Number of commits between `last_commit` and the current
-    /// HEAD (computed by the driver from `git rev-list --count`).
-    /// `None` when `last_commit` is `None`.
-    pub commits_since: Option<u32>,
+pub enum EvidenceState {
+    Current {
+        result: CriterionResult,
+        last_timestamp_ms: i64,
+        last_commit: GitSha,
+        commits_since: u32,
+    },
+    Missing,
+    StaleAnnotation {
+        cached_annotation: CriterionAnnotation,
+        last_timestamp_ms: i64,
+        last_commit: GitSha,
+        commits_since: u32,
+    },
 }
 
 pub enum CriterionResult {
     Pass,
     Fail,
-    /// The verifier reported the criterion was out of scope for
-    /// the run (e.g. file-scoped `--files` filter excluded it).
     Skipped,
-    /// No cached run exists — this criterion has never been
-    /// verified on this machine.
-    NoResult,
 }
 ```
 
-**Source.** The driver constructs `criterion_status` by reading
-the status cache that `loom gate verify` / `loom gate review`
-populate; cache contents per criterion (annotation target,
-last-run timestamp + commit hash, verdict, evidence string) are
-owned by [gate.md — Status cache](gate.md#status-cache). The
-driver computes `commits_since` against the current HEAD at
-prompt-render time. No new schema in gate.md is required for this
-surface — the existing cache fields suffice.
+`CriterionId` identifies the requirement, not the verifier binding. The
+parser computes it from canonical bytes containing `spec_label` plus the
+normalized criterion text (bullet marker stripped, continuation lines
+joined with single spaces, surrounding whitespace trimmed, internal
+whitespace collapsed, annotation line excluded). It deliberately excludes
+annotation tier and target so changing `[check]` to `[test]` does not make
+a new requirement id. Stale verifier evidence is represented by
+`EvidenceState::StaleAnnotation` instead. Duplicate normalized criterion
+text inside one spec is an integrity error because it would collide.
 
-**Spec the surface, not the policy.** This struct deliberately
-does not encode staleness thresholds (e.g. "≥ 24h is stale"). The
-partial body in `partial/decomposition_discipline.md` carries the
-heuristic the agent applies to these values; that heuristic can
-evolve without spec churn. The struct's contract is just "expose
-result + recency"; the agent's prompt instructions decide what
-counts as a gap.
+Criteria with no annotation, multiple annotations, or malformed annotation
+syntax block todo preflight. They do not appear as normal
+`CriterionStatus` rows because the acceptance surface is broken.
 
-**Empty cache.** When no run has populated the cache (fresh
-checkout, never-verified spec), every criterion arrives with
-`last_result = NoResult`. The partial body treats this as the
-strongest signal toward either authoring beads or, when the
-volume is too large to inline-audit, emitting `LOOM_CLARIFY`
-against the molecule epic.
+### Todo Success Marker
+
+`partial/todo_success.md` instructs the agent that a successful todo
+session ends with exactly one final line:
+
+```text
+LOOM_TODO: {"head":"<sha>","fingerprint":"<fingerprint>","work_epic":"<bead-id>","specs":[...]}
+```
+
+The JSON shape is derived from `loom-protocol::todo::TodoSuccess` as
+specified in [harness.md § Spec and Work Epic Lifecycle](harness.md#spec-and-work-epic-lifecycle).
+The template tells the agent to include exactly the changed specs the
+driver injected, using `Decomposed { beads }` for non-empty work and
+`NoWork { reason }` for an audited no-implementation outcome. `Blocked`,
+`pending`, or omitted specs are not success states; the agent emits
+`LOOM_CLARIFY` or `LOOM_BLOCKED` instead.
 
 ### Typed `PreviousFailure`
 
@@ -512,18 +531,18 @@ boundary remains the post-integration verify and molecule push gate in
 ### Agent-Output Markers
 
 Agent-generated content rendered back into a prompt
-(`previous_failure`, `title`, `description`, `existing_tasks`) is
-delimited with `<agent-output>` / `</agent-output>` markers so the
-receiving agent can distinguish injected content from system
-instructions. This is a best-effort prompt-injection mitigation;
-the real trust boundary is the container.
+(`previous_failure`, `title`, `description`, prior work-epic diagnostics,
+implementation notes) is delimited with `<agent-output>` /
+`</agent-output>` markers so the receiving agent can distinguish injected
+content from system instructions. This is a best-effort prompt-injection
+mitigation; the real trust boundary is the container.
 
 ### Chat Discipline
 
 `partial/chat_interview.md` is included by every interactive-session
-template: `plan_new.md`, `plan_update.md`, and `msg.md`. It carries
-the discipline shared across every interactive session the loom
-binary runs with a human in the loop:
+template: `plan.md` and `msg.md`. It carries the discipline shared
+across every interactive session the loom binary runs with a human in
+the loop:
 
 - Questions go out in prose, in the assistant's normal reply.
   Answers come back as user prose.
@@ -549,78 +568,80 @@ binary runs with a human in the loop:
   specific and lives in a separate partial; the chat-discipline rules
   above apply to every interactive session, including msg-chat.
 
-Worker phases (`loop`, `todo_*`, `review`) are single-shot and do not
+Worker phases (`loop`, `todo`, `review`) are single-shot and do not
 interview the user, so the partial is not pinned there.
 
 ### Decomposition Discipline
 
-`partial/decomposition_discipline.md` is included by `todo_new.md`
-and `todo_update.md`. It tells the decomposition agent that every
-bead it authors must correspond to **evidence-confirmed missing
-work**, not to a spec criterion in the abstract.
+`partial/decomposition_discipline.md` is included by `todo.md`. It tells
+the decomposition agent that the driver has already computed the exact
+changed-spec roster and created or reused the `loom:todo` work epic. The
+agent must decompose **that roster exactly**; it does not discover or
+narrow the changed-spec set.
 
 Before authoring any non-audit bead, the agent must:
 
-1. Consult the `criterion_status` surface (see *Criterion-Status
-   Surface*) for the cached verdict + timestamp + commits-since on
-   each criterion in scope. A criterion whose verifier passed in a
-   fresh run, with no intervening commits, is positive evidence of
-   coverage — not a gap.
-2. Read representative existing implementations and verifier
-   functions for criteria where `criterion_status` is suspicious
-   (stale timestamp, many commits since, or the agent judges the
-   verifier name resolves to a path that doesn't exercise the
-   live system per [spec-conventions.md](../docs/spec-conventions.md)'s
-   "no tier-skipping" rule). A directory listing proves a file
-   exists; it does not prove the file contains the named target.
+1. Consult the `criterion_status` surface (see *Criterion-Status Surface*)
+   for each criterion in each changed spec. `EvidenceState::Current { result:
+   Pass, commits_since: 0, ... }` is positive evidence of coverage;
+   `Missing` or `StaleAnnotation` is absence/staleness of evidence, not a
+   reason to treat the criterion as already complete.
+2. Read representative existing implementations and verifier functions for
+   criteria where evidence is missing, stale, failed, skipped, or the agent
+   judges the verifier target may not exercise the live system per
+   [spec-conventions.md](../docs/spec-conventions.md)'s "no tier-skipping"
+   rule. A directory listing proves a file exists; it does not prove the
+   file contains the named target.
+3. Create implementation beads only under the injected `work_epic`, and
+   label/bond each bead to the spec(s) it implements. Beads outside the work
+   epic cannot satisfy `LOOM_TODO` validation.
 
-A `loom todo` session has exactly two acceptable outcomes:
+A successful `loom todo` session has exactly one success outcome: emit
+`LOOM_TODO: <json>` on the final line. The JSON must report every changed
+spec exactly once, with `Decomposed { beads }` for specs that produced
+non-empty work and `NoWork { reason }` for specs audited as requiring no
+implementation change (for example typo-only spec wording). The agent may
+not omit changed specs, report a pending state as success, or use
+`LOOM_COMPLETE` / `LOOM_NOOP` as todo success.
 
-- **(a) Gap-targeted bead set.** Beads are authored only for
-  criteria the audit confirms are missing, incomplete, or covered
-  by a dishonest verifier. The agent cites its evidence (the
-  `criterion_status` row, the file read that surfaced the gap, or
-  the verifier-source observation) in the bead description.
-- **(b) Clarify on the molecule epic.** When coverage cannot be
-  determined by inspection — spec ambiguity, conflicting verifier
-  targets, or the agent's judgement of cache trustworthiness is
-  contestable — the agent emits `LOOM_CLARIFY` with the question
-  and `## Options — …` block persisted to the **molecule epic's**
-  notes per the *Options Format Contract* in [gate.md](gate.md).
-  The verdict gate applies `loom:clarify` to the epic; the human
-  resolves via `loom msg <epic>`, and a subsequent `loom todo`
-  invocation consumes the answer from the epic's notes before
-  fanning out.
+Decision-needed or dead-end outcomes use worker self-report markers:
 
-Per-bead `loom:clarify` is not appropriate here because the child
-beads either don't yet exist (`todo_new`) or are exactly the set
-under negotiation (`todo_update`). The epic is the only
-session-stable carrier for "this molecule's decomposition is
-paused pending clarification".
+- **Clarify on the work epic.** When coverage cannot be determined by
+  inspection — spec ambiguity, conflicting verifier targets, cursor/index
+  inconsistency needing human choice, or contestable cache trust — the agent
+  emits `LOOM_CLARIFY` with the question and `## Options — …` block
+  persisted to the **`loom:todo` work epic's** notes/description per the
+  *Options Format Contract* in [gate.md](gate.md). The verdict gate applies
+  `loom:clarify` to that work epic; the human resolves via `loom msg`, and a
+  subsequent `loom todo` invocation reuses the matching pending work epic.
+- **Blocked on the work epic.** When the agent has no candidate resolutions
+  to enumerate, it emits `LOOM_BLOCKED`; the work epic remains non-active
+  and spec cursors do not advance.
 
-**Epic-first-always in `todo_new`.** For the clarify-on-epic
-fallback to be viable mid-decomposition, the `todo_new.md` flow
-creates the molecule epic before any criterion-by-criterion gap
-analysis runs. `todo_update` already operates against an
-existing molecule, so the ordering is automatic there.
+Per-bead `loom:clarify` is not appropriate in todo because the child beads
+under negotiation may not exist yet, or may be exactly the set whose
+validity is disputed. The work epic is the session-stable carrier for
+"this decomposition batch is paused pending clarification".
 
-**Enumerate-everything defaults are forbidden by data, not by
-grep.** A fixed decomposition axis — e.g. "setup,
-implementation, tests, documentation" applied across the board
-irrespective of evidence — is the failure mode this discipline
-targets. The combined effect of (i) `criterion_status` exposing
-positive evidence that whole axes already pass and (ii) the
-audit clause's evidence-confirmation prerequisite for bead
-authorship makes such fan-outs structurally unviable.
-`loom gate review`'s judge-tier walk is what catches any
-decomposition that bypasses the `criterion_status` surface to
-re-introduce enumerate-everything beads.
+**Work-epic-first always.** The driver creates or reuses the `loom:todo`
+work epic before rendering `todo.md`, so clarify/block paths always have a
+valid target and the agent never has to create the batch container.
 
-**Template-agnostic.** The partial describes the audit obligation
-in terms of "criteria in scope" and "representative
-implementations", not specific file paths or crate names.
-Downstream consumers of loom whose workspace layouts differ from
-this one inherit the same discipline against their own layouts.
+**Enumerate-everything defaults are forbidden by data, not by grep.** A
+fixed decomposition axis — e.g. "setup, implementation, tests,
+documentation" applied across the board irrespective of evidence — is the
+failure mode this discipline targets. The combined effect of (i) typed
+criterion evidence exposing current/missing/stale verifier state and (ii)
+the exact-roster `LOOM_TODO` validator makes such fan-outs structurally
+unviable. `loom gate review`'s judge-tier walk catches any decomposition
+that bypasses the evidence surface to re-introduce enumerate-everything
+beads.
+
+**Template-agnostic.** The partial describes the audit obligation in terms
+of "changed specs", "criteria in scope", and "representative
+implementations", not specific file paths or crate names. Downstream
+consumers of loom whose workspace layouts differ from this one inherit the
+same discipline against their own layouts.
 
 ### Review Emit Shape
 
@@ -713,11 +734,11 @@ the driver applies the default profile when minting from
 
 ### Planning-Rubric Pending Discipline
 
-`partial/plan_stage_rubric.md` is pinned in `plan_new.md` and
-`plan_update.md`. It owns the planning interview's pre-commit
-gate (completeness / coherence / invariant-clash) **and** the
-pending-modifier discipline that determines whether the planning
-session's spec edits can pass the push gate.
+`partial/plan_stage_rubric.md` is pinned in `plan.md`. It owns the
+planning interview's pre-commit gate (completeness / coherence /
+invariant-clash) **and** the pending-modifier discipline that
+determines whether the planning session's spec edits can pass the push
+gate.
 
 The partial body MUST spell out the pending-modifier discipline
 unambiguously, because the planning session's biggest failure mode
@@ -788,22 +809,21 @@ walker greps for.
 
 ### Sibling-Spec Editing
 
-`partial/sibling_spec_editing.md` is included only in
-`plan_update.md`. It tells the planning agent:
+`partial/sibling_spec_editing.md` is included in `plan.md`. It tells
+the planning agent:
 
-1. The label named on `loom plan -u` is the **anchor**; it owns
-   the session state row.
+1. Any labels passed to `loom plan [SPEC_LABEL ...]` are **anchors**:
+   they seed initial context only and do not define the touched set.
 2. During this session, the agent may read and edit any spec in
    `specs/` when a change cross-cuts sibling specs. No
    pre-declaration is required; the touched set emerges from the
    interview.
 3. **Creating a new sibling spec is a valid outcome** when the
-   planner judges that a section warrants its own spec. The
-   planner may allocate a tracking epic for the new sibling and
-   record its index entry. This is the one carve-out from the
-   general "no bead creation during planning" rule —
-   implementation beads for the new spec are created later by
-   `loom todo`.
+   planner judges that a section warrants its own spec. The planner
+   creates `specs/<label>.md` and records its index entry in
+   `docs/README.md`; it does **not** allocate a bead/epic. `loom todo`
+   creates the spec epic and work epic later during deterministic
+   preflight.
 4. **Commits are never automatic.** Planning sessions edit specs
    in place but do not commit. Soft signals ("looks good",
    "accept") authorize the next interview step, not a commit.
@@ -827,12 +847,13 @@ templates from `templates`' exposed building blocks:
   `PreviousFailure::ReviewConcern` is owned by `loom-workflow`
   (per [gate.md § Findings and Minting](gate.md#findings-and-minting))
   and re-exported here as a typed dependency.
-- `CriterionStatus`, `CriterionResult` (the decomposition-phase
-  criterion-recency surface; consumers writing decomposition-
-  style tools reuse this shape against their own caches)
-- `LoopContext`, `ReviewContext` (workflow-phase context shapes
-  consumers can either reuse directly or model their own contexts
-  after)
+- `CriterionStatus`, `EvidenceState`, `CriterionId`,
+  `CriterionAnnotation` (the decomposition-phase criterion-evidence
+  surface; consumers writing decomposition-style tools reuse this shape
+  against their own caches)
+- `PlanContext`, `TodoContext`, `LoopContext`, `ReviewContext`
+  (workflow-phase context shapes consumers can either reuse directly or
+  model their own contexts after)
 
 **Exposed partial strings:**
 
@@ -886,7 +907,7 @@ pinned_context = "docs/README.md"
 # Style rules — pinned in loop and review
 style_rules = "docs/style-rules.md"
 
-# Spec-authoring conventions — pinned in plan_new and plan_update
+# Spec-authoring conventions — pinned in plan
 spec_conventions = "docs/spec-conventions.md"
 ```
 
@@ -927,68 +948,63 @@ documents in front of the agent with zero configuration.
 
 - `style_rules.md` partial renders the `style_rules` variable
   [check](grep -q '{{ style_rules' crates/loom-templates/templates/partial/style_rules.md)
-- `loop.md` and `review.md` include `style_rules.md`; no other
-  phase template does
+- `loop.md` and `review.md` include `style_rules.md`; no other phase
+  template does
   [check](cargo run -p loom-walk -- template_pinning_matrix)
-- `spec_conventions.md` partial renders the `spec_conventions`
-  variable; included only by `plan_new` and `plan_update`
+- `spec_conventions.md` partial renders the `spec_conventions` variable;
+  included only by `plan.md`
   [check](cargo run -p loom-walk -- template_pinning_matrix)
-- `LoopContext` and `ReviewContext` carry `style_rules: String`;
-  other phase contexts do not
+- `todo_success.md` exists, is included only by `todo.md`, and names the
+  `LOOM_TODO:` success marker plus the `TodoSuccess` Rust type
+  [check](cargo run -p loom-walk -- template_pinning_matrix)
+- `todo.md` deliberately omits `progress_markers.md`; generic
+  `LOOM_COMPLETE` / `LOOM_NOOP` are wrong-phase success markers for todo
+  [check](cargo run -p loom-walk -- template_pinning_matrix)
+- `LoopContext` and `ReviewContext` carry `style_rules: String`; other
+  phase contexts do not
   [check](cargo test -p loom-templates --test render template_renders_are_byte_stable_across_runs)
-- `PlanNewContext` and `PlanUpdateContext` carry
-  `spec_conventions: String`; other phase contexts do not
+- `PlanContext` carries `spec_conventions: String`; other phase contexts
+  do not
   [check](cargo test -p loom-templates --test render template_renders_are_byte_stable_across_runs)
 - `LoomConfig.style_rules` defaults to `"docs/style-rules.md"`;
   `LoomConfig.spec_conventions` defaults to
-  `"docs/spec-conventions.md"`; `LoomConfig.pinned_context`
-  defaults to `"docs/README.md"`
+  `"docs/spec-conventions.md"`; `LoomConfig.pinned_context` defaults to
+  `"docs/README.md"`
   [test](pin_paths_default_to_bundled_docs)
-- Empty string values for any pin path are rejected at parse time
-  with `ConfigError::EmptyPath { field }` naming the offending
-  field
+- Empty string values for any pin path are rejected at parse time with
+  `ConfigError::EmptyPath { field }` naming the offending field
   [test](empty_pin_path_returns_empty_path_error)
 - The `style_rules.md` and `review_rubric.md` partials are
-  rule-family-agnostic: their bodies do not enumerate fixed
-  prefixes like `SH-` / `RS-` / `COM-`; rule-ID examples in
-  template prose are placeholders, not normative
+  rule-family-agnostic: their bodies do not enumerate fixed prefixes like
+  `SH-` / `RS-` / `COM-`; rule-ID examples in template prose are
+  placeholders, not normative
   [check](cargo test -p loom-templates --test render review_renders_style_rule_conformance_walkthrough)
-- Every non-pending cell of the pinning matrix above matches the
-  actual `{% include %}` graph in `loom-templates/templates/`
-  (transitive resolution); drift in either direction — `✓` with no
-  include or include with no `✓` — fails the audit. Pending cells
-  (`?` and `~`) silent-pass during the pending window per
-  *Pinning matrix walker pending support* below
+- Every non-pending cell of the pinning matrix above matches the actual
+  `{% include %}` graph in `loom-templates/templates/` (transitive
+  resolution); drift in either direction fails the audit
   [check](cargo run -p loom-walk -- template_pinning_matrix)
-- The `chat_marker_final_turn_only.md` partial is included by
-  every interactive-session template (`msg`, `plan_new`,
-  `plan_update`), pinning the "emit `LOOM_COMPLETE` on the final
-  turn only" rule that disambiguates `progress_markers.md`'s
-  single-shot "end your response with the marker" wording
+- The `chat_marker_final_turn_only.md` partial is included by every
+  interactive-session template (`plan`, `msg`)
   [test](every_multi_turn_template_includes_chat_marker_partial)
-- One-shot worker templates (`loop`, `todo_new`, `todo_update`,
-  `review`) deliberately **omit** `chat_marker_final_turn_only.md`
-  because every response in those phases is the session's final
-  output; including the chat-only clause would mislead the agent
-  into withholding the marker
+- One-shot worker templates (`todo`, `loop`, `review`) deliberately omit
+  `chat_marker_final_turn_only.md` because every response in those phases
+  is the session's final output
   [test](worker_templates_omit_chat_final_turn_clause)
 - `partial/chat_interview.md` exists and is included by every
-  interactive-session template — `plan_new.md`, `plan_update.md`,
-  and `msg.md` — and by no worker template; the body forbids
-  Claude Code's structured option-picker tool for interactive Q&A
-  and requires conversational prose instead
+  interactive-session template (`plan`, `msg`) and by no worker template;
+  the body forbids Claude Code's structured option-picker tool for
+  interactive Q&A and requires conversational prose instead
   [check](cargo run -p loom-walk -- template_pinning_matrix)
-- The partial body names the picker prohibition explicitly so a
-  grep for the rule succeeds (no rule-by-implication)
+- The partial body names the picker prohibition explicitly so a grep for
+  the rule succeeds (no rule-by-implication)
   [check](grep -qi 'option-picker\|AskUserQuestion' crates/loom-templates/templates/partial/chat_interview.md)
-- The partial body names the bd-persistence clause distinctively so
-  a grep for the rule succeeds: interactive sessions persist
-  cross-session memory via bd (notes, descriptions, new beads), not
-  via Claude Code's `MEMORY.md` system which is container-local
+- The partial body names the bd-persistence clause distinctively so a grep
+  for the rule succeeds: interactive sessions persist cross-session memory
+  via bd (notes, descriptions, new beads), not via Claude Code's
+  `MEMORY.md` system which is container-local
   [check](grep -qi 'MEMORY.md\|bd update.*--notes' crates/loom-templates/templates/partial/chat_interview.md)
-- `msg.md` rendered prompt contains the chat-interview discipline
-  clauses (picker prohibition + bd-persistence) sourced from the
-  pinned partial
+- `msg.md` rendered prompt contains the chat-interview discipline clauses
+  (picker prohibition + bd-persistence) sourced from the pinned partial
   [test](msg_template_renders_chat_interview_discipline)
 
 ### Agent-output markers
@@ -1009,8 +1025,8 @@ documents in front of the agent with zero configuration.
 ### Sibling-spec editing
 
 - `partial/sibling_spec_editing.md` documents that creating a new
-  sibling spec is a valid planning-session outcome and names the
-  bead-allocation carve-out
+  sibling spec is a valid planning-session outcome, requires an index
+  row, and says plan does not allocate a bead/epic
   [judge](../tests/judges/loom.sh#judge_sibling_spec_editing_documents_split)
 
 ### Pinning matrix walker pending support
@@ -1037,8 +1053,8 @@ documents in front of the agent with zero configuration.
 
 ### Planning-rubric pending discipline
 
-- `partial/plan_stage_rubric.md` exists and is included by
-  `plan_new.md` and `plan_update.md` only
+- `partial/plan_stage_rubric.md` exists and is included by `plan.md`
+  only
   [check](cargo run -p loom-walk -- template_pinning_matrix)
 - The partial body distinguishes **binary-pending** from
   **assertion-pending** pending-modifier cases with worked
@@ -1060,6 +1076,22 @@ documents in front of the agent with zero configuration.
   `?` must be dropped in the same diff that resolves the target,
   else `UnneededPendingMarker` fires
   [check](grep -qi 'UnneededPendingMarker\|self-cleaning\|drop the.*marker' crates/loom-templates/templates/partial/plan_stage_rubric.md)
+
+### Todo success shape
+
+- `partial/todo_success.md` is the single source of truth for the
+  `LOOM_TODO: <json>` success marker and names the
+  `loom-protocol::todo::TodoSuccess` type
+  [check?](grep -q 'LOOM_TODO:' crates/loom-templates/templates/partial/todo_success.md)
+- `todo.md` includes `todo_success.md` via `{% include %}` rather than
+  restating the success marker contract inline
+  [check?](grep -q 'partial/todo_success.md' crates/loom-templates/templates/todo.md)
+- `partial/progress_markers.md` contains no `LOOM_TODO:` literal;
+  todo success belongs to `todo_success.md`
+  [check](bash -c "! grep -nE 'LOOM_TODO:' crates/loom-templates/templates/partial/progress_markers.md")
+- Rendered `todo.md` prompts instruct the agent that `LOOM_COMPLETE` and
+  `LOOM_NOOP` are wrong-phase success markers for todo
+  [test?](todo_template_rejects_generic_success_markers)
 
 ### Review emit shape
 
@@ -1087,12 +1119,11 @@ documents in front of the agent with zero configuration.
   markers (`LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`) and contains
   no `LOOM_CONCERN:` or `LOOM_FINDING:` literal
   [check](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/self_report_markers.md")
-- Interactive-session templates (`plan_new.md`, `plan_update.md`,
-  `msg.md`) deliberately **omit** `self_report_markers.md` because
-  the worker-phase cannot-finish markers are not valid emit options
-  for interactive sessions — the human resolves friction in-turn.
-  Including the partial would teach interactive agents about markers
-  they cannot emit
+- Interactive-session templates (`plan.md`, `msg.md`) deliberately
+  **omit** `self_report_markers.md` because the worker-phase
+  cannot-finish markers are not valid emit options for interactive
+  sessions — the human resolves friction in-turn. Including the partial
+  would teach interactive agents about markers they cannot emit
   [check](cargo run -p loom-walk -- template_pinning_matrix)
 - The partial body names `LOOM_RETRY` semantics distinctively
   (transient / environmental / agent-self-reset, consumes a
@@ -1107,9 +1138,8 @@ documents in front of the agent with zero configuration.
   [check](grep -qi 'candidate resolution\|enumerate options' crates/loom-templates/templates/partial/self_report_markers.md)
 - The partial body identifies the worker-phase scoping: `LOOM_RETRY`,
   `LOOM_CLARIFY`, `LOOM_BLOCKED` are valid in worker phases (`loop`,
-  `todo_*`, `review`) only; interactive sessions (`plan_*`,
-  `msg`) emit `LOOM_COMPLETE` only because the human resolves
-  friction in-turn
+  `todo`, `review`) only; interactive sessions (`plan`, `msg`) emit
+  `LOOM_COMPLETE` only because the human resolves friction in-turn
   [check](grep -qi 'worker.*phase\|interactive.*session' crates/loom-templates/templates/partial/self_report_markers.md)
 
 ### Mint default-profile
@@ -1276,8 +1306,9 @@ documents in front of the agent with zero configuration.
 
 - `templates` exposes `PreviousFailure`, `VerifierFailure`,
   `BadWalk`, `DriverNoticeCause`, `CriterionStatus`,
-  `CriterionResult`, `LoopContext`, `ReviewContext`, `PinnedContext`
-  as public types consumable from external crates
+  `EvidenceState`, `CriterionId`, `CriterionAnnotation`,
+  `LoopContext`, `ReviewContext`, `PlanContext`, `TodoContext`, and
+  `PinnedContext` as public types consumable from external crates
   [check](cargo run -p loom-walk -- loom_templates_public_types)
 - Each partial in the *Partials* table is also exposed as a public
   `&'static str` constant (e.g. `SCRATCHPAD_PARTIAL`,
@@ -1290,43 +1321,40 @@ documents in front of the agent with zero configuration.
 
 ### Criterion-status surface
 
-- `TodoNewContext` and `TodoUpdateContext` carry
-  `criterion_status: Vec<CriterionStatus>`; no other phase context
-  does
+- `TodoContext` carries `criterion_status: Vec<CriterionStatus>`; no
+  other phase context does
   [check](cargo run -p loom-walk -- todo_contexts_carry_criterion_status)
-- `CriterionStatus` is a struct with fields `criterion_anchor`,
-  `annotation`, `last_result`, `last_timestamp_ms`, `last_commit`,
-  `commits_since`; `CriterionResult` is a tagged enum with
-  variants `Pass`, `Fail`, `Skipped`, `NoResult`
+- `CriterionStatus` is a struct with fields `spec_label`,
+  `criterion_id`, `criterion_text`, `annotation`, and `evidence`;
+  `EvidenceState` is a tagged enum with variants `Current`, `Missing`,
+  and `StaleAnnotation`
   [check](grep -q 'pub struct CriterionStatus' crates/loom-templates/src/criterion_status.rs)
-- `todo_new` and `todo_update` rendered prompts surface every
-  `CriterionStatus` row's annotation + last result + recency
-  signal so the agent can distinguish fresh-pass criteria from
-  stale or never-run ones
-  [test](todo_templates_render_criterion_status_rows)
+- `todo.md` rendered prompts surface every changed spec's
+  `CriterionStatus` rows with criterion text, annotation, and evidence
+  state so the agent can distinguish current pass evidence from stale or
+  missing evidence
+  [test?](todo_template_renders_typed_criterion_status_rows)
 
 ### Decomposition discipline
 
 - `partial/decomposition_discipline.md` exists and is included by
-  `todo_new.md` and `todo_update.md` only; the body names the
-  audit obligation and the two acceptable session outcomes
+  `todo.md` only; the body names the exact changed-spec roster, the
+  evidence-confirmation obligation, and the `LOOM_TODO` success shape
   [check](cargo run -p loom-walk -- template_pinning_matrix)
 - The partial body names the discipline distinctively (so a grep
   catches accidental emptying)
-  [check](grep -qi 'evidence-confirmed\|audit before' crates/loom-templates/templates/partial/decomposition_discipline.md)
-- Rendered `todo_new` and `todo_update` prompts contain a clause
-  committing the agent to confirm missing work by inspection
-  before authoring any non-audit bead
-  [test](todo_templates_render_pre_decomposition_audit_clause)
-- The partial documents `LOOM_CLARIFY` on the molecule epic as
+  [check](grep -qi 'exact.*roster\|evidence-confirmed\|LOOM_TODO' crates/loom-templates/templates/partial/decomposition_discipline.md)
+- Rendered `todo.md` prompts contain a clause committing the agent to
+  confirm missing work by inspection before authoring any non-audit bead
+  [test?](todo_template_renders_pre_decomposition_audit_clause)
+- The partial documents `LOOM_CLARIFY` on the `loom:todo` work epic as
   the fallback when coverage cannot be determined, with the
   `## Options — …` block per [gate.md](gate.md)'s Options Format
   Contract
   [check](grep -q 'LOOM_CLARIFY' crates/loom-templates/templates/partial/decomposition_discipline.md)
-- `todo_new.md` directs the agent to create the molecule epic
-  before the gap-analysis pass, so the clarify-on-epic fallback
-  has a valid target mid-decomposition
-  [check](cargo run -p loom-walk -- todo_new_creates_epic_before_decomposition)
+- `todo.md` receives an already-created work epic from the driver before
+  any path that can emit `LOOM_CLARIFY`
+  [check?](cargo run -p loom-walk -- todo_template_uses_driver_created_work_epic)
 
 ## Requirements
 
@@ -1341,24 +1369,24 @@ documents in front of the agent with zero configuration.
    own LLM calls via `llm` use the public typed building
    blocks per FR12; this FR is specifically about Loom's own
    workflow templates.)
-2. **One template per phase plus per-mode variants** as enumerated
-   in *Template Files* above.
+2. **One template per phase** as enumerated in *Template Files* above;
+   `plan` and `todo` no longer split into new/update modes.
 3. **Partials** as enumerated in *Partials* above. Each partial
    declares which templates include it; the matrix in *Pinning
    Policy* is the authoritative listing.
 4. **Typed context per template.** Each template has a Rust
    `#[derive(Template)]` struct with one field per variable. The
    variable set is enumerated in *Template Variables*.
-5. **Per-phase pinning.** Partial inclusion follows *Pinning
-   Policy*; `style_rules.md` is pinned in `loop` and `review` only;
-   `spec_conventions.md` is pinned in `plan_new` and `plan_update`
-   only. Matrix cells use the four-value vocabulary `✓` / blank /
-   `?` (pending addition) / `~` (pending removal) per
+5. **Per-phase pinning.** Partial inclusion follows *Pinning Policy*;
+   `style_rules.md` is pinned in `loop` and `review` only;
+   `spec_conventions.md` is pinned in `plan` only; `todo_success.md` is
+   pinned in `todo` only. Matrix cells use the four-value vocabulary
+   `✓` / blank / `?` (pending addition) / `~` (pending removal) per
    [gate.md § Pending support in structured walker
-   input](gate.md#pending-support-in-structured-walker-input);
-   the pinning-matrix walker enforces the assertion at the
-   appropriate scope and fails with `pending-marker-resolved`
-   when a pending marker's state catches up.
+   input](gate.md#pending-support-in-structured-walker-input); the
+   pinning-matrix walker enforces the assertion at the appropriate scope
+   and fails with `pending-marker-resolved` when a pending marker's state
+   catches up.
 6. **Rule-family agnosticism.** The `style_rules.md` and
    `review_rubric.md` partial bodies discover rule families from
    the pinned `{{ style_rules }}` document. Template bodies do
@@ -1382,7 +1410,7 @@ documents in front of the agent with zero configuration.
 10. **Attempt counter.** `LoopContext.attempt: u32` is the per-bead
     in-session retry counter, bounded by `[loop] max_retries`
     (default 2), resets to 0 on fresh bead dispatch. Fix-up beads
-    start at `attempt = 0`; molecule-level iteration is opaque to
+    start at `attempt = 0`; work-epic-level iteration is opaque to
     the agent. `loop.md` renders the attempt line when `attempt > 0
     && previous_failure.is_some()`, omits it otherwise.
 11. **First-instruction reframe.** When
@@ -1392,19 +1420,23 @@ documents in front of the agent with zero configuration.
     detail lives in the previous-failure block itself.
 12. **Public surface for consumers.** `templates` is a
     public-contract crate. Exposed: `PreviousFailure` (and its
-    sub-types), `LoopContext`, `ReviewContext`, `PinnedContext`,
-    and the partial-string constants for each entry in the
-    *Partials* table. Loom's workflow template bodies themselves
-    are not exposed — consumers compose their own templates from
-    the typed contexts + partial strings, not from Loom's workflow
-    templates. Stability: additive type changes are minor bumps;
+    sub-types), `CriterionStatus`, `EvidenceState`, `CriterionId`,
+    `CriterionAnnotation`, `PlanContext`, `TodoContext`, `LoopContext`,
+    `ReviewContext`, `PinnedContext`, and the partial-string constants
+    for each entry in the *Partials* table. Loom's workflow template
+    bodies themselves are not exposed — consumers compose their own
+    templates from the typed contexts + partial strings, not from Loom's
+    workflow templates. Stability: additive type changes are minor bumps;
     removing or renaming fields / partial paths is a major bump.
 
     **Dependency on `loom-protocol`.** The typed gate wire-format
     contract (`Finding`, `ConcernToken`, `FindingTarget`, `BadWalk`,
     `WalkOutput`, etc.) lives in `loom-protocol::gate` — see
     [gate.md § Canonical contract location](gate.md#canonical-contract-location).
-    `loom-templates` depends on `loom-protocol` so
+    The typed todo success contract (`TodoSuccess`, `TodoSpecSuccess`,
+    `TodoSpecOutcome`, `TodoFingerprint`) lives in
+    `loom-protocol::todo` per [harness.md](harness.md). `loom-templates`
+    depends on `loom-protocol` so
     `PreviousFailure::ReviewConcern { findings: Vec<Finding> }` and
     `PreviousFailure::BadWalk(BadWalk)` can carry the typed values;
     `loom-templates` re-exports the gate contract via `pub use` so
@@ -1441,10 +1473,10 @@ documents in front of the agent with zero configuration.
     release.
 13. **Chat discipline in interactive sessions.**
     `partial/chat_interview.md`, pinned in every interactive-session
-    template (`plan_new`, `plan_update`, `msg`), requires the
-    interactive agent to conduct conversations as back-and-forth
-    prose and forbids Claude Code's structured option-picker tool
-    (`AskUserQuestion` or any equivalent multi-choice widget).
+    template (`plan`, `msg`), requires the interactive agent to conduct
+    conversations as back-and-forth prose and forbids Claude Code's
+    structured option-picker tool (`AskUserQuestion` or any equivalent
+    multi-choice widget).
     Options are listed inline in prose; the user replies in prose.
     The partial also carries the **persistence-destination clause**:
     session-bridging memory (decisions, context, follow-ups) goes
@@ -1454,29 +1486,24 @@ documents in front of the agent with zero configuration.
     planning-specific and lives in a separate partial; the chat-
     discipline rules above apply to every interactive session,
     including msg-chat.
-14. **Criterion-status surface for decomposition.** `todo_new` and
-    `todo_update` contexts carry `criterion_status:
-    Vec<CriterionStatus>` where each `CriterionStatus` exposes
-    annotation target + last result (`Pass | Fail | Skipped |
-    NoResult`) + last timestamp + last commit + commits-since-HEAD.
-    The driver populates the surface from
-    [gate.md](gate.md#status-cache)'s sqlite cache. No new cache
-    schema; the existing fields suffice. The struct does not
-    encode staleness thresholds — the partial body owns the
-    heuristic.
-15. **Decomposition discipline in `todo_*` phases.**
-    `partial/decomposition_discipline.md`, pinned in `todo_new`
-    and `todo_update` only, requires the decomposition agent to
-    confirm missing work by consulting `criterion_status` and (for
-    suspicious or empty cache rows) reading representative
-    implementations before authoring any non-audit bead. The
-    partial defines the two acceptable session outcomes:
-    (a) a gap-targeted bead set citing evidence per bead, or
-    (b) `LOOM_CLARIFY` on the **molecule epic** with the
+14. **Criterion-status surface for decomposition.** `TodoContext`
+    carries `criterion_status: Vec<CriterionStatus>` where each row
+    exposes `spec_label`, typed `criterion_id`, criterion text, typed
+    annotation, and `EvidenceState` (`Current`, `Missing`,
+    `StaleAnnotation`). The driver populates the surface by parsing the
+    changed specs and joining against `.loom/cache.db`'s criterion
+    evidence cache. Missing cache rows become `EvidenceState::Missing`,
+    never no work. The struct does not encode staleness thresholds — the
+    partial body owns the heuristic.
+15. **Decomposition discipline in `todo`.**
+    `partial/decomposition_discipline.md`, pinned in `todo` only,
+    requires the decomposition agent to decompose the driver-injected
+    changed-spec roster exactly, confirm missing work by consulting
+    `criterion_status` and representative implementations before
+    authoring non-audit beads, create beads only under the injected
+    `loom:todo` work epic, and use `LOOM_TODO: <json>` as the only
+    success marker. `LOOM_CLARIFY` targets the work epic with a
     `## Options — …` block when coverage cannot be determined.
-    `todo_new.md` creates the molecule epic before the
-    gap-analysis pass — without an existing epic the
-    clarify-on-epic fallback has no target.
 16. **Self-report marker taxonomy.** The worker-phase self-report
     markers form a three-way taxonomy carried by
     `partial/self_report_markers.md`:
@@ -1503,8 +1530,8 @@ documents in front of the agent with zero configuration.
     The semantic discriminator between the three is explicit and
     grep-able in the partial body: "expect retry to succeed? →
     RETRY. can you enumerate options? → CLARIFY. dead end? → BLOCKED."
-    The taxonomy applies to worker phases only (`loop`, `todo_*`,
-    `review`); interactive sessions (`plan_*`, `msg`) emit
+    The taxonomy applies to worker phases only (`loop`, `todo`,
+    `review`); interactive sessions (`plan`, `msg`) emit
     `LOOM_COMPLETE` only — the human resolves friction in-turn.
 17. **Options-block requirement on clarify-bound findings.**
     `partial/findings_walk.md` requires every clarify-bound finding

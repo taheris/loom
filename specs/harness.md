@@ -1,7 +1,7 @@
 # Loom Harness
 
 Rust workspace, build system, workspace lint config, process architecture,
-state store, and command-set platform for the Loom agent driver.
+cache store, and command-set platform for the Loom agent driver.
 
 ## Problem Statement
 
@@ -14,7 +14,7 @@ schemas, and renders templates with compile-time variable
 validation.
 
 This spec covers the platform: crate structure, Rust conventions,
-Nix integration, SQLite state store, beads CLI wrapper, process
+Nix integration, SQLite cache store, beads CLI wrapper, process
 architecture, recovery mechanics, the `Session` and `EventSink`
 trait surfaces, and the `llm` public LLM-primitives crate.
 The Askama template engine, partials inventory, per-phase pinning
@@ -38,12 +38,13 @@ Loom is a host-side orchestrator. Every workflow phase that drives an agent
 spawns its own container per bead — no shared long-lived container, no
 in-container loom loop. The two motivations:
 
-1. **Per-bead profile selection.** Beads carry `profile:rust` /
-   `profile:python` / `profile:base` labels. Each bead must run in a container
-   built from the matching profile image. A long-lived parent container can't
-   change profile mid-run; per-bead spawn is the only clean way.
+1. **Per-bead profile/runtime selection.** Beads carry `profile:rust` /
+   `profile:python` / `profile:base` labels, and each phase resolves an
+   agent runtime. Each bead must run in the matching composed image. A
+   long-lived parent container can't change profile/runtime mid-run;
+   per-bead spawn is the only clean way.
 2. **Trust boundary.** Loom (orchestrator, on host) is trusted; the agent
-   (claude or pi, in container) is the sandboxed execution layer.
+   (claude, pi, or direct, in container) is the sandboxed execution layer.
 
 **Container spawn is delegated to `wrix spawn`** — a thin wrix
 subcommand that owns container construction (mounts, env passthrough, krun
@@ -62,7 +63,7 @@ loom (host)
     │   │
     │   └─ exec podman run [no -t, stdio piped] <image> <entrypoint>
     │       │
-    │       └─ entrypoint.sh → agent (claude --print … / pi --mode rpc)
+    │       └─ entrypoint.sh → agent (claude / pi --mode rpc / direct)
     │           ↑              ↓
     │           └── JSONL over stdin/stdout ─→ loom (parses events)
     │
@@ -78,16 +79,17 @@ serialization boundary.
 
 **`loom plan` is the exception.** It is an interactive spec interview
 (human-in-the-loop terminal session), so it shells out to interactive
-`wrix run` rather than driving an JSONL session. Loom prepares the
+`wrix run` rather than driving a JSONL session. Loom prepares the
 template-rendered prompt, sets environment, exec's `wrix run`, and lets
-claude attach to the user's terminal. No subprocess capture, no JSONL.
+the selected interactive agent attach to the user's terminal. No subprocess
+capture, no JSONL.
 
 **Trade-off accepted:** parallelism is straightforward (N concurrent
 `wrix spawn` invocations) and per-bead container spawn cost (~1-2s
 on podman) is dominated by agent runtime for typical bead sizes
 (minutes of agent work). The alternative — one long-lived container
 sharing one agent across beads — was rejected because it conflicts
-with per-bead profile selection and with the trust-boundary split
+with per-bead profile/runtime selection and with the trust-boundary split
 between host orchestrator and sandboxed agent.
 
 ### Bead Dispatch
@@ -116,9 +118,9 @@ The integration branch name is `[loom] integration_branch` in
 checked out and never switches. `loom init` materializes the loom
 workspace via `git clone <origin> .loom/integration` on a
 fresh install; existing operator workspaces run it once after
-upgrading to this layout. The lock-file location
-(`$XDG_STATE_HOME/loom/locks/<workspace-basename>/<spec>.lock`) is
-unchanged.
+upgrading to this layout. Lock files remain outside the workspace under
+`$XDG_STATE_HOME/loom/locks/<workspace-basename>/`, keyed by phase or
+work root.
 
 **Why the layering.**
 
@@ -250,9 +252,9 @@ loops across specs share one loom workspace. Serialization points:
 - Origin push: serialized by origin's non-fast-forward + retry-with-
   fetch loop.
 
-The per-spec advisory lock (see [Concurrency & Locking](#concurrency--locking))
-continues to serialize plan / todo / loop / gate / msg on the same
-spec.
+The phase/work-root advisory locks (see [Concurrency & Locking](#concurrency--locking))
+serialize planning, workspace-wide todo decomposition, and per-work-root
+loop / gate / msg actions without using an active-spec pointer.
 
 **Mounts.** Bead containers see two mandatory bind mounts plus an
 optional sccache mount, all via `SpawnConfig`:
@@ -468,89 +470,115 @@ accumulated wouldn't transfer to the loom workspace.
 ### Profile-Image Manifest
 
 The *profile-image manifest* is a JSON file produced by Nix at flake-build
-time that maps each profile name to the podman ref, Nix store path, and
-optional content-digest path needed to spawn its image. Loom reads it at
-startup and, for each bead, looks up the profile label to populate
-`SpawnConfig.image_ref` (the podman ref), `SpawnConfig.image_source` (the
-store path handed to the launcher install step), and
-`SpawnConfig.image_digest_path` (the digest file wrix uses to skip
-reloading already-present image content).
+time that maps each workspace profile and agent runtime to the podman ref,
+Nix store path, and optional content-digest path needed to spawn its image.
+Loom reads it at startup and, for each container spawn, looks up the resolved
+profile/runtime pair to populate `SpawnConfig.image_ref` (the podman ref),
+`SpawnConfig.image_source` (the store path handed to the launcher install
+step), and `SpawnConfig.image_digest_path` (the digest file wrix uses to
+skip reloading already-present image content).
 
-The file is a JSON object keyed by profile name, with two required string
-fields plus an optional `digest` string per entry:
+The file is a JSON object keyed first by profile name and then by agent
+runtime. Each runtime entry has two required string fields plus an optional
+`digest` string. An abbreviated example:
 
 ```json
 {
-  "base":   { "ref": "localhost/wrix-base:abc123",   "source": "/nix/store/...-image-base",   "digest": "/nix/store/...-image-base-digest" },
-  "rust":   { "ref": "localhost/wrix-rust:def456",   "source": "/nix/store/...-image-rust",   "digest": "/nix/store/...-image-rust-digest" },
-  "python": { "ref": "localhost/wrix-python:ghi789", "source": "/nix/store/...-image-python", "digest": "/nix/store/...-image-python-digest" }
+  "base": {
+    "claude": {
+      "ref": "localhost/wrix-base-claude:abc123",
+      "source": "/nix/store/...-image-base-claude",
+      "digest": "/nix/store/...-image-base-claude-digest"
+    },
+    "pi": {
+      "ref": "localhost/wrix-base-pi:def456",
+      "source": "/nix/store/...-image-base-pi",
+      "digest": "/nix/store/...-image-base-pi-digest"
+    },
+    "direct": {
+      "ref": "localhost/wrix-base-direct:ghi789",
+      "source": "/nix/store/...-image-base-direct",
+      "digest": "/nix/store/...-image-base-direct-digest"
+    }
+  },
+  "rust": {
+    "pi": {
+      "ref": "localhost/wrix-rust-pi:jkl012",
+      "source": "/nix/store/...-image-rust-pi",
+      "digest": "/nix/store/...-image-rust-pi-digest"
+    }
+  }
 }
 ```
 
-Built by `wrix.lib.${system}.mkProfileImages` (defined in
-[profiles.md](profiles.md)); the bundled flake output is
+Built by the wrix `mkProfileImages` helper; the bundled flake output is
 `packages.profile-images`. External flakes that add custom profiles call
 `mkProfileImages` themselves to produce a manifest covering their full
-profile set.
+profile/runtime set.
 
 Loom reads the manifest path from the `LOOM_PROFILES_MANIFEST` environment
 variable. The bundled devshell sets it to `${self'.packages.profile-images}`;
 consumers integrating loom into their own flake set it the same way. If the
 variable is unset or the file is missing, loom errors at startup before any
-bead spawn — there is no implicit search path or fallback default. The
+container spawn — there is no implicit search path or fallback default. The
 manifest is parsed once at startup and held as a
-`BTreeMap<ProfileName, ImageEntry>` in `loom-driver`.
+`BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>` in
+`loom-driver`.
 
 Per-bead dispatch is:
 
 1. Parse the bead's labels; pick the highest-precedence `profile:X` (or the
    value of `--profile` if set on the CLI).
-2. Look up `X` in the parsed manifest. Missing key → exit immediately as
-   `loom:blocked` with cause `unknown-profile`; no retry. The note on the
-   bead names the requested profile and the manifest's declared set so the
-   operator can relabel (`bd update`-shaped fix, not a `loom msg` chat
-   reply — the chat session does not retag beads). Same routing as
+2. Resolve the phase backend to an `AgentRuntime` (`claude`, `pi`, or
+   `direct`).
+3. Look up `(X, AgentRuntime)` in the parsed manifest. Missing profile →
+   exit immediately as `loom:blocked` with cause `unknown-profile`; missing
+   runtime under an existing profile → `unknown-agent-runtime-for-profile`.
+   The note names the requested profile/runtime and the manifest's declared
+   set so the operator can relabel or rebuild the manifest. Same routing as
    `infra-preflight` (see *Verdict gate* below).
-3. Build `SpawnConfig` with `image_ref = entry.ref`, `image_source =
+4. Build `SpawnConfig` with `image_ref = entry.ref`, `image_source =
    entry.source`, and `image_digest_path = entry.digest` when present. Hand it
    to `wrix spawn`.
 
-Agent (claude vs pi) is selected at container start via the `WRIX_AGENT`
-env-allowlist entry the entrypoint switches on — see
-[agent.md — Entrypoint Agent Selection](agent.md#entrypoint-agent-selection).
-The manifest stays one-dimensional; each per-profile image carries both
-runtimes, and `mkSandbox` no longer takes an `agent` parameter at Nix-eval
-time.
+Loom derives `WRIX_AGENT` from the same `AgentRuntime` and places it in
+both `SpawnConfig.launcher_env` for the host-side `wrix spawn` child
+process and the in-container `SpawnConfig.env` allowlist. The operator's
+parent-shell `WRIX_AGENT` is never the source of truth; wrix consumes the
+launcher env before podman startup and passes the same value to the
+entrypoint — see [agent.md — Entrypoint Agent
+Selection](agent.md#entrypoint-agent-selection).
 
 `loom plan` and `loom msg --chat` are interactive, so they shell out to
 `wrix run` (TTY-attached) rather than `wrix spawn`. To keep one
-resolution path, both commands look up their profile (per
+resolution path, both commands look up their profile/runtime pair (per
 [Configuration](#configuration); default `base`) in the manifest and
-export `WRIX_DEFAULT_IMAGE_REF=<entry.ref>` plus
-`WRIX_DEFAULT_IMAGE_SOURCE=<entry.source>` into the child environment
-before exec'ing `wrix run`. The launcher reads those env vars when no
-`--spawn-config` is supplied — see
-[sandbox.md — Launcher Subcommands](sandbox.md#launcher-subcommands).
-`wrix run` has no `--profile` argv parser; any extra tokens between
+export `WRIX_DEFAULT_IMAGE_REF=<entry.ref>`,
+`WRIX_DEFAULT_IMAGE_SOURCE=<entry.source>`, and
+`WRIX_AGENT=<runtime>` into the child environment before exec'ing
+`wrix run`. The launcher reads those env vars when no `--spawn-config`
+is supplied. `wrix run` has no `--profile` argv parser; any extra tokens
+between
 the workspace positional and the in-container command are forwarded into
 the container as the command vector, so the env-var hand-off is the sole
-profile-selection contract on this path. The in-container command is
+image-selection contract on this path. The in-container command is
 selected from the resolved phase backend: Claude uses `claude
 --dangerously-skip-permissions`, while Pi uses `pi`.
 
 ### Concurrency & Locking
 
 Multiple `loom` invocations on the same workspace are explicitly allowed.
-The lock model is **per-spec advisory locks** plus a single workspace
-exclusive lock used only during destructive state rebuild.
+The lock model is **phase/work-root advisory locks** plus a single
+workspace-exclusive lock used only during destructive cache rebuild.
 
 **Lock files** live **outside the workspace**, under
 `$XDG_STATE_HOME/loom/locks/<workspace-basename>/` (default
 `~/.local/state/loom/locks/<workspace-basename>/`):
 
-- `<label>.lock` — one per spec
+- `plan.lock` — serializes interactive planning edits
+- `todo.lock` — serializes workspace-wide changed-spec decomposition
+- `<bead-or-epic-id>.lock` — serializes loop/gate/msg work roots
 - `workspace.lock` — held by `loom init` and `loom init --rebuild`
-  (`workspace` is reserved as a spec label to avoid collision)
 
 `<workspace-basename>` is the final path component of the canonicalized
 workspace root (e.g. `/workspace` → `workspace`, `~/work/myrepo` →
@@ -575,16 +603,18 @@ there are no stale locks to clean up.
 | Class | Commands | Lock acquired |
 |-------|----------|---------------|
 | Read-only | `status`, `logs` (incl. `-f` follow), `spec` | none |
-| Spec-scoped mutating | `plan`, `todo`, `loop`, `gate`, `msg`, `use` | exclusive on `<label>.lock` |
+| Planning | `plan` | exclusive on `plan.lock` |
+| Todo decomposition | `todo` | exclusive on `todo.lock` (workspace-wide changed-spec preflight + one pending work epic) |
+| Work-root mutating | `loop`, `gate`, `msg` | exclusive on each addressed bead/work-epic id; default `loop` resolves `loom:active` before locking |
 | Workspace-exclusive | `init`, `init --rebuild` | exclusive on `workspace.lock` |
 
-A spec-scoped command on label `X` waits up to 5 seconds for `<X>.lock`,
-then errors with `another loom command is operating on <X>` (no busy-loop,
-no silent stalls). `init` and `init --rebuild` error immediately if any
-spec lock is held.
+A mutating command waits up to 5 seconds for its lock, then errors naming
+the held plan/todo/work root (no busy-loop, no silent stalls). `init` and
+`init --rebuild` error immediately if any plan, todo, or work-root lock is
+held.
 
 **Why git is the second-order serialization point.** Two `loom loop`
-invocations on *different* specs share the loom workspace's
+invocations on different work epics share the loom workspace's
 integration branch. They collide briefly at integration and at
 origin push:
 
@@ -1090,13 +1120,11 @@ self-reports go straight to human resolution via `loom msg`.
 
 **Interactive vs worker sessions.** The verdict gate's reconciliation
 applies to **worker sessions only** — single-shot agent dispatches
-against a bead or molecule (`loom loop`'s per-bead worker,
-`loom todo_new` / `loom todo_update`, `loom gate review`).
-**Interactive sessions** —
-multi-turn chats with a human in the loop (`loom plan -n` /
-`loom plan -u`, `loom msg -c`; identifiable in the template layer
-by inclusion of `chat_marker_final_turn_only.md`) — are
-agent-and-human authoritative:
+against a bead, work epic, or review scope (`loom loop`'s per-bead
+worker, `loom todo`, `loom gate review`). **Interactive sessions** —
+multi-turn chats with a human in the loop (`loom plan`, `loom msg -c`;
+identifiable in the template layer by inclusion of
+`chat_marker_final_turn_only.md`) — are agent-and-human authoritative:
 the driver does **not** mutate bd state as a consequence of an
 interactive session. Whatever bd state exists at session end IS the
 state. The chat agent has full bd-write authority on the beads it
@@ -1125,14 +1153,16 @@ The decision table below therefore documents **worker-session**
 outcomes only. Interactive sessions short-circuit before the table
 is consulted.
 
-**Decision table** (worker sessions only — interactive sessions
-short-circuit before this table is consulted, per *Interactive vs
-worker sessions* above). The gate inspects four signals — the agent's
-exit marker, whether the bead was bd-closed, whether the bead-branch
-diff is empty (no commits since dispatch), and whether the working tree
-is clean (`git status --porcelain` empty). It produces `blocked`,
-`clarify`, `recovery` with a cause, or a clean worker result that may
-then enter post-integration verification:
+**Decision table** (per-bead loop/review worker sessions only —
+interactive sessions short-circuit before this table is consulted, and
+`loom todo` uses the typed `LOOM_TODO` success protocol in
+[Spec and Work Epic Lifecycle](#spec-and-work-epic-lifecycle)). The
+gate inspects four signals — the agent's exit marker, whether the bead
+was bd-closed, whether the bead-branch diff is empty (no commits since
+dispatch), and whether the working tree is clean (`git status
+--porcelain` empty). It produces `blocked`, `clarify`, `recovery` with
+a cause, or a clean worker result that may then enter
+post-integration verification:
 
 | Marker | bd-closed | Diff | Tree clean | Outcome |
 |--------|-----------|------|------------|---------|
@@ -1255,18 +1285,18 @@ prompt contract — not a driver action. A driver that auto-closes on
 parsing (not exit_code) must be the primary outcome signal for every
 phase that spawns an agent.
 
-`recovery` resolves to `retry` if the molecule's iteration counter is
+`recovery` resolves to `retry` if the work epic's iteration counter is
 below `[loop] max_iterations` (default 10), otherwise `blocked` with
 the cause preserved in `bd update --notes`. The iteration counter is
-**molecule-level** state — stored in `molecules.iteration_count` (see
-the schema in *SQLite State Store* below) — and survives
+**work-epic-level** state — cached in `work_epics.iteration_count` (see
+the schema in *SQLite Cache Store* below) — and survives
 `retry → [running]` round-trips. Per FR1, the same counter bounds
-`loom loop`'s stabilization passes: every full molecule pass (initial
+`loom loop`'s stabilization passes: every full work-epic pass (initial
 implementation pass + each promoted deferred remediation pass)
 consumes one slot. This is the same knob as the per-bead recovery loop
-because a promoted remediation bead getting picked up *is* a molecule
-pass — the two concepts collapse onto one molecule-level counter, with
-in-session retry left to `[loop] max_retries` (default 2).
+because a promoted remediation bead getting picked up *is* a work-epic
+pass — the two concepts collapse onto one work-epic-level counter,
+with in-session retry left to `[loop] max_retries` (default 2).
 
 **Mechanical integration gate.** Marker parsing, bd-closed lookup,
 diff inspection, and tree cleanliness are deterministic. After the bead
@@ -1386,14 +1416,14 @@ capped, total truncated to `PREVIOUS_FAILURE_MAX_LEN = 4000` chars):
 | `bad-walk` (malformed-finding) | `BadWalk(BadWalk::MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface })` | "One or more `LOOM_FINDING:` lines failed parse." Per-line errors are enumerated; the well-formed terminal is rendered alongside so the agent fixes the malformation (typically: drop the surrounding markdown fence) without losing the surrounding well-formed context. This is the variant that fires on backtick-wrapped finding lines whose JSON otherwise would have parsed. |
 | `integration-conflict` | `IntegrationConflict { files: Vec<PathBuf>, new_base_sha: GitOid }` | "Your bead branch could not be rebased onto integration — files conflict: <files>. The new integration tip is <new_base_sha>. Rebase your bead workspace onto the new tip, resolve, and re-commit." Single-retry cap (not full `[loop] max_retries`); a second rebase-conflict escalates the bead to `loom:clarify` with the same cause. The `signature-verification-failed` cause does **not** appear in this table because it routes to `loom:blocked` immediately without an agent-retry pass — there is no next dispatch and thus no `PreviousFailure` context. |
 | `post-integrate-fail` | `PostIntegrateFail { failures: Vec<VerifierFailure>, gate_log_path: PathBuf }` | "After your bead was rebased onto the integration branch and ff'd, the post-integration verify failed at the loom workspace. The integration was rolled back. Gate log: <path>. Specific failure: <verifier-failure blocks>." Used for cross-bead deterministic breakage where the bead-workspace self-check may have passed but the integrated tree's verify failed. The default per-bead hot path has no focused review session, so review-style findings route at molecule completion via `review-concern` / `bad-walk` rather than `post-integrate-fail`. Capped at the shared `PREVIOUS_FAILURE_MAX_LEN` budget; the path is outside the truncation budget. |
-| `agent-retry` | `AgentRetry { reason: String }` | "Previous attempt requested retry: <reason>. A fresh dispatch was scheduled." `reason` is the verbatim prose the agent wrote on the line preceding `LOOM_RETRY` (environmental detail or stuck-on-approach summary). Consumes one `[loop] max_retries` slot; on exhaustion the molecule escalates to `loom:blocked` with cause `retry-exhausted`. The recovery prompt instructs the retry attempt to escalate to `LOOM_BLOCKED` (no candidate resolutions) or `LOOM_CLARIFY` (with `## Options — …`) if the same problem persists rather than emitting `LOOM_RETRY` again. |
+| `agent-retry` | `AgentRetry { reason: String }` | "Previous attempt requested retry: <reason>. A fresh dispatch was scheduled." `reason` is the verbatim prose the agent wrote on the line preceding `LOOM_RETRY` (environmental detail or stuck-on-approach summary). Consumes one `[loop] max_retries` slot; on exhaustion the target bead is marked `loom:blocked` with cause `retry-exhausted`. The recovery prompt instructs the retry attempt to escalate to `LOOM_BLOCKED` (no candidate resolutions) or `LOOM_CLARIFY` (with `## Options — …`) if the same problem persists rather than emitting `LOOM_RETRY` again. |
 
 When `previous_failure.is_some() && attempt > 0`, the `loop.md`
 template prepends a first-instruction reframe: *"Re-read the
 previous failure block above and address its specific concern
 before re-implementing."* The `attempt` counter is per-bead
 in-session (bounded by `[loop] max_retries`), resetting when a
-fresh bead is dispatched; molecule-level iteration is opaque to the
+fresh bead is dispatched; work-epic-level iteration is opaque to the
 agent because each remediation bead is a different prompt context.
 
 Transcript excerpts are deliberately not included — the agent can re-read
@@ -1469,18 +1499,27 @@ operators can diagnose the downgrade without replaying the whole log.
 **Marker definitions.** The agent ends every phase by emitting exactly
 **one** marker on its own line, as the final output of the session.
 Markers are **mutually exclusive** — a session emits one and only one.
-Six markers are defined:
+Todo has a typed success marker; other worker phases use the generic
+success/self-report markers below.
 
-- `LOOM_COMPLETE` — the work succeeded. The agent has implemented the
-  bead's criteria and `bd close`d the bead. The diff is non-empty
-  (real changes); see `LOOM_NOOP` below for the zero-diff variant.
-  Valid in every phase.
-- `LOOM_NOOP` — the work was already done in tree; the phase
+- `LOOM_COMPLETE` — the loop/review work succeeded. For a bead worker,
+  the agent has implemented the bead's criteria and `bd close`d the
+  bead. The diff is non-empty (real changes); see `LOOM_NOOP` below for
+  the zero-diff variant. Valid in `loop` and zero-finding `review`, and
+  in final turns of interactive sessions where the template permits it;
+  wrong phase for `loom todo`.
+- `LOOM_NOOP` — loop work was already done in tree; the phase
   intentionally produced an empty diff. Without `LOOM_NOOP`, an empty
   diff is treated as `zero-progress` (a recovery cause). The agent
   emits `LOOM_NOOP` to distinguish "no work needed" from "work
-  attempted but produced no diff." Valid in worker phases (`loop`,
-  `todo`); not valid in the review phase.
+  attempted but produced no diff." Valid in loop worker phases only;
+  not valid in `loom todo` or the review phase.
+- `LOOM_TODO: <json>` — todo-specific success marker. The JSON payload
+  parses as `loom-protocol::todo::TodoSuccess` and is validated against
+  the deterministic preflight roster before any cursor or active-epic
+  state changes. It is the only successful terminal marker for
+  `loom todo`; `LOOM_COMPLETE` and `LOOM_NOOP` are wrong-phase success
+  markers there.
 - `LOOM_RETRY` — the agent self-reports that this attempt cannot
   finish but a fresh dispatch is likely to succeed. Two failure
   shapes warrant `LOOM_RETRY`:
@@ -1499,27 +1538,29 @@ Six markers are defined:
   next attempt. Consumes one `[loop] max_retries` slot; exhaustion
   routes to `loom:blocked` with cause `retry-exhausted` (same as the
   existing retry-exhaustion path). Valid in worker phases only
-  (`loop`, `todo_*`, `review`); invalid in interactive sessions
-  (`plan_*`, `msg`).
+  (`loop`, `todo`, `review`); invalid in interactive sessions
+  (`plan`, `msg`).
 - `LOOM_BLOCKED` — the agent cannot proceed and is self-reporting a
   **genuine dead end** — no candidate resolutions to enumerate, no
   retry path the agent expects to succeed. Use `LOOM_RETRY` for
   environmental failures or stuck-on-this-approach cases; use
   `LOOM_CLARIFY` when the agent can frame the decision-point as a
   structured `## Options — …` block. Write the reason on prior lines
-  before the marker; the gate applies `loom:blocked` to *this bead*
-  and exits the verdict evaluation without entering recovery. Other
-  beads in the molecule continue running; the labelled bead waits
-  for human resolution via `loom msg` (where `msg -c` walks the
-  human through candidate enumeration in-session). Valid in worker
-  phases only — invalid in interactive sessions (`plan_*`, `msg`).
+  before the marker; the gate applies `loom:blocked` to the target
+  bead/work epic (the bead under dispatch for `loop` / `review`, the
+  `loom:todo` work epic for `todo`) and exits the verdict evaluation
+  without entering recovery. Other beads in the molecule continue
+  running; the labelled bead or work epic waits for human resolution via
+  `loom msg` (where `msg -c` walks the human through candidate
+  enumeration in-session). Valid in worker phases only — invalid in
+  interactive sessions (`plan`, `msg`).
 - `LOOM_CLARIFY` — the agent has a specific question with structured
   options for the human (per the [Options Format
   Contract](gate.md#options-format-contract)). The discriminator
   against `LOOM_BLOCKED`: clarify means *I can enumerate the
   candidate resolutions*; blocked means *I cannot*. The target bead
   is **the bead under dispatch** for `loop` / `review`, and
-  **the molecule epic** for `todo_*` (per [templates.md —
+  **the `loom:todo` work epic** for `loom todo` (per [templates.md —
   Decomposition Discipline](templates.md#decomposition-discipline)).
   Write the question + options block to the target bead's state
   (notes or description) before emitting the marker. **The gate
@@ -1536,7 +1577,7 @@ Six markers are defined:
   `loom:clarify` to the target bead and exits the verdict evaluation
   without entering recovery. Other beads in the molecule continue
   running; the labelled bead waits for `loom msg` resolution. Valid
-  in worker phases only — invalid in interactive sessions (`plan_*`,
+  in worker phases only — invalid in interactive sessions (`plan`,
   `msg`).
 - `LOOM_CONCERN` — the review phase found a quality issue with the
   molecule's work; push must not fire. Carries a JSON payload:
@@ -1638,8 +1679,8 @@ pub enum GateOutcome {
 }
 
 pub enum NoGateReason {
-    NoBeadsReady,    // queue empty at start; nothing to gate
-    OncePartial,     // `--once` processed beads, molecule not complete
+    NoBeadsReady,       // selected work roots had no ready child work
+    SelectionPartial,   // explicit bead/root selection processed work but its epic is not complete
 }
 ```
 
@@ -1775,17 +1816,17 @@ addressing schemes for the same target). `-c` is mutually exclusive with
 all other action flags except `-s`.
 
 **Cross-spec by default.** Bare `loom msg` lists every outstanding
-open `loom:blocked` and `loom:clarify` bead across all specs,
-regardless of the `current_spec` meta value. Closed beads are excluded
-from list/chat queues even if their labels remain on the bead. `-s
-<label>` is the only narrowing path. The `current_spec` is not consulted
-for any msg mode.
+open `loom:blocked` and `loom:clarify` bead across all specs. Closed
+beads are excluded from list/chat queues even if their labels remain on
+the bead. `-s <label>` is the only narrowing path. No active-spec cache
+or work-epic selection is consulted for any msg mode.
 
 **Chat session shape.** `loom msg -c` (optionally with `-s <label>`)
-launches the base profile via `wrix spawn`, runs Claude with the
-`msg.md` template, and walks the user through outstanding beads
-interactively. The session has **full bd-write authority** on the
-beads in its queue: notes via `bd update --notes`, label add/remove
+launches the resolved profile/runtime via interactive `wrix run`, runs
+the selected chat-capable agent with the `msg.md` template, and walks
+the user through outstanding beads interactively. The session has **full
+bd-write authority** on the beads in its queue: notes via
+`bd update --notes`, label add/remove
 via `bd update --add-label` / `--remove-label`, status changes, and
 bead closure via `bd close`. The chokepoint reasoning that gates
 worker-session bd writes (replay-safety, cross-finding dedup,
@@ -1842,10 +1883,10 @@ the other five are internal organization.
 | `loom-events` | **public** | `AgentEvent` enum, ID newtypes (`BeadId`, `MoleculeId`, `ToolCallId`, `SpecLabel`, `ProfileName`, `SessionId`, `RequestId`), `DriverKind`, `Session` trait, `EventSink` trait, `SessionCommand`. Frontends, SSE bridges, and external log tools depend only on this. |
 | `llm` | **public** | Typed wrapper over a multi-provider LLM crate. `LlmClient` trait, `Conversation` with built-in tool-use loop, `ModelId`, `CacheControl`, `complete_structured::<T>` (provider-agnostic), `TokenUsage`. Hosts the agent-loop observers (`DoomLoopObserver`, `DuplicateResultObserver`) so consumers driving via `Conversation` get the same safety nets Loom's binary uses. See [llm.md](llm.md). |
 | `templates` | **public** | Askama templates + typed context structs. Consumers compose their own templates from the exposed typed building blocks (`PinnedContext`, `PreviousFailure`, `LoopContext`, partial strings). Loom's workflow templates themselves stay internal. See [templates.md](templates.md). |
-| `loom-driver` | internal | Host-side runtime — `AgentBackend` trait, `StateDb`, `Config`, `BdClient`, `Clock`, profile manifest, lock files, scratch dir, git ops, workflow-layer driver-event emission (verdict-gate, push-gate, container-spawn). |
+| `loom-driver` | internal | Host-side runtime — `AgentBackend` trait, `CacheDb`, `Config`, `BdClient`, `Clock`, profile manifest, lock files, scratch dir, git ops, workflow-layer driver-event emission (verdict-gate, push-gate, container-spawn). |
 | `loom-render` | internal | `Renderer` trait + `Pretty` / `Plain` / `Json` / `Raw` impls; `LogSink` (impl `EventSink`) driving disk JSONL from the same event stream the renderer consumes. |
 | `agent` | internal | `AgentBackend` implementations (pi, claude, direct). Pi/Claude drive subprocess agents; `direct` composes `llm` with Loom's six sandbox-aware tools behind the Direct runner. Adapters flatten backend wire schemas into `loom-events` variants. |
-| `loom-workflow` | internal | Workflow engine — plan, todo, run, gate, msg. Selects concrete backends per phase and drives the shared session lifecycle. Owns orchestration loop, bead lifecycle, retry logic, push gate, verdict gate. |
+| `loom-workflow` | internal | Workflow engine — plan, todo, loop, gate, msg. Selects concrete backends per phase and drives the shared session lifecycle. Owns orchestration loop, bead lifecycle, retry logic, push gate, verdict gate. |
 
 ### Dependency Graph
 
@@ -1923,8 +1964,9 @@ everywhere downstream. No internal function re-checks or re-parses.
 6. **CLI output parsing** — `bd --json` output deserializes into typed structs
    (`Bead`, `Molecule`).
 7. **Profile-image manifest** — the JSON produced by `mkProfileImages`
-   deserializes into `BTreeMap<ProfileName, ImageEntry { ref, source, digest? }>`
-   once at loom startup. Downstream code receives `&ImageEntry`, never raw JSON.
+   deserializes into `BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry { ref, source, digest? }>>`
+   once at loom startup. Downstream code receives typed profile/runtime keys
+   and `&ImageEntry`, never raw JSON.
 
 **Newtype IDs:**
 
@@ -1967,12 +2009,13 @@ template composition, and the snapshot-test contract all live there.
 - Uses `--json` flag where available
 - Parses output into typed structs (`Bead`, `Molecule`, `MolProgress`).
   Bead labels deserialize into a `Label` newtype that pre-parses the
-  `spec:`/`profile:`/`loom:clarify`/`loom:blocked` prefix families once at
-  the boundary, so call sites read through typed accessors
-  (`spec_label()`, `profile_name()`, `is_clarify()`, `is_blocked()`)
-  rather than re-doing `strip_prefix` walks. The `loom:active` family
-  is **removed** — disambiguation isn't needed once "at most one open
-  epic per spec" is invariant.
+  `spec:`/`profile:`/`loom:spec`/`loom:todo`/`loom:active`/
+  `loom:clarify`/`loom:blocked` prefix families once at the boundary,
+  so call sites read through typed accessors (`spec_label()`,
+  `profile_name()`, `is_spec_epic()`, `is_todo_stage()`,
+  `is_active()`, `is_clarify()`, `is_blocked()`) rather than re-doing
+  `strip_prefix` walks. `loom:active` is an execution bookmark for the
+  default work epic, never a spec-discovery filter.
 - Maps CLI errors to typed error variants
 - All subprocess calls have a 60-second timeout (configurable). Prevents
   unbounded hangs from a stuck `bd` process.
@@ -1981,29 +2024,39 @@ template composition, and the snapshot-test contract all live there.
   relies on the bind-mounted Dolt socket so every `bd` call is already
   authoritative.
 
-### SQLite State Store
+### SQLite Cache Store
 
-Workflow state lives in `.loom/state.db`. The schema is owned by
-`loom-driver` and migrated on open (embed migrations via `rusqlite`'s
-`execute_batch`).
+Workflow cache lives in `.loom/cache.db`. The filename is deliberate:
+this database is local, optional, reconstructable cache state, not a
+source of truth. Git (code + specs), Beads/Dolt (beads, epics,
+labels, metadata), and the current `docs/README.md` spec index are the
+durable shared sources. A missing, stale, or corrupt cache may make Loom
+slower or lose transient hints; it must never make Loom conclude that
+changed spec work is clean.
 
-**Sources of truth.** Git (code + specs) and Beads (tasks + molecules
-+ metadata) are the durable, shared sources of truth. The state DB is
-a **per-machine cache** of values derived from those sources, plus
-session-bound transient data (notes). Every state-DB value is either
-rebuildable from Git/Beads or session-bound by design; nothing in the
-state DB is load-bearing-and-unrecoverable.
+The previous `.loom/state.db` name is retired. Existing installations
+migrate by moving compatible rows into `.loom/cache.db` or rebuilding
+from durable sources; correctness paths must not require either file
+to exist before they run.
 
 ```sql
 CREATE TABLE specs (
-    label TEXT PRIMARY KEY
+    label TEXT PRIMARY KEY,
+    spec_path TEXT NOT NULL
 );
 
-CREATE TABLE molecules (
-    id              TEXT PRIMARY KEY,
-    spec_label      TEXT NOT NULL REFERENCES specs(label),
-    base_commit     TEXT,                       -- cache of bead metadata `loom.base_commit`
-    iteration_count INTEGER NOT NULL DEFAULT 0
+CREATE TABLE spec_epics (
+    spec_label  TEXT PRIMARY KEY REFERENCES specs(label),
+    epic_id     TEXT NOT NULL,
+    todo_cursor TEXT                         -- cache of spec-epic metadata `loom.todo_cursor`
+);
+
+CREATE TABLE work_epics (
+    epic_id          TEXT PRIMARY KEY,
+    todo_head        TEXT,
+    todo_fingerprint TEXT,
+    is_active        INTEGER NOT NULL DEFAULT 0,
+    iteration_count  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE companions (
@@ -2021,76 +2074,77 @@ CREATE TABLE notes (
 );
 CREATE INDEX idx_notes_spec_kind ON notes(spec_label, kind);
 
+CREATE TABLE criterion_status (
+    spec_label        TEXT NOT NULL REFERENCES specs(label),
+    criterion_id      TEXT NOT NULL,
+    annotation_json   TEXT NOT NULL,
+    result            TEXT NOT NULL,
+    last_timestamp_ms INTEGER,
+    last_commit       TEXT,
+    evidence          TEXT,
+    PRIMARY KEY (spec_label, criterion_id)
+);
+
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
--- meta rows: current_spec, schema_version
+-- meta rows: schema_version and cache-only implementation details.
+-- There is no current_spec/current_molecule pointer.
 ```
 
-**No `current_molecule` pointer table.** At most one epic per spec is
-open at any time (see *Molecule lifecycle* below), so resolution is a
-single `bd find --type=epic --label=spec:<X> --status=open` query —
-no pointer, no tiers, no README parse at resolution time.
+The gate's criterion-status cache is folded into `.loom/cache.db`;
+there is no separate `.loom/gate-cache.sqlite`. Gate runs write
+`criterion_status` rows keyed by the typed join `(SpecLabel,
+CriterionId)`. Todo preflight parses current spec criteria and joins
+against this cache after parsing cached strings back into typed
+`CriterionId`, `CriterionAnnotation`, and `GitSha` values. Cache parse
+failures are cache corruption diagnostics, not reasons to skip a spec.
 
-**`molecules.base_commit` is a cache of bead metadata.** The
-authoritative diff base for a molecule lives on the epic bead in
-Beads as the `loom.base_commit` metadata field, written when `loom
-todo` mints the molecule (see *Molecule lifecycle* above). The
-state-DB column is a per-machine cache populated at rebuild time and
-kept in sync when `loom todo` advances the diff base. A wiped state
-DB recovers the value from Beads.
+Typed Rust API — no raw SQL outside `loom-driver`. The cache handle
+opens `.loom/cache.db`, rebuilds cache rows from durable sources,
+manages transient notes, records criterion evidence from gate runs,
+and caches active work-epic iteration counts. Durable workflow
+answers (which specs changed, which spec epic owns a cursor, which
+work epic is active) are re-derived from Git + Beads before use; cache
+rows are advisory mirrors.
 
-**No `todo_cursor:<label>` meta key.** The molecule's
-`loom.base_commit` (in bead metadata) is the sole diff base for
-`loom todo` fan-out — rebuildable across machines and state-DB
-wipes — and advances atomically when fan-out completes.
+**Rebuild (`loom init --rebuild`):** Drops and recreates all cache
+tables, then repopulates from durable sources:
 
-Typed Rust API — no raw SQL outside `loom-driver`. `loom-driver` owns a single
-`StateDb` handle that wraps the SQLite connection and exposes typed
-operations: open the DB at a path, fetch a spec row by label, get/set the
-`current_spec` meta key, increment a molecule's iteration counter, manage
-notes (`set`/`add`/`clear`/`list` scoped by `(spec_label, kind)`; `rm` by
-note id), and run the rebuild described below. Every operation returns
-`Result<_, StateError>`; row shapes are `SpecRow` (label), `MoleculeRow`
-(id, spec_label, base_commit, iteration_count), and `NoteRow` (id,
-spec_label, kind, text, created_at) — the columns of the `specs`,
-`molecules`, and `notes` tables. Notes are one row per note, so
-`loom note add` is a single `INSERT`, `loom note rm <id>` is a single
-`DELETE`, and `ORDER BY id` yields chronological order without a parse
-step.
+1. Parse `docs/README.md`'s spec index and cross-check `specs/*.md`.
+   The index is authoritative for discoverable specs. An indexed row
+   whose file is missing, an unindexed `specs/*.md` file, duplicate
+   rows/files for one label, or a label/path mismatch is a structural
+   diagnostic. Planned spec rename/delete work is allowed only when a
+   planning session left durable evidence (spec/index diff plus, when
+   needed, implementation notes); otherwise todo blocks with an
+   Options-format diagnostic rather than guessing.
+2. Query Beads for spec epics: exactly one bead labelled
+   `loom:spec` and `spec:<label>` per indexed spec. Status is ignored;
+   spec epics may be open or closed. The cache records the epic id and
+   its `loom.todo_cursor` metadata when present. More than one spec
+   epic for a label is a hard invariant violation naming the
+   conflicting ids.
+3. Query Beads for work epics: epics labelled `loom:todo` (pending
+   decomposition) and the sole `loom:active` epic (default loop
+   target). At most one open `loom:todo` epic and at most one
+   `loom:active` epic may exist in a workspace; violations fail loud.
+4. Parse each spec markdown for `## Companions` and populate
+   `companions` rows.
 
-**Rebuild (`loom init --rebuild`):** Drops and recreates all tables, then
-repopulates from three sources:
+Criterion evidence rows are not durable and are not reconstructed by
+rebuild. Missing rows become `EvidenceState::Missing` when a prompt is
+rendered.
 
-1. Glob `specs/*.md` → one `specs` row per file (label from filename).
-   ~10-20 files.
-2. `bd list --status=open --type=epic` → one `molecules` row per open
-   epic carrying a `spec:<label>` label. The "at most one open epic
-   per spec" invariant means each spec contributes 0 or 1 row;
-   discovering more than one is a structural-invariant error that
-   surfaces with the conflicting epic IDs (operator closes one before
-   re-running). For each row, `bd show <id> --json` reads
-   `loom.base_commit` metadata and populates the row's `base_commit`.
-3. Each spec markdown is parsed for a canonical `## Companions` section
-   (see *Companion declaration in specs* below); each listed path becomes
-   one `companions` row. Specs without the section contribute zero
-   companions, not an error.
+Iteration counters reset to 0 on rebuild. **Notes are lost on
+rebuild** — they live only in the cache and have no filesystem source
+to reconstruct from. This can lose implementation hints but cannot
+lose correctness: `loom todo` must still derive changed specs from
+Git + Beads and fail loud when evidence is unknown.
 
-Iteration counters reset to 0 on rebuild. **Notes are lost on rebuild** —
-they live only in SQLite and have no filesystem source to reconstruct
-from. Rebuild is a clean-slate operation; running it discards all
-transient hints, and `loom init --rebuild --help` says so explicitly.
-Recovering notes after a rebuild means re-running `loom plan` for the
-affected spec. (`loom todo`'s routine consumption is *not* a loss path —
-notes are rendered into bead bodies before the rows are deleted; see
-*Notes lifecycle* below.)
-
-Total cost: a glob + ~5 `bd` CLI calls + N markdown reads (already loaded
-for source #1). Runs in under a second.
-
-**Companion declaration in specs.** Specs declare their companion paths in
-a single, parseable section so rebuild is lossless:
+**Companion declaration in specs.** Specs declare their companion paths
+in a single, parseable section so rebuild is lossless:
 
 ```markdown
 ## Companions
@@ -2110,135 +2164,151 @@ Parser rules:
 - Malformed lines (no backticks, multiple paths) are skipped with a
   `warn!`, not an abort.
 
-This is the only contract between spec authors and the state DB on
-companions. The `loom plan` interview enforces the format when adding
-companion paths to a spec.
+### Spec and Work Epic Lifecycle
 
-**Molecule lifecycle.** A molecule is the unit of cross-cutting
-work for a plan session: one plan session that touches N specs
-produces one molecule containing N epics (one per touched spec)
-plus the task beads fanned out from each spec's diff.
+Loom uses two distinct epic kinds.
 
-**Invariant: at most one open epic per spec, ever.** This is the
-single load-bearing rule for molecule identity. It collapses a
-prior four-tier resolution machinery (state DB pointer, bd
-auto-pick, README parse, fresh decomposition) into one bd query,
-makes the "which molecule is current?" question structurally
-unrepresentable as a misclassification, and renders the
-`loom:active` label and `current_molecule` pointer table
-unnecessary — both removed. Recovery work and follow-ups extend the
-spec's open epic (or re-open a closed one explicitly via
-`bd update <id> --status=open`); a fresh epic is only minted when
-none is open.
+**Spec epic.** A spec epic is the durable per-spec metadata carrier.
+It has labels `loom:spec` and `spec:<label>`, exactly one exists per
+indexed spec, and its status does not affect cursor lookup. It carries
+`loom.todo_cursor=<full git sha>`, meaning: `loom todo` has
+successfully finalized decomposition coverage for this spec through
+that commit. Normal `loom todo` never creates implementation child
+beads under a spec epic.
 
-**Single-tier resolution.** "Which molecule is active for spec X?"
-is answered by:
+**Work epic.** A work epic is the execution batch created by
+`loom todo` for a deterministic changed-spec set. The driver creates
+it before the todo agent runs, labels it `loom:todo`, and writes
+`loom.todo_head=<sha>`, `loom.todo_fingerprint=<TodoFingerprint>`,
+and the changed spec labels as metadata. While `loom:todo` is present,
+the epic is still in the decomposition stage and is not a default loop
+target. After a validated `LOOM_TODO` handoff, finalization removes
+`loom:todo`, adds `loom:active`, advances every changed spec epic's
+`loom.todo_cursor` to the preflight head, and removes `loom:active`
+from any previous work epic. At most one open work epic may carry
+`loom:todo`, and at most one epic may carry `loom:active`.
 
-```
-open_epic = bd find --type=epic --label=spec:<X> --status=open
-```
-
-- **One result** → that epic's bonded molecule is the active
-  molecule for X.
-- **Zero results** → no active molecule; the next operation that
-  needs one (`loom todo`, `loom gate mint --tree`) mints it.
-- **More than one** → structural invariant violation. Loom refuses
-  to proceed and surfaces the conflicting epic IDs; the operator
-  closes one before re-running.
-
-`loom init --rebuild` populates the state DB's `molecules` cache from
-bd (one row per open epic), but resolution itself never reads the
-cache — it always asks bd directly. The cache exists for `loom
-status` and other read-only listings, not for the hot resolution
-path.
+`loom:active` is an execution bookmark only: `loom loop` with no
+positional ids runs the sole active work epic. It is never consulted by
+`loom todo` changed-spec discovery.
 
 **Lifecycle events:**
 
-- **`loom plan -n <label>` / `loom plan -u <label>`** — edits the
-  anchor spec markdown and any cross-cutting siblings under
-  `specs/`. No bd writes. No epic creation. Plan sessions run
-  repeatedly against a spec without minting anything.
-- **`loom todo`** — fans out beads across **every spec touched in
-  the working tree** (anchor + siblings whose markdown differs from
-  `HEAD`). For each touched spec, single-tier resolution decides:
-  - All touched specs return **zero** open epics → mint one
-    molecule, N epics (one per touched spec via `bd create
-    --type=epic --title="<X>" --labels="spec:<X>" --metadata
-    "loom.base_commit=<HEAD>"`, bonded to the new molecule via
-    `bd mol bond`), fan out task beads bonded to the molecule and
-    depending on their per-spec epic.
-  - All touched specs share the **same** existing molecule → bond
-    fan-out beads to that molecule under the right per-spec epic.
-  - Touched specs span **different** molecules, or some have open
-    epics and others don't → **multi-spec collision**. Loom mints
-    nothing and writes a `## Options — …` block to a new
-    `loom:clarify` bead per the
-    [Options Format Contract](gate.md#options-format-contract).
-    The options enumerate the bonding alternatives (join one of
-    the pre-existing molecules) plus the fresh-mint alternative
-    (close the pre-existing epic(s), mint one cross-cutting
-    molecule covering all touched specs); the operator resolves
-    via `loom msg`.
-- **`loom gate mint --tree`** — for each finding about spec X,
-  applies single-tier resolution: bonds remediation beads to X's open
-  epic, or mints molecule + epic if none exists. `loom gate audit
-  --tree` performs the same walk for inspection but produces no bd
-  writes. See
-  [gate.md — Findings and Minting](gate.md#findings-and-minting) and
-  [gate.md — Standing-safety-net checks](gate.md#standing-safety-net-checks).
+- **`loom plan [SPEC_LABEL ...]`** — interactive spec interview.
+  Positional labels are initial context anchors only; zero labels
+  starts from the project overview/spec index, an existing label pins
+  that spec body, and a missing label is a proposed new spec. Plan
+  may edit any spec and the index as the interview discovers
+  cross-cutting scope. It does not write bd state, create epics, or
+  record a touched-set manifest; Git records the touched set.
+- **`loom todo` preflight** — deterministic, before any LLM prompt:
+  1. Parse the current `docs/README.md` spec index and spec files; any
+     inconsistency blocks.
+  2. Ensure exactly one spec epic per indexed spec. Missing spec epic
+     is created by the driver and marks that spec uninitialized for
+     this preflight. More than one blocks.
+  3. Read each spec epic's `loom.todo_cursor`. Missing cursor on a
+     newly-created spec epic is expected and makes the spec changed;
+     missing cursor on an existing spec epic blocks with an exact
+     repair diagnostic. Malformed cursor, unknown commit, or cursor
+     not an ancestor of `HEAD` blocks.
+  4. Compute changed specs from Git using the durable cursor, current
+     `HEAD`, the spec file blob, and the spec-index row. New indexed
+     specs, index-row changes, and spec-file changes are changed.
+     Missing local criterion evidence is not part of discovery.
+  5. Parse Success Criteria for every changed spec and build typed
+     `CriterionStatus` rows by joining against `.loom/cache.db`.
+     Missing evidence becomes `EvidenceState::Missing`; malformed
+     criteria (no annotation, multiple annotations, malformed syntax)
+     block preflight.
+  6. If no specs changed, no todo agent runs, no work epic is created,
+     no cursor changes, and `loom:active` is unchanged.
+  7. If an open `loom:todo` epic exists with matching
+     `loom.todo_head` and `loom.todo_fingerprint`, reuse it so the
+     agent repairs/completes the pending decomposition. Multiple
+     matching epics, or any non-matching open `loom:todo` epic, block
+     with an Options-format diagnostic; Loom never silently ignores
+     pending decomposition state.
+  8. Otherwise create one new `loom:todo` work epic for the changed
+     set. The work epic is not active.
+- **`loom todo` agent handoff** — the prompt contains the preflight
+  roster, the work epic id, spec epic ids, diffs, implementation
+  notes, and typed criterion evidence. The agent may create child
+  implementation beads only under the named work epic. The only
+  successful terminal marker for a todo session is
+  `LOOM_TODO: <json>` (typed in `loom-protocol::todo`); generic
+  `LOOM_COMPLETE` / `LOOM_NOOP` are wrong-phase success markers for
+  todo. Decision-needed or dead-end exits use `LOOM_CLARIFY` /
+  `LOOM_BLOCKED` with the Options Format Contract when applicable.
+- **`loom todo` validation/finalization** — the driver parses
+  `LOOM_TODO`, validates `head`, `TodoFingerprint`, exact changed-spec
+  coverage, bead existence, bead parentage under the work epic, and
+  per-spec outcomes. `Decomposed` outcomes must name a non-empty bead
+  list; `NoWork` outcomes must carry a non-empty reason. Any mismatch
+  leaves the work epic labelled `loom:todo`, records diagnostics on it,
+  advances no cursor, and does not change `loom:active`. A validated
+  handoff finalizes atomically as described above. Cursor advancement
+  is all-or-nothing across the changed set and applies to both
+  `Decomposed` and `NoWork` outcomes. Every todo run prints a
+  driver-authored summary that lists each changed spec and its outcome
+  (`decomposed`, `no-work`, or blocked/diagnostic before success), plus
+  the work epic id when one exists; a spec absent from the summary is a
+  validation failure, not a successful skip.
+- **`loom loop`** — executes work. With no positional ids it runs the
+  sole `loom:active` work epic. With one or more positional ids, each
+  id may be an epic (run ready child work under that epic/molecule) or
+  a task bead (run exactly that bead). Loop never narrows by spec.
+- **`loom gate mint --tree`** — creates remediation work under work
+  epics; spec epics remain metadata carriers and never receive normal
+  implementation children. See [gate.md — Findings and
+  Minting](gate.md#findings-and-minting).
 
-**Epic close is gated structurally on `GateSuccess`** via the
-composition of three facts: (1) the worker queue filter excludes
-`type=epic` beads from worker dispatch (FR1), so the agent's
-`bd close <bead-id>` on `LOOM_COMPLETE` can never target an epic;
-(2) the workflow runtime does not call `bd close` from any other
-non-review path; (3) `auto_close_completed_epics` runs only inside
-`apply_verdict`'s `ReviewVerdict::Clean` branch, which is reachable
-only when `GateSuccess` is constructed (see *Loop Outcome Types*
-above). Manual `bd close` by the user remains permitted — that is
-outside loom's scope to police.
+**Todo success protocol.** The final non-empty line of a successful
+todo agent session is exactly one JSON payload prefixed by
+`LOOM_TODO:`. The Rust contract lives in `loom-protocol::todo`:
 
-**`loom.base_commit` inheritance for out-of-band beads.** Beads
-created via `bd create` (outside `loom todo`) that bond to an
-existing molecule's epic as `--parent` may legitimately ship
-without their own `loom.base_commit`. The `loom init --rebuild` /
-`loom loop` init entry point self-heals:
+```rust
+pub struct TodoSuccess {
+    pub head: GitSha,
+    pub fingerprint: TodoFingerprint,
+    pub work_epic: BeadId,
+    pub specs: Vec<TodoSpecSuccess>,
+}
 
-1. Read the bead's own `loom.base_commit` metadata. If present, use
-   it.
-2. Otherwise, follow the bead's `parent` to its parent bead's
-   `loom.base_commit`. On a hit, write the value back to the child
-   via `bd update <id> --set-metadata loom.base_commit=<sha>`.
-3. If neither the bead nor its parent carries the metadata, the
-   init returns `InitError::MoleculeMissingBaseCommit` whose
-   `Display` text names the exact `bd update` fix command.
+pub struct TodoSpecSuccess {
+    pub label: SpecLabel,
+    pub outcome: TodoSpecOutcome,
+}
 
-The single-step lookup is sufficient because Beads enforces at most
-one parent per bead and `loom todo` writes the metadata
-unconditionally on every molecule it creates.
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+pub enum TodoSpecOutcome {
+    Decomposed { beads: NonEmptyVec<BeadId> },
+    NoWork { reason: NonEmptyString },
+}
+```
 
-**Cycle close.** When the push gate constructs `GateSuccess`, the
-existing `auto_close_completed_epics` walk closes every epic whose
-direct children are all closed. After closure, single-tier
-resolution for that spec returns zero open epics — the molecule
-is "done" by construction. Continuing work against the same
-molecule means **re-opening** the closed epic explicitly (`bd
-update <id> --status=open`); starting a fresh cycle means leaving
-the closed epic alone and letting the next `loom todo` /
-`loom gate mint --tree` mint a new molecule because no open epic
-exists. Closed epics persist as a queryable history; they're never
-auto-revived.
+`TodoSuccess.specs` contains exactly the preflight changed-spec set —
+no omissions, no extras, no unchanged specs. Initialization is driver
+preflight state, not an agent-reported outcome; the driver summary may
+render "initialized + decomposed" when it created a spec epic and the
+agent reported `Decomposed`.
 
-**Notes lifecycle.** Notes are *transient hints* attached to a spec —
+`TodoFingerprint` is an opaque newtype constructed by the driver from
+canonical JSON containing the preflight head, sorted changed spec
+labels, each changed spec's path, spec-file blob SHA, spec epic id,
+current cursor-or-null, initialized flag, and the `docs/README.md`
+blob SHA. The canonical bytes are hashed and encoded by the driver;
+callers compare typed values, not raw strings.
+
+**Notes lifecycle.** Notes are transient hints attached to a spec —
 bug-or-gotcha context, file paths to touch, design trade-offs left to
 the implementer's judgement, decisions captured during a review, etc.
-They are never canonical: the spec markdown holds the durable design,
-the `notes` table holds the in-flight scratch around it. Notes are
-discriminated by `kind`, with `implementation` being the kind consumed
-by `loom todo` to seed bead bodies. Other kinds (`decision`, `review`,
-`interview-context`, …) can be added additively without a schema change.
+They are never canonical: the spec markdown and Beads metadata hold
+durable design/cursor state, while the cache holds in-flight scratch.
+Notes are discriminated by `kind`, with `implementation` consumed by
+`loom todo` to seed bead bodies.
 
-The agent never writes notes by editing markdown. It calls a CLI:
+The note CLI remains:
 
 ```
 loom note set   <label> [--kind implementation] --json '["note 1", …]'
@@ -2248,79 +2318,23 @@ loom note list  [<label>] [--kind implementation | --all-kinds]
 loom note rm    <id>
 ```
 
-`--kind` defaults to `implementation` so the common case stays terse.
-`set` is atomic: `DELETE WHERE spec_label=? AND kind=?` plus N `INSERT`s
-in a single transaction. The agent thinks in arrays; storage stays
-per-row. Each invocation surfaces in the `AgentEvent` stream as a
-regular `tool_call`/`tool_result` pair — visible in `loom logs`,
-reproducible in replay, same shape as how the agent already calls
-`bd update` and `bd close`.
-
 Lifecycle for `kind = implementation`:
 
-| Event | Effect on `notes` rows where `kind = 'implementation'` |
-|-------|--------------------------------------------------------|
-| `loom plan -n <label>` | Interview ends by calling `loom note set <label> --json '[…]'`. Plan does NOT create a molecule epic; epic creation is owned by `loom todo` — see *Molecule lifecycle* above. |
-| `loom plan -u <label>` | Interview reads existing notes via `loom note list <label>`, then writes a **merged** array back via `loom note set` — agent's judgement, keeping what still applies, dropping what new decisions invalidate, adding what's fresh. Not a blind append or replace. Plan does NOT touch bd. |
-| `loom todo` (productive completion: `(LOOM_COMPLETE or LOOM_NOOP)` AND `exit_code == 0`) | Renders the notes into each new bead body, then atomically: deletes the notes, advances `loom.base_commit` on the molecule's epic (via `bd update --metadata`), and refreshes the `molecules.base_commit` cache. Single SQLite transaction wraps the local writes; the bead-metadata write is the durable source of truth. |
-| `loom todo` (any other terminal state) | Notes untouched; `loom.base_commit` untouched; next invocation reprocesses the same diff with the same notes. |
-| `loom init --rebuild` | All notes drop with the table — no filesystem source to reconstruct from. |
-| Spec file deleted from `specs/` | The `specs` row is orphaned but stays; cleanup is deferred to the next `--rebuild`. |
+| Event | Effect on notes rows where `kind = 'implementation'` |
+|-------|------------------------------------------------------|
+| `loom plan [labels...]` | Interview reads notes for anchor specs and any sibling it touches, then writes a merged array back via `loom note set` for each affected spec. Plan does not touch bd. |
+| `loom todo` with no changed specs | Notes untouched. |
+| Validated `LOOM_TODO` finalization | Notes for every changed spec are rendered into the created work beads as applicable, then deleted when the corresponding spec cursor advances. |
+| Any non-finalized todo terminal (`LOOM_BLOCKED`, `LOOM_CLARIFY`, malformed/missing `LOOM_TODO`, validation failure, nonzero exit) | Notes untouched and all spec cursors untouched; the next invocation reprocesses the same changed set. |
+| `loom init --rebuild` | All notes drop with the cache — no filesystem source reconstructs them. |
 
-The `ON DELETE CASCADE` on `notes.spec_label` is dormant — no routine
-command `DELETE`s from `specs`, and rebuild drops the table outright.
-The clause exists only to keep the FK honest if a future code path ever
-takes the explicit-delete route.
-
-**Productive-completion gate.** `loom todo` advances
-`loom.base_commit` on the molecule's epic and deletes the implementation
-notes only when the session demonstrates productive completion:
-
-- The agent emitted a `LOOM_COMPLETE` or `LOOM_NOOP` marker on its
-  final line (the completion shapes the verdict gate recognises).
-- The session's `exit_code == 0`.
-
-A zero exit alone is not enough — backend errors (529 overload,
-network drop, watchdog timeout) and swallowed-marker turns also exit
-zero, and treating those as success would skip the spec's diff
-range on the next `loom todo` run. On any other terminal state
-(`LOOM_BLOCKED`, `LOOM_CLARIFY`, missing marker, nonzero exit) both
-the metadata and the notes stay put so the next invocation
-reprocesses the same range.
-
-Three writes happen against the same productive-completion gate.
-The ordering is load-bearing:
-
-1. `BEGIN` SQLite transaction.
-2. `DELETE` notes rows for `(spec_label, kind='implementation')`.
-3. `UPDATE molecules SET base_commit = <HEAD>` (local cache).
-4. `bd update <epic-id> --metadata loom.base_commit=<HEAD>` (Beads —
-   the durable source of truth).
-5. If step 4 succeeded → `COMMIT` SQLite transaction. If step 4
-   failed → `ROLLBACK`; local state stays unchanged and matches
-   pre-write Beads state.
-
-The bead-metadata write happens **before** the SQLite `COMMIT` so
-that Beads becomes the leading edge of the state — if anything
-crashes between step 4 and step 5, the local cache lags Beads on
-next open; `loom init --rebuild` recovers cleanly. The inverse
-ordering (commit SQLite first, then update Beads) would risk a
-local cache ahead of the durable source after a crash, which is
-the harder inconsistency to detect.
-
-The API exposing this gate
-(`StateDb::consume_notes_and_refresh_base_commit(&label, &molecule_id,
-new_base_commit)` plus an injected bead-update closure) wraps the
-sequence so calling code cannot perform one without the others.
-
-**Container exposure:** The state DB is inside the workspace bind-mounted
-into containers. A malicious agent could modify it directly. This is an
-accepted risk — the DB is reconstructable via `loom init --rebuild`, the
-blast radius is limited to local-cache values (iteration counters,
-`current_spec`, the `molecules.base_commit` cache) all of which recover
-from Beads + Git on rebuild, and the durable sources of truth (spec
-files on disk, beads in Dolt with `loom.base_commit` metadata) are
-independently verifiable.
+**Container exposure:** `.loom/cache.db` is inside the workspace
+bind-mounted into containers. A malicious agent could modify it
+directly. This is accepted because the cache is reconstructable and
+non-authoritative: durable correctness comes from Git, Beads metadata,
+and spec files. Cache tampering can lose hints or stale evidence; it
+cannot make `loom todo` skip a changed spec because preflight treats
+absent/invalid local evidence as unknown or blocking, never as clean.
 
 ### Compaction Recovery
 
@@ -2346,10 +2360,10 @@ session — joined by a hook script that re-injects both after compaction.
   the same session-end cleanup below.
 
 `<key>` is the session concurrency unit, matching the existing locks:
-spec **label** for `loom plan -n` / `loom plan -u` / `loom todo`; **bead
-ID** for `loom loop` / `loom gate` / `loom msg`. Two parallel run
-workers on different beads of the same molecule get independent scratch
-directories.
+the joined anchor-label set (or `plan`) for `loom plan`, the work epic
+id for `loom todo`, and the bead id for `loom loop` / `loom gate` /
+`loom msg`. Two parallel loop workers on different beads of the same
+work epic get independent scratch directories.
 
 **Per-backend delivery.** How each backend re-pins the recovery
 content at compaction time — including any hook fragments the
@@ -2423,10 +2437,10 @@ integration_branch = "main"
 # git_hook_timeout_secs = 600
 
 [loop]
-# Molecule-level: bounds `loom loop`'s outer loop on promoted deferred
-# remediation beads (each full molecule pass — initial pass + every
-# promoted remediation pass — consumes one slot). Recorded as
-# `molecules.iteration_count` in the state DB and surfaced in
+# Work-epic-level: bounds `loom loop`'s outer loop on promoted deferred
+# remediation beads (each full work-epic pass — initial pass + every
+# promoted remediation pass — consumes one slot). Cached as
+# `work_epics.iteration_count` in `.loom/cache.db` and surfaced in
 # `previous_failure` context on each retry.
 max_iterations = 10
 # In-session: bounds the per-bead retry-with-`previous_failure` budget
@@ -2441,7 +2455,7 @@ retention_days = 14
 
 # Per-phase config. Resolution for any field: [phase.<name>] →
 # [phase.default] → built-in. `loom loop` reads its profile from the
-# bead's `profile:X` label first, then [phase.run] / [phase.default];
+# bead's `profile:X` label first, then [phase.loop] / [phase.default];
 # the `--profile` CLI flag overrides everything.
 [phase.default]
 profile = "base"
@@ -2453,7 +2467,7 @@ agent.backend = "claude"
 # agent.provider = "deepseek"
 # agent.model_id = "deepseek-v3"
 #
-# [phase.check]
+# [phase.gate.review]
 # agent.backend = "claude"
 
 [claude]
@@ -2464,8 +2478,8 @@ post_result_grace_secs = 5
 # Backend-agnostic liveness knobs. `handshake_timeout_secs` bounds the pi
 # startup probe + optional set_model response — a non-responsive launcher
 # fails fast with `HandshakeTimeout` instead of hanging. `stall_warn_secs`
-# emits a `warn!` every N seconds of agent silence on the run loop without
-# aborting; claude can legitimately think for minutes, so this is a
+# emits a `warn!` every N seconds of agent silence on the agent event loop
+# without aborting; claude can legitimately think for minutes, so this is a
 # heartbeat, not a deadline. Defaults: 30s / 60s.
 # handshake_timeout_secs = 30
 # stall_warn_secs = 60
@@ -2584,40 +2598,44 @@ Criteria.
       is present, wrix skips reloading bytes if the same content already
       exists in the local image store
   [system](nix run .#test)
-- Per-bead profile selection: two beads with different profile labels
-      result in two `wrix spawn` invocations with different `image_ref`
-      and `image_source` (and digest paths when present)
-  [test](per_bead_profile_dispatch_produces_distinct_image_refs)
+- Per-bead profile/runtime selection: two beads with different profile
+      labels or backend runtimes result in `wrix spawn` invocations with
+      the matching `image_ref` and `image_source` (and digest paths when
+      present)
+  [test?](per_bead_profile_runtime_dispatch_produces_distinct_image_refs)
 - Loom reads `LOOM_PROFILES_MANIFEST` at startup and parses it into
-      `BTreeMap<ProfileName, ImageEntry>`; missing env var or missing file
-      errors before any bead spawn
+      `BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>`; missing
+      env var or missing file errors before any bead spawn
   [test](from_path_missing_file_returns_manifest_not_found)
 - A bead with `profile:X` where `X` is not in the manifest fails with a
       typed `ProfileError::UnknownProfile` naming the missing profile
   [test](lookup_unknown_profile_carries_manifest_path)
+- A resolved backend runtime missing under an existing profile fails with a
+      typed profile-manifest error naming the profile and runtime
+  [test?](lookup_missing_runtime_for_profile_carries_profile_and_runtime)
 - `--profile` CLI override takes precedence over bead labels
   [test](cli_override_swaps_resolved_image)
 - `loom plan` shells out to interactive `wrix run` (TTY attached); does
       not capture stdio for JSONL
-  [check](cargo test -p loom-workflow --lib argv_starts_with_run_subcommand)
+  [test?](plan_argv_starts_with_wrix_run_subcommand)
 
 ### Concurrency & locking
 
-- Spec-scoped mutating commands acquire `<label>.lock` and release on
-      process exit
-  [test](acquire_spec_creates_lock_file)
-- Two mutating commands on the same spec serialize: the second waits up
-      to 5s, then errors clearly
-  [test](second_acquire_times_out_with_spec_busy)
-- Two mutating commands on *different* specs run concurrently (no
-      blocking)
-  [test](cross_spec_locks_do_not_block)
+- `plan.lock`, `todo.lock`, and `<bead-or-epic-id>.lock` files are
+      created outside the workspace and released on process exit
+  [test?](phase_and_work_root_locks_create_expected_files)
+- Two mutating commands for the same phase/work root serialize: the
+      second waits up to 5s, then errors clearly naming the held root
+  [test?](second_acquire_times_out_with_work_root_busy)
+- Independent work-root commands run concurrently when they address
+      different bead/epic ids
+  [test?](different_work_root_locks_do_not_block)
 - Read-only commands (`status`, `logs`, `spec`) acquire no lock and run
       during an active `loom loop`
   [test](readonly_paths_unaffected_by_spec_lock)
 - `loom init` and `loom init --rebuild` acquire the workspace lock
-      and error immediately if any per-spec lock is held
-  [test](acquire_workspace_errors_when_spec_lock_held)
+      and error immediately if any plan/todo/work-root lock is held
+  [test?](acquire_workspace_errors_when_phase_or_work_root_lock_held)
 - Crashed loom process leaves no stale lock (kernel releases flock on
       exit; new invocation acquires immediately)
   [test](crash_releases_spec_lock)
@@ -2633,7 +2651,7 @@ Criteria.
       `SpawnConfig.env` allowlist
   [test](spawn_config_env_includes_loom_inside_marker)
 - With `LOOM_INSIDE=1`, driver/workspace-mutating or LLM-spawning
-      subcommands (`loop`, `init`, `plan`, `todo`, `msg`, `use`,
+      subcommands (`loop`, `init`, `plan`, `todo`, `msg`,
       `loom gate mint`, `loom gate review`, `loom gate judge`,
       `loom gate rubric`, and `loom gate audit`) refuse with a clear
       error
@@ -2835,8 +2853,8 @@ Criteria.
   [test](bead_clone_branches_off_published_head_not_stale_base)
 - `loom loop` startup drops every bead workspace under
       `.loom/beads/` whose bead is `closed` and parented by the
-      current molecule, under the spec advisory lock
-  [test](loop_startup_gc_drops_closed_bead_workspaces_for_current_molecule)
+      selected work epic/molecule, under the work-root advisory lock
+  [test?](loop_startup_gc_drops_closed_bead_workspaces_for_selected_work_root)
 - `loom loop` startup leaves closed bead workspaces from other
       molecules alone
   [test](loop_startup_gc_skips_closed_bead_workspaces_from_other_molecules)
@@ -3009,74 +3027,63 @@ Criteria.
 - Each backend applies `SpawnConfig.launcher_env` to the `wrix
       spawn` child process environment before exec
   [test](apply_launcher_env_sets_child_process_env)
+- Backend-derived `WRIX_AGENT` is inserted into both
+      `SpawnConfig.launcher_env` and the in-container
+      `SpawnConfig.env` allowlist, overriding an absent or conflicting
+      parent-shell value
+  [test?](wrix_spawn_child_env_sets_backend_derived_wrix_agent)
 
 ### Workflow commands
 
-- `loom plan -n <label>` spawns container with base profile, runs
-      spec interview; edits the spec markdown only — no bd writes
-  [test](plan_new_invokes_wrix_run_and_records_companions)
-- `loom plan -u <label>` updates existing spec with anchor/sibling
-      support; edits the spec markdown(s) only — same isolation as
-      `-n`. Sibling specs that the interview touches are detected
-      by `loom todo`'s working-tree diff walk; plan does not write
-      a touched-set manifest
-  [test](plan_update_threads_existing_companions_into_prompt)
-- `loom use <label>` sets the `current_spec` meta key only. There
-      is no `--epic` flag (the prior pointer-write surface is
-      removed under the "at most one open epic per spec" invariant)
-  [test?](loom_use_sets_current_spec_only)
-- `loom todo` resolves "the active molecule for spec X" via a
-      single `bd find --type=epic --label=spec:<X> --status=open`
-      query — no tier walk, no pointer table, no README parse at
-      resolution time. Zero results → mint molecule + epic; one
-      result → bond to its molecule; more than one → structural
-      invariant violation, refuse with conflicting IDs surfaced
-  [test](todo_single_query_resolution_with_invariant_violation_refusal)
-- `loom todo` fans out across **every** spec whose markdown differs
-      from `HEAD` in the working tree (anchor + siblings), not just
-      the anchor. For each touched spec it applies single-tier
-      resolution; multi-spec collision (touched specs span different
-      molecules, or mix has/has-not open epics) is surfaced as a
-      `loom:clarify` bead carrying a structured `## Options — …`
-      block per the Options Format Contract — loom does not mint
-      anything in that case
-  [test](todo_fans_out_across_all_touched_specs_and_clarifies_on_collision)
-- `loom todo` reads [gate.md](gate.md)'s sqlite status cache before
-      rendering the prompt and populates `criterion_status:
-      Vec<CriterionStatus>` on the rendered context (struct shape owned by
-      [templates.md](templates.md)); empty cache yields rows with
-      `CriterionResult::NoResult`, never an inline verifier run
-  [test](todo_populates_criterion_status_from_gate_cache)
-- The driver computes each `CriterionStatus.commits_since` via
-      `git rev-list --count <last_commit>..HEAD` at render time;
-      `last_commit = None` ⇒ `commits_since = None`
-  [test](criterion_status_commits_since_computed_from_git_rev_list)
-- `loom todo_new` creates the molecule epic before the agent's
-      gap-analysis pass, so the clarify-on-epic fallback has a
-      valid target mid-decomposition; an emitted `LOOM_CLARIFY`
-      with no epic in scope is a verdict-gate dispatch error
-  [check](cargo run -p loom-walk -- todo_new_creates_epic_before_decomposition)
-- `loom loop` continuous mode processes beads until molecule complete
-  [test](continuous_loops_until_molecule_complete)
-- `loom loop --once` processes a single bead then fires the gate if
-      that bead closed the molecule (queue subsequently empty); if
-      the bead did NOT close the molecule, exits with
-      `GateOutcome::NoGate { reason: OncePartial }`. `--once` never
-      silently skips the gate when the molecule is complete
-  [test?](once_mode_fires_gate_when_molecule_closes_else_no_gate_partial)
+- `loom plan [SPEC_LABEL ...]` spawns an interactive container with
+      the base profile and runs the spec interview. Positional labels
+      are optional initial anchors (existing specs are pinned; missing
+      labels are proposed new specs). Options may appear before,
+      between, or after labels. Plan edits spec/index markdown and
+      implementation notes only — no bd writes and no touched-set
+      manifest
+  [test?](plan_accepts_optional_anchor_labels_and_interspersed_options)
+- `loom todo` performs deterministic changed-spec preflight from
+      durable spec-epic cursors (`loom.todo_cursor`), Git, and the
+      current `docs/README.md` spec index before rendering any agent
+      prompt. It never consults `loom:active`, a current-spec cache key,
+      or the LLM to decide the changed-spec set
+  [test?](todo_preflight_discovers_changed_specs_from_durable_cursors)
+- `loom todo` ensures exactly one `loom:spec spec:<label>` spec epic
+      per indexed spec. Missing spec epics are created and make the
+      spec uninitialized/changed; duplicate spec epics block with
+      conflicting IDs; missing cursor metadata on an existing spec
+      epic blocks with an exact repair diagnostic
+  [test?](todo_ensures_spec_epics_and_blocks_missing_existing_cursor)
+- `loom todo` creates or reuses one `loom:todo` work epic for the
+      preflight changed-spec set and requires a final `LOOM_TODO:`
+      marker whose typed payload covers exactly that set. Generic
+      `LOOM_COMPLETE` / `LOOM_NOOP`, missing rows, malformed JSON,
+      nonexistent beads, beads outside the work epic, or extra/omitted
+      specs fail validation
+  [test?](todo_success_marker_must_cover_exact_changed_spec_set)
+- Validated `LOOM_TODO` finalization is all-or-nothing across changed
+      specs: every changed spec cursor advances to the preflight HEAD
+      (including `NoWork` outcomes), `loom:todo` is removed from the
+      work epic, `loom:active` is applied to it, and previous active
+      state is cleared. Any failure leaves cursors and active state
+      unchanged
+  [test?](todo_finalization_advances_cursors_and_active_epic_atomically)
+- Missing criterion evidence in `.loom/cache.db` produces typed
+      `EvidenceState::Missing` rows in `criterion_status`; it is never
+      treated as no criteria or no work. Malformed criteria block
+      preflight
+  [test?](todo_missing_criterion_evidence_is_missing_not_clean)
+- `loom loop [OPTIONS] [BEAD_OR_EPIC_ID ...]` runs the sole
+      `loom:active` work epic when no ids are provided. Positional ids
+      may be task beads (run exactly that bead) or epics (run ready
+      child work under that epic/molecule). Options may appear before,
+      between, or after ids; `--spec`, `--once`, and `--all-specs` are
+      not part of the loop surface
+  [test?](loop_accepts_positional_work_roots_and_defaults_to_active_epic)
 - `loom loop --parallel N` (alias `-p N`) accepts a positive integer; non-
       positive or non-integer values fail with a clear error
   [test](default_is_one)
-- `loom loop --all-specs` iterates every spec with an open epic
-      (resolved via single bd query per spec in the index), ordered
-      by bd's `Updated` timestamp ascending (oldest first), running
-      the per-spec outer loop to completion for each; per-spec
-      `GateOutcome::Fail` does not stop the iteration
-  [test?](all_specs_iterates_by_bd_updated_asc)
-- `loom loop --all-specs` aggregate exit code is non-zero iff any
-      spec ended in `GateOutcome::Fail`; `Success` and `NoGate`
-      across all specs → exit 0
-  [test?](all_specs_exit_code_reflects_aggregate)
 - `loom loop`'s worker queue resolution skips any bead with
       `issue_type == "epic"`, emitting an info-level log line naming
       the skipped epic. Sequential and parallel codepaths share the
@@ -3100,8 +3107,8 @@ Criteria.
       log contains a `gate_run_start` and matching successful
       `gate_run_end`, and the review evidence contains a terminal
       `AgentEvent` whose effective marker is complete. Holds for all
-      execution modes (`--once`, `--parallel`, default continuous,
-      `--all-specs`)
+      execution modes (explicit bead roots, explicit epic roots,
+      `--parallel`, and default active-epic continuous mode)
   [test?](every_successful_loom_loop_references_completed_gate_logs)
 - `run_parallel_loop` returns `Result<LoopOutcome, LoopError>` —
       identical type to the sequential codepath; parallel mode invokes
@@ -3246,9 +3253,18 @@ Criteria.
       `loom -h`, and `loom help` — clap's flat default-help fallback
       is not produced for any top-level invocation
   [test](loom_help_groups_workflow_inspection_state_in_order)
+- `loom todo --help` documents deterministic all-spec changed-spec
+      preflight, the fail-loud guarantee for blocked/unregistered/stale
+      specs, and that successful todo sets the active work epic only
+      after every changed spec is represented
+  [test?](loom_todo_help_documents_multispec_fail_loud_behavior)
+- `loom loop --help` documents `[BEAD_OR_EPIC_ID ...]`, the default
+      `loom:active` work epic, interspersed options, and absence of
+      `--spec` / `--once` / `--all-specs`
+  [test?](loom_loop_help_documents_work_roots_and_removed_selectors)
 - Bare `loom msg` lists every outstanding open `loom:blocked` and
-      `loom:clarify` bead across all specs (cross-spec default); the
-      `current_spec` meta value is not consulted, and closed beads are
+      `loom:clarify` bead across all specs (cross-spec default); no
+      active-spec cache value is consulted, and closed beads are
       excluded even when labels remain
   [test?](msg_list_excludes_closed_blocked_or_clarify_beads)
 - `loom msg -s <label>` (alias `--spec`) filters the list to
@@ -3320,14 +3336,14 @@ Criteria.
   [test?](msg_chat_crash_exits_nonzero_without_auto_retry)
 - `loom msg -c` with `-s <label>` scopes the chat session to
       clarifies labeled `spec:<label>`; without `-s`, the session sees
-      every outstanding clarify regardless of `current_spec`
+      every outstanding clarify regardless of active work epic
   [test](loom_msg_chat_scope_filters_to_spec)
 - `loom spec` queries spec annotations (`[check]` / `[test]` /
       `[system]` / `[judge]`) parsed via `loom-gate`'s annotation parser
   [test](list_for_label_reads_all_four_tiers)
-- `loom spec --deps` walks file-shaped `[test]`/`[judge]` targets and
-      `[check]`/`[system]` command strings in the active spec, printing
-      the required nixpkgs
+- `loom spec <label> --deps` walks file-shaped `[test]`/`[judge]`
+      targets and `[check]`/`[system]` command strings in the named
+      spec, printing the required nixpkgs
   [test](deps_for_label_walks_file_targets_and_command_strings)
 - `loom spec <label> --targets` prints one annotation per line as
       `[tier] target`; `--tier <tier>` narrows to that tier; `--plain`
@@ -3378,17 +3394,17 @@ Criteria.
       `retry-exhausted` (the same exhaustion path as other
       driver-detected recoveries)
   [test?](retry_marker_exhaustion_routes_to_retry_exhausted_blocked)
-- `LOOM_RETRY` from an interactive session (`plan_*`, `msg`) is a
+- `LOOM_RETRY` from an interactive session (`plan`, `msg`) is a
       wrong-phase-marker error; the driver exits non-zero with a
       diagnostic and does not apply any label
   [test?](retry_marker_from_interactive_session_is_wrong_phase_error)
-- `LOOM_CLARIFY` from a `loom todo_new` / `loom todo_update` session
-      targets the **molecule epic** (rationale per
+- `LOOM_CLARIFY` from a `loom todo` session targets the **`loom:todo`
+      work epic** (rationale per
       [templates.md — Decomposition Discipline](templates.md));
-      the agent's `## Options — …` block is persisted to the
-      epic's notes per [gate.md](gate.md)'s Options Format
-      Contract before the label is applied
-  [test](todo_clarify_marks_molecule_epic)
+      the agent's `## Options — …` block is persisted to the work
+      epic's notes per [gate.md](gate.md)'s Options Format Contract
+      before the label is applied
+  [test?](todo_clarify_marks_work_epic)
 - No marker emitted → recovery with cause `swallowed-marker`
   [test](missing_marker_routes_to_swallowed_marker_recovery)
 - `LOOM_COMPLETE` + bead not bd-closed → recovery with cause
@@ -3466,13 +3482,13 @@ Criteria.
       streamed `LOOM_FINDING:` lines routes to
       `RecoveryCause::ReviewConcern { summary, findings }`, never
       collapses to `BadWalk::ConcernWithoutFindings` because the
-      findings were left at default. The run/loop classifier
-      (`neutral_gate_inputs` at `crates/loom-workflow/src/loop/production.rs`)
+      findings were left at default. The loop classifier
+      (`neutral_gate_inputs` in `crates/loom-workflow/src/loop/production.rs`)
       is deliberately exempt: it passes an empty findings vec because
       worker phases have no findings stream, and `classify_session`
       rejects `LOOM_CONCERN`/`BadWalk` markers as review-phase-only
-      (loop/production.rs:1062-1074) before `decide` is reached, so
-      populated findings could not affect routing — wiring it would
+      before `decide` is reached, so populated findings could not affect
+      routing — wiring it would
       instead risk mis-routing a loop-phase `LOOM_COMPLETE` to
       `FindingsWithoutConcern`
   [test](classify_review_phase_invokes_parse_walk_output_and_threads_findings_through_gate_inputs)
@@ -3504,11 +3520,11 @@ Criteria.
 - Recovery iter ≥ max_iterations → applies `loom:blocked` with cause
       in `bd update --notes`
   [test](at_or_above_max_applies_blocked_with_retry_exhausted_cause)
-- Iteration count is **molecule-level** state (stored in
-      `molecules.iteration_count`, not on individual beads) and
+- Iteration count is **work-epic-level** state (cached in
+      `work_epics.iteration_count`, not on individual beads) and
       survives `retry → [running]` round-trips; every promoted
       remediation pass consumes one slot of `[loop] max_iterations`
-  [test](iteration_counter_round_trips_through_state_db)
+  [test?](iteration_counter_round_trips_through_cache_db)
 - Pre-flight infra failures (image load, container start) exit
       immediately as `loom:blocked` with cause `infra-preflight`; no retry
   [test](infra_preflight_routes_to_blocked_without_retry)
@@ -3571,24 +3587,18 @@ two agent-loop observers.
 ### Auxiliary commands
 
 - `loom init` creates `<workspace>/loom.toml` (or `$LOOM_CONFIG` when
-      set) and `.loom/state.db` with the default schema
-  [test](run_creates_config_and_state_db)
-- `loom init --rebuild` drops and repopulates the state DB from
-      three sources: `specs/*.md` (one row per file), `bd list
-      --status=open --type=epic` (one `molecules` row per open epic;
-      finding more than one open epic for the same spec aborts the
-      rebuild with a structural-invariant error), and each spec's
-      `## Companions` section
-  [test](rebuild_drops_and_repopulates_state_db)
-- `loom status` prints the active spec (`current_spec` meta key),
-      the open epic ID resolved via single bd query for that spec
-      (or "(none)" when no open epic exists), and the iteration
-      count for the resolved molecule
-  [test](empty_state_reports_unset_spec)
-- `loom use <label>` sets `current_spec` in the state DB; round-trips
-      with `loom status`. No `--epic` flag (single-tier resolution
-      derives the active molecule from bd directly)
-  [test](use_round_trips_with_status_load)
+      set) and `.loom/cache.db` with the default cache schema
+  [test?](init_creates_config_and_cache_db)
+- `loom init --rebuild` drops and repopulates `.loom/cache.db` from
+      durable sources: the spec index, `specs/*.md`, bd spec/work
+      epics, and each spec's `## Companions` section. It also folds
+      gate criterion-status storage into the unified cache; there is no
+      `.loom/gate-cache.sqlite`
+  [test?](rebuild_drops_and_repopulates_cache_db)
+- `loom status` prints the active work epic, any pending `loom:todo`
+      work epic, cached iteration counts, and cache health; no active
+      spec/current-spec value is displayed or read
+  [test?](status_reports_active_work_epic_not_current_spec)
 - Bare `loom logs` pretty-renders the most recent bead's full log
       via the same `AgentEvent` renderer used by `loom loop`, then
       exits at EOF (no implicit follow); `-b <id>` (long form
@@ -3619,76 +3629,95 @@ two agent-loop observers.
       them unnecessary)
   [check](cargo run -p loom-walk -- no_sync_or_tune_command)
 
-### State database
+### Cache database
 
-- `StateDb::open` creates tables on first open (the `specs`,
-      `molecules`, `companions`, `notes`, and `meta` tables)
-  [test](state_db_init_creates_tables)
-- `StateDb::rebuild` populates `specs` from spec files and
-      `molecules` from open `type=epic` beads carrying `spec:<label>`;
-      discovering more than one open epic for the same spec aborts
-      with `RebuildError::MultipleOpenEpicsForSpec` naming the
-      conflicting IDs
-  [test](state_db_rebuild_populates_specs_and_molecules)
-- `StateDb::rebuild` parses each spec's `## Companions` section and
+- `CacheDb::open` creates `.loom/cache.db` tables on first open
+      (`specs`, `spec_epics`, `work_epics`, `companions`, `notes`,
+      `criterion_status`, and `meta`)
+  [test?](cache_db_init_creates_tables)
+- `CacheDb::rebuild` populates `specs` from `docs/README.md`'s spec
+      index and cross-checks `specs/*.md`; unindexed spec files,
+      missing indexed files, duplicate labels, and label/path mismatches
+      fail loud
+  [test?](cache_rebuild_cross_checks_spec_index_and_files)
+- `CacheDb::rebuild` mirrors exactly one `loom:spec spec:<label>` spec
+      epic per indexed spec, regardless of epic status; duplicates fail
+      with conflicting IDs
+  [test?](cache_rebuild_requires_one_spec_epic_per_indexed_spec)
+- `loom todo` creates a missing spec epic during preflight, treats the
+      spec as uninitialized/changed, and blocks when an existing spec
+      epic lacks `loom.todo_cursor` metadata
+  [test?](todo_missing_spec_epic_initializes_existing_missing_cursor_blocks)
+- `loom todo` rejects malformed, missing, non-ancestor, or unknown
+      `loom.todo_cursor` SHAs with diagnostics that name the spec epic
+      and repair surface
+  [test?](todo_invalid_spec_cursor_blocks_loudly)
+- `loom todo` discovers changed specs by comparing each spec/index row
+      at `HEAD` against the spec epic's durable cursor; it includes
+      inactive/stale specs and brand-new indexed specs regardless of
+      `loom:active`
+  [test?](todo_discovers_active_inactive_and_new_specs_from_cursors)
+- `loom todo` creates one `loom:todo` work epic before rendering the
+      agent prompt, records `loom.todo_head`, `loom.todo_fingerprint`,
+      and changed spec labels on it, and does not add `loom:active`
+      until validation succeeds
+  [test?](todo_creates_pending_work_epic_before_agent_prompt)
+- A pre-existing open `loom:todo` work epic with matching head and
+      `TodoFingerprint` is reused; multiple matches or non-matching
+      pending work epics block with an Options-format diagnostic
+  [test?](todo_reuses_matching_pending_work_epic_else_blocks)
+- `loom-protocol::todo::parse_todo_success` accepts exactly
+      `LOOM_TODO: <json>` final lines and returns typed `TodoSuccess`;
+      malformed JSON, missing fields, empty `Decomposed.beads`, empty
+      `NoWork.reason`, or wrong prefix fail parse
+  [test?](todo_success_marker_parses_to_typed_protocol)
+- `loom todo` validates `TodoSuccess.head`, `TodoFingerprint`, work
+      epic id, exact changed-spec coverage, bead existence, and bead
+      parentage under the work epic before finalization
+  [test?](todo_success_validation_rejects_missing_extra_or_misparented_beads)
+- Validated `NoWork` outcomes advance the spec cursor just like
+      `Decomposed` outcomes; no-work rows require a non-empty reason
+  [test?](todo_no_work_outcome_advances_cursor_with_reason)
+- Failed todo validation leaves the work epic labelled `loom:todo`,
+      writes diagnostics to it, advances no spec cursor, and does not
+      change `loom:active`
+  [test?](todo_validation_failure_leaves_pending_without_advancing)
+- Validated or blocked `loom todo` output prints a driver-authored
+      per-spec summary covering every changed spec and its outcome; a
+      changed spec missing from the summary is a validation failure
+  [test?](todo_output_summarizes_every_changed_spec_outcome)
+- Validated todo finalization removes `loom:todo`, applies the sole
+      `loom:active` label to the work epic, clears any previous active
+      epic, and advances every changed spec epic's `loom.todo_cursor`
+      to the preflight HEAD all-or-nothing
+  [test?](todo_finalization_sets_active_and_advances_all_cursors)
+- `criterion_status` cache rows join to current criteria by typed
+      `(SpecLabel, CriterionId)`; stale annotation evidence renders as
+      `EvidenceState::StaleAnnotation`, absent rows as
+      `EvidenceState::Missing`
+  [test?](criterion_status_joins_by_typed_criterion_id)
+- `CacheDb::rebuild` parses each spec's `## Companions` section and
       writes one `companions` row per listed path; specs without the
       section contribute zero rows (not an error)
-  [test](state_db_rebuild_companions)
-- `StateDb::rebuild` resets iteration counters to 0
-  [test](state_db_rebuild_resets_counters)
-- `current_spec` / `set_current_spec` round-trips correctly
-  [test](state_current_spec_round_trips)
-- `increment_iteration` returns updated count
-  [test](state_increment_iteration_returns_updated_count)
-- Corrupted DB file → `loom init --rebuild` recovers
-  [test](state_corruption_recovery)
-- `loom plan -n/-u` does NOT create a molecule epic and does NOT
-      write to bd; plan sessions edit specs only
+  [test?](cache_db_rebuild_companions)
+- `CacheDb::rebuild` resets work-epic iteration counters to 0
+  [test?](cache_rebuild_resets_work_epic_counters)
+- Corrupted cache file → `loom init --rebuild` recovers from durable
+      sources or reports the exact durable inconsistency; it never
+      treats cache loss as clean todo state
+  [test?](cache_corruption_recovery_never_implies_clean_todo)
+- `loom plan [labels...]` does NOT create epics and does NOT write to
+      bd; plan sessions edit specs/index/notes only
   [test?](plan_does_not_create_epic_or_touch_bd)
-- `loom init --rebuild` populates `molecules.base_commit` from
-      `bd show <id> --json` reading `loom.base_commit` metadata for
-      every open `type=epic` bead carrying `spec:<label>` (with the
-      at-most-one-open-epic-per-spec invariant enforced)
-  [test](rebuild_reads_base_commit_from_bead_metadata)
-- `fetch_active_molecules` inherits `loom.base_commit` from a
-      bead's parent when the bead is missing it of its own, writes
-      the inherited value back via `bd update --set-metadata`,
-      and surfaces the inherited value to the rebuilt row
-  [test](rebuild_inherits_base_commit_from_parent_when_missing)
-- An open epic with neither own `loom.base_commit` nor a parent
-      carrying it fails loudly with
-      `InitError::MoleculeMissingBaseCommit`, and the error's
-      `Display` text names the exact
-      `bd update <id> --set-metadata loom.base_commit=<sha>`
-      fix command
-  [test](rebuild_errors_when_active_molecule_lacks_base_commit_metadata)
-- `loom todo` advances `loom.base_commit` on the molecule's epic
-      AND the local `molecules.base_commit` cache only when the
-      session emitted `LOOM_COMPLETE` or `LOOM_NOOP` **and**
-      `exit_code == 0`; any other terminal state leaves both
-      untouched
-  [test](base_commit_advances_only_on_complete_or_noop_with_clean_exit)
-- The implementation-notes delete, the local `molecules.base_commit`
-      cache refresh, and the `bd update --metadata` write happen
-      atomically under productive completion; failure of the
-      bead-metadata write aborts the SQLite transaction
-  [test](consume_notes_and_advance_base_commit_is_atomic)
-- No `meta.todo_cursor:<label>` keys exist in the state DB schema;
-      the cursor concept is replaced by the molecule's `loom.base_commit`
-      bead metadata
-  [check](cargo run -p loom-walk -- no_todo_cursor_meta_key)
-- `loom plan -n <label>` inserts a `specs` row and seeds
-      implementation notes via `loom note set` from the interview
-  [test](new_prompt_instructs_agent_to_call_loom_note_set)
-- `loom plan -u <label>` reads the existing implementation notes
-      via `loom note list`, and writes back a merged array via
+- `loom plan [labels...]` reads existing implementation notes for
+      anchor/touched specs and writes back merged arrays via
       `loom note set` (interview-driven keep/drop/add — not blind
       append, not blind replace)
   [judge](../tests/judges/loom.sh#judge_plan_update_merges_notes)
-- `loom todo` reads implementation notes from the anchor's `notes`
-      rows and renders each note's text into every new bead body
-      created during the run
-  [test](build_spawn_config_renders_implementation_notes_from_db)
+- `loom todo` renders implementation notes for each changed spec into
+      the relevant work beads and deletes those notes only after the
+      spec cursor advances during validated finalization
+  [test?](todo_consumes_notes_only_after_validated_finalization)
 - `loom note set <label> --kind <k> --json '[…]'` is atomic —
       `DELETE WHERE spec_label=? AND kind=?` plus N `INSERT`s in one
       transaction; partial failure leaves the prior set intact
@@ -3719,19 +3748,17 @@ two agent-loop observers.
       the same statement. No routine command takes that path today —
       this verifies the FK clause itself
   [test](notes_cascade_on_spec_delete)
-- Routine commands never DELETE a `specs` row; row removal happens
-      only via `loom init --rebuild`
-  [check](cargo test -p loom-driver --test state_db routine_commands_never_delete_spec_row)
 
 ### Compaction recovery
 
 - At session start, `.loom/scratch/<key>/` contains
       `prompt.txt`, `scratch.md`, `repin.sh` for every phase command
-      (plan, todo, run, check, msg)
+      (plan, todo, loop, gate, msg)
   [test](open_creates_layout_and_drop_removes_it)
-- `<key>` is the spec label for plan/todo phases and the bead ID for
-      run/check/msg phases
-  [test](resolve_scratch_key_picks_label_for_spec_scoped_phases)
+- `<key>` is the joined anchor-label set (or `plan`) for `loom plan`,
+      the work epic id for `loom todo`, and the bead id for loop/gate/msg
+      worker sessions
+  [test?](resolve_scratch_key_uses_plan_anchors_work_epic_or_bead)
 - Running `repin.sh` emits a valid `SessionStart[compact]` JSON
       envelope containing banner + `prompt.txt` + `scratch.md` contents
   [test](repin_script_runs_jq_envelope_against_files)
@@ -3768,7 +3795,7 @@ two agent-loop observers.
   [system](nix develop -c loom --version)
 - `cargo clippy --workspace` and `cargo test --workspace` are
       covered by the `loom-clippy` and `loom-nextest` flake checks
-      (shared cargoArtifacts cache); see [profiles.md](profiles.md)
+      with a shared cargoArtifacts cache
 
 ## Requirements
 
@@ -3780,47 +3807,42 @@ two agent-loop observers.
    as listed.
 
    **Workflow** — the loom loop, in execution order:
-   - `loom plan` — spec interview (interactive agent session); flags
-     `-n <label>` for a new spec and `-u <label>` for updating an existing
-     one. Plan sessions edit specs only — they do **not** create molecule
-     epics or write to bd. Epic creation is owned by `loom todo` and by
-     `loom gate mint --tree`'s mint-if-missing branch (see
-     [gate.md](gate.md)). No hidden-spec flag: scratch / private specs
-     are kept out of git via `.git/info/exclude`.
-   - `loom todo` — spec-to-beads decomposition. Fans out across **every**
-     spec whose markdown differs from `HEAD` in the working tree
-     (anchor + siblings). For each touched spec, resolution is one
-     `bd find --type=epic --label=spec:<X> --status=open` query: zero
-     results → mint molecule + epic and bond fan-out; one result →
-     bond fan-out to that epic's molecule; more than one → structural
-     invariant violation, refuse. A multi-spec collision (touched
-     specs span different molecules or mix has/has-not open epics)
-     writes a structured `## Options — …` block to a `loom:clarify`
-     bead and exits without minting anything.
-   - `loom loop` — execute beads in loop (continuous or `--once`).
-     The loop pulls beads via `bd ready` filtered to exclude
-     `loom:blocked` / `loom:clarify` beads. **Worker queue excludes
-     epics structurally:** `loom loop`'s ready-queue resolution skips
-     any bead with `issue_type == "epic"`, emitting an info-level log
-     line naming the skipped epic. The agent never receives an epic
-     as a worker task. Under `--parallel N`, a clarify or block on one
-     of the N concurrent beads does not cancel the others. **On
-     molecule completion** (the spec's open epic has no remaining
-     ready children and stabilization has drained deferred remediation),
-     the driver fetches/rebases against `origin/<integration-branch>`,
-     verifies the actual push range via the prek pre-push chain, runs
-     `loom gate review --diff <actual-push-range>`, then evaluates the
-     push gate per FR9. The outer loop
-     iterates over molecule passes (initial pass + each promoted
-     remediation pass) bounded by `[loop] max_iterations`. **`loom loop` returns a typed
-     [`LoopOutcome`](#loop-outcome-types) whose `gate: GateOutcome`
-     field is non-optional; the binary's exit code is a pure
-     function of the `GateOutcome` variant.** `--all-specs` iterates every spec with
-     an open epic (single-query resolution per spec in the index)
-     ordered by bd's `Updated` field ascending (oldest first),
-     running the per-spec outer loop to completion for each;
-     per-spec failures continue to the next spec; aggregate exit
-     code is non-zero iff any spec's outcome was `GateOutcome::Fail`.
+   - `loom plan [SPEC_LABEL ...]` — spec interview (interactive agent
+     session). Positional labels are optional initial anchors, not the
+     touched set: zero labels starts from the overview/index; existing
+     labels pin those spec bodies; missing labels are proposed new
+     specs. Options may appear before, between, or after labels. Plan
+     sessions edit specs/index/notes only — they do **not** create
+     epics or write to bd.
+   - `loom todo` — deterministic spec-to-beads decomposition. It
+     discovers every changed spec from spec epics' durable
+     `loom.todo_cursor` metadata, Git, and the current `docs/README.md`
+     spec index — never from `loom:active`, current-spec cache state, or
+     the LLM.
+     It creates/ensures spec epics, creates or reuses one `loom:todo`
+     work epic, renders the changed-spec roster to the todo agent, and
+     accepts success only via a validated `LOOM_TODO:` payload covering
+     exactly that roster. Finalization removes `loom:todo`, applies
+     `loom:active`, and advances every changed spec cursor to the
+     preflight HEAD all-or-nothing.
+   - `loom loop [OPTIONS] [BEAD_OR_EPIC_ID ...]` — execute work. With
+     no ids, runs the sole `loom:active` work epic. With ids, each
+     positional may be a task bead (run exactly that bead) or an epic
+     (run ready child work under that epic/molecule). Options may
+     appear before, between, or after ids. The loop pulls ready child
+     beads filtered to exclude `loom:blocked` / `loom:clarify` beads;
+     an epic positional is a work root, never a worker task itself.
+     Under `--parallel N`, a clarify or block on one of the N
+     concurrent beads does not cancel the others. On work-epic
+     completion, the driver fetches/rebases against
+     `origin/<integration-branch>`, verifies the actual push range via
+     the prek pre-push chain, runs `loom gate review --diff
+     <actual-push-range>`, then evaluates the push gate per FR9. The
+     outer loop iterates over work-epic passes (initial pass + each
+     promoted remediation pass) bounded by `[loop] max_iterations`.
+     **`loom loop` returns a typed [`LoopOutcome`](#loop-outcome-types)
+     whose `gate: GateOutcome` field is non-optional; the binary's exit
+     code is a pure function of the `GateOutcome` variant.**
    - `loom gate` — quality gate (annotation-dispatched verifiers +
      LLM rubric). Subcommands per [gate.md](gate.md)
      Commands table: bare `loom gate` prints subcommand help;
@@ -3840,9 +3862,10 @@ two agent-loop observers.
      dispatched by `loom gate check`.
    - `loom msg` — clarify resolution
 
-   **Inspection** — read-only views over state and logs:
-   - `loom status` — print active spec, current molecule, iteration count
-     (trivial state DB query)
+   **Inspection** — read-only views over cache, bd state, and logs:
+   - `loom status` — print the active work epic, any pending
+     `loom:todo` work epic, cached iteration counts, and cache health;
+     it does not report or depend on an active-spec pointer
    - `loom logs` — pretty-render a bead's JSONL log under
      `.loom/logs/` via the same `AgentEvent` renderer used by
      `loom loop`. Full flag set in [Logs UX](#logs-ux).
@@ -3852,17 +3875,15 @@ two agent-loop observers.
      to print annotation targets (`--tier <tier>` narrows; `--plain`
      prints exact target strings for piping)
 
-   **State** — workspace lifecycle and persisted state:
-   - `loom init` — create `.loom/` config + state DB. `--rebuild`
-     drops and repopulates the state DB from `specs/*.md`, bd state
-     (one `molecules` row per open epic; finding more than one open
-     epic for the same spec aborts with a structural-invariant error),
-     and each spec's `## Companions` section. The orchestrator's hot
-     path never parses markdown.
-   - `loom use <label>` — set `current_spec` in the state DB. No
-     `--epic` flag — under single-tier resolution, the active
-     molecule is derived directly from bd (one query, no pointer
-     table to write to).
+   **State** — workspace lifecycle and cached state:
+   - `loom init` — create `.loom/` config + `.loom/cache.db`.
+     `--rebuild` drops and repopulates the cache from the spec index,
+     spec files, bd spec/work epics, and each spec's `## Companions`
+     section. The cache is non-authoritative; hot correctness paths
+     re-read durable Git/Beads inputs.
+   - `loom use <label>` — legacy active-spec selector retained for
+     compatibility; deterministic `loom todo` does not read it, and
+     `loom loop` defaults from `loom:active` work-epic state instead.
    - `loom note` — manage spec notes
 
    The single-line help text for every command follows CLI-1: one
@@ -3884,8 +3905,6 @@ two agent-loop observers.
    | `loom run` | renamed to `loom loop` (current name describes the iteration shape) |
    | `loom sync` | Askama-compiled templates make per-project sync unnecessary |
    | `loom tune` | Askama-compiled templates make per-project tune unnecessary |
-   | `loom use --epic <id>` | pointer-write surface removed under the at-most-one-open-epic-per-spec invariant — single-tier resolution derives the active molecule from bd directly (see *Molecule lifecycle*) |
-   | `loom todo --spec <label>` | selectively narrowing fan-out is the failure mode the at-most-one-open-epic-per-spec invariant was rebuilt to prevent; `loom todo` always fans out across every spec whose markdown differs from `HEAD` |
 
 2. **Compiled templates with consumer-composable typed building blocks** —
    Askama engine, per-phase templates, partials, and per-phase pinning
@@ -3897,22 +3916,23 @@ two agent-loop observers.
    own templates from the same building blocks Loom's workflow uses.
    Loom's workflow templates themselves remain compile-time Askama and
    internal — consumers do not override them.
-3. **SQLite state store** — workflow state persisted in a SQLite database
-   (`.loom/state.db`). Tracks active specs, per-molecule
-   iteration counts, companions, and implementation notes.
-   Reconstructable from spec files on disk and bd state via
-   `loom init --rebuild`. **"Which molecule is active for spec X?"
-   is not stored** — it's derived on demand via a single
-   `bd find --type=epic --label=spec:<X> --status=open` query
-   under the at-most-one-open-epic-per-spec invariant (see
-   *Molecule lifecycle*). The `loom:active` label is not used.
+3. **SQLite cache store** — workflow cache persisted in
+   `.loom/cache.db` (renamed from `.loom/state.db`). Tracks indexed
+   spec rows, spec/work epic mirrors, criterion evidence cache,
+   companions, iteration counters, and implementation notes. It is
+   reconstructable or disposable: correctness-sensitive decisions use
+   Git + Beads/Dolt metadata + current spec files/index. There is no
+   `current_spec` pointer. `loom:active` is a bd label on the default
+   work epic for `loom loop`, not cache state and not a todo-discovery
+   input.
 4. **Beads integration** — interacts with beads via the `bd` CLI (subprocess
    calls). Bead operations: create, show, close, update, list, dep add, mol
    bond, mol progress. CLI output parsed into typed Rust structs.
-5. **Profile selection** — reads `profile:X` labels from beads and resolves
-   each label to a profile image via the
-   [Profile-Image Manifest](#profile-image-manifest). Unknown labels fail
-   at dispatch (no silent default). `--profile` overrides bead labels.
+5. **Profile/runtime selection** — reads `profile:X` labels from beads,
+   resolves the phase backend to an `AgentRuntime`, and resolves the pair
+   via the [Profile-Image Manifest](#profile-image-manifest). Unknown
+   labels or missing runtime variants fail at dispatch (no silent default).
+   `--profile` overrides bead labels.
 6. **Bead dispatch** — `loom loop --parallel N` (alias `-p N`) dispatches
    up to N ready beads, each in its own clone of the loom workspace
    under `.loom/beads/<id>/` on a per-bead branch. The operator's
@@ -3943,7 +3963,7 @@ two agent-loop observers.
    reports enter a bounded recovery loop; agent self-reports
    `LOOM_BLOCKED` / `LOOM_CLARIFY` escalate directly to the human via
    `loom msg`. The verdict gate applies to **worker sessions only**
-   (`loop`, `todo_*`, `review`); interactive sessions (`plan_*`, `msg`)
+   (`loop`, `todo`, `review`); interactive sessions (`plan`, `msg`)
    are agent-and-human authoritative — the driver does not mutate bd
    state as a consequence of an interactive session. See [Verdict Gate §
    Interactive vs worker sessions](#verdict-gate) for the full
@@ -4038,10 +4058,11 @@ two agent-loop observers.
     push/pull` handoff. Loom on the host reads the same state
     through the same socket. The legacy `.beads/issues.jsonl` path
     is not used — beads no longer supports it.
-11. **Spec resolution** — workflow commands that are explicitly
-    spec-scoped parse spec labels into `SpecLabel` values at the CLI
-    boundary; when such a command permits omission, it falls back to
-    the `current_spec` key in the state database. `loom gate` is not a
+11. **Spec label parsing** — workflow commands that accept spec labels
+    parse them into `SpecLabel` values at the CLI boundary. No command
+    falls back to a `current_spec` cache key: `loom plan` labels are
+    optional anchors, `loom todo` discovers specs from durable cursors,
+    and `loom loop` executes work roots. `loom gate` is not a
     spec-scoped surface; gate affectedness comes from work scopes and
     target discovery uses `loom spec <label> --targets`.
 12. **Verdict-gate production wiring** — the verdict-gate decision
@@ -4105,19 +4126,17 @@ two agent-loop observers.
     [llm.md](llm.md) (notably `DoomLoopObserver`'s
     stage 2). Without this routing, observer kills would
     mis-classify as `swallowed-marker`.
-18. **Decomposition-phase wiring.** `loom todo` reads
-    [gate.md](gate.md#status-cache)'s sqlite status cache before
-    rendering the prompt and surfaces a per-criterion
-    `CriterionStatus` row (shape owned by
-    [templates.md](templates.md)) so the decomposition agent
-    decides gaps from evidence rather than spec text alone.
-    `loom todo_new` creates the molecule epic before any path that
-    can emit `LOOM_CLARIFY`; clarify from a `todo_*` session
-    targets the epic (per-bead clarify is not appropriate when
-    the child beads under negotiation don't yet exist or are
-    exactly the set being authored). Empty cache surfaces as
-    `CriterionResult::NoResult` rows — staleness is exposed, not
-    papered over.
+18. **Decomposition-phase wiring.** `loom todo` runs deterministic
+    changed-spec preflight before rendering the prompt, creates or
+    reuses the `loom:todo` work epic, and surfaces a per-criterion
+    `CriterionStatus` row (shape owned by [templates.md](templates.md))
+    for every changed spec. Criterion evidence is read from the unified
+    `.loom/cache.db`; empty cache surfaces as `EvidenceState::Missing`
+    rows — staleness is exposed, not papered over. The todo agent's
+    only success terminal is `LOOM_TODO: <json>`, parsed by
+    `loom-protocol::todo` and validated against the preflight roster.
+    `LOOM_CLARIFY` from a todo session targets the `loom:todo` work
+    epic because the child beads under negotiation may not yet exist.
 
 ### Non-Functional
 
@@ -4133,9 +4152,8 @@ two agent-loop observers.
 2. **Required newtypes** — `BeadId`, `SpecLabel`, `MoleculeId`,
    `ProfileName` for domain identifiers; `SessionId`, `ToolCallId`,
    `RequestId` for protocol identifiers. No bare `String` for typed IDs.
-   `AgentKind` is an enum (`Pi`, `Claude`), not a newtype.
-3. **Nix integration** — built via `wrix.profiles.rust.buildPackage`
-   (crane-backed; see [profiles.md — Rust package builder](profiles.md#rust-profile)).
+   `AgentRuntime` is an enum (`Pi`, `Claude`, `Direct`), not a newtype.
+3. **Nix integration** — built via the wrix Rust package builder.
    `packages.loom` consumes `.bin` so devshell rebuilds skip the clippy/nextest
    passes; those land as separate `loom-clippy` / `loom-nextest` entries in
    `nix flake check`. Binary is included in the devShell.

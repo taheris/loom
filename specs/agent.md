@@ -88,26 +88,32 @@ production code change.
 and shell out to an interactive REPL with inherited stdio. Both invoke
 `wrix run <workspace> <agent command> ... <prompt>` and let the spawned
 process attach directly to the controlling terminal; the driver-side
-stream-json parser does not run on this path. The command is selected from
-the resolved phase backend: `claude --dangerously-skip-permissions` for
-Claude and `pi` for Pi.
+stream-json parser does not run on this path. The command is selected
+from the resolved chat-capable phase backend:
+`claude --dangerously-skip-permissions` for Claude and `pi` for Pi.
+Direct has no interactive REPL command; selecting
+`agent.backend = "direct"` for `plan` or chat `msg` is a configuration
+error before any Wrix child process is spawned.
 
 Per-phase config still resolves: each phase's `profile` key flows
 through `LoomConfig::agent_for(Phase)` exactly like the non-interactive
-phases. The resolved name is looked up in the profile-image manifest
-and the resulting `ImageEntry` is exported to `wrix run` via the
-`WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` env vars
+phases. The resolved profile/runtime pair is looked up in the
+profile-image manifest and the resulting `ImageEntry` is exported to
+`wrix run` via the `WRIX_DEFAULT_IMAGE_REF` /
+`WRIX_DEFAULT_IMAGE_SOURCE` env vars
 documented in [harness.md — Profile-Image
-Manifest](harness.md#profile-image-manifest). The env-var hand-off is
-the sole profile-selection contract on this path: `wrix run` has no
+Manifest](harness.md#profile-image-manifest). Loom also sets the
+backend-derived `WRIX_AGENT` on the `wrix run` child process so launcher
+host-side setup matches the selected runtime. The env-var hand-off is
+the sole image-selection contract on this path: `wrix run` has no
 `--profile` parser, and any extra tokens between the workspace
 positional and the agent command would be forwarded into the container as
 the command vector (the entrypoint would exec them literally and exit 127).
 
 `wrix run` reads those env vars (when no `--spawn-config` is supplied)
-to pick the same per-profile image the non-interactive `wrix spawn`
+to pick the same profile/runtime image the non-interactive `wrix spawn`
 path selects — the two paths must select the same image for the same
-profile name.
+profile name and backend runtime.
 
 ### Agent Backend Trait
 
@@ -290,7 +296,7 @@ loom and `wrix spawn` ship from the same flake and stay in lockstep.
 
 Required fields:
 
-- `image_ref` — podman image reference (e.g. `localhost/wrix-rust:<hash>`).
+- `image_ref` — podman image reference (e.g. `localhost/wrix-rust-pi:<hash>`).
 - `image_source` — Nix store path the launcher uses to materialize that ref
   when needed.
 - `image_digest_path` — optional Nix store path containing the image content
@@ -328,12 +334,21 @@ Bounding](#direct-output-bounding).
 dispatch time — see [harness.md — Profile-Image
 Manifest](harness.md#profile-image-manifest).
 
+`SpawnConfig` also carries a host-only `launcher_env` map that is
+`#[serde(skip)]`-excluded from the JSON file. Backends apply it to the
+`wrix spawn` `Command` before exec; it is for launcher inputs wrix must
+see before container startup, such as `WRIX_AGENT` and host key paths.
+
 The env allowlist is constructed by the workflow engine from
-known-needed variables:
+known-needed variables. `WRIX_AGENT` is special: Loom derives it from the
+resolved closed-set backend runtime (`pi`, `claude`, or `direct`) and
+writes the same value to `SpawnConfig.env` and `SpawnConfig.launcher_env`.
+The parent shell's `WRIX_AGENT` is never the source of truth for agent
+selection.
 
 | Variable | When | Purpose |
 |----------|------|---------|
-| `WRIX_AGENT` | always | Agent selection in entrypoint |
+| `WRIX_AGENT` | always | Agent selection in entrypoint; same backend-derived value as launcher env |
 | `CLAUDE_CODE_OAUTH_TOKEN` | claude backend | Claude authentication |
 | `ANTHROPIC_API_KEY` | pi or direct backend (Anthropic models) | LLM API key |
 | `TERM` | always | Terminal capability |
@@ -343,7 +358,8 @@ known-needed variables:
 Provider-specific API keys for the pi and direct backends (OpenAI,
 Google, DeepSeek, etc.) are added only when the configured model
 requires them. Variable names are logged at `info!` level during
-spawn; values are never logged.
+spawn; secret values are never logged. The closed-set `WRIX_AGENT`
+value is non-secret and is logged as spawn diagnostics.
 
 ### Host-to-Container Communication
 
@@ -351,6 +367,7 @@ spawn; values are never logged.
 loom (host)                                            container
     │                                                       │
     ├─ serialize SpawnConfig → /tmp/loom-<id>.json          │
+    ├─ set launcher env: WRIX_AGENT=<runtime>, keys…        │
     ├─ wrix spawn --spawn-config <file> --stdio        │
     │   └─ exec podman run [no TTY, stdio piped] ─►  entrypoint.sh
     │                                                       │
@@ -850,13 +867,14 @@ Container images compose from two independent axes:
 | **Workspace profile** | base, rust, python | Toolchain packages (cargo, python, etc.) |
 | **Agent runtime** | claude, pi, direct | Agent binary that runs inside the container |
 
-Selected profile × selected runtime → one composed image. No
-standalone `profiles.pi`; no `pi+rust` / `pi+python` proliferation.
-The claude runtime layer is empty (claude is already in the base
-image today); the pi runtime layer adds Node.js and the pi binary;
-the direct runtime layer adds the statically-linked
-`loom-direct-runner` binary (which carries `loom-llm` and the six
-sandbox-aware tool impls).
+Selected profile × selected runtime → one composed image. The image
+name may include both axes (for example, `wrix-rust-pi`), but bead
+labels stay profile-only (`profile:rust`, not `profile:rust-pi`) and
+backend selection stays in `agent.backend`. The claude runtime layer is
+empty (claude is already in the base image today); the pi runtime layer
+adds Node.js and the pi binary; the direct runtime layer adds the
+statically-linked `loom-direct-runner` binary (which carries `loom-llm`
+and the six sandbox-aware tool impls).
 
 ### Entrypoint Agent Selection
 
@@ -873,6 +891,15 @@ The container entrypoint branches on `WRIX_AGENT`:
 All three branches preserve shared setup: git SSH, beads-dolt
 connection, network filtering, session audit logging.
 
+Loom sets `WRIX_AGENT` on the `wrix spawn` child process from the
+resolved backend runtime; it does not rely on the operator's shell
+already exporting it. Spawn diagnostics include `agent_backend`,
+`wrix_agent_env`, and `image_ref`. Loom does not infer correctness by
+parsing the image-ref string; it logs the ref for diagnosis. If the
+selected image entry carries typed runtime metadata and it conflicts
+with the resolved backend, Loom errors before spawn rather than letting
+the entrypoint run the wrong runtime.
+
 ## Success Criteria
 
 ### Agent trait
@@ -882,11 +909,13 @@ connection, network filtering, session audit logging.
 - `AgentBackend` trait defined in loom-driver with associated `spawn`; no `SUPPORTS_STEERING` constant (all three backends steer)
   [check](grep -q 'pub trait AgentBackend' crates/loom-driver/src/agent/backend.rs)
 - `run_agent` compiles with `PiBackend`, `ClaudeBackend`, and `DirectBackend` as concrete types
-  [check](cargo test -p loom-agent --test static_dispatch pi_and_claude_dispatch_through_run_agent)
+  [test?](all_backends_dispatch_through_run_agent)
 - `AgentEvent` enum covers: AgentStart, AgentEnd, TurnStart, TextDelta, TextEnd, ThinkingDelta, ThinkingEnd, ToolcallDelta, ToolCall, ToolResult, ToolProgress, TurnEnd, SessionComplete, CompactionStart, CompactionEnd, AutoRetry, Error, DriverEvent
   [check](cargo test -p loom-events --lib every_spec_variant_present)
 - `SpawnConfig` struct captures image_ref, image_source, optional image_digest_path, workspace, env, initial_prompt, agent_args, scratch_dir
   [check](cargo test -p loom-driver --lib spawn_config_with_image_digest_path_round_trips)
+- `SpawnConfig.launcher_env` exists as host-only state and is skipped from spawn-config JSON serialization
+  [test](launcher_env_is_never_serialized)
 - Typestate `AgentSession<Idle>` / `AgentSession<Active>` exists as an internal host-side lifecycle mechanic for JSONL subprocess sessions. It does not leak through the `Session` interoperability trait; Direct's in-container conversation loop carries no Pi / Claude handshake typestate.
   [check](grep -q 'pub struct Idle' crates/loom-driver/src/agent/session.rs)
 - `Session` trait surface does not reference `AgentSession`, `Idle`, or `Active` types (typestate is private to subprocess backends)
@@ -942,8 +971,8 @@ connection, network filtering, session audit logging.
 
 - Direct backend's `Session` impl spawns a container via `wrix spawn` with the `direct` runtime layer; the container's entrypoint exec's `loom-direct-runner`
   [test](direct_session_spawn_invokes_wrix_spawn_with_direct_runtime)
-- `loom-direct-runner` constructs a `loom-llm::Conversation`, registers the six sandbox-aware tools, runs the loop, and emits `AgentEvent` JSONL to stdout — same wire shape as Pi/Claude
-  [test](direct_runner_emits_agent_event_jsonl_compatible_with_pi_and_claude)
+- `loom-direct-runner` constructs a `loom-llm::Conversation`, registers the six sandbox-aware tools, runs the loop, and emits `AgentEvent` JSONL to stdout — the same common event shape as the subprocess backends
+  [test?](direct_runner_emits_agent_event_jsonl_compatible_with_common_agent_events)
 - Direct registers exactly six tools by name: `Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`
   [test](direct_runner_registers_canonical_six_tools)
 - Each Direct tool's impl lives in `loom-agent::direct::tools` — net-new code, not re-exported from any other crate
@@ -986,8 +1015,8 @@ connection, network filtering, session audit logging.
 
 - Per-phase config resolves correct backend (`[phase.todo].agent.backend` overrides `[phase.default].agent.backend`)
   [test](agent_for_per_phase_resolves_override_and_default)
-- `--agent` CLI flag overrides all phase config for the invocation
-  [test](loom_accepts_agent_pi)
+- `--agent` CLI flag accepts `pi`, `claude`, and `direct` and overrides all phase config for the invocation
+  [test?](loom_accepts_agent_backend_values)
 - Default (no phase config, no flag) selects claude
   [test](agent_for_default_is_claude_when_config_empty)
 - Invalid backend name produces clear error
@@ -1002,36 +1031,47 @@ connection, network filtering, session audit logging.
   [test](set_thinking_level_skipped_when_config_none)
 - Pi backend tolerates pi rejection of `set_thinking_level` without aborting the handshake
   [test](set_thinking_level_tolerates_pi_rejection)
+- Backend runtime names map to the `WRIX_AGENT` child-env values exactly: Pi → `pi`, Claude → `claude`, Direct → `direct`
+  [test?](agent_runtime_name_maps_to_wrix_agent_values)
 
 ### Interactive shell-out
 
-- `loom plan` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` to `wrix run` (no `--profile` argv flag — `wrix run` has no parser for it), with the profile resolved through `LoomConfig::agent_for(Phase::Plan)`
-  [test](plan_runner_passes_resolved_profile_to_wrix_run)
-- `loom msg --chat` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` to `wrix run` (no `--profile` argv flag), with the profile resolved through `LoomConfig::agent_for(Phase::Msg)`
-  [test](msg_chat_passes_resolved_profile_to_wrix_run)
+- `loom plan` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` and backend-derived `WRIX_AGENT` to `wrix run` (no `--profile` argv flag — `wrix run` has no parser for it), with the profile/runtime image resolved through `LoomConfig::agent_for(Phase::Plan)`
+  [test?](plan_runner_passes_resolved_profile_runtime_to_wrix_run)
+- `loom msg --chat` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` and backend-derived `WRIX_AGENT` to `wrix run` (no `--profile` argv flag), with the profile/runtime image resolved through `LoomConfig::agent_for(Phase::Msg)`
+  [test?](msg_chat_passes_resolved_profile_runtime_to_wrix_run)
 - `[phase.default].profile` alone (no per-phase override, no CLI override) reaches `Phase::Plan` via the env-var hand-off
   [test](plan_phase_default_profile_alone_picks_manifest_entry)
+- Direct backend selection for `loom plan` or `loom msg --chat` fails before spawning Wrix because Direct has no interactive REPL command
+  [test?](interactive_shell_out_rejects_direct_backend)
 
 ### Container integration
 
 - Loom spawns containers via `wrix spawn --spawn-config <file>
-      --stdio` with the correct profile image, never via `podman run` directly
+      --stdio` with the correct profile/runtime image, never via `podman run` directly
   [test](wrix_spawn_invocation_records_correct_argv)
+- Every `wrix spawn` child process receives `WRIX_AGENT` from the resolved backend runtime, independent of whether the parent shell has `WRIX_AGENT` set
+  [test?](wrix_spawn_child_env_sets_backend_derived_wrix_agent)
+- Spawn diagnostics log `agent_backend`, `wrix_agent_env`, and `image_ref`; typed image-runtime metadata mismatches fail before spawn
+  [test?](wrix_spawn_logs_backend_runtime_and_image_ref)
 - Container receives agent stdin/stdout via pipe
   [test](child_stdin_is_a_pipe_not_a_tty)
 - Entrypoint starts pi in RPC mode when `WRIX_AGENT=pi`
   [check](bash -c "grep -q 'pi --mode rpc' $(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
 - Entrypoint starts claude normally when `WRIX_AGENT=claude`
   [check](bash -c "grep -q 'dangerously-skip-permissions' $(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
-- Entrypoint preserves git SSH, beads, network filtering for both agents
+- Entrypoint starts the Direct runner when `WRIX_AGENT=direct`
+  [check](bash -c "grep -q 'loom-direct-runner' $(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
+- Entrypoint preserves git SSH, beads, network filtering for all runtime branches
   [check](bash -c "grep -q '/git-ssh-setup.sh' $(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
 
 ### Agent runtime layer
 
-- The default Loom sandbox image builds with the Pi agent runtime selected
-  explicitly (`agent = "pi"`), matching wrix's one-agent-per-image format.
+- The smoke/default Loom sandbox image builds a concrete profile/runtime
+  image with the Pi agent runtime selected explicitly (`agent = "pi"`),
+  matching wrix's one-agent-per-image format.
   [system](nix build .#sandbox)
-- The selected Pi agent binary launches inside the built sandbox image and
+- The selected Pi agent binary launches inside that built sandbox image and
   responds to `--version`; failures identify when the selected runtime is
   missing or broken.
   [system](nix run .#test-sandbox)
@@ -1094,22 +1134,25 @@ connection, network filtering, session audit logging.
 7. **Interactive shell-out profile contract** — `loom plan` and `loom msg
    --chat` bypass the agent-backend abstraction (so stdio can attach as a
    REPL) and invoke `wrix run <workspace> <agent command> ... <prompt>`
-   directly. The profile and backend resolved by
+   directly. The profile and chat-capable backend resolved by
    `LoomConfig::agent_for(Phase)` select the image and command together:
    Claude uses `claude --dangerously-skip-permissions`, while Pi uses `pi`.
-   The profile's matching `ImageEntry` is exported to `wrix run` via the
-   `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` env vars.
-   The env-var hand-off is the sole profile-selection contract on this path;
+   Direct is rejected for these interactive phases before Wrix spawn/run.
+   The matching profile/runtime `ImageEntry` is exported to `wrix run`
+   via the `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` env vars,
+   and the backend-derived `WRIX_AGENT` is set on the child process. The
+   env-var hand-off is the sole image-selection contract on this path;
    `wrix run` has no `--profile` parser, and extra argv tokens between the
    workspace positional and agent command would be forwarded into the
    container as the command vector (exit 127).
 8. **Agent runtime layer** — the image builder composes two orthogonal axes:
    *workspace profile* (base, rust, python) and *agent runtime* (claude, pi,
-   direct). Loom's default sandbox and profile manifest build the Pi variant
-   explicitly with `agent = "pi"`. That selected runtime layer (Node.js + pi
-   binary) is added to whichever workspace profile is configured for the
-   bead. Direct and Claude remain separate wrix image variants rather than
-   binaries bundled into the same image.
+   direct). The bundled profile manifest contains concrete entries for the
+   configured profile/runtime pairs. The selected runtime layer is added to
+   the selected workspace profile: Pi contributes Node.js + the pi binary,
+   Direct contributes `loom-direct-runner`, and Claude uses the Claude-capable
+   base layer. The variants are distinct image entries rather than multiple
+   agent binaries selected from one undifferentiated image.
 9. **Entrypoint agent selection** — `entrypoint.sh` checks `WRIX_AGENT` and:
    - `claude` (default): existing behavior (Claude config merging, hooks,
      `claude --dangerously-skip-permissions`)
@@ -1157,7 +1200,7 @@ connection, network filtering, session audit logging.
 4. **Static dispatch** — `AgentBackend` uses an explicit type parameter
    (`<B: AgentBackend>`), not a trait object. Backends are zero-sized types
    with associated functions (no `&self`). A `dispatch` function in the
-   binary crate matches on `AgentKind` per phase and calls
+   binary crate matches on `AgentRuntime` per phase and calls
    `run_agent::<ConcreteType>`. No `async-trait` needed — `async fn` in
    traits is stable and works directly with static dispatch.
 
