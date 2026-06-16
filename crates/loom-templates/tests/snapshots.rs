@@ -32,10 +32,18 @@ const TEST_SHA_2: &str = "1111111111111111111111111111111111111111";
 const TEST_SHA_3: &str = "2222222222222222222222222222222222222222";
 const TEST_FINGERPRINT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "fixture literals are part of the snapshot contract; parse failure means the test fixture is invalid"
+)]
 fn git_sha(raw: &str) -> GitSha {
     GitSha::new(raw).unwrap()
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "fixture identifiers are parsed once so snapshots exercise production newtypes"
+)]
 fn todo_ctx() -> TodoContext {
     TodoContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),

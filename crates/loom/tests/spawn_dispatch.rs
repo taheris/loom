@@ -233,9 +233,31 @@ fn seed_active_spec(workspace: &Path, _loom_bin: &str, label: &str) {
     use loom_driver::identifier::SpecLabel;
     use loom_driver::state::CacheDb;
     let spec_dir = workspace.join("specs");
+    let docs_dir = workspace.join("docs");
     std::fs::create_dir_all(&spec_dir).expect("mkdir specs");
+    std::fs::create_dir_all(&docs_dir).expect("mkdir docs");
     std::fs::write(spec_dir.join(format!("{label}.md")), format!("# {label}\n"))
         .expect("write spec");
+    std::fs::write(
+        docs_dir.join("README.md"),
+        format!("- [{label}](../specs/{label}.md)\n"),
+    )
+    .expect("write spec index");
+    let spec_path = format!("specs/{label}.md");
+    let add = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["add", "docs/README.md", &spec_path])
+        .status()
+        .expect("git add seeded spec");
+    assert!(add.success(), "git add seeded spec failed: {add}");
+    let commit = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["commit", "-q", "-m", "seed active spec"])
+        .status()
+        .expect("git commit seeded spec");
+    assert!(commit.success(), "git commit seeded spec failed: {commit}");
     let state_dir = workspace.join(".loom");
     std::fs::create_dir_all(&state_dir).expect("mkdir .loom");
     let db = CacheDb::open(state_dir.join("cache.db")).expect("open state db");
@@ -432,9 +454,8 @@ fn loom_todo_writes_jsonl_log_under_workspace_logs_dir() {
         "loom todo --agent pi must exit 0 against the mock pi shim. stdout={stdout} stderr={stderr}",
     );
 
-    // The phase log path is `<workspace>/.loom/logs/<spec>/todo-<utc>.jsonl`.
-    // Spec label was passed as `agent` via `drive_loom_todo_pi`.
-    let logs_dir = workspace.join(".loom/logs/agent");
+    // The todo phase log path is `<workspace>/.loom/logs/todo/todo-<utc>.jsonl`.
+    let logs_dir = workspace.join(".loom/logs/todo");
     assert!(
         logs_dir.is_dir(),
         "phase log directory must exist after `loom todo`: {}\nstdout={stdout}\nstderr={stderr}",
@@ -919,7 +940,7 @@ fn loom_todo_pi_compaction_drives_repin_steer_through_run_agent() {
     // observes the steer. The on-disk JSONL log contains every event the
     // driver consumed, so we can confirm both the compaction_start event
     // arrived and the steer reached the mock by inspecting the log.
-    let logs_dir = workspace.join(".loom/logs/agent");
+    let logs_dir = workspace.join(".loom/logs/todo");
     let log_path = std::fs::read_dir(&logs_dir)
         .expect("read logs dir")
         .filter_map(Result::ok)

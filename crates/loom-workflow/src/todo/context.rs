@@ -4,8 +4,7 @@ use loom_templates::criterion_status::CriterionStatus;
 use loom_templates::todo::{
     SpecEpicContext, SpecImplementationNotes, TodoChangedSpec, TodoContext,
 };
-
-use super::touched::TouchedSpec;
+use serde::Serialize;
 
 /// Inputs the unified todo template needs from deterministic preflight.
 pub struct TemplateBaseFields {
@@ -19,6 +18,16 @@ pub struct TemplateBaseFields {
     pub companion_paths: Vec<String>,
     pub implementation_notes: Vec<SpecImplementationNotes>,
     pub scratchpad_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FingerprintSpecInput {
+    pub label: SpecLabel,
+    pub spec_path: String,
+    pub spec_blob_sha: String,
+    pub spec_epic_id: BeadId,
+    pub todo_cursor: Option<String>,
+    pub initialized: bool,
 }
 
 /// Build the unified todo template context.
@@ -41,26 +50,16 @@ pub fn build_template_context(
     }
 }
 
-pub fn changed_specs_from_touched(
-    anchor: &SpecLabel,
-    touched: &[TouchedSpec],
-) -> Vec<TodoChangedSpec> {
-    if touched.is_empty() {
-        return vec![TodoChangedSpec {
-            label: anchor.clone(),
-            spec_path: format!("specs/{anchor}.md"),
-            diff: None,
-        }];
+pub fn changed_spec_context(
+    label: SpecLabel,
+    spec_path: impl Into<String>,
+    diff: Option<String>,
+) -> TodoChangedSpec {
+    TodoChangedSpec {
+        label,
+        spec_path: spec_path.into(),
+        diff,
     }
-
-    touched
-        .iter()
-        .map(|spec| TodoChangedSpec {
-            label: spec.label.clone(),
-            spec_path: spec.spec_path.to_string_lossy().into_owned(),
-            diff: Some(spec.diff.clone()),
-        })
-        .collect()
 }
 
 pub fn spec_epic_context(
@@ -84,20 +83,51 @@ pub fn implementation_notes_context(
 
 pub fn todo_fingerprint(
     todo_head: &GitSha,
-    work_epic: &BeadId,
-    changed_specs: &[TodoChangedSpec],
+    docs_index_blob_sha: &str,
+    changed_specs: &[FingerprintSpecInput],
 ) -> TodoFingerprint {
-    let mut canonical = String::new();
-    canonical.push_str(todo_head.as_str());
-    canonical.push('\0');
-    canonical.push_str(work_epic.as_str());
-    for spec in changed_specs {
-        canonical.push('\0');
-        canonical.push_str(spec.label.as_str());
-        canonical.push('\0');
-        canonical.push_str(&spec.spec_path);
+    #[derive(Serialize)]
+    struct Canonical<'a> {
+        head: &'a str,
+        docs_index_blob_sha: &'a str,
+        specs: Vec<CanonicalSpec<'a>>,
     }
-    let digest = blake3::hash(canonical.as_bytes()).to_hex().to_string();
+
+    #[derive(Serialize)]
+    struct CanonicalSpec<'a> {
+        label: &'a str,
+        spec_path: &'a str,
+        spec_blob_sha: &'a str,
+        spec_epic_id: &'a str,
+        todo_cursor: Option<&'a str>,
+        initialized: bool,
+    }
+
+    let mut sorted = changed_specs.iter().collect::<Vec<_>>();
+    sorted.sort_by(|left, right| left.label.as_str().cmp(right.label.as_str()));
+    let canonical = Canonical {
+        head: todo_head.as_str(),
+        docs_index_blob_sha,
+        specs: sorted
+            .into_iter()
+            .map(|spec| CanonicalSpec {
+                label: spec.label.as_str(),
+                spec_path: &spec.spec_path,
+                spec_blob_sha: &spec.spec_blob_sha,
+                spec_epic_id: spec.spec_epic_id.as_str(),
+                todo_cursor: spec.todo_cursor.as_deref(),
+                initialized: spec.initialized,
+            })
+            .collect(),
+    };
+    let bytes = match serde_json::to_vec(&canonical) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::error!(target: "loom::bug", error = %err, "todo fingerprint canonicalization failed");
+            std::process::abort();
+        }
+    };
+    let digest = blake3::hash(&bytes).to_hex().to_string();
     match TodoFingerprint::new(&digest) {
         Ok(fingerprint) => fingerprint,
         Err(err) => {
@@ -117,12 +147,20 @@ mod tests {
     fn base_fields() -> TemplateBaseFields {
         let work_epic = BeadId::new("lm-work").expect("valid bead id");
         let todo_head = GitSha::new(SHA).expect("valid git sha");
-        let changed_specs = vec![TodoChangedSpec {
+        let changed_specs = vec![changed_spec_context(
+            SpecLabel::new("alpha"),
+            "specs/alpha.md",
+            None,
+        )];
+        let fingerprint_input = vec![FingerprintSpecInput {
             label: SpecLabel::new("alpha"),
             spec_path: "specs/alpha.md".to_string(),
-            diff: None,
+            spec_blob_sha: SHA.to_string(),
+            spec_epic_id: work_epic.clone(),
+            todo_cursor: None,
+            initialized: true,
         }];
-        let todo_fingerprint = todo_fingerprint(&todo_head, &work_epic, &changed_specs);
+        let todo_fingerprint = todo_fingerprint(&todo_head, SHA, &fingerprint_input);
         TemplateBaseFields {
             pinned_context: "PIN".to_string(),
             spec_index: "INDEX".to_string(),
@@ -185,35 +223,44 @@ mod tests {
     }
 
     #[test]
-    fn touched_specs_render_changed_spec_roster_with_path_markers() {
-        let touched = vec![
-            TouchedSpec {
-                label: SpecLabel::new("alpha"),
-                spec_path: PathBuf::from("specs/alpha.md"),
-                diff: "alpha diff line\n".into(),
-            },
-            TouchedSpec {
-                label: SpecLabel::new("beta"),
-                spec_path: PathBuf::from("specs/beta.md"),
-                diff: "beta diff line".into(),
-            },
-        ];
-        let changed = changed_specs_from_touched(&SpecLabel::new("alpha"), &touched);
-        assert_eq!(changed[0].spec_path, "specs/alpha.md");
+    fn fingerprint_is_order_independent_for_changed_specs() {
+        let head = GitSha::new(SHA).expect("valid git sha");
+        let alpha = FingerprintSpecInput {
+            label: SpecLabel::new("alpha"),
+            spec_path: "specs/alpha.md".to_string(),
+            spec_blob_sha: SHA.to_string(),
+            spec_epic_id: BeadId::new("lm-alpha").expect("valid bead id"),
+            todo_cursor: None,
+            initialized: true,
+        };
+        let beta = FingerprintSpecInput {
+            label: SpecLabel::new("beta"),
+            spec_path: "specs/beta.md".to_string(),
+            spec_blob_sha: SHA.to_string(),
+            spec_epic_id: BeadId::new("lm-beta").expect("valid bead id"),
+            todo_cursor: Some(SHA.to_string()),
+            initialized: false,
+        };
+        let left = todo_fingerprint(&head, SHA, &[beta.clone(), alpha.clone()]);
+        let right = todo_fingerprint(&head, SHA, &[alpha, beta]);
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn changed_spec_context_sets_path_and_diff() {
+        let changed = changed_spec_context(
+            SpecLabel::new("alpha"),
+            PathBuf::from("specs/alpha.md")
+                .to_string_lossy()
+                .into_owned(),
+            Some("alpha diff line\n".into()),
+        );
+        assert_eq!(changed.spec_path, "specs/alpha.md");
         assert!(
-            changed[0]
+            changed
                 .diff
                 .as_deref()
                 .is_some_and(|d| d.contains("alpha diff"))
         );
-        assert_eq!(changed[1].label, SpecLabel::new("beta"));
-    }
-
-    #[test]
-    fn empty_touched_set_uses_anchor_changed_spec() {
-        let changed = changed_specs_from_touched(&SpecLabel::new("alpha"), &[]);
-        assert_eq!(changed.len(), 1);
-        assert_eq!(changed[0].spec_path, "specs/alpha.md");
-        assert!(changed[0].diff.is_none());
     }
 }

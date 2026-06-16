@@ -18,6 +18,39 @@ pub enum TodoError {
     /// multiple open epics found for spec `{label}`: {ids}; close all but one before re-running
     InvariantViolation { label: String, ids: String },
 
+    /// spec index is inconsistent: {detail}
+    SpecIndex { detail: String },
+
+    /// duplicate loom:spec epics found for spec `{label}`: {ids}; close or relabel all but one before re-running
+    DuplicateSpecEpics { label: String, ids: String },
+
+    /// existing spec epic `{epic_id}` for `{label}` lacks `loom.todo_cursor`; repair with `bd update {epic_id} --set-metadata loom.todo_cursor=<sha>`
+    MissingSpecCursor { label: String, epic_id: String },
+
+    /// spec epic `{epic_id}` for `{label}` has invalid `loom.todo_cursor` `{cursor}`: {reason}
+    InvalidSpecCursor {
+        label: String,
+        epic_id: String,
+        cursor: String,
+        reason: String,
+    },
+
+    /// pending loom:todo epic conflict across {ids}; resolve before re-running:
+    /// {diagnostic}
+    PendingTodoEpicConflict { ids: String, diagnostic: String },
+
+    /// no specs changed since their durable `loom.todo_cursor`; no todo agent was run
+    NoChangedSpecs,
+
+    /// todo success was observed before deterministic preflight completed
+    TodoSuccessWithoutPreflight,
+
+    /// `loom todo` success must be `LOOM_TODO: <json>`; generic LOOM_COMPLETE/LOOM_NOOP are wrong-phase markers
+    GenericTodoMarker,
+
+    /// LOOM_TODO validation failed: {detail}
+    TodoValidation { detail: String },
+
     /// agent supplied no exit signal — neither LOOM_COMPLETE nor LOOM_BLOCKED observed before session ended
     MissingExitSignal,
 

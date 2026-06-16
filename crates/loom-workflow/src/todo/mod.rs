@@ -19,7 +19,7 @@ mod runner;
 mod touched;
 
 pub use context::{
-    TemplateBaseFields, build_template_context, changed_specs_from_touched,
+    FingerprintSpecInput, TemplateBaseFields, build_template_context, changed_spec_context,
     implementation_notes_context, spec_epic_context, todo_fingerprint,
 };
 pub use criterion_status::{build_criterion_status, criterion_id_for, criterion_text_for_line};

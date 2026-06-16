@@ -1,46 +1,37 @@
 //! Production [`TodoController`] used by the `loom todo` binary.
-//!
-//! Resolves the per-bead [`SpawnConfig`] by running the single-query
-//! resolver against a real [`BdClient`] + working-tree-diff touched-set
-//! discovery against a real [`GitClient`], then renders the unified
-//! `todo.md` template from `templates`.
-//!
-//! Agent dispatch happens in [`super::runner::run`] via a caller-provided
-//! closure, so this controller does not own the spawn surface.
 
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::{BTreeSet, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use askama::Template;
 use loom_driver::agent::{AgentRuntime, SessionOutcome};
 use loom_driver::bd::{
-    BdClient, BdError, CommandRunner, CreateOpts, ListOpts, TokioRunner, UpdateOpts,
+    BdClient, CommandRunner, CreateOpts, Label, ListOpts, TokioRunner, UpdateOpts,
 };
-use loom_driver::config::{LoomTopConfig, Phase};
+use loom_driver::config::LoomTopConfig;
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::ProfileImageManifest;
-use loom_driver::scratch::resolve_scratch_key;
-use loom_driver::state::{BdUpdateFn, CacheDb};
-use tracing::{debug, info, warn};
+use loom_driver::state::{CacheDb, SpecEpicRow, WorkEpicRow};
+use loom_protocol::todo::{GitSha, TodoSpecOutcome, TodoSuccess};
+use tracing::{debug, info};
 
 use super::ExitSignal;
 use super::context::{
-    TemplateBaseFields, build_template_context, changed_specs_from_touched,
+    FingerprintSpecInput, TemplateBaseFields, build_template_context, changed_spec_context,
     implementation_notes_context, spec_epic_context, todo_fingerprint,
 };
 use super::criterion_status::build_criterion_status;
 use super::error::TodoError;
-use super::fanout::{FanoutOutcome, classify_touched_set, render_collision_options};
-use super::resolve::{ResolverOutcome, resolve_molecule};
 use super::runner::{TodoController, TodoSession};
-use super::touched::touched_specs;
 
-const BASE_COMMIT_METADATA_KEY: &str = "loom.base_commit";
+const TODO_HEAD_METADATA_KEY: &str = "loom.todo_head";
+const TODO_FINGERPRINT_METADATA_KEY: &str = "loom.todo_fingerprint";
+const TODO_CURSOR_METADATA_KEY: &str = "loom.todo_cursor";
+const TODO_SPECS_METADATA_KEY: &str = "loom.todo_specs";
 
 pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
-    label: SpecLabel,
     workspace: PathBuf,
     state: Arc<CacheDb>,
     manifest: Arc<ProfileImageManifest>,
@@ -50,25 +41,52 @@ pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
     bd: Arc<BdClient<R>>,
     #[expect(
         dead_code,
-        reason = "CLI flag retained pending broader --since/--spec pruning; the tier-1 base override it fed has been removed"
+        reason = "CLI flag retained until the deterministic todo surface removes --since"
     )]
     since: Option<String>,
-    /// Pre-session task-bead snapshot for the productive-completion
-    /// fan-out guard. `None` means [`Self::build_session`] has not run
-    /// yet; the guard is skipped in that branch.
-    pre_snapshot: Option<HashSet<BeadId>>,
-    /// `[loom]` block snapshot. Threaded onto the todo container's
-    /// `SpawnConfig.mounts` + `env` via [`crate::r#loop::sccache_mount`] +
-    /// [`LoomTopConfig::container_sccache_env`] when sccache is configured.
-    /// `LoomTopConfig::default()` is harmless — both sccache fields are
-    /// `None`/`/sccache` so no mount or env is emitted.
+    preflight: Option<Preflight>,
     loom_cfg: LoomTopConfig,
+}
+
+#[derive(Debug, Clone)]
+struct Preflight {
+    head: GitSha,
+    fingerprint: loom_protocol::todo::TodoFingerprint,
+    changed_specs: Vec<ChangedSpec>,
+    work_epic: BeadId,
+}
+
+#[derive(Debug, Clone)]
+struct ChangedSpec {
+    label: SpecLabel,
+    spec_path: String,
+    spec_epic: BeadId,
+    todo_cursor: Option<String>,
+    initialized: bool,
+}
+
+#[derive(Debug, Clone)]
+struct IndexedSpec {
+    label: SpecLabel,
+    spec_path: String,
 }
 
 impl<R: CommandRunner> ProductionTodoController<R> {
     #[expect(clippy::too_many_arguments, reason = "controller construction surface")]
     pub fn new(
-        label: SpecLabel,
+        _label: SpecLabel,
+        workspace: PathBuf,
+        state: Arc<CacheDb>,
+        manifest: Arc<ProfileImageManifest>,
+        phase_default: ProfileName,
+        git: Arc<GitClient>,
+        bd: Arc<BdClient<R>>,
+        since: Option<String>,
+    ) -> Self {
+        Self::for_workspace(workspace, state, manifest, phase_default, git, bd, since)
+    }
+
+    pub fn for_workspace(
         workspace: PathBuf,
         state: Arc<CacheDb>,
         manifest: Arc<ProfileImageManifest>,
@@ -78,7 +96,6 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         since: Option<String>,
     ) -> Self {
         Self {
-            label,
             workspace,
             state,
             manifest,
@@ -87,13 +104,11 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             git,
             bd,
             since,
-            pre_snapshot: None,
+            preflight: None,
             loom_cfg: LoomTopConfig::default(),
         }
     }
 
-    /// Snapshot the `[loom]` config block onto the controller so the todo
-    /// container picks up the shared sccache mount + env when configured.
     pub fn with_loom_config(mut self, cfg: LoomTopConfig) -> Self {
         self.loom_cfg = cfg;
         self
@@ -104,144 +119,276 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         self
     }
 
-    /// Snapshot every task bead carrying `spec:<label>` across the three
-    /// statuses an in-flight session can move beads through (open,
-    /// in_progress, closed). Used by the productive-completion guard to
-    /// detect zero fan-out under non-empty implementation notes — the
-    /// failure shape the driver must refuse to consume per
-    /// `specs/harness.md` *Productive-completion gate*.
-    async fn snapshot_task_beads(&self) -> Result<HashSet<BeadId>, TodoError> {
-        let mut snapshot = HashSet::new();
+    async fn preflight(&self) -> Result<Option<Preflight>, TodoError> {
+        let indexed = parse_spec_index(&self.workspace)?;
+        let mut changed = Vec::new();
+        for spec in &indexed {
+            self.state.upsert_spec(&spec.label, &spec.spec_path)?;
+            let epic = self.ensure_spec_epic(spec).await?;
+            if epic.initialized {
+                changed.push(epic);
+                continue;
+            }
+            if self
+                .spec_changed_since_cursor(spec, epic.todo_cursor.as_deref())
+                .await?
+            {
+                changed.push(epic);
+            }
+        }
+        if changed.is_empty() {
+            return Ok(None);
+        }
+        changed.sort_by(|left, right| left.label.as_str().cmp(right.label.as_str()));
+        let head = self.git.head_commit_sha().await?;
+        let docs_blob = self.git.head_blob_sha(Path::new("docs/README.md")).await?;
+        let mut fingerprint_specs = Vec::with_capacity(changed.len());
+        for spec in &changed {
+            let blob = self.git.head_blob_sha(Path::new(&spec.spec_path)).await?;
+            fingerprint_specs.push(FingerprintSpecInput {
+                label: spec.label.clone(),
+                spec_path: spec.spec_path.clone(),
+                spec_blob_sha: blob.to_string(),
+                spec_epic_id: spec.spec_epic.clone(),
+                todo_cursor: spec.todo_cursor.clone(),
+                initialized: spec.initialized,
+            });
+        }
+        let fingerprint = todo_fingerprint(&head, docs_blob.as_str(), &fingerprint_specs);
+        let work_epic = self.ensure_work_epic(&head, &fingerprint, &changed).await?;
+        Ok(Some(Preflight {
+            head,
+            fingerprint,
+            changed_specs: changed,
+            work_epic,
+        }))
+    }
+
+    async fn ensure_spec_epic(&self, spec: &IndexedSpec) -> Result<ChangedSpec, TodoError> {
+        let epics = self.spec_epics_for(&spec.label).await?;
+        if epics.len() > 1 {
+            let ids = epics
+                .iter()
+                .map(|bead| bead.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(TodoError::DuplicateSpecEpics {
+                label: spec.label.to_string(),
+                ids,
+            });
+        }
+        let (spec_epic, todo_cursor, initialized) = match epics.first() {
+            Some(bead) => {
+                let cursor = metadata_string(bead, TODO_CURSOR_METADATA_KEY).ok_or_else(|| {
+                    TodoError::MissingSpecCursor {
+                        label: spec.label.to_string(),
+                        epic_id: bead.id.to_string(),
+                    }
+                })?;
+                self.validate_cursor(&spec.label, &bead.id, &cursor).await?;
+                (bead.id.clone(), Some(cursor), false)
+            }
+            None => {
+                let id = self
+                    .bd
+                    .create(CreateOpts {
+                        title: format!("loom spec: {}", spec.label),
+                        description: format!("Spec metadata epic for `{}`.", spec.label),
+                        issue_type: Some("epic".to_string()),
+                        priority: Some(2),
+                        labels: vec!["loom:spec".to_string(), format!("spec:{}", spec.label)],
+                        ..CreateOpts::default()
+                    })
+                    .await?;
+                (id, None, true)
+            }
+        };
+        let molecule_id = MoleculeId::new(spec_epic.as_str().to_owned());
+        self.state.upsert_spec_epic(&SpecEpicRow {
+            spec_label: spec.label.clone(),
+            epic_id: molecule_id,
+            todo_cursor: todo_cursor.clone(),
+        })?;
+        Ok(ChangedSpec {
+            label: spec.label.clone(),
+            spec_path: spec.spec_path.clone(),
+            spec_epic,
+            todo_cursor,
+            initialized,
+        })
+    }
+
+    async fn spec_epics_for(
+        &self,
+        label: &SpecLabel,
+    ) -> Result<Vec<loom_driver::bd::Bead>, TodoError> {
+        let mut out = Vec::new();
         for status in ["open", "in_progress", "closed"] {
             let beads = self
                 .bd
                 .list(ListOpts {
-                    issue_type: Some("task".to_string()),
-                    label: Some(format!("spec:{}", self.label.as_str())),
+                    issue_type: Some("epic".to_string()),
+                    label: Some(format!("spec:{label}")),
                     status: Some(status.to_string()),
                     ..Default::default()
                 })
                 .await?;
-            for bead in beads {
-                snapshot.insert(bead.id);
-            }
+            out.extend(beads.into_iter().filter(has_label(Label::is_spec_epic)));
         }
-        Ok(snapshot)
+        Ok(out)
+    }
+
+    async fn validate_cursor(
+        &self,
+        label: &SpecLabel,
+        epic_id: &BeadId,
+        cursor: &str,
+    ) -> Result<(), TodoError> {
+        if GitSha::new(cursor).is_err() {
+            return Err(TodoError::InvalidSpecCursor {
+                label: label.to_string(),
+                epic_id: epic_id.to_string(),
+                cursor: cursor.to_string(),
+                reason: "not a full git SHA".to_string(),
+            });
+        }
+        if !self.git.rev_exists(cursor).await? {
+            return Err(TodoError::InvalidSpecCursor {
+                label: label.to_string(),
+                epic_id: epic_id.to_string(),
+                cursor: cursor.to_string(),
+                reason: "commit does not exist".to_string(),
+            });
+        }
+        if !self.git.is_ancestor_of_head(cursor).await? {
+            return Err(TodoError::InvalidSpecCursor {
+                label: label.to_string(),
+                epic_id: epic_id.to_string(),
+                cursor: cursor.to_string(),
+                reason: "commit is not an ancestor of HEAD".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn spec_changed_since_cursor(
+        &self,
+        spec: &IndexedSpec,
+        cursor: Option<&str>,
+    ) -> Result<bool, TodoError> {
+        let Some(cursor) = cursor else {
+            return Ok(true);
+        };
+        let spec_path = Path::new(&spec.spec_path);
+        if self.git.path_changed_since(cursor, spec_path).await? {
+            return Ok(true);
+        }
+        let old_index = self
+            .git
+            .file_at_revision(cursor, Path::new("docs/README.md"))
+            .await?
+            .unwrap_or_default();
+        let old_rows = parse_spec_index_content(&old_index)?;
+        let old_path = old_rows
+            .iter()
+            .find(|row| row.label == spec.label)
+            .map(|row| row.spec_path.as_str());
+        Ok(old_path != Some(spec.spec_path.as_str()))
     }
 
     async fn ensure_work_epic(
         &self,
-        resolved: Option<&MoleculeId>,
-        changed_specs: &[loom_templates::todo::TodoChangedSpec],
+        head: &GitSha,
+        fingerprint: &loom_protocol::todo::TodoFingerprint,
+        changed_specs: &[ChangedSpec],
     ) -> Result<BeadId, TodoError> {
-        if let Some(id) = resolved {
-            return BeadId::new(id.as_str()).map_err(|source| TodoError::InvalidWorkEpic {
-                id: id.as_str().to_owned(),
-                source,
+        let pending = self.pending_todo_epics().await?;
+        let (matching, nonmatching): (Vec<_>, Vec<_>) = pending.into_iter().partition(|bead| {
+            metadata_string(bead, TODO_HEAD_METADATA_KEY).as_deref() == Some(head.as_str())
+                && metadata_string(bead, TODO_FINGERPRINT_METADATA_KEY).as_deref()
+                    == Some(fingerprint.as_str())
+        });
+        if matching.len() == 1 && nonmatching.is_empty() {
+            return Ok(matching[0].id.clone());
+        }
+        if matching.len() > 1 || !nonmatching.is_empty() {
+            let ids = matching
+                .iter()
+                .chain(nonmatching.iter())
+                .map(|bead| bead.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(TodoError::PendingTodoEpicConflict {
+                ids,
+                diagnostic: pending_todo_options(head, fingerprint),
             });
         }
-        let labels = changed_specs
+        let specs = changed_specs
             .iter()
             .map(|spec| spec.label.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        self.bd
+            .collect::<Vec<_>>();
+        let metadata = serde_json::json!({
+            TODO_HEAD_METADATA_KEY: head.as_str(),
+            TODO_FINGERPRINT_METADATA_KEY: fingerprint.as_str(),
+            TODO_SPECS_METADATA_KEY: specs,
+        })
+        .to_string();
+        let mut labels = vec!["loom:todo".to_string()];
+        labels.extend(
+            changed_specs
+                .iter()
+                .map(|spec| format!("spec:{}", spec.label)),
+        );
+        let work_epic = self
+            .bd
             .create(CreateOpts {
-                title: format!("loom todo work: {labels}"),
-                description: "Driver-created work epic for loom todo decomposition.".to_string(),
+                title: format!("loom todo work: {}", specs.join(", ")),
+                description: "Driver-created work epic for deterministic loom todo decomposition."
+                    .to_string(),
                 issue_type: Some("epic".to_string()),
                 priority: Some(2),
-                labels: vec!["loom:todo".to_string()],
+                labels,
+                metadata: Some(metadata),
                 ..CreateOpts::default()
             })
-            .await
-            .map_err(TodoError::Bd)
+            .await?;
+        self.state.upsert_work_epic(&WorkEpicRow {
+            epic_id: MoleculeId::new(work_epic.as_str().to_owned()),
+            todo_head: Some(head.to_string()),
+            todo_fingerprint: Some(fingerprint.to_string()),
+            is_active: false,
+            iteration_count: 0,
+        })?;
+        Ok(work_epic)
     }
 
-    async fn build_prompt(&self) -> Result<String, TodoError> {
-        let spec_path = PathBuf::from("specs").join(format!("{}.md", self.label.as_str()));
-        let touched = touched_specs(self.git.as_ref()).await?;
-
-        // Multi-spec collision check runs before any prompt rendering. The
-        // touched-set classifier walks every spec whose markdown differs
-        // from HEAD; if it spans multiple molecules — or mixes
-        // has-open-epic with no-open-epic — Loom mints nothing and emits
-        // a `loom:clarify` bead per gate.md's *Options Format Contract*.
-        // The classifier and clarify mint live in [`super::fanout`].
-        //
-        // Empty touched-set is a degenerate case (working tree matches
-        // `HEAD`): the classifier returns `MintAll` vacuously, but we
-        // still need the anchor's existing molecule for template
-        // selection. Fall back to single-spec resolution against the
-        // anchor when nothing is touched.
-        let molecule_id = if touched.is_empty() {
-            match resolve_molecule(&self.bd, &self.label).await? {
-                ResolverOutcome::Existing(id) => Some(id),
-                ResolverOutcome::None => None,
-                ResolverOutcome::InvariantViolation(ids) => {
-                    let joined = ids
-                        .iter()
-                        .map(MoleculeId::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    return Err(TodoError::InvariantViolation {
-                        label: self.label.to_string(),
-                        ids: joined,
-                    });
-                }
-            }
-        } else {
-            match classify_touched_set(&self.bd, &touched).await? {
-                FanoutOutcome::MintAll => None,
-                FanoutOutcome::Bond(id) => Some(id),
-                FanoutOutcome::Collision { resolutions } => {
-                    let body = render_collision_options(&resolutions);
-                    let labels = resolutions
-                        .iter()
-                        .map(|r| r.label.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let title = format!("loom todo: multi-spec collision across {labels}");
-                    let clarify_id = self
-                        .bd
-                        .create(CreateOpts {
-                            title,
-                            description: body,
-                            issue_type: Some("task".to_string()),
-                            priority: Some(2),
-                            labels: vec!["loom:clarify".to_string()],
-                            ..CreateOpts::default()
-                        })
-                        .await?;
-                    info!(
-                        label = %self.label,
-                        clarify_id = %clarify_id,
-                        "loom todo: multi-spec collision → clarify bead minted",
-                    );
-                    return Err(TodoError::MultiSpecCollision {
-                        clarify_id: clarify_id.as_str().to_owned(),
-                    });
-                }
-            }
-        };
-        debug!(label = %self.label, ?molecule_id, "multi-spec fan-out classification");
-
-        match self.state.spec(&self.label) {
-            Ok(_) => (),
-            Err(loom_driver::state::CacheError::SpecNotFound { .. }) => (),
-            Err(e) => return Err(TodoError::State(e)),
-        }
-
-        let changed_specs = changed_specs_from_touched(&self.label, &touched);
-        let work_epic = self
-            .ensure_work_epic(molecule_id.as_ref(), &changed_specs)
+    async fn pending_todo_epics(&self) -> Result<Vec<loom_driver::bd::Bead>, TodoError> {
+        let beads = self
+            .bd
+            .list(ListOpts {
+                issue_type: Some("epic".to_string()),
+                label: Some("loom:todo".to_string()),
+                status: Some("open".to_string()),
+                ..Default::default()
+            })
             .await?;
-        let todo_head = self.git.head_commit_sha().await?;
-        let todo_fingerprint = todo_fingerprint(&todo_head, &work_epic, &changed_specs);
+        Ok(beads
+            .into_iter()
+            .filter(has_label(Label::is_todo_stage))
+            .collect())
+    }
+
+    async fn build_prompt(&mut self) -> Result<Option<String>, TodoError> {
+        let Some(preflight) = self.preflight().await? else {
+            self.preflight = None;
+            return Ok(None);
+        };
         let mut implementation_notes = Vec::new();
         let mut companion_paths = Vec::new();
         let mut spec_epics = Vec::new();
-        for spec in &changed_specs {
+        let mut changed_specs = Vec::new();
+        let mut criterion_status = Vec::new();
+        for spec in &preflight.changed_specs {
             let notes = self
                 .state
                 .notes_list(Some(&spec.label), Some("implementation"))?
@@ -250,71 +397,222 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 .collect::<Vec<_>>();
             implementation_notes.push(implementation_notes_context(spec.label.clone(), notes));
             companion_paths.extend(self.state.companions(&spec.label)?);
-            let cached_epic = self.state.spec_epic(&spec.label)?;
             spec_epics.push(spec_epic_context(
                 spec.label.clone(),
-                cached_epic.as_ref().map(|row| row.epic_id.clone()),
-                cached_epic.and_then(|row| row.todo_cursor),
+                Some(MoleculeId::new(spec.spec_epic.as_str().to_owned())),
+                spec.todo_cursor.clone(),
             ));
+            let diff = match spec.todo_cursor.as_deref() {
+                Some(cursor) => Some(
+                    self.git
+                        .diff_spec(cursor, Path::new(&spec.spec_path))
+                        .await?,
+                ),
+                None => None,
+            };
+            changed_specs.push(changed_spec_context(
+                spec.label.clone(),
+                spec.spec_path.clone(),
+                diff,
+            ));
+            let cache_path = self.workspace.join(".loom/cache.db");
+            criterion_status.extend(
+                build_criterion_status(
+                    &self.workspace,
+                    &cache_path,
+                    &spec.label,
+                    Path::new(&spec.spec_path),
+                    self.git.as_ref(),
+                )
+                .await,
+            );
         }
         companion_paths.sort();
         companion_paths.dedup();
-
-        let key = resolve_scratch_key(Phase::Todo, &self.label, None);
+        let key = preflight.work_epic.as_str();
         let scratchpad_path =
-            loom_driver::scratch::ScratchSession::scratchpad_path_for(&self.workspace, &key)
+            loom_driver::scratch::ScratchSession::scratchpad_path_for(&self.workspace, key)
                 .to_string_lossy()
                 .into_owned();
-        let spec_index = match std::fs::read_to_string(self.workspace.join("docs/README.md")) {
-            Ok(body) => body,
-            Err(err) => {
-                warn!(error = %err, "loom todo: failed to read spec index for prompt");
-                String::new()
-            }
-        };
+        let spec_index = std::fs::read_to_string(self.workspace.join("docs/README.md"))?;
         let base = TemplateBaseFields {
             pinned_context: String::new(),
             spec_index,
             changed_specs,
-            work_epic,
-            todo_head,
-            todo_fingerprint,
+            work_epic: preflight.work_epic.clone(),
+            todo_head: preflight.head.clone(),
+            todo_fingerprint: preflight.fingerprint.clone(),
             spec_epics,
             companion_paths,
             implementation_notes,
             scratchpad_path,
         };
-        let cache_path = self.workspace.join(".loom/cache.db");
-        let criterion_status = build_criterion_status(
-            &self.workspace,
-            &cache_path,
-            &self.label,
-            &spec_path,
-            self.git.as_ref(),
-        )
-        .await;
         let ctx = build_template_context(base, criterion_status);
-        Ok(ctx.render()?)
+        self.preflight = Some(preflight);
+        Ok(Some(ctx.render()?))
+    }
+
+    async fn validate_success(&self, success: &TodoSuccess) -> Result<(), TodoError> {
+        let preflight = self
+            .preflight
+            .as_ref()
+            .ok_or(TodoError::TodoSuccessWithoutPreflight)?;
+        if success.head != preflight.head {
+            return Err(TodoError::TodoValidation {
+                detail: "LOOM_TODO head did not match preflight HEAD".to_string(),
+            });
+        }
+        if success.fingerprint != preflight.fingerprint {
+            return Err(TodoError::TodoValidation {
+                detail: "LOOM_TODO fingerprint did not match preflight fingerprint".to_string(),
+            });
+        }
+        if success.work_epic != preflight.work_epic {
+            return Err(TodoError::TodoValidation {
+                detail: "LOOM_TODO work_epic did not match driver-created work epic".to_string(),
+            });
+        }
+        let expected = preflight
+            .changed_specs
+            .iter()
+            .map(|spec| spec.label.to_string())
+            .collect::<BTreeSet<_>>();
+        let mut seen = BTreeSet::new();
+        for spec in success.specs.as_slice() {
+            let label = spec.label.to_string();
+            if !seen.insert(label.clone()) {
+                return Err(TodoError::TodoValidation {
+                    detail: format!("LOOM_TODO reported duplicate spec `{}`", spec.label),
+                });
+            }
+            if !expected.contains(&label) {
+                return Err(TodoError::TodoValidation {
+                    detail: format!("LOOM_TODO reported unexpected spec `{}`", spec.label),
+                });
+            }
+            if let TodoSpecOutcome::Decomposed { beads } = &spec.outcome {
+                for bead_id in beads.as_slice() {
+                    let bead = self.bd.show(bead_id).await?;
+                    if bead.parent.as_ref() != Some(&preflight.work_epic) {
+                        return Err(TodoError::TodoValidation {
+                            detail: format!(
+                                "bead `{bead_id}` is not parented under work epic `{}`",
+                                preflight.work_epic
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        if seen != expected {
+            let missing = expected
+                .difference(&seen)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(TodoError::TodoValidation {
+                detail: format!("LOOM_TODO omitted changed spec(s): {missing}"),
+            });
+        }
+        Ok(())
+    }
+
+    async fn finalize_success(&self) -> Result<(), TodoError> {
+        let preflight = self
+            .preflight
+            .as_ref()
+            .ok_or(TodoError::TodoSuccessWithoutPreflight)?;
+        for active in self.active_work_epics().await? {
+            if active.id != preflight.work_epic {
+                self.bd
+                    .update(
+                        &active.id,
+                        UpdateOpts {
+                            remove_labels: vec!["loom:active".to_string()],
+                            ..UpdateOpts::default()
+                        },
+                    )
+                    .await?;
+            }
+        }
+        for spec in &preflight.changed_specs {
+            self.bd
+                .update(
+                    &spec.spec_epic,
+                    UpdateOpts {
+                        set_metadata: vec![(
+                            TODO_CURSOR_METADATA_KEY.to_string(),
+                            preflight.head.to_string(),
+                        )],
+                        ..UpdateOpts::default()
+                    },
+                )
+                .await?;
+            self.state.upsert_spec_epic(&SpecEpicRow {
+                spec_label: spec.label.clone(),
+                epic_id: MoleculeId::new(spec.spec_epic.as_str().to_owned()),
+                todo_cursor: Some(preflight.head.to_string()),
+            })?;
+            self.state
+                .notes_clear(&spec.label, Some("implementation"))?;
+        }
+        self.bd
+            .update(
+                &preflight.work_epic,
+                UpdateOpts {
+                    add_labels: vec!["loom:active".to_string()],
+                    remove_labels: vec!["loom:todo".to_string()],
+                    ..UpdateOpts::default()
+                },
+            )
+            .await?;
+        self.state.upsert_work_epic(&WorkEpicRow {
+            epic_id: MoleculeId::new(preflight.work_epic.as_str().to_owned()),
+            todo_head: Some(preflight.head.to_string()),
+            todo_fingerprint: Some(preflight.fingerprint.to_string()),
+            is_active: true,
+            iteration_count: 0,
+        })?;
+        Ok(())
+    }
+
+    async fn active_work_epics(&self) -> Result<Vec<loom_driver::bd::Bead>, TodoError> {
+        let beads = self
+            .bd
+            .list(ListOpts {
+                issue_type: Some("epic".to_string()),
+                label: Some("loom:active".to_string()),
+                status: Some("open".to_string()),
+                ..Default::default()
+            })
+            .await?;
+        Ok(beads
+            .into_iter()
+            .filter(has_label(Label::is_active))
+            .collect())
     }
 }
 
 impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
     async fn build_session(&mut self) -> Result<TodoSession, TodoError> {
-        let prompt = self.build_prompt().await?;
-        // Pre-session task-bead snapshot for the productive-completion
-        // fan-out guard. Captured before the agent spawns so a post-
-        // session re-snapshot in `record_outcome` can detect new mints.
-        self.pre_snapshot = Some(self.snapshot_task_beads().await?);
+        let prompt = self
+            .build_prompt()
+            .await?
+            .ok_or(TodoError::NoChangedSpecs)?;
         let entry = self.manifest.lookup(&self.phase_default, self.runtime)?;
-        let banner = format!("loom todo @ {}", self.label);
-        let key = resolve_scratch_key(Phase::Todo, &self.label, None);
+        let preflight = self
+            .preflight
+            .as_ref()
+            .ok_or(TodoError::TodoSuccessWithoutPreflight)?;
+        let banner = format!("loom todo @ {}", preflight.work_epic);
+        let key = preflight.work_epic.as_str();
         let scratch =
-            loom_driver::scratch::ScratchSession::open(&self.workspace, &key, &prompt, &banner)
+            loom_driver::scratch::ScratchSession::open(&self.workspace, key, &prompt, &banner)
                 .map_err(|source| {
                     TodoError::Protocol(loom_driver::agent::ProtocolError::Io(source))
                 })?;
         info!(
-            label = %self.label,
+            work_epic = %preflight.work_epic,
             workspace = %self.workspace.display(),
             image_ref = %entry.r#ref,
             scratch_dir = %scratch.path().display(),
@@ -343,167 +641,119 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         &mut self,
         outcome: &SessionOutcome,
         marker: Option<&ExitSignal>,
+        todo_success: Option<&TodoSuccess>,
     ) -> Result<(), TodoError> {
-        // Decomposition Discipline (`specs/templates.md`): LOOM_CLARIFY
-        // from a todo session targets the **molecule epic**, not a leaf
-        // bead. Verdict-gate direct-emit check (`specs/gate.md` § Options
-        // Format Contract) validates the epic carries a well-formed
-        // `## Options — …` block before stamping `loom:clarify`; a
-        // malformed / absent block downgrades to `loom:blocked` with
-        // cause `clarify-without-options`.
-        if matches!(marker, Some(ExitSignal::Clarify { .. }))
-            && let Some(mol_id) = crate::resolve::resolve_open_epic(&self.bd, &self.label).await?
-        {
-            let bead_id = BeadId::new(mol_id.as_str()).map_err(BdError::CreateInvalidId)?;
-            let applied = crate::gate_clarify::apply_clarify_or_blocked(&self.bd, &bead_id).await?;
-            info!(
-                label = %self.label,
-                epic = %mol_id,
-                outcome = ?applied,
-                "loom todo: LOOM_CLARIFY routed to molecule epic",
-            );
-        }
-        if !base_commit_should_advance(outcome.exit_code, marker) {
-            info!(
-                label = %self.label,
-                exit_code = outcome.exit_code,
-                marker = ?marker,
-                "loom todo: base_commit not advanced — gate requires exit_code==0 AND LOOM_COMPLETE/LOOM_NOOP",
-            );
+        if let Some(ExitSignal::Clarify { .. }) = marker {
+            if let Some(preflight) = self.preflight.as_ref() {
+                let applied =
+                    crate::gate_clarify::apply_clarify_or_blocked(&self.bd, &preflight.work_epic)
+                        .await?;
+                info!(work_epic = %preflight.work_epic, outcome = ?applied, "loom todo: LOOM_CLARIFY routed to work epic");
+            }
             return Ok(());
         }
-        // Productive-completion fan-out guard per `specs/harness.md`
-        // *Productive-completion gate*: refuse to consume notes when
-        // the agent narrated success without minting any task beads.
-        if let Some(pre) = self.pre_snapshot.take() {
-            let notes_remaining = self
-                .state
-                .notes_list(Some(&self.label), Some("implementation"))?
-                .len();
-            if notes_remaining > 0 {
-                let post = self.snapshot_task_beads().await?;
-                let beads_minted: HashSet<&BeadId> = post.difference(&pre).collect();
-                if beads_minted.is_empty() {
-                    warn!(
-                        label = %self.label,
-                        notes_remaining,
-                        "loom todo: productive completion with non-empty notes minted zero task beads — refusing to advance base_commit",
-                    );
-                    return Err(TodoError::ProductiveCompletionWithoutFanout {
-                        label: self.label.to_string(),
-                        notes_remaining,
-                    });
-                }
-            }
+        if matches!(marker, Some(ExitSignal::Complete | ExitSignal::Noop)) {
+            return Err(TodoError::GenericTodoMarker);
         }
-        let Some(mol_id) = crate::resolve::resolve_open_epic(&self.bd, &self.label).await? else {
-            // No active molecule + non-empty notes is the same
-            // malformed exit the fan-out guard catches above; empty
-            // notes is the legitimate audit-only path.
-            let notes_remaining = self
-                .state
-                .notes_list(Some(&self.label), Some("implementation"))?
-                .len();
-            if notes_remaining > 0 {
-                warn!(
-                    label = %self.label,
-                    notes_remaining,
-                    "loom todo: productive completion with non-empty notes but no active molecule — refusing to advance base_commit",
-                );
-                return Err(TodoError::ProductiveCompletionWithoutFanout {
-                    label: self.label.to_string(),
-                    notes_remaining,
-                });
-            }
-            warn!(
-                label = %self.label,
-                "loom todo: productive completion observed but no active molecule — base_commit and notes unchanged",
-            );
+        let Some(success) = todo_success else {
+            debug!(exit_code = outcome.exit_code, marker = ?marker, "loom todo: no success payload to finalize");
             return Ok(());
         };
-        let head = self
-            .git
-            .head_commit_sha()
-            .await
-            .map_err(|e| TodoError::Io(std::io::Error::other(e.to_string())))?
-            .to_string();
-        let bd = Arc::clone(&self.bd);
-        let bd_update: BdUpdateFn = Box::new(move |mol_id, new_base_commit| {
-            let bd = Arc::clone(&bd);
-            let mol_id_str = mol_id.as_str().to_owned();
-            let new_base_commit = new_base_commit.to_owned();
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async move {
-                    let bead_id = BeadId::new(&mol_id_str).map_err(BdError::CreateInvalidId)?;
-                    bd.update(
-                        &bead_id,
-                        UpdateOpts {
-                            set_metadata: vec![(
-                                BASE_COMMIT_METADATA_KEY.to_owned(),
-                                new_base_commit,
-                            )],
-                            ..UpdateOpts::default()
-                        },
-                    )
-                    .await
-                })
-            })
-        });
-        self.state
-            .consume_notes_and_refresh_base_commit(&self.label, &mol_id, &head, bd_update)?;
-        info!(
-            label = %self.label,
-            head = %head,
-            mol_id = %mol_id,
-            marker = ?marker,
-            "loom todo: implementation notes consumed and base_commit refreshed atomically",
-        );
+        if outcome.exit_code != 0 {
+            return Ok(());
+        }
+        self.validate_success(success).await?;
+        self.finalize_success().await?;
         Ok(())
     }
 }
 
-/// Productive-completion gate: a `loom todo` session advances
-/// `loom.base_commit` only when the marker is `LOOM_COMPLETE` /
-/// `LOOM_NOOP` and the agent process exited zero — backend errors,
-/// network drops, and swallowed-marker turns must not skip the diff.
-fn base_commit_should_advance(exit_code: i32, marker: Option<&ExitSignal>) -> bool {
-    exit_code == 0 && matches!(marker, Some(ExitSignal::Complete | ExitSignal::Noop))
+fn parse_spec_index(workspace: &Path) -> Result<Vec<IndexedSpec>, TodoError> {
+    let content = std::fs::read_to_string(workspace.join("docs/README.md"))?;
+    parse_spec_index_content(&content)
+}
+
+fn parse_spec_index_content(content: &str) -> Result<Vec<IndexedSpec>, TodoError> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for line in content.lines() {
+        let Some(start) = line.find("](../specs/") else {
+            continue;
+        };
+        let path_start = start + "](../".len();
+        let Some(rest) = line.get(path_start..) else {
+            continue;
+        };
+        let Some(end) = rest.find(')') else {
+            continue;
+        };
+        let spec_path = &rest[..end];
+        let Some(label) = spec_path
+            .strip_prefix("specs/")
+            .and_then(|path| path.strip_suffix(".md"))
+        else {
+            continue;
+        };
+        if !seen.insert(label.to_string()) {
+            return Err(TodoError::SpecIndex {
+                detail: format!("duplicate index row for spec `{label}`"),
+            });
+        }
+        out.push(IndexedSpec {
+            label: label.parse().map_err(|_| TodoError::SpecIndex {
+                detail: format!("invalid spec label `{label}`"),
+            })?,
+            spec_path: spec_path.to_string(),
+        });
+    }
+    if out.is_empty() {
+        return Err(TodoError::SpecIndex {
+            detail: "no specs indexed in docs/README.md".to_string(),
+        });
+    }
+    Ok(out)
+}
+
+fn metadata_string(bead: &loom_driver::bd::Bead, key: &str) -> Option<String> {
+    bead.metadata
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+fn has_label(pred: fn(&Label) -> bool) -> impl Fn(&loom_driver::bd::Bead) -> bool {
+    move |bead| bead.labels.iter().any(pred)
+}
+
+fn pending_todo_options(
+    head: &GitSha,
+    fingerprint: &loom_protocol::todo::TodoFingerprint,
+) -> String {
+    format!(
+        "## Options — Resolve pending todo epic\n\n### Option 1 — Continue matching batch\nClose or relabel non-matching `loom:todo` epics, leaving exactly one open epic with `{TODO_HEAD_METADATA_KEY}={head}` and `{TODO_FINGERPRINT_METADATA_KEY}={fingerprint}`. Cost: manual bd cleanup.\n\n### Option 2 — Restart decomposition\nRemove `loom:todo` from all pending todo epics, then rerun `loom todo` so the driver creates a fresh batch. Cost: any useful draft decomposition must be copied manually."
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Five terminal marker shapes × two exit codes — ten rows, two
-    /// truths: only `LOOM_COMPLETE`/`LOOM_NOOP` paired with `exit_code==0`
-    /// advances `loom.base_commit` (per `specs/harness.md`
-    /// *Productive-completion gate*).
     #[test]
-    fn base_commit_should_advance_only_on_complete_or_noop_with_clean_exit() {
-        let blocked = ExitSignal::Blocked {
-            reason: "missing schema".into(),
-        };
-        let clarify = ExitSignal::Clarify {
-            question: "additive only?".into(),
-        };
-        let cases: &[(Option<&ExitSignal>, i32, bool, &str)] = &[
-            (Some(&ExitSignal::Complete), 0, true, "complete + exit 0"),
-            (Some(&ExitSignal::Noop), 0, true, "noop + exit 0"),
-            (Some(&blocked), 0, false, "blocked + exit 0"),
-            (Some(&clarify), 0, false, "clarify + exit 0"),
-            (None, 0, false, "no marker + exit 0"),
-            (Some(&ExitSignal::Complete), 1, false, "complete + exit 1"),
-            (Some(&ExitSignal::Noop), 1, false, "noop + exit 1"),
-            (Some(&blocked), 1, false, "blocked + exit 1"),
-            (Some(&clarify), 1, false, "clarify + exit 1"),
-            (None, 1, false, "no marker + exit 1"),
-        ];
-        for (marker, exit_code, expected, label) in cases {
-            assert_eq!(
-                base_commit_should_advance(*exit_code, *marker),
-                *expected,
-                "case `{label}`: expected advance={expected}",
-            );
-        }
+    fn parse_spec_index_reads_docs_rows() {
+        let rows = parse_spec_index_content(
+            "- [Harness](../specs/harness.md)\n- [Templates](../specs/templates.md)\n",
+        )
+        .expect("index parses");
+        assert_eq!(rows[0].label, SpecLabel::new("harness"));
+        assert_eq!(rows[1].spec_path, "specs/templates.md");
+    }
+
+    #[test]
+    fn parse_spec_index_rejects_duplicate_labels() {
+        let err = parse_spec_index_content(
+            "- [Harness](../specs/harness.md)\n- [Harness again](../specs/harness.md)\n",
+        )
+        .expect_err("duplicate rejected");
+        assert!(matches!(err, TodoError::SpecIndex { .. }));
     }
 }

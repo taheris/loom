@@ -15,8 +15,11 @@ pub struct Label(String);
 
 const SPEC_PREFIX: &str = "spec:";
 const PROFILE_PREFIX: &str = "profile:";
+const ACTIVE: &str = "loom:active";
 const BLOCKED: &str = "loom:blocked";
 const CLARIFY: &str = "loom:clarify";
+const SPEC: &str = "loom:spec";
+const TODO: &str = "loom:todo";
 
 impl Label {
     pub fn new(s: impl Into<String>) -> Self {
@@ -37,6 +40,11 @@ impl Label {
         self.0.strip_prefix(PROFILE_PREFIX).map(ProfileName::new)
     }
 
+    /// `true` when the label is exactly `loom:active`.
+    pub fn is_active(&self) -> bool {
+        self.0 == ACTIVE
+    }
+
     /// `true` when the label is exactly `loom:blocked`.
     pub fn is_blocked(&self) -> bool {
         self.0 == BLOCKED
@@ -45,6 +53,16 @@ impl Label {
     /// `true` when the label is exactly `loom:clarify`.
     pub fn is_clarify(&self) -> bool {
         self.0 == CLARIFY
+    }
+
+    /// `true` when the label is exactly `loom:spec`.
+    pub fn is_spec_epic(&self) -> bool {
+        self.0 == SPEC
+    }
+
+    /// `true` when the label is exactly `loom:todo`.
+    pub fn is_todo_stage(&self) -> bool {
+        self.0 == TODO
     }
 }
 

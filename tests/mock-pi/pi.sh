@@ -149,9 +149,20 @@ run_probe_ok() {
 
 run_happy_path() {
     handle_probe 0
-    local _prompt
-    IFS= read -r _prompt
-    emit_message_delta "LOOM_COMPLETE"
+    local prompt_line work_epic head fingerprint label payload
+    IFS= read -r prompt_line
+    if [[ "$prompt_line" =~ Work\ epic\*\*:\ ([^\\]+)\\n-\ \*\*Todo\ head\*\*:\ ([0-9a-f]{40,64})\\n-\ \*\*Todo\ fingerprint\*\*:\ ([0-9a-f]{64}) ]]; then
+        work_epic="${BASH_REMATCH[1]}"
+        head="${BASH_REMATCH[2]}"
+        fingerprint="${BASH_REMATCH[3]}"
+    fi
+    if [[ -n "${work_epic:-}" && "$prompt_line" =~ \#\#\#\ ([a-z0-9-]+)\\n ]]; then
+        label="${BASH_REMATCH[1]}"
+        payload="LOOM_TODO: {\"head\":\"${head}\",\"fingerprint\":\"${fingerprint}\",\"work_epic\":\"${work_epic}\",\"specs\":[{\"label\":\"${label}\",\"outcome\":\"no-work\",\"reason\":\"mock audit\"}]}"
+        emit_message_delta "$payload"
+    else
+        emit_message_delta "LOOM_COMPLETE"
+    fi
     emit_agent_end
 }
 

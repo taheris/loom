@@ -11,6 +11,8 @@
 use loom_driver::agent::{ProtocolError, SessionOutcome, SpawnConfig};
 use loom_driver::scratch::ScratchSession;
 
+use loom_protocol::todo::TodoSuccess;
+
 use super::ExitSignal;
 use super::error::TodoError;
 
@@ -48,6 +50,7 @@ pub trait TodoController: Send {
         &mut self,
         outcome: &SessionOutcome,
         marker: Option<&ExitSignal>,
+        todo_success: Option<&TodoSuccess>,
     ) -> impl std::future::Future<Output = Result<(), TodoError>> + Send;
 }
 
@@ -71,13 +74,20 @@ pub async fn run<C, S, F>(controller: &mut C, spawn: S) -> Result<TodoSummary, T
 where
     C: TodoController + ?Sized,
     S: FnOnce(SpawnConfig) -> F,
-    F: std::future::Future<Output = Result<(SessionOutcome, Option<ExitSignal>), ProtocolError>>,
+    F: std::future::Future<
+            Output = Result<
+                (SessionOutcome, Option<ExitSignal>, Option<TodoSuccess>),
+                ProtocolError,
+            >,
+        >,
 {
     let TodoSession { config, scratch } = controller.build_session().await?;
     let result = spawn(config).await;
     drop(scratch);
-    let (outcome, marker) = result?;
-    controller.record_outcome(&outcome, marker.as_ref()).await?;
+    let (outcome, marker, todo_success) = result?;
+    controller
+        .record_outcome(&outcome, marker.as_ref(), todo_success.as_ref())
+        .await?;
     Ok(TodoSummary {
         exit_code: outcome.exit_code,
         cost_usd: outcome.cost_usd,
@@ -151,6 +161,7 @@ mod tests {
             &mut self,
             outcome: &SessionOutcome,
             marker: Option<&ExitSignal>,
+            _todo_success: Option<&TodoSuccess>,
         ) -> Result<(), TodoError> {
             self.recorded.fetch_add(1, Ordering::SeqCst);
             *self.last_exit.lock().unwrap() = Some(outcome.exit_code);
@@ -171,6 +182,7 @@ mod tests {
                         cost_usd: Some(0.42),
                     },
                     Some(ExitSignal::Complete),
+                    None,
                 ))
             }
         })

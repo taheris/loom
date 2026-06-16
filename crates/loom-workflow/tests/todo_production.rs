@@ -1,15 +1,4 @@
-//! Integration tests for [`ProductionTodoController`] that need a real git
-//! repo. Pure logic for tier classification lives in
-//! `src/todo/tier.rs::tests`; pure construction tests
-//! (manifest lookup, template selection) live in
-//! `src/todo/production.rs::tests`.
-//!
-//! These tests spawn the system `git` binary to seed and inspect a real
-//! workspace (spec NFR #8): tier-1 fan-out resolves through
-//! `LiveGitDiffSource` over `loom_driver::git::GitClient`, which only has
-//! anything to observe against real refs/index/diff state.
-
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+//! Integration coverage for deterministic `loom todo` preflight.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -18,57 +7,85 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use anyhow::{Result, anyhow};
 use loom_driver::agent::SessionOutcome;
 use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
 use loom_driver::git::GitClient;
-use loom_driver::identifier::{MoleculeId, ProfileName, SpecLabel};
+use loom_driver::identifier::ProfileName;
 use loom_driver::profile_manifest::ProfileImageManifest;
-use loom_driver::state::{ActiveMolecule, CacheDb};
+use loom_driver::state::CacheDb;
+use loom_protocol::todo::{TODO_SUCCESS_PREFIX, parse_todo_success};
 use loom_workflow::todo::{ExitSignal, ProductionTodoController, TodoController, TodoError};
 
-fn run_git(workspace: &Path, args: &[&str]) {
+fn run_git(workspace: &Path, args: &[&str]) -> Result<()> {
     let status = Command::new("git")
         .arg("-C")
         .arg(workspace)
         .args(args)
-        .status()
-        .expect("git spawn");
-    assert!(status.success(), "git {args:?} failed: {status}");
+        .status()?;
+    if !status.success() {
+        return Err(anyhow!("git {args:?} failed: {status}"));
+    }
+    Ok(())
 }
 
-fn capture_head(workspace: &Path) -> String {
+fn git_output(workspace: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(workspace)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .expect("git rev-parse");
-    assert!(output.status.success());
-    String::from_utf8(output.stdout).unwrap().trim().to_string()
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        return Err(anyhow!("git {args:?} failed"));
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
-fn init_repo(workspace: &Path) -> Arc<GitClient> {
-    run_git(workspace, &["init", "-q", "-b", "main"]);
-    run_git(workspace, &["config", "user.email", "test@example.com"]);
-    run_git(workspace, &["config", "user.name", "Test"]);
-    run_git(workspace, &["config", "commit.gpgsign", "false"]);
-    std::fs::write(workspace.join("seed.txt"), "seed\n").unwrap();
-    run_git(workspace, &["add", "seed.txt"]);
-    run_git(workspace, &["commit", "-q", "-m", "seed"]);
-    Arc::new(GitClient::open(workspace).unwrap())
+fn init_workspace(workspace: &Path) -> Result<(String, String)> {
+    run_git(workspace, &["init", "-q", "-b", "main"])?;
+    run_git(workspace, &["config", "user.email", "test@example.com"])?;
+    run_git(workspace, &["config", "user.name", "Test"])?;
+    run_git(workspace, &["config", "commit.gpgsign", "false"])?;
+    std::fs::create_dir_all(workspace.join("docs"))?;
+    std::fs::create_dir_all(workspace.join("specs"))?;
+    std::fs::write(
+        workspace.join("docs/README.md"),
+        "- [Alpha](../specs/alpha.md)\n- [Beta](../specs/beta.md)\n",
+    )?;
+    std::fs::write(workspace.join("specs/alpha.md"), "# Alpha\n")?;
+    std::fs::write(workspace.join("specs/beta.md"), "# Beta\n")?;
+    run_git(
+        workspace,
+        &["add", "docs/README.md", "specs/alpha.md", "specs/beta.md"],
+    )?;
+    run_git(workspace, &["commit", "-q", "-m", "seed specs"])?;
+    let base = git_output(workspace, &["rev-parse", "HEAD"])?;
+    std::fs::write(workspace.join("specs/alpha.md"), "# Alpha\n\nchanged\n")?;
+    std::fs::write(
+        workspace.join("docs/README.md"),
+        "- [Alpha](../specs/alpha.md)\n- [Beta](../specs/beta.md)\n- [Gamma](../specs/gamma.md)\n",
+    )?;
+    std::fs::write(workspace.join("specs/gamma.md"), "# Gamma\n")?;
+    run_git(
+        workspace,
+        &["add", "docs/README.md", "specs/alpha.md", "specs/gamma.md"],
+    )?;
+    run_git(workspace, &["commit", "-q", "-m", "change alpha add gamma"])?;
+    let head = git_output(workspace, &["rev-parse", "HEAD"])?;
+    Ok((base, head))
 }
 
-fn stub_manifest(dir: &Path) -> Arc<ProfileImageManifest> {
+fn manifest(dir: &Path) -> Result<Arc<ProfileImageManifest>> {
     let body = r#"{
-      "base": { "pi": { "ref": "localhost/wrix-base-pi:abc", "source": "/nix/store/aaa-image-base-pi" }, "claude": { "ref": "localhost/wrix-base-claude:abc", "source": "/nix/store/aaa-image-base-claude" }, "direct": { "ref": "localhost/wrix-base-direct:abc", "source": "/nix/store/aaa-image-base-direct" } }
+      "base": {
+        "pi": { "ref": "localhost/wrix-base-pi:abc", "source": "/nix/store/aaa-image-base-pi" },
+        "claude": { "ref": "localhost/wrix-base-claude:abc", "source": "/nix/store/aaa-image-base-claude" },
+        "direct": { "ref": "localhost/wrix-base-direct:abc", "source": "/nix/store/aaa-image-base-direct" }
+      }
     }"#;
     let path = dir.join("profile-images.json");
-    std::fs::write(&path, body).unwrap();
-    Arc::new(ProfileImageManifest::from_path(&path).unwrap())
-}
-
-fn empty_state(workspace: &Path) -> Arc<CacheDb> {
-    Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).unwrap())
+    std::fs::write(&path, body)?;
+    Ok(Arc::new(ProfileImageManifest::from_path(&path)?))
 }
 
 #[derive(Clone, Default)]
@@ -85,1274 +102,318 @@ impl CapturingRunner {
         }
     }
 
-    fn calls(&self) -> Vec<Vec<String>> {
-        self.calls
+    fn calls(&self) -> Result<Vec<Vec<String>>> {
+        Ok(self
+            .calls
             .lock()
-            .unwrap()
+            .map_err(|_| anyhow!("calls lock poisoned"))?
             .iter()
             .map(|argv| {
                 argv.iter()
-                    .map(|a| a.to_string_lossy().into_owned())
+                    .map(|arg| arg.to_string_lossy().into_owned())
                     .collect()
             })
-            .collect()
+            .collect())
     }
 }
 
 impl CommandRunner for CapturingRunner {
-    async fn run(&self, args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
-        let is_create = args.iter().any(|arg| arg == "create");
-        self.calls.lock().unwrap().push(args);
-        let mut responses = self.responses.lock().unwrap();
-        if !(is_create
-            && responses
-                .front()
-                .is_some_and(|output| output.stdout.starts_with(b"[")))
-            && let Some(output) = responses.pop_front()
-        {
-            return Ok(output);
-        }
-        drop(responses);
-        let stdout = if is_create {
-            b"lm-work\n".to_vec()
-        } else {
-            Vec::new()
-        };
-        Ok(RunOutput {
-            status: 0,
-            stdout,
-            stderr: Vec::new(),
-        })
+    async fn run(&self, args: Vec<OsString>, _timeout: Duration) -> Result<RunOutput, BdError> {
+        self.calls
+            .lock()
+            .map_err(|_| BdError::Cli {
+                status: 1,
+                args: "bd fake".to_string(),
+                stderr: "calls lock poisoned".to_string(),
+            })?
+            .push(args);
+        let response = self
+            .responses
+            .lock()
+            .map_err(|_| BdError::Cli {
+                status: 1,
+                args: "bd fake".to_string(),
+                stderr: "responses lock poisoned".to_string(),
+            })?
+            .pop_front();
+        Ok(response.unwrap_or_else(empty_json))
     }
 }
 
-fn stub_bd() -> Arc<BdClient<CapturingRunner>> {
-    scripted_bd([])
+fn empty_json() -> RunOutput {
+    ok("[]")
 }
 
-fn scripted_bd(responses: impl IntoIterator<Item = RunOutput>) -> Arc<BdClient<CapturingRunner>> {
-    Arc::new(BdClient::with_runner(CapturingRunner::new(responses)))
-}
-
-fn epic_response(mol_id: &str, label: &str, base_commit: Option<&str>) -> RunOutput {
-    let metadata = match base_commit {
-        Some(b) => format!(r#"{{ "loom.base_commit": "{b}" }}"#),
-        None => "{}".to_string(),
-    };
-    let body = format!(
-        r#"[{{
-            "id": "{mol_id}",
-            "title": "{label}: epic",
-            "status": "open",
-            "priority": 2,
-            "issue_type": "epic",
-            "labels": ["spec:{label}"],
-            "metadata": {metadata}
-        }}]"#,
-    );
+fn ok(stdout: &str) -> RunOutput {
     RunOutput {
         status: 0,
-        stdout: body.into_bytes(),
+        stdout: stdout.as_bytes().to_vec(),
         stderr: Vec::new(),
     }
 }
 
-fn well_formed_options_block() -> &'static str {
-    "## Options — pick one\\n\\n### Option 1 — additive\\nbody\\n\\n### Option 2 — breaking\\nbody\\n"
+fn spec_epic(id: &str, label: &str, cursor: &str) -> RunOutput {
+    ok(&format!(
+        r#"[{{"id":"{id}","title":"{label}","status":"open","issue_type":"epic","labels":["loom:spec","spec:{label}"],"metadata":{{"loom.todo_cursor":"{cursor}"}}}}]"#
+    ))
 }
 
-fn epic_response_with_description(mol_id: &str, label: &str, description: &str) -> RunOutput {
-    let body = format!(
-        r#"[{{
-            "id": "{mol_id}",
-            "title": "{label}: epic",
-            "status": "open",
-            "priority": 2,
-            "issue_type": "epic",
-            "labels": ["spec:{label}"],
-            "description": "{description}"
-        }}]"#,
-    );
-    RunOutput {
-        status: 0,
-        stdout: body.into_bytes(),
-        stderr: Vec::new(),
-    }
+fn pending_todo(id: &str, head: &str, fingerprint: &str) -> RunOutput {
+    ok(&format!(
+        r#"[{{"id":"{id}","title":"todo","status":"open","issue_type":"epic","labels":["loom:todo"],"metadata":{{"loom.todo_head":"{head}","loom.todo_fingerprint":"{fingerprint}"}}}}]"#
+    ))
 }
 
-/// `bd list --type=epic --label=spec:<X> --status=open` response carrying
-/// the epic's `parent` field (i.e. the molecule it's bonded to via
-/// `bd mol bond`). Used by the multi-spec fan-out classifier to detect
-/// whether two touched specs share a molecule.
-fn epic_response_with_parent(epic_id: &str, label: &str, parent: Option<&str>) -> RunOutput {
-    let parent_field = match parent {
-        Some(p) => format!(r#"  "parent": "{p}","#),
-        None => String::new(),
-    };
-    let body = format!(
-        r#"[{{
-            "id": "{epic_id}",
-            "title": "{label}: epic",
-            "status": "open",
-            "priority": 2,
-            "issue_type": "epic",
-            "labels": ["spec:{label}"],
-            {parent_field}
-            "metadata": {{}}
-        }}]"#,
-    );
-    RunOutput {
-        status: 0,
-        stdout: body.into_bytes(),
-        stderr: Vec::new(),
-    }
+fn created(id: &str) -> RunOutput {
+    ok(&format!("{id}\n"))
 }
 
-/// `bd create --silent` response — `bd` prints only the new bead's id on
-/// stdout under `--silent`. The collision-clarify path consumes this to
-/// learn the minted bead's id for the `MultiSpecCollision` error.
-fn create_silent_response(new_id: &str) -> RunOutput {
-    RunOutput {
-        status: 0,
-        stdout: format!("{new_id}\n").into_bytes(),
-        stderr: Vec::new(),
-    }
+fn preflight_responses(base: &str, head: &str) -> Vec<RunOutput> {
+    vec![
+        spec_epic("lm-alpha", "alpha", base),
+        empty_json(),
+        empty_json(),
+        spec_epic("lm-beta", "beta", head),
+        empty_json(),
+        empty_json(),
+        empty_json(),
+        empty_json(),
+        empty_json(),
+        created("lm-gamma"),
+        empty_json(),
+        created("lm-work"),
+    ]
 }
 
-/// `bd list --type=epic --label=spec:<X> --status=open` returning an empty
-/// result — the spec has no open epic.
-fn empty_epic_response() -> RunOutput {
-    RunOutput {
-        status: 0,
-        stdout: b"[]".to_vec(),
-        stderr: Vec::new(),
-    }
-}
-
-fn seeded_state(
+fn controller(
     workspace: &Path,
-    label: &str,
-    mol: &str,
-    base_commit: Option<String>,
-) -> Arc<CacheDb> {
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(
-        workspace.join(format!("specs/{label}.md")),
-        format!("# {label}\n"),
-    )
-    .unwrap();
-    let db = CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
-    db.rebuild(
-        workspace,
-        &[ActiveMolecule {
-            id: MoleculeId::new(mol),
-            spec_label: SpecLabel::new(label),
-            base_commit,
-        }],
-    )
-    .unwrap();
-    Arc::new(db)
+    runner: CapturingRunner,
+) -> Result<ProductionTodoController<CapturingRunner>> {
+    Ok(ProductionTodoController::for_workspace(
+        workspace.to_path_buf(),
+        Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?),
+        manifest(workspace)?,
+        ProfileName::new("base"),
+        Arc::new(GitClient::open(workspace)?),
+        Arc::new(BdClient::with_runner(runner)),
+        None,
+    ))
 }
 
-/// `loom todo` must build a `SpawnConfig` whose
-/// `initial_prompt` carries the rendered phase template body (with the
-/// scratchpad path partial), whose `RePinContent` is an empty placeholder
-/// — the rendered phase prompt now flows from `<scratch_dir>/prompt.txt`
-/// via post-compaction `repin.sh`, not from the `repin` field — and whose
-/// scratch dir holds a `prompt.txt` whose contents equal `initial_prompt`.
-/// Mirror of the `loom review` and `loom loop` dispatch-shape tests
-/// (`src/review/production.rs`, `src/loop/production.rs`).
-#[tokio::test]
-async fn build_session_dispatches_rendered_todo_template_and_writes_prompt_txt() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    let state = empty_state(&workspace);
-    let manifest = stub_manifest(&workspace);
-    let git = init_repo(&workspace);
-    let mut ctrl = ProductionTodoController::new(
-        SpecLabel::new("harness"),
-        workspace,
-        state,
-        manifest,
-        ProfileName::new("base"),
-        git,
-        stub_bd(),
-        None,
-    );
-    let session = ctrl.build_session().await.expect("build cfg");
-    let cfg = &session.config;
-    assert!(
-        cfg.initial_prompt.contains("# Todo Decomposition"),
-        "prompt missing template heading: {}",
-        cfg.initial_prompt,
-    );
-    assert!(
-        cfg.initial_prompt.contains("specs/harness.md"),
-        "prompt missing spec path: {}",
-        cfg.initial_prompt,
-    );
-    assert!(
-        cfg.initial_prompt.contains(".loom/scratch"),
-        "prompt missing scratchpad partial: {}",
-        cfg.initial_prompt,
-    );
-    assert!(
-        cfg.repin.orientation.is_empty()
-            && cfg.repin.pinned_context.is_empty()
-            && cfg.repin.partial_bodies.is_empty(),
-        "RePinContent must be empty placeholder; rendered template lives in prompt.txt: {:?}",
-        cfg.repin,
-    );
-    let written =
-        std::fs::read_to_string(cfg.scratch_dir.join("prompt.txt")).expect("prompt.txt readable");
-    assert_eq!(written, cfg.initial_prompt);
+fn field(prompt: &str, name: &str) -> Result<String> {
+    let prefix = format!("- **{name}**: ");
+    prompt
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow!("field `{name}` missing"))
+}
+
+fn todo_success(prompt: &str, specs: &[&str]) -> Result<loom_protocol::todo::TodoSuccess> {
+    let head = field(prompt, "Todo head")?;
+    let fingerprint = field(prompt, "Todo fingerprint")?;
+    let work_epic = field(prompt, "Work epic")?;
+    let spec_json = specs
+        .iter()
+        .map(|label| format!(r#"{{"label":"{label}","outcome":"no-work","reason":"audited"}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(parse_todo_success(&format!(
+        "{TODO_SUCCESS_PREFIX}{{\"head\":\"{head}\",\"fingerprint\":\"{fingerprint}\",\"work_epic\":\"{work_epic}\",\"specs\":[{spec_json}]}}"
+    ))?)
 }
 
 #[tokio::test]
-async fn build_spawn_config_resolves_manifest_image_and_renders_new_template() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    let state = empty_state(&workspace);
-    let manifest = stub_manifest(&workspace);
-    let git = init_repo(&workspace);
-    let mut ctrl = ProductionTodoController::new(
-        SpecLabel::new("alpha"),
-        workspace,
-        state,
-        manifest,
-        ProfileName::new("base"),
-        git,
-        stub_bd(),
-        None,
-    );
-    let session = ctrl.build_session().await.expect("build cfg");
-    let cfg = &session.config;
+async fn todo_discovers_active_inactive_and_new_specs_from_cursors() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let runner = CapturingRunner::new(preflight_responses(&base, &head));
+    let calls = runner.clone();
+    let mut ctrl = controller(dir.path(), runner)?;
+
+    let session = ctrl.build_session().await?;
+    let prompt = session.config.initial_prompt;
+
+    assert!(prompt.contains("### alpha"), "prompt: {prompt}");
+    assert!(prompt.contains("### gamma"), "prompt: {prompt}");
+    assert!(!prompt.contains("### beta"), "prompt: {prompt}");
+    let all_calls = calls.calls()?;
     assert!(
-        cfg.initial_prompt.contains("Todo Decomposition"),
-        "TodoContext renders todo.md (header marker missing): {}",
-        cfg.initial_prompt,
+        all_calls
+            .iter()
+            .any(|argv| argv.iter().any(|arg| arg.contains("loom:todo")))
     );
     assert!(
-        cfg.initial_prompt.contains("alpha"),
-        "spec label must appear in rendered prompt: {}",
-        cfg.initial_prompt,
+        all_calls
+            .iter()
+            .any(|argv| argv.iter().any(|arg| arg == "loom:spec,spec:gamma"))
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn build_spawn_config_uses_update_template_when_molecule_exists() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    let state = seeded_state(&workspace, "alpha", "lm-mol", None);
-    let manifest = stub_manifest(&workspace);
-    let git = init_repo(&workspace);
-    let mut ctrl = ProductionTodoController::new(
-        SpecLabel::new("alpha"),
-        workspace,
-        state,
-        manifest,
-        ProfileName::new("base"),
-        git,
-        scripted_bd([epic_response("lm-mol", "alpha", None)]),
-        None,
-    );
-    let session = ctrl.build_session().await.expect("build cfg");
-    let cfg = &session.config;
-    assert!(
-        cfg.initial_prompt.contains("lm-mol"),
-        "molecule id must thread into update template: {}",
-        cfg.initial_prompt,
-    );
-}
+async fn generic_todo_marker_is_rejected_without_advancing() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let runner = CapturingRunner::new(preflight_responses(&base, &head));
+    let mut ctrl = controller(dir.path(), runner)?;
+    let _session = ctrl.build_session().await?;
 
-#[tokio::test]
-async fn build_spawn_config_surfaces_unknown_profile_as_profile_error() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    let state = empty_state(&workspace);
-    let manifest = stub_manifest(&workspace);
-    let git = init_repo(&workspace);
-    let mut ctrl = ProductionTodoController::new(
-        SpecLabel::new("alpha"),
-        workspace,
-        state,
-        manifest,
-        ProfileName::new("missing"),
-        git,
-        stub_bd(),
-        None,
-    );
-    let err = match ctrl.build_session().await {
-        Ok(_) => panic!("expected Profile error, got Ok"),
-        Err(e) => e,
-    };
-    assert!(
-        matches!(err, TodoError::Profile(_)),
-        "expected Profile, got {err:?}",
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn build_spawn_config_tier_1_renders_diff_from_base_commit() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(workspace.join("specs/alpha.md"), "# alpha\n").unwrap();
-    let git = init_repo(&workspace);
-    run_git(&workspace, &["add", "specs"]);
-    run_git(&workspace, &["commit", "-q", "-m", "seed alpha"]);
-    let base = capture_head(&workspace);
-
-    std::fs::write(
-        workspace.join("specs/alpha.md"),
-        "# alpha\n\ntier-1 marker line\n",
-    )
-    .unwrap();
-    run_git(&workspace, &["commit", "-q", "-am", "update alpha"]);
-
-    let state = seeded_state(&workspace, "alpha", "lm-mol", Some(base.clone()));
-    let manifest = stub_manifest(&workspace);
-    let mut ctrl = ProductionTodoController::new(
-        SpecLabel::new("alpha"),
-        workspace,
-        state,
-        manifest,
-        ProfileName::new("base"),
-        git,
-        scripted_bd([epic_response("lm-mol", "alpha", Some(&base))]),
-        None,
-    );
-    let session = ctrl.build_session().await.expect("build cfg");
-    let cfg = &session.config;
-    assert!(
-        cfg.initial_prompt.contains("Diff:") && cfg.initial_prompt.contains("specs/alpha.md"),
-        "tier-1 prompt must carry the per-spec diff header: {}",
-        cfg.initial_prompt,
-    );
-    assert!(
-        cfg.initial_prompt.contains("tier-1 marker line"),
-        "tier-1 prompt must include the spec diff body: {}",
-        cfg.initial_prompt,
-    );
-}
-
-/// Spec criterion `test_todo_renders_notes_into_beads`: `loom todo` reads
-/// implementation notes from the anchor's `notes` rows (kind =
-/// 'implementation') and renders each note's text into the prompt so the
-/// agent copies them into every new bead body it creates.
-#[tokio::test]
-async fn build_spawn_config_renders_implementation_notes_from_db() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    let state = seeded_state(&workspace, "alpha", "lm-mol", None);
-    let label = SpecLabel::new("alpha");
-    state
-        .notes_add(&label, "implementation", "touch lib/foo/bar.rs", 100)
-        .unwrap();
-    state
-        .notes_add(&label, "implementation", "beware FK cascade ordering", 200)
-        .unwrap();
-    // Non-implementation kinds must NOT bleed into the todo prompt.
-    state
-        .notes_add(&label, "design", "design-only context", 300)
-        .unwrap();
-    let manifest = stub_manifest(&workspace);
-    let git = init_repo(&workspace);
-    let mut ctrl = ProductionTodoController::new(
-        label,
-        workspace,
-        state,
-        manifest,
-        ProfileName::new("base"),
-        git,
-        stub_bd(),
-        None,
-    );
-    let session = ctrl.build_session().await.expect("build cfg");
-    let prompt = &session.config.initial_prompt;
-    assert!(
-        prompt.contains("## Implementation Notes"),
-        "prompt missing Implementation Notes header: {prompt}",
-    );
-    assert!(
-        prompt.contains("touch lib/foo/bar.rs"),
-        "prompt missing first impl note: {prompt}",
-    );
-    assert!(
-        prompt.contains("beware FK cascade ordering"),
-        "prompt missing second impl note: {prompt}",
-    );
-    assert!(
-        !prompt.contains("design-only context"),
-        "prompt must NOT include design-kind notes: {prompt}",
-    );
-    assert_eq!(
-        prompt.matches("<implementation-note>").count(),
-        2,
-        "expected 2 implementation-note markers, got prompt: {prompt}",
-    );
-}
-
-/// Empty notes table → prompt omits the Implementation Notes section entirely
-/// (no empty `## Implementation Notes` header). Guards against the section
-/// rendering with a stale header when no notes have been recorded.
-#[tokio::test]
-async fn build_spawn_config_omits_notes_section_when_notes_empty() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    let state = seeded_state(&workspace, "alpha", "lm-mol", None);
-    let manifest = stub_manifest(&workspace);
-    let git = init_repo(&workspace);
-    let mut ctrl = ProductionTodoController::new(
-        SpecLabel::new("alpha"),
-        workspace,
-        state,
-        manifest,
-        ProfileName::new("base"),
-        git,
-        stub_bd(),
-        None,
-    );
-    let session = ctrl.build_session().await.expect("build cfg");
-    assert!(
-        !session
-            .config
-            .initial_prompt
-            .contains("## Implementation Notes"),
-        "empty notes must omit the Implementation Notes section: {}",
-        session.config.initial_prompt,
-    );
-}
-
-/// Productive completion (`exit_code == 0` AND `LOOM_COMPLETE` /
-/// `LOOM_NOOP`) advances `loom.base_commit` on the molecule's epic
-/// (via `bd update --set-metadata`) AND the local
-/// `molecules.base_commit` cache; any other terminal state leaves both
-/// untouched. Spec criterion
-/// `base_commit_advances_only_on_complete_or_noop_with_clean_exit`.
-#[tokio::test(flavor = "multi_thread")]
-async fn base_commit_advances_only_on_complete_or_noop_with_clean_exit() {
-    for (marker, exit_code, expected_advance, case) in [
-        (Some(ExitSignal::Complete), 0, true, "complete + exit 0"),
-        (Some(ExitSignal::Noop), 0, true, "noop + exit 0"),
-        (Some(ExitSignal::Complete), 1, false, "complete + exit 1"),
-        (None, 0, false, "missing marker + exit 0"),
-        (
-            Some(ExitSignal::Blocked { reason: "x".into() }),
-            0,
-            false,
-            "blocked + exit 0",
-        ),
-        (
-            Some(ExitSignal::Clarify {
-                question: "x".into(),
-            }),
-            0,
-            false,
-            "clarify + exit 0",
-        ),
-    ] {
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path().to_path_buf();
-        let state = seeded_state(&workspace, "alpha", "lm-alpha", Some("old-sha".into()));
-        let label = SpecLabel::new("alpha");
-        state
-            .notes_add(&label, "implementation", "impl 1", 100)
-            .unwrap();
-        state
-            .notes_add(&label, "implementation", "impl 2", 200)
-            .unwrap();
-        state.notes_add(&label, "design", "design 1", 300).unwrap();
-        let manifest = stub_manifest(&workspace);
-        let git = init_repo(&workspace);
-        let head_after_seed = capture_head(&workspace);
-        // Two bd responses cover the productive-completion path: a list
-        // returning the open epic, then an empty update response. Non-
-        // productive cases hit the list once or not at all and consume a
-        // subset.
-        let runner = CapturingRunner::new([
-            epic_response("lm-alpha", "alpha", Some("old-sha")),
-            epic_response("lm-alpha", "alpha", Some("old-sha")),
-            RunOutput {
-                status: 0,
-                stdout: Vec::new(),
-                stderr: Vec::new(),
+    let err = match ctrl
+        .record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
             },
-        ]);
-        let runner_handle = runner.clone();
-        let bd = Arc::new(BdClient::with_runner(runner));
-        let mut ctrl = ProductionTodoController::new(
-            label.clone(),
-            workspace,
-            Arc::clone(&state),
-            manifest,
-            ProfileName::new("base"),
-            git,
-            bd,
+            Some(&ExitSignal::Complete),
             None,
-        );
-
-        ctrl.record_outcome(
-            &SessionOutcome {
-                exit_code,
-                cost_usd: None,
-            },
-            marker.as_ref(),
         )
         .await
-        .unwrap_or_else(|e| panic!("case `{case}`: record_outcome failed: {e}"));
+    {
+        Ok(()) => return Err(anyhow!("generic marker was accepted")),
+        Err(err) => err,
+    };
 
-        let mol = state
-            .molecule_for_spec(&label)
-            .unwrap()
-            .expect("molecule survives");
-        let impl_notes_left = state
-            .notes_list(Some(&label), Some("implementation"))
-            .unwrap()
-            .len();
-        let bd_calls = runner_handle.calls();
-        if expected_advance {
-            assert_eq!(
-                mol.base_commit,
-                Some(head_after_seed.clone()),
-                "case `{case}`: molecules.base_commit must advance to HEAD",
-            );
-            assert_eq!(
-                impl_notes_left, 0,
-                "case `{case}`: productive completion must delete implementation notes",
-            );
-            assert_eq!(
-                state
-                    .notes_list(Some(&label), Some("design"))
-                    .unwrap()
-                    .len(),
-                1,
-                "case `{case}`: non-implementation kinds must survive the gate",
-            );
-            let update_argv = bd_calls
-                .iter()
-                .find(|argv| argv.first().is_some_and(|a| a == "update"))
-                .unwrap_or_else(|| panic!("case `{case}`: bd update call missing: {bd_calls:?}"));
-            assert_eq!(update_argv[1], "lm-alpha");
-            let pos = update_argv
-                .iter()
-                .position(|a| a == "--set-metadata")
-                .unwrap_or_else(|| {
-                    panic!("case `{case}`: --set-metadata flag missing in argv: {update_argv:?}")
-                });
-            assert_eq!(
-                update_argv[pos + 1],
-                format!("loom.base_commit={head_after_seed}"),
-            );
-        } else {
-            assert_eq!(
-                mol.base_commit,
-                Some("old-sha".to_string()),
-                "case `{case}`: non-productive terminal state must leave molecules.base_commit untouched",
-            );
-            assert_eq!(
-                impl_notes_left, 2,
-                "case `{case}`: non-productive terminal state must leave implementation notes intact",
-            );
-            let advanced_base_commit = bd_calls
-                .iter()
-                .flat_map(|argv| argv.iter())
-                .any(|a| a.starts_with("loom.base_commit="));
-            assert!(
-                !advanced_base_commit,
-                "case `{case}`: non-productive terminal state must not advance loom.base_commit: {bd_calls:?}",
-            );
-        }
-    }
+    assert!(matches!(err, TodoError::GenericTodoMarker));
+    Ok(())
 }
 
-/// Spec gate (`specs/harness.md` § Marker routing for `loom todo`):
-/// `LOOM_CLARIFY` emitted from a `loom todo`
-/// session MUST target the molecule epic — not the bead the agent
-/// was working on — per templates.md Decomposition Discipline. The
-/// agent has already persisted its `## Options — …` block to the
-/// epic's notes per gate.md's Options Format Contract; the driver
-/// stamps `loom:clarify` + status=blocked on the epic so `bd ready`
-/// excludes it until a human resolves via `loom msg`.
 #[tokio::test]
-async fn todo_clarify_marks_molecule_epic() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    let label = "alpha";
-    let epic_id = "lm-alpha";
-    let git = init_repo(&workspace);
-    let state = seeded_state(&workspace, label, epic_id, None);
+async fn omitted_spec_payload_is_rejected_before_finalization() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let runner = CapturingRunner::new(preflight_responses(&base, &head));
+    let calls = runner.clone();
+    let mut ctrl = controller(dir.path(), runner)?;
+    let session = ctrl.build_session().await?;
+    let success = todo_success(&session.config.initial_prompt, &["alpha"])?;
 
-    let well_formed_epic =
-        epic_response_with_description(epic_id, label, well_formed_options_block());
-    let runner = CapturingRunner::new([
-        // bd list (resolve_open_epic) → the seeded epic
-        epic_response(epic_id, label, None),
-        // bd show (verdict-gate Options-block validation)
-        well_formed_epic,
-        // bd update with loom:clarify label
-        RunOutput {
-            status: 0,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        },
-    ]);
-    let bd = Arc::new(BdClient::with_runner(runner.clone()));
-    let manifest = stub_manifest(&workspace);
-    let mut ctrl = ProductionTodoController::new(
-        SpecLabel::new(label),
-        workspace,
-        state,
-        manifest,
-        ProfileName::new("base"),
-        git,
-        bd,
-        None,
-    );
-
-    let outcome = SessionOutcome {
-        exit_code: 0,
-        cost_usd: None,
-    };
-    let marker = ExitSignal::Clarify {
-        question: "additive-only or breaking?".into(),
-    };
-    ctrl.record_outcome(&outcome, Some(&marker))
-        .await
-        .expect("record_outcome ok");
-
-    let calls = runner.calls();
-    assert!(
-        !calls.is_empty(),
-        "LOOM_CLARIFY MUST trigger a bd update on the molecule epic; got: {calls:?}",
-    );
-    let argv = calls
-        .iter()
-        .find(|argv| argv.first().map(String::as_str) == Some("update"))
-        .expect("a `bd update` call must target the epic");
-    assert_eq!(argv[1], epic_id, "update must target the molecule epic id");
-    assert!(
-        argv.iter().any(|a| a == "loom:clarify"),
-        "update must add loom:clarify label: {argv:?}",
-    );
-    assert!(
-        argv.windows(2)
-            .any(|w| w[0] == "--status" && w[1] == "blocked"),
-        "update must pair status=blocked with the label: {argv:?}",
-    );
-}
-
-/// Spec gate (`specs/gate.md` § *Options Format Contract*): when a
-/// `loom todo` session emits `LOOM_CLARIFY` but the molecule epic does
-/// NOT carry a well-formed `## Options — …` block in notes ∪
-/// description, the verdict gate downgrades to `loom:blocked` with cause
-/// `clarify-without-options` instead of `loom:clarify`. This keeps
-/// `loom msg`'s queue from being populated with an empty options block.
-#[tokio::test]
-async fn todo_clarify_without_options_block_downgrades_to_blocked() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    let label = "alpha";
-    let epic_id = "lm-alpha";
-    let git = init_repo(&workspace);
-    let state = seeded_state(&workspace, label, epic_id, None);
-
-    let malformed_epic = epic_response_with_description(epic_id, label, "no options block here");
-    let runner = CapturingRunner::new([
-        epic_response(epic_id, label, None),
-        malformed_epic,
-        RunOutput {
-            status: 0,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        },
-    ]);
-    let bd = Arc::new(BdClient::with_runner(runner.clone()));
-    let manifest = stub_manifest(&workspace);
-    let mut ctrl = ProductionTodoController::new(
-        SpecLabel::new(label),
-        workspace,
-        state,
-        manifest,
-        ProfileName::new("base"),
-        git,
-        bd,
-        None,
-    );
-
-    let outcome = SessionOutcome {
-        exit_code: 0,
-        cost_usd: None,
-    };
-    let marker = ExitSignal::Clarify {
-        question: "additive-only or breaking?".into(),
-    };
-    ctrl.record_outcome(&outcome, Some(&marker))
-        .await
-        .expect("record_outcome ok");
-
-    let calls = runner.calls();
-    let argv = calls
-        .iter()
-        .find(|argv| argv.first().map(String::as_str) == Some("update"))
-        .expect("a `bd update` call must target the epic");
-    assert_eq!(argv[1], epic_id, "update must target the molecule epic id");
-    assert!(
-        argv.iter().any(|a| a == "loom:blocked"),
-        "malformed options must downgrade to loom:blocked: {argv:?}",
-    );
-    assert!(
-        !argv.iter().any(|a| a == "loom:clarify"),
-        "loom:clarify MUST NOT be applied without a well-formed options block: {argv:?}",
-    );
-    assert!(
-        argv.iter().any(|a| a.contains("clarify-without-options")),
-        "notes must cite the cause: {argv:?}",
-    );
-}
-
-/// `specs/harness.md` *Workflow commands*: `loom todo` fans out across
-/// every spec whose markdown differs from `HEAD`; touched specs that
-/// span different molecules (or mix has-open-epic with no-open-epic)
-/// produce a multi-spec collision. Loom mints nothing; it creates a
-/// `loom:clarify` bead carrying a structured `## Options — …` block
-/// per gate.md's *Options Format Contract* and exits without dispatch.
-#[tokio::test(flavor = "multi_thread")]
-async fn todo_fans_out_across_all_touched_specs_and_clarifies_on_collision() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(workspace.join("specs/alpha.md"), "# alpha\n").unwrap();
-    std::fs::write(workspace.join("specs/beta.md"), "# beta\n").unwrap();
-    let git = init_repo(&workspace);
-    run_git(&workspace, &["add", "specs"]);
-    run_git(&workspace, &["commit", "-q", "-m", "seed specs"]);
-
-    // Touch both specs vs HEAD to populate the touched set.
-    std::fs::write(workspace.join("specs/alpha.md"), "# alpha\n\nalpha edit\n").unwrap();
-    std::fs::write(workspace.join("specs/beta.md"), "# beta\n\nbeta edit\n").unwrap();
-
-    let state = empty_state(&workspace);
-    let manifest = stub_manifest(&workspace);
-
-    // Two touched specs, two distinct molecules → collision.
-    // The order of `touched_specs` follows `git diff --name-only`'s
-    // alphabetical output, so alpha is queried first.
-    let runner = CapturingRunner::new([
-        epic_response_with_parent("lm-alphae", "alpha", Some("lm-mola")),
-        epic_response_with_parent("lm-betae", "beta", Some("lm-molb")),
-        // bd create --silent for the clarify bead.
-        create_silent_response("lm-clarify1"),
-    ]);
-    let runner_handle = runner.clone();
-    let bd = Arc::new(BdClient::with_runner(runner));
-    let mut ctrl = ProductionTodoController::new(
-        SpecLabel::new("alpha"),
-        workspace,
-        state,
-        manifest,
-        ProfileName::new("base"),
-        git,
-        bd,
-        None,
-    );
-
-    let err = match ctrl.build_session().await {
-        Ok(_) => panic!("expected MultiSpecCollision, got Ok"),
-        Err(e) => e,
-    };
-    match &err {
-        TodoError::MultiSpecCollision { clarify_id } => {
-            assert_eq!(clarify_id, "lm-clarify1");
-        }
-        other => panic!("expected MultiSpecCollision, got {other:?}"),
-    }
-
-    let calls = runner_handle.calls();
-    // Must include a `bd create` call for the clarify bead.
-    let create_argv = calls
-        .iter()
-        .find(|argv| argv.first().map(String::as_str) == Some("create"))
-        .expect("collision must trigger a `bd create` call");
-    assert!(
-        create_argv.iter().any(|a| a == "--type") && create_argv.iter().any(|a| a == "task"),
-        "clarify bead must be created as a task: {create_argv:?}",
-    );
-    assert!(
-        create_argv.iter().any(|a| a == "--labels"),
-        "clarify bead must carry labels flag: {create_argv:?}",
-    );
-    let labels_pos = create_argv
-        .iter()
-        .position(|a| a == "--labels")
-        .expect("labels flag present");
-    assert!(
-        create_argv[labels_pos + 1].contains("loom:clarify"),
-        "clarify bead must carry the loom:clarify label: {create_argv:?}",
-    );
-    // The description must carry the canonical `## Options — …` block.
-    let desc_pos = create_argv
-        .iter()
-        .position(|a| a == "--description")
-        .expect("description flag present");
-    let description = &create_argv[desc_pos + 1];
-    assert!(
-        description.starts_with("## Options — "),
-        "clarify description must lead with the Options Format Contract header: {description}",
-    );
-    assert!(
-        description.contains("### Option 1"),
-        "clarify description must enumerate options: {description}",
-    );
-    assert!(
-        description.contains("lm-mola") || description.contains("lm-molb"),
-        "clarify description must reference pre-existing molecule ids: {description}",
-    );
-}
-
-/// `specs/harness.md` *Workflow commands*: the same multi-spec fan-out
-/// classifier flags collisions when one touched spec has an open epic
-/// and another does not — even though both individual single-tier
-/// resolutions are well-formed. Loom mints nothing; clarify bead carries
-/// the options block.
-#[tokio::test(flavor = "multi_thread")]
-async fn todo_fans_across_touched_specs_and_clarifies_on_collision() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(workspace.join("specs/gamma.md"), "# gamma\n").unwrap();
-    std::fs::write(workspace.join("specs/delta.md"), "# delta\n").unwrap();
-    let git = init_repo(&workspace);
-    run_git(&workspace, &["add", "specs"]);
-    run_git(&workspace, &["commit", "-q", "-m", "seed specs"]);
-
-    std::fs::write(workspace.join("specs/gamma.md"), "# gamma\n\ngamma edit\n").unwrap();
-    std::fs::write(workspace.join("specs/delta.md"), "# delta\n\ndelta edit\n").unwrap();
-
-    let state = empty_state(&workspace);
-    let manifest = stub_manifest(&workspace);
-
-    // Mixed has-/has-not-open-epic: delta has an existing molecule,
-    // gamma does not. The classifier flags this as a collision per
-    // FR1's "mix has/has-not open epics" rule.
-    let runner = CapturingRunner::new([
-        // touched_specs order from `git diff --name-only` is
-        // alphabetical: delta before gamma.
-        epic_response_with_parent("lm-deltae", "delta", Some("lm-mold")),
-        empty_epic_response(),
-        create_silent_response("lm-clarify2"),
-    ]);
-    let runner_handle = runner.clone();
-    let bd = Arc::new(BdClient::with_runner(runner));
-    let mut ctrl = ProductionTodoController::new(
-        SpecLabel::new("delta"),
-        workspace,
-        state,
-        manifest,
-        ProfileName::new("base"),
-        git,
-        bd,
-        None,
-    );
-
-    let err = match ctrl.build_session().await {
-        Ok(_) => panic!("expected MultiSpecCollision, got Ok"),
-        Err(e) => e,
-    };
-    assert!(
-        matches!(err, TodoError::MultiSpecCollision { .. }),
-        "mix has/has-not must be a collision: {err:?}",
-    );
-
-    let calls = runner_handle.calls();
-    let create_argv = calls
-        .iter()
-        .find(|argv| argv.first().map(String::as_str) == Some("create"))
-        .expect("mix-has/has-not must trigger a `bd create` clarify");
-    let desc_pos = create_argv
-        .iter()
-        .position(|a| a == "--description")
-        .expect("description present");
-    let description = &create_argv[desc_pos + 1];
-    assert!(
-        description.contains("Close existing epics and mint a fresh cross-cutting molecule"),
-        "options block must offer the fresh-mint resolution: {description}",
-    );
-}
-
-fn task_list_response(ids: &[&str]) -> RunOutput {
-    let entries: Vec<String> = ids
-        .iter()
-        .map(|id| {
-            format!(
-                r#"{{
-                    "id": "{id}",
-                    "title": "task",
-                    "status": "open",
-                    "priority": 2,
-                    "issue_type": "task",
-                    "labels": [],
-                    "metadata": {{}}
-                }}"#
-            )
-        })
-        .collect();
-    RunOutput {
-        status: 0,
-        stdout: format!("[{}]", entries.join(",")).into_bytes(),
-        stderr: Vec::new(),
-    }
-}
-
-fn ok_empty() -> RunOutput {
-    RunOutput {
-        status: 0,
-        stdout: Vec::new(),
-        stderr: Vec::new(),
-    }
-}
-
-/// Productive-completion fan-out guard happy path: notes non-empty, the
-/// agent mints task beads during the session, and `record_outcome` then
-/// advances `loom.base_commit` + deletes the notes as usual. Pins the
-/// guard's *positive* branch — minted beads unlock the existing
-/// persistence sequence.
-#[tokio::test(flavor = "multi_thread")]
-async fn productive_completion_with_minted_beads_advances_base_commit() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    let state = seeded_state(&workspace, "alpha", "lm-alpha", Some("old-sha".into()));
-    let label = SpecLabel::new("alpha");
-    state
-        .notes_add(&label, "implementation", "touch foo.rs", 100)
-        .unwrap();
-    state
-        .notes_add(&label, "implementation", "touch bar.rs", 200)
-        .unwrap();
-    let manifest = stub_manifest(&workspace);
-    let git = init_repo(&workspace);
-    let head_after_seed = capture_head(&workspace);
-
-    let runner = CapturingRunner::new([
-        epic_response("lm-alpha", "alpha", Some("old-sha")),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        task_list_response(&["lm-alpha.1", "lm-alpha.2", "lm-alpha.3"]),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        epic_response("lm-alpha", "alpha", Some("old-sha")),
-        ok_empty(),
-    ]);
-    let bd = Arc::new(BdClient::with_runner(runner));
-    let mut ctrl = ProductionTodoController::new(
-        label.clone(),
-        workspace,
-        Arc::clone(&state),
-        manifest,
-        ProfileName::new("base"),
-        git,
-        bd,
-        None,
-    );
-
-    let _ = ctrl.build_session().await.expect("build_session ok");
-    ctrl.record_outcome(
-        &SessionOutcome {
-            exit_code: 0,
-            cost_usd: None,
-        },
-        Some(&ExitSignal::Complete),
-    )
-    .await
-    .expect("productive completion with mints must succeed");
-
-    let mol = state
-        .molecule_for_spec(&label)
-        .unwrap()
-        .expect("molecule survives");
-    assert_eq!(
-        mol.base_commit,
-        Some(head_after_seed),
-        "happy path must advance molecules.base_commit",
-    );
-    let impl_notes_left = state
-        .notes_list(Some(&label), Some("implementation"))
-        .unwrap()
-        .len();
-    assert_eq!(impl_notes_left, 0, "happy path must delete impl notes");
-}
-
-/// Productive-completion fan-out guard refuses to advance when the
-/// agent emitted `LOOM_COMPLETE` without minting any task beads while
-/// implementation notes describe planned work: notes survive, the
-/// base_commit does not move, and the driver returns a typed error
-/// instead of warning-and-exit-0.
-#[tokio::test(flavor = "multi_thread")]
-async fn productive_completion_without_mints_returns_error_and_preserves_notes() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    let state = seeded_state(&workspace, "alpha", "lm-alpha", Some("old-sha".into()));
-    let label = SpecLabel::new("alpha");
-    state
-        .notes_add(&label, "implementation", "fan-out work pending", 100)
-        .unwrap();
-    let manifest = stub_manifest(&workspace);
-    let git = init_repo(&workspace);
-
-    let runner = CapturingRunner::new([
-        epic_response("lm-alpha", "alpha", Some("old-sha")),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        task_list_response(&[]),
-    ]);
-    let runner_handle = runner.clone();
-    let bd = Arc::new(BdClient::with_runner(runner));
-    let mut ctrl = ProductionTodoController::new(
-        label.clone(),
-        workspace,
-        Arc::clone(&state),
-        manifest,
-        ProfileName::new("base"),
-        git,
-        bd,
-        None,
-    );
-
-    let _ = ctrl.build_session().await.expect("build_session ok");
-    let err = ctrl
+    let err = match ctrl
         .record_outcome(
             &SessionOutcome {
                 exit_code: 0,
                 cost_usd: None,
             },
-            Some(&ExitSignal::Complete),
+            None,
+            Some(&success),
         )
         .await
-        .expect_err("guard must refuse productive completion without fan-out");
+    {
+        Ok(()) => return Err(anyhow!("omitted spec payload was accepted")),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, TodoError::TodoValidation { .. }));
+    let updates = calls
+        .calls()?
+        .into_iter()
+        .filter(|argv| argv.first().is_some_and(|arg| arg == "update"))
+        .collect::<Vec<_>>();
+    assert!(updates.is_empty(), "no finalization updates: {updates:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn valid_todo_success_sets_active_and_advances_all_cursors() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let mut responses = preflight_responses(&base, &head);
+    responses.push(empty_json());
+    let runner = CapturingRunner::new(responses);
+    let calls = runner.clone();
+    let mut ctrl = controller(dir.path(), runner)?;
+    let session = ctrl.build_session().await?;
+    let success = todo_success(&session.config.initial_prompt, &["alpha", "gamma"])?;
+
+    ctrl.record_outcome(
+        &SessionOutcome {
+            exit_code: 0,
+            cost_usd: None,
+        },
+        None,
+        Some(&success),
+    )
+    .await?;
+
+    let calls = calls.calls()?;
+    assert!(calls.iter().any(|argv| {
+        argv == &[
+            "update",
+            "lm-alpha",
+            "--set-metadata",
+            &format!("loom.todo_cursor={head}"),
+        ]
+        .map(str::to_string)
+    }));
+    assert!(calls.iter().any(|argv| {
+        argv == &[
+            "update",
+            "lm-gamma",
+            "--set-metadata",
+            &format!("loom.todo_cursor={head}"),
+        ]
+        .map(str::to_string)
+    }));
+    assert!(
+        calls
+            .iter()
+            .any(|argv| argv.iter().any(|arg| arg == "--add-label")
+                && argv.iter().any(|arg| arg == "loom:active"))
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|argv| argv.iter().any(|arg| arg == "--remove-label")
+                && argv.iter().any(|arg| arg == "loom:todo"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_reuses_matching_pending_work_epic_else_blocks() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let mut initial = controller(
+        dir.path(),
+        CapturingRunner::new(preflight_responses(&base, &head)),
+    )?;
+    let initial_session = initial.build_session().await?;
+    let todo_head = field(&initial_session.config.initial_prompt, "Todo head")?;
+    let fingerprint = field(&initial_session.config.initial_prompt, "Todo fingerprint")?;
+
+    let mut responses = preflight_responses(&base, &head);
+    responses.pop();
+    responses.pop();
+    responses.push(pending_todo("lm-pending", &todo_head, &fingerprint));
+    let mut ctrl = controller(dir.path(), CapturingRunner::new(responses))?;
+    let session = ctrl.build_session().await?;
+    assert_eq!(
+        field(&session.config.initial_prompt, "Work epic")?,
+        "lm-pending"
+    );
+
+    let conflict_dir = tempfile::tempdir()?;
+    let (conflict_base, conflict_head) = init_workspace(conflict_dir.path())?;
+    let mut responses = preflight_responses(&conflict_base, &conflict_head);
+    responses.pop();
+    responses.pop();
+    responses.push(pending_todo(
+        "lm-pending",
+        "0123456789abcdef0123456789abcdef01234567",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ));
+    let mut ctrl = controller(conflict_dir.path(), CapturingRunner::new(responses))?;
+
+    let err = match ctrl.build_session().await {
+        Ok(_) => panic!("pending mismatch should block"),
+        Err(err) => err,
+    };
+
     match err {
-        TodoError::ProductiveCompletionWithoutFanout {
-            label: l,
-            notes_remaining,
-        } => {
-            assert_eq!(l, "alpha");
-            assert_eq!(notes_remaining, 1);
+        TodoError::PendingTodoEpicConflict { diagnostic, .. } => {
+            assert!(diagnostic.contains("## Options"), "{diagnostic}");
         }
-        other => panic!("expected ProductiveCompletionWithoutFanout, got {other:?}"),
+        other => return Err(anyhow!("expected pending conflict, got {other:?}")),
     }
-
-    let mol = state
-        .molecule_for_spec(&label)
-        .unwrap()
-        .expect("molecule survives");
-    assert_eq!(
-        mol.base_commit,
-        Some("old-sha".to_string()),
-        "guard must NOT advance molecules.base_commit",
-    );
-    let impl_notes_left = state
-        .notes_list(Some(&label), Some("implementation"))
-        .unwrap()
-        .len();
-    assert_eq!(
-        impl_notes_left, 1,
-        "guard must preserve implementation notes for re-processing",
-    );
-    let bd_calls = runner_handle.calls();
-    let advanced = bd_calls
-        .iter()
-        .flat_map(|argv| argv.iter())
-        .any(|a| a.starts_with("loom.base_commit="));
-    assert!(
-        !advanced,
-        "guard must NOT emit bd update --set-metadata loom.base_commit: {bd_calls:?}",
-    );
-}
-
-/// Productive completion + notes-non-empty + no active molecule (the
-/// agent created an epic and closed it in-session): the secondary
-/// guard refuses just like the epic-still-open variant — same
-/// persistence-boundary failure, same preservation of notes.
-#[tokio::test(flavor = "multi_thread")]
-async fn productive_completion_without_molecule_and_with_notes_returns_error() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    let state = empty_state(&workspace);
-    let label = SpecLabel::new("alpha");
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(workspace.join("specs/alpha.md"), "# alpha\n").unwrap();
-    state
-        .notes_add(&label, "implementation", "work pending", 100)
-        .unwrap();
-    let manifest = stub_manifest(&workspace);
-    let git = init_repo(&workspace);
-
-    let runner = CapturingRunner::new([
-        empty_epic_response(),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        task_list_response(&["lm-alpha.1"]),
-        empty_epic_response(),
-    ]);
-    let bd = Arc::new(BdClient::with_runner(runner));
-    let mut ctrl = ProductionTodoController::new(
-        label.clone(),
-        workspace,
-        Arc::clone(&state),
-        manifest,
-        ProfileName::new("base"),
-        git,
-        bd,
-        None,
-    );
-
-    let _ = ctrl.build_session().await.expect("build_session ok");
-    let err = ctrl
-        .record_outcome(
-            &SessionOutcome {
-                exit_code: 0,
-                cost_usd: None,
-            },
-            Some(&ExitSignal::Complete),
-        )
-        .await
-        .expect_err("no-molecule + notes must refuse");
-    assert!(
-        matches!(
-            err,
-            TodoError::ProductiveCompletionWithoutFanout { ref label, notes_remaining: 1, .. }
-                if label == "alpha"
-        ),
-        "expected ProductiveCompletionWithoutFanout, got {err:?}",
-    );
-    let impl_notes_left = state
-        .notes_list(Some(&label), Some("implementation"))
-        .unwrap()
-        .len();
-    assert_eq!(
-        impl_notes_left, 1,
-        "notes must survive the no-molecule + notes refusal",
-    );
-}
-
-/// Legitimate audit-only path: notes table empty, agent inspects the
-/// spec and emits `LOOM_NOOP`. With no notes describing planned work,
-/// the guard does not fire and the existing no-molecule warn-and-Ok
-/// behaviour is preserved — there is nothing to advance and nothing to
-/// refuse.
-#[tokio::test(flavor = "multi_thread")]
-async fn empty_notes_audit_completion_does_not_trip_guard() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    let state = empty_state(&workspace);
-    let label = SpecLabel::new("alpha");
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(workspace.join("specs/alpha.md"), "# alpha\n").unwrap();
-    let manifest = stub_manifest(&workspace);
-    let git = init_repo(&workspace);
-
-    let runner = CapturingRunner::new([
-        empty_epic_response(),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        empty_epic_response(),
-    ]);
-    let bd = Arc::new(BdClient::with_runner(runner));
-    let mut ctrl = ProductionTodoController::new(
-        label,
-        workspace,
-        Arc::clone(&state),
-        manifest,
-        ProfileName::new("base"),
-        git,
-        bd,
-        None,
-    );
-
-    let _ = ctrl.build_session().await.expect("build_session ok");
-    ctrl.record_outcome(
-        &SessionOutcome {
-            exit_code: 0,
-            cost_usd: None,
-        },
-        Some(&ExitSignal::Noop),
-    )
-    .await
-    .expect("empty-notes audit must NOT trip the guard");
-}
-
-/// LOOM_CLARIFY emitted under non-empty notes routes through the
-/// existing clarify-on-epic path; the productive-completion fan-out
-/// guard MUST NOT fire (clarify is a non-productive marker, so
-/// `base_commit_should_advance` returns early before the guard is
-/// reached).
-#[tokio::test(flavor = "multi_thread")]
-async fn clarify_path_does_not_trip_fanout_guard() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path().to_path_buf();
-    let label = "alpha";
-    let epic_id = "lm-alpha";
-    let git = init_repo(&workspace);
-    let state = seeded_state(&workspace, label, epic_id, None);
-    state
-        .notes_add(
-            &SpecLabel::new(label),
-            "implementation",
-            "fan-out work pending",
-            100,
-        )
-        .unwrap();
-
-    let runner = CapturingRunner::new([
-        epic_response(epic_id, label, None),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        task_list_response(&[]),
-        epic_response(epic_id, label, None),
-        epic_response_with_description(epic_id, label, well_formed_options_block()),
-        ok_empty(),
-    ]);
-    let runner_handle = runner.clone();
-    let bd = Arc::new(BdClient::with_runner(runner));
-    let manifest = stub_manifest(&workspace);
-    let mut ctrl = ProductionTodoController::new(
-        SpecLabel::new(label),
-        workspace,
-        state,
-        manifest,
-        ProfileName::new("base"),
-        git,
-        bd,
-        None,
-    );
-
-    let _ = ctrl.build_session().await.expect("build_session ok");
-    ctrl.record_outcome(
-        &SessionOutcome {
-            exit_code: 0,
-            cost_usd: None,
-        },
-        Some(&ExitSignal::Clarify {
-            question: "additive-only or breaking?".into(),
-        }),
-    )
-    .await
-    .expect("clarify must NOT trip productive-completion guard");
-
-    let calls = runner_handle.calls();
-    let update_argv = calls
-        .iter()
-        .find(|argv| argv.first().map(String::as_str) == Some("update"))
-        .expect("clarify path must emit a bd update on the epic");
-    assert!(
-        update_argv.iter().any(|a| a == "loom:clarify"),
-        "clarify update must carry the loom:clarify label: {update_argv:?}",
-    );
+    Ok(())
 }

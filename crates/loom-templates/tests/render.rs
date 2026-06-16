@@ -35,10 +35,18 @@ const TEST_SHA_4: &str = "3333333333333333333333333333333333333333";
 const TEST_SHA_5: &str = "4444444444444444444444444444444444444444";
 const TEST_FINGERPRINT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+#[expect(
+    clippy::expect_used,
+    reason = "fixture literals are part of the render contract; parse failure means the test fixture is invalid"
+)]
 fn git_sha(raw: &str) -> GitSha {
     GitSha::new(raw).expect("valid git sha")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "fixture identifiers are parsed once so rendered contexts use production newtypes"
+)]
 fn todo_context(notes: Vec<String>, criterion_status: Vec<CriterionStatus>) -> TodoContext {
     TodoContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),

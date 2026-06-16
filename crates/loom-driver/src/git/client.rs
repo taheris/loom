@@ -982,6 +982,78 @@ impl GitClient {
         Ok(String::from_utf8(output.stdout)?)
     }
 
+    /// `git diff --quiet <base> HEAD -- <path>` — true when `path` changed.
+    pub async fn path_changed_since(&self, base: &str, path: &Path) -> Result<bool, GitError> {
+        let path_str = path.to_string_lossy().into_owned();
+        let output = run_git_raw(
+            &self.workdir,
+            self.clock.as_ref(),
+            ["diff", "--quiet", base, "HEAD", "--", &path_str],
+            None,
+        )
+        .await?;
+        match output.status.code() {
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            _ => Err(cli_error(&output)),
+        }
+    }
+
+    /// `git show <rev>:<path>` — file contents at `rev`, or `None` if absent.
+    pub async fn file_at_revision(
+        &self,
+        rev: &str,
+        path: &Path,
+    ) -> Result<Option<String>, GitError> {
+        let path_str = path.to_string_lossy();
+        let spec = format!("{rev}:{path_str}");
+        let output = run_git_raw(&self.workdir, self.clock.as_ref(), ["show", &spec], None).await?;
+        if output.status.success() {
+            return Ok(Some(String::from_utf8(output.stdout)?));
+        }
+        Ok(None)
+    }
+
+    /// `git rev-parse HEAD:<path>` — blob SHA for a path at HEAD.
+    pub async fn head_blob_sha(&self, path: &Path) -> Result<GitOid, GitError> {
+        let path_str = path.to_string_lossy();
+        let spec = format!("HEAD:{path_str}");
+        let output = run_git_raw(
+            &self.workdir,
+            self.clock.as_ref(),
+            ["rev-parse", &spec],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(cli_error(&output));
+        }
+        let raw = String::from_utf8(output.stdout)?;
+        Ok(GitOid::new(raw.trim())?)
+    }
+
+    /// `git rev-parse <rev>:<path>` — blob SHA for a path at `rev`, if present.
+    pub async fn blob_sha_at_revision(
+        &self,
+        rev: &str,
+        path: &Path,
+    ) -> Result<Option<GitOid>, GitError> {
+        let path_str = path.to_string_lossy();
+        let spec = format!("{rev}:{path_str}");
+        let output = run_git_raw(
+            &self.workdir,
+            self.clock.as_ref(),
+            ["rev-parse", &spec],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let raw = String::from_utf8(output.stdout)?;
+        Ok(Some(GitOid::new(raw.trim())?))
+    }
+
     /// `git rev-list --count <commit>..HEAD` — number of commits between
     /// `commit` and the current `HEAD`. Returns `0` when `commit` is `HEAD`,
     /// and surfaces [`GitError::GitCli`] when `commit` does not resolve.

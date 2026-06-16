@@ -31,6 +31,7 @@ use loom_gate::{
     FsCommandResolver, InputResolver, RunnerSpec, StatusCache, TestScope, Tier, TierCwds, Verdict,
     filter_by_files, is_missing_binary_target, render_report,
 };
+use loom_protocol::todo::parse_todo_success;
 use loom_workflow::r#loop::{
     GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
     REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV, RetryPolicy, SessionResult, run_loop,
@@ -3598,7 +3599,6 @@ fn run_todo(
     agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
-    let label = resolve_spec_label(workspace, None)?;
     let lock_mgr = LockManager::new(workspace)?;
     let _guard = lock_mgr.acquire_todo()?;
 
@@ -3617,11 +3617,10 @@ fn run_todo(
     let runtime = tokio::runtime::Runtime::new()?;
     let workspace_buf = workspace.to_path_buf();
     let logs_root = workspace.join(".loom/logs");
-    let label_for_sink = label.clone();
+    let label_for_sink = SpecLabel::new("todo");
     let loom_cfg_for_todo = config.loom.clone();
     let result = runtime.block_on(async move {
-        let mut controller = ProductionTodoController::new(
-            label,
+        let mut controller = ProductionTodoController::for_workspace(
             workspace_buf,
             state,
             manifest,
@@ -3650,8 +3649,16 @@ fn run_todo(
                 Some(&mut output),
             )
             .await?;
+            let final_line = output.lines().rev().find(|line| !line.trim().is_empty());
+            let todo_success = match final_line {
+                Some(line) if line.starts_with(loom_protocol::todo::TODO_SUCCESS_PREFIX) => Some(
+                    parse_todo_success(line)
+                        .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))?,
+                ),
+                _ => None,
+            };
             let marker = parse_exit_signal(&output);
-            Ok((outcome, marker))
+            Ok((outcome, marker, todo_success))
         })
         .await
     });
@@ -3661,6 +3668,10 @@ fn run_todo(
                 "loom todo: agent exited {}, cost_usd={:?}",
                 summary.exit_code, summary.cost_usd
             );
+            Ok(())
+        }
+        Err(TodoError::NoChangedSpecs) => {
+            println!("loom todo: no specs changed since their todo cursors");
             Ok(())
         }
         Err(TodoError::MultiSpecCollision { clarify_id }) => {

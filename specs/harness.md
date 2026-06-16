@@ -3656,7 +3656,7 @@ two agent-loop observers.
       at `HEAD` against the spec epic's durable cursor; it includes
       inactive/stale specs and brand-new indexed specs regardless of
       `loom:active`
-  [test?](todo_discovers_active_inactive_and_new_specs_from_cursors)
+  [test](todo_discovers_active_inactive_and_new_specs_from_cursors)
 - `loom todo` creates one `loom:todo` work epic before rendering the
       agent prompt, records `loom.todo_head`, `loom.todo_fingerprint`,
       and changed spec labels on it, and does not add `loom:active`
@@ -3665,7 +3665,7 @@ two agent-loop observers.
 - A pre-existing open `loom:todo` work epic with matching head and
       `TodoFingerprint` is reused; multiple matches or non-matching
       pending work epics block with an Options-format diagnostic
-  [test?](todo_reuses_matching_pending_work_epic_else_blocks)
+  [test](todo_reuses_matching_pending_work_epic_else_blocks)
 - `loom-protocol::todo::parse_todo_success` accepts exactly
       `LOOM_TODO: <json>` final lines and returns typed `TodoSuccess`;
       malformed JSON, missing fields, empty `Decomposed.beads`, empty
