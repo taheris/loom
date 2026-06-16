@@ -15,6 +15,7 @@
 //! the agent invocation. A missing manifest entry surfaces as
 //! [`LoopError::Profile`] — no silent fallback.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -150,6 +151,7 @@ where
     /// Attempt number rendered into the current bead's prompt and copied
     /// into durable post-integrate gate logs.
     current_attempt: u32,
+    fixed_queue: Option<VecDeque<Bead>>,
 }
 
 impl<S, F, R: CommandRunner> ProductionAgentLoopController<S, F, R>
@@ -189,7 +191,13 @@ where
             loom_cfg: LoomTopConfig::default(),
             pre_integration_tip: None,
             current_attempt: 0,
+            fixed_queue: None,
         }
+    }
+
+    pub fn with_fixed_queue(mut self, queue: VecDeque<Bead>) -> Self {
+        self.fixed_queue = Some(queue);
+        self
     }
 
     /// Snapshot the `[loom]` config block onto the controller so the
@@ -308,6 +316,9 @@ where
     F: std::future::Future<Output = (SessionResult, Option<ExitSignal>)> + Send,
 {
     async fn next_ready_bead(&mut self) -> Result<Option<Bead>, LoopError> {
+        if let Some(queue) = self.fixed_queue.as_mut() {
+            return Ok(queue.pop_front());
+        }
         // Dedup of clarify/blocked beads relies on the paired
         // `status=blocked` transition that `apply_clarify` / `apply_blocked`
         // write alongside the label. `bd ready` natively excludes
@@ -408,7 +419,11 @@ where
         // on the first attempt against a freshly-cloned tree.
         self.git.reset_bead_clone(&worktree.path).await?;
 
-        let key = resolve_scratch_key(Phase::Run, &self.label, Some(&bead.id));
+        let key = resolve_scratch_key(
+            Phase::Loop,
+            std::slice::from_ref(&self.label),
+            Some(&bead.id),
+        );
         let scratchpad_path =
             loom_driver::scratch::ScratchSession::scratchpad_path_for(&worktree.path, &key)
                 .to_string_lossy()

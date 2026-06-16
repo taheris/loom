@@ -1555,7 +1555,7 @@ mod tests {
                     ..
                 }
             ),
-            "empty queue in --once must surface NoGate(NoBeadsReady), got {:?}",
+            "empty fixed queue must surface NoGate(NoBeadsReady), got {:?}",
             outcome_empty.gate,
         );
 

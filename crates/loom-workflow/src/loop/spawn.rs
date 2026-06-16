@@ -71,7 +71,7 @@ pub fn sccache_mount(cfg: &LoomTopConfig) -> std::io::Result<Option<MountSpec>> 
 /// Missing manifest entries surface as [`ProfileError::UnknownProfile`] so
 /// the dispatcher can fail loudly instead of falling back to a default
 /// profile silently. `phase_default` carries the per-phase fallback name
-/// (already chained through `[phase.run]` → `[phase.default]` → built-in
+/// (already chained through `[phase.loop]` → `[phase.default]` → built-in
 /// `base` by `LoomConfig::agent_for`).
 ///
 /// `launcher_env` carries host-only key paths (`WRIX_DEPLOY_KEY` /

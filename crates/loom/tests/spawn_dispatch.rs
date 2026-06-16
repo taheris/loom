@@ -512,7 +512,7 @@ fn loom_todo_writes_jsonl_log_under_workspace_logs_dir() {
 /// and mock-pi finish the protocol so the sink reaches `session_complete`
 /// before being dropped.
 #[test]
-fn loom_loop_once_writes_per_bead_jsonl_log() {
+fn loom_loop_bead_writes_per_bead_jsonl_log() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -558,9 +558,7 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
         .arg("--agent")
         .arg("pi")
         .arg("loop")
-        .arg("--once")
-        .arg("-s")
-        .arg("agent")
+        .arg("lm-runtest")
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", &shim)
         // Point `LOOM_BIN` at a no-op shim so the per-bead gate's
@@ -580,13 +578,13 @@ fn loom_loop_once_writes_per_bead_jsonl_log() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom loop --once must exit 0 against the bd + wrix stubs. stdout={stdout} stderr={stderr}",
+        "loom loop <bead-id> must exit 0 against the bd + wrix stubs. stdout={stdout} stderr={stderr}",
     );
 
     let logs_dir = workspace.join(".loom/logs/agent");
     assert!(
         logs_dir.is_dir(),
-        "per-bead log directory must exist after `loom loop --once`: {}\nstdout={stdout}\nstderr={stderr}",
+        "per-bead log directory must exist after `loom loop <bead-id>`: {}\nstdout={stdout}\nstderr={stderr}",
         logs_dir.display(),
     );
     let entries: Vec<_> = std::fs::read_dir(&logs_dir)

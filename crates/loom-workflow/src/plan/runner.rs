@@ -9,7 +9,7 @@ use loom_driver::config::{LoomConfig, Phase};
 use loom_driver::identifier::{ProfileName, SpecLabel};
 use loom_driver::lock::LockManager;
 use loom_driver::profile_manifest::{ImageEntry, ProfileImageManifest};
-use loom_driver::scratch::ScratchSession;
+use loom_driver::scratch::{ScratchSession, resolve_plan_scratch_key};
 use loom_driver::state::CacheDb;
 
 use super::command::{WRIX_BIN, build_wrix_argv};
@@ -89,7 +89,7 @@ pub fn run_with_timeout(
     let spec_index = read_pinned_context(workspace, "docs/README.md")?;
     let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
     let companion_paths = anchor_companions(&db, &anchor_labels)?;
-    let key = plan_scratch_key(&anchor_labels);
+    let key = resolve_plan_scratch_key(&anchor_labels);
     let scratchpad_path = ScratchSession::scratchpad_path_for(workspace, &key)
         .to_string_lossy()
         .into_owned();
@@ -178,17 +178,6 @@ fn anchor_companions(db: &CacheDb, anchor_labels: &[SpecLabel]) -> Result<Vec<St
         }
     }
     Ok(paths)
-}
-
-fn plan_scratch_key(anchor_labels: &[SpecLabel]) -> String {
-    if anchor_labels.is_empty() {
-        return "plan".to_string();
-    }
-    anchor_labels
-        .iter()
-        .map(SpecLabel::as_str)
-        .collect::<Vec<_>>()
-        .join("+")
 }
 
 fn read_pinned_context(workspace: &Path, rel: &str) -> Result<String, PlanError> {

@@ -40,20 +40,22 @@ pub struct PhaseAgentConfig {
 
 /// Workflow phase that resolves an [`AgentSelection`] from config.
 ///
-/// `[phase.<phase>]` table keys in TOML correspond one-to-one with this
-/// enum's lowercase variants: `plan`, `todo`, `run`, `check`, `msg`. The
-/// enum is the closed dispatch surface used by `LoomConfig::agent_for`;
-/// the `BTreeMap` that backs `[phase.*]` remains string-keyed so unknown
-/// TOML keys parse without error and the resolver's `[phase.default]`
-/// fallback is just another lookup against the same map.
+/// `[phase.<phase>]` table keys in TOML correspond to the active workflow
+/// phases. `loom loop` resolves `[phase.loop]`; LLM review resolves
+/// `[phase.gate.review]`. The `BTreeMap` that backs `[phase.*]` remains
+/// string-keyed so unknown TOML keys parse without error and the resolver's
+/// `[phase.default]` fallback is just another lookup against the same map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum Phase {
+    #[serde(rename = "plan")]
     Plan,
+    #[serde(rename = "todo")]
     Todo,
-    Run,
-    Check,
+    #[serde(rename = "loop")]
+    Loop,
+    #[serde(rename = "gate.review")]
     Review,
+    #[serde(rename = "msg")]
     Msg,
 }
 
@@ -62,9 +64,8 @@ impl Phase {
         match self {
             Phase::Plan => "plan",
             Phase::Todo => "todo",
-            Phase::Run => "run",
-            Phase::Check => "check",
-            Phase::Review => "review",
+            Phase::Loop => "loop",
+            Phase::Review => "gate.review",
             Phase::Msg => "msg",
         }
     }
@@ -181,9 +182,8 @@ mod tests {
         for (phase, expected) in [
             (Phase::Plan, "plan"),
             (Phase::Todo, "todo"),
-            (Phase::Run, "run"),
-            (Phase::Check, "check"),
-            (Phase::Review, "review"),
+            (Phase::Loop, "loop"),
+            (Phase::Review, "gate.review"),
             (Phase::Msg, "msg"),
         ] {
             assert_eq!(

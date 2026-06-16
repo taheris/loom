@@ -139,7 +139,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         .spec_filter
         .clone()
         .unwrap_or_else(|| SpecLabel::new("msg-chat"));
-    let key = resolve_scratch_key(Phase::Msg, &scope_label, None);
+    let key = resolve_scratch_key(Phase::Msg, std::slice::from_ref(&scope_label), None);
     let scratchpad_path = ScratchSession::scratchpad_path_for(workspace, &key)
         .to_string_lossy()
         .into_owned();

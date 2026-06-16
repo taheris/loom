@@ -3,7 +3,7 @@
 //! driver itself never invokes `bd close` (closure is the agent's
 //! responsibility per `specs/harness.md` § Verdict gate).
 //!
-//! Drives `loom loop --once` against a Rust mock agent that emits the
+//! Drives `loom loop <bead-id>` against a Rust mock agent that emits the
 //! marker through the pi-mono protocol, with `bd-shim` standing in for
 //! the live beads socket. A prior bug collapsed every clean-exit
 //! session to `AgentOutcome::Success → bd close`, ignoring markers; the
@@ -70,13 +70,13 @@ fn write_minimal_manifest(dir: &Path) -> PathBuf {
     manifest
 }
 
-fn run_loom_loop_once(
+fn run_loom_loop_bead(
     workspace: &Path,
     bin_dir: &Path,
     state_dir: &Path,
     manifest: &Path,
     agent_mode: &str,
-    spec_label: &str,
+    bead_id: &str,
 ) -> std::process::Output {
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let mut entries: Vec<PathBuf> = vec![bin_dir.to_path_buf()];
@@ -92,9 +92,7 @@ fn run_loom_loop_once(
         .arg("--agent")
         .arg("pi")
         .arg("loop")
-        .arg("--once")
-        .arg("-s")
-        .arg(spec_label)
+        .arg(bead_id)
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", mock_agent)
         .env("LOOM_TEST_AGENT_MODE", agent_mode)
@@ -151,7 +149,7 @@ fn driver_closed_bead(log: &str, target_id: &str) -> bool {
 /// The status transition is the dedup mechanism: `bd ready` natively
 /// excludes status=blocked so the run loop won't re-dispatch the bead.
 #[test]
-fn loom_loop_once_routes_blocked_marker_to_label_and_status_blocked() {
+fn loom_loop_bead_routes_blocked_marker_to_label_and_status_blocked() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -169,20 +167,20 @@ fn loom_loop_once_routes_blocked_marker_to_label_and_status_blocked() {
     let bin_dir = install_bd_shim(workspace);
     let manifest = write_minimal_manifest(workspace);
 
-    let output = run_loom_loop_once(
+    let output = run_loom_loop_bead(
         workspace,
         &bin_dir,
         &state_dir,
         &manifest,
         "blocked-marker",
-        "markertest",
+        "lm-blocka",
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let log = read_invocation_log(&state_dir);
     assert!(
         output.status.success(),
-        "loom loop --once must exit 0 on LOOM_BLOCKED.\n\
+        "loom loop <bead-id> must exit 0 on LOOM_BLOCKED.\n\
          stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
     );
 
@@ -211,7 +209,7 @@ fn loom_loop_once_routes_blocked_marker_to_label_and_status_blocked() {
 /// close. The status transition is the dedup mechanism per the paired
 /// label+status contract.
 #[test]
-fn loom_loop_once_routes_clarify_marker_to_label_and_status_blocked() {
+fn loom_loop_bead_routes_clarify_marker_to_label_and_status_blocked() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -234,20 +232,20 @@ fn loom_loop_once_routes_clarify_marker_to_label_and_status_blocked() {
     let bin_dir = install_bd_shim(workspace);
     let manifest = write_minimal_manifest(workspace);
 
-    let output = run_loom_loop_once(
+    let output = run_loom_loop_bead(
         workspace,
         &bin_dir,
         &state_dir,
         &manifest,
         "clarify-marker",
-        "markertest",
+        "lm-clara",
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let log = read_invocation_log(&state_dir);
     assert!(
         output.status.success(),
-        "loom loop --once must exit 0 on LOOM_CLARIFY.\n\
+        "loom loop <bead-id> must exit 0 on LOOM_CLARIFY.\n\
          stdout={stdout}\nstderr={stderr}\nbd-shim log:\n{log}",
     );
 
@@ -309,14 +307,7 @@ fn loom_loop_never_invokes_bd_close_on_dispatched_bead_across_all_markers() {
         let bin_dir = install_bd_shim(workspace);
         let manifest = write_minimal_manifest(workspace);
 
-        let output = run_loom_loop_once(
-            workspace,
-            &bin_dir,
-            &state_dir,
-            &manifest,
-            mode,
-            "noclostest",
-        );
+        let output = run_loom_loop_bead(workspace, &bin_dir, &state_dir, &manifest, mode, id);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let log = read_invocation_log(&state_dir);

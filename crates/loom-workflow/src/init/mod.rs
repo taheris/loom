@@ -744,8 +744,7 @@ mod tests {
         for phase in [
             Phase::Plan,
             Phase::Todo,
-            Phase::Run,
-            Phase::Check,
+            Phase::Loop,
             Phase::Review,
             Phase::Msg,
         ] {

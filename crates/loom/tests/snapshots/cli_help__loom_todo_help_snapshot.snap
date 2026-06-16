@@ -1,9 +1,8 @@
 ---
 source: crates/loom/tests/cli_help.rs
-assertion_line: 264
 expression: "loom_help(&[\"todo\"])"
 ---
-Decompose every touched spec into beads (multi-spec fan-out)
+Decompose the deterministic changed specs into the todo work epic
 
 Usage: loom todo [OPTIONS]
 

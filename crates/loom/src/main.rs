@@ -2,8 +2,8 @@
 //!
 //! Parses command-line arguments and dispatches to the workflow modules in
 //! `loom-workflow`. The set of subcommands matches the harness specification:
-//! `init`, `status`, `use`, `logs`, `spec`, plus the previously-implemented
-//! `run`, `gate`, `msg`. There is no `sync` or `tune` — Askama compiled
+//! `init`, `status`, `use`, `logs`, `spec`, `loop`, `gate`, and `msg`.
+//! There is no `sync` or `tune` — Askama compiled
 //! templates make per-project sync unnecessary (see `specs/harness.md`).
 
 use std::path::{Path, PathBuf};
@@ -273,8 +273,11 @@ enum Command {
         #[arg(long, conflicts_with_all = ["follow", "raw", "verbose"])]
         path: bool,
     },
-    /// Inspect spec annotations and tooling dependencies.
+    /// Inspect annotations and tooling dependencies for a spec.
     Spec {
+        /// Spec label to inspect.
+        #[arg(value_name = "LABEL")]
+        label: String,
         /// Print the unique nixpkgs names referenced by spec annotation targets.
         #[arg(long)]
         deps: bool,
@@ -290,20 +293,17 @@ enum Command {
         #[arg(long, value_name = "PROFILE")]
         profile: Option<String>,
     },
-    /// Per-bead execution loop. Continuous by default; `--once` exits after one bead.
+    /// Execute task beads from explicit work roots or the active work epic.
     Loop {
-        /// Process a single bead then exit (no auto-handoff to `loom gate verify` / `loom gate review`).
-        #[arg(long)]
-        once: bool,
+        /// Bead or epic ids to run; omitted means the sole open `loom:active` epic.
+        #[arg(value_name = "BEAD_OR_EPIC_ID")]
+        work_roots: Vec<String>,
         /// Concurrent dispatch slots (`-p N` / `--parallel N`). Default 1.
         #[arg(long, short = 'p', default_value = "1")]
         parallel: Parallelism,
         /// Override the per-bead `profile:X` label resolution.
         #[arg(long, value_name = "PROFILE")]
         profile: Option<String>,
-        /// Spec label override.
-        #[arg(long, short = 's', value_name = "LABEL")]
-        spec: Option<String>,
         /// ASCII output, no color, no OSC 8. Pipe-safe. Implied when
         /// stdout is not a TTY or `NO_COLOR` is set. Mutually exclusive
         /// with `--json` and `--raw`.
@@ -377,7 +377,7 @@ enum Command {
         )]
         chat: bool,
     },
-    /// Decompose every touched spec into beads (multi-spec fan-out).
+    /// Decompose the deterministic changed specs into the todo work epic.
     Todo {
         /// Override the anchor's `base_commit` for tier-1 detection.
         #[arg(long, value_name = "COMMIT")]
@@ -599,7 +599,9 @@ fn main() -> ExitCode {
             path,
         } => run_logs(&workspace, bead.as_deref(), follow, raw, verbose, path)
             .map(|()| ExitCode::SUCCESS),
-        Command::Spec { deps } => run_spec(&workspace, deps).map(|()| ExitCode::SUCCESS),
+        Command::Spec { label, deps } => {
+            run_spec(&workspace, label, deps).map(|()| ExitCode::SUCCESS)
+        }
         Command::Plan {
             anchor_labels,
             profile,
@@ -607,20 +609,18 @@ fn main() -> ExitCode {
             run_plan(&workspace, anchor_labels, profile, agent_override).map(|()| ExitCode::SUCCESS)
         }
         Command::Loop {
-            once,
+            work_roots,
             parallel,
             profile,
-            spec,
             plain,
             json,
             raw,
             verbose,
         } => run_loop_cmd(
             &workspace,
-            once,
+            work_roots,
             parallel,
             profile,
-            spec,
             agent_override,
             RenderFlags {
                 plain,
@@ -671,8 +671,7 @@ fn main() -> ExitCode {
 /// Spec-table function: the binary's exit code is a pure function of the
 /// [`GateOutcome`] variant — `Success(_)` and `NoGate { .. }` exit 0,
 /// `Fail(_)` exits non-zero. Lives at the binary boundary so wrapper scripts
-/// consume one canonical signal across sequential, parallel, once, and
-/// all-specs codepaths.
+/// consume one canonical signal across sequential and parallel loop paths.
 fn exit_code_for_gate(gate: &GateOutcome) -> ExitCode {
     match gate {
         GateOutcome::Success(_) | GateOutcome::NoGate { .. } => ExitCode::SUCCESS,
@@ -2371,20 +2370,20 @@ struct RenderFlags {
 
 fn run_loop_cmd(
     workspace: &Path,
-    once: bool,
+    work_roots: Vec<String>,
     parallel: Parallelism,
     profile: Option<String>,
-    spec: Option<String>,
     agent_override: Option<AgentKind>,
     render_flags: RenderFlags,
 ) -> anyhow::Result<LoopOutcome> {
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let runtime = tokio::runtime::Runtime::new()?;
-    let label = runtime.block_on(async {
+    let root = runtime.block_on(async {
         let bd = BdClient::new();
-        resolve_loop_spec_label(&bd, workspace, spec).await
+        resolve_loop_work_root(&bd, work_roots).await
     })?;
-    let work_root_guard = acquire_active_work_root_lock(workspace, &label, &runtime)?;
+    let label = root.label.clone();
+    let work_root_guard = Some(acquire_work_root_lock(workspace, root.id.as_str())?);
 
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     sweep_retention_at(
@@ -2396,7 +2395,7 @@ fn run_loop_cmd(
     // the config (or via `--agent` — clap covers the latter) fails before
     // any work begins. The resolution itself is the wiring; the dispatch
     // closure handed to the parallel batch driver below is what consumes it.
-    let selection = resolved_agent_for(&config, agent_override, Phase::Run)?;
+    let selection = resolved_agent_for(&config, agent_override, Phase::Loop)?;
     let phase_default = selection.profile.clone();
     let cli_profile = profile.map(ProfileName::new);
 
@@ -2451,6 +2450,9 @@ fn run_loop_cmd(
     }
 
     if !parallel.is_one() {
+        if matches!(root.kind, LoopWorkRootKind::Task) {
+            anyhow::bail!("loom loop --parallel does not accept task bead roots");
+        }
         let _guard = work_root_guard;
         let parallel_n = parallel.get();
         let workspace_buf = workspace.to_path_buf();
@@ -2485,10 +2487,9 @@ fn run_loop_cmd(
         return Ok(outcome);
     }
 
-    let mode = if once {
-        LoopMode::Once
-    } else {
-        LoopMode::Continuous
+    let mode = match root.kind {
+        LoopWorkRootKind::Task => LoopMode::Once,
+        LoopWorkRootKind::Epic => LoopMode::Continuous,
     };
     let manifest_for_seq = Arc::clone(&manifest);
     let kind = selection.kind;
@@ -2570,6 +2571,9 @@ fn run_loop_cmd(
         .with_agent_runtime(kind)
         .with_loom_config(loom_cfg_for_run)
         .with_phase_log_root(logs_root_for_controller);
+        if let LoopWorkRootKind::Task = root.kind {
+            controller = controller.with_fixed_queue(std::collections::VecDeque::from([root.bead]));
+        }
         if let Some(guard) = work_root_guard {
             controller = controller.with_handoff_lock(guard);
         }
@@ -2856,7 +2860,11 @@ async fn dispatch_for_slot(
     };
 
     let banner = format!("loom loop @ {}", slot.bead.id);
-    let key = resolve_scratch_key(Phase::Run, label, Some(&slot.bead.id));
+    let key = resolve_scratch_key(
+        Phase::Loop,
+        std::slice::from_ref(label),
+        Some(&slot.bead.id),
+    );
     let scratchpad_path = ScratchSession::scratchpad_path_for(&slot.worktree.path, &key)
         .to_string_lossy()
         .into_owned();
@@ -3730,15 +3738,36 @@ fn acquire_review_work_root_lock(
     acquire_active_work_root_lock(workspace, label, runtime)
 }
 
-async fn resolve_loop_spec_label<R: CommandRunner>(
-    bd: &BdClient<R>,
-    workspace: &Path,
-    spec: Option<String>,
-) -> anyhow::Result<SpecLabel> {
-    if let Some(s) = spec {
-        return Ok(SpecLabel::new(s));
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LoopWorkRootKind {
+    Task,
+    Epic,
+}
 
+#[derive(Debug, Clone)]
+struct LoopWorkRoot {
+    id: BeadId,
+    label: SpecLabel,
+    kind: LoopWorkRootKind,
+    bead: Bead,
+}
+
+async fn resolve_loop_work_root<R: CommandRunner>(
+    bd: &BdClient<R>,
+    roots: Vec<String>,
+) -> anyhow::Result<LoopWorkRoot> {
+    match roots.as_slice() {
+        [] => resolve_active_loop_work_root(bd).await,
+        [root] => resolve_explicit_loop_work_root(bd, root).await,
+        _ => Err(anyhow::anyhow!(
+            "loom loop currently accepts one work root per invocation"
+        )),
+    }
+}
+
+async fn resolve_active_loop_work_root<R: CommandRunner>(
+    bd: &BdClient<R>,
+) -> anyhow::Result<LoopWorkRoot> {
     let active = bd
         .list(ListOpts {
             status: Some("open".to_string()),
@@ -3748,8 +3777,10 @@ async fn resolve_loop_spec_label<R: CommandRunner>(
         })
         .await?;
     match active.len() {
-        0 => resolve_spec_label_from_tree(workspace),
-        1 => spec_label_from_active_epic(&active[0]),
+        1 => loop_work_root_from_bead(active[0].clone(), LoopWorkRootKind::Epic),
+        0 => Err(anyhow::anyhow!(
+            "no open loom:active work epic found; pass a bead or epic id explicitly"
+        )),
         _ => {
             let ids = active
                 .iter()
@@ -3763,8 +3794,32 @@ async fn resolve_loop_spec_label<R: CommandRunner>(
     }
 }
 
-fn spec_label_from_active_epic(epic: &Bead) -> anyhow::Result<SpecLabel> {
-    let mut labels = epic
+async fn resolve_explicit_loop_work_root<R: CommandRunner>(
+    bd: &BdClient<R>,
+    root: &str,
+) -> anyhow::Result<LoopWorkRoot> {
+    let id = BeadId::new(root)?;
+    let bead = bd.show(&id).await?;
+    let kind = if bead.issue_type == "epic" {
+        LoopWorkRootKind::Epic
+    } else {
+        LoopWorkRootKind::Task
+    };
+    loop_work_root_from_bead(bead, kind)
+}
+
+fn loop_work_root_from_bead(bead: Bead, kind: LoopWorkRootKind) -> anyhow::Result<LoopWorkRoot> {
+    let label = spec_label_from_work_root(&bead)?;
+    Ok(LoopWorkRoot {
+        id: bead.id.clone(),
+        label,
+        kind,
+        bead,
+    })
+}
+
+fn spec_label_from_work_root(root: &Bead) -> anyhow::Result<SpecLabel> {
+    let mut labels = root
         .labels
         .iter()
         .filter_map(|label| label.spec_label())
@@ -3776,10 +3831,10 @@ fn spec_label_from_active_epic(epic: &Bead) -> anyhow::Result<SpecLabel> {
         1 => labels
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow::anyhow!("active work epic {} has no spec label", epic.id)),
+            .ok_or_else(|| anyhow::anyhow!("work root {} has no spec label", root.id)),
         0 => Err(anyhow::anyhow!(
-            "active work epic {} has no spec:<label> label",
-            epic.id
+            "work root {} has no spec:<label> label",
+            root.id
         )),
         _ => {
             let declared = labels
@@ -3788,8 +3843,8 @@ fn spec_label_from_active_epic(epic: &Bead) -> anyhow::Result<SpecLabel> {
                 .collect::<Vec<_>>()
                 .join(", ");
             Err(anyhow::anyhow!(
-                "active work epic {} has multiple spec labels ({declared}); pass --spec to select one explicitly",
-                epic.id
+                "work root {} has multiple spec labels ({declared}); pass one root with a single spec label",
+                root.id
             ))
         }
     }
@@ -3855,18 +3910,8 @@ fn current_loom_bin() -> anyhow::Result<PathBuf> {
     Ok(std::env::current_exe()?)
 }
 
-fn run_spec(workspace: &std::path::Path, deps: bool) -> anyhow::Result<()> {
-    let labels = resolve_tree_mint_labels(workspace, None)?;
-    let label = if labels.len() == 1 {
-        labels
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("no spec files found under specs/"))?
-    } else {
-        return Err(anyhow::anyhow!(
-            "multiple specs found; inspect a spec by path or narrow the workspace"
-        ));
-    };
+fn run_spec(workspace: &std::path::Path, label: String, deps: bool) -> anyhow::Result<()> {
+    let label = SpecLabel::new(label);
     if deps {
         let pkgs = spec::deps_for_label(workspace, &label)?;
         for pkg in pkgs {
@@ -3901,6 +3946,56 @@ fn run_spec(workspace: &std::path::Path, deps: bool) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::ffi::OsString;
+
+    #[derive(Clone)]
+    struct ScriptedRunner {
+        outputs: Arc<Mutex<VecDeque<&'static str>>>,
+    }
+
+    impl ScriptedRunner {
+        fn new(outputs: impl IntoIterator<Item = &'static str>) -> Self {
+            Self {
+                outputs: Arc::new(Mutex::new(outputs.into_iter().collect())),
+            }
+        }
+    }
+
+    impl CommandRunner for ScriptedRunner {
+        async fn run(
+            &self,
+            _args: Vec<OsString>,
+            _timeout: Duration,
+        ) -> Result<loom_driver::bd::RunOutput, loom_driver::bd::BdError> {
+            let mut outputs = self.outputs.lock().expect("scripted output lock");
+            let stdout = outputs.pop_front().expect("scripted bd output");
+            Ok(loom_driver::bd::RunOutput {
+                status: 0,
+                stdout: stdout.as_bytes().to_vec(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn loop_accepts_positional_work_roots_and_defaults_to_active_epic() -> anyhow::Result<()>
+    {
+        let active = r#"[{"id":"lm-active","title":"active","status":"open","priority":2,"issue_type":"epic","labels":["loom:active","spec:harness"],"metadata":{}}]"#;
+        let task = r#"[{"id":"lm-task","title":"task","status":"open","priority":2,"issue_type":"task","labels":["spec:gate"],"metadata":{}}]"#;
+        let bd = BdClient::with_runner(ScriptedRunner::new([active, task]));
+
+        let default_root = resolve_loop_work_root(&bd, Vec::new()).await?;
+        assert_eq!(default_root.id, BeadId::new("lm-active")?);
+        assert_eq!(default_root.label, SpecLabel::new("harness"));
+        assert_eq!(default_root.kind, LoopWorkRootKind::Epic);
+
+        let task_root = resolve_loop_work_root(&bd, vec!["lm-task".to_string()]).await?;
+        assert_eq!(task_root.id, BeadId::new("lm-task")?);
+        assert_eq!(task_root.label, SpecLabel::new("gate"));
+        assert_eq!(task_root.kind, LoopWorkRootKind::Task);
+        Ok(())
+    }
 
     /// Spec contract `specs/harness.md` § Labels: parallel-mode
     /// `loom:clarify` / `loom:blocked` self-reports must pair

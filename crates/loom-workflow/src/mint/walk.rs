@@ -386,7 +386,7 @@ where
         let (test_sources, judge_rubrics) =
             load_review_sources(&self.workspace, &self.workspace.join(&spec_path_rel))
                 .map_err(|e| WalkError::Rubric(e.to_string()))?;
-        let key = resolve_scratch_key(Phase::Review, &self.label, None);
+        let key = resolve_scratch_key(Phase::Review, std::slice::from_ref(&self.label), None);
         let scratchpad_path = ScratchSession::scratchpad_path_for(&self.workspace, &key)
             .to_string_lossy()
             .into_owned();
@@ -423,7 +423,7 @@ where
             .lookup(&self.phase_default, self.runtime)
             .map_err(|e| WalkError::Rubric(e.to_string()))?;
         let banner = format!("loom gate mint @ {}", self.label);
-        let key = resolve_scratch_key(Phase::Review, &self.label, None);
+        let key = resolve_scratch_key(Phase::Review, std::slice::from_ref(&self.label), None);
         let scratch = ScratchSession::open(&self.workspace, &key, &prompt, &banner)
             .map_err(|e| WalkError::Rubric(format!("scratch: {e}")))?;
         let spawn_config = crate::spawn::build_spawn_config(

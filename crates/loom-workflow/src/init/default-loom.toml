@@ -40,7 +40,7 @@ retention_days = 14
 
 # Per-phase config. Resolution for any field: [phase.<name>] →
 # [phase.default] → built-in. `loom loop` reads its profile from the
-# bead's `profile:X` label first, then [phase.run] / [phase.default];
+# bead's `profile:X` label first, then [phase.loop] / [phase.default];
 # the `--profile` CLI flag overrides everything.
 [phase.default]
 profile = "base"
@@ -52,7 +52,7 @@ agent.backend = "claude"
 # agent.provider = "deepseek"
 # agent.model_id = "deepseek-v3"
 #
-# [phase.check]
+# [phase.gate.review]
 # agent.backend = "claude"
 
 [claude]

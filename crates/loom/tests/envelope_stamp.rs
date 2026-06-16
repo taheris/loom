@@ -1,7 +1,7 @@
 //! Every `AgentEvent` emitted by `loom loop` carries a per-spawn
 //! envelope (real `bead_id`, monotonic `seq`, real `ts_ms`).
 //!
-//! Drives `loom loop --once` against the mock pi agent in
+//! Drives `loom loop <bead-id>` against the mock pi agent in
 //! `complete-marker` mode, locates the per-bead JSONL log, and asserts
 //! that every recorded event carries the seeded bead id and that `seq`
 //! advances by exactly one per event starting at zero. Guards against
@@ -86,13 +86,13 @@ fn install_loom_noop_stub(dir: &Path) -> PathBuf {
     stub
 }
 
-fn run_loom_loop_once(
+fn run_loom_loop_bead(
     workspace: &Path,
     bin_dir: &Path,
     state_dir: &Path,
     manifest: &Path,
     agent_mode: &str,
-    spec_label: &str,
+    bead_id: &str,
 ) -> std::process::Output {
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let mut entries: Vec<PathBuf> = vec![bin_dir.to_path_buf()];
@@ -109,9 +109,7 @@ fn run_loom_loop_once(
         .arg("--agent")
         .arg("pi")
         .arg("loop")
-        .arg("--once")
-        .arg("-s")
-        .arg(spec_label)
+        .arg(bead_id)
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", mock_agent)
         .env("LOOM_TEST_AGENT_MODE", agent_mode)
@@ -175,19 +173,19 @@ fn loom_loop_stamps_real_bead_id_and_monotonic_seq_on_every_event() {
     let bin_dir = install_bd_shim(workspace);
     let manifest = write_minimal_manifest(workspace);
 
-    let output = run_loom_loop_once(
+    let output = run_loom_loop_bead(
         workspace,
         &bin_dir,
         &state_dir,
         &manifest,
         "complete-marker",
-        spec,
+        bead,
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom loop --once must exit 0 on complete-marker.\nstdout={stdout}\nstderr={stderr}",
+        "loom loop <bead-id> must exit 0 on complete-marker.\nstdout={stdout}\nstderr={stderr}",
     );
 
     let log_path = find_bead_log(workspace, spec, bead);

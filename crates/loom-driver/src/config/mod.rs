@@ -148,6 +148,22 @@ fn config_parent(path: &Path) -> Result<PathBuf, LoomConfigError> {
         .join(parent))
 }
 
+fn normalize_nested_phase_tables(src: &str, cfg: &mut LoomConfig) -> Result<(), LoomConfigError> {
+    let value: toml::Value = toml::from_str(src)?;
+    let Some(review) = value
+        .get("phase")
+        .and_then(|phase| phase.get("gate"))
+        .and_then(|gate| gate.get("review"))
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let phase: PhaseConfig = review.try_into()?;
+    cfg.phase.remove("gate");
+    cfg.phase.insert("gate.review".to_string(), phase);
+    Ok(())
+}
+
 fn validate_suppressions(entries: &[SuppressionConfig]) -> Result<(), LoomConfigError> {
     for (index, entry) in entries.iter().enumerate() {
         let has_id = entry.id.as_deref().is_some_and(|id| !id.trim().is_empty());
@@ -180,7 +196,8 @@ impl LoomConfig {
     /// pin — to genuinely drop a pin, remove the corresponding
     /// `{% include %}` from the relevant template.
     pub fn from_toml_str(src: &str) -> Result<Self, LoomConfigError> {
-        let cfg: Self = toml::from_str(src)?;
+        let mut cfg: Self = toml::from_str(src)?;
+        normalize_nested_phase_tables(src, &mut cfg)?;
         for (field, value) in [
             ("pinned_context", &cfg.pinned_context),
             ("style_rules", &cfg.style_rules),
@@ -324,7 +341,7 @@ retention_days = 14
 
 # Per-phase config. Resolution for any field: [phase.<name>] →
 # [phase.default] → built-in. `loom loop` reads its profile from the
-# bead's `profile:X` label first, then [phase.run] / [phase.default];
+# bead's `profile:X` label first, then [phase.loop] / [phase.default];
 # the `--profile` CLI flag overrides everything.
 [phase.default]
 profile = "base"
@@ -336,7 +353,7 @@ agent.backend = "claude"
 # agent.provider = "deepseek"
 # agent.model_id = "deepseek-v3"
 #
-# [phase.check]
+# [phase.gate.review]
 # agent.backend = "claude"
 
 [claude]
@@ -407,8 +424,7 @@ post_result_grace_secs = 5
         for phase in [
             Phase::Plan,
             Phase::Todo,
-            Phase::Run,
-            Phase::Check,
+            Phase::Loop,
             Phase::Review,
             Phase::Msg,
         ] {
@@ -609,7 +625,7 @@ agent.backend = "pi"
 agent.provider = "deepseek"
 agent.model_id = "deepseek-v3"
 
-[phase.check]
+[phase.gate.review]
 agent.backend = "claude"
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
@@ -625,10 +641,10 @@ agent.backend = "claude"
         assert_eq!(todo.agent.provider.as_deref(), Some("deepseek"));
         assert_eq!(todo.agent.model_id.as_deref(), Some("deepseek-v3"));
 
-        let check = &cfg.phase["check"];
-        assert!(check.profile.is_none());
-        assert_eq!(check.agent.backend.as_deref(), Some("claude"));
-        assert!(check.agent.provider.is_none());
+        let review = &cfg.phase["gate.review"];
+        assert!(review.profile.is_none());
+        assert_eq!(review.agent.backend.as_deref(), Some("claude"));
+        assert!(review.agent.provider.is_none());
         Ok(())
     }
 
@@ -818,7 +834,7 @@ reason = "Generated template noise."
 
     /// `[phase.default] agent.backend = "claude"` with `[phase.todo]
     /// agent.backend = "pi"` → `agent_for(Todo)` returns `Pi`,
-    /// `agent_for(Run)` inherits `Claude` from default.
+    /// `agent_for(Loop)` inherits `Claude` from default.
     #[test]
     fn agent_for_per_phase_resolves_override_and_default() -> Result<()> {
         let src = r#"
@@ -841,7 +857,7 @@ agent.model_id = "deepseek-v3"
         assert_eq!(todo.model_id.as_deref(), Some("deepseek-v3"));
         assert!(todo.claude_settings.is_none());
 
-        let run = cfg.agent_for(Phase::Run).expect("agent_for run");
+        let run = cfg.agent_for(Phase::Loop).expect("agent_for run");
         assert_eq!(run.profile.as_str(), "base");
         assert_eq!(run.kind, AgentKind::Claude);
         assert!(run.provider.is_none());
@@ -849,6 +865,28 @@ agent.model_id = "deepseek-v3"
         assert_eq!(claude.post_result_grace_secs, 5);
         assert!(claude.denied_tools.is_empty());
 
+        Ok(())
+    }
+
+    #[test]
+    fn agent_for_loop_and_gate_review_use_active_phase_keys() -> Result<()> {
+        let src = r#"
+[phase.default]
+agent.backend = "claude"
+
+[phase.loop]
+profile = "rust"
+agent.backend = "pi"
+
+[phase.gate.review]
+agent.backend = "direct"
+"#;
+        let cfg = LoomConfig::from_toml_str(src)?;
+        let loop_sel = cfg.agent_for(Phase::Loop).expect("loop phase");
+        assert_eq!(loop_sel.profile.as_str(), "rust");
+        assert_eq!(loop_sel.kind, AgentKind::Pi);
+        let review_sel = cfg.agent_for(Phase::Review).expect("review phase");
+        assert_eq!(review_sel.kind, AgentKind::Direct);
         Ok(())
     }
 
@@ -873,7 +911,7 @@ agent.thinking_level = "high"
         let todo = cfg.agent_for(Phase::Todo).expect("agent_for todo");
         assert_eq!(todo.thinking_level, Some(ThinkingLevel::High));
 
-        let run = cfg.agent_for(Phase::Run).expect("agent_for run");
+        let run = cfg.agent_for(Phase::Loop).expect("agent_for run");
         assert_eq!(run.thinking_level, Some(ThinkingLevel::Medium));
         Ok(())
     }
@@ -890,7 +928,7 @@ agent.backend = "pi"
 agent.thinking_level = "ultra"
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
-        match cfg.agent_for(Phase::Run) {
+        match cfg.agent_for(Phase::Loop) {
             Err(AgentSelectionError::UnknownThinkingLevel { name }) => {
                 assert_eq!(name, "ultra");
             }
@@ -922,8 +960,7 @@ agent.model_id = "claude-sonnet-4-6"
         for phase in [
             Phase::Plan,
             Phase::Todo,
-            Phase::Run,
-            Phase::Check,
+            Phase::Loop,
             Phase::Review,
             Phase::Msg,
         ] {
@@ -945,7 +982,7 @@ agent.model_id = "claude-sonnet-4-6"
 profile = "base"
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
-        let sel = cfg.agent_for(Phase::Run).expect("agent_for");
+        let sel = cfg.agent_for(Phase::Loop).expect("agent_for");
         assert_eq!(sel.kind, AgentKind::Claude);
         assert_eq!(sel.profile.as_str(), "base");
         Ok(())
@@ -960,7 +997,7 @@ profile = "base"
 agent.backend = "gpt"
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
-        match cfg.agent_for(Phase::Run) {
+        match cfg.agent_for(Phase::Loop) {
             Err(AgentSelectionError::UnknownBackend { name }) => assert_eq!(name, "gpt"),
             other => panic!("expected UnknownBackend, got {other:?}"),
         }
@@ -984,7 +1021,7 @@ agent.backend = "ollama"
             other => panic!("expected UnknownBackend, got {other:?}"),
         }
         // Other phases unaffected.
-        let run = cfg.agent_for(Phase::Run).expect("run unaffected");
+        let run = cfg.agent_for(Phase::Loop).expect("run unaffected");
         assert_eq!(run.kind, AgentKind::Claude);
         Ok(())
     }
@@ -1001,7 +1038,7 @@ post_result_grace_secs = 12
 denied_tools = ["WebFetch", "Other"]
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
-        let sel = cfg.agent_for(Phase::Run).expect("agent_for");
+        let sel = cfg.agent_for(Phase::Loop).expect("agent_for");
         let claude = sel.claude_settings.expect("claude_settings present");
         assert_eq!(claude.post_result_grace_secs, 12);
         assert_eq!(claude.denied_tools, vec!["WebFetch", "Other"]);
@@ -1024,7 +1061,7 @@ profile = "rust"
             "rust"
         );
         assert_eq!(
-            cfg.agent_for(Phase::Run).expect("run").profile.as_str(),
+            cfg.agent_for(Phase::Loop).expect("run").profile.as_str(),
             "base"
         );
         Ok(())

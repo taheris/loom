@@ -2,9 +2,12 @@
 source: crates/loom/tests/cli_help.rs
 expression: "loom_help(&[\"spec\"])"
 ---
-Inspect spec annotations and tooling dependencies
+Inspect annotations and tooling dependencies for a spec
 
-Usage: loom spec [OPTIONS]
+Usage: loom spec [OPTIONS] <LABEL>
+
+Arguments:
+  <LABEL>  Spec label to inspect
 
 Options:
       --deps              Print the unique nixpkgs names referenced by spec annotation targets

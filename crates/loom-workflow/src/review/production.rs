@@ -568,7 +568,7 @@ where
         let spec_path = format!("specs/{}.md", self.label.as_str());
         let (test_sources, judge_rubrics) =
             load_review_sources(&self.workspace, &self.workspace.join(&spec_path))?;
-        let key = resolve_scratch_key(Phase::Review, &self.label, None);
+        let key = resolve_scratch_key(Phase::Review, std::slice::from_ref(&self.label), None);
         let scratchpad_path =
             loom_driver::scratch::ScratchSession::scratchpad_path_for(&self.workspace, &key)
                 .to_string_lossy()
@@ -824,7 +824,7 @@ where
         let prompt = self.build_review_prompt().await?;
         let entry = self.manifest.lookup(&self.phase_default, self.runtime)?;
         let banner = format!("loom review @ {}", self.label);
-        let key = resolve_scratch_key(Phase::Review, &self.label, None);
+        let key = resolve_scratch_key(Phase::Review, std::slice::from_ref(&self.label), None);
         let scratch =
             loom_driver::scratch::ScratchSession::open(&self.workspace, &key, &prompt, &banner)
                 .map_err(|source| ReviewError::Protocol(ProtocolError::Io(source)))?;

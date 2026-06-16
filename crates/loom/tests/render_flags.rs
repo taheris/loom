@@ -2,7 +2,7 @@
 //! `--plain` CLI flags and the on-disk JSONL stays identical regardless
 //! of which mode drives the terminal.
 //!
-//! Each test spawns `loom loop --once` against the mock pi agent in
+//! Each test spawns `loom loop <bead-id>` against the mock pi agent in
 //! `complete-marker` mode with one of the new flags, then parses
 //! stdout against the spec'd shape:
 //!
@@ -67,7 +67,7 @@ fn run_loom_with_flag(
     bin_dir: &Path,
     state_dir: &Path,
     manifest: &Path,
-    spec_label: &str,
+    bead_id: &str,
     flag: &str,
 ) -> std::process::Output {
     let path_var = std::env::var_os("PATH").unwrap_or_default();
@@ -84,9 +84,7 @@ fn run_loom_with_flag(
         .arg("--agent")
         .arg("pi")
         .arg("loop")
-        .arg("--once")
-        .arg("-s")
-        .arg(spec_label)
+        .arg(bead_id)
         .arg(flag)
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", mock_agent)
@@ -155,12 +153,12 @@ fn loom_loop_json_flag_emits_pretty_printed_json_on_stdout() {
         &[&format!("spec:{spec}"), "profile:base"],
     );
 
-    let output = run_loom_with_flag(workspace, &bin_dir, &state_dir, &manifest, spec, "--json");
+    let output = run_loom_with_flag(workspace, &bin_dir, &state_dir, &manifest, bead, "--json");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom loop --once --json must exit 0.\nstdout={stdout}\nstderr={stderr}",
+        "loom loop <bead-id> --json must exit 0.\nstdout={stdout}\nstderr={stderr}",
     );
     // Json mode emits pretty-printed objects. The presence of `"kind":`
     // (with the space between `:` and the value that pretty-print
@@ -196,12 +194,12 @@ fn loom_loop_raw_flag_emits_compact_jsonl_on_stdout() {
         &[&format!("spec:{spec}"), "profile:base"],
     );
 
-    let output = run_loom_with_flag(workspace, &bin_dir, &state_dir, &manifest, spec, "--raw");
+    let output = run_loom_with_flag(workspace, &bin_dir, &state_dir, &manifest, bead, "--raw");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom loop --once --raw must exit 0.\nstdout={stdout}\nstderr={stderr}",
+        "loom loop <bead-id> --raw must exit 0.\nstdout={stdout}\nstderr={stderr}",
     );
     // Raw mode emits compact JSON. Find at least one parseable event line.
     let parsed = stdout
@@ -231,12 +229,12 @@ fn loom_loop_plain_flag_emits_no_ansi_escapes_on_stdout() {
         &[&format!("spec:{spec}"), "profile:base"],
     );
 
-    let output = run_loom_with_flag(workspace, &bin_dir, &state_dir, &manifest, spec, "--plain");
+    let output = run_loom_with_flag(workspace, &bin_dir, &state_dir, &manifest, bead, "--plain");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "loom loop --once --plain must exit 0.\nstdout={stdout}\nstderr={stderr}",
+        "loom loop <bead-id> --plain must exit 0.\nstdout={stdout}\nstderr={stderr}",
     );
     // Plain output must not carry ANSI escape bytes; OSC 8 wrappers and
     // color codes both start with `\x1b`.

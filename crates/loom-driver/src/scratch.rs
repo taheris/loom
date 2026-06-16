@@ -10,9 +10,9 @@
 //! - `claude-settings.json` — registers `repin.sh` under
 //!   `SessionStart[matcher: "compact"]`.
 //!
-//! `<key>` is the spec label for `loom plan` / `loom todo` and the bead
-//! id for `loom loop` / `loom gate`. Two parallel `loom loop` workers on
-//! different beads of the same molecule get independent dirs.
+//! `<key>` is the joined plan anchors (or `plan`), the todo work epic id,
+//! or the bead id for `loom loop` / `loom gate` / `loom msg`. Two parallel
+//! `loom loop` workers on different beads get independent dirs.
 //!
 //! Cleanup runs on every exit path: [`Drop`] removes the directory
 //! unconditionally, so a panic in the workflow engine still leaves no
@@ -30,20 +30,40 @@ use crate::identifier::{BeadId, SpecLabel};
 
 const SCRATCH_SUBDIR: &str = ".loom/scratch";
 
-/// Resolve the per-session scratch-dir key for `phase`. Single source of
-/// truth for the spec-label-vs-bead-id choice documented in
-/// `specs/harness.md`: spec label for `loom plan` / `loom todo`,
-/// bead id for `loom loop` / `loom gate` / `loom msg`. `loom gate verify`
-/// currently runs once per molecule and has no bead at the call site —
-/// when `bead_id` is `None` for a bead-scoped phase the helper falls
-/// back to the spec label so the on-disk path stays deterministic.
-pub fn resolve_scratch_key(phase: Phase, label: &SpecLabel, bead_id: Option<&BeadId>) -> String {
+/// Resolve the per-session scratch-dir key for a phase.
+/// Plan sessions use joined anchor labels or `plan`; todo passes the work
+/// epic as `bead_id`; loop, gate review, and msg pass the bead under discussion.
+pub fn resolve_scratch_key(
+    phase: Phase,
+    anchor_labels: &[SpecLabel],
+    bead_id: Option<&BeadId>,
+) -> String {
     match phase {
-        Phase::Plan | Phase::Todo => label.as_str().to_string(),
-        Phase::Run | Phase::Check | Phase::Review | Phase::Msg => {
-            bead_id.map_or_else(|| label.as_str().to_string(), |b| b.as_str().to_string())
-        }
+        Phase::Plan => resolve_plan_scratch_key(anchor_labels),
+        Phase::Todo | Phase::Loop | Phase::Review | Phase::Msg => bead_id.map_or_else(
+            || fallback_label_key(anchor_labels, phase),
+            |b| b.as_str().to_string(),
+        ),
     }
+}
+
+/// Resolve the plan-session scratch key from its initial anchors.
+pub fn resolve_plan_scratch_key(anchor_labels: &[SpecLabel]) -> String {
+    if anchor_labels.is_empty() {
+        return "plan".to_string();
+    }
+    anchor_labels
+        .iter()
+        .map(SpecLabel::as_str)
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+fn fallback_label_key(anchor_labels: &[SpecLabel], phase: Phase) -> String {
+    anchor_labels.first().map_or_else(
+        || phase.as_str().replace('.', "+"),
+        |label| label.as_str().to_string(),
+    )
 }
 
 /// Owns a `.loom/scratch/<key>/` directory for the duration of an
@@ -366,42 +386,44 @@ mod tests {
     }
 
     #[test]
-    fn resolve_scratch_key_picks_label_for_spec_scoped_phases() {
-        let label = SpecLabel::new("harness");
+    fn resolve_scratch_key_uses_plan_anchors_work_epic_or_bead() {
+        let harness = SpecLabel::new("harness");
+        let templates = SpecLabel::new("templates");
+        let anchors = vec![harness.clone(), templates];
         let bead = BeadId::new("lm-3hhwq.15").unwrap();
+        assert_eq!(resolve_scratch_key(Phase::Plan, &[], Some(&bead)), "plan");
         assert_eq!(
-            resolve_scratch_key(Phase::Plan, &label, Some(&bead)),
-            "harness",
+            resolve_scratch_key(Phase::Plan, &anchors, Some(&bead)),
+            "harness+templates"
         );
         assert_eq!(
-            resolve_scratch_key(Phase::Todo, &label, Some(&bead)),
-            "harness",
-        );
-        assert_eq!(resolve_scratch_key(Phase::Plan, &label, None), "harness",);
-    }
-
-    #[test]
-    fn resolve_scratch_key_picks_bead_id_for_bead_scoped_phases() {
-        let label = SpecLabel::new("harness");
-        let bead = BeadId::new("lm-3hhwq.15").unwrap();
-        assert_eq!(
-            resolve_scratch_key(Phase::Run, &label, Some(&bead)),
+            resolve_scratch_key(Phase::Todo, std::slice::from_ref(&harness), Some(&bead)),
             "lm-3hhwq.15",
         );
         assert_eq!(
-            resolve_scratch_key(Phase::Check, &label, Some(&bead)),
-            "lm-3hhwq.15",
+            resolve_scratch_key(Phase::Loop, std::slice::from_ref(&harness), Some(&bead)),
+            "lm-3hhwq.15"
         );
         assert_eq!(
-            resolve_scratch_key(Phase::Msg, &label, Some(&bead)),
-            "lm-3hhwq.15",
+            resolve_scratch_key(Phase::Review, std::slice::from_ref(&harness), Some(&bead)),
+            "lm-3hhwq.15"
+        );
+        assert_eq!(
+            resolve_scratch_key(Phase::Msg, std::slice::from_ref(&harness), Some(&bead)),
+            "lm-3hhwq.15"
         );
     }
 
     #[test]
     fn resolve_scratch_key_falls_back_to_label_when_bead_missing() {
         let label = SpecLabel::new("harness");
-        assert_eq!(resolve_scratch_key(Phase::Check, &label, None), "harness",);
-        assert_eq!(resolve_scratch_key(Phase::Run, &label, None), "harness",);
+        assert_eq!(
+            resolve_scratch_key(Phase::Review, std::slice::from_ref(&label), None),
+            "harness",
+        );
+        assert_eq!(
+            resolve_scratch_key(Phase::Loop, std::slice::from_ref(&label), None),
+            "harness",
+        );
     }
 }

@@ -140,13 +140,28 @@ fn loom_spec_help_snapshot() {
 }
 
 #[test]
+fn loom_spec_deps_requires_explicit_label() {
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let output = Command::new(loom_bin)
+        .args(["spec", "--deps"])
+        .env("COLUMNS", "100")
+        .env("CLAP_TERM_WIDTH", "100")
+        .output()
+        .expect("spawn loom");
+    assert!(
+        !output.status.success(),
+        "loom spec --deps must require an explicit label",
+    );
+}
+
+#[test]
 fn loom_plan_help_snapshot() {
     insta::assert_snapshot!(loom_help(&["plan"]));
 }
 
 #[test]
 fn loom_loop_help_snapshot() {
-    insta::assert_snapshot!(loom_help(&["run"]));
+    insta::assert_snapshot!(loom_help(&["loop"]));
 }
 
 #[test]
@@ -346,6 +361,30 @@ fn loom_msg_help_snapshot() {
 #[test]
 fn loom_todo_help_snapshot() {
     insta::assert_snapshot!(loom_help(&["todo"]));
+}
+
+#[test]
+fn loom_todo_help_documents_multispec_fail_loud_behavior() {
+    let out = loom_help(&["todo"]);
+    assert!(
+        out.contains("changed specs") || out.contains("multi-spec"),
+        "todo help must describe deterministic changed-spec decomposition: {out}",
+    );
+}
+
+#[test]
+fn loom_loop_help_documents_work_roots_and_removed_selectors() {
+    let out = loom_help(&["loop"]);
+    assert!(
+        out.contains("BEAD_OR_EPIC_ID"),
+        "loop help must name work roots: {out}"
+    );
+    for removed in ["--spec", "--once", "--all-specs"] {
+        assert!(
+            !out.contains(removed),
+            "loop help must not expose removed selector {removed}: {out}",
+        );
+    }
 }
 
 #[test]

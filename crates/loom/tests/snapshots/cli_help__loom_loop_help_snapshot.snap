@@ -1,33 +1,21 @@
 ---
 source: crates/loom/tests/cli_help.rs
-assertion_line: 149
-expression: "loom_help(&[\"run\"])"
+expression: "loom_help(&[\"loop\"])"
 ---
-Loom harness CLI
+Execute task beads from explicit work roots or the active work epic
 
-Usage: loom [OPTIONS] <COMMAND>
+Usage: loom loop [OPTIONS] [BEAD_OR_EPIC_ID]...
 
-Workflow:
-  plan    Interactive spec interview with optional initial anchors
-  todo    Decompose every touched spec into beads (multi-spec fan-out)
-  loop    Per-bead execution loop. Continuous by default; `--once` exits after one bead
-  gate    Quality gate — annotation-dispatched verifiers and LLM rubric
-  msg     Resolve outstanding `loom:clarify` and `loom:blocked` beads
-
-Inspection:
-  status  Print cache health and work-epic status
-  logs    Render (or tail) the most recent per-bead JSONL log
-  spec    Inspect spec annotations and tooling dependencies
-
-State:
-  init    Initialize the workspace (create `.loom/` config + cache DB)
-  use     Validate that a spec label exists in the cache
-  note    Manage notes for a spec
-
-  help    Print this message or the help of the given subcommand(s)
+Arguments:
+  [BEAD_OR_EPIC_ID]...  Bead or epic ids to run; omitted means the sole open `loom:active` epic
 
 Options:
-  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
-  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
-  -h, --help              Print help
-  -V, --version           Print version
+  -p, --parallel <PARALLEL>  Concurrent dispatch slots (`-p N` / `--parallel N`). Default 1 [default: 1]
+  -w, --workspace <PATH>     Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>      Override the agent backend for this invocation [possible values: claude, pi, direct]
+      --profile <PROFILE>    Override the per-bead `profile:X` label resolution
+      --plain                ASCII output, no color, no OSC 8. Pipe-safe. Implied when stdout is not a TTY or `NO_COLOR` is set. Mutually exclusive with `--json` and `--raw`
+      --json                 Emit one pretty-printed JSON object per line on stdout. Mutually exclusive with `--plain` and `--raw`
+      --raw                  Emit one compact JSON line per event on stdout — same as the on-disk JSONL shape. Mutually exclusive with `--plain`, `--json`, and `-v/--verbose`
+  -v, --verbose              Widen the rendered text: streams `TextDelta` verbatim and renders each `ToolResult` body capped at 10 lines with a recovery hint. Mutually exclusive with `--raw`
+  -h, --help                 Print help

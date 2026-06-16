@@ -23,7 +23,7 @@ fn mutating_and_llm_spawning_subcommands_refuse_with_loom_inside_set() {
         &["init"][..],
         &["use", "harness"],
         &["plan", "tmp"],
-        &["loop", "--once"],
+        &["loop"],
         &["gate", "audit", "--tree"],
         &["gate", "mint", "--tree"],
         &["gate", "review", "--tree"],

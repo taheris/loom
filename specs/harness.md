@@ -3080,7 +3080,7 @@ Criteria.
       child work under that epic/molecule). Options may appear before,
       between, or after ids; `--spec`, `--once`, and `--all-specs` are
       not part of the loop surface
-  [test?](loop_accepts_positional_work_roots_and_defaults_to_active_epic)
+  [test](loop_accepts_positional_work_roots_and_defaults_to_active_epic)
 - `loom loop --parallel N` (alias `-p N`) accepts a positive integer; non-
       positive or non-integer values fail with a clear error
   [test](default_is_one)
@@ -3257,11 +3257,11 @@ Criteria.
       preflight, the fail-loud guarantee for blocked/unregistered/stale
       specs, and that successful todo sets the active work epic only
       after every changed spec is represented
-  [test?](loom_todo_help_documents_multispec_fail_loud_behavior)
+  [test](loom_todo_help_documents_multispec_fail_loud_behavior)
 - `loom loop --help` documents `[BEAD_OR_EPIC_ID ...]`, the default
       `loom:active` work epic, interspersed options, and absence of
       `--spec` / `--once` / `--all-specs`
-  [test?](loom_loop_help_documents_work_roots_and_removed_selectors)
+  [test](loom_loop_help_documents_work_roots_and_removed_selectors)
 - Bare `loom msg` lists every outstanding open `loom:blocked` and
       `loom:clarify` bead across all specs (cross-spec default); no
       active-spec cache value is consulted, and closed beads are
@@ -3758,7 +3758,7 @@ two agent-loop observers.
 - `<key>` is the joined anchor-label set (or `plan`) for `loom plan`,
       the work epic id for `loom todo`, and the bead id for loop/gate/msg
       worker sessions
-  [test?](resolve_scratch_key_uses_plan_anchors_work_epic_or_bead)
+  [test](resolve_scratch_key_uses_plan_anchors_work_epic_or_bead)
 - Running `repin.sh` emits a valid `SessionStart[compact]` JSON
       envelope containing banner + `prompt.txt` + `scratch.md` contents
   [test](repin_script_runs_jq_envelope_against_files)

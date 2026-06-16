@@ -1,16 +1,7 @@
-//! End-to-end smoke test for `loom loop --once`.
+//! End-to-end smoke tests for `loom loop`.
 //!
-//! Pins that `loom loop --once` against a fake bd returns a meaningful
-//! exit code (not unrecognized subcommand).
-//!
-//! The test installs a stub `bd` on PATH that prints `[]` for every `ready` /
-//! `list` query (emulating an empty molecule), seeds a cache DB so spec
-//! resolution succeeds, and invokes the compiled `loom` binary. The expected
-//! path through `run_loop`:
-//!
-//! 1. `next_ready_bead` → `bd ready --label spec:<X>` → empty slice → `None`,
-//! 2. `LoopMode::Once` exits cleanly without invoking `loom review`,
-//! 3. binary returns exit code 0.
+//! These tests pin CLI-level dispatch surfaces that need the compiled binary
+//! plus a stub `bd` on PATH.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -26,52 +17,38 @@ fn init_workspace_repo(path: &Path) {
         .expect("init test repo with loom integration");
 }
 
-/// Write a stub `bd` shell script to `dir/bin/bd` that returns `[]` for any
-/// JSON-shaped subcommand and `0` for everything else. Returns the bin
-/// directory caller should prepend to PATH.
-fn install_bd_stub(dir: &Path) -> std::path::PathBuf {
-    let bin_dir = dir.join("bin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let bd = bin_dir.join("bd");
-    std::fs::write(
-        &bd,
-        "#!/bin/sh\n\
-         # The driver's `ready` / `list` calls all carry --json; the rest of\n\
-         # the bd surface (close, update) gets a silent zero.\n\
-         for arg in \"$@\"; do\n\
-           if [ \"$arg\" = \"--json\" ]; then\n\
-             printf '%s' '[]'\n\
-             exit 0\n\
-           fi\n\
-         done\n\
-         exit 0\n",
-    )
-    .unwrap();
-    let mut perm = std::fs::metadata(&bd).unwrap().permissions();
-    perm.set_mode(0o755);
-    std::fs::set_permissions(&bd, perm).unwrap();
-    bin_dir
-}
-
 /// Write a stub `bd` that appends each invocation's full argv to
-/// `argv_log` (NUL-separated argv per line) and returns `[]` for any
-/// JSON-shaped subcommand. Used to inspect the exact flags `loom`'s bd
-/// client emits.
+/// `argv_log` and exposes one active work epic with an empty ready queue.
+/// Used to inspect the exact flags `loom`'s bd client emits.
 fn install_bd_argv_logger(dir: &Path, argv_log: &Path) -> std::path::PathBuf {
     let bin_dir = dir.join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let bd = bin_dir.join("bd");
+    let active = r#"[{"id":"lm-active","title":"active","status":"open","priority":2,"issue_type":"epic","labels":["loom:active","spec:harness"],"metadata":{}}]"#;
     let script = format!(
-        "#!/bin/sh\n\
-         {{ for a in \"$@\"; do printf '%s\\t' \"$a\"; done; printf '\\n'; }} >> {log}\n\
-         for arg in \"$@\"; do\n\
-           if [ \"$arg\" = \"--json\" ]; then\n\
-             printf '%s' '[]'\n\
-             exit 0\n\
-           fi\n\
-         done\n\
-         exit 0\n",
+        r#"#!/bin/sh
+{{ for a in "$@"; do printf '%s\t' "$a"; done; printf '\n'; }} >> {log}
+cmd="${{1:-}}"
+has_json=0
+label_active=0
+for arg in "$@"; do
+  case "$arg" in
+    --json) has_json=1 ;;
+    --label=loom:active) label_active=1 ;;
+  esac
+done
+if [ "$cmd" = "list" ] && [ "$has_json" = "1" ] && [ "$label_active" = "1" ]; then
+  printf '%s' '{active}'
+  exit 0
+fi
+if [ "$has_json" = "1" ]; then
+  printf '%s' '[]'
+  exit 0
+fi
+exit 0
+"#,
         log = argv_log.display(),
+        active = active,
     );
     std::fs::write(&bd, script).unwrap();
     let mut perm = std::fs::metadata(&bd).unwrap().permissions();
@@ -138,73 +115,30 @@ exit 0
 }
 
 #[test]
-fn loom_loop_once_against_empty_bd_exits_zero() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = dir.path();
-    init_workspace_repo(workspace);
-    std::fs::create_dir_all(workspace.join(".loom")).unwrap();
-    std::fs::create_dir_all(workspace.join("specs")).unwrap();
-    std::fs::write(workspace.join("specs/harness.md"), "# harness\n").unwrap();
-
-    // Seed cache DB + active spec so resolve_spec_label returns Some(label)
-    // without the caller having to pass -s.
-    let db = loom_driver::state::CacheDb::open(workspace.join(".loom/cache.db")).unwrap();
-    db.upsert_spec(
-        &loom_driver::identifier::SpecLabel::new("harness"),
-        "specs/harness.md",
-    )
-    .unwrap();
-    drop(db);
-
-    let bin_dir = install_bd_stub(workspace);
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let mut path_entries = vec![bin_dir];
-    path_entries.extend(std::env::split_paths(&path));
-    let new_path = std::env::join_paths(path_entries).unwrap();
-
-    // The CLI requires LOOM_PROFILES_MANIFEST for spawn-bound subcommands.
-    // Even on the empty-queue fast-path the manifest is read before spec
-    // resolution, so the smoke test must point at a real file.
-    let manifest_path = workspace.join("profile-images.json");
-    std::fs::write(&manifest_path, "{}").unwrap();
-
+fn loom_loop_removed_selectors_are_rejected() {
     let loom_bin = env!("CARGO_BIN_EXE_loom");
-    let output = Command::new(loom_bin)
-        .arg("--workspace")
-        .arg(workspace)
-        .arg("loop")
-        .arg("--once")
-        .env("PATH", new_path)
-        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
-        // The exec_review path is gated behind LoopMode::Continuous; on the
-        // empty-queue path we still set this so the binary can locate itself
-        // if the loop ever changes shape.
-        .env("LOOM_BIN", loom_bin)
-        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
-        // Bypass the nested-loom guard so cargo test inside a loom container
-        // still reaches the run dispatch path under test.
-        .env_remove("LOOM_INSIDE")
-        .output()
-        .expect("spawn loom");
+    for args in [
+        vec!["loop", "--once"],
+        vec!["loop", "--spec", "harness"],
+        vec!["loop", "--all-specs"],
+    ] {
+        let output = Command::new(loom_bin)
+            .args(&args)
+            .env_remove("LOOM_INSIDE")
+            .output()
+            .expect("spawn loom");
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "loom loop --once must exit zero on empty queue. stdout={stdout} stderr={stderr}",
-    );
-    assert!(
-        stdout.contains("loom loop:"),
-        "expected the run summary line. stdout={stdout}",
-    );
-    assert!(
-        stdout.contains("gate=no-gate"),
-        "--once on empty queue must produce GateOutcome::NoGate. stdout={stdout}",
-    );
-    assert!(
-        stdout.contains("outer_iterations=0"),
-        "--once must NOT exec review (outer_iterations stays 0). stdout={stdout}",
-    );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "removed selector must fail for {args:?}. stdout={stdout} stderr={stderr}",
+        );
+        assert!(
+            stderr.contains("unexpected argument"),
+            "clap must reject removed selector before loop dispatch for {args:?}. stderr={stderr}",
+        );
+    }
 }
 
 #[test]
@@ -232,7 +166,8 @@ fn loom_loop_without_spec_uses_active_epic_in_multi_spec_workspace() {
         .arg("--workspace")
         .arg(workspace)
         .arg("loop")
-        .arg("--once")
+        .arg("--parallel")
+        .arg("2")
         .env("PATH", new_path)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("LOOM_BIN", loom_bin)
@@ -258,7 +193,7 @@ fn loom_loop_without_spec_uses_active_epic_in_multi_spec_workspace() {
     assert!(
         log.lines()
             .any(|line| line.contains("list\t") && line.contains("--label=loom:active")),
-        "bare loop must query the active work epic before falling back to tree spec resolution:\n{log}",
+        "bare loop must query the active work epic rather than tree spec resolution:\n{log}",
     );
     assert!(
         log.lines()
@@ -366,7 +301,8 @@ fn parallel_codepath_returns_loop_outcome_with_gate_field() {
     .unwrap();
     drop(db);
 
-    let bin_dir = install_bd_stub(workspace);
+    let argv_log = workspace.join("bd-argv.log");
+    let bin_dir = install_bd_active_epic_stub(workspace, &argv_log);
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut path_entries = vec![bin_dir];
     path_entries.extend(std::env::split_paths(&path));
@@ -424,7 +360,9 @@ fn loom_loop_recognizes_subcommand() {
         "loom loop --help must exit zero. stdout={stdout} stderr={stderr}",
     );
     assert!(
-        stdout.contains("--once") && stdout.contains("--parallel"),
-        "loom loop --help must list the spec'd flags. stdout={stdout}",
+        stdout.contains("BEAD_OR_EPIC_ID")
+            && stdout.contains("--parallel")
+            && !stdout.contains("--once"),
+        "loom loop --help must document work roots and omit removed selectors. stdout={stdout}",
     );
 }
