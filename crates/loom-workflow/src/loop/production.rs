@@ -840,8 +840,9 @@ where
             diff = %diff_range,
             "loom loop: molecule handoff — pre-push chain finished",
         );
+        let gate_workspace = self.git.loom_workspace();
         let review_output = Command::new(&self.loom_bin)
-            .current_dir(&self.workspace)
+            .current_dir(gate_workspace)
             .env(REVIEW_PHASE_WHEN_ENV, phase_when_millis.to_string())
             .env(REVIEW_EMIT_STDOUT_ENV, "1")
             .arg("gate")
@@ -940,8 +941,9 @@ where
             "--diff".to_string(),
             diff_range.clone(),
         ];
+        let gate_workspace = self.git.loom_workspace();
         let verify_output = Command::new(&self.loom_bin)
-            .current_dir(&self.workspace)
+            .current_dir(gate_workspace)
             .args(&verify_args)
             .output()
             .await?;
@@ -2146,7 +2148,7 @@ mod tests {
         let argv_log = dir.path().join("argv.log");
         let stub = dir.path().join("loom-stub.sh");
         let stub_body = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {log}\nexit 0\n",
+            "#!/bin/sh\nprintf '%s\\t%s\\n' \"$PWD\" \"$*\" >> {log}\nexit 0\n",
             log = argv_log.to_string_lossy(),
         );
         std::fs::write(&stub, stub_body).unwrap();
@@ -2179,14 +2181,18 @@ mod tests {
             },
         );
 
+        let gate_workspace = controller.git.loom_workspace();
         controller.exec_review().await.expect("exec_review ok");
 
         let recorded = std::fs::read_to_string(&argv_log).expect("argv log readable");
-        let lines: Vec<&str> = recorded.lines().collect();
+        let lines: Vec<String> = recorded.lines().map(ToOwned::to_owned).collect();
         assert_eq!(
             lines,
-            vec!["gate review --diff origin/main..HEAD"],
-            "review must run over the actual origin push range with no scalar handoff flag: {recorded:?}",
+            vec![format!(
+                "{}\tgate review --diff origin/main..HEAD",
+                gate_workspace.display()
+            )],
+            "review must run from the integration checkout over the actual origin push range with no scalar handoff flag: {recorded:?}",
         );
     }
 
@@ -2829,7 +2835,13 @@ mod tests {
             .expect("exec_per_bead_gate ok");
         assert_eq!(outcome, PerBeadGateOutcome::Clean);
 
-        let log = std::fs::read_to_string(workspace.join("argv.log")).expect("argv.log readable");
+        let operator_log = workspace.join("argv.log");
+        assert!(
+            !operator_log.exists(),
+            "post-integration gate must not run in stale operator checkout",
+        );
+        let log_path = controller.git.loom_workspace().join("argv.log");
+        let log = std::fs::read_to_string(log_path).expect("argv.log readable");
         let calls: Vec<&str> = log.lines().collect();
         assert_eq!(
             calls.len(),
