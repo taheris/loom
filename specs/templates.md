@@ -123,21 +123,21 @@ walker input](gate.md#pending-support-in-structured-walker-input).
 
 | Partial | `plan` | `todo` | `loop` | `review` | `msg` |
 |---|:-:|:-:|:-:|:-:|:-:|
-| `context_pinning.md` | ✓ | ? | ✓ | ✓ | ✓ |
+| `context_pinning.md` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `style_rules.md` |  |  | ✓ | ✓ |  |
 | `spec_conventions.md` | ✓ |  |  |  |  |
 | `spec_header.md` | ? | ? | ✓ | ✓ |  |
-| `companions_context.md` | ✓ | ? | ✓ | ✓ | ✓ |
-| `scratchpad.md` | ✓ | ? | ✓ | ✓ | ✓ |
+| `companions_context.md` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `scratchpad.md` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `progress_markers.md` | ✓ |  | ✓ | ✓ |  |
-| `todo_success.md` |  | ? |  |  |  |
-| `self_report_markers.md` |  | ? | ✓ | ✓ |  |
+| `todo_success.md` |  | ✓ |  |  |  |
+| `self_report_markers.md` |  | ✓ | ✓ | ✓ |  |
 | `findings_walk.md` |  |  |  | ✓ |  |
-| `options_format.md` |  | ? | ✓ | ✓ |  |
+| `options_format.md` |  | ✓ | ✓ | ✓ |  |
 | `chat_marker_final_turn_only.md` | ✓ |  |  |  | ✓ |
 | `interview_modes.md` | ✓ |  |  |  |  |
 | `chat_interview.md` | ✓ |  |  |  | ✓ |
-| `decomposition_discipline.md` |  | ? |  |  |  |
+| `decomposition_discipline.md` |  | ✓ |  |  |  |
 | `plan_stage_rubric.md` | ✓ |  |  |  |  |
 | `invariant_clash.md` | ✓ |  |  |  |  |
 | `review_rubric.md` |  |  |  | ✓ |  |
@@ -1085,16 +1085,16 @@ documents in front of the agent with zero configuration.
 - `partial/todo_success.md` is the single source of truth for the
   `LOOM_TODO: <json>` success marker and names the
   `loom-protocol::todo::TodoSuccess` type
-  [check?](grep -q 'LOOM_TODO:' crates/loom-templates/templates/partial/todo_success.md)
+  [check](grep -q 'LOOM_TODO:' crates/loom-templates/templates/partial/todo_success.md)
 - `todo.md` includes `todo_success.md` via `{% include %}` rather than
   restating the success marker contract inline
-  [check?](grep -q 'partial/todo_success.md' crates/loom-templates/templates/todo.md)
+  [check](grep -q 'partial/todo_success.md' crates/loom-templates/templates/todo.md)
 - `partial/progress_markers.md` contains no `LOOM_TODO:` literal;
   todo success belongs to `todo_success.md`
   [check](bash -c "! grep -nE 'LOOM_TODO:' crates/loom-templates/templates/partial/progress_markers.md")
 - Rendered `todo.md` prompts instruct the agent that `LOOM_COMPLETE` and
   `LOOM_NOOP` are wrong-phase success markers for todo
-  [test?](todo_template_rejects_generic_success_markers)
+  [test](todo_template_rejects_generic_success_markers)
 
 ### Review emit shape
 
@@ -1336,7 +1336,7 @@ documents in front of the agent with zero configuration.
   `CriterionStatus` rows with criterion text, annotation, and evidence
   state so the agent can distinguish current pass evidence from stale or
   missing evidence
-  [test?](todo_template_renders_typed_criterion_status_rows)
+  [test](todo_template_renders_typed_criterion_status_rows)
 
 ### Decomposition discipline
 
@@ -1349,7 +1349,7 @@ documents in front of the agent with zero configuration.
   [check](grep -qi 'exact.*roster\|evidence-confirmed\|LOOM_TODO' crates/loom-templates/templates/partial/decomposition_discipline.md)
 - Rendered `todo.md` prompts contain a clause committing the agent to
   confirm missing work by inspection before authoring any non-audit bead
-  [test?](todo_template_renders_pre_decomposition_audit_clause)
+  [test](todo_template_renders_pre_decomposition_audit_clause)
 - The partial documents `LOOM_CLARIFY` on the `loom:todo` work epic as
   the fallback when coverage cannot be determined, with the
   `## Options — …` block per [gate.md](gate.md)'s Options Format
@@ -1357,7 +1357,7 @@ documents in front of the agent with zero configuration.
   [check](grep -q 'LOOM_CLARIFY' crates/loom-templates/templates/partial/decomposition_discipline.md)
 - `todo.md` receives an already-created work epic from the driver before
   any path that can emit `LOOM_CLARIFY`
-  [check?](cargo run -p loom-walk -- todo_template_uses_driver_created_work_epic)
+  [check](cargo run -p loom-walk -- todo_template_uses_driver_created_work_epic)
 
 ## Requirements
 

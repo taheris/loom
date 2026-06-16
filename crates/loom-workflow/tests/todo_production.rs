@@ -101,17 +101,28 @@ impl CapturingRunner {
 
 impl CommandRunner for CapturingRunner {
     async fn run(&self, args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
+        let is_create = args.iter().any(|arg| arg == "create");
         self.calls.lock().unwrap().push(args);
-        Ok(self
-            .responses
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or(RunOutput {
-                status: 0,
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-            }))
+        let mut responses = self.responses.lock().unwrap();
+        if !(is_create
+            && responses
+                .front()
+                .is_some_and(|output| output.stdout.starts_with(b"[")))
+            && let Some(output) = responses.pop_front()
+        {
+            return Ok(output);
+        }
+        drop(responses);
+        let stdout = if is_create {
+            b"lm-work\n".to_vec()
+        } else {
+            Vec::new()
+        };
+        Ok(RunOutput {
+            status: 0,
+            stdout,
+            stderr: Vec::new(),
+        })
     }
 }
 
@@ -271,7 +282,7 @@ async fn build_session_dispatches_rendered_todo_template_and_writes_prompt_txt()
     let session = ctrl.build_session().await.expect("build cfg");
     let cfg = &session.config;
     assert!(
-        cfg.initial_prompt.contains("# Task Decomposition"),
+        cfg.initial_prompt.contains("# Todo Decomposition"),
         "prompt missing template heading: {}",
         cfg.initial_prompt,
     );
@@ -317,8 +328,8 @@ async fn build_spawn_config_resolves_manifest_image_and_renders_new_template() {
     let session = ctrl.build_session().await.expect("build cfg");
     let cfg = &session.config;
     assert!(
-        cfg.initial_prompt.contains("Task Decomposition"),
-        "TodoNewContext renders todo_new.md (header marker missing): {}",
+        cfg.initial_prompt.contains("Todo Decomposition"),
+        "TodoContext renders todo.md (header marker missing): {}",
         cfg.initial_prompt,
     );
     assert!(
@@ -414,7 +425,7 @@ async fn build_spawn_config_tier_1_renders_diff_from_base_commit() {
     let session = ctrl.build_session().await.expect("build cfg");
     let cfg = &session.config;
     assert!(
-        cfg.initial_prompt.contains("=== specs/alpha.md ==="),
+        cfg.initial_prompt.contains("Diff:") && cfg.initial_prompt.contains("specs/alpha.md"),
         "tier-1 prompt must carry the per-spec diff header: {}",
         cfg.initial_prompt,
     );
@@ -656,7 +667,7 @@ async fn base_commit_advances_only_on_complete_or_noop_with_clean_exit() {
 }
 
 /// Spec gate (`specs/harness.md` § Marker routing for `loom todo`):
-/// `LOOM_CLARIFY` emitted from a `loom todo_new` / `loom todo_update`
+/// `LOOM_CLARIFY` emitted from a `loom todo`
 /// session MUST target the molecule epic — not the bead the agent
 /// was working on — per templates.md Decomposition Discipline. The
 /// agent has already persisted its `## Options — …` block to the

@@ -68,7 +68,7 @@ mod template_pinning_matrix;
 mod template_wire_format_restatement;
 mod templates_no_removed_surface;
 mod todo_contexts_carry_criterion_status;
-mod todo_new_creates_epic_before_decomposition;
+mod todo_template_uses_driver_created_work_epic;
 mod util;
 mod workspace_deps_pinned;
 mod workspace_edition;
@@ -350,8 +350,8 @@ pub static REGISTRY: &[Walk] = &[
         run: todo_contexts_carry_criterion_status::run,
     },
     Walk {
-        name: "todo_new_creates_epic_before_decomposition",
-        run: todo_new_creates_epic_before_decomposition::run,
+        name: "todo_template_uses_driver_created_work_epic",
+        run: todo_template_uses_driver_created_work_epic::run,
     },
     Walk {
         name: "workspace_deps_pinned",
@@ -442,7 +442,7 @@ mod tests {
             "template_wire_format_restatement",
             "templates_no_removed_surface",
             "todo_contexts_carry_criterion_status",
-            "todo_new_creates_epic_before_decomposition",
+            "todo_template_uses_driver_created_work_epic",
             "loom_templates_deps",
             "loom_templates_public_partial_constants",
             "loom_templates_public_types",

@@ -1,0 +1,330 @@
+---
+source: crates/loom-templates/tests/snapshots.rs
+expression: todo_ctx().render().unwrap()
+---
+# Todo Decomposition
+
+You are decomposing the driver-injected changed-spec roster into bead work. The driver has already created or reused the `loom:todo` work epic for this batch; do not create a molecule epic yourself.
+
+## Context Pinning
+
+First, read the project overview to understand project terminology and context:
+
+# Project Overview
+
+Loom orchestrates the spec-to-implementation workflow.
+
+## Spec Index
+
+# Loom Docs
+| Spec | Purpose |
+| [harness](../specs/harness.md) | Harness |
+
+## Todo Batch
+
+- **Work epic**: lm-work
+- **Todo head**: 0123456789abcdef0123456789abcdef01234567
+- **Todo fingerprint**: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+## Changed Specs
+
+Decompose exactly the specs listed here. Every label in this roster must appear exactly once in the final `LOOM_TODO:` payload.
+
+### harness
+
+- Spec file: `specs/harness.md`
+
+Diff:
+
+```diff
+=== specs/harness.md ===
++ new requirement
+```
+
+
+## Spec Epic Metadata
+
+- **harness** · epic lm-spec · todo cursor `0123456789abcdef0123456789abcdef01234567`
+
+## Companions
+
+The following companion directories are in scope. Read each one's `manifest.md` on demand:
+
+- lib/sandbox/
+
+
+## Scratchpad
+
+You have a per-session scratchpad at `/workspace/.loom/scratch/harness/scratch.md`. The file starts empty; append to it as the session progresses.
+
+**Purpose.** This is a **compaction-recovery aid, not durable storage.** The
+file lives only for the lifetime of this session: the driver creates it at
+session start and removes it at session end on every exit path. After
+compaction, the harness re-pins the original prompt plus the scratchpad's
+current contents so you regain the working notes you would otherwise have
+lost.
+
+**What to append:**
+
+- Decisions you have made and the reasoning that tipped them, so you do not
+  re-litigate them after compaction.
+- Open questions you are tracking and what would resolve them.
+- TODOs for the remainder of this session — files to touch next, checks to
+  re-run, follow-ups inside this session's scope.
+- Hypotheses you have already ruled out (with the evidence), so you do not
+  re-explore them.
+
+**What NOT to put here.** Anything that needs to outlive this session belongs
+in a durable destination, not the scratchpad:
+
+- Decisions, design rationale, or open questions that future sessions need →
+  bead notes (`bd update <id> --notes "..."`) or the spec file (`specs/<label>.md`).
+- Implementation context for future agents → spec file or `AGENTS.md` /
+  companion docs.
+- Why a change was made → the commit message.
+- Cross-session follow-up work → a new bead (`bd create ...`).
+
+The scratchpad will be deleted when this session ends. If a thought is worth
+keeping past session end, write it to one of the durable destinations above
+**before** you finish.
+
+**How to append.** Append to the file directly — for example,
+`echo "..." >> .loom/scratch/<key>/scratch.md` or via the Edit tool.
+Do not rewrite or truncate prior contents; the recovery payload is the full
+running log.
+
+## Implementation Notes
+
+The following implementation notes were captured during planning. **Every note below describes work that MUST become one or more beads in this session** unless you persist a structured clarify question to the work epic and self-report.
+
+### harness
+
+<implementation-note>
+<agent-output>
+Carry the unified todo protocol into snapshots.
+</agent-output>
+</implementation-note>
+
+## Criterion Status
+
+The status cache below shows the latest cached verifier verdict for each Success-Criteria bullet in scope. Use these typed rows to distinguish criteria already covered by fresh positive evidence from stale, missing, failed, or skipped evidence.
+
+- **templates / engine-001** · All workflow templates compile under Askama. · annotation `[check](cargo build -p loom-templates)` · evidence `Current` · result Pass · last commit `0123456789abcdef0123456789abcdef01234567` · commits since 0 · last timestamp 1716300000000 · cached annotation `—`
+- **templates / engine-002** · Rendered output is stable across runs. · annotation `[test](template_renders_are_byte_stable_across_runs)` · evidence `Current` · result Fail · last commit `1111111111111111111111111111111111111111` · commits since 7 · last timestamp 1716200000000 · cached annotation `—`
+- **templates / criterion-status-001** · Todo prompts render typed criterion status rows. · annotation `[test](todo_template_renders_typed_criterion_status_rows)` · evidence `Missing` · result — · last commit — · commits since — · last timestamp — · cached annotation `—`
+- **templates / engine-003** · Every non-pending pinning cell matches the include graph. · annotation `[check](cargo run -p loom-walk -- template_pinning_matrix)` · evidence `Current` · result Skipped · last commit `2222222222222222222222222222222222222222` · commits since 3 · last timestamp 1716250000000 · cached annotation `—`
+
+## Decomposition Discipline
+
+Every bead you author in this session must correspond to **evidence-confirmed missing work**, not to a fixed task axis or a Success Criteria bullet considered in the abstract. The driver has already computed the exact changed-spec roster and created or reused the `loom:todo` work epic; decompose that roster exactly.
+
+### Audit before fan-out
+
+Before authoring any non-audit bead, you MUST:
+
+1. **Consult the `criterion_status` surface** rendered above for each criterion in each changed spec. Each row exposes the criterion text, annotation target, typed evidence state (`Current`, `Missing`, or `StaleAnnotation`), any current verifier result (`Pass | Fail | Skipped`), the commit it was recorded against, and how many commits have landed on HEAD since. A row whose evidence is `Current`, whose result is `Pass`, and whose commits-since count is low is positive evidence of coverage — do **not** author a bead for it.
+
+2. **Inspect representative implementations and verifier functions** for any row that is suspicious: missing evidence, stale annotation evidence, failed or skipped current evidence, a large commits-since value, or a verifier-target name whose body may not actually exercise the live system. A directory listing proves the file exists; it does not prove the file contains the named target, and it does not prove the named target exercises the contract the criterion asserts.
+
+The discipline is template-agnostic: it applies to whatever workspace layout the consumer has. "Representative implementations" means the production code path the criterion's verifier is supposed to exercise, under whatever organisation that consumer's repository uses.
+
+### What the audit governs
+
+The `criterion_status` audit governs **how** the injected changed-spec work decomposes into beads — split, merge, dependency-order — **not whether** driver-provided planning inputs get authored at all. Implementation notes and changed-spec diffs describe the next batch of planned work; a green row is evidence about prior coverage, not proof that a new planned change is already shipped.
+
+The audit's role is to discipline the *shape* of the decomposition: which notes collapse into a single bead, which split across several, how the resulting beads order against each other, and whether any proposed bead is redundant because representative source inspection confirms the contract is already covered.
+
+### Acceptable session outcomes
+
+A successful decomposition session emits `LOOM_TODO: <json>` with every changed spec represented exactly once:
+
+- **Decomposed.** Use the `Decomposed { beads }` outcome for a spec where you created one or more beads under the injected work epic. For each non-audit bead, cite the evidence that drove its creation in the bead description: the `criterion_status` row you consulted, the file you read that surfaced the gap, and/or the verifier-source observation that showed the target was dishonest.
+- **NoWork.** Use the `NoWork { reason }` outcome only after auditing the changed spec and confirming no implementation change is needed. The reason must name the evidence that made no work safe.
+
+Omitted specs, duplicate specs, pending outcomes, and generic `LOOM_COMPLETE` / `LOOM_NOOP` markers are not success states for todo.
+
+### Clarify or block on the work epic
+
+When coverage cannot be determined by inspection — the spec is ambiguous, verifier targets conflict, cursor/index state is inconsistent, or your judgement of the status cache's trustworthiness is contestable — emit `LOOM_CLARIFY`. Persist both the question and the canonical `## Options — …` block to the **driver-created work epic** notes per the *Options Format Contract* in `specs/gate.md` before emitting the marker. The verdict gate applies `loom:clarify` to the work epic; the human resolves via `loom msg`, and a subsequent `loom todo` invocation reuses the pending work epic.
+
+When you have no candidate resolutions to enumerate, emit `LOOM_BLOCKED`; the work epic remains the session-stable carrier for the blocked decomposition batch.
+
+### Enumerate-everything fan-outs are structurally invalid
+
+A fixed decomposition axis applied across the board irrespective of evidence — for example, "setup, implementation, tests, documentation" mechanically expanded onto every criterion — is precisely the failure mode this discipline targets. The combined effect of the typed `criterion_status` surface and the exact-roster `LOOM_TODO` validator makes such fan-outs structurally unviable. `loom gate review`'s judge-tier walk catches any decomposition that bypasses the evidence surface to re-introduce enumerate-everything beads.
+
+## Task Breakdown Guidelines
+
+- Create implementation beads only as children of the injected work epic `lm-work`.
+- Label every bead with `spec:<label>` for the changed spec it implements and the appropriate `profile:<name>` label.
+- Keep each bead self-contained with enough context for a fresh `loom loop` agent.
+- Set dependencies with `bd dep add` when one bead must land before another.
+- Include the criterion-status row or source-inspection evidence that justified each non-audit bead.
+
+## Profile Assignment
+
+| Task Type | Profile | When to Use |
+|-----------|---------|-------------|
+| Rust implementation | `profile:rust` | Tasks touching `.rs` files or using cargo |
+| Python implementation | `profile:python` | Tasks touching `.py` files or using pytest/pip |
+| Nix/shell/docs | `profile:base` | Tasks touching only `.nix`, `.sh`, `.md` files |
+
+## Instructions
+
+1. Read every changed spec in the injected roster and any companion manifests listed above.
+2. Audit the Criterion Status rows before fan-out. `EvidenceState::Missing` and `EvidenceState::StaleAnnotation` are absence or staleness of evidence; inspect representative code and verifier bodies before creating non-audit beads.
+3. Create needed beads under the driver-created work epic:
+   ```bash
+   TASK_ID=$(bd create --title="<task title>" --description="<detailed description>" \
+     --type=task --labels="spec:<label>,profile:<profile>" --parent="lm-work" --silent)
+   ```
+4. Set execution order with `bd dep add <later-task> <earlier-task>` where required.
+5. Emit success only through the typed todo payload described below.
+
+  ```markdown
+  ## Options — <one-line summary of the decision, ≤80 chars>
+
+  ### Option 1 — <short title>
+  <body paragraph(s) describing the option, naming its cost>
+
+  ### Option 2 — <short title>
+  <body, including cost>
+
+  ### Option 3 — <short title>
+  <body, including cost>
+  ```
+
+  **Rules:**
+
+  - The `## Options` header carries a one-line summary (≤50 chars)
+    separated from the word `Options` by em-dash `—` (default),
+    en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
+    tolerate any of these; emit em-dash by default.
+  - Each option is `### Option N — <title>` where `N` is 1-based
+    sequential. Numbering is required for `-a <int>` lookup to work.
+  - Each option body extends from its `### Option N` heading until
+    the next `### Option` or the next `##` heading; name the cost
+    (churn, debt, coupling, risk).
+  - Use contextual options per decision — typically 2–4, each
+    naming its cost. Do NOT emit a fixed A/B/C menu.
+
+  `loom msg` parses this format to render the SUMMARY column,
+  enumerate options for view mode, and resolve integer fast-replies.
+  A malformed block — or one that lives only in your prose, never
+  persisted to bead state — breaks fast-reply with `-a <int>` and
+  leaves the options invisible to `loom msg`'s queue.
+
+## Self-Report Markers
+
+When you cannot complete the work, end your response with one of
+these markers instead of a progress marker. They are mutually
+exclusive with each other **and** with the progress markers — emit
+exactly one, on its own line, as the final output of the session.
+
+- `LOOM_RETRY` — This attempt cannot finish but a fresh dispatch is
+  likely to succeed. Two failure shapes warrant retry: (a)
+  **environmental** — tools failing mid-session, sandbox/cwd
+  unlinked, transient IO — and (b) **agent self-reset** —
+  stuck-but-not-blocked, prompt-context exhausted, approach
+  abandoned. Write the reason on the line immediately before the
+  marker; the driver captures it verbatim as
+  `PreviousFailure::AgentRetry { reason }` for the next attempt's
+  prompt. Each `LOOM_RETRY` consumes one slot in `[loop] max_retries`
+  (default 2); exhaustion escalates to `loom:blocked` with cause
+  `retry-exhausted`. If the same problem persists after retry,
+  escalate to `LOOM_BLOCKED` (no candidate resolutions) or
+  `LOOM_CLARIFY` (with a structured Options block) rather than
+  emitting `LOOM_RETRY` again.
+- `LOOM_CLARIFY` — A decision is **blocking your work** and has
+  two or more genuinely viable resolutions you cannot adjudicate
+  from the spec, the code, or research. **Not for ratifying a
+  recommended path** — if you can write "Recommended: X.
+  Alternative: Y" and X is your clear preference, you do not have
+  a clarify question, you have a plan; file or implement it
+  directly. Reserve `LOOM_CLARIFY` for the cases where the spec
+  is genuinely ambiguous, two paths carry materially different
+  costs or risks you cannot weigh, or your judgement of the
+  evidence is itself contestable.
+
+  **Persist the question and the canonical options block to bead
+  state before emitting the marker** — either by `bd create` on
+  a new clarify bead or by `bd update --notes` + `bd update
+  --add-label=loom:clarify` on an existing bead, per the Options
+  Format Contract in `specs/gate.md`. The gate does NOT parse
+  your prose for options: prose `Recommended:` / `Alternative:`
+  headings are NOT the canonical block and will downgrade the
+  bead to `loom:blocked` with cause `clarify-without-options`.
+  The block MUST use the canonical heading shape:
+
+  ```markdown
+  ## Options — <one-line summary of the decision, ≤80 chars>
+
+  ### Option 1 — <short title>
+  <body paragraph(s) describing the option, naming its cost>
+
+  ### Option 2 — <short title>
+  <body, including cost>
+
+  ### Option 3 — <short title>
+  <body, including cost>
+  ```
+
+  **Rules:**
+
+  - The `## Options` header carries a one-line summary (≤50 chars)
+    separated from the word `Options` by em-dash `—` (default),
+    en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
+    tolerate any of these; emit em-dash by default.
+  - Each option is `### Option N — <title>` where `N` is 1-based
+    sequential. Numbering is required for `-a <int>` lookup to work.
+  - Each option body extends from its `### Option N` heading until
+    the next `### Option` or the next `##` heading; name the cost
+    (churn, debt, coupling, risk).
+  - Use contextual options per decision — typically 2–4, each
+    naming its cost. Do NOT emit a fixed A/B/C menu.
+
+  `loom msg` parses this format to render the SUMMARY column,
+  enumerate options for view mode, and resolve integer fast-replies.
+  A malformed block — or one that lives only in your prose, never
+  persisted to bead state — breaks fast-reply with `-a <int>` and
+  leaves the options invisible to `loom msg`'s queue.
+
+  After persisting, the gate applies `loom:clarify` to *this*
+  bead and exits without entering recovery; other beads in the
+  molecule continue running. The labelled bead waits for `loom
+  msg` resolution.
+- `LOOM_BLOCKED` — Genuine dead end: you cannot proceed and have
+  no candidate resolutions to enumerate. Write the reason on the
+  line immediately before the marker (the gate only reads the most
+  recent non-empty prior line — multi-paragraph prose is NOT
+  captured). The gate applies `loom:blocked` to *this* bead and
+  exits without entering recovery; other beads in the molecule
+  continue running. The labelled bead waits for human resolution
+  via `loom msg`. **If you can enumerate options, do NOT use
+  `LOOM_BLOCKED`** — use `LOOM_CLARIFY` above so the candidate
+  resolutions reach bead state.
+
+**Discriminator.** expect retry to succeed? → RETRY. **blocked**
+by a decision you cannot make alone, with ≥2 viable resolutions?
+→ CLARIFY (a recommended path with prose alternatives is NOT
+clarify — file the plan directly). dead end? → BLOCKED.
+
+**Worker-phase only.** These three self-report markers are valid
+in worker phases only (`loop`, `todo`, `review`). Interactive sessions
+(`plan`, `msg`) emit `LOOM_COMPLETE` only — the human is in the room and resolves
+friction in-turn, so the cannot-finish terminators are out of
+scope for those templates.
+
+## Todo Success Marker
+
+A successful `loom todo` session ends with exactly one final line using the typed todo protocol:
+
+```text
+LOOM_TODO: {"head":"<sha>","fingerprint":"<fingerprint>","work_epic":"<bead-id>","specs":[...]}
+```
+
+The JSON shape is `loom-protocol::todo::TodoSuccess`: `head` is the injected `GitSha`, `fingerprint` is the injected `TodoFingerprint`, `work_epic` is the injected `BeadId`, and `specs` is a non-empty list with exactly one entry for each changed spec the driver rendered.
+
+For each spec entry, use `{"label":"<spec>","outcome":"decomposed","beads":[...]}` when you created one or more beads, or `{"label":"<spec>","outcome":"no-work","reason":"<non-empty audit reason>"}` when inspection proves no implementation work is needed. Bead lists and no-work reasons are typed non-empty values in `TodoSuccess`; empty lists, empty reasons, omitted specs, duplicate specs, `Blocked`, and `pending` are not success states.
+
+`LOOM_COMPLETE` and `LOOM_NOOP` are wrong-phase success markers for todo. Use `LOOM_TODO: <json>` for success, or the worker self-report markers above when the session cannot complete.

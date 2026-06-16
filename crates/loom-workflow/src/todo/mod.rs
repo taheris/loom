@@ -1,9 +1,7 @@
 //! `loom todo` — spec-to-beads decomposition.
 //!
-//! Resolves "the active molecule for spec X" via a single
-//! `bd find --type=epic --label=spec:<X> --status=open` query (see
-//! [`resolve_molecule`]). Three outcomes — `Existing`, `None`, and
-//! `InvariantViolation` — capture every shape the loop must handle.
+//! Resolves the changed-spec roster, prepares or reuses the work epic, and
+//! renders the unified typed todo prompt.
 //!
 //! Touched-set discovery (see [`touched_specs`]) walks every spec whose
 //! markdown differs from `HEAD` in the working tree and renders each diff
@@ -20,7 +18,10 @@ mod resolve;
 mod runner;
 mod touched;
 
-pub use context::{TemplateBaseFields, TodoTemplateContext, build_template_context};
+pub use context::{
+    TemplateBaseFields, build_template_context, changed_specs_from_touched,
+    implementation_notes_context, spec_epic_context, todo_fingerprint,
+};
 pub use criterion_status::{build_criterion_status, criterion_id_for, criterion_text_for_line};
 pub use error::TodoError;
 pub use exit::{ExitSignal, parse_exit_signal};

@@ -1,6 +1,5 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
-assertion_line: 157
 expression: ctx.render().unwrap()
 ---
 # Implementation Step
@@ -301,8 +300,7 @@ by a decision you cannot make alone, with ≥2 viable resolutions?
 clarify — file the plan directly). dead end? → BLOCKED.
 
 **Worker-phase only.** These three self-report markers are valid
-in worker phases only (`loop`, `todo_new`, `todo_update`,
-`review`). Interactive sessions (`plan`, `msg`)
-emit `LOOM_COMPLETE` only — the human is in the room and resolves
+in worker phases only (`loop`, `todo`, `review`). Interactive sessions
+(`plan`, `msg`) emit `LOOM_COMPLETE` only — the human is in the room and resolves
 friction in-turn, so the cannot-finish terminators are out of
 scope for those templates.

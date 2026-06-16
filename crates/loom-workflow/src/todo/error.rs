@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use displaydoc::Display;
 use loom_driver::agent::ProtocolError;
 use loom_driver::bd::BdError;
+use loom_driver::git::GitError;
+use loom_driver::identifier::ParseBeadIdError;
 use loom_driver::profile_manifest::ProfileError;
 use loom_driver::state::CacheError;
 use thiserror::Error;
@@ -55,6 +57,16 @@ pub enum TodoError {
 
     /// bd client failure during `loom todo`
     Bd(#[from] BdError),
+
+    /// git operation failed during `loom todo`
+    Git(#[from] GitError),
+
+    /// invalid work epic id `{id}` returned during `loom todo`
+    InvalidWorkEpic {
+        id: String,
+        #[source]
+        source: ParseBeadIdError,
+    },
 
     /// spec → molecule resolution failed during `loom todo`
     Resolve(#[from] crate::resolve::ResolveError),

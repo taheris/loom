@@ -192,8 +192,8 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         // Template-tree scans.
         "template_wire_format_restatement" => template_files(root),
         "templates_no_removed_surface" => template_md_files(root),
-        "todo_new_creates_epic_before_decomposition" => {
-            vec![root.join("crates/loom-templates/templates/todo_new.md")]
+        "todo_template_uses_driver_created_work_epic" => {
+            vec![root.join("crates/loom-templates/templates/todo.md")]
         }
         "template_context_structs" => {
             let mut out = crate_src(root, "loom-templates");

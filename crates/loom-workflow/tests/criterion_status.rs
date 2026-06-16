@@ -9,6 +9,7 @@ use loom_driver::git::GitClient;
 use loom_driver::identifier::SpecLabel;
 use loom_gate::annotation::{Tier, parse_content};
 use loom_gate::cache::{CacheRow, StatusCache, Verdict};
+use loom_protocol::todo::GitSha;
 use loom_templates::criterion_status::{CriterionResult, EvidenceState};
 use loom_workflow::todo::{build_criterion_status, criterion_id_for, criterion_text_for_line};
 use tempfile::TempDir;
@@ -33,6 +34,10 @@ fn init_git_repo() -> TempDir {
     must(&["add", "README.md"]);
     must(&["commit", "-q", "-m", "initial"]);
     dir
+}
+
+fn git_sha(raw: &str) -> GitSha {
+    GitSha::new(raw).unwrap()
 }
 
 fn head_sha(repo: &Path) -> String {
@@ -154,7 +159,7 @@ async fn cache_hit_with_stale_commit_renders_non_zero_commits_since() {
         EvidenceState::Current {
             result: CriterionResult::Pass,
             last_timestamp_ms: 1_700_000_000_000,
-            last_commit: stale,
+            last_commit: git_sha(&stale),
             commits_since: 2,
         }
     );

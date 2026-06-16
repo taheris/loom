@@ -2010,7 +2010,12 @@ const TEMPLATES_PUBLIC_TYPES_BODY: &str = "pub struct PreviousFailure;\n\
      pub struct VerifierFailure;\n\
      pub enum BadWalk { Concern { payload: String } }\n\
      pub enum DriverNoticeCause { RetryExhausted }\n\
+     pub struct CriterionStatus;\n\
+     pub enum EvidenceState { Missing }\n\
+     pub struct CriterionId;\n\
+     pub struct CriterionAnnotation;\n\
      pub struct PlanContext;\n\
+     pub struct TodoContext;\n\
      pub struct LoopContext;\n\
      pub struct ReviewContext;\n\
      pub struct PinnedContext;\n";
@@ -2034,7 +2039,7 @@ fn loom_templates_public_types_pass_when_reexported_via_pub_use() {
         ws.path(),
         "crates/loom-templates/src/lib.rs",
         "pub mod inner;\n\
-         pub use inner::{PreviousFailure, VerifierFailure, BadWalk, DriverNoticeCause, PlanContext, LoopContext, ReviewContext, PinnedContext};\n",
+         pub use inner::{PreviousFailure, VerifierFailure, BadWalk, DriverNoticeCause, CriterionStatus, EvidenceState, CriterionId, CriterionAnnotation, PlanContext, TodoContext, LoopContext, ReviewContext, PinnedContext};\n",
     );
     seed(
         ws.path(),
@@ -2052,7 +2057,12 @@ fn loom_templates_public_types_fail_when_one_missing() {
                 pub struct VerifierFailure;\n\
                 pub enum BadWalk { Concern { payload: String } }\n\
                 pub enum DriverNoticeCause { RetryExhausted }\n\
+                pub struct CriterionStatus;\n\
+                pub enum EvidenceState { Missing }\n\
+                pub struct CriterionId;\n\
+                pub struct CriterionAnnotation;\n\
                 pub struct PlanContext;\n\
+                pub struct TodoContext;\n\
                 pub struct LoopContext;\n\
                 pub struct ReviewContext;\n";
     seed(ws.path(), "crates/loom-templates/src/lib.rs", body);
@@ -2067,7 +2077,12 @@ fn loom_templates_public_types_fail_when_private() {
                 struct VerifierFailure;\n\
                 enum BadWalk { Concern { payload: String } }\n\
                 enum DriverNoticeCause { RetryExhausted }\n\
+                struct CriterionStatus;\n\
+                enum EvidenceState { Missing }\n\
+                struct CriterionId;\n\
+                struct CriterionAnnotation;\n\
                 struct PlanContext;\n\
+                struct TodoContext;\n\
                 struct LoopContext;\n\
                 struct ReviewContext;\n\
                 struct PinnedContext;\n";
@@ -3113,15 +3128,14 @@ fn templates_no_removed_surface_pass_on_word_extension() {
 // todo_contexts_carry_criterion_status
 // ---------------------------------------------------------------------------
 
-const TODO_CRITERION_STATUS_PASS_BODY: &str = "pub struct TodoNewContext { pub criterion_status: Vec<CriterionStatus> }\n\
-     pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n\
+const TODO_CRITERION_STATUS_PASS_BODY: &str = "pub struct TodoContext { pub criterion_status: Vec<CriterionStatus> }\n\
      pub struct PlanContext { pub spec_path: String }\n\
      pub struct LoopContext { pub spec_path: String }\n\
      pub struct ReviewContext { pub spec_path: String }\n\
      pub struct MsgContext { pub scratchpad_path: String }\n";
 
 #[test]
-fn todo_contexts_carry_criterion_status_pass_when_only_todo_contexts_have_field() {
+fn todo_contexts_carry_criterion_status_pass_when_only_todo_context_has_field() {
     let ws = make_workspace();
     seed(
         ws.path(),
@@ -3137,13 +3151,12 @@ fn todo_contexts_carry_criterion_status_pass_when_only_todo_contexts_have_field(
 }
 
 #[test]
-fn todo_contexts_carry_criterion_status_fail_when_todo_new_missing_field() {
+fn todo_contexts_carry_criterion_status_fail_when_todo_missing_field() {
     let ws = make_workspace();
     seed(
         ws.path(),
         "crates/loom-templates/src/lib.rs",
-        "pub struct TodoNewContext { pub spec_path: String }\n\
-         pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n\
+        "pub struct TodoContext { pub spec_path: String }\n\
          pub struct PlanContext { pub spec_path: String }\n\
          pub struct LoopContext { pub spec_path: String }\n\
          pub struct ReviewContext { pub spec_path: String }\n\
@@ -3154,17 +3167,16 @@ fn todo_contexts_carry_criterion_status_fail_when_todo_new_missing_field() {
         Some(ws.path()),
         None,
     );
-    assert_fail(&out, "TodoNewContext` is missing field `criterion_status");
+    assert_fail(&out, "TodoContext` is missing field `criterion_status");
 }
 
 #[test]
-fn todo_contexts_carry_criterion_status_fail_when_todo_update_field_has_wrong_type() {
+fn todo_contexts_carry_criterion_status_fail_when_todo_field_has_wrong_type() {
     let ws = make_workspace();
     seed(
         ws.path(),
         "crates/loom-templates/src/lib.rs",
-        "pub struct TodoNewContext { pub criterion_status: Vec<CriterionStatus> }\n\
-         pub struct TodoUpdateContext { pub criterion_status: String }\n\
+        "pub struct TodoContext { pub criterion_status: String }\n\
          pub struct PlanContext { pub spec_path: String }\n\
          pub struct LoopContext { pub spec_path: String }\n\
          pub struct ReviewContext { pub spec_path: String }\n\
@@ -3177,7 +3189,7 @@ fn todo_contexts_carry_criterion_status_fail_when_todo_update_field_has_wrong_ty
     );
     assert_fail(
         &out,
-        "TodoUpdateContext.criterion_status` has wrong type — expected `Vec<CriterionStatus>`",
+        "TodoContext.criterion_status` has wrong type — expected `Vec<CriterionStatus>`",
     );
 }
 
@@ -3187,8 +3199,7 @@ fn todo_contexts_carry_criterion_status_fail_when_run_context_carries_field() {
     seed(
         ws.path(),
         "crates/loom-templates/src/lib.rs",
-        "pub struct TodoNewContext { pub criterion_status: Vec<CriterionStatus> }\n\
-         pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n\
+        "pub struct TodoContext { pub criterion_status: Vec<CriterionStatus> }\n\
          pub struct PlanContext { pub spec_path: String }\n\
          pub struct LoopContext { pub criterion_status: Vec<CriterionStatus> }\n\
          pub struct ReviewContext { pub spec_path: String }\n\
@@ -3201,7 +3212,7 @@ fn todo_contexts_carry_criterion_status_fail_when_run_context_carries_field() {
     );
     assert_fail(
         &out,
-        "LoopContext` carries field `criterion_status` — only `TodoNewContext`/`TodoUpdateContext` may",
+        "LoopContext` carries field `criterion_status` — only `TodoContext` may",
     );
 }
 
@@ -3215,13 +3226,8 @@ fn todo_contexts_carry_criterion_status_finds_structs_split_across_files() {
     );
     seed(
         ws.path(),
-        "crates/loom-templates/src/todo/new.rs",
-        "pub struct TodoNewContext { pub criterion_status: Vec<CriterionStatus> }\n",
-    );
-    seed(
-        ws.path(),
-        "crates/loom-templates/src/todo/update.rs",
-        "pub struct TodoUpdateContext { pub criterion_status: Vec<CriterionStatus> }\n",
+        "crates/loom-templates/src/todo/mod.rs",
+        "pub struct TodoContext { pub criterion_status: Vec<CriterionStatus> }\n",
     );
     seed(
         ws.path(),
@@ -3252,49 +3258,24 @@ fn todo_contexts_carry_criterion_status_finds_structs_split_across_files() {
 }
 
 // ---------------------------------------------------------------------------
-// todo_new_creates_epic_before_decomposition
+// todo_template_uses_driver_created_work_epic
 // ---------------------------------------------------------------------------
 
-const TODO_NEW_EPIC_FIRST_BODY: &str = "# Task Decomposition\n\
-     \n\
-     ## Criterion Status\n\
-     \n\
-     {% for row in criterion_status %}- row\n{% endfor %}\n\
-     \n\
-     ## Instructions\n\
-     \n\
-     1. **Analyze the spec** - understand requirements\n\
-     2. **Create the epic** and store its ID:\n   \
-        ```bash\n   \
-        MOLECULE_ID=$(bd create --type=epic --title=\"foo\" --silent)\n   \
-        ```\n\
-     3. **Audit before fan-out** — walk every Success-Criteria bullet in scope\n   \
-        against the **Criterion Status** section above.\n\
-     4. **Create child tasks** with --parent.\n";
-
-const TODO_NEW_EPIC_AFTER_BODY: &str = "# Task Decomposition\n\
-     \n\
-     ## Instructions\n\
-     \n\
-     1. **Analyze the spec** - understand requirements\n\
-     2. **Audit before fan-out** — walk every Success-Criteria bullet in scope\n   \
-        against the **Criterion Status** section above.\n\
-     3. **Create the epic** and store its ID:\n   \
-        ```bash\n   \
-        MOLECULE_ID=$(bd create --type=epic --title=\"foo\" --silent)\n   \
-        ```\n\
-     4. **Create child tasks** with --parent.\n";
+const TODO_DRIVER_WORK_EPIC_BODY: &str = "# Todo Decomposition\n\
+     The driver has already created the driver-created work epic.\n\
+     Work epic: {{ work_epic }}\n\
+     TASK_ID=$(bd create --title=\"task\" --parent=\"{{ work_epic }}\" --silent)\n";
 
 #[test]
-fn todo_new_creates_epic_before_decomposition_pass_when_epic_first() {
+fn todo_template_uses_driver_created_work_epic_passes_when_injected_epic_is_used() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-templates/templates/todo_new.md",
-        TODO_NEW_EPIC_FIRST_BODY,
+        "crates/loom-templates/templates/todo.md",
+        TODO_DRIVER_WORK_EPIC_BODY,
     );
     let out = invoke(
-        &["todo_new_creates_epic_before_decomposition"],
+        &["todo_template_uses_driver_created_work_epic"],
         Some(ws.path()),
         None,
     );
@@ -3302,67 +3283,46 @@ fn todo_new_creates_epic_before_decomposition_pass_when_epic_first() {
 }
 
 #[test]
-fn todo_new_creates_epic_before_decomposition_fail_when_gap_analysis_first() {
+fn todo_template_uses_driver_created_work_epic_fails_when_template_missing() {
     let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom-templates/templates/todo_new.md",
-        TODO_NEW_EPIC_AFTER_BODY,
-    );
     let out = invoke(
-        &["todo_new_creates_epic_before_decomposition"],
+        &["todo_template_uses_driver_created_work_epic"],
         Some(ws.path()),
         None,
     );
-    assert_fail(
-        &out,
-        "epic creation appears at or after the gap-analysis step at line",
-    );
+    assert_fail(&out, "template not found");
 }
 
 #[test]
-fn todo_new_creates_epic_before_decomposition_fail_when_template_missing() {
-    let ws = make_workspace();
-    let out = invoke(
-        &["todo_new_creates_epic_before_decomposition"],
-        Some(ws.path()),
-        None,
-    );
-    assert_fail(&out, "template file not found");
-}
-
-#[test]
-fn todo_new_creates_epic_before_decomposition_fail_when_no_instructions_section() {
+fn todo_template_uses_driver_created_work_epic_fails_when_work_epic_not_rendered() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-templates/templates/todo_new.md",
-        "# Task Decomposition\n\nNo instructions section here.\n",
+        "crates/loom-templates/templates/todo.md",
+        "# Todo\nThe driver has already created the driver-created work epic.\n",
     );
     let out = invoke(
-        &["todo_new_creates_epic_before_decomposition"],
+        &["todo_template_uses_driver_created_work_epic"],
         Some(ws.path()),
         None,
     );
-    assert_fail(&out, "no `## Instructions` heading found");
+    assert_fail(&out, "does not render");
 }
 
 #[test]
-fn todo_new_creates_epic_before_decomposition_fail_when_epic_create_missing() {
+fn todo_template_uses_driver_created_work_epic_fails_when_epic_creation_is_requested() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-templates/templates/todo_new.md",
-        "## Instructions\n\n\
-         1. **Audit** — walk Success-Criteria.\n\
-         2. **Create child tasks** with --parent.\n",
+        "crates/loom-templates/templates/todo.md",
+        "# Todo\nThe driver has already created the driver-created work epic.\n{{ work_epic }}\n--parent=\"{{ work_epic }}\"\nbd create --type=epic\n",
     );
     let out = invoke(
-        &["todo_new_creates_epic_before_decomposition"],
+        &["todo_template_uses_driver_created_work_epic"],
         Some(ws.path()),
         None,
     );
-    assert_fail(&out, "no `bd create --type=epic` invocation found");
+    assert_fail(&out, "instructs the agent to create an epic");
 }
 
 // ---------------------------------------------------------------------------

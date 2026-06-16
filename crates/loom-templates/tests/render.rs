@@ -9,6 +9,7 @@
 use anyhow::Result;
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
+use loom_protocol::todo::{GitSha, TodoFingerprint};
 use loom_templates::criterion_status::{
     AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
     CriterionStatus, EvidenceState,
@@ -20,11 +21,50 @@ use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
 use loom_templates::run::{
     DriverNoticeCause, LoopContext, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, VerifierFailure,
 };
-use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
+use loom_templates::todo::{
+    SpecEpicContext, SpecImplementationNotes, TodoChangedSpec, TodoContext,
+};
 
 const PINNED_CONTEXT_BODY: &str =
     "# Project Overview\n\nLoom orchestrates the spec-to-implementation workflow.";
 const SCRATCHPAD_PATH_BODY: &str = "/workspace/.loom/scratch/harness/scratch.md";
+const TEST_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+const TEST_SHA_2: &str = "1111111111111111111111111111111111111111";
+const TEST_SHA_3: &str = "2222222222222222222222222222222222222222";
+const TEST_SHA_4: &str = "3333333333333333333333333333333333333333";
+const TEST_SHA_5: &str = "4444444444444444444444444444444444444444";
+const TEST_FINGERPRINT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+fn git_sha(raw: &str) -> GitSha {
+    GitSha::new(raw).expect("valid git sha")
+}
+
+fn todo_context(notes: Vec<String>, criterion_status: Vec<CriterionStatus>) -> TodoContext {
+    TodoContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        spec_index: "# Loom Docs\n| Spec | Purpose |".to_string(),
+        changed_specs: vec![TodoChangedSpec {
+            label: SpecLabel::new("harness"),
+            spec_path: "specs/harness.md".to_string(),
+            diff: Some("=== specs/harness.md ===\n+ new requirement".to_string()),
+        }],
+        work_epic: BeadId::new("lm-work").expect("valid bead id"),
+        todo_head: git_sha(TEST_SHA),
+        todo_fingerprint: TodoFingerprint::new(TEST_FINGERPRINT).expect("valid fingerprint"),
+        spec_epics: vec![SpecEpicContext {
+            label: SpecLabel::new("harness"),
+            epic_id: Some(MoleculeId::new("lm-spec")),
+            todo_cursor: Some(TEST_SHA.to_string()),
+        }],
+        companion_paths: vec!["lib/sandbox/".into()],
+        implementation_notes: vec![SpecImplementationNotes {
+            label: SpecLabel::new("harness"),
+            notes,
+        }],
+        criterion_status,
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+    }
+}
 
 fn plan_ctx() -> PlanContext {
     PlanContext {
@@ -97,40 +137,28 @@ fn plan_defers_spec_format_to_conventions_doc() -> Result<()> {
 }
 
 #[test]
-fn todo_new_renders_spec_label_marker() -> Result<()> {
-    let ctx = TodoNewContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec!["lib/sandbox/".into()],
-        implementation_notes: vec![],
-        criterion_status: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-    };
-    let out = ctx.render()?;
+fn todo_renders_driver_created_work_epic_and_changed_roster() -> Result<()> {
+    let out = todo_context(vec![], vec![]).render()?;
 
-    assert!(out.contains("# Task Decomposition"));
-    assert!(out.contains("spec:harness"));
-    // Empty notes → the section header is suppressed entirely (no empty
-    // "## Implementation Notes" header in the prompt).
+    assert!(out.contains("# Todo Decomposition"));
+    assert!(out.contains("driver-injected changed-spec roster"));
+    assert!(out.contains("Work epic**: lm-work"));
+    assert!(out.contains("### harness"));
+    assert!(out.contains("specs/harness.md"));
+    assert!(out.contains("--parent=\"lm-work\""));
     assert!(!out.contains("## Implementation Notes"));
     Ok(())
 }
 
 #[test]
-fn todo_new_renders_implementation_notes_when_present() -> Result<()> {
-    let ctx = TodoNewContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![],
-        implementation_notes: vec![
+fn todo_renders_implementation_notes_when_present() -> Result<()> {
+    let ctx = todo_context(
+        vec![
             "Hidden constraint: touch lib/sandbox/linux/default.nix".into(),
             "Design trade-off: prefer single FK over join table".into(),
         ],
-        criterion_status: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-    };
+        vec![],
+    );
     let out = ctx.render()?;
     assert!(out.contains("## Implementation Notes"));
     assert!(out.contains("Hidden constraint: touch lib/sandbox/linux/default.nix"));
@@ -141,52 +169,12 @@ fn todo_new_renders_implementation_notes_when_present() -> Result<()> {
 }
 
 #[test]
-fn todo_update_renders_implementation_notes_when_present() -> Result<()> {
-    let ctx = TodoUpdateContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![],
-        spec_diff: Some("=== specs/harness.md ===\n+ change".into()),
-        existing_tasks: None,
-        molecule_id: Some(MoleculeId::new("lm-mol")),
-        implementation_notes: vec!["beware FK cascade ordering".into()],
-        criterion_status: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-    };
-    let out = ctx.render()?;
-    assert!(out.contains("## Implementation Notes"));
-    assert!(out.contains("beware FK cascade ordering"));
-    assert!(out.contains("<implementation-note>"));
-    Ok(())
-}
+fn todo_template_rejects_generic_success_markers() -> Result<()> {
+    let out = todo_context(vec![], vec![]).render()?;
 
-#[test]
-fn todo_update_wraps_existing_tasks_in_agent_output() -> Result<()> {
-    let ctx = TodoUpdateContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![],
-        spec_diff: Some("=== specs/harness.md ===\n+ new requirement".into()),
-        existing_tasks: Some("- lm-3hhwq.1: scaffold workspace".into()),
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
-        implementation_notes: vec![],
-        criterion_status: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-    };
-    let out = ctx.render()?;
-
-    assert!(out.contains("# Add Tasks to Existing Molecule"));
-    assert!(out.contains("=== specs/harness.md ==="));
-    assert!(out.contains("Molecule ID: lm-3hhwq"));
-    let agent_open = out.find("<agent-output>");
-    let agent_close = out.find("</agent-output>");
-    assert!(agent_open.is_some() && agent_close.is_some());
-    let (open, close) = (agent_open.unwrap_or(0), agent_close.unwrap_or(0));
-    assert!(open < close);
-    let inside = &out[open..close];
-    assert!(inside.contains("lm-3hhwq.1: scaffold workspace"));
+    assert!(out.contains("LOOM_TODO: <json>"));
+    assert!(out.contains("wrong-phase success markers"));
+    assert!(out.contains("`LOOM_COMPLETE`") && out.contains("`LOOM_NOOP`"));
     Ok(())
 }
 
@@ -1109,7 +1097,7 @@ fn every_multi_turn_template_includes_chat_marker_partial() -> Result<()> {
     Ok(())
 }
 
-/// One-shot worker templates (`run`, `todo_*`, `review`) deliberately
+/// One-shot worker templates (`run`, `todo`, `review`) deliberately
 /// omit the chat-mode final-turn restriction: every response in those
 /// phases IS the final output, so the wrap-up clause is meaningless and
 /// could confuse the agent into delaying the marker. This test pins the
@@ -1134,30 +1122,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
     }
     .render()?;
 
-    let todo_new_out = TodoNewContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![],
-        implementation_notes: vec![],
-        criterion_status: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-    }
-    .render()?;
-
-    let todo_update_out = TodoUpdateContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![],
-        spec_diff: None,
-        existing_tasks: None,
-        molecule_id: Some(MoleculeId::new("lm-mol")),
-        implementation_notes: vec![],
-        criterion_status: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-    }
-    .render()?;
+    let todo_out = todo_context(vec![], vec![]).render()?;
 
     let review_out = ReviewContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
@@ -1178,8 +1143,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
 
     for (name, out) in [
         ("run", &run_out),
-        ("todo_new", &todo_new_out),
-        ("todo_update", &todo_update_out),
+        ("todo", &todo_out),
         ("review", &review_out),
     ] {
         assert!(
@@ -1340,7 +1304,7 @@ fn contained_within_agent_output(haystack: &str, needle: &str) -> bool {
 }
 
 /// Pins the per-field agent-output wrapping: each of the four agent-supplied
-/// fields (`title`, `description`, `previous_failure`, `existing_tasks`) is
+/// fields (`title`, `description`, `previous_failure`, implementation notes) are
 /// rendered inside an `<agent-output>` span, not merely in the same prompt.
 #[test]
 fn agent_output_markers_wrap_each_agent_supplied_field() -> Result<()> {
@@ -1371,22 +1335,10 @@ fn agent_output_markers_wrap_each_agent_supplied_field() -> Result<()> {
         );
     }
 
-    let todo_update = TodoUpdateContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![],
-        spec_diff: Some("=== specs/harness.md ===\n+ change".into()),
-        existing_tasks: Some("AGENTOUT_TASKS_TOKEN".into()),
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
-        implementation_notes: vec![],
-        criterion_status: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-    }
-    .render()?;
+    let todo = todo_context(vec!["AGENTOUT_NOTE_TOKEN".into()], vec![]).render()?;
     assert!(
-        contained_within_agent_output(&todo_update, "AGENTOUT_TASKS_TOKEN"),
-        "todo_update.md: existing_tasks not enclosed in <agent-output>: {todo_update}",
+        contained_within_agent_output(&todo, "AGENTOUT_NOTE_TOKEN"),
+        "todo.md: implementation note not enclosed in <agent-output>: {todo}",
     );
     Ok(())
 }
@@ -1408,33 +1360,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
     }
 
     assert_stable("plan", plan_ctx())?;
-    assert_stable(
-        "todo_new",
-        TodoNewContext {
-            pinned_context: PINNED_CONTEXT_BODY.to_string(),
-            label: SpecLabel::new("harness"),
-            spec_path: "specs/harness.md".to_string(),
-            companion_paths: vec!["lib/sandbox/".into()],
-            implementation_notes: vec![],
-            criterion_status: vec![],
-            scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        },
-    )?;
-    assert_stable(
-        "todo_update",
-        TodoUpdateContext {
-            pinned_context: PINNED_CONTEXT_BODY.to_string(),
-            label: SpecLabel::new("harness"),
-            spec_path: "specs/harness.md".to_string(),
-            companion_paths: vec![],
-            spec_diff: Some("=== specs/harness.md ===\n+ stability".into()),
-            existing_tasks: Some("- lm-3hhwq.1: scaffold".into()),
-            molecule_id: Some(MoleculeId::new("lm-3hhwq")),
-            implementation_notes: vec![],
-            criterion_status: vec![],
-            scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        },
-    )?;
+    assert_stable("todo", todo_context(vec![], vec![]))?;
     assert_stable(
         "run",
         LoopContext {
@@ -1520,7 +1446,7 @@ fn representative_criterion_status() -> Vec<CriterionStatus> {
             evidence: EvidenceState::Current {
                 result: CriterionResult::Pass,
                 last_timestamp_ms: 1_716_300_000_000,
-                last_commit: "abc1234".into(),
+                last_commit: git_sha(TEST_SHA),
                 commits_since: 0,
             },
         },
@@ -1535,7 +1461,7 @@ fn representative_criterion_status() -> Vec<CriterionStatus> {
             evidence: EvidenceState::Current {
                 result: CriterionResult::Pass,
                 last_timestamp_ms: 1_716_000_000_000,
-                last_commit: "9abcdef".into(),
+                last_commit: git_sha(TEST_SHA_2),
                 commits_since: 42,
             },
         },
@@ -1550,7 +1476,7 @@ fn representative_criterion_status() -> Vec<CriterionStatus> {
             evidence: EvidenceState::Current {
                 result: CriterionResult::Fail,
                 last_timestamp_ms: 1_716_200_000_000,
-                last_commit: "def5678".into(),
+                last_commit: git_sha(TEST_SHA_3),
                 commits_since: 7,
             },
         },
@@ -1565,7 +1491,7 @@ fn representative_criterion_status() -> Vec<CriterionStatus> {
             evidence: EvidenceState::Current {
                 result: CriterionResult::Skipped,
                 last_timestamp_ms: 1_716_250_000_000,
-                last_commit: "11aa22bb".into(),
+                last_commit: git_sha(TEST_SHA_4),
                 commits_since: 3,
             },
         },
@@ -1575,7 +1501,7 @@ fn representative_criterion_status() -> Vec<CriterionStatus> {
             criterion_text: "Todo prompts render typed criterion status rows.".into(),
             annotation: ann(
                 AnnotationTier::Test,
-                "todo_templates_render_criterion_status_rows",
+                "todo_template_renders_typed_criterion_status_rows",
             ),
             evidence: EvidenceState::Missing,
         },
@@ -1587,7 +1513,7 @@ fn representative_criterion_status() -> Vec<CriterionStatus> {
             evidence: EvidenceState::StaleAnnotation {
                 cached_annotation: ann(AnnotationTier::Check, "old_target"),
                 last_timestamp_ms: 1_716_260_000_000,
-                last_commit: "22bb33cc".into(),
+                last_commit: git_sha(TEST_SHA_5),
                 commits_since: 5,
             },
         },
@@ -1602,127 +1528,58 @@ fn ann(tier: AnnotationTier, target: &str) -> CriterionAnnotation {
     }
 }
 
-/// `todo_new` and `todo_update` surface typed evidence states for every row.
+/// `todo` surfaces typed evidence states for every row.
 #[test]
-fn todo_templates_render_criterion_status_rows() -> Result<()> {
+fn todo_template_renders_typed_criterion_status_rows() -> Result<()> {
     let rows = representative_criterion_status();
+    let out = todo_context(vec![], rows.clone()).render()?;
 
-    let todo_new_out = TodoNewContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![],
-        implementation_notes: vec![],
-        criterion_status: rows.clone(),
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-    }
-    .render()?;
-    let todo_update_out = TodoUpdateContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![],
-        spec_diff: Some("=== specs/harness.md ===\n+ added requirement".into()),
-        existing_tasks: None,
-        molecule_id: Some(MoleculeId::new("lm-mol")),
-        implementation_notes: vec![],
-        criterion_status: rows.clone(),
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-    }
-    .render()?;
-
-    for (name, out) in [
-        ("todo_new", &todo_new_out),
-        ("todo_update", &todo_update_out),
-    ] {
-        for row in &rows {
-            assert!(
-                out.contains(&row.annotation.to_string()),
-                "{name}: annotation `{}` missing from render: {out}",
-                row.annotation,
-            );
-            assert!(
-                out.contains(row.evidence.as_str()),
-                "{name}: evidence state `{}` missing from render: {out}",
-                row.evidence.as_str(),
-            );
-        }
-
-        let fresh_line = "**engine-fresh-pass** · All workflow templates compile under Askama. · annotation `[check](cargo build -p loom-templates)` · evidence `Current` · result Pass · last commit `abc1234` · commits since 0 · last timestamp 1716300000000 · cached annotation `—`";
-        let missing_line = "**criterion-status-never-run** · Todo prompts render typed criterion status rows. · annotation `[test](todo_templates_render_criterion_status_rows)` · evidence `Missing` · result — · last commit — · commits since — · last timestamp — · cached annotation `—`";
-        let stale_line = "**criterion-status-stale-annotation** · Stale annotations are explicit evidence states. · annotation `[test](new_target)` · evidence `StaleAnnotation` · result — · last commit `22bb33cc` · commits since 5 · last timestamp 1716260000000 · cached annotation `[check](old_target)`";
+    for row in &rows {
         assert!(
-            out.contains(fresh_line),
-            "{name}: current row layout drifted: {out}",
+            out.contains(&row.annotation.to_string()),
+            "annotation `{}` missing from render: {out}",
+            row.annotation,
         );
         assert!(
-            out.contains(missing_line),
-            "{name}: missing row layout drifted: {out}",
-        );
-        assert!(
-            out.contains(stale_line),
-            "{name}: stale annotation row layout drifted: {out}",
+            out.contains(row.evidence.as_str()),
+            "evidence state `{}` missing from render: {out}",
+            row.evidence.as_str(),
         );
     }
+
+    let fresh_line = format!(
+        "**templates / engine-fresh-pass** · All workflow templates compile under Askama. · annotation `[check](cargo build -p loom-templates)` · evidence `Current` · result Pass · last commit `{TEST_SHA}` · commits since 0 · last timestamp 1716300000000 · cached annotation `—`"
+    );
+    let missing_line = "**templates / criterion-status-never-run** · Todo prompts render typed criterion status rows. · annotation `[test](todo_template_renders_typed_criterion_status_rows)` · evidence `Missing` · result — · last commit — · commits since — · last timestamp — · cached annotation `—`";
+    let stale_line = format!(
+        "**templates / criterion-status-stale-annotation** · Stale annotations are explicit evidence states. · annotation `[test](new_target)` · evidence `StaleAnnotation` · result — · last commit `{TEST_SHA_5}` · commits since 5 · last timestamp 1716260000000 · cached annotation `[check](old_target)`"
+    );
+    assert!(
+        out.contains(&fresh_line),
+        "current row layout drifted: {out}"
+    );
+    assert!(
+        out.contains(missing_line),
+        "missing row layout drifted: {out}"
+    );
+    assert!(
+        out.contains(&stale_line),
+        "stale annotation row layout drifted: {out}"
+    );
     Ok(())
 }
 
-/// `todo_new` and `todo_update` must each render the
-/// `partial/decomposition_discipline.md` audit clause so the decomposition
+/// `todo` must render the decomposition audit clause so the decomposition
 /// agent is committed to confirming missing work by inspection before
-/// authoring any non-audit bead. Pins the spec's grep tripwires
-/// (`evidence-confirmed`, `audit before`, `LOOM_CLARIFY`) per
-/// `specs/templates.md` § Decomposition discipline.
+/// authoring any non-audit bead.
 #[test]
-fn todo_templates_render_pre_decomposition_audit_clause() -> Result<()> {
-    let todo_new_out = TodoNewContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![],
-        implementation_notes: vec![],
-        criterion_status: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-    }
-    .render()?;
-    let todo_update_out = TodoUpdateContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![],
-        spec_diff: None,
-        existing_tasks: None,
-        molecule_id: Some(MoleculeId::new("lm-mol")),
-        implementation_notes: vec![],
-        criterion_status: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-    }
-    .render()?;
+fn todo_template_renders_pre_decomposition_audit_clause() -> Result<()> {
+    let out = todo_context(vec![], vec![]).render()?;
 
-    for (name, out) in [
-        ("todo_new", &todo_new_out),
-        ("todo_update", &todo_update_out),
-    ] {
-        assert!(
-            out.contains("Decomposition Discipline"),
-            "{name}: decomposition discipline section missing: {out}",
-        );
-        assert!(
-            out.contains("evidence-confirmed"),
-            "{name}: missing `evidence-confirmed` grep tripwire: {out}",
-        );
-        assert!(
-            out.contains("Audit before fan-out"),
-            "{name}: missing `Audit before fan-out` clause heading: {out}",
-        );
-        assert!(
-            out.contains("LOOM_CLARIFY"),
-            "{name}: missing `LOOM_CLARIFY` fallback citation: {out}",
-        );
-        assert!(
-            out.contains("molecule epic"),
-            "{name}: missing `molecule epic` fallback target: {out}",
-        );
-    }
+    assert!(out.contains("Decomposition Discipline"));
+    assert!(out.contains("evidence-confirmed"));
+    assert!(out.contains("Audit before fan-out"));
+    assert!(out.contains("LOOM_CLARIFY"));
+    assert!(out.contains("driver-created work epic"));
     Ok(())
 }

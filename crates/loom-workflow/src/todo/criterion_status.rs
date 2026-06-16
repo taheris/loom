@@ -11,6 +11,7 @@ use loom_driver::git::GitClient;
 use loom_driver::identifier::SpecLabel;
 use loom_gate::annotation::{Annotation, Tier, parse_content};
 use loom_gate::cache::{CacheRow, StatusCache, Verdict};
+use loom_protocol::todo::GitSha;
 use loom_templates::criterion_status::{
     AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
     CriterionStatus, EvidenceState,
@@ -136,19 +137,37 @@ async fn evidence_from_row(
 ) -> EvidenceState {
     let commits_since = commits_since(git, &row.last_run_commit).await;
     let cached_annotation = annotation_from_cache_row(row);
+    let Some(last_commit) = parse_cache_commit(&row.last_run_commit, row) else {
+        return EvidenceState::Missing;
+    };
     if &cached_annotation == current_annotation {
         EvidenceState::Current {
             result: verdict_to_result(row.verdict),
             last_timestamp_ms: row.last_run_ts_ms,
-            last_commit: row.last_run_commit.clone(),
+            last_commit,
             commits_since,
         }
     } else {
         EvidenceState::StaleAnnotation {
             cached_annotation,
             last_timestamp_ms: row.last_run_ts_ms,
-            last_commit: row.last_run_commit.clone(),
+            last_commit,
             commits_since,
+        }
+    }
+}
+
+fn parse_cache_commit(raw: &str, row: &CacheRow) -> Option<GitSha> {
+    match GitSha::new(raw) {
+        Ok(sha) => Some(sha),
+        Err(err) => {
+            warn!(
+                spec_label = %row.spec_label,
+                criterion_id = %row.criterion_anchor,
+                error = %err,
+                "loom todo: criterion evidence cache row has invalid commit; rendering missing evidence",
+            );
+            None
         }
     }
 }

@@ -10,8 +10,8 @@ use loom_templates::{
     PARTIAL_FINDINGS_WALK, PARTIAL_INTERVIEW_MODES, PARTIAL_INVARIANT_CLASH,
     PARTIAL_PLAN_STAGE_RUBRIC, PARTIAL_PROGRESS_MARKERS, PARTIAL_REVIEW_RUBRIC, PARTIAL_SCRATCHPAD,
     PARTIAL_SELF_REPORT_MARKERS, PARTIAL_SIBLING_SPEC_EDITING, PARTIAL_SPEC_CONVENTIONS,
-    PARTIAL_SPEC_HEADER, PARTIAL_STYLE_RULES, PinnedContext, PlanContext, PreviousFailure,
-    VerifierFailure,
+    PARTIAL_SPEC_HEADER, PARTIAL_STYLE_RULES, PARTIAL_TODO_SUCCESS, PinnedContext, PlanContext,
+    PreviousFailure, SpecImplementationNotes, TodoChangedSpec, TodoContext, VerifierFailure,
 };
 
 #[test]
@@ -45,6 +45,7 @@ fn partial_constants_carry_their_source_files() {
         ("spec_conventions", PARTIAL_SPEC_CONVENTIONS),
         ("spec_header", PARTIAL_SPEC_HEADER),
         ("style_rules", PARTIAL_STYLE_RULES),
+        ("todo_success", PARTIAL_TODO_SUCCESS),
     ] {
         assert!(
             !body.is_empty(),
@@ -123,6 +124,36 @@ fn plan_context_is_publicly_constructible_from_crate_root() {
         companion_paths: vec![],
         scratchpad_path: String::new(),
         spec_conventions: String::new(),
+    };
+}
+
+#[test]
+fn todo_context_is_publicly_constructible_from_crate_root() {
+    use loom_events::identifier::BeadId;
+    use loom_protocol::todo::{GitSha, TodoFingerprint};
+
+    let _ctx = TodoContext {
+        pinned_context: String::new(),
+        spec_index: String::new(),
+        changed_specs: vec![TodoChangedSpec {
+            label: loom_events::identifier::SpecLabel::new("demo"),
+            spec_path: "specs/demo.md".to_string(),
+            diff: None,
+        }],
+        work_epic: BeadId::new("lm-work").expect("valid bead id"),
+        todo_head: GitSha::new("0123456789abcdef0123456789abcdef01234567").expect("valid git sha"),
+        todo_fingerprint: TodoFingerprint::new(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .expect("valid fingerprint"),
+        spec_epics: vec![],
+        companion_paths: vec![],
+        implementation_notes: vec![SpecImplementationNotes {
+            label: loom_events::identifier::SpecLabel::new("demo"),
+            notes: vec![],
+        }],
+        criterion_status: vec![],
+        scratchpad_path: String::new(),
     };
 }
 

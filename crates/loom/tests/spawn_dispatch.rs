@@ -775,10 +775,10 @@ fn loom_gate_review_writes_phase_jsonl_log() {
     );
 }
 
-/// Install a `bd` shim that returns `bead_json` for any `--json`-flagged
-/// subcommand (`bd ready`, `bd list`) and exits 0 silently for everything
-/// else (`bd close`, `bd update`). Returns the bin directory the caller
-/// should prepend to PATH.
+/// Install a `bd` shim that returns `bead_json` for JSON list subcommands,
+/// returns a synthetic id for `bd create --json`, and exits 0 silently for
+/// everything else (`bd close`, `bd update`). Returns the bin directory the
+/// caller should prepend to PATH.
 fn install_bd_bead_stub(dir: &Path, bead_json: &str) -> PathBuf {
     let bin_dir = dir.join("bd-bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
@@ -787,8 +787,12 @@ fn install_bd_bead_stub(dir: &Path, bead_json: &str) -> PathBuf {
     let body = format!(
         "#!{bash}\n\
          set -euo pipefail\n\
+         if [[ \"${{1:-}}\" == 'create' ]]; then\n\
+             echo 'lm-work'\n\
+             exit 0\n\
+         fi\n\
          for arg in \"$@\"; do\n\
-             if [ \"$arg\" = '--json' ]; then\n\
+             if [[ \"$arg\" == '--json' ]]; then\n\
                  cat <<'__BD_BEAD_JSON__'\n\
 {bead}\n\
 __BD_BEAD_JSON__\n\

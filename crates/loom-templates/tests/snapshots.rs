@@ -10,6 +10,7 @@
 
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
+use loom_protocol::todo::{GitSha, TodoFingerprint};
 use loom_templates::criterion_status::{
     AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
     CriterionStatus, EvidenceState,
@@ -19,11 +20,49 @@ use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
 use loom_templates::plan::PlanContext;
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
 use loom_templates::run::{DriverNoticeCause, LoopContext, PreviousFailure, VerifierFailure};
-use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
+use loom_templates::todo::{
+    SpecEpicContext, SpecImplementationNotes, TodoChangedSpec, TodoContext,
+};
 
 const PINNED_CONTEXT_BODY: &str =
     "# Project Overview\n\nLoom orchestrates the spec-to-implementation workflow.";
 const SCRATCHPAD_PATH_BODY: &str = "/workspace/.loom/scratch/harness/scratch.md";
+const TEST_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+const TEST_SHA_2: &str = "1111111111111111111111111111111111111111";
+const TEST_SHA_3: &str = "2222222222222222222222222222222222222222";
+const TEST_FINGERPRINT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+fn git_sha(raw: &str) -> GitSha {
+    GitSha::new(raw).unwrap()
+}
+
+fn todo_ctx() -> TodoContext {
+    TodoContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        spec_index: "# Loom Docs\n| Spec | Purpose |\n| [harness](../specs/harness.md) | Harness |"
+            .to_string(),
+        changed_specs: vec![TodoChangedSpec {
+            label: SpecLabel::new("harness"),
+            spec_path: "specs/harness.md".to_string(),
+            diff: Some("=== specs/harness.md ===\n+ new requirement".to_string()),
+        }],
+        work_epic: BeadId::new("lm-work").unwrap(),
+        todo_head: git_sha(TEST_SHA),
+        todo_fingerprint: TodoFingerprint::new(TEST_FINGERPRINT).unwrap(),
+        spec_epics: vec![SpecEpicContext {
+            label: SpecLabel::new("harness"),
+            epic_id: Some(MoleculeId::new("lm-spec")),
+            todo_cursor: Some(TEST_SHA.to_string()),
+        }],
+        companion_paths: vec!["lib/sandbox/".into()],
+        implementation_notes: vec![SpecImplementationNotes {
+            label: SpecLabel::new("harness"),
+            notes: vec!["Carry the unified todo protocol into snapshots.".into()],
+        }],
+        criterion_status: snapshot_criterion_status(),
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+    }
+}
 
 fn snapshot_criterion_status() -> Vec<CriterionStatus> {
     vec![
@@ -35,7 +74,7 @@ fn snapshot_criterion_status() -> Vec<CriterionStatus> {
             evidence: EvidenceState::Current {
                 result: CriterionResult::Pass,
                 last_timestamp_ms: 1_716_300_000_000,
-                last_commit: "abc1234".into(),
+                last_commit: git_sha(TEST_SHA),
                 commits_since: 0,
             },
         },
@@ -50,7 +89,7 @@ fn snapshot_criterion_status() -> Vec<CriterionStatus> {
             evidence: EvidenceState::Current {
                 result: CriterionResult::Fail,
                 last_timestamp_ms: 1_716_200_000_000,
-                last_commit: "def5678".into(),
+                last_commit: git_sha(TEST_SHA_2),
                 commits_since: 7,
             },
         },
@@ -60,7 +99,7 @@ fn snapshot_criterion_status() -> Vec<CriterionStatus> {
             criterion_text: "Todo prompts render typed criterion status rows.".into(),
             annotation: ann(
                 AnnotationTier::Test,
-                "todo_templates_render_criterion_status_rows",
+                "todo_template_renders_typed_criterion_status_rows",
             ),
             evidence: EvidenceState::Missing,
         },
@@ -75,7 +114,7 @@ fn snapshot_criterion_status() -> Vec<CriterionStatus> {
             evidence: EvidenceState::Current {
                 result: CriterionResult::Skipped,
                 last_timestamp_ms: 1_716_250_000_000,
-                last_commit: "9abcdef".into(),
+                last_commit: git_sha(TEST_SHA_3),
                 commits_since: 3,
             },
         },
@@ -108,34 +147,8 @@ fn plan_snapshot() {
 }
 
 #[test]
-fn todo_new_snapshot() {
-    let ctx = TodoNewContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec!["lib/sandbox/".into()],
-        implementation_notes: vec![],
-        criterion_status: snapshot_criterion_status(),
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-    };
-    insta::assert_snapshot!(ctx.render().unwrap());
-}
-
-#[test]
-fn todo_update_snapshot() {
-    let ctx = TodoUpdateContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        label: SpecLabel::new("harness"),
-        spec_path: "specs/harness.md".to_string(),
-        companion_paths: vec![],
-        spec_diff: Some("=== specs/harness.md ===\n+ new requirement".into()),
-        existing_tasks: Some("- lm-3hhwq.1: scaffold workspace".into()),
-        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
-        implementation_notes: vec![],
-        criterion_status: snapshot_criterion_status(),
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-    };
-    insta::assert_snapshot!(ctx.render().unwrap());
+fn todo_snapshot() {
+    insta::assert_snapshot!(todo_ctx().render().unwrap());
 }
 
 #[test]

@@ -9,6 +9,7 @@
 use std::fmt;
 
 use loom_events::identifier::SpecLabel;
+use loom_protocol::todo::GitSha;
 
 /// Per-criterion evidence record threaded into todo contexts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,14 +102,14 @@ pub enum EvidenceState {
     Current {
         result: CriterionResult,
         last_timestamp_ms: i64,
-        last_commit: String,
+        last_commit: GitSha,
         commits_since: u32,
     },
     Missing,
     StaleAnnotation {
         cached_annotation: CriterionAnnotation,
         last_timestamp_ms: i64,
-        last_commit: String,
+        last_commit: GitSha,
         commits_since: u32,
     },
 }

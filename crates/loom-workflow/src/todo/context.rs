@@ -1,82 +1,109 @@
-use loom_driver::identifier::{MoleculeId, SpecLabel};
+use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_protocol::todo::{GitSha, TodoFingerprint};
 use loom_templates::criterion_status::CriterionStatus;
-use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
+use loom_templates::todo::{
+    SpecEpicContext, SpecImplementationNotes, TodoChangedSpec, TodoContext,
+};
 
-use super::touched::{TouchedSpec, render_fanout_block};
+use super::touched::TouchedSpec;
 
-/// Tagged template context — picks the right Askama struct based on the
-/// resolver outcome. The driver renders this directly.
-pub enum TodoTemplateContext {
-    New(TodoNewContext),
-    Update(TodoUpdateContext),
-}
-
-/// Inputs every template needs, regardless of resolver outcome.
+/// Inputs the unified todo template needs from deterministic preflight.
 pub struct TemplateBaseFields {
-    pub label: SpecLabel,
-    pub spec_path: String,
     pub pinned_context: String,
+    pub spec_index: String,
+    pub changed_specs: Vec<TodoChangedSpec>,
+    pub work_epic: BeadId,
+    pub todo_head: GitSha,
+    pub todo_fingerprint: TodoFingerprint,
+    pub spec_epics: Vec<SpecEpicContext>,
     pub companion_paths: Vec<String>,
-    /// Implementation notes pulled from `notes` rows where
-    /// `kind = 'implementation'`, in chronological (id ascending) order.
-    /// Rendered into every new bead body so each implementation agent
-    /// receives the full planning context independent of external state.
-    pub implementation_notes: Vec<String>,
-    /// Absolute path to `.loom/scratch/<spec-label>/scratch.md` for
-    /// this todo session. Embedded in the rendered prompt so the agent can
-    /// write to the correct file under compaction recovery.
+    pub implementation_notes: Vec<SpecImplementationNotes>,
     pub scratchpad_path: String,
 }
 
-/// Build the template context for the resolver's outcome.
-///
-/// - `Some(molecule_id)` → [`TodoUpdateContext`] with `spec_diff` set to
-///   the per-spec fan-out across every touched spec.
-/// - `None` → [`TodoNewContext`].
+/// Build the unified todo template context.
 pub fn build_template_context(
-    molecule_id: Option<MoleculeId>,
-    touched: &[TouchedSpec],
     base: TemplateBaseFields,
     criterion_status: Vec<CriterionStatus>,
-) -> TodoTemplateContext {
-    let TemplateBaseFields {
-        label,
-        spec_path,
-        pinned_context,
-        companion_paths,
-        implementation_notes,
-        scratchpad_path,
-    } = base;
+) -> TodoContext {
+    TodoContext {
+        pinned_context: base.pinned_context,
+        spec_index: base.spec_index,
+        changed_specs: base.changed_specs,
+        work_epic: base.work_epic,
+        todo_head: base.todo_head,
+        todo_fingerprint: base.todo_fingerprint,
+        spec_epics: base.spec_epics,
+        companion_paths: base.companion_paths,
+        implementation_notes: base.implementation_notes,
+        criterion_status,
+        scratchpad_path: base.scratchpad_path,
+    }
+}
 
-    match molecule_id {
-        Some(id) => {
-            let spec_diff = if touched.is_empty() {
-                None
-            } else {
-                Some(render_fanout_block(touched))
-            };
-            TodoTemplateContext::Update(TodoUpdateContext {
-                pinned_context,
-                label,
-                spec_path,
-                companion_paths,
-                spec_diff,
-                existing_tasks: None,
-                molecule_id: Some(id),
-                implementation_notes,
-                criterion_status,
-                scratchpad_path,
-            })
+pub fn changed_specs_from_touched(
+    anchor: &SpecLabel,
+    touched: &[TouchedSpec],
+) -> Vec<TodoChangedSpec> {
+    if touched.is_empty() {
+        return vec![TodoChangedSpec {
+            label: anchor.clone(),
+            spec_path: format!("specs/{anchor}.md"),
+            diff: None,
+        }];
+    }
+
+    touched
+        .iter()
+        .map(|spec| TodoChangedSpec {
+            label: spec.label.clone(),
+            spec_path: spec.spec_path.to_string_lossy().into_owned(),
+            diff: Some(spec.diff.clone()),
+        })
+        .collect()
+}
+
+pub fn spec_epic_context(
+    label: SpecLabel,
+    epic_id: Option<MoleculeId>,
+    todo_cursor: Option<String>,
+) -> SpecEpicContext {
+    SpecEpicContext {
+        label,
+        epic_id,
+        todo_cursor,
+    }
+}
+
+pub fn implementation_notes_context(
+    label: SpecLabel,
+    notes: Vec<String>,
+) -> SpecImplementationNotes {
+    SpecImplementationNotes { label, notes }
+}
+
+pub fn todo_fingerprint(
+    todo_head: &GitSha,
+    work_epic: &BeadId,
+    changed_specs: &[TodoChangedSpec],
+) -> TodoFingerprint {
+    let mut canonical = String::new();
+    canonical.push_str(todo_head.as_str());
+    canonical.push('\0');
+    canonical.push_str(work_epic.as_str());
+    for spec in changed_specs {
+        canonical.push('\0');
+        canonical.push_str(spec.label.as_str());
+        canonical.push('\0');
+        canonical.push_str(&spec.spec_path);
+    }
+    let digest = blake3::hash(canonical.as_bytes()).to_hex().to_string();
+    match TodoFingerprint::new(&digest) {
+        Ok(fingerprint) => fingerprint,
+        Err(err) => {
+            tracing::error!(target: "loom::bug", error = %err, "blake3 todo fingerprint rejected");
+            std::process::abort();
         }
-        None => TodoTemplateContext::New(TodoNewContext {
-            pinned_context,
-            label,
-            spec_path,
-            companion_paths,
-            implementation_notes,
-            criterion_status,
-            scratchpad_path,
-        }),
     }
 }
 
@@ -85,64 +112,54 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
     fn base_fields() -> TemplateBaseFields {
-        TemplateBaseFields {
+        let work_epic = BeadId::new("lm-work").expect("valid bead id");
+        let todo_head = GitSha::new(SHA).expect("valid git sha");
+        let changed_specs = vec![TodoChangedSpec {
             label: SpecLabel::new("alpha"),
             spec_path: "specs/alpha.md".to_string(),
+            diff: None,
+        }];
+        let todo_fingerprint = todo_fingerprint(&todo_head, &work_epic, &changed_specs);
+        TemplateBaseFields {
             pinned_context: "PIN".to_string(),
+            spec_index: "INDEX".to_string(),
+            changed_specs,
+            work_epic,
+            todo_head,
+            todo_fingerprint,
+            spec_epics: vec![],
             companion_paths: vec![],
             implementation_notes: vec![],
-            scratchpad_path: "/workspace/.loom/scratch/alpha/scratch.md".to_string(),
+            scratchpad_path: "/workspace/.loom/scratch/todo/scratch.md".to_string(),
         }
     }
 
     #[test]
-    fn no_molecule_routes_to_todo_new_context() {
-        let ctx = build_template_context(None, &[], base_fields(), vec![]);
-        assert!(matches!(ctx, TodoTemplateContext::New(_)));
+    fn build_context_returns_unified_todo_context() {
+        let ctx = build_template_context(base_fields(), vec![]);
+        assert_eq!(ctx.changed_specs[0].label, SpecLabel::new("alpha"));
+        assert_eq!(ctx.work_epic.as_str(), "lm-work");
     }
 
     #[test]
-    fn existing_molecule_without_touched_renders_update_with_no_diff() {
-        let mol = MoleculeId::new("lm-mol");
-        let ctx = build_template_context(Some(mol.clone()), &[], base_fields(), vec![]);
-        match ctx {
-            TodoTemplateContext::Update(u) => {
-                assert!(u.spec_diff.is_none());
-                assert_eq!(u.molecule_id, Some(mol));
-            }
-            _ => panic!("expected Update"),
-        }
-    }
-
-    #[test]
-    fn notes_thread_into_new_tier_context() {
+    fn notes_thread_into_unified_context() {
         let mut base = base_fields();
-        base.implementation_notes = vec!["note one".into(), "note two".into()];
-        let ctx = build_template_context(None, &[], base, vec![]);
-        match ctx {
-            TodoTemplateContext::New(n) => {
-                assert_eq!(n.implementation_notes, vec!["note one", "note two"]);
-            }
-            _ => panic!("expected New"),
-        }
+        base.implementation_notes = vec![implementation_notes_context(
+            SpecLabel::new("alpha"),
+            vec!["note one".into(), "note two".into()],
+        )];
+        let ctx = build_template_context(base, vec![]);
+        assert_eq!(
+            ctx.implementation_notes[0].notes,
+            vec!["note one", "note two"]
+        );
     }
 
     #[test]
-    fn notes_thread_into_update_tier_context() {
-        let mut base = base_fields();
-        base.implementation_notes = vec!["seeded note".into()];
-        let ctx = build_template_context(Some(MoleculeId::new("lm-mol")), &[], base, vec![]);
-        match ctx {
-            TodoTemplateContext::Update(u) => {
-                assert_eq!(u.implementation_notes, vec!["seeded note"]);
-            }
-            _ => panic!("expected Update"),
-        }
-    }
-
-    #[test]
-    fn criterion_status_threads_into_new_tier_context() {
+    fn criterion_status_threads_into_unified_context() {
         use loom_templates::criterion_status::{
             AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
             CriterionStatus, EvidenceState,
@@ -159,48 +176,16 @@ mod tests {
             evidence: EvidenceState::Current {
                 result: CriterionResult::Pass,
                 last_timestamp_ms: 42,
-                last_commit: "deadbeef".into(),
+                last_commit: GitSha::new(SHA).expect("valid git sha"),
                 commits_since: 0,
             },
         }];
-        let ctx = build_template_context(None, &[], base_fields(), cs.clone());
-        match ctx {
-            TodoTemplateContext::New(n) => assert_eq!(n.criterion_status, cs),
-            _ => panic!("expected New"),
-        }
+        let ctx = build_template_context(base_fields(), cs.clone());
+        assert_eq!(ctx.criterion_status, cs);
     }
 
     #[test]
-    fn criterion_status_threads_into_update_tier_context() {
-        use loom_templates::criterion_status::{
-            AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionStatus,
-            EvidenceState,
-        };
-        let cs = vec![CriterionStatus {
-            spec_label: SpecLabel::new("harness"),
-            criterion_id: CriterionId::new("criterion-9"),
-            criterion_text: "Test succeeds".into(),
-            annotation: CriterionAnnotation {
-                tier: AnnotationTier::Test,
-                target: AnnotationTarget::new("crate::t::b"),
-                pending: false,
-            },
-            evidence: EvidenceState::Missing,
-        }];
-        let ctx = build_template_context(
-            Some(MoleculeId::new("lm-mol")),
-            &[],
-            base_fields(),
-            cs.clone(),
-        );
-        match ctx {
-            TodoTemplateContext::Update(u) => assert_eq!(u.criterion_status, cs),
-            _ => panic!("expected Update"),
-        }
-    }
-
-    #[test]
-    fn touched_specs_render_fanout_with_path_markers() {
+    fn touched_specs_render_changed_spec_roster_with_path_markers() {
         let touched = vec![
             TouchedSpec {
                 label: SpecLabel::new("alpha"),
@@ -213,21 +198,22 @@ mod tests {
                 diff: "beta diff line".into(),
             },
         ];
-        let ctx = build_template_context(
-            Some(MoleculeId::new("lm-mol")),
-            &touched,
-            base_fields(),
-            vec![],
+        let changed = changed_specs_from_touched(&SpecLabel::new("alpha"), &touched);
+        assert_eq!(changed[0].spec_path, "specs/alpha.md");
+        assert!(
+            changed[0]
+                .diff
+                .as_deref()
+                .is_some_and(|d| d.contains("alpha diff"))
         );
-        match ctx {
-            TodoTemplateContext::Update(u) => {
-                let diff = u.spec_diff.expect("spec_diff set");
-                assert!(diff.contains("=== specs/alpha.md ==="));
-                assert!(diff.contains("alpha diff line"));
-                assert!(diff.contains("=== specs/beta.md ==="));
-                assert!(diff.contains("beta diff line"));
-            }
-            _ => panic!("expected Update"),
-        }
+        assert_eq!(changed[1].label, SpecLabel::new("beta"));
+    }
+
+    #[test]
+    fn empty_touched_set_uses_anchor_changed_spec() {
+        let changed = changed_specs_from_touched(&SpecLabel::new("alpha"), &[]);
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].spec_path, "specs/alpha.md");
+        assert!(changed[0].diff.is_none());
     }
 }

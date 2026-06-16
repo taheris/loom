@@ -2,8 +2,8 @@
 //!
 //! Resolves the per-bead [`SpawnConfig`] by running the single-query
 //! resolver against a real [`BdClient`] + working-tree-diff touched-set
-//! discovery against a real [`GitClient`], then renders `todo_new.md` /
-//! `todo_update.md` from `templates`.
+//! discovery against a real [`GitClient`], then renders the unified
+//! `todo.md` template from `templates`.
 //!
 //! Agent dispatch happens in [`super::runner::run`] via a caller-provided
 //! closure, so this controller does not own the spawn surface.
@@ -26,7 +26,10 @@ use loom_driver::state::{BdUpdateFn, CacheDb};
 use tracing::{debug, info, warn};
 
 use super::ExitSignal;
-use super::context::{TemplateBaseFields, TodoTemplateContext, build_template_context};
+use super::context::{
+    TemplateBaseFields, build_template_context, changed_specs_from_touched,
+    implementation_notes_context, spec_epic_context, todo_fingerprint,
+};
 use super::criterion_status::build_criterion_status;
 use super::error::TodoError;
 use super::fanout::{FanoutOutcome, classify_touched_set, render_collision_options};
@@ -126,6 +129,35 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         Ok(snapshot)
     }
 
+    async fn ensure_work_epic(
+        &self,
+        resolved: Option<&MoleculeId>,
+        changed_specs: &[loom_templates::todo::TodoChangedSpec],
+    ) -> Result<BeadId, TodoError> {
+        if let Some(id) = resolved {
+            return BeadId::new(id.as_str()).map_err(|source| TodoError::InvalidWorkEpic {
+                id: id.as_str().to_owned(),
+                source,
+            });
+        }
+        let labels = changed_specs
+            .iter()
+            .map(|spec| spec.label.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.bd
+            .create(CreateOpts {
+                title: format!("loom todo work: {labels}"),
+                description: "Driver-created work epic for loom todo decomposition.".to_string(),
+                issue_type: Some("epic".to_string()),
+                priority: Some(2),
+                labels: vec!["loom:todo".to_string()],
+                ..CreateOpts::default()
+            })
+            .await
+            .map_err(TodoError::Bd)
+    }
+
     async fn build_prompt(&self) -> Result<String, TodoError> {
         let spec_path = PathBuf::from("specs").join(format!("{}.md", self.label.as_str()));
         let touched = touched_specs(self.git.as_ref()).await?;
@@ -200,23 +232,55 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             Err(e) => return Err(TodoError::State(e)),
         }
 
-        let implementation_notes = self
-            .state
-            .notes_list(Some(&self.label), Some("implementation"))?
-            .into_iter()
-            .map(|row| row.text)
-            .collect::<Vec<_>>();
+        let changed_specs = changed_specs_from_touched(&self.label, &touched);
+        let work_epic = self
+            .ensure_work_epic(molecule_id.as_ref(), &changed_specs)
+            .await?;
+        let todo_head = self.git.head_commit_sha().await?;
+        let todo_fingerprint = todo_fingerprint(&todo_head, &work_epic, &changed_specs);
+        let mut implementation_notes = Vec::new();
+        let mut companion_paths = Vec::new();
+        let mut spec_epics = Vec::new();
+        for spec in &changed_specs {
+            let notes = self
+                .state
+                .notes_list(Some(&spec.label), Some("implementation"))?
+                .into_iter()
+                .map(|row| row.text)
+                .collect::<Vec<_>>();
+            implementation_notes.push(implementation_notes_context(spec.label.clone(), notes));
+            companion_paths.extend(self.state.companions(&spec.label)?);
+            let cached_epic = self.state.spec_epic(&spec.label)?;
+            spec_epics.push(spec_epic_context(
+                spec.label.clone(),
+                cached_epic.as_ref().map(|row| row.epic_id.clone()),
+                cached_epic.and_then(|row| row.todo_cursor),
+            ));
+        }
+        companion_paths.sort();
+        companion_paths.dedup();
 
         let key = resolve_scratch_key(Phase::Todo, &self.label, None);
         let scratchpad_path =
             loom_driver::scratch::ScratchSession::scratchpad_path_for(&self.workspace, &key)
                 .to_string_lossy()
                 .into_owned();
+        let spec_index = match std::fs::read_to_string(self.workspace.join("docs/README.md")) {
+            Ok(body) => body,
+            Err(err) => {
+                warn!(error = %err, "loom todo: failed to read spec index for prompt");
+                String::new()
+            }
+        };
         let base = TemplateBaseFields {
-            label: self.label.clone(),
-            spec_path: spec_path.to_string_lossy().into_owned(),
             pinned_context: String::new(),
-            companion_paths: vec![],
+            spec_index,
+            changed_specs,
+            work_epic,
+            todo_head,
+            todo_fingerprint,
+            spec_epics,
+            companion_paths,
             implementation_notes,
             scratchpad_path,
         };
@@ -229,12 +293,8 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             self.git.as_ref(),
         )
         .await;
-        let ctx = build_template_context(molecule_id, &touched, base, criterion_status);
-        let body = match ctx {
-            TodoTemplateContext::New(c) => c.render()?,
-            TodoTemplateContext::Update(c) => c.render()?,
-        };
-        Ok(body)
+        let ctx = build_template_context(base, criterion_status);
+        Ok(ctx.render()?)
     }
 }
 

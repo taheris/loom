@@ -1,9 +1,8 @@
-//! Architectural: `TodoNewContext` and `TodoUpdateContext` carry
-//! `criterion_status: Vec<CriterionStatus>`; the other phase context structs
-//! (`PlanContext`, `LoopContext`, `ReviewContext`, `MsgContext`) do not.
-//! The criterion-status decomposition-evidence surface
-//! is scoped to the two `todo_*` phases per
-//! `specs/templates.md` § Criterion-Status Surface.
+//! Architectural: `TodoContext` carries `criterion_status:
+//! Vec<CriterionStatus>`; the other phase context structs (`PlanContext`,
+//! `LoopContext`, `ReviewContext`, `MsgContext`) do not. The
+//! criterion-status decomposition-evidence surface is scoped to the unified
+//! `todo` phase per `specs/templates.md` § Criterion-Status Surface.
 
 use std::collections::HashMap;
 
@@ -12,12 +11,12 @@ use syn::spanned::Spanned;
 use super::util::{parse_rs, rel, rs_files_recursive, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "todo_contexts_carry_criterion_status — TodoNewContext/TodoUpdateContext carry `criterion_status: Vec<CriterionStatus>`; no other phase context does";
+const RULE: &str = "todo_contexts_carry_criterion_status — TodoContext carries `criterion_status: Vec<CriterionStatus>`; no other phase context does";
 
 const FIELD: &str = "criterion_status";
 const SRC_DIR: &str = "crates/loom-templates/src";
 
-const REQUIRED: &[&str] = &["TodoNewContext", "TodoUpdateContext"];
+const REQUIRED: &[&str] = &["TodoContext"];
 const FORBIDDEN: &[&str] = &["PlanContext", "LoopContext", "ReviewContext", "MsgContext"];
 
 struct Found {
@@ -85,7 +84,7 @@ pub fn run(_input: &WalkInput) -> Verdict {
             && let Some(info) = &f.field
         {
             violations.push(format!(
-                "{}:{} `{name}` carries field `{FIELD}` — only `TodoNewContext`/`TodoUpdateContext` may",
+                "{}:{} `{name}` carries field `{FIELD}` — only `TodoContext` may",
                 f.rel_path, info.line,
             ));
         }
