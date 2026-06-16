@@ -10,17 +10,17 @@ evidence of coverage, not a candidate for a new implementation bead.
 Before authoring any non-audit bead, you MUST:
 
 1. **Consult the `criterion_status` surface** rendered above for each
-   criterion in scope. Each row exposes the criterion's annotation target,
-   the cached verifier verdict (`Pass | Fail | Skipped | NoResult`), the
-   timestamp of the run that produced that verdict, the commit it was
-   recorded against, and how many commits have landed on HEAD since. A
-   row whose verdict is `Pass`, whose timestamp is recent, and whose
-   commits-since count is low is positive evidence of coverage — do
-   **not** author a bead for it.
+   criterion in scope. Each row exposes the criterion text, annotation
+   target, typed evidence state (`Current`, `Missing`, or
+   `StaleAnnotation`), any current verifier result (`Pass | Fail |
+   Skipped`), the commit it was recorded against, and how many commits
+   have landed on HEAD since. A row whose evidence is `Current`, whose
+   result is `Pass`, and whose commits-since count is low is positive
+   evidence of coverage — do **not** author a bead for it.
 
 2. **Inspect representative implementations and verifier functions** for
-   any row that is suspicious: a stale timestamp, a large commits-since
-   value, a `NoResult` row on a fresh checkout, or a verifier-target
+   any row that is suspicious: stale annotation evidence, a large
+   commits-since value, a `Missing` row on a fresh checkout, or a verifier-target
    name whose body may not actually exercise the live system. A
    directory listing proves the file exists; it does not prove the
    file contains the named target, and it does not prove the named

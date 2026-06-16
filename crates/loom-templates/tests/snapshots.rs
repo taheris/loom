@@ -10,7 +10,10 @@
 
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
-use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
+use loom_templates::criterion_status::{
+    AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
+    CriterionStatus, EvidenceState,
+};
 use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
 use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
 use loom_templates::plan::PlanContext;
@@ -21,6 +24,71 @@ use loom_templates::todo::{TodoNewContext, TodoUpdateContext};
 const PINNED_CONTEXT_BODY: &str =
     "# Project Overview\n\nLoom orchestrates the spec-to-implementation workflow.";
 const SCRATCHPAD_PATH_BODY: &str = "/workspace/.loom/scratch/harness/scratch.md";
+
+fn snapshot_criterion_status() -> Vec<CriterionStatus> {
+    vec![
+        CriterionStatus {
+            spec_label: SpecLabel::new("templates"),
+            criterion_id: CriterionId::new("engine-001"),
+            criterion_text: "All workflow templates compile under Askama.".into(),
+            annotation: ann(AnnotationTier::Check, "cargo build -p loom-templates"),
+            evidence: EvidenceState::Current {
+                result: CriterionResult::Pass,
+                last_timestamp_ms: 1_716_300_000_000,
+                last_commit: "abc1234".into(),
+                commits_since: 0,
+            },
+        },
+        CriterionStatus {
+            spec_label: SpecLabel::new("templates"),
+            criterion_id: CriterionId::new("engine-002"),
+            criterion_text: "Rendered output is stable across runs.".into(),
+            annotation: ann(
+                AnnotationTier::Test,
+                "template_renders_are_byte_stable_across_runs",
+            ),
+            evidence: EvidenceState::Current {
+                result: CriterionResult::Fail,
+                last_timestamp_ms: 1_716_200_000_000,
+                last_commit: "def5678".into(),
+                commits_since: 7,
+            },
+        },
+        CriterionStatus {
+            spec_label: SpecLabel::new("templates"),
+            criterion_id: CriterionId::new("criterion-status-001"),
+            criterion_text: "Todo prompts render typed criterion status rows.".into(),
+            annotation: ann(
+                AnnotationTier::Test,
+                "todo_templates_render_criterion_status_rows",
+            ),
+            evidence: EvidenceState::Missing,
+        },
+        CriterionStatus {
+            spec_label: SpecLabel::new("templates"),
+            criterion_id: CriterionId::new("engine-003"),
+            criterion_text: "Every non-pending pinning cell matches the include graph.".into(),
+            annotation: ann(
+                AnnotationTier::Check,
+                "cargo run -p loom-walk -- template_pinning_matrix",
+            ),
+            evidence: EvidenceState::Current {
+                result: CriterionResult::Skipped,
+                last_timestamp_ms: 1_716_250_000_000,
+                last_commit: "9abcdef".into(),
+                commits_since: 3,
+            },
+        },
+    ]
+}
+
+fn ann(tier: AnnotationTier, target: &str) -> CriterionAnnotation {
+    CriterionAnnotation {
+        tier,
+        target: AnnotationTarget::new(target),
+        pending: false,
+    }
+}
 
 #[test]
 fn plan_snapshot() {
@@ -47,40 +115,7 @@ fn todo_new_snapshot() {
         spec_path: "specs/harness.md".to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
         implementation_notes: vec![],
-        criterion_status: vec![
-            CriterionStatus {
-                criterion_anchor: "engine-001".into(),
-                annotation: "[check](cargo build -p loom-templates)".into(),
-                last_result: CriterionResult::Pass,
-                last_timestamp_ms: Some(1_716_300_000_000),
-                last_commit: Some("abc1234".into()),
-                commits_since: Some(0),
-            },
-            CriterionStatus {
-                criterion_anchor: "engine-002".into(),
-                annotation: "[test](template_renders_are_byte_stable_across_runs)".into(),
-                last_result: CriterionResult::Fail,
-                last_timestamp_ms: Some(1_716_200_000_000),
-                last_commit: Some("def5678".into()),
-                commits_since: Some(7),
-            },
-            CriterionStatus {
-                criterion_anchor: "criterion-status-001".into(),
-                annotation: "[test](todo_templates_render_criterion_status_rows)".into(),
-                last_result: CriterionResult::NoResult,
-                last_timestamp_ms: None,
-                last_commit: None,
-                commits_since: None,
-            },
-            CriterionStatus {
-                criterion_anchor: "engine-003".into(),
-                annotation: "[check](cargo run -p loom-walk -- template_pinning_matrix)".into(),
-                last_result: CriterionResult::Skipped,
-                last_timestamp_ms: Some(1_716_250_000_000),
-                last_commit: Some("9abcdef".into()),
-                commits_since: Some(3),
-            },
-        ],
+        criterion_status: snapshot_criterion_status(),
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
@@ -97,40 +132,7 @@ fn todo_update_snapshot() {
         existing_tasks: Some("- lm-3hhwq.1: scaffold workspace".into()),
         molecule_id: Some(MoleculeId::new("lm-3hhwq")),
         implementation_notes: vec![],
-        criterion_status: vec![
-            CriterionStatus {
-                criterion_anchor: "engine-001".into(),
-                annotation: "[check](cargo build -p loom-templates)".into(),
-                last_result: CriterionResult::Pass,
-                last_timestamp_ms: Some(1_716_300_000_000),
-                last_commit: Some("abc1234".into()),
-                commits_since: Some(0),
-            },
-            CriterionStatus {
-                criterion_anchor: "engine-002".into(),
-                annotation: "[test](template_renders_are_byte_stable_across_runs)".into(),
-                last_result: CriterionResult::Fail,
-                last_timestamp_ms: Some(1_716_200_000_000),
-                last_commit: Some("def5678".into()),
-                commits_since: Some(7),
-            },
-            CriterionStatus {
-                criterion_anchor: "criterion-status-001".into(),
-                annotation: "[test](todo_templates_render_criterion_status_rows)".into(),
-                last_result: CriterionResult::NoResult,
-                last_timestamp_ms: None,
-                last_commit: None,
-                commits_since: None,
-            },
-            CriterionStatus {
-                criterion_anchor: "engine-003".into(),
-                annotation: "[check](cargo run -p loom-walk -- template_pinning_matrix)".into(),
-                last_result: CriterionResult::Skipped,
-                last_timestamp_ms: Some(1_716_250_000_000),
-                last_commit: Some("9abcdef".into()),
-                commits_since: Some(3),
-            },
-        ],
+        criterion_status: snapshot_criterion_status(),
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());

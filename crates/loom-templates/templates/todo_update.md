@@ -75,12 +75,8 @@ already covered by a fresh-pass verifier from those that are stale, never-run,
 or failing — they are the evidence the Decomposition Discipline (next section)
 requires before you author any non-audit bead.
 
-{% if criterion_status.is_empty() %}_No cached status rows for this spec. Treat this as the empty-cache case
-described in the Decomposition Discipline below: every criterion arrives
-without evidence, so either author beads only for confirmed gaps after
-reading the relevant implementations, or emit `LOOM_CLARIFY` on the molecule
-epic when the volume is too large to inline-audit._
-{% else %}{% for row in criterion_status %}- **{{ row.criterion_anchor }}** · annotation `{{ row.annotation }}` · result `{{ row.last_result.as_str() }}` · last commit {% match row.last_commit %}{% when Some with (c) %}`{{ c }}`{% when None %}—{% endmatch %} · commits since {% match row.commits_since %}{% when Some with (n) %}{{ n }}{% when None %}—{% endmatch %} · last timestamp {% match row.last_timestamp_ms %}{% when Some with (t) %}{{ t }}{% when None %}—{% endmatch %}
+{% if criterion_status.is_empty() %}_No parsed criteria were available for this spec. Treat this as a preflight problem, not as evidence of no work._
+{% else %}{% for row in criterion_status %}- **{{ row.criterion_id }}** · {{ row.criterion_text }} · annotation `{{ row.annotation }}` · evidence `{{ row.evidence.as_str() }}` · result {{ row.evidence.result_label() }} · last commit {{ row.evidence.last_commit_label() }} · commits since {{ row.evidence.commits_since_label() }} · last timestamp {{ row.evidence.last_timestamp_label() }} · cached annotation `{{ row.evidence.cached_annotation_label() }}`
 {% endfor %}{% endif %}
 {% include "partial/decomposition_discipline.md" %}
 

@@ -21,7 +21,7 @@ mod runner;
 mod touched;
 
 pub use context::{TemplateBaseFields, TodoTemplateContext, build_template_context};
-pub use criterion_status::build_criterion_status;
+pub use criterion_status::{build_criterion_status, criterion_id_for, criterion_text_for_line};
 pub use error::TodoError;
 pub use exit::{ExitSignal, parse_exit_signal};
 pub use fanout::{FanoutOutcome, SpecResolution, classify_touched_set, render_collision_options};

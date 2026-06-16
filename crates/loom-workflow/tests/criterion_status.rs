@@ -1,11 +1,4 @@
-//! Integration tests for [`build_criterion_status`] that need a real git
-//! repo. Pure logic tests for parse/result mapping live alongside the
-//! parser in `loom-gate`; the cases here all exercise `commits_since`,
-//! which only has anything to assert against a real `HEAD` history.
-//!
-//! These tests spawn the system `git` binary to seed and inspect a real
-//! workspace (spec NFR #8) — `loom_driver::git::GitClient` deliberately
-//! exposes no repo-setup surface.
+//! Integration tests for [`build_criterion_status`] that need a real git repo.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -16,8 +9,8 @@ use loom_driver::git::GitClient;
 use loom_driver::identifier::SpecLabel;
 use loom_gate::annotation::{Tier, parse_content};
 use loom_gate::cache::{CacheRow, StatusCache, Verdict};
-use loom_templates::criterion_status::CriterionResult;
-use loom_workflow::todo::build_criterion_status;
+use loom_templates::criterion_status::{CriterionResult, EvidenceState};
+use loom_workflow::todo::{build_criterion_status, criterion_id_for, criterion_text_for_line};
 use tempfile::TempDir;
 
 fn init_git_repo() -> TempDir {
@@ -70,8 +63,30 @@ fn write_spec(workspace: &Path, label: &str, body: &str) -> PathBuf {
     rel
 }
 
+fn criterion_id(label: &SpecLabel, body: &str, line_index: usize) -> String {
+    let parsed = parse_content(Path::new("specs/alpha.md"), body);
+    let line = parsed.criteria[line_index].line;
+    let next = parsed.criteria.get(line_index + 1).map(|c| c.line);
+    criterion_id_for(label, &criterion_text_for_line(body, line, next))
+        .as_str()
+        .to_string()
+}
+
+fn cache_row(label: &str, id: String, target: &str, commit: String) -> CacheRow {
+    CacheRow {
+        spec_label: label.into(),
+        criterion_anchor: id,
+        tier: Tier::Check,
+        annotation_target: target.into(),
+        last_run_ts_ms: 1_700_000_000_000,
+        last_run_commit: commit,
+        verdict: Verdict::Pass,
+        evidence: "ok".into(),
+    }
+}
+
 #[tokio::test]
-async fn empty_cache_yields_no_result_for_every_criterion() {
+async fn empty_cache_yields_missing_evidence_for_every_criterion() {
     let dir = init_git_repo();
     let workspace = dir.path();
     let label = SpecLabel::new("alpha");
@@ -89,13 +104,19 @@ async fn empty_cache_yields_no_result_for_every_criterion() {
     assert_eq!(rows.len(), 2);
     assert!(
         rows.iter()
-            .all(|r| matches!(r.last_result, CriterionResult::NoResult))
+            .all(|r| matches!(r.evidence, EvidenceState::Missing))
     );
-    assert!(rows.iter().all(|r| r.last_timestamp_ms.is_none()));
-    assert!(rows.iter().all(|r| r.last_commit.is_none()));
-    assert!(rows.iter().all(|r| r.commits_since.is_none()));
-    assert_eq!(rows[0].annotation, "[check](cargo run -p w -- a)");
-    assert_eq!(rows[1].annotation, "[test](crate::t::b)");
+    assert!(
+        cache_path.exists(),
+        "fresh .loom/cache.db should be created"
+    );
+    assert_eq!(
+        rows[0].annotation.to_string(),
+        "[check](cargo run -p w -- a)"
+    );
+    assert_eq!(rows[1].annotation.to_string(), "[test](crate::t::b)");
+    assert_eq!(rows[0].criterion_text, "First criterion");
+    assert_eq!(rows[1].criterion_text, "Second criterion");
 }
 
 #[tokio::test]
@@ -113,47 +134,38 @@ async fn cache_hit_with_stale_commit_renders_non_zero_commits_since() {
     add_empty_commit(workspace, "second");
     add_empty_commit(workspace, "third");
 
-    let parsed = parse_content(&spec_rel, body);
-    let crit_line = parsed.criteria[0].line;
-
     let cache_path = workspace.join(".loom/cache.db");
     let cache = StatusCache::open(&cache_path).unwrap();
     cache
-        .upsert(&CacheRow {
-            spec_label: "alpha".into(),
-            criterion_anchor: crit_line.to_string(),
-            tier: Tier::Check,
-            annotation_target: "cargo run -p w -- a".into(),
-            last_run_ts_ms: 1_700_000_000_000,
-            last_run_commit: stale.clone(),
-            verdict: Verdict::Pass,
-            evidence: "ok".into(),
-        })
+        .upsert(&cache_row(
+            "alpha",
+            criterion_id(&label, body, 0),
+            "cargo run -p w -- a",
+            stale.clone(),
+        ))
         .unwrap();
     drop(cache);
 
     let git = GitClient::open(workspace).unwrap();
     let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
     assert_eq!(rows.len(), 1);
-    let r = &rows[0];
-    assert_eq!(r.last_result, CriterionResult::Pass);
-    assert_eq!(r.last_commit.as_deref(), Some(stale.as_str()));
-    assert_eq!(r.last_timestamp_ms, Some(1_700_000_000_000));
-    assert_eq!(r.commits_since, Some(2));
-    assert_eq!(r.annotation, "[check](cargo run -p w -- a)");
+    assert_eq!(
+        rows[0].evidence,
+        EvidenceState::Current {
+            result: CriterionResult::Pass,
+            last_timestamp_ms: 1_700_000_000_000,
+            last_commit: stale,
+            commits_since: 2,
+        }
+    );
+    assert_eq!(
+        rows[0].annotation.to_string(),
+        "[check](cargo run -p w -- a)"
+    );
 }
 
-/// Spec gate (`specs/harness.md` § `loom todo` decomposition): `loom
-/// todo`'s prompt-render pipeline reads the gate's sqlite status cache
-/// and populates each `CriterionStatus` row with the cached verdict +
-/// timestamp + commit. An empty cache yields `CriterionResult::NoResult`
-/// on every row so the agent can distinguish "never run" from "ran and
-/// failed". Wraps the per-bullet behavior pinned by
-/// [`empty_cache_yields_no_result_for_every_criterion`] +
-/// [`cache_hit_with_stale_commit_renders_non_zero_commits_since`] in
-/// one assertion so the spec's named criterion has a direct verifier.
 #[tokio::test]
-async fn todo_populates_criterion_status_from_gate_cache() {
+async fn todo_populates_criterion_status_from_cache_db() {
     let dir = init_git_repo();
     let workspace = dir.path();
     let label = SpecLabel::new("alpha");
@@ -164,44 +176,102 @@ async fn todo_populates_criterion_status_from_gate_cache() {
 - Uncached criterion [test](crate::t::b)
 ";
     let spec_rel = write_spec(workspace, "alpha", body);
-
-    let parsed = parse_content(&spec_rel, body);
-    let cached_line = parsed.criteria[0].line;
-
     let head = head_sha(workspace);
     let cache_path = workspace.join(".loom/cache.db");
     let cache = StatusCache::open(&cache_path).unwrap();
     cache
-        .upsert(&CacheRow {
-            spec_label: "alpha".into(),
-            criterion_anchor: cached_line.to_string(),
-            tier: Tier::Check,
-            annotation_target: "cargo run -p w -- a".into(),
-            last_run_ts_ms: 1_700_000_000_000,
-            last_run_commit: head.clone(),
-            verdict: Verdict::Pass,
-            evidence: "ok".into(),
-        })
+        .upsert(&cache_row(
+            "alpha",
+            criterion_id(&label, body, 0),
+            "cargo run -p w -- a",
+            head.clone(),
+        ))
         .unwrap();
     drop(cache);
 
     let git = GitClient::open(workspace).unwrap();
     let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].last_result, CriterionResult::Pass);
-    assert_eq!(rows[0].last_timestamp_ms, Some(1_700_000_000_000));
-    assert_eq!(rows[0].last_commit.as_deref(), Some(head.as_str()));
-    assert_eq!(rows[1].last_result, CriterionResult::NoResult);
-    assert!(rows[1].last_timestamp_ms.is_none());
-    assert!(rows[1].last_commit.is_none());
+    assert!(matches!(rows[0].evidence, EvidenceState::Current { .. }));
+    assert!(matches!(rows[1].evidence, EvidenceState::Missing));
 }
 
-/// Spec gate (`specs/harness.md` § Criterion-Status Surface):
-/// `CriterionStatus.commits_since` is the result of `git rev-list
-/// --count <last_commit>..HEAD`. When the cached row has no
-/// `last_commit` (`CriterionResult::NoResult`), `commits_since` is
-/// `None`; with `last_commit` set, the count is the number of commits
-/// added on top of that commit in the workspace's HEAD chain.
+#[tokio::test]
+async fn stale_annotation_detected_when_cached_binding_differs() {
+    let dir = init_git_repo();
+    let workspace = dir.path();
+    let label = SpecLabel::new("alpha");
+    let body = "\
+## Success Criteria
+
+- A criterion [check](cargo run -p w -- new)
+";
+    let spec_rel = write_spec(workspace, "alpha", body);
+    let head = head_sha(workspace);
+    let cache_path = workspace.join(".loom/cache.db");
+    let cache = StatusCache::open(&cache_path).unwrap();
+    cache
+        .upsert(&cache_row(
+            "alpha",
+            criterion_id(&label, body, 0),
+            "cargo run -p w -- old",
+            head,
+        ))
+        .unwrap();
+    drop(cache);
+
+    let git = GitClient::open(workspace).unwrap();
+    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+    assert_eq!(rows.len(), 1);
+    let EvidenceState::StaleAnnotation {
+        cached_annotation, ..
+    } = &rows[0].evidence
+    else {
+        panic!("expected stale annotation evidence");
+    };
+    assert_eq!(
+        cached_annotation.to_string(),
+        "[check](cargo run -p w -- old)"
+    );
+}
+
+#[tokio::test]
+async fn legacy_gate_cache_file_is_not_a_live_input() {
+    let dir = init_git_repo();
+    let workspace = dir.path();
+    let label = SpecLabel::new("alpha");
+    let body = "\
+## Success Criteria
+
+- A criterion [check](cargo run -p w -- a)
+";
+    let spec_rel = write_spec(workspace, "alpha", body);
+    let head = head_sha(workspace);
+    let legacy_path = workspace.join(".loom/gate-cache.sqlite");
+    let legacy = StatusCache::open(&legacy_path).unwrap();
+    legacy
+        .upsert(&cache_row(
+            "alpha",
+            criterion_id(&label, body, 0),
+            "cargo run -p w -- a",
+            head,
+        ))
+        .unwrap();
+    drop(legacy);
+
+    let git = GitClient::open(workspace).unwrap();
+    let rows = build_criterion_status(
+        workspace,
+        &workspace.join(".loom/cache.db"),
+        &label,
+        &spec_rel,
+        &git,
+    )
+    .await;
+    assert_eq!(rows.len(), 1);
+    assert!(matches!(rows[0].evidence, EvidenceState::Missing));
+}
+
 #[tokio::test]
 async fn criterion_status_commits_since_computed_from_git_rev_list() {
     let dir = init_git_repo();
@@ -213,9 +283,6 @@ async fn criterion_status_commits_since_computed_from_git_rev_list() {
 - A criterion [check](cargo run -p w -- a)
 ";
     let spec_rel = write_spec(workspace, "alpha", body);
-    let parsed = parse_content(&spec_rel, body);
-    let crit_line = parsed.criteria[0].line;
-
     let stale = head_sha(workspace);
     add_empty_commit(workspace, "one");
     add_empty_commit(workspace, "two");
@@ -224,34 +291,23 @@ async fn criterion_status_commits_since_computed_from_git_rev_list() {
     let cache_path = workspace.join(".loom/cache.db");
     let cache = StatusCache::open(&cache_path).unwrap();
     cache
-        .upsert(&CacheRow {
-            spec_label: "alpha".into(),
-            criterion_anchor: crit_line.to_string(),
-            tier: Tier::Check,
-            annotation_target: "cargo run -p w -- a".into(),
-            last_run_ts_ms: 1_700_000_000_000,
-            last_run_commit: stale,
-            verdict: Verdict::Pass,
-            evidence: "ok".into(),
-        })
+        .upsert(&cache_row(
+            "alpha",
+            criterion_id(&label, body, 0),
+            "cargo run -p w -- a",
+            stale,
+        ))
         .unwrap();
     drop(cache);
 
     let git = GitClient::open(workspace).unwrap();
     let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
     assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0].commits_since,
-        Some(3),
-        "three empty commits added on top of `stale` => commits_since == 3",
-    );
+    assert_eq!(rows[0].evidence.commits_since_label(), "3");
 }
 
-/// Same surface, no cache row: `commits_since` MUST be `None` because
-/// `last_commit` is `None`. The driver must NOT default to `Some(0)` or
-/// the agent loses the "never verified" signal entirely.
 #[tokio::test]
-async fn criterion_status_commits_since_is_none_when_no_cache_row() {
+async fn criterion_status_commits_since_is_missing_when_no_cache_row() {
     let dir = init_git_repo();
     let workspace = dir.path();
     let label = SpecLabel::new("alpha");
@@ -265,9 +321,7 @@ async fn criterion_status_commits_since_is_none_when_no_cache_row() {
     let cache_path = workspace.join(".loom/cache.db");
     let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].last_result, CriterionResult::NoResult);
-    assert!(rows[0].last_commit.is_none());
-    assert!(rows[0].commits_since.is_none());
+    assert!(matches!(rows[0].evidence, EvidenceState::Missing));
 }
 
 #[tokio::test]

@@ -29,7 +29,7 @@ use loom_driver::state::CacheDb;
 use loom_gate::{
     self, CacheRow, CargoMetadataScope, CommandResolver, DispatchOptions, DispatchPendingExecutor,
     FsCommandResolver, InputResolver, RunnerSpec, StatusCache, TestScope, Tier, TierCwds, Verdict,
-    filter_by_files, is_missing_binary_target, render_report, row_for,
+    filter_by_files, is_missing_binary_target, render_report,
 };
 use loom_workflow::r#loop::{
     GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
@@ -1483,7 +1483,7 @@ fn dispatch_tier(workspace: &Path, args: &GateScopeArgs, tier: Tier) -> anyhow::
                         combined = combined.max(1);
                         Verdict::Fail
                     };
-                    persist_outcome(&cache, &outcome, verdict, now_ms, &commit);
+                    persist_outcome(workspace, &cache, &outcome, verdict, now_ms, &commit);
                 }
                 Ok(None) => eprintln!("loom gate [test]: no annotations matched scope filter"),
                 Err(err) => {
@@ -1631,17 +1631,17 @@ fn run_check_with_progress(
                 for line in outcome.verdict.evidence.lines().take(5) {
                     let _ = writeln!(stderr, "  {line}");
                 }
-                persist_outcome(cache, &outcome, Verdict::Skipped, now_ms, commit);
+                persist_outcome(repo_root, cache, &outcome, Verdict::Skipped, now_ms, commit);
             }
             Ok(outcome) if outcome.verdict.pass => {
-                persist_outcome(cache, &outcome, Verdict::Pass, now_ms, commit);
+                persist_outcome(repo_root, cache, &outcome, Verdict::Pass, now_ms, commit);
             }
             Ok(outcome) => {
                 let _ = writeln!(stderr, "loom gate [check] FAIL: {}", ann.target);
                 for line in outcome.verdict.evidence.lines().take(5) {
                     let _ = writeln!(stderr, "  {line}");
                 }
-                persist_outcome(cache, &outcome, Verdict::Fail, now_ms, commit);
+                persist_outcome(repo_root, cache, &outcome, Verdict::Fail, now_ms, commit);
                 combined = combined.max(1);
             }
             Err(err) => {
@@ -1715,10 +1715,10 @@ fn run_system_with_progress(
                     for line in outcome.verdict.evidence.lines().take(5) {
                         let _ = writeln!(stderr, "  {line}");
                     }
-                    persist_outcome(cache, &outcome, Verdict::Skipped, now_ms, commit);
+                    persist_outcome(repo_root, cache, &outcome, Verdict::Skipped, now_ms, commit);
                 }
                 Ok(outcome) if outcome.verdict.pass => {
-                    persist_outcome(cache, &outcome, Verdict::Pass, now_ms, commit);
+                    persist_outcome(repo_root, cache, &outcome, Verdict::Pass, now_ms, commit);
                 }
                 Ok(outcome) => {
                     if is_tty {
@@ -1728,7 +1728,7 @@ fn run_system_with_progress(
                     for line in outcome.verdict.evidence.lines().take(5) {
                         let _ = writeln!(stderr, "  {line}");
                     }
-                    persist_outcome(cache, &outcome, Verdict::Fail, now_ms, commit);
+                    persist_outcome(repo_root, cache, &outcome, Verdict::Fail, now_ms, commit);
                     combined = combined.max(1);
                 }
                 Err(err) => {
@@ -1761,6 +1761,7 @@ fn truncate_for_progress(s: &str, max: usize) -> String {
 }
 
 fn persist_outcome(
+    workspace: &Path,
     cache: &StatusCache,
     outcome: &loom_gate::DispatchOutcome,
     verdict: Verdict,
@@ -1768,17 +1769,66 @@ fn persist_outcome(
     commit: &str,
 ) {
     for ann in &outcome.annotations {
-        let row: CacheRow = row_for(
-            ann,
+        let source_spec = if ann.source_spec.is_absolute() {
+            ann.source_spec.clone()
+        } else {
+            workspace.join(&ann.source_spec)
+        };
+        let criterion_id = match criterion_id_for_annotation(&source_spec, ann) {
+            Ok(id) => id,
+            Err(err) => {
+                eprintln!("loom gate: failed to derive criterion id: {err:#}");
+                continue;
+            }
+        };
+        let row = CacheRow {
+            spec_label: spec_label_from_path(&ann.source_spec),
+            criterion_anchor: criterion_id,
+            tier: ann.tier,
+            annotation_target: ann.target.clone(),
+            last_run_ts_ms: now_ms,
+            last_run_commit: commit.to_string(),
             verdict,
-            outcome.verdict.evidence.clone(),
-            now_ms,
-            commit,
-        );
+            evidence: outcome.verdict.evidence.clone(),
+        };
         if let Err(err) = cache.upsert(&row) {
             eprintln!("loom gate: failed to upsert cache row: {err:#}");
         }
     }
+}
+
+fn criterion_id_for_annotation(
+    source_spec: &Path,
+    ann: &loom_gate::Annotation,
+) -> anyhow::Result<String> {
+    let content = std::fs::read_to_string(source_spec).with_context(|| {
+        format!(
+            "read criterion source spec {}",
+            source_spec.to_string_lossy()
+        )
+    })?;
+    let parsed = loom_gate::annotation::parse_content(source_spec, &content);
+    let next_line = parsed
+        .criteria
+        .iter()
+        .map(|criterion| criterion.line)
+        .filter(|line| *line > ann.criterion_line)
+        .min();
+    let criterion_text =
+        loom_workflow::todo::criterion_text_for_line(&content, ann.criterion_line, next_line);
+    let label = SpecLabel::new(spec_label_from_path(&ann.source_spec));
+    Ok(
+        loom_workflow::todo::criterion_id_for(&label, &criterion_text)
+            .as_str()
+            .to_string(),
+    )
+}
+
+fn spec_label_from_path(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 fn current_commit(workspace: &Path) -> anyhow::Result<String> {

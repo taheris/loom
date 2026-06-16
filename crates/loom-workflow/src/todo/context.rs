@@ -143,14 +143,25 @@ mod tests {
 
     #[test]
     fn criterion_status_threads_into_new_tier_context() {
-        use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
+        use loom_templates::criterion_status::{
+            AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
+            CriterionStatus, EvidenceState,
+        };
         let cs = vec![CriterionStatus {
-            criterion_anchor: "5".into(),
-            annotation: "[check](cargo run -p w -- a)".into(),
-            last_result: CriterionResult::Pass,
-            last_timestamp_ms: Some(42),
-            last_commit: Some("deadbeef".into()),
-            commits_since: Some(0),
+            spec_label: SpecLabel::new("harness"),
+            criterion_id: CriterionId::new("criterion-5"),
+            criterion_text: "Build succeeds".into(),
+            annotation: CriterionAnnotation {
+                tier: AnnotationTier::Check,
+                target: AnnotationTarget::new("cargo run -p w -- a"),
+                pending: false,
+            },
+            evidence: EvidenceState::Current {
+                result: CriterionResult::Pass,
+                last_timestamp_ms: 42,
+                last_commit: "deadbeef".into(),
+                commits_since: 0,
+            },
         }];
         let ctx = build_template_context(None, &[], base_fields(), cs.clone());
         match ctx {
@@ -161,14 +172,20 @@ mod tests {
 
     #[test]
     fn criterion_status_threads_into_update_tier_context() {
-        use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
+        use loom_templates::criterion_status::{
+            AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionStatus,
+            EvidenceState,
+        };
         let cs = vec![CriterionStatus {
-            criterion_anchor: "9".into(),
-            annotation: "[test](crate::t::b)".into(),
-            last_result: CriterionResult::NoResult,
-            last_timestamp_ms: None,
-            last_commit: None,
-            commits_since: None,
+            spec_label: SpecLabel::new("harness"),
+            criterion_id: CriterionId::new("criterion-9"),
+            criterion_text: "Test succeeds".into(),
+            annotation: CriterionAnnotation {
+                tier: AnnotationTier::Test,
+                target: AnnotationTarget::new("crate::t::b"),
+                pending: false,
+            },
+            evidence: EvidenceState::Missing,
         }];
         let ctx = build_template_context(
             Some(MoleculeId::new("lm-mol")),

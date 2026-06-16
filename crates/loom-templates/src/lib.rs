@@ -28,7 +28,10 @@ pub mod review;
 pub mod run;
 pub mod todo;
 
-pub use criterion_status::{CriterionResult, CriterionStatus};
+pub use criterion_status::{
+    AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
+    CriterionStatus, EvidenceState,
+};
 pub use finding::{
     ConcernToken, Finding, FindingParseError, FindingRoute, FindingTarget, FindingValidator,
     LOOM_FINDING_PREFIX, TargetKind,

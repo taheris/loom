@@ -1,6 +1,5 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
-assertion_line: 85
 expression: ctx.render().unwrap()
 ---
 # Task Decomposition
@@ -80,10 +79,10 @@ already covered by a fresh-pass verifier from those that are stale, never-run,
 or failing — they are the evidence the Decomposition Discipline (next section)
 requires before you author any non-audit bead.
 
-- **engine-001** · annotation `[check](cargo build -p loom-templates)` · result `Pass` · last commit `abc1234` · commits since 0 · last timestamp 1716300000000
-- **engine-002** · annotation `[test](template_renders_are_byte_stable_across_runs)` · result `Fail` · last commit `def5678` · commits since 7 · last timestamp 1716200000000
-- **criterion-status-001** · annotation `[test](todo_templates_render_criterion_status_rows)` · result `NoResult` · last commit — · commits since — · last timestamp —
-- **engine-003** · annotation `[check](cargo run -p loom-walk -- template_pinning_matrix)` · result `Skipped` · last commit `9abcdef` · commits since 3 · last timestamp 1716250000000
+- **engine-001** · All workflow templates compile under Askama. · annotation `[check](cargo build -p loom-templates)` · evidence `Current` · result Pass · last commit `abc1234` · commits since 0 · last timestamp 1716300000000 · cached annotation `—`
+- **engine-002** · Rendered output is stable across runs. · annotation `[test](template_renders_are_byte_stable_across_runs)` · evidence `Current` · result Fail · last commit `def5678` · commits since 7 · last timestamp 1716200000000 · cached annotation `—`
+- **criterion-status-001** · Todo prompts render typed criterion status rows. · annotation `[test](todo_templates_render_criterion_status_rows)` · evidence `Missing` · result — · last commit — · commits since — · last timestamp — · cached annotation `—`
+- **engine-003** · Every non-pending pinning cell matches the include graph. · annotation `[check](cargo run -p loom-walk -- template_pinning_matrix)` · evidence `Current` · result Skipped · last commit `9abcdef` · commits since 3 · last timestamp 1716250000000 · cached annotation `—`
 
 ## Decomposition Discipline
 
@@ -97,17 +96,17 @@ evidence of coverage, not a candidate for a new implementation bead.
 Before authoring any non-audit bead, you MUST:
 
 1. **Consult the `criterion_status` surface** rendered above for each
-   criterion in scope. Each row exposes the criterion's annotation target,
-   the cached verifier verdict (`Pass | Fail | Skipped | NoResult`), the
-   timestamp of the run that produced that verdict, the commit it was
-   recorded against, and how many commits have landed on HEAD since. A
-   row whose verdict is `Pass`, whose timestamp is recent, and whose
-   commits-since count is low is positive evidence of coverage — do
-   **not** author a bead for it.
+   criterion in scope. Each row exposes the criterion text, annotation
+   target, typed evidence state (`Current`, `Missing`, or
+   `StaleAnnotation`), any current verifier result (`Pass | Fail |
+   Skipped`), the commit it was recorded against, and how many commits
+   have landed on HEAD since. A row whose evidence is `Current`, whose
+   result is `Pass`, and whose commits-since count is low is positive
+   evidence of coverage — do **not** author a bead for it.
 
 2. **Inspect representative implementations and verifier functions** for
-   any row that is suspicious: a stale timestamp, a large commits-since
-   value, a `NoResult` row on a fresh checkout, or a verifier-target
+   any row that is suspicious: stale annotation evidence, a large
+   commits-since value, a `Missing` row on a fresh checkout, or a verifier-target
    name whose body may not actually exercise the live system. A
    directory listing proves the file exists; it does not prove the
    file contains the named target, and it does not prove the named
@@ -237,11 +236,11 @@ Different tasks in the same molecule can have different profiles. Assign based o
    criterion-by-criterion gap analysis below, so the `LOOM_CLARIFY`-on-epic
    fallback always has a valid target if the audit cannot complete.
 3. **Audit before fan-out** — walk every Success-Criteria bullet in scope
-   against the **Criterion Status** section above. A row whose verdict is
-   `Pass`, whose timestamp is recent, and whose commits-since count is low
+   against the **Criterion Status** section above. A row whose evidence is
+   `Current`, whose result is `Pass`, and whose commits-since count is low
    is positive evidence of coverage — do **not** author a bead for it. For
-   every suspicious row (stale timestamp, large commits-since, `NoResult`
-   on a fresh checkout, or a verifier-target name whose body may not
+   every suspicious row (`Missing`, `StaleAnnotation`, failed/skipped
+   current evidence, large commits-since, or a verifier-target name whose body may not
    exercise the live system), read the verifier function and the
    production code path it claims to cover before deciding the criterion
    is a gap. Cite the evidence (the criterion-status row, the file read,

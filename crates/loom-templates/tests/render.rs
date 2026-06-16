@@ -9,7 +9,10 @@
 use anyhow::Result;
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
-use loom_templates::criterion_status::{CriterionResult, CriterionStatus};
+use loom_templates::criterion_status::{
+    AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
+    CriterionStatus, EvidenceState,
+};
 use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
 use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
 use loom_templates::plan::PlanContext;
@@ -1506,60 +1509,100 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
     Ok(())
 }
 
-/// Representative `criterion_status` rows used by both
-/// `todo_new` and `todo_update` fixtures below. Covers every
-/// [`CriterionResult`] variant so the assertions can pin the rendered
-/// shape (annotation + last result + recency signal) for each.
+/// Representative `criterion_status` rows used by both todo fixtures.
 fn representative_criterion_status() -> Vec<CriterionStatus> {
     vec![
         CriterionStatus {
-            criterion_anchor: "engine-fresh-pass".into(),
-            annotation: "[check](cargo build -p loom-templates)".into(),
-            last_result: CriterionResult::Pass,
-            last_timestamp_ms: Some(1_716_300_000_000),
-            last_commit: Some("abc1234".into()),
-            commits_since: Some(0),
+            spec_label: SpecLabel::new("templates"),
+            criterion_id: CriterionId::new("engine-fresh-pass"),
+            criterion_text: "All workflow templates compile under Askama.".into(),
+            annotation: ann(AnnotationTier::Check, "cargo build -p loom-templates"),
+            evidence: EvidenceState::Current {
+                result: CriterionResult::Pass,
+                last_timestamp_ms: 1_716_300_000_000,
+                last_commit: "abc1234".into(),
+                commits_since: 0,
+            },
         },
         CriterionStatus {
-            criterion_anchor: "engine-stale-pass".into(),
-            annotation: "[check](cargo run -p loom-walk -- template_pinning_matrix)".into(),
-            last_result: CriterionResult::Pass,
-            last_timestamp_ms: Some(1_716_000_000_000),
-            last_commit: Some("9abcdef".into()),
-            commits_since: Some(42),
+            spec_label: SpecLabel::new("templates"),
+            criterion_id: CriterionId::new("engine-stale-pass"),
+            criterion_text: "Every non-pending pinning cell matches the include graph.".into(),
+            annotation: ann(
+                AnnotationTier::Check,
+                "cargo run -p loom-walk -- template_pinning_matrix",
+            ),
+            evidence: EvidenceState::Current {
+                result: CriterionResult::Pass,
+                last_timestamp_ms: 1_716_000_000_000,
+                last_commit: "9abcdef".into(),
+                commits_since: 42,
+            },
         },
         CriterionStatus {
-            criterion_anchor: "engine-fail".into(),
-            annotation: "[test](template_renders_are_byte_stable_across_runs)".into(),
-            last_result: CriterionResult::Fail,
-            last_timestamp_ms: Some(1_716_200_000_000),
-            last_commit: Some("def5678".into()),
-            commits_since: Some(7),
+            spec_label: SpecLabel::new("templates"),
+            criterion_id: CriterionId::new("engine-fail"),
+            criterion_text: "Rendered output is stable across runs.".into(),
+            annotation: ann(
+                AnnotationTier::Test,
+                "template_renders_are_byte_stable_across_runs",
+            ),
+            evidence: EvidenceState::Current {
+                result: CriterionResult::Fail,
+                last_timestamp_ms: 1_716_200_000_000,
+                last_commit: "def5678".into(),
+                commits_since: 7,
+            },
         },
         CriterionStatus {
-            criterion_anchor: "engine-skipped".into(),
-            annotation: "[check](cargo nextest run -p loom-templates --test render)".into(),
-            last_result: CriterionResult::Skipped,
-            last_timestamp_ms: Some(1_716_250_000_000),
-            last_commit: Some("11aa22bb".into()),
-            commits_since: Some(3),
+            spec_label: SpecLabel::new("templates"),
+            criterion_id: CriterionId::new("engine-skipped"),
+            criterion_text: "Snapshot tests run under clippy test exemptions.".into(),
+            annotation: ann(
+                AnnotationTier::Check,
+                "cargo nextest run -p loom-templates --test render",
+            ),
+            evidence: EvidenceState::Current {
+                result: CriterionResult::Skipped,
+                last_timestamp_ms: 1_716_250_000_000,
+                last_commit: "11aa22bb".into(),
+                commits_since: 3,
+            },
         },
         CriterionStatus {
-            criterion_anchor: "criterion-status-never-run".into(),
-            annotation: "[test](todo_templates_render_criterion_status_rows)".into(),
-            last_result: CriterionResult::NoResult,
-            last_timestamp_ms: None,
-            last_commit: None,
-            commits_since: None,
+            spec_label: SpecLabel::new("templates"),
+            criterion_id: CriterionId::new("criterion-status-never-run"),
+            criterion_text: "Todo prompts render typed criterion status rows.".into(),
+            annotation: ann(
+                AnnotationTier::Test,
+                "todo_templates_render_criterion_status_rows",
+            ),
+            evidence: EvidenceState::Missing,
+        },
+        CriterionStatus {
+            spec_label: SpecLabel::new("templates"),
+            criterion_id: CriterionId::new("criterion-status-stale-annotation"),
+            criterion_text: "Stale annotations are explicit evidence states.".into(),
+            annotation: ann(AnnotationTier::Test, "new_target"),
+            evidence: EvidenceState::StaleAnnotation {
+                cached_annotation: ann(AnnotationTier::Check, "old_target"),
+                last_timestamp_ms: 1_716_260_000_000,
+                last_commit: "22bb33cc".into(),
+                commits_since: 5,
+            },
         },
     ]
 }
 
-/// `todo_new` and `todo_update` must surface every `criterion_status` row's
-/// annotation, last result, and a recency signal so the decomposition agent
-/// can distinguish fresh-pass criteria from stale or never-run ones. Pins
-/// the spec's *Criterion-Status Surface* contract per
-/// `specs/templates.md` § Success Criteria.
+fn ann(tier: AnnotationTier, target: &str) -> CriterionAnnotation {
+    CriterionAnnotation {
+        tier,
+        target: AnnotationTarget::new(target),
+        pending: false,
+    }
+}
+
+/// `todo_new` and `todo_update` surface typed evidence states for every row.
 #[test]
 fn todo_templates_render_criterion_status_rows() -> Result<()> {
     let rows = representative_criterion_status();
@@ -1594,63 +1637,31 @@ fn todo_templates_render_criterion_status_rows() -> Result<()> {
     ] {
         for row in &rows {
             assert!(
-                out.contains(&row.annotation),
+                out.contains(&row.annotation.to_string()),
                 "{name}: annotation `{}` missing from render: {out}",
                 row.annotation,
             );
             assert!(
-                out.contains(row.last_result.as_str()),
-                "{name}: last_result `{}` missing from render: {out}",
-                row.last_result.as_str(),
+                out.contains(row.evidence.as_str()),
+                "{name}: evidence state `{}` missing from render: {out}",
+                row.evidence.as_str(),
             );
-            match (&row.last_commit, &row.commits_since, &row.last_timestamp_ms) {
-                (Some(commit), Some(n), Some(ts)) => {
-                    let recency = format!(
-                        "last commit `{commit}` · commits since {n} · last timestamp {ts}",
-                    );
-                    assert!(
-                        out.contains(&recency),
-                        "{name}: recency signal `{recency}` missing for `{}`: {out}",
-                        row.criterion_anchor,
-                    );
-                }
-                (None, None, None) => {
-                    let recency = "last commit — · commits since — · last timestamp —";
-                    assert!(
-                        out.contains(recency),
-                        "{name}: never-run recency placeholder missing for `{}`: {out}",
-                        row.criterion_anchor,
-                    );
-                }
-                other => panic!(
-                    "{name}: fixture row `{}` mixes Some/None recency fields: {other:?}",
-                    row.criterion_anchor,
-                ),
-            }
         }
 
-        let fresh_line = "**engine-fresh-pass** · annotation `[check](cargo build -p loom-templates)` · result `Pass` · last commit `abc1234` · commits since 0 · last timestamp 1716300000000";
-        let stale_line = "**engine-stale-pass** · annotation `[check](cargo run -p loom-walk -- template_pinning_matrix)` · result `Pass` · last commit `9abcdef` · commits since 42 · last timestamp 1716000000000";
-        let never_line = "**criterion-status-never-run** · annotation `[test](todo_templates_render_criterion_status_rows)` · result `NoResult` · last commit — · commits since — · last timestamp —";
+        let fresh_line = "**engine-fresh-pass** · All workflow templates compile under Askama. · annotation `[check](cargo build -p loom-templates)` · evidence `Current` · result Pass · last commit `abc1234` · commits since 0 · last timestamp 1716300000000 · cached annotation `—`";
+        let missing_line = "**criterion-status-never-run** · Todo prompts render typed criterion status rows. · annotation `[test](todo_templates_render_criterion_status_rows)` · evidence `Missing` · result — · last commit — · commits since — · last timestamp — · cached annotation `—`";
+        let stale_line = "**criterion-status-stale-annotation** · Stale annotations are explicit evidence states. · annotation `[test](new_target)` · evidence `StaleAnnotation` · result — · last commit `22bb33cc` · commits since 5 · last timestamp 1716260000000 · cached annotation `[check](old_target)`";
         assert!(
             out.contains(fresh_line),
-            "{name}: fresh-pass row layout drifted: {out}",
+            "{name}: current row layout drifted: {out}",
+        );
+        assert!(
+            out.contains(missing_line),
+            "{name}: missing row layout drifted: {out}",
         );
         assert!(
             out.contains(stale_line),
-            "{name}: stale-pass row (commits_since=42) layout drifted: {out}",
-        );
-        assert!(
-            out.contains(never_line),
-            "{name}: never-run row layout drifted: {out}",
-        );
-        assert_ne!(
-            fresh_line, stale_line,
-            "fresh-pass and stale-pass rows must be visually distinct",
-        );
-        assert_ne!(
-            fresh_line, never_line,
-            "fresh-pass and never-run rows must be visually distinct",
+            "{name}: stale annotation row layout drifted: {out}",
         );
     }
     Ok(())
