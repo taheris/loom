@@ -111,6 +111,7 @@ pub struct Annotation {
 pub struct Criterion {
     pub source_spec: PathBuf,
     pub line: u32,
+    pub text: String,
 }
 
 /// Aggregated parser output across one or more spec files.
@@ -204,12 +205,17 @@ pub fn parse_content(source_spec: &Path, content: &str) -> ParsedSpecs {
         });
     }
 
-    let criteria = structure
-        .criterion_bullet_lines
-        .iter()
-        .map(|&line| Criterion {
+    let criterion_lines: Vec<u32> = structure.criterion_bullet_lines.iter().copied().collect();
+    let next_lines: std::collections::BTreeMap<u32, u32> = criterion_lines
+        .windows(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect();
+    let criteria = criterion_lines
+        .into_iter()
+        .map(|line| Criterion {
             source_spec: source_spec.to_path_buf(),
             line,
+            text: criterion_text_for_line(content, line, next_lines.get(&line).copied()),
         })
         .collect();
 
@@ -298,12 +304,93 @@ fn match_tier(s: &[u8]) -> Option<(Tier, usize)> {
     }
 }
 
-/// Walk forward from an opening `(` and return the index of the
-/// matching `)`. Tracks paren depth so balanced parens inside the
-/// target — e.g. `cargo run --foo "$(date)"` — round-trip intact.
-/// Returns `None` when the parens never balance before a hard break
-/// (newline-newline) or end-of-input; this matches the markdown
-/// convention that link destinations don't span paragraphs.
+/// Return the normalized Success-Criteria bullet text used for criterion ids.
+pub fn criterion_text_for_line(content: &str, line: u32, next_line: Option<u32>) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let start = line.saturating_sub(1) as usize;
+    let end = next_line
+        .map(|n| n.saturating_sub(1) as usize)
+        .unwrap_or(lines.len())
+        .min(lines.len());
+    let mut parts = Vec::new();
+    for (idx, raw) in lines[start..end].iter().enumerate() {
+        let without_bullet = if idx == 0 {
+            strip_bullet_marker(raw)
+        } else {
+            raw.trim()
+        };
+        let without_annotation = strip_annotation_tokens(without_bullet);
+        let trimmed = without_annotation.trim();
+        if !trimmed.is_empty() {
+            parts.push(trimmed.to_string());
+        }
+    }
+    normalize_whitespace(&parts.join(" "))
+}
+
+/// Return the stable criterion id for a spec label and normalized criterion text.
+pub fn criterion_id_for(
+    label: &loom_driver::identifier::SpecLabel,
+    criterion_text: &str,
+) -> String {
+    let canonical = format!(
+        "{}\0{}",
+        label.as_str(),
+        normalize_whitespace(criterion_text)
+    );
+    let digest = blake3::hash(canonical.as_bytes()).to_hex().to_string();
+    format!("criterion-{}", &digest[..16])
+}
+
+fn strip_bullet_marker(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("- ") {
+        return rest;
+    }
+    if let Some(rest) = trimmed.strip_prefix("* ") {
+        return rest;
+    }
+    if let Some((digits, rest)) = trimmed.split_once(". ")
+        && !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit())
+    {
+        return rest;
+    }
+    trimmed
+}
+
+fn strip_annotation_tokens(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(start) = rest.find('[') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(close) = after.find(']') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let label = &after[..close];
+        let tier = label.strip_suffix('?').unwrap_or(label);
+        let target_start = start + 1 + close + 1;
+        if matches!(tier, "check" | "test" | "system" | "judge")
+            && rest[target_start..].starts_with('(')
+            && let Some(end) = rest[target_start + 1..].find(')')
+        {
+            rest = &rest[target_start + 1 + end + 1..];
+            continue;
+        }
+        out.push('[');
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+fn normalize_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Walk forward from an opening `(` and return the matching `)` byte index.
 fn find_balanced_close(bytes: &[u8], lparen: usize) -> Option<usize> {
     let mut depth = 1usize;
     let mut j = lparen + 1;

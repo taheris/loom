@@ -24,6 +24,9 @@ pub enum MintError {
     /// spec → epic resolution failed while minting findings
     Resolve(#[from] ResolveError),
 
+    /// finding carried no bonded specs
+    EmptyBonds,
+
     /// lead epic id `{molecule}` is not a valid bead id
     InvalidParentId {
         molecule: String,

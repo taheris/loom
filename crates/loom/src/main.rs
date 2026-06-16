@@ -1234,6 +1234,20 @@ fn print_gate_status(report: &loom_gate::Report) {
             );
         }
     }
+    if !report.annotation_health.stale_annotations.is_empty() {
+        println!("stale annotations:");
+        for stale in &report.annotation_health.stale_annotations {
+            println!(
+                "  {spec}/{id}: cached [{cached_tier}]({cached_target}) current [{current_tier}]({current_target})",
+                spec = stale.spec_label,
+                id = stale.criterion_id,
+                cached_tier = stale.cached_tier,
+                cached_target = stale.cached_target,
+                current_tier = stale.current_tier,
+                current_target = stale.current_target,
+            );
+        }
+    }
 }
 
 fn run_gate_verify(workspace: &Path, args: &GateScopeArgs) -> anyhow::Result<()> {

@@ -413,11 +413,24 @@ pub struct BrokenAnnotation {
     pub target: String,
 }
 
+/// One cached row whose current criterion still exists but now points at
+/// a different verifier annotation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleAnnotation {
+    pub spec_label: String,
+    pub criterion_id: String,
+    pub cached_tier: Tier,
+    pub cached_target: String,
+    pub current_tier: Tier,
+    pub current_target: String,
+}
+
 /// Annotation-health rollup for the report.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AnnotationHealth {
     pub broken_annotations: Vec<BrokenAnnotation>,
     pub stale_runs: Vec<StaleRun>,
+    pub stale_annotations: Vec<StaleAnnotation>,
 }
 
 /// Full status report rendered by [`render_report`]. Each section maps
@@ -467,7 +480,7 @@ pub fn render_from_rows(
 ) -> Report {
     let specs = summarise_specs(parsed);
     let tiers = summarise_tiers(rows);
-    let annotation_health = summarise_health(rows, integrity, now_ms, stale_threshold_days);
+    let annotation_health = summarise_health(rows, parsed, integrity, now_ms, stale_threshold_days);
     Report {
         generated_at_ms: now_ms,
         stale_threshold_days,
@@ -549,6 +562,7 @@ fn summarise_tiers(rows: &[CacheRow]) -> Vec<TierSummary> {
 
 fn summarise_health(
     rows: &[CacheRow],
+    parsed: &ParsedSpecs,
     integrity: &[IntegrityFinding],
     now_ms: i64,
     stale_threshold_days: i64,
@@ -609,10 +623,54 @@ fn summarise_health(
             .collect()
     };
 
+    let stale_annotations = summarise_stale_annotations(rows, parsed);
+
     AnnotationHealth {
         broken_annotations,
         stale_runs,
+        stale_annotations,
     }
+}
+
+fn summarise_stale_annotations(rows: &[CacheRow], parsed: &ParsedSpecs) -> Vec<StaleAnnotation> {
+    let current = current_annotation_snapshots(parsed);
+    rows.iter()
+        .filter_map(|row| {
+            let key = (row.spec_label.clone(), row.criterion_anchor.clone());
+            let (current_tier, current_target) = current.get(&key)?;
+            ((*current_tier != row.tier) || (current_target != &row.annotation_target)).then(|| {
+                StaleAnnotation {
+                    spec_label: row.spec_label.clone(),
+                    criterion_id: row.criterion_anchor.clone(),
+                    cached_tier: row.tier,
+                    cached_target: row.annotation_target.clone(),
+                    current_tier: *current_tier,
+                    current_target: current_target.clone(),
+                }
+            })
+        })
+        .collect()
+}
+
+fn current_annotation_snapshots(
+    parsed: &ParsedSpecs,
+) -> BTreeMap<(String, String), (Tier, String)> {
+    let mut criteria_by_line: BTreeMap<(String, u32), String> = BTreeMap::new();
+    for criterion in &parsed.criteria {
+        let label = spec_label_from_path(&criterion.source_spec);
+        let spec_label = loom_driver::identifier::SpecLabel::new(label.clone());
+        let id = crate::annotation::criterion_id_for(&spec_label, &criterion.text);
+        criteria_by_line.insert((label, criterion.line), id);
+    }
+    let mut snapshots = BTreeMap::new();
+    for ann in &parsed.annotations {
+        let label = spec_label_from_path(&ann.source_spec);
+        let Some(id) = criteria_by_line.get(&(label.clone(), ann.criterion_line)) else {
+            continue;
+        };
+        snapshots.insert((label, id.clone()), (ann.tier, ann.target.clone()));
+    }
+    snapshots
 }
 
 struct TierBuilder {
@@ -799,10 +857,12 @@ mod tests {
                 Criterion {
                     source_spec: PathBuf::from("specs/alpha.md"),
                     line: 5,
+                    text: "one".into(),
                 },
                 Criterion {
                     source_spec: PathBuf::from("specs/alpha.md"),
                     line: 9,
+                    text: "two".into(),
                 },
             ],
         };

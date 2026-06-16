@@ -2642,7 +2642,7 @@ and conservative fall-through for unowned queries.
   bonded spec (per [harness.md — Spec and Work Epic Lifecycle](harness.md#spec-and-work-epic-lifecycle)), then mints remediation under a work
   epic; duplicate spec epics are structural violations naming the
   conflicting IDs
-  [test?](mint_tree_scope_resolves_lead_spec_and_ensures_spec_epic)
+  [test](mint_tree_scope_resolves_lead_spec_and_ensures_spec_epic)
 - `loom gate mint --tree` applies the same spec/work-epic lifecycle per
   finding batch. Each missing indexed spec epic is auto-created and
   surfaced on stdout; work beads are never parented to spec epics. No
@@ -2784,7 +2784,7 @@ and conservative fall-through for unowned queries.
   carries one `finding:<hash>` label per contained finding plus one
   `spec:<X>` label per unique entry across the union of `bonds` over the
   batch's findings
-  [test?](mint_creates_batch_under_work_epic_with_finding_hash_and_union_spec_labels)
+  [test](mint_creates_batch_under_work_epic_with_finding_hash_and_union_spec_labels)
 - The bonding lead is the first element of each finding's `bonds` array
   after validating unique spec epics for bonded specs. Findings sharing a
   lead may bundle into the same per-spec remediation batch without

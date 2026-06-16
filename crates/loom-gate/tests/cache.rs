@@ -8,8 +8,9 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use loom_driver::identifier::SpecLabel;
 use loom_driver::state::CacheDb;
-use loom_gate::annotation::{Annotation, Criterion, ParsedSpecs, Tier};
+use loom_gate::annotation::{Annotation, Criterion, ParsedSpecs, Tier, criterion_id_for};
 use loom_gate::cache::{CacheRow, StatusCache, Verdict, render_from_rows, render_report, row_for};
 use loom_gate::integrity::IntegrityFinding;
 use tempfile::tempdir;
@@ -98,10 +99,12 @@ fn render_report_reads_from_disk_and_summarises_per_tier() {
             Criterion {
                 source_spec: PathBuf::from("specs/gate.md"),
                 line: 10,
+                text: "first".into(),
             },
             Criterion {
                 source_spec: PathBuf::from("specs/gate.md"),
                 line: 50,
+                text: "second".into(),
             },
         ],
     };
@@ -247,4 +250,49 @@ fn broken_annotations_in_report_come_from_integrity_findings() {
         report.annotation_health.broken_annotations[0].target,
         "missing-bin"
     );
+}
+
+#[test]
+fn stale_annotations_join_typed_criterion_ids_against_current_snapshot() {
+    let dir = tempdir().unwrap();
+    let cache = StatusCache::open(&cache_path(&dir)).unwrap();
+    let spec_label = SpecLabel::new("gate");
+    let criterion_text = "Verifier evidence is cached";
+    let criterion_id = criterion_id_for(&spec_label, criterion_text);
+    cache
+        .upsert(&CacheRow {
+            spec_label: "gate".into(),
+            criterion_anchor: criterion_id.clone(),
+            tier: Tier::Check,
+            annotation_target: "cargo run -p old-walk".into(),
+            last_run_ts_ms: 1,
+            last_run_commit: "abc1234".into(),
+            verdict: Verdict::Pass,
+            evidence: "old pass".into(),
+        })
+        .unwrap();
+    let parsed = ParsedSpecs {
+        annotations: vec![Annotation {
+            tier: Tier::Test,
+            target: "crate::new_test".into(),
+            source_spec: PathBuf::from("specs/gate.md"),
+            line: 12,
+            criterion_line: 10,
+            pending: false,
+        }],
+        criteria: vec![Criterion {
+            source_spec: PathBuf::from("specs/gate.md"),
+            line: 10,
+            text: criterion_text.into(),
+        }],
+    };
+
+    let report = render_report(&cache, &parsed, &[], 0, 0).unwrap();
+
+    assert_eq!(report.annotation_health.stale_annotations.len(), 1);
+    let stale = &report.annotation_health.stale_annotations[0];
+    assert_eq!(stale.spec_label, "gate");
+    assert_eq!(stale.criterion_id, criterion_id);
+    assert_eq!(stale.cached_tier, Tier::Check);
+    assert_eq!(stale.current_tier, Tier::Test);
 }

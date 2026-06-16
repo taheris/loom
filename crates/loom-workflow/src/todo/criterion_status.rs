@@ -98,36 +98,14 @@ pub async fn build_criterion_status(
 }
 
 pub fn criterion_id_for(spec_label: &SpecLabel, criterion_text: &str) -> CriterionId {
-    let canonical = format!(
-        "{}\0{}",
-        spec_label.as_str(),
-        normalize_whitespace(criterion_text)
-    );
-    let digest = blake3::hash(canonical.as_bytes()).to_hex().to_string();
-    CriterionId::new(format!("criterion-{}", &digest[..16]))
+    CriterionId::new(loom_gate::annotation::criterion_id_for(
+        spec_label,
+        criterion_text,
+    ))
 }
 
 pub fn criterion_text_for_line(content: &str, line: u32, next_line: Option<u32>) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    let start = line.saturating_sub(1) as usize;
-    let end = next_line
-        .map(|n| n.saturating_sub(1) as usize)
-        .unwrap_or(lines.len())
-        .min(lines.len());
-    let mut parts = Vec::new();
-    for (idx, raw) in lines[start..end].iter().enumerate() {
-        let without_bullet = if idx == 0 {
-            strip_bullet_marker(raw)
-        } else {
-            raw.trim()
-        };
-        let without_annotation = strip_annotation_tokens(without_bullet);
-        let trimmed = without_annotation.trim();
-        if !trimmed.is_empty() {
-            parts.push(trimmed.to_string());
-        }
-    }
-    normalize_whitespace(&parts.join(" "))
+    loom_gate::annotation::criterion_text_for_line(content, line, next_line)
 }
 
 async fn evidence_from_row(
@@ -213,54 +191,6 @@ fn verdict_to_result(verdict: Verdict) -> CriterionResult {
         Verdict::Fail => CriterionResult::Fail,
         Verdict::Skipped => CriterionResult::Skipped,
     }
-}
-
-fn strip_bullet_marker(line: &str) -> &str {
-    let trimmed = line.trim_start();
-    if let Some(rest) = trimmed.strip_prefix("- ") {
-        return rest;
-    }
-    if let Some(rest) = trimmed.strip_prefix("* ") {
-        return rest;
-    }
-    if let Some((digits, rest)) = trimmed.split_once(". ")
-        && !digits.is_empty()
-        && digits.chars().all(|c| c.is_ascii_digit())
-    {
-        return rest;
-    }
-    trimmed
-}
-
-fn strip_annotation_tokens(line: &str) -> String {
-    let mut out = String::new();
-    let mut rest = line;
-    while let Some(start) = rest.find('[') {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 1..];
-        let Some(close) = after.find(']') else {
-            out.push_str(&rest[start..]);
-            return out;
-        };
-        let label = &after[..close];
-        let tier = label.strip_suffix('?').unwrap_or(label);
-        let target_start = start + 1 + close + 1;
-        if matches!(tier, "check" | "test" | "system" | "judge")
-            && rest[target_start..].starts_with('(')
-            && let Some(end) = rest[target_start + 1..].find(')')
-        {
-            rest = &rest[target_start + 1 + end + 1..];
-            continue;
-        }
-        out.push('[');
-        rest = after;
-    }
-    out.push_str(rest);
-    out
-}
-
-fn normalize_whitespace(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]

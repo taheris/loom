@@ -31,7 +31,8 @@ pub mod scope;
 pub use annotation::{Annotation, Criterion, ParsedSpecs, Tier};
 pub use cache::{
     AnnotationHealth, BrokenAnnotation, CacheError, CacheRow, FailingCriterion, Report, SpecReport,
-    StaleRun, StatusCache, TierSummary, Verdict, render_from_rows, render_report, row_for,
+    StaleAnnotation, StaleRun, StatusCache, TierSummary, Verdict, render_from_rows, render_report,
+    row_for,
 };
 pub use dispatch::{
     DispatchError, DispatchOptions, DispatchOutcome, EmptyScope, SKIP_EXIT_CODE, TestScope,

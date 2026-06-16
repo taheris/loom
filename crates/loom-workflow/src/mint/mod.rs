@@ -6,9 +6,9 @@
 //! § *Per-batch processing*:
 //!
 //! 1. **Group findings by lead-spec.** For each well-formed finding,
-//!    pick the lead via *Multi-spec findings* — first element of `bonds`
-//!    whose spec has an open epic, else `bonds[0]`. Findings with the
-//!    same lead group into the same per-spec candidate.
+//!    ensure each bonded spec has exactly one resolvable epic, then pick
+//!    the first `bonds` element as the lead. Findings with the same lead
+//!    group into the same per-spec candidate.
 //! 2. **Partition by routing within each group.** Each lead-spec group
 //!    yields at most one fix-up batch (non-clarify-bound findings) plus
 //!    N single-finding clarify batches (one per clarify-bound finding,
@@ -1169,8 +1169,8 @@ async fn process_batch<R: CommandRunner>(
     }
 }
 
-/// Caches lead-spec resolution so two findings bonded to the same
-/// missing-epic spec do not each mint a fresh molecule.
+/// Caches bonded-spec resolution so two findings naming the same missing
+/// spec do not each mint a fresh molecule.
 struct LeadResolver<'a, R: CommandRunner> {
     bd: &'a BdClient<R>,
     head_commit: &'a str,
@@ -1193,30 +1193,43 @@ impl<'a, R: CommandRunner> LeadResolver<'a, R> {
         bonds: &[SpecLabel],
         dry_run: bool,
     ) -> Result<(SpecLabel, Option<MoleculeId>), MintError> {
+        let Some(lead) = bonds.first().cloned() else {
+            return Err(MintError::EmptyBonds);
+        };
+        let mut lead_epic = None;
         for spec in bonds {
-            let key = spec.as_str().to_owned();
-            if let Some((s, epic)) = self.cache.get(&key) {
-                return Ok((s.clone(), Some(epic.clone())));
+            let resolved = self.resolve_one(spec, dry_run).await?;
+            if spec == &lead {
+                lead_epic = resolved;
             }
-            if self.explored.contains(&key) {
-                continue;
-            }
-            if let Some(epic) = resolve_open_epic(self.bd, spec).await? {
-                self.cache.insert(key, (spec.clone(), epic.clone()));
-                return Ok((spec.clone(), Some(epic)));
-            }
-            self.explored.insert(key);
         }
-        let lead = bonds[0].clone();
+        Ok((lead, lead_epic))
+    }
+
+    async fn resolve_one(
+        &mut self,
+        spec: &SpecLabel,
+        dry_run: bool,
+    ) -> Result<Option<MoleculeId>, MintError> {
+        let key = spec.as_str().to_owned();
+        if let Some((_, epic)) = self.cache.get(&key) {
+            return Ok(Some(epic.clone()));
+        }
+        if self.explored.contains(&key) {
+            return Ok(None);
+        }
+        if let Some(epic) = resolve_open_epic(self.bd, spec).await? {
+            self.cache.insert(key, (spec.clone(), epic.clone()));
+            return Ok(Some(epic));
+        }
+        self.explored.insert(key.clone());
         if dry_run {
-            return Ok((lead, None));
+            return Ok(None);
         }
-        let resolved = resolve_or_mint_open_epic(self.bd, &lead, self.head_commit).await?;
-        self.cache.insert(
-            lead.as_str().to_owned(),
-            (lead.clone(), resolved.molecule_id.clone()),
-        );
-        Ok((lead, Some(resolved.molecule_id)))
+        let resolved = resolve_or_mint_open_epic(self.bd, spec, self.head_commit).await?;
+        self.cache
+            .insert(key, (spec.clone(), resolved.molecule_id.clone()));
+        Ok(Some(resolved.molecule_id))
     }
 }
 
@@ -1483,6 +1496,18 @@ mod tests {
 
     fn labels_arg(args: &[String]) -> Vec<&str> {
         flag_arg(args, "--labels").split(',').collect()
+    }
+
+    fn task_create_call(calls: &[Vec<String>]) -> &Vec<String> {
+        calls
+            .iter()
+            .find(|call| {
+                call.iter().any(|arg| arg == "create")
+                    && call
+                        .windows(2)
+                        .any(|pair| pair[0] == "--type" && pair[1] == "task")
+            })
+            .expect("bd task create recorded")
     }
 
     impl CommandRunner for ScriptedRunner {
@@ -2261,7 +2286,7 @@ reason = "false positive"
     /// `spec:<X>` label per unique entry across the union of `bonds`
     /// over the batch's findings.
     #[tokio::test]
-    async fn mint_creates_batch_with_parent_epic_finding_hash_labels_and_union_spec_labels() {
+    async fn mint_creates_batch_under_work_epic_with_finding_hash_and_union_spec_labels() {
         let f1 = contract_finding(
             vec![spec("gate"), spec("harness")],
             "molecule-lifecycle",
@@ -2275,17 +2300,25 @@ reason = "false positive"
             ok_stdout(&epic_list("lm-gateepic", "gate")),
             ok_stdout("[]"),
             ok_stdout("[]"),
+            ok_stdout("lm-harn\n"),
+            ok_stdout("[]"),
+            ok_stdout("[]"),
+            ok_stdout("[]"),
+            ok_stdout("[]"),
+            ok_stdout("lm-tmpl\n"),
             ok_stdout("lm-batch.1\n"),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
-        let summary = mint_findings(&bd, &[f1, f2, f3], "head-sha").await;
+        let opts = MintOptions {
+            suppress_closed_same_molecule: false,
+            report_stale: false,
+            ..MintOptions::default()
+        };
+        let summary = mint_findings_with_options(&bd, &[f1, f2, f3], "head-sha", &opts).await;
         assert_eq!(summary.minted, 1, "one batch minted: {summary:?}");
         let calls = rendered_calls(&invocations);
-        let create = calls
-            .iter()
-            .find(|c| c.iter().any(|a| a == "create"))
-            .expect("bd create recorded");
+        let create = task_create_call(&calls);
 
         assert_eq!(flag_arg(create, "--parent"), "lm-gateepic");
 
@@ -2336,13 +2369,22 @@ reason = "false positive"
         let runner = ScriptedRunner::new(vec![
             ok_stdout("[]"),
             ok_stdout("[]"),
-            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout("[]"),
+            ok_stdout("lm-harn\n"),
+            ok_stdout("[]"),
+            ok_stdout("[]"),
+            ok_stdout("lm-gateepic\n"),
             ok_stdout("[]"),
             ok_stdout("lm-batch.1\n"),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
-        let summary = mint_findings(&bd, &[f1, f2], "head-sha").await;
+        let opts = MintOptions {
+            suppress_closed_same_molecule: false,
+            report_stale: false,
+            ..MintOptions::default()
+        };
+        let summary = mint_findings_with_options(&bd, &[f1, f2], "head-sha", &opts).await;
         assert_eq!(summary.minted, 1, "two findings → one batch: {summary:?}");
         match &summary.batches[0] {
             BatchOutcome::Minted {
@@ -2350,18 +2392,15 @@ reason = "false positive"
                 findings_count,
                 ..
             } => {
-                assert_eq!(lead_spec.as_str(), "gate");
+                assert_eq!(lead_spec.as_str(), "harness");
                 assert_eq!(*findings_count, 2);
             }
             other => panic!("expected Minted, got {other:?}"),
         }
 
         let calls = rendered_calls(&invocations);
-        let create = calls
-            .iter()
-            .find(|c| c.iter().any(|a| a == "create"))
-            .expect("bd create recorded");
-        assert_eq!(flag_arg(create, "--parent"), "lm-gateepic");
+        let create = task_create_call(&calls);
+        assert_eq!(flag_arg(create, "--parent"), "lm-harn");
         let labels = labels_arg(create);
         let description = flag_arg(create, "--description");
         for (id, hash, label) in expected_identity {
@@ -2378,39 +2417,49 @@ reason = "false positive"
     }
 
     /// Spec contract `specs/gate.md` § *Standing-safety-net bonding*:
-    /// `loom gate mint --tree --spec <X>` resolves the bonding target
-    /// via a single bd query. The walk through `resolve_open_epic` /
-    /// `resolve_or_mint_open_epic` is one query, no tier walk, no
-    /// pointer table.
+    /// `loom gate mint --tree` resolves the lead from `bonds[0]` after
+    /// ensuring every bonded spec has an epic. Missing sibling spec epics
+    /// are bootstrapped before the remediation task is parented under the
+    /// lead work epic.
     #[tokio::test]
-    async fn mint_tree_scope_resolves_lead_spec_via_single_tier_query() {
-        let finding = coherence_finding(vec![spec("alpha")], "x", "evidence");
+    async fn mint_tree_scope_resolves_lead_spec_and_ensures_spec_epic() {
+        let finding = contract_finding(vec![spec("alpha"), spec("beta")], "x", "evidence");
         let runner = ScriptedRunner::new(vec![
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-alphaepic", "alpha")),
+            ok_stdout("[]"),
+            ok_stdout("[]"),
+            ok_stdout("lm-betaepic\n"),
             ok_stdout("lm-fix.1\n"),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
-        let _ = mint_findings(&bd, &[finding], "deadbeef").await;
+        let opts = MintOptions {
+            suppress_closed_same_molecule: false,
+            report_stale: false,
+            ..MintOptions::default()
+        };
+        let summary = mint_findings_with_options(&bd, &[finding], "deadbeef", &opts).await;
+        assert_eq!(summary.minted, 1, "summary: {summary:?}");
+        match &summary.batches[0] {
+            BatchOutcome::Minted { lead_spec, .. } => assert_eq!(lead_spec.as_str(), "alpha"),
+            other => panic!("expected Minted, got {other:?}"),
+        }
         let calls = rendered_calls(&invocations);
-        let lead_query = &calls[1];
         assert!(
-            lead_query.iter().any(|a| a == "list"),
-            "lead resolution must be a single `bd list` query: {lead_query:?}",
+            calls
+                .iter()
+                .any(|call| call.iter().any(|arg| arg == "create")
+                    && call
+                        .windows(2)
+                        .any(|pair| pair[0] == "--type" && pair[1] == "epic")
+                    && call
+                        .windows(2)
+                        .any(|pair| pair[0] == "--labels" && pair[1] == "spec:beta")),
+            "missing bonded spec must be bootstrapped as an epic: {calls:?}",
         );
-        assert!(
-            lead_query.iter().any(|a| a == "--type=epic"),
-            "lead query must restrict to type=epic: {lead_query:?}",
-        );
-        assert!(
-            lead_query.iter().any(|a| a == "--label=spec:alpha"),
-            "lead query must carry spec label: {lead_query:?}",
-        );
-        assert!(
-            lead_query.iter().any(|a| a == "--status=open"),
-            "lead query must restrict to status=open: {lead_query:?}",
-        );
+        let create = task_create_call(&calls);
+        assert_eq!(flag_arg(create, "--parent"), "lm-alphaepic");
     }
 
     /// Spec contract: when the lead query returns one open epic, the
@@ -2472,7 +2521,7 @@ reason = "false positive"
         let finding_hash_label = finding_label(&finding);
         let runner = ScriptedRunner::new(vec![
             ok_stdout("[]"),
-            ok_stdout(&epic_list("lm-harnessepic", "harness")),
+            ok_stdout(&epic_list("lm-harn", "harness")),
             ok_stdout("lm-clarify.1\n"),
         ]);
         let invocations = runner.invocations_handle();
@@ -2520,7 +2569,7 @@ reason = "false positive"
         let fp = batch_fingerprint(std::slice::from_ref(&finding));
         let runner = ScriptedRunner::new(vec![
             ok_stdout("[]"),
-            ok_stdout(&epic_list("lm-harnessepic", "harness")),
+            ok_stdout(&epic_list("lm-harn", "harness")),
             ok_stdout("lm-blocked.1\n"),
         ]);
         let invocations = runner.invocations_handle();
@@ -2836,7 +2885,7 @@ reason = "false positive"
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
             ok_stdout("[]"),
-            ok_stdout(&epic_list("lm-harnessepic", "harness")),
+            ok_stdout(&epic_list("lm-harn", "harness")),
             ok_stdout("lm-fix.1\n"),
         ]);
         let invocations = runner.invocations_handle();
