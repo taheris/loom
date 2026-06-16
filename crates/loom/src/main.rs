@@ -3690,6 +3690,9 @@ fn run_todo(
                 "loom todo: agent exited {}, cost_usd={:?}",
                 summary.exit_code, summary.cost_usd
             );
+            for spec in summary.spec_outcomes {
+                println!("loom todo: {} — {}", spec.label, spec.outcome);
+            }
             Ok(())
         }
         Err(TodoError::NoChangedSpecs) => {

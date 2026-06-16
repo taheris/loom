@@ -11,11 +11,13 @@ use anyhow::{Result, anyhow};
 use loom_driver::agent::SessionOutcome;
 use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
 use loom_driver::git::GitClient;
-use loom_driver::identifier::ProfileName;
+use loom_driver::identifier::{ProfileName, SpecLabel};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::state::CacheDb;
 use loom_protocol::todo::{TODO_SUCCESS_PREFIX, parse_todo_success};
-use loom_workflow::todo::{ExitSignal, ProductionTodoController, TodoController, TodoError};
+use loom_workflow::todo::{
+    ExitSignal, ProductionTodoController, TodoController, TodoError, run as run_todo_workflow,
+};
 
 fn run_git(workspace: &Path, args: &[&str]) -> Result<()> {
     let status = Command::new("git")
@@ -164,6 +166,33 @@ fn pending_todo(id: &str, head: &str, fingerprint: &str) -> RunOutput {
     ))
 }
 
+fn spec_epic_without_cursor(id: &str, label: &str) -> RunOutput {
+    ok(&format!(
+        r#"[{{"id":"{id}","title":"{label}","status":"open","issue_type":"epic","labels":["loom:spec","spec:{label}"],"metadata":{{}}}}]"#
+    ))
+}
+
+fn child_bead(id: &str, parent: &str, notes: Option<&str>) -> RunOutput {
+    let notes = notes
+        .map(|text| {
+            format!(
+                r#","notes":{}"#,
+                serde_json::Value::String(text.to_string())
+            )
+        })
+        .unwrap_or_default();
+    ok(&format!(
+        r#"[{{"id":"{id}","title":"child","status":"open","issue_type":"task","parent":"{parent}","labels":[]{notes}}}]"#
+    ))
+}
+
+fn work_epic_with_notes(id: &str, notes: &str) -> RunOutput {
+    let notes_json = serde_json::Value::String(notes.to_string());
+    ok(&format!(
+        r#"[{{"id":"{id}","title":"todo","status":"open","issue_type":"epic","description":"plain","labels":["loom:todo"],"notes":{notes_json}}}]"#
+    ))
+}
+
 fn created(id: &str) -> RunOutput {
     ok(&format!("{id}\n"))
 }
@@ -210,14 +239,21 @@ fn field(prompt: &str, name: &str) -> Result<String> {
 }
 
 fn todo_success(prompt: &str, specs: &[&str]) -> Result<loom_protocol::todo::TodoSuccess> {
-    let head = field(prompt, "Todo head")?;
-    let fingerprint = field(prompt, "Todo fingerprint")?;
-    let work_epic = field(prompt, "Work epic")?;
     let spec_json = specs
         .iter()
         .map(|label| format!(r#"{{"label":"{label}","outcome":"no-work","reason":"audited"}}"#))
         .collect::<Vec<_>>()
         .join(",");
+    todo_success_with_specs(prompt, &spec_json)
+}
+
+fn todo_success_with_specs(
+    prompt: &str,
+    spec_json: &str,
+) -> Result<loom_protocol::todo::TodoSuccess> {
+    let head = field(prompt, "Todo head")?;
+    let fingerprint = field(prompt, "Todo fingerprint")?;
+    let work_epic = field(prompt, "Work epic")?;
     Ok(parse_todo_success(&format!(
         "{TODO_SUCCESS_PREFIX}{{\"head\":\"{head}\",\"fingerprint\":\"{fingerprint}\",\"work_epic\":\"{work_epic}\",\"specs\":[{spec_json}]}}"
     ))?)
@@ -270,7 +306,7 @@ async fn generic_todo_marker_is_rejected_without_advancing() -> Result<()> {
         )
         .await
     {
-        Ok(()) => return Err(anyhow!("generic marker was accepted")),
+        Ok(_) => return Err(anyhow!("generic marker was accepted")),
         Err(err) => err,
     };
 
@@ -279,7 +315,7 @@ async fn generic_todo_marker_is_rejected_without_advancing() -> Result<()> {
 }
 
 #[tokio::test]
-async fn omitted_spec_payload_is_rejected_before_finalization() -> Result<()> {
+async fn todo_validation_failure_leaves_pending_without_advancing() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (base, head) = init_workspace(dir.path())?;
     let runner = CapturingRunner::new(preflight_responses(&base, &head));
@@ -299,7 +335,7 @@ async fn omitted_spec_payload_is_rejected_before_finalization() -> Result<()> {
         )
         .await
     {
-        Ok(()) => return Err(anyhow!("omitted spec payload was accepted")),
+        Ok(_) => return Err(anyhow!("omitted spec payload was accepted")),
         Err(err) => err,
     };
 
@@ -309,7 +345,24 @@ async fn omitted_spec_payload_is_rejected_before_finalization() -> Result<()> {
         .into_iter()
         .filter(|argv| argv.first().is_some_and(|arg| arg == "update"))
         .collect::<Vec<_>>();
-    assert!(updates.is_empty(), "no finalization updates: {updates:?}");
+    assert!(
+        updates.iter().any(|argv| argv
+            .iter()
+            .any(|arg| arg.contains("LOOM_TODO validation failed"))),
+        "diagnostic update expected: {updates:?}",
+    );
+    assert!(
+        updates
+            .iter()
+            .all(|argv| !argv.iter().any(|arg| arg == "--set-metadata")),
+        "no cursor writes on validation failure: {updates:?}",
+    );
+    assert!(
+        updates
+            .iter()
+            .all(|argv| !argv.iter().any(|arg| arg == "loom:active")),
+        "active state unchanged on validation failure: {updates:?}",
+    );
     Ok(())
 }
 
@@ -415,5 +468,285 @@ async fn todo_reuses_matching_pending_work_epic_else_blocks() -> Result<()> {
         }
         other => return Err(anyhow!("expected pending conflict, got {other:?}")),
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_missing_spec_epic_initializes_existing_missing_cursor_blocks() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let runner = CapturingRunner::new(preflight_responses(&base, &head));
+    let calls = runner.clone();
+    let mut ctrl = controller(dir.path(), runner)?;
+    let session = ctrl.build_session().await?;
+    assert!(session.config.initial_prompt.contains("### gamma"));
+    assert!(
+        calls
+            .calls()?
+            .iter()
+            .any(|argv| argv.iter().any(|arg| arg == "loom:spec,spec:gamma"))
+    );
+
+    let blocked_dir = tempfile::tempdir()?;
+    let (_blocked_base, _blocked_head) = init_workspace(blocked_dir.path())?;
+    let responses = vec![spec_epic_without_cursor("lm-alpha", "alpha")];
+    let mut ctrl = controller(blocked_dir.path(), CapturingRunner::new(responses))?;
+    let err = match ctrl.build_session().await {
+        Ok(_) => return Err(anyhow!("missing existing cursor was accepted")),
+        Err(err) => err,
+    };
+    match err {
+        TodoError::MissingSpecCursor { label, epic_id } => {
+            assert_eq!(label, "alpha");
+            assert_eq!(epic_id, "lm-alpha");
+        }
+        other => return Err(anyhow!("expected MissingSpecCursor, got {other:?}")),
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_invalid_spec_cursor_blocks_loudly() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (_base, _head) = init_workspace(dir.path())?;
+    let responses = vec![spec_epic("lm-alpha", "alpha", "not-a-sha")];
+    let mut ctrl = controller(dir.path(), CapturingRunner::new(responses))?;
+
+    let err = match ctrl.build_session().await {
+        Ok(_) => return Err(anyhow!("invalid cursor was accepted")),
+        Err(err) => err,
+    };
+
+    match err {
+        TodoError::InvalidSpecCursor {
+            label,
+            epic_id,
+            cursor,
+            reason,
+        } => {
+            assert_eq!(label, "alpha");
+            assert_eq!(epic_id, "lm-alpha");
+            assert_eq!(cursor, "not-a-sha");
+            assert!(reason.contains("full git SHA"));
+        }
+        other => return Err(anyhow!("expected InvalidSpecCursor, got {other:?}")),
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_no_work_outcome_advances_cursor_with_reason() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let runner = CapturingRunner::new(preflight_responses(&base, &head));
+    let calls = runner.clone();
+    let mut ctrl = controller(dir.path(), runner)?;
+    let session = ctrl.build_session().await?;
+    let success = todo_success(&session.config.initial_prompt, &["alpha", "gamma"])?;
+
+    let record = ctrl
+        .record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
+            },
+            None,
+            Some(&success),
+        )
+        .await?;
+
+    assert!(
+        record
+            .spec_outcomes
+            .iter()
+            .any(|row| row.label == SpecLabel::new("alpha") && row.outcome == "no-work: audited")
+    );
+    let calls = calls.calls()?;
+    assert!(calls.iter().any(|argv| {
+        argv == &[
+            "update",
+            "lm-alpha",
+            "--set-metadata",
+            &format!("loom.todo_cursor={head}"),
+        ]
+        .map(str::to_string)
+    }));
+    assert!(calls.iter().any(|argv| {
+        argv == &[
+            "update",
+            "lm-gamma",
+            "--set-metadata",
+            &format!("loom.todo_cursor={head}"),
+        ]
+        .map(str::to_string)
+    }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_output_summarizes_every_changed_spec_outcome() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let runner = CapturingRunner::new(preflight_responses(&base, &head));
+    let mut ctrl = controller(dir.path(), runner)?;
+
+    let summary = run_todo_workflow(&mut ctrl, |cfg| async move {
+        let success = todo_success(&cfg.initial_prompt, &["alpha", "gamma"]).map_err(|err| {
+            loom_driver::agent::ProtocolError::Io(std::io::Error::other(err.to_string()))
+        })?;
+        Ok((
+            SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
+            },
+            None,
+            Some(success),
+        ))
+    })
+    .await?;
+
+    let labels = summary
+        .spec_outcomes
+        .iter()
+        .map(|row| row.label.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(labels, vec!["alpha", "gamma"]);
+    assert!(
+        summary
+            .spec_outcomes
+            .iter()
+            .all(|row| row.outcome == "no-work: audited")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_clarify_marks_work_epic() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let mut responses = preflight_responses(&base, &head);
+    responses.push(work_epic_with_notes(
+        "lm-work",
+        "## Options — choose decomposition\n\n### Option 1 — proceed\nCost: churn.",
+    ));
+    responses.push(empty_json());
+    let runner = CapturingRunner::new(responses);
+    let calls = runner.clone();
+    let mut ctrl = controller(dir.path(), runner)?;
+    let _session = ctrl.build_session().await?;
+
+    let record = ctrl
+        .record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
+            },
+            Some(&ExitSignal::Clarify {
+                question: "which decomposition?".to_string(),
+            }),
+            None,
+        )
+        .await?;
+
+    assert!(record.spec_outcomes.is_empty());
+    let calls = calls.calls()?;
+    assert!(
+        calls
+            .iter()
+            .any(|argv| argv.first().is_some_and(|arg| arg == "show")
+                && argv.get(1).is_some_and(|arg| arg == "lm-work"))
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|argv| argv.iter().any(|arg| arg == "loom:clarify"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_consumes_notes_only_after_validated_finalization() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let state = Arc::new(CacheDb::open(dir.path().join(".loom/cache.db"))?);
+    state.notes_add(
+        &SpecLabel::new("alpha"),
+        "implementation",
+        "carry this hint",
+        1,
+    )?;
+    let mut responses = preflight_responses(&base, &head);
+    responses.push(child_bead("lm-child", "lm-work", None));
+    responses.push(child_bead("lm-child", "lm-work", Some("existing note")));
+    responses.push(empty_json());
+    let runner = CapturingRunner::new(responses);
+    let calls = runner.clone();
+    let mut ctrl = ProductionTodoController::for_workspace(
+        dir.path().to_path_buf(),
+        Arc::clone(&state),
+        manifest(dir.path())?,
+        ProfileName::new("base"),
+        Arc::new(GitClient::open(dir.path())?),
+        Arc::new(BdClient::with_runner(runner)),
+        None,
+    );
+    let session = ctrl.build_session().await?;
+    let success = todo_success_with_specs(
+        &session.config.initial_prompt,
+        r#"{"label":"alpha","outcome":"decomposed","beads":["lm-child"]},{"label":"gamma","outcome":"no-work","reason":"audited"}"#,
+    )?;
+
+    ctrl.record_outcome(
+        &SessionOutcome {
+            exit_code: 0,
+            cost_usd: None,
+        },
+        None,
+        Some(&success),
+    )
+    .await?;
+
+    assert!(
+        state
+            .notes_list(Some(&SpecLabel::new("alpha")), Some("implementation"))?
+            .is_empty()
+    );
+    let calls = calls.calls()?;
+    assert!(calls.iter().any(|argv| {
+        argv.iter()
+            .any(|arg| arg.contains("existing note\n\nImplementation notes:\n\n- carry this hint"))
+    }));
+
+    let invalid_dir = tempfile::tempdir()?;
+    let (invalid_base, invalid_head) = init_workspace(invalid_dir.path())?;
+    let invalid_state = Arc::new(CacheDb::open(invalid_dir.path().join(".loom/cache.db"))?);
+    invalid_state.notes_add(&SpecLabel::new("alpha"), "implementation", "preserve", 1)?;
+    let invalid_runner = CapturingRunner::new(preflight_responses(&invalid_base, &invalid_head));
+    let mut invalid_ctrl = ProductionTodoController::for_workspace(
+        invalid_dir.path().to_path_buf(),
+        Arc::clone(&invalid_state),
+        manifest(invalid_dir.path())?,
+        ProfileName::new("base"),
+        Arc::new(GitClient::open(invalid_dir.path())?),
+        Arc::new(BdClient::with_runner(invalid_runner)),
+        None,
+    );
+    let invalid_session = invalid_ctrl.build_session().await?;
+    let invalid_success = todo_success(&invalid_session.config.initial_prompt, &["alpha"])?;
+    let result = invalid_ctrl
+        .record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
+            },
+            None,
+            Some(&invalid_success),
+        )
+        .await;
+    assert!(matches!(result, Err(TodoError::TodoValidation { .. })));
+    assert_eq!(
+        invalid_state.notes_list(Some(&SpecLabel::new("alpha")), Some("implementation"))?[0].text,
+        "preserve",
+    );
     Ok(())
 }

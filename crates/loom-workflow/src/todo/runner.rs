@@ -11,6 +11,7 @@
 use loom_driver::agent::{ProtocolError, SessionOutcome, SpawnConfig};
 use loom_driver::scratch::ScratchSession;
 
+use loom_driver::identifier::SpecLabel;
 use loom_protocol::todo::TodoSuccess;
 
 use super::ExitSignal;
@@ -51,7 +52,18 @@ pub trait TodoController: Send {
         outcome: &SessionOutcome,
         marker: Option<&ExitSignal>,
         todo_success: Option<&TodoSuccess>,
-    ) -> impl std::future::Future<Output = Result<(), TodoError>> + Send;
+    ) -> impl std::future::Future<Output = Result<TodoRecord, TodoError>> + Send;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TodoRecord {
+    pub spec_outcomes: Vec<TodoSpecSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TodoSpecSummary {
+    pub label: SpecLabel,
+    pub outcome: String,
 }
 
 /// Summary of one [`run`] invocation surfaced to the binary so it can print
@@ -60,6 +72,7 @@ pub trait TodoController: Send {
 pub struct TodoSummary {
     pub exit_code: i32,
     pub cost_usd: Option<f64>,
+    pub spec_outcomes: Vec<TodoSpecSummary>,
 }
 
 /// Drive one `loom todo` session: build the spawn config, hand it to the
@@ -85,12 +98,13 @@ where
     let result = spawn(config).await;
     drop(scratch);
     let (outcome, marker, todo_success) = result?;
-    controller
+    let record = controller
         .record_outcome(&outcome, marker.as_ref(), todo_success.as_ref())
         .await?;
     Ok(TodoSummary {
         exit_code: outcome.exit_code,
         cost_usd: outcome.cost_usd,
+        spec_outcomes: record.spec_outcomes,
     })
 }
 
@@ -162,11 +176,11 @@ mod tests {
             outcome: &SessionOutcome,
             marker: Option<&ExitSignal>,
             _todo_success: Option<&TodoSuccess>,
-        ) -> Result<(), TodoError> {
+        ) -> Result<TodoRecord, TodoError> {
             self.recorded.fetch_add(1, Ordering::SeqCst);
             *self.last_exit.lock().unwrap() = Some(outcome.exit_code);
             *self.last_marker.lock().unwrap() = marker.cloned();
-            Ok(())
+            Ok(TodoRecord::default())
         }
     }
 
@@ -190,6 +204,7 @@ mod tests {
         .expect("run ok");
         assert_eq!(summary.exit_code, 0);
         assert_eq!(summary.cost_usd, Some(0.42));
+        assert!(summary.spec_outcomes.is_empty());
         assert_eq!(controller.recorded.load(Ordering::SeqCst), 1);
         assert_eq!(*controller.last_exit.lock().unwrap(), Some(0));
         assert_eq!(

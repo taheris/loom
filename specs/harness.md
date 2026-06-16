@@ -3404,7 +3404,7 @@ Criteria.
       the agent's `## Options — …` block is persisted to the work
       epic's notes per [gate.md](gate.md)'s Options Format Contract
       before the label is applied
-  [test?](todo_clarify_marks_work_epic)
+  [test](todo_clarify_marks_work_epic)
 - No marker emitted → recovery with cause `swallowed-marker`
   [test](missing_marker_routes_to_swallowed_marker_recovery)
 - `LOOM_COMPLETE` + bead not bd-closed → recovery with cause
@@ -3647,11 +3647,11 @@ two agent-loop observers.
 - `loom todo` creates a missing spec epic during preflight, treats the
       spec as uninitialized/changed, and blocks when an existing spec
       epic lacks `loom.todo_cursor` metadata
-  [test?](todo_missing_spec_epic_initializes_existing_missing_cursor_blocks)
+  [test](todo_missing_spec_epic_initializes_existing_missing_cursor_blocks)
 - `loom todo` rejects malformed, missing, non-ancestor, or unknown
       `loom.todo_cursor` SHAs with diagnostics that name the spec epic
       and repair surface
-  [test?](todo_invalid_spec_cursor_blocks_loudly)
+  [test](todo_invalid_spec_cursor_blocks_loudly)
 - `loom todo` discovers changed specs by comparing each spec/index row
       at `HEAD` against the spec epic's durable cursor; it includes
       inactive/stale specs and brand-new indexed specs regardless of
@@ -3677,15 +3677,15 @@ two agent-loop observers.
   [test?](todo_success_validation_rejects_missing_extra_or_misparented_beads)
 - Validated `NoWork` outcomes advance the spec cursor just like
       `Decomposed` outcomes; no-work rows require a non-empty reason
-  [test?](todo_no_work_outcome_advances_cursor_with_reason)
+  [test](todo_no_work_outcome_advances_cursor_with_reason)
 - Failed todo validation leaves the work epic labelled `loom:todo`,
       writes diagnostics to it, advances no spec cursor, and does not
       change `loom:active`
-  [test?](todo_validation_failure_leaves_pending_without_advancing)
+  [test](todo_validation_failure_leaves_pending_without_advancing)
 - Validated or blocked `loom todo` output prints a driver-authored
       per-spec summary covering every changed spec and its outcome; a
       changed spec missing from the summary is a validation failure
-  [test?](todo_output_summarizes_every_changed_spec_outcome)
+  [test](todo_output_summarizes_every_changed_spec_outcome)
 - Validated todo finalization removes `loom:todo`, applies the sole
       `loom:active` label to the work epic, clears any previous active
       epic, and advances every changed spec epic's `loom.todo_cursor`
@@ -3717,7 +3717,7 @@ two agent-loop observers.
 - `loom todo` renders implementation notes for each changed spec into
       the relevant work beads and deletes those notes only after the
       spec cursor advances during validated finalization
-  [test?](todo_consumes_notes_only_after_validated_finalization)
+  [test](todo_consumes_notes_only_after_validated_finalization)
 - `loom note set <label> --kind <k> --json '[…]'` is atomic —
       `DELETE WHERE spec_label=? AND kind=?` plus N `INSERT`s in one
       transaction; partial failure leaves the prior set intact

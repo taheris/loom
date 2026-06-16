@@ -24,7 +24,7 @@ use super::context::{
 };
 use super::criterion_status::build_criterion_status;
 use super::error::TodoError;
-use super::runner::{TodoController, TodoSession};
+use super::runner::{TodoController, TodoRecord, TodoSession, TodoSpecSummary};
 
 const TODO_HEAD_METADATA_KEY: &str = "loom.todo_head";
 const TODO_FINGERPRINT_METADATA_KEY: &str = "loom.todo_fingerprint";
@@ -517,11 +517,60 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         Ok(())
     }
 
-    async fn finalize_success(&self) -> Result<(), TodoError> {
+    async fn record_validation_failure(&self, detail: &str) -> Result<(), TodoError> {
+        let Some(preflight) = self.preflight.as_ref() else {
+            return Ok(());
+        };
+        self.bd
+            .update(
+                &preflight.work_epic,
+                UpdateOpts {
+                    notes: Some(format!("LOOM_TODO validation failed: {detail}")),
+                    ..UpdateOpts::default()
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn render_notes_into_beads(&self, success: &TodoSuccess) -> Result<(), TodoError> {
+        for spec in success.specs.as_slice() {
+            let TodoSpecOutcome::Decomposed { beads } = &spec.outcome else {
+                continue;
+            };
+            let notes = self
+                .state
+                .notes_list(Some(&spec.label), Some("implementation"))?
+                .into_iter()
+                .map(|row| row.text)
+                .collect::<Vec<_>>();
+            if notes.is_empty() {
+                continue;
+            }
+            let rendered = render_implementation_notes(&notes);
+            for bead_id in beads.as_slice() {
+                let bead = self.bd.show(bead_id).await?;
+                let notes = append_note_block(bead.notes.as_deref(), &rendered);
+                self.bd
+                    .update(
+                        bead_id,
+                        UpdateOpts {
+                            notes: Some(notes),
+                            ..UpdateOpts::default()
+                        },
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn finalize_success(&self, success: &TodoSuccess) -> Result<TodoRecord, TodoError> {
         let preflight = self
             .preflight
             .as_ref()
             .ok_or(TodoError::TodoSuccessWithoutPreflight)?;
+        self.render_notes_into_beads(success).await?;
         for active in self.active_work_epics().await? {
             if active.id != preflight.work_epic {
                 self.bd
@@ -573,7 +622,36 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             is_active: true,
             iteration_count: 0,
         })?;
-        Ok(())
+        Ok(TodoRecord {
+            spec_outcomes: summarize_success(success),
+        })
+    }
+
+    async fn record_blocked(&self, reason: &str) -> Result<TodoRecord, TodoError> {
+        let Some(preflight) = self.preflight.as_ref() else {
+            return Ok(TodoRecord::default());
+        };
+        self.bd
+            .update(
+                &preflight.work_epic,
+                UpdateOpts {
+                    status: Some("blocked".to_string()),
+                    add_labels: vec!["loom:blocked".to_string()],
+                    notes: Some(reason.to_string()),
+                    ..UpdateOpts::default()
+                },
+            )
+            .await?;
+        Ok(TodoRecord {
+            spec_outcomes: preflight
+                .changed_specs
+                .iter()
+                .map(|spec| TodoSpecSummary {
+                    label: spec.label.clone(),
+                    outcome: format!("blocked: {reason}"),
+                })
+                .collect(),
+        })
     }
 
     async fn active_work_epics(&self) -> Result<Vec<loom_driver::bd::Bead>, TodoError> {
@@ -642,7 +720,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         outcome: &SessionOutcome,
         marker: Option<&ExitSignal>,
         todo_success: Option<&TodoSuccess>,
-    ) -> Result<(), TodoError> {
+    ) -> Result<TodoRecord, TodoError> {
         if let Some(ExitSignal::Clarify { .. }) = marker {
             if let Some(preflight) = self.preflight.as_ref() {
                 let applied =
@@ -650,21 +728,28 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
                         .await?;
                 info!(work_epic = %preflight.work_epic, outcome = ?applied, "loom todo: LOOM_CLARIFY routed to work epic");
             }
-            return Ok(());
+            return Ok(TodoRecord::default());
+        }
+        if let Some(ExitSignal::Blocked { reason }) = marker {
+            return self.record_blocked(reason).await;
         }
         if matches!(marker, Some(ExitSignal::Complete | ExitSignal::Noop)) {
             return Err(TodoError::GenericTodoMarker);
         }
         let Some(success) = todo_success else {
             debug!(exit_code = outcome.exit_code, marker = ?marker, "loom todo: no success payload to finalize");
-            return Ok(());
+            return Ok(TodoRecord::default());
         };
         if outcome.exit_code != 0 {
-            return Ok(());
+            return Ok(TodoRecord::default());
         }
-        self.validate_success(success).await?;
-        self.finalize_success().await?;
-        Ok(())
+        if let Err(err) = self.validate_success(success).await {
+            if let TodoError::TodoValidation { detail } = &err {
+                self.record_validation_failure(detail).await?;
+            }
+            return Err(err);
+        }
+        self.finalize_success(success).await
     }
 }
 
@@ -732,6 +817,48 @@ fn pending_todo_options(
     format!(
         "## Options — Resolve pending todo epic\n\n### Option 1 — Continue matching batch\nClose or relabel non-matching `loom:todo` epics, leaving exactly one open epic with `{TODO_HEAD_METADATA_KEY}={head}` and `{TODO_FINGERPRINT_METADATA_KEY}={fingerprint}`. Cost: manual bd cleanup.\n\n### Option 2 — Restart decomposition\nRemove `loom:todo` from all pending todo epics, then rerun `loom todo` so the driver creates a fresh batch. Cost: any useful draft decomposition must be copied manually."
     )
+}
+
+fn render_implementation_notes(notes: &[String]) -> String {
+    let mut out = String::from("Implementation notes:\n");
+    for note in notes {
+        out.push_str("\n- ");
+        out.push_str(note);
+    }
+    out
+}
+
+fn append_note_block(existing: Option<&str>, block: &str) -> String {
+    let Some(existing) = existing.filter(|value| !value.trim().is_empty()) else {
+        return block.to_string();
+    };
+    format!("{}\n\n{}", existing.trim_end(), block)
+}
+
+fn summarize_success(success: &TodoSuccess) -> Vec<TodoSpecSummary> {
+    success
+        .specs
+        .as_slice()
+        .iter()
+        .map(|spec| {
+            let outcome = match &spec.outcome {
+                TodoSpecOutcome::Decomposed { beads } => {
+                    let bead_list = beads
+                        .as_slice()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("decomposed: {bead_list}")
+                }
+                TodoSpecOutcome::NoWork { reason } => format!("no-work: {reason}"),
+            };
+            TodoSpecSummary {
+                label: spec.label.clone(),
+                outcome,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
