@@ -41,7 +41,7 @@ async fn run_agent<B: AgentBackend>(config: &SpawnConfig) -> Result<SessionOutco
 }
 
 #[test]
-fn pi_claude_and_direct_dispatch_through_run_agent() {
+fn all_backends_dispatch_through_run_agent() {
     // The bound `B: AgentBackend` is the dispatch contract — instantiating
     // it at every concrete type is what monomorphizes `run_agent` and proves
     // the trait surface accepts each backend.

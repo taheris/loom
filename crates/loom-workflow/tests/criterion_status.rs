@@ -330,6 +330,46 @@ async fn criterion_status_commits_since_is_missing_when_no_cache_row() {
 }
 
 #[tokio::test]
+async fn todo_missing_criterion_cache_rows_are_missing_evidence() {
+    let dir = init_git_repo();
+    let workspace = dir.path();
+    let label = SpecLabel::new("alpha");
+    let body = "\
+## Success Criteria
+
+- Cached stale binding [check](cargo run -p w -- new)
+- Uncached binding [test](crate::t::uncached)
+";
+    let spec_rel = write_spec(workspace, "alpha", body);
+    let head = head_sha(workspace);
+    let cache_path = workspace.join(".loom/cache.db");
+    let cache = StatusCache::open(&cache_path).unwrap();
+    cache
+        .upsert(&cache_row(
+            "alpha",
+            criterion_id(&label, body, 0),
+            "cargo run -p w -- old",
+            head,
+        ))
+        .unwrap();
+    drop(cache);
+
+    let git = GitClient::open(workspace).unwrap();
+    let rows = build_criterion_status(workspace, &cache_path, &label, &spec_rel, &git).await;
+
+    assert_eq!(
+        rows.len(),
+        2,
+        "criteria are not silently dropped as no-work"
+    );
+    assert!(matches!(
+        rows[0].evidence,
+        EvidenceState::StaleAnnotation { .. }
+    ));
+    assert!(matches!(rows[1].evidence, EvidenceState::Missing));
+}
+
+#[tokio::test]
 async fn missing_spec_file_returns_empty_vec() {
     let dir = init_git_repo();
     let workspace = dir.path();

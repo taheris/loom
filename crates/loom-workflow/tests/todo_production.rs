@@ -214,6 +214,67 @@ fn preflight_responses(base: &str, head: &str) -> Vec<RunOutput> {
     ]
 }
 
+fn init_multi_spec_workspace(workspace: &Path) -> Result<(String, String)> {
+    run_git(workspace, &["init", "-q", "-b", "main"])?;
+    run_git(workspace, &["config", "user.email", "test@example.com"])?;
+    run_git(workspace, &["config", "user.name", "Test"])?;
+    run_git(workspace, &["config", "commit.gpgsign", "false"])?;
+    std::fs::create_dir_all(workspace.join("docs"))?;
+    std::fs::create_dir_all(workspace.join("specs"))?;
+    std::fs::write(
+        workspace.join("docs/README.md"),
+        "- [Alpha](../specs/alpha.md)\n- [Beta](../specs/beta.md)\n",
+    )?;
+    std::fs::write(workspace.join("specs/alpha.md"), "# Alpha\n")?;
+    std::fs::write(workspace.join("specs/beta.md"), "# Beta\n")?;
+    run_git(
+        workspace,
+        &["add", "docs/README.md", "specs/alpha.md", "specs/beta.md"],
+    )?;
+    run_git(workspace, &["commit", "-q", "-m", "seed specs"])?;
+    let base = git_output(workspace, &["rev-parse", "HEAD"])?;
+    std::fs::write(workspace.join("specs/alpha.md"), "# Alpha\n\nchanged\n")?;
+    std::fs::write(
+        workspace.join("specs/beta.md"),
+        "# Beta\n\nstale cursor changed\n",
+    )?;
+    std::fs::write(
+        workspace.join("docs/README.md"),
+        "- [Alpha](../specs/alpha.md)\n- [Beta](../specs/beta.md)\n- [Gamma](../specs/gamma.md)\n",
+    )?;
+    std::fs::write(workspace.join("specs/gamma.md"), "# Gamma\n")?;
+    run_git(
+        workspace,
+        &[
+            "add",
+            "docs/README.md",
+            "specs/alpha.md",
+            "specs/beta.md",
+            "specs/gamma.md",
+        ],
+    )?;
+    run_git(workspace, &["commit", "-q", "-m", "change all specs"])?;
+    let head = git_output(workspace, &["rev-parse", "HEAD"])?;
+    Ok((base, head))
+}
+
+fn multi_spec_preflight_responses(base: &str) -> Vec<RunOutput> {
+    vec![
+        spec_epic("lm-alpha", "alpha", base),
+        empty_json(),
+        empty_json(),
+        spec_epic("lm-beta", "beta", base),
+        empty_json(),
+        empty_json(),
+        empty_json(),
+        empty_json(),
+        empty_json(),
+        created("lm-gamma"),
+        empty_json(),
+        created("lm-work"),
+    ]
+}
+
 fn controller(
     workspace: &Path,
     runner: CapturingRunner,
@@ -288,6 +349,35 @@ async fn todo_discovers_active_inactive_and_new_specs_from_cursors() -> Result<(
 }
 
 #[tokio::test]
+async fn todo_preflight_discovers_active_inactive_and_new_specs() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, _head) = init_multi_spec_workspace(dir.path())?;
+    let runner = CapturingRunner::new(multi_spec_preflight_responses(&base));
+    let calls = runner.clone();
+    let mut ctrl = controller(dir.path(), runner)?;
+
+    let session = ctrl.build_session().await?;
+    let prompt = session.config.initial_prompt;
+
+    assert!(prompt.contains("### alpha"), "prompt: {prompt}");
+    assert!(prompt.contains("### beta"), "prompt: {prompt}");
+    assert!(prompt.contains("### gamma"), "prompt: {prompt}");
+    let all_calls = calls.calls()?;
+    assert!(
+        all_calls
+            .iter()
+            .any(|argv| argv.iter().any(|arg| arg == "loom:spec,spec:gamma"))
+    );
+    assert!(
+        all_calls
+            .iter()
+            .all(|argv| argv.iter().all(|arg| arg != "loom:active")),
+        "preflight must not discover changed specs through loom:active: {all_calls:?}",
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn generic_todo_marker_is_rejected_without_advancing() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (base, head) = init_workspace(dir.path())?;
@@ -314,8 +404,7 @@ async fn generic_todo_marker_is_rejected_without_advancing() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn todo_validation_failure_leaves_pending_without_advancing() -> Result<()> {
+async fn assert_todo_validation_failure_leaves_pending_without_advancing() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (base, head) = init_workspace(dir.path())?;
     let runner = CapturingRunner::new(preflight_responses(&base, &head));
@@ -364,6 +453,16 @@ async fn todo_validation_failure_leaves_pending_without_advancing() -> Result<()
         "active state unchanged on validation failure: {updates:?}",
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn todo_validation_failure_leaves_pending_without_advancing() -> Result<()> {
+    assert_todo_validation_failure_leaves_pending_without_advancing().await
+}
+
+#[tokio::test]
+async fn todo_success_missing_changed_spec_fails_without_advancing() -> Result<()> {
+    assert_todo_validation_failure_leaves_pending_without_advancing().await
 }
 
 #[tokio::test]

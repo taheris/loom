@@ -909,7 +909,7 @@ the entrypoint run the wrong runtime.
 - `AgentBackend` trait defined in loom-driver with associated `spawn`; no `SUPPORTS_STEERING` constant (all three backends steer)
   [check](grep -q 'pub trait AgentBackend' crates/loom-driver/src/agent/backend.rs)
 - `run_agent` compiles with `PiBackend`, `ClaudeBackend`, and `DirectBackend` as concrete types
-  [test?](all_backends_dispatch_through_run_agent)
+  [test](all_backends_dispatch_through_run_agent)
 - `AgentEvent` enum covers: AgentStart, AgentEnd, TurnStart, TextDelta, TextEnd, ThinkingDelta, ThinkingEnd, ToolcallDelta, ToolCall, ToolResult, ToolProgress, TurnEnd, SessionComplete, CompactionStart, CompactionEnd, AutoRetry, Error, DriverEvent
   [check](cargo test -p loom-events --lib every_spec_variant_present)
 - `SpawnConfig` struct captures image_ref, image_source, optional image_digest_path, workspace, env, initial_prompt, agent_args, scratch_dir
@@ -972,7 +972,7 @@ the entrypoint run the wrong runtime.
 - Direct backend's `Session` impl spawns a container via `wrix spawn` with the `direct` runtime layer; the container's entrypoint exec's `loom-direct-runner`
   [test](direct_session_spawn_invokes_wrix_spawn_with_direct_runtime)
 - `loom-direct-runner` constructs a `loom-llm::Conversation`, registers the six sandbox-aware tools, runs the loop, and emits `AgentEvent` JSONL to stdout — the same common event shape as the subprocess backends
-  [test?](direct_runner_emits_agent_event_jsonl_compatible_with_common_agent_events)
+  [test](direct_runner_emits_agent_event_jsonl_compatible_with_common_agent_events)
 - Direct registers exactly six tools by name: `Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`
   [test](direct_runner_registers_canonical_six_tools)
 - Each Direct tool's impl lives in `loom-agent::direct::tools` — net-new code, not re-exported from any other crate
@@ -1032,7 +1032,7 @@ the entrypoint run the wrong runtime.
 - Pi backend tolerates pi rejection of `set_thinking_level` without aborting the handshake
   [test](set_thinking_level_tolerates_pi_rejection)
 - Backend runtime names map to the `WRIX_AGENT` child-env values exactly: Pi → `pi`, Claude → `claude`, Direct → `direct`
-  [test?](agent_runtime_name_maps_to_wrix_agent_values)
+  [test](agent_runtime_name_maps_to_wrix_agent_values)
 
 ### Interactive shell-out
 

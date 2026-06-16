@@ -41,6 +41,27 @@ an explicit acknowledgement that the implementation is on the way. Walk
 every annotation this session added or touched: if its target won't
 resolve until a follow-on bead lands, mark it pending before exiting.
 
+**Binary-pending vs assertion-pending.** Binary-pending means the
+verifier executable or referenced path does not exist yet. Assertion-
+pending means the verifier can run but the asserted condition does not
+hold yet. Both shapes use `[tier?](target)` until the target resolves.
+
+**Added and modified annotations both count.** If this session adds an
+annotation or changes an existing annotation's command, file path,
+grep pattern, or symbol name so the new target does not resolve now,
+mark it pending. Do not treat modified annotations as exempt.
+
+**Structured walker input uses pending cells.** Planning edits to
+matrix rows, surface tables, or other structured walker input use the
+walker's own `?` pending-addition and `~` pending-removal cell syntax in
+the input element itself, not the success-criterion annotation marker.
+
+**Self-cleaning obligation.** Drop the pending marker in the same diff
+that resolves the target: `[tier?]` becomes `[tier]`, `?` cells become
+`✓`, and `~` cells become blank. Leaving it behind fires
+`UnneededPendingMarker` or the structured walker's pending-marker-
+resolved finding.
+
 **Atomic-acceptance discipline.** Each Success Criteria bullet carries
 **exactly one** verifier annotation. A bullet that needs two is two
 criteria — split. The integrity gate flags multi-annotation criteria

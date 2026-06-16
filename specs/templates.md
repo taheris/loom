@@ -1038,17 +1038,17 @@ documents in front of the agent with zero configuration.
   `~` (pending removal) as valid cell values in the matrix
   alongside `✓` and blank, per [gate.md § Pending support in
   structured walker input](gate.md#pending-support-in-structured-walker-input)
-  [check?](cargo run -p loom-walk -- template_pinning_matrix_accepts_pending_cells)
+  [test](template_pinning_matrix_accepts_pending_cells)
 - `?` + template-doesn't-include → silent pass (pending);
   `?` + template-includes → walker fails with
   `pending-marker-resolved` so the author drops `?` to `✓` in the
   same diff
-  [check?](cargo run -p loom-walk -- pending_addition_marker_fires_when_template_now_includes)
+  [test](pending_addition_marker_fires_when_template_now_includes)
 - `~` + template-includes → silent pass (pending);
   `~` + template-doesn't-include → walker fails with
   `pending-marker-resolved` so the author drops `~` to blank in
   the same diff
-  [check?](cargo run -p loom-walk -- pending_removal_marker_fires_when_template_no_longer_includes)
+  [test](pending_removal_marker_fires_when_template_no_longer_includes)
 - The walker's existing per-cell assertion is unchanged for
   non-pending cells: `✓` requires transitive include; blank
   forbids transitive include; mismatch fails the walker
@@ -1063,18 +1063,18 @@ documents in front of the agent with zero configuration.
   **assertion-pending** pending-modifier cases with worked
   examples, so a planning agent author understands both shapes
   warrant `?`
-  [check?](grep -qi 'binary-pending\|assertion-pending' crates/loom-templates/templates/partial/plan_stage_rubric.md)
+  [check](grep -qi 'binary-pending\|assertion-pending' crates/loom-templates/templates/partial/plan_stage_rubric.md)
 - The partial body names the **"added and modified" rule**
   explicitly — pending discipline applies to annotations the
   session adds AND to annotations whose target the session
   changed in a way that breaks resolution
-  [check?](grep -qi 'added.*modified\|added and modified\|modified.*annotation' crates/loom-templates/templates/partial/plan_stage_rubric.md)
+  [check](grep -qi 'added.*modified\|added and modified\|modified.*annotation' crates/loom-templates/templates/partial/plan_stage_rubric.md)
 - The partial body names the **structured walker input** rule —
   planning edits to matrix / surface / wire-format input use the
   walker's `?` (pending addition) and `~` (pending removal) cell
   syntax for pending elements, not the SC-level `?` modifier, per
   gate.md § Pending support in structured walker input
-  [check?](grep -qi 'structured.*input\|pending.*cell\|walker.*input' crates/loom-templates/templates/partial/plan_stage_rubric.md)
+  [check](grep -qi 'structured.*input\|pending.*cell\|walker.*input' crates/loom-templates/templates/partial/plan_stage_rubric.md)
 - The partial body names the **self-cleaning obligation** — the
   `?` must be dropped in the same diff that resolves the target,
   else `UnneededPendingMarker` fires

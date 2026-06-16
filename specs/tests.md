@@ -623,14 +623,14 @@ in Functional #4.
       represented in the active work epic, an existing inactive/stale spec,
       and a brand-new spec added to `docs/README.md`; `loom todo`
       discovers all three from durable cursors regardless of `loom:active`
-  [test?](todo_preflight_discovers_active_inactive_and_new_specs)
+  [test](todo_preflight_discovers_active_inactive_and_new_specs)
 - Todo validation rejects an agent `LOOM_TODO` payload that omits any
       changed spec; no spec cursor advances and no work epic becomes
       `loom:active`
-  [test?](todo_success_missing_changed_spec_fails_without_advancing)
+  [test](todo_success_missing_changed_spec_fails_without_advancing)
 - Missing criterion evidence rows in `.loom/cache.db` render as
       `EvidenceState::Missing` and never as no criteria/no work
-  [test?](todo_missing_criterion_cache_rows_are_missing_evidence)
+  [test](todo_missing_criterion_cache_rows_are_missing_evidence)
 - Phase/work-root advisory locking: two contending acquisitions on the
       same plan/todo/bead/epic root serialize via `flock`; the second
       waits via `MockClock` advance, then errors naming the held root.

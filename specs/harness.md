@@ -3656,7 +3656,7 @@ two agent-loop observers.
       at `HEAD` against the spec epic's durable cursor; it includes
       inactive/stale specs and brand-new indexed specs regardless of
       `loom:active`
-  [test](todo_discovers_active_inactive_and_new_specs_from_cursors)
+  [test](todo_preflight_discovers_active_inactive_and_new_specs)
 - `loom todo` creates one `loom:todo` work epic before rendering the
       agent prompt, records `loom.todo_head`, `loom.todo_fingerprint`,
       and changed spec labels on it, and does not add `loom:active`

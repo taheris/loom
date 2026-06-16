@@ -592,7 +592,7 @@ mod tests {
     /// per-frame line discipline (one JSON object + `\n`) and the
     /// `DirectEvent` tag/variant set.
     #[test]
-    fn direct_runner_emits_agent_event_jsonl_compatible_with_pi_and_claude() {
+    fn direct_runner_emits_agent_event_jsonl_compatible_with_common_agent_events() {
         let client = ScriptedClient::new(vec![final_text("hello back")]);
         let stdin = b"{\"type\":\"prompt\",\"message\":\"hi\"}\n".to_vec();
         let mut stdout: Vec<u8> = Vec::new();

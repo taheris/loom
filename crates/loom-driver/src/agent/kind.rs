@@ -60,11 +60,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_parse_serde_rejects_unknown_values() -> Result<()> {
-        for (runtime, expected) in [
-            (AgentRuntime::Pi, "pi"),
-            (AgentRuntime::Claude, "claude"),
-            (AgentRuntime::Direct, "direct"),
-        ] {
+        for (runtime, expected) in runtime_wire_values() {
             assert_eq!(runtime.as_str(), expected);
             assert_eq!(runtime.to_string(), expected);
             assert_eq!(serde_json::to_string(&runtime)?, format!("\"{expected}\""));
@@ -82,5 +78,20 @@ mod tests {
             "{serde_err}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn agent_runtime_name_maps_to_wrix_agent_values() {
+        for (runtime, expected) in runtime_wire_values() {
+            assert_eq!(runtime.as_str(), expected);
+        }
+    }
+
+    fn runtime_wire_values() -> [(AgentRuntime, &'static str); 3] {
+        [
+            (AgentRuntime::Pi, "pi"),
+            (AgentRuntime::Claude, "claude"),
+            (AgentRuntime::Direct, "direct"),
+        ]
     }
 }
