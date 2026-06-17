@@ -294,6 +294,7 @@ mod tests {
         let cfg = SpawnConfig {
             image_ref: "localhost/wrix-test:claude".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-claude.tar"),
+            profile_config: None,
             image_digest_path: None,
             workspace: workspace.path().to_path_buf(),
             env: vec![("WRIX_AGENT".into(), "claude".into())],

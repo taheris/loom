@@ -23,6 +23,11 @@ pub struct SpawnConfig {
     /// Nix store path to an image archive stream that materializes
     /// `image_ref`. The wrapper installs it before `podman run` when needed.
     pub image_source: PathBuf,
+    /// Wrix ProfileConfig path selected from the same manifest entry as
+    /// [`SpawnConfig::image_ref`]. Host-side backends pass it as a launcher
+    /// flag rather than serializing it into the spawn-config JSON.
+    #[serde(skip)]
+    pub profile_config: Option<PathBuf>,
     /// Optional Nix store path containing the image content digest. Modern
     /// wrix launchers use this to skip image installation when the same
     /// content already exists under any tag, avoiding cold layer reloads when
@@ -319,6 +324,7 @@ mod tests {
         SpawnConfig {
             image_ref: "localhost/wrix-test:tag".into(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test.tar"),
+            profile_config: None,
             image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "pi".into())],

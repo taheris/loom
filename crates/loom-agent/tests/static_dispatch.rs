@@ -72,6 +72,7 @@ fn sample_config() -> SpawnConfig {
     SpawnConfig {
         image_ref: String::new(),
         image_source: PathBuf::new(),
+        profile_config: None,
         image_digest_path: None,
         workspace: PathBuf::new(),
         env: Vec::new(),

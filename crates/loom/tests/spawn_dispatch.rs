@@ -2,9 +2,10 @@
 //!
 //! Verifies the contract loom owes the wrix wrapper:
 //!
-//! 1. `wrix spawn --spawn-config <file> --stdio` is the only argv shape
-//!    loom hands to the wrapper. `<file>` resolves to a JSON-serialized
-//!    [`SpawnConfig`] containing the resolved profile image.
+//! 1. `wrix --profile-config <file> spawn --spawn-config <file> --stdio`
+//!    is the Pi argv shape loom hands to the wrapper. The spawn config
+//!    resolves to a JSON-serialized [`SpawnConfig`] containing the resolved
+//!    profile image.
 //! 2. The container child receives stdin via a pipe (not a TTY) so JSONL
 //!    framing flows correctly and EOF semantics work when loom closes its
 //!    end of the pipe.
@@ -140,17 +141,34 @@ fn mock_claude_path() -> PathBuf {
 /// assertions stay focused on what they verify.
 fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::process::Output {
     // Spawn-bound subcommands (`todo` is one) read LOOM_PROFILES_MANIFEST at
-    // startup. The production todo controller resolves the `base` profile
-    // through this manifest, so it must contain a real entry — an empty
-    // `{}` would surface as ProfileError::UnknownProfile.
+    // startup. The production todo controller resolves the configured `rust`
+    // profile through this manifest, so it must contain a real entry — an
+    // empty `{}` would surface as ProfileError::UnknownProfile.
     let manifest_path = workspace.join("profile-images.json");
-    let image_source = workspace.join("base.tar");
+    let image_source = workspace.join("rust.tar");
+    let pi_profile_config = workspace.join("wrix-rust-pi-profile-config.json");
+    let direct_profile_config = workspace.join("wrix-rust-direct-profile-config.json");
     std::fs::write(&image_source, "").expect("write stub image source");
+    std::fs::write(&pi_profile_config, r#"{"agent":{"kind":"pi"}}"#)
+        .expect("write pi profile config");
+    std::fs::write(&direct_profile_config, r#"{"agent":{"kind":"direct"}}"#)
+        .expect("write direct profile config");
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(workspace.join("loom.toml"))
+        .and_then(|mut file| {
+            use std::io::Write as _;
+            file.write_all(b"\n[phase.todo]\nprofile = \"rust\"\n")
+        })
+        .expect("write loom config");
     let manifest_body = format!(
         r#"{{
-          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?} }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?} }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?} }} }}
+          "rust": {{ "pi": {{ "ref": "localhost/wrix-rust-pi:test", "source": {source:?}, "profile_config": {pi_profile_config:?} }}, "direct": {{ "ref": "localhost/wrix-rust-direct:test", "source": {source:?}, "profile_config": {direct_profile_config:?} }} }}
         }}"#,
         source = image_source.display().to_string(),
+        pi_profile_config = pi_profile_config.display().to_string(),
+        direct_profile_config = direct_profile_config.display().to_string(),
     );
     std::fs::write(&manifest_path, manifest_body).expect("write manifest stub");
     init_workspace_repo(workspace);
@@ -302,12 +320,12 @@ fn install_loom_noop_stub(dir: &Path) -> PathBuf {
     stub
 }
 
-/// Loom hands the wrapper exactly `wrix spawn --spawn-config <file>
-/// --stdio`, and the file resolves to a JSON [`SpawnConfig`] carrying
-/// the per-bead profile image. A future profile-resolution change that
-/// drops the `image_ref`/`image_source` fields or renames the
-/// subcommand will trip this assertion before the wrapper ever sees the
-/// malformed argv.
+/// Loom hands the wrapper the selected Pi ProfileConfig before `spawn`, and
+/// the spawn-config file resolves to a JSON [`SpawnConfig`] carrying the
+/// per-bead profile image. A future profile-resolution change that drops the
+/// `image_ref`/`image_source` fields, uses the direct ProfileConfig, or
+/// renames the subcommand will trip this assertion before the wrapper ever
+/// sees the malformed argv.
 #[test]
 fn wrix_spawn_invocation_records_correct_argv() {
     let dir = tempfile::tempdir().unwrap();
@@ -339,10 +357,21 @@ fn wrix_spawn_invocation_records_correct_argv() {
 
     let argv = std::fs::read_to_string(&argv_file).expect("shim should record argv");
     let tokens: Vec<&str> = argv.lines().collect();
+    let profile_idx = tokens
+        .iter()
+        .position(|t| *t == "--profile-config")
+        .unwrap_or_else(|| panic!("--profile-config flag missing from argv. argv={tokens:?}"));
+    let profile_config_path = tokens.get(profile_idx + 1).unwrap_or_else(|| {
+        panic!("--profile-config without a value. argv={tokens:?}");
+    });
+    assert!(
+        profile_config_path.ends_with("wrix-rust-pi-profile-config.json"),
+        "Pi spawn must use rust.pi profile_config, not the direct/default variant. argv={tokens:?}",
+    );
     assert_eq!(
-        tokens.first().copied(),
+        tokens.get(profile_idx + 2).copied(),
         Some("spawn"),
-        "first arg must be spawn. argv={tokens:?}",
+        "spawn must follow --profile-config <path>. argv={tokens:?}",
     );
     let spawn_idx = tokens
         .iter()
@@ -362,18 +391,18 @@ fn wrix_spawn_invocation_records_correct_argv() {
 
     // The spawn-config JSON must round-trip through SpawnConfig and carry
     // the resolved image_ref + image_source from the manifest written by
-    // `drive_loom_todo_pi` (`base` + `pi` maps to `localhost/wrix-base-pi:test`).
+    // `drive_loom_todo_pi` (`rust` + `pi` maps to `localhost/wrix-rust-pi:test`).
     let bytes = std::fs::read(&spawn_copy).expect("shim should copy spawn-config aside");
     let cfg: loom_driver::agent::SpawnConfig =
         serde_json::from_slice(&bytes).expect("spawn-config must deserialize");
     assert_eq!(
-        cfg.image_ref, "localhost/wrix-base-pi:test",
+        cfg.image_ref, "localhost/wrix-rust-pi:test",
         "spawn-config image_ref must match the resolved profile image",
     );
-    assert!(
-        !cfg.image_source.as_os_str().is_empty(),
-        "spawn-config image_source must be populated. got={}",
-        cfg.image_source.display(),
+    assert_eq!(
+        cfg.image_source,
+        workspace.join("rust.tar"),
+        "spawn-config image_source must match the selected profile image",
     );
     assert!(
         cfg.initial_prompt.contains("agent"),

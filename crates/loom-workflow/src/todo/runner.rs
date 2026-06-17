@@ -147,6 +147,7 @@ mod tests {
                 config: SpawnConfig {
                     image_ref: "wrix-base:latest".into(),
                     image_source: PathBuf::from("/nix/store/zzz-wrix-base.tar"),
+                    profile_config: None,
                     image_digest_path: None,
                     workspace: self.workspace.path().to_path_buf(),
                     env: vec![],

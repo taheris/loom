@@ -1,9 +1,9 @@
 //! Pi-mono RPC backend: spawn + startup probe + optional `set_model`.
 //!
 //! [`PiBackend::spawn`] serializes the [`SpawnConfig`] to a JSON file,
-//! execs `wrix spawn --spawn-config <file> --stdio` (the wrapper that
-//! owns container construction), and drives the pi RPC handshake before
-//! handing back an [`AgentSession`] in the [`Idle`] state:
+//! execs `wrix --profile-config <file> spawn --spawn-config <file> --stdio`
+//! when the manifest provides a ProfileConfig, and drives the pi RPC
+//! handshake before handing back an [`AgentSession`] in the [`Idle`] state:
 //!
 //! 1. `get_state` probe — verifies the RPC process is responsive and
 //!    returns the documented state object shape before any workflow begins.
@@ -18,7 +18,7 @@
 //! layer's responsibility (driven from `AgentEvent::CompactionStart`); the
 //! backend itself does not own re-pin policy.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -103,11 +103,11 @@ impl AgentBackend for PiBackend {
             "pi backend spawn",
         );
 
-        let mut cmd = Command::new(&wrix_bin);
-        cmd.arg("spawn")
-            .arg("--spawn-config")
-            .arg(&spawn_config_path)
-            .arg("--stdio");
+        let mut cmd = build_wrix_command(
+            &wrix_bin,
+            config.profile_config.as_deref(),
+            &spawn_config_path,
+        );
         apply_launcher_env(&mut cmd, &config.launcher_env);
         // Needed for the stderr readiness boundary below. The marker is
         // emitted by wrix after image load/staging and before `podman run`.
@@ -182,6 +182,22 @@ struct SetModelCommand<'a> {
     provider: &'a str,
     #[serde(rename = "modelId")]
     model_id: &'a str,
+}
+
+pub(crate) fn build_wrix_command(
+    wrix_bin: &OsStr,
+    profile_config: Option<&Path>,
+    spawn_config_path: &Path,
+) -> Command {
+    let mut cmd = Command::new(wrix_bin);
+    if let Some(profile_config) = profile_config {
+        cmd.arg("--profile-config").arg(profile_config);
+    }
+    cmd.arg("spawn")
+        .arg("--spawn-config")
+        .arg(spawn_config_path)
+        .arg("--stdio");
+    cmd
 }
 
 /// Spawn the launcher [`Command`], drive the startup handshake (probe +
@@ -633,6 +649,7 @@ mod tests {
         SpawnConfig {
             image_ref: "localhost/wrix-test:pi".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-pi.tar"),
+            profile_config: Some(PathBuf::from("/nix/store/wrix-test-pi-profile-config.json")),
             image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "pi".into())],
@@ -649,6 +666,29 @@ mod tests {
             stall_warn_interval: None,
             launcher_env: Vec::new(),
         }
+    }
+
+    #[test]
+    fn wrix_command_uses_profile_config_before_spawn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let spawn_config_path = dir.path().join("loom-spawn.json");
+        let profile_config = Path::new("/nix/store/wrix-rust-pi-profile-config.json");
+        let cmd = build_wrix_command(OsStr::new("wrix"), Some(profile_config), &spawn_config_path);
+        let std_cmd = cmd.as_std();
+
+        assert_eq!(std_cmd.get_program(), OsStr::new("wrix"));
+        let args: Vec<&OsStr> = std_cmd.get_args().collect();
+        assert_eq!(
+            args,
+            vec![
+                OsStr::new("--profile-config"),
+                profile_config.as_os_str(),
+                OsStr::new("spawn"),
+                OsStr::new("--spawn-config"),
+                spawn_config_path.as_os_str(),
+                OsStr::new("--stdio"),
+            ],
+        );
     }
 
     // -- write_spawn_config -----------------------------------------------

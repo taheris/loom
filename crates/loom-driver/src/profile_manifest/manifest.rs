@@ -13,8 +13,9 @@ use super::error::ProfileError;
 pub const ENV_VAR: &str = "LOOM_PROFILES_MANIFEST";
 
 /// One manifest entry: the podman ref to spawn, the Nix store path of the
-/// image archive that materializes it, and (when produced by modern wrix)
-/// the content-digest file used to skip redundant image loads.
+/// image archive that materializes it, the wrix ProfileConfig path matching
+/// that image variant, and (when produced by modern wrix) the content-digest
+/// file used to skip redundant image loads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {
     /// Podman ref (e.g. `localhost/wrix-rust-pi:abc123`) handed to `podman run`.
@@ -22,6 +23,9 @@ pub struct ImageEntry {
     pub r#ref: String,
     /// Nix store path of the image archive handed to the launcher install step.
     pub source: PathBuf,
+    /// Optional Nix store path of the wrix ProfileConfig matching this image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_config: Option<PathBuf>,
     /// Optional Nix store path containing the image content digest. The wrix
     /// launcher uses this for content-addressed image-cache preflight so tag
     /// changes do not force re-streaming identical layer tarballs.
@@ -188,6 +192,31 @@ mod tests {
         assert_eq!(base_pi.runtime, None);
         let rust_direct = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Direct)?;
         assert_eq!(rust_direct.r#ref, "localhost/wrix-rust-direct:ghi");
+        assert_eq!(rust_direct.profile_config, None);
+        Ok(())
+    }
+
+    #[test]
+    fn from_path_parses_optional_profile_config_path() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let body = r#"{
+          "rust": {
+            "pi": {
+              "ref": "localhost/wrix-rust-pi:def",
+              "source": "/nix/store/bbb-image-rust-pi",
+              "profile_config": "/nix/store/eee-wrix-rust-pi-profile-config.json"
+            }
+          }
+        }"#;
+        let path = write_manifest(dir.path(), body)?;
+        let manifest = ProfileImageManifest::from_path(&path)?;
+        let rust = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Pi)?;
+        assert_eq!(
+            rust.profile_config,
+            Some(PathBuf::from(
+                "/nix/store/eee-wrix-rust-pi-profile-config.json"
+            ))
+        );
         Ok(())
     }
 

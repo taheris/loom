@@ -443,6 +443,7 @@ mod tests {
         SpawnConfig {
             image_ref: "localhost/wrix-test:direct".into(),
             image_source: PathBuf::from("/nix/store/zzz-test.tar"),
+            profile_config: None,
             image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "direct".into())],

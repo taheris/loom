@@ -36,6 +36,7 @@ pub fn build_spawn_config(
     SpawnConfig {
         image_ref: diagnostics.image_ref,
         image_source: entry.source.clone(),
+        profile_config: entry.profile_config.clone(),
         image_digest_path: entry.digest.clone(),
         workspace,
         env,
@@ -119,6 +120,7 @@ mod tests {
         ImageEntry {
             r#ref: "localhost/wrix-rust-pi:test".into(),
             source: PathBuf::from("/nix/store/image-rust-pi"),
+            profile_config: Some(PathBuf::from("/nix/store/wrix-rust-pi-profile-config.json")),
             digest: Some(PathBuf::from("/nix/store/image-rust-pi-digest")),
             runtime: Some(AgentRuntime::Pi),
         }
@@ -151,6 +153,10 @@ mod tests {
                 .filter(|(key, _)| key == "WRIX_AGENT")
                 .collect::<Vec<_>>(),
             vec![&("WRIX_AGENT".to_string(), "pi".to_string())],
+        );
+        assert_eq!(
+            cfg.profile_config,
+            Some(PathBuf::from("/nix/store/wrix-rust-pi-profile-config.json")),
         );
     }
 

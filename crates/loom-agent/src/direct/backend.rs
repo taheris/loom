@@ -312,6 +312,7 @@ mod tests {
         SpawnConfig {
             image_ref: "localhost/wrix-test:direct".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-direct.tar"),
+            profile_config: None,
             image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "direct".into())],
