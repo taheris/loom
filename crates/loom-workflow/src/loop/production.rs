@@ -47,8 +47,8 @@ use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_
 use super::tree_clean::dirty_paths_from_porcelain;
 use super::verify::{VerifyPass, verify_pass};
 use crate::review::{
-    DispatchScope, GateInputs, PhaseVerdict, RecoveryCause, WalkOutput,
-    WorkspaceReviewFindingValidator, decide,
+    DispatchScope, GateInputs, PhaseVerdict, RecoveryCause, WalkOutput, WorkspaceFindingValidator,
+    decide,
 };
 use crate::suppression::suppresses_rubric_finding;
 use crate::todo::{ExitSignal, parse_exit_signal};
@@ -870,7 +870,7 @@ where
         // § *molecule_completion_review_threads_findings_into_previous_failure_review_concern*.
         // The mint path is NOT fired here — push-stage is `audit`,
         // inspection-only per `specs/gate.md` § *Stages*.
-        let validator = WorkspaceReviewFindingValidator::new(&self.workspace);
+        let validator = WorkspaceFindingValidator::new(&self.workspace);
         let walk = WalkOutput::from_stdout(&review_stdout, DispatchScope::PerBead, &validator);
         let config = LoomConfig::load(LoomConfig::resolve_path(&self.workspace))?;
         let unsuppressed_findings = walk

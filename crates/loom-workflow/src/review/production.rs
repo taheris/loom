@@ -36,9 +36,9 @@ use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::CacheDb;
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
 use loom_gate::{
-    CommandResolver, DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateRun,
-    GateSuccess, HandoffEvidence, InputResolver, IntegrityFinding, MarkerProof, TierCwds,
-    annotation, compose_clarify_options, integrity, parse_gate_runs_from_jsonl,
+    DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateRun, GateSuccess,
+    HandoffEvidence, InputResolver, IntegrityFinding, MarkerProof, TierCwds, annotation,
+    compose_clarify_options, integrity, parse_gate_runs_from_jsonl,
 };
 use loom_templates::previous_failure::PreviousFailure;
 use loom_templates::review::{ReviewContext, ReviewLane};
@@ -51,6 +51,7 @@ use super::finding::{DispatchScope, FindingValidator, TerminalSurface, WalkOutpu
 use super::phase_verdict::{GateInputs, PhaseVerdict, RecoveryCause, decide};
 use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
 use super::verdict::PushGateRefuseCause;
+use super::workspace_validator::WorkspaceFindingValidator;
 use crate::suppression::{has_ineffective_suppression_match, suppresses_rubric_finding};
 use crate::todo::ExitSignal;
 
@@ -75,103 +76,6 @@ impl FindingValidator for AcceptAllFindingValidator {
     }
 }
 
-pub(crate) struct WorkspaceReviewFindingValidator {
-    workspace: PathBuf,
-}
-
-impl WorkspaceReviewFindingValidator {
-    pub(crate) fn new(workspace: &Path) -> Self {
-        Self {
-            workspace: workspace.to_path_buf(),
-        }
-    }
-
-    fn spec_path(&self, label: &SpecLabel) -> PathBuf {
-        self.workspace.join("specs").join(format!("{label}.md"))
-    }
-
-    fn selector_path(target: &str) -> &str {
-        let without_hash = target.split_once('#').map_or(target, |(path, _)| path);
-        without_hash
-            .split_once("::")
-            .map_or(without_hash, |(path, _)| path)
-    }
-
-    fn target_path_exists(&self, target: &str) -> bool {
-        let path = Self::selector_path(target.trim());
-        if path.is_empty() {
-            return false;
-        }
-        let candidate = Path::new(path);
-        if candidate.is_absolute() {
-            candidate.exists()
-        } else {
-            self.workspace.join(candidate).exists()
-        }
-    }
-}
-
-impl FindingValidator for WorkspaceReviewFindingValidator {
-    fn spec_label_is_known(&self, label: &SpecLabel) -> bool {
-        self.spec_path(label).is_file()
-    }
-
-    fn criterion_anchor_resolves(&self, spec: &SpecLabel, anchor: &str) -> bool {
-        let Ok(body) = std::fs::read_to_string(self.spec_path(spec)) else {
-            return false;
-        };
-        body.lines()
-            .filter_map(markdown_heading_anchor)
-            .any(|candidate| candidate == anchor)
-    }
-
-    fn annotation_resolves(&self, target_string: &str) -> bool {
-        if self.target_path_exists(target_string) {
-            return true;
-        }
-        let Some(first_token) = target_string.split_whitespace().next() else {
-            return false;
-        };
-        FsCommandResolver::new(&self.workspace).resolves(first_token)
-    }
-
-    fn file_exists(&self, path: &str) -> bool {
-        self.target_path_exists(path)
-    }
-
-    fn invariant_resolves(&self, spec: &SpecLabel, section: &str, tag: &str) -> bool {
-        let Ok(body) = std::fs::read_to_string(self.spec_path(spec)) else {
-            return false;
-        };
-        let section_anchor = markdown_slug(section);
-        let tag_anchor = markdown_slug(tag);
-        let body_anchor = markdown_slug(&body);
-        body.lines()
-            .filter_map(markdown_heading_anchor)
-            .any(|candidate| candidate == section_anchor)
-            && invariant_tag_resolves(&body_anchor, &tag_anchor)
-    }
-}
-
-fn markdown_heading_anchor(line: &str) -> Option<String> {
-    let trimmed = line.trim_start();
-    let text = trimmed.strip_prefix('#')?.trim_start_matches('#').trim();
-    if text.is_empty() {
-        None
-    } else {
-        Some(markdown_slug(text))
-    }
-}
-
-fn invariant_tag_resolves(body_anchor: &str, tag_anchor: &str) -> bool {
-    !tag_anchor.is_empty()
-        && (body_anchor.contains(tag_anchor)
-            || tag_anchor
-                .split('-')
-                .filter(|part| !part.is_empty())
-                .all(|part| body_anchor.split('-').any(|body_part| body_part == part)))
-}
-
 fn push_refusal_note(existing: Option<&str>, cause: PushGateRefuseCause) -> String {
     let note = format!(
         "push-gate-refused: {}; local bead workspace preserved under .loom/beads for inspection",
@@ -181,24 +85,6 @@ fn push_refusal_note(existing: Option<&str>, cause: PushGateRefuseCause) -> Stri
         Some(body) => format!("{body}\n\n{note}"),
         None => note,
     }
-}
-
-fn markdown_slug(input: &str) -> String {
-    let mut out = String::new();
-    let mut previous_was_separator = true;
-    for c in input.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-            previous_was_separator = false;
-        } else if !previous_was_separator {
-            out.push('-');
-            previous_was_separator = true;
-        }
-    }
-    if out.ends_with('-') {
-        out.pop();
-    }
-    out
 }
 
 fn pre_commit_config_digest(workspace: &Path) -> Result<String, ReviewError> {
@@ -857,7 +743,7 @@ where
         let result = (self.spawn)(spawn_config).await;
         drop(scratch);
         let (outcome, marker, stdout) = result?;
-        let validator = WorkspaceReviewFindingValidator::new(&self.workspace);
+        let validator = WorkspaceFindingValidator::new(&self.workspace);
         let walk = WalkOutput::from_stdout(&stdout, self.dispatch_scope, &validator);
         let suppressed_findings = suppressed_findings(&walk, &self.suppressions);
         let ineffective_suppression_matches =

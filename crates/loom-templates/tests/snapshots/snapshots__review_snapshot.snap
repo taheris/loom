@@ -562,6 +562,14 @@ LOOM_FINDING: {"token":"concurrency-untested","route":"deferred","bonds":["harne
 
 ### Validation rules
 
+- **`Criterion.anchor` MUST be copyable from the spec surface**: a
+  markdown heading slug, a criterion id when one is shown, or an
+  attached verifier / judge function name or target string. Do not
+  invent a fresh label.
+- **`Annotation.target_string` MUST be only the raw annotation target**
+  inside `[check](...)`, `[test](...)`, `[system](...)`, or
+  `[judge](...)`. Omit `specs/foo.md:line` prefixes and the `[tier]`
+  wrapper.
 - **`target.spec` MUST appear in `bonds`** for `Criterion` and
   `Invariant` target variants. You cannot cite a criterion or
   invariant in spec X while bonding only to spec Y. The driver

@@ -478,6 +478,15 @@ impl FindingTarget {
         }
     }
 
+    fn canonicalized(self) -> Self {
+        match self {
+            Self::Annotation { target_string } => Self::Annotation {
+                target_string: canonical_annotation_target(&target_string),
+            },
+            other => other,
+        }
+    }
+
     /// Variant-aware canonical string for human-facing batch surfaces.
     #[must_use]
     pub fn canonical_form(&self) -> String {
@@ -587,6 +596,59 @@ fn lower_kebab(input: &str) -> String {
         out.pop();
     }
     out
+}
+
+fn canonical_annotation_target(target: &str) -> String {
+    embedded_annotation_target(target).unwrap_or_else(|| target.trim().to_owned())
+}
+
+fn embedded_annotation_target(target: &str) -> Option<String> {
+    let mut offset = 0;
+    while let Some(start_rel) = target[offset..].find('[') {
+        let start = offset + start_rel;
+        let label_start = start + 1;
+        let close_rel = target[label_start..].find(']')?;
+        let close = label_start + close_rel;
+        let label = &target[label_start..close];
+        let tier = label.strip_suffix('?').unwrap_or(label);
+        let after_close = close + 1;
+        if !annotation_wrapper_prefix(&target[..start])
+            || !matches!(tier, "check" | "test" | "system" | "judge")
+            || !target[after_close..].starts_with('(')
+        {
+            offset = after_close;
+            continue;
+        }
+        let inner_start = after_close + 1;
+        let inner_end = matching_annotation_paren(target, inner_start)?;
+        return Some(target[inner_start..inner_end].trim().to_owned());
+    }
+    None
+}
+
+fn annotation_wrapper_prefix(prefix: &str) -> bool {
+    let trimmed = prefix.trim();
+    trimmed.is_empty()
+        || trimmed.rsplit_once(':').is_some_and(|(path, line)| {
+            path.ends_with(".md") && line.chars().all(|ch| ch.is_ascii_digit())
+        })
+}
+
+fn matching_annotation_paren(input: &str, start: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    for (rel, ch) in input[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start + rel);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Wire-format prefix the LLM rubric emits before each finding's JSON
@@ -716,12 +778,13 @@ impl Finding {
         raw_line: &str,
         scope: DispatchScope,
     ) -> Result<Self, FindingParseError> {
-        let finding: Finding =
+        let mut finding: Finding =
             serde_json::from_str(payload).map_err(|source| FindingParseError::Json {
                 line_number,
                 raw: raw_line.to_owned(),
                 message: source.to_string(),
             })?;
+        finding.target = finding.target.canonicalized();
 
         let expected_kind = finding.token.expected_target_kind();
         let actual_kind = finding.target.kind();
@@ -2060,6 +2123,40 @@ mod tests {
                 (error.clone(), terminal)
             }
             other => panic!("expected MalformedFinding bad walk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn annotation_target_wrapper_canonicalizes_to_inner_target() {
+        let output = concat!(
+            r#"LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["gate"],"target":{"kind":"Annotation","target_string":"specs/pre-commit.md:141 [check?](grep -nE 'test-ci' flake.nix)"},"evidence":"wrapped target"}"#,
+            "\nLOOM_CONCERN: {\"summary\":\"wrapped annotation\"}\n",
+        );
+        let findings = parse_walk_output(output, DispatchScope::Tree, &AlwaysValid)
+            .expect("wrapped annotation target parses");
+
+        match &findings[0].target {
+            FindingTarget::Annotation { target_string } => {
+                assert_eq!(target_string, "grep -nE 'test-ci' flake.nix");
+            }
+            other => panic!("expected Annotation target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn annotation_target_command_text_is_not_treated_as_wrapper() {
+        let output = concat!(
+            r#"LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["gate"],"target":{"kind":"Annotation","target_string":"bash -c 'printf [check](still-raw)'"},"evidence":"literal bracket text"}"#,
+            "\nLOOM_CONCERN: {\"summary\":\"literal annotation text\"}\n",
+        );
+        let findings = parse_walk_output(output, DispatchScope::Tree, &AlwaysValid)
+            .expect("literal annotation text parses");
+
+        match &findings[0].target {
+            FindingTarget::Annotation { target_string } => {
+                assert_eq!(target_string, "bash -c 'printf [check](still-raw)'");
+            }
+            other => panic!("expected Annotation target, got {other:?}"),
         }
     }
 

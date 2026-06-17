@@ -30,6 +30,7 @@ mod recovery;
 mod runner;
 mod verdict;
 mod verify_fail;
+mod workspace_validator;
 
 pub use context::{
     ReviewContextInputs, beads_summary, build_review_context, default_profile_for_spec,
@@ -49,7 +50,6 @@ pub use phase_verdict::{
     GateInputs, PhaseKind, PhaseVerdict, RecoveryCause, ReviewConcern, ReviewFlag, decide,
     decide_for_phase,
 };
-pub(crate) use production::WorkspaceReviewFindingValidator;
 pub use production::{AcceptAllFindingValidator, ProductionReviewController};
 pub use recovery::{
     RETRY_EXHAUSTED_CAUSE, RecoveryResolution, cause_to_previous_failure,
@@ -61,3 +61,4 @@ pub use verify_fail::{
     PREVIOUS_FAILURE_BUDGET, REVIEW_NOTES_BUDGET, STDERR_TAIL_LINES, VerifyFailure,
     format_previous_failure,
 };
+pub use workspace_validator::WorkspaceFindingValidator;

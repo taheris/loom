@@ -27,7 +27,7 @@ use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::CacheDb;
 use loom_gate::{
-    self, CacheRow, CargoMetadataScope, CommandResolver, DispatchOptions, DispatchPendingExecutor,
+    self, CacheRow, CargoMetadataScope, DispatchOptions, DispatchPendingExecutor,
     FsCommandResolver, InputResolver, RunnerSpec, StatusCache, TestScope, Tier, TierCwds, Verdict,
     filter_by_files, is_missing_binary_target, render_report,
 };
@@ -42,8 +42,8 @@ use loom_workflow::msg::{
     kind_of, resolve_target, spec_label_of,
 };
 use loom_workflow::review::{
-    AcceptAllFindingValidator, DispatchScope, FindingValidator, IterationCap,
-    ProductionReviewController, ReviewLane, WalkOutput, review_loop as run_review_loop,
+    AcceptAllFindingValidator, DispatchScope, IterationCap, ProductionReviewController, ReviewLane,
+    WalkOutput, WorkspaceFindingValidator, review_loop as run_review_loop,
 };
 use loom_workflow::todo::{
     ExitSignal, ProductionTodoController, TodoError, parse_exit_signal, run as run_todo_workflow,
@@ -2039,121 +2039,6 @@ fn mint_summary_exit_code(summary: &loom_workflow::mint::MintSummary) -> i32 {
     }
 }
 
-struct WorkspaceFindingValidator {
-    workspace: PathBuf,
-}
-
-impl WorkspaceFindingValidator {
-    fn new(workspace: &Path) -> Self {
-        Self {
-            workspace: workspace.to_path_buf(),
-        }
-    }
-
-    fn spec_path(&self, label: &SpecLabel) -> PathBuf {
-        self.workspace.join("specs").join(format!("{label}.md"))
-    }
-
-    fn selector_path(target: &str) -> &str {
-        let without_hash = target.split_once('#').map_or(target, |(path, _)| path);
-        without_hash
-            .split_once("::")
-            .map_or(without_hash, |(path, _)| path)
-    }
-
-    fn target_path_exists(&self, target: &str) -> bool {
-        let path = Self::selector_path(target.trim());
-        if path.is_empty() {
-            return false;
-        }
-        let candidate = Path::new(path);
-        if candidate.is_absolute() {
-            candidate.exists()
-        } else {
-            self.workspace.join(candidate).exists()
-        }
-    }
-}
-
-impl FindingValidator for WorkspaceFindingValidator {
-    fn spec_label_is_known(&self, label: &SpecLabel) -> bool {
-        self.spec_path(label).is_file()
-    }
-
-    fn criterion_anchor_resolves(&self, spec: &SpecLabel, anchor: &str) -> bool {
-        let Ok(body) = std::fs::read_to_string(self.spec_path(spec)) else {
-            return false;
-        };
-        body.lines()
-            .filter_map(markdown_heading_anchor)
-            .any(|candidate| candidate == anchor)
-    }
-
-    fn annotation_resolves(&self, target_string: &str) -> bool {
-        if self.target_path_exists(target_string) {
-            return true;
-        }
-        let Some(first_token) = target_string.split_whitespace().next() else {
-            return false;
-        };
-        FsCommandResolver::new(&self.workspace).resolves(first_token)
-    }
-
-    fn file_exists(&self, path: &str) -> bool {
-        self.target_path_exists(path)
-    }
-
-    fn invariant_resolves(&self, spec: &SpecLabel, section: &str, tag: &str) -> bool {
-        let Ok(body) = std::fs::read_to_string(self.spec_path(spec)) else {
-            return false;
-        };
-        let section_anchor = markdown_slug(section);
-        let tag_anchor = markdown_slug(tag);
-        let body_anchor = markdown_slug(&body);
-        body.lines()
-            .filter_map(markdown_heading_anchor)
-            .any(|candidate| candidate == section_anchor)
-            && invariant_tag_resolves(&body_anchor, &tag_anchor)
-    }
-}
-
-fn markdown_heading_anchor(line: &str) -> Option<String> {
-    let trimmed = line.trim_start();
-    let text = trimmed.strip_prefix('#')?.trim_start_matches('#').trim();
-    if text.is_empty() {
-        None
-    } else {
-        Some(markdown_slug(text))
-    }
-}
-
-fn invariant_tag_resolves(body_anchor: &str, tag_anchor: &str) -> bool {
-    !tag_anchor.is_empty()
-        && (body_anchor.contains(tag_anchor)
-            || tag_anchor
-                .split('-')
-                .filter(|part| !part.is_empty())
-                .all(|part| body_anchor.split('-').any(|body_part| body_part == part)))
-}
-
-fn markdown_slug(input: &str) -> String {
-    let mut out = String::new();
-    let mut previous_was_separator = true;
-    for c in input.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-            previous_was_separator = false;
-        } else if !previous_was_separator {
-            out.push('-');
-            previous_was_separator = true;
-        }
-    }
-    if out.ends_with('-') {
-        out.pop();
-    }
-    out
-}
-
 /// Walk-then-mint pipeline seam. `run_gate_mint` constructs the
 /// production walker and delegates here so the dispatch path is
 /// exercisable under a recording [`MintWalker`] in tests. Per
@@ -3959,6 +3844,7 @@ fn run_spec(workspace: &std::path::Path, label: String, deps: bool) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loom_workflow::review::FindingValidator;
     use std::collections::VecDeque;
     use std::ffi::OsString;
 
@@ -4562,6 +4448,37 @@ mod tests {
         assert!(!validator.criterion_anchor_resolves(&gate, "missing-anchor"));
         assert!(!validator.invariant_resolves(&gate, "Architecture", "workspace-service-missing"));
         assert!(!validator.file_exists("tests/missing.rs::live"));
+    }
+
+    #[test]
+    fn workspace_finding_validator_accepts_reviewer_target_aliases() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("specs")).expect("specs dir");
+        std::fs::write(
+            tmp.path().join("specs/beads.md"),
+            "# Beads\n\n## Success Criteria\n\n- Push failures fall back only after fast-forward rejection\n  [judge](tests/judges/beads.sh test_beadspush_pushes_before_pulls)\n- Pending verifier placeholder [check?](true)\n",
+        )
+        .expect("write spec");
+        let output = concat!(
+            r#"LOOM_FINDING: {"token":"spec-coherence-fail","route":"deferred","bonds":["beads"],"target":{"kind":"Criterion","spec":"beads","anchor":"test_beadspush_pushes_before_pulls"},"evidence":"criterion target uses attached judge function"}"#,
+            "\n",
+            r#"LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["beads"],"target":{"kind":"Annotation","target_string":"specs/beads.md:7 [check?](true)"},"evidence":"annotation target includes rendered source coordinate"}"#,
+            "\nLOOM_CONCERN: {\"summary\":\"target aliases\"}\n",
+        );
+        let findings = loom_workflow::review::parse_walk_output(
+            output,
+            DispatchScope::Tree,
+            &WorkspaceFindingValidator::new(tmp.path()),
+        )
+        .expect("reviewer target aliases should parse");
+
+        assert_eq!(findings.len(), 2);
+        match &findings[1].target {
+            loom_workflow::review::FindingTarget::Annotation { target_string } => {
+                assert_eq!(target_string, "true");
+            }
+            other => panic!("expected Annotation target, got {other:?}"),
+        }
     }
 
     #[tokio::test]
