@@ -44,7 +44,7 @@ first-class, supported path, no `--no-verify` required.
 | Stage      | Wall-time target          | Hooks |
 |------------|---------------------------|-------|
 | pre-commit | ~1s target; bounded by staged-file annotation selectivity | `repo: builtin` `trailing-whitespace`, `end-of-file-fixer` (excludes `.beads/config.yaml`), `check-merge-conflict`; `treefmt --fail-on-change`; `shell-reexec-explicit-interpreter`; `loom gate verify --files` (spec annotation lane only: affected `[check]` / `[test]` verifiers scoped to staged files per [gate.md § Verifier inputs](gate.md); `[system]` excluded) |
-| pre-push   | <10s fast + targeted slow  | `pre-push-checks skip-if-missing nix -- nix flake check` (fast derivations; no-ops in the bead container with no `nix`; marker-aware like the rest of the push path); `pre-push-checks cargo clippy --workspace --all-targets -- -D warnings` (file-gated on `\.rs$`); `pre-push-checks loom gate verify --diff <push-range>` (scope-derived project pre-commit lane + affected `[check]` / `[test]`; `[system]` excluded unless added as an explicit hook); `pre-push-checks skip-if-missing nix -- nix run .#test` (`container-smoke`; gated on `^crates/[^/]+/tests/properties\.rs$`; nested wrappers compose) |
+| pre-push   | <10s fast + targeted slow  | repo-local `bin/pre-push-checks` wrapping `skip-if-missing nix -- nix flake check` (fast derivations; no-ops in the bead container with no `nix`; marker-aware like the rest of the push path); `bin/pre-push-checks` wrapping `cargo clippy --workspace --all-targets -- -D warnings` (file-gated on `\.rs$`); `bin/pre-push-checks` wrapping `loom gate verify --diff <push-range>` (scope-derived project pre-commit lane + affected `[check]` / `[test]`; `[system]` excluded unless added as an explicit hook); `bin/pre-push-checks` wrapping `skip-if-missing nix -- nix run .#test` (`container-smoke`; gated on `^crates/[^/]+/tests/properties\.rs$`; nested wrappers compose) |
 
 There is no standalone `loom gate verify-marker` hook; the marker is
 consulted by the `pre-push-checks` wrapper per-hook (see *Marker
@@ -70,9 +70,10 @@ controls the shortcut.
 
 `nix flake check` is still budgeted as the fast derivation set. It runs
 unconditionally in CI — no CI marker shortcut, no file gating. On
-pre-push it is routed through `pre-push-checks`, so a driver-minted
-marker may skip it only if the marker's `GateSuccess` proves the hook
-ran and passed. Its derivation chain contains checks that don't require
+pre-push it is routed through repo-local `bin/pre-push-checks`, so a
+driver-minted marker may skip it only if the marker's `GateSuccess`
+proves the hook ran and passed. Its derivation chain contains checks
+that don't require
 compiling the workspace under test: the treefmt-check derivation plus a
 `loom gate check` derivation that runs `[check]`-tier verifiers + the
 integrity gate + the surface-conformance audit. The loom binary itself
@@ -190,21 +191,22 @@ once per push.
 prek's stash/restore window across overlapping commits, the
 `push-verified` SHA stamp (the pre-push shim writes it on overall
 pre-push success; the user's git-push re-run consumes it instantly
-to decouple from SSH latency), the `pre-push-checks` wrapper script
-(per-hook marker-aware short-circuit inside the prek chain), and the
-`skip-if-missing` wrapper (PATH-conditional exec for hooks whose
-binary may be absent in some contexts, notably `nix` inside the
-bead container) are all packaged in the `wrix.prekHooks`
-derivation and installed by `wrixLib.mkDevShell` when this
-project's `nix develop` is entered. **The same packaged hooks are
-available inside the bead container**: bead-container entrypoints from
-profile images that build on `wrixLib` put both wrappers on `PATH`, and
-Loom configures the bead clone's `core.hooksPath` before spawning the
-agent. The agent's `git commit` fires the prek pre-commit chain
-uniformly with the host; workers do not rely on `git push` for final
-self-verification. The downstream project does not maintain its own hook
-shims, lock script, wrappers, or installation logic. Loom consumes the
-canonical installed path:
+to decouple from SSH latency), and the `skip-if-missing` wrapper
+(PATH-conditional exec for hooks whose binary may be absent in some
+contexts, notably `nix` inside the bead container) are packaged in the
+`wrix.prekHooks` derivation and installed by `wrixLib.mkDevShell` when
+this project's `nix develop` is entered. The marker-aware
+`pre-push-checks` wrapper is repo-local at `bin/pre-push-checks`, and
+pre-push hook entries invoke it by that path rather than relying on
+ambient PATH. **The same packaged hooks are available inside the bead
+container**: bead-container entrypoints from profile images that build
+on `wrixLib` put the packaged wrappers on `PATH`, and Loom configures
+the bead clone's `core.hooksPath` before spawning the agent. The agent's
+`git commit` fires the prek pre-commit chain uniformly with the host;
+workers do not rely on `git push` for final self-verification. The
+downstream project maintains its repo-local marker wrapper, but does not
+maintain hook shims, lock scripts, or installation logic. Loom consumes
+the canonical installed path:
 `loom init` writes it into `.loom/integration`, and bead workspace
 creation writes or repairs it in each `.loom/beads/<id>` clone before
 an agent is spawned. The operator checkout's current git config is not
@@ -314,9 +316,10 @@ declared as such.
   targeted `loom gate verify --diff` without any `LOOM_VERIFY_TIERS`
   environment override
   [test?](pre_push_config_runs_clippy_and_verify_diff_without_loom_verify_tiers)
-- Each pre-push hook entry routes through the `pre-push-checks` wrapper
-  from `wrix.prekHooks` so marker coverage can be checked per hook
-  [check](grep -q 'pre-push-checks' .pre-commit-config.yaml)
+- Each pre-push hook entry routes through the repo-local
+  `bin/pre-push-checks` wrapper so marker coverage can be checked per
+  hook without relying on ambient PATH
+  [check](grep -q 'bin/pre-push-checks' .pre-commit-config.yaml)
 - Hooks whose entry runs `nix` are wrapped with
   `skip-if-missing nix --` so they no-op in the bead container
   (which has no `nix`) while running normally on the host devShell

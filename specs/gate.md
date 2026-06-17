@@ -1503,9 +1503,10 @@ stale, malformed, or unsupported marker. The diagnostic on stderr names
 the specific `MarkerError` variant for human debugging but is not the
 machine-readable contract.
 
-The pre-push chain consumes markers through the `pre-push-checks`
-wrapper (owned upstream by `wrix.prekHooks` — see
-[pre-commit.md § Marker integration](pre-commit.md#marker-integration)).
+The pre-push chain consumes markers through the repo-local
+`bin/pre-push-checks` wrapper, while the Git hook shim that invokes prek
+comes from `wrix.prekHooks` — see
+[pre-commit.md § Marker integration](pre-commit.md#marker-integration).
 The wrapper validates both fingerprint and hook coverage for the hook it
 wraps, short-circuits on covered success, and execs the underlying
 command on marker absence or mismatch. `loom gate verify-marker` is not
