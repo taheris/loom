@@ -746,7 +746,7 @@ impl Finding {
             });
         }
 
-        if finding.route == FindingRoute::Blocking && scope != DispatchScope::PerBead {
+        if finding.route == FindingRoute::Blocking && scope == DispatchScope::PushGate {
             return Err(FindingParseError::RouteScopeMismatch {
                 line_number,
                 route: finding.route.as_wire(),
@@ -2828,7 +2828,7 @@ mod tests {
     }
 
     #[test]
-    fn blocking_route_rejected_outside_per_bead_scope() {
+    fn blocking_route_rejected_at_push_gate_scope() {
         let gate = spec("gate");
         let finding = Finding {
             token: ConcernToken::SpecCoherenceFail,
@@ -2838,31 +2838,31 @@ mod tests {
                 spec: gate,
                 anchor: "verifier-honesty".to_owned(),
             },
-            evidence: "blocking only has a current bead at per-bead scope".to_owned(),
+            evidence: "tree mint treats blocking as ready remediation".to_owned(),
         };
         let payload = serde_json::to_string(&finding).expect("serialize");
         let output = format!(
             "preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_CONCERN: {{\"summary\":\"blocking route\"}}\n"
         );
 
-        for scope in [DispatchScope::Tree, DispatchScope::PushGate] {
-            match single_malformed_finding_error(&output, scope, &AlwaysValid).0 {
-                FindingParseError::RouteScopeMismatch {
-                    route,
-                    dispatch_scope,
-                    ..
-                } => {
-                    assert_eq!(route, "blocking");
-                    assert_eq!(dispatch_scope, scope.label());
-                }
-                other => panic!(
-                    "expected RouteScopeMismatch for blocking route at {} scope, got {other:?}",
-                    scope.label(),
-                ),
+        match single_malformed_finding_error(&output, DispatchScope::PushGate, &AlwaysValid).0 {
+            FindingParseError::RouteScopeMismatch {
+                route,
+                dispatch_scope,
+                ..
+            } => {
+                assert_eq!(route, "blocking");
+                assert_eq!(dispatch_scope, DispatchScope::PushGate.label());
             }
+            other => panic!(
+                "expected RouteScopeMismatch for blocking route at push-gate scope, got {other:?}",
+            ),
         }
-        parse_walk_output(&output, DispatchScope::PerBead, &AlwaysValid)
-            .expect("blocking route parses with current bead scope");
+        for scope in [DispatchScope::PerBead, DispatchScope::Tree] {
+            parse_walk_output(&output, scope, &AlwaysValid).unwrap_or_else(|e| {
+                panic!("blocking route must parse at {} scope: {e}", scope.label())
+            });
+        }
     }
 
     #[test]

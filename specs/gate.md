@@ -727,7 +727,9 @@ runs. Rubric-origin findings also carry the explicit `route` field
 from *Worker and per-bead integration checks*; the table below names
 the default route when no push-range classification applies. At tree
 scope, `route="deferred"` still materializes ready remediation because
-`loom gate mint --tree` is an explicit standing-safety-net act.
+`loom gate mint --tree` is an explicit standing-safety-net act; a stray
+`route="blocking"` from the tree rubric is accepted as the same ready
+remediation for compatibility.
 
 | Token | Source | Target variant | Default route |
 |---|---|---|---|
@@ -785,10 +787,14 @@ LOOM_FINDING: {"token":"<token>","route":"blocking|deferred|clarify","bonds":["<
   current push-range review and creates or reuses same-molecule
   remediation work, `deferred` merges into a `loom:deferred`
   remediation bead for molecule stabilization, and `clarify`
-  materializes a human-decision bead with options. Tree-scope
-  deterministic findings normalized by the driver do not come from LLM
-  wire output; the driver assigns `deferred` at molecule/push scope and
-  materializes ready remediation directly at tree scope.
+  materializes a human-decision bead with options. Tree-scope rubric
+  output should emit `deferred` for mechanical remediation and
+  `clarify` for human decisions; if it emits `blocking`, the parser
+  keeps the finding and tree mint materializes it as ready remediation.
+  Tree-scope deterministic findings normalized by the driver do not
+  come from LLM wire output; the driver assigns `deferred` at
+  molecule/push scope and materializes ready remediation directly at
+  tree scope.
 - **`bonds`** — array of spec labels the remediation should bond to.
   Always present, always at least one element. The driver picks the
   bonding lead from this array via *Multi-spec findings* below.
@@ -1223,8 +1229,8 @@ finding is absent from the whole tree.
 Molecule-final review and tree sweep produce the same typed Finding
 records, but they materialize differently depending on route and scope.
 `route="blocking"` is valid at molecule-final review for work that must
-block the push; at tree scope the walker emits `deferred` or `clarify`,
-and a `blocking` route is a malformed finding.
+block the push; at tree scope the canonical walker emits `deferred` or
+`clarify`, and a stray `blocking` route is treated as ready remediation.
 
 1. **Parse** each `LOOM_FINDING:` line into typed fields:
    `{ token, route, bonds, target, evidence }`. Per-line parse errors
@@ -1243,11 +1249,11 @@ and a `blocking` route is a malformed finding.
 
 3. **Route per finding.** `blocking` findings at molecule-final review
    refuse the push and create or reuse same-molecule remediation work;
-   at tree scope a `blocking` route is malformed because there is no
-   current push to block. `deferred` findings merge into a molecule-
-   local deferred bead at molecule scope, or ready remediation at tree
-   scope. `clarify` findings create or update one human-decision bead
-   per finding hash.
+   at tree scope `blocking` is a compatibility alias for ready
+   remediation because there is no current push to block. `deferred`
+   findings merge into a molecule-local deferred bead at molecule scope,
+   or ready remediation at tree scope. `clarify` findings create or
+   update one human-decision bead per finding hash.
 
 4. **Dedup within the molecule.** Query bd by `finding:<finding-hash>`
    across every non-closed child bead in the molecule, including

@@ -17,7 +17,9 @@ LOOM_FINDING: {"token":"<token>","route":"blocking|deferred|clarify","bonds":["<
 - **`route`** — workflow route for this finding: `blocking` retries
   the current bead, `deferred` records remediation outside the current
   bead's hot path, and `clarify` creates human-decision work with an
-  options block.
+  options block. At `--tree` scope, emit `deferred` for mechanical
+  remediation and `clarify` for options-block decisions; do not emit
+  `blocking` because there is no current bead to retry.
 - **`bonds`** — array of spec labels the fix-up should bond to.
   Always present, always at least one element. The driver picks the
   bonding lead from this array.
@@ -58,7 +60,7 @@ and `spec-conventions-violation` apply at `--tree` scope only (see
 Example lines:
 
 ```text
-LOOM_FINDING: {"token":"spec-coherence-fail","route":"blocking","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"The bead claims to verify live-path coverage but every annotation mocks the binary."}
+LOOM_FINDING: {"token":"spec-coherence-fail","route":"deferred","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"The bead claims to verify live-path coverage but every annotation mocks the binary."}
 LOOM_FINDING: {"token":"style-rule-violation","route":"deferred","bonds":["gate"],"target":{"kind":"StyleRule","rule_id":"RS-12","subject":"crates/loom-gate/src/finding.rs#Finding"},"evidence":"crates/loom-gate/src/finding.rs:42-58 holds a placeholder String that consumers must overwrite — RS-12 forbids placeholder fields on production types."}
 LOOM_FINDING: {"token":"concurrency-untested","route":"deferred","bonds":["harness"],"target":{"kind":"LockSite","file":"crates/loom-workflow/src/run/runner.rs","line":210},"evidence":"New Arc<Mutex<T>> introduced at runner.rs:210 has no concurrent-load test exercising contention."}
 ```
@@ -72,7 +74,9 @@ LOOM_FINDING: {"token":"concurrency-untested","route":"deferred","bonds":["harne
   mint invocation. This rule applies to every token whose canonical
   target is `Criterion` (`spec-coherence-fail`,
   `verifier-too-narrow`, `judge-flag`) and the `Invariant` target
-  (`invariant-clash`).
+  (`invariant-clash`). For `Invariant`, `section` must name an actual
+  heading in the spec, and `tag` must be a short slug made from words
+  that appear in that invariant's prose; do not invent labels.
 - **`StyleRule` targets MUST include a concrete `subject`** in
   addition to `rule_id`; a rule-only target is too broad for dedup or
   suppression, and a bare line number is not a stable subject.

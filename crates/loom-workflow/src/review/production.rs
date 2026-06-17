@@ -145,10 +145,11 @@ impl FindingValidator for WorkspaceReviewFindingValidator {
         };
         let section_anchor = markdown_slug(section);
         let tag_anchor = markdown_slug(tag);
+        let body_anchor = markdown_slug(&body);
         body.lines()
             .filter_map(markdown_heading_anchor)
             .any(|candidate| candidate == section_anchor)
-            && markdown_slug(&body).contains(&tag_anchor)
+            && invariant_tag_resolves(&body_anchor, &tag_anchor)
     }
 }
 
@@ -160,6 +161,15 @@ fn markdown_heading_anchor(line: &str) -> Option<String> {
     } else {
         Some(markdown_slug(text))
     }
+}
+
+fn invariant_tag_resolves(body_anchor: &str, tag_anchor: &str) -> bool {
+    !tag_anchor.is_empty()
+        && (body_anchor.contains(tag_anchor)
+            || tag_anchor
+                .split('-')
+                .filter(|part| !part.is_empty())
+                .all(|part| body_anchor.split('-').any(|body_part| body_part == part)))
 }
 
 fn push_refusal_note(existing: Option<&str>, cause: PushGateRefuseCause) -> String {

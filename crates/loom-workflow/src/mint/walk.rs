@@ -391,7 +391,7 @@ where
             .to_string_lossy()
             .into_owned();
         let ctx = ReviewContext {
-            pinned_context: String::new(),
+            pinned_context: tree_mint_scope_pin(),
             default_profile: default_profile_for_spec(&self.label),
             label: self.label.clone(),
             spec_path: spec_path_rel,
@@ -407,6 +407,16 @@ where
         };
         ctx.render().map_err(|e| WalkError::Rubric(e.to_string()))
     }
+}
+
+fn tree_mint_scope_pin() -> String {
+    concat!(
+        "Current dispatch scope: `--tree` (`loom gate mint --tree`). ",
+        "Emit mechanical findings with `route=\"deferred\"`; reserve ",
+        "`route=\"clarify\"` for options-block decisions; do not emit ",
+        "`route=\"blocking\"` at tree scope.\n",
+    )
+    .to_owned()
 }
 
 impl<S, F, R: CommandRunner> MintWalker for ProductionMintWalker<S, F, R>
@@ -784,6 +794,34 @@ mod tests {
 
     fn finding_line(payload: &str) -> String {
         format!("{LOOM_FINDING_PREFIX} {payload}")
+    }
+
+    #[tokio::test]
+    async fn mint_tree_walk_accepts_blocking_route_as_ready_remediation() {
+        let gate = spec("gate");
+        let finding = Finding {
+            token: ConcernToken::StyleRuleViolation,
+            route: FindingRoute::Blocking,
+            bonds: vec![gate],
+            target: FindingTarget::StyleRule {
+                rule_id: "CLI-1".to_owned(),
+                subject: "crates/wrix-beads/src/command/mod.rs::write_help".to_owned(),
+            },
+            evidence: "tree-scope rubric used blocking for mechanical remediation".to_owned(),
+        };
+        let mut walker = FakeWalker {
+            rubric_stdout: format!(
+                "{}\nLOOM_CONCERN: {{\"summary\":\"tree blocking\"}}\n",
+                finding_line(&serde_json::to_string(&finding).expect("finding json")),
+            ),
+            ..FakeWalker::default()
+        };
+
+        let findings = walk(&mut walker, &MintScope::Tree, &AlwaysValid)
+            .await
+            .expect("tree blocking route reaches mint as a finding");
+
+        assert_eq!(findings, vec![finding]);
     }
 
     /// Spec contract `specs/gate.md` § *Production walker wiring* (criterion
@@ -1374,15 +1412,20 @@ cwd = "verifier-cwd"
 
         let spawn_called = Arc::new(Mutex::new(0_usize));
         let captured_scope_dir = Arc::new(Mutex::new(None::<PathBuf>));
+        let captured_prompt = Arc::new(Mutex::new(String::new()));
         let spawn_called_inner = Arc::clone(&spawn_called);
         let captured_inner = Arc::clone(&captured_scope_dir);
+        let captured_prompt_inner = Arc::clone(&captured_prompt);
         let spawn = move |cfg: SpawnConfig| {
             let called = Arc::clone(&spawn_called_inner);
             let captured = Arc::clone(&captured_inner);
+            let prompt = Arc::clone(&captured_prompt_inner);
             let scratch = cfg.scratch_dir.clone();
+            let initial_prompt = cfg.initial_prompt.clone();
             async move {
                 *called.lock().expect("not poisoned") += 1;
                 *captured.lock().expect("not poisoned") = Some(scratch);
+                *prompt.lock().expect("not poisoned") = initial_prompt;
                 Ok((
                     SessionOutcome {
                         exit_code: 0,
@@ -1416,6 +1459,13 @@ cwd = "verifier-cwd"
         assert!(
             captured_scope_dir.lock().expect("not poisoned").is_some(),
             "spawn closure must receive a scratch_dir from ScratchSession::open",
+        );
+        let prompt = captured_prompt.lock().expect("not poisoned").clone();
+        assert!(
+            prompt.contains("Current dispatch scope: `--tree`")
+                && prompt.contains("route=\"deferred\"")
+                && prompt.contains("do not emit `route=\"blocking\"`"),
+            "tree mint prompt must pin route selection away from blocking: {prompt}",
         );
         let unresolved: Vec<&Finding> = findings
             .iter()

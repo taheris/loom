@@ -2109,10 +2109,11 @@ impl FindingValidator for WorkspaceFindingValidator {
         };
         let section_anchor = markdown_slug(section);
         let tag_anchor = markdown_slug(tag);
+        let body_anchor = markdown_slug(&body);
         body.lines()
             .filter_map(markdown_heading_anchor)
             .any(|candidate| candidate == section_anchor)
-            && markdown_slug(&body).contains(&tag_anchor)
+            && invariant_tag_resolves(&body_anchor, &tag_anchor)
     }
 }
 
@@ -2124,6 +2125,15 @@ fn markdown_heading_anchor(line: &str) -> Option<String> {
     } else {
         Some(markdown_slug(text))
     }
+}
+
+fn invariant_tag_resolves(body_anchor: &str, tag_anchor: &str) -> bool {
+    !tag_anchor.is_empty()
+        && (body_anchor.contains(tag_anchor)
+            || tag_anchor
+                .split('-')
+                .filter(|part| !part.is_empty())
+                .all(|part| body_anchor.split('-').any(|body_part| body_part == part)))
 }
 
 fn markdown_slug(input: &str) -> String {
@@ -4535,7 +4545,7 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("tests")).expect("tests dir");
         std::fs::write(
             tmp.path().join("specs/gate.md"),
-            "# Gate\n\n### Findings and Minting\n\n## Out of Scope\n\nloom-runs-podman is not part of this spec.\n",
+            "# Gate\n\n### Findings and Minting\n\n## Architecture\n\nService identity derives from sha256(workspace path).\n\n## Out of Scope\n\nloom-runs-podman is not part of this spec.\n",
         )
         .expect("write spec");
         std::fs::write(tmp.path().join("tests/gate.rs"), "#[test] fn live() {}\n")
@@ -4547,8 +4557,10 @@ mod tests {
         assert!(validator.criterion_anchor_resolves(&gate, "findings-and-minting"));
         assert!(validator.file_exists("tests/gate.rs::live"));
         assert!(validator.invariant_resolves(&gate, "Out of Scope", "loom-runs-podman"));
+        assert!(validator.invariant_resolves(&gate, "Architecture", "workspace-service-identity"));
         assert!(!validator.spec_label_is_known(&SpecLabel::new("harness")));
         assert!(!validator.criterion_anchor_resolves(&gate, "missing-anchor"));
+        assert!(!validator.invariant_resolves(&gate, "Architecture", "workspace-service-missing"));
         assert!(!validator.file_exists("tests/missing.rs::live"));
     }
 
