@@ -34,6 +34,6 @@ pub use hooks::{
 // `loom_driver::git::GitOid` callers stay unchanged.
 pub use loom_protocol::oid::{GitOid, ParseGitOidError};
 pub use signing::{
-    WRIX_DEPLOY_KEY_ENV, WRIX_SIGNING_KEY_ENV, enable_rerere, resolve_deploy_key,
-    resolve_signing_key, write_signing_config,
+    WRIX_DEPLOY_KEY_ENV, WRIX_SIGNING_KEY_ENV, enable_rerere, reconcile_signing_config,
+    resolve_deploy_key, resolve_signing_key, write_signing_config,
 };

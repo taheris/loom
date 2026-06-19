@@ -82,16 +82,16 @@ pub struct GitClient {
     /// Defaults to [`GIT_HOOK_TIMEOUT`]; production overrides it from
     /// `[loom] git_hook_timeout_secs` via [`Self::with_hook_timeout`].
     hook_timeout: Duration,
-    /// Test-only seam: when `Some`, [`Self::create_worktree`] writes the
-    /// signing block using this key instead of resolving it from the env +
-    /// deploy-key fallback. Production resolves per
-    /// [`super::signing::resolve_signing_key`]; the seam exists because
-    /// `std::env::set_var` is unsafe under edition 2024 and the workspace
-    /// forbids `unsafe_code`, so tests cannot drive `$WRIX_SIGNING_KEY`.
-    /// Gated behind `cfg(test)` / the `test-support` feature so it is absent
-    /// from production builds (RS-14).
+    /// Test-only seam: when `Some`, loom-workspace signing refresh uses
+    /// this override instead of resolving from the env + deploy-key fallback.
+    /// `Some(key)` forces a key; `None` forces the no-key path. Production
+    /// resolves per [`super::signing::resolve_signing_key`]; the seam exists
+    /// because `std::env::set_var` is unsafe under edition 2024 and the
+    /// workspace forbids `unsafe_code`, so tests cannot drive
+    /// `$WRIX_SIGNING_KEY`. Gated behind `cfg(test)` / the `test-support`
+    /// feature so it is absent from production builds (RS-14).
     #[cfg(any(test, feature = "test-support"))]
-    signing_key_override: Option<PathBuf>,
+    signing_key_override: Option<Option<PathBuf>>,
     #[cfg(any(test, feature = "test-support"))]
     prek_hooks_path_override: Option<PathBuf>,
 }
@@ -161,13 +161,19 @@ impl GitClient {
         self
     }
 
-    /// Test-only: force [`Self::create_worktree`] to write the signing
-    /// block with `key` instead of resolving it from the environment.
+    /// Test-only: force loom-workspace signing refresh and launcher key
+    /// export to use `key` instead of resolving it from the environment.
     /// Gated behind `cfg(test)` / the `test-support` feature (RS-14).
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn set_signing_key_override(&mut self, key: PathBuf) {
-        self.signing_key_override = Some(key);
+        self.signing_key_override = Some(Some(key));
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn disable_signing_key_resolution(&mut self) {
+        self.signing_key_override = Some(None);
     }
 
     /// Test-only: force [`Self::create_worktree`] / push-gate hook
@@ -179,19 +185,19 @@ impl GitClient {
         self.prek_hooks_path_override = Some(path);
     }
 
-    /// The signing-key override set via [`Self::set_signing_key_override`],
-    /// or `None`. Production builds (where the seam is compiled out) always
-    /// return `None`, so the signing key resolves from the environment +
-    /// deploy-key fallback.
+    /// The signing-key override set via [`Self::set_signing_key_override`]
+    /// or [`Self::disable_signing_key_resolution`]. Production builds (where
+    /// the seam is compiled out) always return `None`, so the signing key
+    /// resolves from the environment + deploy-key fallback.
     #[cfg(any(test, feature = "test-support"))]
-    fn signing_override(&self) -> Option<PathBuf> {
+    fn signing_override(&self) -> Option<Option<PathBuf>> {
         self.signing_key_override.clone()
     }
 
     /// See the `cfg(test)` / `test-support` variant — production carries no
     /// override seam, so this always resolves the key from the environment.
     #[cfg(not(any(test, feature = "test-support")))]
-    fn signing_override(&self) -> Option<PathBuf> {
+    fn signing_override(&self) -> Option<Option<PathBuf>> {
         None
     }
 
@@ -222,6 +228,18 @@ impl GitClient {
             return Ok(test_hooks);
         }
         super::hooks::resolve_prek_hooks_path_for_workspace(&self.workdir)
+    }
+
+    fn resolve_signing_key(&self) -> Result<Option<PathBuf>, GitError> {
+        match self.signing_override() {
+            Some(key) => Ok(key),
+            None => super::signing::resolve_signing_key(&self.loom_workspace()),
+        }
+    }
+
+    fn refresh_loom_signing_config(&self) -> Result<(), GitError> {
+        let signing_key = self.resolve_signing_key()?;
+        super::signing::reconcile_signing_config(&self.loom_workspace(), signing_key.as_deref())
     }
 
     /// Name of the integration branch this client targets (the branch
@@ -461,8 +479,8 @@ impl GitClient {
     /// Returns `(env var, host path)` pairs — `WRIX_DEPLOY_KEY` and
     /// `WRIX_SIGNING_KEY` — for each key that resolves. Resolution runs
     /// against the loom workspace (whose `origin` is GitHub), matching
-    /// [`Self::create_worktree`]'s signing-key resolution, and honors the
-    /// signing-key override test seam (when built with `test-support`). A key
+    /// loom-workspace signing refresh, and honors the signing-key override
+    /// test seam (when built with `test-support`). A key
     /// that does not resolve is omitted rather than erroring: `wrix spawn`
     /// fails loudly on its own when a key it needs is absent, and the
     /// "wrix isn't set up on this host" path must stay non-fatal here.
@@ -475,10 +493,7 @@ impl GitClient {
     pub fn launcher_key_env(&self) -> Result<Vec<(String, String)>, GitError> {
         let loom_workspace = self.loom_workspace();
         let mut env = Vec::new();
-        let signing = match self.signing_override() {
-            Some(key) => Some(key),
-            None => super::signing::resolve_signing_key(&loom_workspace)?,
-        };
+        let signing = self.resolve_signing_key()?;
         if let Some(key) = signing {
             env.push((
                 super::signing::WRIX_SIGNING_KEY_ENV.to_string(),
@@ -769,6 +784,7 @@ impl GitClient {
 
     pub async fn prepare_actual_push_range(&self) -> Result<ActualPushRange, GitError> {
         self.validate_loom_hooks_path_configured().await?;
+        self.refresh_loom_signing_config()?;
         let workdir = self.loom_workspace();
         let integration_branch = self.integration_branch.as_str();
         let remote_ref = format!("origin/{integration_branch}");
@@ -1170,6 +1186,7 @@ impl GitClient {
     /// restore the integration branch, and surface
     /// [`RebaseOutcome::Conflict`].
     pub async fn rebase_onto_integration(&self, branch: &str) -> Result<RebaseOutcome, GitError> {
+        self.refresh_loom_signing_config()?;
         let workdir = self.loom_workspace();
         let integration_branch = self.integration_branch.as_str();
 
@@ -1414,9 +1431,9 @@ impl GitClient {
 
     /// Path to the loom-workspace allowed_signers file the per-bead
     /// integration step verifies commits against. Written by `loom init`
-    /// / `create_worktree` when a wrix signing key resolves (see
-    /// `specs/harness.md` § Commit signing). Absent when no key is
-    /// configured.
+    /// and refreshed before signing-sensitive git operations when a wrix
+    /// signing key resolves (see `specs/harness.md` § Commit signing).
+    /// Absent when no key is configured.
     fn allowed_signers_path(&self) -> PathBuf {
         self.loom_workspace()
             .join(".git")
@@ -1425,8 +1442,8 @@ impl GitClient {
 
     /// Whether driver-side signature verification is active in the loom
     /// workspace. True only when the allowed_signers file exists — i.e. a
-    /// wrix signing key resolved at `loom init` / `create_worktree`
-    /// time. When false the per-bead integration step skips both
+    /// wrix signing key resolved at `loom init` or the latest signing
+    /// refresh. When false the per-bead integration step skips both
     /// verify-signature passes (the spec-sanctioned "no key" path —
     /// `specs/harness.md` § Verdict Gate, phase 2).
     pub async fn signing_verification_enabled(&self) -> Result<bool, GitError> {
@@ -1450,6 +1467,7 @@ impl GitClient {
     /// `git verify-commit` rejects, carrying the offending sha + stderr so
     /// the caller can route to `signature-verification-failed`.
     pub async fn verify_commit_range(&self, range: &str) -> Result<SignatureCheck, GitError> {
+        self.refresh_loom_signing_config()?;
         if !self.signing_verification_enabled().await? {
             return Ok(SignatureCheck::Skipped);
         }

@@ -1137,7 +1137,8 @@ async fn driver_fetches_bead_branch_from_workspace_path() -> Result<()> {
 async fn signature_verification_skipped_when_no_key() -> Result<()> {
     let repo = init_repo()?;
     let loom = loom_path(repo.path());
-    let client = GitClient::open(repo.path())?;
+    let mut client = GitClient::open(repo.path())?;
+    client.disable_signing_key_resolution();
     let label = SpecLabel::new("harness");
     let bead = BeadId::new("lm-nosig.1")?;
     let created = client.create_worktree(&label, &bead).await?;
@@ -1206,7 +1207,8 @@ async fn signature_verification_runs_when_key_present() -> Result<()> {
     // and format are passed explicitly here — standing in for the wrix
     // `git-ssh-setup.sh` global config that signs the worker's commits
     // in-container.
-    let client = GitClient::open(repo.path())?;
+    let mut client = GitClient::open(repo.path())?;
+    client.set_signing_key_override(key.clone());
     let label = SpecLabel::new("harness");
     let bead = BeadId::new("lm-sig.1")?;
     let created = client.create_worktree(&label, &bead).await?;
@@ -1249,6 +1251,137 @@ async fn signature_verification_runs_when_key_present() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn verify_commit_range_refreshes_stale_loom_signing_config() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+    let key = gen_signing_key(repo.path())?;
+    write_signing_config(&loom, &key)?;
+    let signers_file = loom.join(".git/loom-allowed-signers");
+    let signers = std::fs::read_to_string(&signers_file)?;
+    let identity = signers
+        .split_whitespace()
+        .next()
+        .context("allowed_signers principal")?
+        .to_string();
+
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("feature.txt"), "feature side\n")?;
+    git(&loom, &["add", "feature.txt"])?;
+    let email_arg = format!("user.email={identity}");
+    let signingkey_arg = format!("user.signingkey={}", key.to_string_lossy());
+    git(
+        &loom,
+        &[
+            "-c",
+            email_arg.as_str(),
+            "-c",
+            "user.name=loom",
+            "-c",
+            "gpg.format=ssh",
+            "-c",
+            signingkey_arg.as_str(),
+            "commit",
+            "-S",
+            "-q",
+            "-m",
+            "signed feature commit",
+        ],
+    )?;
+
+    std::fs::remove_file(&signers_file)?;
+    let stale_key = repo.path().join("missing-signing-key");
+    let stale_signers = repo.path().join("missing-allowed-signers");
+    git(
+        &loom,
+        &[
+            "config",
+            "user.signingkey",
+            stale_key.to_string_lossy().as_ref(),
+        ],
+    )?;
+    git(
+        &loom,
+        &[
+            "config",
+            "gpg.ssh.allowedSignersFile",
+            stale_signers.to_string_lossy().as_ref(),
+        ],
+    )?;
+
+    let mut client = GitClient::open(repo.path())?;
+    client.set_signing_key_override(key.clone());
+    assert_eq!(
+        client.verify_commit_range("main..feature").await?,
+        SignatureCheck::Verified,
+        "verify must recreate allowed_signers before deciding whether to skip",
+    );
+    assert!(signers_file.exists(), "allowed_signers must be refreshed");
+    assert_eq!(
+        git_config_get(&loom, "user.signingkey")?,
+        key.to_string_lossy().as_ref(),
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rebase_refreshes_stale_loom_signing_config() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+    let key = gen_signing_key(repo.path())?;
+
+    git(&loom, &["checkout", "-q", "-b", "feature"])?;
+    std::fs::write(loom.join("feature.txt"), "feature side\n")?;
+    git(&loom, &["add", "feature.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "feature commit"])?;
+
+    git(&loom, &["checkout", "-q", "main"])?;
+    std::fs::write(loom.join("main.txt"), "main side\n")?;
+    git(&loom, &["add", "main.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "main commit"])?;
+
+    let stale_key = repo.path().join("missing-signing-key");
+    let stale_signers = repo.path().join("missing-allowed-signers");
+    git(&loom, &["config", "gpg.format", "ssh"])?;
+    git(
+        &loom,
+        &[
+            "config",
+            "user.signingkey",
+            stale_key.to_string_lossy().as_ref(),
+        ],
+    )?;
+    git(&loom, &["config", "commit.gpgsign", "true"])?;
+    git(
+        &loom,
+        &[
+            "config",
+            "gpg.ssh.allowedSignersFile",
+            stale_signers.to_string_lossy().as_ref(),
+        ],
+    )?;
+
+    let mut client = GitClient::open(repo.path())?;
+    client.set_signing_key_override(key.clone());
+    assert!(
+        matches!(
+            client.rebase_onto_integration("feature").await?,
+            RebaseOutcome::Rebased,
+        ),
+        "rebase must repair stale signing config and complete",
+    );
+
+    assert_eq!(
+        git_config_get(&loom, "user.signingkey")?,
+        key.to_string_lossy().as_ref(),
+    );
+    assert!(
+        commit_has_gpgsig(&loom, "feature")?,
+        "the rebased commit must be signed after config refresh",
+    );
+    Ok(())
+}
+
 /// Spec contract `[test?]` annotation (`specs/harness.md` § Success Criteria
 /// · Commit signing): the driver-side rebase in the loom workspace produces
 /// signed commits — the rewritten commit carries a `gpgsig` header even
@@ -1282,7 +1415,8 @@ async fn driver_rebase_signs_with_wrix_key() -> Result<()> {
     // (commit.gpgsign=true + user.signingkey) is what makes the rebase sign.
     write_signing_config(&loom, &key)?;
 
-    let client = GitClient::open(repo.path())?;
+    let mut client = GitClient::open(repo.path())?;
+    client.set_signing_key_override(key.clone());
     let outcome = client.rebase_onto_integration("feature").await?;
     assert!(
         matches!(outcome, RebaseOutcome::Rebased),
@@ -1320,7 +1454,8 @@ async fn rebased_commits_verify_via_derived_allowed_signers() -> Result<()> {
 
     write_signing_config(&loom, &key)?;
 
-    let client = GitClient::open(repo.path())?;
+    let mut client = GitClient::open(repo.path())?;
+    client.set_signing_key_override(key.clone());
     assert!(
         matches!(
             client.rebase_onto_integration("feature").await?,

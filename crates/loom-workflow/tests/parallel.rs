@@ -683,12 +683,10 @@ async fn merge_back_preserves_input_slot_order() -> Result<()> {
 ///   `merge_branch` with zero verification, so an unsigned/tampered commit
 ///   landed on every host where wrix signing is configured.)
 /// - **Pass 2 (driver-side):** a worker commit signed by a TRUSTED key
-///   clears pass 1, but the loom workspace re-signs the rebased commit with
-///   an UNTRUSTED key (loom's own signing setup broken), so `git
-///   verify-commit` rejects the rewritten commit AFTER the rebase but
-///   BEFORE the ff-merge. The bead routes to `loom:blocked` carrying
-///   `signature-verification-failed (driver-side)` and the integration
-///   branch is left unmoved.
+///   clears pass 1, and a stale local loom signing key is refreshed before
+///   the driver-side rebase/verification path. The rewritten commit is
+///   signed with the resolved trusted key, pass 2 verifies it, and the
+///   integration branch advances.
 #[tokio::test]
 async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
     let repo = init_repo()?;
@@ -696,8 +694,9 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
         // No `ssh-keygen` on PATH — the signing path cannot be exercised.
         return Ok(());
     };
-    let client = GitClient::open(repo.path())?;
+    let mut client = GitClient::open(repo.path())?;
     let loom = loom_path(repo.path());
+    client.set_signing_key_override(key.clone());
 
     // Enable verification in the loom workspace: write the allowed_signers
     // file + ssh-verify config the way `loom init` does when a key resolves.
@@ -755,9 +754,10 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
     );
 
     // ---- Pass 2 (driver-side) ----
-    // A worker commit signed by a TRUSTED key clears pass 1, but the loom
-    // workspace re-signs the rebased commit with an UNTRUSTED key, so pass 2
-    // rejects what pass 1 accepted and routes to `loom:blocked (driver-side)`.
+    // A worker commit signed by a TRUSTED key clears pass 1. The loom
+    // workspace starts with a stale/untrusted local signing key, but the
+    // driver refreshes that config before rebasing and before pass 2, so the
+    // rewritten commit verifies and merges.
 
     // `verify-commit` matches the committer email against the allowed_signers
     // principal — derive it so the signed worker commit lines up at pass 1.
@@ -767,9 +767,9 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
         .next()
         .context("allowed_signers principal")?
         .to_string();
-    // A second key the loom workspace re-signs with at rebase time but that
-    // allowed_signers does NOT trust — models a broken driver-side signing
-    // setup so pass 2 rejects the rewritten commit.
+    // A second key left in the loom workspace config models the stale
+    // host-specific signing setup that the merge path must repair before
+    // driver-side rebase/signature verification.
     let untrusted_key = repo.path().join("untrusted-key");
     let kg = Command::new("ssh-keygen")
         .args(["-t", "ed25519", "-N", "", "-q", "-C", "", "-f"])
@@ -808,12 +808,16 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
             "-m",
             "signed worker work",
         ])
+        .env("GIT_AUTHOR_EMAIL", &identity)
+        .env("GIT_COMMITTER_EMAIL", &identity)
+        .env("GIT_AUTHOR_NAME", "loom")
+        .env("GIT_COMMITTER_NAME", "loom")
         .status()?;
     anyhow::ensure!(status.success(), "signed worker commit exited {status}");
 
-    // Point the loom workspace at the UNTRUSTED key so the driver-side rebase
-    // re-signs the rewritten commit with a key allowed_signers rejects
-    // (commit.gpgsign=true is already set by write_signing_config).
+    // Point the loom workspace at the UNTRUSTED key. The client override
+    // models the key that should resolve from wrix, so the merge path must
+    // repair this stale local config before signing the rebased commit.
     git(
         &loom,
         &[
@@ -841,36 +845,27 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
 
     assert_eq!(outcome2.results.len(), 1);
     let r2 = &outcome2.results[0];
-    let BatchResult::AgentBlocked {
-        bead: bid2,
-        reason: reason2,
-    } = r2
-    else {
-        panic!("driver-side pass-2 rejection must route to AgentBlocked, got {r2:?}");
+    let BatchResult::Merged { bead: bid2 } = r2 else {
+        panic!("stale driver signing config must be repaired and merged, got {r2:?}");
     };
     assert_eq!(*bid2, bead2.id);
-    assert!(
-        reason2.contains("signature-verification-failed (driver-side)"),
-        "blocked reason must name the driver-side pass-2 failure: {reason2}",
-    );
-    // Pass 2 fails BEFORE the ff-merge, so the integration branch never moved
-    // past its own advance commit and the worker change never landed.
-    assert_eq!(
+    assert_ne!(
         git_capture(&loom, &["rev-parse", "main"])?.trim(),
         main_tip,
-        "a driver-side pass-2 rejection must leave the integration branch unmoved",
+        "a repaired driver signing config must allow the integration branch to advance",
     );
     assert!(
-        !loom.join("worker.txt").exists(),
-        "the rejected worker change must NOT reach the integration branch",
+        loom.join("worker.txt").exists(),
+        "the verified worker change must reach the integration branch",
     );
-    // The transient `loom/<id>` ref was deleted on the block path — only
-    // possible after checking out the integration branch, since the
+    let configured_key = git_capture(&loom, &["config", "user.signingkey"])?;
+    assert_eq!(configured_key.trim(), key.to_string_lossy().as_ref());
+    // The transient `loom/<id>` ref was deleted on the merge path after the
     // successful rebase left the workspace on the bead branch.
     let leaked2 = git_capture(&loom, &["branch", "--list", &slot2.worktree.branch])?;
     assert!(
         leaked2.trim().is_empty(),
-        "transient ref {} must be deleted on signature-block (got: {leaked2:?})",
+        "transient ref {} must be deleted after merge (got: {leaked2:?})",
         slot2.worktree.branch,
     );
     Ok(())

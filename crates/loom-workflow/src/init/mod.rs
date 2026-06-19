@@ -22,8 +22,8 @@ use loom_driver::bd::{BdClient, CommandRunner, ListOpts, UpdateOpts};
 use loom_driver::config::LoomConfig;
 use loom_driver::git::{
     clone_loom_workspace, enable_rerere, fast_forward_loom_workspace_to_origin, read_origin_url,
-    resolve_prek_hooks_path_for_workspace, resolve_signing_key, write_hooks_config,
-    write_signing_config,
+    reconcile_signing_config, resolve_prek_hooks_path_for_workspace, resolve_signing_key,
+    write_hooks_config,
 };
 use loom_driver::identifier::MoleculeId;
 use loom_driver::lock::LockManager;
@@ -172,17 +172,12 @@ fn materialize_integration_workspace(
         // dispatch).
         let config = LoomConfig::load(config_path)?;
         fast_forward_loom_workspace_to_origin(&dest, &config.loom.integration_branch)?;
-        // Re-init must refresh the signing + rerere block idempotently: a
-        // workspace materialized before signing landed (or a host where the
-        // key was provisioned after the first init) would otherwise never be
-        // upgraded, leaving host-side loom-workspace commits prompting or
-        // falling through to the global gitconfig. Both writes are
-        // idempotent, so reconciling them on every init is safe (per
-        // `specs/harness.md` § Bead Dispatch — signing gitconfig).
+        // Re-init must refresh signing + rerere idempotently: stale host
+        // paths must not shadow the current wrix/global gitconfig, and a
+        // key provisioned after first init must upgrade the workspace.
         enable_rerere(&dest)?;
-        if let Some(key) = resolve(&dest)? {
-            write_signing_config(&dest, &key)?;
-        }
+        let signing_key = resolve(&dest)?;
+        reconcile_signing_config(&dest, signing_key.as_deref())?;
         let hooks_path = resolve_hooks(workspace)?;
         write_hooks_config(&dest, &hooks_path)?;
         return Ok(Some(MaterializedIntegration {
@@ -197,13 +192,11 @@ fn materialize_integration_workspace(
     clone_loom_workspace(&origin_url, &dest, &config.loom.integration_branch)?;
 
     // Enable rerere unconditionally so the driver-side rebase replays
-    // recorded conflict resolutions; write the signing block when the
-    // wrix signing key resolves (otherwise the operator's global
-    // gitconfig governs). Both target the loom workspace itself.
+    // recorded conflict resolutions; sync the signing block to the current
+    // wrix key, or remove it so the operator's global gitconfig governs.
     enable_rerere(&dest)?;
-    if let Some(key) = resolve(&dest)? {
-        write_signing_config(&dest, &key)?;
-    }
+    let signing_key = resolve(&dest)?;
+    reconcile_signing_config(&dest, signing_key.as_deref())?;
     let hooks_path = resolve_hooks(workspace)?;
     write_hooks_config(&dest, &hooks_path)?;
 
@@ -656,6 +649,50 @@ mod tests {
             config.contains("gpgsign = true"),
             "commit.gpgsign: {config}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn loom_init_reinit_removes_stale_signing_gitconfig_without_key() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let workspace = temp_child_workspace(tmp.path(), "loom-init-clear-signing-ws");
+        loom_driver::git::init_test_repo(&workspace)?;
+        let key = gen_ssh_key(tmp.path());
+        let hooks = fake_prek_hooks(tmp.path())?;
+
+        let first = run_with_resolvers(
+            &workspace,
+            InitOpts::default(),
+            &[],
+            |_dir| Ok(Some(key.clone())),
+            |_workspace| Ok(hooks.clone()),
+        )?
+        .integration_workspace
+        .ok_or_else(|| anyhow!("first init must materialize integration workspace"))?;
+        let signers = first.path.join(".git/loom-allowed-signers");
+        assert!(signers.exists(), "precondition: signing block written");
+
+        let second = run_with_resolvers(
+            &workspace,
+            InitOpts::default(),
+            &[],
+            |_dir| Ok(None),
+            |_workspace| Ok(hooks.clone()),
+        )?
+        .integration_workspace
+        .ok_or_else(|| anyhow!("second init must report the existing workspace"))?;
+        assert!(!second.created, "second init must NOT re-clone");
+
+        let config = std::fs::read_to_string(second.path.join(".git/config"))?;
+        assert!(
+            !config.contains("signingkey"),
+            "stale signing key must be removed when no key resolves: {config}",
+        );
+        assert!(
+            !config.contains("gpgsign"),
+            "stale gpgsign must be removed when no key resolves: {config}",
+        );
+        assert!(!signers.exists(), "stale allowed_signers must be removed");
         Ok(())
     }
 

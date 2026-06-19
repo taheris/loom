@@ -13,6 +13,7 @@
 //! `git_client_encapsulation` rule stays satisfied.
 
 use std::ffi::OsString;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 
@@ -26,6 +27,7 @@ const DEFAULT_SIGNING_IDENTITY: &str = "sandbox@wrix.dev";
 /// Basename of the derived allowed_signers file under a workspace's
 /// `.git/` directory.
 const ALLOWED_SIGNERS_FILE: &str = "loom-allowed-signers";
+const GIT_CONFIG_KEY_NOT_FOUND_STATUS: i32 = 5;
 
 /// Launcher env var naming the host deploy-key path. Loom sets it on the
 /// `wrix spawn` child process so the wrapper mounts the key into the bead
@@ -193,6 +195,19 @@ fn resolve_hostname() -> Option<String> {
     None
 }
 
+/// Sync the loom workspace signing block to the currently resolved key.
+/// Passing `None` removes Loom's local signing keys so global gitconfig
+/// governs again.
+pub fn reconcile_signing_config(
+    target_dir: &Path,
+    signing_key: Option<&Path>,
+) -> Result<(), GitError> {
+    match signing_key {
+        Some(key) => write_signing_config(target_dir, key),
+        None => clear_signing_config(target_dir),
+    }
+}
+
 /// Write the signing block into `target_dir`'s local `.git/config` and
 /// derive the allowed_signers file at `target_dir/.git/loom-allowed-signers`.
 ///
@@ -200,17 +215,6 @@ fn resolve_hostname() -> Option<String> {
 /// `gpg.ssh.allowedSignersFile=<target_dir>/.git/loom-allowed-signers`, and
 /// `commit.gpgsign=true`. Local config beats the operator's `~/.gitconfig`,
 /// so this is the sole authority on signing inside the workspace.
-///
-/// `target_dir` must be the host-only loom workspace, NOT a bead clone:
-/// `user.signingkey` holds the HOST key path, which does not exist inside the
-/// wrix bead container, and a local block in a container-mounted clone would
-/// shadow wrix's `git-ssh-setup.sh` global config and break the worker's
-/// in-container `git commit` (`specs/harness.md` § Commit signing).
-///
-/// The allowed_signers file is derived with `ssh-keygen -y -f <signing_key>`
-/// and prefixed with the wrix signing identity (`$GIT_AUTHOR_EMAIL`, or
-/// `sandbox@wrix.dev`). It lives under `.git/` so workspace removal cleans
-/// it up automatically.
 pub fn write_signing_config(target_dir: &Path, signing_key: &Path) -> Result<(), GitError> {
     let allowed_signers_file = target_dir.join(".git").join(ALLOWED_SIGNERS_FILE);
     // `.ok()` discards VarError (unset or non-UTF-8): either case means the
@@ -236,6 +240,23 @@ pub fn write_signing_config(target_dir: &Path, signing_key: &Path) -> Result<(),
     )?;
     sync_git_config(target_dir, "commit.gpgsign", "true")?;
     Ok(())
+}
+
+fn clear_signing_config(target_dir: &Path) -> Result<(), GitError> {
+    for key in [
+        "gpg.format",
+        "user.signingkey",
+        "gpg.ssh.allowedSignersFile",
+        "commit.gpgsign",
+    ] {
+        unset_git_config(target_dir, key)?;
+    }
+    let allowed_signers_file = target_dir.join(".git").join(ALLOWED_SIGNERS_FILE);
+    match std::fs::remove_file(allowed_signers_file) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(GitError::Io(err)),
+    }
 }
 
 /// Enable rerere in `target_dir`'s local `.git/config`
@@ -280,6 +301,22 @@ fn sync_git_config(target_dir: &Path, key: &str, value: &str) -> Result<(), GitE
         .output()
         .map_err(GitError::Spawn)?;
     if output.status.success() {
+        return Ok(());
+    }
+    Err(GitError::GitCli {
+        status: output.status.code().unwrap_or(-1),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
+fn unset_git_config(target_dir: &Path, key: &str) -> Result<(), GitError> {
+    let output = StdCommand::new("git")
+        .arg("-C")
+        .arg(target_dir)
+        .args(["config", "--unset-all", key])
+        .output()
+        .map_err(GitError::Spawn)?;
+    if output.status.success() || output.status.code() == Some(GIT_CONFIG_KEY_NOT_FOUND_STATUS) {
         return Ok(());
     }
     Err(GitError::GitCli {
@@ -451,6 +488,26 @@ mod tests {
             git_config_get(target, "gpg.ssh.allowedSignersFile").as_deref(),
             Some(expected_signers.as_str()),
         );
+    }
+
+    #[test]
+    fn reconcile_signing_config_clears_stale_block_without_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path();
+        init_git_repo(target);
+        let key = gen_ssh_key(tmp.path());
+
+        write_signing_config(target, &key).unwrap();
+        let signers_path = target.join(".git").join(ALLOWED_SIGNERS_FILE);
+        assert!(signers_path.exists(), "precondition: signers file exists");
+
+        reconcile_signing_config(target, None).unwrap();
+
+        assert_eq!(git_config_get(target, "gpg.format"), None);
+        assert_eq!(git_config_get(target, "user.signingkey"), None);
+        assert_eq!(git_config_get(target, "commit.gpgsign"), None);
+        assert_eq!(git_config_get(target, "gpg.ssh.allowedSignersFile"), None);
+        assert!(!signers_path.exists(), "stale signers file must be removed");
     }
 
     /// Spec contract `[test]` annotation (`specs/harness.md` § Success
