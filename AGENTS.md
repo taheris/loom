@@ -1,5 +1,13 @@
 # Agent Instructions
 
+## Specifications
+
+Before implementing features, consult `docs/README.md`:
+
+- **Architecture first** — Read `docs/architecture.md` for system overview
+- **Check specs before coding** — Each feature has a dedicated spec file in `specs/`
+- **Terminology** — `docs/README.md` has a terminology index
+
 ## Building
 
 ```bash
@@ -56,7 +64,7 @@ bd dolt pull
 git add <files>
 git commit -m "..."
 git push
-beads-push # beads branch sync to GitHub
+wrix beads push       # Sync beads branch: bd dolt commit + push + git push origin beads
 ```
 
 When `LOOM_INSIDE` is set, skip the pushes; the driver publishes.
