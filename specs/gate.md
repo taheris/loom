@@ -133,7 +133,7 @@ failure detected, not by stage or scope.
 
   Gate raises `loom:clarify` per the *Options Format Contract*
   (defined in [Options Format Contract](#options-format-contract)
-  below) and waits for `loom msg` resolution.
+  below) and waits for `loom inbox` resolution.
 
 ## Commands
 
@@ -405,7 +405,7 @@ per-finding via each streamed finding's `route`, never via the
 terminal marker. A clarify-route finding whose evidence lacks a
 well-formed options block falls back to `loom:blocked` with cause
 `clarify-without-options` rather than a stranded clarify. Push is held
-until clarify beads in the molecule are resolved via `loom msg`.
+until clarify beads in the molecule are resolved via `loom inbox`.
 
 ### Standing-safety-net checks
 
@@ -2213,7 +2213,7 @@ the *Options Format Contract*. The composition rule is mechanical:
   affected findings (e.g. *"Option 1 — Drop the `?` markers at
   specs/templates.md lines 913, 920, 925"*).
 - Close the block with one final `### Option N` for
-  *"Mixed resolution via `msg -c` chat"* — the escape hatch when
+  *"Mixed resolution via `loom inbox chat`"* — the escape hatch when
   the operator needs different resolutions across findings or wants
   options beyond each kind's primary.
 
@@ -2322,7 +2322,8 @@ behalf of the gate) raises `loom:clarify` — for an invariant clash,
 for a verifier-honesty concern with multiple resolution paths, or
 for any review-time decision the user must pick from — the bead body
 presents the candidate paths as a structured markdown block that
-`loom msg` can consume mechanically:
+`loom inbox view` can render and `loom inbox chat` can use as structured
+resolution context:
 
 ```markdown
 ## Options — <one-line summary of the decision>
@@ -2341,15 +2342,15 @@ to file>
 invariant to weaken or remove, what code realignment would follow>
 ```
 
-`loom msg` consumes this format three ways:
+`loom inbox` consumes this format without a host-side option picker:
 
-- **List mode** (`loom msg`): the `## Options — <summary>` line is
+- **List mode** (`loom inbox`): the `## Options — <summary>` line is
   rendered as the bead's SUMMARY column.
-- **View mode** (`loom msg -n <N>` / `loom msg -b <id>`): the full
-  block is rendered to the user with each `### Option N` heading.
-- **Fast-reply** (`loom msg -n <N> -o <K>`): the body of `### Option
-  K` is recorded as the resolution note, the bead is closed, and
-  `loom:clarify` is removed.
+- **View mode** (`loom inbox view <N>` / `loom inbox view -b <id>`): the
+  full block is rendered to the user with each `### Option N` heading.
+- **Chat mode** (`loom inbox chat`): the block is rendered as structured context
+  for the human and chat agent. The chat agent records any authorized decision
+  through Beads; Loom does not infer executable actions from option prose.
 
 A clarify bead can present fewer or differently-framed options when
 the decision warrants — the format is `### Option <integer> —
@@ -2359,7 +2360,7 @@ the decision warrants — the format is `### Option <integer> —
 paths apply `loom:clarify` to a bead. All three require a
 well-formed `## Options — <summary>` heading with at least one
 `### Option <N> — <title>` subsection somewhere readable by `loom
-msg` (bead notes ∪ description). Each path has its own writer and
+inbox` (bead notes ∪ description). Each path has its own writer and
 validator, but the *shape* of the options block and the *failure
 mode* on absence are uniform:
 
@@ -2367,7 +2368,7 @@ mode* on absence are uniform:
 |---|---|---|---|---|
 | **Mint-from-finding** (worker phase emits `LOOM_FINDING` with a clarify-route token) | Rubric agent — embeds the block inside `evidence` | Mint extracts from `evidence` into the minted bead's description | `loom gate mint` (per *Deferred remediation processing* step 4) | Fall back to `loom:blocked` cause `clarify-without-options` |
 | **Direct-emit `LOOM_CLARIFY`** (worker phase emits the marker; target bead is the bead under dispatch for `loop` / `review`, the `loom:todo` work epic for `todo` per [templates.md — Decomposition Discipline](templates.md#decomposition-discipline)) | The worker agent itself, via `bd update --notes` / `bd update --description` against the target bead before emitting the marker | The target bead's notes or description | Verdict gate (per [harness.md § Verdict Gate](harness.md#verdict-gate) marker definitions) | Fall back to `loom:blocked` cause `clarify-without-options` |
-| **Existing-bead promotion** (chat agent in `msg -c` upgrades a `loom:blocked` bead) | The chat agent, with human authorization | The bead's notes (added via `bd update --notes` before `bd update --add-label=loom:clarify`) | None — the chat agent has bd-write authority and the human authorizes each turn (per [harness.md § Msg Modes](harness.md#msg-modes)) | n/a (no automatic validation; if the chat agent skips the options write, the human catches it next turn) |
+| **Existing-bead promotion** (chat agent in `loom inbox chat` upgrades a `loom:blocked` bead) | The chat agent, with human authorization | The bead's notes (added via `bd update --notes` before `bd update --add-label=loom:clarify`) | None — the chat agent has bd-write authority and the human authorizes each turn (per [harness.md § Inbox Modes](harness.md#inbox-modes)) | n/a (no automatic validation; if the chat agent skips the options write, the human catches it next turn) |
 
 The structural enforcement at the chokepoint is what makes
 "stranded clarify bead the chat-drafter cannot resolve"
@@ -2386,24 +2387,21 @@ notes/description for direct-emit and existing-bead paths.
 
 The `## Options — <summary>` block lives on the target bead (in
 notes or description, per the path table above) only from emit to
-resolution. When `loom:clarify` is cleared — via `loom msg -o`,
-`-r`, `-d`, or the chat session's
-`bd update --remove-label=loom:clarify` — the originating options
-block is removed from wherever it lives (notes or description) in
-the same transaction that records the resolution note (chosen
-option body, verbatim reply, or dismissal note).
+resolution. When `loom:clarify` is cleared by an inbox chat session's
+`bd update --remove-label=loom:clarify`, the originating options block is
+removed from wherever it lives (notes or description) in the same authorized
+resolution update that records the human decision.
 
 A single bead can receive multiple clarifications across its
 lifetime — notably a `loom:todo` work epic, which hosts
 decomposition-phase clarifies emitted by successive `loom todo`
 invocations while the same pending fingerprint is being repaired. Without removal,
-options blocks accumulate and `loom msg` lists become ambiguous
+options blocks accumulate and `loom inbox` lists become ambiguous
 about which block belongs to the currently active label.
 
 For clarifies hosted on a **dedicated clarify bead** (created via
-the mint-from-finding path above, closed on fast-reply per
-`loom msg`'s consumption shape above), the removal is moot — the
-whole bead is closed and the notes/description pass out of scope
+the mint-from-finding path above and closed during inbox chat), the removal is
+moot — the whole bead is closed and the notes/description pass out of scope
 with it. The lifecycle contract is load-bearing for the
 **existing-bead promotion** path where the bead survives the
 resolution.
@@ -2437,7 +2435,7 @@ record.
   finding, never bundled — carrying `loom:clarify` with the
   `## Options — …` block from the finding's `evidence` rendered into
   the bead's description per the Options Format Contract. The
-  per-finding shape is load-bearing because `loom msg` cannot consume
+  per-finding shape is load-bearing because `loom inbox` cannot consume
   a bead carrying multiple options blocks. Clarify-route findings whose
   evidence lacks a well-formed options block fall back to
   `loom:blocked` with cause `clarify-without-options` rather than
@@ -2465,7 +2463,7 @@ Per-stage flag handling:
   are stored on `status=deferred` / `loom:deferred` molecule
   remediation beads and are not returned by `bd ready` until
   stabilization promotes them. `route="clarify"` findings create or
-  update one `loom:clarify` bead per finding hash; `loom msg` resolves
+  update one `loom:clarify` bead per finding hash; `loom inbox` resolves
   the clarify. Clashes never trigger fresh-agent retry of an already-
   integrated original bead.
 - **Standing** — `loom gate mint --tree` walks the deterministic
@@ -2474,7 +2472,7 @@ Per-stage flag handling:
   single-finding clarify beads for any clarify-route findings) under
   work epics while ensuring each owning spec has exactly one spec epic.
   Invariant clashes surface via `loom:clarify` on the minted
-  single-finding clarify bead; resolved in the next `loom msg` walk. See
+  single-finding clarify bead; resolved in the next `loom inbox` walk. See
   [*Findings and Minting*](#findings-and-minting) for the deferred
   remediation processing flow.
 
@@ -3358,5 +3356,5 @@ The gate enforces; it does not own:
 - Workflow events (push, merge, bead lifecycle, remediation bonding,
   molecule progress). Those are downstream of the gate's verdict, not
   properties the gate evaluates.
-- The `loom:clarify` resolution channel itself — `loom msg` is the
-  surface, defined in [harness.md](harness.md) Msg Modes.
+- The `loom:clarify` resolution channel itself — `loom inbox` is the
+  surface, defined in [harness.md § Inbox Modes](harness.md#inbox-modes).

@@ -8,10 +8,10 @@ cache store, and command-set platform for the Loom agent driver.
 Loom is a Rust binary that owns a complete spec-driven workflow:
 spec interview (plan), spec-to-beads decomposition (todo), per-bead
 agent dispatch (loop), deterministic and LLM-judged review (gate),
-and human clarification (msg). The binary holds the workflow's
-state in typed domain objects, parses agent protocols against typed
-schemas, and renders templates with compile-time variable
-validation.
+human clarification/proposal review (inbox), and manual artifact tuning
+(tune). The binary holds the workflow's state in typed domain objects,
+parses agent protocols against typed schemas, and renders templates with
+compile-time variable validation.
 
 This spec covers the platform: crate structure, Rust conventions,
 Nix integration, SQLite cache store, beads CLI wrapper, process
@@ -26,9 +26,9 @@ communication; backend selection) lives in
 [agent.md](agent.md). The gate (rubric, invariants,
 lanes, stages) lives in [gate.md](gate.md). Workflow
 semantics — what each `loom plan` / `loom todo` / `loom loop` /
-`loom gate` / `loom msg` command does — are defined in this
-spec's Functional section and the Msg Modes / Verdict Gate sections
-below.
+`loom gate` / `loom inbox` / `loom tune` command does — are defined in
+this spec's Functional section and the Inbox Modes / Tune Modes /
+Verdict Gate sections below.
 
 ## Architecture
 
@@ -143,7 +143,7 @@ work root.
 first dispatch and persists across attempts, recovery iterations,
 and `loom loop` invocations. It is reaped when the bead transitions
 to `closed` (via the agent's `bd close` on success, the operator's
-`loom msg`-resolve, or a direct `bd close`). Within that lifetime
+`loom inbox` resolution, or a direct `bd close`). Within that lifetime
 every fresh dispatch attempt sees a clean working tree: the
 dispatch path runs `git reset --hard HEAD` plus
 `git clean -fdx --exclude=target --exclude=.git --exclude=.wrix`
@@ -230,7 +230,7 @@ failure all route the bead to `Blocked` or `Clarify` per the
 verdict gate; the bead workspace persists on disk. Under the
 per-bead-close lifecycle "preserve" is the default — the workspace
 persists until `bd close` regardless of why it stopped progressing.
-The operator unblocks via `loom msg`-resolve; the bd-close-driven
+The operator unblocks via `loom inbox` resolution; the bd-close-driven
 reap drops the bead workspace.
 
 **Concurrency.** Concurrent `loom loop --parallel N` and concurrent
@@ -254,7 +254,7 @@ loops across specs share one loom workspace. Serialization points:
 
 The phase/work-root advisory locks (see [Concurrency & Locking](#concurrency--locking))
 serialize planning, workspace-wide todo decomposition, and per-work-root
-loop / gate / msg actions without using an active-spec pointer.
+loop / gate / targeted inbox-chat actions without using an active-spec pointer.
 
 **Mounts.** Bead containers see two mandatory bind mounts plus an
 optional sccache mount, all via `SpawnConfig`:
@@ -549,7 +549,7 @@ launcher env before podman startup and passes the same value to the
 entrypoint — see [agent.md — Entrypoint Agent
 Selection](agent.md#entrypoint-agent-selection).
 
-`loom plan` and `loom msg --chat` are interactive, so they shell out to
+`loom plan` and `loom inbox chat` are interactive, so they shell out to
 `wrix run` (TTY-attached) rather than `wrix spawn`. To keep one
 resolution path, both commands look up their profile/runtime pair (per
 [Configuration](#configuration); default `base`) in the manifest and
@@ -558,12 +558,11 @@ export `WRIX_DEFAULT_IMAGE_REF=<entry.ref>`,
 `WRIX_AGENT=<runtime>` into the child environment before exec'ing
 `wrix run`. The launcher reads those env vars when no `--spawn-config`
 is supplied. `wrix run` has no `--profile` argv parser; any extra tokens
-between
-the workspace positional and the in-container command are forwarded into
-the container as the command vector, so the env-var hand-off is the sole
-image-selection contract on this path. The in-container command is
-selected from the resolved phase backend: Claude uses `claude
---dangerously-skip-permissions`, while Pi uses `pi`.
+between the workspace positional and the in-container command are
+forwarded into the container as the command vector, so the env-var
+hand-off is the sole image-selection contract on this path. The
+in-container command is selected from the resolved phase backend: Claude
+uses `claude --dangerously-skip-permissions`, while Pi uses `pi`.
 
 ### Concurrency & Locking
 
@@ -577,7 +576,8 @@ workspace-exclusive lock used only during destructive cache rebuild.
 
 - `plan.lock` — serializes interactive planning edits
 - `todo.lock` — serializes workspace-wide changed-spec decomposition
-- `<bead-or-epic-id>.lock` — serializes loop/gate/msg work roots
+- `<bead-or-epic-id>.lock` — serializes loop/gate/targeted-inbox-chat work roots
+- `tune.lock` — serializes tune proposal creation under `.loom/tune/`
 - `workspace.lock` — held by `loom init` and `loom init --rebuild`
 
 `<workspace-basename>` is the final path component of the canonicalized
@@ -602,10 +602,11 @@ there are no stale locks to clean up.
 
 | Class | Commands | Lock acquired |
 |-------|----------|---------------|
-| Read-only | `status`, `logs` (incl. `-f` follow), `spec` | none |
+| Read-only | `status`, `logs` (incl. `-f` follow), `spec`, `inbox list`, `inbox view`, bare `tune` | none |
 | Planning | `plan` | exclusive on `plan.lock` |
 | Todo decomposition | `todo` | exclusive on `todo.lock` (workspace-wide changed-spec preflight + one pending work epic) |
-| Work-root mutating | `loop`, `gate`, `msg` | exclusive on each addressed bead/work-epic id; default `loop` resolves `loom:active` before locking |
+| Work-root mutating | `loop`, `gate`, targeted `inbox chat`, post-chat tune apply | exclusive on each addressed bead/work-epic id as applicable; default `loop` resolves `loom:active` before locking. Tune apply relies on git/index serialization like loop integration rather than a separate integration lock. |
+| Tune proposal | `tune skill fast|run|full`, `tune phase fast|run|full`, `tune partial fast|run|full`, `tune all fast|run|full` | exclusive on `tune.lock` while allocating the proposal id/worktree; proposal work continues in its isolated worktree |
 | Workspace-exclusive | `init`, `init --rebuild` | exclusive on `workspace.lock` |
 
 A mutating command waits up to 5 seconds for its lock, then errors naming
@@ -646,7 +647,7 @@ error: loom cannot run inside a loom-managed container
 ```
 
 **Refused inside container:** driver/workspace-mutating or managed-
-session-spawning surfaces: `loop`, `init`, `plan`, `todo`, `msg`,
+session-spawning surfaces: `loop`, `init`, `plan`, `todo`, `inbox`, `tune`,
 `use`, `loom gate mint`, and LLM-spawning gate subcommands (`review`,
 `judge`, `rubric`, `audit`).
 
@@ -1116,13 +1117,13 @@ validation is what makes the push fast in the warm-driver-loop
 case without trusting an unverified stamp.
 
 Driver-detected failures enter a bounded recovery loop; agent
-self-reports go straight to human resolution via `loom msg`.
+self-reports go straight to human resolution via `loom inbox`.
 
 **Interactive vs worker sessions.** The verdict gate's reconciliation
 applies to **worker sessions only** — single-shot agent dispatches
 against a bead, work epic, or review scope (`loom loop`'s per-bead
 worker, `loom todo`, `loom gate review`). **Interactive sessions** —
-multi-turn chats with a human in the loop (`loom plan`, `loom msg -c`;
+multi-turn chats with a human in the loop (`loom plan`, `loom inbox chat`;
 identifiable in the template layer by inclusion of
 `chat_marker_final_turn_only.md`) — are agent-and-human authoritative:
 the driver does **not** mutate bd state as a consequence of an
@@ -1133,11 +1134,14 @@ write); the human authorizes each turn, so the chokepoint reasoning
 that justifies driver-side mint for worker sessions (replay-safety,
 cross-finding dedup, deterministic per-spec routing) does not apply.
 
-Concretely, the driver's only post-session action after an
-interactive session is parsing the terminal marker for log +
-exit-code. Interactive sessions emit `LOOM_COMPLETE` only —
-`LOOM_RETRY` / `LOOM_BLOCKED` / `LOOM_CLARIFY` / `LOOM_CONCERN`
-are wrong-phase-marker errors and exit non-zero.
+Concretely, the driver does not run worker-session reconciliation after an
+interactive session. It parses the terminal marker for log/exit-code and, for
+phases that register an apply handler, may execute the typed apply handoff.
+`plan` emits `LOOM_COMPLETE` only. `inbox` emits `LOOM_COMPLETE` when no
+driver-side apply is requested, or `LOOM_APPLY: {"proposals":[...]}` when the
+trusted driver should apply accepted tune proposals. `LOOM_RETRY` /
+`LOOM_BLOCKED` / `LOOM_CLARIFY` / `LOOM_NOOP` / `LOOM_CONCERN` are
+wrong-phase-marker errors from interactive sessions and exit non-zero.
 
 The driver-side reconciliation paths that fire for worker sessions
 are uniformly suppressed: no `loom:blocked` / `loom:clarify` label
@@ -1211,7 +1215,7 @@ under `.loom/logs/gate/` (or an equivalent gate-log root) and records:
 command argv, scope flag, exit code, stdout, stderr, parsed terminal
 marker when applicable, integration SHA, bead id, retry attempt,
 rollback state, and the log path. The corresponding `driver_event`
-payload and rendered summary name the log path so `loom msg` and
+payload and rendered summary name the log path so `loom inbox` and
 operators can inspect the exact failing verifier output without
 reconstructing the rolled-back integration state. Retry attempts use
 distinct log files.
@@ -1439,7 +1443,7 @@ its own session log if it needs prior tool-call context.
   agent should have emitted `LOOM_BLOCKED` directly, but the driver
   falls back to blocked rather than minting a stranded clarify bead
   the chat-drafter cannot resolve). All meanings are uniform from
-  the human's perspective — the bead is blocked and `loom msg` is
+  the human's perspective — the bead is blocked and `loom inbox` is
   the resolution channel.
 - `loom:clarify` is applied by either: (a) the `LOOM_CLARIFY` agent
   marker, (b) `loom gate mint` lifting a clarify-route finding
@@ -1482,7 +1486,7 @@ its own session log if it needs prior tool-call context.
   Per-cause sub-labels can be stacked on top later if filtering
   becomes important; the gate's terminal label stays `loom:blocked`.
 - Closing a bead does not automatically remove stale `loom:blocked` or
-  `loom:clarify` labels. `loom msg` filters out closed beads regardless
+  `loom:clarify` labels. `loom inbox` filters out closed beads regardless
   of labels, so label cleanup is not a prerequisite for hiding resolved
   work from the human queue.
 
@@ -1502,18 +1506,22 @@ Markers are **mutually exclusive** — a session emits one and only one.
 Todo has a typed success marker; other worker phases use the generic
 success/self-report markers below.
 
-- `LOOM_COMPLETE` — the loop/review work succeeded. For a bead worker,
-  the agent has implemented the bead's criteria and `bd close`d the
-  bead. The diff is non-empty (real changes); see `LOOM_NOOP` below for
-  the zero-diff variant. Valid in `loop` and zero-finding `review`, and
-  in final turns of interactive sessions where the template permits it;
-  wrong phase for `loom todo`.
-- `LOOM_NOOP` — loop work was already done in tree; the phase
-  intentionally produced an empty diff. Without `LOOM_NOOP`, an empty
-  diff is treated as `zero-progress` (a recovery cause). The agent
-  emits `LOOM_NOOP` to distinguish "no work needed" from "work
-  attempted but produced no diff." Valid in loop worker phases only;
-  not valid in `loom todo` or the review phase.
+- `LOOM_COMPLETE` — the phase completed successfully with no typed handoff.
+  For a bead worker, the agent has implemented the bead's criteria and
+  `bd close`d the bead; normal loop completion expects a non-empty diff. Valid
+  in `loop`, zero-finding `review`, `plan`, and `inbox` when no apply handoff is
+  needed; wrong phase for `loom todo`.
+- `LOOM_NOOP` — loop work was already done in tree; the loop worker
+  intentionally produced an empty diff and closed the bead. Without
+  `LOOM_NOOP`, an empty loop diff is treated as `zero-progress` (a recovery
+  cause). `LOOM_NOOP` is valid only in loop worker phases, requires a clean tree
+  and empty diff, and is invalid in `todo`, `review`, `plan`, and `inbox`.
+- `LOOM_APPLY: {"proposals":[...]}` — typed apply handoff. The phase completed
+  and asks the trusted driver to run a phase-registered apply handler. In v1,
+  only `inbox` registers an apply handler, and `proposals` names accepted tune
+  proposal bead ids. The driver validates the ids/state/artifacts, applies the
+  batch through integration, gates the actual combined range, pushes once, and
+  marks proposals `applied` only after push succeeds.
 - `LOOM_TODO: <json>` — todo-specific success marker. The JSON payload
   parses as `loom-protocol::todo::TodoSuccess` and is validated against
   the deterministic preflight roster before any cursor or active-epic
@@ -1539,7 +1547,7 @@ success/self-report markers below.
   routes to `loom:blocked` with cause `retry-exhausted` (same as the
   existing retry-exhaustion path). Valid in worker phases only
   (`loop`, `todo`, `review`); invalid in interactive sessions
-  (`plan`, `msg`).
+  (`plan`, `inbox`).
 - `LOOM_BLOCKED` — the agent cannot proceed and is self-reporting a
   **genuine dead end** — no candidate resolutions to enumerate, no
   retry path the agent expects to succeed. Use `LOOM_RETRY` for
@@ -1551,9 +1559,9 @@ success/self-report markers below.
   `loom:todo` work epic for `todo`) and exits the verdict evaluation
   without entering recovery. Other beads in the molecule continue
   running; the labelled bead or work epic waits for human resolution via
-  `loom msg` (where `msg -c` walks the human through candidate
+  `loom inbox` (where `loom inbox chat` walks the human through candidate
   enumeration in-session). Valid in worker phases only — invalid in
-  interactive sessions (`plan`, `msg`).
+  interactive sessions (`plan`, `inbox`).
 - `LOOM_CLARIFY` — the agent has a specific question with structured
   options for the human (per the [Options Format
   Contract](gate.md#options-format-contract)). The discriminator
@@ -1576,9 +1584,9 @@ success/self-report markers below.
   cannot resolve. On a well-formed options block the gate applies
   `loom:clarify` to the target bead and exits the verdict evaluation
   without entering recovery. Other beads in the molecule continue
-  running; the labelled bead waits for `loom msg` resolution. Valid
+  running; the labelled bead waits for `loom inbox` resolution. Valid
   in worker phases only — invalid in interactive sessions (`plan`,
-  `msg`).
+  `inbox`).
 - `LOOM_CONCERN` — the review phase found a quality issue with the
   molecule's work; push must not fire. Carries a JSON payload:
   `LOOM_CONCERN: {"summary": "<one-sentence summary>"}`. The
@@ -1775,107 +1783,188 @@ contract: any `loom loop` invocation whose outcome was not
 `GateOutcome::Success(_)` or `NoGate { .. }` surfaces a non-zero
 exit. Wrapper scripts must consume this signal.
 
-### Msg Modes
+### Inbox Modes
 
-`loom msg` is the human resolution channel for outstanding `loom:blocked`
-and `loom:clarify` beads. Clarify beads carry their options in the
-*Options Format Contract* defined in
-[gate.md](gate.md#options-format-contract); `loom msg`
-consumes that format for list / view / fast-reply / dismiss. The
-flag table below documents `loom msg`'s own surface.
+`loom inbox` is the human decision queue for outstanding `loom:blocked`
+beads, `loom:clarify` beads, and tune proposals. `loom msg` is removed;
+there is no compatibility alias.
 
-**Five modes plus a filter:**
+Clarify beads carry their options in the *Options Format Contract* defined in
+[gate.md](gate.md#options-format-contract). Tune proposals use a tune bead as
+the canonical durable report/state and `.loom/tune/<bead-id>/` as a local
+execution cache. `loom inbox` consumes both shapes through list / view / chat.
+There is no host-side pick/reply/resolve/apply mutation surface in v1.
+
+**Modes:**
 
 | Mode | Invocation | Where it runs |
-|------|-----------|---------------|
-| List (default) | `loom msg` | host, no container |
-| View | `loom msg -n <N>` / `loom msg -b <id>` | host, no container |
-| Fast-reply (option) | `loom msg -n <N> -o <int>` | host, no container |
-| Fast-reply (verbatim) | `loom msg -n <N> -r <text>` | host, no container |
-| Dismiss | `loom msg -n <N> -d` | host, no container |
-| Chat | `loom msg -c` | container, Claude (`msg.md` template) |
-| Filter | `-s <label>` (combines with any mode) | scope to `spec:<label>` |
+|------|------------|---------------|
+| List (default) | `loom inbox` / `loom inbox list` | host, no container |
+| View by list number | `loom inbox view <N>` | host, no container |
+| View by bead | `loom inbox view -b <id>` | host, no container |
+| View by proposal | `loom inbox view -p <proposal-id>` | host, no container |
+| Chat queue | `loom inbox chat` | container, interactive backend (`inbox.md` template) |
+| Chat by list number | `loom inbox chat <N>` | container, interactive backend |
+| Chat by bead | `loom inbox chat -b <id>` | container, interactive backend |
+| Chat by proposal | `loom inbox chat -p <proposal-id>` | container, interactive backend |
 
-**Flag table.** Both short and long forms are accepted; the long form is
-what `loom msg --help` documents.
+**Filters and addressing:**
 
-| Short | Long | Argument | Purpose |
-|-------|------|----------|---------|
-| `-c` | `--chat` | — | Launch interactive Drafter session in a container |
-| `-s` | `--spec` | `<label>` | Filter to clarifies labeled `spec:<label>` |
-| `-n` | `--number` | `<int>` | Address a clarify by 1-based list index |
-| `-b` | `--bead` | `<bead-id>` | Address a clarify by bead ID |
-| `-o` | `--option` | `<int>` | Fast-reply with the bead's `### Option <int>` body; **validated** — errors `option <int> not found in bead <id>` if no matching subsection exists |
-| `-r` | `--reply` | `<text>` | Fast-reply with verbatim free-form text; works on any bead regardless of whether it has an Options section |
-| `-d` | `--dismiss` | — | Clear the label with a work-around note |
+| Flag | Argument | Purpose |
+|------|----------|---------|
+| `-s`, `--spec` | `<label>` | Filter queue entries to `spec:<label>` |
+| `-k`, `--kind` | `clarify\|blocked\|tune` | Filter queue entries by kind; absence means all kinds |
+| `-b`, `--bead` | `<bead-id>` | Address a bead-backed item for `view` / `chat` |
+| `-p`, `--proposal` | `<proposal-id>` | Address a tune proposal for `view` / `chat` |
 
-**Mutually exclusive flags.** `-o` and `-r` cannot both be supplied —
-passing both errors before any side effects. `-d` cannot combine with
-`-o` or `-r`. `-n` and `-b` cannot both be supplied (they're alternative
-addressing schemes for the same target). `-c` is mutually exclusive with
-all other action flags except `-s`.
+There is no `-c/--chat` flag; chat is a subcommand. There is no
+`-d/--dismiss`, no `--option`, no `--text`, and no standalone
+`loom inbox apply` in v1. Options blocks are structured context for view/chat,
+not a host-executable menu.
 
-**Cross-spec by default.** Bare `loom msg` lists every outstanding
-open `loom:blocked` and `loom:clarify` bead across all specs. Closed
-beads are excluded from list/chat queues even if their labels remain on
-the bead. `-s <label>` is the only narrowing path. No active-spec cache
-or work-epic selection is consulted for any msg mode.
+**Cross-spec by default.** Bare `loom inbox` lists every outstanding open
+`loom:blocked` and `loom:clarify` bead across all specs plus pending/blocked/
+apply-failed tune proposal beads. Closed beads are excluded even if their labels
+remain on the bead. No active-spec cache or work-epic selection is consulted for
+any inbox mode. Filters narrow the queue before positional numbering. Default
+ordering is kind-group first, then FIFO within each group: `clarify`
+oldest→newest, then `blocked` oldest→newest, then `tune` oldest→newest. A
+corrupt or unavailable tune proposal remains `kind = tune` with blocked
+status/framing; it appears in the default and `-k tune` queues, not as a generic
+blocked bead.
 
-**Chat session shape.** `loom msg -c` (optionally with `-s <label>`)
-launches the resolved profile/runtime via interactive `wrix run`, runs
-the selected chat-capable agent with the `msg.md` template, and walks
-the user through outstanding beads interactively. The session has **full
-bd-write authority** on the beads in its queue: notes via
-`bd update --notes`, label add/remove
-via `bd update --add-label` / `--remove-label`, status changes, and
-bead closure via `bd close`. The chokepoint reasoning that gates
-worker-session bd writes (replay-safety, cross-finding dedup,
-deterministic per-spec routing) does not apply to chat because the
+**View semantics.** `loom inbox view` renders the canonical bead/proposal body,
+structured options when present, durable ids, proposal branch/head commits, and
+local artifact paths. If no chat-capable backend is available, view output gives
+manual escape-hatch surfaces (`bd`, local proposal paths, and repair/drop
+instructions) rather than mutating state.
+
+**Chat session shape.** `loom inbox chat` launches the resolved profile/runtime
+via interactive `wrix run`, runs the selected chat-capable agent with the
+`inbox.md` template, and normally works through the visible queue one item at a
+time. Targeted chat forms focus a single item. The chat-capable backend/profile
+comes from `[phase.inbox]` or normal phase defaults; Direct is rejected because
+it has no interactive REPL command.
+
+The session has **full bd-write authority** on bead-backed items in its queue:
+notes via `bd update --notes`, label add/remove via `bd update --add-label` /
+`--remove-label`, status changes, and bead closure via `bd close`. It may repair
+tune proposal artifacts only in `.loom/tune/<id>/repo/` and update tune beads;
+it must not push and must not leave `.loom/integration` dirty. The chokepoint
+reasoning that gates worker-session bd writes does not apply to chat because the
 human is present and authorizes each turn.
 
-Per [Verdict Gate § Interactive vs worker
-sessions](#verdict-gate), the driver does **not** mutate bd state as
-a consequence of an interactive session. Whatever bd state the chat
-agent (with human authorization) established at session end IS the
-state — the driver does not reconcile, revert, or re-classify.
-Unresolved beads remain visible in the next `loom msg` list; mis-
-applied label changes are corrected in the next chat session by the
-human, not by driver auto-remediation.
+Per [Verdict Gate § Interactive vs worker sessions](#verdict-gate), the driver
+does **not** reconcile bead state as a consequence of an interactive session.
+Whatever bd/proposal state the chat agent (with human authorization) established
+at session end is the state, except for the explicit tune apply handoff below.
+Unresolved items remain visible in the next `loom inbox` list.
 
-Mid-walk exit is a clean `LOOM_COMPLETE`; the chat session emits
-`LOOM_COMPLETE` only — `LOOM_RETRY`, `LOOM_BLOCKED`, `LOOM_CLARIFY`,
-and `LOOM_CONCERN` are wrong-phase-marker errors from `msg` (the
-session itself is the resolution channel, not a producer of new
-clarifies; the human is present to resolve friction in-turn).
+**Inbox terminal markers.** Inbox chat emits exactly one terminal marker:
 
-**Chat queue — clarify vs blocked framing.** The chat session queue
-includes both `loom:clarify` and `loom:blocked` beads, but the two
-flows differ in the rendered prompt:
+- `LOOM_COMPLETE` — chat is done and no driver-side apply handoff is requested.
+- `LOOM_APPLY: {"proposals":["<bead-id>", ...]}` — chat is done and requests
+  the trusted driver to apply the listed accepted tune proposals.
 
-- **`loom:clarify`** beads carry options under the *Options Format
-  Contract*. The drafter helps the user **pick among existing
-  options**; it does not re-generate them.
-- **`loom:blocked`** beads do not carry options (the `LOOM_BLOCKED`
-  marker is the no-options variant). The drafter walks the user
-  through **enumerating candidate resolutions first**, then helps
-  them pick. This is equivalent to promoting the bead from
-  `loom:blocked` to `loom:clarify` in-session and immediately
-  resolving the promoted clarify.
-- **Options in notes.** Per [gate.md](gate.md#options-format-contract),
-  a reviewer that promotes a previously-blocked bead writes the
-  `## Options` block into the bead's `--notes`. The msg queue reads
-  options from notes ∪ description so notes-carried options are
-  surfaced alongside description-carried ones.
-- **Epic exclusion.** Epic beads (`issue_type == "epic"`) are filtered
-  out of the chat queue: workers target leaf beads, and an epic
-  carrying `loom:blocked` would surface as a non-actionable
-  container.
+`LOOM_APPLY` is a phase apply-handoff marker. It is valid only for phases that
+register an apply handler; in v1 only inbox registers one, and `proposals` names
+tune proposal bead ids. `LOOM_RETRY`, `LOOM_BLOCKED`, `LOOM_CLARIFY`,
+`LOOM_NOOP`, and `LOOM_CONCERN` are wrong-phase-marker errors from inbox.
+
+**Tune apply handoff.** Tune proposals accepted during chat are queued for a
+single end-of-chat apply batch. After `LOOM_APPLY`, the driver validates that
+each id is a tune bead in accepted state with a local proposal artifact, applies
+those proposal branches through the same integration/push-gate machinery used by
+`loom loop`, runs deterministic verify plus LLM review over the actual combined
+range, and pushes `origin/<integration_branch>` once at the end. `applied` means
+pushed, not merely cherry-picked locally.
+
+The apply batch is all-or-nothing in v1. A `cherry_pick_conflict`,
+`verify_failed`, `review_failed`, or `push_failed` cause aborts the attempt,
+pushes nothing, leaves `.loom/integration` clean, and moves every proposal in the
+accepted batch to `apply_failed` with a shared diagnostic/log. `apply_failed`
+tune items appear in the next inbox and are not retried automatically; a later
+chat must explicitly repair/reauthorize a subset or drop/regenerate them.
+
+**Chat queue framing.** The chat session queue includes `loom:clarify` beads,
+`loom:blocked` beads, and tune proposals, with separate rendered framing:
+
+- **`loom:clarify`** beads carry options under the *Options Format Contract*.
+  The drafter helps the user discuss and choose among existing options; it does
+  not re-generate them as a host-side menu.
+- **`loom:blocked`** beads do not necessarily carry options. The drafter walks
+  the user through enumerating candidate resolutions first, then helps them
+  pick or update bead state.
+- **Tune proposals** present the tune bead body, changed files, local
+  `evidence.md` appendix when present, checker results, and candidate commits.
+  Chat may mark proposals accepted/rejected/blocked/apply_failed only with
+  human authorization.
+- **Options in notes.** Per [gate.md](gate.md#options-format-contract), a
+  reviewer that promotes a previously-blocked bead writes the `## Options` block
+  into the bead's `--notes`. The inbox reads options from notes ∪ description so
+  notes-carried options are surfaced alongside description-carried ones.
+- **Epic exclusion.** Epic beads (`issue_type == "epic"`) are filtered out of
+  the chat queue: workers target leaf beads, and an epic carrying `loom:blocked`
+  would surface as a non-actionable container.
+
+### Tune Modes
+
+`loom tune` with no subcommand prints clap/default command help and exits 0.
+Listing commands are read-only; they do not create tune beads, harvest external
+evidence, or run candidate generation.
+
+| Command | Meaning |
+|---------|---------|
+| `loom tune skill` | List tuneable skills with name, description, source, applicability, and paths according to disclosure policy. |
+| `loom tune phase` | List tuneable phase templates. |
+| `loom tune partial` | List tuneable partials. |
+| `loom tune checker` | List registered tuning checkers with id, status, target kinds, levels, cost, mandatory/disableable policy, and summaries. |
+| `loom tune all` | List all tuneable surfaces and summary counts. |
+
+Proposal creation requires an explicit level:
+
+| Command | Meaning |
+|---------|---------|
+| `loom tune skill fast|run|full [<skill-name>...]` | Tune all applicable skills when no names are supplied, or the named skills when supplied. |
+| `loom tune phase fast|run|full [<phase-name>...]` | Tune all phase templates when no names are supplied, or named templates such as `plan`, `todo`, `loop`, `review`, `inbox`. |
+| `loom tune partial fast|run|full [<partial-name>...]` | Tune all partials when no names are supplied, or the named partials. |
+| `loom tune all fast|run|full` | Tune skills, phase templates, and partials in one proposal; target names are not accepted after `all`. |
+
+There are no plural aliases and no `template` umbrella command in v1. `loom tune
+checker` is list-only; `loom tune checker run` is invalid. The first positional
+after `skill`/`phase`/`partial` is interpreted as a level only if it is exactly
+`fast`, `run`, or `full`; remaining positionals are target names. To tune a skill
+named `run`, use `loom tune skill run run`.
+
+Common flags for proposal-creating commands:
+
+| Flag | Meaning |
+|------|---------|
+| `--dry-run` | Print loaded tuning docs, evidence roots, seed, case pool, selected/skipped cases, and frozen checker plan; create no candidate. Invalid on list commands. |
+| `--seed <n>` | Use a deterministic checker-plan seed; generated and recorded when absent. |
+
+Each tuning invocation creates one tune bead and one local
+`.loom/tune/<bead-id>/` envelope with `repo/`, `manifest.json`, `evidence.md`,
+`logs/`, and `evidence/`. The invoking checkout is not modified. Evidence
+defaults to the workspace; external evidence roots require explicit
+`[tune.evidence].external_roots` config and are printed before harvesting.
+Loaded tuning docs are `docs/tuning.md` plus applicable package `tuning.md` files;
+`loom-case` blocks are parsed and validated at every level, including `fast` and
+`--dry-run`.
+
+The checker plan is selected/frozen before candidate generation and recorded in
+the bead/manifest. `fast` runs preflight and case validation only; `run` executes
+a bounded behavioral checker plan; `full` runs all applicable declared regression
+cases before sampling mined selection evidence under hard caps. Template
+candidates must compile/render/pass conformance validation in the proposal
+worktree before they enter `loom inbox` as pending.
 
 ### Crate Layout
 
-The workspace has eight member crates. Three are **public-contract**
-crates (downstream consumers import them as Rust dependencies);
-the other five are internal organization.
+The target v1 workspace layout has ten member crates. Four are
+**public-contract** crates (downstream consumers import them as Rust
+dependencies); the other six are internal organization. Pending verifier markers
+below identify target v1 crate rows that are specified before implementation.
 
 | Crate | Tier | Role |
 |-------|------|------|
@@ -1883,10 +1972,12 @@ the other five are internal organization.
 | `loom-events` | **public** | `AgentEvent` enum, ID newtypes (`BeadId`, `MoleculeId`, `ToolCallId`, `SpecLabel`, `ProfileName`, `SessionId`, `RequestId`), `DriverKind`, `Session` trait, `EventSink` trait, `SessionCommand`. Frontends, SSE bridges, and external log tools depend only on this. |
 | `llm` | **public** | Typed wrapper over a multi-provider LLM crate. `LlmClient` trait, `Conversation` with built-in tool-use loop, `ModelId`, `CacheControl`, `complete_structured::<T>` (provider-agnostic), `TokenUsage`. Hosts the agent-loop observers (`DoomLoopObserver`, `DuplicateResultObserver`) so consumers driving via `Conversation` get the same safety nets Loom's binary uses. See [llm.md](llm.md). |
 | `templates` | **public** | Askama templates + typed context structs. Consumers compose their own templates from the exposed typed building blocks (`PinnedContext`, `PreviousFailure`, `LoopContext`, partial strings). Loom's workflow templates themselves stay internal. See [templates.md](templates.md). |
-| `loom-driver` | internal | Host-side runtime — `AgentBackend` trait, `CacheDb`, `Config`, `BdClient`, `Clock`, profile manifest, lock files, scratch dir, git ops, workflow-layer driver-event emission (verdict-gate, push-gate, container-spawn). |
+| `loom-skills` | **public** | Agent skill artifact model, typed discovery/diagnostics, duplicate/override resolution, phase/profile filtering, and materialization for backend registration. The tuning engine is internal in v1. See [skills.md](skills.md). |
+| `loom-tune` | internal | SkillOpt-style tuning internals — typed checker registry, `loom-case` schemas/validation, evidence indexing/splits, scoring summaries, tune metadata structs, and proposal manifest types. Orchestration stays in `loom-workflow`; apply stays in the driver. |
+| `loom-driver` | internal | Host-side runtime — `AgentBackend` trait, `CacheDb`, `Config`, `BdClient`, `Clock`, profile manifest, skill registry wiring, lock files, scratch dir, git ops, workflow-layer driver-event emission (verdict-gate, push-gate, container-spawn). |
 | `loom-render` | internal | `Renderer` trait + `Pretty` / `Plain` / `Json` / `Raw` impls; `LogSink` (impl `EventSink`) driving disk JSONL from the same event stream the renderer consumes. |
 | `agent` | internal | `AgentBackend` implementations (pi, claude, direct). Pi/Claude drive subprocess agents; `direct` composes `llm` with Loom's six sandbox-aware tools behind the Direct runner. Adapters flatten backend wire schemas into `loom-events` variants. |
-| `loom-workflow` | internal | Workflow engine — plan, todo, loop, gate, msg. Selects concrete backends per phase and drives the shared session lifecycle. Owns orchestration loop, bead lifecycle, retry logic, push gate, verdict gate. |
+| `loom-workflow` | internal | Workflow engine — plan, todo, loop, gate, inbox, tune. Selects concrete backends per phase and drives the shared session lifecycle. Owns orchestration loop, bead lifecycle, retry logic, push gate, verdict gate, tune proposal staging, and inbox resolution. |
 
 ### Dependency Graph
 
@@ -1904,17 +1995,27 @@ Load-bearing constraints on the dep graph:
 - `templates` depends on `loom-events` only (typed contexts
   reference `BeadId` / `SpecLabel` / etc.). The Askama compile
   machinery is a build-time concern, not a runtime dep.
+- `loom-skills` depends on `loom-events` for shared newtypes and on
+  parsing/diagnostic libraries only; it does not depend on `loom-driver`,
+  `agent`, `templates`, `loom-tune`, or `loom-workflow`.
+- `loom-tune` depends on `loom-events`, `loom-skills`, and parsing/scoring
+  libraries for registry/case/evidence/metadata types; it does not depend on
+  `loom-driver`, `agent`, or `loom-workflow`.
 - `loom-render` depends on `loom-events` only — no `loom-driver`
   import. A renderer regression must be local to `loom-render`.
 - `agent` depends on `llm` (its `direct` backend wraps
-  `Conversation`) and `loom-events` (the `Session` trait, `AgentEvent`).
-- `loom-workflow` depends on all the internal crates because it is
-  the orchestration layer; `loom-events` is the bottom of the
-  internal-crate stack and `loom-workflow` is the top.
+  `Conversation`), `loom-events` (the `Session` trait, `AgentEvent`), and
+  `loom-skills` for materialized registry/disclosure types consumed during
+  backend setup.
+- `loom-workflow` depends on the internal orchestration crates, on
+  `loom-skills` because it resolves the effective skill registry before
+  rendering prompts/spawning backends, and on `loom-tune` for tuning registry,
+  case, evidence, scoring, and metadata types. `loom-events` is the bottom of
+  the internal-crate stack and `loom-workflow` is the top.
 
-`loom-events`'s, `llm`'s, and `templates`'s leaf-or-near-leaf
-status is what makes each contract version-able in isolation — a
-public-API change shows up as a single-crate bump, not as accidental
+`loom-events`'s, `llm`'s, `templates`'s, and `loom-skills`'s
+leaf-or-near-leaf status is what makes each contract version-able in isolation
+— a public-API change shows up as a single-crate bump, not as accidental
 coupling through a deeper crate.
 
 ### Workspace Dependencies
@@ -1928,9 +2029,9 @@ per [`docs/style-rules.md`](../docs/style-rules.md) RS-3.
 `loom-events` is the contract-crate dependency-floor: its dep
 footprint is `serde + serde_json + thiserror + futures-core` only —
 no internal crates, no timestamps crate, no `ulid`, no `uuid`. The
-contract stays small. `llm` and `templates` carry their own
-small public-surface dep sets (LLM crate + `schemars` for `llm`;
-Askama for `templates`).
+contract stays small. `llm`, `templates`, and `loom-skills` carry their own
+small public-surface dep sets (LLM crate + `schemars` for `llm`; Askama for
+`templates`; Markdown/frontmatter parsing and diagnostics for `loom-skills`).
 
 ### Workspace Lints
 
@@ -2353,6 +2454,9 @@ session — joined by a hook script that re-injects both after compaction.
 - `repin.sh` — small bash that emits the `SessionStart[compact]` JSON
   envelope: a short fixed preamble identifying this as a post-compaction
   re-pin, then `cat prompt.txt`, then `cat scratch.md`.
+- `skills/` — materialized built-in skill packages selected for the resolved
+  profile/phase. Repo/configured skills remain at their source paths; built-ins
+  are copied here so prompt disclosure and native backends have readable files.
 - `offload/` — Direct-backend sessions only: a subdirectory the Direct
   runner creates lazily to hold tool output that exceeded the inline cap.
   Semantics are owned by [agent.md § Direct Output
@@ -2361,9 +2465,9 @@ session — joined by a hook script that re-injects both after compaction.
 
 `<key>` is the session concurrency unit, matching the existing locks:
 the joined anchor-label set (or `plan`) for `loom plan`, the work epic
-id for `loom todo`, and the bead id for `loom loop` / `loom gate` /
-`loom msg`. Two parallel loop workers on different beads of the same
-work epic get independent scratch directories.
+id for `loom todo`, the bead id for `loom loop` / `loom gate`, and the
+addressed item/filter key for `loom inbox chat`. Two parallel loop workers on
+different beads of the same work epic get independent scratch directories.
 
 **Per-backend delivery.** How each backend re-pins the recovery
 content at compaction time — including any hook fragments the
@@ -2452,6 +2556,38 @@ max_retries = 2
 # Delete log files under .loom/logs/ older than this many days on
 # `loom loop` startup. 0 disables sweeping (keep forever).
 retention_days = 14
+
+[skills]
+# Skill registration policy. `auto` registers natively when the resolved
+# backend supports native skills and fails loud on registration failure;
+# `prompt` disables native registration globally and exposes readable paths
+# in the prompt skill index.
+registration = "auto" # auto | prompt
+# Show paths only when prompt disclosure needs them, or always include paths
+# for audit/debugging.
+show_paths = "needed" # needed | always
+# Explicit non-standard skill files or directories. Auto-discovery still finds
+# git-tracked skill.md packages matched case-insensitively; no globs in v1.
+# paths = ["docs/review-skill.md", "team/agent-skills/"]
+
+[tune.evidence]
+# Stable fraction of mined evidence withheld for selection/gating. Must be >0
+# and <1. Workspace evidence is always eligible; external roots are never
+# implicit.
+selection_fraction = 0.34
+# Every configured external root is printed before harvesting.
+external_roots = []
+
+[tune.checks]
+# Hard caps for budgeted behavioral checker planning. `full` runs all applicable
+# declared regression cases before sampling mined selection evidence, but still
+# honors wall/judge caps.
+max_behavior_cases = 3
+max_wall_time_secs = 1800
+max_llm_judge_calls = 10
+# Disable optional built-in checker ids for this workspace. Mandatory preflight
+# validators cannot be disabled.
+# disabled = ["behavior.review.finding-recall"]
 
 # Per-phase config. Resolution for any field: [phase.<name>] →
 # [phase.default] → built-in. `loom loop` reads its profile from the
@@ -2555,9 +2691,11 @@ without carve-outs. Set `LOOM_CONFIG` to relocate.
 
 - Workspace builds with `cargo build` from `loom/` root
   [check](cargo build --workspace)
-- All eight crates present: loom, loom-events, loom-llm, loom-templates, loom-driver, loom-render, loom-agent, loom-workflow
-  [check](cargo run -p loom-walk -- crate_structure)
-- Three public-contract crates declared in workspace manifest metadata: loom-events, loom-llm, loom-templates
+- Target v1 crate set present: loom, loom-events, loom-llm, loom-templates,
+      loom-skills, loom-tune, loom-driver, loom-render, loom-agent,
+      loom-workflow
+  [check?](cargo run -p loom-walk -- crate_structure_includes_loom_tune)
+- Four public-contract crates declared in workspace manifest metadata: loom-events, loom-llm, loom-templates, loom-skills
   [check](cargo run -p loom-walk -- public_contract_crates)
 - Workspace uses edition 2024 and resolver "3"
   [check](cargo run -p loom-walk -- workspace_edition)
@@ -2651,7 +2789,7 @@ Criteria.
       `SpawnConfig.env` allowlist
   [test](spawn_config_env_includes_loom_inside_marker)
 - With `LOOM_INSIDE=1`, driver/workspace-mutating or LLM-spawning
-      subcommands (`loop`, `init`, `plan`, `todo`, `msg`,
+      subcommands (`loop`, `init`, `plan`, `todo`, `inbox`, `tune`,
       `loom gate mint`, `loom gate review`, `loom gate judge`,
       `loom gate rubric`, and `loom gate audit`) refuse with a clear
       error
@@ -2788,15 +2926,19 @@ Criteria.
 
 **Crate boundary**
 
-- `loom-events` is a leaf crate — no internal deps on `loom-driver` / `loom-render` / `loom-workflow` / `templates` / `llm` / `agent`
+- `loom-events` is a leaf crate — no internal deps on `loom-driver` / `loom-render` / `loom-workflow` / `templates` / `llm` / `agent` / `loom-skills` / `loom-tune`
   [check](cargo run -p loom-walk -- loom_events_is_leaf)
-- `llm` depends on `loom-events` only (no `loom-driver` / `agent` / `loom-workflow` import)
+- `llm` depends on `loom-events` only (no `loom-driver` / `agent` / `loom-workflow` / `loom-skills` / `loom-tune` import)
   [check](cargo run -p loom-walk -- loom_llm_deps)
-- `templates` depends on `loom-events` only (no `loom-driver` / `llm` / `agent` / `loom-workflow` import)
+- `templates` depends on `loom-events` only (no `loom-driver` / `llm` / `agent` / `loom-workflow` / `loom-skills` / `loom-tune` import)
   [check](cargo run -p loom-walk -- loom_templates_deps)
+- `loom-skills` depends on `loom-events` but not `loom-driver` / `agent` / `templates` / `loom-tune` / `loom-workflow`
+  [check?](cargo run -p loom-walk -- loom_skills_deps)
+- `loom-tune` depends on `loom-events` and `loom-skills`, but not `loom-driver` / `agent` / `loom-workflow`
+  [check?](cargo run -p loom-walk -- loom_tune_deps)
 - `loom-render` depends on `loom-events` only (no `loom-driver`)
   [check](cargo run -p loom-walk -- loom_render_deps)
-- `agent` depends on `llm` and `loom-events`; its `direct` backend wraps `loom-llm::Conversation`
+- `agent` depends on `llm`, `loom-events`, and `loom-skills`; its `direct` backend wraps `loom-llm::Conversation`
   [check](cargo run -p loom-walk -- loom_agent_deps)
 
 ### Bead dispatch
@@ -3247,7 +3389,7 @@ Criteria.
       drifts from FR1 (command set, flag set, removed surface,
       grouping order) and exits 0 when spec and binary agree.
       Wired as a `[check]`-tier verifier under `loom gate check`
-  [check](cargo run -p loom-walk -- surface_conformance)
+  [check?](cargo run -p loom-walk -- surface_conformance)
 - Bare `loom` (no args) renders the same Workflow / Inspection /
       State grouped sections (in spec order) as `loom --help`,
       `loom -h`, and `loom help` — clap's flat default-help fallback
@@ -3262,82 +3404,85 @@ Criteria.
       `loom:active` work epic, interspersed options, and absence of
       `--spec` / `--once` / `--all-specs`
   [test](loom_loop_help_documents_work_roots_and_removed_selectors)
-- Bare `loom msg` lists every outstanding open `loom:blocked` and
-      `loom:clarify` bead across all specs (cross-spec default); no
-      active-spec cache value is consulted, and closed beads are
-      excluded even when labels remain
-  [test?](msg_list_excludes_closed_blocked_or_clarify_beads)
-- `loom msg -s <label>` (alias `--spec`) filters the list to
-      clarifies carrying the `spec:<label>` bead label
-  [test](msg_spec_filter_narrows_list_to_matching_spec)
-- `loom msg -n <N>` / `loom msg -b <id>` (long forms `--number` /
-      `--bead`) views a clarify host-side without launching a container
-  [test](msg_view_modes_render_bead_host_side)
-- `loom msg -n <N> -o <int>` (long form `--option`) writes the bead's
-      `### Option <int>` body to notes and clears the label; errors
-      `option <int> not found in bead <id>` and exits non-zero if the
-      subsection is missing
-  [test](msg_option_fast_reply_persists_note_via_bd_show)
-- `loom msg -n <N> -r <text>` (long form `--reply`) writes verbatim
-      text to notes and clears the label, regardless of whether the bead
-      has an Options section
-  [test](options_em_dash_summary_and_three_options)
-- `loom msg -n <N> -d` (long form `--dismiss`) clears the label with
-      a work-around note, host-side
-  [test](msg_dismiss_writes_canonical_note_and_clears_label)
-- `-o` and `-r` are mutually exclusive; `-d` is mutually exclusive
-      with both; `-n` and `-b` are mutually exclusive; passing
-      conflicting flags errors before any side effects
-  [test](msg_flag_exclusivity_enforced_at_parse_time)
-- `loom msg -c` (long form `--chat`) launches an interactive
-      Drafter session in a container with the base profile, using the
-      `msg.md` template; bare `loom msg` stays host-side
-  [test](loom_msg_chat_launches_container)
-- The chat session has full bd-write authority on the beads in its
-      queue: notes via `bd update --notes`, label add/remove via
-      `bd update --add-label` / `--remove-label`, status changes via
-      `bd update --status`, and bead closure via `bd close`. The
-      `msg.md` template instructs the agent on when to use each
-      (resolved → close; needs further work → unblock without close;
-      misclassified → re-label) and lets the human authorize each turn
-  [test?](msg_template_documents_full_bd_write_authority_for_chat_agent)
-- The driver does **not** reconcile bd state after an interactive
-      session — no canonical unblock, no status reversion, no label
-      re-application. Whatever bd state the chat agent (with human
-      authorization) established at session end IS the state. The
-      previously-mandated "driver reverses agent-applied bd close"
-      behavior is removed
-  [test?](msg_chat_driver_does_not_reconcile_bd_state_after_session)
-- The bd state the chat session leaves in place persists across
-      `loom msg` invocations: a bead the chat closed stays closed; a
-      bead the chat unblocked stays unblocked; a bead the chat
-      relabelled stays relabelled
-  [test?](msg_chat_bd_state_persists_across_invocations)
-- Clearing the `loom:clarify` label via any `loom msg` path
-      (`-o`, `-r`, `-d`, chat session) removes the originating
-      `## Options — …` block from the bead's notes in the same
-      transaction that records the resolution note, per
-      [gate.md](gate.md)'s *Resolution lifecycle*; only the
-      resolution note remains on the bead afterwards
-  [test](msg_resolution_removes_originating_options_block_from_notes)
-- The chat session ending mid-walk is a clean `LOOM_COMPLETE`;
-      unresolved clarifies remain visible in the next session
-  [test](loom_msg_chat_partial_progress_leaves_unresolved_clarifies_open)
-- The chat session's only valid exit signal is `LOOM_COMPLETE`
-      (no `LOOM_RETRY`, `LOOM_BLOCKED`, `LOOM_CLARIFY`, `LOOM_NOOP`,
-      or `LOOM_CONCERN` — interactive sessions don't self-report
-      failures because the human is present)
-  [test](loom_msg_chat_rejects_non_complete_exit_signal)
-- Interactive-session crashes (container OOM, observer abort,
-      swallowed marker) exit non-zero with a diagnostic; the driver
-      does NOT auto-retry (the one-free-retry infra-failure path is
-      worker-session only — interactive sessions are cheap to re-
-      invoke and the user is present to redispatch)
-  [test?](msg_chat_crash_exits_nonzero_without_auto_retry)
-- `loom msg -c` with `-s <label>` scopes the chat session to
-      clarifies labeled `spec:<label>`; without `-s`, the session sees
-      every outstanding clarify regardless of active work epic
-  [test](loom_msg_chat_scope_filters_to_spec)
+- Bare `loom inbox` / `loom inbox list` lists every outstanding open
+      `loom:blocked` and `loom:clarify` bead across all specs plus pending,
+      blocked, and apply-failed tune proposal beads (cross-spec default); no
+      active-spec cache value is consulted, and closed beads are excluded even
+      when labels remain
+  [test?](inbox_list_excludes_closed_blocked_or_clarify_beads)
+- `loom inbox list -s <label>` (alias `--spec`) filters the list to items
+      carrying the `spec:<label>` bead label or proposal metadata
+  [test?](inbox_spec_filter_narrows_list_to_matching_spec)
+- `loom inbox list -k clarify|blocked|tune` filters by exclusive item kind;
+      absence of `--kind` means all kinds. Filters narrow before positional
+      numbering and default ordering is group-first (`clarify`, `blocked`,
+      `tune`) then FIFO within each group
+  [test?](inbox_kind_filter_narrows_list)
+- `loom inbox view <N>` / `loom inbox view -b <id>` /
+      `loom inbox view -p <proposal-id>` renders the addressed item host-side
+      without launching a container, including durable ids and manual repair
+      paths; corrupt/unavailable tune proposals remain tune-kind items with
+      blocked status rather than being skipped
+  [test?](inbox_view_modes_render_host_side)
+- `loom inbox` exposes no host-side `pick`, `reply`, `resolve`, `apply`,
+      `--option`, `--text`, `-c/--chat`, or `-d/--dismiss`; conflicting address
+      flags error before any side effects
+  [test?](inbox_removed_flags_and_address_exclusivity)
+- `loom inbox chat`, `loom inbox chat <N>`, `loom inbox chat -b <id>`, and
+      `loom inbox chat -p <proposal-id>` launch an interactive session in a
+      container using the `inbox.md` template; list/view stay host-side
+  [test?](loom_inbox_chat_launches_container)
+- The chat session has full bd-write authority on bead-backed items in its
+      queue and may repair tune proposal artifacts only under
+      `.loom/tune/<id>/repo/`; it never pushes and never leaves
+      `.loom/integration` dirty
+  [test?](inbox_chat_bd_authority_and_tune_repair_scope)
+- The driver does **not** reconcile bd state after an interactive session —
+      no canonical unblock, no status reversion, no label re-application.
+      Whatever bd/proposal state the chat agent (with human authorization)
+      established at session end IS the state, except for the explicit
+      `LOOM_APPLY` handoff
+  [test?](inbox_chat_driver_does_not_reconcile_bd_state_after_session)
+- `LOOM_COMPLETE` from inbox exits cleanly with no driver-side apply;
+      `LOOM_APPLY: {"proposals":[...]}` validates accepted tune proposal ids
+      and triggers one end-of-chat driver apply batch. `LOOM_APPLY` is the sole
+      terminal marker for that session, never paired with `LOOM_COMPLETE`
+  [test?](inbox_apply_marker_triggers_single_driver_handoff)
+- The end-of-chat tune apply batch is all-or-nothing: `cherry_pick_conflict`,
+      `verify_failed`, `review_failed`, or `push_failed` aborts the batch,
+      pushes nothing, leaves `.loom/integration` clean, and marks every proposal
+      in the batch `apply_failed` with shared diagnostics
+  [test?](inbox_apply_batch_is_all_or_nothing)
+- `apply_failed` tune proposals appear in the next default inbox and are not
+      retried automatically; a later chat must explicitly repair/reauthorize a
+      subset or reject/regenerate them
+  [test?](apply_failed_tune_proposals_require_reauthorization)
+- Interactive-session crashes (container OOM, observer abort, swallowed marker)
+      exit non-zero with a diagnostic; the driver does NOT auto-retry
+  [test?](inbox_chat_crash_exits_nonzero_without_auto_retry)
+- `loom inbox chat` with `-s <label>` and/or `-k <kind>` scopes the chat
+      queue; without filters, the session sees every outstanding human decision
+      item regardless of active work epic and normally works them one at a time
+  [test?](loom_inbox_chat_scope_filters_queue)
+- Bare `loom tune` prints command help; `loom tune skill`, `phase`, `partial`,
+      `checker`, and `all` are read-only listing commands that create no tune
+      bead or `.loom/tune/<bead-id>/`
+  [test?](loom_tune_bare_prints_help_without_proposal)
+- `loom tune skill fast|run|full`, `loom tune phase fast|run|full`,
+      `loom tune partial fast|run|full`, and `loom tune all fast|run|full` each
+      create one tune bead plus one isolated `.loom/tune/<bead-id>/` envelope
+      with `repo/`, `manifest.json`, `evidence.md`, logs/evidence caches, and no
+      changes to the invoking checkout
+  [test?](loom_tune_subcommands_create_isolated_proposals)
+- `loom tune ... --dry-run` on a proposal-creating command prints loaded tuning
+      docs, evidence roots, seed, case pool, selected/skipped cases, and the
+      frozen checker plan without candidate generation; `--seed` pins the
+      deterministic sampling seed. `--dry-run` is invalid on list commands.
+  [test?](loom_tune_level_seed_dry_run_shape_plan)
+- `loom tune` prints workspace and explicitly configured external evidence
+      roots before harvesting; no home-directory transcript root is implicit;
+      `[tune.evidence].selection_fraction` drives stable train/selection splits
+  [test?](loom_tune_evidence_roots_printed_and_explicit)
 - `loom spec` queries spec annotations (`[check]` / `[test]` /
       `[system]` / `[judge]`) parsed via `loom-gate`'s annotation parser
   [test](list_for_label_reads_all_four_tiers)
@@ -3379,7 +3524,7 @@ Criteria.
       validates on a clarify-route finding's evidence. Forgetful-
       agent case (marker emitted, options block absent or malformed)
       falls back to `loom:blocked` with cause `clarify-without-options`
-      — no stranded clarify bead reaches `loom msg`
+      — no stranded clarify bead reaches `loom inbox`
   [test?](direct_emit_clarify_without_options_block_falls_back_to_blocked)
 - Clarify downgrades emit `DriverKind::ClarifyDowngraded`, write a bd
       note breadcrumb with cause `clarify-without-options`, and pair the
@@ -3394,7 +3539,7 @@ Criteria.
       `retry-exhausted` (the same exhaustion path as other
       driver-detected recoveries)
   [test?](retry_marker_exhaustion_routes_to_retry_exhausted_blocked)
-- `LOOM_RETRY` from an interactive session (`plan`, `msg`) is a
+- `LOOM_RETRY` from an interactive session (`plan`, `inbox`) is a
       wrong-phase-marker error; the driver exits non-zero with a
       diagnostic and does not apply any label
   [test?](retry_marker_from_interactive_session_is_wrong_phase_error)
@@ -3625,9 +3770,10 @@ two agent-loop observers.
       `AgentEvent` consumer used to format live output is the same
       module used to replay saved logs (no second formatter)
   [check](cargo test -p loom-workflow --lib replay_renders_via_shared_renderer)
-- No `loom sync` / `loom tune` commands exist (compiled templates make
-      them unnecessary)
-  [check](cargo run -p loom-walk -- no_sync_or_tune_command)
+- `loom sync` remains absent, but `loom tune` is present as the manual
+      SkillOpt-style proposal command; the surface-conformance walk rejects
+      any reintroduction of sync and validates the tune subcommand shape
+  [check?](cargo run -p loom-walk -- tune_surface_conformance)
 
 ### Cache database
 
@@ -3752,12 +3898,13 @@ two agent-loop observers.
 ### Compaction recovery
 
 - At session start, `.loom/scratch/<key>/` contains
-      `prompt.txt`, `scratch.md`, `repin.sh` for every phase command
-      (plan, todo, loop, gate, msg)
+      `prompt.txt`, `scratch.md`, `repin.sh`, and any materialized built-in
+      `skills/` for every agent-bearing phase command (plan, todo, loop,
+      gate review, inbox chat)
   [test](open_creates_layout_and_drop_removes_it)
 - `<key>` is the joined anchor-label set (or `plan`) for `loom plan`,
-      the work epic id for `loom todo`, and the bead id for loop/gate/msg
-      worker sessions
+      the work epic id for `loom todo`, the bead id for loop/gate worker
+      sessions, and the addressed item/filter key for inbox chat
   [test](resolve_scratch_key_uses_plan_anchors_work_epic_or_bead)
 - Running `repin.sh` emits a valid `SessionStart[compact]` JSON
       envelope containing banner + `prompt.txt` + `scratch.md` contents
@@ -3860,7 +4007,17 @@ two agent-loop observers.
      `-m/--molecule <id>` or `--tree` and has no bare default. The
      surface-conformance walk (FR13) ships as a `[check]`-tier verifier
      dispatched by `loom gate check`.
-   - `loom msg` — clarify resolution
+   - `loom inbox` — human decision queue for clarifies, blocked beads, and
+     tune proposals. Bare `loom inbox` and `loom inbox list` are read-only;
+     `loom inbox view` renders a numbered, bead-addressed, or proposal-addressed
+     item; and `loom inbox chat` launches the interactive resolution agent.
+     There is no host-side pick/reply/resolve/apply path in v1.
+   - `loom tune` — manual SkillOpt-style tuning surface. Bare `loom tune`
+     prints command help. `loom tune skill` / `phase` / `partial` / `checker` /
+     `all` are read-only listing commands. `loom tune skill fast|run|full`,
+     `phase fast|run|full`, `partial fast|run|full`, and `all fast|run|full`
+     create one tune bead plus a local `.loom/tune/<bead-id>/` proposal envelope
+     for later review through `loom inbox`.
 
    **Inspection** — read-only views over cache, bd state, and logs:
    - `loom status` — print the active work epic, any pending
@@ -3903,13 +4060,17 @@ two agent-loop observers.
    | `loom doctor` | replaced by `loom gate <subcommand>` per-tier dispatch |
    | `loom check` | renamed to `loom gate <subcommand>` per [gate.md](gate.md) |
    | `loom run` | renamed to `loom loop` (current name describes the iteration shape) |
-   | `loom sync` | Askama-compiled templates make per-project sync unnecessary |
-   | `loom tune` | Askama-compiled templates make per-project tune unnecessary |
+   | `loom sync` | Askama-compiled workflow templates make per-project sync unnecessary |
+   | `loom msg` | renamed/replaced by `loom inbox`; no compatibility alias |
+   | `loom inbox -c` / `loom inbox --chat` | chat is the `loom inbox chat` subcommand |
+   | `loom inbox -d` / `loom inbox --dismiss` | resolution happens through `loom inbox chat`; no host-side dismissal path |
+   | `loom inbox pick` / `loom inbox reply` / `loom inbox resolve` | options are chat context, not a host-side executable menu |
+   | `loom inbox apply` | tune proposals may be applied only through `LOOM_APPLY` emitted by `loom inbox chat` and executed by the trusted driver |
 
 2. **Compiled templates with consumer-composable typed building blocks** —
    Askama engine, per-phase templates, partials, and per-phase pinning
    policy live in [templates.md](templates.md). The crate that
-   builds them (`templates`) is one of the eight enumerated below.
+   builds them (`templates`) is one of the workspace crates enumerated above.
    `templates` is **public-contract**: it exposes its typed context
    structs (`PinnedContext`, `PreviousFailure`, `LoopContext`, etc.) and
    partial-string constants so external Rust consumers can compose their
@@ -3962,8 +4123,8 @@ two agent-loop observers.
    review rubric. Driver-detected gate failures and `LOOM_RETRY` self-
    reports enter a bounded recovery loop; agent self-reports
    `LOOM_BLOCKED` / `LOOM_CLARIFY` escalate directly to the human via
-   `loom msg`. The verdict gate applies to **worker sessions only**
-   (`loop`, `todo`, `review`); interactive sessions (`plan`, `msg`)
+   `loom inbox`. The verdict gate applies to **worker sessions only**
+   (`loop`, `todo`, `review`); interactive sessions (`plan`, `inbox`)
    are agent-and-human authoritative — the driver does not mutate bd
    state as a consequence of an interactive session. See [Verdict Gate §
    Interactive vs worker sessions](#verdict-gate) for the full
@@ -4171,17 +4332,16 @@ two agent-loop observers.
   the flag keeps `plan` / `todo` / `loop` path-resolution
   single-shaped. Reintroducing it later is a non-breaking additive
   change if the workflow asks for it.
-- **Override of Loom's workflow templates** — Loom's `plan` / `todo`
-  / `loop` / `review` / `msg` templates are Askama, compiled
-  into the binary. There is no per-project template-fetch /
-  template-tune mechanism for overriding *Loom's own* templates;
-  template updates ship via a new loom release. Project-specific
-  prompt tweaks to Loom's workflow happen via `pinned_context` /
-  `style_rules` config and per-spec implementation notes.
-  Consumers writing their *own* templates (for their own LLM
-  calls via `llm`) compose them from `templates`'
-  exposed typed building blocks — that path is supported and
-  is *not* what this exclusion covers.
+- **Runtime override of Loom's workflow templates** — Loom's `plan` / `todo`
+  / `loop` / `review` / `inbox` templates are Askama, compiled into the
+  binary. `loom tune phase` / `loom tune partial` may propose source edits in an
+  isolated worktree, but there is no per-project runtime template-fetch or
+  hot-override mechanism for Loom's own workflow templates. Project-specific
+  prompt tweaks to Loom's workflow happen via `pinned_context`, `style_rules`,
+  skills, and per-spec implementation notes. Consumers writing their *own*
+  templates (for their own LLM calls via `llm`) compose them from `templates`'
+  exposed typed building blocks — that path is supported and is *not* what this
+  exclusion covers.
 - **Runtime template engine for consumer overrides of Loom's
   workflow templates** — adding a runtime engine (e.g. `minijinja`)
   to allow consumers to drop in replacements for Loom's compiled

@@ -43,7 +43,7 @@ Backends are zero-sized types — `PiBackend`, `ClaudeBackend`, and
 No instances, no constructor.
 
 The backend is resolved **per phase** from config, not once at startup.
-Each workflow command (plan, todo, loop, gate, msg) independently selects
+Each workflow command (plan, todo, loop, gate, inbox) independently selects
 its backend + model. The binary crate exposes a single `dispatch`
 function that matches on the per-phase choice and forwards to a generic
 helper parameterized by backend type. The workflow engine receives that
@@ -73,8 +73,8 @@ backend calls `set_model` after spawn if the phase config specifies a
 provider/model; the direct backend reads `agent.model_id` directly
 into its `Conversation`'s `ModelId`.
 
-`[phase.plan]` and `[phase.msg]` are also valid per-phase keys, but
-the interactive phases (`loom plan`, `loom msg --chat`) bypass this
+`[phase.plan]` and `[phase.inbox]` are also valid per-phase keys, but
+the interactive phases (`loom plan`, `loom inbox chat`) bypass this
 dispatch entirely — see [Interactive Shell-Out](#interactive-shell-out)
 below.
 
@@ -84,7 +84,7 @@ production code change.
 
 ### Interactive Shell-Out
 
-`loom plan` and `loom msg --chat` bypass the agent-backend abstraction
+`loom plan` and `loom inbox chat` bypass the agent-backend abstraction
 and shell out to an interactive REPL with inherited stdio. Both invoke
 `wrix run <workspace> <agent command> ... <prompt>` and let the spawned
 process attach directly to the controlling terminal; the driver-side
@@ -92,7 +92,7 @@ stream-json parser does not run on this path. The command is selected
 from the resolved chat-capable phase backend:
 `claude --dangerously-skip-permissions` for Claude and `pi` for Pi.
 Direct has no interactive REPL command; selecting
-`agent.backend = "direct"` for `plan` or chat `msg` is a configuration
+`agent.backend = "direct"` for `plan` or `inbox chat` is a configuration
 error before any Wrix child process is spawned.
 
 Per-phase config still resolves: each phase's `profile` key flows
@@ -136,6 +136,42 @@ reintroduced.
 Backends carry no per-instance state — the type parameter conveys all
 information. The implementation uses native `async fn` in traits
 (edition 2024) with static dispatch, avoiding the `async-trait` crate.
+
+### Skill Registration and Disclosure
+
+Skill disclosure is derived from the resolved per-phase `agent.backend` plus
+`[skills]` policy, not from a separate backend-like skill mode. Direct behavior
+therefore comes from `agent.backend = "direct"`; no `mode = "direct"` flag
+exists for skills.
+
+The workflow resolves skills before spawning an agent session:
+
+1. `loom-skills` discovers and parses candidates, resolves duplicates and
+   built-in overrides, applies phase/profile filters, and materializes built-ins
+   under the session scratch directory.
+2. The workflow selects a disclosure mode from `[skills].registration`:
+   `auto` (default) or `prompt`.
+3. The prompt receives the `SkillIndexMarkdown` rendered through
+   `partial/skill_index.md`.
+4. The backend spawn path receives a `MaterializedRegistry` plus the selected
+   disclosure mode.
+
+`registration = "auto"` requires native registration for a backend that declares
+native skill support. Native registration failure is a fatal spawn/setup error;
+Loom does not silently fall back to prompt disclosure because that would hide a
+backend capability regression. Backends without native skill support, and all
+sessions when `registration = "prompt"`, use prompt disclosure: the skill index
+contains readable paths and the agent loads full skill bodies on demand.
+
+Direct has no native skill registry in `loom-llm::Conversation`; it always uses
+prompt disclosure. Pi and Claude may use native skill mechanisms only when Loom
+has a concrete, tested registrar for the runtime/version. Loom does not infer
+native support from the product name. Exact per-backend mechanics (config files,
+package directories, or RPC commands) are backend implementation details, but
+the user-visible contract is common: after native registration succeeds, the
+skill index lists `name` + `description` (paths only when
+`[skills].show_paths = "always"`); in prompt disclosure it lists `name` +
+`description` + `path`.
 
 ### Session Lifecycle Contract
 
@@ -319,11 +355,15 @@ Required fields:
   entries at launch — VirtioFS does not pass socket operations across
   the VM boundary — so dolt-over-socket on Darwin needs a TCP-routed
   alternative or a platform gate skipping the socket entry.
-- `initial_prompt` — prompt rendered from the phase template.
+- `initial_prompt` — prompt rendered from the phase template, including the
+  compact skill index for the selected disclosure mode.
 - `agent_args` — extra argv to pass to the agent binary.
 - `scratch_dir` — per-key scratch directory the agent backend reads on
-  compaction events; see [harness.md § Compaction
-  Recovery](harness.md#compaction-recovery).
+  compaction events and where built-in skills are materialized; see
+  [harness.md § Compaction Recovery](harness.md#compaction-recovery).
+- `skills` — host-side materialized skill registry plus disclosure mode. Native
+  backends use it during spawn/setup; prompt-disclosure backends rely on the
+  paths already rendered into `initial_prompt`.
 
 Additionally, `output_limits` (optional, Direct-only) carries
 `max_inline_bytes` — the inline-output cap above which content-returning
@@ -712,6 +752,11 @@ agent.backend = "direct"
 agent.model_id = "claude-sonnet-4-6"
 ```
 
+**Skill disclosure.** Direct has no native Agent Skills registry; skill support
+is prompt disclosure only. The rendered prompt lists applicable skill names,
+descriptions, and readable paths, and the Direct `Read` tool loads full skill
+bodies from those paths when relevant.
+
 **The six tools.** Direct registers six sandbox-aware tools with
 the Conversation: `Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`.
 These are **net-new implementations in `loom-agent::direct`** — not
@@ -1033,16 +1078,29 @@ the entrypoint run the wrong runtime.
   [test](set_thinking_level_tolerates_pi_rejection)
 - Backend runtime names map to the `WRIX_AGENT` child-env values exactly: Pi → `pi`, Claude → `claude`, Direct → `direct`
   [test](agent_runtime_name_maps_to_wrix_agent_values)
+- Skill disclosure mode is derived from resolved `agent.backend` plus
+      `[skills].registration`; there is no separate skill `mode = "direct"`
+  [test?](skill_disclosure_derives_from_backend_and_registration_policy)
+- `registration = "auto"` calls native registration for native-capable backends
+      and fails the spawn/setup path if native registration fails; backends
+      without native support use prompt disclosure
+  [test?](native_skill_registration_failure_is_fatal)
+- `registration = "prompt"` disables native registration globally and renders
+      prompt-disclosure paths for Pi, Claude, and Direct
+  [test?](prompt_skill_registration_policy_disables_native)
+- Direct sessions always use prompt disclosure: the skill index contains paths
+      and full skill bodies are loaded through Direct's `Read` tool on demand
+  [test?](direct_skill_disclosure_uses_readable_paths)
 
 ### Interactive shell-out
 
 - `loom plan` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` and backend-derived `WRIX_AGENT` to `wrix run` (no `--profile` argv flag — `wrix run` has no parser for it), with the profile/runtime image resolved through `LoomConfig::agent_for(Phase::Plan)`
   [test](plan_runner_passes_resolved_profile_runtime_to_wrix_run)
-- `loom msg --chat` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` and backend-derived `WRIX_AGENT` to `wrix run` (no `--profile` argv flag), with the profile/runtime image resolved through `LoomConfig::agent_for(Phase::Msg)`
-  [test](msg_chat_passes_resolved_profile_runtime_to_wrix_run)
+- `loom inbox chat` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` and backend-derived `WRIX_AGENT` to `wrix run` (no `--profile` argv flag), with the profile/runtime image resolved through `LoomConfig::agent_for(Phase::Inbox)`
+  [test?](inbox_chat_passes_resolved_profile_runtime_to_wrix_run)
 - `[phase.default].profile` alone (no per-phase override, no CLI override) reaches `Phase::Plan` via the env-var hand-off
   [test](plan_phase_default_profile_alone_picks_manifest_entry)
-- Direct backend selection for `loom plan` or `loom msg --chat` fails before spawning Wrix because Direct has no interactive REPL command
+- Direct backend selection for `loom plan` or `loom inbox chat` fails before spawning Wrix because Direct has no interactive REPL command
   [test](interactive_shell_out_rejects_direct_backend)
 
 ### Container integration
@@ -1125,15 +1183,21 @@ the entrypoint run the wrong runtime.
    composed by default, `DriverKind::TokenUsage` events — are available
    in Direct sessions.
 6. **Per-phase backend selection** — each workflow phase (plan, todo, loop,
-   gate, msg) independently resolves its backend and model from config.
+   gate, inbox) independently resolves its backend and model from config.
    `[phase.default].agent.backend` sets the fallback (`claude`). Per-phase
    overrides (e.g. `[phase.todo]`) carry `agent.backend` plus optional
    `agent.provider` and `agent.model_id`. Valid `agent.backend` values are
    `claude`, `pi`, and `direct`. `--agent` CLI flag overrides all phase
    config for the current invocation.
-7. **Interactive shell-out profile contract** — `loom plan` and `loom msg
-   --chat` bypass the agent-backend abstraction (so stdio can attach as a
-   REPL) and invoke `wrix run <workspace> <agent command> ... <prompt>`
+7. **Skill registration policy** — before spawn, the workflow passes an
+   applicable/materialized skill registry and disclosure mode to the backend.
+   `registration = "auto"` requires native registration for native-capable
+   backends and treats registration failure as fatal; `registration = "prompt"`
+   disables native registration globally. Direct has no native skill registry
+   and always consumes the prompt-disclosure index plus readable paths.
+8. **Interactive shell-out profile contract** — `loom plan` and
+   `loom inbox chat` bypass the agent-backend abstraction (so stdio can attach
+   as a REPL) and invoke `wrix run <workspace> <agent command> ... <prompt>`
    directly. The profile and chat-capable backend resolved by
    `LoomConfig::agent_for(Phase)` select the image and command together:
    Claude uses `claude --dangerously-skip-permissions`, while Pi uses `pi`.
@@ -1145,7 +1209,7 @@ the entrypoint run the wrong runtime.
    `wrix run` has no `--profile` parser, and extra argv tokens between the
    workspace positional and agent command would be forwarded into the
    container as the command vector (exit 127).
-8. **Agent runtime layer** — the image builder composes two orthogonal axes:
+9. **Agent runtime layer** — the image builder composes two orthogonal axes:
    *workspace profile* (base, rust, python) and *agent runtime* (claude, pi,
    direct). The bundled profile manifest contains concrete entries for the
    configured profile/runtime pairs. The selected runtime layer is added to
@@ -1153,20 +1217,20 @@ the entrypoint run the wrong runtime.
    Direct contributes `loom-direct-runner`, and Claude uses the Claude-capable
    base layer. The variants are distinct image entries rather than multiple
    agent binaries selected from one undifferentiated image.
-9. **Entrypoint agent selection** — `entrypoint.sh` checks `WRIX_AGENT` and:
+10. **Entrypoint agent selection** — `entrypoint.sh` checks `WRIX_AGENT` and:
    - `claude` (default): existing behavior (Claude config merging, hooks,
      `claude --dangerously-skip-permissions`)
    - `pi`: skips Claude-specific config, starts `pi --mode rpc` listening on
      stdin/stdout
    - `direct`: skips Claude-specific config, exec's `loom-direct-runner`
      listening on stdin/stdout
-10. **Event normalization** — all three backends emit a common `AgentEvent` enum so
+11. **Event normalization** — all three backends emit a common `AgentEvent` enum so
     the workflow engine does not need backend-specific event handling.
-11. **JSONL framing** — all three backends' wire protocols use JSON Lines
+12. **JSONL framing** — all three backends' wire protocols use JSON Lines
     (one complete JSON object per line, separated by `\n`). The JSONL
     reader splits on `\n` only, not Unicode line separators (U+2028,
     U+2029). Each line is independently parseable.
-12. **Direct output bounding** — content-returning Direct tools (`Read`,
+13. **Direct output bounding** — content-returning Direct tools (`Read`,
     `Bash`, `Grep`, `Glob`) cap the bytes they place inline at
     `max_inline_bytes` (the `[direct]` block, default 16384). Above the
     cap the tool writes the full payload to a content-addressed file under

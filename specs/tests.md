@@ -910,7 +910,7 @@ the rules:
      and work epic
    - Profile/runtime selection from bead labels plus resolved backend
      (parse, fallback to base, flag override, missing runtime failure)
-   - Interactive `plan` / chat `msg` command construction exports
+   - Interactive `plan` / `inbox chat` command construction exports
      backend-derived `WRIX_AGENT` for Pi/Claude and rejects Direct before
      spawning Wrix
    - Retry logic (failure count tracking, `loom:clarify` label after max
@@ -976,8 +976,8 @@ the rules:
      `[test]` / `[system]` / `[judge]` annotations, opens each referenced
      verifier source, and prints the deduplicated set of nixpkgs needed
    - CLI surface: `loom --help` lists every v1 command (`plan`,
-     `todo`, `loop`, `gate`, `msg`, `spec`, `init`, `status`, `logs`,
-     `note`)
+     `todo`, `loop`, `gate`, `inbox`, `tune`, `spec`, `init`, `status`,
+     `logs`, `note`)
 
    #### Loop UX renderer (loom-workflow)
    - Default mode: header line per bead, one line per tool call, no
@@ -1125,7 +1125,7 @@ the rules:
    invokes `wrix spawn` with `WRIX_AGENT=pi` and
    `MOCK_PI_SCENARIO=happy-path`; the smoke asserts the container exits
    clean and the bead closes.
-   Workflow-level coverage (plan/todo/loop/gate/msg, profile/runtime
+   Workflow-level coverage (plan/todo/loop/gate/inbox/tune, profile/runtime
    selection, agent switching) lives in inline
    `#[cfg(test)] mod tests` blocks under `loom-workflow/src/` — those
    are exercised via `cargo nextest run`, not the smoke.

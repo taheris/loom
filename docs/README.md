@@ -10,6 +10,8 @@ sessions.
 - [`style-rules.md`](style-rules.md) — code-style and test-quality rules
   organized by rule family (SH-, NX-, DOC-, GIT-, TST-, RS-, COM-, CLI-).
   Pinned by `loom loop` and `loom gate review` sessions.
+- [`tuning.md`](tuning.md) — Loom tuning handbook: SkillOpt adaptation,
+  behavioral checker model, `loom-case` syntax, and consumer tuning guidance.
 
 ## Specs
 
@@ -20,6 +22,7 @@ sessions.
 | [harness.md](../specs/harness.md) | [`crates/`](../crates/) | `lm-9ehh` | Platform: crate structure, workspace lints, process architecture, cache store, command set |
 | [llm.md](../specs/llm.md) | [`crates/loom-llm/`](../crates/loom-llm/) | `lm-ywph` | Public-contract LLM primitives: `LlmClient`, typed `CacheControl`, `Conversation` with built-in tool-use loop, agent-loop observers (doom-loop, duplicate-result) |
 | [pre-commit.md](../specs/pre-commit.md) | [`.pre-commit-config.yaml`](../.pre-commit-config.yaml) | `lm-q50m` | Hook composition policy: pre-commit (fast, ~1s) + pre-push (slow, ~10s + smoke) staged via `.pre-commit-config.yaml`; plumbing (lock, shim, install) delegated to `wrix.prekHooks` |
+| [skills.md](../specs/skills.md) | [`crates/loom-skills/`](../crates/loom-skills/) plus planned internal crate `loom-tune` | — | Dynamic agent skill registry, built-in/profile-scoped skills, internal SkillOpt-style tuning engine, and `loom inbox` human review for tuned artifacts |
 | [templates.md](../specs/templates.md) | [`crates/loom-templates/`](../crates/loom-templates/) | `lm-pe00` | Askama templates, partials inventory, per-phase pinning policy |
 | [tests.md](../specs/tests.md) | [`tests/`](../tests/) | `lm-lsyj` | Test strategy: unit, integration, system tests |
 
@@ -31,12 +34,16 @@ sessions.
 | **Beads** | Persistent issue tracker used by Loom and the `bd` CLI |
 | **JSONL** | JSON Lines — one complete JSON object per `\n`-terminated line; protocol framing for both pi-mono RPC and Claude stream-json |
 | **Loom** | Rust workflow orchestrator: spec-to-implementation pipeline with pi-mono, Claude Code, and Direct (loom-llm) backends |
-| **loom:clarify** | Bead label for items awaiting human response via `loom msg` |
+| **loom:clarify** | Bead label for items awaiting human response via `loom inbox` |
 | **Agent runtime** | Closed-set backend runtime selected by `agent.backend`: `pi`, `claude`, or `direct` |
 | **Molecule** | Cross-cutting work grouping in Beads; Loom's CLI-facing decomposition container is the work epic for a changed-spec batch. |
 | **pi** | Pi-mono stdio-RPC agent runtime; one backend Loom drives |
 | **Profile** | Workspace toolchain axis (`base`, `rust`, `python`, …) paired with an agent runtime to select a sandbox image |
 | **Scratchpad** | Per-session note file under `.loom/scratch/<key>/`, used for compaction recovery |
 | **Spec epic** | Durable per-spec Beads epic labelled `loom:spec` + `spec:<label>`; carries metadata such as `loom.todo_cursor` |
+| **Skill** | Markdown agent capability package or loose skill file, identified by frontmatter `name` and progressively disclosed to agent backends |
+| **Skill registry** | Effective per-session set of built-in, repo, configured, and override skills after profile/phase filtering and duplicate-name validation |
 | **SpecLabel** | The kebab-case identifier matching a `specs/<label>.md` file |
+| **Tune proposal** | Tune bead plus local `.loom/tune/<bead-id>/` envelope (`repo/`, manifest, evidence appendix) containing SkillOpt-style candidate edits awaiting human review through `loom inbox` |
+| **Tuning case** | Strict TOML `loom-case` block in `docs/tuning.md` or package `tuning.md`, naming a built-in behavioral checker and explicit tune targets |
 | **Work epic** | Per-`loom todo` decomposition batch epic; `loom:todo` while pending, `loom:active` when it is the default `loom loop` target |
