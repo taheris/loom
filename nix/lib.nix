@@ -75,7 +75,7 @@ in
         profileName: profileManifest:
         mapAttrs (
           runtime: entry:
-          entry
+          entry.${runtime}
           // {
             inherit runtime;
           }
