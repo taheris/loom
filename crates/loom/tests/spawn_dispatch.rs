@@ -146,9 +146,11 @@ fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::pro
     // empty `{}` would surface as ProfileError::UnknownProfile.
     let manifest_path = workspace.join("profile-images.json");
     let image_source = workspace.join("rust.tar");
+    let image_digest = workspace.join("rust.digest");
     let pi_profile_config = workspace.join("wrix-rust-pi-profile-config.json");
     let direct_profile_config = workspace.join("wrix-rust-direct-profile-config.json");
     std::fs::write(&image_source, "").expect("write stub image source");
+    std::fs::write(&image_digest, "sha256:abc").expect("write stub image digest");
     std::fs::write(&pi_profile_config, r#"{"agent":{"kind":"pi"}}"#)
         .expect("write pi profile config");
     std::fs::write(&direct_profile_config, r#"{"agent":{"kind":"direct"}}"#)
@@ -164,9 +166,10 @@ fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::pro
         .expect("write loom config");
     let manifest_body = format!(
         r#"{{
-          "rust": {{ "pi": {{ "ref": "localhost/wrix-rust-pi:test", "source": {source:?}, "profile_config": {pi_profile_config:?} }}, "direct": {{ "ref": "localhost/wrix-rust-direct:test", "source": {source:?}, "profile_config": {direct_profile_config:?} }} }}
+          "rust": {{ "pi": {{ "ref": "localhost/wrix-rust-pi:test", "source": {source:?}, "profile_config": {pi_profile_config:?}, "digest": {digest:?} }}, "direct": {{ "ref": "localhost/wrix-rust-direct:test", "source": {source:?}, "profile_config": {direct_profile_config:?}, "digest": {digest:?} }} }}
         }}"#,
         source = image_source.display().to_string(),
+        digest = image_digest.display().to_string(),
         pi_profile_config = pi_profile_config.display().to_string(),
         direct_profile_config = direct_profile_config.display().to_string(),
     );
@@ -393,6 +396,19 @@ fn wrix_spawn_invocation_records_correct_argv() {
     // the resolved image_ref + image_source from the manifest written by
     // `drive_loom_todo_pi` (`rust` + `pi` maps to `localhost/wrix-rust-pi:test`).
     let bytes = std::fs::read(&spawn_copy).expect("shim should copy spawn-config aside");
+    let raw: serde_json::Value = serde_json::from_slice(&bytes).expect("spawn-config must be JSON");
+    assert!(
+        raw.get("profile_config").is_none(),
+        "wrix rejects profile_config as a per-launch override: {raw}",
+    );
+    assert!(
+        raw.get("image_digest_path").is_none(),
+        "wrix rejects image_digest_path as a per-launch override: {raw}",
+    );
+    assert!(
+        raw.get("image_digest").is_none(),
+        "image digest belongs to the selected ProfileConfig, not SpawnConfig: {raw}",
+    );
     let cfg: loom_driver::agent::SpawnConfig =
         serde_json::from_slice(&bytes).expect("spawn-config must deserialize");
     assert_eq!(

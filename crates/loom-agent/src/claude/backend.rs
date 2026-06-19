@@ -2,12 +2,13 @@
 //!
 //! [`ClaudeBackend::spawn`] writes the re-pin files into the workspace
 //! runtime dir, serializes the [`SpawnConfig`] to JSON, and execs `wrix
-//! spawn --spawn-config <file> --stdio` with stdin/stdout piped. The
+//! --profile-config <file> spawn --spawn-config <file> --stdio` with
+//! stdin/stdout piped. The
 //! watchdog ([`ClaudeBackend::shutdown_after_result`]) handles the
 //! post-`result` cleanup: drop the writer, wait `grace`, escalate
 //! SIGTERM → SIGKILL.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -67,11 +68,11 @@ impl AgentBackend for ClaudeBackend {
             "claude backend spawn",
         );
 
-        let mut cmd = Command::new(&wrix_bin);
-        cmd.arg("spawn")
-            .arg("--spawn-config")
-            .arg(&spawn_config_path)
-            .arg("--stdio");
+        let mut cmd = build_wrix_command(
+            &wrix_bin,
+            config.profile_config.as_deref(),
+            &spawn_config_path,
+        );
         apply_launcher_env(&mut cmd, &config.launcher_env);
 
         spawn_session(cmd, Vec::new()).await
@@ -194,6 +195,22 @@ pub(crate) async fn spawn_session(
     ))
 }
 
+fn build_wrix_command(
+    wrix_bin: &OsStr,
+    profile_config: Option<&Path>,
+    spawn_config_path: &Path,
+) -> Command {
+    let mut cmd = Command::new(wrix_bin);
+    if let Some(profile_config) = profile_config {
+        cmd.arg("--profile-config").arg(profile_config);
+    }
+    cmd.arg("spawn")
+        .arg("--spawn-config")
+        .arg(spawn_config_path)
+        .arg("--stdio");
+    cmd
+}
+
 fn write_spawn_config(runtime_dir: &Path, config: &SpawnConfig) -> Result<PathBuf, ProtocolError> {
     std::fs::create_dir_all(runtime_dir).map_err(ProtocolError::Io)?;
     let path = runtime_dir.join(SPAWN_CONFIG_FILE);
@@ -294,8 +311,9 @@ mod tests {
         let cfg = SpawnConfig {
             image_ref: "localhost/wrix-test:claude".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-claude.tar"),
-            profile_config: None,
-            image_digest_path: None,
+            profile_config: Some(PathBuf::from(
+                "/nix/store/wrix-test-claude-profile-config.json",
+            )),
             workspace: workspace.path().to_path_buf(),
             env: vec![("WRIX_AGENT".into(), "claude".into())],
             mounts: vec![],
@@ -334,6 +352,29 @@ mod tests {
         assert_eq!(decoded.image_source, cfg.image_source);
         assert_eq!(decoded.initial_prompt, cfg.initial_prompt);
         assert_eq!(decoded.agent_args, cfg.agent_args);
+    }
+
+    #[test]
+    fn wrix_command_uses_profile_config_before_spawn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let spawn_config_path = dir.path().join("loom-spawn.json");
+        let profile_config = Path::new("/nix/store/wrix-claude-profile-config.json");
+        let cmd = build_wrix_command(OsStr::new("wrix"), Some(profile_config), &spawn_config_path);
+        let std_cmd = cmd.as_std();
+
+        assert_eq!(std_cmd.get_program(), OsStr::new("wrix"));
+        let args: Vec<&OsStr> = std_cmd.get_args().collect();
+        assert_eq!(
+            args,
+            vec![
+                OsStr::new("--profile-config"),
+                profile_config.as_os_str(),
+                OsStr::new("spawn"),
+                OsStr::new("--spawn-config"),
+                spawn_config_path.as_os_str(),
+                OsStr::new("--stdio"),
+            ],
+        );
     }
 
     // -- test_claude_supports_steering -------------------------------------

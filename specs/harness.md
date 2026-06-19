@@ -59,7 +59,7 @@ loom (host)
     ├─ build SpawnConfig (image_ref, image_source, env allowlist, mounts, scratch_dir)
     ├─ serialize to /tmp/loom-<id>.json
     │
-    ├─ spawn: wrix spawn --spawn-config /tmp/loom-<id>.json --stdio
+    ├─ spawn: wrix --profile-config <file> spawn --spawn-config /tmp/loom-<id>.json --stdio
     │   │
     │   └─ exec podman run [no -t, stdio piped] <image> <entrypoint>
     │       │
@@ -471,16 +471,19 @@ accumulated wouldn't transfer to the loom workspace.
 
 The *profile-image manifest* is a JSON file produced by Nix at flake-build
 time that maps each workspace profile and agent runtime to the podman ref,
-Nix store path, and optional content-digest path needed to spawn its image.
-Loom reads it at startup and, for each container spawn, looks up the resolved
-profile/runtime pair to populate `SpawnConfig.image_ref` (the podman ref),
-`SpawnConfig.image_source` (the store path handed to the launcher install
-step), and `SpawnConfig.image_digest_path` (the digest file wrix uses to
-skip reloading already-present image content).
+Nix store path, optional wrix ProfileConfig path, and optional content-digest
+path needed to spawn its image. Loom reads it at startup and, for each container
+spawn, looks up the resolved profile/runtime pair to populate
+`SpawnConfig.image_ref` (the podman ref), `SpawnConfig.image_source` (the
+store path handed to the launcher install step), and the host-only
+`SpawnConfig.profile_config` path passed as `wrix --profile-config`. The
+image digest is not a `SpawnConfig` field; wrix reads it from the matching
+ProfileConfig image and rejects per-launch digest overrides.
 
 The file is a JSON object keyed first by profile name and then by agent
-runtime. Each runtime entry has two required string fields plus an optional
-`digest` string. An abbreviated example:
+runtime. Each runtime entry has two required string fields, a `profile_config`
+string in current wrix manifests, and an optional `digest` string. An
+abbreviated example:
 
 ```json
 {
@@ -488,16 +491,19 @@ runtime. Each runtime entry has two required string fields plus an optional
     "claude": {
       "ref": "localhost/wrix-base-claude:abc123",
       "source": "/nix/store/...-image-base-claude",
+      "profile_config": "/nix/store/...-wrix-base-claude-profile-config.json",
       "digest": "/nix/store/...-image-base-claude-digest"
     },
     "pi": {
       "ref": "localhost/wrix-base-pi:def456",
       "source": "/nix/store/...-image-base-pi",
+      "profile_config": "/nix/store/...-wrix-base-pi-profile-config.json",
       "digest": "/nix/store/...-image-base-pi-digest"
     },
     "direct": {
       "ref": "localhost/wrix-base-direct:ghi789",
       "source": "/nix/store/...-image-base-direct",
+      "profile_config": "/nix/store/...-wrix-base-direct-profile-config.json",
       "digest": "/nix/store/...-image-base-direct-digest"
     }
   },
@@ -505,6 +511,7 @@ runtime. Each runtime entry has two required string fields plus an optional
     "pi": {
       "ref": "localhost/wrix-rust-pi:jkl012",
       "source": "/nix/store/...-image-rust-pi",
+      "profile_config": "/nix/store/...-wrix-rust-pi-profile-config.json",
       "digest": "/nix/store/...-image-rust-pi-digest"
     }
   }
@@ -538,8 +545,10 @@ Per-bead dispatch is:
    set so the operator can relabel or rebuild the manifest. Same routing as
    `infra-preflight` (see *Verdict gate* below).
 4. Build `SpawnConfig` with `image_ref = entry.ref`, `image_source =
-   entry.source`, and `image_digest_path = entry.digest` when present. Hand it
-   to `wrix spawn`.
+   entry.source`, and host-only `profile_config = entry.profile_config` when
+   present. Hand it to `wrix spawn`; `entry.digest` is not serialized into
+   the per-launch JSON because the matching ProfileConfig supplies the image
+   digest.
 
 Loom derives `WRIX_AGENT` from the same `AgentRuntime` and places it in
 both `SpawnConfig.launcher_env` for the host-side `wrix spawn` child
@@ -2724,22 +2733,21 @@ Criteria.
 - Loom never invokes `podman run` directly (grep `crates/` for
       `podman` finds only documentation references)
   [check](cargo run -p loom-walk -- loom_does_not_invoke_podman)
-- `wrix spawn --spawn-config <file> --stdio` accepts a JSON config,
+- `wrix --profile-config <file> spawn --spawn-config <file> --stdio` accepts a JSON config,
       reuses container construction from existing `wrix run`, omits TTY
   [test](wrix_spawn_invocation_records_correct_argv)
 - `SpawnConfig` JSON shape is stable: serialization round-trip preserves
-      all fields and key names, including the `image_ref`, `image_source`,
-      and optional `image_digest_path` fields
-  [test](spawn_config_with_image_digest_path_round_trips)
+      documented per-launch fields and key names, including `image_ref` and
+      `image_source`, while omitting ProfileConfig-only host fields
+  [test](spawn_config_omits_profile_manifest_host_only_fields_from_wrix_json)
 - `wrix spawn` installs from `image_source` (a Nix store path) before
-      invoking podman with `image_ref` as the ref; when `image_digest_path`
-      is present, wrix skips reloading bytes if the same content already
+      invoking podman with `image_ref` as the ref; the selected ProfileConfig
+      image digest lets wrix skip reloading bytes if the same content already
       exists in the local image store
   [system](nix run .#test)
 - Per-bead profile/runtime selection: two beads with different profile
       labels or backend runtimes result in `wrix spawn` invocations with
-      the matching `image_ref` and `image_source` (and digest paths when
-      present)
+      the matching `image_ref`, `image_source`, and ProfileConfig
   [test?](per_bead_profile_runtime_dispatch_produces_distinct_image_refs)
 - Loom reads `LOOM_PROFILES_MANIFEST` at startup and parses it into
       `BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>`; missing

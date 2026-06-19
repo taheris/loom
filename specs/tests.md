@@ -597,8 +597,8 @@ in Functional #4.
       data → loom fails fast with a version-mismatch error
   [test](pi_startup_probe_fails_with_bad_get_state_shape)
 - `wrix spawn` argv contract: loom invokes
-      `wrix spawn --spawn-config <file> --stdio` with stdin
-      attached as a pipe (not a TTY); recorded `SpawnConfig` JSON
+      `wrix --profile-config <file> spawn --spawn-config <file> --stdio`
+      with stdin attached as a pipe (not a TTY); recorded `SpawnConfig` JSON
       matches the on-disk shape
   [test](wrix_spawn_invocation_records_correct_argv)
 - `WRIX_AGENT` launcher-env contract: command construction is exercised
@@ -831,7 +831,7 @@ the rules:
    - Config file loading (TOML parsing into `LoomConfig`), defaults when
      file is absent or fields are missing
    - `SpawnConfig` JSON serialization round-trips with stable field ordering
-     and key names (the contract with `wrix spawn --spawn-config`).
+     and key names (the contract with `wrix --profile-config <file> spawn --spawn-config`).
      Adding a field is non-breaking; renaming or removing one is — the test
      pins the on-disk shape so changes surface as test failures, not silent
      wire-format drift. Includes the optional

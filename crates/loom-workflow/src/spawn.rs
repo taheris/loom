@@ -37,7 +37,6 @@ pub fn build_spawn_config(
         image_ref: diagnostics.image_ref,
         image_source: entry.source.clone(),
         profile_config: entry.profile_config.clone(),
-        image_digest_path: entry.digest.clone(),
         workspace,
         env,
         mounts,
@@ -157,6 +156,35 @@ mod tests {
         assert_eq!(
             cfg.profile_config,
             Some(PathBuf::from("/nix/store/wrix-rust-pi-profile-config.json")),
+        );
+    }
+
+    #[test]
+    fn spawn_config_omits_profile_manifest_host_only_fields_from_wrix_json() {
+        let cfg = build_spawn_config(
+            &entry(),
+            AgentRuntime::Pi,
+            PathBuf::from("/workspace"),
+            "prompt".into(),
+            PathBuf::from("/workspace/.loom/scratch/key"),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+
+        let json = serde_json::to_string(&cfg).expect("serialize spawn config");
+        assert!(
+            !json.contains("profile_config"),
+            "wrix rejects profile_config as a per-launch override: {json}",
+        );
+        assert!(
+            !json.contains("image_digest_path"),
+            "wrix rejects image_digest_path as a per-launch override: {json}",
+        );
+        assert!(
+            !json.contains("image_digest"),
+            "wrix digest selection must stay in ProfileConfig, not SpawnConfig: {json}",
         );
     }
 

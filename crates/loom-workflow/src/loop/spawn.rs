@@ -193,10 +193,6 @@ mod tests {
             cfg_rust.image_source,
             PathBuf::from("/nix/store/bbb-image-rust-pi")
         );
-        assert_eq!(
-            cfg_rust.image_digest_path,
-            Some(PathBuf::from("/nix/store/ddd-image-rust-pi-digest"))
-        );
         assert_eq!(cfg_python.image_ref, "localhost/wrix-python-pi:ghi");
         assert_eq!(
             cfg_python.image_source,

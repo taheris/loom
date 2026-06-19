@@ -14,8 +14,8 @@ pub const ENV_VAR: &str = "LOOM_PROFILES_MANIFEST";
 
 /// One manifest entry: the podman ref to spawn, the Nix store path of the
 /// image archive that materializes it, the wrix ProfileConfig path matching
-/// that image variant, and (when produced by modern wrix) the content-digest
-/// file used to skip redundant image loads.
+/// that image variant, and (when produced by the flake glue) the image
+/// content-digest file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {
     /// Podman ref (e.g. `localhost/wrix-rust-pi:abc123`) handed to `podman run`.
@@ -26,9 +26,10 @@ pub struct ImageEntry {
     /// Optional Nix store path of the wrix ProfileConfig matching this image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_config: Option<PathBuf>,
-    /// Optional Nix store path containing the image content digest. The wrix
-    /// launcher uses this for content-addressed image-cache preflight so tag
-    /// changes do not force re-streaming identical layer tarballs.
+    /// Optional Nix store path containing the image content digest. The
+    /// matching ProfileConfig carries the digest to wrix; Loom parses this
+    /// manifest field for compatibility and must not serialize it as a
+    /// per-launch SpawnConfig override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<PathBuf>,
     /// Optional typed runtime metadata emitted by newer manifest builders.

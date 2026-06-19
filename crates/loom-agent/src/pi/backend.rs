@@ -650,7 +650,6 @@ mod tests {
             image_ref: "localhost/wrix-test:pi".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-pi.tar"),
             profile_config: Some(PathBuf::from("/nix/store/wrix-test-pi-profile-config.json")),
-            image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "pi".into())],
             mounts: vec![],

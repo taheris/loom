@@ -63,20 +63,31 @@ impl AgentBackend for DirectBackend {
             "direct backend spawn",
         );
 
-        let mut cmd = build_wrix_command(&wrix_bin, &spawn_config_path);
+        let mut cmd = build_wrix_command(
+            &wrix_bin,
+            config.profile_config.as_deref(),
+            &spawn_config_path,
+        );
         apply_launcher_env(&mut cmd, &config.launcher_env);
         spawn_session(cmd).await
     }
 }
 
-/// Build the `<wrix_bin> spawn --spawn-config <file> --stdio` command
-/// [`DirectBackend::spawn`] launches. The argv shape is the load-bearing
-/// contract loom owes the wrix wrapper: the wrapper resolves `<file>`
-/// as a JSON [`SpawnConfig`] and `--stdio` selects the JSONL wire path
-/// (rather than a TTY attach). Extracted so tests can pin the contract
-/// without spawning a child or mutating the process env.
-pub(crate) fn build_wrix_command(wrix_bin: &OsStr, spawn_config_path: &Path) -> Command {
+/// Build the `<wrix_bin> --profile-config <file> spawn --spawn-config <file>
+/// --stdio` command [`DirectBackend::spawn`] launches. The argv shape is the
+/// load-bearing contract loom owes the wrix wrapper: the wrapper resolves
+/// `<file>` as a JSON [`SpawnConfig`] and `--stdio` selects the JSONL wire path
+/// (rather than a TTY attach). Extracted so tests can pin the contract without
+/// spawning a child or mutating the process env.
+pub(crate) fn build_wrix_command(
+    wrix_bin: &OsStr,
+    profile_config: Option<&Path>,
+    spawn_config_path: &Path,
+) -> Command {
     let mut cmd = Command::new(wrix_bin);
+    if let Some(profile_config) = profile_config {
+        cmd.arg("--profile-config").arg(profile_config);
+    }
     cmd.arg("spawn")
         .arg("--spawn-config")
         .arg(spawn_config_path)
@@ -312,8 +323,9 @@ mod tests {
         SpawnConfig {
             image_ref: "localhost/wrix-test:direct".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-direct.tar"),
-            profile_config: None,
-            image_digest_path: None,
+            profile_config: Some(PathBuf::from(
+                "/nix/store/wrix-test-direct-profile-config.json",
+            )),
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "direct".into())],
             mounts: vec![],
@@ -358,10 +370,10 @@ mod tests {
         assert_eq!(decoded.agent_args, cfg.agent_args);
     }
 
-    /// Spec contract (`specs/agent.md` § Direct backend, L753–754):
-    /// `DirectBackend::spawn` launches `wrix spawn --spawn-config <file>
-    /// --stdio`, and the spawn-config the wrapper reads carries
-    /// `WRIX_AGENT=direct` so the container's entrypoint dispatches to
+    /// Spec contract (`specs/agent.md` § Direct backend):
+    /// `DirectBackend::spawn` launches `wrix --profile-config <file> spawn
+    /// --spawn-config <file> --stdio`, and the spawn-config the wrapper
+    /// reads carries `WRIX_AGENT=direct` so the container's entrypoint dispatches to
     /// the direct runtime layer (`lib/sandbox/linux/entrypoint.sh` exec's
     /// `loom-direct-runner` on this value). Both halves of the contract
     /// are pinned here: the argv shape via [`build_wrix_command`]
@@ -383,7 +395,8 @@ mod tests {
         let spawn_config_path = prepare_runtime(&cfg).expect("prepare_runtime");
 
         let wrix_bin = OsStr::new("wrix");
-        let cmd = build_wrix_command(wrix_bin, &spawn_config_path);
+        let profile_config = cfg.profile_config.as_deref().expect("profile config");
+        let cmd = build_wrix_command(wrix_bin, Some(profile_config), &spawn_config_path);
         let std_cmd = cmd.as_std();
 
         assert_eq!(
@@ -395,12 +408,14 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                OsStr::new("--profile-config"),
+                profile_config.as_os_str(),
                 OsStr::new("spawn"),
                 OsStr::new("--spawn-config"),
                 spawn_config_path.as_os_str(),
                 OsStr::new("--stdio"),
             ],
-            "argv contract is `spawn --spawn-config <file> --stdio`; got={args:?}",
+            "argv contract is `--profile-config <file> spawn --spawn-config <file> --stdio`; got={args:?}",
         );
 
         let bytes = std::fs::read(&spawn_config_path).expect("read spawn-config");

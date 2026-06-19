@@ -25,15 +25,11 @@ pub struct SpawnConfig {
     pub image_source: PathBuf,
     /// Wrix ProfileConfig path selected from the same manifest entry as
     /// [`SpawnConfig::image_ref`]. Host-side backends pass it as a launcher
-    /// flag rather than serializing it into the spawn-config JSON.
+    /// flag rather than serializing it into the spawn-config JSON; the
+    /// ProfileConfig carries the matching image digest for wrix install
+    /// preflight.
     #[serde(skip)]
     pub profile_config: Option<PathBuf>,
-    /// Optional Nix store path containing the image content digest. Modern
-    /// wrix launchers use this to skip image installation when the same
-    /// content already exists under any tag, avoiding cold layer reloads when
-    /// only the generated ref changes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_digest_path: Option<PathBuf>,
     pub workspace: PathBuf,
     pub env: Vec<(String, String)>,
     /// Per-spawn bind mounts beyond [`SpawnConfig::workspace`]. Loom uses this
@@ -325,7 +321,6 @@ mod tests {
             image_ref: "localhost/wrix-test:tag".into(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test.tar"),
             profile_config: None,
-            image_digest_path: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "pi".into())],
             mounts: Vec::new(),
@@ -364,7 +359,7 @@ mod tests {
         );
         assert!(
             !obj.contains_key("image_digest_path"),
-            "image_digest_path: None must be omitted, got JSON: {json}"
+            "image_digest_path is not a SpawnConfig wire field: {json}"
         );
         // Seven top-level keys remain — any silent rename or drop fails here.
         let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
@@ -382,16 +377,22 @@ mod tests {
     }
 
     #[test]
-    fn spawn_config_with_image_digest_path_round_trips() {
-        let mut cfg = sample_config(None);
-        cfg.image_digest_path = Some(PathBuf::from("/nix/store/ddd-wrix-digest"));
+    fn spawn_config_ignores_undocumented_image_digest_path() {
+        let legacy = r#"{
+            "image_ref": "localhost/img:tag",
+            "image_source": "/nix/store/zzz-img.tar",
+            "image_digest_path": "/nix/store/ddd-wrix-digest",
+            "workspace": "/workspace",
+            "env": [["A","1"]],
+            "initial_prompt": "go",
+            "agent_args": [],
+            "repin": {"orientation":"o","pinned_context":"p","partial_bodies":[]}
+        }"#;
+        let cfg: SpawnConfig = serde_json::from_str(legacy).expect("legacy fixture parses");
         let json = serde_json::to_string(&cfg).expect("serialize");
-        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        assert_eq!(v["image_digest_path"], "/nix/store/ddd-wrix-digest");
-        let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(
-            back.image_digest_path,
-            Some(PathBuf::from("/nix/store/ddd-wrix-digest"))
+        assert!(
+            !json.contains("image_digest_path"),
+            "image_digest_path is a wrix ProfileConfig field, not a SpawnConfig override: {json}",
         );
     }
 
@@ -503,7 +504,6 @@ mod tests {
         }"#;
         let cfg: SpawnConfig = serde_json::from_str(legacy).expect("legacy fixture parses");
         assert!(cfg.model.is_none());
-        assert!(cfg.image_digest_path.is_none());
         assert_eq!(cfg.image_ref, "localhost/img:tag");
         assert_eq!(cfg.image_source, PathBuf::from("/nix/store/zzz-img.tar"));
         assert_eq!(cfg.env, vec![("A".to_string(), "1".to_string())]);
@@ -550,7 +550,6 @@ mod tests {
         let json = serde_json::to_string(&cfg).expect("serialize");
         for absent in [
             "\"mounts\":",
-            "\"image_digest_path\":",
             "\"model\":",
             "\"thinking_level\":",
             "\"output_limits\":",

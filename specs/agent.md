@@ -335,9 +335,6 @@ Required fields:
 - `image_ref` — podman image reference (e.g. `localhost/wrix-rust-pi:<hash>`).
 - `image_source` — Nix store path the launcher uses to materialize that ref
   when needed.
-- `image_digest_path` — optional Nix store path containing the image content
-  digest. Modern wrix launchers use it to skip reloading identical image
-  content that is already present under any tag.
 - `workspace` — host path bind-mounted into the container at
   `/workspace`.
 - `env` — explicit env allowlist (table below); the host environment is
@@ -370,9 +367,12 @@ Additionally, `output_limits` (optional, Direct-only) carries
 Direct tools offload to the scratch offload directory. See [Direct Output
 Bounding](#direct-output-bounding).
 
-`image_ref`, `image_source`, and optional `image_digest_path` come from the profile-image manifest at
+`image_ref` and `image_source` come from the profile-image manifest at
 dispatch time — see [harness.md — Profile-Image
-Manifest](harness.md#profile-image-manifest).
+Manifest](harness.md#profile-image-manifest). The matching ProfileConfig path
+comes from the same manifest and is passed to `wrix --profile-config` as
+host-only backend state. Image digests live in that ProfileConfig, not in the
+per-launch `SpawnConfig` JSON.
 
 `SpawnConfig` also carries a host-only `launcher_env` map that is
 `#[serde(skip)]`-excluded from the JSON file. Backends apply it to the
@@ -408,7 +408,7 @@ loom (host)                                            container
     │                                                       │
     ├─ serialize SpawnConfig → /tmp/loom-<id>.json          │
     ├─ set launcher env: WRIX_AGENT=<runtime>, keys…        │
-    ├─ wrix spawn --spawn-config <file> --stdio        │
+    ├─ wrix --profile-config <file> spawn --spawn-config <file> --stdio
     │   └─ exec podman run [no TTY, stdio piped] ─►  entrypoint.sh
     │                                                       │
     │                                                  agent (pi --mode rpc / claude / loom-direct-runner)
@@ -957,8 +957,8 @@ the entrypoint run the wrong runtime.
   [test](all_backends_dispatch_through_run_agent)
 - `AgentEvent` enum covers: AgentStart, AgentEnd, TurnStart, TextDelta, TextEnd, ThinkingDelta, ThinkingEnd, ToolcallDelta, ToolCall, ToolResult, ToolProgress, TurnEnd, SessionComplete, CompactionStart, CompactionEnd, AutoRetry, Error, DriverEvent
   [check](cargo test -p loom-events --lib every_spec_variant_present)
-- `SpawnConfig` struct captures image_ref, image_source, optional image_digest_path, workspace, env, initial_prompt, agent_args, scratch_dir
-  [check](cargo test -p loom-driver --lib spawn_config_with_image_digest_path_round_trips)
+- `SpawnConfig` struct captures image_ref, image_source, workspace, env, initial_prompt, agent_args, scratch_dir, and omits ProfileConfig-only host fields from JSON
+  [check](cargo test -p loom-workflow --lib spawn_config_omits_profile_manifest_host_only_fields_from_wrix_json)
 - `SpawnConfig.launcher_env` exists as host-only state and is skipped from spawn-config JSON serialization
   [test](launcher_env_is_never_serialized)
 - Typestate `AgentSession<Idle>` / `AgentSession<Active>` exists as an internal host-side lifecycle mechanic for JSONL subprocess sessions. It does not leak through the `Session` interoperability trait; Direct's in-container conversation loop carries no Pi / Claude handshake typestate.
@@ -1105,8 +1105,8 @@ the entrypoint run the wrong runtime.
 
 ### Container integration
 
-- Loom spawns containers via `wrix spawn --spawn-config <file>
-      --stdio` with the correct profile/runtime image, never via `podman run` directly
+- Loom spawns containers via `wrix --profile-config <file> spawn
+      --spawn-config <file> --stdio` with the correct profile/runtime image, never via `podman run` directly
   [test](wrix_spawn_invocation_records_correct_argv)
 - Every `wrix spawn` child process receives `WRIX_AGENT` from the resolved backend runtime, independent of whether the parent shell has `WRIX_AGENT` set
   [test](wrix_spawn_child_env_sets_backend_derived_wrix_agent)
@@ -1139,8 +1139,8 @@ the entrypoint run the wrong runtime.
 ### Functional
 
 1. **Host-side execution** — Loom runs on the host, not inside containers. It
-   spawns per-bead containers by invoking `wrix spawn --spawn-config
-   <file> --stdio` (a thin wrix subcommand that owns container construction)
+   spawns per-bead containers by invoking `wrix --profile-config <file>
+   spawn --spawn-config <file> --stdio` (a thin wrix subcommand that owns container construction)
    and communicates with the agent process inside via stdin/stdout pipes.
    Loom never calls `podman run` directly; see
    [harness.md — Process Architecture](harness.md#process-architecture).

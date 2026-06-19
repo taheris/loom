@@ -661,7 +661,6 @@ agent.backend = "claude"
                 image_ref: "localhost/wrix:tag".into(),
                 image_source: PathBuf::from("/nix/store/zzz-wrix.tar"),
                 profile_config: None,
-                image_digest_path: None,
                 workspace: PathBuf::from("/workspace"),
                 env: vec![("WRIX_AGENT".into(), "direct".into())],
                 mounts: Vec::new(),
