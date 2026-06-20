@@ -39,8 +39,8 @@ pub enum AgentOutcome {
     /// Consumes one `[loop] max_retries` slot via the same counter as
     /// `Failure`; the verbatim `reason` rides through to the next attempt's
     /// `PreviousFailure::AgentRetry { reason }`. Exhaustion routes to
-    /// `loom:blocked` cause `retry-exhausted` (distinct from the
-    /// `Failure`-exhaustion path which routes to `loom:clarify`).
+    /// `loom:blocked` cause `retry-exhausted`, matching other
+    /// driver-detected retry exhaustion.
     Retry { reason: String },
 
     /// The driver-side rebase of the bead branch onto the integration

@@ -1330,7 +1330,7 @@ documents in front of the agent with zero configuration.
   `attempt = 0` regardless of the failing bead's prior attempts
   [test](fix_up_bead_starts_at_attempt_zero)
 - Attempt counter is bounded by `[loop] max_retries` (default 2)
-  [test](failed_bead_retries_with_previous_failure_then_clarifies)
+  [test](failed_bead_retries_with_previous_failure_then_blocks)
 
 ### First-instruction reframe
 

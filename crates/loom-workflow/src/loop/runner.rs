@@ -504,32 +504,36 @@ async fn process_one_bead<C: AgentLoopController>(
                     }
                 }
             },
-            AgentOutcome::Failure { error } => match policy.decide(retries_used, error) {
-                RetryDecision::Retry {
-                    previous_failure: pf,
-                } => {
-                    retries_used += 1;
-                    controller.emit_driver_event(
-                        DriverKind::RetryDispatch,
-                        &format!(
-                            "retry dispatch — attempt {retries_used}/{max} for bead {bead_id}",
-                            max = policy.max_retries,
-                            bead_id = bead.id,
-                        ),
-                        serde_json::json!({
-                            "bead_id": bead.id.to_string(),
-                            "attempt": retries_used,
-                            "max_attempts": policy.max_retries,
-                        }),
-                    );
-                    previous_failure = Some(pf);
+            AgentOutcome::Failure { error } => {
+                let exhausted_detail = error.clone();
+                match policy.decide(retries_used, error) {
+                    RetryDecision::Retry {
+                        previous_failure: pf,
+                    } => {
+                        retries_used += 1;
+                        controller.emit_driver_event(
+                            DriverKind::RetryDispatch,
+                            &format!(
+                                "retry dispatch — attempt {retries_used}/{max} for bead {bead_id}",
+                                max = policy.max_retries,
+                                bead_id = bead.id,
+                            ),
+                            serde_json::json!({
+                                "bead_id": bead.id.to_string(),
+                                "attempt": retries_used,
+                                "max_attempts": policy.max_retries,
+                            }),
+                        );
+                        previous_failure = Some(pf);
+                    }
+                    RetryDecision::GiveUp => {
+                        return Ok(BeadResult::Blocked {
+                            cause: RETRY_EXHAUSTED_CAUSE.to_string(),
+                            error: exhausted_detail,
+                        });
+                    }
                 }
-                RetryDecision::GiveUp => {
-                    return Ok(BeadResult::Clarified {
-                        note: previous_failure.unwrap_or_default(),
-                    });
-                }
-            },
+            }
             AgentOutcome::Retry { reason } => match policy.decide(retries_used, reason.clone()) {
                 RetryDecision::Retry {
                     previous_failure: pf,
@@ -897,8 +901,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_bead_retries_with_previous_failure_then_clarifies() -> Result<(), LoopError> {
-        // max_retries = 2 → attempts = initial + 2 retries = 3 failures triggers clarify.
+    async fn failed_bead_retries_with_previous_failure_then_blocks() -> Result<(), LoopError> {
+        // max_retries = 2 → attempts = initial + 2 retries = 3 failures triggers retry-exhausted.
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("lm-1", &[]));
         for i in 0..3 {
@@ -916,9 +920,12 @@ mod tests {
         assert_eq!(c.run_calls[1].1.as_deref(), Some("err-0"));
         assert_eq!(c.run_calls[2].1.as_deref(), Some("err-1"));
 
-        assert_eq!(c.clarified.len(), 1);
-        assert_eq!(c.clarified[0].0, BeadId::new("lm-1").expect("valid"));
-        assert_eq!(summary.beads_clarified, 1);
+        assert!(c.clarified.is_empty());
+        assert_eq!(c.blocked.len(), 1);
+        assert_eq!(c.blocked[0].0, BeadId::new("lm-1").expect("valid"));
+        assert_eq!(c.blocked[0].1, RETRY_EXHAUSTED_CAUSE);
+        assert_eq!(c.blocked[0].2, "err-2");
+        assert_eq!(summary.beads_blocked, 1);
         Ok(())
     }
 
@@ -960,10 +967,7 @@ mod tests {
     /// Spec criterion (`specs/harness.md` § Marker definitions):
     /// exhausting `[loop] max_retries` on consecutive `LOOM_RETRY`
     /// exits labels the bead `loom:blocked` with cause
-    /// `retry-exhausted`. Distinct from the generic
-    /// `AgentOutcome::Failure` exhaustion path which routes through
-    /// `loom:clarify`; the self-reported retry-shaped failure carries
-    /// no candidate resolution so clarify is the wrong terminal.
+    /// `retry-exhausted`, matching generic driver-detected retry exhaustion.
     #[tokio::test]
     async fn consecutive_agent_retry_exhaustion_routes_to_loom_blocked_retry_exhausted()
     -> Result<(), LoopError> {
@@ -1260,11 +1264,13 @@ mod tests {
         // Third attempt sees the first agent-side failure body.
         assert_eq!(c.run_calls[2].1.as_deref(), Some("agent-err-0"));
         assert_eq!(c.run_calls[3].1.as_deref(), Some("agent-err-1"));
-        // The bead exhausts agent retries and clarifies — never blocks.
-        assert!(c.blocked.is_empty(), "clarify path must not block");
-        assert_eq!(c.clarified.len(), 1);
-        assert_eq!(c.clarified[0].0, BeadId::new("lm-1").expect("valid"));
-        assert_eq!(summary.beads_clarified, 1);
+        // The bead exhausts agent retries and blocks with the final failure detail.
+        assert!(c.clarified.is_empty(), "retry exhaustion must not clarify");
+        assert_eq!(c.blocked.len(), 1);
+        assert_eq!(c.blocked[0].0, BeadId::new("lm-1").expect("valid"));
+        assert_eq!(c.blocked[0].1, RETRY_EXHAUSTED_CAUSE);
+        assert_eq!(c.blocked[0].2, "agent-err-2");
+        assert_eq!(summary.beads_blocked, 1);
         Ok(())
     }
 
