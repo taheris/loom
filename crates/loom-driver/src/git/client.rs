@@ -707,6 +707,28 @@ impl GitClient {
         Ok(removed)
     }
 
+    /// Fetch any branch from an isolated checkout into the loom workspace.
+    pub async fn fetch_branch_from_path(
+        &self,
+        checkout_path: &Path,
+        source_branch: &str,
+        destination_branch: &str,
+    ) -> Result<(), GitError> {
+        let refspec = format!("+{source_branch}:refs/heads/{destination_branch}");
+        run_git(
+            &self.loom_workspace(),
+            self.clock.as_ref(),
+            [
+                OsString::from("fetch"),
+                OsString::from("--quiet"),
+                checkout_path.into(),
+                OsString::from(refspec),
+            ],
+            None,
+        )
+        .await
+    }
+
     /// Fetch the bead branch `loom/<bead_id>` from the bead workspace at
     /// `bead_workspace_path` into the loom workspace, where
     /// [`Self::merge_branch`] rebases and fast-forwards it onto the
@@ -724,19 +746,9 @@ impl GitClient {
         bead_workspace_path: &Path,
         bead_id: &BeadId,
     ) -> Result<(), GitError> {
-        let refspec = format!("{BRANCH_PREFIX}/{bead_id}:{BRANCH_PREFIX}/{bead_id}");
-        run_git(
-            &self.loom_workspace(),
-            self.clock.as_ref(),
-            [
-                OsString::from("fetch"),
-                OsString::from("--quiet"),
-                bead_workspace_path.into(),
-                OsString::from(refspec),
-            ],
-            None,
-        )
-        .await
+        let branch = format!("{BRANCH_PREFIX}/{bead_id}");
+        self.fetch_branch_from_path(bead_workspace_path, &branch, &branch)
+            .await
     }
 
     /// Create an isolated tune proposal checkout at `destination`.
@@ -912,6 +924,22 @@ impl GitClient {
             &self.loom_workspace(),
             self.clock.as_ref(),
             ["rev-parse", "--verify", rev],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(cli_error(&output));
+        }
+        let raw = String::from_utf8(output.stdout)?;
+        Ok(GitOid::new(raw.trim())?)
+    }
+
+    /// `git rev-parse --verify <rev>^{commit}` — resolve a commit object.
+    pub async fn resolve_commit_sha(&self, rev: &str) -> Result<GitOid, GitError> {
+        let output = run_git_raw(
+            &self.workdir,
+            self.clock.as_ref(),
+            ["rev-parse", "--verify", &format!("{rev}^{{commit}}")],
             None,
         )
         .await?;
@@ -1425,6 +1453,22 @@ impl GitClient {
         }
         let raw = String::from_utf8(output.stdout)?;
         Ok(GitOid::new(raw.trim())?)
+    }
+
+    /// Reset the integration branch to an exact commit in the loom workspace.
+    pub async fn reset_integration_to(&self, rev: &str) -> Result<(), GitError> {
+        self.checkout_integration().await?;
+        let output = run_git_index_mut(
+            &self.loom_workspace(),
+            self.clock.as_ref(),
+            ["reset", "--hard", rev],
+            None,
+        )
+        .await?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(cli_error(&output))
     }
 
     /// Roll the integration branch back one commit (`git reset --hard

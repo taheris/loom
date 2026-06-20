@@ -6,10 +6,13 @@
 //! with inherited stdio so the configured agent attaches to the user's terminal
 //! as a real REPL.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
+use std::thread;
 
 use askama::Template;
+use displaydoc::Display;
 use loom_driver::agent::AgentKind;
 use loom_driver::bd::{BdClient, ListOpts};
 use loom_driver::config::{LoomConfig, Phase};
@@ -27,6 +30,8 @@ use super::context::build_inbox_context;
 use super::list::{
     InboxItem, InboxKind, build_queue, find_by_bead_id, find_by_index, find_by_proposal_id,
 };
+use super::terminal::{TerminalMarker, TerminalMarkerError, parse as parse_terminal_marker};
+use super::{ApplyError, apply_proposals, ensure_integration_clean_after_chat};
 
 /// Default name of the wrix launcher binary on PATH.
 pub const WRIX_BIN: &str = "wrix";
@@ -69,35 +74,41 @@ pub struct ChatReport {
     pub items_surfaced: usize,
     /// Number of inbox items still visible after the session exited.
     pub items_remaining: usize,
+    /// Number of tune proposals applied by a trusted driver handoff.
+    pub applied_proposals: usize,
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Display, Error)]
 pub enum ChatError {
-    #[error("profile resolution failed")]
+    /// profile resolution failed
     Profile(#[from] ProfileError),
-    #[error("config load failed: {0}")]
+    /// config load failed: {0}
     Config(String),
-    #[error("bd list failed: {0}")]
+    /// bd list failed: {0}
     BdList(String),
-    #[error("render inbox.md template: {0}")]
+    /// render inbox.md template: {0}
     Render(String),
-    #[error("cache db operation failed while running `loom inbox chat`")]
+    /// cache db operation failed while running `loom inbox chat`
     State(#[from] loom_driver::state::CacheError),
-    #[error("scratch session io failed")]
+    /// scratch session io failed
     Scratch(#[from] std::io::Error),
-    #[error("wrix exited with status {status}")]
+    /// wrix exited with status {status}
     WrixExit { status: String },
-    #[error("agent selection: {0}")]
+    /// agent selection: {0}
     AgentSelection(String),
-    #[error("git step failed while running `loom inbox chat`")]
+    /// git step failed while running `loom inbox chat`
     Git(#[from] GitError),
-    #[error("skill resolution failed while running `loom inbox chat`")]
+    /// skill resolution failed while running `loom inbox chat`
     Skill(#[from] SkillError),
-    #[error("no inbox item at index {index} ({total} outstanding)")]
+    /// inbox terminal marker error
+    Terminal(#[from] TerminalMarkerError),
+    /// tune proposal apply failed
+    Apply(#[from] ApplyError),
+    /// no inbox item at index {index} ({total} outstanding)
     IndexOutOfRange { index: u32, total: u32 },
-    #[error("no inbox item with bead id {id}")]
+    /// no inbox item with bead id {id}
     BeadNotFound { id: String },
-    #[error("no tune proposal with id {id}")]
+    /// no tune proposal with id {id}
     ProposalNotFound { id: String },
 }
 
@@ -126,6 +137,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         return Ok(ChatReport {
             items_surfaced: 0,
             items_remaining: 0,
+            applied_proposals: 0,
         });
     }
 
@@ -187,20 +199,29 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         "loom inbox chat: shelling out to interactive wrix run",
     );
 
-    let status = Command::new(&bin)
+    let mut command = Command::new(&bin);
+    command
         .args(&argv)
         .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
         .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
-        .env("WRIX_AGENT", agent_kind.as_str())
-        .status()
-        .map_err(ChatError::Scratch)?;
+        .env("WRIX_AGENT", agent_kind.as_str());
+    let output = run_wrix_and_capture_stdout(command).map_err(ChatError::Scratch)?;
     drop(scratch);
 
-    if !status.success() {
+    if !output.status.success() {
         return Err(ChatError::WrixExit {
-            status: status.to_string(),
+            status: output.status.to_string(),
         });
     }
+
+    let marker = parse_terminal_marker(&output.stdout)?;
+    ensure_integration_clean_after_chat(workspace)?;
+    let applied_proposals = match marker {
+        TerminalMarker::Complete => 0,
+        TerminalMarker::Apply { proposals } => {
+            apply_proposals(workspace, proposals)?.proposals.len()
+        }
+    };
 
     let beads_after = runtime
         .block_on(async {
@@ -217,7 +238,45 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     Ok(ChatReport {
         items_surfaced,
         items_remaining: remaining.len(),
+        applied_proposals,
     })
+}
+
+struct WrixOutput {
+    status: ExitStatus,
+    stdout: String,
+}
+
+fn run_wrix_and_capture_stdout(mut command: Command) -> std::io::Result<WrixOutput> {
+    let mut child = command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("wrix stdout pipe unavailable"))?;
+    let reader = thread::spawn(move || -> std::io::Result<String> {
+        let mut captured = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        let mut terminal = std::io::stdout();
+        loop {
+            let n = stdout.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            terminal.write_all(&buffer[..n])?;
+            terminal.flush()?;
+            captured.extend_from_slice(&buffer[..n]);
+        }
+        Ok(String::from_utf8_lossy(&captured).into_owned())
+    });
+    let status = child.wait()?;
+    let stdout = reader
+        .join()
+        .map_err(|_| std::io::Error::other("wrix stdout reader panicked"))??;
+    Ok(WrixOutput { status, stdout })
 }
 
 pub fn build_wrix_argv(workspace: &Path, prompt_body: &str, agent_kind: AgentKind) -> Vec<String> {

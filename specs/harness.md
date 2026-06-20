@@ -3469,16 +3469,16 @@ Criteria.
       `LOOM_APPLY: {"proposals":[...]}` validates accepted tune proposal ids
       and triggers one end-of-chat driver apply batch. `LOOM_APPLY` is the sole
       terminal marker for that session, never paired with `LOOM_COMPLETE`
-  [test?](inbox_apply_marker_triggers_single_driver_handoff)
+  [test](inbox_apply_marker_triggers_single_driver_handoff)
 - The end-of-chat tune apply batch is all-or-nothing: `cherry_pick_conflict`,
       `verify_failed`, `review_failed`, or `push_failed` aborts the batch,
       pushes nothing, leaves `.loom/integration` clean, and marks every proposal
       in the batch `apply_failed` with shared diagnostics
-  [test?](inbox_apply_batch_is_all_or_nothing)
+  [test](inbox_apply_batch_is_all_or_nothing)
 - `apply_failed` tune proposals appear in the next default inbox and are not
       retried automatically; a later chat must explicitly repair/reauthorize a
       subset or reject/regenerate them
-  [test?](apply_failed_tune_proposals_require_reauthorization)
+  [test](apply_failed_tune_proposals_require_reauthorization)
 - Interactive-session crashes (container OOM, observer abort, swallowed marker)
       exit non-zero with a diagnostic; the driver does NOT auto-retry
   [test?](inbox_chat_crash_exits_nonzero_without_auto_retry)

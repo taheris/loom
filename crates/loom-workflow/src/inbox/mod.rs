@@ -4,12 +4,15 @@
 //! `loom:blocked`, and tune proposal items. Host-side modes are read-only;
 //! resolution happens in `loom inbox chat`.
 
+mod apply;
 pub mod chat;
 mod context;
 mod error;
 mod list;
 mod options;
+mod terminal;
 
+pub use apply::{ApplyError, ApplyReport, apply_proposals, ensure_integration_clean_after_chat};
 pub use context::build_inbox_context;
 pub use error::InboxError;
 pub use list::{

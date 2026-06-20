@@ -3644,8 +3644,8 @@ fn run_inbox_chat(
     } else {
         let resolved = report.items_surfaced.saturating_sub(report.items_remaining);
         println!(
-            "loom inbox chat: surfaced {}, resolved {}, remaining {}",
-            report.items_surfaced, resolved, report.items_remaining,
+            "loom inbox chat: surfaced {}, resolved {}, remaining {}, applied {}",
+            report.items_surfaced, resolved, report.items_remaining, report.applied_proposals,
         );
     }
     Ok(())

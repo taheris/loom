@@ -6,6 +6,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use loom_driver::git::{
+    GitClient, bare_origin_path, commit_all_in, init_test_repo_with_integration,
+    status_porcelain_sync, sync_head_commit_sha, sync_rev_parse,
+};
+
 fn seed_bead(
     state_dir: &Path,
     id: &str,
@@ -98,6 +103,11 @@ case "$mode" in
             bd close "$id"
         done < <(printf '%s\n' "$prompt" | awk '/^### [0-9]+\. lm-/ {{print $3}}')
         ;;
+    accept-tune)
+        while IFS= read -r id; do
+            bd update "$id" --status open --set-metadata loom.tune.state=accepted
+        done < <(printf '%s\n' "$prompt" | awk '/^### [0-9]+\. lm-/ && /\[tune\]/ {{print $3}}')
+        ;;
     resolve-none)
         :
         ;;
@@ -109,6 +119,11 @@ case "$mode" in
         exit 2
         ;;
 esac
+
+marker="${{WRIX_STUB_MARKER:-LOOM_COMPLETE}}"
+if [[ -n "$marker" ]]; then
+    printf '%s\n' "$marker"
+fi
 "#,
         argv_log = argv_log.display(),
         env_log = env_log.display(),
@@ -211,6 +226,144 @@ fn read_labels(state_dir: &Path, id: &str) -> Vec<String> {
         .filter(|line| !line.is_empty())
         .map(String::from)
         .collect()
+}
+
+fn read_metadata(state_dir: &Path, id: &str) -> serde_json::Value {
+    let raw = read_field(state_dir, id, "metadata.json");
+    serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+fn install_apply_loom_stub(dir: &Path) -> PathBuf {
+    let bin_dir = dir.join("apply-loom-bin");
+    std::fs::create_dir_all(&bin_dir).expect("mkdir apply loom bin");
+    let bin = bin_dir.join("loom-apply-stub");
+    let log = dir.join("apply-loom.log");
+    let script = format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+
+log={log:?}
+printf '%s\n' "$*" >> "$log"
+
+case "${{1:-}} ${{2:-}}" in
+    'gate verify')
+        if [[ "${{LOOM_APPLY_STUB_VERIFY:-pass}}" == "fail" ]]; then
+            printf 'verify failed\n' >&2
+            exit 42
+        fi
+        printf 'LOOM_COMPLETE\n'
+        ;;
+    'gate review')
+        case "${{LOOM_APPLY_STUB_REVIEW:-pass}}" in
+            pass)
+                printf 'LOOM_COMPLETE\n'
+                ;;
+            fail)
+                printf 'review failed\n' >&2
+                exit 43
+                ;;
+            concern)
+                printf 'LOOM_CONCERN: {{"summary":"review failed"}}\n'
+                ;;
+            *)
+                printf 'unknown review mode %s\n' "${{LOOM_APPLY_STUB_REVIEW:-}}" >&2
+                exit 44
+                ;;
+        esac
+        ;;
+    *)
+        printf 'unexpected loom stub argv: %s\n' "$*" >&2
+        exit 2
+        ;;
+esac
+"#,
+        log = log.display(),
+    );
+    std::fs::write(&bin, script).expect("write apply loom stub");
+    let mut perm = std::fs::metadata(&bin)
+        .expect("stat apply loom stub")
+        .permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&bin, perm).expect("chmod apply loom stub");
+    bin
+}
+
+fn create_tune_proposal(env: &ChatRun, id: &str, edits: &[(&str, &str)]) {
+    let git = GitClient::open(&env.workspace).expect("open workspace git");
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let base = runtime
+        .block_on(git.head_commit_sha())
+        .expect("base commit")
+        .to_string();
+    let branch = format!("loom/tune/{id}");
+    let repo = env.workspace.join(".loom/tune").join(id).join("repo");
+    runtime
+        .block_on(git.create_tune_checkout(&repo, &base, &branch))
+        .expect("create tune checkout");
+    for (path, body) in edits {
+        let file = repo.join(path);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir proposal edit parent");
+        }
+        std::fs::write(file, body).expect("write proposal edit");
+    }
+    commit_all_in(&repo, "tune proposal").expect("commit proposal");
+    let head = runtime
+        .block_on(
+            GitClient::open(&repo)
+                .expect("open proposal git")
+                .head_commit_sha(),
+        )
+        .expect("proposal head")
+        .to_string();
+    std::fs::write(
+        env.workspace
+            .join(".loom/tune")
+            .join(id)
+            .join("manifest.json"),
+        serde_json::json!({"proposal_id": id}).to_string(),
+    )
+    .expect("write manifest");
+    seed_bead(
+        &env.state_dir,
+        id,
+        "accepted tune",
+        "Tune body",
+        "open",
+        &["loom:tune", "spec:skills"],
+    );
+    seed_metadata(
+        &env.state_dir,
+        id,
+        serde_json::json!({
+            "loom.tune.id": id,
+            "loom.tune.state": "pending",
+            "loom.tune.base_commit": base,
+            "loom.tune.proposal_branch": branch,
+            "loom.tune.proposal_head": head,
+        }),
+    );
+}
+
+fn apply_marker(ids: &[&str]) -> String {
+    let payload = serde_json::json!({"proposals": ids});
+    format!("LOOM_APPLY: {payload}")
+}
+
+fn init_apply_repo(env: &ChatRun) {
+    init_test_repo_with_integration(&env.workspace).expect("init git repo with integration");
+    std::fs::write(
+        env.workspace.join(".git/info/exclude"),
+        "/bd-state/\n/bd-bin/\n/wrix-bin/\n/apply-loom-bin/\n/profile-images.json\n/base.tar\n/argv.log\n/env.log\n/apply-loom.log\n",
+    )
+    .expect("write git exclude");
+}
+
+fn assert_apply_failed_kind(env: &ChatRun, id: &str, kind: &str) {
+    let metadata = read_metadata(&env.state_dir, id);
+    assert_eq!(metadata["loom.tune.state"], "apply_failed");
+    assert_eq!(metadata["loom.tune.apply_failure"]["kind"], kind);
+    assert_eq!(read_field(&env.state_dir, id, "status"), "blocked");
 }
 
 #[test]
@@ -420,6 +573,266 @@ fn inbox_chat_targeting_focuses_single_item() {
     let prompt = std::fs::read_to_string(prompt_dump).expect("prompt dump");
     assert!(prompt.contains("lm-two"), "{prompt}");
     assert!(!prompt.contains("lm-one"), "{prompt}");
+}
+
+#[test]
+fn inbox_apply_marker_triggers_single_driver_handoff() {
+    let env = setup_chat();
+    init_apply_repo(&env);
+    let loom_stub = install_apply_loom_stub(&env.workspace);
+    create_tune_proposal(&env, "lm-app1", &[("proposal.txt", "accepted\n")]);
+    let marker = apply_marker(&["lm-app1"]);
+    let loom_stub_path = loom_stub.to_string_lossy().into_owned();
+
+    let output = run_chat_extra(
+        &env,
+        "accept-tune",
+        &["-p", "lm-app1"],
+        &[
+            ("WRIX_STUB_MARKER", marker.as_str()),
+            ("LOOM_INBOX_APPLY_LOOM_BIN", loom_stub_path.as_str()),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let metadata = read_metadata(&env.state_dir, "lm-app1");
+    assert_eq!(metadata["loom.tune.state"], "applied");
+    assert_eq!(read_field(&env.state_dir, "lm-app1", "status"), "closed");
+    let gate_log =
+        std::fs::read_to_string(env.workspace.join("apply-loom.log")).expect("apply loom log");
+    assert_eq!(
+        gate_log.matches("gate verify --diff").count(),
+        1,
+        "{gate_log}"
+    );
+    assert_eq!(
+        gate_log.matches("gate review --diff").count(),
+        1,
+        "{gate_log}"
+    );
+    let integration_head =
+        sync_head_commit_sha(&env.workspace.join(".loom/integration")).expect("integration head");
+    let origin_head =
+        sync_rev_parse(&bare_origin_path(&env.workspace), "main").expect("origin head");
+    assert_eq!(integration_head, origin_head);
+}
+
+#[test]
+fn inbox_apply_batch_is_all_or_nothing() {
+    let env = setup_chat();
+    init_apply_repo(&env);
+    let loom_stub = install_apply_loom_stub(&env.workspace);
+    create_tune_proposal(&env, "lm-app2", &[("a.txt", "a\n")]);
+    create_tune_proposal(&env, "lm-app3", &[("b.txt", "b\n")]);
+    let integration = env.workspace.join(".loom/integration");
+    let pre_head = sync_head_commit_sha(&integration).expect("pre integration head");
+    let origin_pre = sync_rev_parse(&bare_origin_path(&env.workspace), "main").expect("origin pre");
+    let marker = apply_marker(&["lm-app2", "lm-app3"]);
+    let loom_stub_path = loom_stub.to_string_lossy().into_owned();
+
+    let output = run_chat_extra(
+        &env,
+        "accept-tune",
+        &[],
+        &[
+            ("WRIX_STUB_MARKER", marker.as_str()),
+            ("LOOM_INBOX_APPLY_LOOM_BIN", loom_stub_path.as_str()),
+            ("LOOM_APPLY_STUB_VERIFY", "fail"),
+        ],
+    );
+    assert!(!output.status.success(), "verify failure must fail apply");
+    for id in ["lm-app2", "lm-app3"] {
+        let metadata = read_metadata(&env.state_dir, id);
+        assert_eq!(metadata["loom.tune.state"], "apply_failed");
+        assert_eq!(metadata["loom.tune.apply_failure"]["kind"], "verify_failed");
+        assert_eq!(read_field(&env.state_dir, id, "status"), "blocked");
+        let labels = read_labels(&env.state_dir, id);
+        assert!(
+            labels.iter().any(|label| label == "loom:blocked"),
+            "{labels:?}"
+        );
+    }
+    assert_eq!(
+        sync_head_commit_sha(&integration).expect("post integration head"),
+        pre_head
+    );
+    assert_eq!(
+        sync_rev_parse(&bare_origin_path(&env.workspace), "main").expect("origin post"),
+        origin_pre,
+    );
+    assert_eq!(
+        status_porcelain_sync(&integration).expect("integration status"),
+        "",
+    );
+    let gate_log =
+        std::fs::read_to_string(env.workspace.join("apply-loom.log")).expect("apply loom log");
+    assert_eq!(
+        gate_log.matches("gate verify --diff").count(),
+        1,
+        "{gate_log}"
+    );
+    assert_eq!(
+        gate_log.matches("gate review --diff").count(),
+        0,
+        "{gate_log}"
+    );
+}
+
+#[test]
+fn inbox_apply_cherry_pick_conflict_aborts_batch() {
+    let env = setup_chat();
+    init_apply_repo(&env);
+    let loom_stub = install_apply_loom_stub(&env.workspace);
+    create_tune_proposal(&env, "lm-app5", &[("README.md", "proposal\n")]);
+    let integration = env.workspace.join(".loom/integration");
+    std::fs::write(integration.join("README.md"), "integration\n").expect("edit integration");
+    commit_all_in(&integration, "integration edit").expect("commit integration edit");
+    let pre_head = sync_head_commit_sha(&integration).expect("pre integration head");
+    let marker = apply_marker(&["lm-app5"]);
+    let loom_stub_path = loom_stub.to_string_lossy().into_owned();
+
+    let output = run_chat_extra(
+        &env,
+        "accept-tune",
+        &[],
+        &[
+            ("WRIX_STUB_MARKER", marker.as_str()),
+            ("LOOM_INBOX_APPLY_LOOM_BIN", loom_stub_path.as_str()),
+        ],
+    );
+    assert!(!output.status.success(), "conflict must fail apply");
+    assert_apply_failed_kind(&env, "lm-app5", "cherry_pick_conflict");
+    assert_eq!(
+        sync_head_commit_sha(&integration).expect("post integration head"),
+        pre_head
+    );
+    assert_eq!(
+        status_porcelain_sync(&integration).expect("integration status"),
+        "",
+    );
+}
+
+#[test]
+fn inbox_apply_review_failure_aborts_batch() {
+    let env = setup_chat();
+    init_apply_repo(&env);
+    let loom_stub = install_apply_loom_stub(&env.workspace);
+    create_tune_proposal(&env, "lm-app6", &[("review.txt", "candidate\n")]);
+    let integration = env.workspace.join(".loom/integration");
+    let pre_head = sync_head_commit_sha(&integration).expect("pre integration head");
+    let marker = apply_marker(&["lm-app6"]);
+    let loom_stub_path = loom_stub.to_string_lossy().into_owned();
+
+    let output = run_chat_extra(
+        &env,
+        "accept-tune",
+        &[],
+        &[
+            ("WRIX_STUB_MARKER", marker.as_str()),
+            ("LOOM_INBOX_APPLY_LOOM_BIN", loom_stub_path.as_str()),
+            ("LOOM_APPLY_STUB_REVIEW", "concern"),
+        ],
+    );
+    assert!(!output.status.success(), "review concern must fail apply");
+    assert_apply_failed_kind(&env, "lm-app6", "review_failed");
+    assert_eq!(
+        sync_head_commit_sha(&integration).expect("post integration head"),
+        pre_head
+    );
+    assert_eq!(
+        status_porcelain_sync(&integration).expect("integration status"),
+        "",
+    );
+}
+
+#[test]
+fn inbox_apply_push_failure_aborts_batch() {
+    let env = setup_chat();
+    init_apply_repo(&env);
+    let loom_stub = install_apply_loom_stub(&env.workspace);
+    create_tune_proposal(&env, "lm-app7", &[("push.txt", "candidate\n")]);
+    let integration = env.workspace.join(".loom/integration");
+    let pre_head = sync_head_commit_sha(&integration).expect("pre integration head");
+    let origin_pre = sync_rev_parse(&bare_origin_path(&env.workspace), "main").expect("origin pre");
+    let remote = Command::new("git")
+        .arg("-C")
+        .arg(&integration)
+        .args(["remote", "set-url", "origin", "/definitely/missing/origin"])
+        .status()
+        .expect("set invalid origin");
+    assert!(remote.success(), "remote set-url failed: {remote}");
+    let marker = apply_marker(&["lm-app7"]);
+    let loom_stub_path = loom_stub.to_string_lossy().into_owned();
+
+    let output = run_chat_extra(
+        &env,
+        "accept-tune",
+        &[],
+        &[
+            ("WRIX_STUB_MARKER", marker.as_str()),
+            ("LOOM_INBOX_APPLY_LOOM_BIN", loom_stub_path.as_str()),
+        ],
+    );
+    assert!(!output.status.success(), "push failure must fail apply");
+    assert_apply_failed_kind(&env, "lm-app7", "push_failed");
+    assert_eq!(
+        sync_head_commit_sha(&integration).expect("post integration head"),
+        pre_head
+    );
+    assert_eq!(
+        sync_rev_parse(&bare_origin_path(&env.workspace), "main").expect("origin post"),
+        origin_pre,
+    );
+    assert_eq!(
+        status_porcelain_sync(&integration).expect("integration status"),
+        "",
+    );
+}
+
+#[test]
+fn apply_failed_tune_proposals_require_reauthorization() {
+    let env = setup_chat();
+    init_apply_repo(&env);
+    let loom_stub = install_apply_loom_stub(&env.workspace);
+    create_tune_proposal(&env, "lm-app4", &[("reauth.txt", "candidate\n")]);
+    seed_metadata(
+        &env.state_dir,
+        "lm-app4",
+        serde_json::json!({
+            "loom.tune.id": "lm-app4",
+            "loom.tune.state": "apply_failed",
+            "loom.tune.proposal_branch": "loom/tune/lm-app4",
+            "loom.tune.proposal_head": read_metadata(&env.state_dir, "lm-app4")["loom.tune.proposal_head"].clone(),
+        }),
+    );
+    std::fs::write(env.state_dir.join("lm-app4").join("status"), "blocked").expect("set blocked");
+    let marker = apply_marker(&["lm-app4"]);
+    let loom_stub_path = loom_stub.to_string_lossy().into_owned();
+
+    let output = run_chat_extra(
+        &env,
+        "resolve-none",
+        &["-p", "lm-app4"],
+        &[
+            ("WRIX_STUB_MARKER", marker.as_str()),
+            ("LOOM_INBOX_APPLY_LOOM_BIN", loom_stub_path.as_str()),
+        ],
+    );
+    assert!(
+        !output.status.success(),
+        "apply_failed requires accepted reauthorization"
+    );
+    let metadata = read_metadata(&env.state_dir, "lm-app4");
+    assert_eq!(metadata["loom.tune.state"], "apply_failed");
+    assert!(
+        !env.workspace.join("apply-loom.log").exists(),
+        "gates must not run"
+    );
 }
 
 #[test]
