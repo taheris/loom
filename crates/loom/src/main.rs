@@ -3338,8 +3338,6 @@ fn phase_when_from_env() -> Option<std::time::SystemTime> {
     Some(std::time::UNIX_EPOCH + Duration::from_millis(millis))
 }
 
-#[expect(clippy::too_many_arguments, reason = "explicit dispatch surface")]
-
 fn run_inbox(
     workspace: &Path,
     args: InboxArgs,
