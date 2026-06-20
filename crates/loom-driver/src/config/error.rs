@@ -26,6 +26,9 @@ pub enum LoomConfigError {
     /// empty path for config field {field}; blanking the value does not disable the pin — remove the corresponding include from the template instead
     EmptyPath { field: &'static str },
 
+    /// invalid skills.paths entry at index {index}: path must not be empty
+    InvalidSkillPath { index: usize },
+
     /// invalid suppress entry at index {index}: {reason}
     InvalidSuppression { index: usize, reason: &'static str },
 }

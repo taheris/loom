@@ -152,6 +152,10 @@ impl PhaseName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub fn matches(&self, current: &Self) -> bool {
+        self == current || current.0.split('.').any(|part| part == self.0)
+    }
 }
 
 impl fmt::Display for PhaseName {
@@ -166,12 +170,13 @@ impl FromStr for PhaseName {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         if value.is_empty()
             || value.chars().count() > MAX_PHASE_CHARS
-            || value.starts_with('-')
-            || value.ends_with('-')
+            || value.starts_with(['-', '.'])
+            || value.ends_with(['-', '.'])
             || value.contains("--")
+            || value.contains("..")
             || !value
                 .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
         {
             return Err(ParsePhaseNameError::Invalid {
                 value: value.to_owned(),
@@ -264,8 +269,13 @@ mod tests {
 
     #[test]
     fn phase_name_uses_kebab_case_filter_identity() {
-        let phase = PhaseName::new("gate-review").expect("valid phase");
-        assert_eq!(phase.as_str(), "gate-review");
+        let phase = PhaseName::new("gate.review").expect("valid phase");
+        assert_eq!(phase.as_str(), "gate.review");
         assert!(PhaseName::new("Gate Review").is_err());
+        assert!(
+            PhaseName::new("gate")
+                .expect("valid filter")
+                .matches(&phase)
+        );
     }
 }

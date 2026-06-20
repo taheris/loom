@@ -693,27 +693,27 @@ requires explicit reauthorization in a later inbox chat.
   registered until it has become a `NamedSkill`, unresolved collections cannot be
   registered, and backend registration accepts only materialized/applicable
   registry types
-  [test?](skill_registry_typestate_prevents_misuse)
+  [test](skill_registry_typestate_prevents_misuse)
 - Skill discovery finds git-tracked package documents whose basename matches
   `skill.md` case-insensitively, explicit loose-file skills, recursive
   configured-directory Markdown skills, and `.loom-override/skills/`
   loose/package overrides while rejecting duplicate names except valid built-in
   overrides and rejecting duplicate `skill.md` / `tuning.md` basename case
   variants in one package directory
-  [test?](skill_registry_discovery_and_duplicate_policy)
+  [test](skill_registry_discovery_and_duplicate_policy)
 - Missing or malformed frontmatter is a warning+skip for auto-discovered repo
   skills, an error for explicit configured paths or override candidates, and a
   fatal release-contract error for built-ins
-  [test?](skill_frontmatter_diagnostics_by_source)
+  [test](skill_frontmatter_diagnostics_by_source)
 - The v1 built-in catalog contains the accepted `base` and `rust` `loom-*`
   skills, is selected per profile, materialized under
   `.loom/scratch/<key>/skills/<name>/skill.md`, and can be shadowed only by
   `.loom-override/skills/` entries whose frontmatter `name` matches a known
   built-in
-  [test?](builtin_skill_profile_selection_and_override_policy)
+  [test](builtin_skill_profile_selection_and_override_policy)
 - Optional `metadata.loom.phases` / `metadata.loom.profiles` filters default to
   all phases/profiles and narrow registration only when present
-  [test?](skill_frontmatter_phase_profile_filters)
+  [test](skill_frontmatter_phase_profile_filters)
 - `registration = "auto"` natively registers skills for native-capable backends
   and fails on registration failure; `registration = "prompt"` disables native
   registration globally

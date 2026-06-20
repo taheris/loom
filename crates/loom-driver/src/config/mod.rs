@@ -24,6 +24,7 @@ mod loom_section;
 mod loop_config;
 mod runner;
 mod security;
+mod skills;
 
 pub use agent::{
     AgentSelection, AgentSelectionError, BUILT_IN_BACKEND, BUILT_IN_PROFILE, ClaudeSettings,
@@ -43,6 +44,7 @@ pub use loom_section::{
 pub use loop_config::LoopConfig;
 pub use runner::{Parser, RunnerConfig, RunnerEntry, RunnerTier};
 pub use security::SecurityConfig;
+pub use skills::{SkillPathDisplay, SkillRegistration, SkillsConfig};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -101,6 +103,8 @@ pub struct LoomConfig {
     /// [`LoomConfig::direct_output_limits`] at dispatch time.
     pub direct: DirectConfig,
     pub security: SecurityConfig,
+    /// `[skills]` block — skill registry loading and disclosure policy.
+    pub skills: SkillsConfig,
     /// `[runner.<tier>.<name>]` blocks per `specs/gate.md` § Runners.
     /// The runtime dispatcher reads this map; an empty table parses as
     /// `RunnerConfig::default()` so consumers without runner overrides
@@ -128,6 +132,7 @@ impl Default for LoomConfig {
             claude: ClaudeConfig::default(),
             direct: DirectConfig::default(),
             security: SecurityConfig::default(),
+            skills: SkillsConfig::default(),
             runner: RunnerConfig::default(),
             agent: AgentObserversConfig::default(),
             suppress: Vec::new(),
@@ -187,6 +192,15 @@ fn validate_suppressions(entries: &[SuppressionConfig]) -> Result<(), LoomConfig
     Ok(())
 }
 
+fn validate_skill_paths(paths: &[PathBuf]) -> Result<(), LoomConfigError> {
+    for (index, path) in paths.iter().enumerate() {
+        if path.as_os_str().is_empty() {
+            return Err(LoomConfigError::InvalidSkillPath { index });
+        }
+    }
+    Ok(())
+}
+
 impl LoomConfig {
     /// Parse a `LoomConfig` from a TOML string. An empty string yields the
     /// full default config.
@@ -208,6 +222,7 @@ impl LoomConfig {
             }
         }
         validate_suppressions(&cfg.suppress)?;
+        validate_skill_paths(&cfg.skills.paths)?;
         Ok(cfg)
     }
 
@@ -294,14 +309,19 @@ impl LoomConfig {
     }
 
     fn resolve_paths_relative_to(&mut self, path: &Path) -> Result<(), LoomConfigError> {
+        let base = config_parent(path)?;
         if let Some(dir) = self
             .loom
             .sccache_dir
             .as_mut()
             .filter(|dir| dir.is_relative())
         {
-            let base = config_parent(path)?;
             *dir = base.join(dir.as_path());
+        }
+        for skill_path in &mut self.skills.paths {
+            if skill_path.is_relative() {
+                *skill_path = base.join(skill_path.as_path());
+            }
         }
         Ok(())
     }
@@ -1080,6 +1100,62 @@ profile = "rust"
             cfg.agent_for(Phase::Msg).expect("msg").profile.as_str(),
             "rust"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn skills_config_defaults_to_auto_needed_and_no_paths() -> Result<()> {
+        let cfg = LoomConfig::from_toml_str("")?;
+        assert_eq!(cfg.skills.registration, SkillRegistration::Auto);
+        assert_eq!(cfg.skills.show_paths, SkillPathDisplay::Needed);
+        assert!(cfg.skills.paths.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn skills_config_parses_registration_show_paths_and_paths() -> Result<()> {
+        let src = r#"
+[skills]
+registration = "prompt"
+show_paths = "always"
+paths = ["docs/review-skill.md", "team/agent-skills"]
+"#;
+        let cfg = LoomConfig::from_toml_str(src)?;
+        assert_eq!(cfg.skills.registration, SkillRegistration::Prompt);
+        assert_eq!(cfg.skills.show_paths, SkillPathDisplay::Always);
+        assert_eq!(
+            cfg.skills.paths,
+            vec![
+                PathBuf::from("docs/review-skill.md"),
+                PathBuf::from("team/agent-skills"),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn skills_config_rejects_separate_mode_field() {
+        let err = LoomConfig::from_toml_str("[skills]\nmode = \"direct\"\n")
+            .expect_err("unknown skills mode must not parse");
+        match err {
+            LoomConfigError::Parse(source) => {
+                assert!(source.to_string().contains("unknown field"), "{source}");
+            }
+            other => panic!("expected parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skills_paths_resolve_relative_to_loaded_config() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let config_path = dir.path().join("loom.toml");
+        std::fs::write(
+            &config_path,
+            "[skills]\npaths = [\"skills/review.md\", \"/absolute/skill.md\"]\n",
+        )?;
+        let cfg = LoomConfig::load(&config_path)?;
+        assert_eq!(cfg.skills.paths[0], dir.path().join("skills/review.md"));
+        assert_eq!(cfg.skills.paths[1], PathBuf::from("/absolute/skill.md"));
         Ok(())
     }
 }

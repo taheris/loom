@@ -2573,11 +2573,14 @@ dependencies = [
 name = "loom-skills"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "displaydoc",
  "loom-events",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
+ "walkdir",
 ]
 
 [[package]]
