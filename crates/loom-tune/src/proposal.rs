@@ -1,34 +1,39 @@
 use loom_events::identifier::BeadId;
-use loom_skills::identity::SkillName;
 use serde::{Deserialize, Serialize};
 
 use crate::checker::CheckerId;
+use crate::plan::{
+    Diagnostic, FrozenPlan, Hash as PlanHash, OutcomeSkeleton, SelectedCase, SkippedCase,
+};
+use crate::target::Target;
 
 /// Tune proposal manifest persisted beside an isolated proposal worktree.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProposalManifest {
     pub proposal_id: BeadId,
-    pub targets: Vec<TuneTarget>,
+    pub targets: Vec<Target>,
     pub checker_plan: Vec<CheckerId>,
+    pub plan_hash: PlanHash,
+    pub selected_cases: Vec<SelectedCase>,
+    pub skipped_cases: Vec<SkippedCase>,
+    pub outcome_skeletons: Vec<OutcomeSkeleton>,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl ProposalManifest {
-    pub fn new(
-        proposal_id: BeadId,
-        targets: Vec<TuneTarget>,
-        checker_plan: Vec<CheckerId>,
-    ) -> Self {
+    pub fn from_plan(proposal_id: BeadId, plan: &FrozenPlan) -> Self {
         Self {
             proposal_id,
-            targets,
-            checker_plan,
+            targets: plan.targets.clone(),
+            checker_plan: plan.checker_plan.clone(),
+            plan_hash: plan.plan_hash.clone(),
+            selected_cases: plan.selected_cases.clone(),
+            skipped_cases: plan.skipped_cases.clone(),
+            outcome_skeletons: plan.outcome_skeletons.clone(),
+            diagnostics: plan.diagnostics.clone(),
         }
     }
 }
 
 /// Artifact surface a tune proposal edits.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum TuneTarget {
-    Skill { name: SkillName },
-}
+pub type TuneTarget = Target;

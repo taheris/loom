@@ -735,13 +735,13 @@ requires explicit reauthorization in a later inbox chat.
   internal typed `loom-tune` registry before candidate generation, records the
   level/seed/case-pool/selected/skipped plan/results in the bead/manifest, and
   rejects post-candidate checker changes as validation evidence
-  [test?](tune_checker_plan_freeze_contract)
+  [test](tune_checker_plan_freeze_contract)
 - Skill tuning reads workspace evidence by default, reads explicit
   `[tune.evidence].external_roots` only when configured, loads `docs/tuning.md`
   plus applicable package `tuning.md` files, validates `loom-case` blocks, prints
   evidence roots before harvesting, and gates candidate edits with selected
   behavioral cases before inbox exposure
-  [test?](skill_tune_evidence_roots_and_gate)
+  [test](skill_tune_evidence_roots_and_gate)
 - Phase and partial tuning validates candidate templates in the proposal worktree
   by compiling Askama templates, rendering representative snapshots, and running
   template conformance walkers before inbox exposure

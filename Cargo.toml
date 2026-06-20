@@ -66,6 +66,7 @@ schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_jcs = "0.2"
 serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
 shlex = "2"
 syn = { version = "2", features = ["full", "extra-traits", "visit"] }
 tempfile = "3"
