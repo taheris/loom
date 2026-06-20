@@ -9,13 +9,15 @@ use loom_driver::agent::{AgentRuntime, SessionOutcome};
 use loom_driver::bd::{
     BdClient, CommandRunner, CreateOpts, Label, ListOpts, TokioRunner, UpdateOpts,
 };
-use loom_driver::config::LoomTopConfig;
+use loom_driver::config::{LoomTopConfig, SkillsConfig};
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::state::{CacheDb, SpecEpicRow, WorkEpicRow};
 use loom_protocol::todo::{GitSha, TodoSpecOutcome, TodoSuccess};
 use tracing::{debug, info};
+
+use crate::skill::SkillPlan;
 
 use super::ExitSignal;
 use super::context::{
@@ -46,6 +48,7 @@ pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
     since: Option<String>,
     preflight: Option<Preflight>,
     loom_cfg: LoomTopConfig,
+    skills_cfg: SkillsConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +72,11 @@ struct ChangedSpec {
 struct IndexedSpec {
     label: SpecLabel,
     spec_path: String,
+}
+
+struct BuiltTodoPrompt {
+    prompt: String,
+    skill_plan: SkillPlan,
 }
 
 impl<R: CommandRunner> ProductionTodoController<R> {
@@ -106,6 +114,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             since,
             preflight: None,
             loom_cfg: LoomTopConfig::default(),
+            skills_cfg: SkillsConfig::default(),
         }
     }
 
@@ -116,6 +125,11 @@ impl<R: CommandRunner> ProductionTodoController<R> {
 
     pub fn with_agent_runtime(mut self, runtime: AgentRuntime) -> Self {
         self.runtime = runtime;
+        self
+    }
+
+    pub fn with_skills_config(mut self, cfg: SkillsConfig) -> Self {
+        self.skills_cfg = cfg;
         self
     }
 
@@ -378,7 +392,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             .collect())
     }
 
-    async fn build_prompt(&mut self) -> Result<Option<String>, TodoError> {
+    async fn build_prompt(&mut self) -> Result<Option<BuiltTodoPrompt>, TodoError> {
         let Some(preflight) = self.preflight().await? else {
             self.preflight = None;
             return Ok(None);
@@ -431,9 +445,22 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         companion_paths.dedup();
         let key = preflight.work_epic.as_str();
         let scratchpad_path =
-            loom_driver::scratch::ScratchSession::scratchpad_path_for(&self.workspace, key)
-                .to_string_lossy()
-                .into_owned();
+            loom_driver::scratch::ScratchSession::scratchpad_path_for(&self.workspace, key);
+        let scratch_dir = scratchpad_path.parent().ok_or_else(|| {
+            TodoError::Protocol(loom_driver::agent::ProtocolError::Io(
+                std::io::Error::other("scratchpad path has no parent"),
+            ))
+        })?;
+        let tracked_files = self.git.tracked_files().await?;
+        let skill_plan = SkillPlan::resolve(
+            &self.workspace,
+            &tracked_files,
+            loom_driver::config::Phase::Todo.as_str(),
+            &self.phase_default,
+            self.runtime,
+            &self.skills_cfg,
+        )?;
+        let skill_session = skill_plan.materialize(scratch_dir, &self.workspace)?;
         let spec_index = std::fs::read_to_string(self.workspace.join("docs/README.md"))?;
         let base = TemplateBaseFields {
             pinned_context: String::new(),
@@ -445,11 +472,15 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             spec_epics,
             companion_paths,
             implementation_notes,
-            scratchpad_path,
+            scratchpad_path: scratchpad_path.to_string_lossy().into_owned(),
+            skill_index: skill_session.skill_index,
         };
         let ctx = build_template_context(base, criterion_status);
         self.preflight = Some(preflight);
-        Ok(Some(ctx.render()?))
+        Ok(Some(BuiltTodoPrompt {
+            prompt: ctx.render()?,
+            skill_plan,
+        }))
     }
 
     async fn validate_success(&self, success: &TodoSuccess) -> Result<(), TodoError> {
@@ -673,10 +704,11 @@ impl<R: CommandRunner> ProductionTodoController<R> {
 
 impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
     async fn build_session(&mut self) -> Result<TodoSession, TodoError> {
-        let prompt = self
+        let built_prompt = self
             .build_prompt()
             .await?
             .ok_or(TodoError::NoChangedSpecs)?;
+        let prompt = built_prompt.prompt;
         let entry = self.manifest.lookup(&self.phase_default, self.runtime)?;
         let preflight = self
             .preflight
@@ -701,7 +733,7 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             .map_err(|source| TodoError::Protocol(loom_driver::agent::ProtocolError::Io(source)))?
             .into_iter()
             .collect();
-        let config = crate::spawn::build_spawn_config(
+        let mut config = crate::spawn::build_spawn_config(
             entry,
             self.runtime,
             self.workspace.clone(),
@@ -712,6 +744,10 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
             mounts,
             vec![],
         );
+        let skill_session = built_prompt
+            .skill_plan
+            .materialize(scratch.path(), &self.workspace)?;
+        config.skills = Some(skill_session.registered);
         Ok(TodoSession { config, scratch })
     }
 

@@ -11,6 +11,7 @@
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_protocol::todo::{GitSha, TodoFingerprint};
+use loom_templates::SkillIndexMarkdown;
 use loom_templates::criterion_status::{
     AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
     CriterionStatus, EvidenceState,
@@ -69,6 +70,7 @@ fn todo_ctx() -> TodoContext {
         }],
         criterion_status: snapshot_criterion_status(),
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     }
 }
 
@@ -150,6 +152,7 @@ fn plan_snapshot() {
         ],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         spec_conventions: "docs/spec-conventions.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
 }
@@ -177,6 +180,7 @@ fn run_snapshot() {
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
 }
@@ -201,6 +205,7 @@ fn run_snapshot_no_failure() {
         attempt: 0,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
 }
@@ -227,6 +232,7 @@ fn run_snapshot_driver_notice() {
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
 }
@@ -253,6 +259,7 @@ fn run_snapshot_verify_failures() {
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
 }
@@ -286,6 +293,7 @@ fn run_snapshot_review_concern() {
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
 }
@@ -313,6 +321,7 @@ fn run_snapshot_build_failure() {
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
 }
@@ -339,6 +348,7 @@ fn review_snapshot() {
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         default_profile: ProfileName::new("rust"),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
 }
@@ -368,6 +378,7 @@ fn msg_snapshot() {
             kind: BeadKind::Clarify,
         }],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     insta::assert_snapshot!(ctx.render().unwrap());
 }

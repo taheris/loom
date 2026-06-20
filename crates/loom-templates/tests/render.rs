@@ -10,6 +10,7 @@ use anyhow::Result;
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_protocol::todo::{GitSha, TodoFingerprint};
+use loom_templates::SkillIndexMarkdown;
 use loom_templates::criterion_status::{
     AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
     CriterionStatus, EvidenceState,
@@ -71,6 +72,7 @@ fn todo_context(notes: Vec<String>, criterion_status: Vec<CriterionStatus>) -> T
         }],
         criterion_status,
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     }
 }
 
@@ -86,6 +88,7 @@ fn plan_ctx() -> PlanContext {
         ],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         spec_conventions: "docs/spec-conventions.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     }
 }
 
@@ -101,6 +104,34 @@ fn plan_renders_partials_index_anchors_and_companions() -> Result<()> {
     assert!(out.contains("Anchor Context & Sibling-Spec Editing"));
     assert!(out.contains("LOOM_COMPLETE"));
     assert!(out.contains("Interview Modes"));
+    Ok(())
+}
+
+#[test]
+fn skill_index_partial_renders_precomputed_markdown() -> Result<()> {
+    let ctx = LoopContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        label: SpecLabel::new("agent"),
+        spec_path: "specs/agent.md".to_string(),
+        companion_paths: vec![],
+        molecule_id: None,
+        issue_id: Some(BeadId::new("lm-agent.1")?),
+        title: Some("wire skills".into()),
+        description: Some("Render skills.".into()),
+        previous_failure: None,
+        review_notes: None,
+        attempt: 0,
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::new(
+            "- `rust-review` — Use for Rust reviews. (path: `/workspace/skills/rust-review.md`)",
+        ),
+    };
+    let out = ctx.render()?;
+
+    assert!(out.contains("## Skills"));
+    assert!(out.contains("`rust-review`"));
+    assert!(out.contains("/workspace/skills/rust-review.md"));
     Ok(())
 }
 
@@ -213,6 +244,7 @@ fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -247,6 +279,7 @@ fn run_template_omits_attempt_line_when_zero() -> Result<()> {
         attempt: 0,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
     assert!(
@@ -275,6 +308,7 @@ fn run_template_renders_attempt_line_on_retry() -> Result<()> {
         attempt: 2,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
     assert!(
@@ -308,6 +342,7 @@ fn run_template_prepends_first_instruction_reframe_on_retry() -> Result<()> {
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
     let reframe = "> Re-read the previous failure block above and address its specific\n> concern before re-implementing.";
@@ -345,6 +380,7 @@ fn run_template_omits_first_instruction_reframe_on_fresh_dispatch() -> Result<()
         attempt: 0,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
     assert!(
@@ -378,6 +414,7 @@ fn run_template_omits_first_instruction_reframe_when_attempt_zero() -> Result<()
         attempt: 0,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
     assert!(
@@ -407,6 +444,7 @@ fn run_template_renders_review_notes_block_when_set() -> Result<()> {
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
     assert!(out.contains("Review notes:"), "heading missing: {out}");
@@ -483,6 +521,7 @@ fn review_renders_review_context_fields() -> Result<()> {
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         default_profile: ProfileName::new("base"),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -526,6 +565,7 @@ fn review_lane_judge_omits_rubric_walk_sections_and_keeps_judge_rubrics() -> Res
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Judge,
         default_profile: ProfileName::new("base"),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -580,6 +620,7 @@ fn review_lane_rubric_omits_judge_rubrics_and_keeps_rubric_walk_sections() -> Re
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Rubric,
         default_profile: ProfileName::new("base"),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -632,6 +673,7 @@ fn review_renders_style_rule_conformance_walkthrough() -> Result<()> {
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         default_profile: ProfileName::new("base"),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -696,6 +738,7 @@ fn review_renders_single_marker_instruction_with_concern_xor_complete() -> Resul
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         default_profile: ProfileName::new("base"),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -742,6 +785,7 @@ fn review_renders_options_format_contract_embedded_in_evidence() -> Result<()> {
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         default_profile: ProfileName::new("base"),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -792,6 +836,7 @@ fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> 
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         default_profile: ProfileName::new("base"),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -884,6 +929,7 @@ fn msg_renders_clarify_beads_with_options() -> Result<()> {
             kind: BeadKind::Clarify,
         }],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -918,6 +964,7 @@ fn msg_renders_blocked_bead_with_enumerate_first_framing() -> Result<()> {
             kind: BeadKind::Blocked,
         }],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -958,6 +1005,7 @@ fn msg_renders_clarify_bead_without_enumerate_first_framing() -> Result<()> {
             kind: BeadKind::Clarify,
         }],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
     assert!(out.contains("`loom:clarify`"));
@@ -991,6 +1039,7 @@ fn msg_chat_template_instructs_options_block_removal_on_resolution() -> Result<(
             kind: BeadKind::Clarify,
         }],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
     assert!(
@@ -1028,6 +1077,7 @@ fn msg_template_teaches_agent_bd_write_authority() -> Result<()> {
             kind: BeadKind::Clarify,
         }],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
     for required in ["bd update", "bd close", "--remove-label"] {
@@ -1053,6 +1103,7 @@ fn msg_template_renders_chat_interview_discipline() -> Result<()> {
         companion_paths: vec![],
         clarify_beads: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -1078,6 +1129,7 @@ fn msg_renders_with_no_clarify_beads() -> Result<()> {
         companion_paths: vec![],
         clarify_beads: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -1096,6 +1148,7 @@ fn every_multi_turn_template_includes_chat_marker_partial() -> Result<()> {
         companion_paths: vec![],
         clarify_beads: vec![],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     }
     .render()?;
     let plan_out = plan_ctx().render()?;
@@ -1136,6 +1189,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
         attempt: 0,
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".into(),
+        skill_index: SkillIndexMarkdown::empty(),
     }
     .render()?;
 
@@ -1155,6 +1209,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
         style_rules: "docs/style-rules.md".to_string(),
         lane: ReviewLane::Both,
         default_profile: ProfileName::new("base"),
+        skill_index: SkillIndexMarkdown::empty(),
     }
     .render()?;
 
@@ -1194,6 +1249,7 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
         attempt: 0,
         scratchpad_path: "/workspace/.loom/scratch/lm-mol.1/scratch.md".into(),
         style_rules: "docs/style-rules.md".into(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -1236,6 +1292,7 @@ fn run_template_uses_injected_self_check_range_not_head_shorthand() -> Result<()
         attempt: 0,
         scratchpad_path: "/workspace/.loom/scratch/lm-mol.1/scratch.md".into(),
         style_rules: "docs/style-rules.md".into(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -1280,6 +1337,7 @@ fn run_template_requires_self_check_rerun_after_post_check_changes() -> Result<(
         attempt: 0,
         scratchpad_path: "/workspace/.loom/scratch/lm-mol.1/scratch.md".into(),
         style_rules: "docs/style-rules.md".into(),
+        skill_index: SkillIndexMarkdown::empty(),
     };
     let out = ctx.render()?;
 
@@ -1339,6 +1397,7 @@ fn agent_output_markers_wrap_each_agent_supplied_field() -> Result<()> {
         attempt: 1,
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
     }
     .render()?;
     for token in [
@@ -1396,6 +1455,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             attempt: 1,
             scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
             style_rules: "docs/style-rules.md".to_string(),
+            skill_index: SkillIndexMarkdown::empty(),
         },
     )?;
     assert_stable(
@@ -1420,6 +1480,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             style_rules: "docs/style-rules.md".to_string(),
             lane: ReviewLane::Both,
             default_profile: ProfileName::new("rust"),
+            skill_index: SkillIndexMarkdown::empty(),
         },
     )?;
     assert_stable(
@@ -1447,6 +1508,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
                 kind: BeadKind::Clarify,
             }],
             scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+            skill_index: SkillIndexMarkdown::empty(),
         },
     )?;
     Ok(())

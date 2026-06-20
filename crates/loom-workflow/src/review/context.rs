@@ -5,6 +5,7 @@ use std::path::Path;
 use loom_driver::bd::Bead;
 use loom_driver::identifier::{MoleculeId, ProfileName, SpecLabel};
 use loom_gate::annotation::{Annotation, Tier, parse_content};
+use loom_templates::SkillIndexMarkdown;
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
 
 use crate::spec::{SpecError, target_file_path};
@@ -34,6 +35,7 @@ pub struct ReviewContextInputs {
     /// Default profile label for driver-minted fix-up and clarify beads
     /// under this spec.
     pub default_profile: ProfileName,
+    pub skill_index: SkillIndexMarkdown,
 }
 
 /// Render the typed [`ReviewContext`] used by the `review.md` Askama template.
@@ -52,6 +54,7 @@ pub fn build_review_context(inputs: ReviewContextInputs) -> ReviewContext {
         style_rules: inputs.style_rules,
         lane: inputs.lane,
         default_profile: inputs.default_profile,
+        skill_index: inputs.skill_index,
     }
 }
 
@@ -235,6 +238,7 @@ mod tests {
             style_rules: "docs/style-rules.md".into(),
             lane: ReviewLane::Both,
             default_profile: default_profile_for_spec(&SpecLabel::new("harness")),
+            skill_index: SkillIndexMarkdown::empty(),
         }
     }
 

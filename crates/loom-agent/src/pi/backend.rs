@@ -38,6 +38,7 @@ use tracing::{debug, error, info, warn};
 use super::messages::{PiEnvelope, PiResponse, SetThinkingLevelCommand};
 use super::parser::PiParser;
 use crate::apply_launcher_env;
+use crate::skill::{NoNativeRegistrar, register_native_skills};
 
 /// Env var that overrides the launcher binary. Production resolves
 /// `wrix` from `PATH`; tests substitute the mock pi script via this.
@@ -90,6 +91,7 @@ pub struct PiBackend;
 
 impl AgentBackend for PiBackend {
     async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+        register_native_skills::<NoNativeRegistrar>(config)?;
         let spawn_config_path = write_spawn_config(config)?;
 
         let wrix_bin = std::env::var_os(ENV_WRIX_BIN).unwrap_or_else(|| OsString::from("wrix"));
@@ -656,6 +658,7 @@ mod tests {
             initial_prompt: "hello pi".to_string(),
             agent_args: vec![],
             repin: sample_repin(),
+            skills: None,
             scratch_dir: PathBuf::from("/workspace/.loom/scratch/test"),
             model,
             thinking_level: None,

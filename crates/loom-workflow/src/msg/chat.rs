@@ -27,12 +27,15 @@ use askama::Template;
 use loom_driver::agent::AgentKind;
 use loom_driver::bd::{BdClient, Bead, ListOpts};
 use loom_driver::config::{LoomConfig, Phase};
+use loom_driver::git::{GitClient, GitError};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::{ImageEntry, ProfileError, ProfileImageManifest};
 use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
 use loom_driver::state::CacheDb;
 use thiserror::Error;
 use tracing::info;
+
+use crate::skill::{SkillError, SkillPlan};
 
 use super::context::build_msg_context;
 use super::list::{filter_msg_beads, spec_label_of};
@@ -100,6 +103,10 @@ pub enum ChatError {
     AgentSelection(String),
     #[error("bead identifier: {0}")]
     Identifier(String),
+    #[error("git step failed while running `loom msg --chat`")]
+    Git(#[from] GitError),
+    #[error("skill resolution failed while running `loom msg --chat`")]
+    Skill(#[from] SkillError),
 }
 
 /// Run one `loom msg --chat` session against `workspace`. Returns the
@@ -140,15 +147,34 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         .clone()
         .unwrap_or_else(|| SpecLabel::new("msg-chat"));
     let key = resolve_scratch_key(Phase::Msg, std::slice::from_ref(&scope_label), None);
-    let scratchpad_path = ScratchSession::scratchpad_path_for(workspace, &key)
-        .to_string_lossy()
-        .into_owned();
+    let scratchpad_path = ScratchSession::scratchpad_path_for(workspace, &key);
+    let scratch_dir = scratchpad_path.parent().ok_or_else(|| {
+        ChatError::Scratch(std::io::Error::other("scratchpad path has no parent"))
+    })?;
+    let git = GitClient::open(workspace)?;
+    let tracked_files = git.tracked_files_sync()?;
+    let skill_plan = SkillPlan::resolve(
+        workspace,
+        &tracked_files,
+        Phase::Msg.as_str(),
+        &profile,
+        agent_kind,
+        &cfg.skills,
+    )?;
+    let skill_session = skill_plan.materialize(scratch_dir, workspace)?;
     let companion_paths = load_companion_paths(workspace, opts.spec_filter.as_ref(), &kept)?;
-    let ctx = build_msg_context(String::new(), companion_paths, &kept, scratchpad_path);
+    let ctx = build_msg_context(
+        String::new(),
+        companion_paths,
+        &kept,
+        scratchpad_path.to_string_lossy().into_owned(),
+        skill_session.skill_index,
+    );
     let prompt_body = ctx.render().map_err(|e| ChatError::Render(e.to_string()))?;
 
     let banner = "loom msg --chat".to_string();
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, &banner)?;
+    let _restored_skills = skill_plan.materialize(scratch.path(), workspace)?;
 
     let argv = build_wrix_argv(workspace, &prompt_body, agent_kind);
     let bin: PathBuf = opts

@@ -83,6 +83,7 @@ fn sample_config() -> SpawnConfig {
             pinned_context: String::new(),
             partial_bodies: Vec::new(),
         },
+        skills: None,
         scratch_dir: PathBuf::new(),
         model: None,
         thinking_level: None,

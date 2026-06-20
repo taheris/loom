@@ -103,4 +103,7 @@ pub enum TodoError {
 
     /// spec → molecule resolution failed during `loom todo`
     Resolve(#[from] crate::resolve::ResolveError),
+
+    /// skill resolution failed during `loom todo`
+    Skill(#[from] crate::skill::SkillError),
 }

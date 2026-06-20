@@ -1,3 +1,4 @@
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -6,11 +7,14 @@ use tracing::info;
 
 use loom_driver::agent::AgentKind;
 use loom_driver::config::{LoomConfig, Phase};
+use loom_driver::git::GitClient;
 use loom_driver::identifier::{ProfileName, SpecLabel};
 use loom_driver::lock::LockManager;
 use loom_driver::profile_manifest::{ImageEntry, ProfileImageManifest};
 use loom_driver::scratch::{ScratchSession, resolve_plan_scratch_key};
 use loom_driver::state::CacheDb;
+
+use crate::skill::SkillPlan;
 
 use super::command::{WRIX_BIN, build_wrix_argv};
 use super::error::PlanError;
@@ -90,21 +94,39 @@ pub fn run_with_timeout(
     let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
     let companion_paths = anchor_companions(&db, &anchor_labels)?;
     let key = resolve_plan_scratch_key(&anchor_labels);
-    let scratchpad_path = ScratchSession::scratchpad_path_for(workspace, &key)
-        .to_string_lossy()
-        .into_owned();
+    let scratchpad_path = ScratchSession::scratchpad_path_for(workspace, &key);
+    let scratch_dir = scratchpad_path.parent().ok_or_else(|| PlanError::Spawn {
+        source: io::Error::other("scratchpad path has no parent"),
+    })?;
+    let tracked_files = if cfg.skills.paths.is_empty() {
+        Vec::new()
+    } else {
+        let git = GitClient::open(workspace)?;
+        git.tracked_files_sync()?
+    };
+    let skill_plan = SkillPlan::resolve(
+        workspace,
+        &tracked_files,
+        Phase::Plan.as_str(),
+        &profile,
+        agent_kind,
+        &cfg.skills,
+    )?;
+    let skill_session = skill_plan.materialize(scratch_dir, workspace)?;
     let prompt_body = render_prompt(PlanPromptInputs {
         anchor_labels: anchor_labels.clone(),
         pinned_context,
         spec_index,
         companion_paths: companion_paths.clone(),
-        scratchpad_path,
+        scratchpad_path: scratchpad_path.to_string_lossy().into_owned(),
         spec_conventions: cfg.spec_conventions.clone(),
+        skill_index: skill_session.skill_index,
     })?;
 
     let banner = format!("loom plan @ {}", key);
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, &banner)
         .map_err(|source| PlanError::Spawn { source })?;
+    let _restored_skills = skill_plan.materialize(scratch.path(), workspace)?;
 
     let argv = build_wrix_argv(workspace, &prompt_body, agent_kind);
     let bin: PathBuf = opts.wrix_bin.unwrap_or_else(|| PathBuf::from(WRIX_BIN));

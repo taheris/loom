@@ -3,6 +3,8 @@
 use askama::Template;
 use loom_events::identifier::{MoleculeId, ProfileName, SpecLabel};
 
+use crate::SkillIndexMarkdown;
+
 /// One file body included in the review prompt — either a `[test]`
 /// script the gate just ran, or a `[judge]` rubric the LLM must score
 /// against. `path` is the workspace-relative source location used as the
@@ -67,4 +69,5 @@ pub struct ReviewContext {
     /// Default profile for driver-minted fix-up and clarify beads under
     /// this spec.
     pub default_profile: ProfileName,
+    pub skill_index: SkillIndexMarkdown,
 }

@@ -3,6 +3,8 @@
 use askama::Template;
 use loom_events::identifier::{BeadId, SpecLabel};
 
+use crate::SkillIndexMarkdown;
+
 /// Context for `loom msg` rendering the cross-spec clarify queue.
 #[derive(Template)]
 #[template(path = "msg.md", escape = "none")]
@@ -11,6 +13,7 @@ pub struct MsgContext {
     pub companion_paths: Vec<String>,
     pub clarify_beads: Vec<ClarifyBead>,
     pub scratchpad_path: String,
+    pub skill_index: SkillIndexMarkdown,
 }
 
 /// A single outstanding msg-queue bead surfaced to the drafter session.

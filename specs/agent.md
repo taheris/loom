@@ -1080,17 +1080,17 @@ the entrypoint run the wrong runtime.
   [test](agent_runtime_name_maps_to_wrix_agent_values)
 - Skill disclosure mode is derived from resolved `agent.backend` plus
       `[skills].registration`; there is no separate skill `mode = "direct"`
-  [test?](skill_disclosure_derives_from_backend_and_registration_policy)
+  [test](skill_disclosure_derives_from_backend_and_registration_policy)
 - `registration = "auto"` calls native registration for native-capable backends
       and fails the spawn/setup path if native registration fails; backends
       without native support use prompt disclosure
-  [test?](native_skill_registration_failure_is_fatal)
+  [test](native_skill_registration_failure_is_fatal)
 - `registration = "prompt"` disables native registration globally and renders
       prompt-disclosure paths for Pi, Claude, and Direct
-  [test?](prompt_skill_registration_policy_disables_native)
+  [test](prompt_skill_registration_policy_disables_native)
 - Direct sessions always use prompt disclosure: the skill index contains paths
       and full skill bodies are loaded through Direct's `Read` tool on demand
-  [test?](direct_skill_disclosure_uses_readable_paths)
+  [test](direct_skill_disclosure_uses_readable_paths)
 
 ### Interactive shell-out
 

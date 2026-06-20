@@ -25,7 +25,7 @@ use loom_driver::bd::{
     BdClient, Bead, CommandRunner, ListOpts, ReadyOpts, TokioRunner, UpdateOpts,
 };
 use loom_driver::clock::{Clock, SystemClock};
-use loom_driver::config::{LoomConfig, LoomTopConfig, Phase};
+use loom_driver::config::{LoomConfig, LoomTopConfig, Phase, SkillsConfig};
 use loom_driver::git::{CreatedWorktree, GitClient, GitOid, RebaseOutcome};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
@@ -50,6 +50,7 @@ use crate::review::{
     DispatchScope, GateInputs, PhaseVerdict, RecoveryCause, WalkOutput, WorkspaceFindingValidator,
     decide,
 };
+use crate::skill::SkillPlan;
 use crate::suppression::suppresses_rubric_finding;
 use crate::todo::{ExitSignal, parse_exit_signal};
 use loom_templates::previous_failure::{TerminalSurface, VerifierFailure};
@@ -135,6 +136,7 @@ where
     /// cache mount + env. `LoomTopConfig::default()` is harmless — both
     /// sccache fields are `None`/`/sccache` so no mount is emitted.
     loom_cfg: LoomTopConfig,
+    skills_cfg: SkillsConfig,
     /// State for the bead currently being processed by `run_bead`. The
     /// envelope builder is shared across every driver event emitted
     /// during one attempt so seq stays strictly increasing across the
@@ -193,6 +195,7 @@ where
             logs_root: None,
             current_emit: None,
             loom_cfg: LoomTopConfig::default(),
+            skills_cfg: SkillsConfig::default(),
             pre_integration_tip: None,
             current_attempt: 0,
             fixed_queue: None,
@@ -216,6 +219,11 @@ where
     /// `LoomTopConfig::default()` when unset, which emits no mount.
     pub fn with_loom_config(mut self, cfg: LoomTopConfig) -> Self {
         self.loom_cfg = cfg;
+        self
+    }
+
+    pub fn with_skills_config(mut self, cfg: SkillsConfig) -> Self {
+        self.skills_cfg = cfg;
         self
     }
 
@@ -439,9 +447,28 @@ where
             Some(&bead.id),
         );
         let scratchpad_path =
-            loom_driver::scratch::ScratchSession::scratchpad_path_for(&worktree.path, &key)
-                .to_string_lossy()
-                .into_owned();
+            loom_driver::scratch::ScratchSession::scratchpad_path_for(&worktree.path, &key);
+        let scratch_dir = scratchpad_path.parent().ok_or_else(|| {
+            LoopError::Protocol(ProtocolError::Io(std::io::Error::other(
+                "scratchpad path has no parent",
+            )))
+        })?;
+        let bead_git = GitClient::open(&worktree.path)?;
+        let tracked_files = bead_git.tracked_files().await?;
+        let skill_profile = super::profile::resolve_profile(
+            &bead.labels,
+            self.cli_profile.as_ref(),
+            &self.phase_default,
+        );
+        let skill_plan = SkillPlan::resolve(
+            &worktree.path,
+            &tracked_files,
+            Phase::Loop.as_str(),
+            &skill_profile,
+            self.runtime,
+            &self.skills_cfg,
+        )?;
+        let skill_session = skill_plan.materialize(scratch_dir, &worktree.path)?;
         let attempt = u32::from(is_retry);
         self.current_attempt = attempt;
         let initial_prompt = match render_loop_prompt(LoopContextInputs {
@@ -456,8 +483,9 @@ where
             previous_failure: typed_previous_failure,
             review_notes: None,
             attempt,
-            scratchpad_path,
+            scratchpad_path: scratchpad_path.to_string_lossy().into_owned(),
             style_rules: self.style_rules.clone(),
+            skill_index: skill_session.skill_index,
         }) {
             Ok(p) => p,
             Err(e) => {
@@ -488,7 +516,7 @@ where
         // the deploy + signing keys into the bead container; the agent boots
         // without git keys otherwise (`specs/harness.md` § Commit signing).
         let launcher_env = self.git.launcher_key_env()?;
-        let spawn_config = match build_spawn_config_from_manifest(
+        let mut spawn_config = match build_spawn_config_from_manifest(
             &self.manifest,
             bead,
             self.cli_profile.as_ref(),
@@ -529,6 +557,8 @@ where
                 return Err(LoopError::Profile(e));
             }
         };
+        let skill_session = skill_plan.materialize(scratch.path(), &worktree.path)?;
+        spawn_config.skills = Some(skill_session.registered);
         info!(
             bead = %bead.id,
             image_ref = %spawn_config.image_ref,

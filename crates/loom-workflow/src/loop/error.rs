@@ -42,6 +42,9 @@ pub enum LoopError {
     /// spec → molecule resolution failed during `loom loop`
     Resolve(#[from] crate::resolve::ResolveError),
 
+    /// skill resolution failed during `loom loop`
+    Skill(#[from] crate::skill::SkillError),
+
     /// no active molecule for spec `{label}`
     NoActiveMolecule { label: String },
 

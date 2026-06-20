@@ -21,6 +21,7 @@ use loom_events::ParsedAgentEvent;
 use loom_events::identifier::ToolCallId;
 
 use crate::apply_launcher_env;
+use crate::skill::{NoNativeRegistrar, register_native_skills};
 use serde::{Deserialize, Serialize};
 use tokio::io::BufWriter;
 use tokio::process::Command;
@@ -54,6 +55,7 @@ pub struct DirectBackend;
 
 impl AgentBackend for DirectBackend {
     async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+        register_native_skills::<NoNativeRegistrar>(config)?;
         let spawn_config_path = prepare_runtime(config)?;
 
         let wrix_bin = std::env::var_os(ENV_WRIX_BIN).unwrap_or_else(|| OsString::from("wrix"));
@@ -332,6 +334,7 @@ mod tests {
             initial_prompt: "hello".to_string(),
             agent_args: vec![],
             repin: sample_repin(),
+            skills: None,
             scratch_dir,
             model: None,
             thinking_level: None,

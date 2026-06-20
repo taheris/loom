@@ -1,5 +1,6 @@
 use askama::Template;
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
+use loom_templates::SkillIndexMarkdown;
 use loom_templates::run::{LoopContext, PreviousFailure};
 
 /// Inputs for [`build_loop_context`]. Constructed once per bead spawn — for
@@ -34,6 +35,7 @@ pub struct LoopContextInputs {
     /// in the rendered prompt so the implementer reads applicable rules
     /// before writing code.
     pub style_rules: String,
+    pub skill_index: SkillIndexMarkdown,
 }
 
 /// Build the typed [`LoopContext`] for a single bead spawn from the driver's
@@ -53,6 +55,7 @@ pub fn build_loop_context(inputs: LoopContextInputs) -> LoopContext {
         attempt: inputs.attempt,
         scratchpad_path: inputs.scratchpad_path,
         style_rules: inputs.style_rules,
+        skill_index: inputs.skill_index,
     }
 }
 
@@ -82,6 +85,7 @@ mod tests {
             attempt: 0,
             scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.15/scratch.md".into(),
             style_rules: "docs/style-rules.md".into(),
+            skill_index: SkillIndexMarkdown::empty(),
         }
     }
 

@@ -15,6 +15,7 @@ loom-gate = { workspace = true }
 loom-llm = { workspace = true }
 loom-protocol = { workspace = true }
 loom-render = { workspace = true }
+loom-skills = { workspace = true }
 loom-templates = { workspace = true }
 pulldown-cmark = { workspace = true }
 serde = { workspace = true }

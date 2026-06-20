@@ -25,7 +25,7 @@ use askama::Template;
 use loom_driver::agent::{AgentRuntime, ProtocolError, SessionOutcome, SpawnConfig};
 use loom_driver::bd::{BdClient, BdError, Bead, CommandRunner, ListOpts, TokioRunner, UpdateOpts};
 use loom_driver::clock::{Clock, SystemClock};
-use loom_driver::config::{LoomConfig, Phase, SuppressionConfig};
+use loom_driver::config::{LoomConfig, Phase, SkillsConfig, SuppressionConfig};
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
@@ -52,6 +52,7 @@ use super::phase_verdict::{GateInputs, PhaseVerdict, RecoveryCause, decide};
 use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
 use super::verdict::PushGateRefuseCause;
 use super::workspace_validator::WorkspaceFindingValidator;
+use crate::skill::SkillPlan;
 use crate::suppression::{has_ineffective_suppression_match, suppresses_rubric_finding};
 use crate::todo::ExitSignal;
 
@@ -198,8 +199,15 @@ where
     dispatch_scope: DispatchScope,
     /// Top-level `[[suppress]]` rubric-finding allowlist entries.
     suppressions: Vec<SuppressionConfig>,
+    skills_cfg: SkillsConfig,
     effective_review_marker: Option<ExitSignal>,
     suppressed_review_concern: bool,
+}
+
+struct BuiltReviewPrompt {
+    prompt: String,
+    skill_plan: SkillPlan,
+    key: String,
 }
 
 impl<S, F, R: CommandRunner> ProductionReviewController<S, F, R>
@@ -252,6 +260,7 @@ where
             lane: ReviewLane::Both,
             dispatch_scope: DispatchScope::PerBead,
             suppressions: Vec::new(),
+            skills_cfg: SkillsConfig::default(),
             effective_review_marker: None,
             suppressed_review_concern: false,
         }
@@ -316,6 +325,11 @@ where
     /// Override the rubric-finding suppressions used after walk-shape validation.
     pub fn with_suppressions(mut self, suppressions: Vec<SuppressionConfig>) -> Self {
         self.suppressions = suppressions;
+        self
+    }
+
+    pub fn with_skills_config(mut self, cfg: SkillsConfig) -> Self {
+        self.skills_cfg = cfg;
         self
     }
 
@@ -447,7 +461,7 @@ where
             .collect())
     }
 
-    async fn build_review_prompt(&self) -> Result<String, ReviewError> {
+    async fn build_review_prompt(&self) -> Result<BuiltReviewPrompt, ReviewError> {
         let beads = self
             .bd
             .list(ListOpts {
@@ -466,9 +480,27 @@ where
             load_review_sources(&self.workspace, &self.workspace.join(&spec_path))?;
         let key = resolve_scratch_key(Phase::Review, std::slice::from_ref(&self.label), None);
         let scratchpad_path =
-            loom_driver::scratch::ScratchSession::scratchpad_path_for(&self.workspace, &key)
-                .to_string_lossy()
-                .into_owned();
+            loom_driver::scratch::ScratchSession::scratchpad_path_for(&self.workspace, &key);
+        let scratch_dir = scratchpad_path.parent().ok_or_else(|| {
+            ReviewError::Protocol(ProtocolError::Io(std::io::Error::other(
+                "scratchpad path has no parent",
+            )))
+        })?;
+        let tracked_files = if self.skills_cfg.paths.is_empty() {
+            Vec::new()
+        } else {
+            let git = GitClient::open(&self.workspace)?;
+            git.tracked_files().await?
+        };
+        let skill_plan = SkillPlan::resolve(
+            &self.workspace,
+            &tracked_files,
+            Phase::Review.as_str(),
+            &self.phase_default,
+            self.runtime,
+            &self.skills_cfg,
+        )?;
+        let skill_session = skill_plan.materialize(scratch_dir, &self.workspace)?;
         let ctx = ReviewContext {
             pinned_context: String::new(),
             default_profile: default_profile_for_spec(&self.label),
@@ -480,11 +512,16 @@ where
             molecule_id,
             test_sources,
             judge_rubrics,
-            scratchpad_path,
+            scratchpad_path: scratchpad_path.to_string_lossy().into_owned(),
             style_rules: self.style_rules.clone(),
             lane: self.lane,
+            skill_index: skill_session.skill_index,
         };
-        Ok(ctx.render()?)
+        Ok(BuiltReviewPrompt {
+            prompt: ctx.render()?,
+            skill_plan,
+            key,
+        })
     }
 }
 
@@ -717,14 +754,18 @@ where
         > + Send,
 {
     async fn run_review(&mut self) -> Result<RunReviewOutput, ReviewError> {
-        let prompt = self.build_review_prompt().await?;
+        let built_prompt = self.build_review_prompt().await?;
+        let prompt = built_prompt.prompt;
         let entry = self.manifest.lookup(&self.phase_default, self.runtime)?;
         let banner = format!("loom review @ {}", self.label);
-        let key = resolve_scratch_key(Phase::Review, std::slice::from_ref(&self.label), None);
-        let scratch =
-            loom_driver::scratch::ScratchSession::open(&self.workspace, &key, &prompt, &banner)
-                .map_err(|source| ReviewError::Protocol(ProtocolError::Io(source)))?;
-        let spawn_config = crate::spawn::build_spawn_config(
+        let scratch = loom_driver::scratch::ScratchSession::open(
+            &self.workspace,
+            &built_prompt.key,
+            &prompt,
+            &banner,
+        )
+        .map_err(|source| ReviewError::Protocol(ProtocolError::Io(source)))?;
+        let mut spawn_config = crate::spawn::build_spawn_config(
             entry,
             self.runtime,
             self.workspace.clone(),
@@ -735,6 +776,10 @@ where
             vec![],
             vec![],
         );
+        let skill_session = built_prompt
+            .skill_plan
+            .materialize(scratch.path(), &self.workspace)?;
+        spawn_config.skills = Some(skill_session.registered);
         info!(
             label = %self.label,
             image_ref = %spawn_config.image_ref,
@@ -2460,7 +2505,7 @@ mod tests {
             noop_spawn,
         );
         let prompt = match ctrl.build_review_prompt().await {
-            Ok(p) => p,
+            Ok(p) => p.prompt,
             Err(ReviewError::Bd(_)) => return,
             Err(e) => panic!("unexpected error: {e:?}"),
         };
@@ -2530,7 +2575,7 @@ mod tests {
             noop_spawn,
         );
         let prompt = match ctrl.build_review_prompt().await {
-            Ok(p) => p,
+            Ok(p) => p.prompt,
             Err(ReviewError::Bd(_)) => return,
             Err(e) => panic!("unexpected error: {e:?}"),
         };
@@ -2577,7 +2622,7 @@ mod tests {
         )
         .with_lane(ReviewLane::Judge);
         let judge_prompt = match judge_ctrl.build_review_prompt().await {
-            Ok(p) => p,
+            Ok(p) => p.prompt,
             Err(ReviewError::Bd(_)) => return,
             Err(e) => panic!("unexpected error: {e:?}"),
         };
@@ -2606,7 +2651,7 @@ mod tests {
         )
         .with_lane(ReviewLane::Rubric);
         let rubric_prompt = match rubric_ctrl.build_review_prompt().await {
-            Ok(p) => p,
+            Ok(p) => p.prompt,
             Err(ReviewError::Bd(_)) => return,
             Err(e) => panic!("unexpected error: {e:?}"),
         };
@@ -2652,7 +2697,7 @@ mod tests {
             noop_spawn,
         );
         let prompt = match ctrl.build_review_prompt().await {
-            Ok(p) => p,
+            Ok(p) => p.prompt,
             Err(ReviewError::Bd(_)) => return,
             Err(e) => panic!("unexpected error: {e:?}"),
         };

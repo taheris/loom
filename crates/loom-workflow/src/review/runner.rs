@@ -1459,7 +1459,9 @@ mod tests {
                 | ReviewError::Profile(_)
                 | ReviewError::NoActiveMolecule(_)
                 | ReviewError::Spec(_)
-                | ReviewError::Resolve(_) => {}
+                | ReviewError::Resolve(_)
+                | ReviewError::Git(_)
+                | ReviewError::Skill(_) => {}
             }
         }
         let _ = variant_set_excludes_concern_without_bead_deltas;

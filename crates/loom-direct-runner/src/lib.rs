@@ -454,6 +454,7 @@ mod tests {
                 pinned_context: String::new(),
                 partial_bodies: vec![],
             },
+            skills: None,
             scratch_dir: PathBuf::new(),
             model: model_id.map(|m| ModelSelection {
                 provider: "anthropic".into(),

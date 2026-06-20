@@ -32,6 +32,7 @@ use loom_gate::{
     IntegrityFinding, Tier, TierCwds, annotation as gate_annotation, integrity, run_check,
     run_system, run_test_in,
 };
+use loom_templates::SkillIndexMarkdown;
 use loom_templates::review::{ReviewContext, ReviewLane};
 use thiserror::Error;
 
@@ -404,6 +405,7 @@ where
             scratchpad_path,
             style_rules: self.style_rules.clone(),
             lane: ReviewLane::Rubric,
+            skill_index: SkillIndexMarkdown::empty(),
         };
         ctx.render().map_err(|e| WalkError::Rubric(e.to_string()))
     }

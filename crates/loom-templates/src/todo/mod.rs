@@ -2,6 +2,7 @@ use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, SpecLabel};
 use loom_protocol::todo::{GitSha, TodoFingerprint};
 
+use crate::SkillIndexMarkdown;
 use crate::criterion_status::CriterionStatus;
 
 /// Context for the unified `loom todo` decomposition prompt.
@@ -19,6 +20,7 @@ pub struct TodoContext {
     pub implementation_notes: Vec<SpecImplementationNotes>,
     pub criterion_status: Vec<CriterionStatus>,
     pub scratchpad_path: String,
+    pub skill_index: SkillIndexMarkdown,
 }
 
 impl TodoContext {
@@ -82,6 +84,7 @@ mod tests {
             }],
             criterion_status: vec![],
             scratchpad_path: SCRATCH.to_string(),
+            skill_index: SkillIndexMarkdown::empty(),
         }
     }
 

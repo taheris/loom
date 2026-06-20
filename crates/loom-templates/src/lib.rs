@@ -19,6 +19,8 @@
 //! `review`, `msg`) are internal — consumers compose with the partials and
 //! typed contexts, not with the workflow shells.
 
+use std::fmt;
+
 pub mod criterion_status;
 pub mod finding;
 pub mod msg;
@@ -59,6 +61,36 @@ pub use todo::{SpecEpicContext, SpecImplementationNotes, TodoChangedSpec, TodoCo
 pub struct PinnedContext {
     pub pinned_context: String,
     pub style_rules: String,
+}
+
+/// Pre-rendered compact skill index injected into agent-bearing templates.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillIndexMarkdown {
+    body: String,
+}
+
+impl SkillIndexMarkdown {
+    pub fn new(body: impl Into<String>) -> Self {
+        Self { body: body.into() }
+    }
+
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.body.is_empty()
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.body
+    }
+}
+
+impl fmt::Display for SkillIndexMarkdown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.body)
+    }
 }
 
 /// `partial/companions_context.md` — list companion paths declared on the spec.
@@ -139,6 +171,9 @@ pub const PARTIAL_REVIEW_RUBRIC: &str = include_str!("../templates/partial/revie
 
 /// `partial/scratchpad.md` — pin the per-session scratchpad path.
 pub const PARTIAL_SCRATCHPAD: &str = include_str!("../templates/partial/scratchpad.md");
+
+/// `partial/skill_index.md` — render the precomputed compact skill index.
+pub const PARTIAL_SKILL_INDEX: &str = include_str!("../templates/partial/skill_index.md");
 
 /// `partial/sibling_spec_editing.md` — authorize cross-spec edits during
 /// a planning session.

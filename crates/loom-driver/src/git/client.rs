@@ -964,6 +964,18 @@ impl GitClient {
             .collect())
     }
 
+    /// `git ls-files` — repo-relative paths tracked at the current worktree.
+    pub async fn tracked_files(&self) -> Result<Vec<PathBuf>, GitError> {
+        let output = run_git_raw(&self.workdir, self.clock.as_ref(), ["ls-files"], None).await?;
+        tracked_files_from_output(output)
+    }
+
+    /// Synchronous `git ls-files` for sync workflow phases such as `loom plan`.
+    pub fn tracked_files_sync(&self) -> Result<Vec<PathBuf>, GitError> {
+        let output = sync_git_raw(&self.workdir, &["ls-files"])?;
+        tracked_files_from_output(output)
+    }
+
     /// `git diff HEAD -- <spec_path>` — working-tree diff for one spec file.
     /// Empty string when the file matches `HEAD`.
     pub async fn workdir_diff_spec(&self, spec_path: &Path) -> Result<String, GitError> {
@@ -1602,6 +1614,18 @@ fn sync_git_raw(workspace: &Path, args: &[&str]) -> Result<std::process::Output,
         .args(args)
         .output()
         .map_err(GitError::Spawn)
+}
+
+fn tracked_files_from_output(output: std::process::Output) -> Result<Vec<PathBuf>, GitError> {
+    if !output.status.success() {
+        return Err(cli_error(&output));
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    Ok(stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect())
 }
 
 /// Synchronous `git -C <workspace> rev-list --count <range>` parsed to a

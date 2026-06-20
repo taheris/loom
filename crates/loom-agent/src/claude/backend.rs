@@ -27,6 +27,7 @@ use tracing::{debug, info, warn};
 
 use super::parser::ClaudeParser;
 use crate::apply_launcher_env;
+use crate::skill::{NoNativeRegistrar, register_native_skills};
 
 /// File name for the JSON-serialized [`SpawnConfig`] handed to
 /// `wrix spawn --spawn-config`. Written into the per-session
@@ -59,6 +60,7 @@ pub struct ClaudeBackend;
 
 impl AgentBackend for ClaudeBackend {
     async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+        register_native_skills::<NoNativeRegistrar>(config)?;
         let spawn_config_path = prepare_runtime(config)?;
 
         let wrix_bin = std::env::var_os(ENV_WRIX_BIN).unwrap_or_else(|| OsString::from("wrix"));
@@ -320,6 +322,7 @@ mod tests {
             initial_prompt: "hello".to_string(),
             agent_args: vec!["--print".into()],
             repin: sample_repin(),
+            skills: None,
             scratch_dir: scratch.path().to_path_buf(),
             model: None,
             thinking_level: None,

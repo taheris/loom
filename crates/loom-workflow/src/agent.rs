@@ -918,6 +918,7 @@ mod tests {
                 pinned_context: String::new(),
                 partial_bodies: vec![],
             },
+            skills: None,
             scratch_dir: dir.path().join("scratch"),
             model: None,
             thinking_level: None,

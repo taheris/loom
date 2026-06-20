@@ -11,6 +11,7 @@
 pub mod claude;
 pub mod direct;
 pub mod pi;
+mod skill;
 
 pub use claude::ClaudeBackend;
 pub use direct::DirectBackend;

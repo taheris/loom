@@ -1,5 +1,6 @@
 use askama::Template;
 
+use loom_templates::SkillIndexMarkdown;
 use loom_templates::plan::PlanContext;
 
 use super::error::PlanError;
@@ -19,6 +20,7 @@ pub struct PlanPromptInputs {
     /// Pinned via `partial/spec_conventions.md` so the agent reads the
     /// conventions before authoring or editing specs.
     pub spec_conventions: String,
+    pub skill_index: SkillIndexMarkdown,
 }
 
 /// Render the Askama template for `loom plan [SPEC_LABEL ...]`.
@@ -30,6 +32,7 @@ pub fn render_prompt(inputs: PlanPromptInputs) -> Result<String, PlanError> {
         companion_paths: inputs.companion_paths,
         scratchpad_path: inputs.scratchpad_path,
         spec_conventions: inputs.spec_conventions,
+        skill_index: inputs.skill_index,
     }
     .render()?)
 }
@@ -46,6 +49,7 @@ mod tests {
             companion_paths: vec!["lib/sandbox/".into()],
             scratchpad_path: "/workspace/.loom/scratch/harness+future-spec/scratch.md".into(),
             spec_conventions: "docs/spec-conventions.md".into(),
+            skill_index: SkillIndexMarkdown::empty(),
         }
     }
 
@@ -68,6 +72,7 @@ mod tests {
             companion_paths: Vec::new(),
             scratchpad_path: "/workspace/.loom/scratch/plan/scratch.md".into(),
             spec_conventions: "docs/spec-conventions.md".into(),
+            skill_index: SkillIndexMarkdown::empty(),
         })
         .expect("render");
         assert!(body.contains("No anchor labels were supplied"));

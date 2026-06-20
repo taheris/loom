@@ -23,7 +23,7 @@ that bead is on deck.
 {% include "partial/companions_context.md" %}
 
 {% include "partial/scratchpad.md" %}
-
+{% include "partial/skill_index.md" %}
 ## Outstanding Beads
 
 Each entry below is an outstanding `loom:clarify` or `loom:blocked` bead.

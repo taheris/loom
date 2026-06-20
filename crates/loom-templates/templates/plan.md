@@ -28,7 +28,7 @@ No anchor labels were supplied. Start from the project overview and spec index.
 {% include "partial/spec_conventions.md" %}
 
 {% include "partial/scratchpad.md" %}
-
+{% include "partial/skill_index.md" %}
 ## Interview Guidelines
 
 1. Ask one focused question at a time.

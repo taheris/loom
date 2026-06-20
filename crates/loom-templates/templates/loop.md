@@ -9,7 +9,7 @@
 {% include "partial/style_rules.md" %}
 
 {% include "partial/scratchpad.md" %}
-
+{% include "partial/skill_index.md" %}
 ## Current Spec
 
 Read: {{ spec_path }}

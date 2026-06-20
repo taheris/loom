@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use displaydoc::Display;
 use thiserror::Error;
 
+use loom_driver::git::GitError;
 use loom_driver::lock::LockError;
 use loom_driver::profile_manifest::ProfileError;
 use loom_driver::state::CacheError;
@@ -47,4 +48,10 @@ pub enum PlanError {
 
     /// `wrix run` exited with status {status}
     WrixExit { status: String },
+
+    /// git step failed during `loom plan`
+    Git(#[from] GitError),
+
+    /// skill resolution failed during `loom plan`
+    Skill(#[from] crate::skill::SkillError),
 }

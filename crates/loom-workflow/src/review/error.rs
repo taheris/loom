@@ -3,6 +3,7 @@ use thiserror::Error;
 
 use loom_driver::agent::ProtocolError;
 use loom_driver::bd::BdError;
+use loom_driver::git::GitError;
 use loom_driver::logging::LogError;
 use loom_driver::profile_manifest::ProfileError;
 use loom_driver::state::CacheError;
@@ -56,4 +57,10 @@ pub enum ReviewError {
 
     /// spec → molecule resolution failed during `loom review`
     Resolve(#[from] crate::resolve::ResolveError),
+
+    /// git step failed during `loom review`
+    Git(#[from] GitError),
+
+    /// skill resolution failed during `loom review`
+    Skill(#[from] crate::skill::SkillError),
 }

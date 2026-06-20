@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use loom_skills::registry::RegisteredSkills;
 use serde::{Deserialize, Serialize};
 
 use super::error::ProtocolError;
@@ -55,6 +56,14 @@ pub struct SpawnConfig {
     pub initial_prompt: String,
     pub agent_args: Vec<String>,
     pub repin: RePinContent,
+    /// Host-side materialized skill registry plus selected disclosure mode.
+    /// Prompt-disclosure backends rely on [`SpawnConfig::initial_prompt`]
+    /// already carrying readable paths, while native-capable backends consult
+    /// this field during setup. It is skipped from the wrix spawn-config JSON
+    /// because the wrapper and in-container Direct runner do not need the
+    /// host-side registry payload.
+    #[serde(skip)]
+    pub skills: Option<RegisteredSkills>,
     /// Pre-populated `.loom/scratch/<key>/` for this session. Owned
     /// by the workflow code through a [`ScratchSession`] guard whose
     /// lifetime spans the spawn; backends read `repin.sh` and
@@ -331,6 +340,7 @@ mod tests {
                 pinned_context: "pc".into(),
                 partial_bodies: vec![],
             },
+            skills: None,
             scratch_dir: PathBuf::from("/workspace/.loom/scratch/test"),
             model,
             thinking_level: None,
@@ -704,6 +714,26 @@ mod tests {
             !json.contains("deploy_keys"),
             "host key paths must not leak into the spawn-config JSON: {json}",
         );
+    }
+
+    /// `skills` is host-only setup state. It must never reach the wrix JSON
+    /// payload because prompt-disclosure backends already receive readable
+    /// paths through `initial_prompt`, and the wrapper does not consume the
+    /// materialized registry.
+    #[test]
+    fn spawn_config_skills_are_host_only_and_never_serialized() {
+        let mut cfg = sample_config(None);
+        cfg.skills = Some(RegisteredSkills::new(
+            loom_skills::registry::MaterializedRegistry::new(vec![]),
+            loom_skills::disclosure::DisclosureMode::Prompt,
+        ));
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        assert!(
+            !json.contains("skills"),
+            "host-side skill registry must not reach wrix spawn JSON: {json}",
+        );
+        let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.skills.is_none());
     }
 
     /// `launcher_env` deserializes to an empty vector via `#[serde(skip)]`'s

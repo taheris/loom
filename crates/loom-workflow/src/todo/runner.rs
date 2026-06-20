@@ -158,6 +158,7 @@ mod tests {
                         pinned_context: String::new(),
                         partial_bodies: vec![],
                     },
+                    skills: None,
                     scratch_dir,
                     model: None,
                     thinking_level: None,

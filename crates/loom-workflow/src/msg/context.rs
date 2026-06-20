@@ -1,5 +1,6 @@
 use loom_driver::bd::Bead;
 use loom_driver::identifier::{BeadId, SpecLabel};
+use loom_templates::SkillIndexMarkdown;
 use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
 
 use super::list::{MsgKind, kind_of, spec_label_of};
@@ -16,12 +17,14 @@ pub fn build_msg_context(
     companion_paths: Vec<String>,
     beads: &[&Bead],
     scratchpad_path: String,
+    skill_index: SkillIndexMarkdown,
 ) -> MsgContext {
     MsgContext {
         pinned_context,
         companion_paths,
         clarify_beads: beads.iter().map(|b| to_clarify_bead(b)).collect(),
         scratchpad_path,
+        skill_index,
     }
 }
 
@@ -140,6 +143,7 @@ mod tests {
             vec!["lib/sandbox/".into()],
             &refs,
             "/workspace/.loom/scratch/msg/scratch.md".into(),
+            SkillIndexMarkdown::empty(),
         );
         let body = ctx.render().expect("render");
         assert!(body.contains("lm-2"), "{body}");

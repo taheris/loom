@@ -39,7 +39,7 @@ Diff:
 {% include "partial/companions_context.md" %}
 
 {% include "partial/scratchpad.md" %}
-{% if self.has_implementation_notes() %}
+{% include "partial/skill_index.md" %}{% if self.has_implementation_notes() %}
 ## Implementation Notes
 
 The following implementation notes were captured during planning. **Every note below describes work that MUST become one or more beads in this session** unless you persist a structured clarify question to the work epic and self-report.

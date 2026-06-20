@@ -1,5 +1,6 @@
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 use loom_protocol::todo::{GitSha, TodoFingerprint};
+use loom_templates::SkillIndexMarkdown;
 use loom_templates::criterion_status::CriterionStatus;
 use loom_templates::todo::{
     SpecEpicContext, SpecImplementationNotes, TodoChangedSpec, TodoContext,
@@ -18,6 +19,7 @@ pub struct TemplateBaseFields {
     pub companion_paths: Vec<String>,
     pub implementation_notes: Vec<SpecImplementationNotes>,
     pub scratchpad_path: String,
+    pub skill_index: SkillIndexMarkdown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +49,7 @@ pub fn build_template_context(
         implementation_notes: base.implementation_notes,
         criterion_status,
         scratchpad_path: base.scratchpad_path,
+        skill_index: base.skill_index,
     }
 }
 
@@ -172,6 +175,7 @@ mod tests {
             companion_paths: vec![],
             implementation_notes: vec![],
             scratchpad_path: "/workspace/.loom/scratch/todo/scratch.md".to_string(),
+            skill_index: SkillIndexMarkdown::empty(),
         }
     }
 

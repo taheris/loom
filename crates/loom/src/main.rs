@@ -2364,6 +2364,7 @@ fn run_loop_cmd(
         let shutdown_grace = resolve_shutdown_grace(&selection);
         let style_rules_for_async = config.style_rules.clone();
         let loom_cfg_for_async = config.loom.clone();
+        let skills_cfg_for_async = config.skills.clone();
         let outcome = runtime.block_on(async move {
             run_parallel_loop(
                 workspace_buf,
@@ -2377,6 +2378,7 @@ fn run_loop_cmd(
                 phase_default_for_async,
                 style_rules_for_async,
                 loom_cfg_for_async,
+                skills_cfg_for_async,
             )
             .await
         })?;
@@ -2403,6 +2405,7 @@ fn run_loop_cmd(
     let render_mode = resolve_render_mode(render_flags);
     let style_rules_for_run = config.style_rules.clone();
     let loom_cfg_for_run = config.loom.clone();
+    let skills_cfg_for_run = config.skills.clone();
     let observer_config = config.agent.clone();
     let retry_policy = RetryPolicy {
         max_retries: config.loop_.max_retries,
@@ -2471,6 +2474,7 @@ fn run_loop_cmd(
         .with_style_rules(style_rules_for_run)
         .with_agent_runtime(kind)
         .with_loom_config(loom_cfg_for_run)
+        .with_skills_config(skills_cfg_for_run)
         .with_phase_log_root(logs_root_for_controller);
         if let LoopWorkRootKind::Task = &root.kind {
             controller =
@@ -2541,6 +2545,7 @@ async fn run_parallel_loop(
     phase_default: ProfileName,
     style_rules: String,
     loom_cfg: loom_driver::config::LoomTopConfig,
+    skills_cfg: loom_driver::config::SkillsConfig,
 ) -> anyhow::Result<LoopOutcome> {
     use loom_driver::bd::UpdateOpts;
     use loom_workflow::r#loop::AgentOutcome;
@@ -2602,6 +2607,7 @@ async fn run_parallel_loop(
             let style_rules_inner = style_rules.clone();
             let workspace_inner = workspace_for_closure.clone();
             let loom_cfg_inner = loom_cfg.clone();
+            let skills_cfg_inner = skills_cfg.clone();
             let launcher_env_inner = launcher_env.clone();
             async move {
                 // Marker is the primary signal here too — without it, parallel
@@ -2619,6 +2625,7 @@ async fn run_parallel_loop(
                     &style_rules_inner,
                     &workspace_inner,
                     &loom_cfg_inner,
+                    &skills_cfg_inner,
                     launcher_env_inner,
                 )
                 .await
@@ -2760,6 +2767,7 @@ async fn dispatch_for_slot(
     style_rules: &str,
     loom_workspace: &Path,
     loom_cfg: &loom_driver::config::LoomTopConfig,
+    skills_cfg: &loom_driver::config::SkillsConfig,
     launcher_env: Vec<(String, String)>,
 ) -> anyhow::Result<(SessionOutcome, Option<ExitSignal>)> {
     use loom_driver::scratch::ScratchSession;
@@ -2767,6 +2775,7 @@ async fn dispatch_for_slot(
         LoopContextInputs, build_spawn_config_from_manifest, dolt_socket_mount, render_loop_prompt,
         sccache_mount,
     };
+    use loom_workflow::skill::SkillPlan;
 
     let banner = format!("loom loop @ {}", slot.bead.id);
     let key = resolve_scratch_key(
@@ -2774,9 +2783,23 @@ async fn dispatch_for_slot(
         std::slice::from_ref(label),
         Some(&slot.bead.id),
     );
-    let scratchpad_path = ScratchSession::scratchpad_path_for(&slot.worktree.path, &key)
-        .to_string_lossy()
-        .into_owned();
+    let scratchpad_path = ScratchSession::scratchpad_path_for(&slot.worktree.path, &key);
+    let scratch_dir = scratchpad_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("scratchpad path has no parent"))?;
+    let bead_git = GitClient::open(&slot.worktree.path)?;
+    let tracked_files = bead_git.tracked_files().await?;
+    let skill_profile =
+        loom_workflow::r#loop::resolve_profile(&slot.bead.labels, cli_profile, phase_default);
+    let skill_plan = SkillPlan::resolve(
+        &slot.worktree.path,
+        &tracked_files,
+        Phase::Loop.as_str(),
+        &skill_profile,
+        kind,
+        skills_cfg,
+    )?;
+    let skill_session = skill_plan.materialize(scratch_dir, &slot.worktree.path)?;
     let initial_prompt = render_loop_prompt(LoopContextInputs {
         label: label.clone(),
         spec_path: format!("specs/{}.md", label.as_str()),
@@ -2789,8 +2812,9 @@ async fn dispatch_for_slot(
         previous_failure: None,
         review_notes: None,
         attempt: 0,
-        scratchpad_path,
+        scratchpad_path: scratchpad_path.to_string_lossy().into_owned(),
         style_rules: style_rules.to_string(),
+        skill_index: skill_session.skill_index,
     })?;
     let scratch = ScratchSession::open(&slot.worktree.path, &key, &initial_prompt, &banner)?;
     let mut mounts: Vec<_> = dolt_socket_mount(loom_workspace).into_iter().collect();
@@ -2798,7 +2822,7 @@ async fn dispatch_for_slot(
         mounts.push(spec);
     }
     let extra_env = loom_cfg.container_sccache_env();
-    let spawn_config = build_spawn_config_from_manifest(
+    let mut spawn_config = build_spawn_config_from_manifest(
         manifest,
         &slot.bead,
         cli_profile,
@@ -2812,6 +2836,8 @@ async fn dispatch_for_slot(
         mounts,
         launcher_env,
     )?;
+    let skill_session = skill_plan.materialize(scratch.path(), &slot.worktree.path)?;
+    spawn_config.skills = Some(skill_session.registered);
 
     let sink = open_bead_sink(logs_root, label, &slot.bead.id)?;
     let mut output = String::new();
@@ -3162,6 +3188,7 @@ fn run_review(
     let integration_branch_for_review = config.loom.integration_branch.clone();
     let hook_timeout_for_review = config.loom.git_hook_timeout();
     let suppressions_for_review = config.suppress.clone();
+    let skills_cfg_for_review = config.skills.clone();
     let dispatch_scope = if opts.tree {
         DispatchScope::Tree
     } else {
@@ -3216,7 +3243,8 @@ fn run_review(
             .with_push_range(opts.diff.clone())
             .with_lane(opts.lane)
             .with_dispatch_scope(dispatch_scope)
-            .with_suppressions(suppressions_for_review);
+            .with_suppressions(suppressions_for_review)
+            .with_skills_config(skills_cfg_for_review);
         run_review_loop(&mut controller, IterationCap::default()).await
     })?;
     let review_stdout = captured_review_stdout
@@ -3550,6 +3578,7 @@ fn run_todo(
     let logs_root = workspace.join(".loom/logs");
     let label_for_sink = SpecLabel::new("todo");
     let loom_cfg_for_todo = config.loom.clone();
+    let skills_cfg_for_todo = config.skills.clone();
     let result = runtime.block_on(async move {
         let mut controller = ProductionTodoController::for_workspace(
             workspace_buf,
@@ -3561,7 +3590,8 @@ fn run_todo(
             since,
         )
         .with_loom_config(loom_cfg_for_todo)
-        .with_agent_runtime(kind);
+        .with_agent_runtime(kind)
+        .with_skills_config(skills_cfg_for_todo);
         run_todo_workflow(&mut controller, |spawn_cfg: SpawnConfig| async move {
             let sink = LogSink::open_phase_at(
                 &logs_root,

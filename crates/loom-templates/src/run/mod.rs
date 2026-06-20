@@ -3,6 +3,8 @@
 use askama::Template;
 use loom_events::identifier::{BeadId, MoleculeId, SpecLabel};
 
+use crate::SkillIndexMarkdown;
+
 pub use crate::previous_failure::{
     BadWalk, DriverNoticeCause, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, STDERR_TAIL_PER_BLOCK,
     VerifierFailure,
@@ -33,4 +35,5 @@ pub struct LoopContext {
     pub attempt: u32,
     pub scratchpad_path: String,
     pub style_rules: String,
+    pub skill_index: SkillIndexMarkdown,
 }
