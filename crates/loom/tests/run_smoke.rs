@@ -195,10 +195,17 @@ fn loom_loop_without_spec_uses_active_epic_in_multi_spec_workspace() {
             .any(|line| line.contains("list\t") && line.contains("--label=loom:active")),
         "bare loop must query the active work epic rather than tree spec resolution:\n{log}",
     );
+    let ready_line = log
+        .lines()
+        .find(|line| line.contains("ready\t"))
+        .unwrap_or_else(|| panic!("no `bd ready` call recorded in log:\n{log}"));
     assert!(
-        log.lines()
-            .any(|line| line.contains("ready\t") && line.contains("--label=spec:harness")),
-        "ready queue must use the spec label declared by the active work epic:\n{log}",
+        ready_line.contains("--parent=lm-active"),
+        "ready queue must scope to the active work epic parent:\n{log}",
+    );
+    assert!(
+        !ready_line.contains("--label=spec:harness"),
+        "ready queue for a multi-spec active work epic must not narrow by spec:\n{log}",
     );
 }
 

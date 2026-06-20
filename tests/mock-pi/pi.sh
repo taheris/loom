@@ -100,6 +100,7 @@ emit_message_delta() {
     local text="$1"
     text="${text//\\/\\\\}"
     text="${text//\"/\\\"}"
+    text="${text//$'\n'/\\n}"
     emit "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"text_delta\",\"text\":\"${text}\"}}"
 }
 
@@ -117,6 +118,23 @@ emit_compaction_start() {
 
 emit_compaction_end() {
     emit '{"type":"compaction_end","aborted":false,"reason":"threshold","willRetry":false}'
+}
+
+todo_payload_from_prompt() {
+    local prompt_line="$1"
+    local work_epic="" head="" fingerprint="" label=""
+    if [[ "$prompt_line" =~ Work\ epic\*\*:\ ([^\\]+)\\n-\ \*\*Todo\ head\*\*:\ ([0-9a-f]{40,64})\\n-\ \*\*Todo\ fingerprint\*\*:\ ([0-9a-f]{64}) ]]; then
+        work_epic="${BASH_REMATCH[1]}"
+        head="${BASH_REMATCH[2]}"
+        fingerprint="${BASH_REMATCH[3]}"
+    fi
+    if [[ -n "$work_epic" && "$prompt_line" =~ \#\#\#\ ([a-z0-9-]+)\\n ]]; then
+        label="${BASH_REMATCH[1]}"
+        printf 'LOOM_TODO: {"head":"%s","fingerprint":"%s","work_epic":"%s","specs":[{"label":"%s","outcome":"no-work","reason":"mock audit"}]}' \
+            "$head" "$fingerprint" "$work_epic" "$label"
+    else
+        printf 'LOOM_COMPLETE'
+    fi
 }
 
 # Read the first command (must be get_state) and echo either a valid state
@@ -149,20 +167,10 @@ run_probe_ok() {
 
 run_happy_path() {
     handle_probe 0
-    local prompt_line work_epic head fingerprint label payload
+    local prompt_line payload
     IFS= read -r prompt_line
-    if [[ "$prompt_line" =~ Work\ epic\*\*:\ ([^\\]+)\\n-\ \*\*Todo\ head\*\*:\ ([0-9a-f]{40,64})\\n-\ \*\*Todo\ fingerprint\*\*:\ ([0-9a-f]{64}) ]]; then
-        work_epic="${BASH_REMATCH[1]}"
-        head="${BASH_REMATCH[2]}"
-        fingerprint="${BASH_REMATCH[3]}"
-    fi
-    if [[ -n "${work_epic:-}" && "$prompt_line" =~ \#\#\#\ ([a-z0-9-]+)\\n ]]; then
-        label="${BASH_REMATCH[1]}"
-        payload="LOOM_TODO: {\"head\":\"${head}\",\"fingerprint\":\"${fingerprint}\",\"work_epic\":\"${work_epic}\",\"specs\":[{\"label\":\"${label}\",\"outcome\":\"no-work\",\"reason\":\"mock audit\"}]}"
-        emit_message_delta "$payload"
-    else
-        emit_message_delta "LOOM_COMPLETE"
-    fi
+    payload="$(todo_payload_from_prompt "$prompt_line")"
+    emit_message_delta "$payload"
     emit_agent_end
 }
 
@@ -191,14 +199,16 @@ run_steering() {
 
 run_compaction() {
     handle_probe 0
-    local _prompt steer_line repin_msg
-    IFS= read -r _prompt
+    local prompt_line steer_line repin_msg payload
+    IFS= read -r prompt_line
     emit_compaction_start
 
     IFS= read -r steer_line
     repin_msg="$(extract_field message "$steer_line")"
+    payload="$(todo_payload_from_prompt "$prompt_line")"
     emit_message_delta "repin: ${repin_msg}"
     emit_compaction_end
+    emit_message_delta $'\n'"$payload"
     emit_agent_end
 }
 

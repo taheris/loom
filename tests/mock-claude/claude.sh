@@ -50,6 +50,23 @@ emit_result_success() {
     emit '{"type":"result","subtype":"success","total_cost_usd":0.0,"duration_ms":1,"num_turns":1,"is_error":false}'
 }
 
+todo_payload_from_prompt() {
+    local prompt_line="$1"
+    local work_epic="" head="" fingerprint="" label=""
+    if [[ "$prompt_line" =~ Work\ epic\*\*:\ ([^\\]+)\\n-\ \*\*Todo\ head\*\*:\ ([0-9a-f]{40,64})\\n-\ \*\*Todo\ fingerprint\*\*:\ ([0-9a-f]{64}) ]]; then
+        work_epic="${BASH_REMATCH[1]}"
+        head="${BASH_REMATCH[2]}"
+        fingerprint="${BASH_REMATCH[3]}"
+    fi
+    if [[ -n "$work_epic" && "$prompt_line" =~ \#\#\#\ ([a-z0-9-]+)\\n ]]; then
+        label="${BASH_REMATCH[1]}"
+        printf 'LOOM_TODO: {"head":"%s","fingerprint":"%s","work_epic":"%s","specs":[{"label":"%s","outcome":"no-work","reason":"mock audit"}]}' \
+            "$head" "$fingerprint" "$work_epic" "$label"
+    else
+        printf 'LOOM_COMPLETE'
+    fi
+}
+
 case "$MODE" in
     steering)
         # Read first user message (initial prompt). We don't parse it —
@@ -81,7 +98,10 @@ case "$MODE" in
         # ship pipes as small as 8 KiB and the encoded prompt is ~8 KiB,
         # so a mock that never reads would deadlock the driver in its
         # prompt write before the watchdog ever ran.
-        IFS= read -r _initial || true
+        initial_line=""
+        if IFS= read -r initial_line; then
+            emit_assistant_text "$(todo_payload_from_prompt "$initial_line")"
+        fi
         emit_result_success
 
         # Trap SIGTERM and SIGPIPE so the test's shutdown watchdog must
