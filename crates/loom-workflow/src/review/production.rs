@@ -1132,7 +1132,7 @@ mod tests {
 
     type SpawnFuture = Ready<Result<(SessionOutcome, Option<ExitSignal>, String), ProtocolError>>;
     type NoopSpawn = fn(SpawnConfig) -> SpawnFuture;
-    type NoopController = ProductionReviewController<NoopSpawn, SpawnFuture>;
+    type NoopController = ProductionReviewController<NoopSpawn, SpawnFuture, ScriptedBd>;
 
     fn noop_spawn(_cfg: SpawnConfig) -> SpawnFuture {
         std::future::ready(Ok((
@@ -1931,6 +1931,13 @@ mod tests {
         }
     }
 
+    fn no_beads_bd() -> BdClient<ScriptedBd> {
+        BdClient::with_runner(ScriptedBd::new([
+            ok_stdout(b"[]".to_vec()),
+            ok_stdout(b"[]".to_vec()),
+        ]))
+    }
+
     fn scripted_controller(
         workspace: PathBuf,
         label: &str,
@@ -1954,7 +1961,7 @@ mod tests {
         let state = empty_state(&workspace);
         let manifest = stub_manifest(&workspace);
         ProductionReviewController::new(
-            BdClient::new(),
+            no_beads_bd(),
             SpecLabel::new("harness"),
             PathBuf::from("/usr/bin/loom"),
             workspace,
@@ -2164,7 +2171,7 @@ mod tests {
         let state = empty_state(&workspace);
         let manifest = stub_manifest(&workspace);
         let mut ctrl = ProductionReviewController::new(
-            BdClient::new(),
+            no_beads_bd(),
             SpecLabel::new("harness"),
             PathBuf::from("/usr/bin/loom"),
             workspace,
@@ -2249,7 +2256,7 @@ mod tests {
             .join("\n");
         let stdout = format!("{finding_lines}\nLOOM_CONCERN: {{\"summary\":\"tree drift\"}}\n");
         let mut ctrl = ProductionReviewController::new(
-            BdClient::new(),
+            no_beads_bd(),
             SpecLabel::new("gate"),
             PathBuf::from("/usr/bin/loom"),
             workspace,
@@ -2390,7 +2397,7 @@ mod tests {
         let state = empty_state(&workspace);
         let manifest = stub_manifest(&workspace);
         let mut ctrl = ProductionReviewController::new(
-            BdClient::new(),
+            no_beads_bd(),
             SpecLabel::new("harness"),
             PathBuf::from("/usr/bin/loom"),
             workspace,
@@ -2443,7 +2450,7 @@ mod tests {
         let state = empty_state(workspace);
         let manifest = stub_manifest(workspace);
         let ctrl = ProductionReviewController::new(
-            BdClient::new(),
+            no_beads_bd(),
             SpecLabel::new(label),
             PathBuf::from("/usr/bin/loom"),
             workspace.to_path_buf(),
@@ -2513,7 +2520,7 @@ mod tests {
         let state = empty_state(workspace);
         let manifest = stub_manifest(workspace);
         let ctrl = ProductionReviewController::new(
-            BdClient::new(),
+            no_beads_bd(),
             SpecLabel::new(label),
             PathBuf::from("/usr/bin/loom"),
             workspace.to_path_buf(),
@@ -2559,7 +2566,7 @@ mod tests {
         .unwrap();
 
         let judge_ctrl = ProductionReviewController::new(
-            BdClient::new(),
+            no_beads_bd(),
             SpecLabel::new(label),
             PathBuf::from("/usr/bin/loom"),
             workspace.to_path_buf(),
@@ -2588,7 +2595,7 @@ mod tests {
         );
 
         let rubric_ctrl = ProductionReviewController::new(
-            BdClient::new(),
+            no_beads_bd(),
             SpecLabel::new(label),
             PathBuf::from("/usr/bin/loom"),
             workspace.to_path_buf(),
@@ -2635,7 +2642,7 @@ mod tests {
         let state = empty_state(workspace);
         let manifest = stub_manifest(workspace);
         let ctrl = ProductionReviewController::new(
-            BdClient::new(),
+            no_beads_bd(),
             SpecLabel::new(label),
             PathBuf::from("/usr/bin/loom"),
             workspace.to_path_buf(),
@@ -2684,7 +2691,7 @@ mod tests {
         let prompt_seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let prompt_seen_inner = Arc::clone(&prompt_seen);
         let mut ctrl = ProductionReviewController::new(
-            BdClient::new(),
+            no_beads_bd(),
             SpecLabel::new(label),
             PathBuf::from("/usr/bin/loom"),
             workspace,
@@ -2769,7 +2776,7 @@ mod tests {
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let mut ctrl = ProductionReviewController::new(
-            BdClient::new(),
+            no_beads_bd(),
             label.clone(),
             stub,
             workspace,

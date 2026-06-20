@@ -26,7 +26,7 @@ use loom_driver::git::{
     write_hooks_config,
 };
 use loom_driver::identifier::MoleculeId;
-use loom_driver::lock::LockManager;
+use loom_driver::lock::{LockGuard, LockManager};
 use loom_driver::state::{ActiveMolecule, CacheDb, RebuildReport};
 
 pub use error::InitError;
@@ -99,8 +99,32 @@ fn run_with_resolvers(
     resolve_hooks: impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
 ) -> Result<InitReport, InitError> {
     let lock_mgr = LockManager::new(workspace)?;
-    let _guard = lock_mgr.acquire_workspace()?;
+    let guard = lock_mgr.acquire_workspace()?;
+    run_locked(workspace, opts, molecules, guard, resolve, resolve_hooks)
+}
 
+#[cfg(test)]
+fn run_with_resolvers_and_lock_state_home(
+    workspace: &Path,
+    opts: InitOpts,
+    molecules: &[ActiveMolecule],
+    resolve: impl Fn(&Path) -> Result<Option<PathBuf>, loom_driver::git::GitError>,
+    resolve_hooks: impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
+    lock_state_home: &Path,
+) -> Result<InitReport, InitError> {
+    let lock_mgr = LockManager::with_state_home(workspace, lock_state_home)?;
+    let guard = lock_mgr.acquire_workspace()?;
+    run_locked(workspace, opts, molecules, guard, resolve, resolve_hooks)
+}
+
+fn run_locked(
+    workspace: &Path,
+    opts: InitOpts,
+    molecules: &[ActiveMolecule],
+    _guard: LockGuard,
+    resolve: impl Fn(&Path) -> Result<Option<PathBuf>, loom_driver::git::GitError>,
+    resolve_hooks: impl Fn(&Path) -> Result<PathBuf, loom_driver::git::GitError>,
+) -> Result<InitReport, InitError> {
     let runtime_dir = workspace.join(".loom");
     fs::create_dir_all(&runtime_dir).map_err(|source| InitError::CreateDir {
         path: runtime_dir.clone(),
@@ -602,18 +626,20 @@ mod tests {
     #[test]
     fn loom_init_reinit_upgrades_signing_gitconfig() -> Result<()> {
         let tmp = tempfile::tempdir()?;
+        let state_home = tempfile::tempdir()?;
         let workspace = temp_child_workspace(tmp.path(), "loom-init-reinit-signing-ws");
         loom_driver::git::init_test_repo(&workspace)?;
         let key = gen_ssh_key(tmp.path());
         let hooks = fake_prek_hooks(tmp.path())?;
 
         // First init: no key resolves → no signing block.
-        let first = run_with_resolvers(
+        let first = run_with_resolvers_and_lock_state_home(
             &workspace,
             InitOpts::default(),
             &[],
             |_dir| Ok(None),
             |_workspace| Ok(hooks.clone()),
+            state_home.path(),
         )?
         .integration_workspace
         .ok_or_else(|| anyhow!("first init must materialize integration workspace"))?;
@@ -627,12 +653,13 @@ mod tests {
         // Second init over the existing workspace: key now resolves → the
         // reconcile path must write the signing block into the workspace it
         // did NOT re-clone.
-        let second = run_with_resolvers(
+        let second = run_with_resolvers_and_lock_state_home(
             &workspace,
             InitOpts::default(),
             &[],
             |_dir| Ok(Some(key.clone())),
             |_workspace| Ok(hooks.clone()),
+            state_home.path(),
         )?
         .integration_workspace
         .ok_or_else(|| anyhow!("second init must report the existing workspace"))?;
@@ -655,29 +682,32 @@ mod tests {
     #[test]
     fn loom_init_reinit_removes_stale_signing_gitconfig_without_key() -> Result<()> {
         let tmp = tempfile::tempdir()?;
+        let state_home = tempfile::tempdir()?;
         let workspace = temp_child_workspace(tmp.path(), "loom-init-clear-signing-ws");
         loom_driver::git::init_test_repo(&workspace)?;
         let key = gen_ssh_key(tmp.path());
         let hooks = fake_prek_hooks(tmp.path())?;
 
-        let first = run_with_resolvers(
+        let first = run_with_resolvers_and_lock_state_home(
             &workspace,
             InitOpts::default(),
             &[],
             |_dir| Ok(Some(key.clone())),
             |_workspace| Ok(hooks.clone()),
+            state_home.path(),
         )?
         .integration_workspace
         .ok_or_else(|| anyhow!("first init must materialize integration workspace"))?;
         let signers = first.path.join(".git/loom-allowed-signers");
         assert!(signers.exists(), "precondition: signing block written");
 
-        let second = run_with_resolvers(
+        let second = run_with_resolvers_and_lock_state_home(
             &workspace,
             InitOpts::default(),
             &[],
             |_dir| Ok(None),
             |_workspace| Ok(hooks.clone()),
+            state_home.path(),
         )?
         .integration_workspace
         .ok_or_else(|| anyhow!("second init must report the existing workspace"))?;

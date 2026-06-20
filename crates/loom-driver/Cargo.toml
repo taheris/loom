@@ -8,13 +8,13 @@ publish.workspace = true
 
 [dependencies]
 displaydoc = { workspace = true }
-fd-lock = { workspace = true }
 gix = { workspace = true }
 loom-events = { workspace = true }
 loom-protocol = { workspace = true }
 loom-render = { workspace = true }
 pulldown-cmark = { workspace = true }
 rusqlite = { workspace = true }
+rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

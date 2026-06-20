@@ -5,8 +5,8 @@
 //! phase locks (`plan.lock`, `todo.lock`), per-work-root locks
 //! (`<bead-or-epic-id>.lock`), and `workspace.lock` for `loom init`.
 //!
-//! All locks are POSIX advisory locks acquired via `fd-lock` (which wraps
-//! `flock(2)`). The kernel releases them on process exit or crash, so there
+//! All locks are POSIX advisory locks acquired via `flock(2)`. The kernel
+//! releases them on process exit or crash, so there
 //! are no stale locks to clean up.
 //!
 //! Lock files live under `$XDG_STATE_HOME/loom/locks/<workspace-basename>/`

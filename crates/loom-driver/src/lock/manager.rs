@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use fd_lock::RwLock;
+use rustix::fs::{FlockOperation, flock};
 
 use crate::clock::{Clock, SystemClock};
 use crate::identifier::BeadId;
@@ -19,12 +19,20 @@ pub struct LockManager {
 }
 
 pub struct LockGuard {
-    _lock: Box<RwLock<File>>,
+    file: File,
 }
 
 impl std::fmt::Debug for LockGuard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LockGuard").finish_non_exhaustive()
+    }
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        if let Err(error) = flock(&self.file, FlockOperation::Unlock) {
+            tracing::warn!(?error, "failed to unlock loom lock");
+        }
     }
 }
 
@@ -142,13 +150,11 @@ impl LockManager {
         }
         let path = self.locks_dir.join(format!("{WORKSPACE_LOCK_STEM}.lock"));
         let file = open_lock_file(&path)?;
-        let mut lock = Box::new(RwLock::new(file));
-        if try_lock_and_forget(&mut lock) {
-            Ok(LockGuard { _lock: lock })
-        } else {
-            Err(LockError::WorkspaceBusy {
+        match try_lock_file(file)? {
+            Some(guard) => Ok(guard),
+            None => Err(LockError::WorkspaceBusy {
                 root: WORKSPACE_LOCK_STEM.to_string(),
-            })
+            }),
         }
     }
 
@@ -179,8 +185,7 @@ impl LockManager {
                 continue;
             }
             let file = open_lock_file(&path)?;
-            let mut probe = RwLock::new(file);
-            if probe.try_write().is_err() {
+            if try_lock_file(file)?.is_none() {
                 return Ok(Some(stem.to_string()));
             }
         }
@@ -223,12 +228,11 @@ async fn acquire_with_timeout<F>(
 where
     F: FnOnce() -> LockError,
 {
-    let file = open_lock_file(path)?;
-    let mut lock = Box::new(RwLock::new(file));
     let deadline = clock.now() + timeout;
     loop {
-        if try_lock_and_forget(&mut lock) {
-            return Ok(LockGuard { _lock: lock });
+        let file = open_lock_file(path)?;
+        if let Some(guard) = try_lock_file(file)? {
+            return Ok(guard);
         }
         if clock.now() >= deadline {
             return Err(on_busy());
@@ -237,12 +241,17 @@ where
     }
 }
 
-fn try_lock_and_forget(lock: &mut RwLock<File>) -> bool {
-    if let Ok(guard) = lock.try_write() {
-        std::mem::forget(guard);
-        true
-    } else {
-        false
+fn try_lock_file(file: File) -> Result<Option<LockGuard>, LockError> {
+    match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(Some(LockGuard { file })),
+        Err(error) => {
+            let io_error = std::io::Error::from(error);
+            if io_error.kind() == std::io::ErrorKind::WouldBlock {
+                Ok(None)
+            } else {
+                Err(LockError::Io(io_error))
+            }
+        }
     }
 }
 

@@ -60,6 +60,12 @@ fn init_repo() -> Result<TempDir> {
     Ok(dir)
 }
 
+fn unsigned_client(repo: &Path) -> Result<GitClient> {
+    let mut client = GitClient::open(repo)?;
+    client.disable_signing_key_resolution();
+    Ok(client)
+}
+
 fn loom_path(repo: &Path) -> std::path::PathBuf {
     repo.join(".loom/integration")
 }
@@ -107,7 +113,7 @@ fn gen_signing_key(dir: &Path) -> Result<Option<std::path::PathBuf>> {
 #[tokio::test]
 async fn bead_dispatch_creates_worktree() -> Result<()> {
     let repo = init_repo()?;
-    let client = GitClient::open(repo.path())?;
+    let client = unsigned_client(repo.path())?;
     let label = SpecLabel::new("harness");
     let bead = fake_bead("lm-solo");
 
@@ -176,7 +182,7 @@ async fn bead_dispatch_creates_worktree() -> Result<()> {
 #[tokio::test]
 async fn parallel_run_two_beads_e2e() -> Result<()> {
     let repo = init_repo()?;
-    let client = GitClient::open(repo.path())?;
+    let client = unsigned_client(repo.path())?;
     let label = SpecLabel::new("harness");
     let beads = vec![fake_bead("lm-1"), fake_bead("lm-2"), fake_bead("lm-3")];
 
@@ -213,7 +219,7 @@ async fn parallel_run_two_beads_e2e() -> Result<()> {
 #[tokio::test]
 async fn parallel_merge_back() -> Result<()> {
     let repo = init_repo()?;
-    let client = GitClient::open(repo.path())?;
+    let client = unsigned_client(repo.path())?;
     let label = SpecLabel::new("harness");
     let beads = vec![fake_bead("lm-mergea"), fake_bead("lm-mergeb")];
 
@@ -281,7 +287,7 @@ async fn parallel_merge_back() -> Result<()> {
 #[tokio::test]
 async fn parallel_failure_preserves_worktree() -> Result<()> {
     let repo = init_repo()?;
-    let client = GitClient::open(repo.path())?;
+    let client = unsigned_client(repo.path())?;
     let label = SpecLabel::new("harness");
     let beads = vec![fake_bead("lm-faila"), fake_bead("lm-failb")];
     let slots = create_worktrees(&client, &label, beads.clone()).await?;
@@ -384,7 +390,7 @@ async fn parallel_failure_preserves_worktree() -> Result<()> {
 #[tokio::test]
 async fn workspace_persists_on_all_failure_paths() -> Result<()> {
     let repo = init_repo()?;
-    let client = GitClient::open(repo.path())?;
+    let client = unsigned_client(repo.path())?;
     let label = SpecLabel::new("harness");
     let beads = vec![
         fake_bead("lm-fail"),
@@ -483,7 +489,7 @@ async fn workspace_persists_on_all_failure_paths() -> Result<()> {
 #[tokio::test]
 async fn parallel_conflict_preserves_worktree() -> Result<()> {
     let repo = init_repo()?;
-    let client = GitClient::open(repo.path())?;
+    let client = unsigned_client(repo.path())?;
     let label = SpecLabel::new("harness");
     let bead = fake_bead("lm-conflict");
     let slots = create_worktrees(&client, &label, vec![bead.clone()]).await?;
@@ -553,7 +559,7 @@ async fn parallel_conflict_preserves_worktree() -> Result<()> {
 #[tokio::test]
 async fn parallel_second_conflict_escalates_to_clarify_with_options() -> Result<()> {
     let repo = init_repo()?;
-    let client = GitClient::open(repo.path())?;
+    let client = unsigned_client(repo.path())?;
     let label = SpecLabel::new("harness");
     let mut bead = fake_bead("lm-conflict2");
     // The marker the first-conflict pass would have applied via the caller.
@@ -614,7 +620,7 @@ async fn parallel_second_conflict_escalates_to_clarify_with_options() -> Result<
 #[tokio::test]
 async fn merge_back_preserves_input_slot_order() -> Result<()> {
     let repo = init_repo()?;
-    let client = GitClient::open(repo.path())?;
+    let client = unsigned_client(repo.path())?;
     let label = SpecLabel::new("harness");
     // Use bead ids that sort differently lexically and numerically so a
     // scrambling re-order would be observable on either axis.
