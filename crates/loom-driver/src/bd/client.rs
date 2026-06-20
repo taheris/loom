@@ -475,7 +475,7 @@ mod tests {
     }
 
     /// `bd show --json` emits a `notes` field when the bead carries
-    /// `bd update --notes` content. The msg-queue Drafter needs this to
+    /// `bd update --notes` content. The inbox Drafter needs this to
     /// surface reviewer-promoted options that live in notes rather than
     /// description (`specs/gate.md` § Options Format Contract).
     #[tokio::test]

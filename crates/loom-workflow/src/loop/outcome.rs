@@ -21,7 +21,7 @@ pub enum AgentOutcome {
     /// the agent self-reports `LOOM_BLOCKED`, or the driver detects a
     /// post-session condition that retry cannot recover. In both cases
     /// re-running the agent is the wrong response; the human resolves via
-    /// `loom msg` or by inspecting the preserved worktree.
+    /// `loom inbox` or by inspecting the preserved worktree.
     Blocked { reason: String },
 
     /// The agent emitted success, but the fetched bead branch did not

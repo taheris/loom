@@ -53,7 +53,7 @@ pub async fn run_agent<B: AgentBackend>(
     match run_agent_classified::<B>(config, sink, None, text_capture, None).await {
         SessionResult::Complete(outcome) => Ok(outcome),
         // Callers that only accept the legacy `Result` shape (todo, plan,
-        // msg, batch dispatch) treat both infra phases as a single failure
+        // inbox, batch dispatch) treat both infra phases as a single failure
         // surface. The run-loop dispatch path in `main.rs` calls
         // `run_agent_classified` directly so it can preserve the
         // preflight/mid-session distinction the verdict gate relies on.
@@ -90,7 +90,7 @@ pub async fn run_agent<B: AgentBackend>(
 /// real wall-clock `ts_ms`) via `AgentEvent::from_parsed`. The session
 /// layer is the sole constructor of `AgentEvent`; parsers cannot reach
 /// a stamped event by any other path. When `None`, the loop falls back
-/// to `phase_envelope_builder` so phase spawns (todo / plan / msg)
+/// to `phase_envelope_builder` so phase spawns (todo / plan / inbox)
 /// without a bead context still produce fully-valid envelopes (bead id
 /// `lm-phase`).
 pub async fn run_agent_classified<B: AgentBackend>(
@@ -363,7 +363,7 @@ async fn next_event_with_stall_warn(
     }
 }
 
-/// Fallback `EnvelopeBuilder` for phase-level spawns (todo/check/msg)
+/// Fallback `EnvelopeBuilder` for phase-level spawns (todo/check/inbox)
 /// that do not own a per-bead context yet. Stamps events with the
 /// synthetic but fully-valid `lm-phase` bead id; replay tools that key
 /// on `bead_id` see it as a distinct stream rather than an invalid

@@ -1,0 +1,21 @@
+---
+source: crates/loom/tests/cli_help.rs
+assertion_line: 358
+expression: "loom_help(&[\"inbox\"])"
+---
+Human decision queue for clarifies, blockers, and tune proposals
+
+Usage: loom inbox [OPTIONS] [COMMAND]
+
+Commands:
+  list  List pending human-decision items
+  view  Render one item host-side
+  chat  Launch interactive agent-assisted resolution
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+  -s, --spec <LABEL>      Filter queue entries to a spec label
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
+  -k, --kind <KIND>       Filter queue entries by kind [possible values: clarify, blocked, tune]
+  -h, --help              Print help

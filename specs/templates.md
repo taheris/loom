@@ -142,21 +142,21 @@ walker input](gate.md#pending-support-in-structured-walker-input).
 
 | Partial | `plan` | `todo` | `loop` | `review` | `inbox` |
 |---|:-:|:-:|:-:|:-:|:-:|
-| `context_pinning.md` | ✓ | ✓ | ✓ | ✓ | ? |
+| `context_pinning.md` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `style_rules.md` |  |  | ✓ | ✓ |  |
 | `spec_conventions.md` | ✓ |  |  |  |  |
 | `spec_header.md` | ? | ? | ✓ | ✓ |  |
-| `companions_context.md` | ✓ | ✓ | ✓ | ✓ | ? |
-| `scratchpad.md` | ✓ | ✓ | ✓ | ✓ | ? |
-| `skill_index.md` | ✓ | ✓ | ✓ | ✓ | ? |
+| `companions_context.md` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `scratchpad.md` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `skill_index.md` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `progress_markers.md` | ✓ |  | ✓ | ✓ |  |
 | `todo_success.md` |  | ✓ |  |  |  |
 | `self_report_markers.md` |  | ✓ | ✓ | ✓ |  |
 | `findings_walk.md` |  |  |  | ✓ |  |
 | `options_format.md` |  | ✓ | ✓ | ✓ |  |
-| `chat_marker_final_turn_only.md` | ✓ |  |  |  | ? |
+| `chat_marker_final_turn_only.md` | ✓ |  |  |  | ✓ |
 | `interview_modes.md` | ✓ |  |  |  |  |
-| `chat_interview.md` | ✓ |  |  |  | ? |
+| `chat_interview.md` | ✓ |  |  |  | ✓ |
 | `decomposition_discipline.md` |  | ✓ |  |  |  |
 | `plan_stage_rubric.md` | ✓ |  |  |  |  |
 | `invariant_clash.md` | ✓ |  |  |  |  |
@@ -1062,7 +1062,7 @@ documents in front of the agent with zero configuration.
 - `inbox.md` rendered prompt contains the chat-interview discipline clauses
   (picker prohibition + persistence destinations) sourced from the pinned
   partial
-  [test?](inbox_template_renders_chat_interview_discipline)
+  [test](inbox_template_renders_chat_interview_discipline)
 
 ### Agent-output markers
 

@@ -291,7 +291,7 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
 /// Worker phases (`loop`, `todo_*`, `review`) admit the worker-phase-only
 /// self-report markers (`LOOM_RETRY`, `LOOM_BLOCKED`, `LOOM_CLARIFY`) and
 /// the review walk's `LOOM_CONCERN` (in the `review` phase only).
-/// Interactive phases (`plan_*`, `msg`) admit `LOOM_COMPLETE` only because
+/// Interactive phases (`plan_*`, `inbox`) admit `LOOM_COMPLETE` only because
 /// the human is in the room to resolve friction in-turn — the
 /// cannot-finish self-report set has no role to play there per
 /// `specs/templates.md` § Pinning Policy (the `self_report_markers.md`
@@ -301,7 +301,7 @@ pub enum PhaseKind {
     /// `loop`, `todo_*`, `review` — single-shot worker phases that admit
     /// the worker-phase-only self-report marker set.
     Worker,
-    /// `plan_*`, `msg` — multi-turn interactive sessions that admit
+    /// `plan_*`, `inbox` — multi-turn interactive sessions that admit
     /// `LOOM_COMPLETE` only.
     Interactive,
 }

@@ -927,13 +927,13 @@ fn find_proptest_bodies(bytes: &[u8]) -> Vec<Range<usize>> {
 /// `UnneededPendingMarker`), each drawn from that kind's primary
 /// (Option 1) auto-option template and scoped to the affected
 /// `spec:line` locations; the block closes with one final `### Option N`
-/// for *"Mixed resolution via `msg -c` chat"*. Non-terminal variants are
+/// for *"Mixed resolution via `loom inbox chat`"*. Non-terminal variants are
 /// skipped. Returns an empty string when no terminal finding is present.
 ///
 /// One block per clarify bead preserves the *Options Format Contract*
 /// invariant while keeping each present kind's resolution path visible.
 /// The string is what `bd update <epic> --notes` consumes and what
-/// `loom msg` parses to populate the option-reply menu.
+/// `loom inbox` parses to render the option context.
 #[must_use]
 pub fn compose_clarify_options(findings: &[IntegrityFinding]) -> String {
     use std::fmt::Write;
@@ -1004,8 +1004,8 @@ pub fn compose_clarify_options(findings: &[IntegrityFinding]) -> String {
     }
     let _ = write!(
         out,
-        "### Option {n} — Mixed resolution via `msg -c` chat\n\
-         Reply with `loom msg -c` when the findings need different \
+        "### Option {n} — Mixed resolution via `loom inbox chat`\n\
+         Use `loom inbox chat` when the findings need different \
          resolutions across kinds, or you want options beyond each kind's \
          primary (retarget, mark the annotation pending with `?`, or remove \
          the criterion).\n",
@@ -3005,7 +3005,7 @@ fn delta_helper() {
         );
         assert!(out.contains("### Option 3 — Drop the `?`"), "kind 3: {out}");
         assert!(
-            out.contains("### Option 4 — Mixed resolution via `msg -c` chat"),
+            out.contains("### Option 4 — Mixed resolution via `loom inbox chat`"),
             "mixed escape hatch closes the block: {out}"
         );
 
@@ -3036,7 +3036,7 @@ fn delta_helper() {
             "pending primary: {out}"
         );
         assert!(
-            out.contains("### Option 2 — Mixed resolution via `msg -c` chat"),
+            out.contains("### Option 2 — Mixed resolution via `loom inbox chat`"),
             "mixed is option 2: {out}"
         );
         assert!(

@@ -45,7 +45,7 @@ exactly one, on its own line, as the final output of the session.
   After persisting, the gate applies `loom:clarify` to *this*
   bead and exits without entering recovery; other beads in the
   molecule continue running. The labelled bead waits for `loom
-  msg` resolution.
+  inbox` resolution.
 - `LOOM_BLOCKED` — Genuine dead end: you cannot proceed and have
   no candidate resolutions to enumerate. Write the reason on the
   line immediately before the marker (the gate only reads the most
@@ -53,7 +53,7 @@ exactly one, on its own line, as the final output of the session.
   captured). The gate applies `loom:blocked` to *this* bead and
   exits without entering recovery; other beads in the molecule
   continue running. The labelled bead waits for human resolution
-  via `loom msg`. **If you can enumerate options, do NOT use
+  via `loom inbox`. **If you can enumerate options, do NOT use
   `LOOM_BLOCKED`** — use `LOOM_CLARIFY` above so the candidate
   resolutions reach bead state.
 
@@ -64,6 +64,6 @@ clarify — file the plan directly). dead end? → BLOCKED.
 
 **Worker-phase only.** These three self-report markers are valid
 in worker phases only (`loop`, `todo`, `review`). Interactive sessions
-(`plan`, `msg`) emit `LOOM_COMPLETE` only — the human is in the room and resolves
+(`plan`, `inbox`) emit `LOOM_COMPLETE` only — the human is in the room and resolves
 friction in-turn, so the cannot-finish terminators are out of
 scope for those templates.

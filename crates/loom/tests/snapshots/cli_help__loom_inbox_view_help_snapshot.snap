@@ -1,0 +1,20 @@
+---
+source: crates/loom/tests/cli_help.rs
+assertion_line: 363
+expression: "loom_help(&[\"inbox\", \"view\"])"
+---
+Render one item host-side
+
+Usage: loom inbox view [OPTIONS] [N]
+
+Arguments:
+  [N]  Select item by 1-based index in the filtered list
+
+Options:
+  -s, --spec <LABEL>      Filter queue entries to a spec label
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
+  -k, --kind <KIND>       Filter queue entries by kind [possible values: clarify, blocked, tune]
+  -b, --bead <ID>         Select bead-backed item by id
+  -p, --proposal <ID>     Select tune proposal by id
+  -h, --help              Print help

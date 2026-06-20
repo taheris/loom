@@ -100,7 +100,7 @@ pub trait AgentLoopController: Send {
     /// persists", the canonical `## Options — …` block lives in bead
     /// state only when the agent writes it there *before* emitting
     /// `LOOM_CLARIFY`. Overwriting that block with the agent's stdout
-    /// reason-line would leave `loom msg`'s queue empty.
+    /// reason-line would leave `loom inbox`'s queue empty.
     fn apply_clarify(
         &mut self,
         bead: &BeadId,
@@ -179,7 +179,7 @@ pub use crate::review::RETRY_EXHAUSTED_CAUSE;
 /// the agent cannot resolve from inside the loop. The bead's run-phase
 /// commit is NOT unwound — the integration is already durable; the
 /// structural violation surfaces as a labelled bead the operator
-/// unblocks via `loom msg`.
+/// unblocks via `loom inbox`.
 pub const MINT_STRUCTURAL_VIOLATION_CAUSE: &str = "mint-structural-violation";
 
 /// Spec-table cause string written to `bd update --notes` when the
@@ -220,7 +220,7 @@ pub const CONFLICT_RETRY_LABEL: &str = "loom:conflict";
 /// Format Contract (`specs/gate.md` § *Options Format Contract*): a
 /// `## Options — <summary>` heading plus two `### Option N — <title>`
 /// subsections (resolve-in-bead-clone and abandon-the-bead), each naming
-/// its cost, so `loom msg` can render the SUMMARY column and resolve
+/// its cost, so `loom inbox` can render the SUMMARY column and resolve
 /// integer fast-replies. The driver is the author here (not the agent),
 /// so the per-bead path persists this block to bead state before
 /// applying `loom:clarify` (see the production `apply_clarify`).
@@ -1424,7 +1424,7 @@ mod tests {
     /// surfaces `LoopError::MoleculeMissingBaseCommit` from
     /// `exec_review`. `run_loop` MUST route the diagnostic through
     /// `apply_clarify` on the epic so the operator can repair the
-    /// metadata via `loom msg`, rather than bubbling the error out and
+    /// metadata via `loom inbox`, rather than bubbling the error out and
     /// killing the entire loop process. After the clarify lands the loop
     /// re-polls `bd ready` (now skipping the parked epic via the status
     /// filter) and exits cleanly via stall detection.

@@ -57,7 +57,7 @@ use crate::suppression::{has_ineffective_suppression_match, suppresses_rubric_fi
 /// How a batch routes to a label class. Single-finding clarify batches
 /// whose evidence is well-formed mint with `loom:clarify`; the same
 /// token with malformed evidence downgrades to `loom:blocked` carrying
-/// [`CLARIFY_WITHOUT_OPTIONS_CAUSE`] so a downstream `loom msg` consumer
+/// [`CLARIFY_WITHOUT_OPTIONS_CAUSE`] so a downstream `loom inbox` consumer
 /// is not handed an empty options block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FindingRouting {

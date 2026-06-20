@@ -17,7 +17,7 @@ use loom_templates::criterion_status::{
     CriterionStatus, EvidenceState,
 };
 use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
-use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
+use loom_templates::inbox::{ClarifyOption, InboxContext, InboxItem, ItemKind};
 use loom_templates::plan::PlanContext;
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
 use loom_templates::run::{DriverNoticeCause, LoopContext, PreviousFailure, VerifierFailure};
@@ -32,6 +32,22 @@ const TEST_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 const TEST_SHA_2: &str = "1111111111111111111111111111111111111111";
 const TEST_SHA_3: &str = "2222222222222222222222222222222222222222";
 const TEST_FINGERPRINT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+fn inbox_item(id: &str, spec: &str, title: &str, kind: ItemKind) -> InboxItem {
+    InboxItem {
+        index: 1,
+        id: id.to_string(),
+        bead_id: id.to_string(),
+        spec_label: spec.to_string(),
+        title: title.to_string(),
+        body: String::new(),
+        notes: None,
+        options_summary: None,
+        options: Vec::new(),
+        kind,
+        tune: None,
+    }
+}
 
 #[expect(
     clippy::unwrap_used,
@@ -354,29 +370,30 @@ fn review_snapshot() {
 }
 
 #[test]
-fn msg_snapshot() {
-    let ctx = MsgContext {
+fn inbox_snapshot() {
+    let mut item = inbox_item(
+        "lm-clar.1",
+        "harness",
+        "State storage choice",
+        ItemKind::Clarify,
+    );
+    item.options_summary = Some("State JSON vs. dedicated table".into());
+    item.options = vec![
+        ClarifyOption {
+            n: 1,
+            title: Some("Keep state in JSON".into()),
+            body: Some("Add a companions array.".into()),
+        },
+        ClarifyOption {
+            n: 2,
+            title: Some("Migrate to a table".into()),
+            body: Some("Use a SQLite table.".into()),
+        },
+    ];
+    let ctx = InboxContext {
         pinned_context: PINNED_CONTEXT_BODY.to_string(),
         companion_paths: vec!["lib/sandbox/".into()],
-        clarify_beads: vec![ClarifyBead {
-            id: BeadId::new("lm-clar.1").unwrap(),
-            spec_label: SpecLabel::new("harness"),
-            title: "State storage choice".into(),
-            options_summary: Some("State JSON vs. dedicated table".into()),
-            options: vec![
-                ClarifyOption {
-                    n: 1,
-                    title: Some("Keep state in JSON".into()),
-                    body: Some("Add a companions array.".into()),
-                },
-                ClarifyOption {
-                    n: 2,
-                    title: Some("Migrate to a table".into()),
-                    body: Some("Use a SQLite table.".into()),
-                },
-            ],
-            kind: BeadKind::Clarify,
-        }],
+        inbox_items: vec![item],
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
         skill_index: SkillIndexMarkdown::empty(),
     };

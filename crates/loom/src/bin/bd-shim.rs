@@ -13,12 +13,13 @@
 //! - `issue_type`   — `task` / `bug` / `feature` / `epic`
 //! - `labels`       — one label per line (no trailing comma)
 //! - `notes`        — free-form text (absent = empty)
+//! - `metadata.json` — free-form JSON object (absent = empty)
 //!
 //! Every invocation appends a debug line to `$BD_STATE_DIR/.invocations.log`
 //! so failing tests can show which calls landed where.
 //!
 //! Supported subcommands (the subset `loom loop` / `loom gate` /
-//! `loom msg` actually invoke):
+//! `loom inbox` actually invoke):
 //!
 //! - `bd list --json [--label-any=<L> …] [--parent=<id>]`
 //! - `bd ready --json [--limit=N] [--label=<L>] [--exclude-label=<L> …]`
@@ -136,6 +137,7 @@ fn bead_to_json(state_dir: &Path, id: &str) -> serde_json::Value {
         "notes": read_field(state_dir, id, "notes"),
         "labels": read_labels(state_dir, id),
         "parent": parent_json(state_dir, id),
+        "metadata": metadata_json(state_dir, id),
     })
 }
 
@@ -146,6 +148,17 @@ fn parent_json(state_dir: &Path, id: &str) -> serde_json::Value {
         serde_json::Value::Null
     } else {
         serde_json::Value::String(trimmed.to_owned())
+    }
+}
+
+fn metadata_json(state_dir: &Path, id: &str) -> serde_json::Value {
+    let raw = read_field(state_dir, id, "metadata.json");
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(trimmed)
+            .unwrap_or_else(|err| serde_json::json!({"bd_shim.metadata_error": err.to_string()}))
     }
 }
 

@@ -6,7 +6,7 @@
 //! subsection (per `specs/gate.md` § *Options Format Contract*). A
 //! well-formed block applies `loom:clarify`; an absent or malformed
 //! block downgrades to `loom:blocked` carrying
-//! [`CLARIFY_WITHOUT_OPTIONS_CAUSE`] so `loom msg`'s queue is not handed
+//! [`CLARIFY_WITHOUT_OPTIONS_CAUSE`] so `loom inbox`'s queue is not handed
 //! an empty options block.
 //!
 //! Target bead for direct-emit is the bead under dispatch for the

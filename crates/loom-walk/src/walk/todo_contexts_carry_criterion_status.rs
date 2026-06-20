@@ -1,6 +1,6 @@
 //! Architectural: `TodoContext` carries `criterion_status:
 //! Vec<CriterionStatus>`; the other phase context structs (`PlanContext`,
-//! `LoopContext`, `ReviewContext`, `MsgContext`) do not. The
+//! `LoopContext`, `ReviewContext`, `InboxContext`) do not. The
 //! criterion-status decomposition-evidence surface is scoped to the unified
 //! `todo` phase per `specs/templates.md` § Criterion-Status Surface.
 
@@ -17,7 +17,12 @@ const FIELD: &str = "criterion_status";
 const SRC_DIR: &str = "crates/loom-templates/src";
 
 const REQUIRED: &[&str] = &["TodoContext"];
-const FORBIDDEN: &[&str] = &["PlanContext", "LoopContext", "ReviewContext", "MsgContext"];
+const FORBIDDEN: &[&str] = &[
+    "PlanContext",
+    "LoopContext",
+    "ReviewContext",
+    "InboxContext",
+];
 
 struct Found {
     rel_path: String,

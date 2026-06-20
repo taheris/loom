@@ -11,7 +11,7 @@
 //!   `SessionStart[matcher: "compact"]`.
 //!
 //! `<key>` is the joined plan anchors (or `plan`), the todo work epic id,
-//! or the bead id for `loom loop` / `loom gate` / `loom msg`. Two parallel
+//! or the bead id for `loom loop` / `loom gate` / `loom inbox`. Two parallel
 //! `loom loop` workers on different beads get independent dirs.
 //!
 //! Cleanup runs on every exit path: [`Drop`] removes the directory
@@ -32,7 +32,7 @@ const SCRATCH_SUBDIR: &str = ".loom/scratch";
 
 /// Resolve the per-session scratch-dir key for a phase.
 /// Plan sessions use joined anchor labels or `plan`; todo passes the work
-/// epic as `bead_id`; loop, gate review, and msg pass the bead under discussion.
+/// epic as `bead_id`; loop, gate review, and inbox pass the bead under discussion.
 pub fn resolve_scratch_key(
     phase: Phase,
     anchor_labels: &[SpecLabel],
@@ -40,7 +40,7 @@ pub fn resolve_scratch_key(
 ) -> String {
     match phase {
         Phase::Plan => resolve_plan_scratch_key(anchor_labels),
-        Phase::Todo | Phase::Loop | Phase::Review | Phase::Msg => bead_id.map_or_else(
+        Phase::Todo | Phase::Loop | Phase::Review | Phase::Inbox => bead_id.map_or_else(
             || fallback_label_key(anchor_labels, phase),
             |b| b.as_str().to_string(),
         ),
@@ -409,7 +409,7 @@ mod tests {
             "lm-3hhwq.15"
         );
         assert_eq!(
-            resolve_scratch_key(Phase::Msg, std::slice::from_ref(&harness), Some(&bead)),
+            resolve_scratch_key(Phase::Inbox, std::slice::from_ref(&harness), Some(&bead)),
             "lm-3hhwq.15"
         );
     }

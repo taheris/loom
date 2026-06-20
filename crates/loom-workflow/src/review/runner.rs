@@ -66,7 +66,7 @@ pub trait ReviewController: Send {
     /// persists", the canonical `## Options — …` block lives in bead
     /// state only when written by the reviewer agent itself before
     /// emitting `LOOM_CLARIFY`; the runner overwriting it would leave
-    /// `loom msg`'s queue empty.
+    /// `loom inbox`'s queue empty.
     fn apply_clarify(
         &mut self,
         bead: &BeadId,
@@ -242,7 +242,7 @@ pub enum ReviewResult {
 
     /// `PushBlocked` verdict — gate stopped without pushing because at
     /// least one molecule bead carries `loom:blocked` or `loom:clarify`.
-    /// Caller surfaces both ID lists to the user via the `loom msg`
+    /// Caller surfaces both ID lists to the user via the `loom inbox`
     /// pointer.
     PushBlocked {
         blocked_ids: Vec<BeadId>,

@@ -120,7 +120,7 @@ Whenever your review surfaces an `invariant-clash` finding — or any other
 clarify-worthy decision point with two or more candidate resolutions — you
 **MUST** embed the canonical Options block as the `evidence` payload of the
 corresponding finding line. The driver lifts the block into the
-minted clarify bead's description so `loom msg` can render it. The format
+minted clarify bead's description so `loom inbox` can render it. The format
 applies to every clarify situation; invariant clash is one common trigger,
 not the only one.
 
@@ -136,11 +136,11 @@ your reasoning for `### Option N` blocks. The canonical block reaches
 bead state **only** through the `evidence` field of an
 `invariant-clash` finding line — the driver's mint step lifts
 it into the minted clarify bead's description. If the canonical block
-lives only in your stdout body or the review log, `loom msg` will not
+lives only in your stdout body or the review log, `loom inbox` will not
 find it.
 
 > **`spec:{{ label }}` label is REQUIRED on every clarify and fix-up bead the driver mints.**
-> `loom msg -s <label>` filters on it, and `loom msg`'s resume hint reads it to
+> `loom inbox -s <label>` filters on it, and `loom inbox`'s resume hint reads it to
 > emit `Resume with: loom loop -s <label>`. The driver adds `spec:{{ label }}` to
 > every minted bead automatically from the finding's `bonds` array — you do not
 > apply the label yourself, but every finding you emit MUST include `{{ label }}`

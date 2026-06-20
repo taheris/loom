@@ -2,7 +2,7 @@
 
 Conduct this interactive session as a back-and-forth **chat** — natural
 prose, not a structured questionnaire. Every interactive loom session
-(`plan`, `msg`) is conversational by design; the wrong
+(`plan`, `inbox`) is conversational by design; the wrong
 instrument (a multi-choice picker, a form-style prompt, a fixed enumeration)
 collapses the user's real answer into a shape it doesn't fit.
 
@@ -26,9 +26,9 @@ collapses the user's real answer into a shape it doesn't fit.
   context, follow-ups, anything future sessions need — goes only to the
   durable surface this phase authorizes. In `loom plan`, do not write bd:
   persist durable planning output in spec/index markdown or implementation
-  notes via `loom note set`. In `loom msg`, bd notes/descriptions are the
+  notes via `loom note set`. In `loom inbox`, bd notes/descriptions are the
   authorized resolution surface (`bd update <id> --notes …`; new beads only
-  when the msg workflow explicitly calls for follow-up work). Claude Code's
+  when the inbox workflow explicitly calls for follow-up work). Claude Code's
   `MEMORY.md` / auto-memory system is container-local and disappears with
   the container; treat it as working notes for the current session only, not
   as durable storage.

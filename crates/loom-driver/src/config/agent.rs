@@ -55,8 +55,8 @@ pub enum Phase {
     Loop,
     #[serde(rename = "gate.review")]
     Review,
-    #[serde(rename = "msg")]
-    Msg,
+    #[serde(rename = "inbox")]
+    Inbox,
 }
 
 impl Phase {
@@ -66,7 +66,7 @@ impl Phase {
             Phase::Todo => "todo",
             Phase::Loop => "loop",
             Phase::Review => "gate.review",
-            Phase::Msg => "msg",
+            Phase::Inbox => "inbox",
         }
     }
 }
@@ -184,7 +184,7 @@ mod tests {
             (Phase::Todo, "todo"),
             (Phase::Loop, "loop"),
             (Phase::Review, "gate.review"),
-            (Phase::Msg, "msg"),
+            (Phase::Inbox, "inbox"),
         ] {
             assert_eq!(
                 serde_json::to_string(&phase).unwrap(),

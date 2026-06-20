@@ -446,7 +446,7 @@ post_result_grace_secs = 5
             Phase::Todo,
             Phase::Loop,
             Phase::Review,
-            Phase::Msg,
+            Phase::Inbox,
         ] {
             let from_spec_sel = from_spec.agent_for(phase).expect("agent_for");
             let empty_sel = empty.agent_for(phase).expect("agent_for");
@@ -983,7 +983,7 @@ agent.model_id = "claude-sonnet-4-6"
             Phase::Todo,
             Phase::Loop,
             Phase::Review,
-            Phase::Msg,
+            Phase::Inbox,
         ] {
             let sel = cfg.agent_for(phase).expect("agent_for");
             assert_eq!(sel.kind, AgentKind::Claude, "phase={phase:?}");
@@ -1088,17 +1088,17 @@ profile = "rust"
         Ok(())
     }
 
-    /// `[phase.default] profile = "rust"` reaches `Phase::Msg` exactly
+    /// `[phase.default] profile = "rust"` reaches `Phase::Inbox` exactly
     /// like the other phases.
     #[test]
-    fn agent_for_msg_inherits_phase_default_profile() -> Result<()> {
+    fn agent_for_inbox_inherits_phase_default_profile() -> Result<()> {
         let src = r#"
 [phase.default]
 profile = "rust"
 "#;
         let cfg = LoomConfig::from_toml_str(src)?;
         assert_eq!(
-            cfg.agent_for(Phase::Msg).expect("msg").profile.as_str(),
+            cfg.agent_for(Phase::Inbox).expect("inbox").profile.as_str(),
             "rust"
         );
         Ok(())

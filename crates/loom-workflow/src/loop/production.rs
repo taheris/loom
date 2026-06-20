@@ -815,7 +815,7 @@ where
         // Options Format Contract): inspect the bead under dispatch for a
         // well-formed `## Options — …` block. Well-formed → loom:clarify;
         // malformed / absent → loom:blocked with cause
-        // `clarify-without-options` so `loom msg`'s queue is not handed
+        // `clarify-without-options` so `loom inbox`'s queue is not handed
         // an empty options block.
         crate::gate_clarify::apply_clarify_or_blocked(&self.bd, bead).await?;
         Ok(())
@@ -2599,7 +2599,7 @@ mod tests {
     /// label — the canonical block belongs to the agent, written to bead
     /// state *before* `LOOM_CLARIFY` is emitted. If the runner also wrote
     /// the agent's stdout reason-line via `bd update --notes`, every
-    /// re-emit would clobber the canonical block and leave `loom msg`'s
+    /// re-emit would clobber the canonical block and leave `loom inbox`'s
     /// queue empty.
     #[tokio::test(flavor = "multi_thread")]
     async fn apply_clarify_does_not_write_notes() {

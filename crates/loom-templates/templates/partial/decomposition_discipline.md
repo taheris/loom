@@ -29,7 +29,7 @@ Omitted specs, duplicate specs, pending outcomes, and generic `LOOM_COMPLETE` / 
 
 ### Clarify or block on the work epic
 
-When coverage cannot be determined by inspection — the spec is ambiguous, verifier targets conflict, cursor/index state is inconsistent, or your judgement of the status cache's trustworthiness is contestable — emit `LOOM_CLARIFY`. Persist both the question and the canonical `## Options — …` block to the **driver-created work epic** notes per the *Options Format Contract* in `specs/gate.md` before emitting the marker. The verdict gate applies `loom:clarify` to the work epic; the human resolves via `loom msg`, and a subsequent `loom todo` invocation reuses the pending work epic.
+When coverage cannot be determined by inspection — the spec is ambiguous, verifier targets conflict, cursor/index state is inconsistent, or your judgement of the status cache's trustworthiness is contestable — emit `LOOM_CLARIFY`. Persist both the question and the canonical `## Options — …` block to the **driver-created work epic** notes per the *Options Format Contract* in `specs/gate.md` before emitting the marker. The verdict gate applies `loom:clarify` to the work epic; the human resolves via `loom inbox`, and a subsequent `loom todo` invocation reuses the pending work epic.
 
 When you have no candidate resolutions to enumerate, emit `LOOM_BLOCKED`; the work epic remains the session-stable carrier for the blocked decomposition batch.
 

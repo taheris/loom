@@ -2,7 +2,7 @@
 //!
 //! Parses command-line arguments and dispatches to the workflow modules in
 //! `loom-workflow`. The set of subcommands matches the harness specification:
-//! `init`, `status`, `use`, `logs`, `spec`, `loop`, `gate`, and `msg`.
+//! `init`, `status`, `use`, `logs`, `spec`, `loop`, `gate`, and `inbox`.
 //! There is no `sync` or `tune` — Askama compiled
 //! templates make per-project sync unnecessary (see `specs/harness.md`).
 
@@ -32,15 +32,15 @@ use loom_gate::{
     filter_by_files, is_missing_binary_target, render_report,
 };
 use loom_protocol::todo::parse_todo_success;
+use loom_workflow::inbox::{
+    InboxItem, InboxKind, build_queue, build_rows, find_by_bead_id, find_by_index,
+    find_by_proposal_id, parse_options_in,
+};
 use loom_workflow::r#loop::{
     GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
     REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV, RetryPolicy, SessionResult, run_loop,
 };
 use loom_workflow::mint::{FindingStatusAction, FindingStatusRecord, MintWalker};
-use loom_workflow::msg::{
-    DISMISS_NOTE, build_rows, compose_option_note, compose_resolved_notes, filter_msg_beads,
-    kind_of, resolve_target, spec_label_of,
-};
 use loom_workflow::review::{
     AcceptAllFindingValidator, DispatchScope, IterationCap, ProductionReviewController, ReviewLane,
     WalkOutput, WorkspaceFindingValidator, review_loop as run_review_loop,
@@ -234,6 +234,94 @@ enum NoteAction {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+enum InboxKindArg {
+    Clarify,
+    Blocked,
+    Tune,
+}
+
+impl From<InboxKindArg> for InboxKind {
+    fn from(arg: InboxKindArg) -> Self {
+        match arg {
+            InboxKindArg::Clarify => InboxKind::Clarify,
+            InboxKindArg::Blocked => InboxKind::Blocked,
+            InboxKindArg::Tune => InboxKind::Tune,
+        }
+    }
+}
+
+#[derive(Debug, Clone, clap::Args)]
+struct InboxFilterArgs {
+    /// Filter queue entries to a spec label.
+    #[arg(long, short = 's', value_name = "LABEL")]
+    spec: Option<String>,
+    /// Filter queue entries by kind.
+    #[arg(long, short = 'k', value_enum, value_name = "KIND")]
+    kind: Option<InboxKindArg>,
+}
+
+#[derive(Debug, clap::Args)]
+struct InboxArgs {
+    #[command(flatten)]
+    filters: InboxFilterArgs,
+    #[command(subcommand)]
+    action: Option<InboxAction>,
+}
+
+impl InboxArgs {
+    fn mutates_workspace(&self) -> bool {
+        matches!(self.action, Some(InboxAction::Chat(_)))
+    }
+}
+
+#[derive(Debug, Subcommand)]
+enum InboxAction {
+    /// List pending human-decision items.
+    List(InboxListArgs),
+    /// Render one item host-side.
+    View(InboxViewArgs),
+    /// Launch interactive agent-assisted resolution.
+    Chat(InboxChatArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct InboxListArgs {
+    #[command(flatten)]
+    filters: InboxFilterArgs,
+}
+
+#[derive(Debug, clap::Args)]
+struct InboxViewArgs {
+    #[command(flatten)]
+    filters: InboxFilterArgs,
+    /// Select item by 1-based index in the filtered list.
+    #[arg(value_name = "N", conflicts_with_all = ["bead", "proposal"])]
+    number: Option<u32>,
+    /// Select bead-backed item by id.
+    #[arg(long, short = 'b', value_name = "ID", conflicts_with_all = ["number", "proposal"])]
+    bead: Option<String>,
+    /// Select tune proposal by id.
+    #[arg(long, short = 'p', value_name = "ID", conflicts_with_all = ["number", "bead"])]
+    proposal: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+struct InboxChatArgs {
+    #[command(flatten)]
+    filters: InboxFilterArgs,
+    /// Focus chat on one list item number.
+    #[arg(value_name = "N", conflicts_with_all = ["bead", "proposal"])]
+    number: Option<u32>,
+    /// Focus chat on a bead-backed item.
+    #[arg(long, short = 'b', value_name = "ID", conflicts_with_all = ["number", "proposal"])]
+    bead: Option<String>,
+    /// Focus chat on a tune proposal.
+    #[arg(long, short = 'p', value_name = "ID", conflicts_with_all = ["number", "bead"])]
+    proposal: Option<String>,
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Initialize the workspace (create `.loom/` config + cache DB).
@@ -329,54 +417,8 @@ enum Command {
         #[command(subcommand)]
         subcommand: Option<GateSubcommand>,
     },
-    /// Resolve outstanding `loom:clarify` and `loom:blocked` beads.
-    Msg {
-        /// Filter to a specific spec label.
-        #[arg(long, short = 's', value_name = "LABEL")]
-        spec: Option<String>,
-        /// Select bead by 1-based index in the printed list. Mutually
-        /// exclusive with `-b`.
-        #[arg(long, short = 'n', value_name = "N", conflicts_with = "bead")]
-        number: Option<u32>,
-        /// Select bead by id. Mutually exclusive with `-n`.
-        #[arg(long, short = 'b', value_name = "ID")]
-        bead: Option<String>,
-        /// Fast-reply with the body of `### Option <int>` for a clarify
-        /// bead. Validated — missing subsection exits non-zero before any
-        /// bd state is mutated. Mutually exclusive with `-r` and `-d`.
-        #[arg(
-            long,
-            short = 'o',
-            value_name = "INT",
-            conflicts_with_all = ["reply", "dismiss"]
-        )]
-        option: Option<u32>,
-        /// Fast-reply with verbatim text. Works on any bead regardless of
-        /// whether it has an `## Options` section. Mutually exclusive with
-        /// `-o` and `-d`.
-        #[arg(
-            long,
-            short = 'r',
-            value_name = "TEXT",
-            conflicts_with_all = ["option", "dismiss"]
-        )]
-        reply: Option<String>,
-        /// Dismiss the bead (write canonical note + remove the loom:* label).
-        #[arg(long, short = 'd')]
-        dismiss: bool,
-        /// Launch an interactive Drafter chat session.
-        /// Renders the msg.md template and spawns a container with the
-        /// claude backend attached to the user's terminal. Mutually
-        /// exclusive with `-o`, `-r`, `-d`, `-b`, `-n` — the chat
-        /// session walks every outstanding clarify, no single-bead
-        /// selection. `-s <label>` may scope the walk to one spec.
-        #[arg(
-            long,
-            short = 'c',
-            conflicts_with_all = ["option", "reply", "dismiss", "bead", "number"]
-        )]
-        chat: bool,
-    },
+    /// Human decision queue for clarifies, blockers, and tune proposals.
+    Inbox(InboxArgs),
     /// Decompose the deterministic changed specs into the todo work epic.
     Todo {
         /// Override the anchor's `base_commit` for tier-1 detection.
@@ -424,12 +466,12 @@ impl Command {
             | Command::Gate {
                 subcommand: Some(GateSubcommand::VerifyMarker(_)),
             } => false,
+            Command::Inbox(args) => args.mutates_workspace(),
             Command::Init { .. }
             | Command::UseSpec { .. }
             | Command::Plan { .. }
             | Command::Loop { .. }
             | Command::Gate { .. }
-            | Command::Msg { .. }
             | Command::Note { .. }
             | Command::Todo { .. } => true,
         }
@@ -441,7 +483,7 @@ impl Command {
 /// `next_help_heading` applies to flags, not subcommands, so the binary
 /// regroups the auto-generated `Commands:` block instead.
 const HELP_GROUPS: &[(&str, &[&str])] = &[
-    ("Workflow", &["plan", "todo", "loop", "gate", "msg"]),
+    ("Workflow", &["plan", "todo", "loop", "gate", "inbox"]),
     ("Inspection", &["status", "logs", "spec"]),
     ("State", &["init", "use", "note"]),
 ];
@@ -456,7 +498,7 @@ fn args_request_top_level_help(args: &[String]) -> bool {
         return true;
     }
     let known_subcommands = [
-        "init", "status", "use", "logs", "spec", "plan", "loop", "gate", "msg", "todo", "note",
+        "init", "status", "use", "logs", "spec", "plan", "loop", "gate", "inbox", "todo", "note",
         "help",
     ];
     for (idx, arg) in args.iter().enumerate() {
@@ -633,26 +675,9 @@ fn main() -> ExitCode {
         Command::Gate { subcommand } => {
             run_gate(&workspace, subcommand, agent_override).map(|()| ExitCode::SUCCESS)
         }
-        Command::Msg {
-            spec,
-            number,
-            bead,
-            option,
-            reply,
-            dismiss,
-            chat,
-        } => run_msg(
-            &workspace,
-            spec,
-            number,
-            bead,
-            option,
-            reply,
-            dismiss,
-            chat,
-            agent_override,
-        )
-        .map(|()| ExitCode::SUCCESS),
+        Command::Inbox(args) => {
+            run_inbox(&workspace, args, agent_override).map(|()| ExitCode::SUCCESS)
+        }
         Command::Todo { since } => {
             run_todo(&workspace, since, agent_override).map(|()| ExitCode::SUCCESS)
         }
@@ -3314,242 +3339,270 @@ fn phase_when_from_env() -> Option<std::time::SystemTime> {
 }
 
 #[expect(clippy::too_many_arguments, reason = "explicit dispatch surface")]
-fn run_msg(
+
+fn run_inbox(
     workspace: &Path,
-    spec: Option<String>,
-    number: Option<u32>,
-    bead: Option<String>,
-    option: Option<u32>,
-    reply: Option<String>,
-    dismiss: bool,
-    chat: bool,
+    args: InboxArgs,
     agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
-    let spec_filter = spec.as_deref().map(SpecLabel::new);
-    if chat {
-        return run_msg_chat(workspace, spec_filter, agent_override);
+    match args.action {
+        None => run_inbox_list(workspace, resolve_inbox_filters(args.filters)?),
+        Some(InboxAction::List(list)) => {
+            run_inbox_list(workspace, merge_inbox_filters(args.filters, list.filters)?)
+        }
+        Some(InboxAction::View(view)) => run_inbox_view(
+            workspace,
+            merge_inbox_filters(args.filters, view.filters)?,
+            view.number,
+            view.bead,
+            view.proposal,
+        ),
+        Some(InboxAction::Chat(chat)) => run_inbox_chat(
+            workspace,
+            merge_inbox_filters(args.filters, chat.filters)?,
+            chat.number,
+            chat.bead,
+            chat.proposal,
+            agent_override,
+        ),
     }
-    let _manifest = ProfileImageManifest::from_env()?;
-    run_msg_inner(workspace, number, bead, option, reply, dismiss, spec_filter)
 }
 
-/// `loom msg -c [-s <label>]` — interactive Drafter chat session.
-///
-/// Renders the `msg.md` template against the outstanding `loom:clarify`
-/// (and `loom:blocked`) beads, spawns the agent via the same dispatch
-/// surface `loom todo` uses, and parses the session's exit signal. Per
-/// the spec, `LOOM_COMPLETE` is the only valid terminator — partial
-/// progress is clean (remaining clarifies persist for the next call),
-/// but `LOOM_BLOCKED`/`LOOM_CLARIFY` from inside the chat surfaces as
-/// a hard error.
-///
-/// The agent writes the resolution note via `bd update <id> --notes "…"`;
-/// the driver runs the canonical unblock (`--status=open` plus the
-/// matching `--remove-label`) per resolved bead after the session exits,
-/// per the persistence-boundary contract — the agent narrates, the
-/// driver persists the terminal state transition.
-fn run_msg_chat(
+#[derive(Debug, Clone)]
+struct ResolvedInboxFilters {
+    spec: Option<SpecLabel>,
+    kind: Option<InboxKind>,
+}
+
+fn resolve_inbox_filters(filters: InboxFilterArgs) -> anyhow::Result<ResolvedInboxFilters> {
+    Ok(ResolvedInboxFilters {
+        spec: filters.spec.as_deref().map(SpecLabel::new),
+        kind: filters.kind.map(InboxKind::from),
+    })
+}
+
+fn merge_inbox_filters(
+    parent: InboxFilterArgs,
+    child: InboxFilterArgs,
+) -> anyhow::Result<ResolvedInboxFilters> {
+    let spec = match (parent.spec, child.spec) {
+        (Some(a), Some(b)) if a != b => anyhow::bail!("conflicting --spec filters: {a} and {b}"),
+        (Some(a), _) | (_, Some(a)) => Some(SpecLabel::new(a)),
+        (None, None) => None,
+    };
+    let kind = match (parent.kind, child.kind) {
+        (Some(a), Some(b)) if a != b => anyhow::bail!("conflicting --kind filters"),
+        (Some(a), _) | (_, Some(a)) => Some(InboxKind::from(a)),
+        (None, None) => None,
+    };
+    Ok(ResolvedInboxFilters { spec, kind })
+}
+
+fn run_inbox_list(_workspace: &Path, filters: ResolvedInboxFilters) -> anyhow::Result<()> {
+    let beads = load_inbox_beads()?;
+    let items = build_queue(&beads, filters.spec.as_ref(), filters.kind, true);
+    let rows = build_rows(&items, filters.spec.as_ref());
+    if rows.is_empty() {
+        println!("(no outstanding inbox items)");
+        return Ok(());
+    }
+    for row in rows {
+        match row.spec {
+            Some(spec) => println!(
+                "{:>3}. {} [{}] [spec:{}] ({}) {}",
+                row.index,
+                row.id,
+                row.kind.tag(),
+                spec,
+                row.status,
+                row.summary
+            ),
+            None => println!(
+                "{:>3}. {} [{}] ({}) {}",
+                row.index,
+                row.id,
+                row.kind.tag(),
+                row.status,
+                row.summary
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn run_inbox_view(
     workspace: &Path,
-    spec_filter: Option<SpecLabel>,
+    filters: ResolvedInboxFilters,
+    number: Option<u32>,
+    bead: Option<String>,
+    proposal: Option<String>,
+) -> anyhow::Result<()> {
+    let beads = load_inbox_beads()?;
+    let items = build_queue(&beads, filters.spec.as_ref(), filters.kind, true);
+    let item = select_inbox_item(&items, number, bead.as_deref(), proposal.as_deref())?;
+    render_inbox_item_view(workspace, item);
+    Ok(())
+}
+
+fn run_inbox_chat(
+    workspace: &Path,
+    filters: ResolvedInboxFilters,
+    number: Option<u32>,
+    bead: Option<String>,
+    proposal: Option<String>,
     agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    let _guard = match &spec_filter {
-        Some(label) => acquire_active_work_root_lock(workspace, label, &runtime)?,
-        None => None,
+    let target = chat_target(number, bead, proposal)?;
+    let _guard = match &target {
+        Some(loom_workflow::inbox::chat::ChatTarget::Bead(id))
+        | Some(loom_workflow::inbox::chat::ChatTarget::Proposal(id)) => {
+            Some(acquire_work_root_lock(workspace, id)?)
+        }
+        _ => None,
     };
     let manifest = ProfileImageManifest::from_env()?;
-    let opts = loom_workflow::msg::chat::ChatOpts {
-        spec_filter,
+    let opts = loom_workflow::inbox::chat::ChatOpts {
+        spec_filter: filters.spec,
+        kind_filter: filters.kind,
+        target,
         cli_profile: None,
         agent_override,
         manifest,
         wrix_bin: std::env::var_os("LOOM_WRIX_BIN").map(PathBuf::from),
     };
-    let report = loom_workflow::msg::chat::run(workspace, opts)?;
-    if report.beads_surfaced == 0 {
-        println!("(no outstanding clarify or blocked beads)");
+    let report = loom_workflow::inbox::chat::run(workspace, opts)?;
+    if report.items_surfaced == 0 {
+        println!("(no outstanding inbox items)");
     } else {
-        let resolved = report.beads_surfaced.saturating_sub(report.beads_remaining);
+        let resolved = report.items_surfaced.saturating_sub(report.items_remaining);
         println!(
-            "loom msg --chat: surfaced {}, resolved {}, remaining {}",
-            report.beads_surfaced, resolved, report.beads_remaining,
+            "loom inbox chat: surfaced {}, resolved {}, remaining {}",
+            report.items_surfaced, resolved, report.items_remaining,
         );
     }
     Ok(())
 }
 
-fn run_msg_inner(
-    workspace: &Path,
+fn load_inbox_beads() -> anyhow::Result<Vec<Bead>> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    Ok(runtime.block_on(async {
+        let bd = BdClient::new();
+        bd.list(ListOpts::default()).await
+    })?)
+}
+
+fn select_inbox_item<'a>(
+    items: &'a [InboxItem],
+    number: Option<u32>,
+    bead: Option<&str>,
+    proposal: Option<&str>,
+) -> anyhow::Result<&'a InboxItem> {
+    let selectors =
+        u8::from(number.is_some()) + u8::from(bead.is_some()) + u8::from(proposal.is_some());
+    if selectors > 1 {
+        anyhow::bail!("use only one address selector: number, --bead, or --proposal");
+    }
+    if let Some(index) = number {
+        let total = u32::try_from(items.len()).unwrap_or(u32::MAX);
+        return find_by_index(items, index).ok_or_else(|| {
+            anyhow::anyhow!("no inbox item at index {index} ({total} outstanding)")
+        });
+    }
+    if let Some(id) = bead {
+        return find_by_bead_id(items, id)
+            .ok_or_else(|| anyhow::anyhow!("no inbox item with bead id {id}"));
+    }
+    if let Some(id) = proposal {
+        return find_by_proposal_id(items, id)
+            .ok_or_else(|| anyhow::anyhow!("no tune proposal with id {id}"));
+    }
+    anyhow::bail!("inbox view requires <N>, --bead <id>, or --proposal <id>")
+}
+
+fn chat_target(
     number: Option<u32>,
     bead: Option<String>,
-    option: Option<u32>,
-    reply: Option<String>,
-    dismiss: bool,
-    spec_filter: Option<SpecLabel>,
-) -> anyhow::Result<()> {
-    let has_action = option.is_some() || reply.is_some() || dismiss;
+    proposal: Option<String>,
+) -> anyhow::Result<Option<loom_workflow::inbox::chat::ChatTarget>> {
+    let selectors =
+        u8::from(number.is_some()) + u8::from(bead.is_some()) + u8::from(proposal.is_some());
+    if selectors > 1 {
+        anyhow::bail!("use only one address selector: number, --bead, or --proposal");
+    }
+    Ok(match (number, bead, proposal) {
+        (Some(index), None, None) => Some(loom_workflow::inbox::chat::ChatTarget::Index(index)),
+        (None, Some(id), None) => Some(loom_workflow::inbox::chat::ChatTarget::Bead(id)),
+        (None, None, Some(id)) => Some(loom_workflow::inbox::chat::ChatTarget::Proposal(id)),
+        (None, None, None) => None,
+        _ => None,
+    })
+}
 
-    let runtime = tokio::runtime::Runtime::new()?;
-    let beads = runtime.block_on(async {
-        let bd = BdClient::new();
-        bd.list(ListOpts {
-            label_any: vec!["loom:clarify".to_string(), "loom:blocked".to_string()],
-            ..ListOpts::default()
-        })
-        .await
-    })?;
-    let kept = filter_msg_beads(&beads, spec_filter.as_ref());
-    let has_target = number.is_some() || bead.is_some();
-
-    if !has_action && !has_target {
-        let rows = build_rows(&kept, spec_filter.as_ref());
-        if rows.is_empty() {
-            println!("(no outstanding clarify or blocked beads)");
-            return Ok(());
+fn render_inbox_item_view(workspace: &Path, item: &InboxItem) {
+    println!(
+        "inbox item {} [{}] ({})",
+        item.durable_id(),
+        item.kind.tag(),
+        item.bead.status,
+    );
+    println!("bead: {}", item.bead.id);
+    if let Some(spec) = &item.spec {
+        println!("spec: {spec}");
+    }
+    println!("title: {}", item.bead.title);
+    if let Some(tune) = &item.tune {
+        println!("tune state: {}", tune.state);
+        if let Some(branch) = &tune.proposal_branch {
+            println!("proposal branch: {branch}");
         }
-        for row in rows {
-            match row.spec {
-                Some(s) => println!(
-                    "{:>3}. {} [{}] [spec:{}] {}",
-                    row.index,
-                    row.bead_id,
-                    row.kind.tag(),
-                    s,
-                    row.summary
-                ),
-                None => println!(
-                    "{:>3}. {} [{}] {}",
-                    row.index,
-                    row.bead_id,
-                    row.kind.tag(),
-                    row.summary
-                ),
+        if let Some(base) = &tune.base_commit {
+            println!("base commit: {base}");
+        }
+        if let Some(head) = &tune.proposal_head {
+            println!("proposal head: {head}");
+        }
+        let envelope = workspace.join(".loom/tune").join(&tune.proposal_id);
+        println!("artifacts:");
+        print_artifact("envelope", &envelope);
+        print_artifact("repo", &envelope.join("repo"));
+        print_artifact("manifest", &envelope.join("manifest.json"));
+        print_artifact("evidence", &envelope.join("evidence.md"));
+    }
+    println!();
+    println!("description:\n{}", item.bead.description);
+    if let Some(notes) = item.bead.notes.as_deref().filter(|notes| !notes.is_empty()) {
+        println!();
+        println!("notes:\n{notes}");
+    }
+    let parsed = parse_options_in(item.bead.notes.as_deref(), &item.bead.description);
+    if !parsed.summary.is_empty() || !parsed.options.is_empty() {
+        println!();
+        println!("options summary: {}", parsed.summary);
+        for option in parsed.options {
+            println!("option {}: {}", option.n, option.title);
+            if !option.body.is_empty() {
+                println!("{}", option.body);
             }
         }
-        return Ok(());
     }
-
-    if !has_action {
-        let (target, _pos) = resolve_target(&kept, number, bead.as_deref())?;
-        let target_bead = kept
-            .iter()
-            .find(|b| b.id == target)
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("bead {target} not in filtered list"))?;
-        let kind = kind_of(target_bead).ok_or_else(|| {
-            anyhow::anyhow!("bead {target} carries neither loom:clarify nor loom:blocked")
-        })?;
-        println!("{target} [{}]", kind.tag());
-        println!("title: {}", target_bead.title);
-        if let Some(label) = spec_label_of(target_bead) {
-            println!("spec: {label}");
-        }
-        println!();
-        println!("{}", target_bead.description);
-        return Ok(());
+    println!();
+    println!("manual escape hatches:");
+    println!("  bd show {}", item.bead.id);
+    if item.tune.is_some() {
+        println!("  loom inbox chat -p {}", item.durable_id());
+        println!(
+            "  inspect {}/.loom/tune/{}",
+            workspace.display(),
+            item.durable_id()
+        );
+    } else {
+        println!("  loom inbox chat -b {}", item.bead.id);
     }
+}
 
-    let (target, _pos) = resolve_target(&kept, number, bead.as_deref())?;
-    let target_bead = kept
-        .iter()
-        .find(|b| b.id == target)
-        .copied()
-        .ok_or_else(|| anyhow::anyhow!("bead {target} not in filtered list"))?;
-    let kind = kind_of(target_bead).ok_or_else(|| {
-        anyhow::anyhow!("bead {target} carries neither loom:clarify nor loom:blocked")
-    })?;
-    let label_to_remove = kind.label().to_string();
-
-    if let Some(opt_idx) = option {
-        let _guard = acquire_work_root_lock(workspace, target.as_str())?;
-        // `-o <int>` strict option lookup: parse the bead's description,
-        // require `### Option <int>` to exist, compose the canonical
-        // `"Chose option N — title: body"` note. Validation runs before
-        // any bd state mutation.
-        let note = compose_option_note(
-            &target,
-            opt_idx,
-            target_bead.notes.as_deref(),
-            &target_bead.description,
-        )?;
-        // Single `--notes` payload strips the originating `## Options`
-        // block and records the resolution in one atomic update per
-        // specs/gate.md § Resolution lifecycle.
-        let new_notes = compose_resolved_notes(target_bead.notes.as_deref(), &note);
-        let runtime = tokio::runtime::Runtime::new()?;
-        let id_clone = target.clone();
-        runtime.block_on(async move {
-            let bd = BdClient::new();
-            bd.update(
-                &id_clone,
-                UpdateOpts {
-                    status: Some("open".to_string()),
-                    remove_labels: vec![label_to_remove],
-                    notes: Some(new_notes),
-                    ..UpdateOpts::default()
-                },
-            )
-            .await
-        })?;
-        println!("answered {target}: {note}");
-        if let Some(label) = spec_label_of(target_bead) {
-            println!("resume: loom loop -s {label}");
-        }
-        return Ok(());
-    }
-
-    if let Some(text) = reply {
-        let _guard = acquire_work_root_lock(workspace, target.as_str())?;
-        // `-r <text>` verbatim: store the raw text on the bead, drop the
-        // loom:* label. Works on any bead kind regardless of Options.
-        let new_notes = compose_resolved_notes(target_bead.notes.as_deref(), &text);
-        let runtime = tokio::runtime::Runtime::new()?;
-        let id_clone = target.clone();
-        runtime.block_on(async move {
-            let bd = BdClient::new();
-            bd.update(
-                &id_clone,
-                UpdateOpts {
-                    status: Some("open".to_string()),
-                    remove_labels: vec![label_to_remove],
-                    notes: Some(new_notes),
-                    ..UpdateOpts::default()
-                },
-            )
-            .await
-        })?;
-        println!("answered {target}: {text}");
-        if let Some(label) = spec_label_of(target_bead) {
-            println!("resume: loom loop -s {label}");
-        }
-        return Ok(());
-    }
-
-    if dismiss {
-        let _guard = acquire_work_root_lock(workspace, target.as_str())?;
-        let new_notes = compose_resolved_notes(target_bead.notes.as_deref(), DISMISS_NOTE);
-        let runtime = tokio::runtime::Runtime::new()?;
-        let id_clone = target.clone();
-        runtime.block_on(async move {
-            let bd = BdClient::new();
-            bd.update(
-                &id_clone,
-                UpdateOpts {
-                    status: Some("open".to_string()),
-                    remove_labels: vec![label_to_remove],
-                    notes: Some(new_notes),
-                    ..UpdateOpts::default()
-                },
-            )
-            .await
-        })?;
-        println!("dismissed {target}: {DISMISS_NOTE}");
-        if let Some(label) = spec_label_of(target_bead) {
-            println!("resume: loom loop -s {label}");
-        }
-    }
-    Ok(())
+fn print_artifact(label: &str, path: &Path) {
+    let state = if path.exists() { "present" } else { "missing" };
+    println!("  {label}: {} ({state})", path.display());
 }
 
 fn run_todo(
@@ -3640,7 +3693,7 @@ fn run_todo(
         }
         Err(TodoError::MultiSpecCollision { clarify_id }) => {
             println!(
-                "loom todo: multi-spec collision detected; loom:clarify bead {clarify_id} created — resolve via `loom msg`",
+                "loom todo: multi-spec collision detected; loom:clarify bead {clarify_id} created — resolve via `loom inbox`",
             );
             Ok(())
         }

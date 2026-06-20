@@ -16,7 +16,7 @@ use loom_templates::criterion_status::{
     CriterionStatus, EvidenceState,
 };
 use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
-use loom_templates::msg::{BeadKind, ClarifyBead, ClarifyOption, MsgContext};
+use loom_templates::inbox::{ClarifyOption, InboxContext, InboxItem, ItemKind, TuneItem};
 use loom_templates::plan::PlanContext;
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
 use loom_templates::run::{
@@ -35,6 +35,32 @@ const TEST_SHA_3: &str = "2222222222222222222222222222222222222222";
 const TEST_SHA_4: &str = "3333333333333333333333333333333333333333";
 const TEST_SHA_5: &str = "4444444444444444444444444444444444444444";
 const TEST_FINGERPRINT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+fn inbox_item(id: &str, spec: &str, title: &str, kind: ItemKind) -> InboxItem {
+    InboxItem {
+        index: 1,
+        id: id.to_string(),
+        bead_id: id.to_string(),
+        spec_label: spec.to_string(),
+        title: title.to_string(),
+        body: String::new(),
+        notes: None,
+        options_summary: None,
+        options: Vec::new(),
+        kind,
+        tune: None,
+    }
+}
+
+fn inbox_ctx(items: Vec<InboxItem>) -> InboxContext {
+    InboxContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        companion_paths: vec![],
+        inbox_items: items,
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
+    }
+}
 
 #[expect(
     clippy::expect_used,
@@ -905,36 +931,33 @@ fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> 
 }
 
 #[test]
-fn msg_renders_clarify_beads_with_options() -> Result<()> {
-    let ctx = MsgContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        companion_paths: vec!["lib/sandbox/".into()],
-        clarify_beads: vec![ClarifyBead {
-            id: BeadId::new("lm-clar.1")?,
-            spec_label: SpecLabel::new("harness"),
-            title: "State storage choice".into(),
-            options_summary: Some("State JSON vs. dedicated table".into()),
-            options: vec![
-                ClarifyOption {
-                    n: 1,
-                    title: Some("Keep state in JSON".into()),
-                    body: Some("Add a companions array.".into()),
-                },
-                ClarifyOption {
-                    n: 2,
-                    title: Some("Migrate to a table".into()),
-                    body: Some("Use a SQLite table.".into()),
-                },
-            ],
-            kind: BeadKind::Clarify,
-        }],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        skill_index: SkillIndexMarkdown::empty(),
-    };
+fn inbox_renders_clarify_items_with_options() -> Result<()> {
+    let mut item = inbox_item(
+        "lm-clar.1",
+        "harness",
+        "State storage choice",
+        ItemKind::Clarify,
+    );
+    item.options_summary = Some("State JSON vs. dedicated table".into());
+    item.options = vec![
+        ClarifyOption {
+            n: 1,
+            title: Some("Keep state in JSON".into()),
+            body: Some("Add a companions array.".into()),
+        },
+        ClarifyOption {
+            n: 2,
+            title: Some("Migrate to a table".into()),
+            body: Some("Use a SQLite table.".into()),
+        },
+    ];
+    item.body = "Canonical body".into();
+    let mut ctx = inbox_ctx(vec![item]);
+    ctx.companion_paths = vec!["lib/sandbox/".into()];
     let out = ctx.render()?;
 
-    assert!(out.contains("# Clarify Resolution — Drafter Session"));
-    assert!(out.contains("### lm-clar.1 — [spec:harness] State storage choice"));
+    assert!(out.contains("# Inbox Resolution — Interactive Session"));
+    assert!(out.contains("### 1. lm-clar.1 — [clarify] [spec:harness] State storage choice"));
     assert!(out.contains("## Options — State JSON vs. dedicated table"));
     assert!(out.contains("#### Option 1 — Keep state in JSON"));
     assert!(out.contains("Add a companions array."));
@@ -945,215 +968,110 @@ fn msg_renders_clarify_beads_with_options() -> Result<()> {
     Ok(())
 }
 
-/// `loom:blocked` beads carry no `## Options` block. The template must
-/// render a distinct flow for them — naming the kind explicitly and
-/// telling the drafter to walk the user through enumerating candidates
-/// — rather than the clarify framing that asserts "the reviewer has
-/// already presented options."
 #[test]
-fn msg_renders_blocked_bead_with_enumerate_first_framing() -> Result<()> {
-    let ctx = MsgContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        companion_paths: vec![],
-        clarify_beads: vec![ClarifyBead {
-            id: BeadId::new("lm-block.1")?,
-            spec_label: SpecLabel::new("harness"),
-            title: "Push hook fails inside sandbox".into(),
-            options_summary: None,
-            options: vec![],
-            kind: BeadKind::Blocked,
-        }],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        skill_index: SkillIndexMarkdown::empty(),
-    };
+fn inbox_renders_blocked_item_with_enumerate_first_framing() -> Result<()> {
+    let ctx = inbox_ctx(vec![inbox_item(
+        "lm-block.1",
+        "harness",
+        "Push hook fails inside sandbox",
+        ItemKind::Blocked,
+    )]);
     let out = ctx.render()?;
 
-    assert!(out.contains("### lm-block.1 — [spec:harness] Push hook fails inside sandbox"));
-    assert!(
-        out.contains("`loom:blocked`"),
-        "kind line must name loom:blocked: {out}",
-    );
-    assert!(
-        out.contains("enumerat"),
-        "blocked bead must trigger enumerate-first framing: {out}",
-    );
-    assert!(
-        !out.contains("#### Option "),
-        "no enumerated options should be rendered for blocked beads without notes: {out}",
-    );
+    assert!(out.contains("### 1. lm-block.1 — [blocked] [spec:harness]"));
+    assert!(out.contains("`loom:blocked`"), "{out}");
+    assert!(out.contains("enumerat"), "{out}");
+    assert!(!out.contains("#### Option "), "{out}");
     Ok(())
 }
 
-/// A `loom:clarify` bead carries its options; the template should
-/// render the existing clarify framing without mentioning the
-/// enumerate-first language meant for `loom:blocked`.
 #[test]
-fn msg_renders_clarify_bead_without_enumerate_first_framing() -> Result<()> {
-    let ctx = MsgContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        companion_paths: vec![],
-        clarify_beads: vec![ClarifyBead {
-            id: BeadId::new("lm-clar.2")?,
-            spec_label: SpecLabel::new("harness"),
-            title: "Adopt new API surface".into(),
-            options_summary: Some("Pick API shape".into()),
-            options: vec![ClarifyOption {
-                n: 1,
-                title: Some("Keep existing".into()),
-                body: Some("Defer the change.".into()),
-            }],
-            kind: BeadKind::Clarify,
-        }],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        skill_index: SkillIndexMarkdown::empty(),
-    };
-    let out = ctx.render()?;
+fn inbox_renders_clarify_item_without_blocked_framing() -> Result<()> {
+    let mut item = inbox_item(
+        "lm-clar.2",
+        "harness",
+        "Adopt new API surface",
+        ItemKind::Clarify,
+    );
+    item.options_summary = Some("Pick API shape".into());
+    item.options = vec![ClarifyOption {
+        n: 1,
+        title: Some("Keep existing".into()),
+        body: Some("Defer the change.".into()),
+    }];
+    let out = inbox_ctx(vec![item]).render()?;
     assert!(out.contains("`loom:clarify`"));
     assert!(out.contains("## Options — Pick API shape"));
     assert!(out.contains("#### Option 1 — Keep existing"));
     Ok(())
 }
 
-/// Per `specs/gate.md` § Resolution lifecycle, the rendered msg.md chat
-/// instructions must direct the Drafter agent to strip the originating
-/// `## Options — …` block from the bead's notes in the same `bd update`
-/// that records the resolution note. Without this clause the chat path
-/// drifts from the driver's `-o`/`-r`/`-d` paths (which call
-/// `compose_resolved_notes` to do the same strip) and accumulating
-/// clarifies on the molecule epic stop being lifecycle-clean.
 #[test]
-fn msg_chat_template_instructs_options_block_removal_on_resolution() -> Result<()> {
-    let ctx = MsgContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        companion_paths: vec![],
-        clarify_beads: vec![ClarifyBead {
-            id: BeadId::new("lm-clar.3")?,
-            spec_label: SpecLabel::new("harness"),
-            title: "Pick a thing".into(),
-            options_summary: Some("Pick".into()),
-            options: vec![ClarifyOption {
-                n: 1,
-                title: Some("A".into()),
-                body: Some("body".into()),
-            }],
-            kind: BeadKind::Clarify,
-        }],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        skill_index: SkillIndexMarkdown::empty(),
-    };
-    let out = ctx.render()?;
-    assert!(
-        out.contains("remove the originating `## Options"),
-        "chat template must direct the agent to remove the originating Options block: {out}",
-    );
-    assert!(
-        out.contains("Resolution lifecycle") || out.contains("specs/gate.md"),
-        "chat template must anchor the contract to the spec citation: {out}",
-    );
-    Ok(())
-}
-
-/// Per `specs/templates.md` Implementation Note 5, the chat agent owns
-/// the full bd-state transition during a msg session — including
-/// `bd close` on resolved beads and `--remove-label` on unblock-without-
-/// close. The driver does NOT reconcile bd state after the session.
-/// This test pins that the template names the writes the agent must
-/// make so the agent has explicit authority.
-#[test]
-fn msg_template_teaches_agent_bd_write_authority() -> Result<()> {
-    let ctx = MsgContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        companion_paths: vec![],
-        clarify_beads: vec![ClarifyBead {
-            id: BeadId::new("lm-clar.9")?,
-            spec_label: SpecLabel::new("harness"),
-            title: "Pick a thing".into(),
-            options_summary: Some("Pick".into()),
-            options: vec![ClarifyOption {
-                n: 1,
-                title: Some("A".into()),
-                body: Some("body".into()),
-            }],
-            kind: BeadKind::Clarify,
-        }],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        skill_index: SkillIndexMarkdown::empty(),
-    };
-    let out = ctx.render()?;
+fn inbox_template_teaches_agent_bd_write_authority() -> Result<()> {
+    let out = inbox_ctx(vec![inbox_item(
+        "lm-clar.9",
+        "harness",
+        "Pick",
+        ItemKind::Clarify,
+    )])
+    .render()?;
     for required in ["bd update", "bd close", "--remove-label"] {
         assert!(
             out.contains(required),
-            "msg.md must name the literal `{required}` so the chat agent \
-             has explicit bd-write authority per Implementation Note 5",
+            "inbox.md must name `{required}` for bd-write authority: {out}",
         );
     }
+    assert!(out.contains("driver does not reconcile") || out.contains("driver does NOT reconcile"));
     Ok(())
 }
 
-/// Per `specs/templates.md` criterion 979, the rendered `msg.md` prompt
-/// must surface both chat-discipline clauses sourced from
-/// `partial/chat_interview.md`: the picker prohibition (criterion 971
-/// rule body) and the bd-persistence clause (criterion 974 rule body).
-/// The msg session is interactive, so the chat-discipline partial is
-/// pinned there alongside the planning templates.
 #[test]
-fn msg_template_renders_chat_interview_discipline() -> Result<()> {
-    let ctx = MsgContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        companion_paths: vec![],
-        clarify_beads: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        skill_index: SkillIndexMarkdown::empty(),
-    };
-    let out = ctx.render()?;
-
+fn inbox_template_renders_chat_interview_discipline() -> Result<()> {
+    let out = inbox_ctx(vec![]).render()?;
     assert!(
         out.contains("AskUserQuestion") || out.contains("option-picker"),
-        "msg.md must surface the picker prohibition from chat_interview.md: {out}",
+        "inbox.md must surface picker prohibition: {out}",
     );
-    assert!(
-        out.contains("MEMORY.md"),
-        "msg.md must surface the MEMORY.md container-local clause from chat_interview.md: {out}",
-    );
-    assert!(
-        out.contains("bd update <id> --notes"),
-        "msg.md must surface the bd-persistence destination from chat_interview.md: {out}",
-    );
+    assert!(out.contains("MEMORY.md"), "{out}");
+    assert!(out.contains("bd update <id> --notes"), "{out}");
     Ok(())
 }
 
 #[test]
-fn msg_renders_with_no_clarify_beads() -> Result<()> {
-    let ctx = MsgContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        companion_paths: vec![],
-        clarify_beads: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        skill_index: SkillIndexMarkdown::empty(),
-    };
-    let out = ctx.render()?;
+fn inbox_renders_tune_proposal_artifact_paths() -> Result<()> {
+    let mut item = inbox_item("lm-tune.1", "skills", "Tune built-in", ItemKind::Tune);
+    item.tune = Some(TuneItem {
+        state: "pending".into(),
+        proposal_branch: Some("loom/tune/lm-tune.1".into()),
+        proposal_head: Some("abc123".into()),
+        base_commit: Some("base123".into()),
+        envelope_path: "/workspace/.loom/tune/lm-tune.1".into(),
+        repo_path: "/workspace/.loom/tune/lm-tune.1/repo".into(),
+        manifest_path: "/workspace/.loom/tune/lm-tune.1/manifest.json".into(),
+        evidence_path: "/workspace/.loom/tune/lm-tune.1/evidence.md".into(),
+    });
+    let out = inbox_ctx(vec![item]).render()?;
+    assert!(out.contains("Tune state"), "{out}");
+    assert!(out.contains("loom/tune/lm-tune.1"), "{out}");
+    assert!(out.contains("manifest.json"), "{out}");
+    assert!(out.contains("evidence.md"), "{out}");
+    Ok(())
+}
 
-    assert!(out.contains("# Clarify Resolution — Drafter Session"));
+#[test]
+fn inbox_renders_with_no_items() -> Result<()> {
+    let out = inbox_ctx(vec![]).render()?;
+    assert!(out.contains("# Inbox Resolution — Interactive Session"));
     assert!(!out.contains("### lm-"));
     Ok(())
 }
 
-/// `msg` and `plan` are multi-turn templates that include progress-marker
-/// language written for single-shot worker phases. Each must disambiguate via
-/// the `chat_marker_final_turn_only.md` partial.
 #[test]
 fn every_multi_turn_template_includes_chat_marker_partial() -> Result<()> {
-    let msg_out = MsgContext {
-        pinned_context: PINNED_CONTEXT_BODY.to_string(),
-        companion_paths: vec![],
-        clarify_beads: vec![],
-        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-        skill_index: SkillIndexMarkdown::empty(),
-    }
-    .render()?;
+    let inbox_out = inbox_ctx(vec![]).render()?;
     let plan_out = plan_ctx().render()?;
 
-    for (name, out) in [("msg", &msg_out), ("plan", &plan_out)] {
+    for (name, out) in [("inbox", &inbox_out), ("plan", &plan_out)] {
         assert!(
             out.contains("final turn only") || out.contains("final assistant turn"),
             "{name}: chat-restrictions must name the final-turn-only rule: {out}",
@@ -1483,34 +1401,28 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             skill_index: SkillIndexMarkdown::empty(),
         },
     )?;
-    assert_stable(
-        "msg",
-        MsgContext {
-            pinned_context: PINNED_CONTEXT_BODY.to_string(),
-            companion_paths: vec!["lib/sandbox/".into()],
-            clarify_beads: vec![ClarifyBead {
-                id: BeadId::new("lm-clar.1")?,
-                spec_label: SpecLabel::new("harness"),
-                title: "State storage choice".into(),
-                options_summary: Some("State JSON vs. dedicated table".into()),
-                options: vec![
-                    ClarifyOption {
-                        n: 1,
-                        title: Some("Keep state in JSON".into()),
-                        body: Some("Add a companions array.".into()),
-                    },
-                    ClarifyOption {
-                        n: 2,
-                        title: Some("Migrate to a table".into()),
-                        body: Some("Use a SQLite table.".into()),
-                    },
-                ],
-                kind: BeadKind::Clarify,
-            }],
-            scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
-            skill_index: SkillIndexMarkdown::empty(),
+    let mut stable_inbox_item = inbox_item(
+        "lm-clar.1",
+        "harness",
+        "State storage choice",
+        ItemKind::Clarify,
+    );
+    stable_inbox_item.options_summary = Some("State JSON vs. dedicated table".into());
+    stable_inbox_item.options = vec![
+        ClarifyOption {
+            n: 1,
+            title: Some("Keep state in JSON".into()),
+            body: Some("Add a companions array.".into()),
         },
-    )?;
+        ClarifyOption {
+            n: 2,
+            title: Some("Migrate to a table".into()),
+            body: Some("Use a SQLite table.".into()),
+        },
+    ];
+    let mut stable_inbox = inbox_ctx(vec![stable_inbox_item]);
+    stable_inbox.companion_paths = vec!["lib/sandbox/".into()];
+    assert_stable("inbox", stable_inbox)?;
     Ok(())
 }
 

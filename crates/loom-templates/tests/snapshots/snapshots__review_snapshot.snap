@@ -1,5 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
+assertion_line: 359
 expression: ctx.render().unwrap()
 ---
 # Post-Epic Review
@@ -436,7 +437,7 @@ Whenever your review surfaces an `invariant-clash` finding — or any other
 clarify-worthy decision point with two or more candidate resolutions — you
 **MUST** embed the canonical Options block as the `evidence` payload of the
 corresponding finding line. The driver lifts the block into the
-minted clarify bead's description so `loom msg` can render it. The format
+minted clarify bead's description so `loom inbox` can render it. The format
 applies to every clarify situation; invariant clash is one common trigger,
 not the only one.
 
@@ -470,11 +471,11 @@ three-paths principle above shape the actual options):
   - Use contextual options per decision — typically 2–4, each
     naming its cost. Do NOT emit a fixed A/B/C menu.
 
-  `loom msg` parses this format to render the SUMMARY column,
-  enumerate options for view mode, and resolve integer fast-replies.
+  `loom inbox` parses this format to render the SUMMARY column,
+  enumerate options for view mode, and provide structured chat context.
   A malformed block — or one that lives only in your prose, never
   persisted to bead state — breaks fast-reply with `-a <int>` and
-  leaves the options invisible to `loom msg`'s queue.
+  leaves the options invisible to `loom inbox`'s queue.
 
 **Persistence (REQUIRED — the gate does NOT parse your prose).** The
 gate routes on mechanical signals (the streamed finding lines,
@@ -483,11 +484,11 @@ your reasoning for `### Option N` blocks. The canonical block reaches
 bead state **only** through the `evidence` field of an
 `invariant-clash` finding line — the driver's mint step lifts
 it into the minted clarify bead's description. If the canonical block
-lives only in your stdout body or the review log, `loom msg` will not
+lives only in your stdout body or the review log, `loom inbox` will not
 find it.
 
 > **`spec:harness` label is REQUIRED on every clarify and fix-up bead the driver mints.**
-> `loom msg -s <label>` filters on it, and `loom msg`'s resume hint reads it to
+> `loom inbox -s <label>` filters on it, and `loom inbox`'s resume hint reads it to
 > emit `Resume with: loom loop -s <label>`. The driver adds `spec:harness` to
 > every minted bead automatically from the finding's `bonds` array — you do not
 > apply the label yourself, but every finding you emit MUST include `harness`
@@ -663,11 +664,11 @@ The remaining tokens cover the other rubric dimensions:
   - Use contextual options per decision — typically 2–4, each
     naming its cost. Do NOT emit a fixed A/B/C menu.
 
-  `loom msg` parses this format to render the SUMMARY column,
-  enumerate options for view mode, and resolve integer fast-replies.
+  `loom inbox` parses this format to render the SUMMARY column,
+  enumerate options for view mode, and provide structured chat context.
   A malformed block — or one that lives only in your prose, never
   persisted to bead state — breaks fast-reply with `-a <int>` and
-  leaves the options invisible to `loom msg`'s queue.
+  leaves the options invisible to `loom inbox`'s queue.
 
   The driver attaches `loom:clarify` to the minted bead and lifts
   the block into its description.
@@ -821,16 +822,16 @@ exactly one, on its own line, as the final output of the session.
   - Use contextual options per decision — typically 2–4, each
     naming its cost. Do NOT emit a fixed A/B/C menu.
 
-  `loom msg` parses this format to render the SUMMARY column,
-  enumerate options for view mode, and resolve integer fast-replies.
+  `loom inbox` parses this format to render the SUMMARY column,
+  enumerate options for view mode, and provide structured chat context.
   A malformed block — or one that lives only in your prose, never
   persisted to bead state — breaks fast-reply with `-a <int>` and
-  leaves the options invisible to `loom msg`'s queue.
+  leaves the options invisible to `loom inbox`'s queue.
 
   After persisting, the gate applies `loom:clarify` to *this*
   bead and exits without entering recovery; other beads in the
   molecule continue running. The labelled bead waits for `loom
-  msg` resolution.
+  inbox` resolution.
 - `LOOM_BLOCKED` — Genuine dead end: you cannot proceed and have
   no candidate resolutions to enumerate. Write the reason on the
   line immediately before the marker (the gate only reads the most
@@ -838,7 +839,7 @@ exactly one, on its own line, as the final output of the session.
   captured). The gate applies `loom:blocked` to *this* bead and
   exits without entering recovery; other beads in the molecule
   continue running. The labelled bead waits for human resolution
-  via `loom msg`. **If you can enumerate options, do NOT use
+  via `loom inbox`. **If you can enumerate options, do NOT use
   `LOOM_BLOCKED`** — use `LOOM_CLARIFY` above so the candidate
   resolutions reach bead state.
 
@@ -849,6 +850,6 @@ clarify — file the plan directly). dead end? → BLOCKED.
 
 **Worker-phase only.** These three self-report markers are valid
 in worker phases only (`loop`, `todo`, `review`). Interactive sessions
-(`plan`, `msg`) emit `LOOM_COMPLETE` only — the human is in the room and resolves
+(`plan`, `inbox`) emit `LOOM_COMPLETE` only — the human is in the room and resolves
 friction in-turn, so the cannot-finish terminators are out of
 scope for those templates.

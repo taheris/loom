@@ -11,10 +11,9 @@
 //!   / **State**` sub-sections in FR1 (and per-group bullet order) ↔
 //!   the order of `HELP_GROUPS` tuples (and per-tuple slice order).
 //! - **Flag set (partial)** — long flag names in the *Logs UX* table
-//!   ↔ `Command::Logs` `#[arg(long, ...)]` declarations; long flag
-//!   names in the *Msg Modes* flag table ↔ `Command::Msg`. FR1
-//!   scope-flag inline prose (`loom gate <sub>` flags) is not yet
-//!   covered.
+//!   ↔ `Command::Logs` `#[arg(long, ...)]` declarations. Nested inbox
+//!   subcommand flags and FR1 scope-flag inline prose (`loom gate <sub>`
+//!   flags) are not yet covered.
 //!
 //! `HELP_GROUPS` is the canonical declaration the binary regroups
 //! clap's flat `Commands:` block against, so parsing it as text is the
@@ -70,7 +69,6 @@ pub fn run(_input: &WalkInput) -> Verdict {
     check_groups_match(&spec_groups, &binary_groups, &mut violations);
     check_removed_surface_absent(&spec_removed, &binary_groups, &main_body, &mut violations);
     check_command_flag_set(&spec_body, &main_body, "logs", "Logs", &mut violations);
-    check_command_flag_set(&spec_body, &main_body, "msg", "Msg", &mut violations);
     violations.retain(|v| !SURFACE_ALLOWLIST.iter().any(|allow| v.contains(allow)));
     verdict_from(RULE, violations)
 }
@@ -91,7 +89,6 @@ fn check_command_flag_set(
 ) {
     let spec_flags = match cmd_label {
         "logs" => parse_logs_ux_flags(spec_body),
-        "msg" => parse_msg_modes_flags(spec_body),
         _ => return,
     };
     let spec_flags = match spec_flags {
@@ -413,46 +410,6 @@ fn parse_logs_ux_flags(body: &str) -> Result<BTreeSet<String>, String> {
     }
     if out.is_empty() {
         return Err(format!("{SPEC} Logs UX table parsed no long flags"));
-    }
-    Ok(out)
-}
-
-fn parse_msg_modes_flags(body: &str) -> Result<BTreeSet<String>, String> {
-    let lines: Vec<&str> = body.lines().collect();
-    let heading = lines
-        .iter()
-        .position(|l| l.trim_start().starts_with("### Msg Modes"))
-        .ok_or_else(|| format!("{SPEC} missing `### Msg Modes` heading"))?;
-    let flag_table_marker = lines
-        .iter()
-        .enumerate()
-        .skip(heading + 1)
-        .find(|(_, l)| l.trim_start().starts_with("**Flag table.**"))
-        .map(|(i, _)| i)
-        .ok_or_else(|| format!("{SPEC} Msg Modes missing `**Flag table.**` marker"))?;
-    let header = lines
-        .iter()
-        .enumerate()
-        .skip(flag_table_marker + 1)
-        .find(|(_, l)| l.trim_start().starts_with("| Short "))
-        .map(|(i, _)| i)
-        .ok_or_else(|| format!("{SPEC} Msg Modes flag table missing `| Short ` header"))?;
-    let mut out = BTreeSet::new();
-    for line in lines.iter().skip(header + 2) {
-        let trimmed = line.trim_start();
-        if !trimmed.starts_with('|') {
-            break;
-        }
-        let cells: Vec<&str> = trimmed.split('|').collect();
-        if cells.len() < 3 {
-            continue;
-        }
-        for name in extract_long_flags(cells[2]) {
-            out.insert(name);
-        }
-    }
-    if out.is_empty() {
-        return Err(format!("{SPEC} Msg Modes flag table parsed no long flags"));
     }
     Ok(out)
 }

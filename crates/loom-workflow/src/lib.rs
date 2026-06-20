@@ -1,6 +1,6 @@
 //! Loom workflow engine.
 //!
-//! Implements the workflow phases (`plan`, `todo`, `loop`, `check`, `msg`,
+//! Implements the workflow phases (`plan`, `todo`, `loop`, `check`, `inbox`,
 //! `spec`) on top of `loom-driver`'s typed surface and `templates`'
 //! Askama-rendered prompts. Subsequent issues populate each phase module;
 //! this crate currently exposes the skeleton only.
@@ -12,11 +12,11 @@
 
 pub mod agent;
 pub mod gate_clarify;
+pub mod inbox;
 pub mod init;
 pub mod logs_cmd;
 pub mod r#loop;
 pub mod mint;
-pub mod msg;
 pub mod observer;
 pub mod plan;
 pub mod resolve;

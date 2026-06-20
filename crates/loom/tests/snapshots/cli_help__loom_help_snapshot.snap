@@ -1,5 +1,6 @@
 ---
 source: crates/loom/tests/cli_help.rs
+assertion_line: 55
 expression: "loom_help(&[])"
 ---
 Loom harness CLI
@@ -11,7 +12,7 @@ Workflow:
   todo    Decompose the deterministic changed specs into the todo work epic
   loop    Execute task beads from explicit work roots or the active work epic
   gate    Quality gate — annotation-dispatched verifiers and LLM rubric
-  msg     Resolve outstanding `loom:clarify` and `loom:blocked` beads
+  inbox   Human decision queue for clarifies, blockers, and tune proposals
 
 Inspection:
   status  Print cache health and work-epic status

@@ -1,0 +1,20 @@
+---
+source: crates/loom/tests/cli_help.rs
+assertion_line: 368
+expression: "loom_help(&[\"inbox\", \"chat\"])"
+---
+Launch interactive agent-assisted resolution
+
+Usage: loom inbox chat [OPTIONS] [N]
+
+Arguments:
+  [N]  Focus chat on one list item number
+
+Options:
+  -s, --spec <LABEL>      Filter queue entries to a spec label
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
+  -k, --kind <KIND>       Filter queue entries by kind [possible values: clarify, blocked, tune]
+  -b, --bead <ID>         Focus chat on a bead-backed item
+  -p, --proposal <ID>     Focus chat on a tune proposal
+  -h, --help              Print help

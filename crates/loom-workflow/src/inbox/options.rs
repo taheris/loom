@@ -135,7 +135,7 @@ pub fn parse_options(description: &str) -> OptionsParse {
 ///
 /// The reviewer promotes a previously `loom:blocked` bead to
 /// `loom:clarify` by writing the options into `--notes`; new clarify
-/// beads carry their options in `--description`. The msg queue must
+/// beads carry their options in `--description`. The inbox queue must
 /// surface both, so [`to_clarify_bead`] / [`build_rows`] call this
 /// wrapper instead of [`parse_options`] directly.
 ///

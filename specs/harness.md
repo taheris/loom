@@ -3417,10 +3417,10 @@ Criteria.
       blocked, and apply-failed tune proposal beads (cross-spec default); no
       active-spec cache value is consulted, and closed beads are excluded even
       when labels remain
-  [test?](inbox_list_excludes_closed_blocked_or_clarify_beads)
+  [test](inbox_list_excludes_closed_blocked_or_clarify_beads)
 - `loom inbox list -s <label>` (alias `--spec`) filters the list to items
       carrying the `spec:<label>` bead label or proposal metadata
-  [test?](inbox_spec_filter_narrows_list_to_matching_spec)
+  [test](inbox_spec_filter_narrows_list_to_matching_spec)
 - `loom inbox list -k clarify|blocked|tune` filters by exclusive item kind;
       absence of `--kind` means all kinds. Filters narrow before positional
       numbering and default ordering is group-first (`clarify`, `blocked`,
@@ -3431,15 +3431,15 @@ Criteria.
       without launching a container, including durable ids and manual repair
       paths; corrupt/unavailable tune proposals remain tune-kind items with
       blocked status rather than being skipped
-  [test?](inbox_view_modes_render_host_side)
+  [test](inbox_view_modes_render_host_side)
 - `loom inbox` exposes no host-side `pick`, `reply`, `resolve`, `apply`,
       `--option`, `--text`, `-c/--chat`, or `-d/--dismiss`; conflicting address
       flags error before any side effects
-  [test?](inbox_removed_flags_and_address_exclusivity)
+  [test](inbox_removed_flags_and_address_exclusivity)
 - `loom inbox chat`, `loom inbox chat <N>`, `loom inbox chat -b <id>`, and
       `loom inbox chat -p <proposal-id>` launch an interactive session in a
       container using the `inbox.md` template; list/view stay host-side
-  [test?](loom_inbox_chat_launches_container)
+  [test](loom_inbox_chat_launches_container)
 - The chat session has full bd-write authority on bead-backed items in its
       queue and may repair tune proposal artifacts only under
       `.loom/tune/<id>/repo/`; it never pushes and never leaves
@@ -3450,7 +3450,7 @@ Criteria.
       Whatever bd/proposal state the chat agent (with human authorization)
       established at session end IS the state, except for the explicit
       `LOOM_APPLY` handoff
-  [test?](inbox_chat_driver_does_not_reconcile_bd_state_after_session)
+  [test](inbox_chat_driver_does_not_reconcile_bd_state_after_session)
 - `LOOM_COMPLETE` from inbox exits cleanly with no driver-side apply;
       `LOOM_APPLY: {"proposals":[...]}` validates accepted tune proposal ids
       and triggers one end-of-chat driver apply batch. `LOOM_APPLY` is the sole
@@ -3471,7 +3471,7 @@ Criteria.
 - `loom inbox chat` with `-s <label>` and/or `-k <kind>` scopes the chat
       queue; without filters, the session sees every outstanding human decision
       item regardless of active work epic and normally works them one at a time
-  [test?](loom_inbox_chat_scope_filters_queue)
+  [test](loom_inbox_chat_scope_filters_queue)
 - Bare `loom tune` prints command help; `loom tune skill`, `phase`, `partial`,
       `checker`, and `all` are read-only listing commands that create no tune
       bead or `.loom/tune/<bead-id>/`

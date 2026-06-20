@@ -16,14 +16,14 @@
 //! ([`PinnedContext`], [`PreviousFailure`], [`PlanContext`], [`TodoContext`],
 //! [`LoopContext`], [`ReviewContext`]) and the `PARTIAL_*` partial-string
 //! constants below. Loom's own workflow templates (`plan`, `todo`, `loop`,
-//! `review`, `msg`) are internal — consumers compose with the partials and
+//! `review`, `inbox`) are internal — consumers compose with the partials and
 //! typed contexts, not with the workflow shells.
 
 use std::fmt;
 
 pub mod criterion_status;
 pub mod finding;
-pub mod msg;
+pub mod inbox;
 pub mod plan;
 pub mod previous_failure;
 pub mod review;
@@ -38,7 +38,7 @@ pub use finding::{
     ConcernToken, Finding, FindingParseError, FindingRoute, FindingTarget, FindingValidator,
     LOOM_FINDING_PREFIX, TargetKind,
 };
-pub use msg::{ClarifyBead, ClarifyOption, MsgContext};
+pub use inbox::{ClarifyOption, InboxContext, InboxItem, ItemKind, TuneItem};
 pub use plan::PlanContext;
 pub use previous_failure::{
     BadWalk, DriverNoticeCause, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, STDERR_TAIL_PER_BLOCK,
@@ -137,14 +137,14 @@ pub const PARTIAL_SELF_REPORT_MARKERS: &str =
     include_str!("../templates/partial/self_report_markers.md");
 
 /// `partial/options_format.md` — canonical `## Options — <summary>` /
-/// `### Option N — <title>` markdown block consumed by `loom msg`'s
+/// `### Option N — <title>` markdown block consumed by `loom inbox`'s
 /// chat-drafter. Pinned by worker phases that may emit `LOOM_CLARIFY` or
 /// stream a clarify-bound finding.
 pub const PARTIAL_OPTIONS_FORMAT: &str = include_str!("../templates/partial/options_format.md");
 
 /// `partial/chat_marker_final_turn_only.md` — restrict `LOOM_COMPLETE`
 /// emission to the **final** assistant turn of a multi-turn chat
-/// session. Multi-turn templates (`msg`, `plan`)
+/// session. Multi-turn templates (`inbox`, `plan`)
 /// include this alongside the progress / self-report marker partials
 /// so the "end your response with the marker" instruction does not
 /// get read as "every response." One-shot worker templates (`todo`,

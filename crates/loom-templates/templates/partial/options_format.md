@@ -25,8 +25,8 @@
   - Use contextual options per decision — typically 2–4, each
     naming its cost. Do NOT emit a fixed A/B/C menu.
 
-  `loom msg` parses this format to render the SUMMARY column,
-  enumerate options for view mode, and resolve integer fast-replies.
+  `loom inbox` parses this format to render the SUMMARY column,
+  enumerate options for view mode, and provide structured chat context.
   A malformed block — or one that lives only in your prose, never
   persisted to bead state — breaks fast-reply with `-a <int>` and
-  leaves the options invisible to `loom msg`'s queue.
+  leaves the options invisible to `loom inbox`'s queue.

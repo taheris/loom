@@ -2899,7 +2899,7 @@ mod tests {
     /// written to bead state *before* `LOOM_CLARIFY` is emitted. If the
     /// controller also wrote the agent's reason via `bd update --notes`,
     /// every re-emit would clobber the canonical block and leave `loom
-    /// msg`'s queue empty.
+    /// inbox`'s queue empty.
     #[tokio::test]
     async fn apply_clarify_does_not_write_notes() {
         let dir = tempfile::tempdir().unwrap();

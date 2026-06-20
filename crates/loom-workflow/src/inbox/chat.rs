@@ -1,31 +1,17 @@
-//! `loom msg --chat` — interactive Drafter session.
+//! `loom inbox chat` — interactive human-decision session.
 //!
-//! Mirrors `loom plan`'s runner shape: the driver renders the `msg.md`
-//! template against the outstanding clarify queue, builds the same
-//! `wrix run <workspace> <agent command> ... <prompt>` argv plan uses, and
-//! shells out with **inherited stdio** so the configured agent attaches
-//! directly to the user's terminal as a real REPL.
-//!
-//! This deliberately bypasses the `dispatch` stream-json surface used by
-//! `loom loop` / `loom gate` / `loom todo`. Those backends pipe stdio so the
-//! driver can read events and write the JSONL log — fine for non-interactive
-//! sessions, fatal for an interactive chat (no readline, no color, no real
-//! REPL).
-//!
-//! Resolution itself is the agent's responsibility: the rendered prompt
-//! tells the configured agent to call `bd update <id> --notes "…"`,
-//! `bd update <id> --remove-label=loom:clarify`, and `bd close <id>` per
-//! resolved bead. The driver only renders, shells out, and reports — it
-//! does NOT reconcile bd state after the session, per the verdict-gate
-//! split between worker and interactive phases (`specs/templates.md`
-//! Implementation Note 5).
+//! Mirrors `loom plan`'s runner shape: the driver renders the `inbox.md`
+//! template against the visible inbox queue, builds the same `wrix run
+//! <workspace> <agent command> ... <prompt>` argv plan uses, and shells out
+//! with inherited stdio so the configured agent attaches to the user's terminal
+//! as a real REPL.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use askama::Template;
 use loom_driver::agent::AgentKind;
-use loom_driver::bd::{BdClient, Bead, ListOpts};
+use loom_driver::bd::{BdClient, ListOpts};
 use loom_driver::config::{LoomConfig, Phase};
 use loom_driver::git::{GitClient, GitError};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
@@ -37,50 +23,52 @@ use tracing::info;
 
 use crate::skill::{SkillError, SkillPlan};
 
-use super::context::build_msg_context;
-use super::list::{filter_msg_beads, spec_label_of};
+use super::context::build_inbox_context;
+use super::list::{
+    InboxItem, InboxKind, build_queue, find_by_bead_id, find_by_index, find_by_proposal_id,
+};
 
-/// Default name of the wrix launcher binary on PATH. Tests override
-/// via the `LOOM_WRIX_BIN` env var resolved by the CLI caller.
+/// Default name of the wrix launcher binary on PATH.
 pub const WRIX_BIN: &str = "wrix";
 
 /// Env vars `wrix run` reads to pick the per-profile image when no
-/// `--spawn-config` is supplied — the sole profile-selection contract
-/// on the interactive shell-out path. Shared with `loom plan` so the
-/// chat dispatch picks up the same per-phase profile resolution.
+/// `--spawn-config` is supplied.
 pub const WRIX_DEFAULT_IMAGE_REF: &str = "WRIX_DEFAULT_IMAGE_REF";
 pub const WRIX_DEFAULT_IMAGE_SOURCE: &str = "WRIX_DEFAULT_IMAGE_SOURCE";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatTarget {
+    Index(u32),
+    Bead(String),
+    Proposal(String),
+}
 
 /// Inputs to one [`run`] call.
 #[derive(Debug)]
 pub struct ChatOpts {
-    /// Optional `-s <label>` filter. When `Some`, only beads carrying
-    /// `spec:<label>` are surfaced in the rendered prompt.
+    /// Optional `-s <label>` filter.
     pub spec_filter: Option<SpecLabel>,
-    /// Optional `--profile <name>` override. Wins over per-phase
-    /// config and the built-in `base` default.
+    /// Optional `-k <kind>` filter.
+    pub kind_filter: Option<InboxKind>,
+    /// Optional target. Absent means the session walks the visible queue.
+    pub target: Option<ChatTarget>,
+    /// Optional profile override.
     pub cli_profile: Option<ProfileName>,
-    /// CLI `--agent` override. When absent, `[phase.msg].agent.backend` /
-    /// `[phase.default].agent.backend` select the interactive command passed
-    /// to `wrix run`.
+    /// CLI `--agent` override.
     pub agent_override: Option<AgentKind>,
-    /// Resolved profile-image manifest. The driver reads this via
-    /// `LOOM_PROFILES_MANIFEST`.
+    /// Resolved profile-image manifest.
     pub manifest: ProfileImageManifest,
-    /// Explicit path to the `wrix` launcher. `None` falls back to
-    /// the `LOOM_WRIX_BIN` env var, then to `wrix` on PATH.
+    /// Explicit path to the `wrix` launcher.
     pub wrix_bin: Option<PathBuf>,
 }
 
-/// Outcome of one `loom msg --chat` session.
+/// Outcome of one `loom inbox chat` session.
 #[derive(Debug, Clone)]
 pub struct ChatReport {
-    /// Number of clarify/blocked beads surfaced into the rendered
-    /// prompt at session start.
-    pub beads_surfaced: usize,
-    /// Number of clarify/blocked beads still open after the session
-    /// exited — the difference is the agent's resolved count.
-    pub beads_remaining: usize,
+    /// Number of inbox items surfaced into the rendered prompt at session start.
+    pub items_surfaced: usize,
+    /// Number of inbox items still visible after the session exited.
+    pub items_remaining: usize,
 }
 
 #[derive(Debug, Error)]
@@ -91,9 +79,9 @@ pub enum ChatError {
     Config(String),
     #[error("bd list failed: {0}")]
     BdList(String),
-    #[error("render msg.md template: {0}")]
+    #[error("render inbox.md template: {0}")]
     Render(String),
-    #[error("cache db operation failed while running `loom msg --chat`")]
+    #[error("cache db operation failed while running `loom inbox chat`")]
     State(#[from] loom_driver::state::CacheError),
     #[error("scratch session io failed")]
     Scratch(#[from] std::io::Error),
@@ -101,17 +89,19 @@ pub enum ChatError {
     WrixExit { status: String },
     #[error("agent selection: {0}")]
     AgentSelection(String),
-    #[error("bead identifier: {0}")]
-    Identifier(String),
-    #[error("git step failed while running `loom msg --chat`")]
+    #[error("git step failed while running `loom inbox chat`")]
     Git(#[from] GitError),
-    #[error("skill resolution failed while running `loom msg --chat`")]
+    #[error("skill resolution failed while running `loom inbox chat`")]
     Skill(#[from] SkillError),
+    #[error("no inbox item at index {index} ({total} outstanding)")]
+    IndexOutOfRange { index: u32, total: u32 },
+    #[error("no inbox item with bead id {id}")]
+    BeadNotFound { id: String },
+    #[error("no tune proposal with id {id}")]
+    ProposalNotFound { id: String },
 }
 
-/// Run one `loom msg --chat` session against `workspace`. Returns the
-/// before/after clarify counts so the caller can surface a one-line
-/// summary.
+/// Run one `loom inbox chat` session against `workspace`.
 pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     let cfg = LoomConfig::load(LoomConfig::resolve_path(workspace))
         .map_err(|e| ChatError::Config(e.to_string()))?;
@@ -126,56 +116,61 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     let beads = runtime
         .block_on(async {
             let bd = BdClient::new();
-            bd.list(ListOpts {
-                label_any: vec!["loom:clarify".to_string(), "loom:blocked".to_string()],
-                ..ListOpts::default()
-            })
-            .await
+            bd.list(ListOpts::default()).await
         })
         .map_err(|e| ChatError::BdList(e.to_string()))?;
-    let kept: Vec<&Bead> = filter_msg_beads(&beads, opts.spec_filter.as_ref()).to_vec();
-    let beads_surfaced = kept.len();
-    if kept.is_empty() {
+    let queue = build_queue(&beads, opts.spec_filter.as_ref(), opts.kind_filter, false);
+    let visible = select_visible(queue, opts.target.as_ref())?;
+    let items_surfaced = visible.len();
+    if visible.is_empty() {
         return Ok(ChatReport {
-            beads_surfaced: 0,
-            beads_remaining: 0,
+            items_surfaced: 0,
+            items_remaining: 0,
         });
     }
 
     let scope_label = opts
         .spec_filter
         .clone()
-        .unwrap_or_else(|| SpecLabel::new("msg-chat"));
-    let key = resolve_scratch_key(Phase::Msg, std::slice::from_ref(&scope_label), None);
+        .or_else(|| visible.iter().find_map(|item| item.spec.clone()))
+        .unwrap_or_else(|| SpecLabel::new("inbox-chat"));
+    let key = resolve_scratch_key(
+        Phase::Inbox,
+        std::slice::from_ref(&scope_label),
+        single_bead(&visible),
+    );
     let scratchpad_path = ScratchSession::scratchpad_path_for(workspace, &key);
     let scratch_dir = scratchpad_path.parent().ok_or_else(|| {
         ChatError::Scratch(std::io::Error::other("scratchpad path has no parent"))
     })?;
-    let git = GitClient::open(workspace)?;
-    let tracked_files = git.tracked_files_sync()?;
+    let tracked_files = if cfg.skills.paths.is_empty() {
+        Vec::new()
+    } else {
+        let git = GitClient::open(workspace)?;
+        git.tracked_files_sync()?
+    };
     let skill_plan = SkillPlan::resolve(
         workspace,
         &tracked_files,
-        Phase::Msg.as_str(),
+        Phase::Inbox.as_str(),
         &profile,
         agent_kind,
         &cfg.skills,
     )?;
     let skill_session = skill_plan.materialize(scratch_dir, workspace)?;
-    let companion_paths = load_companion_paths(workspace, opts.spec_filter.as_ref(), &kept)?;
-    let ctx = build_msg_context(
+    let companion_paths = load_companion_paths(workspace, opts.spec_filter.as_ref(), &visible)?;
+    let ctx = build_inbox_context(
+        workspace,
         String::new(),
         companion_paths,
-        &kept,
+        &visible,
         scratchpad_path.to_string_lossy().into_owned(),
         skill_session.skill_index,
     );
     let prompt_body = ctx.render().map_err(|e| ChatError::Render(e.to_string()))?;
 
-    let banner = "loom msg --chat".to_string();
-    let scratch = ScratchSession::open(workspace, &key, &prompt_body, &banner)?;
+    let scratch = ScratchSession::open(workspace, &key, &prompt_body, "loom inbox chat")?;
     let _restored_skills = skill_plan.materialize(scratch.path(), workspace)?;
-
     let argv = build_wrix_argv(workspace, &prompt_body, agent_kind);
     let bin: PathBuf = opts
         .wrix_bin
@@ -184,12 +179,12 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
 
     info!(
         wrix_bin = %bin.display(),
-        beads_surfaced,
+        items_surfaced,
         profile = %profile,
         agent = ?agent_kind,
         image_ref = %image.r#ref,
         scratch_dir = %scratch.path().display(),
-        "loom msg --chat: shelling out to interactive wrix run",
+        "loom inbox chat: shelling out to interactive wrix run",
     );
 
     let status = Command::new(&bin)
@@ -207,37 +202,24 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         });
     }
 
-    // Interactive sessions own their own bd state per `specs/templates.md`
-    // Implementation Note 5: the driver runs no post-session
-    // reconciliation, applies no labels, and does not reverse agent
-    // writes. The remaining-bead count is read fresh so the caller can
-    // print a one-line summary; whatever bd state the chat agent + human
-    // established is the canonical state.
     let beads_after = runtime
         .block_on(async {
             let bd = BdClient::new();
-            bd.list(ListOpts {
-                label_any: vec!["loom:clarify".to_string(), "loom:blocked".to_string()],
-                ..ListOpts::default()
-            })
-            .await
+            bd.list(ListOpts::default()).await
         })
         .map_err(|e| ChatError::BdList(e.to_string()))?;
-    let remaining_kept = filter_msg_beads(&beads_after, opts.spec_filter.as_ref());
+    let remaining = build_queue(
+        &beads_after,
+        opts.spec_filter.as_ref(),
+        opts.kind_filter,
+        false,
+    );
     Ok(ChatReport {
-        beads_surfaced,
-        beads_remaining: remaining_kept.len(),
+        items_surfaced,
+        items_remaining: remaining.len(),
     })
 }
 
-/// Build the argv passed to `wrix run` — the SAME shape `loom plan`
-/// uses so both interactive sessions share one entry point. `wrix
-/// run` (NOT `spawn`) keeps the TTY attached and inherits the user's
-/// terminal. Profile selection flows through the
-/// `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` env vars
-/// exported by [`run`]; `wrix run` has no `--profile` parser (any
-/// trailing tokens after the workspace are forwarded into the container
-/// as the command vector).
 pub fn build_wrix_argv(workspace: &Path, prompt_body: &str, agent_kind: AgentKind) -> Vec<String> {
     let mut argv = vec![
         "run".to_string(),
@@ -259,23 +241,50 @@ fn agent_command(kind: AgentKind) -> &'static str {
     }
 }
 
-/// Aggregate companion paths from the cache DB across every spec label
-/// represented in the surfaced clarify queue. `msg --chat` is cross-spec by
-/// default, so the queue may carry beads from multiple specs; under a
-/// `--spec <label>` filter the union collapses to that single spec. Returns
-/// a sorted, deduplicated list.
+fn select_visible(
+    queue: Vec<InboxItem>,
+    target: Option<&ChatTarget>,
+) -> Result<Vec<InboxItem>, ChatError> {
+    let Some(target) = target else {
+        return Ok(queue);
+    };
+    let total = u32::try_from(queue.len()).unwrap_or(u32::MAX);
+    let item = match target {
+        ChatTarget::Index(index) => {
+            find_by_index(&queue, *index).ok_or(ChatError::IndexOutOfRange {
+                index: *index,
+                total,
+            })?
+        }
+        ChatTarget::Bead(id) => {
+            find_by_bead_id(&queue, id).ok_or_else(|| ChatError::BeadNotFound { id: id.clone() })?
+        }
+        ChatTarget::Proposal(id) => find_by_proposal_id(&queue, id)
+            .ok_or_else(|| ChatError::ProposalNotFound { id: id.clone() })?,
+    };
+    Ok(vec![item.clone()])
+}
+
+fn single_bead(items: &[InboxItem]) -> Option<&BeadId> {
+    if items.len() == 1 {
+        Some(&items[0].bead.id)
+    } else {
+        None
+    }
+}
+
 fn load_companion_paths(
     workspace: &Path,
     spec_filter: Option<&SpecLabel>,
-    beads: &[&Bead],
+    items: &[InboxItem],
 ) -> Result<Vec<String>, ChatError> {
     let db = CacheDb::open(workspace.join(".loom/cache.db"))?;
     let mut labels: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     if let Some(label) = spec_filter {
         labels.insert(label.as_str().to_string());
     } else {
-        for bead in beads {
-            if let Some(label) = spec_label_of(bead) {
+        for item in items {
+            if let Some(label) = &item.spec {
                 labels.insert(label.as_str().to_string());
             }
         }
@@ -290,16 +299,13 @@ fn load_companion_paths(
     Ok(paths.into_iter().collect())
 }
 
-/// Resolve the profile `loom msg --chat` should pass to the launcher.
-/// Same precedence chain as `loom plan`: CLI override → per-phase
-/// config → built-in `base`.
 fn resolve_chat_selection(
     cli_profile: Option<&ProfileName>,
     agent_override: Option<AgentKind>,
     config: &LoomConfig,
 ) -> Result<(ProfileName, AgentKind), ChatError> {
     let mut selection = config
-        .agent_for(Phase::Msg)
+        .agent_for(Phase::Inbox)
         .map_err(|e| ChatError::AgentSelection(e.to_string()))?;
     if let Some(p) = cli_profile {
         selection.profile = p.clone();
@@ -309,16 +315,11 @@ fn resolve_chat_selection(
     }
     if matches!(selection.kind, AgentKind::Direct) {
         return Err(ChatError::AgentSelection(
-            "direct backend cannot run interactive `loom msg --chat`".to_string(),
+            "direct backend cannot run interactive `loom inbox chat`".to_string(),
         ));
     }
     Ok((selection.profile, selection.kind))
 }
-
-// Unused type alias — `BeadId` import kept so callers needing it via
-// `msg::chat::BeadId` don't fall through to `loom_driver::identifier`.
-#[doc(hidden)]
-pub type _BeadId = BeadId;
 
 #[cfg(test)]
 mod tests {
@@ -349,21 +350,10 @@ mod tests {
         assert!(!argv.iter().any(|a| a == "--dangerously-skip-permissions"));
     }
 
-    /// The dispatch must NEVER include `--profile`, `--stdio`, or
-    /// `--spawn-config`. `wrix run` has no `--profile` parser (the
-    /// flag would be forwarded into the container as a command and
-    /// crash the entrypoint); profile selection rides the
-    /// `WRIX_DEFAULT_IMAGE_*` env vars instead. `--stdio` /
-    /// `--spawn-config` are the non-interactive surfaces `loom loop` /
-    /// `check` / `todo` use — msg --chat is interactive (`wrix run`,
-    /// no pi-mono protocol).
     #[test]
     fn argv_never_contains_profile_spawn_or_stdio_or_spawn_config() {
         let argv = build_wrix_argv(&PathBuf::from("/work"), "PROMPT", AgentKind::Claude);
-        assert!(
-            !argv.iter().any(|a| a == "--profile"),
-            "wrix run has no --profile parser; profile flows via WRIX_DEFAULT_IMAGE_* env vars"
-        );
+        assert!(!argv.iter().any(|a| a == "--profile"));
         assert!(!argv.iter().any(|a| a == "spawn"));
         assert!(!argv.iter().any(|a| a == "--stdio"));
         assert!(!argv.iter().any(|a| a == "--spawn-config"));

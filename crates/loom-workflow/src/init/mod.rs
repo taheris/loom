@@ -813,7 +813,7 @@ mod tests {
             Phase::Todo,
             Phase::Loop,
             Phase::Review,
-            Phase::Msg,
+            Phase::Inbox,
         ] {
             assert_eq!(
                 parsed.agent_for(phase).map_err(anyhow::Error::from)?,

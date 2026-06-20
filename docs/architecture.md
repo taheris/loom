@@ -54,7 +54,7 @@ orientation.
 | `loom-test-support` | Shared test fixtures and helpers |
 | `loom-tune` | Internal tuning registry, case, score, and proposal types |
 | `loom-walk` | Spec-annotation walker for `[verify]` / `[check]` / `[system]` |
-| `loom-workflow` | Phase implementations: `plan`, `todo`, `loop`, `gate`, `msg` |
+| `loom-workflow` | Phase implementations: `plan`, `todo`, `loop`, `gate`, `inbox` |
 
 ## Phases
 
@@ -65,7 +65,7 @@ orientation.
 | Loop | `loom loop <label>` | `<label>.lock` | Beads, agent | Code changes, bead transitions |
 | Gate (verify) | `loom gate verify` | none | Spec annotations | Deterministic pass/fail |
 | Gate (review) | `loom gate review` | none | Diff, judge rubrics | LLM verdict |
-| Msg | `loom msg <bead>` | per-bead | `loom:clarify` bead | Resolved options, label removed |
+| Inbox | `loom inbox` / `loom inbox chat` | targeted chat locks addressed bead | `loom:clarify`, `loom:blocked`, tune proposal beads | Human decision list/view/chat |
 
 See [`../specs/harness.md`](../specs/harness.md) for the lock matrix and full
 command set; [`../specs/gate.md`](../specs/gate.md) for the verification

@@ -1506,17 +1506,6 @@ const LOGS_UX_TABLE: &str = concat!(
     "| `--raw` | raw bytes |\n",
 );
 
-const MSG_FLAG_TABLE: &str = concat!(
-    "### Msg Modes\n",
-    "\n",
-    "**Flag table.**\n",
-    "\n",
-    "| Short | Long | Argument | Purpose |\n",
-    "|-------|------|----------|---------|\n",
-    "| `-c` | `--chat` | — | chat |\n",
-    "| `-s` | `--spec` | `<label>` | filter |\n",
-);
-
 const COMMAND_ENUM_DEFAULT: &str = concat!(
     "enum Command {\n",
     "    Logs {\n",
@@ -1535,12 +1524,12 @@ const COMMAND_ENUM_DEFAULT: &str = concat!(
 );
 
 fn seed_surface_spec(ws: &TempDir, fr1_body: &str) {
-    seed_surface_spec_with(ws, fr1_body, LOGS_UX_TABLE, MSG_FLAG_TABLE);
+    seed_surface_spec_with(ws, fr1_body, LOGS_UX_TABLE);
 }
 
-fn seed_surface_spec_with(ws: &TempDir, fr1_body: &str, logs_section: &str, msg_section: &str) {
+fn seed_surface_spec_with(ws: &TempDir, fr1_body: &str, logs_section: &str) {
     let body = format!(
-        "# Loom Harness\n\n{logs_section}\n{msg_section}\n## Requirements\n\n### Functional\n\n1. **Command set** — header\n\n{fr1_body}\n2. **Compiled templates** — sentinel\n",
+        "# Loom Harness\n\n{logs_section}\n## Requirements\n\n### Functional\n\n1. **Command set** — header\n\n{fr1_body}\n2. **Compiled templates** — sentinel\n",
     );
     seed(ws.path(), "specs/harness.md", &body);
 }
@@ -1680,7 +1669,6 @@ fn surface_conformance_fail_when_spec_logs_flag_missing_from_binary() {
             "| `--raw` | raw bytes |\n",
             "| `--ghost` | undeclared |\n",
         ),
-        MSG_FLAG_TABLE,
     );
     seed_surface_main(&ws, HELP_GROUPS_MINIMAL);
     let out = invoke(&["surface_conformance"], Some(ws.path()), None);
@@ -1715,30 +1703,6 @@ fn surface_conformance_fail_when_binary_logs_flag_missing_from_spec() {
     );
     let out = invoke(&["surface_conformance"], Some(ws.path()), None);
     assert_fail(&out, "`--ghost`");
-}
-
-#[test]
-fn surface_conformance_fail_when_msg_flag_drift() {
-    let ws = make_workspace();
-    seed_surface_spec_with(
-        &ws,
-        SPEC_FR1_MINIMAL,
-        LOGS_UX_TABLE,
-        concat!(
-            "### Msg Modes\n",
-            "\n",
-            "**Flag table.**\n",
-            "\n",
-            "| Short | Long | Argument | Purpose |\n",
-            "|-------|------|----------|---------|\n",
-            "| `-c` | `--chat` | — | chat |\n",
-            "| `-s` | `--spec` | `<label>` | filter |\n",
-            "| `-d` | `--phantom` | — | undeclared |\n",
-        ),
-    );
-    seed_surface_main(&ws, HELP_GROUPS_MINIMAL);
-    let out = invoke(&["surface_conformance"], Some(ws.path()), None);
-    assert_fail(&out, "`--phantom`");
 }
 
 #[test]
