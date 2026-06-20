@@ -2431,6 +2431,7 @@ dependencies = [
  "loom-driver",
  "loom-events",
  "loom-llm",
+ "loom-skills",
  "loom-test-support",
  "nix",
  "proptest",
@@ -2580,6 +2581,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-skills"
+version = "0.1.0"
+dependencies = [
+ "displaydoc",
+ "loom-events",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "loom-templates"
 version = "0.1.0"
 dependencies = [
@@ -2598,6 +2610,19 @@ dependencies = [
 [[package]]
 name = "loom-test-support"
 version = "0.1.0"
+
+[[package]]
+name = "loom-tune"
+version = "0.1.0"
+dependencies = [
+ "displaydoc",
+ "loom-events",
+ "loom-skills",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+]
 
 [[package]]
 name = "loom-walk"

@@ -1,19 +1,21 @@
-//! Crate-structure sentinel: the eight named member crates from the
-//! loom-harness spec must exist with their canonical files. `loom` is
-//! the binary crate (`src/main.rs`); the rest are libraries
-//! (`src/lib.rs`). Each carries a `Cargo.toml`.
+//! Crate-structure sentinel: the target v1 crates from the loom-harness
+//! spec must exist with their canonical files. `loom` is the binary
+//! crate (`src/main.rs`); the rest are libraries (`src/lib.rs`). Each
+//! carries a `Cargo.toml`.
 
 use std::path::Path;
 
 use super::util::{verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "crate_structure — the eight named crates must exist with Cargo.toml + lib/main";
+const RULE: &str = "crate_structure_includes_loom_tune — the target v1 crates must exist with Cargo.toml + lib/main";
 
 const LIBRARY_CRATES: &[&str] = &[
     "loom-events",
     "loom-llm",
     "loom-templates",
+    "loom-skills",
+    "loom-tune",
     "loom-driver",
     "loom-render",
     "loom-agent",

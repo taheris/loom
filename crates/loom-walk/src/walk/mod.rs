@@ -29,17 +29,20 @@ mod loom_llm_client_constructors_use_newtypes;
 mod loom_llm_client_types_per_schema_kind;
 mod loom_llm_deps;
 mod loom_llm_error_variant_set_multimodal;
+mod loom_llm_has_no_skill_registry_surface;
 mod loom_llm_mime_type_no_raw_strings;
 mod loom_llm_multimodal_no_provider_wire_types;
 mod loom_llm_no_public_genai_types;
 mod loom_llm_no_underlying_crate_reexports;
 mod loom_llm_public_surface;
 mod loom_render_deps;
+mod loom_skills_deps;
 mod loom_templates_deps;
 mod loom_templates_public_partial_constants;
 mod loom_templates_public_types;
 mod loom_templates_snapshots_no_crate_root_allow;
 mod loom_templates_workflow_templates_not_exported;
+mod loom_tune_deps;
 mod newtype_identifiers;
 mod nix_flake_check_excludes_workspace_compile;
 mod no_allow_dead_code;
@@ -138,7 +141,7 @@ pub static REGISTRY: &[Walk] = &[
         run: audit_makes_no_bd_writes_outside_mint_module::run,
     },
     Walk {
-        name: "crate_structure",
+        name: "crate_structure_includes_loom_tune",
         run: crate_structure::run,
     },
     Walk {
@@ -194,6 +197,10 @@ pub static REGISTRY: &[Walk] = &[
         run: loom_llm_error_variant_set_multimodal::run,
     },
     Walk {
+        name: "loom_llm_has_no_skill_registry_surface",
+        run: loom_llm_has_no_skill_registry_surface::run,
+    },
+    Walk {
         name: "loom_llm_mime_type_no_raw_strings",
         run: loom_llm_mime_type_no_raw_strings::run,
     },
@@ -218,6 +225,10 @@ pub static REGISTRY: &[Walk] = &[
         run: loom_render_deps::run,
     },
     Walk {
+        name: "loom_skills_deps",
+        run: loom_skills_deps::run,
+    },
+    Walk {
         name: "loom_templates_deps",
         run: loom_templates_deps::run,
     },
@@ -236,6 +247,10 @@ pub static REGISTRY: &[Walk] = &[
     Walk {
         name: "loom_templates_workflow_templates_not_exported",
         run: loom_templates_workflow_templates_not_exported::run,
+    },
+    Walk {
+        name: "loom_tune_deps",
+        run: loom_tune_deps::run,
     },
     Walk {
         name: "newtype_identifiers",
@@ -401,7 +416,7 @@ mod tests {
     fn registry_lookup_finds_known_walks() {
         for name in [
             "audit_makes_no_bd_writes_outside_mint_module",
-            "crate_structure",
+            "crate_structure_includes_loom_tune",
             "direct_tools_net_new",
             "event_sink_in_loom_events",
             "finding_no_duplicate_definitions",
@@ -415,12 +430,14 @@ mod tests {
             "loom_llm_client_types_per_schema_kind",
             "loom_llm_deps",
             "loom_llm_error_variant_set_multimodal",
+            "loom_llm_has_no_skill_registry_surface",
             "loom_llm_mime_type_no_raw_strings",
             "loom_llm_multimodal_no_provider_wire_types",
             "loom_llm_no_public_genai_types",
             "loom_llm_no_underlying_crate_reexports",
             "loom_llm_public_surface",
             "loom_render_deps",
+            "loom_skills_deps",
             "no_derive_from_on_newtypes",
             "no_todo_cursor_meta_key",
             "no_types_or_error_files",
@@ -448,6 +465,7 @@ mod tests {
             "loom_templates_public_types",
             "loom_templates_snapshots_no_crate_root_allow",
             "loom_templates_workflow_templates_not_exported",
+            "loom_tune_deps",
             "no_hardcoded_tmp_paths",
             "no_inline_suppression_comment_contract",
             "no_thread_sleep",

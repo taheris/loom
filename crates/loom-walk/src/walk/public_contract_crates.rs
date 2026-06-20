@@ -1,15 +1,15 @@
 //! Public-contract crates carry an explicit declaration in their own
-//! manifest: `[package.metadata.loom] public_contract = true`. Three
-//! crates currently make that promise — `loom-events`, `llm`,
-//! `templates`. The walk reads each crate's `Cargo.toml` and
-//! confirms the marker is present and set to `true`.
+//! manifest: `[package.metadata.loom] public_contract = true`. The
+//! target v1 public crates are `loom-events`, `loom-llm`,
+//! `loom-templates`, and `loom-skills`. The walk reads each crate's
+//! `Cargo.toml` and confirms the marker is present and set to `true`.
 
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "public_contract_crates — loom-events, loom-llm, loom-templates declare `[package.metadata.loom] public_contract = true`";
+const RULE: &str = "public_contract_crates — loom-events, loom-llm, loom-templates, loom-skills declare `[package.metadata.loom] public_contract = true`";
 
-const PUBLIC_CRATES: &[&str] = &["loom-events", "loom-llm", "loom-templates"];
+const PUBLIC_CRATES: &[&str] = &["loom-events", "loom-llm", "loom-templates", "loom-skills"];
 
 pub fn run(_input: &WalkInput) -> Verdict {
     let root = workspace_root();

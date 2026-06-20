@@ -1,9 +1,9 @@
 //! `templates` is a public-contract leaf alongside `loom-events`
 //! and `llm`. Its `[dependencies]` table may depend on no internal
 //! crate other than `loom-events` — references to `loom-driver`,
-//! `agent`, `loom-workflow`, `llm`, etc. would either re-shape
-//! the consumer-facing dependency graph or pull the runtime into the
-//! template surface.
+//! `agent`, `loom-workflow`, `llm`, `loom-skills`, `loom-tune`, etc.
+//! would either re-shape the consumer-facing dependency graph or pull the
+//! runtime into the template surface.
 
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
@@ -16,6 +16,8 @@ const FORBIDDEN: &[&str] = &[
     "loom-workflow",
     "loom-render",
     "loom-llm",
+    "loom-skills",
+    "loom-tune",
     "loom-gate",
 ];
 

@@ -1,0 +1,22 @@
+[package]
+name = "loom-skills"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.loom]
+public_contract = true
+
+[dependencies]
+displaydoc = { workspace = true }
+loom-events = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

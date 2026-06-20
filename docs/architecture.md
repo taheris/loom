@@ -49,8 +49,10 @@ orientation.
 | `loom-gate` | Quality gate: `loom gate verify` (deterministic) + `loom gate review` (LLM judge) |
 | `loom-llm` | Public-contract LLM primitives: `LlmClient`, `Conversation`, observers |
 | `loom-render` | Streaming output formatters and event sinks |
+| `loom-skills` | Public skill artifact model and registry stages |
 | `loom-templates` | Askama prompt templates with typed contexts |
 | `loom-test-support` | Shared test fixtures and helpers |
+| `loom-tune` | Internal tuning registry, case, score, and proposal types |
 | `loom-walk` | Spec-annotation walker for `[verify]` / `[check]` / `[system]` |
 | `loom-workflow` | Phase implementations: `plan`, `todo`, `loop`, `gate`, `msg` |
 

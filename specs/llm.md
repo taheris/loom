@@ -751,7 +751,7 @@ and `--no-default-features` to catch feature-gating regressions.
 - No `loom-llm` public type or dependency exposes `loom-skills` or native skill
       registration; Direct skill support is prompt/path content owned by
       `loom-agent`
-  [check?](cargo run -p loom-walk -- loom_llm_has_no_skill_registry_surface)
+  [check](cargo run -p loom-walk -- loom_llm_has_no_skill_registry_surface)
 
 ### Agent-loop observers
 

@@ -1,29 +1,39 @@
-//! `loom-agent::direct` wraps `loom-llm::Conversation` to satisfy the
-//! `Session` trait; the backend setup path also consumes the materialized
-//! skill registry. `loom-agent` must therefore depend on `loom-llm`,
-//! `loom-events`, and `loom-skills` directly.
+//! `loom-skills` is a public-contract crate for skill artifacts and
+//! registry stages. It may depend on `loom-events` for shared newtypes,
+//! but not on runtime, agent, template, tune, or workflow crates.
 
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
 const RULE: &str =
-    "loom_agent_deps — `loom-agent` depends on `loom-llm`, `loom-events`, and `loom-skills`";
+    "loom_skills_deps — `loom-skills` depends on `loom-events` and not on runtime crates";
 
-const REQUIRED: &[&str] = &["loom-llm", "loom-events", "loom-skills"];
+const REQUIRED: &[&str] = &["loom-events"];
+
+const FORBIDDEN: &[&str] = &[
+    "loom-driver",
+    "loom-agent",
+    "loom-templates",
+    "loom-tune",
+    "loom-workflow",
+    "loom-llm",
+    "loom-render",
+    "loom-gate",
+];
 
 pub fn run(_input: &WalkInput) -> Verdict {
     let root = workspace_root();
-    let manifest = root.join("crates/loom-agent/Cargo.toml");
+    let manifest = root.join("crates/loom-skills/Cargo.toml");
     let mut violations = Vec::new();
 
     let Some(body) = read_to_string(&manifest) else {
-        violations.push("crates/loom-agent/Cargo.toml:1 manifest not readable".to_string());
+        violations.push("crates/loom-skills/Cargo.toml:1 manifest not readable".to_string());
         return verdict_from(RULE, violations);
     };
 
     let Some(section) = section_body(&body, "[dependencies]") else {
         violations
-            .push("crates/loom-agent/Cargo.toml:1 [dependencies] section missing".to_string());
+            .push("crates/loom-skills/Cargo.toml:1 [dependencies] section missing".to_string());
         return verdict_from(RULE, violations);
     };
     let keys = section_keys(section);
@@ -31,7 +41,15 @@ pub fn run(_input: &WalkInput) -> Verdict {
     for required in REQUIRED {
         if !keys.iter().any(|k| k == required) {
             violations.push(format!(
-                "crates/loom-agent/Cargo.toml:1 missing required dependency `{required}` — `loom-agent` must depend on `loom-llm`, `loom-events`, and `loom-skills`",
+                "crates/loom-skills/Cargo.toml:1 missing required dependency `{required}`",
+            ));
+        }
+    }
+
+    for forbidden in FORBIDDEN {
+        if keys.iter().any(|k| k == forbidden) {
+            violations.push(format!(
+                "crates/loom-skills/Cargo.toml:1 forbidden internal dep `{forbidden}` — `loom-skills` may depend only on `loom-events` among internal crates",
             ));
         }
     }

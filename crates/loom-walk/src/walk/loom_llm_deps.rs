@@ -1,8 +1,8 @@
 //! `llm` is a public-contract leaf alongside `loom-events` and
 //! `templates`. Its `[dependencies]` table must depend on no
 //! internal crate other than `loom-events` — pulling `loom-driver`,
-//! `agent`, or `loom-workflow` would invert the consumer-facing
-//! dependency direction the spec preserves.
+//! `agent`, `loom-workflow`, `loom-skills`, or `loom-tune` would invert
+//! the consumer-facing dependency direction the spec preserves.
 
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
@@ -16,6 +16,8 @@ const FORBIDDEN: &[&str] = &[
     "loom-workflow",
     "loom-render",
     "loom-templates",
+    "loom-skills",
+    "loom-tune",
     "loom-gate",
 ];
 

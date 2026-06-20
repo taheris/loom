@@ -71,14 +71,16 @@ fn rel_inputs(name: &str, root: &Path) -> Vec<String> {
     out
 }
 
-/// The eight named workspace member crates whose manifests the
+/// The ten target v1 workspace member crates whose manifests the
 /// `workspace_edition` / `workspace_lints` walks inherit-check, mirroring
-/// `crate_structure`'s `BINARY_CRATE` + `LIBRARY_CRATES`.
+/// `crate_structure_includes_loom_tune`'s binary + library crate set.
 const MEMBER_CRATES: &[&str] = &[
     "loom",
     "loom-events",
     "loom-llm",
     "loom-templates",
+    "loom-skills",
+    "loom-tune",
     "loom-driver",
     "loom-render",
     "loom-agent",
@@ -115,6 +117,11 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         | "result_hasher_single_call_site" => crate_src(root, "loom-llm"),
         "loom_llm_client_constructors_use_newtypes" | "loom_llm_client_types_per_schema_kind" => {
             rs_files_recursive(&root.join("crates/loom-llm/src/client"))
+        }
+        "loom_llm_has_no_skill_registry_surface" => {
+            let mut out = vec![manifest(root, "loom-llm")];
+            out.extend(crate_src(root, "loom-llm"));
+            out
         }
         "loom_templates_public_partial_constants"
         | "loom_templates_public_types"
@@ -164,9 +171,11 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         "loom_agent_deps" => vec![manifest(root, "loom-agent")],
         "loom_llm_deps" => vec![manifest(root, "loom-llm")],
         "loom_render_deps" => vec![manifest(root, "loom-render")],
+        "loom_skills_deps" => vec![manifest(root, "loom-skills")],
         "loom_templates_deps" => vec![manifest(root, "loom-templates")],
+        "loom_tune_deps" => vec![manifest(root, "loom-tune")],
         "loom_events_is_leaf" | "loom_events_minimal_deps" => vec![manifest(root, "loom-events")],
-        "public_contract_crates" => ["loom-events", "loom-llm", "loom-templates"]
+        "public_contract_crates" => ["loom-events", "loom-llm", "loom-templates", "loom-skills"]
             .iter()
             .map(|c| manifest(root, c))
             .collect(),
@@ -178,7 +187,7 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         }
 
         // Crate-structure sentinels: each member crate's manifest + entry.
-        "crate_structure" => crate_structure_inputs(root),
+        "crate_structure_includes_loom_tune" => crate_structure_inputs(root),
         // RS-5: forbidden central `types.rs` / `error.rs` at any crate-src root.
         "no_types_or_error_files" => types_error_inputs(root),
 
@@ -246,8 +255,9 @@ fn files_under(dir: &Path, ext: Option<&str>) -> Vec<PathBuf> {
         .collect()
 }
 
-/// `crate_structure`'s scope: each member crate's `Cargo.toml` plus its
-/// entry source (`src/main.rs` for the binary, `src/lib.rs` for libraries).
+/// `crate_structure_includes_loom_tune`'s scope: each member crate's
+/// `Cargo.toml` plus its entry source (`src/main.rs` for the binary,
+/// `src/lib.rs` for libraries).
 fn crate_structure_inputs(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for krate in MEMBER_CRATES {

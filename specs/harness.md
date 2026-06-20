@@ -2703,7 +2703,7 @@ without carve-outs. Set `LOOM_CONFIG` to relocate.
 - Target v1 crate set present: loom, loom-events, loom-llm, loom-templates,
       loom-skills, loom-tune, loom-driver, loom-render, loom-agent,
       loom-workflow
-  [check?](cargo run -p loom-walk -- crate_structure_includes_loom_tune)
+  [check](cargo run -p loom-walk -- crate_structure_includes_loom_tune)
 - Four public-contract crates declared in workspace manifest metadata: loom-events, loom-llm, loom-templates, loom-skills
   [check](cargo run -p loom-walk -- public_contract_crates)
 - Workspace uses edition 2024 and resolver "3"
@@ -2941,9 +2941,9 @@ Criteria.
 - `templates` depends on `loom-events` only (no `loom-driver` / `llm` / `agent` / `loom-workflow` / `loom-skills` / `loom-tune` import)
   [check](cargo run -p loom-walk -- loom_templates_deps)
 - `loom-skills` depends on `loom-events` but not `loom-driver` / `agent` / `templates` / `loom-tune` / `loom-workflow`
-  [check?](cargo run -p loom-walk -- loom_skills_deps)
+  [check](cargo run -p loom-walk -- loom_skills_deps)
 - `loom-tune` depends on `loom-events` and `loom-skills`, but not `loom-driver` / `agent` / `loom-workflow`
-  [check?](cargo run -p loom-walk -- loom_tune_deps)
+  [check](cargo run -p loom-walk -- loom_tune_deps)
 - `loom-render` depends on `loom-events` only (no `loom-driver`)
   [check](cargo run -p loom-walk -- loom_render_deps)
 - `agent` depends on `llm`, `loom-events`, and `loom-skills`; its `direct` backend wraps `loom-llm::Conversation`
