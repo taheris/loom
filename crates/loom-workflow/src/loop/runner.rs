@@ -465,6 +465,7 @@ async fn process_one_bead<C: AgentLoopController>(
     let mut integration_conflict_used = false;
     loop {
         match controller.run_bead(bead, previous_failure.clone()).await? {
+            AgentOutcome::Noop => return Ok(BeadResult::Done),
             AgentOutcome::Success => match controller.exec_per_bead_gate(&bead.id).await? {
                 PerBeadGateOutcome::Clean => return Ok(BeadResult::Done),
                 PerBeadGateOutcome::StructuralViolation { detail } => {
@@ -857,6 +858,21 @@ mod tests {
         assert_eq!(c.review_calls, 0, "once mode never execs review");
         // Second bead remains in the queue; run_loop did not pull it.
         assert_eq!(c.ready_queue.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn noop_outcome_finishes_without_per_bead_gate() -> Result<(), LoopError> {
+        let mut c = FakeController::default();
+        c.ready_queue.push_back(bead("lm-noop", &[]));
+        c.agent_outcomes.push_back(AgentOutcome::Noop);
+
+        let summary = run_loop(&mut c, LoopMode::Once, RetryPolicy::default(), 10).await?;
+
+        assert_eq!(summary.beads_processed, 1);
+        assert!(c.per_bead_gate_calls.is_empty());
+        assert!(c.clarified.is_empty());
+        assert!(c.blocked.is_empty());
         Ok(())
     }
 

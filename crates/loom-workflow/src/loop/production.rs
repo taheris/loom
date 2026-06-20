@@ -567,6 +567,7 @@ where
             "loom loop: dispatching agent",
         );
         let (session, marker) = (self.spawn)(spawn_config, bead.id.clone()).await;
+        let marker_is_noop = matches!(marker.as_ref(), Some(ExitSignal::Noop));
         drop(scratch);
         // Resolve the per-bead log file the closure just finished writing
         // to so subsequent driver events (tree-not-clean / merge / push /
@@ -677,6 +678,19 @@ where
                     let main_sha = self.git.integration_commit_sha().await?;
                     if main_sha == pre_tip {
                         self.git.delete_branch(&worktree.branch).await?;
+                        if marker_is_noop {
+                            self.emit_to_log(
+                                DriverKind::VerdictGate,
+                                &format!("noop: bead {} did not advance integration", bead.id),
+                                serde_json::json!({
+                                    "bead_id": bead.id.to_string(),
+                                    "branch": worktree.branch,
+                                    "worktree_path": worktree.path.to_string_lossy(),
+                                    "cause": "noop",
+                                }),
+                            );
+                            return Ok(AgentOutcome::Noop);
+                        }
                         let detail = format!(
                             "{bead_id} emitted success but branch {branch} did not advance {integration_branch}; preserved workspace {path}",
                             bead_id = bead.id,

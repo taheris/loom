@@ -8,8 +8,11 @@ use loom_driver::git::GitOid;
 /// `LOOM_BLOCKED` / `LOOM_CLARIFY` markers) into one of these.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentOutcome {
-    /// Agent finished cleanly (`LOOM_COMPLETE` or `LOOM_NOOP`, exit 0).
+    /// Agent finished cleanly with reviewable work (`LOOM_COMPLETE`, exit 0).
     Success,
+
+    /// Agent finished cleanly with an intentional empty-diff no-op.
+    Noop,
 
     /// Agent exited with a non-zero `SessionComplete` code or surfaced a
     /// recoverable failure body. The string carries the body the driver

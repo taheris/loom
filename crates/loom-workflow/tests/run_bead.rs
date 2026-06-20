@@ -788,6 +788,62 @@ async fn run_bead_emits_preserved_workspace_event_for_happy_path_in_seq_order() 
     Ok(())
 }
 
+#[tokio::test]
+async fn run_bead_noop_empty_branch_is_done_not_zero_progress() -> Result<()> {
+    let (_dir, workspace, manifest, git_client) = setup();
+    let label = SpecLabel::new("harness");
+    let logs_root = workspace.join(".loom/logs");
+    let logs_root_for_closure = logs_root.clone();
+    let label_for_closure = label.clone();
+    let loom = workspace.join(".loom/integration");
+    let base = git_capture(&loom, &["rev-parse", "HEAD"])?;
+
+    let mut controller = ProductionAgentLoopController::new(
+        BdClient::new(),
+        label.clone(),
+        std::path::PathBuf::from("/loom/bin"),
+        workspace.clone(),
+        git_client,
+        manifest,
+        None,
+        ProfileName::new("base"),
+        move |_cfg: SpawnConfig, bead_id: BeadId| {
+            let logs_root = logs_root_for_closure.clone();
+            let label = label_for_closure.clone();
+            async move {
+                let mut sink = open_bead_sink_for_test(&logs_root, &label, &bead_id);
+                sink.finish(BeadOutcome::Done).expect("finish sink");
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Noop),
+                )
+            }
+        },
+    )
+    .with_phase_log_root(logs_root.clone());
+
+    let bead = fake_bead("lm-noopdone");
+    let outcome = controller.run_bead(&bead, None).await?;
+    assert_eq!(outcome, AgentOutcome::Noop);
+    assert_eq!(git_capture(&loom, &["rev-parse", "HEAD"])?, base);
+    let branches = git_capture(&loom, &["branch", "--list", "loom/lm-noopdone"])?;
+    assert!(
+        branches.trim().is_empty(),
+        "noop branch must be deleted after classification: {branches:?}",
+    );
+    let events = read_bead_events(&logs_root, &label, &bead.id);
+    let causes = events
+        .iter()
+        .filter(|event| event["driver_kind"] == "verdict_gate")
+        .filter_map(|event| event["payload"]["cause"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(causes, vec!["noop"], "events={events:?}");
+    Ok(())
+}
+
 /// Conflict path: when the driver-side rebase aborts on a conflict, the
 /// controller MUST emit a single `integration_conflict` event and no
 /// `merge_ok`. Mirrors the

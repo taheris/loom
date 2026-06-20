@@ -321,7 +321,7 @@ async fn merge_back_one(
         .zip(label)
         .and_then(|(root, lbl)| BeadEmit::for_bead(root, lbl, &bead.id));
     match outcome {
-        AgentOutcome::Success => {
+        AgentOutcome::Success | AgentOutcome::Noop => {
             // A3: the worker never pushes; the driver fetches the bead
             // branch from the bead workspace path into the loom workspace,
             // where `merge_branch` rebases + ff's it onto the integration
