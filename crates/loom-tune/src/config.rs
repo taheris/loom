@@ -9,7 +9,7 @@ use crate::checker::{CheckerId, Registry, RegistryError};
 
 /// Top-level `loom.toml` tuning fragment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct FileConfig {
     pub tune: TuneConfig,
 }

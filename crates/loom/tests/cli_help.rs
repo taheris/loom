@@ -72,7 +72,7 @@ fn loom_help_groups_workflow_inspection_state_in_order() {
     );
 
     let workflow_section = &out[workflow..inspection];
-    for sub in ["plan", "todo", "loop", "gate", "inbox"] {
+    for sub in ["plan", "todo", "loop", "gate", "inbox", "tune"] {
         assert!(
             workflow_section.contains(&format!("  {sub} "))
                 || workflow_section.contains(&format!("  {sub}\n")),
@@ -366,6 +366,11 @@ fn loom_inbox_view_help_snapshot() {
 #[test]
 fn loom_inbox_chat_help_snapshot() {
     insta::assert_snapshot!(loom_help(&["inbox", "chat"]));
+}
+
+#[test]
+fn loom_tune_help_snapshot() {
+    insta::assert_snapshot!(loom_help(&["tune"]));
 }
 
 #[test]

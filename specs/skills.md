@@ -726,7 +726,7 @@ requires explicit reauthorization in a later inbox chat.
   `partial`, `checker`, and `all` list surfaces/checkers; proposal creation
   requires explicit `fast`, `run`, or `full` after `skill`/`phase`/`partial`/`all`;
   `--dry-run` and `--seed` apply only to proposal-creating commands
-  [test?](loom_tune_cli_surface)
+  [test](loom_tune_cli_surface)
 - Each tuning invocation creates one tune bead plus one isolated
   `.loom/tune/<bead-id>/` envelope with `repo/`, `manifest.json`,
   `evidence.md`, candidate commit(s), and no changes to the invoking checkout

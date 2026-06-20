@@ -9,6 +9,7 @@ use thiserror::Error;
 pub enum PhaseLock {
     Planning,
     Todo,
+    Tune,
 }
 
 impl PhaseLock {
@@ -16,6 +17,7 @@ impl PhaseLock {
         match self {
             Self::Planning => "plan",
             Self::Todo => "todo",
+            Self::Tune => "tune",
         }
     }
 }

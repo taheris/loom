@@ -3475,18 +3475,18 @@ Criteria.
 - Bare `loom tune` prints command help; `loom tune skill`, `phase`, `partial`,
       `checker`, and `all` are read-only listing commands that create no tune
       bead or `.loom/tune/<bead-id>/`
-  [test?](loom_tune_bare_prints_help_without_proposal)
+  [test](loom_tune_bare_prints_help_without_proposal)
 - `loom tune skill fast|run|full`, `loom tune phase fast|run|full`,
       `loom tune partial fast|run|full`, and `loom tune all fast|run|full` each
       create one tune bead plus one isolated `.loom/tune/<bead-id>/` envelope
       with `repo/`, `manifest.json`, `evidence.md`, logs/evidence caches, and no
       changes to the invoking checkout
-  [test?](loom_tune_subcommands_create_isolated_proposals)
+  [test](loom_tune_subcommands_create_isolated_proposals)
 - `loom tune ... --dry-run` on a proposal-creating command prints loaded tuning
       docs, evidence roots, seed, case pool, selected/skipped cases, and the
       frozen checker plan without candidate generation; `--seed` pins the
       deterministic sampling seed. `--dry-run` is invalid on list commands.
-  [test?](loom_tune_level_seed_dry_run_shape_plan)
+  [test](loom_tune_level_seed_dry_run_shape_plan)
 - `loom tune` prints workspace and explicitly configured external evidence
       roots before harvesting; no home-directory transcript root is implicit;
       `[tune.evidence].selection_fraction` drives stable train/selection splits

@@ -27,6 +27,7 @@ pub mod spec;
 pub mod status;
 mod suppression;
 pub mod todo;
+pub mod tune;
 pub mod use_spec;
 
 pub use agent::{run_agent, run_agent_classified};

@@ -1,0 +1,20 @@
+---
+source: crates/loom/tests/cli_help.rs
+expression: "loom_help(&[\"tune\"])"
+---
+Tune skills and templates through isolated proposals
+
+Usage: loom tune [OPTIONS] [COMMAND]
+
+Commands:
+  skill    List or tune skills
+  phase    List or tune phase templates
+  partial  List or tune partial templates
+  checker  List registered tuning checkers
+  all      List or tune every tuneable surface
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
+  -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
+  -h, --help              Print help

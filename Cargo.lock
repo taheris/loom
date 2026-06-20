@@ -2398,6 +2398,7 @@ dependencies = [
  "loom-protocol",
  "loom-render",
  "loom-test-support",
+ "loom-tune",
  "loom-workflow",
  "nix",
  "proc-macro2",

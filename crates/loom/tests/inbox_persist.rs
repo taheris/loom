@@ -96,6 +96,37 @@ fn stderr(output: &std::process::Output) -> String {
 }
 
 #[test]
+fn inbox_bare_prints_help_and_list_prints_items() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let state_dir = workspace.join("bd-state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let bin_dir = install_bd_shim(workspace);
+
+    seed_bead(
+        &state_dir,
+        "lm-open",
+        "open clarify",
+        CLARIFY_DESC,
+        "open",
+        &["loom:clarify", "spec:agent"],
+    );
+
+    let bare = run_loom_inbox(workspace, &bin_dir, &state_dir, &[]);
+    assert!(bare.status.success(), "stderr={}", stderr(&bare));
+    let out = stdout(&bare);
+    assert!(out.contains("Usage: loom inbox"), "{out}");
+    assert!(
+        !out.contains("lm-open"),
+        "bare inbox should not list items: {out}"
+    );
+
+    let list = run_loom_inbox(workspace, &bin_dir, &state_dir, &["list"]);
+    assert!(list.status.success(), "stderr={}", stderr(&list));
+    assert!(stdout(&list).contains("lm-open"));
+}
+
+#[test]
 fn inbox_list_excludes_closed_blocked_or_clarify_beads() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
@@ -133,7 +164,7 @@ fn inbox_list_excludes_closed_blocked_or_clarify_beads() {
         serde_json::json!({"loom.tune.state":"pending","loom.tune.id":"lm-tune"}),
     );
 
-    let output = run_loom_inbox(workspace, &bin_dir, &state_dir, &[]);
+    let output = run_loom_inbox(workspace, &bin_dir, &state_dir, &["list"]);
     assert!(output.status.success(), "stderr={}", stderr(&output));
     let out = stdout(&output);
     assert!(out.contains("lm-open"), "{out}");
@@ -166,7 +197,7 @@ fn inbox_spec_filter_narrows_list_to_matching_spec() {
         &["loom:blocked", "spec:beta"],
     );
 
-    let output = run_loom_inbox(workspace, &bin_dir, &state_dir, &["-s", "alpha"]);
+    let output = run_loom_inbox(workspace, &bin_dir, &state_dir, &["list", "-s", "alpha"]);
     assert!(output.status.success(), "stderr={}", stderr(&output));
     let out = stdout(&output);
     assert!(out.contains("lm-alpha"), "{out}");

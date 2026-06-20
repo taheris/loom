@@ -2,9 +2,9 @@
 //!
 //! Parses command-line arguments and dispatches to the workflow modules in
 //! `loom-workflow`. The set of subcommands matches the harness specification:
-//! `init`, `status`, `use`, `logs`, `spec`, `loop`, `gate`, and `inbox`.
-//! There is no `sync` or `tune` — Askama compiled
-//! templates make per-project sync unnecessary (see `specs/harness.md`).
+//! `init`, `status`, `use`, `logs`, `spec`, `loop`, `gate`, `inbox`, and
+//! `tune`. There is no `sync` — Askama compiled templates make per-project
+//! sync unnecessary (see `specs/harness.md`).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -322,6 +322,103 @@ struct InboxChatArgs {
     proposal: Option<String>,
 }
 
+#[derive(Debug, clap::Args)]
+struct TuneArgs {
+    #[command(subcommand)]
+    action: Option<TuneAction>,
+}
+
+impl TuneArgs {
+    fn mutates_workspace(&self) -> bool {
+        matches!(
+            &self.action,
+            Some(TuneAction::Skill(args)) if args.creates_proposal()
+        ) || matches!(
+            &self.action,
+            Some(TuneAction::Phase(args)) if args.creates_proposal()
+        ) || matches!(
+            &self.action,
+            Some(TuneAction::Partial(args)) if args.creates_proposal()
+        ) || matches!(
+            &self.action,
+            Some(TuneAction::All(args)) if args.creates_proposal()
+        )
+    }
+}
+
+#[derive(Debug, Subcommand)]
+enum TuneAction {
+    /// List or tune skills.
+    Skill(TuneSurfaceArgs),
+    /// List or tune phase templates.
+    Phase(TuneSurfaceArgs),
+    /// List or tune partial templates.
+    Partial(TuneSurfaceArgs),
+    /// List registered tuning checkers.
+    Checker,
+    /// List or tune every tuneable surface.
+    All(TuneAllArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct TuneSurfaceArgs {
+    /// Proposal level.
+    #[arg(value_enum, value_name = "fast|run|full")]
+    level: Option<TuneLevelArg>,
+    /// Target names to tune after the level.
+    #[arg(value_name = "NAME")]
+    targets: Vec<String>,
+    /// Print the frozen tune plan without creating a proposal.
+    #[arg(long, requires = "level")]
+    dry_run: bool,
+    /// Deterministic checker-plan seed.
+    #[arg(long, value_name = "N", requires = "level")]
+    seed: Option<u64>,
+}
+
+impl TuneSurfaceArgs {
+    fn creates_proposal(&self) -> bool {
+        self.level.is_some() && !self.dry_run
+    }
+}
+
+#[derive(Debug, clap::Args)]
+struct TuneAllArgs {
+    /// Proposal level.
+    #[arg(value_enum, value_name = "fast|run|full")]
+    level: Option<TuneLevelArg>,
+    /// Print the frozen tune plan without creating a proposal.
+    #[arg(long, requires = "level")]
+    dry_run: bool,
+    /// Deterministic checker-plan seed.
+    #[arg(long, value_name = "N", requires = "level")]
+    seed: Option<u64>,
+}
+
+impl TuneAllArgs {
+    fn creates_proposal(&self) -> bool {
+        self.level.is_some() && !self.dry_run
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+enum TuneLevelArg {
+    Fast,
+    Run,
+    Full,
+}
+
+impl From<TuneLevelArg> for loom_tune::checker::Level {
+    fn from(value: TuneLevelArg) -> Self {
+        match value {
+            TuneLevelArg::Fast => Self::Fast,
+            TuneLevelArg::Run => Self::Run,
+            TuneLevelArg::Full => Self::Full,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Initialize the workspace (create `.loom/` config + cache DB).
@@ -419,6 +516,8 @@ enum Command {
     },
     /// Human decision queue for clarifies, blockers, and tune proposals.
     Inbox(InboxArgs),
+    /// Tune skills and templates through isolated proposals.
+    Tune(TuneArgs),
     /// Decompose the deterministic changed specs into the todo work epic.
     Todo {
         /// Override the anchor's `base_commit` for tier-1 detection.
@@ -467,6 +566,7 @@ impl Command {
                 subcommand: Some(GateSubcommand::VerifyMarker(_)),
             } => false,
             Command::Inbox(args) => args.mutates_workspace(),
+            Command::Tune(args) => args.mutates_workspace(),
             Command::Init { .. }
             | Command::UseSpec { .. }
             | Command::Plan { .. }
@@ -483,7 +583,10 @@ impl Command {
 /// `next_help_heading` applies to flags, not subcommands, so the binary
 /// regroups the auto-generated `Commands:` block instead.
 const HELP_GROUPS: &[(&str, &[&str])] = &[
-    ("Workflow", &["plan", "todo", "loop", "gate", "inbox"]),
+    (
+        "Workflow",
+        &["plan", "todo", "loop", "gate", "inbox", "tune"],
+    ),
     ("Inspection", &["status", "logs", "spec"]),
     ("State", &["init", "use", "note"]),
 ];
@@ -498,8 +601,8 @@ fn args_request_top_level_help(args: &[String]) -> bool {
         return true;
     }
     let known_subcommands = [
-        "init", "status", "use", "logs", "spec", "plan", "loop", "gate", "inbox", "todo", "note",
-        "help",
+        "init", "status", "use", "logs", "spec", "plan", "loop", "gate", "inbox", "tune", "todo",
+        "note", "help",
     ];
     for (idx, arg) in args.iter().enumerate() {
         if known_subcommands.contains(&arg.as_str()) {
@@ -678,6 +781,7 @@ fn main() -> ExitCode {
         Command::Inbox(args) => {
             run_inbox(&workspace, args, agent_override).map(|()| ExitCode::SUCCESS)
         }
+        Command::Tune(args) => run_tune(&workspace, args).map(|()| ExitCode::SUCCESS),
         Command::Todo { since } => {
             run_todo(&workspace, since, agent_override).map(|()| ExitCode::SUCCESS)
         }
@@ -701,6 +805,68 @@ fn exit_code_for_gate(gate: &GateOutcome) -> ExitCode {
     match gate {
         GateOutcome::Success(_) | GateOutcome::NoGate { .. } => ExitCode::SUCCESS,
         GateOutcome::Fail(_) => ExitCode::from(1),
+    }
+}
+
+fn run_tune(workspace: &std::path::Path, args: TuneArgs) -> anyhow::Result<()> {
+    let Some(action) = args.action else {
+        print_tune_help()?;
+        return Ok(());
+    };
+    let request = tune_request(action);
+    let runtime = tokio::runtime::Runtime::new()?;
+    let response = runtime.block_on(loom_workflow::tune::run(workspace, request))?;
+    print!("{}", response.render());
+    Ok(())
+}
+
+fn print_tune_help() -> anyhow::Result<()> {
+    let mut cmd = Cli::command();
+    let Some(tune) = cmd.find_subcommand_mut("tune") else {
+        anyhow::bail!("tune subcommand help is unavailable");
+    };
+    let mut tune_help = tune.clone().bin_name("loom tune");
+    tune_help.print_help()?;
+    println!();
+    Ok(())
+}
+
+fn tune_request(action: TuneAction) -> loom_workflow::tune::Request {
+    use loom_workflow::tune::{ListSurface, ProposeRequest, Request, Surface};
+    match action {
+        TuneAction::Skill(args) => tune_surface_request(Surface::Skill, ListSurface::Skill, args),
+        TuneAction::Phase(args) => tune_surface_request(Surface::Phase, ListSurface::Phase, args),
+        TuneAction::Partial(args) => {
+            tune_surface_request(Surface::Partial, ListSurface::Partial, args)
+        }
+        TuneAction::Checker => Request::List(ListSurface::Checker),
+        TuneAction::All(args) => match args.level {
+            Some(level) => Request::Propose(ProposeRequest {
+                surface: Surface::All,
+                level: level.into(),
+                targets: Vec::new(),
+                dry_run: args.dry_run,
+                seed: args.seed,
+            }),
+            None => Request::List(ListSurface::All),
+        },
+    }
+}
+
+fn tune_surface_request(
+    surface: loom_workflow::tune::Surface,
+    list: loom_workflow::tune::ListSurface,
+    args: TuneSurfaceArgs,
+) -> loom_workflow::tune::Request {
+    match args.level {
+        Some(level) => loom_workflow::tune::Request::Propose(loom_workflow::tune::ProposeRequest {
+            surface,
+            level: level.into(),
+            targets: args.targets,
+            dry_run: args.dry_run,
+            seed: args.seed,
+        }),
+        None => loom_workflow::tune::Request::List(list),
     }
 }
 
@@ -3344,7 +3510,7 @@ fn run_inbox(
     agent_override: Option<AgentKind>,
 ) -> anyhow::Result<()> {
     match args.action {
-        None => run_inbox_list(workspace, resolve_inbox_filters(args.filters)?),
+        None => print_inbox_help(),
         Some(InboxAction::List(list)) => {
             run_inbox_list(workspace, merge_inbox_filters(args.filters, list.filters)?)
         }
@@ -3366,17 +3532,21 @@ fn run_inbox(
     }
 }
 
+fn print_inbox_help() -> anyhow::Result<()> {
+    let mut cmd = Cli::command();
+    let Some(inbox) = cmd.find_subcommand_mut("inbox") else {
+        anyhow::bail!("inbox subcommand help is unavailable");
+    };
+    let mut inbox_help = inbox.clone().bin_name("loom inbox");
+    inbox_help.print_help()?;
+    println!();
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 struct ResolvedInboxFilters {
     spec: Option<SpecLabel>,
     kind: Option<InboxKind>,
-}
-
-fn resolve_inbox_filters(filters: InboxFilterArgs) -> anyhow::Result<ResolvedInboxFilters> {
-    Ok(ResolvedInboxFilters {
-        spec: filters.spec.as_deref().map(SpecLabel::new),
-        kind: filters.kind.map(InboxKind::from),
-    })
 }
 
 fn merge_inbox_filters(

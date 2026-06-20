@@ -24,7 +24,8 @@
 //! - `bd list --json [--label-any=<L> …] [--parent=<id>]`
 //! - `bd ready --json [--limit=N] [--label=<L>] [--exclude-label=<L> …]`
 //! - `bd show <id> --json`
-//! - `bd update <id> [--description <t>] [--notes <t>] [--remove-label <l>] [--add-label <l>] [--status <s>] [--priority <n>] [--claim]`
+//! - `bd create --silent --title <t> --description <t> [--type <t>] [--priority <n>] [--labels <csv>] [--metadata <json>]`
+//! - `bd update <id> [--description <t>] [--notes <t>] [--remove-label <l>] [--add-label <l>] [--status <s>] [--priority <n>] [--claim] [--set-metadata <k=v>]`
 //! - `bd close <id>` — sets status to closed; recorded in the invocation log
 //!   so the verdict-gate "no driver-side bd close" assertion can find it
 //!
@@ -71,6 +72,7 @@ fn main() -> ExitCode {
         "list" => cmd_list(&state_dir, rest),
         "ready" => cmd_ready(&state_dir, rest),
         "show" => cmd_show(&state_dir, rest),
+        "create" => cmd_create(&state_dir, rest),
         "update" => cmd_update(&state_dir, rest),
         "close" => cmd_close(&state_dir, rest),
         other => {
@@ -356,6 +358,109 @@ fn cmd_show(state_dir: &Path, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn cmd_create(state_dir: &Path, args: &[String]) -> ExitCode {
+    let mut title = String::new();
+    let mut description = String::new();
+    let mut issue_type = "task".to_owned();
+    let mut priority = "2".to_owned();
+    let mut parent: Option<String> = None;
+    let mut labels: Vec<String> = Vec::new();
+    let mut metadata = serde_json::json!({});
+    let mut silent = false;
+    let mut i = 0;
+    while i < args.len() {
+        let flag = &args[i];
+        match flag.as_str() {
+            "--silent" => {
+                silent = true;
+                i += 1;
+            }
+            "--title" => {
+                title = args.get(i + 1).cloned().unwrap_or_default();
+                i += 2;
+            }
+            "--description" => {
+                description = args.get(i + 1).cloned().unwrap_or_default();
+                i += 2;
+            }
+            "--type" => {
+                issue_type = args.get(i + 1).cloned().unwrap_or_default();
+                i += 2;
+            }
+            "--priority" => {
+                priority = args.get(i + 1).cloned().unwrap_or_default();
+                i += 2;
+            }
+            "--parent" => {
+                parent = Some(args.get(i + 1).cloned().unwrap_or_default());
+                i += 2;
+            }
+            "--labels" => {
+                labels = args
+                    .get(i + 1)
+                    .map(|raw| {
+                        raw.split(',')
+                            .filter(|label| !label.is_empty())
+                            .map(ToOwned::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                i += 2;
+            }
+            "--metadata" => {
+                let raw = args.get(i + 1).cloned().unwrap_or_default();
+                metadata = serde_json::from_str(&raw).unwrap_or_else(
+                    |err| serde_json::json!({"bd_shim.metadata_error": err.to_string()}),
+                );
+                i += 2;
+            }
+            other => {
+                eprintln!("bd-shim: create: unsupported flag {other}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    if !silent {
+        eprintln!("bd-shim: create: --silent required (production code always passes it)");
+        return ExitCode::from(2);
+    }
+    let id = next_create_id(state_dir);
+    let bead_dir = state_dir.join(&id);
+    fs::create_dir_all(&bead_dir).expect("mkdir bead dir");
+    fs::write(bead_dir.join("title"), title).expect("write title");
+    fs::write(bead_dir.join("description"), description).expect("write description");
+    fs::write(bead_dir.join("status"), "open").expect("write status");
+    fs::write(bead_dir.join("priority"), priority).expect("write priority");
+    fs::write(bead_dir.join("issue_type"), issue_type).expect("write issue_type");
+    fs::write(bead_dir.join("labels"), labels.join("\n")).expect("write labels");
+    if let Some(parent) = parent {
+        fs::write(bead_dir.join("parent"), parent).expect("write parent");
+    }
+    fs::write(
+        bead_dir.join("metadata.json"),
+        serde_json::to_string(&metadata).expect("metadata json"),
+    )
+    .expect("write metadata");
+    println!("{id}");
+    ExitCode::SUCCESS
+}
+
+fn next_create_id(state_dir: &Path) -> String {
+    if let Ok(id) = env::var("BD_CREATE_ID")
+        && !id.trim().is_empty()
+    {
+        return id;
+    }
+    let mut index = list_bead_ids(state_dir).len() + 1;
+    loop {
+        let id = format!("lm-tune{index}");
+        if !state_dir.join(&id).exists() {
+            return id;
+        }
+        index += 1;
+    }
+}
+
 fn cmd_update(state_dir: &Path, args: &[String]) -> ExitCode {
     let Some(id) = args.first() else {
         eprintln!("bd-shim: update: bead id required");
@@ -412,6 +517,11 @@ fn cmd_update(state_dir: &Path, args: &[String]) -> ExitCode {
                 fs::write(bead_dir.join("status"), "in_progress").expect("claim status");
                 i += 1;
             }
+            "--set-metadata" => {
+                let val = args.get(i + 1).cloned().unwrap_or_default();
+                set_metadata_value(&bead_dir, &val);
+                i += 2;
+            }
             other => {
                 eprintln!("bd-shim: update: unsupported flag {other}");
                 return ExitCode::from(2);
@@ -419,6 +529,24 @@ fn cmd_update(state_dir: &Path, args: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+fn set_metadata_value(bead_dir: &Path, assignment: &str) {
+    let (key, value) = assignment.split_once('=').unwrap_or((assignment, ""));
+    let path = bead_dir.join("metadata.json");
+    let current = fs::read_to_string(&path).unwrap_or_default();
+    let mut metadata = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&current)
+        .unwrap_or_default();
+    metadata.insert(key.to_owned(), parse_metadata_value(value));
+    fs::write(
+        path,
+        serde_json::to_string(&serde_json::Value::Object(metadata)).expect("metadata json"),
+    )
+    .expect("write metadata");
+}
+
+fn parse_metadata_value(value: &str) -> serde_json::Value {
+    serde_json::from_str(value).unwrap_or_else(|_| serde_json::Value::String(value.to_owned()))
 }
 
 fn cmd_close(state_dir: &Path, args: &[String]) -> ExitCode {

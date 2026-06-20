@@ -1,6 +1,5 @@
 ---
 source: crates/loom/tests/cli_help.rs
-assertion_line: 55
 expression: "loom_help(&[])"
 ---
 Loom harness CLI
@@ -13,6 +12,7 @@ Workflow:
   loop    Execute task beads from explicit work roots or the active work epic
   gate    Quality gate — annotation-dispatched verifiers and LLM rubric
   inbox   Human decision queue for clarifies, blockers, and tune proposals
+  tune    Tune skills and templates through isolated proposals
 
 Inspection:
   status  Print cache health and work-epic status

@@ -739,6 +739,65 @@ impl GitClient {
         .await
     }
 
+    /// Create an isolated tune proposal checkout at `destination`.
+    pub async fn create_tune_checkout(
+        &self,
+        destination: &Path,
+        base: &str,
+        branch: &str,
+    ) -> Result<(), GitError> {
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        run_git(
+            &self.workdir,
+            self.clock.as_ref(),
+            [
+                OsString::from("clone"),
+                OsString::from("--no-local"),
+                OsString::from("--no-checkout"),
+                self.workdir.clone().into(),
+                destination.into(),
+            ],
+            None,
+        )
+        .await?;
+        run_git(
+            destination,
+            self.clock.as_ref(),
+            ["checkout", "-B", branch, base],
+            None,
+        )
+        .await?;
+        run_git(
+            destination,
+            self.clock.as_ref(),
+            ["config", "user.name", "Loom Tune"],
+            None,
+        )
+        .await?;
+        run_git(
+            destination,
+            self.clock.as_ref(),
+            ["config", "user.email", "loom-tune@example.invalid"],
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Commit every current worktree change, permitting an empty candidate.
+    pub async fn commit_all_allow_empty(&self, message: &str) -> Result<(), GitError> {
+        run_git(&self.workdir, self.clock.as_ref(), ["add", "--all"], None).await?;
+        run_git(
+            &self.workdir,
+            self.clock.as_ref(),
+            ["commit", "--allow-empty", "-m", message],
+            None,
+        )
+        .await
+    }
+
     /// Force-delete the named branch in the loom workspace. Used by the
     /// parallel batch driver to reclaim the per-bead branch after agent
     /// failure (the worktree has already been removed by
