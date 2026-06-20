@@ -2,8 +2,14 @@ _:
 
 {
   perSystem =
-    { pkgs, loom, ... }:
+    {
+      pkgs,
+      loom,
+      sandbox,
+      ...
+    }:
     let
+      inherit (builtins) filter length;
       inherit (loom)
         bin
         cargoArtifacts
@@ -37,6 +43,25 @@ _:
         # for a git-less build sandbox: the source artifact has no `.git`,
         checkPhaseCargoCommand = "loom gate check --tree";
       };
+
+      wrixProfilePackages = filter (pkg: (pkg.meta.mainProgram or "") == "wrix") sandbox.profile.packages;
+      sandboxProfileEnv =
+        assert length wrixProfilePackages == 1;
+        pkgs.buildEnv {
+          name = "loom-sandbox-profile-env-check";
+          paths = wrixProfilePackages;
+          pathsToLink = [ "/bin" ];
+        };
+
+      sandbox-profile-env-has-wrix = pkgs.runCommand "sandbox-profile-env-has-wrix" { } ''
+        set -euo pipefail
+        if [[ ! -x ${sandboxProfileEnv}/bin/wrix ]]; then
+          printf 'expected sandbox profile PATH to include real wrix at %s/bin/wrix\n' ${sandboxProfileEnv} >&2
+          exit 1
+        fi
+        ${sandboxProfileEnv}/bin/wrix beads --help | grep -q 'push'
+        touch "$out"
+      '';
 
       fakePodman = pkgs.writeShellScript "podman" ''
         set -euo pipefail
@@ -77,7 +102,11 @@ _:
     in
     {
       checks = {
-        inherit loom-gate-check test-sandbox-skips-unsupported-runtime;
+        inherit
+          loom-gate-check
+          sandbox-profile-env-has-wrix
+          test-sandbox-skips-unsupported-runtime
+          ;
       };
     };
 }

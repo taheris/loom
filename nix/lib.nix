@@ -22,6 +22,7 @@ in
       pkgs,
       wrixLib,
       loomBin,
+      extraPackages ? [ ],
       profiles ? { inherit (wrixLib.profiles) base rust python; },
       # Back-compat for callers that previously selected the single runtime via
       # `agent` and optionally overrode its package via `agentPkg`. The manifest
@@ -56,7 +57,7 @@ in
           {
             inherit profile;
             agent = runtime;
-            packages = [ loomBin ];
+            packages = [ loomBin ] ++ extraPackages;
           }
           // optionalAttrs (agentPkgOverride != null) {
             agentPkg = agentPkgOverride;

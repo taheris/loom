@@ -37,6 +37,7 @@ in
         profiles ? { inherit (wrixLib.profiles) base rust python; },
         agent ? "pi",
         agentPkg ? null,
+        extraPackages ? [ ],
         loomBin ?
           (loomLib.mkLoom {
             inherit
@@ -59,6 +60,7 @@ in
           profiles
           agent
           agentPkg
+          extraPackages
           loomBin
           ;
       };
@@ -68,10 +70,18 @@ in
     {
       inputs',
       pkgs,
+      system,
       ...
     }:
     let
       wrixLib = inputs'.wrix.legacyPackages.lib;
+      wrixCli =
+        (import "${inputs.wrix}/lib" {
+          inherit pkgs system;
+          linuxPkgs = pkgs;
+          inherit (inputs) crane fenix;
+          inherit (pkgs) treefmt;
+        }).rustPackage.wrix;
       piCodingAgent = pkgs.pi-coding-agent;
 
       # The same file + hash pin the toolchain for the wrix sandbox
@@ -102,6 +112,7 @@ in
         agentPkg = piCodingAgent;
         packages = [
           loom.bin
+          wrixCli
         ];
       };
 
@@ -111,6 +122,7 @@ in
         agentPkg = piCodingAgent;
         packages = [
           loom.bin
+          wrixCli
           pkgs.podman
         ];
       };
@@ -118,6 +130,7 @@ in
       profileManifest = loomLib.mkProfileManifest {
         inherit pkgs wrixLib;
         loomBin = loom.bin;
+        extraPackages = [ wrixCli ];
         agentPkg = piCodingAgent;
       };
 
