@@ -20,7 +20,7 @@ use loom_driver::bd::{BdClient, Bead, CommandRunner, ListOpts, UpdateOpts};
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{AgentObserversConfig, LoomConfig, Phase};
 use loom_driver::git::GitClient;
-use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
+use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::lock::{LockGuard, LockManager};
 use loom_driver::logging::{LogSink, sweep_retention_at};
 use loom_driver::profile_manifest::ProfileImageManifest;
@@ -2319,10 +2319,14 @@ fn run_loop_cmd(
 
     let gc_git = GitClient::open(workspace)?;
     let gc_workspace = workspace.to_path_buf();
-    let gc_molecule = runtime.block_on(async {
-        let bd = BdClient::new();
-        loom_workflow::resolve::resolve_open_epic(&bd, &label).await
-    })?;
+    let gc_molecule = match &root.kind {
+        LoopWorkRootKind::Epic => Some(MoleculeId::new(root.id.as_str())),
+        LoopWorkRootKind::Task => root
+            .bead
+            .parent
+            .as_ref()
+            .map(|parent| MoleculeId::new(parent.as_str())),
+    };
     if let Some(gc_molecule) = gc_molecule {
         runtime.block_on(async move {
             let bd = BdClient::new();
@@ -2345,13 +2349,14 @@ fn run_loop_cmd(
     }
 
     if !parallel.is_one() {
-        if matches!(root.kind, LoopWorkRootKind::Task) {
+        if matches!(&root.kind, LoopWorkRootKind::Task) {
             anyhow::bail!("loom loop --parallel does not accept task bead roots");
         }
         let _guard = work_root_guard;
         let parallel_n = parallel.get();
         let workspace_buf = workspace.to_path_buf();
         let label_for_async = label.clone();
+        let ready_parent_for_async = root.ready_parent.clone();
         let manifest_for_async = Arc::clone(&manifest);
         let cli_profile_for_async = cli_profile.clone();
         let phase_default_for_async = phase_default.clone();
@@ -2363,6 +2368,7 @@ fn run_loop_cmd(
             run_parallel_loop(
                 workspace_buf,
                 label_for_async,
+                ready_parent_for_async,
                 parallel_n,
                 kind,
                 shutdown_grace,
@@ -2382,7 +2388,7 @@ fn run_loop_cmd(
         return Ok(outcome);
     }
 
-    let mode = match root.kind {
+    let mode = match &root.kind {
         LoopWorkRootKind::Task => LoopMode::Once,
         LoopWorkRootKind::Epic => LoopMode::Continuous,
     };
@@ -2466,8 +2472,12 @@ fn run_loop_cmd(
         .with_agent_runtime(kind)
         .with_loom_config(loom_cfg_for_run)
         .with_phase_log_root(logs_root_for_controller);
-        if let LoopWorkRootKind::Task = root.kind {
-            controller = controller.with_fixed_queue(std::collections::VecDeque::from([root.bead]));
+        if let LoopWorkRootKind::Task = &root.kind {
+            controller =
+                controller.with_fixed_queue(std::collections::VecDeque::from([root.bead.clone()]));
+        }
+        if let Some(parent) = root.ready_parent.clone() {
+            controller = controller.with_ready_parent(parent);
         }
         if let Some(guard) = work_root_guard {
             controller = controller.with_handoff_lock(guard);
@@ -2522,6 +2532,7 @@ fn parallel_park_update(label: &str, notes: Option<String>) -> UpdateOpts {
 async fn run_parallel_loop(
     workspace: PathBuf,
     label: SpecLabel,
+    ready_parent: Option<BeadId>,
     parallel_n: u32,
     kind: AgentKind,
     shutdown_grace: Option<Duration>,
@@ -2538,7 +2549,10 @@ async fn run_parallel_loop(
     let beads = bd
         .ready(loom_driver::bd::ReadyOpts {
             limit: Some(parallel_n),
-            label: Some(format!("spec:{}", label.as_str())),
+            label: ready_parent
+                .is_none()
+                .then(|| format!("spec:{}", label.as_str())),
+            parent: ready_parent,
             // Dedup of clarify/blocked beads relies on the paired
             // `status=blocked` transition that the apply paths write
             // alongside the label. `bd ready` natively excludes
@@ -3648,6 +3662,7 @@ struct LoopWorkRoot {
     label: SpecLabel,
     kind: LoopWorkRootKind,
     bead: Bead,
+    ready_parent: Option<BeadId>,
 }
 
 async fn resolve_loop_work_root<R: CommandRunner>(
@@ -3707,16 +3722,18 @@ async fn resolve_explicit_loop_work_root<R: CommandRunner>(
 }
 
 fn loop_work_root_from_bead(bead: Bead, kind: LoopWorkRootKind) -> anyhow::Result<LoopWorkRoot> {
-    let label = spec_label_from_work_root(&bead)?;
+    let label = primary_spec_label_from_work_root(&bead)?;
+    let ready_parent = matches!(&kind, LoopWorkRootKind::Epic).then(|| bead.id.clone());
     Ok(LoopWorkRoot {
         id: bead.id.clone(),
         label,
         kind,
         bead,
+        ready_parent,
     })
 }
 
-fn spec_label_from_work_root(root: &Bead) -> anyhow::Result<SpecLabel> {
+fn primary_spec_label_from_work_root(root: &Bead) -> anyhow::Result<SpecLabel> {
     let mut labels = root
         .labels
         .iter()
@@ -3725,27 +3742,10 @@ fn spec_label_from_work_root(root: &Bead) -> anyhow::Result<SpecLabel> {
     labels.sort_by(|a, b| a.as_str().cmp(b.as_str()));
     labels.dedup_by(|a, b| a.as_str() == b.as_str());
 
-    match labels.len() {
-        1 => labels
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("work root {} has no spec label", root.id)),
-        0 => Err(anyhow::anyhow!(
-            "work root {} has no spec:<label> label",
-            root.id
-        )),
-        _ => {
-            let declared = labels
-                .iter()
-                .map(SpecLabel::as_str)
-                .collect::<Vec<_>>()
-                .join(", ");
-            Err(anyhow::anyhow!(
-                "work root {} has multiple spec labels ({declared}); pass one root with a single spec label",
-                root.id
-            ))
-        }
-    }
+    labels
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("work root {} has no spec:<label> label", root.id))
 }
 
 fn resolve_spec_label(workspace: &Path, spec: Option<String>) -> anyhow::Result<SpecLabel> {
@@ -3880,19 +3880,21 @@ mod tests {
     #[tokio::test]
     async fn loop_accepts_positional_work_roots_and_defaults_to_active_epic() -> anyhow::Result<()>
     {
-        let active = r#"[{"id":"lm-active","title":"active","status":"open","priority":2,"issue_type":"epic","labels":["loom:active","spec:harness"],"metadata":{}}]"#;
-        let task = r#"[{"id":"lm-task","title":"task","status":"open","priority":2,"issue_type":"task","labels":["spec:gate"],"metadata":{}}]"#;
+        let active = r#"[{"id":"lm-active","title":"active","status":"open","priority":2,"issue_type":"epic","labels":["loom:active","spec:agent","spec:harness"],"metadata":{}}]"#;
+        let task = r#"[{"id":"lm-task","title":"task","status":"open","priority":2,"issue_type":"task","labels":["spec:gate","spec:harness"],"metadata":{}}]"#;
         let bd = BdClient::with_runner(ScriptedRunner::new([active, task]));
 
         let default_root = resolve_loop_work_root(&bd, Vec::new()).await?;
         assert_eq!(default_root.id, BeadId::new("lm-active")?);
-        assert_eq!(default_root.label, SpecLabel::new("harness"));
+        assert_eq!(default_root.label, SpecLabel::new("agent"));
         assert_eq!(default_root.kind, LoopWorkRootKind::Epic);
+        assert_eq!(default_root.ready_parent, Some(BeadId::new("lm-active")?));
 
         let task_root = resolve_loop_work_root(&bd, vec!["lm-task".to_string()]).await?;
         assert_eq!(task_root.id, BeadId::new("lm-task")?);
         assert_eq!(task_root.label, SpecLabel::new("gate"));
         assert_eq!(task_root.kind, LoopWorkRootKind::Task);
+        assert_eq!(task_root.ready_parent, None);
         Ok(())
     }
 

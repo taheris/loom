@@ -115,6 +115,15 @@ fn plan_template_prohibits_bd_writes() -> Result<()> {
 }
 
 #[test]
+fn plan_template_requires_index_rows_for_new_specs() -> Result<()> {
+    let out = plan_ctx().render()?;
+
+    assert!(out.contains("verify every new `specs/<label>.md` file has exactly one"));
+    assert!(out.contains("unindexed specs are invisible to `loom todo`"));
+    Ok(())
+}
+
+#[test]
 fn plan_template_renders_three_plan_stage_checks() -> Result<()> {
     let out = plan_ctx().render()?;
     assert!(out.contains("Plan-Stage Rubric"));

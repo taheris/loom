@@ -152,6 +152,10 @@ where
     /// into durable post-integrate gate logs.
     current_attempt: u32,
     fixed_queue: Option<VecDeque<Bead>>,
+    /// Optional work-epic scope for active/explicit epic loops. When set,
+    /// ready lookup is constrained to descendants of this work root rather
+    /// than to a single `spec:<label>` so multi-spec todo batches can run.
+    ready_parent: Option<BeadId>,
 }
 
 impl<S, F, R: CommandRunner> ProductionAgentLoopController<S, F, R>
@@ -192,11 +196,17 @@ where
             pre_integration_tip: None,
             current_attempt: 0,
             fixed_queue: None,
+            ready_parent: None,
         }
     }
 
     pub fn with_fixed_queue(mut self, queue: VecDeque<Bead>) -> Self {
         self.fixed_queue = Some(queue);
+        self
+    }
+
+    pub fn with_ready_parent(mut self, parent: BeadId) -> Self {
+        self.ready_parent = Some(parent);
         self
     }
 
@@ -331,7 +341,11 @@ where
             .bd
             .ready(ReadyOpts {
                 limit: Some(8),
-                label: Some(self.spec_label_filter()),
+                label: self
+                    .ready_parent
+                    .is_none()
+                    .then(|| self.spec_label_filter()),
+                parent: self.ready_parent.clone(),
                 exclude_label: vec![],
             })
             .await?;
@@ -2735,6 +2749,52 @@ mod tests {
         assert!(
             !argv.iter().any(|a| a.starts_with("--exclude-label")),
             "next_ready_bead must NOT forward --exclude-label; argv={argv:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn next_ready_bead_with_ready_parent_omits_spec_filter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let scripted = ScriptedBd::new([ok_stdout(b"[]\n")]);
+        let calls = scripted.calls_handle();
+        let bd = BdClient::with_runner(scripted);
+        let mut controller = ProductionAgentLoopController::new(
+            bd,
+            SpecLabel::new("agent"),
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        )
+        .with_ready_parent(BeadId::new("lm-root").expect("valid bead id"));
+        let _ = controller.next_ready_bead().await.expect("ready ok");
+        let captured = calls.lock().unwrap();
+        assert_eq!(captured.len(), 1, "exactly one bd invocation expected");
+        let argv: Vec<String> = captured[0]
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            argv.iter().any(|arg| arg == "--parent=lm-root"),
+            "ready lookup must be scoped to the active work epic: {argv:?}",
+        );
+        assert!(
+            !argv.iter().any(|arg| arg.starts_with("--label=")),
+            "multi-spec work epic lookup must not narrow by spec: {argv:?}",
         );
     }
 

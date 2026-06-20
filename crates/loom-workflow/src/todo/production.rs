@@ -736,13 +736,14 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         if matches!(marker, Some(ExitSignal::Complete | ExitSignal::Noop)) {
             return Err(TodoError::GenericTodoMarker);
         }
+        if outcome.exit_code != 0 {
+            debug!(exit_code = outcome.exit_code, marker = ?marker, "loom todo: agent exited before finalizing success");
+            return Err(TodoError::MissingExitSignal);
+        }
         let Some(success) = todo_success else {
             debug!(exit_code = outcome.exit_code, marker = ?marker, "loom todo: no success payload to finalize");
-            return Ok(TodoRecord::default());
+            return Err(TodoError::MissingExitSignal);
         };
-        if outcome.exit_code != 0 {
-            return Ok(TodoRecord::default());
-        }
         if let Err(err) = self.validate_success(success).await {
             if let TodoError::TodoValidation { detail } = &err {
                 self.record_validation_failure(detail).await?;
@@ -755,7 +756,46 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
 
 fn parse_spec_index(workspace: &Path) -> Result<Vec<IndexedSpec>, TodoError> {
     let content = std::fs::read_to_string(workspace.join("docs/README.md"))?;
-    parse_spec_index_content(&content)
+    let indexed = parse_spec_index_content(&content)?;
+    cross_check_spec_tree(workspace, &indexed)?;
+    Ok(indexed)
+}
+
+fn cross_check_spec_tree(workspace: &Path, indexed: &[IndexedSpec]) -> Result<(), TodoError> {
+    let indexed_paths = indexed
+        .iter()
+        .map(|row| row.spec_path.as_str())
+        .collect::<HashSet<_>>();
+    for row in indexed {
+        if !workspace.join(&row.spec_path).is_file() {
+            return Err(TodoError::SpecIndex {
+                detail: format!(
+                    "indexed spec `{}` points to missing file `{}`",
+                    row.label, row.spec_path
+                ),
+            });
+        }
+    }
+    let specs_dir = workspace.join("specs");
+    for entry in std::fs::read_dir(&specs_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let spec_path = format!("specs/{file_name}");
+        if !indexed_paths.contains(spec_path.as_str()) {
+            return Err(TodoError::SpecIndex {
+                detail: format!(
+                    "spec file `{spec_path}` is not listed in `docs/README.md`; add a spec index row so `loom todo` can discover it"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn parse_spec_index_content(content: &str) -> Result<Vec<IndexedSpec>, TodoError> {

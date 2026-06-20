@@ -199,7 +199,7 @@ impl<R: CommandRunner> BdClient<R> {
         Ok(())
     }
 
-    /// `bd ready --json [--limit=N] [--label=<label>] [--exclude-label=<label>...]`
+    /// `bd ready --json [--limit=N] [--label=<label>] [--parent=<id>] [--exclude-label=<label>...]`
     /// — beads ready to work (open, no active blockers). Step (1) of the
     /// parallel batch driver: pulls up to `limit` candidates per batch.
     pub async fn ready(&self, opts: ReadyOpts) -> Result<Vec<Bead>, BdError> {
@@ -209,6 +209,9 @@ impl<R: CommandRunner> BdClient<R> {
         }
         if let Some(label) = opts.label {
             args.push(format!("--label={label}").into());
+        }
+        if let Some(parent) = opts.parent {
+            args.push(format!("--parent={parent}").into());
         }
         for label in opts.exclude_label {
             args.push(format!("--exclude-label={label}").into());
@@ -339,13 +342,15 @@ pub struct ListOpts {
 
 /// Filters accepted by `bd ready`. `limit` caps the result count
 /// (`--limit=N`); the parallel batch driver uses it to pull at most N ready
-/// beads per batch. `exclude_label` forwards each entry as a separate
-/// `--exclude-label=<L>` flag — the run loop uses it to skip beads parked
-/// for human resolution (`loom:clarify`, `loom:blocked`).
+/// beads per batch. `label` narrows by `spec:<label>` for legacy
+/// spec-scoped queues; `parent` narrows to a work epic's descendants.
+/// `exclude_label` forwards each entry as a separate `--exclude-label=<L>`
+/// flag for callers that need upstream label exclusion.
 #[derive(Debug, Clone, Default)]
 pub struct ReadyOpts {
     pub limit: Option<u32>,
     pub label: Option<String>,
+    pub parent: Option<BeadId>,
     pub exclude_label: Vec<String>,
 }
 
@@ -881,6 +886,7 @@ mod tests {
             .ready(ReadyOpts {
                 limit: Some(4),
                 label: Some("spec:harness".into()),
+                parent: None,
                 exclude_label: Vec::new(),
             })
             .await?;
@@ -897,10 +903,30 @@ mod tests {
         Ok(())
     }
 
-    /// FR1 gate: the run loop must not re-dispatch beads parked for human
-    /// resolution. `ReadyOpts.exclude_label` forwards each entry as a
-    /// repeated `--exclude-label=<label>` flag so `bd ready` filters them
-    /// upstream — the loop never sees them.
+    #[tokio::test]
+    async fn ready_forwards_parent_filter() -> Result<()> {
+        let runner = CapturingRunner::new([ok(b"[]")]);
+        let client = BdClient::with_runner(runner);
+        client
+            .ready(ReadyOpts {
+                limit: None,
+                label: None,
+                parent: Some(BeadId::new("lm-parent")?),
+                exclude_label: Vec::new(),
+            })
+            .await?;
+        let argv = argv_of(&client.runner, 0);
+        assert_eq!(
+            argv,
+            vec![
+                "ready".to_string(),
+                "--json".into(),
+                "--parent=lm-parent".into(),
+            ]
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn ready_excludes_clarify_and_blocked_labels() -> Result<()> {
         let runner = CapturingRunner::new([ok(b"[]")]);
@@ -909,6 +935,7 @@ mod tests {
             .ready(ReadyOpts {
                 limit: Some(1),
                 label: Some("spec:harness".into()),
+                parent: None,
                 exclude_label: vec!["loom:clarify".into(), "loom:blocked".into()],
             })
             .await?;
@@ -948,6 +975,7 @@ mod tests {
             .ready(ReadyOpts {
                 limit: Some(2),
                 label: None,
+                parent: None,
                 exclude_label: Vec::new(),
             })
             .await?;

@@ -51,7 +51,7 @@ pub enum TodoError {
     /// LOOM_TODO validation failed: {detail}
     TodoValidation { detail: String },
 
-    /// agent supplied no exit signal — neither LOOM_COMPLETE nor LOOM_BLOCKED observed before session ended
+    /// todo agent supplied no terminal signal — expected a final `LOOM_TODO: <json>` success payload or a worker self-report marker
     MissingExitSignal,
 
     /// agent reported LOOM_BLOCKED: {reason}

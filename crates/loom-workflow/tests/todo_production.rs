@@ -378,6 +378,28 @@ async fn todo_preflight_discovers_active_inactive_and_new_specs() -> Result<()> 
 }
 
 #[tokio::test]
+async fn todo_preflight_rejects_unindexed_spec_file() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (_base, _head) = init_workspace(dir.path())?;
+    std::fs::write(dir.path().join("specs/services.md"), "# Services\n")?;
+    let mut ctrl = controller(dir.path(), CapturingRunner::new(Vec::<RunOutput>::new()))?;
+
+    let err = match ctrl.build_session().await {
+        Ok(_) => return Err(anyhow!("unindexed spec file was accepted")),
+        Err(err) => err,
+    };
+
+    match err {
+        TodoError::SpecIndex { detail } => {
+            assert!(detail.contains("specs/services.md"), "detail: {detail}");
+            assert!(detail.contains("docs/README.md"), "detail: {detail}");
+        }
+        other => return Err(anyhow!("expected SpecIndex, got {other:?}")),
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn generic_todo_marker_is_rejected_without_advancing() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (base, head) = init_workspace(dir.path())?;
@@ -401,6 +423,51 @@ async fn generic_todo_marker_is_rejected_without_advancing() -> Result<()> {
     };
 
     assert!(matches!(err, TodoError::GenericTodoMarker));
+    Ok(())
+}
+
+#[tokio::test]
+async fn missing_todo_success_marker_fails_without_advancing() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let runner = CapturingRunner::new(preflight_responses(&base, &head));
+    let calls = runner.clone();
+    let mut ctrl = controller(dir.path(), runner)?;
+    let _session = ctrl.build_session().await?;
+
+    let err = match ctrl
+        .record_outcome(
+            &SessionOutcome {
+                exit_code: 0,
+                cost_usd: None,
+            },
+            None,
+            None,
+        )
+        .await
+    {
+        Ok(_) => return Err(anyhow!("missing LOOM_TODO marker was accepted")),
+        Err(err) => err,
+    };
+
+    assert!(matches!(err, TodoError::MissingExitSignal));
+    let updates = calls
+        .calls()?
+        .into_iter()
+        .filter(|argv| argv.first().is_some_and(|arg| arg == "update"))
+        .collect::<Vec<_>>();
+    assert!(
+        updates
+            .iter()
+            .all(|argv| !argv.iter().any(|arg| arg == "--set-metadata")),
+        "no cursor writes on missing marker: {updates:?}",
+    );
+    assert!(
+        updates
+            .iter()
+            .all(|argv| !argv.iter().any(|arg| arg == "loom:active")),
+        "active state unchanged on missing marker: {updates:?}",
+    );
     Ok(())
 }
 
