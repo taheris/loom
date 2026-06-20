@@ -15,21 +15,29 @@
 
 let
   inherit (pkgs) lib;
+  inherit (lib)
+    cleanSourceWith
+    concatStringsSep
+    hasInfix
+    hasSuffix
+    mapAttrsToList
+    ;
 
   fenixPkgs = fenix.packages.${pkgs.stdenv.hostPlatform.system};
   resolvedToolchain =
     if toolchain != null then toolchain else fenixPkgs.combine [ fenixPkgs.stable.defaultToolchain ];
   craneLib = (crane.mkLib pkgs).overrideToolchain (_: resolvedToolchain);
 
-  # Keep templates/ and snapshot files alongside the Cargo workspace —
-  # crane's default filter would exclude them.
+  # Keep template assets, built-in skill packages, and snapshot files
+  # alongside the Cargo workspace — crane's default filter would exclude them.
   srcFilter =
     path: type:
     (craneLib.filterCargoSources path type)
-    || (lib.hasInfix "/loom-templates/templates/" path)
-    || (lib.hasSuffix ".snap" path);
+    || (hasInfix "/loom-templates/templates/" path)
+    || (hasInfix "/loom-skills/builtin/" path)
+    || (hasSuffix ".snap" path);
 
-  cleanedSrc = lib.cleanSourceWith {
+  cleanedSrc = cleanSourceWith {
     inherit src;
     filter = srcFilter;
   };
@@ -68,8 +76,8 @@ let
       cp -r ${cleanedSrc} $out
       chmod -R u+w $out
     ''
-    + lib.concatStringsSep "\n" (
-      lib.mapAttrsToList (rel: abs: ''
+    + concatStringsSep "\n" (
+      mapAttrsToList (rel: abs: ''
         mkdir -p "$(dirname "$out/${rel}")"
         rm -rf "$out/${rel}"
         cp -r ${abs} "$out/${rel}"
