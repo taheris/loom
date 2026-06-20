@@ -178,6 +178,36 @@ mod tests {
     }
 
     #[test]
+    fn workspace_discovery_skips_loom_builtin_source_packages() {
+        let repo = workspace();
+        let source_path = repo
+            .path()
+            .join("crates/loom-skills/builtin/base/loom-context-before-edit/skill.md");
+        write(
+            &source_path,
+            &skill_markdown(
+                "loom-context-before-edit",
+                "Use when testing built-in source discovery.",
+                "",
+            ),
+        );
+        let report = load_workspace(
+            repo.path(),
+            &[
+                PathBuf::from("crates/loom-skills/src/builtin.rs"),
+                PathBuf::from("crates/loom-skills/builtin/base/loom-context-before-edit/skill.md"),
+            ],
+            &[],
+        )
+        .expect("workspace skills load");
+        assert_eq!(report.set().skills().len(), 0);
+
+        let mut set = builtin::catalog().expect("catalog");
+        set.extend(report.into_set());
+        SkillRegistry::from_set(set).expect("built-in source packages are not duplicated");
+    }
+
+    #[test]
     fn skill_frontmatter_diagnostics_by_source() {
         let repo = workspace();
         write(
