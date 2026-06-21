@@ -25,7 +25,7 @@
 //! - `bd ready --json [--limit=N] [--label=<L>] [--exclude-label=<L> …]`
 //! - `bd show <id> --json`
 //! - `bd create --silent --title <t> --description <t> [--type <t>] [--priority <n>] [--labels <csv>] [--metadata <json>]`
-//! - `bd update <id> [--description <t>] [--notes <t>] [--remove-label <l>] [--add-label <l>] [--status <s>] [--priority <n>] [--claim] [--set-metadata <k=v>]`
+//! - `bd update <id> [--title <t>] [--description <t>] [--notes <t>] [--remove-label <l>] [--add-label <l>] [--status <s>] [--priority <n>] [--claim] [--set-metadata <k=v>]`
 //! - `bd close <id>` — sets status to closed; recorded in the invocation log
 //!   so the verdict-gate "no driver-side bd close" assertion can find it
 //!
@@ -478,6 +478,11 @@ fn cmd_update(state_dir: &Path, args: &[String]) -> ExitCode {
             "--description" => {
                 let val = args.get(i + 1).cloned().unwrap_or_default();
                 fs::write(bead_dir.join("description"), val).expect("write description");
+                i += 2;
+            }
+            "--title" => {
+                let val = args.get(i + 1).cloned().unwrap_or_default();
+                fs::write(bead_dir.join("title"), val).expect("write title");
                 i += 2;
             }
             "--notes" => {

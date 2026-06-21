@@ -168,6 +168,7 @@ pub struct TodoSuccess {
     pub head: GitSha,
     pub fingerprint: TodoFingerprint,
     pub work_epic: BeadId,
+    pub title: NonEmptyString,
     pub specs: NonEmptyVec<TodoSpecSuccess>,
 }
 
@@ -246,6 +247,8 @@ impl TryFrom<RawTodoSuccess> for TodoSuccess {
             }
         })?;
         let work_epic = parse_bead_id(raw.work_epic)?;
+        let title =
+            NonEmptyString::new(raw.title).map_err(|_| ParseTodoSuccessError::EmptyTitle)?;
         let specs = raw
             .specs
             .into_iter()
@@ -256,6 +259,7 @@ impl TryFrom<RawTodoSuccess> for TodoSuccess {
             head,
             fingerprint,
             work_epic,
+            title,
             specs,
         })
     }
@@ -358,6 +362,8 @@ pub enum ParseTodoSuccessError {
     },
     /// invalid spec label in todo success payload
     InvalidSpecLabel { value: String },
+    /// todo success must carry a non-empty work epic title
+    EmptyTitle,
     /// todo success must report at least one spec
     EmptySpecs,
     /// decomposed todo outcome must name at least one bead
@@ -375,6 +381,7 @@ struct RawTodoSuccess {
     head: String,
     fingerprint: String,
     work_epic: String,
+    title: String,
     specs: Vec<RawTodoSpecSuccess>,
 }
 
@@ -407,7 +414,7 @@ mod tests {
 
     fn success_json(outcome: &str) -> String {
         format!(
-            r#"{{"head":"{SHA}","fingerprint":"{FINGERPRINT}","work_epic":"lm-work.1","specs":[{{"label":"templates",{outcome}}}]}}"#
+            r#"{{"head":"{SHA}","fingerprint":"{FINGERPRINT}","work_epic":"lm-work.1","title":"Pin template prompts","specs":[{{"label":"templates",{outcome}}}]}}"#
         )
     }
 
@@ -419,6 +426,7 @@ mod tests {
         assert_eq!(parsed.head.as_str(), SHA);
         assert_eq!(parsed.fingerprint.as_str(), FINGERPRINT);
         assert_eq!(parsed.work_epic.as_str(), "lm-work.1");
+        assert_eq!(parsed.title.as_str(), "Pin template prompts");
         assert_eq!(parsed.specs.len(), 1);
         let spec = &parsed.specs[0];
         assert_eq!(spec.label.as_str(), "templates");
@@ -548,11 +556,20 @@ mod tests {
     #[test]
     fn empty_specs_returns_empty_specs_error() {
         let payload = format!(
-            r#"{{"head":"{SHA}","fingerprint":"{FINGERPRINT}","work_epic":"lm-work.1","specs":[]}}"#
+            r#"{{"head":"{SHA}","fingerprint":"{FINGERPRINT}","work_epic":"lm-work.1","title":"Pin template prompts","specs":[]}}"#
         );
         let err = parse_todo_success(&marker(&payload)).unwrap_err();
 
         assert!(matches!(err, ParseTodoSuccessError::EmptySpecs));
+    }
+
+    #[test]
+    fn empty_title_returns_empty_title_error() {
+        let payload = success_json(r#""outcome":"no-work","reason":"audit""#)
+            .replace("Pin template prompts", "   ");
+        let err = parse_todo_success(&marker(&payload)).unwrap_err();
+
+        assert!(matches!(err, ParseTodoSuccessError::EmptyTitle));
     }
 
     #[test]

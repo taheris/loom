@@ -2340,7 +2340,7 @@ positional ids runs the sole active work epic. It is never consulted by
      with an Options-format diagnostic; Loom never silently ignores
      pending decomposition state.
   8. Otherwise create one new `loom:todo` work epic for the changed
-     set. The work epic is not active.
+     set with a placeholder title. The work epic is not active.
 - **`loom todo` agent handoff** — the prompt contains the preflight
   roster, the work epic id, spec epic ids, diffs, implementation
   notes, and typed criterion evidence. The agent may create child
@@ -2351,13 +2351,15 @@ positional ids runs the sole active work epic. It is never consulted by
   todo. Decision-needed or dead-end exits use `LOOM_CLARIFY` /
   `LOOM_BLOCKED` with the Options Format Contract when applicable.
 - **`loom todo` validation/finalization** — the driver parses
-  `LOOM_TODO`, validates `head`, `TodoFingerprint`, exact changed-spec
-  coverage, bead existence, bead parentage under the work epic, and
-  per-spec outcomes. `Decomposed` outcomes must name a non-empty bead
-  list; `NoWork` outcomes must carry a non-empty reason. Any mismatch
+  `LOOM_TODO`, validates `head`, `TodoFingerprint`, non-empty final
+  work-epic title, exact changed-spec coverage, bead existence, bead
+  parentage under the work epic, and per-spec outcomes. `Decomposed`
+  outcomes must name a non-empty bead list; `NoWork` outcomes must
+  carry a non-empty reason. Any mismatch
   leaves the work epic labelled `loom:todo`, records diagnostics on it,
   advances no cursor, and does not change `loom:active`. A validated
-  handoff finalizes atomically as described above. Cursor advancement
+  handoff applies the `LOOM_TODO.title` to the work epic and finalizes
+  atomically as described above. Cursor advancement
   is all-or-nothing across the changed set and applies to both
   `Decomposed` and `NoWork` outcomes. Every todo run prints a
   driver-authored summary that lists each changed spec and its outcome
@@ -2382,6 +2384,7 @@ pub struct TodoSuccess {
     pub head: GitSha,
     pub fingerprint: TodoFingerprint,
     pub work_epic: BeadId,
+    pub title: NonEmptyString,
     pub specs: Vec<TodoSpecSuccess>,
 }
 
@@ -2397,8 +2400,11 @@ pub enum TodoSpecOutcome {
 }
 ```
 
-`TodoSuccess.specs` contains exactly the preflight changed-spec set —
-no omissions, no extras, no unchanged specs. Initialization is driver
+`TodoSuccess.title` is the final work-epic title the decomposition
+agent judged from the bead set; the driver-created preflight title is a
+placeholder and is not durable. `TodoSuccess.specs` contains exactly the
+preflight changed-spec set — no omissions, no extras, no unchanged specs.
+Initialization is driver
 preflight state, not an agent-reported outcome; the driver summary may
 render "initialized + decomposed" when it created a spec epic and the
 agent reported `Decomposed`.
@@ -3221,17 +3227,18 @@ Criteria.
   [test?](todo_ensures_spec_epics_and_blocks_missing_existing_cursor)
 - `loom todo` creates or reuses one `loom:todo` work epic for the
       preflight changed-spec set and requires a final `LOOM_TODO:`
-      marker whose typed payload covers exactly that set. Generic
-      `LOOM_COMPLETE` / `LOOM_NOOP`, missing rows, malformed JSON,
-      nonexistent beads, beads outside the work epic, or extra/omitted
-      specs fail validation
+      marker whose typed payload includes a non-empty final title and
+      covers exactly that set. Generic `LOOM_COMPLETE` / `LOOM_NOOP`,
+      missing rows, missing/empty title, malformed JSON, nonexistent
+      beads, beads outside the work epic, or extra/omitted specs fail
+      validation
   [test?](todo_success_marker_must_cover_exact_changed_spec_set)
 - Validated `LOOM_TODO` finalization is all-or-nothing across changed
       specs: every changed spec cursor advances to the preflight HEAD
-      (including `NoWork` outcomes), `loom:todo` is removed from the
-      work epic, `loom:active` is applied to it, and previous active
-      state is cleared. Any failure leaves cursors and active state
-      unchanged
+      (including `NoWork` outcomes), `LOOM_TODO.title` is applied to
+      the work epic, `loom:todo` is removed from the work epic,
+      `loom:active` is applied to it, and previous active state is
+      cleared. Any failure leaves cursors and active state unchanged
   [test?](todo_finalization_advances_cursors_and_active_epic_atomically)
 - Missing criterion evidence in `.loom/cache.db` produces typed
       `EvidenceState::Missing` rows in `criterion_status`; it is never
@@ -3825,10 +3832,10 @@ two agent-loop observers.
       inactive/stale specs and brand-new indexed specs regardless of
       `loom:active`
   [test](todo_preflight_discovers_active_inactive_and_new_specs)
-- `loom todo` creates one `loom:todo` work epic before rendering the
-      agent prompt, records `loom.todo_head`, `loom.todo_fingerprint`,
-      and changed spec labels on it, and does not add `loom:active`
-      until validation succeeds
+- `loom todo` creates one `loom:todo` work epic with a placeholder title
+      before rendering the agent prompt, records `loom.todo_head`,
+      `loom.todo_fingerprint`, and changed spec labels on it, and does
+      not add `loom:active` until validation succeeds
   [test?](todo_creates_pending_work_epic_before_agent_prompt)
 - A pre-existing open `loom:todo` work epic with matching head and
       `TodoFingerprint` is reused; multiple matches or non-matching
@@ -3836,12 +3843,13 @@ two agent-loop observers.
   [test](todo_reuses_matching_pending_work_epic_else_blocks)
 - `loom-protocol::todo::parse_todo_success` accepts exactly
       `LOOM_TODO: <json>` final lines and returns typed `TodoSuccess`;
-      malformed JSON, missing fields, empty `Decomposed.beads`, empty
-      `NoWork.reason`, or wrong prefix fail parse
+      malformed JSON, missing fields, empty `title`, empty
+      `Decomposed.beads`, empty `NoWork.reason`, or wrong prefix fail
+      parse
   [test](todo_success_marker_parses_to_typed_protocol)
 - `loom todo` validates `TodoSuccess.head`, `TodoFingerprint`, work
-      epic id, exact changed-spec coverage, bead existence, and bead
-      parentage under the work epic before finalization
+      epic id, final title, exact changed-spec coverage, bead existence,
+      and bead parentage under the work epic before finalization
   [test?](todo_success_validation_rejects_missing_extra_or_misparented_beads)
 - Validated `NoWork` outcomes advance the spec cursor just like
       `Decomposed` outcomes; no-work rows require a non-empty reason
@@ -4007,8 +4015,9 @@ two agent-loop observers.
      the LLM.
      It creates/ensures spec epics, creates or reuses one `loom:todo`
      work epic, renders the changed-spec roster to the todo agent, and
-     accepts success only via a validated `LOOM_TODO:` payload covering
-     exactly that roster. Finalization removes `loom:todo`, applies
+     accepts success only via a validated `LOOM_TODO:` payload carrying
+     a final work-epic title and covering exactly that roster.
+     Finalization applies the title, removes `loom:todo`, applies
      `loom:active`, and advances every changed spec cursor to the
      preflight HEAD all-or-nothing.
    - `loom loop [OPTIONS] [BEAD_OR_EPIC_ID ...]` — execute work. With
@@ -4334,7 +4343,8 @@ two agent-loop observers.
     `.loom/cache.db`; empty cache surfaces as `EvidenceState::Missing`
     rows — staleness is exposed, not papered over. The todo agent's
     only success terminal is `LOOM_TODO: <json>`, parsed by
-    `loom-protocol::todo` and validated against the preflight roster.
+    `loom-protocol::todo` and validated for a final work-epic title plus
+    the preflight roster.
     `LOOM_CLARIFY` from a todo session targets the `loom:todo` work
     epic because the child beads under negotiation may not yet exist.
 

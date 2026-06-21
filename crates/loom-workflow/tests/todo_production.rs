@@ -333,7 +333,7 @@ fn todo_success_with_specs(
     let fingerprint = field(prompt, "Todo fingerprint")?;
     let work_epic = field(prompt, "Work epic")?;
     Ok(parse_todo_success(&format!(
-        "{TODO_SUCCESS_PREFIX}{{\"head\":\"{head}\",\"fingerprint\":\"{fingerprint}\",\"work_epic\":\"{work_epic}\",\"specs\":[{spec_json}]}}"
+        "{TODO_SUCCESS_PREFIX}{{\"head\":\"{head}\",\"fingerprint\":\"{fingerprint}\",\"work_epic\":\"{work_epic}\",\"title\":\"Pin changed spec follow-ups\",\"specs\":[{spec_json}]}}"
     ))?)
 }
 
@@ -420,7 +420,7 @@ async fn todo_preflight_closes_spec_metadata_epics() -> Result<()> {
 }
 
 #[tokio::test]
-async fn todo_work_epic_title_uses_changed_spec_summary() -> Result<()> {
+async fn todo_work_epic_starts_with_placeholder_title() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (base, _head) = init_multi_spec_workspace(dir.path())?;
     let runner = CapturingRunner::new(multi_spec_preflight_responses(&base));
@@ -439,7 +439,7 @@ async fn todo_work_epic_title_uses_changed_spec_summary() -> Result<()> {
         .ok_or_else(|| anyhow!("work epic create call missing: {all_calls:?}"))?;
     assert_eq!(
         flag_value(work_create, "--title"),
-        Some("Implement pending spec changes for alpha, beta, and gamma")
+        Some("Pending todo decomposition")
     );
     Ok(())
 }
@@ -640,6 +640,13 @@ async fn valid_todo_success_sets_active_and_advances_all_cursors() -> Result<()>
         ]
         .map(str::to_string)
     }));
+    assert!(
+        calls.iter().any(|argv| {
+            argv.iter().any(|arg| arg == "--title")
+                && argv.iter().any(|arg| arg == "Pin changed spec follow-ups")
+        }),
+        "finalization must apply the LOOM_TODO title: {calls:?}"
+    );
     assert!(
         calls
             .iter()

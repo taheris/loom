@@ -20,7 +20,7 @@ The audit's role is to discipline the *shape* of the decomposition: which notes 
 
 ### Acceptable session outcomes
 
-A successful decomposition session emits `LOOM_TODO: <json>` with every changed spec represented exactly once:
+A successful decomposition session emits `LOOM_TODO: <json>` with a required final work-epic title and every changed spec represented exactly once:
 
 - **Decomposed.** Use the `Decomposed { beads }` outcome for a spec where you created one or more beads under the injected work epic. For each non-audit bead, cite the evidence that drove its creation in the bead description: the `criterion_status` row you consulted, the file you read that surfaced the gap, and/or the verifier-source observation that showed the target was dishonest.
 - **NoWork.** Use the `NoWork { reason }` outcome only after auditing the changed spec and confirming no implementation change is needed. The reason must name the evidence that made no work safe.

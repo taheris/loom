@@ -137,7 +137,7 @@ The audit's role is to discipline the *shape* of the decomposition: which notes 
 
 ### Acceptable session outcomes
 
-A successful decomposition session emits `LOOM_TODO: <json>` with every changed spec represented exactly once:
+A successful decomposition session emits `LOOM_TODO: <json>` with a required final work-epic title and every changed spec represented exactly once:
 
 - **Decomposed.** Use the `Decomposed { beads }` outcome for a spec where you created one or more beads under the injected work epic. For each non-audit bead, cite the evidence that drove its creation in the bead description: the `criterion_status` row you consulted, the file you read that surfaced the gap, and/or the verifier-source observation that showed the target was dishonest.
 - **NoWork.** Use the `NoWork { reason }` outcome only after auditing the changed spec and confirming no implementation change is needed. The reason must name the evidence that made no work safe.
@@ -321,10 +321,10 @@ scope for those templates.
 A successful `loom todo` session ends with exactly one final line using the typed todo protocol:
 
 ```text
-LOOM_TODO: {"head":"<sha>","fingerprint":"<fingerprint>","work_epic":"<bead-id>","specs":[...]}
+LOOM_TODO: {"head":"<sha>","fingerprint":"<fingerprint>","work_epic":"<bead-id>","title":"<final work epic title>","specs":[...]}
 ```
 
-The JSON shape is `loom-protocol::todo::TodoSuccess`: `head` is the injected `GitSha`, `fingerprint` is the injected `TodoFingerprint`, `work_epic` is the injected `BeadId`, and `specs` is a non-empty list with exactly one entry for each changed spec the driver rendered.
+The JSON shape is `loom-protocol::todo::TodoSuccess`: `head` is the injected `GitSha`, `fingerprint` is the injected `TodoFingerprint`, `work_epic` is the injected `BeadId`, `title` is the required non-empty final title for that work epic, and `specs` is a non-empty list with exactly one entry for each changed spec the driver rendered. The title should summarize the coherent implementation work the child beads represent; do not use driver mechanics or a raw changed-spec list as the title.
 
 Write this line directly as normal assistant text in the final assistant response. Do not generate it via `bash`, `python`, `echo`, `printf`, or any other tool: the driver parses assistant text only and ignores tool output when looking for the terminal marker. Do not wrap the marker in a code fence, and do not add follow-up prose after it.
 

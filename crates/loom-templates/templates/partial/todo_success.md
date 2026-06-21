@@ -3,10 +3,10 @@
 A successful `loom todo` session ends with exactly one final line using the typed todo protocol:
 
 ```text
-LOOM_TODO: {"head":"<sha>","fingerprint":"<fingerprint>","work_epic":"<bead-id>","specs":[...]}
+LOOM_TODO: {"head":"<sha>","fingerprint":"<fingerprint>","work_epic":"<bead-id>","title":"<final work epic title>","specs":[...]}
 ```
 
-The JSON shape is `loom-protocol::todo::TodoSuccess`: `head` is the injected `GitSha`, `fingerprint` is the injected `TodoFingerprint`, `work_epic` is the injected `BeadId`, and `specs` is a non-empty list with exactly one entry for each changed spec the driver rendered.
+The JSON shape is `loom-protocol::todo::TodoSuccess`: `head` is the injected `GitSha`, `fingerprint` is the injected `TodoFingerprint`, `work_epic` is the injected `BeadId`, `title` is the required non-empty final title for that work epic, and `specs` is a non-empty list with exactly one entry for each changed spec the driver rendered. The title should summarize the coherent implementation work the child beads represent; do not use driver mechanics or a raw changed-spec list as the title.
 
 Write this line directly as normal assistant text in the final assistant response. Do not generate it via `bash`, `python`, `echo`, `printf`, or any other tool: the driver parses assistant text only and ignores tool output when looking for the terminal marker. Do not wrap the marker in a code fence, and do not add follow-up prose after it.
 

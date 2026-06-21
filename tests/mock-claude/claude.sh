@@ -60,7 +60,7 @@ todo_payload_from_prompt() {
     fi
     if [[ -n "$work_epic" && "$prompt_line" =~ \#\#\#\ ([a-z0-9-]+)\\n ]]; then
         label="${BASH_REMATCH[1]}"
-        printf 'LOOM_TODO: {"head":"%s","fingerprint":"%s","work_epic":"%s","specs":[{"label":"%s","outcome":"no-work","reason":"mock audit"}]}' \
+        printf 'LOOM_TODO: {"head":"%s","fingerprint":"%s","work_epic":"%s","title":"Mock todo decomposition","specs":[{"label":"%s","outcome":"no-work","reason":"mock audit"}]}' \
             "$head" "$fingerprint" "$work_epic" "$label"
     else
         printf 'LOOM_COMPLETE'

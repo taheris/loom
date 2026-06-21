@@ -328,16 +328,17 @@ syntax block todo preflight. They do not appear as normal
 session ends with exactly one final line:
 
 ```text
-LOOM_TODO: {"head":"<sha>","fingerprint":"<fingerprint>","work_epic":"<bead-id>","specs":[...]}
+LOOM_TODO: {"head":"<sha>","fingerprint":"<fingerprint>","work_epic":"<bead-id>","title":"<final work epic title>","specs":[...]}
 ```
 
 The JSON shape is derived from `loom-protocol::todo::TodoSuccess` as
 specified in [harness.md § Spec and Work Epic Lifecycle](harness.md#spec-and-work-epic-lifecycle).
-The template tells the agent to include exactly the changed specs the
-driver injected, using `Decomposed { beads }` for non-empty work and
-`NoWork { reason }` for an audited no-implementation outcome. `Blocked`,
-`pending`, or omitted specs are not success states; the agent emits
-`LOOM_CLARIFY` or `LOOM_BLOCKED` instead.
+The template tells the agent to include a required non-empty final work-
+epic title plus exactly the changed specs the driver injected, using
+`Decomposed { beads }` for non-empty work and `NoWork { reason }` for an
+audited no-implementation outcome. `Blocked`, `pending`, or omitted specs
+are not success states; the agent emits `LOOM_CLARIFY` or `LOOM_BLOCKED`
+instead.
 
 ### Typed `PreviousFailure`
 
@@ -661,12 +662,13 @@ Before authoring any non-audit bead, the agent must:
    epic cannot satisfy `LOOM_TODO` validation.
 
 A successful `loom todo` session has exactly one success outcome: emit
-`LOOM_TODO: <json>` on the final line. The JSON must report every changed
-spec exactly once, with `Decomposed { beads }` for specs that produced
-non-empty work and `NoWork { reason }` for specs audited as requiring no
-implementation change (for example typo-only spec wording). The agent may
-not omit changed specs, report a pending state as success, or use
-`LOOM_COMPLETE` / `LOOM_NOOP` as todo success.
+`LOOM_TODO: <json>` on the final line. The JSON must carry a non-empty
+final work-epic title and report every changed spec exactly once, with
+`Decomposed { beads }` for specs that produced non-empty work and
+`NoWork { reason }` for specs audited as requiring no implementation
+change (for example typo-only spec wording). The agent may not omit
+changed specs, report a pending state as success, or use `LOOM_COMPLETE` /
+`LOOM_NOOP` as todo success.
 
 Decision-needed or dead-end outcomes use worker self-report markers:
 

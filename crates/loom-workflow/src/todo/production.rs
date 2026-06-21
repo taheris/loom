@@ -32,6 +32,7 @@ const TODO_HEAD_METADATA_KEY: &str = "loom.todo_head";
 const TODO_FINGERPRINT_METADATA_KEY: &str = "loom.todo_fingerprint";
 const TODO_CURSOR_METADATA_KEY: &str = "loom.todo_cursor";
 const TODO_SPECS_METADATA_KEY: &str = "loom.todo_specs";
+const PENDING_WORK_EPIC_TITLE: &str = "Pending todo decomposition";
 
 pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
     workspace: PathBuf,
@@ -372,7 +373,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let work_epic = self
             .bd
             .create(CreateOpts {
-                title: work_epic_title(&specs),
+                title: PENDING_WORK_EPIC_TITLE.to_string(),
                 description: "Driver-created work epic for deterministic loom todo decomposition."
                     .to_string(),
                 issue_type: Some("epic".to_string()),
@@ -656,6 +657,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             .update(
                 &preflight.work_epic,
                 UpdateOpts {
+                    title: Some(success.title.to_string()),
                     add_labels: vec!["loom:active".to_string()],
                     remove_labels: vec!["loom:todo".to_string()],
                     ..UpdateOpts::default()
@@ -902,23 +904,6 @@ fn has_label(pred: fn(&Label) -> bool) -> impl Fn(&loom_driver::bd::Bead) -> boo
     move |bead| bead.labels.iter().any(pred)
 }
 
-fn work_epic_title(specs: &[String]) -> String {
-    let joined = human_join(specs);
-    if joined.is_empty() {
-        return "Implement pending spec changes".to_string();
-    }
-    format!("Implement pending spec changes for {joined}")
-}
-
-fn human_join(items: &[String]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => one.clone(),
-        [first, second] => format!("{first} and {second}"),
-        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
-    }
-}
-
 fn pending_todo_options(
     head: &GitSha,
     fingerprint: &loom_protocol::todo::TodoFingerprint,
@@ -991,19 +976,5 @@ mod tests {
         )
         .expect_err("duplicate rejected");
         assert!(matches!(err, TodoError::SpecIndex { .. }));
-    }
-
-    #[test]
-    fn work_epic_title_uses_human_spec_list() {
-        let specs = [
-            "agent".to_string(),
-            "harness".to_string(),
-            "llm".to_string(),
-        ];
-
-        assert_eq!(
-            work_epic_title(&specs),
-            "Implement pending spec changes for agent, harness, and llm"
-        );
     }
 }

@@ -132,6 +132,10 @@ impl<R: CommandRunner> BdClient<R> {
             args.push("--status".into());
             args.push(s.into());
         }
+        if let Some(title) = opts.title {
+            args.push("--title".into());
+            args.push(title.into());
+        }
         if let Some(p) = opts.priority {
             args.push("--priority".into());
             args.push(p.to_string().into());
@@ -302,6 +306,7 @@ pub struct CreateOpts {
 pub struct UpdateOpts {
     pub claim: bool,
     pub status: Option<String>,
+    pub title: Option<String>,
     pub priority: Option<u8>,
     pub add_labels: Vec<String>,
     pub remove_labels: Vec<String>,
@@ -781,6 +786,7 @@ mod tests {
                 UpdateOpts {
                     claim: true,
                     status: Some("in_progress".into()),
+                    title: Some("Retitle work epic".into()),
                     add_labels: vec!["urgent".into()],
                     ..UpdateOpts::default()
                 },
@@ -792,6 +798,8 @@ mod tests {
         assert!(argv.contains(&"--claim".to_string()));
         assert!(argv.contains(&"--status".to_string()));
         assert!(argv.contains(&"in_progress".to_string()));
+        assert!(argv.contains(&"--title".to_string()));
+        assert!(argv.contains(&"Retitle work epic".to_string()));
         assert!(argv.contains(&"--add-label".to_string()));
         assert!(argv.contains(&"urgent".to_string()));
         assert!(!argv.contains(&"--priority".to_string()));
