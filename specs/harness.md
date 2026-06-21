@@ -3947,7 +3947,7 @@ two agent-loop observers.
 - Any backend-specific hard-limit fallback preserves instruction,
       protocol, and mode sections verbatim and removes ordinary history
       before pinned instruction text
-  [test?](hard_limit_fallback_preserves_pinned_instruction_sections)
+  [test](hard_limit_fallback_preserves_pinned_instruction_sections)
 - `claude-settings.json` registers `repin.sh` under
       `SessionStart[matcher: compact]`
   [test](claude_settings_registers_repin_under_session_start_compact)

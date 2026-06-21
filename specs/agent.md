@@ -1036,7 +1036,7 @@ the entrypoint run the wrong runtime.
 - Direct context-budget management preserves the initial rendered prompt
   as pinned instruction context when truncating or summarizing ordinary
   conversation history
-  [test?](direct_context_budget_preserves_initial_prompt_pin)
+  [test](direct_context_budget_preserves_initial_prompt_pin)
 - Direct backend's `Session` impl spawns a container via `wrix spawn` with the `direct` runtime layer; the container's entrypoint exec's `loom-direct-runner`
   [test](direct_session_spawn_invokes_wrix_spawn_with_direct_runtime)
 - `loom-direct-runner` constructs a `loom-llm::Conversation`, registers the six sandbox-aware tools, runs the loop, and emits `AgentEvent` JSONL to stdout — the same common event shape as the subprocess backends

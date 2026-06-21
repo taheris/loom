@@ -28,7 +28,7 @@ use crate::model_id::SchemaKind;
 use crate::observer::{
     DoomLoopConfig, DoomLoopObserver, DuplicateResultConfig, DuplicateResultObserver,
 };
-use crate::request::{CompletionRequest, Message};
+use crate::request::{CompletionRequest, Message, MessageContent, Role};
 use crate::tool::{Tool, ToolDef};
 
 /// Behaviour selected by the consumer when the iteration budget is
@@ -40,6 +40,27 @@ pub enum LoopOutcome {
     Error,
     /// Return the last `CompletionResponse` produced before the cap.
     ReturnLast,
+}
+
+/// Byte budget for a request assembled from a [`Conversation`]. Pinned
+/// history is retained even when it exceeds the budget; ordinary history
+/// is trimmed at turn boundaries before pinned messages are removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextBudget {
+    max_request_bytes: usize,
+}
+
+impl ContextBudget {
+    /// Construct a budget measured against the estimated request byte
+    /// size before provider-specific transport encoding.
+    pub const fn max_request_bytes(max_request_bytes: usize) -> Self {
+        Self { max_request_bytes }
+    }
+
+    /// Configured request byte budget.
+    pub const fn max_request_bytes_value(self) -> usize {
+        self.max_request_bytes
+    }
 }
 
 /// Failure modes for [`Conversation`] construction. Surfaced when an
@@ -94,6 +115,8 @@ pub struct Conversation {
     max_iterations: u32,
     on_iteration_exhausted: LoopOutcome,
     history: Vec<Message>,
+    pinned_history_len: usize,
+    context_budget: Option<ContextBudget>,
     doom_loop: Option<DoomLoopObserver>,
     duplicate_result: Option<DuplicateResultObserver>,
     envelope_builder: EnvelopeBuilder,
@@ -139,6 +162,8 @@ impl Conversation {
             max_iterations: 50,
             on_iteration_exhausted: LoopOutcome::Error,
             history: Vec::new(),
+            pinned_history_len: 0,
+            context_budget: None,
             doom_loop: build_doom_loop_observer(&doom_loop),
             duplicate_result: build_duplicate_result_observer(&duplicate_result),
             envelope_builder: default_envelope_builder()?,
@@ -180,6 +205,14 @@ impl Conversation {
     /// stopping.
     pub fn on_iteration_exhausted(mut self, outcome: LoopOutcome) -> Self {
         self.on_iteration_exhausted = outcome;
+        self
+    }
+
+    /// Apply request-context budgeting when building provider calls.
+    /// Pinned history stays verbatim; ordinary history is retained from
+    /// the newest turn backwards until the budget is filled.
+    pub fn context_budget(mut self, budget: ContextBudget) -> Self {
+        self.context_budget = Some(budget);
         self
     }
 
@@ -242,6 +275,14 @@ impl Conversation {
     /// it without error.
     pub fn user_cached(&mut self, content: impl Into<String>, cache: CacheControl) {
         self.history.push(Message::user_cached(content, cache));
+    }
+
+    /// Append the initial rendered prompt as pinned user history. Direct
+    /// runners use this for the phase prompt so context-budget trimming
+    /// removes ordinary transcript turns before instruction text.
+    pub fn user_cached_pinned(&mut self, content: impl Into<String>, cache: CacheControl) {
+        self.history.push(Message::user_cached(content, cache));
+        self.pinned_history_len = self.history.len();
     }
 
     /// Run the tool-use loop to completion against `client`. Returns
@@ -449,14 +490,120 @@ impl Conversation {
         if let Some(prefix) = &self.system {
             req = req.system(prefix.clone());
         }
-        for message in &self.history {
-            req = req.message(message.clone());
+        for message in self.history_for_request(&tool_defs) {
+            req = req.message(message);
         }
         if !tool_defs.is_empty() {
             req = req.tools(tool_defs);
         }
         req
     }
+
+    fn history_for_request(&self, tool_defs: &[ToolDef]) -> Vec<Message> {
+        let Some(budget) = self.context_budget else {
+            return self.history.clone();
+        };
+        let pinned_len = self.pinned_history_len.min(self.history.len());
+        let chunks = ordinary_history_chunks(&self.history, pinned_len);
+        let Some(newest_chunk) = chunks.last() else {
+            return self.history.clone();
+        };
+
+        let pinned_bytes = estimate_messages_bytes(&self.history[..pinned_len]);
+        let suffix_bytes = estimate_messages_bytes(&self.history[newest_chunk.start..]);
+        let mut used = self
+            .static_request_bytes(tool_defs)
+            .saturating_add(pinned_bytes)
+            .saturating_add(suffix_bytes);
+        let mut selected_start = newest_chunk.start;
+        let prior_chunk_count = chunks.len().saturating_sub(1);
+
+        for chunk in chunks[..prior_chunk_count].iter().rev() {
+            let chunk_bytes = estimate_messages_bytes(&self.history[chunk.start..chunk.end]);
+            if used.saturating_add(chunk_bytes) > budget.max_request_bytes {
+                break;
+            }
+            used = used.saturating_add(chunk_bytes);
+            selected_start = chunk.start;
+        }
+
+        let mut messages = Vec::with_capacity(pinned_len + self.history.len() - selected_start);
+        messages.extend_from_slice(&self.history[..pinned_len]);
+        messages.extend_from_slice(&self.history[selected_start..]);
+        messages
+    }
+
+    fn static_request_bytes(&self, tool_defs: &[ToolDef]) -> usize {
+        let system_bytes = self.system.as_ref().map_or(0, |system| system.len());
+        tool_defs.iter().fold(system_bytes, |total, tool| {
+            total.saturating_add(estimate_tool_def_bytes(tool))
+        })
+    }
+}
+
+fn ordinary_history_chunks(history: &[Message], pinned_len: usize) -> Vec<std::ops::Range<usize>> {
+    let mut chunks = Vec::new();
+    let mut start = pinned_len.min(history.len());
+    if start >= history.len() {
+        return chunks;
+    }
+
+    let mut index = start + 1;
+    while index < history.len() {
+        if history[index].role == Role::User {
+            chunks.push(start..index);
+            start = index;
+        }
+        index += 1;
+    }
+    chunks.push(start..history.len());
+    chunks
+}
+
+fn estimate_messages_bytes(messages: &[Message]) -> usize {
+    messages.iter().fold(0, |total, message| {
+        total.saturating_add(estimate_message_bytes(message))
+    })
+}
+
+fn estimate_message_bytes(message: &Message) -> usize {
+    const MESSAGE_OVERHEAD_BYTES: usize = 32;
+    const TOOL_CALL_OVERHEAD_BYTES: usize = 32;
+
+    let content_bytes = message.content.iter().fold(0usize, |total, part| {
+        total.saturating_add(estimate_content_bytes(part))
+    });
+    let tool_call_bytes = message.tool_calls.iter().fold(0usize, |total, call| {
+        total
+            .saturating_add(TOOL_CALL_OVERHEAD_BYTES)
+            .saturating_add(call.call_id.len())
+            .saturating_add(call.name.len())
+            .saturating_add(call.args.to_string().len())
+    });
+    let tool_result_id_bytes = message.tool_call_id.as_ref().map_or(0, |id| id.len());
+
+    MESSAGE_OVERHEAD_BYTES
+        .saturating_add(content_bytes)
+        .saturating_add(tool_call_bytes)
+        .saturating_add(tool_result_id_bytes)
+}
+
+fn estimate_content_bytes(part: &MessageContent) -> usize {
+    match part {
+        MessageContent::Text(text) => text.len(),
+        MessageContent::Binary(binary) => binary
+            .bytes
+            .len()
+            .saturating_add(binary.mime_type.as_str().len())
+            .saturating_add(binary.name.as_ref().map_or(0, |name| name.len())),
+    }
+}
+
+fn estimate_tool_def_bytes(tool: &ToolDef) -> usize {
+    tool.name
+        .len()
+        .saturating_add(tool.description.len())
+        .saturating_add(tool.input_schema.to_string().len())
 }
 
 /// Synthetic `EnvelopeBuilder` for consumers that don't thread their own
@@ -595,6 +742,60 @@ mod tests {
         }
     }
 
+    struct CapturingClient {
+        captured: Arc<Mutex<Vec<CompletionRequest>>>,
+        response: CompletionResponse,
+    }
+
+    impl CapturingClient {
+        fn new(response: CompletionResponse) -> (Self, Arc<Mutex<Vec<CompletionRequest>>>) {
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    captured: captured.clone(),
+                    response,
+                },
+                captured,
+            )
+        }
+    }
+
+    impl LlmClient for CapturingClient {
+        fn schema(&self) -> SchemaKind {
+            SchemaKind::Anthropic
+        }
+
+        fn supports(&self, _model: &ModelId) -> bool {
+            true
+        }
+
+        fn complete<'a>(
+            &'a self,
+            req: CompletionRequest,
+        ) -> crate::client::BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+            Box::pin(async move {
+                self.captured
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(req);
+                Ok(self.response.clone())
+            })
+        }
+
+        fn complete_structured_raw<'a>(
+            &'a self,
+            _req: CompletionRequest,
+            _schema: serde_json::Value,
+            _type_name: String,
+        ) -> crate::client::BoxFuture<'a, Result<String, LlmError>> {
+            Box::pin(async move {
+                Err(LlmError::Provider {
+                    message: "complete_structured not exercised in conversation tests".into(),
+                })
+            })
+        }
+    }
+
     fn no_calls(text: &str) -> CompletionResponse {
         CompletionResponse {
             text: text.to_string(),
@@ -613,6 +814,31 @@ mod tests {
                 args,
             }],
         }
+    }
+
+    /// Context budgeting keeps the pinned initial prompt and newest
+    /// active turn while trimming older ordinary history first. This
+    /// pins the `loom-llm` seam Direct uses for its hard-limit fallback.
+    #[test]
+    fn conversation_context_budget_trims_ordinary_history_before_pinned_prompt() {
+        let (client, captured) = CapturingClient::new(no_calls("done"));
+        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+            .expect("conversation builds")
+            .context_budget(ContextBudget::max_request_bytes(1));
+        conv.user_cached_pinned("PINNED INSTRUCTIONS", CacheControl::None);
+        conv.user("ordinary history should be dropped");
+        conv.user("current active turn");
+
+        tokio_test::block_on(conv.run(&client)).expect("run completes");
+
+        let requests = captured.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(requests.len(), 1);
+        let texts: Vec<String> = requests[0]
+            .messages
+            .iter()
+            .map(Message::text_content)
+            .collect();
+        assert_eq!(texts, vec!["PINNED INSTRUCTIONS", "current active turn"]);
     }
 
     /// `Conversation::new(ModelId)` returns a builder that accepts the

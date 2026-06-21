@@ -38,7 +38,9 @@ pub use client::{
     LlmCapability, LlmClient, LlmClientExt, LlmError, OpenAiClient, RetryAdvice, ToolUseRequest,
     parse_retry_after,
 };
-pub use conversation::{Conversation, ConversationBuildError, ConversationError, LoopOutcome};
+pub use conversation::{
+    ContextBudget, Conversation, ConversationBuildError, ConversationError, LoopOutcome,
+};
 pub use model_id::{AnthropicModel, GeminiModel, ModelId, OpenAiModel, SchemaKind};
 pub use observer::{
     DoomLoopConfig, DoomLoopObserver, DuplicateDetection, DuplicateResultConfig,

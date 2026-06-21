@@ -30,7 +30,7 @@ use loom_llm::cache::{CacheControl, CacheTtl};
 use loom_llm::client::{
     AnthropicClient, BoxFuture, CompletionResponse, GeminiClient, LlmClient, LlmError, OpenAiClient,
 };
-use loom_llm::conversation::{Conversation, ConversationBuildError};
+use loom_llm::conversation::{ContextBudget, Conversation, ConversationBuildError};
 use loom_llm::model_id::{AnthropicModel, ModelId, SchemaKind};
 use loom_llm::request::{CompletionRequest, Message, Role};
 use loom_llm::tool::Tool;
@@ -50,6 +50,10 @@ const DEFAULT_MODEL: ModelId = ModelId::Anthropic(AnthropicModel::ClaudeSonnet46
 
 /// Default inline content cap when an older spawn config omits output limits.
 const DEFAULT_MAX_INLINE_BYTES: usize = 16_384;
+
+/// Default request-context budget used before the runner trims ordinary
+/// transcript turns while retaining the initial rendered prompt.
+const DEFAULT_CONTEXT_BUDGET_BYTES: usize = 1_048_576;
 
 /// Build the canonical six-tool registry the Direct backend registers
 /// with every Conversation. Order matches the spec's tool list (`Read`,
@@ -146,8 +150,31 @@ where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    run_session_with_context_budget(
+        client,
+        config,
+        stdin,
+        stdout,
+        ContextBudget::max_request_bytes(DEFAULT_CONTEXT_BUDGET_BYTES),
+    )
+    .await
+}
+
+async fn run_session_with_context_budget<C, R, W>(
+    client: C,
+    config: SpawnConfig,
+    stdin: R,
+    stdout: W,
+    context_budget: ContextBudget,
+) -> Result<(), RunnerError>
+where
+    C: LlmClient + Sync,
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let ctx = tool_context(&config);
-    let mut conv = build_conversation_with_context(&config, ctx.clone())?;
+    let mut conv =
+        build_conversation_with_context(&config, ctx.clone())?.context_budget(context_budget);
     let usages = Arc::new(Mutex::new(Vec::<UsageRecord>::new()));
     let recording = UsageRecordingClient {
         inner: client,
@@ -156,6 +183,7 @@ where
     let mut emitter = Emitter::new(stdout);
     let mut lines = stdin.lines();
     let mut exit_code: i32 = 0;
+    let mut initial_prompt_pending = true;
 
     while let Some(line) = lines.next_line().await.map_err(RunnerError::Io)? {
         let trimmed = line.trim_end_matches('\r');
@@ -165,8 +193,18 @@ where
         match serde_json::from_str::<DirectCommand>(trimmed) {
             Ok(DirectCommand::Prompt { message }) => {
                 debug!(bytes = message.len(), "received prompt");
-                if let Err(err) =
-                    run_prompt(&mut conv, &recording, &usages, &ctx, &mut emitter, message).await
+                let pin_initial_prompt = initial_prompt_pending;
+                initial_prompt_pending = false;
+                if let Err(err) = run_prompt(
+                    &mut conv,
+                    &recording,
+                    &usages,
+                    &ctx,
+                    &mut emitter,
+                    message,
+                    pin_initial_prompt,
+                )
+                .await
                 {
                     warn!(error = %err, "prompt failed");
                     emitter
@@ -213,13 +251,18 @@ async fn run_prompt<C, W>(
     ctx: &ToolContext,
     emitter: &mut Emitter<W>,
     message: String,
+    pin_initial_prompt: bool,
 ) -> Result<(), RunnerError>
 where
     C: LlmClient + Sync,
     W: AsyncWrite + Unpin,
 {
     let history_pivot = conv.history_len();
-    conv.user_cached(message, CacheControl::Ephemeral(PROMPT_CACHE_TTL));
+    if pin_initial_prompt {
+        conv.user_cached_pinned(message, CacheControl::Ephemeral(PROMPT_CACHE_TTL));
+    } else {
+        conv.user_cached(message, CacheControl::Ephemeral(PROMPT_CACHE_TTL));
+    }
     let response = match conv.run(client).await {
         Ok(response) => response,
         Err(err) => {
@@ -438,6 +481,11 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::Mutex;
+
+    const PLANNING_PROMPT_INTERVIEW_MODES: &str =
+        include_str!("../../../tests/fixtures/planning_prompt_interview_modes.md");
+    const POLISH_MODE_DEFINITION: &str = "- polish / do-a-polish: report-only mode. Review the proposed wording and report suggested edits, but do not modify files or apply edits unless the human explicitly asks you to make the edits.";
+    const ONE_BY_ONE_MODE_DEFINITION: &str = "- one-by-one: ask exactly one design question per turn, then wait for the human's answer before asking the next question or changing topics.";
 
     fn sample_config(model_id: Option<&str>) -> SpawnConfig {
         SpawnConfig {
@@ -839,6 +887,108 @@ mod tests {
                 })
             })
         }
+    }
+
+    fn command_frame(cmd: &DirectCommand) -> String {
+        let mut line = serde_json::to_string(cmd).expect("command serializes");
+        line.push('\n');
+        line
+    }
+
+    fn forced_budget_planning_request() -> CompletionRequest {
+        let (client, captured) = CapturingClient::new(final_text("ok"));
+        let stale_history = [
+            "ordinary history alpha: prior assistant summary and tool chatter".repeat(8),
+            "ordinary history beta: stale grep/read/bash outputs".repeat(8),
+        ];
+        let current_prompt = "Current request: continue the planning interview.";
+        let stdin = [
+            command_frame(&DirectCommand::Prompt {
+                message: PLANNING_PROMPT_INTERVIEW_MODES.to_string(),
+            }),
+            command_frame(&DirectCommand::Steer {
+                message: stale_history[0].clone(),
+            }),
+            command_frame(&DirectCommand::Steer {
+                message: stale_history[1].clone(),
+            }),
+            command_frame(&DirectCommand::Prompt {
+                message: current_prompt.to_string(),
+            }),
+        ]
+        .concat()
+        .into_bytes();
+        let mut stdout: Vec<u8> = Vec::new();
+
+        tokio_test::block_on(run_session_with_context_budget(
+            client,
+            sample_config(Some("claude-sonnet-4-6")),
+            tokio::io::BufReader::new(&stdin[..]),
+            &mut stdout,
+            ContextBudget::max_request_bytes(1),
+        ))
+        .expect("run_session completes");
+
+        let requests = captured.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(requests.len(), 2, "two prompt frames produce requests");
+        requests[1].clone()
+    }
+
+    fn assert_pinned_planning_prompt_survives(request: &CompletionRequest) {
+        let texts: Vec<String> = request.messages.iter().map(Message::text_content).collect();
+        assert_eq!(
+            texts,
+            vec![
+                PLANNING_PROMPT_INTERVIEW_MODES.to_string(),
+                "Current request: continue the planning interview.".to_string(),
+            ],
+            "forced budget should keep the pinned initial prompt and active turn only",
+        );
+        let request_text = texts.join("\n---\n");
+        assert!(
+            request_text.contains(POLISH_MODE_DEFINITION),
+            "polish mode definition missing from request: {request_text}",
+        );
+        assert!(
+            request_text.contains(ONE_BY_ONE_MODE_DEFINITION),
+            "one-by-one mode definition missing from request: {request_text}",
+        );
+        assert!(
+            request_text.contains("## Context Pinning"),
+            "instruction/context section missing from request: {request_text}",
+        );
+        assert!(
+            request_text.contains("## Final Protocol"),
+            "phase protocol section missing from request: {request_text}",
+        );
+        assert!(
+            !request_text.contains("ordinary history alpha"),
+            "ordinary history alpha should be trimmed before pinned prompt: {request_text}",
+        );
+        assert!(
+            !request_text.contains("ordinary history beta"),
+            "ordinary history beta should be trimmed before pinned prompt: {request_text}",
+        );
+    }
+
+    /// Direct context-budget trimming treats the first rendered phase
+    /// prompt as pinned instruction context. Under forced byte pressure,
+    /// ordinary history is dropped while the planning prompt's Interview
+    /// Modes section stays verbatim in the LLM request.
+    #[test]
+    fn direct_context_budget_preserves_initial_prompt_pin() {
+        let request = forced_budget_planning_request();
+        assert_pinned_planning_prompt_survives(&request);
+    }
+
+    /// Hard-limit fallback preserves instruction, phase protocol, and
+    /// mode sections before ordinary transcript turns. This is the
+    /// Direct-backed verifier for the harness compaction-recovery
+    /// fallback contract.
+    #[test]
+    fn hard_limit_fallback_preserves_pinned_instruction_sections() {
+        let request = forced_budget_planning_request();
+        assert_pinned_planning_prompt_survives(&request);
     }
 
     /// Spec contract (`specs/agent.md` § Direct Backend): per-call
