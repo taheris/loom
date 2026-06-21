@@ -197,6 +197,10 @@ fn created(id: &str) -> RunOutput {
     ok(&format!("{id}\n"))
 }
 
+fn closed() -> RunOutput {
+    ok("")
+}
+
 fn preflight_responses(base: &str, head: &str) -> Vec<RunOutput> {
     vec![
         spec_epic("lm-alpha", "alpha", base),
@@ -209,6 +213,7 @@ fn preflight_responses(base: &str, head: &str) -> Vec<RunOutput> {
         empty_json(),
         empty_json(),
         created("lm-gamma"),
+        closed(),
         empty_json(),
         created("lm-work"),
     ]
@@ -270,6 +275,7 @@ fn multi_spec_preflight_responses(base: &str) -> Vec<RunOutput> {
         empty_json(),
         empty_json(),
         created("lm-gamma"),
+        closed(),
         empty_json(),
         created("lm-work"),
     ]
@@ -297,6 +303,13 @@ fn field(prompt: &str, name: &str) -> Result<String> {
         .find_map(|line| line.strip_prefix(&prefix))
         .map(ToOwned::to_owned)
         .ok_or_else(|| anyhow!("field `{name}` missing"))
+}
+
+fn flag_value<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
+    argv.iter()
+        .position(|arg| arg == flag)
+        .and_then(|idx| argv.get(idx + 1))
+        .map(String::as_str)
 }
 
 fn todo_success(prompt: &str, specs: &[&str]) -> Result<loom_protocol::todo::TodoSuccess> {
@@ -373,6 +386,47 @@ async fn todo_preflight_discovers_active_inactive_and_new_specs() -> Result<()> 
             .iter()
             .all(|argv| argv.iter().all(|arg| arg != "loom:active")),
         "preflight must not discover changed specs through loom:active: {all_calls:?}",
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_preflight_closes_new_spec_epics() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let runner = CapturingRunner::new(preflight_responses(&base, &head));
+    let calls = runner.clone();
+    let mut ctrl = controller(dir.path(), runner)?;
+
+    let _session = ctrl.build_session().await?;
+
+    assert!(calls.calls()?.iter().any(|argv| {
+        argv == &["close", "lm-gamma", "--reason", "spec metadata carrier"].map(str::to_string)
+    }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn todo_work_epic_title_uses_changed_spec_summary() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, _head) = init_multi_spec_workspace(dir.path())?;
+    let runner = CapturingRunner::new(multi_spec_preflight_responses(&base));
+    let calls = runner.clone();
+    let mut ctrl = controller(dir.path(), runner)?;
+
+    let _session = ctrl.build_session().await?;
+
+    let all_calls = calls.calls()?;
+    let work_create = all_calls
+        .iter()
+        .find(|argv| {
+            argv.first().is_some_and(|arg| arg == "create")
+                && flag_value(argv, "--labels").is_some_and(|labels| labels.contains("loom:todo"))
+        })
+        .ok_or_else(|| anyhow!("work epic create call missing: {all_calls:?}"))?;
+    assert_eq!(
+        flag_value(work_create, "--title"),
+        Some("Implement pending spec changes for alpha, beta, and gamma")
     );
     Ok(())
 }

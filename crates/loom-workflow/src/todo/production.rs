@@ -203,17 +203,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 (bead.id.clone(), Some(cursor), false)
             }
             None => {
-                let id = self
-                    .bd
-                    .create(CreateOpts {
-                        title: format!("loom spec: {}", spec.label),
-                        description: format!("Spec metadata epic for `{}`.", spec.label),
-                        issue_type: Some("epic".to_string()),
-                        priority: Some(2),
-                        labels: vec!["loom:spec".to_string(), format!("spec:{}", spec.label)],
-                        ..CreateOpts::default()
-                    })
-                    .await?;
+                let id = self.create_spec_epic(spec).await?;
                 (id, None, true)
             }
         };
@@ -230,6 +220,22 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             todo_cursor,
             initialized,
         })
+    }
+
+    async fn create_spec_epic(&self, spec: &IndexedSpec) -> Result<BeadId, TodoError> {
+        let id = self
+            .bd
+            .create(CreateOpts {
+                title: format!("loom spec: {}", spec.label),
+                description: format!("Spec metadata epic for `{}`.", spec.label),
+                issue_type: Some("epic".to_string()),
+                priority: Some(2),
+                labels: vec!["loom:spec".to_string(), format!("spec:{}", spec.label)],
+                ..CreateOpts::default()
+            })
+            .await?;
+        self.bd.close(&id, Some("spec metadata carrier")).await?;
+        Ok(id)
     }
 
     async fn spec_epics_for(
@@ -356,7 +362,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         let work_epic = self
             .bd
             .create(CreateOpts {
-                title: format!("loom todo work: {}", specs.join(", ")),
+                title: work_epic_title(&specs),
                 description: "Driver-created work epic for deterministic loom todo decomposition."
                     .to_string(),
                 issue_type: Some("epic".to_string()),
@@ -886,6 +892,23 @@ fn has_label(pred: fn(&Label) -> bool) -> impl Fn(&loom_driver::bd::Bead) -> boo
     move |bead| bead.labels.iter().any(pred)
 }
 
+fn work_epic_title(specs: &[String]) -> String {
+    let joined = human_join(specs);
+    if joined.is_empty() {
+        return "Implement pending spec changes".to_string();
+    }
+    format!("Implement pending spec changes for {joined}")
+}
+
+fn human_join(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first, second] => format!("{first} and {second}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
 fn pending_todo_options(
     head: &GitSha,
     fingerprint: &loom_protocol::todo::TodoFingerprint,
@@ -958,5 +981,19 @@ mod tests {
         )
         .expect_err("duplicate rejected");
         assert!(matches!(err, TodoError::SpecIndex { .. }));
+    }
+
+    #[test]
+    fn work_epic_title_uses_human_spec_list() {
+        let specs = [
+            "agent".to_string(),
+            "harness".to_string(),
+            "llm".to_string(),
+        ];
+
+        assert_eq!(
+            work_epic_title(&specs),
+            "Implement pending spec changes for agent, harness, and llm"
+        );
     }
 }
