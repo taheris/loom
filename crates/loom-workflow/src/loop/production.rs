@@ -70,6 +70,12 @@ pub const REVIEW_PHASE_WHEN_ENV: &str = "LOOM_REVIEW_PHASE_WHEN_MILLIS";
 /// [`parse_exit_signal`] on the final non-empty line.
 pub const REVIEW_EMIT_STDOUT_ENV: &str = "LOOM_REVIEW_EMIT_STDOUT";
 
+/// Env var the molecule-completion handoff sets when spawning `loom gate
+/// review` so the child can select the same spec context/log namespace as
+/// the parent controller without adding a public `--spec` gate filter. The
+/// value is context only: `--diff` remains the trust-bearing scope.
+pub const REVIEW_SPEC_LABEL_ENV: &str = "LOOM_REVIEW_SPEC_LABEL";
+
 /// Wires the [`AgentLoopController`] trait against the real `BdClient`, a
 /// caller-provided agent dispatch closure, and a child `loom review` exec for
 /// handoff.
@@ -903,6 +909,7 @@ where
             .current_dir(gate_workspace)
             .env(REVIEW_PHASE_WHEN_ENV, phase_when_millis.to_string())
             .env(REVIEW_EMIT_STDOUT_ENV, "1")
+            .env(REVIEW_SPEC_LABEL_ENV, self.label.as_str())
             .arg("gate")
             .arg("review")
             .arg("--diff")
@@ -917,6 +924,17 @@ where
             "loom loop: molecule handoff — loom gate review --diff finished",
         );
         let review_stdout = String::from_utf8_lossy(&review_output.stdout);
+        let review_stderr = String::from_utf8_lossy(&review_output.stderr);
+        if !review_status.success() {
+            return Err(LoopError::ReviewHandoff {
+                detail: format!(
+                    "loom gate review --diff {diff_range} exited {code}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                    code = review_status.code().unwrap_or(-1),
+                    stdout = review_stdout,
+                    stderr = review_stderr,
+                ),
+            });
+        }
         let raw_review_marker = parse_exit_signal(&review_stdout);
         // Parse the typed walk product once: streamed `LOOM_FINDING:`
         // lines + the terminal marker shape. When the terminal is a
@@ -2206,7 +2224,7 @@ mod tests {
         let argv_log = dir.path().join("argv.log");
         let stub = dir.path().join("loom-stub.sh");
         let stub_body = format!(
-            "#!/bin/sh\nprintf '%s\\t%s\\n' \"$PWD\" \"$*\" >> {log}\nexit 0\n",
+            "#!/bin/sh\nprintf '%s\\t%s\\t%s\\n' \"$PWD\" \"$LOOM_REVIEW_SPEC_LABEL\" \"$*\" >> {log}\nexit 0\n",
             log = argv_log.to_string_lossy(),
         );
         std::fs::write(&stub, stub_body).unwrap();
@@ -2247,11 +2265,67 @@ mod tests {
         assert_eq!(
             lines,
             vec![format!(
-                "{}\tgate review --diff origin/main..HEAD",
+                "{}\talpha\tgate review --diff origin/main..HEAD",
                 gate_workspace.display()
             )],
-            "review must run from the integration checkout over the actual origin push range with no scalar handoff flag: {recorded:?}",
+            "review must run from the integration checkout over the actual origin push range; the spec label travels as env context, not as a gate filter: {recorded:?}",
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn exec_review_surfaces_child_failure_detail() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_manifest(dir.path());
+        let label = SpecLabel::new("alpha");
+        let stub = dir.path().join("loom-stub.sh");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\nprintf 'child stdout\\n'\nprintf 'child stderr\\n' >&2\nexit 17\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let bd = BdClient::with_runner(molecule_lookup_script(
+            dir.path(),
+            "alpha",
+            "lm-mol.1",
+            "deadbeef",
+        ));
+        let git = git_workspace(dir.path());
+        let mut controller = ProductionAgentLoopController::new(
+            bd,
+            label,
+            stub,
+            dir.path().to_path_buf(),
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        );
+
+        let err = controller
+            .exec_review()
+            .await
+            .expect_err("child review failure must not mint successful evidence");
+        match err {
+            LoopError::ReviewHandoff { detail } => {
+                assert!(detail.contains("exited 17"), "missing exit code: {detail}");
+                assert!(detail.contains("child stdout"), "missing stdout: {detail}");
+                assert!(detail.contains("child stderr"), "missing stderr: {detail}");
+            }
+            other => panic!("expected ReviewHandoff, got {other:?}"),
+        }
     }
 
     /// `specs/harness.md` § *handoff_evidence_populates_marker_and_log_path*:

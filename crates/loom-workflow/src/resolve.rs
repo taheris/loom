@@ -1,8 +1,9 @@
 //! Spec → molecule resolution via `bd find`.
 //!
-//! Under the at-most-one-open-epic-per-spec invariant, the spec's
-//! "active" molecule is the open epic returned by
-//! `bd find --type=epic --label=spec:<X> --status=open`. Zero results
+//! Under the at-most-one-open-work-epic-per-spec invariant, the spec's
+//! active/current molecule is the non-`loom:spec` open epic returned by
+//! `bd find --type=epic --label=spec:<X> --status=open`. Spec epics are
+//! durable metadata carriers and are ignored here. Zero work-epic results
 //! means no molecule (callers either mint one or treat the spec as
 //! pristine); more than one is a structural invariant violation that
 //! refuses to proceed.
@@ -22,10 +23,11 @@ pub enum ResolveError {
     InvariantViolation { label: String, ids: String },
 }
 
-/// Resolve the spec's active molecule via `bd find --type=epic
-/// --label=spec:<X> --status=open`. Returns the open epic's id, `None`
-/// when no open epic exists, or [`ResolveError::InvariantViolation`]
-/// when more than one open epic exists for the spec.
+/// Resolve the spec's active/current molecule via `bd find --type=epic
+/// --label=spec:<X> --status=open`, ignoring `loom:spec` metadata epics.
+/// Returns the open work epic's id, `None` when no open work epic exists,
+/// or [`ResolveError::InvariantViolation`] when more than one open work
+/// epic exists for the spec.
 pub async fn resolve_open_epic<R: CommandRunner>(
     bd: &BdClient<R>,
     label: &SpecLabel,
@@ -38,11 +40,15 @@ pub async fn resolve_open_epic<R: CommandRunner>(
             ..Default::default()
         })
         .await?;
-    match beads.len() {
+    let work_epics = beads
+        .iter()
+        .filter(|bead| !bead.labels.iter().any(|label| label.is_spec_epic()))
+        .collect::<Vec<_>>();
+    match work_epics.len() {
         0 => Ok(None),
-        1 => Ok(Some(MoleculeId::new(beads[0].id.as_str()))),
+        1 => Ok(Some(MoleculeId::new(work_epics[0].id.as_str()))),
         _ => {
-            let ids = beads
+            let ids = work_epics
                 .iter()
                 .map(|b| b.id.as_str())
                 .collect::<Vec<_>>()
@@ -87,7 +93,8 @@ pub async fn resolve_or_mint_open_epics<R: CommandRunner>(
 /// Single-tier bonding-target resolver for `loom gate mint --tree`.
 ///
 /// Runs the same `bd find --type=epic --label=spec:<X> --status=open`
-/// query as [`resolve_open_epic`]; on zero results, mints a fresh epic
+/// query as [`resolve_open_epic`], ignoring `loom:spec` metadata epics;
+/// on zero work-epic results, mints a fresh epic
 /// via `bd create --type=epic --title="<X>" --labels="spec:<X>"
 /// --metadata "loom.base_commit=<head_commit>"` and returns it with
 /// `was_minted = true`. More-than-one open epics propagate as
@@ -196,6 +203,31 @@ mod tests {
             .expect("resolve_or_mint ok");
         assert_eq!(resolved.molecule_id, MoleculeId::new("lm-existing"));
         assert!(!resolved.was_minted);
+    }
+
+    #[tokio::test]
+    async fn resolve_or_mint_ignores_metadata_spec_epic() {
+        let only_spec_epic = r#"[{
+            "id": "lm-spec",
+            "title": "loom spec: acme",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "epic",
+            "labels": ["loom:spec", "spec:acme"],
+            "metadata": {"loom.todo_cursor":"deadbeef"}
+        }]"#;
+        let runner =
+            ScriptedRunner::new(vec![ok_stdout(only_spec_epic), ok_stdout("lm-newwork\n")]);
+        let bd = BdClient::with_runner(runner);
+        let label = SpecLabel::new("acme");
+        let resolved = resolve_or_mint_open_epic(&bd, &label, "deadbeef")
+            .await
+            .expect("resolve_or_mint ok");
+        assert_eq!(resolved.molecule_id, MoleculeId::new("lm-newwork"));
+        assert!(
+            resolved.was_minted,
+            "spec epics are metadata carriers and must not satisfy work-epic resolution",
+        );
     }
 
     #[tokio::test]

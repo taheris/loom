@@ -48,6 +48,9 @@ pub enum LoopError {
     /// no active molecule for spec `{label}`
     NoActiveMolecule { label: String },
 
+    /// molecule-completion review failed: {detail}
+    ReviewHandoff { detail: String },
+
     /// active molecule {id} has no `loom.base_commit` metadata and no parent to inherit from — set it with: bd update {id} --set-metadata loom.base_commit=<sha>
     MoleculeMissingBaseCommit { id: String },
 

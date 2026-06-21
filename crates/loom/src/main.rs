@@ -38,7 +38,8 @@ use loom_workflow::inbox::{
 };
 use loom_workflow::r#loop::{
     GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
-    REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV, RetryPolicy, SessionResult, run_loop,
+    REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV, REVIEW_SPEC_LABEL_ENV, RetryPolicy,
+    SessionResult, run_loop,
 };
 use loom_workflow::mint::{FindingStatusAction, FindingStatusRecord, MintWalker};
 use loom_workflow::review::{
@@ -4003,6 +4004,13 @@ fn resolve_spec_label(workspace: &Path, spec: Option<String>) -> anyhow::Result<
     if let Some(s) = spec {
         return Ok(SpecLabel::new(s));
     }
+    match std::env::var(REVIEW_SPEC_LABEL_ENV) {
+        Ok(s) => return Ok(s.parse()?),
+        Err(std::env::VarError::NotPresent) => {}
+        Err(std::env::VarError::NotUnicode(raw)) => {
+            anyhow::bail!("{REVIEW_SPEC_LABEL_ENV} must be valid UTF-8, got {:?}", raw,);
+        }
+    }
     resolve_spec_label_from_tree(workspace)
 }
 
@@ -4015,7 +4023,7 @@ fn resolve_spec_label_from_tree(workspace: &Path) -> anyhow::Result<SpecLabel> {
             .ok_or_else(|| anyhow::anyhow!("no spec files found under specs/"));
     }
     Err(anyhow::anyhow!(
-        "multiple specs found and no active work epic is selected; pass --spec to select one explicitly"
+        "multiple specs found and no review context label is available; run from a single-spec workspace or via loom loop"
     ))
 }
 
