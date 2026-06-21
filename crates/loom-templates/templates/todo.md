@@ -87,7 +87,7 @@ The status cache below shows the latest cached verifier verdict for each Success
      --type=task --labels="spec:<label>,profile:<profile>" --parent="{{ work_epic }}" --silent)
    ```
 4. Set execution order with `bd dep add <later-task> <earlier-task>` where required.
-5. Emit success only through the typed todo payload described below.
+5. When finished, stop using tools and emit success only through the typed todo payload described below as your final assistant message. Do not use `bash`, `python`, `echo`, `printf`, or any other tool to print the terminal line.
 
 {% include "partial/options_format.md" %}
 

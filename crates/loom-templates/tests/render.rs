@@ -249,6 +249,9 @@ fn todo_template_rejects_generic_success_markers() -> Result<()> {
     assert!(out.contains("LOOM_TODO: <json>"));
     assert!(out.contains("wrong-phase success markers"));
     assert!(out.contains("`LOOM_COMPLETE`") && out.contains("`LOOM_NOOP`"));
+    assert!(out.contains("final assistant message"));
+    assert!(out.contains("driver parses assistant text only"));
+    assert!(out.contains("`bash`") && out.contains("`python`"));
     Ok(())
 }
 
