@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 pub use inputs::render_print_inputs;
 
 mod audit_makes_no_bd_writes_outside_mint_module;
+mod cli_surface;
 mod crate_structure;
 mod direct_tools_net_new;
 mod event_sink_in_loom_events;
@@ -51,7 +52,6 @@ mod no_hardcoded_tmp_paths;
 mod no_inline_suppression_comment_contract;
 mod no_panics_in_production;
 mod no_real_clock_outside_system_clock;
-mod no_sync_or_tune_command;
 mod no_thread_sleep;
 mod no_todo_cursor_meta_key;
 mod no_tokio_sleep_outside_clock;
@@ -72,6 +72,7 @@ mod template_wire_format_restatement;
 mod templates_no_removed_surface;
 mod todo_contexts_carry_criterion_status;
 mod todo_template_uses_driver_created_work_epic;
+mod tune_surface_conformance;
 mod util;
 mod workspace_deps_pinned;
 mod workspace_edition;
@@ -285,10 +286,6 @@ pub static REGISTRY: &[Walk] = &[
         run: no_real_clock_outside_system_clock::run,
     },
     Walk {
-        name: "no_sync_or_tune_command",
-        run: no_sync_or_tune_command::run,
-    },
-    Walk {
         name: "no_thread_sleep",
         run: no_thread_sleep::run,
     },
@@ -369,6 +366,10 @@ pub static REGISTRY: &[Walk] = &[
         run: todo_template_uses_driver_created_work_epic::run,
     },
     Walk {
+        name: "tune_surface_conformance",
+        run: tune_surface_conformance::run,
+    },
+    Walk {
         name: "workspace_deps_pinned",
         run: workspace_deps_pinned::run,
     },
@@ -443,7 +444,6 @@ mod tests {
             "no_types_or_error_files",
             "no_allow_dead_code",
             "no_panics_in_production",
-            "no_sync_or_tune_command",
             "observers_in_loom_llm",
             "phase_verdict_decide_called_from_production",
             "public_contract_crates",
@@ -460,6 +460,7 @@ mod tests {
             "templates_no_removed_surface",
             "todo_contexts_carry_criterion_status",
             "todo_template_uses_driver_created_work_epic",
+            "tune_surface_conformance",
             "loom_templates_deps",
             "loom_templates_public_partial_constants",
             "loom_templates_public_types",

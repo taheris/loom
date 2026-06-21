@@ -6,14 +6,15 @@
 //! - **Command set** — FR1's per-group bullets ↔ the `HELP_GROUPS`
 //!   constant in `crates/loom/src/main.rs`.
 //! - **Removed surface** — every row in FR1's *Removed surface* table
-//!   MUST be absent from `HELP_GROUPS`.
+//!   MUST be absent from `HELP_GROUPS`, the `Command` enum, and nested
+//!   inbox actions/flags.
 //! - **Grouping order** — the order of `**Workflow** / **Inspection**
 //!   / **State**` sub-sections in FR1 (and per-group bullet order) ↔
 //!   the order of `HELP_GROUPS` tuples (and per-tuple slice order).
-//! - **Flag set (partial)** — long flag names in the *Logs UX* table
-//!   ↔ `Command::Logs` `#[arg(long, ...)]` declarations. Nested inbox
-//!   subcommand flags and FR1 scope-flag inline prose (`loom gate <sub>`
-//!   flags) are not yet covered.
+//! - **Flag set (partial)** — long flag names in the *Logs UX* and
+//!   *Inbox Modes* tables ↔ the corresponding clap `#[arg(...)]`
+//!   declarations. FR1 scope-flag inline prose (`loom gate <sub>`
+//!   flags) is not yet covered.
 //!
 //! `HELP_GROUPS` is the canonical declaration the binary regroups
 //! clap's flat `Commands:` block against, so parsing it as text is the
@@ -23,8 +24,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use syn::{Expr, ExprLit, Lit, Meta, MetaNameValue};
-
+use super::cli_surface;
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
@@ -33,14 +33,17 @@ const SPEC: &str = "specs/harness.md";
 const MAIN_RS: &str = "crates/loom/src/main.rs";
 const SPEC_GROUP_ORDER: &[&str] = &["Workflow", "Inspection", "State"];
 
-/// A row in `harness.md`'s Removed-surface table. Command-level rows name
-/// a whole subcommand to be absent from `HELP_GROUPS`; flag-level rows
-/// name a `--<flag>` to be absent from the retained subcommand's
-/// `#[arg(long, …)]` declarations on `Command::<Variant>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RemovedEntry {
-    Command(String),
-    Flag { command: String, flag: String },
+    TopCommand(String),
+    Subcommand { command: String, subcommand: String },
+    Flag { command: String, flag: RemovedFlag },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RemovedFlag {
+    Long(String),
+    Short(char),
 }
 
 pub fn run(_input: &WalkInput) -> Verdict {
@@ -64,11 +67,27 @@ pub fn run(_input: &WalkInput) -> Verdict {
         Ok(b) => b,
         Err(e) => return verdict_from(RULE, vec![e]),
     };
+    let main_file = match cli_surface::parse_file(&main_body, MAIN_RS) {
+        Ok(file) => file,
+        Err(e) => return verdict_from(RULE, vec![e]),
+    };
+    let binary_top_commands = match cli_surface::enum_variant_names(&main_file, "Command", MAIN_RS)
+    {
+        Ok(commands) => commands,
+        Err(e) => return verdict_from(RULE, vec![e]),
+    };
 
     let mut violations = Vec::new();
     check_groups_match(&spec_groups, &binary_groups, &mut violations);
-    check_removed_surface_absent(&spec_removed, &binary_groups, &main_body, &mut violations);
-    check_command_flag_set(&spec_body, &main_body, "logs", "Logs", &mut violations);
+    check_removed_surface_absent(
+        &spec_removed,
+        &binary_groups,
+        &binary_top_commands,
+        &main_file,
+        &mut violations,
+    );
+    check_command_flag_set(&spec_body, &main_file, "logs", "Logs", &mut violations);
+    check_inbox_surface(&spec_body, &main_file, &mut violations);
     violations.retain(|v| !SURFACE_ALLOWLIST.iter().any(|allow| v.contains(allow)));
     verdict_from(RULE, violations)
 }
@@ -82,7 +101,7 @@ const SURFACE_ALLOWLIST: &[&str] = &[];
 
 fn check_command_flag_set(
     spec_body: &str,
-    main_body: &str,
+    main_file: &syn::File,
     cmd_label: &str,
     variant: &str,
     violations: &mut Vec<String>,
@@ -98,7 +117,7 @@ fn check_command_flag_set(
             return;
         }
     };
-    let binary_flags = match parse_binary_command_flags(main_body, variant) {
+    let binary_flags = match parse_binary_command_flags(main_file, variant) {
         Ok(b) => b,
         Err(e) => {
             violations.push(e);
@@ -160,49 +179,203 @@ fn check_groups_match(
 
 fn check_removed_surface_absent(
     removed: &[RemovedEntry],
-    binary: &[(String, Vec<String>)],
-    main_body: &str,
+    binary_groups: &[(String, Vec<String>)],
+    binary_top_commands: &BTreeSet<String>,
+    main_file: &syn::File,
     violations: &mut Vec<String>,
 ) {
+    let needs_inbox = removed.iter().any(|entry| match entry {
+        RemovedEntry::Subcommand { command, .. } | RemovedEntry::Flag { command, .. } => {
+            command == "inbox"
+        }
+        RemovedEntry::TopCommand(_) => false,
+    });
+    let inbox_subcommands = if needs_inbox {
+        match cli_surface::enum_variant_names(main_file, "InboxAction", MAIN_RS) {
+            Ok(commands) => commands,
+            Err(e) => {
+                violations.push(e);
+                BTreeSet::new()
+            }
+        }
+    } else {
+        BTreeSet::new()
+    };
+    let inbox_flags = if needs_inbox {
+        match inbox_flags(main_file) {
+            Ok(flags) => flags,
+            Err(e) => {
+                violations.push(e);
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
     for entry in removed {
         match entry {
-            RemovedEntry::Command(cmd) => {
-                for (heading, cmds) in binary {
+            RemovedEntry::TopCommand(cmd) => {
+                for (heading, cmds) in binary_groups {
                     if cmds.iter().any(|c| c == cmd) {
                         violations.push(format!(
                             "{MAIN_RS} HELP_GROUPS re-introduces `{cmd}` under {heading} — listed in {SPEC} Removed surface table",
                         ));
                     }
                 }
-            }
-            RemovedEntry::Flag { command, flag } => {
-                let variant = command_variant_ident(command);
-                let declared = match parse_binary_command_flags(main_body, &variant) {
-                    Ok(set) => set,
-                    Err(_) => continue,
-                };
-                if declared.contains(flag) {
+                if binary_top_commands.contains(cmd) {
                     violations.push(format!(
-                        "{MAIN_RS} `Command::{variant}` re-declares `--{flag}` — listed as `loom {command} --{flag}` in {SPEC} Removed surface table",
+                        "{MAIN_RS} `Command` enum re-introduces `{cmd}` — listed in {SPEC} Removed surface table",
                     ));
                 }
             }
+            RemovedEntry::Subcommand {
+                command,
+                subcommand,
+            } if command == "inbox" => {
+                if inbox_subcommands.contains(subcommand) {
+                    violations.push(format!(
+                        "{MAIN_RS} `InboxAction` re-introduces `loom inbox {subcommand}` — listed in {SPEC} Removed surface table",
+                    ));
+                }
+            }
+            RemovedEntry::Subcommand { .. } => {}
+            RemovedEntry::Flag { command, flag } if command == "inbox" => {
+                if inbox_flags
+                    .iter()
+                    .any(|candidate| removed_flag_matches(flag, candidate))
+                {
+                    violations.push(format!(
+                        "{MAIN_RS} inbox args re-declare `{}` — listed in {SPEC} Removed surface table",
+                        format_removed_flag(flag),
+                    ));
+                }
+            }
+            RemovedEntry::Flag { .. } => {}
         }
     }
 }
 
-/// Capitalize a subcommand name into its `Command::<Variant>` ident.
-/// Hyphens collapse via title-case per word (`use-spec` → `UseSpec`).
-fn command_variant_ident(name: &str) -> String {
-    name.split('-')
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(c) => c.to_ascii_uppercase().to_string() + chars.as_str(),
-                None => String::new(),
+fn removed_flag_matches(removed: &RemovedFlag, candidate: &cli_surface::Flag) -> bool {
+    match removed {
+        RemovedFlag::Long(name) => candidate.long.as_deref() == Some(name.as_str()),
+        RemovedFlag::Short(name) => candidate.short == Some(*name),
+    }
+}
+
+fn format_removed_flag(flag: &RemovedFlag) -> String {
+    match flag {
+        RemovedFlag::Long(name) => format!("--{name}"),
+        RemovedFlag::Short(name) => format!("-{name}"),
+    }
+}
+
+fn inbox_flags(main_file: &syn::File) -> Result<Vec<cli_surface::Flag>, String> {
+    let mut out = Vec::new();
+    for struct_name in [
+        "InboxArgs",
+        "InboxFilterArgs",
+        "InboxListArgs",
+        "InboxViewArgs",
+        "InboxChatArgs",
+    ] {
+        out.extend(cli_surface::struct_flags(main_file, struct_name, MAIN_RS)?);
+    }
+    Ok(out)
+}
+
+fn check_inbox_surface(spec_body: &str, main_file: &syn::File, violations: &mut Vec<String>) {
+    let Some(expected_subcommands) = parse_spec_inbox_subcommands(spec_body, violations) else {
+        return;
+    };
+    let expected_flags = match parse_spec_inbox_long_flags(spec_body) {
+        Ok(Some(flags)) => flags,
+        Ok(None) => return,
+        Err(e) => {
+            violations.push(e);
+            return;
+        }
+    };
+    let actual_subcommands =
+        match cli_surface::enum_variant_names(main_file, "InboxAction", MAIN_RS) {
+            Ok(commands) => commands,
+            Err(e) => {
+                violations.push(e);
+                return;
             }
-        })
-        .collect()
+        };
+    compare_named_set(
+        "Inbox Modes subcommands",
+        &expected_subcommands,
+        &actual_subcommands,
+        violations,
+    );
+
+    let filter_flags = match cli_surface::struct_long_flags(main_file, "InboxFilterArgs", MAIN_RS) {
+        Ok(flags) => flags,
+        Err(e) => {
+            violations.push(e);
+            return;
+        }
+    };
+    let view_direct = match cli_surface::struct_long_flags(main_file, "InboxViewArgs", MAIN_RS) {
+        Ok(flags) => flags,
+        Err(e) => {
+            violations.push(e);
+            return;
+        }
+    };
+    let chat_direct = match cli_surface::struct_long_flags(main_file, "InboxChatArgs", MAIN_RS) {
+        Ok(flags) => flags,
+        Err(e) => {
+            violations.push(e);
+            return;
+        }
+    };
+    let expected_filter = expected_flags
+        .iter()
+        .filter(|flag| flag.as_str() == "spec" || flag.as_str() == "kind")
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let expected_address = expected_flags
+        .difference(&expected_filter)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    compare_named_set(
+        "Inbox filter flags",
+        &expected_filter,
+        &filter_flags,
+        violations,
+    );
+    compare_named_set(
+        "Inbox view address flags",
+        &expected_address,
+        &view_direct,
+        violations,
+    );
+    compare_named_set(
+        "Inbox chat address flags",
+        &expected_address,
+        &chat_direct,
+        violations,
+    );
+}
+
+fn compare_named_set(
+    label: &str,
+    expected: &BTreeSet<String>,
+    actual: &BTreeSet<String>,
+    violations: &mut Vec<String>,
+) {
+    for missing in expected.difference(actual) {
+        violations.push(format!(
+            "{SPEC} documents {label} `{missing}` but {MAIN_RS} does not declare it",
+        ));
+    }
+    for extra in actual.difference(expected) {
+        violations.push(format!(
+            "{MAIN_RS} declares {label} `{extra}` but {SPEC} does not document it",
+        ));
+    }
 }
 
 fn parse_spec_command_groups(body: &str) -> Result<Vec<(String, Vec<String>)>, String> {
@@ -230,6 +403,83 @@ fn parse_spec_command_groups(body: &str) -> Result<Vec<(String, Vec<String>)>, S
     Ok(groups)
 }
 
+fn parse_spec_inbox_subcommands(
+    body: &str,
+    violations: &mut Vec<String>,
+) -> Option<BTreeSet<String>> {
+    let section = section_lines(body, "### Inbox Modes")?;
+    let header_idx = match section
+        .iter()
+        .position(|line| line.trim_start().starts_with("| Mode "))
+    {
+        Some(idx) => idx,
+        None => {
+            violations.push(format!("{SPEC} Inbox Modes table missing `| Mode ` header"));
+            return None;
+        }
+    };
+    let mut out = BTreeSet::new();
+    for line in section.iter().skip(header_idx + 2) {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with('|') {
+            break;
+        }
+        for span in extract_code_spans(trimmed) {
+            if let Some(subcommand) = inbox_subcommand_from_invocation(&span) {
+                out.insert(subcommand);
+            }
+        }
+    }
+    if out.is_empty() {
+        violations.push(format!("{SPEC} Inbox Modes table parsed no subcommands"));
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn parse_spec_inbox_long_flags(body: &str) -> Result<Option<BTreeSet<String>>, String> {
+    let Some(section) = section_lines(body, "### Inbox Modes") else {
+        return Ok(None);
+    };
+    let header_idx = section
+        .iter()
+        .position(|line| line.trim_start().starts_with("| Flag "))
+        .ok_or_else(|| format!("{SPEC} Inbox Modes missing `| Flag ` table header"))?;
+    let mut out = BTreeSet::new();
+    for line in section.iter().skip(header_idx + 2) {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with('|') {
+            break;
+        }
+        let cells: Vec<&str> = trimmed.split('|').collect();
+        if cells.len() < 2 {
+            continue;
+        }
+        for flag in extract_long_flags(cells[1]) {
+            out.insert(flag);
+        }
+    }
+    if out.is_empty() {
+        Err(format!(
+            "{SPEC} Inbox Modes flag table parsed no long flags"
+        ))
+    } else {
+        Ok(Some(out))
+    }
+}
+
+fn inbox_subcommand_from_invocation(invocation: &str) -> Option<String> {
+    let rest = invocation.strip_prefix("loom inbox")?.trim();
+    let mut tokens = rest.split_whitespace();
+    let first = tokens.next()?;
+    if first.starts_with('-') || first.starts_with('<') {
+        None
+    } else {
+        Some(first.to_string())
+    }
+}
+
 fn parse_spec_removed_surface(body: &str) -> Result<Vec<RemovedEntry>, String> {
     let (fr1, _, _) = locate_fr1(body)?;
     let marker_idx = fr1
@@ -251,31 +501,80 @@ fn parse_spec_removed_surface(body: &str) -> Result<Vec<RemovedEntry>, String> {
         if cells.len() < 2 {
             continue;
         }
-        let first = cells[1].trim().trim_matches('`');
-        let Some(rest) = first.strip_prefix("loom ") else {
-            continue;
-        };
-        let mut tokens = rest.split_whitespace();
-        let Some(command) = tokens.next() else {
-            continue;
-        };
-        match tokens.find(|t| t.starts_with("--")) {
-            Some(flag_token) => {
-                let flag = flag_token.trim_start_matches('-');
-                if !flag.is_empty() {
-                    out.push(RemovedEntry::Flag {
-                        command: command.to_string(),
-                        flag: flag.to_string(),
-                    });
-                }
+        for span in extract_code_spans(cells[1]) {
+            if let Some(entry) = removed_entry_from_invocation(&span) {
+                out.push(entry);
             }
-            None => out.push(RemovedEntry::Command(command.to_string())),
         }
     }
     if out.is_empty() {
         return Err(format!("{SPEC} Removed-surface table parsed empty"));
     }
     Ok(out)
+}
+
+fn removed_entry_from_invocation(invocation: &str) -> Option<RemovedEntry> {
+    let rest = invocation.strip_prefix("loom ")?;
+    let mut tokens = rest.split_whitespace();
+    let command = tokens.next()?;
+    let Some(next) = tokens.next() else {
+        return Some(RemovedEntry::TopCommand(command.to_string()));
+    };
+    if let Some(flag) = removed_flag_from_token(next) {
+        Some(RemovedEntry::Flag {
+            command: command.to_string(),
+            flag,
+        })
+    } else {
+        Some(RemovedEntry::Subcommand {
+            command: command.to_string(),
+            subcommand: next.to_string(),
+        })
+    }
+}
+
+fn removed_flag_from_token(token: &str) -> Option<RemovedFlag> {
+    if let Some(long) = token.strip_prefix("--")
+        && !long.is_empty()
+    {
+        return Some(RemovedFlag::Long(long.to_string()));
+    }
+    if let Some(short) = token.strip_prefix('-') {
+        let mut chars = short.chars();
+        if let (Some(name), None) = (chars.next(), chars.next()) {
+            return Some(RemovedFlag::Short(name));
+        }
+    }
+    None
+}
+
+fn extract_code_spans(cell: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = cell;
+    while let Some(start) = rest.find('`') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('`') else {
+            break;
+        };
+        out.push(after[..end].to_string());
+        rest = &after[end + 1..];
+    }
+    out
+}
+
+fn section_lines<'a>(body: &'a str, heading: &str) -> Option<Vec<&'a str>> {
+    let lines: Vec<&str> = body.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with(heading))?;
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, line)| line.starts_with("### "))
+        .map(|(idx, _)| idx)
+        .unwrap_or(lines.len());
+    Some(lines[start..end].to_vec())
 }
 
 /// Resolve a relative path against the cargo workspace root, falling back to
@@ -440,13 +739,15 @@ fn extract_long_flags(cell: &str) -> Vec<String> {
     out
 }
 
-fn parse_binary_command_flags(body: &str, variant: &str) -> Result<BTreeSet<String>, String> {
-    let file = syn::parse_file(body).map_err(|e| format!("{MAIN_RS} syn parse: {e}"))?;
-    let cmd_enum = file
+fn parse_binary_command_flags(
+    main_file: &syn::File,
+    variant: &str,
+) -> Result<BTreeSet<String>, String> {
+    let cmd_enum = main_file
         .items
         .iter()
-        .find_map(|i| match i {
-            syn::Item::Enum(e) if e.ident == "Command" => Some(e),
+        .find_map(|item| match item {
+            syn::Item::Enum(item) if item.ident == "Command" => Some(item),
             _ => None,
         })
         .ok_or_else(|| format!("{MAIN_RS} no `Command` enum"))?;
@@ -455,16 +756,13 @@ fn parse_binary_command_flags(body: &str, variant: &str) -> Result<BTreeSet<Stri
         .iter()
         .find(|v| v.ident == variant)
         .ok_or_else(|| format!("{MAIN_RS} `Command` has no `{variant}` variant"))?;
-    let fields = match &var.fields {
-        syn::Fields::Named(n) => &n.named,
-        _ => {
-            return Err(format!(
-                "{MAIN_RS} `Command::{variant}` has no named fields to audit"
-            ));
-        }
+    let syn::Fields::Named(fields) = &var.fields else {
+        return Err(format!(
+            "{MAIN_RS} `Command::{variant}` has no named fields to audit"
+        ));
     };
     let mut out = BTreeSet::new();
-    for field in fields {
+    for field in &fields.named {
         let field_name = field
             .ident
             .as_ref()
@@ -474,38 +772,15 @@ fn parse_binary_command_flags(body: &str, variant: &str) -> Result<BTreeSet<Stri
             if !attr.path().is_ident("arg") {
                 continue;
             }
-            if let Some(long) = arg_long_name(attr, &field_name) {
+            if let Some(flag) =
+                cli_surface::flag_from_arg_attr(attr, &field_name, MAIN_RS, variant)?
+                && let Some(long) = flag.long
+            {
                 out.insert(long);
             }
         }
     }
     Ok(out)
-}
-
-fn arg_long_name(attr: &syn::Attribute, field_name: &str) -> Option<String> {
-    let meta_list = attr.meta.require_list().ok()?;
-    let nested: syn::punctuated::Punctuated<Meta, syn::Token![,]> = meta_list
-        .parse_args_with(syn::punctuated::Punctuated::parse_terminated)
-        .ok()?;
-    for meta in nested {
-        match meta {
-            Meta::Path(p) if p.is_ident("long") => {
-                return Some(field_name.replace('_', "-"));
-            }
-            Meta::NameValue(MetaNameValue {
-                path,
-                value:
-                    Expr::Lit(ExprLit {
-                        lit: Lit::Str(s), ..
-                    }),
-                ..
-            }) if path.is_ident("long") => {
-                return Some(s.value());
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 fn extract_quoted_strings(s: &str) -> Vec<String> {

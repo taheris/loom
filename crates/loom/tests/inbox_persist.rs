@@ -209,7 +209,7 @@ fn inbox_spec_filter_narrows_list_to_matching_spec() {
 }
 
 #[test]
-fn inbox_kind_filter_narrows_list_and_numbers_after_filtering() {
+fn inbox_kind_filter_narrows_list() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     let state_dir = workspace.join("bd-state");

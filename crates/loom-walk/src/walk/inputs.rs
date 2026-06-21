@@ -144,7 +144,10 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         "loom_llm_mime_type_no_raw_strings" => {
             vec![root.join("crates/loom-llm/src/request.rs")]
         }
-        "no_sync_or_tune_command" => vec![root.join("crates/loom/src/main.rs")],
+        "tune_surface_conformance" => vec![
+            root.join("specs/harness.md"),
+            root.join("crates/loom/src/main.rs"),
+        ],
         "no_todo_cursor_meta_key" => vec![root.join("crates/loom-driver/src/state/db.rs")],
         "single_event_channel" => vec![root.join("crates/loom-render/src/sink/mod.rs")],
         "loom_templates_snapshots_no_crate_root_allow" => {

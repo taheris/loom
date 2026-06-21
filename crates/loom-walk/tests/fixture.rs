@@ -1276,43 +1276,110 @@ fn phase_verdict_decide_called_from_production_fail_run_missing_call() {
 }
 
 // ---------------------------------------------------------------------------
-// no_sync_or_tune_command
+// tune_surface_conformance
 // ---------------------------------------------------------------------------
 
+const TUNE_SPEC: &str = "# Harness\n\n### Tune Modes\n\ncontract\n";
+
+const TUNE_MAIN: &str = concat!(
+    "enum Command {\n",
+    "    Tune(TuneArgs),\n",
+    "}\n",
+    "struct TuneArgs { action: Option<TuneAction> }\n",
+    "enum TuneAction {\n",
+    "    Skill(TuneSurfaceArgs),\n",
+    "    Phase(TuneSurfaceArgs),\n",
+    "    Partial(TuneSurfaceArgs),\n",
+    "    Checker,\n",
+    "    All(TuneAllArgs),\n",
+    "}\n",
+    "struct TuneSurfaceArgs {\n",
+    "    level: Option<TuneLevelArg>,\n",
+    "    targets: Vec<String>,\n",
+    "    #[arg(long, requires = \"level\")]\n",
+    "    dry_run: bool,\n",
+    "    #[arg(long, requires = \"level\")]\n",
+    "    seed: Option<u64>,\n",
+    "}\n",
+    "struct TuneAllArgs {\n",
+    "    level: Option<TuneLevelArg>,\n",
+    "    #[arg(long, requires = \"level\")]\n",
+    "    dry_run: bool,\n",
+    "    #[arg(long, requires = \"level\")]\n",
+    "    seed: Option<u64>,\n",
+    "}\n",
+    "enum TuneLevelArg { Fast, Run, Full }\n",
+);
+
+fn seed_tune_surface(ws: &TempDir, main_body: &str) {
+    seed(ws.path(), "specs/harness.md", TUNE_SPEC);
+    seed(ws.path(), "crates/loom/src/main.rs", main_body);
+}
+
 #[test]
-fn no_sync_or_tune_command_pass_when_absent() {
+fn tune_surface_conformance_pass_when_sync_absent_and_tune_shape_matches() {
     let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom/src/main.rs",
-        "fn main() {}\n\nenum Command {\n    Run,\n    Init,\n}\n",
-    );
-    let out = invoke(&["no_sync_or_tune_command"], Some(ws.path()), None);
+    seed_tune_surface(&ws, TUNE_MAIN);
+    let out = invoke(&["tune_surface_conformance"], Some(ws.path()), None);
     assert_pass(&out);
 }
 
 #[test]
-fn no_sync_or_tune_command_fail_when_sync_variant_present() {
+fn tune_surface_conformance_fail_when_sync_variant_present() {
     let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom/src/main.rs",
-        "fn main() {}\n\nenum Command {\n    Run,\n    Sync,\n    Init,\n}\n",
+    seed_tune_surface(
+        &ws,
+        &TUNE_MAIN.replace("Tune(TuneArgs),", "Sync,\n    Tune(TuneArgs),"),
     );
-    let out = invoke(&["no_sync_or_tune_command"], Some(ws.path()), None);
-    assert_fail(&out, "Sync");
+    let out = invoke(&["tune_surface_conformance"], Some(ws.path()), None);
+    assert_fail(&out, "sync");
 }
 
 #[test]
-fn no_sync_or_tune_command_fail_when_tune_variant_present() {
+fn tune_surface_conformance_fail_when_tune_missing() {
     let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom/src/main.rs",
-        "fn main() {}\n\nenum Command {\n    Run,\n    Tune(TuneArgs),\n}\n",
+    seed_tune_surface(&ws, &TUNE_MAIN.replace("    Tune(TuneArgs),\n", ""));
+    let out = invoke(&["tune_surface_conformance"], Some(ws.path()), None);
+    assert_fail(&out, "loom tune");
+}
+
+#[test]
+fn tune_surface_conformance_fail_when_plural_subcommand_present() {
+    let ws = make_workspace();
+    seed_tune_surface(
+        &ws,
+        &TUNE_MAIN.replace("Skill(TuneSurfaceArgs)", "Skills(TuneSurfaceArgs)"),
     );
-    let out = invoke(&["no_sync_or_tune_command"], Some(ws.path()), None);
-    assert_fail(&out, "Tune");
+    let out = invoke(&["tune_surface_conformance"], Some(ws.path()), None);
+    assert_fail(&out, "skills");
+}
+
+#[test]
+fn tune_surface_conformance_fail_when_all_accepts_targets() {
+    let ws = make_workspace();
+    seed_tune_surface(
+        &ws,
+        &TUNE_MAIN.replace(
+            "struct TuneAllArgs {\n    level: Option<TuneLevelArg>,",
+            "struct TuneAllArgs {\n    level: Option<TuneLevelArg>,\n    targets: Vec<String>,",
+        ),
+    );
+    let out = invoke(&["tune_surface_conformance"], Some(ws.path()), None);
+    assert_fail(&out, "must not accept target names");
+}
+
+#[test]
+fn tune_surface_conformance_fail_when_dry_run_allowed_on_list_command() {
+    let ws = make_workspace();
+    seed_tune_surface(
+        &ws,
+        &TUNE_MAIN.replace(
+            "#[arg(long, requires = \"level\")]\n    dry_run: bool,",
+            "#[arg(long)]\n    dry_run: bool,",
+        ),
+    );
+    let out = invoke(&["tune_surface_conformance"], Some(ws.path()), None);
+    assert_fail(&out, "must require `level`");
 }
 
 // ---------------------------------------------------------------------------
@@ -1514,12 +1581,30 @@ const COMMAND_ENUM_DEFAULT: &str = concat!(
     "        #[arg(long)]\n",
     "        raw: bool,\n",
     "    },\n",
-    "    Msg {\n",
-    "        #[arg(long, short = 'c')]\n",
-    "        chat: bool,\n",
-    "        #[arg(long, short = 's')]\n",
-    "        spec: Option<String>,\n",
-    "    },\n",
+    "    Inbox(InboxArgs),\n",
+    "}\n",
+    "struct InboxArgs { action: Option<InboxAction> }\n",
+    "struct InboxFilterArgs {\n",
+    "    #[arg(long, short = 's')]\n",
+    "    spec: Option<String>,\n",
+    "    #[arg(long, short = 'k')]\n",
+    "    kind: Option<String>,\n",
+    "}\n",
+    "enum InboxAction { List(InboxListArgs), View(InboxViewArgs), Chat(InboxChatArgs) }\n",
+    "struct InboxListArgs { filters: InboxFilterArgs }\n",
+    "struct InboxViewArgs {\n",
+    "    number: Option<u32>,\n",
+    "    #[arg(long, short = 'b')]\n",
+    "    bead: Option<String>,\n",
+    "    #[arg(long, short = 'p')]\n",
+    "    proposal: Option<String>,\n",
+    "}\n",
+    "struct InboxChatArgs {\n",
+    "    number: Option<u32>,\n",
+    "    #[arg(long, short = 'b')]\n",
+    "    bead: Option<String>,\n",
+    "    #[arg(long, short = 'p')]\n",
+    "    proposal: Option<String>,\n",
     "}\n",
 );
 
@@ -1588,6 +1673,28 @@ const HELP_GROUPS_MINIMAL: &str = concat!(
     "    (\"State\", &[\"init\"]),\n",
 );
 
+const INBOX_MODES_SECTION: &str = concat!(
+    "### Inbox Modes\n",
+    "\n",
+    "| Mode | Invocation | Where it runs |\n",
+    "|------|------------|---------------|\n",
+    "| List | `loom inbox` / `loom inbox list` | host |\n",
+    "| View by number | `loom inbox view <N>` | host |\n",
+    "| View by bead | `loom inbox view -b <bead-id>` | host |\n",
+    "| View by proposal | `loom inbox view -p <proposal-id>` | host |\n",
+    "| Chat queue | `loom inbox chat` | container |\n",
+    "| Chat by number | `loom inbox chat <N>` | container |\n",
+    "| Chat by bead | `loom inbox chat -b <bead-id>` | container |\n",
+    "| Chat by proposal | `loom inbox chat -p <proposal-id>` | container |\n",
+    "\n",
+    "| Flag | Argument | Purpose |\n",
+    "|------|----------|---------|\n",
+    "| `-s`, `--spec` | `<label>` | filter |\n",
+    "| `-k`, `--kind` | `clarify|blocked|tune` | filter |\n",
+    "| `-b`, `--bead` | `<bead-id>` | address |\n",
+    "| `-p`, `--proposal` | `<proposal-id>` | address |\n",
+);
+
 #[test]
 fn surface_conformance_pass_when_spec_and_binary_agree() {
     let ws = make_workspace();
@@ -1595,6 +1702,74 @@ fn surface_conformance_pass_when_spec_and_binary_agree() {
     seed_surface_main(&ws, HELP_GROUPS_MINIMAL);
     let out = invoke(&["surface_conformance"], Some(ws.path()), None);
     assert_pass(&out);
+}
+
+#[test]
+fn surface_conformance_validates_inbox_modes() {
+    let ws = make_workspace();
+    let logs_and_inbox = format!("{LOGS_UX_TABLE}\n{INBOX_MODES_SECTION}");
+    seed_surface_spec_with(&ws, SPEC_FR1_MINIMAL, &logs_and_inbox);
+    seed_surface_main(&ws, HELP_GROUPS_MINIMAL);
+    let out = invoke(&["surface_conformance"], Some(ws.path()), None);
+    assert_pass(&out);
+}
+
+#[test]
+fn surface_conformance_fail_when_inbox_subcommand_missing() {
+    let ws = make_workspace();
+    let logs_and_inbox = format!("{LOGS_UX_TABLE}\n{INBOX_MODES_SECTION}");
+    seed_surface_spec_with(&ws, SPEC_FR1_MINIMAL, &logs_and_inbox);
+    seed_surface_main_with(
+        &ws,
+        HELP_GROUPS_MINIMAL,
+        &COMMAND_ENUM_DEFAULT.replace(", Chat(InboxChatArgs)", ""),
+    );
+    let out = invoke(&["surface_conformance"], Some(ws.path()), None);
+    assert_fail(&out, "chat");
+}
+
+#[test]
+fn surface_conformance_fail_when_removed_inbox_flag_resurfaces() {
+    let ws = make_workspace();
+    seed_surface_spec(
+        &ws,
+        &SPEC_FR1_MINIMAL.replace(
+            "   | `loom doctor` | because |",
+            "   | `loom doctor` | because |\n   | `loom inbox -c` / `loom inbox --chat` | because |",
+        ),
+    );
+    seed_surface_main_with(
+        &ws,
+        HELP_GROUPS_MINIMAL,
+        &COMMAND_ENUM_DEFAULT.replace(
+            "struct InboxArgs { action: Option<InboxAction> }",
+            "struct InboxArgs { #[arg(long, short = 'c')] chat: bool, action: Option<InboxAction> }",
+        ),
+    );
+    let out = invoke(&["surface_conformance"], Some(ws.path()), None);
+    assert_fail(&out, "--chat");
+}
+
+#[test]
+fn surface_conformance_fail_when_removed_inbox_subcommand_resurfaces() {
+    let ws = make_workspace();
+    seed_surface_spec(
+        &ws,
+        &SPEC_FR1_MINIMAL.replace(
+            "   | `loom doctor` | because |",
+            "   | `loom doctor` | because |\n   | `loom inbox apply` | because |",
+        ),
+    );
+    seed_surface_main_with(
+        &ws,
+        HELP_GROUPS_MINIMAL,
+        &COMMAND_ENUM_DEFAULT.replace(
+            "List(InboxListArgs), View(InboxViewArgs), Chat(InboxChatArgs)",
+            "List(InboxListArgs), View(InboxViewArgs), Chat(InboxChatArgs), Apply",
+        ),
+    );
+    let out = invoke(&["surface_conformance"], Some(ws.path()), None);
+    assert_fail(&out, "loom inbox apply");
 }
 
 #[test]
@@ -1692,12 +1867,7 @@ fn surface_conformance_fail_when_binary_logs_flag_missing_from_spec() {
             "        #[arg(long)]\n",
             "        ghost: bool,\n",
             "    },\n",
-            "    Msg {\n",
-            "        #[arg(long, short = 'c')]\n",
-            "        chat: bool,\n",
-            "        #[arg(long, short = 's')]\n",
-            "        spec: Option<String>,\n",
-            "    },\n",
+            "    Inbox(InboxArgs),\n",
             "}\n",
         ),
     );
@@ -1720,12 +1890,7 @@ fn surface_conformance_long_attr_with_explicit_value_is_recognised() {
             "        #[arg(long)]\n",
             "        raw: bool,\n",
             "    },\n",
-            "    Msg {\n",
-            "        #[arg(long, short = 'c')]\n",
-            "        chat: bool,\n",
-            "        #[arg(long, short = 's')]\n",
-            "        spec: Option<String>,\n",
-            "    },\n",
+            "    Inbox(InboxArgs),\n",
             "}\n",
         ),
     );
@@ -3277,7 +3442,7 @@ const TODO_CRITERION_STATUS_PASS_BODY: &str = "pub struct TodoContext { pub crit
      pub struct PlanContext { pub spec_path: String }\n\
      pub struct LoopContext { pub spec_path: String }\n\
      pub struct ReviewContext { pub spec_path: String }\n\
-     pub struct MsgContext { pub scratchpad_path: String }\n";
+     pub struct InboxContext { pub scratchpad_path: String }\n";
 
 #[test]
 fn todo_contexts_carry_criterion_status_pass_when_only_todo_context_has_field() {
@@ -3305,7 +3470,7 @@ fn todo_contexts_carry_criterion_status_fail_when_todo_missing_field() {
          pub struct PlanContext { pub spec_path: String }\n\
          pub struct LoopContext { pub spec_path: String }\n\
          pub struct ReviewContext { pub spec_path: String }\n\
-         pub struct MsgContext { pub scratchpad_path: String }\n",
+         pub struct InboxContext { pub scratchpad_path: String }\n",
     );
     let out = invoke(
         &["todo_contexts_carry_criterion_status"],
@@ -3325,7 +3490,7 @@ fn todo_contexts_carry_criterion_status_fail_when_todo_field_has_wrong_type() {
          pub struct PlanContext { pub spec_path: String }\n\
          pub struct LoopContext { pub spec_path: String }\n\
          pub struct ReviewContext { pub spec_path: String }\n\
-         pub struct MsgContext { pub scratchpad_path: String }\n",
+         pub struct InboxContext { pub scratchpad_path: String }\n",
     );
     let out = invoke(
         &["todo_contexts_carry_criterion_status"],
@@ -3348,7 +3513,7 @@ fn todo_contexts_carry_criterion_status_fail_when_run_context_carries_field() {
          pub struct PlanContext { pub spec_path: String }\n\
          pub struct LoopContext { pub criterion_status: Vec<CriterionStatus> }\n\
          pub struct ReviewContext { pub spec_path: String }\n\
-         pub struct MsgContext { pub scratchpad_path: String }\n",
+         pub struct InboxContext { pub scratchpad_path: String }\n",
     );
     let out = invoke(
         &["todo_contexts_carry_criterion_status"],
@@ -3367,7 +3532,7 @@ fn todo_contexts_carry_criterion_status_finds_structs_split_across_files() {
     seed(
         ws.path(),
         "crates/loom-templates/src/lib.rs",
-        "pub mod todo;\npub mod plan;\npub mod run;\npub mod review;\npub mod msg;\n",
+        "pub mod todo;\npub mod plan;\npub mod run;\npub mod review;\npub mod inbox;\n",
     );
     seed(
         ws.path(),
@@ -3391,8 +3556,8 @@ fn todo_contexts_carry_criterion_status_finds_structs_split_across_files() {
     );
     seed(
         ws.path(),
-        "crates/loom-templates/src/msg/mod.rs",
-        "pub struct MsgContext { pub scratchpad_path: String }\n",
+        "crates/loom-templates/src/inbox/mod.rs",
+        "pub struct InboxContext { pub scratchpad_path: String }\n",
     );
     let out = invoke(
         &["todo_contexts_carry_criterion_status"],

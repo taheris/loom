@@ -32,7 +32,7 @@ Loom drives a five-phase pipeline per spec:
 2. `loom todo` — decompose changed specs into beads
 3. `loom loop [BEAD_OR_EPIC_ID ...]` — execute beads through the configured agent
 4. `loom gate verify` / `loom gate review` — deterministic checks + LLM judge
-5. `loom msg <bead>` — resolve `loom:clarify` beads with the Options Format
+5. `loom inbox` / `loom inbox chat` — resolve clarifies, blockers, and tune proposals
 
 See `specs/harness.md` for the full command surface and `specs/gate.md` for the
 verification model.

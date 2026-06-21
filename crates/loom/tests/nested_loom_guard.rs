@@ -30,6 +30,7 @@ fn mutating_and_llm_spawning_subcommands_refuse_with_loom_inside_set() {
         &["gate", "judge", "--tree"],
         &["gate", "rubric", "--tree"],
         &["inbox", "chat"],
+        &["tune", "skill", "fast"],
         &["todo"],
     ] {
         let out = loom_with_inside_env(sub);
@@ -87,6 +88,7 @@ fn readonly_and_deterministic_gate_subcommands_run_under_loom_inside_set() {
         &["inbox"],
         &["inbox", "list"],
         &["inbox", "view", "1"],
+        &["tune"],
         &["gate"],
         &["gate", "status", "--tree"],
         &["gate", "verify", "--tree"],

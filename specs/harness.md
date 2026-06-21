@@ -3411,7 +3411,7 @@ Criteria.
       drifts from FR1 (command set, flag set, removed surface,
       grouping order) and exits 0 when spec and binary agree.
       Wired as a `[check]`-tier verifier under `loom gate check`
-  [check?](cargo run -p loom-walk -- surface_conformance)
+  [check](cargo run -p loom-walk -- surface_conformance)
 - Bare `loom` (no args) renders the same Workflow / Inspection /
       State grouped sections (in spec order) as `loom --help`,
       `loom -h`, and `loom help` — clap's flat default-help fallback
@@ -3439,7 +3439,7 @@ Criteria.
       absence of `--kind` means all kinds. Filters narrow before positional
       numbering and default ordering is group-first (`clarify`, `blocked`,
       `tune`) then FIFO within each group
-  [test?](inbox_kind_filter_narrows_list)
+  [test](inbox_kind_filter_narrows_list)
 - `loom inbox view <N>` / `loom inbox view -b <id>` /
       `loom inbox view -p <proposal-id>` renders the addressed item host-side
       without launching a container, including durable ids and manual repair
@@ -3795,7 +3795,7 @@ two agent-loop observers.
 - `loom sync` remains absent, but `loom tune` is present as the manual
       SkillOpt-style proposal command; the surface-conformance walk rejects
       any reintroduction of sync and validates the tune subcommand shape
-  [check?](cargo run -p loom-walk -- tune_surface_conformance)
+  [check](cargo run -p loom-walk -- tune_surface_conformance)
 
 ### Cache database
 
@@ -4279,9 +4279,9 @@ two agent-loop observers.
     spec, hard-failing on any drift across four dimensions:
     (1) **Command set** — FR1's commands ↔ the `Command` enum's
     variants; (2) **Flag set** — flags documented in the spec's
-    per-command tables (e.g. *Msg Modes*, *Logs UX*, FR1 scope-flag
-    lines) ↔ declared `#[arg(...)]`; (3) **Removed surface** — the
-    `Removed` table is absent from the binary; (4) **Grouping
+    per-command tables (e.g. *Inbox Modes*, *Tune Modes*, *Logs UX*,
+    FR1 scope-flag lines) ↔ declared `#[arg(...)]`; (3) **Removed
+    surface** — the `Removed` table is absent from the binary; (4) **Grouping
     order** — both `loom --help` AND bare `loom` render `Workflow:`
     / `Inspection:` / `State:` in FR1's declared order. Help-text
     wording is *not* a dimension — CLI-1 style is enforced by
