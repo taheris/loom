@@ -643,6 +643,22 @@ mod tests {
         }
     }
 
+    const PLANNING_INTERVIEW_PROMPT: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/planning_prompt_interview_modes.md"
+    ));
+    const POLISH_MODE_DEFINITION: &str = "- polish / do-a-polish: report-only mode. Review the proposed wording and report suggested edits, but do not modify files or apply edits unless the human explicitly asks you to make the edits.";
+    const ONE_BY_ONE_MODE_DEFINITION: &str = "- one-by-one: ask exactly one design question per turn, then wait for the human's answer before asking the next question or changing topics.";
+
+    fn json_string_body(value: &str) -> String {
+        let encoded = serde_json::to_string(value).expect("encode string");
+        encoded
+            .strip_prefix('"')
+            .and_then(|body| body.strip_suffix('"'))
+            .expect("serde_json string has quotes")
+            .to_string()
+    }
+
     /// Mock-pi scenarios all reply within ~50ms; 5 s is comfortably above
     /// any legitimate jitter without making a hung scenario stall the suite.
     const TEST_HANDSHAKE_BUDGET: Duration = Duration::from_secs(5);
@@ -927,6 +943,73 @@ mod tests {
         assert!(
             saw_scratch_echo,
             "scratch.md content missing from steer payload"
+        );
+    }
+
+    #[tokio::test]
+    async fn driver_repins_interview_modes_on_compaction_start_via_steer() {
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let scratch_body = "## Scratchpad\n- decisions recorded after compaction started\n";
+        std::fs::write(scratch.path().join("prompt.txt"), PLANNING_INTERVIEW_PROMPT)
+            .expect("write prompt.txt");
+        std::fs::write(scratch.path().join("scratch.md"), scratch_body).expect("write scratch.md");
+
+        let mut config = sample_config(None);
+        config.scratch_dir = scratch.path().to_path_buf();
+        let expected_payload = build_repin_payload(scratch.path()).expect("build payload");
+        let expected_wire_payload = json_string_body(&expected_payload);
+        let prompt_wire = json_string_body(PLANNING_INTERVIEW_PROMPT);
+        let scratch_wire = json_string_body(scratch_body);
+
+        let session = spawn_with_handshake(
+            mock_command("compaction"),
+            None,
+            None,
+            TEST_HANDSHAKE_BUDGET,
+            &SystemClock::new(),
+        )
+        .await
+        .expect("spawn");
+        let mut session = session.prompt("kickoff").await.expect("prompt ok");
+
+        let mut handler_called = false;
+        let mut echoed_repin = String::new();
+        loop {
+            match session.next_event().await.expect("event ok") {
+                Some(ParsedAgentEvent::CompactionStart { .. }) if !handler_called => {
+                    PiBackend::on_compaction_start(&mut session, &config)
+                        .await
+                        .expect("on_compaction_start ok");
+                    handler_called = true;
+                }
+                Some(ParsedAgentEvent::TextDelta { text, .. }) => {
+                    if text.contains(&expected_wire_payload) {
+                        echoed_repin = text;
+                    }
+                }
+                Some(ParsedAgentEvent::SessionComplete { .. }) => break,
+                Some(_) => continue,
+                None => panic!("unexpected EOF before SessionComplete"),
+            }
+        }
+        assert!(handler_called, "compaction_start was not observed");
+        assert!(
+            echoed_repin.contains(&prompt_wire),
+            "full prompt.txt payload missing from steer echo: {echoed_repin}",
+        );
+        assert!(
+            echoed_repin.contains(POLISH_MODE_DEFINITION),
+            "polish mode definition missing from steer echo: {echoed_repin}",
+        );
+        assert!(
+            echoed_repin.contains(ONE_BY_ONE_MODE_DEFINITION),
+            "one-by-one mode definition missing from steer echo: {echoed_repin}",
+        );
+        let prompt_pos = echoed_repin.find(&prompt_wire).expect("prompt position");
+        let scratch_pos = echoed_repin.find(&scratch_wire).expect("scratch position");
+        assert!(
+            prompt_pos < scratch_pos,
+            "prompt.txt payload must precede scratch.md payload: {echoed_repin}",
         );
     }
 

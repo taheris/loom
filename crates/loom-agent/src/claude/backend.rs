@@ -277,6 +277,59 @@ mod tests {
         }
     }
 
+    const PLANNING_INTERVIEW_PROMPT: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/planning_prompt_interview_modes.md"
+    ));
+    const POLISH_MODE_DEFINITION: &str = "- polish / do-a-polish: report-only mode. Review the proposed wording and report suggested edits, but do not modify files or apply edits unless the human explicitly asks you to make the edits.";
+    const ONE_BY_ONE_MODE_DEFINITION: &str = "- one-by-one: ask exactly one design question per turn, then wait for the human's answer before asking the next question or changing topics.";
+
+    fn jq_is_available() -> bool {
+        std::process::Command::new("jq")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn compact_hook_context_from_settings(
+        scratch: &loom_driver::scratch::ScratchSession,
+    ) -> Option<String> {
+        if !jq_is_available() {
+            eprintln!("jq missing; skipping compact-hook repin test");
+            return None;
+        }
+        let body = std::fs::read_to_string(scratch.claude_settings()).expect("read settings");
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("parse settings");
+        let cmd = parsed["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            .as_str()
+            .expect("hook command");
+        let repin_script = scratch.repin_script();
+        assert_eq!(cmd, repin_script.to_string_lossy().as_ref());
+
+        let out = std::process::Command::new("bash")
+            .arg(cmd)
+            .output()
+            .expect("run repin.sh");
+        assert!(
+            out.status.success(),
+            "repin.sh failed: stderr={}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("parse hook output");
+        assert_eq!(
+            envelope["hookSpecificOutput"]["hookEventName"],
+            "SessionStart",
+        );
+        Some(
+            envelope["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .expect("additional context")
+                .to_string(),
+        )
+    }
+
     fn mock_claude_path() -> PathBuf {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         for ancestor in manifest_dir.ancestors() {
@@ -355,6 +408,43 @@ mod tests {
         assert_eq!(decoded.image_source, cfg.image_source);
         assert_eq!(decoded.initial_prompt, cfg.initial_prompt);
         assert_eq!(decoded.agent_args, cfg.agent_args);
+    }
+
+    #[test]
+    fn claude_compact_hook_rehydrates_interview_modes() {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let scratch = loom_driver::scratch::ScratchSession::open(
+            workspace.path(),
+            "lm-interview",
+            PLANNING_INTERVIEW_PROMPT,
+            "loom plan @ agent",
+        )
+        .expect("open scratch");
+        let scratch_body = "## Scratchpad\n- compacted summary omitted interview modes\n";
+        std::fs::write(scratch.path().join("scratch.md"), scratch_body).expect("write scratch.md");
+
+        let Some(context) = compact_hook_context_from_settings(&scratch) else {
+            return;
+        };
+        let expected =
+            format!("loom plan @ agent\n\n{PLANNING_INTERVIEW_PROMPT}\n\n{scratch_body}");
+        assert_eq!(context, expected);
+        assert!(
+            context.contains(POLISH_MODE_DEFINITION),
+            "polish mode definition missing from compact-hook context: {context}",
+        );
+        assert!(
+            context.contains(ONE_BY_ONE_MODE_DEFINITION),
+            "one-by-one mode definition missing from compact-hook context: {context}",
+        );
+        let prompt_pos = context
+            .find(PLANNING_INTERVIEW_PROMPT)
+            .expect("prompt position");
+        let scratch_pos = context.find(scratch_body).expect("scratch position");
+        assert!(
+            prompt_pos < scratch_pos,
+            "prompt.txt payload must precede scratch.md payload: {context}",
+        );
     }
 
     #[test]

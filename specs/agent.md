@@ -1000,7 +1000,7 @@ the entrypoint run the wrong runtime.
 - Pi backend compaction re-pin preserves a fixture planning prompt's
   `Interview Modes` definitions for `polish` report-only behavior and
   `one by one` question sequencing in the steer payload
-  [test?](driver_repins_interview_modes_on_compaction_start_via_steer)
+  [test](driver_repins_interview_modes_on_compaction_start_via_steer)
 - Pi backend handles malformed JSONL gracefully (logs warning, continues)
   [test](malformed_json_returns_invalid_json_error)
 - Pi backend logs extension_ui_request at debug level without responding
@@ -1023,7 +1023,7 @@ the entrypoint run the wrong runtime.
 - Claude backend compact-hook delivery preserves a fixture planning
   prompt's `Interview Modes` definitions for `polish` report-only
   behavior and `one by one` question sequencing in the resumed context
-  [test?](claude_compact_hook_rehydrates_interview_modes)
+  [test](claude_compact_hook_rehydrates_interview_modes)
 - Claude backend auto-approves permission requests via control_response
   [test](control_request_autoapproves_when_denylist_empty)
 - Claude backend supports steering — sends a stream-json user message via stdin during the session and verifies the agent receives it

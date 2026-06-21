@@ -227,6 +227,53 @@ fn bash_single_quote(s: &str) -> String {
 mod tests {
     use super::*;
 
+    const PLANNING_INTERVIEW_PROMPT: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/planning_prompt_interview_modes.md"
+    ));
+    const POLISH_MODE_DEFINITION: &str = "- polish / do-a-polish: report-only mode. Review the proposed wording and report suggested edits, but do not modify files or apply edits unless the human explicitly asks you to make the edits.";
+    const ONE_BY_ONE_MODE_DEFINITION: &str = "- one-by-one: ask exactly one design question per turn, then wait for the human's answer before asking the next question or changing topics.";
+
+    fn jq_is_available() -> bool {
+        std::process::Command::new("jq")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn repin_context(prompt: &str, scratch: &str) -> Option<String> {
+        if !jq_is_available() {
+            eprintln!("jq missing; skipping repin.sh envelope test");
+            return None;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let session =
+            ScratchSession::open(workspace.path(), "lm-3", prompt, "loom loop @ lm-3").unwrap();
+        fs::write(session.path().join("scratch.md"), scratch).unwrap();
+
+        let out = std::process::Command::new("bash")
+            .arg(session.repin_script())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "repin.sh failed: stderr={}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+        let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            parsed["hookSpecificOutput"]["hookEventName"],
+            "SessionStart",
+        );
+        Some(
+            parsed["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        )
+    }
+
     #[test]
     fn open_creates_layout_and_drop_removes_it() {
         let workspace = tempfile::tempdir().unwrap();
@@ -308,45 +355,12 @@ mod tests {
 
     #[test]
     fn repin_script_runs_jq_envelope_against_files() {
-        // Skip when the test environment does not have jq — repin.sh
-        // depends on it for JSON escaping.
-        if !std::process::Command::new("jq")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            eprintln!("jq missing; skipping envelope smoke test");
-            return;
-        }
-        let workspace = tempfile::tempdir().unwrap();
-        let session = ScratchSession::open(
-            workspace.path(),
-            "lm-3",
+        let Some(context) = repin_context(
             "the initial prompt\nwith\nlines",
-            "loom loop @ lm-3",
-        )
-        .unwrap();
-        // Simulate the agent appending to the scratchpad mid-session.
-        fs::write(
-            session.path().join("scratch.md"),
             "## decisions\n- pick option A\n",
-        )
-        .unwrap();
-
-        let out = std::process::Command::new("bash")
-            .arg(session.repin_script())
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "repin.sh failed: stderr={}",
-            String::from_utf8_lossy(&out.stderr),
-        );
-        let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        let context = parsed["hookSpecificOutput"]["additionalContext"]
-            .as_str()
-            .unwrap();
+        ) else {
+            return;
+        };
         assert!(
             context.contains("loom loop @ lm-3"),
             "missing banner in {context}",
@@ -359,9 +373,47 @@ mod tests {
             context.contains("pick option A"),
             "missing scratch.md content in {context}",
         );
-        assert_eq!(
-            parsed["hookSpecificOutput"]["hookEventName"],
-            "SessionStart",
+    }
+
+    #[test]
+    fn repin_script_preserves_full_prompt_verbatim() {
+        let scratch = "## Scratchpad\n- decisions recorded after compaction started\n";
+        let Some(context) = repin_context(PLANNING_INTERVIEW_PROMPT, scratch) else {
+            return;
+        };
+        let expected = format!("loom loop @ lm-3\n\n{PLANNING_INTERVIEW_PROMPT}\n\n{scratch}");
+        assert_eq!(context, expected);
+        assert!(
+            context.find(PLANNING_INTERVIEW_PROMPT).unwrap() < context.find(scratch).unwrap(),
+            "prompt.txt bytes must precede scratch.md bytes",
+        );
+    }
+
+    #[test]
+    fn compacted_resume_preserves_polish_mode_definition() {
+        let Some(context) = repin_context(
+            PLANNING_INTERVIEW_PROMPT,
+            "## Scratchpad\n- compacted summary omitted the polish mode\n",
+        ) else {
+            return;
+        };
+        assert!(
+            context.contains(POLISH_MODE_DEFINITION),
+            "polish mode definition missing from compacted context: {context}",
+        );
+    }
+
+    #[test]
+    fn compacted_resume_preserves_one_by_one_mode_definition() {
+        let Some(context) = repin_context(
+            PLANNING_INTERVIEW_PROMPT,
+            "## Scratchpad\n- compacted summary omitted one-by-one sequencing\n",
+        ) else {
+            return;
+        };
+        assert!(
+            context.contains(ONE_BY_ONE_MODE_DEFINITION),
+            "one-by-one mode definition missing from compacted context: {context}",
         );
     }
 

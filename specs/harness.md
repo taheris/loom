@@ -3934,16 +3934,16 @@ two agent-loop observers.
 - Running `repin.sh` preserves the full `prompt.txt` bytes in the
       post-compaction envelope before appending `scratch.md`; compacted
       summaries are not accepted as substitutes for the pinned prompt
-  [test?](repin_script_preserves_full_prompt_verbatim)
+  [test](repin_script_preserves_full_prompt_verbatim)
 - A simulated planning compaction with a fixture `Interview Modes`
       section defining `polish` / `do a polish` as report-only, with no
       edits applied unless explicitly asked, resumes with that definition
       still present
-  [test?](compacted_resume_preserves_polish_mode_definition)
+  [test](compacted_resume_preserves_polish_mode_definition)
 - A simulated planning compaction with a fixture `Interview Modes`
       section defining `one by one` as one design question per turn
       resumes with that definition still present
-  [test?](compacted_resume_preserves_one_by_one_mode_definition)
+  [test](compacted_resume_preserves_one_by_one_mode_definition)
 - Any backend-specific hard-limit fallback preserves instruction,
       protocol, and mode sections verbatim and removes ordinary history
       before pinned instruction text
