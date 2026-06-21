@@ -1061,11 +1061,11 @@ documents in front of the agent with zero configuration.
 - The interview-modes partial documents `polish` / `do a polish` as a
   report-only review mode that proposes edits but does not apply them
   unless the user explicitly asks
-  [check?](bash -c "grep -qi 'report-only' crates/loom-templates/templates/partial/interview_modes.md && grep -qi 'unless explicitly asked' crates/loom-templates/templates/partial/interview_modes.md")
+  [check](bash -c "grep -qi 'report-only' crates/loom-templates/templates/partial/interview_modes.md && grep -qi 'unless explicitly asked' crates/loom-templates/templates/partial/interview_modes.md")
 - The interview-modes partial documents `one by one` as one question per
   turn with a proposed default and an explicit wait for the user's answer
   before proceeding
-  [check?](bash -c "grep -qi 'one question per' crates/loom-templates/templates/partial/interview_modes.md && grep -qi 'wait' crates/loom-templates/templates/partial/interview_modes.md")
+  [check](bash -c "grep -qi 'one question per' crates/loom-templates/templates/partial/interview_modes.md && grep -qi 'wait' crates/loom-templates/templates/partial/interview_modes.md")
 - The `chat_marker_final_turn_only.md` partial is included by every
   interactive-session template (`plan`, `inbox`) and documents that inbox may
   use `LOOM_APPLY: {"proposals":[...]}` as its final marker when driver apply
