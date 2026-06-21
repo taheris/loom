@@ -200,6 +200,8 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                     }
                 })?;
                 self.validate_cursor(&spec.label, &bead.id, &cursor).await?;
+                self.close_spec_epic_if_needed(&bead.id, bead.status.as_str())
+                    .await?;
                 (bead.id.clone(), Some(cursor), false)
             }
             None => {
@@ -234,8 +236,16 @@ impl<R: CommandRunner> ProductionTodoController<R> {
                 ..CreateOpts::default()
             })
             .await?;
-        self.bd.close(&id, Some("spec metadata carrier")).await?;
+        self.close_spec_epic_if_needed(&id, "open").await?;
         Ok(id)
+    }
+
+    async fn close_spec_epic_if_needed(&self, id: &BeadId, status: &str) -> Result<(), TodoError> {
+        if status == "closed" {
+            return Ok(());
+        }
+        self.bd.close(id, Some("spec metadata carrier")).await?;
+        Ok(())
     }
 
     async fn spec_epics_for(

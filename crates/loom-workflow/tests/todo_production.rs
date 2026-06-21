@@ -204,9 +204,11 @@ fn closed() -> RunOutput {
 fn preflight_responses(base: &str, head: &str) -> Vec<RunOutput> {
     vec![
         spec_epic("lm-alpha", "alpha", base),
+        closed(),
         empty_json(),
         empty_json(),
         spec_epic("lm-beta", "beta", head),
+        closed(),
         empty_json(),
         empty_json(),
         empty_json(),
@@ -266,9 +268,11 @@ fn init_multi_spec_workspace(workspace: &Path) -> Result<(String, String)> {
 fn multi_spec_preflight_responses(base: &str) -> Vec<RunOutput> {
     vec![
         spec_epic("lm-alpha", "alpha", base),
+        closed(),
         empty_json(),
         empty_json(),
         spec_epic("lm-beta", "beta", base),
+        closed(),
         empty_json(),
         empty_json(),
         empty_json(),
@@ -391,7 +395,7 @@ async fn todo_preflight_discovers_active_inactive_and_new_specs() -> Result<()> 
 }
 
 #[tokio::test]
-async fn todo_preflight_closes_new_spec_epics() -> Result<()> {
+async fn todo_preflight_closes_spec_metadata_epics() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (base, head) = init_workspace(dir.path())?;
     let runner = CapturingRunner::new(preflight_responses(&base, &head));
@@ -400,9 +404,18 @@ async fn todo_preflight_closes_new_spec_epics() -> Result<()> {
 
     let _session = ctrl.build_session().await?;
 
-    assert!(calls.calls()?.iter().any(|argv| {
-        argv == &["close", "lm-gamma", "--reason", "spec metadata carrier"].map(str::to_string)
-    }));
+    let close_calls = calls
+        .calls()?
+        .into_iter()
+        .filter(|argv| argv.first().is_some_and(|arg| arg == "close"))
+        .collect::<Vec<_>>();
+    for id in ["lm-alpha", "lm-beta", "lm-gamma"] {
+        assert!(
+            close_calls.iter().any(|argv| argv
+                == &["close", id, "--reason", "spec metadata carrier"].map(str::to_string)),
+            "missing close for {id}: {close_calls:?}"
+        );
+    }
     Ok(())
 }
 
