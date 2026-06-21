@@ -667,9 +667,17 @@ ships a tool type that reaches outside the container boundary.
 
 The harness creates a per-session scratch directory containing the
 rendered prompt and a live scratchpad — see [harness.md § Compaction
-Recovery](harness.md#compaction-recovery) for the file layout and
-lifecycle. This section describes only how each backend delivers the
-recovery content to the agent.
+Recovery](harness.md#compaction-recovery) for the file layout,
+lifecycle, and non-lossy pinned-context invariant. This section
+describes only how each backend delivers the recovery content to the
+agent.
+
+Every backend delivery path treats `prompt.txt` as active instruction
+context. Backend summaries may summarize ordinary conversation history,
+but they are never accepted as substitutes for reintroducing the pinned
+prompt. Phase protocol, project/session pins, and mode definitions must
+survive compaction/resume without relying on the LLM summary to remember
+them.
 
 **Delivery is asymmetric across backends.** Claude stream-json does
 not expose compaction events — Anthropic compacts internally with no
@@ -694,8 +702,8 @@ design choice.
 - Knows the per-key scratch directory path from the harness's
   `SpawnConfig`.
 - When a `compaction_start` event arrives in the JSONL stream, reads
-  `prompt.txt` + `scratch.md` from the scratch directory and sends the
-  concatenated content via a `steer` command on stdin.
+  the full `prompt.txt` plus `scratch.md` from the scratch directory and
+  sends the concatenated content via a `steer` command on stdin.
 - **Steer timing.** A `steer` command queues; pi delivers it after the
   current assistant turn finishes its tool calls, before the next LLM
   call — it does not inject content during compaction itself. The re-pin
@@ -723,10 +731,13 @@ design choice.
   management (truncation, summarization) when the conversation
   approaches model limits. The re-pin mechanism doesn't apply;
   the runner already has direct access to the rendered prompt and
-  scratchpad from the start of the session.
-- Context-management strategy for Direct is implementation work
-  for the runner itself, not a spec-level protocol — defer until
-  a Direct-driven phase actually hits context overflow in practice.
+  scratchpad from the start of the session. Any truncation strategy
+  keeps the initial rendered prompt in the pinned segment rather than
+  summarizing it away.
+- The detailed Direct context-management algorithm remains
+  implementation work for the runner itself. The spec-level contract is
+  only the pinned-context invariant above: truncation does not summarize
+  away the initial rendered prompt.
 
 ### Direct Backend
 
@@ -986,6 +997,10 @@ the entrypoint run the wrong runtime.
   [test](message_update_text_delta_yields_message_delta)
 - Pi backend detects CompactionStart event, reads `prompt.txt` + `scratch.md` from the per-key scratch directory, and sends the concatenated content via steer
   [test](driver_repins_on_compaction_start_via_steer)
+- Pi backend compaction re-pin preserves a fixture planning prompt's
+  `Interview Modes` definitions for `polish` report-only behavior and
+  `one by one` question sequencing in the steer payload
+  [test?](driver_repins_interview_modes_on_compaction_start_via_steer)
 - Pi backend handles malformed JSONL gracefully (logs warning, continues)
   [test](malformed_json_returns_invalid_json_error)
 - Pi backend logs extension_ui_request at debug level without responding
@@ -1005,6 +1020,10 @@ the entrypoint run the wrong runtime.
   [test](unknown_message_type_returns_empty_events)
 - Claude backend's `repin.sh` is registered under `SessionStart[matcher: compact]` before spawn, and the script emits a JSON envelope containing the scratch directory's `prompt.txt` + `scratch.md` when fired
   [test](claude_settings_registers_repin_under_session_start_compact)
+- Claude backend compact-hook delivery preserves a fixture planning
+  prompt's `Interview Modes` definitions for `polish` report-only
+  behavior and `one by one` question sequencing in the resumed context
+  [test?](claude_compact_hook_rehydrates_interview_modes)
 - Claude backend auto-approves permission requests via control_response
   [test](control_request_autoapproves_when_denylist_empty)
 - Claude backend supports steering — sends a stream-json user message via stdin during the session and verifies the agent receives it
@@ -1014,6 +1033,10 @@ the entrypoint run the wrong runtime.
 
 ### Direct backend
 
+- Direct context-budget management preserves the initial rendered prompt
+  as pinned instruction context when truncating or summarizing ordinary
+  conversation history
+  [test?](direct_context_budget_preserves_initial_prompt_pin)
 - Direct backend's `Session` impl spawns a container via `wrix spawn` with the `direct` runtime layer; the container's entrypoint exec's `loom-direct-runner`
   [test](direct_session_spawn_invokes_wrix_spawn_with_direct_runtime)
 - `loom-direct-runner` constructs a `loom-llm::Conversation`, registers the six sandbox-aware tools, runs the loop, and emits `AgentEvent` JSONL to stdout — the same common event shape as the subprocess backends

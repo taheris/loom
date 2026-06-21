@@ -2453,6 +2453,20 @@ conversation is lost. Recovery uses two pieces — the original phase prompt
 (re-pinned verbatim) and a live scratchpad the agent writes to during the
 session — joined by a hook script that re-injects both after compaction.
 
+**Pinned-context invariant.** `prompt.txt` is active instruction context,
+not summarizable chat history. After compaction, Loom reintroduces the
+full initial rendered prompt before the scratchpad so phase protocol,
+project pins, and mode definitions such as `Interview Modes` survive
+resume. A compacted LLM summary is never the sole carrier for pinned
+context. Token pressure in the initial prompt is handled as a separate
+prompt-size issue; it does not justify silently omitting or summarizing
+instruction/mode sections. The normal required path is full-prompt
+re-pinning. If any resumed-context assembly faces a backend-specific
+hard limit and must choose between compacted history and pinned
+instructions, it drops or summarizes ordinary history first; any
+exceptional fallback preserves instruction, protocol, and mode sections
+verbatim.
+
 **Per-session scratch directory.** At session start the driver creates
 `.loom/scratch/<key>/`:
 
@@ -3917,6 +3931,23 @@ two agent-loop observers.
 - Running `repin.sh` emits a valid `SessionStart[compact]` JSON
       envelope containing banner + `prompt.txt` + `scratch.md` contents
   [test](repin_script_runs_jq_envelope_against_files)
+- Running `repin.sh` preserves the full `prompt.txt` bytes in the
+      post-compaction envelope before appending `scratch.md`; compacted
+      summaries are not accepted as substitutes for the pinned prompt
+  [test?](repin_script_preserves_full_prompt_verbatim)
+- A simulated planning compaction with a fixture `Interview Modes`
+      section defining `polish` / `do a polish` as report-only, with no
+      edits applied unless explicitly asked, resumes with that definition
+      still present
+  [test?](compacted_resume_preserves_polish_mode_definition)
+- A simulated planning compaction with a fixture `Interview Modes`
+      section defining `one by one` as one design question per turn
+      resumes with that definition still present
+  [test?](compacted_resume_preserves_one_by_one_mode_definition)
+- Any backend-specific hard-limit fallback preserves instruction,
+      protocol, and mode sections verbatim and removes ordinary history
+      before pinned instruction text
+  [test?](hard_limit_fallback_preserves_pinned_instruction_sections)
 - `claude-settings.json` registers `repin.sh` under
       `SessionStart[matcher: compact]`
   [test](claude_settings_registers_repin_under_session_start_compact)
@@ -4355,6 +4386,11 @@ two agent-loop observers.
   to allow consumers to drop in replacements for Loom's compiled
   Askama templates is bolt-on-able after the typed-context public
   surface lands and is deferred until a concrete consumer asks.
+- **Prompt-size tuning for oversized initial prompts** — if a rendered
+  phase prompt grows too large to re-pin after compaction, the fix is
+  to tune the prompt/template/pinning surface separately. The compaction
+  recovery path does not silently drop pinned instruction context to
+  make room.
 - **Observation daemon** — a polling monitor that spawns short-lived
   agent sessions to observe tmux / browser logs and create beads for
   detected issues. Independent of the workflow phase set; deferred to
