@@ -491,6 +491,7 @@ mod tests {
         SpawnConfig {
             image_ref: "localhost/wrix-test:direct".into(),
             image_source: PathBuf::from("/nix/store/zzz-test.tar"),
+            image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
             profile_config: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "direct".into())],

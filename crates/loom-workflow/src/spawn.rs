@@ -33,9 +33,11 @@ pub fn build_spawn_config(
     let env = spawn_env(extra_env, &runtime_name);
     let launcher_env = spawn_launcher_env(launcher_env, &runtime_name);
     let diagnostics = log_spawn_diagnostics(runtime, &runtime_name, &entry.r#ref);
+    let image_source_kind = (!entry.source.as_os_str().is_empty()).then_some(entry.source_kind);
     SpawnConfig {
         image_ref: diagnostics.image_ref,
         image_source: entry.source.clone(),
+        image_source_kind,
         profile_config: entry.profile_config.clone(),
         workspace,
         env,
@@ -102,6 +104,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use loom_driver::agent::ImageSourceKind;
 
     struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
 
@@ -120,6 +123,7 @@ mod tests {
         ImageEntry {
             r#ref: "localhost/wrix-rust-pi:test".into(),
             source: PathBuf::from("/nix/store/image-rust-pi"),
+            source_kind: ImageSourceKind::NixDescriptor,
             profile_config: Some(PathBuf::from("/nix/store/wrix-rust-pi-profile-config.json")),
             digest: Some(PathBuf::from("/nix/store/image-rust-pi-digest")),
             runtime: Some(AgentRuntime::Pi),
@@ -158,6 +162,64 @@ mod tests {
             cfg.profile_config,
             Some(PathBuf::from("/nix/store/wrix-rust-pi-profile-config.json")),
         );
+        assert_eq!(cfg.image_source_kind, Some(ImageSourceKind::NixDescriptor));
+    }
+
+    #[test]
+    fn build_spawn_config_copies_docker_archive_source_kind_from_manifest() {
+        let mut image = entry();
+        image.source = PathBuf::from("/nix/store/no-filename-inference");
+        image.source_kind = ImageSourceKind::DockerArchive;
+
+        let cfg = build_spawn_config(
+            &image,
+            AgentRuntime::Pi,
+            PathBuf::from("/workspace"),
+            "prompt".into(),
+            PathBuf::from("/workspace/.loom/scratch/key"),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+
+        assert_eq!(
+            cfg.image_source,
+            PathBuf::from("/nix/store/no-filename-inference")
+        );
+        assert_eq!(cfg.image_source_kind, Some(ImageSourceKind::DockerArchive));
+        let json = serde_json::to_string(&cfg).expect("serialize spawn config");
+        let raw: serde_json::Value = serde_json::from_str(&json).expect("spawn config json");
+        assert_eq!(raw["image_source_kind"], "docker-archive");
+    }
+
+    #[test]
+    fn build_spawn_config_omits_image_source_kind_without_source_override() {
+        let mut image = entry();
+        image.source = PathBuf::new();
+
+        let cfg = build_spawn_config(
+            &image,
+            AgentRuntime::Pi,
+            PathBuf::from("/workspace"),
+            "prompt".into(),
+            PathBuf::from("/workspace/.loom/scratch/key"),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+
+        let json = serde_json::to_string(&cfg).expect("serialize spawn config");
+        let raw: serde_json::Value = serde_json::from_str(&json).expect("spawn config json");
+        assert!(
+            raw.get("image_source").is_none(),
+            "no source override: {json}"
+        );
+        assert!(
+            raw.get("image_source_kind").is_none(),
+            "no source kind without source override: {json}",
+        );
     }
 
     #[test]
@@ -175,6 +237,11 @@ mod tests {
         );
 
         let json = serde_json::to_string(&cfg).expect("serialize spawn config");
+        let raw: serde_json::Value = serde_json::from_str(&json).expect("spawn config json");
+        assert_eq!(
+            raw["image_source_kind"], "nix-descriptor",
+            "SpawnConfig must carry the manifest source_kind when image_source is emitted: {json}",
+        );
         assert!(
             !json.contains("profile_config"),
             "wrix rejects profile_config as a per-launch override: {json}",

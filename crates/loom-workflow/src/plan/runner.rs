@@ -222,9 +222,9 @@ mod tests {
         let manifest_path = dir.join("profile-images.json");
         let body = format!(
             r#"{{
-              "base":   {{ "claude": {{ "ref": "localhost/wrix-base-claude:abc",   "source": {base:?} }}, "pi": {{ "ref": "localhost/wrix-base-pi:abc",   "source": {base:?} }} }},
-              "rust":   {{ "claude": {{ "ref": "localhost/wrix-rust-claude:def",   "source": {rust:?} }}, "pi": {{ "ref": "localhost/wrix-rust-pi:def",   "source": {rust:?} }} }},
-              "python": {{ "claude": {{ "ref": "localhost/wrix-python-claude:ghi", "source": {py:?} }}, "pi": {{ "ref": "localhost/wrix-python-pi:ghi", "source": {py:?} }} }}
+              "base":   {{ "claude": {{ "ref": "localhost/wrix-base-claude:abc",   "source": {base:?}, "source_kind": "nix-descriptor" }}, "pi": {{ "ref": "localhost/wrix-base-pi:abc",   "source": {base:?}, "source_kind": "nix-descriptor" }} }},
+              "rust":   {{ "claude": {{ "ref": "localhost/wrix-rust-claude:def",   "source": {rust:?}, "source_kind": "nix-descriptor" }}, "pi": {{ "ref": "localhost/wrix-rust-pi:def",   "source": {rust:?}, "source_kind": "nix-descriptor" }} }},
+              "python": {{ "claude": {{ "ref": "localhost/wrix-python-claude:ghi", "source": {py:?}, "source_kind": "nix-descriptor" }}, "pi": {{ "ref": "localhost/wrix-python-pi:ghi", "source": {py:?}, "source_kind": "nix-descriptor" }} }}
             }}"#,
             base = dir.join("base.tar").display().to_string(),
             rust = dir.join("rust.tar").display().to_string(),

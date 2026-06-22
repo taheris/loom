@@ -907,6 +907,7 @@ mod tests {
         let cfg = SpawnConfig {
             image_ref: "localhost/img:tag".into(),
             image_source: PathBuf::from("/nix/store/none.tar"),
+            image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
             profile_config: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![],

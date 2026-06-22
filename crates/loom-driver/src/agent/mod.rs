@@ -28,9 +28,9 @@ mod repin;
 mod session;
 
 pub use backend::{
-    AgentBackend, DEFAULT_HANDSHAKE_TIMEOUT_SECS, DEFAULT_STALL_WARN_SECS, LOOM_INSIDE_ENV,
-    ModelSelection, MountSpec, OutputLimits, SessionOutcome, SpawnConfig, ThinkingLevel,
-    set_loom_inside,
+    AgentBackend, DEFAULT_HANDSHAKE_TIMEOUT_SECS, DEFAULT_STALL_WARN_SECS, ImageSourceKind,
+    LOOM_INSIDE_ENV, ModelSelection, MountSpec, OutputLimits, SessionOutcome, SpawnConfig,
+    ThinkingLevel, set_loom_inside,
 };
 pub use error::ProtocolError;
 pub use jsonl::{JsonlReader, MAX_LINE_BYTES};

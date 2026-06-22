@@ -366,6 +366,7 @@ mod tests {
         let cfg = SpawnConfig {
             image_ref: "localhost/wrix-test:claude".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-claude.tar"),
+            image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
             profile_config: Some(PathBuf::from(
                 "/nix/store/wrix-test-claude-profile-config.json",
             )),

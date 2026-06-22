@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::AgentRuntime;
+use crate::agent::{AgentRuntime, ImageSourceKind};
 use crate::identifier::ProfileName;
 
 use super::error::ProfileError;
@@ -13,16 +13,18 @@ use super::error::ProfileError;
 pub const ENV_VAR: &str = "LOOM_PROFILES_MANIFEST";
 
 /// One manifest entry: the podman ref to spawn, the Nix store path of the
-/// image archive that materializes it, the wrix ProfileConfig path matching
-/// that image variant, and (when produced by the flake glue) the image
-/// content-digest file.
+/// image source that materializes it, the source kind selecting the wrix
+/// install path, the wrix ProfileConfig path matching that image variant,
+/// and (when produced by the flake glue) the image content-digest file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {
     /// Podman ref (e.g. `localhost/wrix-rust-pi:abc123`) handed to `podman run`.
     #[serde(rename = "ref")]
     pub r#ref: String,
-    /// Nix store path of the image archive handed to the launcher install step.
+    /// Nix store path of the image source handed to the launcher install step.
     pub source: PathBuf,
+    /// Explicit source kind selecting the wrix launcher install path.
+    pub source_kind: ImageSourceKind,
     /// Optional Nix store path of the wrix ProfileConfig matching this image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_config: Option<PathBuf>,
@@ -172,11 +174,11 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let body = r#"{
           "base": {
-            "claude": { "ref": "localhost/wrix-base-claude:abc", "source": "/nix/store/aaa-image-base-claude" },
-            "pi": { "ref": "localhost/wrix-base-pi:def", "source": "/nix/store/bbb-image-base-pi" }
+            "claude": { "ref": "localhost/wrix-base-claude:abc", "source": "/nix/store/aaa-image-base-claude", "source_kind": "nix-descriptor" },
+            "pi": { "ref": "localhost/wrix-base-pi:def", "source": "/nix/store/bbb-image-base-pi", "source_kind": "nix-descriptor" }
           },
           "rust": {
-            "direct": { "ref": "localhost/wrix-rust-direct:ghi", "source": "/nix/store/ccc-image-rust-direct" }
+            "direct": { "ref": "localhost/wrix-rust-direct:ghi", "source": "/nix/store/ccc-image-rust-direct", "source_kind": "nix-descriptor" }
           }
         }"#;
         let path = write_manifest(dir.path(), body)?;
@@ -189,6 +191,7 @@ mod tests {
             base_pi.source,
             PathBuf::from("/nix/store/bbb-image-base-pi")
         );
+        assert_eq!(base_pi.source_kind, ImageSourceKind::NixDescriptor);
         assert_eq!(base_pi.digest, None);
         assert_eq!(base_pi.runtime, None);
         let rust_direct = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Direct)?;
@@ -204,7 +207,7 @@ mod tests {
           "rust": {
             "pi": {
               "ref": "localhost/wrix-rust-pi:def",
-              "source": "/nix/store/bbb-image-rust-pi",
+              "source": "/nix/store/bbb-image-rust-pi", "source_kind": "nix-descriptor",
               "profile_config": "/nix/store/eee-wrix-rust-pi-profile-config.json"
             }
           }
@@ -228,7 +231,7 @@ mod tests {
           "rust": {
             "pi": {
               "ref": "localhost/wrix-rust-pi:def",
-              "source": "/nix/store/bbb-image-rust-pi",
+              "source": "/nix/store/bbb-image-rust-pi", "source_kind": "nix-descriptor",
               "digest": "/nix/store/ddd-image-digest"
             }
           }
@@ -244,13 +247,35 @@ mod tests {
     }
 
     #[test]
+    fn from_path_rejects_missing_source_kind() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = write_manifest(
+            dir.path(),
+            r#"{ "rust": { "pi": { "ref": "r", "source": "/s" } } }"#,
+        )?;
+        let err = match ProfileImageManifest::from_path(&path) {
+            Err(e) => e,
+            Ok(_) => return Err(anyhow!("expected malformed manifest without source_kind")),
+        };
+        if let ProfileError::ManifestMalformed {
+            path: errored_path, ..
+        } = err
+        {
+            assert_eq!(errored_path, path);
+            Ok(())
+        } else {
+            Err(anyhow!("expected ManifestMalformed, got {err:?}"))
+        }
+    }
+
+    #[test]
     fn from_path_accepts_matching_runtime_metadata() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let body = r#"{
           "rust": {
             "pi": {
               "ref": "localhost/wrix-rust-pi:def",
-              "source": "/nix/store/bbb-image-rust-pi",
+              "source": "/nix/store/bbb-image-rust-pi", "source_kind": "nix-descriptor",
               "runtime": "pi"
             }
           }
@@ -269,7 +294,7 @@ mod tests {
           "rust": {
             "pi": {
               "ref": "localhost/wrix-rust-pi:def",
-              "source": "/nix/store/bbb-image-rust-pi",
+              "source": "/nix/store/bbb-image-rust-pi", "source_kind": "nix-descriptor",
               "runtime": "claude"
             }
           }
@@ -301,7 +326,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let path = write_manifest(
             dir.path(),
-            r#"{ "base": { "gpt": { "ref": "r", "source": "/s" } } }"#,
+            r#"{ "base": { "gpt": { "ref": "r", "source": "/s", "source_kind": "nix-descriptor" } } }"#,
         )?;
         let err = match ProfileImageManifest::from_path(&path) {
             Err(e) => e,
@@ -356,9 +381,9 @@ mod tests {
     fn declared_profiles_yields_keys_in_btreemap_order() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let body = r#"{
-          "rust":   { "pi": { "ref": "r1", "source": "/s1" } },
-          "base":   { "pi": { "ref": "r2", "source": "/s2" } },
-          "python": { "pi": { "ref": "r3", "source": "/s3" } }
+          "rust":   { "pi": { "ref": "r1", "source": "/s1", "source_kind": "nix-descriptor" } },
+          "base":   { "pi": { "ref": "r2", "source": "/s2", "source_kind": "nix-descriptor" } },
+          "python": { "pi": { "ref": "r3", "source": "/s3", "source_kind": "nix-descriptor" } }
         }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
@@ -373,7 +398,7 @@ mod tests {
     #[test]
     fn lookup_unknown_profile_carries_manifest_path() -> Result<()> {
         let dir = tempfile::tempdir()?;
-        let body = r#"{ "base": { "pi": { "ref": "r", "source": "/s" } } }"#;
+        let body = r#"{ "base": { "pi": { "ref": "r", "source": "/s", "source_kind": "nix-descriptor" } } }"#;
         let path = write_manifest(dir.path(), body)?;
         let manifest = ProfileImageManifest::from_path(&path)?;
         let err = match manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Pi) {
@@ -398,8 +423,8 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let body = r#"{
           "rust": {
-            "claude": { "ref": "r1", "source": "/s1" },
-            "pi": { "ref": "r2", "source": "/s2" }
+            "claude": { "ref": "r1", "source": "/s1", "source_kind": "nix-descriptor" },
+            "pi": { "ref": "r2", "source": "/s2", "source_kind": "nix-descriptor" }
           }
         }"#;
         let path = write_manifest(dir.path(), body)?;

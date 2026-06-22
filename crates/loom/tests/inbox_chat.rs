@@ -140,7 +140,7 @@ fn write_manifest(dir: &Path) -> PathBuf {
     std::fs::write(&source, "").expect("write base.tar");
     let manifest = dir.join("profile-images.json");
     let body = format!(
-        r#"{{"base": {{"pi": {{"ref":"localhost/wrix-base-pi:test","source":{source:?}}}, "claude": {{"ref":"localhost/wrix-base-claude:test","source":{source:?}}}, "direct": {{"ref":"localhost/wrix-base-direct:test","source":{source:?}}}}}}}"#,
+        r#"{{"base": {{"pi": {{"ref":"localhost/wrix-base-pi:test","source":{source:?}, "source_kind": "nix-descriptor"}}, "claude": {{"ref":"localhost/wrix-base-claude:test","source":{source:?}, "source_kind": "nix-descriptor"}}, "direct": {{"ref":"localhost/wrix-base-direct:test","source":{source:?}, "source_kind": "nix-descriptor"}}}}}}"#,
         source = source.display().to_string(),
     );
     std::fs::write(&manifest, body).expect("write manifest");

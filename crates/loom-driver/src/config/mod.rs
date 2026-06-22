@@ -674,12 +674,13 @@ agent.backend = "claude"
     /// § Direct Output Bounding — Configuration.
     #[test]
     fn direct_max_inline_bytes_resolves_from_config_default_16384() -> Result<()> {
-        use crate::agent::{OutputLimits, RePinContent, SpawnConfig};
+        use crate::agent::{ImageSourceKind, OutputLimits, RePinContent, SpawnConfig};
 
         fn spawn_config_carrying(limits: OutputLimits) -> SpawnConfig {
             SpawnConfig {
                 image_ref: "localhost/wrix:tag".into(),
                 image_source: PathBuf::from("/nix/store/zzz-wrix.tar"),
+                image_source_kind: Some(ImageSourceKind::NixDescriptor),
                 profile_config: None,
                 workspace: PathBuf::from("/workspace"),
                 env: vec![("WRIX_AGENT".into(), "direct".into())],

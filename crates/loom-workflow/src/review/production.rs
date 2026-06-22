@@ -1930,7 +1930,7 @@ mod tests {
 
     fn stub_manifest(dir: &std::path::Path) -> Arc<ProfileImageManifest> {
         let body = r#"{
-          "base": { "pi": { "ref": "localhost/wrix-base-pi:abc", "source": "/nix/store/aaa-image-base-pi" }, "claude": { "ref": "localhost/wrix-base-claude:abc", "source": "/nix/store/aaa-image-base-claude" }, "direct": { "ref": "localhost/wrix-base-direct:abc", "source": "/nix/store/aaa-image-base-direct" } }
+          "base": { "pi": { "ref": "localhost/wrix-base-pi:abc", "source": "/nix/store/aaa-image-base-pi", "source_kind": "nix-descriptor" }, "claude": { "ref": "localhost/wrix-base-claude:abc", "source": "/nix/store/aaa-image-base-claude", "source_kind": "nix-descriptor" }, "direct": { "ref": "localhost/wrix-base-direct:abc", "source": "/nix/store/aaa-image-base-direct", "source_kind": "nix-descriptor" } }
         }"#;
         let path = dir.join("profile-images.json");
         std::fs::write(&path, body).unwrap();
@@ -2768,6 +2768,11 @@ mod tests {
         }
         outcome.expect("run_review ok");
         let cfg = captured.lock().unwrap().take().expect("closure called");
+        assert_eq!(
+            cfg.image_source_kind,
+            Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
+            "review SpawnConfig must copy manifest source_kind for image_source overrides",
+        );
         assert!(
             cfg.initial_prompt.contains("# Post-Epic Review"),
             "prompt missing template heading: {}",

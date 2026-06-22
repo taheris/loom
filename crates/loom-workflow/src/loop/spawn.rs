@@ -112,6 +112,7 @@ pub fn build_spawn_config_from_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loom_driver::agent::ImageSourceKind;
     use loom_driver::bd::Label;
     use loom_driver::identifier::BeadId;
 
@@ -132,9 +133,9 @@ mod tests {
 
     fn three_profile_manifest(dir: &std::path::Path) -> ProfileImageManifest {
         let body = r#"{
-          "base":   { "pi": { "ref": "localhost/wrix-base-pi:abc",   "source": "/nix/store/aaa-image-base-pi" } },
-          "rust":   { "pi": { "ref": "localhost/wrix-rust-pi:def",   "source": "/nix/store/bbb-image-rust-pi", "digest": "/nix/store/ddd-image-rust-pi-digest" } },
-          "python": { "pi": { "ref": "localhost/wrix-python-pi:ghi", "source": "/nix/store/ccc-image-python-pi" } }
+          "base":   { "pi": { "ref": "localhost/wrix-base-pi:abc",   "source": "/nix/store/aaa-image-base-pi", "source_kind": "nix-descriptor" } },
+          "rust":   { "pi": { "ref": "localhost/wrix-rust-pi:def",   "source": "/nix/store/bbb-image-rust-pi", "source_kind": "nix-descriptor", "digest": "/nix/store/ddd-image-rust-pi-digest" } },
+          "python": { "pi": { "ref": "localhost/wrix-python-pi:ghi", "source": "/nix/store/ccc-image-python-pi", "source_kind": "nix-descriptor" } }
         }"#;
         let path = dir.join("profile-images.json");
         std::fs::write(&path, body).expect("write manifest");
@@ -192,6 +193,10 @@ mod tests {
         assert_eq!(
             cfg_rust.image_source,
             PathBuf::from("/nix/store/bbb-image-rust-pi")
+        );
+        assert_eq!(
+            cfg_rust.image_source_kind,
+            Some(ImageSourceKind::NixDescriptor)
         );
         assert_eq!(cfg_python.image_ref, "localhost/wrix-python-pi:ghi");
         assert_eq!(
@@ -294,6 +299,7 @@ mod tests {
 
         assert_eq!(seq.image_ref, par.image_ref);
         assert_eq!(seq.image_source, par.image_source);
+        assert_eq!(seq.image_source_kind, par.image_source_kind);
         assert_eq!(seq.env, par.env);
         assert_eq!(seq.agent_args, par.agent_args);
         assert_eq!(seq.initial_prompt, par.initial_prompt);
@@ -302,6 +308,40 @@ mod tests {
             seq.workspace, par.workspace,
             "workspace MUST differ — parallel uses a per-bead worktree",
         );
+    }
+
+    #[test]
+    fn manifest_source_kind_is_copied_without_platform_or_filename_inference() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let body = r#"{
+          "base": { "pi": { "ref": "localhost/wrix-base-pi:darwin", "source": "/nix/store/source-without-tar-suffix", "source_kind": "docker-archive" } }
+        }"#;
+        let path = dir.path().join("profile-images.json");
+        std::fs::write(&path, body).expect("write manifest");
+        let manifest = ProfileImageManifest::from_path(&path).expect("parse manifest");
+        let bead = bead_with_labels("lm-1", &["profile:base"]);
+
+        let cfg = build_spawn_config_from_manifest(
+            &manifest,
+            &bead,
+            None,
+            &base(),
+            AgentRuntime::Pi,
+            PathBuf::from("/work"),
+            "p".into(),
+            dir.path().join("scratch"),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .expect("dispatch");
+
+        assert_eq!(
+            cfg.image_source,
+            PathBuf::from("/nix/store/source-without-tar-suffix")
+        );
+        assert_eq!(cfg.image_source_kind, Some(ImageSourceKind::DockerArchive));
     }
 
     /// Every dispatched bead container receives `LOOM_INSIDE=1` via

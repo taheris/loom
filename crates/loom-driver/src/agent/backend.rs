@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use loom_skills::registry::RegisteredSkills;
@@ -21,9 +21,16 @@ pub struct SpawnConfig {
     /// argument passed to `podman run`. Populated by loom from the
     /// profile-image manifest at dispatch time.
     pub image_ref: String,
-    /// Nix store path to an image archive stream that materializes
-    /// `image_ref`. The wrapper installs it before `podman run` when needed.
+    /// Nix store path to an image source that materializes `image_ref`.
+    /// The wrapper installs it before `podman run` when needed. Empty means
+    /// no per-launch image-source override and is omitted from the JSON.
+    #[serde(default, skip_serializing_if = "path_is_empty")]
     pub image_source: PathBuf,
+    /// Source kind for [`SpawnConfig::image_source`]. Wrix requires this
+    /// whenever an `image_source` override is non-empty so launchers never
+    /// infer the install path from filenames or platform defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_source_kind: Option<ImageSourceKind>,
     /// Wrix ProfileConfig path selected from the same manifest entry as
     /// [`SpawnConfig::image_ref`]. Host-side backends pass it as a launcher
     /// flag rather than serializing it into the spawn-config JSON; the
@@ -149,6 +156,30 @@ pub struct SpawnConfig {
     /// into a world-readable file.
     #[serde(skip)]
     pub launcher_env: Vec<(String, String)>,
+}
+
+/// Wrix image source install path selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageSourceKind {
+    /// Linux archive-less image descriptor consumed by the wrix installer.
+    NixDescriptor,
+    /// Docker/OCI archive consumed by tar-loadable platform installers.
+    DockerArchive,
+}
+
+impl ImageSourceKind {
+    /// Stable wire token used in SpawnConfig and profile-image manifests.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NixDescriptor => "nix-descriptor",
+            Self::DockerArchive => "docker-archive",
+        }
+    }
+}
+
+fn path_is_empty(path: &Path) -> bool {
+    path.as_os_str().is_empty()
 }
 
 /// Env var name set by the driver in every bead container's
@@ -329,6 +360,7 @@ mod tests {
         SpawnConfig {
             image_ref: "localhost/wrix-test:tag".into(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test.tar"),
+            image_source_kind: Some(ImageSourceKind::NixDescriptor),
             profile_config: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "pi".into())],
@@ -371,11 +403,12 @@ mod tests {
             !obj.contains_key("image_digest_path"),
             "image_digest_path is not a SpawnConfig wire field: {json}"
         );
-        // Seven top-level keys remain — any silent rename or drop fails here.
+        // Required top-level keys remain — any silent rename or drop fails here.
         let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
         for required in [
             "image_ref",
             "image_source",
+            "image_source_kind",
             "workspace",
             "env",
             "initial_prompt",
@@ -420,6 +453,25 @@ mod tests {
         let model = back.model.expect("model present");
         assert_eq!(model.provider, "deepseek");
         assert_eq!(model.model_id, "deepseek-v3");
+    }
+
+    /// `image_source_kind` uses wrix's kebab-case wire tokens and round-trips
+    /// as the typed source selector used by launchers.
+    #[test]
+    fn image_source_kind_serializes_wrix_wire_tokens() {
+        let cfg = sample_config(None);
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(
+            v["image_source_kind"],
+            ImageSourceKind::NixDescriptor.as_str()
+        );
+        let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.image_source_kind, Some(ImageSourceKind::NixDescriptor));
+
+        let docker_json =
+            serde_json::to_string(&ImageSourceKind::DockerArchive).expect("serialize");
+        assert_eq!(docker_json, "\"docker-archive\"");
     }
 
     /// `set_loom_inside` appends `LOOM_INSIDE=1` when missing and is a no-op
@@ -516,7 +568,29 @@ mod tests {
         assert!(cfg.model.is_none());
         assert_eq!(cfg.image_ref, "localhost/img:tag");
         assert_eq!(cfg.image_source, PathBuf::from("/nix/store/zzz-img.tar"));
+        assert_eq!(cfg.image_source_kind, None);
         assert_eq!(cfg.env, vec![("A".to_string(), "1".to_string())]);
+    }
+
+    #[test]
+    fn spawn_config_without_image_source_override_omits_source_kind() {
+        let mut cfg = sample_config(None);
+        cfg.image_source = PathBuf::new();
+        cfg.image_source_kind = None;
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        let obj = v.as_object().expect("object");
+        assert!(
+            !obj.contains_key("image_source"),
+            "no image override: {json}"
+        );
+        assert!(
+            !obj.contains_key("image_source_kind"),
+            "no source kind without an image override: {json}",
+        );
+        let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.image_source, PathBuf::new());
+        assert_eq!(back.image_source_kind, None);
     }
 
     /// The on-disk JSON shape is the contract with
@@ -534,6 +608,7 @@ mod tests {
         let expected = [
             "\"image_ref\":",
             "\"image_source\":",
+            "\"image_source_kind\":",
             "\"workspace\":",
             "\"env\":",
             "\"initial_prompt\":",
@@ -551,14 +626,18 @@ mod tests {
         }
     }
 
-    /// With every optional field skipped, the wire payload is the eight
-    /// mandatory keys in declaration order — the steady-state shape every
-    /// wrapper fixture pre-dating the optional knobs round-trips against.
+    /// With every optional field skipped, the wire payload omits the
+    /// per-launch image-source override and optional knobs while preserving
+    /// the remaining mandatory keys in declaration order.
     #[test]
     fn spawn_config_skips_all_optional_keys_when_unset() {
-        let cfg = sample_config(None);
+        let mut cfg = sample_config(None);
+        cfg.image_source = PathBuf::new();
+        cfg.image_source_kind = None;
         let json = serde_json::to_string(&cfg).expect("serialize");
         for absent in [
+            "\"image_source\":",
+            "\"image_source_kind\":",
             "\"mounts\":",
             "\"model\":",
             "\"thinking_level\":",
@@ -574,7 +653,6 @@ mod tests {
         }
         let expected = [
             "\"image_ref\":",
-            "\"image_source\":",
             "\"workspace\":",
             "\"env\":",
             "\"initial_prompt\":",

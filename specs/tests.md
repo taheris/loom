@@ -1083,8 +1083,9 @@ the rules:
    - **`wrix spawn` argv contract** — loom writes a `SpawnConfig`
      JSON, invokes a `wrix-spawn` shim that records the argv +
      stdin properties (TTY vs pipe), then exec's a mock agent. Asserts
-     the JSON shape, the `--spawn-config <file> --stdio` argv, and that
-     stdin is a pipe (not a TTY).
+     the JSON shape (including `image_source_kind` whenever `image_source`
+     is emitted), the `--spawn-config <file> --stdio` argv, and that stdin is
+     a pipe (not a TTY).
    - **`WRIX_AGENT` launcher-env contract** — the same command-construction
      shim records child environment for pi, claude, and direct backend
      selections. Parent-shell `WRIX_AGENT` is unset in one case and set

@@ -166,7 +166,7 @@ fn drive_loom_todo_pi(workspace: &Path, shim: &Path, loom_bin: &str) -> std::pro
         .expect("write loom config");
     let manifest_body = format!(
         r#"{{
-          "rust": {{ "pi": {{ "ref": "localhost/wrix-rust-pi:test", "source": {source:?}, "profile_config": {pi_profile_config:?}, "digest": {digest:?} }}, "direct": {{ "ref": "localhost/wrix-rust-direct:test", "source": {source:?}, "profile_config": {direct_profile_config:?}, "digest": {digest:?} }} }}
+          "rust": {{ "pi": {{ "ref": "localhost/wrix-rust-pi:test", "source": {source:?}, "source_kind": "nix-descriptor", "profile_config": {pi_profile_config:?}, "digest": {digest:?} }}, "direct": {{ "ref": "localhost/wrix-rust-direct:test", "source": {source:?}, "source_kind": "nix-descriptor", "profile_config": {direct_profile_config:?}, "digest": {digest:?} }} }}
         }}"#,
         source = image_source.display().to_string(),
         digest = image_digest.display().to_string(),
@@ -420,6 +420,12 @@ fn wrix_spawn_invocation_records_correct_argv() {
         workspace.join("rust.tar"),
         "spawn-config image_source must match the selected profile image",
     );
+    assert_eq!(
+        cfg.image_source_kind,
+        Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
+        "spawn-config image_source_kind must match the selected profile image source_kind",
+    );
+    assert_eq!(raw["image_source_kind"], "nix-descriptor");
     assert!(
         cfg.initial_prompt.contains("agent"),
         "initial prompt should reference the spec label. prompt={}",
@@ -567,7 +573,7 @@ fn loom_loop_bead_writes_per_bead_jsonl_log() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?} }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?} }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?} }} }}
+          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?}, "source_kind": "nix-descriptor" }} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -706,7 +712,7 @@ fn loom_gate_review_writes_phase_jsonl_log() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?} }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?} }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?} }} }}
+          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?}, "source_kind": "nix-descriptor" }} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -1050,7 +1056,7 @@ fn loom_todo_claude_runs_shutdown_watchdog_through_run_agent() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?} }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?} }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?} }} }}
+          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?}, "source_kind": "nix-descriptor" }} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -1133,7 +1139,7 @@ fn loom_todo_pi_hang_probe_surfaces_handshake_timeout() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?} }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?} }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?} }} }}
+          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?}, "source_kind": "nix-descriptor" }} }}
         }}"#,
         source = image_source.display().to_string(),
     );
@@ -1213,7 +1219,7 @@ fn loom_todo_pi_stall_mid_session_emits_stall_warning() {
     std::fs::write(&image_source, "").unwrap();
     let manifest_body = format!(
         r#"{{
-          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?} }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?} }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?} }} }}
+          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?}, "source_kind": "nix-descriptor" }} }}
         }}"#,
         source = image_source.display().to_string(),
     );

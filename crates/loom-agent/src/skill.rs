@@ -32,7 +32,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use loom_driver::agent::{RePinContent, SpawnConfig};
+    use loom_driver::agent::{ImageSourceKind, RePinContent, SpawnConfig};
     use loom_skills::registry::RegisteredSkills;
 
     use super::*;
@@ -62,6 +62,7 @@ mod tests {
         SpawnConfig {
             image_ref: "localhost/wrix-test:pi".into(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test.tar"),
+            image_source_kind: Some(ImageSourceKind::NixDescriptor),
             profile_config: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![],

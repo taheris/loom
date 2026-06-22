@@ -845,7 +845,7 @@ mod tests {
         let manifest_path = workspace.join("profile-images.json");
         std::fs::write(
             &manifest_path,
-            r#"{"base":{"pi":{"ref":"localhost/base-pi:test","source":"/nix/store/base-pi-image"},"claude":{"ref":"localhost/base-claude:test","source":"/nix/store/base-claude-image"},"direct":{"ref":"localhost/base-direct:test","source":"/nix/store/base-direct-image"}}}"#,
+            r#"{"base":{"pi":{"ref":"localhost/base-pi:test","source":"/nix/store/base-pi-image", "source_kind": "nix-descriptor"},"claude":{"ref":"localhost/base-claude:test","source":"/nix/store/base-claude-image", "source_kind": "nix-descriptor"},"direct":{"ref":"localhost/base-direct:test","source":"/nix/store/base-direct-image", "source_kind": "nix-descriptor"}}}"#,
         )
         .expect("manifest");
         let manifest = Arc::new(
@@ -1398,7 +1398,7 @@ cwd = "verifier-cwd"
         let manifest_path = workspace.join("profile-images.json");
         std::fs::write(
             &manifest_path,
-            r#"{"base":{"pi":{"ref":"localhost/wrix-base-pi:abc","source":"/nix/store/aaa-pi"},"claude":{"ref":"localhost/wrix-base-claude:abc","source":"/nix/store/aaa-claude"},"direct":{"ref":"localhost/wrix-base-direct:abc","source":"/nix/store/aaa-direct"}}}"#,
+            r#"{"base":{"pi":{"ref":"localhost/wrix-base-pi:abc","source":"/nix/store/aaa-pi", "source_kind": "nix-descriptor"},"claude":{"ref":"localhost/wrix-base-claude:abc","source":"/nix/store/aaa-claude", "source_kind": "nix-descriptor"},"direct":{"ref":"localhost/wrix-base-direct:abc","source":"/nix/store/aaa-direct", "source_kind": "nix-descriptor"}}}"#,
         )
         .expect("manifest");
         let manifest =
@@ -1545,7 +1545,7 @@ cwd = "verifier-cwd"
         let manifest_path = workspace.join("profile-images.json");
         std::fs::write(
             &manifest_path,
-            r#"{"base":{"pi":{"ref":"localhost/wrix-base-pi:abc","source":"/nix/store/aaa-pi"},"claude":{"ref":"localhost/wrix-base-claude:abc","source":"/nix/store/aaa-claude"},"direct":{"ref":"localhost/wrix-base-direct:abc","source":"/nix/store/aaa-direct"}}}"#,
+            r#"{"base":{"pi":{"ref":"localhost/wrix-base-pi:abc","source":"/nix/store/aaa-pi", "source_kind": "nix-descriptor"},"claude":{"ref":"localhost/wrix-base-claude:abc","source":"/nix/store/aaa-claude", "source_kind": "nix-descriptor"},"direct":{"ref":"localhost/wrix-base-direct:abc","source":"/nix/store/aaa-direct", "source_kind": "nix-descriptor"}}}"#,
         )
         .expect("manifest");
         let manifest =

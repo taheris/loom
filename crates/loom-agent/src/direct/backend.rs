@@ -325,6 +325,7 @@ mod tests {
         SpawnConfig {
             image_ref: "localhost/wrix-test:direct".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-direct.tar"),
+            image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
             profile_config: Some(PathBuf::from(
                 "/nix/store/wrix-test-direct-profile-config.json",
             )),

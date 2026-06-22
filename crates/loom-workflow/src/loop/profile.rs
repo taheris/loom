@@ -58,6 +58,7 @@ pub fn resolve_profile_image<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loom_driver::agent::ImageSourceKind;
     use std::path::PathBuf;
 
     fn labels(items: &[&str]) -> Vec<Label> {
@@ -76,9 +77,9 @@ mod tests {
 
     fn three_profile_manifest(dir: &std::path::Path) -> ProfileImageManifest {
         let body = r#"{
-          "base":   { "pi": { "ref": "localhost/wrix-base-pi:abc",   "source": "/nix/store/aaa-image-base-pi" } },
-          "rust":   { "pi": { "ref": "localhost/wrix-rust-pi:def",   "source": "/nix/store/bbb-image-rust-pi" } },
-          "python": { "pi": { "ref": "localhost/wrix-python-pi:ghi", "source": "/nix/store/ccc-image-python-pi" } }
+          "base":   { "pi": { "ref": "localhost/wrix-base-pi:abc",   "source": "/nix/store/aaa-image-base-pi", "source_kind": "nix-descriptor" } },
+          "rust":   { "pi": { "ref": "localhost/wrix-rust-pi:def",   "source": "/nix/store/bbb-image-rust-pi", "source_kind": "nix-descriptor" } },
+          "python": { "pi": { "ref": "localhost/wrix-python-pi:ghi", "source": "/nix/store/ccc-image-python-pi", "source_kind": "nix-descriptor" } }
         }"#;
         let path = write_manifest(dir, body);
         ProfileImageManifest::from_path(&path).expect("parse manifest")
@@ -122,6 +123,7 @@ mod tests {
             .expect("resolve");
         assert_eq!(entry.r#ref, "localhost/wrix-rust-pi:def");
         assert_eq!(entry.source, PathBuf::from("/nix/store/bbb-image-rust-pi"));
+        assert_eq!(entry.source_kind, ImageSourceKind::NixDescriptor);
     }
 
     /// FR5: `--profile` beats both `profile:X` labels and the phase default.
@@ -156,7 +158,7 @@ mod tests {
     #[test]
     fn resolve_profile_image_missing_entry_returns_unknown_profile() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let body = r#"{ "base": { "pi": { "ref": "r", "source": "/s" } } }"#;
+        let body = r#"{ "base": { "pi": { "ref": "r", "source": "/s", "source_kind": "nix-descriptor" } } }"#;
         let path = write_manifest(dir.path(), body);
         let manifest = ProfileImageManifest::from_path(&path).expect("parse");
         let labels = labels(&["profile:rust"]);

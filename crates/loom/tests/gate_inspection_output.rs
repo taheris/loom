@@ -42,7 +42,7 @@ fn write_profile_manifest(workspace: &Path) -> PathBuf {
     std::fs::write(
         &manifest_path,
         r#"{
-          "base": { "pi": { "ref": "localhost/wrix-base-pi:test", "source": "/nix/store/aaa-image-base-pi" }, "claude": { "ref": "localhost/wrix-base-claude:test", "source": "/nix/store/aaa-image-base-claude" }, "direct": { "ref": "localhost/wrix-base-direct:test", "source": "/nix/store/aaa-image-base-direct" } }
+          "base": { "pi": { "ref": "localhost/wrix-base-pi:test", "source": "/nix/store/aaa-image-base-pi", "source_kind": "nix-descriptor" }, "claude": { "ref": "localhost/wrix-base-claude:test", "source": "/nix/store/aaa-image-base-claude", "source_kind": "nix-descriptor" }, "direct": { "ref": "localhost/wrix-base-direct:test", "source": "/nix/store/aaa-image-base-direct", "source_kind": "nix-descriptor" } }
         }"#,
     )
     .expect("write profile manifest");

@@ -56,7 +56,7 @@ hands to the wrapper.
 ```
 loom (host)
     │
-    ├─ build SpawnConfig (image_ref, image_source, env allowlist, mounts, scratch_dir)
+    ├─ build SpawnConfig (image_ref, image_source, image_source_kind, env allowlist, mounts, scratch_dir)
     ├─ serialize to /tmp/loom-<id>.json
     │
     ├─ spawn: wrix --profile-config <file> spawn --spawn-config /tmp/loom-<id>.json --stdio
@@ -471,19 +471,21 @@ accumulated wouldn't transfer to the loom workspace.
 
 The *profile-image manifest* is a JSON file produced by Nix at flake-build
 time that maps each workspace profile and agent runtime to the podman ref,
-Nix store path, optional wrix ProfileConfig path, and optional content-digest
-path needed to spawn its image. Loom reads it at startup and, for each container
-spawn, looks up the resolved profile/runtime pair to populate
-`SpawnConfig.image_ref` (the podman ref), `SpawnConfig.image_source` (the
-store path handed to the launcher install step), and the host-only
-`SpawnConfig.profile_config` path passed as `wrix --profile-config`. The
-image digest is not a `SpawnConfig` field; wrix reads it from the matching
-ProfileConfig image and rejects per-launch digest overrides.
+Nix store path, source kind, optional wrix ProfileConfig path, and optional
+content-digest path needed to spawn its image. Loom reads it at startup and,
+for each container spawn, looks up the resolved profile/runtime pair to
+populate `SpawnConfig.image_ref` (the podman ref), `SpawnConfig.image_source`
+(the store path handed to the launcher install step),
+`SpawnConfig.image_source_kind` (the explicit wrix install-path selector), and
+the host-only `SpawnConfig.profile_config` path passed as
+`wrix --profile-config`. The image digest is not a `SpawnConfig` field; wrix
+reads it from the matching ProfileConfig image and rejects per-launch digest
+overrides.
 
 The file is a JSON object keyed first by profile name and then by agent
-runtime. Each runtime entry has two required string fields, a `profile_config`
-string in current wrix manifests, and an optional `digest` string. An
-abbreviated example:
+runtime. Each runtime entry has three required string fields (`ref`, `source`,
+`source_kind`), a `profile_config` string in current wrix manifests, and an
+optional `digest` string. An abbreviated example:
 
 ```json
 {
@@ -491,18 +493,21 @@ abbreviated example:
     "claude": {
       "ref": "localhost/wrix-base-claude:abc123",
       "source": "/nix/store/...-image-base-claude",
+      "source_kind": "nix-descriptor",
       "profile_config": "/nix/store/...-wrix-base-claude-profile-config.json",
       "digest": "/nix/store/...-image-base-claude-digest"
     },
     "pi": {
       "ref": "localhost/wrix-base-pi:def456",
       "source": "/nix/store/...-image-base-pi",
+      "source_kind": "nix-descriptor",
       "profile_config": "/nix/store/...-wrix-base-pi-profile-config.json",
       "digest": "/nix/store/...-image-base-pi-digest"
     },
     "direct": {
       "ref": "localhost/wrix-base-direct:ghi789",
       "source": "/nix/store/...-image-base-direct",
+      "source_kind": "nix-descriptor",
       "profile_config": "/nix/store/...-wrix-base-direct-profile-config.json",
       "digest": "/nix/store/...-image-base-direct-digest"
     }
@@ -511,6 +516,7 @@ abbreviated example:
     "pi": {
       "ref": "localhost/wrix-rust-pi:jkl012",
       "source": "/nix/store/...-image-rust-pi",
+      "source_kind": "nix-descriptor",
       "profile_config": "/nix/store/...-wrix-rust-pi-profile-config.json",
       "digest": "/nix/store/...-image-rust-pi-digest"
     }
@@ -545,8 +551,9 @@ Per-bead dispatch is:
    set so the operator can relabel or rebuild the manifest. Same routing as
    `infra-preflight` (see *Verdict gate* below).
 4. Build `SpawnConfig` with `image_ref = entry.ref`, `image_source =
-   entry.source`, and host-only `profile_config = entry.profile_config` when
-   present. Hand it to `wrix spawn`; `entry.digest` is not serialized into
+   entry.source`, `image_source_kind = entry.source_kind`, and host-only
+   `profile_config = entry.profile_config` when present. Hand it to
+   `wrix spawn`; `entry.digest` is not serialized into
    the per-launch JSON because the matching ProfileConfig supplies the image
    digest.
 
@@ -2074,7 +2081,7 @@ everywhere downstream. No internal function re-checks or re-parses.
 6. **CLI output parsing** — `bd --json` output deserializes into typed structs
    (`Bead`, `Molecule`).
 7. **Profile-image manifest** — the JSON produced by `mkProfileImages`
-   deserializes into `BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry { ref, source, digest? }>>`
+   deserializes into `BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry { ref, source, source_kind, profile_config?, digest? }>>`
    once at loom startup. Downstream code receives typed profile/runtime keys
    and `&ImageEntry`, never raw JSON.
 
@@ -2757,8 +2764,9 @@ Criteria.
       reuses container construction from existing `wrix run`, omits TTY
   [test](wrix_spawn_invocation_records_correct_argv)
 - `SpawnConfig` JSON shape is stable: serialization round-trip preserves
-      documented per-launch fields and key names, including `image_ref` and
-      `image_source`, while omitting ProfileConfig-only host fields
+      documented per-launch fields and key names, including `image_ref`,
+      `image_source`, and `image_source_kind`, while omitting
+      ProfileConfig-only host fields
   [test](spawn_config_omits_profile_manifest_host_only_fields_from_wrix_json)
 - `wrix spawn` installs from `image_source` (a Nix store path) before
       invoking podman with `image_ref` as the ref; the selected ProfileConfig
@@ -2767,7 +2775,8 @@ Criteria.
   [system](nix run .#test)
 - Per-bead profile/runtime selection: two beads with different profile
       labels or backend runtimes result in `wrix spawn` invocations with
-      the matching `image_ref`, `image_source`, and ProfileConfig
+      the matching `image_ref`, `image_source`, `image_source_kind`, and
+      ProfileConfig
   [test?](per_bead_profile_runtime_dispatch_produces_distinct_image_refs)
 - Loom reads `LOOM_PROFILES_MANIFEST` at startup and parses it into
       `BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry>>`; missing

@@ -335,6 +335,9 @@ Required fields:
 - `image_ref` — podman image reference (e.g. `localhost/wrix-rust-pi:<hash>`).
 - `image_source` — Nix store path the launcher uses to materialize that ref
   when needed.
+- `image_source_kind` — source-kind selector for `image_source`
+  (`nix-descriptor` on Linux, `docker-archive` on Darwin); required whenever
+  `image_source` is present so wrix never infers the install path.
 - `workspace` — host path bind-mounted into the container at
   `/workspace`.
 - `env` — explicit env allowlist (table below); the host environment is
@@ -367,8 +370,8 @@ Additionally, `output_limits` (optional, Direct-only) carries
 Direct tools offload to the scratch offload directory. See [Direct Output
 Bounding](#direct-output-bounding).
 
-`image_ref` and `image_source` come from the profile-image manifest at
-dispatch time — see [harness.md — Profile-Image
+`image_ref`, `image_source`, and `image_source_kind` come from the
+profile-image manifest at dispatch time — see [harness.md — Profile-Image
 Manifest](harness.md#profile-image-manifest). The matching ProfileConfig path
 comes from the same manifest and is passed to `wrix --profile-config` as
 host-only backend state. Image digests live in that ProfileConfig, not in the
@@ -968,7 +971,7 @@ the entrypoint run the wrong runtime.
   [test](all_backends_dispatch_through_run_agent)
 - `AgentEvent` enum covers: AgentStart, AgentEnd, TurnStart, TextDelta, TextEnd, ThinkingDelta, ThinkingEnd, ToolcallDelta, ToolCall, ToolResult, ToolProgress, TurnEnd, SessionComplete, CompactionStart, CompactionEnd, AutoRetry, Error, DriverEvent
   [check](cargo test -p loom-events --lib every_spec_variant_present)
-- `SpawnConfig` struct captures image_ref, image_source, workspace, env, initial_prompt, agent_args, scratch_dir, and omits ProfileConfig-only host fields from JSON
+- `SpawnConfig` struct captures image_ref, image_source, image_source_kind, workspace, env, initial_prompt, agent_args, scratch_dir, and omits ProfileConfig-only host fields from JSON
   [check](cargo test -p loom-workflow --lib spawn_config_omits_profile_manifest_host_only_fields_from_wrix_json)
 - `SpawnConfig.launcher_env` exists as host-only state and is skipped from spawn-config JSON serialization
   [test](launcher_env_is_never_serialized)

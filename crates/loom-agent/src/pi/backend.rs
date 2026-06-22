@@ -667,6 +667,7 @@ mod tests {
         SpawnConfig {
             image_ref: "localhost/wrix-test:pi".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-pi.tar"),
+            image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
             profile_config: Some(PathBuf::from("/nix/store/wrix-test-pi-profile-config.json")),
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "pi".into())],

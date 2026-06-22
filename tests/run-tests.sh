@@ -17,6 +17,7 @@
 #                              whose ref is LOOM_TEST_IMAGE_REF; the image
 #                              must contain `pi` as the mock-pi script.
 #   LOOM_TEST_IMAGE_REF      — image ref tag (e.g. localhost/wrix-test:smoke)
+#   LOOM_TEST_IMAGE_SOURCE_KIND — wrix image source kind (default: nix-descriptor)
 #   LOOM_TEST_MOCK_PI_PATH   — host path to tests/mock-pi/pi.sh; sourced for
 #                              the container build step when the image is
 #                              produced inline rather than from a Nix archive.
@@ -62,6 +63,7 @@ if [[ -z "${LOOM_TEST_IMAGE:-}" || -z "${LOOM_TEST_IMAGE_REF:-}" ]]; then
     log "      (the Nix wrapper builds the test image and points these here)"
     exit 77
 fi
+LOOM_TEST_IMAGE_SOURCE_KIND=${LOOM_TEST_IMAGE_SOURCE_KIND:-nix-descriptor}
 
 WORKSPACE="$(mktemp -d -t loom-smoke.XXXXXX)"
 log "workspace: $WORKSPACE"
@@ -84,7 +86,8 @@ cat >"$WORKSPACE/profile-images.json" <<JSON
   "base": {
     "pi": {
       "ref": "${LOOM_TEST_IMAGE_REF}",
-      "source": "${LOOM_TEST_IMAGE}"
+      "source": "${LOOM_TEST_IMAGE}",
+      "source_kind": "${LOOM_TEST_IMAGE_SOURCE_KIND}"
     }
   }
 }
