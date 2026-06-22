@@ -513,16 +513,20 @@ additional commands that Loom does not use in v1: `get_messages`,
 
 Pi events have a `type` field and no `id`. The `message_update` event contains
 a nested `assistantMessageEvent` with its own delta types — the parser must
-dispatch on both levels.
+dispatch on both levels. Pi may also emit final assistant text only in the
+complete `message_end` / `turn_end.message` payload without any `text_delta`;
+Loom must surface that text exactly once so terminal markers are not lost.
 
 | Event | Key Fields | Maps To |
 |-------|------------|---------|
+| `message_start` | `message` | resets per-message fallback text capture |
 | `message_update` | `assistantMessageEvent` | see delta mapping below |
+| `message_end` | `message` | fallback `AgentEvent::TextDelta` + `TextEnd` when assistant text was not streamed |
 | `tool_execution_start` | `toolCallId`, `toolName`, `args` | `AgentEvent::ToolCall` |
 | `tool_execution_end` | `toolCallId`, `toolName`, `result`, `isError` | `AgentEvent::ToolResult` |
-| `tool_execution_update` | `toolCallId`, `partialResult` | logged at `trace!`, skipped |
+| `tool_execution_update` | `toolCallId`, `partialResult` | `AgentEvent::ToolProgress` |
 | `turn_start` | — | logged at `trace!`, skipped |
-| `turn_end` | `message`, `toolResults` | `AgentEvent::TurnEnd` |
+| `turn_end` | `message`, `toolResults` | fallback final text if needed, then `AgentEvent::TurnEnd` |
 | `agent_start` | — | logged at `trace!`, skipped |
 | `agent_end` | `messages` | `AgentEvent::SessionComplete` (`exit_code: 0`, synthesized) — see note below |
 | `compaction_start` | `reason` | `AgentEvent::CompactionStart` |
@@ -970,8 +974,12 @@ the entrypoint run the wrong runtime.
   [test](driver_sends_prompt_as_jsonl_line)
 - Pi backend supports steering (steer returns Ok and reaches the agent on the next turn)
   [test](driver_steers_mid_session_and_mock_observes_payload)
-- Pi backend maps all pi event types to AgentEvent variants
+- Pi backend maps streamed pi message deltas to AgentEvent text variants
   [test](message_update_text_delta_yields_message_delta)
+- Pi backend surfaces non-streamed final assistant text carried by `message_end`
+  [test](message_end_without_streamed_text_yields_fallback_text)
+- Pi backend surfaces non-streamed final assistant text carried by `turn_end.message`
+  [test](turn_end_without_message_end_yields_fallback_text_then_turn_end)
 - Pi backend detects CompactionStart event, reads `prompt.txt` + `scratch.md` from the per-key scratch directory, and sends the concatenated content via steer
   [test](driver_repins_on_compaction_start_via_steer)
 - Pi backend compaction re-pin preserves a fixture planning prompt's

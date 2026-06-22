@@ -47,17 +47,29 @@ pub struct PiResponse {
 
 /// Streaming event from pi (no `id` field). Discriminated by the wire
 /// `type` value via serde's internally-tagged enum form. Variants whose
-/// payload Loom does not consume (turn boundaries, retry telemetry,
-/// extension errors) are unit forms — serde drops their extra fields.
+/// payload Loom does not consume (retry telemetry, extension errors) are
+/// unit forms — serde drops their extra fields.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PiEvent {
+    /// Assistant message lifecycle start. The payload is kept as raw JSON
+    /// because Loom only needs a fallback text extraction path when the
+    /// provider emits final content without streaming `text_delta` chunks.
+    MessageStart {
+        message: serde_json::Value,
+    },
+
     /// Streaming assistant message update; the inner
     /// [`AssistantMessageDelta`] dispatch determines what (if anything) is
     /// emitted as an [`AgentEvent`](loom_driver::agent::AgentEvent).
     MessageUpdate {
         #[serde(rename = "assistantMessageEvent")]
         delta: AssistantMessageDelta,
+    },
+
+    /// Assistant message lifecycle end. Carries the complete message.
+    MessageEnd {
+        message: serde_json::Value,
     },
 
     /// Pi started executing a tool call.
@@ -93,13 +105,23 @@ pub enum PiEvent {
         partial_result: serde_json::Value,
     },
 
-    /// Turn boundaries — payload is dropped.
+    /// Turn start boundary — payload is dropped.
     TurnStart,
-    TurnEnd,
+
+    /// Turn completion boundary. Carries the complete assistant message and
+    /// tool results; Loom uses the message as a fallback final-text source
+    /// when `message_end`/streaming deltas did not surface it.
+    TurnEnd {
+        #[serde(default)]
+        message: serde_json::Value,
+    },
 
     /// Agent lifecycle.
     AgentStart,
-    AgentEnd,
+    AgentEnd {
+        #[serde(default)]
+        messages: Vec<serde_json::Value>,
+    },
 
     /// Compaction lifecycle. The reason string is one of `"threshold"`,
     /// `"overflow"`, `"manual"` as of pi v0.72.
@@ -566,12 +588,11 @@ mod tests {
         }
     }
 
-    /// Unit-form events drop any extension fields pi may add. Pin every
+    /// Lifecycle events tolerate any extension fields pi may add. Pin every
     /// fieldless variant individually so an accidental change in serde
-    /// representation (e.g. adding a field but forgetting `#[serde(default)]`)
-    /// surfaces as a parse failure here.
+    /// representation surfaces as a parse failure here.
     #[test]
-    fn pi_event_unit_variants_drop_extension_fields() {
+    fn pi_event_lifecycle_variants_drop_extension_fields() {
         for (line, expected) in [
             (r#"{"type":"turn_start","ignored":1}"#, "TurnStart"),
             (r#"{"type":"turn_end","message":{"x":1}}"#, "TurnEnd"),
@@ -593,9 +614,9 @@ mod tests {
             let event: PiEvent = serde_json::from_str(line).expect("parse unit variant");
             let actual = match event {
                 PiEvent::TurnStart => "TurnStart",
-                PiEvent::TurnEnd => "TurnEnd",
+                PiEvent::TurnEnd { .. } => "TurnEnd",
                 PiEvent::AgentStart => "AgentStart",
-                PiEvent::AgentEnd => "AgentEnd",
+                PiEvent::AgentEnd { .. } => "AgentEnd",
                 PiEvent::QueueUpdate => "QueueUpdate",
                 PiEvent::AutoRetryEnd => "AutoRetryEnd",
                 PiEvent::ExtensionError => "ExtensionError",

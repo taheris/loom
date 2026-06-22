@@ -29,12 +29,19 @@ use super::messages::{
 /// session, so contention is non-existent.
 pub struct PiParser {
     task_stack: std::sync::Mutex<Vec<loom_events::identifier::ToolCallId>>,
+    message_capture: std::sync::Mutex<MessageCapture>,
+}
+
+#[derive(Debug, Default)]
+struct MessageCapture {
+    text_emitted: bool,
 }
 
 impl PiParser {
     pub fn new() -> Self {
         Self {
             task_stack: std::sync::Mutex::new(Vec::new()),
+            message_capture: std::sync::Mutex::new(MessageCapture::default()),
         }
     }
 
@@ -67,6 +74,46 @@ impl PiParser {
             stack.pop();
         }
         Ok(())
+    }
+
+    fn reset_message_capture(&self) -> Result<(), ProtocolError> {
+        let mut capture = self
+            .message_capture
+            .lock()
+            .map_err(|_| ProtocolError::LockPoisoned)?;
+        capture.text_emitted = false;
+        Ok(())
+    }
+
+    fn mark_text_emitted(&self) -> Result<(), ProtocolError> {
+        let mut capture = self
+            .message_capture
+            .lock()
+            .map_err(|_| ProtocolError::LockPoisoned)?;
+        capture.text_emitted = true;
+        Ok(())
+    }
+
+    fn fallback_text_events(
+        &self,
+        message: &serde_json::Value,
+    ) -> Result<Vec<ParsedAgentEvent>, ProtocolError> {
+        let text = assistant_message_text(message);
+        if text.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut capture = self
+            .message_capture
+            .lock()
+            .map_err(|_| ProtocolError::LockPoisoned)?;
+        if capture.text_emitted {
+            return Ok(Vec::new());
+        }
+        capture.text_emitted = true;
+        Ok(vec![
+            ParsedAgentEvent::TextDelta { text },
+            ParsedAgentEvent::TextEnd,
+        ])
     }
 }
 
@@ -109,13 +156,53 @@ fn encode_command<T: Serialize>(payload: &T) -> Result<String, ProtocolError> {
     Ok(line)
 }
 
+fn assistant_message_text(message: &serde_json::Value) -> String {
+    if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+        return String::new();
+    }
+    content_text(message.get("content"))
+}
+
+fn content_text(content: Option<&serde_json::Value>) -> String {
+    match content {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(text_block_text)
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
+fn text_block_text(block: &serde_json::Value) -> Option<&str> {
+    if block.get("type").and_then(serde_json::Value::as_str) != Some("text") {
+        return None;
+    }
+    block
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| block.get("content").and_then(serde_json::Value::as_str))
+}
+
 fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, ProtocolError> {
     Ok(match event {
+        PiEvent::MessageStart { .. } => {
+            parser.reset_message_capture()?;
+            empty()
+        }
+        PiEvent::MessageEnd { message } => ParsedLine {
+            events: parser.fallback_text_events(&message)?,
+            response: None,
+        },
         PiEvent::MessageUpdate { delta } => match delta {
-            AssistantMessageDelta::TextDelta { text } => ParsedLine {
-                events: vec![ParsedAgentEvent::TextDelta { text }],
-                response: None,
-            },
+            AssistantMessageDelta::TextDelta { text } => {
+                parser.mark_text_emitted()?;
+                ParsedLine {
+                    events: vec![ParsedAgentEvent::TextDelta { text }],
+                    response: None,
+                }
+            }
             AssistantMessageDelta::TextEnd => ParsedLine {
                 events: vec![ParsedAgentEvent::TextEnd],
                 response: None,
@@ -202,11 +289,16 @@ fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, Protocol
                 response: None,
             }
         }
-        PiEvent::TurnEnd => ParsedLine {
-            events: vec![ParsedAgentEvent::TurnEnd],
-            response: None,
-        },
-        PiEvent::AgentEnd => ParsedLine {
+        PiEvent::TurnEnd { message } => {
+            let mut events = parser.fallback_text_events(&message)?;
+            events.push(ParsedAgentEvent::TurnEnd);
+            parser.reset_message_capture()?;
+            ParsedLine {
+                events,
+                response: None,
+            }
+        }
+        PiEvent::AgentEnd { .. } => ParsedLine {
             events: vec![ParsedAgentEvent::SessionComplete {
                 exit_code: 0,
                 cost_usd: None,
@@ -530,6 +622,44 @@ mod tests {
     }
 
     #[test]
+    fn message_end_without_streamed_text_yields_fallback_text() {
+        let line = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"LOOM_TODO: {}"}]}}"#;
+        let p = parse(line);
+        assert_eq!(p.events.len(), 2);
+        match &p.events[0] {
+            ParsedAgentEvent::TextDelta { text } => assert_eq!(text, "LOOM_TODO: {}"),
+            other => panic!("expected fallback TextDelta, got {other:?}"),
+        }
+        assert!(matches!(p.events[1], ParsedAgentEvent::TextEnd));
+    }
+
+    #[test]
+    fn message_end_after_streamed_text_does_not_duplicate_text() {
+        let parser = PiParser::new();
+        let start = r#"{"type":"message_start","message":{"role":"assistant","content":[]}}"#;
+        assert!(
+            parser
+                .parse_line(start)
+                .expect("start parses")
+                .events
+                .is_empty()
+        );
+        let delta = r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello"}}"#;
+        assert!(matches!(
+            parser.parse_line(delta).expect("delta parses").events[..],
+            [ParsedAgentEvent::TextDelta { .. }]
+        ));
+        let end = r#"{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}"#;
+        assert!(
+            parser
+                .parse_line(end)
+                .expect("end parses")
+                .events
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn message_update_thinking_delta_yields_thinking_delta_event() {
         // thinking_delta maps to ParsedAgentEvent::ThinkingDelta.
         let line = r#"{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"…"}}"#;
@@ -632,6 +762,19 @@ mod tests {
         let line = r#"{"type":"turn_end","message":{"x":1},"toolResults":[]}"#;
         let p = parse(line);
         assert!(matches!(p.events[..], [ParsedAgentEvent::TurnEnd]));
+    }
+
+    #[test]
+    fn turn_end_without_message_end_yields_fallback_text_then_turn_end() {
+        let line = r#"{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"final answer"}]},"toolResults":[]}"#;
+        let p = parse(line);
+        assert_eq!(p.events.len(), 3);
+        match &p.events[0] {
+            ParsedAgentEvent::TextDelta { text } => assert_eq!(text, "final answer"),
+            other => panic!("expected fallback TextDelta, got {other:?}"),
+        }
+        assert!(matches!(p.events[1], ParsedAgentEvent::TextEnd));
+        assert!(matches!(p.events[2], ParsedAgentEvent::TurnEnd));
     }
 
     #[test]
