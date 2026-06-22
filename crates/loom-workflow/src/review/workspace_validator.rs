@@ -1,19 +1,33 @@
 use std::path::{Path, PathBuf};
 
 use loom_driver::identifier::SpecLabel;
-use loom_gate::{CommandResolver, FsCommandResolver, annotation};
+use loom_gate::{
+    CommandResolver, FsCommandResolver, RustWorkspaceTestResolver, TestPathResolver, Tier,
+    annotation,
+};
+use tracing::warn;
 
 use super::finding::FindingValidator;
 
 pub struct WorkspaceFindingValidator {
     workspace: PathBuf,
+    annotations: Vec<annotation::Annotation>,
+    command_resolver: FsCommandResolver,
+    test_resolver: Option<RustWorkspaceTestResolver>,
 }
 
 impl WorkspaceFindingValidator {
     #[must_use]
     pub fn new(workspace: &Path) -> Self {
+        let workspace = workspace.to_path_buf();
+        let annotations = load_annotations(&workspace);
+        let test_resolver = load_test_resolver(&workspace);
+        let command_resolver = FsCommandResolver::new(&workspace);
         Self {
-            workspace: workspace.to_path_buf(),
+            workspace,
+            annotations,
+            command_resolver,
+            test_resolver,
         }
     }
 
@@ -29,16 +43,55 @@ impl WorkspaceFindingValidator {
     }
 
     fn target_path_exists(&self, target: &str) -> bool {
-        let path = Self::selector_path(target.trim());
-        if path.is_empty() {
+        path_exists_from(&self.workspace, target)
+    }
+
+    fn declared_annotation_resolves(&self, target: &str) -> Option<bool> {
+        let mut saw_target = false;
+        for ann in self
+            .annotations
+            .iter()
+            .filter(|ann| ann.target.trim() == target)
+        {
+            saw_target = true;
+            if self.annotation_record_resolves(ann) {
+                return Some(true);
+            }
+        }
+        saw_target.then_some(false)
+    }
+
+    fn annotation_record_resolves(&self, ann: &annotation::Annotation) -> bool {
+        match ann.tier {
+            Tier::Check | Tier::System => self.command_target_resolves(&ann.target),
+            Tier::Test => self
+                .test_resolver
+                .as_ref()
+                .is_some_and(|resolver| resolver.resolves(&ann.target)),
+            Tier::Judge => self.judge_target_resolves(&ann.target, &ann.source_spec),
+        }
+    }
+
+    fn command_target_resolves(&self, target: &str) -> bool {
+        if self.target_path_exists(target) {
+            return true;
+        }
+        let Some(first_token) = target.split_whitespace().next() else {
             return false;
+        };
+        self.command_resolver.resolves(first_token)
+    }
+
+    fn judge_target_resolves(&self, target: &str, source_spec: &Path) -> bool {
+        if self.target_path_exists(target) {
+            return true;
         }
-        let candidate = Path::new(path);
-        if candidate.is_absolute() {
-            candidate.exists()
-        } else {
-            self.workspace.join(candidate).exists()
-        }
+        let base = match source_spec.parent() {
+            Some(parent) if parent.is_absolute() => parent.to_path_buf(),
+            Some(parent) => self.workspace.join(parent),
+            None => self.workspace.clone(),
+        };
+        path_exists_from(&base, target)
     }
 
     fn criterion_anchor_matches(&self, spec: &SpecLabel, anchor: &str, body: &str) -> bool {
@@ -65,13 +118,14 @@ impl FindingValidator for WorkspaceFindingValidator {
     }
 
     fn annotation_resolves(&self, target_string: &str) -> bool {
-        if self.target_path_exists(target_string) {
-            return true;
-        }
-        let Some(first_token) = target_string.split_whitespace().next() else {
+        let target = target_string.trim();
+        if target.is_empty() {
             return false;
-        };
-        FsCommandResolver::new(&self.workspace).resolves(first_token)
+        }
+        if let Some(resolved) = self.declared_annotation_resolves(target) {
+            return resolved;
+        }
+        self.command_target_resolves(target)
     }
 
     fn file_exists(&self, path: &str) -> bool {
@@ -89,6 +143,40 @@ impl FindingValidator for WorkspaceFindingValidator {
             .filter_map(markdown_heading_anchor)
             .any(|candidate| candidate == section_anchor)
             && invariant_tag_resolves(&body_anchor, &tag_anchor)
+    }
+}
+
+fn load_annotations(workspace: &Path) -> Vec<annotation::Annotation> {
+    let specs_dir = workspace.join("specs");
+    match annotation::parse(&specs_dir) {
+        Ok(parsed) => parsed.annotations,
+        Err(err) => {
+            warn!(path = %specs_dir.display(), error = ?err, "failed to parse spec annotations for finding validation");
+            Vec::new()
+        }
+    }
+}
+
+fn load_test_resolver(workspace: &Path) -> Option<RustWorkspaceTestResolver> {
+    match RustWorkspaceTestResolver::scan(workspace) {
+        Ok(resolver) => Some(resolver),
+        Err(err) => {
+            warn!(workspace = %workspace.display(), error = ?err, "failed to scan tests for finding validation");
+            None
+        }
+    }
+}
+
+fn path_exists_from(base: &Path, target: &str) -> bool {
+    let path = WorkspaceFindingValidator::selector_path(target.trim());
+    if path.is_empty() {
+        return false;
+    }
+    let candidate = Path::new(path);
+    if candidate.is_absolute() {
+        candidate.exists()
+    } else {
+        base.join(candidate).exists()
     }
 }
 
@@ -200,5 +288,86 @@ mod tests {
         let validator = WorkspaceFindingValidator::new(tmp.path());
 
         assert!(validator.criterion_anchor_resolves(&gate, &criterion_id));
+    }
+
+    #[test]
+    fn annotation_resolves_declared_test_targets_only_when_test_exists() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("specs")).expect("specs dir");
+        std::fs::create_dir_all(tmp.path().join("crates/loom-agent/src/pi")).expect("source dir");
+        std::fs::write(
+            tmp.path().join("specs/agent.md"),
+            "# Agent\n\n## Success Criteria\n\n- Malformed JSON is handled [test](malformed_json_returns_invalid_json_error)\n- Missing verifier is declared [test](declared_but_missing_test)\n",
+        )
+        .expect("write spec");
+        std::fs::write(
+            tmp.path().join("crates/loom-agent/src/pi/parser.rs"),
+            "#[test]\nfn malformed_json_returns_invalid_json_error() {}\n#[test]\nfn undeclared_bare_test_name() {}\n",
+        )
+        .expect("write source");
+        let validator = WorkspaceFindingValidator::new(tmp.path());
+
+        assert!(validator.annotation_resolves("malformed_json_returns_invalid_json_error"));
+        assert!(!validator.annotation_resolves("declared_but_missing_test"));
+        assert!(!validator.annotation_resolves("undeclared_bare_test_name"));
+    }
+
+    #[test]
+    fn tree_walk_accepts_declared_bare_test_annotation_targets() {
+        use super::super::finding::{DispatchScope, FindingTarget, parse_walk_output};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("specs")).expect("specs dir");
+        std::fs::create_dir_all(tmp.path().join("crates/loom-agent/src/direct/tools"))
+            .expect("direct tools dir");
+        std::fs::create_dir_all(tmp.path().join("crates/loom-agent/src/pi")).expect("pi dir");
+        std::fs::write(
+            tmp.path().join("specs/agent.md"),
+            "# Agent\n\n## Success Criteria\n\n- Malformed JSON streams continue [test](malformed_json_returns_invalid_json_error)\n- Direct spawn reaches wrix [test](direct_session_spawn_invokes_wrix_spawn_with_direct_runtime)\n- Direct reads use the workspace mount [test](direct_tools_read_against_container_workspace_mount)\n",
+        )
+        .expect("write spec");
+        std::fs::write(
+            tmp.path().join("crates/loom-agent/src/direct/backend.rs"),
+            "#[test]\nfn direct_session_spawn_invokes_wrix_spawn_with_direct_runtime() {}\n",
+        )
+        .expect("write backend test");
+        std::fs::write(
+            tmp.path()
+                .join("crates/loom-agent/src/direct/tools/read.rs"),
+            "#[tokio::test]\nasync fn direct_tools_read_against_container_workspace_mount() {}\n",
+        )
+        .expect("write read test");
+        std::fs::write(
+            tmp.path().join("crates/loom-agent/src/pi/parser.rs"),
+            "#[test]\nfn malformed_json_returns_invalid_json_error() {}\n",
+        )
+        .expect("write parser test");
+        let validator = WorkspaceFindingValidator::new(tmp.path());
+        let output = concat!(
+            r#"LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["agent"],"target":{"kind":"Annotation","target_string":"direct_session_spawn_invokes_wrix_spawn_with_direct_runtime"},"evidence":"spawn test does not execute the entrypoint path it claims to verify"}"#,
+            "\n",
+            r#"LOOM_FINDING: {"token":"coincidental-pass","route":"deferred","bonds":["agent"],"target":{"kind":"Annotation","target_string":"direct_tools_read_against_container_workspace_mount"},"evidence":"read test passes due to host filesystem reads"}"#,
+            "\n",
+            r#"LOOM_FINDING: {"token":"verifier-bypass","route":"deferred","bonds":["agent"],"target":{"kind":"Annotation","target_string":"malformed_json_returns_invalid_json_error"},"evidence":"parser test does not drive a live stream continuation"}"#,
+            "\nLOOM_CONCERN: {\"summary\":\"Verifier findings cite declared test annotations\"}\n",
+        );
+        let findings = parse_walk_output(output, DispatchScope::Tree, &validator)
+            .expect("declared bare test annotations should parse");
+
+        let targets: Vec<&str> = findings
+            .iter()
+            .map(|finding| match &finding.target {
+                FindingTarget::Annotation { target_string } => target_string.as_str(),
+                other => panic!("expected annotation target, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            targets,
+            vec![
+                "direct_session_spawn_invokes_wrix_spawn_with_direct_runtime",
+                "direct_tools_read_against_container_workspace_mount",
+                "malformed_json_returns_invalid_json_error",
+            ]
+        );
     }
 }
