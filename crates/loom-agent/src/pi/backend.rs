@@ -14,9 +14,9 @@
 //!
 //! Process IO during the handshake is direct (no [`AgentSession`] yet) —
 //! the typestate session only starts taking events once `prompt` is
-//! called by the workflow layer. Compaction re-pin is the workflow
-//! layer's responsibility (driven from `AgentEvent::CompactionStart`); the
-//! backend itself does not own re-pin policy.
+//! called by the workflow layer. Compaction re-pin delivery is triggered
+//! from `AgentEvent::CompactionStart`; [`PiParser`] owns Pi-private
+//! overflow auto-retry fail-fast policy.
 
 use std::ffi::{OsStr, OsString};
 use std::io;

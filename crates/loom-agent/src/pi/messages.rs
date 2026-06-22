@@ -132,6 +132,10 @@ pub enum PiEvent {
     CompactionEnd {
         #[serde(default)]
         aborted: bool,
+        #[serde(default)]
+        reason: Option<String>,
+        #[serde(default, rename = "willRetry")]
+        will_retry: bool,
     },
 
     /// Per-stream queue change — observability only.
@@ -548,7 +552,15 @@ mod tests {
         let line = r#"{"type":"compaction_end","aborted":true}"#;
         let event: PiEvent = serde_json::from_str(line).expect("parse");
         match event {
-            PiEvent::CompactionEnd { aborted } => assert!(aborted),
+            PiEvent::CompactionEnd {
+                aborted,
+                reason,
+                will_retry,
+            } => {
+                assert!(aborted);
+                assert!(reason.is_none());
+                assert!(!will_retry);
+            }
             other => panic!("expected CompactionEnd, got {other:?}"),
         }
     }
@@ -558,7 +570,34 @@ mod tests {
         let line = r#"{"type":"compaction_end","aborted":false,"willRetry":true}"#;
         let event: PiEvent = serde_json::from_str(line).expect("parse");
         match event {
-            PiEvent::CompactionEnd { aborted } => assert!(!aborted),
+            PiEvent::CompactionEnd {
+                aborted,
+                reason,
+                will_retry,
+            } => {
+                assert!(!aborted);
+                assert!(will_retry);
+                assert!(reason.is_none());
+            }
+            other => panic!("expected CompactionEnd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pi_event_compaction_end_maps_reason_and_will_retry_fields() {
+        let line =
+            r#"{"type":"compaction_end","aborted":false,"reason":"overflow","willRetry":true}"#;
+        let event: PiEvent = serde_json::from_str(line).expect("parse");
+        match event {
+            PiEvent::CompactionEnd {
+                aborted,
+                reason,
+                will_retry,
+            } => {
+                assert!(!aborted);
+                assert_eq!(reason.as_deref(), Some("overflow"));
+                assert!(will_retry);
+            }
             other => panic!("expected CompactionEnd, got {other:?}"),
         }
     }

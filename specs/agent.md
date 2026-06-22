@@ -988,7 +988,7 @@ the entrypoint run the wrong runtime.
   [test](driver_repins_interview_modes_on_compaction_start_via_steer)
 - Pi backend does not accept post-compaction auto-retry output as workflow
   progress until the full re-pin is effective or the session is restarted/failed
-  [test?](pi_overflow_retry_waits_for_effective_repin)
+  [test](pi_overflow_retry_waits_for_effective_repin)
 - Pi backend handles malformed JSONL gracefully (logs warning, continues)
   [test](malformed_json_returns_invalid_json_error)
 - Pi backend logs extension_ui_request at debug level without responding

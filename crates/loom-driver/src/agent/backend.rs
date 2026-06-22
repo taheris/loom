@@ -316,12 +316,12 @@ pub trait AgentBackend: Send + Sync {
 
     /// Per-backend handler for `AgentEvent::CompactionStart`.
     ///
-    /// Pi overrides this to send `config.repin.to_prompt()` via `steer` —
-    /// the spec requires the driver to re-pin context as soon as compaction
-    /// begins so the next turn after `compaction_end` reaches the agent
-    /// with orientation restored. Claude's default no-op stands: claude
-    /// installs a `SessionStart` hook pre-spawn that re-pins inside the
-    /// agent process, so the workflow driver has nothing to do here.
+    /// Pi overrides this to read `prompt.txt` + `scratch.md` and send the
+    /// bytes via `steer` — the spec requires the driver to re-pin context as
+    /// soon as compaction begins so the next turn after `compaction_end`
+    /// reaches the agent with orientation restored. Claude's default no-op
+    /// stands: claude installs a `SessionStart` hook pre-spawn that re-pins
+    /// inside the agent process, so the workflow driver has nothing to do here.
     fn on_compaction_start<'a>(
         _session: &'a mut AgentSession<Active>,
         _config: &'a SpawnConfig,

@@ -17,19 +17,12 @@ use super::messages::{
 
 /// Pi-mono RPC line parser.
 ///
-/// Stateless dispatch layer between
-/// [`AgentSession`](loom_driver::agent::AgentSession) and
-/// [`messages`](super::messages). The parser owns JSONL framing on
-/// stdout (line in → [`ParsedLine`]) and command encoding for stdin
-/// (`encode_prompt`/`encode_steer`/`encode_abort`).
-/// Pi-mono line parser. Holds a per-session `Task` stack so nested
-/// tool calls (inside a `Task` subagent) carry the parent's id. The
-/// stack uses interior mutability (`Mutex`) because
-/// [`LineParse::parse_line`] is `&self`; one parser instance per agent
-/// session, so contention is non-existent.
+/// Owns JSONL framing, command encoding, per-session tool nesting, fallback
+/// text capture, and Pi-private compaction retry policy state.
 pub struct PiParser {
     task_stack: std::sync::Mutex<Vec<loom_events::identifier::ToolCallId>>,
     message_capture: std::sync::Mutex<MessageCapture>,
+    compaction_policy: std::sync::Mutex<CompactionPolicy>,
 }
 
 #[derive(Debug, Default)]
@@ -37,11 +30,45 @@ struct MessageCapture {
     text_emitted: bool,
 }
 
+#[derive(Debug, Default)]
+struct CompactionPolicy {
+    active_reason: Option<NativeCompactionReason>,
+    terminal_after_untrusted_retry: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeCompactionReason {
+    Threshold,
+    Overflow,
+    Manual,
+    Unknown,
+}
+
+impl NativeCompactionReason {
+    fn from_wire(reason: Option<&str>) -> Self {
+        match reason {
+            Some("threshold") => Self::Threshold,
+            Some("overflow") => Self::Overflow,
+            Some("manual") => Self::Manual,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn to_canonical(self) -> CompactionReason {
+        match self {
+            Self::Threshold | Self::Overflow => CompactionReason::ContextLimit,
+            Self::Manual => CompactionReason::UserRequested,
+            Self::Unknown => CompactionReason::Unknown,
+        }
+    }
+}
+
 impl PiParser {
     pub fn new() -> Self {
         Self {
             task_stack: std::sync::Mutex::new(Vec::new()),
             message_capture: std::sync::Mutex::new(MessageCapture::default()),
+            compaction_policy: std::sync::Mutex::new(CompactionPolicy::default()),
         }
     }
 
@@ -115,6 +142,58 @@ impl PiParser {
             ParsedAgentEvent::TextEnd,
         ])
     }
+
+    fn observe_compaction_start(
+        &self,
+        reason: NativeCompactionReason,
+    ) -> Result<(), ProtocolError> {
+        let mut policy = self
+            .compaction_policy
+            .lock()
+            .map_err(|_| ProtocolError::LockPoisoned)?;
+        if !policy.terminal_after_untrusted_retry {
+            policy.active_reason = Some(reason);
+        }
+        Ok(())
+    }
+
+    fn compaction_end_events(
+        &self,
+        aborted: bool,
+        will_retry: bool,
+        end_reason: NativeCompactionReason,
+    ) -> Result<Vec<ParsedAgentEvent>, ProtocolError> {
+        let mut policy = self
+            .compaction_policy
+            .lock()
+            .map_err(|_| ProtocolError::LockPoisoned)?;
+        let reason = match policy.active_reason.take() {
+            Some(NativeCompactionReason::Unknown) | None => end_reason,
+            Some(reason) => reason,
+        };
+        if reason == NativeCompactionReason::Overflow && !aborted && will_retry {
+            policy.terminal_after_untrusted_retry = true;
+            return Ok(vec![
+                ParsedAgentEvent::CompactionEnd { aborted },
+                ParsedAgentEvent::Error {
+                    message: UNTRUSTED_OVERFLOW_RETRY_MESSAGE.to_string(),
+                },
+                ParsedAgentEvent::SessionComplete {
+                    exit_code: 1,
+                    cost_usd: None,
+                },
+            ]);
+        }
+        Ok(vec![ParsedAgentEvent::CompactionEnd { aborted }])
+    }
+
+    fn terminal_after_untrusted_retry(&self) -> Result<bool, ProtocolError> {
+        let policy = self
+            .compaction_policy
+            .lock()
+            .map_err(|_| ProtocolError::LockPoisoned)?;
+        Ok(policy.terminal_after_untrusted_retry)
+    }
 }
 
 impl Default for PiParser {
@@ -123,23 +202,16 @@ impl Default for PiParser {
     }
 }
 
+const UNTRUSTED_OVERFLOW_RETRY_MESSAGE: &str = concat!(
+    "pi overflow compaction requested auto-retry before the full re-pin was effective; ",
+    "failing this session so the workflow can restart with the full prompt",
+);
+
 /// Empty `ParsedLine` — no events, no response.
 fn empty() -> ParsedLine {
     ParsedLine {
         events: Vec::new(),
         response: None,
-    }
-}
-
-/// Map a pi `compaction_start.reason` string to the neutral
-/// [`CompactionReason`]. `"threshold"`/`"overflow"` → `ContextLimit`
-/// (both signal context pressure); `"manual"` → `UserRequested`;
-/// anything else → `Unknown`.
-fn map_compaction_reason(reason: Option<&str>) -> CompactionReason {
-    match reason {
-        Some("threshold") | Some("overflow") => CompactionReason::ContextLimit,
-        Some("manual") => CompactionReason::UserRequested,
-        _ => CompactionReason::Unknown,
     }
 }
 
@@ -186,6 +258,10 @@ fn text_block_text(block: &serde_json::Value) -> Option<&str> {
 }
 
 fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, ProtocolError> {
+    if parser.terminal_after_untrusted_retry()? {
+        trace!("pi event ignored after unsafe overflow auto-retry fail-fast");
+        return Ok(empty());
+    }
     Ok(match event {
         PiEvent::MessageStart { .. } => {
             parser.reset_message_capture()?;
@@ -305,14 +381,26 @@ fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, Protocol
             }],
             response: None,
         },
-        PiEvent::CompactionStart { reason } => ParsedLine {
-            events: vec![ParsedAgentEvent::CompactionStart {
-                reason: map_compaction_reason(reason.as_deref()),
-            }],
-            response: None,
-        },
-        PiEvent::CompactionEnd { aborted } => ParsedLine {
-            events: vec![ParsedAgentEvent::CompactionEnd { aborted }],
+        PiEvent::CompactionStart { reason } => {
+            let native_reason = NativeCompactionReason::from_wire(reason.as_deref());
+            parser.observe_compaction_start(native_reason)?;
+            ParsedLine {
+                events: vec![ParsedAgentEvent::CompactionStart {
+                    reason: native_reason.to_canonical(),
+                }],
+                response: None,
+            }
+        }
+        PiEvent::CompactionEnd {
+            aborted,
+            will_retry,
+            reason,
+        } => ParsedLine {
+            events: parser.compaction_end_events(
+                aborted,
+                will_retry,
+                NativeCompactionReason::from_wire(reason.as_deref()),
+            )?,
             response: None,
         },
         PiEvent::ToolExecutionUpdate {
@@ -867,6 +955,60 @@ mod tests {
             p.events[..],
             [ParsedAgentEvent::CompactionEnd { aborted: false }]
         ));
+    }
+
+    #[test]
+    fn pi_overflow_retry_waits_for_effective_repin() {
+        let parser = PiParser::new();
+        let start = parser
+            .parse_line(r#"{"type":"compaction_start","reason":"overflow"}"#)
+            .expect("overflow compaction_start parses");
+        assert!(matches!(
+            start.events[..],
+            [ParsedAgentEvent::CompactionStart {
+                reason: CompactionReason::ContextLimit,
+            }]
+        ));
+
+        let end = parser
+            .parse_line(
+                r#"{"type":"compaction_end","aborted":false,"reason":"overflow","willRetry":true}"#,
+            )
+            .expect("overflow compaction_end parses");
+        assert_eq!(end.events.len(), 3);
+        assert!(matches!(
+            end.events[0],
+            ParsedAgentEvent::CompactionEnd { aborted: false }
+        ));
+        match &end.events[1] {
+            ParsedAgentEvent::Error { message } => {
+                assert!(message.contains("re-pin"));
+                assert!(message.contains("full prompt"));
+            }
+            other => panic!("expected Error event, got {other:?}"),
+        }
+        match &end.events[2] {
+            ParsedAgentEvent::SessionComplete {
+                exit_code,
+                cost_usd,
+            } => {
+                assert_eq!(*exit_code, 1);
+                assert!(cost_usd.is_none());
+            }
+            other => panic!("expected SessionComplete event, got {other:?}"),
+        }
+
+        for line in [
+            r#"{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":0,"errorMessage":"overflow retry"}"#,
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"UNPINNED_RETRY_OUTPUT"}}"#,
+            r#"{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"POST_REPIN_OUTPUT"}}"#,
+        ] {
+            let parsed = parser.parse_line(line).expect("post-terminal line parses");
+            assert!(
+                parsed.events.is_empty(),
+                "unsafe retry output must stay quarantined after line: {line}"
+            );
+        }
     }
 
     /// `error` delta with only `reason` present falls back to surfacing

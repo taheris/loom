@@ -404,6 +404,26 @@ mod tests {
     }
 
     #[test]
+    fn post_compaction_polish_canary_requires_full_mode_definition() {
+        let summary_only = "loom loop @ lm-3\n\nSummary: polish means report-only.";
+        assert!(
+            !summary_only.contains(POLISH_MODE_DEFINITION),
+            "the canary must reject vague summaries as substitutes",
+        );
+
+        let Some(context) = repin_context(
+            PLANNING_INTERVIEW_PROMPT,
+            "## Scratchpad\n- user asks: do a polish\n",
+        ) else {
+            return;
+        };
+        assert!(
+            context.contains(POLISH_MODE_DEFINITION),
+            "full polish mode definition missing from post-compaction context: {context}",
+        );
+    }
+
+    #[test]
     fn compacted_resume_preserves_one_by_one_mode_definition() {
         let Some(context) = repin_context(
             PLANNING_INTERVIEW_PROMPT,

@@ -3546,7 +3546,7 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
   [test](compacted_resume_preserves_polish_mode_definition)
 - A post-compaction `do a polish` canary fails if resumed context contains
       only a vague summary instead of the full report-only mode definition
-  [test?](post_compaction_polish_canary_requires_full_mode_definition)
+  [test](post_compaction_polish_canary_requires_full_mode_definition)
 - A simulated planning compaction with a fixture `Interview Modes`
       section defining `one by one` as one design question per turn
       resumes with that definition still present
