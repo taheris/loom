@@ -2973,7 +2973,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       log path in its payload / rendered summary, and retry attempts
       produce distinct log paths while successful integration flow is
       unchanged
-  [test](post_integrate_fail_driver_event_names_gate_log_path)
+  [test](gate_invocations_write_separate_jsonl_logs_with_parent_breadcrumb)
 - Transient errors while recording deferred or clarify findings thread
       their detail into `PreviousFailure` and re-run through the
       existing per-bead recovery loop bounded by `[loop] max_retries`;

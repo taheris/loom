@@ -36,7 +36,9 @@ use loom_events::DriverKind;
 use tokio::process::Command;
 use tracing::{info, warn};
 
-use loom_gate::{GateRun, HandoffEvidence, parse_gate_runs_from_jsonl};
+use loom_gate::{
+    GateRun, HandoffEvidence, append_gate_run_lifecycle_events, parse_gate_runs_from_jsonl,
+};
 
 use super::context::{LoopContextInputs, render_loop_prompt};
 use super::driver_emit::BeadEmit;
@@ -891,7 +893,7 @@ where
         self.git.run_pre_push_chain().await?;
         let config_digest = pre_commit_config_digest(&self.workspace)?;
         if let Some(path) = review_log_path.as_deref() {
-            append_gate_run_event(
+            append_gate_run_lifecycle_events(
                 path,
                 &GateRun::successful_verify(
                     diff_range.clone(),
@@ -976,7 +978,7 @@ where
         }
         if let Some(path) = review_log_path.as_deref() {
             let marker = review_marker.clone().unwrap_or(ExitSignal::Complete);
-            append_gate_run_event(
+            append_gate_run_lifecycle_events(
                 path,
                 &GateRun::successful_review(
                     diff_range.clone(),
@@ -1146,51 +1148,6 @@ fn pre_commit_config_digest(workspace: &std::path::Path) -> Result<String, LoopE
         Err(error) => return Err(error.into()),
     };
     Ok(blake3::hash(&bytes).to_hex().to_string())
-}
-
-fn append_gate_run_event(path: &std::path::Path, run: &GateRun) -> Result<(), LoopError> {
-    use std::io::Write as _;
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let covered_hooks = run.covered_hooks.clone();
-    let phase = match run.phase {
-        loom_gate::GatePhase::Verify => "verify",
-        loom_gate::GatePhase::Review => "review",
-    };
-    let status = match run.status {
-        loom_gate::GateRunStatus::Success => "success",
-        loom_gate::GateRunStatus::Failed => "failed",
-    };
-    let marker = match run.marker.as_ref() {
-        Some(ExitSignal::Complete) => Some("complete".to_string()),
-        Some(ExitSignal::Noop) => Some("noop".to_string()),
-        Some(ExitSignal::Concern { summary }) => Some(format!("concern:{summary}")),
-        Some(_) | None => None,
-    };
-    let event = serde_json::json!({
-        "kind": "driver_event",
-        "driver_kind": "gate_run_end",
-        "payload": {
-            "phase": phase,
-            "push_range": &run.push_range,
-            "tree_oid": &run.tree_oid,
-            "config_digest": &run.config_digest,
-            "log_path": path.to_string_lossy(),
-            "exit_code": run.exit_code,
-            "status": status,
-            "marker": marker,
-            "covered_hooks": covered_hooks,
-        }
-    });
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    serde_json::to_writer(&mut file, &event).map_err(std::io::Error::other)?;
-    writeln!(&mut file)?;
-    Ok(())
 }
 
 fn write_post_integrate_gate_log(
@@ -3237,7 +3194,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_integrate_fail_driver_event_names_gate_log_path() {
+    async fn gate_invocations_write_separate_jsonl_logs_with_parent_breadcrumb() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().expect("tempdir");

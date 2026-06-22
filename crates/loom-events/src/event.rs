@@ -77,6 +77,16 @@ pub enum DriverKind {
     /// next-retry `TreeNotClean` stash. Payload fields: `bead_id`,
     /// `dirty_paths` (capped list of paths).
     TreeNotClean,
+    /// Gate invocation accepted and lifecycle logging began.
+    GateRunStart,
+    /// Gate invocation scope resolved to concrete inputs.
+    GateRunScope,
+    /// Gate invocation reported progress for one execution lane.
+    GateRunLane,
+    /// Gate invocation finished and serialized its `GateRun` summary.
+    GateRunEnd,
+    /// Gate invocation was skipped before running verifier work.
+    GateRunSkipped,
     /// Forward-compat fallback: any wire `driver_kind` string that does
     /// not match a known variant lands here. Known variants never fall
     /// through.
@@ -108,6 +118,11 @@ impl DriverKind {
             DriverKind::SignatureVerificationFailed => "signature_verification_failed",
             DriverKind::WorktreeCleanupOk => "worktree_cleanup_ok",
             DriverKind::TreeNotClean => "tree_not_clean",
+            DriverKind::GateRunStart => "gate_run_start",
+            DriverKind::GateRunScope => "gate_run_scope",
+            DriverKind::GateRunLane => "gate_run_lane",
+            DriverKind::GateRunEnd => "gate_run_end",
+            DriverKind::GateRunSkipped => "gate_run_skipped",
             DriverKind::Other(s) => s.as_str(),
         }
     }
@@ -136,6 +151,11 @@ impl DriverKind {
             "signature_verification_failed" => DriverKind::SignatureVerificationFailed,
             "worktree_cleanup_ok" => DriverKind::WorktreeCleanupOk,
             "tree_not_clean" => DriverKind::TreeNotClean,
+            "gate_run_start" => DriverKind::GateRunStart,
+            "gate_run_scope" => DriverKind::GateRunScope,
+            "gate_run_lane" => DriverKind::GateRunLane,
+            "gate_run_end" => DriverKind::GateRunEnd,
+            "gate_run_skipped" => DriverKind::GateRunSkipped,
             other => DriverKind::Other(other.to_string()),
         }
     }
@@ -930,6 +950,246 @@ mod tests {
         }
     }
 
+    /// The flat payload field set for every `AgentEvent` variant matches
+    /// the table in specs/events.md: common envelope fields plus only the
+    /// variant's documented payload fields.
+    #[test]
+    fn agent_event_payload_fields_match_spec() {
+        let mut b = builder();
+        let samples: Vec<(&str, AgentEvent, &[&str])> = vec![
+            (
+                "agent_start",
+                AgentEvent::AgentStart {
+                    envelope: b.build(),
+                    schema_version: 1,
+                    title: "smoke".into(),
+                    profile: ProfileName::new("base"),
+                    spec_label: SpecLabel::new("harness"),
+                    started_at_ms: 1_700_000_000_000,
+                    parent_tool_call_id: None,
+                },
+                &[
+                    "schema_version",
+                    "title",
+                    "profile",
+                    "spec_label",
+                    "started_at_ms",
+                    "parent_tool_call_id",
+                ],
+            ),
+            (
+                "agent_end",
+                AgentEvent::AgentEnd {
+                    envelope: b.build(),
+                },
+                &[],
+            ),
+            (
+                "turn_start",
+                AgentEvent::TurnStart {
+                    envelope: b.build(),
+                },
+                &[],
+            ),
+            (
+                "text_delta",
+                AgentEvent::TextDelta {
+                    envelope: b.build(),
+                    text: "hello".into(),
+                },
+                &["text"],
+            ),
+            (
+                "text_end",
+                AgentEvent::TextEnd {
+                    envelope: b.build(),
+                },
+                &[],
+            ),
+            (
+                "thinking_delta",
+                AgentEvent::ThinkingDelta {
+                    envelope: b.build(),
+                    text: "thinking".into(),
+                },
+                &["text"],
+            ),
+            (
+                "thinking_end",
+                AgentEvent::ThinkingEnd {
+                    envelope: b.build(),
+                },
+                &[],
+            ),
+            (
+                "toolcall_delta",
+                AgentEvent::ToolcallDelta {
+                    envelope: b.build(),
+                    id: ToolCallId::new("tc-1"),
+                    delta: "{".into(),
+                },
+                &["id", "delta"],
+            ),
+            (
+                "tool_call",
+                AgentEvent::ToolCall {
+                    envelope: b.build(),
+                    id: ToolCallId::new("tc-1"),
+                    tool: "Read".into(),
+                    params: serde_json::json!({"path": "Cargo.toml"}),
+                    parent_tool_call_id: None,
+                },
+                &["id", "tool", "params", "parent_tool_call_id"],
+            ),
+            (
+                "tool_result",
+                AgentEvent::ToolResult {
+                    envelope: b.build(),
+                    id: ToolCallId::new("tc-1"),
+                    output: "ok".into(),
+                    is_error: false,
+                },
+                &["id", "output", "is_error"],
+            ),
+            (
+                "tool_progress",
+                AgentEvent::ToolProgress {
+                    envelope: b.build(),
+                    id: ToolCallId::new("tc-1"),
+                    text: "running".into(),
+                },
+                &["id", "text"],
+            ),
+            (
+                "turn_end",
+                AgentEvent::TurnEnd {
+                    envelope: b.build(),
+                },
+                &[],
+            ),
+            (
+                "session_complete",
+                AgentEvent::SessionComplete {
+                    envelope: b.build(),
+                    exit_code: 0,
+                    cost_usd: Some(0.25),
+                },
+                &["exit_code", "cost_usd"],
+            ),
+            (
+                "compaction_start",
+                AgentEvent::CompactionStart {
+                    envelope: b.build(),
+                    reason: CompactionReason::ContextLimit,
+                },
+                &["reason"],
+            ),
+            (
+                "compaction_end",
+                AgentEvent::CompactionEnd {
+                    envelope: b.build(),
+                    aborted: false,
+                },
+                &["aborted"],
+            ),
+            (
+                "auto_retry",
+                AgentEvent::AutoRetry {
+                    envelope: b.build(),
+                    attempt: 1,
+                    max_attempts: 3,
+                    delay_ms: 100,
+                    error_message: "retry".into(),
+                },
+                &["attempt", "max_attempts", "delay_ms", "error_message"],
+            ),
+            (
+                "error",
+                AgentEvent::Error {
+                    envelope: b.build(),
+                    message: "boom".into(),
+                },
+                &["message"],
+            ),
+            (
+                "driver_event",
+                AgentEvent::DriverEvent {
+                    envelope: b.build_with_source(Source::Driver),
+                    driver_kind: DriverKind::VerdictGate,
+                    summary: "summary".into(),
+                    payload: serde_json::json!({"detail": 1}),
+                },
+                &["driver_kind", "summary", "payload"],
+            ),
+        ];
+        let common = [
+            "kind",
+            "bead_id",
+            "molecule_id",
+            "iteration",
+            "source",
+            "ts_ms",
+            "seq",
+        ];
+        for (kind, event, payload_fields) in samples {
+            let value = serde_json::to_value(&event).expect("serialize");
+            let object = value.as_object().expect("event object");
+            assert_eq!(object["kind"], kind);
+            let actual = object
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>();
+            let expected = common
+                .iter()
+                .chain(payload_fields.iter())
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                actual, expected,
+                "payload fields drifted for {kind}: {value}"
+            );
+        }
+    }
+
+    /// Gate lifecycle values are typed `DriverKind` arms carried by the
+    /// existing `driver_event.driver_kind` field, not new top-level event
+    /// variants.
+    #[test]
+    fn driver_kind_typed_enum_carries_gate_lifecycle_values() {
+        let kinds = [
+            (DriverKind::GateRunStart, "gate_run_start"),
+            (DriverKind::GateRunScope, "gate_run_scope"),
+            (DriverKind::GateRunLane, "gate_run_lane"),
+            (DriverKind::GateRunEnd, "gate_run_end"),
+            (DriverKind::GateRunSkipped, "gate_run_skipped"),
+        ];
+        let mut b = builder();
+        for (driver_kind, wire) in kinds {
+            let event = AgentEvent::DriverEvent {
+                envelope: b.build_with_source(Source::Driver),
+                driver_kind: driver_kind.clone(),
+                summary: format!("{wire} summary"),
+                payload: serde_json::json!({"run_id": "r1"}),
+            };
+            let value = serde_json::to_value(&event).expect("serialize");
+            assert_eq!(value["kind"], "driver_event");
+            assert_eq!(value["driver_kind"], wire);
+            assert_ne!(value["kind"], wire);
+            let parsed: AgentEvent = serde_json::from_value(value).expect("deserialize");
+            match parsed {
+                AgentEvent::DriverEvent {
+                    driver_kind: parsed_kind,
+                    envelope,
+                    ..
+                } => {
+                    assert_eq!(parsed_kind, driver_kind);
+                    assert_eq!(envelope.source, Source::Driver);
+                }
+                other => panic!("gate lifecycle kind became a top-level variant: {other:?}"),
+            }
+        }
+    }
+
     /// G2 — unknown `kind` values must fail deserialization loudly. The
     /// log format is small and well-known; a silent skip on unknown
     /// variants would mask the on-disk format drifting from the in-code
@@ -1038,8 +1298,15 @@ mod tests {
             "bead_branch_pushed",
             "merge_ok",
             "merge_conflict",
+            "integration_conflict",
+            "signature_verification_failed",
             "worktree_cleanup_ok",
             "tree_not_clean",
+            "gate_run_start",
+            "gate_run_scope",
+            "gate_run_lane",
+            "gate_run_end",
+            "gate_run_skipped",
         ];
         for kind in kinds {
             let json = serde_json::json!({
@@ -1142,6 +1409,11 @@ mod tests {
             ),
             ("worktree_cleanup_ok", DriverKind::WorktreeCleanupOk),
             ("tree_not_clean", DriverKind::TreeNotClean),
+            ("gate_run_start", DriverKind::GateRunStart),
+            ("gate_run_scope", DriverKind::GateRunScope),
+            ("gate_run_lane", DriverKind::GateRunLane),
+            ("gate_run_end", DriverKind::GateRunEnd),
+            ("gate_run_skipped", DriverKind::GateRunSkipped),
         ];
         for (wire, variant) in known {
             assert_eq!(DriverKind::from_wire(wire), variant);

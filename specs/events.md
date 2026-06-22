@@ -275,13 +275,13 @@ not abort the run.
 - Event JSON is flat tagged by `kind`, with no nested event envelope
   [check](cargo test -p loom-events --lib flat_variant_shape_has_no_nested_envelopes)
 - `AgentEvent` payload fields match this spec's variant payload table
-  [test?](agent_event_payload_fields_match_spec)
+  [test](agent_event_payload_fields_match_spec)
 - Unknown `driver_kind` wire values deserialize as forward-compatible driver events
   [test](driver_event_accepts_unknown_driver_kind)
 - Core driver event kinds deserialize as `source: "driver"` events
   [test](driver_kinds_present_for_spec_emission_sites)
 - Gate lifecycle driver event kinds serialize through `driver_event.driver_kind` rather than new top-level `AgentEvent` variants
-  [test?](driver_kind_typed_enum_carries_gate_lifecycle_values)
+  [test](driver_kind_typed_enum_carries_gate_lifecycle_values)
 - `EventSink` and `SessionCommand` are defined in `loom-events` with sync `emit`, default `react`, `Steer`, and `Abort`
   [check](cargo run -p loom-walk -- event_sink_in_loom_events)
 - `EventSink` composition preserves registration order for `react()`
@@ -339,9 +339,9 @@ not abort the run.
 - Retention sweep failures do not abort `loom loop`
   [test](log_retention_failure_tolerance)
 - Gate invocations outside an agent session write separate JSONL logs and parent streams reference the gate log path
-  [test?](gate_invocations_write_separate_jsonl_logs_with_parent_breadcrumb)
+  [test](gate_invocations_write_separate_jsonl_logs_with_parent_breadcrumb)
 - Incomplete gate event logs are marked incomplete rather than rendered as successful completed gate runs
-  [test?](incomplete_gate_event_log_is_not_successful)
+  [test](incomplete_gate_event_log_is_not_successful)
 - `loom-events` remains a leaf public-contract crate
   [check](cargo run -p loom-walk -- loom_events_is_leaf)
 - `loom-render` depends on `loom-events` and does not depend on `loom-driver` or `loom-workflow`

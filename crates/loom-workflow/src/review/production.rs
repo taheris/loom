@@ -38,7 +38,8 @@ use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
 use loom_gate::{
     DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateRun, GateSuccess,
     HandoffEvidence, InputResolver, IntegrityFinding, MarkerProof, TierCwds, annotation,
-    compose_clarify_options, integrity, parse_gate_runs_from_jsonl,
+    append_gate_run_lifecycle_events, compose_clarify_options, integrity,
+    parse_gate_runs_from_jsonl,
 };
 use loom_templates::previous_failure::PreviousFailure;
 use loom_templates::review::{ReviewContext, ReviewLane};
@@ -97,50 +98,6 @@ fn pre_commit_config_digest(workspace: &Path) -> Result<String, ReviewError> {
         Err(error) => return Err(error.into()),
     };
     Ok(blake3::hash(&bytes).to_hex().to_string())
-}
-
-fn append_gate_run_event(path: &Path, run: &GateRun) -> Result<(), ReviewError> {
-    use std::io::Write as _;
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let phase = match run.phase {
-        loom_gate::GatePhase::Verify => "verify",
-        loom_gate::GatePhase::Review => "review",
-    };
-    let status = match run.status {
-        loom_gate::GateRunStatus::Success => "success",
-        loom_gate::GateRunStatus::Failed => "failed",
-    };
-    let marker = match run.marker.as_ref() {
-        Some(ExitSignal::Complete) => Some("complete".to_string()),
-        Some(ExitSignal::Noop) => Some("noop".to_string()),
-        Some(ExitSignal::Concern { summary }) => Some(format!("concern:{summary}")),
-        Some(_) | None => None,
-    };
-    let event = serde_json::json!({
-        "kind": "driver_event",
-        "driver_kind": "gate_run_end",
-        "payload": {
-            "phase": phase,
-            "push_range": &run.push_range,
-            "tree_oid": &run.tree_oid,
-            "config_digest": &run.config_digest,
-            "log_path": path.to_string_lossy(),
-            "exit_code": run.exit_code,
-            "status": status,
-            "marker": marker,
-            "covered_hooks": &run.covered_hooks,
-        }
-    });
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    serde_json::to_writer(&mut file, &event).map_err(std::io::Error::other)?;
-    writeln!(&mut file)?;
-    Ok(())
 }
 
 pub struct ProductionReviewController<S, F, R: CommandRunner = TokioRunner>
@@ -969,7 +926,7 @@ where
                 .clone()
                 .unwrap_or(ExitSignal::Complete);
             let config_digest = pre_commit_config_digest(&self.workspace)?;
-            append_gate_run_event(
+            append_gate_run_lifecycle_events(
                 path,
                 &GateRun::successful_review(
                     range.clone(),

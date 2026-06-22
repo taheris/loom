@@ -1,9 +1,14 @@
 //! Typed outcomes of one `loom loop` invocation.
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use loom_driver::clock::{Clock, SystemClock};
+use loom_events::identifier::BeadId;
+use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
 use loom_protocol::gate::ExitSignal;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -122,16 +127,17 @@ impl GateRun {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GatePhase {
     Verify,
     Review,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateRunStatus {
     Success,
     Failed,
+    Incomplete,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -452,39 +458,305 @@ pub struct LoopOutcome {
     pub gate: GateOutcome,
 }
 
+pub fn append_gate_run_lifecycle_events(path: &Path, run: &GateRun) -> Result<(), std::io::Error> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let seq_start = next_seq_in_log(path);
+    let events = gate_run_lifecycle_events(path, run, seq_start)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    for event in events {
+        serde_json::to_writer(&mut file, &event).map_err(std::io::Error::other)?;
+        writeln!(&mut file)?;
+        file.flush()?;
+    }
+    Ok(())
+}
+
 #[must_use]
 pub fn parse_gate_runs_from_jsonl(path: &Path) -> Vec<GateRun> {
     let Ok(contents) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
-    contents
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|value| {
-            value.get("kind").and_then(serde_json::Value::as_str) == Some("driver_event")
-        })
-        .filter(|value| {
-            value.get("driver_kind").and_then(serde_json::Value::as_str) == Some("gate_run_end")
-        })
-        .filter_map(|value| gate_run_from_payload(value.get("payload")?, path))
-        .collect()
+    let mut completed = Vec::new();
+    let mut completed_keys = BTreeSet::new();
+    let mut pending = BTreeMap::new();
+    for line in contents.lines() {
+        let value = match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if value.get("kind").and_then(serde_json::Value::as_str) != Some("driver_event") {
+            continue;
+        }
+        let Some(driver_kind) = value
+            .get("driver_kind")
+            .and_then(serde_json::Value::as_str)
+            .map(DriverKind::from_wire)
+        else {
+            continue;
+        };
+        let Some(payload) = value.get("payload") else {
+            continue;
+        };
+        match driver_kind {
+            DriverKind::GateRunStart | DriverKind::GateRunScope => {
+                if let Some(key) = gate_lifecycle_key(payload) {
+                    pending.insert(key, payload.clone());
+                }
+            }
+            DriverKind::GateRunEnd => {
+                if let Some(key) = gate_lifecycle_key(payload) {
+                    completed_keys.insert(key);
+                }
+                if let Some(run) = gate_run_from_payload(payload, path) {
+                    completed.push(run);
+                }
+            }
+            _ => {}
+        }
+    }
+    for (key, payload) in pending {
+        if completed_keys.contains(&key) {
+            continue;
+        }
+        if let Some(run) = incomplete_gate_run_from_payload(&payload, path) {
+            completed.push(run);
+        }
+    }
+    completed
+}
+
+fn gate_run_lifecycle_events(
+    path: &Path,
+    run: &GateRun,
+    seq_start: u64,
+) -> Result<Vec<AgentEvent>, std::io::Error> {
+    let mut builder = gate_log_envelope_builder(path, seq_start)?;
+    let phase = gate_phase_wire(run.phase);
+    let payload = gate_run_payload(path, run);
+    let mut events = vec![
+        gate_driver_event(
+            &mut builder,
+            DriverKind::GateRunStart,
+            format!("{phase} gate run started"),
+            payload.clone(),
+        ),
+        gate_driver_event(
+            &mut builder,
+            DriverKind::GateRunScope,
+            format!("{phase} gate run scoped: {}", run.push_range),
+            payload.clone(),
+        ),
+    ];
+    if run.covered_hooks.is_empty() {
+        events.push(gate_driver_event(
+            &mut builder,
+            DriverKind::GateRunLane,
+            format!("{phase} gate run lane complete"),
+            gate_lane_payload(path, run, 0, None),
+        ));
+    } else {
+        for (index, hook) in run.covered_hooks.iter().enumerate() {
+            events.push(gate_driver_event(
+                &mut builder,
+                DriverKind::GateRunLane,
+                format!("{phase} gate run lane complete: {}", hook.id),
+                gate_lane_payload(path, run, index, Some(hook)),
+            ));
+        }
+    }
+    events.push(gate_driver_event(
+        &mut builder,
+        DriverKind::GateRunEnd,
+        format!("{phase} gate run {}", gate_status_wire(run.status)),
+        payload,
+    ));
+    Ok(events)
+}
+
+fn gate_driver_event(
+    builder: &mut EnvelopeBuilder,
+    driver_kind: DriverKind,
+    summary: String,
+    payload: serde_json::Value,
+) -> AgentEvent {
+    AgentEvent::DriverEvent {
+        envelope: builder.build(),
+        driver_kind,
+        summary,
+        payload,
+    }
+}
+
+fn gate_run_payload(path: &Path, run: &GateRun) -> serde_json::Value {
+    serde_json::json!({
+        "run_id": gate_run_id(path, run),
+        "phase": gate_phase_wire(run.phase),
+        "push_range": &run.push_range,
+        "tree_oid": &run.tree_oid,
+        "config_digest": &run.config_digest,
+        "log_path": path.to_string_lossy(),
+        "exit_code": run.exit_code,
+        "status": gate_status_wire(run.status),
+        "marker": run.marker.as_ref().and_then(marker_to_wire),
+        "covered_hooks": &run.covered_hooks,
+    })
+}
+
+fn gate_lane_payload(
+    path: &Path,
+    run: &GateRun,
+    lane_index: usize,
+    hook: Option<&HookCoverage>,
+) -> serde_json::Value {
+    let mut payload = gate_run_payload(path, run);
+    let Some(object) = payload.as_object_mut() else {
+        return payload;
+    };
+    object.insert("lane_index".to_string(), serde_json::json!(lane_index));
+    match hook {
+        Some(hook) => {
+            object.insert("lane_kind".to_string(), serde_json::json!("hook"));
+            object.insert(
+                "hook".to_string(),
+                serde_json::json!({ "id": &hook.id, "entry": &hook.entry }),
+            );
+        }
+        None => {
+            object.insert(
+                "lane_kind".to_string(),
+                serde_json::json!(gate_phase_wire(run.phase)),
+            );
+        }
+    }
+    payload
+}
+
+fn gate_log_envelope_builder(
+    path: &Path,
+    seq_start: u64,
+) -> Result<EnvelopeBuilder, std::io::Error> {
+    let bead_id = gate_log_bead_id(path)?;
+    let clock = SystemClock::new();
+    Ok(EnvelopeBuilder::with_seq_start(
+        bead_id,
+        None,
+        0,
+        Source::Driver,
+        seq_start,
+        move || {
+            clock
+                .wall_now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_millis() as i64)
+        },
+    ))
+}
+
+fn gate_log_bead_id(path: &Path) -> Result<BeadId, std::io::Error> {
+    if let Ok(contents) = std::fs::read_to_string(path) {
+        for line in contents.lines() {
+            let value = match serde_json::from_str::<serde_json::Value>(line) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let Some(raw) = value.get("bead_id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if let Ok(bead_id) = BeadId::new(raw) {
+                return Ok(bead_id);
+            }
+        }
+    }
+    BeadId::new("gate-log")
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string()))
+}
+
+fn next_seq_in_log(path: &Path) -> u64 {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return 0;
+    };
+    let mut max_seq: Option<u64> = None;
+    for line in contents.lines() {
+        let value = match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let Some(seq) = value.get("seq").and_then(serde_json::Value::as_u64) else {
+            continue;
+        };
+        max_seq = Some(max_seq.map_or(seq, |max| max.max(seq)));
+    }
+    max_seq.map_or(0, |seq| seq + 1)
+}
+
+fn gate_run_id(path: &Path, run: &GateRun) -> String {
+    blake3::hash(
+        format!(
+            "{}\0{}\0{}\0{}\0{}",
+            gate_phase_wire(run.phase),
+            run.push_range,
+            run.tree_oid,
+            run.config_digest,
+            path.display(),
+        )
+        .as_bytes(),
+    )
+    .to_hex()
+    .to_string()
+}
+
+fn gate_lifecycle_key(payload: &serde_json::Value) -> Option<String> {
+    if let Some(run_id) = payload.get("run_id").and_then(serde_json::Value::as_str)
+        && !run_id.is_empty()
+    {
+        return Some(run_id.to_owned());
+    }
+    let phase = payload.get("phase")?.as_str()?;
+    let push_range = payload.get("push_range")?.as_str()?;
+    let tree_oid = payload.get("tree_oid")?.as_str()?;
+    let config_digest = payload
+        .get("config_digest")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    Some(format!(
+        "{phase}\0{push_range}\0{tree_oid}\0{config_digest}"
+    ))
 }
 
 fn gate_run_from_payload(payload: &serde_json::Value, fallback_path: &Path) -> Option<GateRun> {
-    let phase = match payload.get("phase")?.as_str()? {
-        "verify" => GatePhase::Verify,
-        "review" => GatePhase::Review,
-        _ => return None,
+    gate_run_from_payload_with_status(payload, fallback_path, None)
+}
+
+fn incomplete_gate_run_from_payload(
+    payload: &serde_json::Value,
+    fallback_path: &Path,
+) -> Option<GateRun> {
+    gate_run_from_payload_with_status(payload, fallback_path, Some(GateRunStatus::Incomplete))
+}
+
+fn gate_run_from_payload_with_status(
+    payload: &serde_json::Value,
+    fallback_path: &Path,
+    status_override: Option<GateRunStatus>,
+) -> Option<GateRun> {
+    let phase = gate_phase_from_wire(payload.get("phase")?.as_str()?)?;
+    let status = match status_override {
+        Some(status) => status,
+        None => gate_status_from_wire(payload.get("status")?.as_str()?)?,
     };
-    let status = match payload.get("status")?.as_str()? {
-        "success" => GateRunStatus::Success,
-        "failed" => GateRunStatus::Failed,
-        _ => return None,
+    let marker = if status == GateRunStatus::Incomplete {
+        None
+    } else {
+        payload
+            .get("marker")
+            .and_then(serde_json::Value::as_str)
+            .and_then(marker_from_str)
     };
-    let marker = payload
-        .get("marker")
-        .and_then(serde_json::Value::as_str)
-        .and_then(marker_from_str);
     let covered_hooks = payload
         .get("covered_hooks")
         .and_then(serde_json::Value::as_array)
@@ -508,14 +780,59 @@ fn gate_run_from_payload(payload: &serde_json::Value, fallback_path: &Path) -> O
             .get("log_path")
             .and_then(serde_json::Value::as_str)
             .map_or_else(|| fallback_path.to_path_buf(), PathBuf::from),
-        exit_code: payload
-            .get("exit_code")
-            .and_then(serde_json::Value::as_i64)
-            .and_then(|code| i32::try_from(code).ok()),
+        exit_code: if status == GateRunStatus::Incomplete {
+            None
+        } else {
+            payload
+                .get("exit_code")
+                .and_then(serde_json::Value::as_i64)
+                .and_then(|code| i32::try_from(code).ok())
+        },
         status,
         marker,
         covered_hooks,
     })
+}
+
+fn gate_phase_wire(phase: GatePhase) -> &'static str {
+    match phase {
+        GatePhase::Verify => "verify",
+        GatePhase::Review => "review",
+    }
+}
+
+fn gate_phase_from_wire(phase: &str) -> Option<GatePhase> {
+    match phase {
+        "verify" => Some(GatePhase::Verify),
+        "review" => Some(GatePhase::Review),
+        _ => None,
+    }
+}
+
+fn gate_status_wire(status: GateRunStatus) -> &'static str {
+    match status {
+        GateRunStatus::Success => "success",
+        GateRunStatus::Failed => "failed",
+        GateRunStatus::Incomplete => "incomplete",
+    }
+}
+
+fn gate_status_from_wire(status: &str) -> Option<GateRunStatus> {
+    match status {
+        "success" => Some(GateRunStatus::Success),
+        "failed" => Some(GateRunStatus::Failed),
+        "incomplete" => Some(GateRunStatus::Incomplete),
+        _ => None,
+    }
+}
+
+fn marker_to_wire(marker: &ExitSignal) -> Option<String> {
+    match marker {
+        ExitSignal::Complete => Some("complete".to_string()),
+        ExitSignal::Noop => Some("noop".to_string()),
+        ExitSignal::Concern { summary } => Some(format!("concern:{summary}")),
+        _ => None,
+    }
 }
 
 fn hook_coverage_from_json(value: &serde_json::Value) -> Option<HookCoverage> {
@@ -653,6 +970,108 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert!(VerifiedScope::from_run(&runs[0]).is_some());
         assert!(ReviewedScope::from_run(&runs[1]).is_some());
+    }
+
+    #[test]
+    fn gate_invocations_emit_jsonl_lifecycle_events() {
+        let log = NamedTempFile::new().expect("tempfile");
+        let run = GateRun::successful_verify(
+            "origin/main..HEAD".to_owned(),
+            "tree-a".to_owned(),
+            "config-a".to_owned(),
+            log.path().to_path_buf(),
+            vec![hook("pre-push", "loom gate verify --diff @{u}..HEAD")],
+        );
+        append_gate_run_lifecycle_events(log.path(), &run).expect("write lifecycle events");
+        let body = std::fs::read_to_string(log.path()).expect("read log");
+        let events = body
+            .lines()
+            .map(|line| serde_json::from_str::<AgentEvent>(line).expect("agent event json"))
+            .collect::<Vec<_>>();
+        let kinds = events
+            .iter()
+            .map(|event| match event {
+                AgentEvent::DriverEvent {
+                    envelope,
+                    driver_kind,
+                    ..
+                } => {
+                    assert_eq!(envelope.source, Source::Driver);
+                    driver_kind.as_wire()
+                }
+                other => panic!("gate log line must be a driver_event: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec![
+                "gate_run_start",
+                "gate_run_scope",
+                "gate_run_lane",
+                "gate_run_end",
+            ],
+        );
+        let runs = parse_gate_runs_from_jsonl(log.path());
+        assert_eq!(runs.len(), 1);
+        assert!(VerifiedScope::from_run(&runs[0]).is_some());
+    }
+
+    #[test]
+    fn incomplete_gate_event_log_is_not_successful() {
+        let log = NamedTempFile::new().expect("tempfile");
+        let verify = GateRun::successful_verify(
+            "origin/main..HEAD".to_owned(),
+            "tree-a".to_owned(),
+            "config-a".to_owned(),
+            log.path().to_path_buf(),
+            vec![hook("pre-push", "loom gate verify --diff @{u}..HEAD")],
+        );
+        let events =
+            gate_run_lifecycle_events(log.path(), &verify, 0).expect("build lifecycle events");
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(log.path())
+            .expect("open log");
+        for event in events {
+            if matches!(
+                &event,
+                AgentEvent::DriverEvent {
+                    driver_kind: DriverKind::GateRunEnd,
+                    ..
+                }
+            ) {
+                continue;
+            }
+            serde_json::to_writer(&mut file, &event).expect("write event");
+            writeln!(&mut file).expect("write newline");
+        }
+        drop(file);
+        let review = GateRun::successful_review(
+            "origin/main..HEAD".to_owned(),
+            "tree-a".to_owned(),
+            "config-a".to_owned(),
+            log.path().to_path_buf(),
+            ExitSignal::Complete,
+        );
+        append_gate_run_lifecycle_events(log.path(), &review).expect("write review events");
+
+        let runs = parse_gate_runs_from_jsonl(log.path());
+        let incomplete = runs
+            .iter()
+            .find(|run| run.phase == GatePhase::Verify)
+            .expect("incomplete verify run parsed");
+        assert_eq!(incomplete.status, GateRunStatus::Incomplete);
+        assert!(!incomplete.is_success());
+        assert!(VerifiedScope::from_run(incomplete).is_none());
+        let mut evidence = HandoffEvidence::from_runs(runs);
+        evidence.gate_log_paths = vec![log.path().to_path_buf()];
+        match GateSuccess::new(&evidence, 1) {
+            Err(GateFail {
+                reason: GateFailReason::VerifierFailed,
+                ..
+            }) => {}
+            other => panic!("incomplete gate log must not mint success: {other:?}"),
+        }
     }
 
     #[test]

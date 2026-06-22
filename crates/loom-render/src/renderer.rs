@@ -7,8 +7,8 @@ use serde_json::Value;
 use crate::clock::{Clock, SystemClock};
 use crate::in_place::CLEAR_TO_EOL;
 use crate::tool_body;
+use loom_events::AgentEvent;
 use loom_events::identifier::{BeadId, ProfileName, ToolCallId};
-use loom_events::{AgentEvent, DriverKind};
 
 /// Final outcome of a bead spawn — drives the closing line color and glyph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -567,29 +567,7 @@ impl TerminalRenderer {
                 ..
             } => {
                 self.close_in_flight("…")?;
-                let kind_wire = match driver_kind {
-                    DriverKind::VerdictGate
-                    | DriverKind::RetryDispatch
-                    | DriverKind::PushGateWalk
-                    | DriverKind::PushGateRefuse
-                    | DriverKind::PushGateClean
-                    | DriverKind::ContainerSpawn
-                    | DriverKind::ContainerOom
-                    | DriverKind::InfraFailure
-                    | DriverKind::TokenUsage
-                    | DriverKind::Offload
-                    | DriverKind::DuplicateToolResult
-                    | DriverKind::DoomLoopTripped
-                    | DriverKind::EpicAutoClosed
-                    | DriverKind::BeadBranchPushed
-                    | DriverKind::MergeOk
-                    | DriverKind::MergeConflict
-                    | DriverKind::IntegrationConflict
-                    | DriverKind::SignatureVerificationFailed
-                    | DriverKind::WorktreeCleanupOk
-                    | DriverKind::TreeNotClean => driver_kind.as_wire(),
-                    DriverKind::Other(name) => name.as_str(),
-                };
+                let kind_wire = driver_kind.as_wire();
                 let line = if self.parallel {
                     format!("  [{}] → {kind_wire}: {summary}\n", self.bead_id.as_str(),)
                 } else {
@@ -951,6 +929,7 @@ pub fn build_renderer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loom_events::DriverKind;
     use loom_events::EventEnvelope;
     use loom_events::Source;
     use loom_events::identifier::ToolCallId;
@@ -1820,6 +1799,23 @@ mod tests {
             "container_spawn",
             "container_oom",
             "infra_failure",
+            "token_usage",
+            "offload",
+            "duplicate_tool_result",
+            "doom_loop_tripped",
+            "epic_auto_closed",
+            "bead_branch_pushed",
+            "merge_ok",
+            "merge_conflict",
+            "integration_conflict",
+            "signature_verification_failed",
+            "worktree_cleanup_ok",
+            "tree_not_clean",
+            "gate_run_start",
+            "gate_run_scope",
+            "gate_run_lane",
+            "gate_run_end",
+            "gate_run_skipped",
         ] {
             let out = capture(RenderMode::Default, false, false, |r| {
                 r.render_event(&driver_event(kind, "summary text", json!({})))

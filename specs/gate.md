@@ -2881,13 +2881,13 @@ and conservative fall-through for unowned queries.
   `gate_run_start`, `gate_run_scope`, per-lane progress, and
   `gate_run_end`; a start without an end is treated as incomplete
   evidence, not success
-  [test?](gate_invocations_emit_jsonl_lifecycle_events)
+  [test](gate_invocations_emit_jsonl_lifecycle_events)
 - `DriverKind` is a typed enum with an `Other(String)` fallback; gate
   lifecycle kinds (`GateRunStart`, `GateRunScope`, `GateRunLane`,
   `GateRunEnd`, `GateRunSkipped`) serialize through the existing
   `driver_event.driver_kind` string field rather than new top-level
   `AgentEvent` variants
-  [test?](driver_kind_typed_enum_carries_gate_lifecycle_values)
+  [test](driver_kind_typed_enum_carries_gate_lifecycle_values)
 - `VerifiedScope` is constructible only from a successful deterministic
   `GateRun`; `ReviewedScope` is constructible only from a successful
   review run; `GateSuccess` is constructible only from matching

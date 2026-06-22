@@ -11,7 +11,10 @@ use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomConfig, LoomConfigError};
 use loom_driver::git::{GitClient, GitError, MergeResult, head_tree_oid_sync};
 use loom_driver::identifier::BeadId;
-use loom_gate::{GateRun, GateSuccess, HandoffEvidence, HookCoverage, MarkerProof};
+use loom_gate::{
+    GateRun, GateSuccess, HandoffEvidence, HookCoverage, MarkerProof,
+    append_gate_run_lifecycle_events,
+};
 use loom_protocol::gate::{ExitSignal, parse_exit_signal};
 use serde_json::json;
 use thiserror::Error;
@@ -461,7 +464,7 @@ fn mint_marker(git: &GitClient, diff_range: &str, log_path: &Path) -> Result<(),
         .to_string();
     let config_digest =
         pre_commit_config_digest(&marker_workspace).map_err(|source| source.to_string())?;
-    append_gate_run_event(
+    append_gate_run_lifecycle_events(
         log_path,
         &GateRun::successful_verify(
             diff_range.to_string(),
@@ -472,7 +475,7 @@ fn mint_marker(git: &GitClient, diff_range: &str, log_path: &Path) -> Result<(),
         ),
     )
     .map_err(|source| source.to_string())?;
-    append_gate_run_event(
+    append_gate_run_lifecycle_events(
         log_path,
         &GateRun::successful_review(
             diff_range.to_string(),
@@ -487,50 +490,6 @@ fn mint_marker(git: &GitClient, diff_range: &str, log_path: &Path) -> Result<(),
     let success = GateSuccess::new(&evidence, 1).map_err(|fail| format!("{:?}", fail.reason))?;
     MarkerProof::mint(success, &marker_workspace, &SystemClock::new())
         .map_err(|source| source.to_string())?;
-    Ok(())
-}
-
-fn append_gate_run_event(path: &Path, run: &GateRun) -> Result<(), std::io::Error> {
-    use std::io::Write as _;
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let phase = match run.phase {
-        loom_gate::GatePhase::Verify => "verify",
-        loom_gate::GatePhase::Review => "review",
-    };
-    let status = match run.status {
-        loom_gate::GateRunStatus::Success => "success",
-        loom_gate::GateRunStatus::Failed => "failed",
-    };
-    let marker = match run.marker.as_ref() {
-        Some(ExitSignal::Complete) => Some("complete".to_string()),
-        Some(ExitSignal::Noop) => Some("noop".to_string()),
-        Some(ExitSignal::Concern { summary }) => Some(format!("concern:{summary}")),
-        Some(_) | None => None,
-    };
-    let event = json!({
-        "kind": "driver_event",
-        "driver_kind": "gate_run_end",
-        "payload": {
-            "phase": phase,
-            "push_range": &run.push_range,
-            "tree_oid": &run.tree_oid,
-            "config_digest": &run.config_digest,
-            "log_path": path.to_string_lossy(),
-            "exit_code": run.exit_code,
-            "status": status,
-            "marker": marker,
-            "covered_hooks": &run.covered_hooks,
-        }
-    });
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    serde_json::to_writer(&mut file, &event).map_err(std::io::Error::other)?;
-    writeln!(&mut file)?;
     Ok(())
 }
 

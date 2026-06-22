@@ -825,31 +825,27 @@ mod tests {
     }
 
     fn good_gate_success(workspace: &Path) -> (tempfile::NamedTempFile, GateSuccess) {
-        use std::io::Write;
-        let mut log = tempfile::NamedTempFile::new().expect("tempfile");
-        let log_path = log.path().to_string_lossy().to_string();
+        let log = tempfile::NamedTempFile::new().expect("tempfile");
         let tree = head_tree(workspace).to_string();
         let config_digest = pre_commit_config_digest(workspace).expect("config digest");
-        let event = |phase: &str, hooks: &[HookCoverage]| {
-            serde_json::json!({
-                "kind": "driver_event",
-                "driver_kind": "gate_run_end",
-                "payload": {
-                    "phase": phase,
-                    "push_range": PUSH_RANGE,
-                    "tree_oid": tree,
-                    "config_digest": config_digest,
-                    "log_path": log_path,
-                    "exit_code": 0,
-                    "status": "success",
-                    "marker": "complete",
-                    "covered_hooks": hooks,
-                }
-            })
-            .to_string()
-        };
-        writeln!(log, "{}", event("verify", &[hook()])).expect("write");
-        writeln!(log, "{}", event("review", &[])).expect("write");
+        let verify = crate::gate_outcome::GateRun::successful_verify(
+            PUSH_RANGE.to_string(),
+            tree.clone(),
+            config_digest.clone(),
+            log.path().to_path_buf(),
+            vec![hook()],
+        );
+        crate::gate_outcome::append_gate_run_lifecycle_events(log.path(), &verify)
+            .expect("write verify gate events");
+        let review = crate::gate_outcome::GateRun::successful_review(
+            PUSH_RANGE.to_string(),
+            tree,
+            config_digest,
+            log.path().to_path_buf(),
+            loom_protocol::gate::ExitSignal::Complete,
+        );
+        crate::gate_outcome::append_gate_run_lifecycle_events(log.path(), &review)
+            .expect("write review gate events");
         let runs = crate::gate_outcome::parse_gate_runs_from_jsonl(log.path());
         let evidence = crate::gate_outcome::HandoffEvidence::from_runs(runs);
         let success = GateSuccess::new(&evidence, 1).expect("good evidence mints success");

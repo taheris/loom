@@ -711,45 +711,27 @@ mod tests {
     }
 
     fn write_gate_log(path: &std::path::Path) {
-        use std::io::Write as _;
-
-        let event = |phase: &str, hooks: &[(&str, &str)]| {
-            let covered_hooks = hooks
-                .iter()
-                .map(|(id, entry)| serde_json::json!({ "id": id, "entry": entry }))
-                .collect::<Vec<_>>();
-            serde_json::json!({
-                "kind": "driver_event",
-                "driver_kind": "gate_run_end",
-                "payload": {
-                    "phase": phase,
-                    "push_range": "origin/main..HEAD",
-                    "tree_oid": "tree-a",
-                    "config_digest": "config-a",
-                    "log_path": path.to_string_lossy(),
-                    "exit_code": 0,
-                    "status": "success",
-                    "marker": "complete",
-                    "covered_hooks": covered_hooks,
-                }
-            })
-            .to_string()
-        };
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .expect("open gate log");
-        writeln!(
-            file,
-            "{}",
-            event(
-                "verify",
-                &[("pre-push", "loom gate verify --diff @{u}..HEAD")]
-            )
-        )
-        .expect("write verify event");
-        writeln!(file, "{}", event("review", &[])).expect("write review event");
+        let verify = loom_gate::GateRun::successful_verify(
+            "origin/main..HEAD".to_string(),
+            "tree-a".to_string(),
+            "config-a".to_string(),
+            path.to_path_buf(),
+            vec![loom_gate::HookCoverage {
+                id: "pre-push".to_string(),
+                entry: "loom gate verify --diff @{u}..HEAD".to_string(),
+            }],
+        );
+        loom_gate::append_gate_run_lifecycle_events(path, &verify)
+            .expect("write verify gate events");
+        let review = loom_gate::GateRun::successful_review(
+            "origin/main..HEAD".to_string(),
+            "tree-a".to_string(),
+            "config-a".to_string(),
+            path.to_path_buf(),
+            loom_protocol::gate::ExitSignal::Complete,
+        );
+        loom_gate::append_gate_run_lifecycle_events(path, &review)
+            .expect("write review gate events");
     }
 
     fn typed_evidence(path: &std::path::Path) -> HandoffEvidence {
