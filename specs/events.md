@@ -301,7 +301,7 @@ not abort the run.
 - Driver events render interleaved with agent events in chronological order
   [test](driver_events_render_interleaved_with_agent_events)
 - Parallel Pretty/Plain rendering prefixes each line with the bead id and disables in-place spinners
-  [test?](parallel_rendering_prefixes_lines_and_disables_spinners)
+  [test](parallel_rendering_prefixes_lines_and_disables_spinners)
 - Cancellation finalizes any in-place running row before the closing output
   [test](run_finish_finalizes_dangling_running_indicator)
 - Agent-event bookkeeping tracing is trace-level diagnostics, not default terminal `INFO` output

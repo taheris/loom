@@ -397,24 +397,77 @@ impl TerminalRenderer {
         self.close_thinking_line()
     }
 
+    fn write_prefixed_fragment(
+        &mut self,
+        text: &str,
+        prefix: &str,
+        line_open: bool,
+        style: Option<(&str, &str)>,
+    ) -> io::Result<bool> {
+        if text.is_empty() {
+            return Ok(line_open);
+        }
+        let mut needs_prefix = !line_open;
+        for segment in text.split_inclusive('\n') {
+            let mut chunk = String::new();
+            if needs_prefix {
+                chunk.push_str(prefix);
+            }
+            let has_newline = segment.ends_with('\n');
+            let body = if has_newline {
+                &segment[..segment.len() - 1]
+            } else {
+                segment
+            };
+            if !body.is_empty() {
+                if let Some((open, close)) = style {
+                    chunk.push_str(open);
+                    chunk.push_str(body);
+                    chunk.push_str(close);
+                } else {
+                    chunk.push_str(body);
+                }
+            }
+            if has_newline {
+                chunk.push('\n');
+            }
+            self.out.write_all(chunk.as_bytes())?;
+            needs_prefix = has_newline;
+        }
+        Ok(!text.ends_with('\n'))
+    }
+
     fn render_text_delta(&mut self, text: &str) -> io::Result<()> {
         self.close_thinking_line()?;
         self.close_in_flight("…")?;
-        self.out.write_all(text.as_bytes())?;
+        if self.parallel {
+            let prefix = self.prefix_str();
+            self.text_needs_newline =
+                self.write_prefixed_fragment(text, &prefix, self.text_needs_newline, None)?;
+        } else {
+            self.out.write_all(text.as_bytes())?;
+            if !text.is_empty() {
+                self.text_needs_newline = !text.ends_with('\n');
+            }
+        }
         self.out.flush()?;
-        self.text_needs_newline = !text.is_empty() && !text.ends_with('\n');
         Ok(())
     }
 
     fn render_thinking_delta(&mut self, text: &str) -> io::Result<()> {
         self.close_text_line()?;
         self.close_in_flight("…")?;
+        if self.parallel {
+            let prefix = format!("{}thinking: ", self.prefix_str());
+            let style = self.color.then_some((ANSI_DIM, ANSI_RESET));
+            self.thinking_needs_newline =
+                self.write_prefixed_fragment(text, &prefix, self.thinking_needs_newline, style)?;
+            self.thinking_open = self.thinking_needs_newline;
+            self.out.flush()?;
+            return Ok(());
+        }
         if !self.thinking_open {
-            let prefix = if self.parallel {
-                format!("  [{}] thinking: ", self.bead_id.as_str())
-            } else {
-                "  thinking: ".to_string()
-            };
+            let prefix = "  thinking: ";
             if self.color {
                 self.out.write_all(ANSI_DIM.as_bytes())?;
             }
@@ -2162,6 +2215,75 @@ mod tests {
         assert!(out.contains("[lm-1]"), "{out:?}");
         assert!(out.contains("→"), "{out:?}");
         assert!(out.contains("push_gate_walk"), "{out:?}");
+    }
+
+    #[test]
+    fn parallel_rendering_prefixes_lines_and_disables_spinners() {
+        let out = capture(RenderMode::Verbose, true, true, |r| {
+            r.render_event(&AgentEvent::TextDelta {
+                envelope: sample_envelope(),
+                text: "assistant one\nassistant two".into(),
+            })
+            .expect("text");
+            r.render_event(&AgentEvent::TextEnd {
+                envelope: sample_envelope(),
+            })
+            .expect("text end");
+            r.render_event(&AgentEvent::ThinkingDelta {
+                envelope: sample_envelope(),
+                text: "thought one\nthought two".into(),
+            })
+            .expect("thinking");
+            r.render_event(&AgentEvent::ThinkingEnd {
+                envelope: sample_envelope(),
+            })
+            .expect("thinking end");
+            r.render_event(&AgentEvent::ToolCall {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("b1"),
+                tool: "Bash".into(),
+                params: json!({"command": "cargo test"}),
+                parent_tool_call_id: None,
+            })
+            .expect("tool call");
+            r.render_event(&AgentEvent::ToolResult {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("b1"),
+                output: "body one\nbody two".into(),
+                is_error: false,
+            })
+            .expect("tool result");
+            r.render_event(&driver_event(
+                "push_gate_walk",
+                "driver row",
+                json!({"lane": "verify"}),
+            ))
+            .expect("driver");
+            r.write_finish(BeadOutcome::Done, Duration::from_secs(3))
+                .expect("finish");
+        });
+
+        assert!(!out.contains("running..."), "{out:?}");
+        assert!(!out.contains('\r'), "{out:?}");
+        for line in out.lines().filter(|line| !line.trim().is_empty()) {
+            assert!(
+                line.starts_with("  [lm-1] ") || line.starts_with("[lm-1] "),
+                "parallel line must carry bead prefix: {line:?} in {out:?}",
+            );
+        }
+        for expected in [
+            "assistant one",
+            "assistant two",
+            "thought one",
+            "thought two",
+            "Bash",
+            "body one",
+            "body two",
+            "driver row",
+            "done",
+        ] {
+            assert!(out.contains(expected), "missing {expected:?}: {out:?}");
+        }
     }
 
     // -- Summary-cell overflow tests ---------------------------------------

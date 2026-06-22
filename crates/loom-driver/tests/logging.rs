@@ -459,6 +459,83 @@ fn parallel_logs_are_per_bead() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn parallel_live_log_sink_renders_prefixed_output() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (mut a, buf_a) = open_sink(
+        dir.path(),
+        "alpha",
+        "lm-1",
+        1_700_000_000,
+        RenderMode::Default,
+        true,
+    )?;
+    let (mut b, buf_b) = open_sink(
+        dir.path(),
+        "alpha",
+        "lm-2",
+        1_700_000_001,
+        RenderMode::Default,
+        true,
+    )?;
+    a.emit(&AgentEvent::TextDelta {
+        envelope: sample_envelope(),
+        text: "alpha live\nalpha second".to_string(),
+    })?;
+    b.emit(&AgentEvent::TextDelta {
+        envelope: sample_envelope(),
+        text: "beta live".to_string(),
+    })?;
+    a.emit(&AgentEvent::ToolCall {
+        envelope: sample_envelope(),
+        id: ToolCallId::new("ta"),
+        tool: "Bash".to_string(),
+        params: json!({"command": "echo a-only"}),
+        parent_tool_call_id: None,
+    })?;
+    b.emit(&AgentEvent::ToolCall {
+        envelope: sample_envelope(),
+        id: ToolCallId::new("tb"),
+        tool: "Bash".to_string(),
+        params: json!({"command": "echo b-only"}),
+        parent_tool_call_id: None,
+    })?;
+    a.emit(&AgentEvent::ToolResult {
+        envelope: sample_envelope(),
+        id: ToolCallId::new("ta"),
+        output: "a-only-output".to_string(),
+        is_error: false,
+    })?;
+    b.emit(&AgentEvent::ToolResult {
+        envelope: sample_envelope(),
+        id: ToolCallId::new("tb"),
+        output: "b-only-output".to_string(),
+        is_error: false,
+    })?;
+    a.finish(BeadOutcome::Done)?;
+    b.finish(BeadOutcome::Done)?;
+
+    let out_a = captured_str(&buf_a);
+    let out_b = captured_str(&buf_b);
+    if out_a.is_empty() || out_b.is_empty() {
+        return Err(anyhow!(
+            "parallel sinks must render live output, got A={out_a:?} B={out_b:?}"
+        ));
+    }
+    for (label, out, prefix) in [("A", &out_a, "lm-1"), ("B", &out_b, "lm-2")] {
+        let body_prefix = format!("  [{prefix}] ");
+        let finish_prefix = format!("[{prefix}] ");
+        for line in out.lines().filter(|line| !line.trim().is_empty()) {
+            if !(line.starts_with(&body_prefix) || line.starts_with(&finish_prefix)) {
+                return Err(anyhow!(
+                    "sink {label} line lacks prefix: {line:?} in {out:?}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 //---------------------------------------------------------------------------
 // test_log_retention_sweep — files older than retention_days are deleted;
 // recent files are preserved.

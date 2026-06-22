@@ -471,6 +471,41 @@ fn wrix_spawn_config_includes_configured_sccache_mount_and_env() {
     assert_spawn_config_uses_sccache(&spawn_copy, &host_cache);
 }
 
+fn install_parallel_bd_stub(dir: &Path) -> PathBuf {
+    let bin_dir = dir.join("bd-parallel-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let bd = bin_dir.join("bd");
+    let bash = find_bash();
+    let body = format!(
+        "#!{bash}\n\
+         set -euo pipefail\n\
+         cmd=\"${{1:-}}\"\n\
+         if [[ \"$cmd\" == 'show' ]]; then\n\
+             cat <<'__BD_EPIC_JSON__'\n\
+[{{\"id\":\"lm-active\",\"title\":\"active epic\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"epic\",\"labels\":[\"loom:active\",\"spec:agent\"]}}]\n\
+__BD_EPIC_JSON__\n\
+             exit 0\n\
+         fi\n\
+         if [[ \"$cmd\" == 'ready' ]]; then\n\
+             cat <<'__BD_READY_JSON__'\n\
+[{{\"id\":\"lm-para\",\"title\":\"parallel a\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"labels\":[\"spec:agent\",\"profile:base\"]}},{{\"id\":\"lm-parb\",\"title\":\"parallel b\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"labels\":[\"spec:agent\",\"profile:base\"]}}]\n\
+__BD_READY_JSON__\n\
+             exit 0\n\
+         fi\n\
+         if [[ \"$cmd\" == 'create' ]]; then\n\
+             echo 'lm-work'\n\
+             exit 0\n\
+         fi\n\
+         exit 0\n",
+        bash = bash.display(),
+    );
+    std::fs::write(&bd, body).unwrap();
+    let mut perm = std::fs::metadata(&bd).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&bd, perm).unwrap();
+    bin_dir
+}
+
 /// The run-time promise from `specs/harness.md` *Run UX & Logging*
 /// is that every `loom todo` invocation emits a per-phase JSONL file
 /// under `<workspace>/.loom/logs/<spec-label>/todo-<utc>.jsonl`.
@@ -688,6 +723,105 @@ fn loom_loop_bead_writes_per_bead_jsonl_log() {
         assert_eq!(
             v["kind"], "driver_event",
             "every post-session_complete line must be a driver_event. line={line}",
+        );
+    }
+}
+
+#[test]
+fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    init_workspace_repo(workspace);
+    seed_active_spec(workspace, env!("CARGO_BIN_EXE_loom"), "agent");
+
+    let manifest_path = workspace.join("profile-images.json");
+    let image_source = workspace.join("base.tar");
+    std::fs::write(&image_source, "").unwrap();
+    let manifest_body = format!(
+        r#"{{
+          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?}, "source_kind": "nix-descriptor" }} }}
+        }}"#,
+        source = image_source.display().to_string(),
+    );
+    std::fs::write(&manifest_path, manifest_body).unwrap();
+
+    let shim_dir = workspace.join("shim");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    let argv_file = shim_dir.join("argv.txt");
+    let stdin_info = shim_dir.join("stdin-info.txt");
+    let spawn_copy = shim_dir.join("spawn-config.json");
+    let shim = install_wrix_shim(
+        &shim_dir,
+        &argv_file,
+        &stdin_info,
+        &spawn_copy,
+        &mock_pi_path(),
+        "happy-path",
+    );
+
+    let bd_bin_dir = install_parallel_bd_stub(workspace);
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries = vec![bd_bin_dir];
+    path_entries.extend(std::env::split_paths(&path_var));
+    let new_path = std::env::join_paths(path_entries).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_loom"))
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--agent")
+        .arg("pi")
+        .arg("loop")
+        .arg("--parallel")
+        .arg("2")
+        .arg("--plain")
+        .arg("lm-active")
+        .env("PATH", new_path)
+        .env("LOOM_WRIX_BIN", &shim)
+        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        .env_remove("LOOM_INSIDE")
+        .output()
+        .expect("spawn loom");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "parallel loom loop must exit 0 against stubs. stdout={stdout} stderr={stderr}",
+    );
+    for bead in ["lm-para", "lm-parb"] {
+        assert!(
+            stdout.contains(&format!("[{bead}]")),
+            "parallel stdout must contain bead prefix for {bead}. stdout={stdout}",
+        );
+    }
+
+    let logs_dir = workspace.join(".loom/logs/agent");
+    for bead in ["lm-para", "lm-parb"] {
+        let entries: Vec<_> = std::fs::read_dir(&logs_dir)
+            .expect("read logs dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+            .filter(|path| {
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| stem.starts_with(&format!("{bead}-")))
+            })
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "expected one log file for {bead}, got {entries:?}",
+        );
+        let body = std::fs::read_to_string(&entries[0]).expect("read bead log");
+        assert!(
+            body.contains(&format!("\"bead_id\":\"{bead}\"")),
+            "log events must be stamped with {bead}: {body}",
+        );
+        assert!(
+            !body.contains("\"bead_id\":\"lm-phase\""),
+            "parallel bead logs must not fall back to phase bead id: {body}",
         );
     }
 }

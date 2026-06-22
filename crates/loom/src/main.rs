@@ -2496,6 +2496,7 @@ fn run_loop_cmd(
             anyhow::bail!("loom loop --parallel does not accept task bead roots");
         }
         let parallel_n = parallel.get();
+        let render_mode = resolve_render_mode(render_flags);
         for root in &roots {
             let outcome = run_parallel_loop_root(
                 &runtime,
@@ -2508,6 +2509,7 @@ fn run_loop_cmd(
                 cli_profile.clone(),
                 phase_default.clone(),
                 &config,
+                render_mode,
             )?;
             print_parallel_loop_summary(multi_root, root, parallel_n, &outcome);
             aggregate.push(outcome);
@@ -2621,6 +2623,7 @@ fn run_parallel_loop_root(
     cli_profile: Option<ProfileName>,
     phase_default: ProfileName,
     config: &LoomConfig,
+    render_mode: loom_render::RenderMode,
 ) -> anyhow::Result<LoopOutcome> {
     if matches!(&root.kind, LoopWorkRootKind::Task) {
         anyhow::bail!("loom loop --parallel does not accept task bead roots");
@@ -2633,6 +2636,7 @@ fn run_parallel_loop_root(
     let style_rules_for_async = config.style_rules.clone();
     let loom_cfg_for_async = config.loom.clone();
     let skills_cfg_for_async = config.skills.clone();
+    let observer_config = config.agent.clone();
     runtime.block_on(async move {
         run_parallel_loop(
             workspace_buf,
@@ -2647,6 +2651,8 @@ fn run_parallel_loop_root(
             style_rules_for_async,
             loom_cfg_for_async,
             skills_cfg_for_async,
+            observer_config,
+            render_mode,
         )
         .await
     })
@@ -2924,6 +2930,8 @@ async fn run_parallel_loop(
     style_rules: String,
     loom_cfg: loom_driver::config::LoomTopConfig,
     skills_cfg: loom_driver::config::SkillsConfig,
+    observer_config: AgentObserversConfig,
+    render_mode: loom_render::RenderMode,
 ) -> anyhow::Result<LoopOutcome> {
     use loom_driver::bd::UpdateOpts;
     use loom_workflow::r#loop::AgentOutcome;
@@ -2986,6 +2994,7 @@ async fn run_parallel_loop(
             let workspace_inner = workspace_for_closure.clone();
             let loom_cfg_inner = loom_cfg.clone();
             let skills_cfg_inner = skills_cfg.clone();
+            let observer_config_inner = observer_config.clone();
             let launcher_env_inner = launcher_env.clone();
             async move {
                 // Marker is the primary signal here too — without it, parallel
@@ -3004,7 +3013,9 @@ async fn run_parallel_loop(
                     &workspace_inner,
                     &loom_cfg_inner,
                     &skills_cfg_inner,
+                    &observer_config_inner,
                     launcher_env_inner,
+                    render_mode,
                 )
                 .await
                 {
@@ -3146,7 +3157,9 @@ async fn dispatch_for_slot(
     loom_workspace: &Path,
     loom_cfg: &loom_driver::config::LoomTopConfig,
     skills_cfg: &loom_driver::config::SkillsConfig,
+    observer_config: &AgentObserversConfig,
     launcher_env: Vec<(String, String)>,
+    render_mode: loom_render::RenderMode,
 ) -> anyhow::Result<(SessionOutcome, Option<ExitSignal>)> {
     use loom_driver::scratch::ScratchSession;
     use loom_workflow::r#loop::{
@@ -3217,20 +3230,37 @@ async fn dispatch_for_slot(
     let skill_session = skill_plan.materialize(scratch.path(), &slot.worktree.path)?;
     spawn_config.skills = Some(skill_session.registered);
 
-    let sink = open_bead_sink(logs_root, label, &slot.bead.id)?;
+    let sink = open_bead_sink_with_renderer(
+        logs_root,
+        label,
+        &slot.bead.id,
+        render_mode,
+        &slot.worktree.path,
+        true,
+    )?;
     let mut output = String::new();
-    let result = dispatch(
+    let envelope_builder = build_envelope_builder(slot.bead.id.clone());
+    let result = dispatch_classified(
         kind,
         spawn_config,
         shutdown_grace,
         Some(sink),
         Some(&mut output),
+        Some(envelope_builder),
+        observer_config.clone(),
     )
     .await;
     drop(scratch);
-    let outcome = result?;
     let marker = parse_exit_signal(&output);
-    Ok((outcome, marker))
+    match result {
+        SessionResult::Complete(outcome) => Ok((outcome, marker)),
+        SessionResult::PreflightFailed { error } | SessionResult::MidSessionFailed { error } => {
+            Err(anyhow::anyhow!(error))
+        }
+        SessionResult::ObserverAbort { reason } => {
+            Err(anyhow::anyhow!("Session aborted by observer: {reason}"))
+        }
+    }
 }
 
 /// Backend-agnostic dispatcher. The match is the only place in the binary
@@ -3382,28 +3412,8 @@ fn resolve_shutdown_grace(selection: &loom_driver::config::AgentSelection) -> Op
         .map(|s| Duration::from_secs(u64::from(s.post_result_grace_secs)))
 }
 
-/// Open the per-bead JSONL sink at the path the spec promises:
-/// `<logs_root>/<spec>/<bead-id>-<utc>.jsonl`. Renderer is `None` because
-/// the sequential and parallel run dispatchers run non-interactively (the
-/// human-facing summary is written by the `loom loop` outer-loop print).
-fn open_bead_sink(
-    logs_root: &Path,
-    label: &SpecLabel,
-    bead_id: &BeadId,
-) -> Result<LogSink, ProtocolError> {
-    LogSink::open_in_at(
-        logs_root,
-        label,
-        bead_id,
-        None,
-        SystemClock::new().wall_now(),
-    )
-    .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))
-}
-
-/// Same as [`open_bead_sink`] but constructs a terminal renderer from
-/// the resolved [`RenderMode`] and hands it to the sink so events tee
-/// into both the on-disk JSONL and the user's terminal.
+/// Open the per-bead JSONL sink at the path the spec promises and
+/// attach the resolved renderer so one event stream drives disk and stdout.
 fn open_bead_sink_with_renderer(
     logs_root: &Path,
     label: &SpecLabel,
