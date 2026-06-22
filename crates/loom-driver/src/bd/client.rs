@@ -58,7 +58,17 @@ impl<R: CommandRunner> BdClient<R> {
 
     /// `bd show <id> --json` → first row.
     pub async fn show(&self, id: &BeadId) -> Result<Bead, BdError> {
-        let args = args(["show", id.as_str(), "--json"]);
+        self.show_selector(id.as_str()).await
+    }
+
+    /// `bd show <selector> --json` → first row.
+    ///
+    /// `bd` accepts abbreviated ids (for example `abcd.1` for
+    /// `lm-abcd.1`) on its CLI. This boundary method lets `bd` resolve
+    /// that operator-facing selector, then deserializes the canonical
+    /// [`BeadId`] from JSON before any downstream workflow code sees it.
+    pub async fn show_selector(&self, selector: &str) -> Result<Bead, BdError> {
+        let args = args(["show", selector, "--json"]);
         let out = self.invoke(args).await?;
         let mut beads: Vec<Bead> = decode(&out.stdout, &out.args)?;
         if beads.is_empty() {
@@ -451,6 +461,17 @@ mod tests {
         );
         let argv = argv_of(&client.runner, 0);
         assert_eq!(argv, vec!["show", "lm-3hhwq.5", "--json"]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn show_selector_forwards_operator_shorthand_to_bd() -> Result<()> {
+        let runner = CapturingRunner::new([ok(SHOW_FIXTURE.as_bytes())]);
+        let client = BdClient::with_runner(runner);
+        let bead = client.show_selector("3hhwq.5").await?;
+        assert_eq!(bead.id, BeadId::new("lm-3hhwq.5")?);
+        let argv = argv_of(&client.runner, 0);
+        assert_eq!(argv, vec!["show", "3hhwq.5", "--json"]);
         Ok(())
     }
 

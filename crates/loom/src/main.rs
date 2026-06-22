@@ -2465,12 +2465,11 @@ fn run_loop_cmd(
 ) -> anyhow::Result<LoopOutcome> {
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let runtime = tokio::runtime::Runtime::new()?;
-    let root = runtime.block_on(async {
+    let roots = runtime.block_on(async {
         let bd = BdClient::new();
-        resolve_loop_work_root(&bd, work_roots).await
+        resolve_loop_work_roots(&bd, work_roots).await
     })?;
-    let label = root.label.clone();
-    let work_root_guard = Some(acquire_work_root_lock(workspace, root.id.as_str())?);
+    let multi_root = roots.len() > 1;
 
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     sweep_retention_at(
@@ -2485,110 +2484,198 @@ fn run_loop_cmd(
     let selection = resolved_agent_for(&config, agent_override, Phase::Loop)?;
     let phase_default = selection.profile.clone();
     let cli_profile = profile.map(ProfileName::new);
-
     let loom_bin = current_loom_bin()?;
+    let shutdown_grace = resolve_shutdown_grace(&selection);
 
-    let ff_git =
-        GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?;
-    let ff_workspace = workspace.to_path_buf();
-    runtime.block_on(async move {
-        let outcome = ff_git
-            .fast_forward_integration_to_origin()
-            .await
-            .with_context(|| {
-                format!(
-                    "loom loop startup: integration fast-forward failed in {}",
-                    ff_workspace.display(),
-                )
-            })?;
-        tracing::info!(
-            outcome = ?outcome,
-            workspace = %ff_workspace.display(),
-            "loom loop startup: integration line reconciled with origin",
-        );
-        anyhow::Ok(())
-    })?;
-
-    let gc_git = GitClient::open(workspace)?;
-    let gc_workspace = workspace.to_path_buf();
-    let gc_molecule = match &root.kind {
-        LoopWorkRootKind::Epic => Some(MoleculeId::new(root.id.as_str())),
-        LoopWorkRootKind::Task => root
-            .bead
-            .parent
-            .as_ref()
-            .map(|parent| MoleculeId::new(parent.as_str())),
-    };
-    if let Some(gc_molecule) = gc_molecule {
-        runtime.block_on(async move {
-            let bd = BdClient::new();
-            match gc_git.sweep_orphan_bead_clones(&bd, &gc_molecule).await {
-                Ok(removed) if !removed.is_empty() => tracing::info!(
-                    count = removed.len(),
-                    workspace = %gc_workspace.display(),
-                    molecule = %gc_molecule.as_str(),
-                    "loom loop startup: reaped closed bead workspaces",
-                ),
-                Ok(_) => {}
-                Err(error) => tracing::warn!(
-                    %error,
-                    workspace = %gc_workspace.display(),
-                    molecule = %gc_molecule.as_str(),
-                    "loom loop startup: orphan-clone sweep failed — continuing",
-                ),
-            }
-        });
-    }
-
+    let mut aggregate = LoopOutcomeAccumulator::default();
     if !parallel.is_one() {
-        if matches!(&root.kind, LoopWorkRootKind::Task) {
+        if roots
+            .iter()
+            .any(|root| matches!(&root.kind, LoopWorkRootKind::Task))
+        {
             anyhow::bail!("loom loop --parallel does not accept task bead roots");
         }
-        let _guard = work_root_guard;
         let parallel_n = parallel.get();
-        let workspace_buf = workspace.to_path_buf();
-        let label_for_async = label.clone();
-        let ready_parent_for_async = root.ready_parent.clone();
-        let manifest_for_async = Arc::clone(&manifest);
-        let cli_profile_for_async = cli_profile.clone();
-        let phase_default_for_async = phase_default.clone();
-        let kind = selection.kind;
-        let shutdown_grace = resolve_shutdown_grace(&selection);
-        let style_rules_for_async = config.style_rules.clone();
-        let loom_cfg_for_async = config.loom.clone();
-        let skills_cfg_for_async = config.skills.clone();
-        let outcome = runtime.block_on(async move {
-            run_parallel_loop(
-                workspace_buf,
-                label_for_async,
-                ready_parent_for_async,
+        for root in &roots {
+            let outcome = run_parallel_loop_root(
+                &runtime,
+                workspace,
+                root,
                 parallel_n,
-                kind,
+                selection.kind,
                 shutdown_grace,
-                manifest_for_async,
-                cli_profile_for_async,
-                phase_default_for_async,
-                style_rules_for_async,
-                loom_cfg_for_async,
-                skills_cfg_for_async,
-            )
-            .await
-        })?;
-        println!(
-            "loom loop --parallel {parallel_n}: processed {}, gate={}",
-            outcome.beads_processed,
-            gate_label(&outcome.gate),
-        );
+                Arc::clone(&manifest),
+                cli_profile.clone(),
+                phase_default.clone(),
+                &config,
+            )?;
+            print_parallel_loop_summary(multi_root, root, parallel_n, &outcome);
+            aggregate.push(outcome);
+        }
+        let outcome = aggregate.finish();
+        if multi_root {
+            print_parallel_aggregate_summary(parallel_n, &outcome);
+        }
         return Ok(outcome);
     }
+
+    for root in &roots {
+        let outcome = run_sequential_loop_root(
+            &runtime,
+            workspace,
+            root,
+            Arc::clone(&manifest),
+            cli_profile.clone(),
+            phase_default.clone(),
+            selection.kind,
+            shutdown_grace,
+            &config,
+            loom_bin.clone(),
+            render_flags,
+        )?;
+        print_sequential_loop_summary(multi_root, root, &outcome);
+        aggregate.push(outcome);
+    }
+
+    let outcome = aggregate.finish();
+    if multi_root {
+        print_loop_summary("loom loop:", &outcome);
+    }
+    Ok(outcome)
+}
+
+#[derive(Debug, Default)]
+struct LoopOutcomeAccumulator {
+    beads_processed: u32,
+    beads_clarified: u32,
+    beads_blocked: u32,
+    outer_iterations: u32,
+    decisive_gate: Option<GateOutcome>,
+    /// At least one explicit bead/root selection processed work without a
+    /// molecule-completion gate. Keep the aggregate conservative: a later
+    /// gated root must not make earlier ungated work look like a sealed
+    /// `GateSuccess` for the whole invocation.
+    ungated_work: bool,
+}
+
+impl LoopOutcomeAccumulator {
+    fn push(&mut self, outcome: LoopOutcome) {
+        let LoopOutcome {
+            beads_processed,
+            beads_clarified,
+            beads_blocked,
+            outer_iterations,
+            gate,
+        } = outcome;
+        self.beads_processed = self.beads_processed.saturating_add(beads_processed);
+        self.beads_clarified = self.beads_clarified.saturating_add(beads_clarified);
+        self.beads_blocked = self.beads_blocked.saturating_add(beads_blocked);
+        self.outer_iterations = self.outer_iterations.saturating_add(outer_iterations);
+        if matches!(&gate, GateOutcome::NoGate { .. }) && beads_processed > 0 {
+            self.ungated_work = true;
+        }
+        self.decisive_gate = merge_decisive_gate(self.decisive_gate.take(), gate);
+    }
+
+    fn finish(self) -> LoopOutcome {
+        let gate = match self.decisive_gate {
+            Some(gate @ GateOutcome::Fail(_)) => gate,
+            Some(gate) if !self.ungated_work => gate,
+            Some(_) | None => GateOutcome::NoGate {
+                beads_processed: self.beads_processed,
+                reason: if self.beads_processed == 0 {
+                    NoGateReason::NoBeadsReady
+                } else {
+                    NoGateReason::OncePartial
+                },
+            },
+        };
+        LoopOutcome {
+            beads_processed: self.beads_processed,
+            beads_clarified: self.beads_clarified,
+            beads_blocked: self.beads_blocked,
+            outer_iterations: self.outer_iterations,
+            gate,
+        }
+    }
+}
+
+fn merge_decisive_gate(current: Option<GateOutcome>, next: GateOutcome) -> Option<GateOutcome> {
+    match (current, next) {
+        (Some(gate @ GateOutcome::Fail(_)), _) => Some(gate),
+        (_, gate @ GateOutcome::Fail(_)) => Some(gate),
+        (_, gate @ GateOutcome::Success(_)) => Some(gate),
+        (current, GateOutcome::NoGate { .. }) => current,
+    }
+}
+
+#[expect(clippy::too_many_arguments, reason = "CLI loop root wiring surface")]
+fn run_parallel_loop_root(
+    runtime: &tokio::runtime::Runtime,
+    workspace: &Path,
+    root: &LoopWorkRoot,
+    parallel_n: u32,
+    kind: AgentKind,
+    shutdown_grace: Option<Duration>,
+    manifest: Arc<ProfileImageManifest>,
+    cli_profile: Option<ProfileName>,
+    phase_default: ProfileName,
+    config: &LoomConfig,
+) -> anyhow::Result<LoopOutcome> {
+    if matches!(&root.kind, LoopWorkRootKind::Task) {
+        anyhow::bail!("loom loop --parallel does not accept task bead roots");
+    }
+    let _guard = acquire_work_root_lock(workspace, root.id.as_str())?;
+    prepare_loop_root(runtime, workspace, root, &config.loom)?;
+    let workspace_buf = workspace.to_path_buf();
+    let label_for_async = root.label.clone();
+    let ready_parent_for_async = root.ready_parent.clone();
+    let style_rules_for_async = config.style_rules.clone();
+    let loom_cfg_for_async = config.loom.clone();
+    let skills_cfg_for_async = config.skills.clone();
+    runtime.block_on(async move {
+        run_parallel_loop(
+            workspace_buf,
+            label_for_async,
+            ready_parent_for_async,
+            parallel_n,
+            kind,
+            shutdown_grace,
+            manifest,
+            cli_profile,
+            phase_default,
+            style_rules_for_async,
+            loom_cfg_for_async,
+            skills_cfg_for_async,
+        )
+        .await
+    })
+}
+
+#[expect(clippy::too_many_arguments, reason = "CLI loop root wiring surface")]
+fn run_sequential_loop_root(
+    runtime: &tokio::runtime::Runtime,
+    workspace: &Path,
+    root: &LoopWorkRoot,
+    manifest: Arc<ProfileImageManifest>,
+    cli_profile: Option<ProfileName>,
+    phase_default: ProfileName,
+    kind: AgentKind,
+    shutdown_grace: Option<Duration>,
+    config: &LoomConfig,
+    loom_bin: PathBuf,
+    render_flags: RenderFlags,
+) -> anyhow::Result<LoopOutcome> {
+    let work_root_guard = acquire_work_root_lock(workspace, root.id.as_str())?;
+    prepare_loop_root(runtime, workspace, root, &config.loom)?;
 
     let mode = match &root.kind {
         LoopWorkRootKind::Task => LoopMode::Once,
         LoopWorkRootKind::Epic => LoopMode::Continuous,
     };
-    let manifest_for_seq = Arc::clone(&manifest);
-    let kind = selection.kind;
-    let shutdown_grace = resolve_shutdown_grace(&selection);
+    let label = root.label.clone();
+    let fixed_bead = matches!(&root.kind, LoopWorkRootKind::Task).then(|| root.bead.clone());
+    let ready_parent = root.ready_parent.clone();
     let workspace_buf = workspace.to_path_buf();
     let workspace_for_renderer = workspace.to_path_buf();
     let logs_root = workspace.join(".loom/logs");
@@ -2606,7 +2693,7 @@ fn run_loop_cmd(
     let git =
         GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?
             .with_hook_timeout(config.loom.git_hook_timeout());
-    let summary = runtime.block_on(async move {
+    let outcome = runtime.block_on(async move {
         let bd = BdClient::new();
         let mut controller = ProductionAgentLoopController::new(
             bd,
@@ -2614,7 +2701,7 @@ fn run_loop_cmd(
             loom_bin,
             workspace_buf,
             git,
-            manifest_for_seq,
+            manifest,
             cli_profile,
             phase_default,
             move |spawn_cfg: SpawnConfig, bead_id: BeadId| {
@@ -2668,16 +2755,13 @@ fn run_loop_cmd(
         .with_loom_config(loom_cfg_for_run)
         .with_skills_config(skills_cfg_for_run)
         .with_phase_log_root(logs_root_for_controller);
-        if let LoopWorkRootKind::Task = &root.kind {
-            controller =
-                controller.with_fixed_queue(std::collections::VecDeque::from([root.bead.clone()]));
+        if let Some(bead) = fixed_bead {
+            controller = controller.with_fixed_queue(std::collections::VecDeque::from([bead]));
         }
-        if let Some(parent) = root.ready_parent.clone() {
+        if let Some(parent) = ready_parent {
             controller = controller.with_ready_parent(parent);
         }
-        if let Some(guard) = work_root_guard {
-            controller = controller.with_handoff_lock(guard);
-        }
+        controller = controller.with_handoff_lock(work_root_guard);
         run_loop(&mut controller, mode, retry_policy, max_iterations).await
     })?;
     // The marker is minted inside the molecule-completion push gate's
@@ -2686,15 +2770,117 @@ fn run_loop_cmd(
     // the push it is meant to authorize, and outside the section that
     // keeps it bound to the pushed `HEAD` (specs/harness.md § Verdict
     // Gate). See `ProductionReviewController::mint_marker`.
+    Ok(outcome)
+}
+
+fn prepare_loop_root(
+    runtime: &tokio::runtime::Runtime,
+    workspace: &Path,
+    root: &LoopWorkRoot,
+    loom_cfg: &loom_driver::config::LoomTopConfig,
+) -> anyhow::Result<()> {
+    let ff_git =
+        GitClient::open_with_integration_branch(workspace, loom_cfg.integration_branch.clone())?;
+    let ff_workspace = workspace.to_path_buf();
+    runtime.block_on(async move {
+        let outcome = ff_git
+            .fast_forward_integration_to_origin()
+            .await
+            .with_context(|| {
+                format!(
+                    "loom loop startup: integration fast-forward failed in {}",
+                    ff_workspace.display(),
+                )
+            })?;
+        tracing::info!(
+            outcome = ?outcome,
+            workspace = %ff_workspace.display(),
+            "loom loop startup: integration line reconciled with origin",
+        );
+        anyhow::Ok(())
+    })?;
+
+    let Some(gc_molecule) = gc_molecule_for_root(root) else {
+        return Ok(());
+    };
+    let gc_git = GitClient::open(workspace)?;
+    let gc_workspace = workspace.to_path_buf();
+    runtime.block_on(async move {
+        let bd = BdClient::new();
+        match gc_git.sweep_orphan_bead_clones(&bd, &gc_molecule).await {
+            Ok(removed) if !removed.is_empty() => tracing::info!(
+                count = removed.len(),
+                workspace = %gc_workspace.display(),
+                molecule = %gc_molecule.as_str(),
+                "loom loop startup: reaped closed bead workspaces",
+            ),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(
+                %error,
+                workspace = %gc_workspace.display(),
+                molecule = %gc_molecule.as_str(),
+                "loom loop startup: orphan-clone sweep failed — continuing",
+            ),
+        }
+    });
+    Ok(())
+}
+
+fn gc_molecule_for_root(root: &LoopWorkRoot) -> Option<MoleculeId> {
+    match &root.kind {
+        LoopWorkRootKind::Epic => Some(MoleculeId::new(root.id.as_str())),
+        LoopWorkRootKind::Task => root
+            .bead
+            .parent
+            .as_ref()
+            .map(|parent| MoleculeId::new(parent.as_str())),
+    }
+}
+
+fn print_sequential_loop_summary(multi_root: bool, root: &LoopWorkRoot, summary: &LoopOutcome) {
+    if multi_root {
+        let prefix = format!("loom loop {}:", root.id);
+        print_loop_summary(&prefix, summary);
+    } else {
+        print_loop_summary("loom loop:", summary);
+    }
+}
+
+fn print_loop_summary(prefix: &str, summary: &LoopOutcome) {
     println!(
-        "loom loop: processed {} bead(s), clarified {}, blocked {}, outer_iterations={}, gate={}",
+        "{prefix} processed {} bead(s), clarified {}, blocked {}, outer_iterations={}, gate={}",
         summary.beads_processed,
         summary.beads_clarified,
         summary.beads_blocked,
         summary.outer_iterations,
         gate_label(&summary.gate),
     );
-    Ok(summary)
+}
+
+fn print_parallel_loop_summary(
+    multi_root: bool,
+    root: &LoopWorkRoot,
+    parallel_n: u32,
+    outcome: &LoopOutcome,
+) {
+    if multi_root {
+        println!(
+            "loom loop {} --parallel {parallel_n}: processed {}, gate={}",
+            root.id,
+            outcome.beads_processed,
+            gate_label(&outcome.gate),
+        );
+    } else {
+        print_parallel_aggregate_summary(parallel_n, outcome);
+    }
+}
+
+fn print_parallel_aggregate_summary(parallel_n: u32, outcome: &LoopOutcome) {
+    println!(
+        "loom loop --parallel {parallel_n}: processed {}, gate={}",
+        outcome.beads_processed,
+        gate_label(&outcome.gate),
+    );
 }
 
 /// One-word render of a [`GateOutcome`] for the operator-facing summary
@@ -3917,17 +4103,19 @@ struct LoopWorkRoot {
     ready_parent: Option<BeadId>,
 }
 
-async fn resolve_loop_work_root<R: CommandRunner>(
+async fn resolve_loop_work_roots<R: CommandRunner>(
     bd: &BdClient<R>,
     roots: Vec<String>,
-) -> anyhow::Result<LoopWorkRoot> {
-    match roots.as_slice() {
-        [] => resolve_active_loop_work_root(bd).await,
-        [root] => resolve_explicit_loop_work_root(bd, root).await,
-        _ => Err(anyhow::anyhow!(
-            "loom loop currently accepts one work root per invocation"
-        )),
+) -> anyhow::Result<Vec<LoopWorkRoot>> {
+    if roots.is_empty() {
+        return Ok(vec![resolve_active_loop_work_root(bd).await?]);
     }
+
+    let mut resolved = Vec::with_capacity(roots.len());
+    for root in roots {
+        resolved.push(resolve_explicit_loop_work_root(bd, &root).await?);
+    }
+    Ok(resolved)
 }
 
 async fn resolve_active_loop_work_root<R: CommandRunner>(
@@ -3963,8 +4151,7 @@ async fn resolve_explicit_loop_work_root<R: CommandRunner>(
     bd: &BdClient<R>,
     root: &str,
 ) -> anyhow::Result<LoopWorkRoot> {
-    let id = BeadId::new(root)?;
-    let bead = bd.show(&id).await?;
+    let bead = bd.show_selector(root).await?;
     let kind = if bead.issue_type == "epic" {
         LoopWorkRootKind::Epic
     } else {
@@ -4141,19 +4328,32 @@ mod tests {
     {
         let active = r#"[{"id":"lm-active","title":"active","status":"open","priority":2,"issue_type":"epic","labels":["loom:active","spec:agent","spec:harness"],"metadata":{}}]"#;
         let task = r#"[{"id":"lm-task","title":"task","status":"open","priority":2,"issue_type":"task","labels":["spec:gate","spec:harness"],"metadata":{}}]"#;
-        let bd = BdClient::with_runner(ScriptedRunner::new([active, task]));
+        let epic = r#"[{"id":"lm-epic","title":"epic","status":"open","priority":2,"issue_type":"epic","labels":["spec:skills"],"metadata":{}}]"#;
+        let bd = BdClient::with_runner(ScriptedRunner::new([active, task, epic]));
 
-        let default_root = resolve_loop_work_root(&bd, Vec::new()).await?;
+        let default_roots = resolve_loop_work_roots(&bd, Vec::new()).await?;
+        assert_eq!(default_roots.len(), 1);
+        let default_root = &default_roots[0];
         assert_eq!(default_root.id, BeadId::new("lm-active")?);
         assert_eq!(default_root.label, SpecLabel::new("agent"));
         assert_eq!(default_root.kind, LoopWorkRootKind::Epic);
         assert_eq!(default_root.ready_parent, Some(BeadId::new("lm-active")?));
 
-        let task_root = resolve_loop_work_root(&bd, vec!["lm-task".to_string()]).await?;
+        let explicit_roots =
+            resolve_loop_work_roots(&bd, vec!["task".to_string(), "epic".to_string()]).await?;
+        assert_eq!(explicit_roots.len(), 2);
+
+        let task_root = &explicit_roots[0];
         assert_eq!(task_root.id, BeadId::new("lm-task")?);
         assert_eq!(task_root.label, SpecLabel::new("gate"));
         assert_eq!(task_root.kind, LoopWorkRootKind::Task);
         assert_eq!(task_root.ready_parent, None);
+
+        let epic_root = &explicit_roots[1];
+        assert_eq!(epic_root.id, BeadId::new("lm-epic")?);
+        assert_eq!(epic_root.label, SpecLabel::new("skills"));
+        assert_eq!(epic_root.kind, LoopWorkRootKind::Epic);
+        assert_eq!(epic_root.ready_parent, Some(BeadId::new("lm-epic")?));
         Ok(())
     }
 
