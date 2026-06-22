@@ -15,16 +15,16 @@ compile-time variable validation.
 
 This spec covers the platform: crate structure, Rust conventions,
 Nix integration, SQLite cache store, beads CLI wrapper, process
-architecture, recovery mechanics, the `Session` and `EventSink`
-trait surfaces, and the `llm` public LLM-primitives crate.
-The Askama template engine, partials inventory, per-phase pinning
-policy, the typed context structs Loom exposes for consumer
-template composition, and the snapshot-test contract live in
-[templates.md](templates.md). The agent abstraction
-layer (pi-mono, Claude Code, and Direct backends; container
-communication; backend selection) lives in
-[agent.md](agent.md). The gate (rubric, invariants,
-lanes, stages) lives in [gate.md](gate.md). Workflow
+architecture, recovery mechanics, and workflow command semantics. The
+typed event stream, renderer, persisted JSONL event logs, `EventSink`
+contract, and diagnostic tracing boundary live in
+[events.md](events.md). The Askama template engine, partials inventory,
+per-phase pinning policy, the typed context structs Loom exposes for
+consumer template composition, and the snapshot-test contract live in
+[templates.md](templates.md). The agent abstraction layer (pi-mono,
+Claude Code, and Direct backends; container communication; backend
+selection) lives in [agent.md](agent.md). The gate (rubric,
+invariants, lanes, stages) lives in [gate.md](gate.md). Workflow
 semantics — what each `loom plan` / `loom todo` / `loom loop` /
 `loom gate` / `loom inbox` / `loom tune` command does — are defined in
 this spec's Functional section and the Inbox Modes / Tune Modes /
@@ -678,304 +678,28 @@ surfaces are banned.
 The guard is mechanical, not advisory: a single env-var check at CLI
 entry, before any subcommand dispatch.
 
-### Loop UX & Logging
+### Events and Rendering
 
-`loom loop` is the long-running command users watch live. Its terminal
-output is shaped for a human reading along; machine consumers (CI
-harnesses, SSE bridges, log analyzers) consume the JSONL stream
-directly.
-
-**Renderer architecture.** A single `Renderer` trait in `loom-render`
-consumes `AgentEvent` values; one impl is selected at startup based
-on flags + TTY detection. Four modes:
-
-| Mode | Selected when | Output shape |
-|------|---------------|--------------|
-| `Pretty` (default) | TTY, no `--plain` / `--json` / `--raw` | Colored, glyphs, indented tool bodies, diffs for `Edit` / `Write`, OSC 8 hyperlinks where supported. |
-| `Plain` | Non-TTY (pipe / redirect), `NO_COLOR`, or `--plain` | ASCII-only, no color, no OSC 8 — same content shape as `Pretty` minus decoration. |
-| `Json` | `--json` | One pretty-printed JSON object per line. Pure data, zero ANSI. |
-| `Raw` | `--raw` | Pass-through of the original JSONL bytes. No parsing, no formatting. |
-
-`loom logs` reuses the same trait + impls — replay and live render
-share one code path. The same Renderer takes a `live: bool` so the
-in-place running indicator is suppressed on replay; durations come
-from `ts_ms` deltas between paired `tool_call` / `tool_result`
-events.
-
-**Verbosity** is one flag: `-v` / `--verbose` disables tool-body
-truncation, streams `text_delta` / `thinking_delta` live, and shows
-`thinking` blocks. No finer-grained sub-flags in v1.
-
-**Driver events** ride the same channel as agent events with
-`source: "driver"`. The renderer marks them so the eye separates
-"what loom did" from "what the agent did". Variant set defined in
-*Event Schema*.
-
-**Cancellation.** Ctrl-C / SIGINT produces a clean closing block;
-the in-place running indicator is collapsed, the partial diff is
-captured, the closing line names `⚠ interrupted`. A panic hook +
-`tokio::signal` handler ensure the in-place region is cleared on
-every exit path.
-
-**Parallel runs.** Under `--parallel N > 1`, every line carries a
-`[bead-id]` prefix with a stable hash-derived hue so interleaved
-output stays attributable. Bead headers and closing lines print
-atomically. The in-place running indicator is disabled (multiple
-`\r`-updating regions on one terminal don't compose).
-
-**Log persistence.** Loom always writes the full raw JSONL event
-stream for every bead spawn to disk via a tee-style sink,
-regardless of terminal verbosity:
-
-```
-.loom/logs/<spec-label>/<bead-id>-<utc-timestamp>.jsonl
-```
-
-One file per bead spawn — parallel batches never interleave inside
-a single file. Per-event flush is mandatory so downstream consumers
-(`tail -f`, SSE bridges, CI ingest) see events at emit time, not at
-OS-buffer cadence. The path is logged at `info!` when the spawn
-starts.
-
-Gate invocations that run outside an agent session write their own raw
-JSONL logs under `.loom/logs/gate/<scope-or-bead>-<utc>.jsonl` using
-the same `AgentEvent` stream and flush contract. A parent bead/session
-log records the gate log path as a breadcrumb rather than sharing the
-same file, so concurrent gate subprocesses never interleave. A
-gate-run `start` event without a matching `end` event is an incomplete
-or interrupted gate, not a success.
-
-**Retention.** Logs older than `[logs] retention_days` (default 14)
-are deleted on `loom loop` startup. `retention_days = 0` disables
-sweeping. The sweep is best-effort; deletion failures are logged at
-`debug!` but never abort the run.
-
-The terminal renderer and the disk writer subscribe to the same
-`AgentEvent` stream — one channel, two subscribers, never two
-parallel pipelines.
-
-### Event Schema
-
-`AgentEvent` is loom's typed event union — the public contract
-between producers (loom + agent backends) and downstream consumers
-(terminal renderer, disk log, `--json` pipelines, SSE bridges, log
-analyzers). It lives in the `loom-events` crate. Field-level
-shapes are defined by the Rust types with serde derives; this
-section names the *shape* of the contract.
-
-**Wire shape.** Flat tagged JSON — one top-level `kind`
-discriminator, no nested envelopes. A consumer dispatches with one
-`match` (Rust) or one `switch (event.kind)` (TypeScript).
-
-**Common envelope.** Every event carries seven structural fields
-plus its variant-specific payload, all flat at the top level:
-
-| Field | Type | Purpose |
-|-------|------|---------|
-| `kind` | `string` | Discriminator — variant name, snake_case |
-| `bead_id` | `string` | Per-bead routing |
-| `molecule_id` | `string` | Per-molecule grouping for push-gate / multi-bead UIs |
-| `iteration` | `u32` | Bead's iteration counter (1-based) |
-| `source` | `"agent" \| "driver"` | Distinguishes agent activity from driver-emitted events |
-| `ts_ms` | `i64` | Unix milliseconds UTC |
-| `seq` | `u64` | Monotonic per-bead-spawn counter — SSE resume key (`Last-Event-ID: <bead_id>:<seq>`) |
-
-**Variant set.** Eighteen variants, flat tagged enum, snake_case on
-the wire and in Rust:
-
-- **Lifecycle** — `agent_start`, `agent_end`, `turn_start`,
-  `turn_end`, `session_complete`
-- **Streaming** — `text_delta`, `text_end`, `thinking_delta`,
-  `thinking_end`, `toolcall_delta`
-- **Tools** — `tool_call`, `tool_result`, `tool_progress`
-- **Operational** — `compaction_start`, `compaction_end`,
-  `auto_retry`, `error`
-- **Driver catch-all** — `driver_event`
-
-Field-level payload shapes per variant are defined by the Rust
-types in `loom-events`; the crate's API docs are the source of
-truth for per-variant fields.
-
-**Architecture-bearing types.** Four load-bearing patterns from
-this schema and the surrounding session contract, each enforcing
-an invariant structurally:
-
-- **Session lifecycle** — the public agent-driver contract is the
-  command/event lifecycle shared by every backend. Workflow code
-  selects a backend for a phase, spawns a session handle, sends
-  prompt / steer / cancel / mode commands, and consumes the resulting
-  `AgentEvent` stream. `loom-events` provides a `Session` trait for
-  consumers that need a backend-neutral interoperability surface, but
-  the spec does not require workflow code to erase backend types or use
-  any particular Rust carrier representation. Host-side JSONL
-  subprocess backends keep a typestate (`AgentSession<Idle|Active>`) as
-  an internal mechanic — ready to prompt, active run in progress, stdin
-  attached — but that typestate does not leak through the
-  interoperability trait. Direct uses that host-side lifecycle for its
-  runner subprocess; only its in-container `Conversation` loop lacks Pi
-  / Claude handshake typestate.
-- **ID newtypes** (`BeadId`, `MoleculeId`, `ToolCallId`, etc.) —
-  `#[serde(transparent)]` wrappers over `String`. Construction
-  validates at the parse boundary; downstream code receives the
-  typed form, never raw `String`.
-- **Parser-to-stamper split** — the parser layer cannot see the
-  live envelope (bead id, molecule id, iteration), so it emits
-  `ParsedAgentEvent` carrying only payload + parser-derived fields.
-  The session layer is the only constructor of `AgentEvent`,
-  combining a `ParsedAgentEvent` with an `Envelope`. The compiler
-  makes "unstamped event reaches a consumer" unrepresentable.
-- **`DriverKind` typed enum with `Other(String)` fallback** — on
-  the wire `driver_kind` is a string for forward compatibility; in
-  Rust it deserializes to an enum with an `Other` arm for unknown
-  values. Producers cannot typo a kind; consumers get exhaustive
-  `match` plus graceful unknown-handling.
-
-**Driver events.** `driver_event` carries a `driver_kind` string
-discriminator plus a free-form `summary` and structured `payload`. The
-Rust producer surface uses the typed `DriverKind` enum (with
-`Other(String)` for unknown wire values), so producing code cannot typo
-kind strings while consumers remain forward-compatible. The closed
-producer set includes verdict / retry / push / container / infra /
-Direct / observer variants (`verdict_gate`, `retry_dispatch`,
-`push_gate_walk`, `push_gate_refuse`, `push_gate_clean`,
-`container_spawn`, `container_oom`, `infra_failure`,
-`doom_loop_tripped`, `duplicate_tool_result`, `token_usage`, `offload`)
-plus gate and routing variants:
-`gate_run_start`, `gate_run_scope`, `gate_run_lane`, `gate_run_end`,
-`gate_run_skipped`, `marker_routed`, `clarify_downgraded`,
-`bd_state_transition`, and `epic_auto_closed`. Payloads are typed at
-producing/consuming sites
-that Loom relies on (`GateRun`, marker routing, clarify downgrade, bd
-transition); render-only consumers may treat them as generic JSON. The
-observer-emitted variants (`doom_loop_tripped`,
-`duplicate_tool_result`, `token_usage`) originate in `llm` rather than
-`loom-driver`, so they fire on both Loom-binary runs and external
-consumer-driven `Conversation` runs. `offload` originates in Direct's tool
-context because Pi and Claude tool transcripts are owned by their
-subprocess agents.
-
-**Schema versioning.** `agent_start` carries `schema_version: u32`
-(currently `1`). Adding new variants, new fields on existing
-variants, or new `driver_kind` values is minor (consumers ignore
-unknown variants / fields). Renaming, removing, or repurposing
-fields requires a major bump. Consumers version-gate on the major.
-The Rust API tracks the same surface — non-additive enum changes
-are a `loom-events` crate major bump. Consumers must accept unknown
-`kind` values gracefully (drop or render as `<unknown>`); unknown
-variants are the contract working across versions.
-
-**Backend adapters.** Per-backend wire schemas (Pi-mono RPC,
-Claude Code stream-json, the `loom-direct-runner` JSONL stream)
-are flattened into the same `AgentEvent` variant set at the parser
-layer. See [agent.md](agent.md) for each backend's
-adapter contract.
-
-**SSE integration.** A pipeline runner that wants to broadcast a
-bead's event stream over SSE pulls `loom-events`, tails the bead's
-JSONL log, deserializes each line as `AgentEvent`, and emits
-`id: <bead_id>:<seq>\nevent: <kind>\ndata: <json>\n\n`. SSE clients
-resume on disconnect via `Last-Event-ID`. Loom does not ship an SSE
-server — `loom-events` is the integration boundary; the pipeline
-runner owns the rest.
-
-**Disk writer contract.** `LogSink` writes the same `AgentEvent`
-stream the renderer consumes, with per-event flush. The flush is
-the contract — downstream `tail -f` and file-watcher SSE bridges
-see each event at emit time, not at OS-buffer cadence. The agent's
-IO is bound by the disk write+flush — measured at <100µs per event
-on local SSD, well below per-token agent latency, so no
-async channel or backpressure machinery is justified. `LogSink`
-implements the `EventSink` trait (below); it is the persistence
-impl of a general consumer interface.
-
-### EventSink and SessionCommand
-
-`EventSink` is the universal `AgentEvent` consumer interface,
-defined in `loom-events` alongside the event type:
-
-```rust
-pub trait EventSink: Send {
-    fn emit(&mut self, event: &AgentEvent);
-    fn react(&mut self) -> Vec<SessionCommand> { Vec::new() }
-}
-
-pub enum SessionCommand {
-    Steer(String),   // inject a system message into the next turn
-    Abort(String),   // terminate the session with this reason
-}
-```
-
-**Contract:**
-
-- `emit` is **sync** — sinks push to channels, write to disk, or
-  mutate counters without awaiting. Sinks that need async work
-  (e.g. network broadcast) own a channel internally.
-- `emit` takes `&AgentEvent` — the driver owns the event;
-  multiple sinks read it without cloning.
-- `Send` bound supports multi-runtime deployments (SaaS).
-- `react()` is **pull-based**, default empty. The driver invokes
-  it after every **non-streaming** event (lifecycle, tool, driver,
-  operational) and applies the returned commands to the live
-  `Session`. Streaming variants (`text_delta`, `thinking_delta`,
-  `toolcall_delta`) do not trigger `react()` — observer state
-  doesn't change on text bytes, and polling them would be pure
-  overhead.
-
-**Composition.** Sinks compose via a chainable `.tee(other)` method
-producing `TeeSink<Self, Other>`. The driver builds a static-typed
-chain at session start; registration order is the `react()`
-invocation order:
-
-```rust
-let sink = LogSink::new(path)
-    .tee(DoomLoopObserver::new(config))
-    .tee(DuplicateResultObserver::new(config));
-```
-
-`react()` priority: any returned `Abort` is terminal — the driver
-cancels the session immediately and ignores subsequent commands in
-the same batch. `Steer` commands process in registration order
-before the next event is read.
-
-`SessionCommand`'s variant set is deliberately narrower than
-`Session`'s own surface (`steer` / `cancel` / `set_mode`) — observers
-only have two levers, both safety-relevant. Direct callers of
-`Session` have the full surface.
+The typed event stream, live `loom loop` renderer, persisted JSONL event
+logs, `loom logs` replay surface, `EventSink` composition contract, and
+diagnostic tracing boundary are owned by [events.md](events.md). This
+spec references those surfaces only where they affect platform workflow
+semantics.
 
 ### Logs UX
 
-`loom logs` replays or tails a saved log file via the same renderer used
-by `loom loop`. Reusing the renderer (rather than shipping a second
-formatter) keeps live and replay output identical and prevents drift.
+Authoritative event-log and rendering semantics live in [events.md](events.md).
+Harness keeps this CLI flag index so command-surface conformance can compare the
+binary's `loom logs` flags against documented command surface.
 
 | Flag | Behavior |
 |------|----------|
-| (default) | Pretty-render the most recent bead's full log; exit at EOF |
-| `-f` / `--follow` | Same renderer, tail-mode (block on EOF, like `tail -f`) |
-| `-b` / `--bead <id>` | Select a specific bead instead of the most recent |
-| `-v` / `--verbose` | Stream assistant text deltas (parity with `loom loop -v`) |
-| `--raw` | Emit raw JSONL bytes from the file, unparsed (for `jq` pipelines) |
-| `--path` | Print the resolved log file path and exit; preserves today's `tail -f $(loom logs --path)` recipe |
-
-`-f` and `--raw` compose: `loom logs -f --raw` tails raw JSONL, the
-spiritual successor to today's `tail -f $(loom logs)` shorthand.
-`--path` is mutually exclusive with `-f`, `-v`, and `--raw` — it
-short-circuits to a path-only output before any rendering happens.
-`-b` combines with everything (it just changes which file is selected).
-
-**Empty-logs case.** Bare `loom logs` against an empty
-`.loom/logs/` prints a one-line message
-(`No bead logs yet. Run 'loom loop' to generate one.`) and exits 0 —
-this is normal post-`loom init`, not an error. `--path` against an
-empty logs directory exits non-zero with a clear error so scripts
-relying on `$(loom logs --path)` fail loudly rather than expanding to
-an empty string.
-
-**No auto-follow.** Bare `loom logs` does **not** detect a still-running
-bead and switch to follow mode automatically. Auto-detection (file
-mtime, fd introspection) is brittle and surprising. Users who want
-live tailing pass `-f` explicitly — matches the `tail` vs `tail -f`
-mental model already in muscle memory.
+| default | Render the most recent log and exit at EOF. |
+| `-f` / `--follow` | Continue rendering the selected log as it grows; no automatic switch to newer files. |
+| `-b` / `--bead <id>` | Select the latest log for a bead. |
+| `-v` / `--verbose` | Use verbose human rendering. |
+| `--raw` | Emit raw JSONL bytes; composes with `--follow`. |
+| `--path` | Print the selected log path and exit. |
 
 ### Verdict Gate
 
@@ -2017,8 +1741,9 @@ Load-bearing constraints on the dep graph:
 - `loom-tune` depends on `loom-events`, `loom-skills`, and parsing/scoring
   libraries for registry/case/evidence/metadata types; it does not depend on
   `loom-driver`, `agent`, or `loom-workflow`.
-- `loom-render` depends on `loom-events` only — no `loom-driver`
-  import. A renderer regression must be local to `loom-render`.
+- `loom-render` depends on `loom-events` for the event contract and may use
+  rendering/support crates, but it imports neither `loom-driver` nor
+  `loom-workflow`. A renderer regression must be local to `loom-render`.
 - `agent` depends on `llm` (its `direct` backend wraps
   `Conversation`), `loom-events` (the `Session` trait, `AgentEvent`), and
   `loom-skills` for materialized registry/disclosure types consumed during
@@ -2480,6 +2205,14 @@ instructions, it drops or summarizes ordinary history first; any
 exceptional fallback preserves instruction, protocol, and mode sections
 verbatim.
 
+**Effective re-pin invariant.** Re-pinning is complete only when those
+instructions are active for future model turns, not merely when bytes are
+written to disk or a hook/steer command is queued. Operational shorthand
+defined by the pinned prompt (for example, `do a polish`) must continue to
+drive behavior after compaction. If Loom cannot assemble or deliver the full
+pin before accepting or using post-compaction workflow output, it blocks,
+restarts, or fails loudly rather than proceeding with summary-only context.
+
 **Per-session scratch directory.** At session start the driver creates
 `.loom/scratch/<key>/`:
 
@@ -2589,8 +2322,7 @@ max_iterations = 10
 max_retries = 2
 
 [logs]
-# Delete log files under .loom/logs/ older than this many days on
-# `loom loop` startup. 0 disables sweeping (keep forever).
+# Event-log retention; see specs/events.md. 0 disables sweeping.
 retention_days = 14
 
 [skills]
@@ -2836,132 +2568,11 @@ Criteria.
       subcommands such as `verify`) still run normally
   [test](readonly_and_deterministic_gate_subcommands_run_under_loom_inside_set)
 
-### Loop UX & logging
+### Events and rendering
 
-**Renderer modes**
+Owned by [events.md](events.md); see that spec's Success Criteria.
 
-- Four renderer modes implemented: `Pretty`, `Plain`, `Json`, `Raw`
-  [test](renderer_modes_present)
-- `Pretty` is selected when stdout is a TTY and no `--plain`/`--json`/`--raw` flag is set
-  [test](run_default_output_shape)
-- `Plain` is auto-selected on non-TTY stdout (pipe/redirect), `NO_COLOR=1`, or `--plain`
-  [test](plain_selected_on_non_tty)
-- `Json` mode emits one pretty-printed JSON object per line; colorized when TTY, plain when piped
-  [test](json_mode_pretty_prints)
-- `Raw` mode passes through the original JSONL bytes unparsed
-  [test](raw_mode_passthrough)
-
-**Per-tool rendering**
-
-- Each builtin (`Read`, `Edit`, `Write`, `Grep`, `Glob`, `Bash`, `WebFetch`, `WebSearch`, `Task`) renders its tailored summary cell
-  [test](every_spec_variant_present)
-- Unknown tools fall through to a generic `<name>  <truncated args>` row
-  [test](unknown_tool_falls_through_to_name)
-- Tool body is capped at 10 lines or 2 KB (whichever first); cap line names recovery `[N more lines — loom logs -b <id> --tool <id>]`
-  [test](cap_body_keeps_short_bodies_unchanged)
-- `Edit` and `Write` render unified diffs via `imara-diff`; `+<add> -<del>` counts on the summary cell
-  [test](edit_summary_includes_added_removed_counts)
-- Subagent (`Task`) tool nests inner events under the parent at deeper indent via `parent_tool_call_id`
-  [test](task_subagent_nesting_threads_parent_tool_call_id)
-- `tool_call` and `tool_result` collapse into one rendered block; duration computed from `ts_ms` delta
-  [test](tool_call_result_pairing_collapses_with_ts_ms_duration)
-
-**Driver events**
-
-- `driver_event` variants emit with `source: "driver"` discriminator and render with `→` glyph
-  [test](driver_event_renders_arrow_glyph)
-- Verdict gate, retry dispatch, push gate walk/refuse/clean, container
-  spawn/oom, gate-run lifecycle, marker routing, clarify downgrade, and
-  bd state transitions all emit `driver_event` with typed `DriverKind`
-  producer variants
-  [test](driver_kinds_present_for_spec_emission_sites)
-- Unknown `driver_kind` values render as generic `→ <kind>: <summary>` (additive without schema bump)
-  [test](driver_event_accepts_unknown_driver_kind)
-
-**Live UX**
-
-- In-place running indicator updates duration via `\r` + clear-to-EOL while a tool is in flight
-  [test](second_tick_overwrites_with_carriage_return_and_clear)
-- In-place running indicator is auto-disabled in non-TTY modes and with `--parallel N > 1`
-  [test](disabled_indicator_writes_nothing)
-- `-v` / `--verbose` disables tool-body truncation, streams `text_delta`/`thinking_delta` live, and shows `thinking` blocks (`◆`)
-  [test](run_verbose_streams_text)
-- Cancellation (Ctrl-C / SIGINT) collapses the in-place indicator and emits a `⚠ interrupted` closing block with partial-diff size
-  [test](run_finish_finalizes_dangling_running_indicator)
-- OSC 8 hyperlinks emitted for paths/URLs when terminal supports it (iTerm2, Kitty, WezTerm, recent VS Code, Alacritty, GNOME Terminal); auto-degrades silently on unsupported terminals
-  [test](wrap_emits_osc8_escape_when_supported)
-- Path normalization: absolute `/workspace/...` paths render repo-relative in tool summary cells
-  [test](normalize_for_display_strips_workspace_prefix)
-
-**Replay**
-
-- `loom logs` reuses the same `Renderer` trait + impls as `loom loop` (no second formatter)
-  [check](cargo test -p loom-render --lib logs_reuses_renderer_via_jsonl_round_trip)
-- Live-vs-replay distinction: `Pretty` renderer takes a `live: bool` parameter; replay suppresses the in-place running indicator and computes durations from `ts_ms` deltas
-  [test](live_vs_replay_distinction_pretty_renderer)
-- `AgentEvent` derives `Deserialize` so `loom logs` reads its own JSONL files back through the same enum it writes
-  [test](agent_event_deserialize_round_trip)
-
-**Event schema**
-
-- Every event carries common envelope fields: `kind`, `bead_id`, `molecule_id`, `iteration`, `source`, `ts_ms` (i64 unix millis), `seq` (u64 monotonic per-bead-spawn)
-  [test](common_envelope_fields_present_on_every_variant)
-- `agent_start` carries `schema_version: u32` (currently `1`), `title`, `profile`, `spec_label`, `started_at_ms`
-  [test](agent_start_fields_present)
-- `seq` is monotonic per bead spawn, starting at `0`
-  [test](seq_advances_monotonically)
-- Variant set is flat (no nested `message_update { delta: ... }`) — top-level `text_delta` / `thinking_delta` / `toolcall_delta` are siblings of `tool_call` / `tool_result`
-  [check](cargo test -p loom-events --lib flat_variant_shape_has_no_nested_envelopes)
-- `loom-events` crate has exactly four deps: `futures-core`, `serde`, `serde_json`, `thiserror` (no `chrono`, no `ulid`, no `uuid`)
-  [check](cargo run -p loom-walk -- loom_events_minimal_deps)
-- Unknown event variants are accepted gracefully (deserialized as a fallback or skipped, never error)
-  [test](unknown_variants_fail_with_a_loud_error)
-- `Session` interoperability trait defined in `loom-events` with methods `prompt`, `steer`, `cancel`, `set_mode`
-  [check](cargo run -p loom-walk -- session_trait_in_loom_events)
-- `EventSink` trait defined in `loom-events` with sync `emit(&AgentEvent)` and default `react() -> Vec<SessionCommand>`; `SessionCommand` enum has `Steer(String)` and `Abort(String)` variants
-  [check](cargo run -p loom-walk -- event_sink_in_loom_events)
-- `EventSink` composition via `.tee(other) -> TeeSink<Self, Other>`; registration order equals `react()` invocation order
-  [test](tee_chain_preserves_registration_order_for_react)
-- Driver applies `react()` after every non-streaming event (not after `text_delta` / `thinking_delta` / `toolcall_delta`)
-  [test](react_invoked_after_non_streaming_events_only)
-- Driver treats any `SessionCommand::Abort` returned from `react()` as terminal: subsequent commands in the same batch are not applied, session is cancelled, recovery cause is `observer-abort`
-  [test](abort_command_short_circuits_remaining_commands_and_classifies_observer_abort)
-- `LogSink` implements `EventSink`; it is the persistence sink in the trait's first implementor
-  [test](log_sink_implements_event_sink)
-
-**Disk log**
-
-- Full raw JSONL event stream is written to
-      `.loom/logs/<spec-label>/<bead-id>-<timestamp>.jsonl` for every
-      bead spawn, regardless of terminal verbosity
-  [test](run_writes_per_bead_jsonl_log)
-- Per-event flush: every `LogSink::emit` call calls `flush()` so `tail -f` and SSE-via-file-watcher consumers see events at emit time
-  [test](log_sink_per_event_flush)
-- Log path is logged at `info!` when the spawn starts
-  [test](run_logs_log_path)
-- With `--parallel N > 1`, each bead writes to its own file (no
-      interleaving in a single log)
-  [test](parallel_logs_are_per_bead)
-- Terminal renderer and log writer consume the same `AgentEvent` stream
-      (single tee-style sink, not two parallel pipelines)
-  [check](cargo run -p loom-walk -- single_event_channel)
-- On `loom loop` startup, log files older than `[logs] retention_days`
-      (default 14) are deleted; recent logs are preserved
-  [test](log_retention_sweep)
-- `[logs] retention_days = 0` disables sweeping (no files deleted)
-  [test](log_retention_disabled)
-- Sweep failures (permission denied, in-use file) do not abort the run
-  [test](log_retention_failure_tolerance)
-- Gate invocations outside an agent session write separate JSONL logs
-      under `.loom/logs/gate/` using the same `AgentEvent` stream; parent
-      bead/session logs record the gate log path as a breadcrumb
-  [test?](gate_invocations_write_separate_jsonl_logs_with_parent_breadcrumb)
-- A gate log with `gate_run_start` and no matching `gate_run_end` is
-      classified as incomplete/interrupted evidence and cannot construct
-      `VerifiedScope`, `ReviewedScope`, or `GateSuccess`
-  [test?](incomplete_gate_log_cannot_construct_scope_evidence)
-
-**Crate boundary**
+### Dependency graph
 
 - `loom-events` is a leaf crate — no internal deps on `loom-driver` / `loom-render` / `loom-workflow` / `templates` / `llm` / `agent` / `loom-skills` / `loom-tune`
   [check](cargo run -p loom-walk -- loom_events_is_leaf)
@@ -2973,7 +2584,7 @@ Criteria.
   [check](cargo run -p loom-walk -- loom_skills_deps)
 - `loom-tune` depends on `loom-events` and `loom-skills`, but not `loom-driver` / `agent` / `loom-workflow`
   [check](cargo run -p loom-walk -- loom_tune_deps)
-- `loom-render` depends on `loom-events` only (no `loom-driver`)
+- `loom-render` depends on `loom-events` and does not depend on `loom-driver` or `loom-workflow`
   [check](cargo run -p loom-walk -- loom_render_deps)
 - `agent` depends on `llm`, `loom-events`, and `loom-skills`; its `direct` backend wraps `loom-llm::Conversation`
   [check](cargo run -p loom-walk -- loom_agent_deps)
@@ -3782,32 +3393,8 @@ two agent-loop observers.
       work epic, cached iteration counts, and cache health; no active
       spec/current-spec value is displayed or read
   [test](status_reports_active_work_epic_not_current_spec)
-- Bare `loom logs` pretty-renders the most recent bead's full log
-      via the same `AgentEvent` renderer used by `loom loop`, then
-      exits at EOF (no implicit follow); `-b <id>` (long form
-      `--bead`) selects a specific bead's log
-  [test](empty_root_returns_no_logs)
-- `loom logs -f` (long form `--follow`) tails the selected log,
-      blocking on EOF until the file grows or the user interrupts
-  [test](follow_blocks_past_eof_until_budget_expires)
-- `loom logs --raw` emits raw JSONL bytes from the file, unparsed;
-      `loom logs -f --raw` tails raw JSONL (composes with follow)
-  [test](replay_raw_copies_bytes_verbatim)
-- `loom logs --path` prints the resolved log file path and exits;
-      mutually exclusive with `-f`, `-v`, and `--raw` (passing any of
-      those alongside `--path` errors before opening the file)
-  [test](loom_logs_help_snapshot)
-- `loom logs -v` (long form `--verbose`) streams assistant text
-      deltas during render, matching `loom loop -v` output
-  [test](replay_verbose_streams_text_deltas)
-- Bare `loom logs` against an empty `.loom/logs/` exits 0
-      with a one-line "No bead logs yet" message; `loom logs --path`
-      in the same state exits non-zero with a clear error
-  [test](empty_root_returns_no_logs)
-- `loom logs` and `loom loop` share a single renderer; the
-      `AgentEvent` consumer used to format live output is the same
-      module used to replay saved logs (no second formatter)
-  [check](cargo test -p loom-workflow --lib replay_renders_via_shared_renderer)
+The `loom logs` inspection surface is owned by [events.md](events.md).
+
 - `loom sync` remains absent, but `loom tune` is present as the manual
       SkillOpt-style proposal command; the surface-conformance walk rejects
       any reintroduction of sync and validates the tune subcommand shape
@@ -3957,6 +3544,9 @@ two agent-loop observers.
       edits applied unless explicitly asked, resumes with that definition
       still present
   [test](compacted_resume_preserves_polish_mode_definition)
+- A post-compaction `do a polish` canary fails if resumed context contains
+      only a vague summary instead of the full report-only mode definition
+  [test?](post_compaction_polish_canary_requires_full_mode_definition)
 - A simulated planning compaction with a fixture `Interview Modes`
       section defining `one by one` as one design question per turn
       resumes with that definition still present
@@ -3999,6 +3589,7 @@ two agent-loop observers.
 - `cargo clippy --workspace` and `cargo test --workspace` are
       covered by the `loom-clippy` and `loom-nextest` flake checks
       with a shared cargoArtifacts cache
+  [check?](cargo run -p loom-walk -- workspace_compile_checks_exposed_as_flake_checks)
 
 ## Requirements
 
@@ -4080,9 +3671,8 @@ two agent-loop observers.
    - `loom status` — print the active work epic, any pending
      `loom:todo` work epic, cached iteration counts, and cache health;
      it does not report or depend on an active-spec pointer
-   - `loom logs` — pretty-render a bead's JSONL log under
-     `.loom/logs/` via the same `AgentEvent` renderer used by
-     `loom loop`. Full flag set in [Logs UX](#logs-ux).
+   - `loom logs` — inspect, render, or tail persisted event logs;
+     the event-log surface and flags are owned by [events.md](events.md).
    - `loom spec` — query spec annotations; supports `--deps` to print
      nixpkgs required by the spec's `[check]` / `[test]` / `[system]`
      / `[judge]` verifier targets, and `loom spec <label> --targets`
@@ -4297,8 +3887,9 @@ two agent-loop observers.
     spec, hard-failing on any drift across four dimensions:
     (1) **Command set** — FR1's commands ↔ the `Command` enum's
     variants; (2) **Flag set** — flags documented in the spec's
-    per-command tables (e.g. *Inbox Modes*, *Tune Modes*, *Logs UX*,
-    FR1 scope-flag lines) ↔ declared `#[arg(...)]`; (3) **Removed
+    per-command tables (e.g. *Inbox Modes*, *Tune Modes*, the
+    event-log flags in [events.md](events.md), FR1 scope-flag lines) ↔
+    declared `#[arg(...)]`; (3) **Removed
     surface** — the `Removed` table is absent from the binary; (4) **Grouping
     order** — both `loom --help` AND bare `loom` render `Workflow:`
     / `Inspection:` / `State:` in FR1's declared order. Help-text
@@ -4326,8 +3917,8 @@ two agent-loop observers.
     Loom-harness's role is the crate-graph placement
     (public-contract leaf, dep floor) — see *Crate Layout* and
     *Dependency Graph* above.
-16. **`EventSink` trait and composition** — per *EventSink and
-    SessionCommand* above. Sinks compose via chainable
+16. **`EventSink` trait and composition** — owned by
+    [events.md](events.md). Sinks compose via chainable
     `.tee(other)`; the driver applies `react()` after every
     non-streaming event and processes returned
     `SessionCommand`s with `Abort` as terminal priority. The

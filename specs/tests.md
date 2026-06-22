@@ -662,6 +662,7 @@ the rules:
 
 - `cargo clippy --workspace` is covered by the `loom-clippy` flake
       check with a shared cargoArtifacts cache
+  [check?](cargo run -p loom-walk -- workspace_compile_checks_exposed_as_flake_checks)
 - No `derive(From)` / `derive(Into)` on tuple-struct newtypes
   [check](cargo run -p loom-walk -- no_derive_from_on_newtypes)
 - No `crates/*/src/{types,error}.rs` files at crate roots
@@ -967,11 +968,8 @@ the rules:
      iteration count, and cache health in a stable parseable format
    - `loom status` with no active work epic exits 0 with a clear message,
      not an error
-   - `loom logs` (no flags) prints the path of the most recent file
-     under `.loom/logs/` and tails it
-   - `loom logs --bead <id>` finds the most recent log for that bead;
-     exits non-zero with a stderr message naming the bead id when no
-     log exists
+   - `loom logs` rendering, replay, follow, raw, and path-selection
+     cases are owned by [events.md](events.md)
    - `loom spec <label> --deps` parses the named spec's `[check]` /
      `[test]` / `[system]` / `[judge]` annotations, opens each referenced
      verifier source, and prints the deduplicated set of nixpkgs needed
@@ -979,35 +977,9 @@ the rules:
      `todo`, `loop`, `gate`, `inbox`, `tune`, `spec`, `init`, `status`,
      `logs`, `note`)
 
-   #### Loop UX renderer (loom-workflow)
-   - Default mode: header line per bead, one line per tool call, no
-     streamed assistant text deltas
-   - `--verbose` / `-v` streams assistant text as it arrives
-   - Tool call rendering: tool name + truncated single-line summary; lines
-     longer than terminal width are clipped, never wrapped
-   - Status colors: green for `✓ done`, red for `✗ failed`, yellow for
-     retry; disabled when stdout is not a TTY (`NO_COLOR` honored)
-   - Parallel mode: tool-call lines are bead-id-prefixed so interleaved
-     output stays attributable
-
-   #### Loop logger (loom-workflow)
-   - Every bead spawn produces a file at
-     `.loom/logs/<spec-label>/<bead-id>-<timestamp>.jsonl` containing
-     the raw event stream as one JSON object per line
-   - File is written for every spawn, regardless of terminal verbosity.
-     The renderer and the on-disk logger both subscribe to the same
-     `AgentEvent` channel; tests verify by routing the channel into
-     two collectors and asserting line-for-line equality between the
-     collected event sequences
-   - With `--parallel N`, two concurrent spawns produce two distinct files;
-     no shared writer, no interleaving
-   - Log file path is logged at `info!` when the spawn starts so users can
-     `tail -f` it
-   - Retention sweep on `loom loop` startup: with `retention_days = 14`,
-     files mtime'd 15+ days ago are deleted, files mtime'd today are kept
-   - `retention_days = 0` is a no-op (no files deleted, no walk)
-   - Best-effort: a single un-deletable file (read-only, locked) does not
-     abort the sweep — remaining deletable files are still removed
+   #### Events and rendering
+   - Event schema, live rendering, replay rendering, log persistence,
+     retention, and tracing-boundary tests are owned by [events.md](events.md)
 
    #### GitClient (loom-driver)
    - `GitClient::create_worktree(label, bead_id)` creates a worktree under

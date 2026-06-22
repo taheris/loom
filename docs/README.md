@@ -18,6 +18,7 @@ sessions.
 | Spec | Code | Epic | Purpose |
 |------|------|------|---------|
 | [agent.md](../specs/agent.md) | [`crates/loom-agent/`](../crates/loom-agent/) | `lm-4y0q` | Agent backend abstraction: pi-mono RPC, Claude Code stream-json, Direct (`loom-llm` + sandbox-aware tools via `loom-direct-runner`) |
+| [events.md](../specs/events.md) | [`crates/loom-events/`](../crates/loom-events/) and [`crates/loom-render/`](../crates/loom-render/) | — | Typed event stream, Pi-inspired live/replay rendering, persisted JSONL event logs, and diagnostic tracing boundary |
 | [gate.md](../specs/gate.md) | [`crates/loom-gate/`](../crates/loom-gate/) | `lm-fbst` | Quality gate: conformance + style + test-quality dimensions, plan/per-diff/standing stages, `loom gate verify` (deterministic) + `loom gate review` (LLM judge) |
 | [harness.md](../specs/harness.md) | [`crates/`](../crates/) | `lm-9ehh` | Platform: crate structure, workspace lints, process architecture, cache store, command set |
 | [llm.md](../specs/llm.md) | [`crates/loom-llm/`](../crates/loom-llm/) | `lm-ywph` | Public-contract LLM primitives: `LlmClient`, typed `CacheControl`, `Conversation` with built-in tool-use loop, agent-loop observers (doom-loop, duplicate-result) |
@@ -32,7 +33,9 @@ sessions.
 |------|------------|
 | **bd** | CLI for the beads issue tracker |
 | **Beads** | Persistent issue tracker used by Loom and the `bd` CLI |
-| **JSONL** | JSON Lines — one complete JSON object per `\n`-terminated line; protocol framing for both pi-mono RPC and Claude stream-json |
+| **AgentEvent** | Canonical typed event emitted by agent backends and the Loom driver; source of truth for live rendering, persisted JSONL logs, and replay |
+| **Event log** | Persisted JSONL copy of an `AgentEvent` stream under `.loom/logs/`, used by `loom logs` and external consumers |
+| **JSONL** | JSON Lines — one complete JSON object per `\n`-terminated line; protocol framing for pi-mono RPC, Claude stream-json, Direct runner streams, and Loom event logs |
 | **Loom** | Rust workflow orchestrator: spec-to-implementation pipeline with pi-mono, Claude Code, and Direct (loom-llm) backends |
 | **loom:clarify** | Bead label for items awaiting human response via `loom inbox` |
 | **Agent runtime** | Closed-set backend runtime selected by `agent.backend`: `pi`, `claude`, or `direct` |

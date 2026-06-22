@@ -255,43 +255,15 @@ map to one outbound event.
 
 ### AgentEvent
 
-The session emits a stream of typed events. Event names are part of the
-wire format: they are serialized as snake_case (`text_delta`,
-`tool_call`, …) when the terminal renderer and on-disk JSONL log share
-the tee-style sink (see [loom-harness — Loop UX &
-Logging](harness.md#loop-ux--logging)). Log readers consume those
-names directly. Every variant carries a flat envelope (`bead_id`,
-`molecule_id?`, `iteration`, `source`, `ts_ms`, `seq`) in addition to
-the per-variant payload listed below.
-
-| Event | Payload | Meaning |
-|-------|---------|---------|
-| `agent_start` | `schema_version`, `title`, `profile`, `spec_label`, `started_at_ms`, `parent_tool_call_id?` | First event in any session; carries per-spawn metadata for the renderer/log replayer. |
-| `agent_end` | — | Agent session ended; lifecycle bookend paired with `agent_start`. |
-| `turn_start` | — | Multi-turn session opened a new turn; paired with `turn_end`. |
-| `text_delta` | `text` | Streaming text fragment from the agent. |
-| `text_end` | — | Closes a `text_delta` stream. |
-| `thinking_delta` | `text` | Streaming reasoning fragment (when the backend exposes it). |
-| `thinking_end` | — | Closes a `thinking_delta` stream. |
-| `toolcall_delta` | `id`, `delta` | Streaming tool-call argument fragment. |
-| `tool_call` | `id`, `tool`, `params`, `parent_tool_call_id?` | Agent invoked a tool. |
-| `tool_result` | `id`, `output`, `is_error` | Tool execution completed. |
-| `tool_progress` | `id`, `text` | In-flight progress update from a long-running tool. |
-| `turn_end` | — | One turn finished; the session may have more turns. |
-| `session_complete` | `exit_code`, `cost_usd?` | Process exiting or final result received. |
-| `compaction_start` | `reason` | Context compaction beginning. |
-| `compaction_end` | `aborted` | Compaction finished. |
-| `auto_retry` | `attempt`, `max_attempts`, `delay_ms`, `error_message` | Backend signaled an auto-retry attempt. |
-| `error` | `message` | Agent reported an error mid-stream (does not necessarily end the session). |
-| `driver_event` | `driver_kind`, `summary`, `payload` | Driver-side event (verdict gate, push gate, container lifecycle, token usage, observer signal, …). `driver_kind` is forward-compatible — unknown wire strings land in `DriverKind::Other`. |
-
-`reason` is one of `context_limit`, `user_requested`, or `unknown`. Pi's
-`threshold` and `overflow` both map to `context_limit`; `manual` maps to
-`user_requested`.
+The canonical event schema, envelope, renderer contract, and persisted
+JSONL log surface are owned by [events.md](events.md). This spec owns
+backend normalization: each backend maps its native protocol messages
+into the canonical `AgentEvent` stream before workflow code, observers,
+renderers, or log sinks consume it.
 
 The session's terminal outcome — exit code and optional reported cost —
-flows out via the `session_complete` event; nothing further is needed
-from the workflow engine to learn how a session ended.
+flows out via the canonical `session_complete` event; nothing further is
+needed from the workflow engine to learn how a session ended.
 
 ### ProtocolError
 
@@ -711,15 +683,17 @@ design choice.
   current assistant turn finishes its tool calls, before the next LLM
   call — it does not inject content during compaction itself. The re-pin
   therefore reaches the agent on the *next* turn after compaction
-  completes, which is the desired effect (post-compact context
-  restoration).
+  completes. That timing is part of the delivery mechanism, not a license
+  to use post-compaction output that has not yet received the pin.
 - **Overflow auto-retry.** When `compaction_start.reason == "overflow"`
-  and compaction succeeds, pi automatically retries the prompt
+  and compaction succeeds, pi may automatically retry the prompt
   (`compaction_end.willRetry == true`). A steer queued during this window
-  interleaves with the auto-retry: it lands on the turn following the
-  retry's first response, not before. This is acceptable — the retry
-  plus re-pin combined still restore working context — but documented so
-  the behavior is not surprising in logs.
+  can otherwise land after the retry's first response. That unpinned retry
+  output is not trusted workflow output: the backend must make the re-pin
+  effective before accepting retry output, discard/ignore unpinned retry
+  output until the re-pin lands, or restart/fail the session with the full
+  prompt. It must not rely on compacted summary plus later re-pin to
+  preserve phase protocol or mode definitions.
 - The subsequent `compaction_end` event confirms whether compaction
   succeeded (`aborted: false`) or was abandoned. If pi retries compaction
   (a fresh `compaction_start` arrives), the driver re-reads the scratch
@@ -969,7 +943,7 @@ the entrypoint run the wrong runtime.
   [check](grep -q 'pub trait AgentBackend' crates/loom-driver/src/agent/backend.rs)
 - `run_agent` compiles with `PiBackend`, `ClaudeBackend`, and `DirectBackend` as concrete types
   [test](all_backends_dispatch_through_run_agent)
-- `AgentEvent` enum covers: AgentStart, AgentEnd, TurnStart, TextDelta, TextEnd, ThinkingDelta, ThinkingEnd, ToolcallDelta, ToolCall, ToolResult, ToolProgress, TurnEnd, SessionComplete, CompactionStart, CompactionEnd, AutoRetry, Error, DriverEvent
+- Agent backends emit only canonical `AgentEvent` variants owned by [events.md](events.md)
   [check](cargo test -p loom-events --lib every_spec_variant_present)
 - `SpawnConfig` struct captures image_ref, image_source, image_source_kind, workspace, env, initial_prompt, agent_args, scratch_dir, and omits ProfileConfig-only host fields from JSON
   [check](cargo test -p loom-workflow --lib spawn_config_omits_profile_manifest_host_only_fields_from_wrix_json)
@@ -1004,6 +978,9 @@ the entrypoint run the wrong runtime.
   `Interview Modes` definitions for `polish` report-only behavior and
   `one by one` question sequencing in the steer payload
   [test](driver_repins_interview_modes_on_compaction_start_via_steer)
+- Pi backend does not accept post-compaction auto-retry output as workflow
+  progress until the full re-pin is effective or the session is restarted/failed
+  [test?](pi_overflow_retry_waits_for_effective_repin)
 - Pi backend handles malformed JSONL gracefully (logs warning, continues)
   [test](malformed_json_returns_invalid_json_error)
 - Pi backend logs extension_ui_request at debug level without responding

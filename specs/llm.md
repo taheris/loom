@@ -289,10 +289,9 @@ Client. Invalid configuration fails at the boundary rather than
 at first request.
 
 Each Client supports attaching an `EventSink` chain (`EventSink`
-is defined in `loom-events`; see
-[loom-harness — EventSink and SessionCommand](harness.md#eventsink-and-sessioncommand))
-via a `.with_event_sink(impl EventSink)` builder method called
-after `::new`. The chain receives `DriverKind::TokenUsage` events
+is defined in `loom-events`; see [events.md](events.md)) via a
+`.with_event_sink(impl EventSink)` builder method called after
+`::new`. The chain receives `DriverKind::TokenUsage` events
 and agent-loop observer commands during `complete*` calls — see
 [Conversation and the Built-in Tool-Use Loop](#conversation-and-the-built-in-tool-use-loop).
 
@@ -506,9 +505,8 @@ different agent-loop crate later without taking the dep now.
 ### Agent-Loop Observers
 
 Two observers ship in `llm`. Both implement the `EventSink`
-trait defined in `loom-events` (see
-[loom-harness — EventSink and SessionCommand](harness.md#eventsink-and-sessioncommand))
-and are composed into `Conversation`'s default sink chain.
+trait defined in `loom-events` (see [events.md](events.md)) and
+are composed into `Conversation`'s default sink chain.
 Consumers driving via `Conversation::run` get the safety nets out
 of the box; Loom's binary composes the same observers when driving
 Pi / Claude / Direct backends. Observer state resets on
