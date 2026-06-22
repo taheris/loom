@@ -1,9 +1,9 @@
 //! Per-tool summary cells + body formatters.
 //!
-//! Each builtin tool gets a tailored one-line summary cell; verbose
-//! mode (`-v`) widens the body cap to "full content". The default
+//! Each builtin tool gets a tailored one-line summary cell. Default
 //! mode caps body at **10 lines or 2 KB whichever first** with a
-//! recovery hint line.
+//! recovery hint line; verbose mode widens the cap while keeping a
+//! safety ceiling.
 //!
 //! ## Summary cells (per spec table)
 //!
@@ -30,6 +30,10 @@ use crate::osc8;
 /// Body cap policy for the default render mode.
 pub const BODY_CAP_LINES: usize = 10;
 pub const BODY_CAP_BYTES: usize = 2048;
+
+/// Wider body cap policy for verbose render mode.
+pub const VERBOSE_BODY_CAP_LINES: usize = 80;
+pub const VERBOSE_BODY_CAP_BYTES: usize = 16_384;
 
 /// OSC 8 wrapping context for summary cells. When `supported = true`,
 /// path-bearing tools (Read/Edit/Write/Grep/WebFetch) wrap the path or
@@ -255,15 +259,50 @@ pub fn truncate(s: &str, max: usize) -> String {
 }
 
 /// Cap a body to 10 lines or 2 KB (whichever first). When the cap
-/// trims content, appends the spec-defined recovery hint as the final
-/// line so the user knows where to find the full body.
+/// trims content, appends a recovery hint pointing at verbose replay.
 pub fn cap_body(body: &str, bead_id: &str, tool_call_id: &str) -> String {
+    cap_body_with_limits(
+        body,
+        bead_id,
+        tool_call_id,
+        BODY_CAP_LINES,
+        BODY_CAP_BYTES,
+        TruncationHint::VerboseReplay,
+    )
+}
+
+/// Cap a verbose body to the renderer's wider safety budget.
+pub fn cap_body_verbose(body: &str, bead_id: &str, tool_call_id: &str) -> String {
+    cap_body_with_limits(
+        body,
+        bead_id,
+        tool_call_id,
+        VERBOSE_BODY_CAP_LINES,
+        VERBOSE_BODY_CAP_BYTES,
+        TruncationHint::SafetyCap,
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TruncationHint {
+    VerboseReplay,
+    SafetyCap,
+}
+
+fn cap_body_with_limits(
+    body: &str,
+    bead_id: &str,
+    tool_call_id: &str,
+    max_lines: usize,
+    max_bytes: usize,
+    hint: TruncationHint,
+) -> String {
     let mut total_bytes = 0;
     let mut kept: Vec<String> = Vec::new();
     let mut truncated = false;
     for (i, line) in body.lines().enumerate() {
         let next_bytes = total_bytes + line.len() + 1;
-        if i >= BODY_CAP_LINES || next_bytes > BODY_CAP_BYTES {
+        if i >= max_lines || next_bytes > max_bytes {
             truncated = true;
             break;
         }
@@ -273,11 +312,25 @@ pub fn cap_body(body: &str, bead_id: &str, tool_call_id: &str) -> String {
     if truncated {
         let remaining = body.lines().count() - kept.len();
         kept.push(String::new());
-        kept.push(format!(
-            "  [{remaining} more lines — loom logs -b {bead_id} --tool {tool_call_id}]"
-        ));
+        kept.push(truncation_hint(hint, remaining, bead_id, tool_call_id));
     }
     kept.join("\n")
+}
+
+fn truncation_hint(
+    hint: TruncationHint,
+    remaining: usize,
+    bead_id: &str,
+    tool_call_id: &str,
+) -> String {
+    match hint {
+        TruncationHint::VerboseReplay => format!(
+            "  [{remaining} more lines — run `loom logs -b {bead_id} -v` for more detail; tool {tool_call_id}]"
+        ),
+        TruncationHint::SafetyCap => format!(
+            "  [{remaining} more lines — verbose renderer safety cap reached for tool {tool_call_id}]"
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -549,7 +602,8 @@ mod tests {
         assert!(lines[9].starts_with("line 10"));
         assert!(lines[10].is_empty(), "{out}");
         assert!(lines[11].contains("10 more lines"), "{out}");
-        assert!(lines[11].contains("loom logs -b lm-1 --tool tc-1"), "{out}");
+        assert!(lines[11].contains("loom logs -b lm-1 -v"), "{out}");
+        assert!(lines[11].contains("tool tc-1"), "{out}");
     }
 
     #[test]
@@ -563,5 +617,17 @@ mod tests {
         // Only ~3 lines fit before the byte cap trips.
         assert!(out.contains("more lines"), "{out}");
         assert!(out.len() < body.len(), "{out}");
+    }
+
+    #[test]
+    fn cap_body_verbose_uses_wider_limit_with_safety_hint() {
+        let body: String = (1..=90)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let out = cap_body_verbose(&body, "lm-1", "tc-1");
+        assert!(out.contains("line 80"), "{out}");
+        assert!(!out.contains("line 81"), "{out}");
+        assert!(out.contains("safety cap"), "{out}");
     }
 }

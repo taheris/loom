@@ -120,9 +120,9 @@ fn set_mtime(path: &Path, when: SystemTime) {
 }
 
 //---------------------------------------------------------------------------
-// test_run_default_output_shape — default render mode prints exactly one
-// header line per bead and one short line per tool call; assistant text
-// deltas are suppressed. A closing line carries tool count + duration.
+// test_run_default_output_shape — default render mode prints assistant
+// prose, one short line per tool call, and a closing line with tool count
+// + duration.
 //---------------------------------------------------------------------------
 #[test]
 fn run_default_output_shape() -> Result<()> {
@@ -158,29 +158,31 @@ fn run_default_output_shape() -> Result<()> {
 
     let term = captured_str(&buf);
     let lines: Vec<&str> = term.lines().collect();
-    if lines.len() != 3 {
+    if lines.len() != 4 {
         return Err(anyhow!(
-            "expected 2 tool lines + 1 finish line, got {}: {term:?}",
+            "expected 2 tool lines + assistant prose + 1 finish line, got {}: {term:?}",
             lines.len()
         ));
     }
     if !lines[0].contains("Read") || !lines[0].contains("src/lib.rs") {
         return Err(anyhow!("first tool line missing Read+path: {term:?}"));
     }
-    if !lines[1].contains("Bash") || !lines[1].contains("cargo build") {
+    if !lines[1].contains("I will not appear on the terminal") {
+        return Err(anyhow!(
+            "assistant prose missing from default output: {term:?}"
+        ));
+    }
+    if !lines[2].contains("Bash") || !lines[2].contains("cargo build") {
         return Err(anyhow!("second tool line missing Bash+cmd: {term:?}"));
     }
-    if !lines[2].contains("done") || !lines[2].contains("2 tool calls") {
+    if !lines[3].contains("done") || !lines[3].contains("2 tool calls") {
         return Err(anyhow!("finish line missing done/count: {term:?}"));
-    }
-    if term.contains("I will not appear on the terminal") {
-        return Err(anyhow!("default mode leaked assistant text: {term:?}"));
     }
     Ok(())
 }
 
 //---------------------------------------------------------------------------
-// test_run_verbose_streams_text — verbose mode streams MessageDelta verbatim.
+// test_run_verbose_streams_text — verbose mode streams TextDelta verbatim.
 //---------------------------------------------------------------------------
 #[test]
 fn run_verbose_streams_text() -> Result<()> {
@@ -235,9 +237,8 @@ fn run_writes_per_bead_jsonl_log() -> Result<()> {
         params: json!({"file_path": "a"}),
         parent_tool_call_id: None,
     })?;
-    // MessageDelta is suppressed by the default renderer, but it MUST appear
-    // in the on-disk log (the file gets the full raw event stream regardless
-    // of terminal verbosity).
+    // TextDelta is visible in the default renderer and MUST also appear in
+    // the on-disk log as part of the full raw event stream.
     sink.emit(&AgentEvent::TextDelta {
         envelope: sample_envelope(),
         text: "secret thoughts".to_string(),
@@ -275,9 +276,7 @@ fn run_writes_per_bead_jsonl_log() -> Result<()> {
         return Err(anyhow!("unexpected event kinds in log: {kinds:?}"));
     }
     if !body.contains("secret thoughts") {
-        return Err(anyhow!(
-            "MessageDelta text missing from on-disk log even though terminal suppressed it"
-        ));
+        return Err(anyhow!("TextDelta text missing from on-disk log"));
     }
     Ok(())
 }
@@ -710,8 +709,8 @@ fn run_single_event_sink_property() -> Result<()> {
 // Read + Edit + Bash drive through `LogSink::emit` and the rendered
 // terminal carries the per-tool summary cell shape: `Read <path>:range`,
 // `Edit <path> +N -M diff↓`, and `Bash <cmd-truncated>`. Plus: a large
-// `ToolResult` body in Verbose mode is capped and the `[N more lines —
-// loom logs -b … --tool …]` recovery hint shows up.
+// `ToolResult` body in Verbose mode is capped and a safety recovery hint
+// shows up.
 //---------------------------------------------------------------------------
 #[test]
 fn run_default_renders_per_tool_summary_cells() -> Result<()> {
@@ -895,7 +894,7 @@ fn run_finish_finalizes_dangling_running_indicator() -> Result<()> {
 }
 
 #[test]
-fn run_verbose_caps_tool_result_body_with_recovery_hint() -> Result<()> {
+fn run_verbose_caps_tool_result_body_with_safety_hint() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (mut sink, buf) = open_sink(
         dir.path(),
@@ -913,7 +912,7 @@ fn run_verbose_caps_tool_result_body_with_recovery_hint() -> Result<()> {
         params: json!({"command": "ls -la"}),
         parent_tool_call_id: None,
     })?;
-    let big_output: String = (1..=15)
+    let big_output: String = (1..=90)
         .map(|i| format!("file-{i:03}"))
         .collect::<Vec<_>>()
         .join("\n");
@@ -926,18 +925,18 @@ fn run_verbose_caps_tool_result_body_with_recovery_hint() -> Result<()> {
     sink.finish(BeadOutcome::Done)?;
 
     let term = captured_str(&buf);
-    if !term.contains("file-001") || !term.contains("file-010") {
-        return Err(anyhow!("body cap dropped early lines: {term:?}"));
+    if !term.contains("file-001") || !term.contains("file-080") {
+        return Err(anyhow!("verbose body cap dropped early lines: {term:?}"));
     }
-    if term.contains("file-011") {
-        return Err(anyhow!("body cap should drop line 11+: {term:?}"));
+    if term.contains("file-081") {
+        return Err(anyhow!("verbose body cap should drop line 81+: {term:?}"));
     }
-    if !term.contains("5 more lines") {
-        return Err(anyhow!("missing `<N> more lines` recovery hint: {term:?}"));
+    if !term.contains("10 more lines") || !term.contains("safety cap") {
+        return Err(anyhow!("missing verbose safety recovery hint: {term:?}"));
     }
-    if !term.contains("loom logs -b lm-2 --tool b1") {
+    if !term.contains("tool b1") {
         return Err(anyhow!(
-            "recovery hint must reference bead id + tool call id: {term:?}",
+            "recovery hint must reference tool call id: {term:?}",
         ));
     }
     Ok(())

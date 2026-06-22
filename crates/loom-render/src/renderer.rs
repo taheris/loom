@@ -80,6 +80,7 @@ const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_GREEN: &str = "\x1b[32m";
 const ANSI_RED: &str = "\x1b[31m";
 const ANSI_YELLOW: &str = "\x1b[33m";
+const ANSI_DIM: &str = "\x1b[2m";
 
 /// Three-space gap between left-edge summary content and the right-edge
 /// duration / status column on a single-line summary cell.
@@ -165,9 +166,9 @@ fn display_width(s: &str) -> usize {
 #[derive(Debug, Clone)]
 struct PendingToolCall {
     /// Builtin tool name (e.g. `"Bash"`, `"Edit"`). Drives per-tool body
-    /// rendering policy at `ToolResult` time — the spec's per-tool body
-    /// table varies the default-mode body by tool (e.g. Bash hides on
-    /// `exit == 0` but renders the first 10 lines on `exit != 0`).
+    /// rendering policy at `ToolResult` time: failures render prominently,
+    /// content-returning successes render bounded excerpts, and concise
+    /// edit/write successes stay summary-only.
     tool: String,
     #[expect(dead_code, reason = "reserved for per-tool verbose body formatting")]
     params: Value,
@@ -222,13 +223,6 @@ pub struct TerminalRenderer {
     /// `ToolResult` arrives. Mutually exclusive with [`running`]: each
     /// top-level call lands in one bucket or the other.
     buffered_overflow: Option<(ToolCallId, Instant, String, String)>,
-    /// `true` for `loom loop` (events arrive in real time) and `false`
-    /// for `loom logs` replay. Replay mode suppresses the in-place
-    /// running indicator entirely — every event already has its
-    /// matching `ToolResult` on disk so the spinner has nothing to
-    /// represent — and pair durations come from `ts_ms` deltas instead
-    /// of the local clock.
-    live: bool,
     /// `true` when the renderer should drive the in-place running
     /// indicator. Disabled in `Plain`/`Json`/`Raw` modes, when running
     /// in parallel (multiple `\r` regions don't compose), and when
@@ -245,6 +239,9 @@ pub struct TerminalRenderer {
     /// in production — each emission queries crossterm so SIGWINCH
     /// resizes take effect immediately.
     term_width_override: Option<usize>,
+    text_needs_newline: bool,
+    thinking_open: bool,
+    thinking_needs_newline: bool,
     header_printed: bool,
     closed: bool,
 }
@@ -328,9 +325,11 @@ impl TerminalRenderer {
             // `color=false` to disable the indicator so captured-buffer
             // assertions stay stable.
             indicator_enabled: color && !parallel && live,
-            live,
             osc8: tool_body::Osc8Context::disabled(),
             term_width_override: None,
+            text_needs_newline: false,
+            thinking_open: false,
+            thinking_needs_newline: false,
             header_printed: false,
             closed: false,
         }
@@ -374,6 +373,68 @@ impl TerminalRenderer {
         self
     }
 
+    fn close_text_line(&mut self) -> io::Result<()> {
+        if self.text_needs_newline {
+            self.out.write_all(b"\n")?;
+            self.out.flush()?;
+        }
+        self.text_needs_newline = false;
+        Ok(())
+    }
+
+    fn close_thinking_line(&mut self) -> io::Result<()> {
+        if self.thinking_needs_newline {
+            self.out.write_all(b"\n")?;
+            self.out.flush()?;
+        }
+        self.thinking_needs_newline = false;
+        self.thinking_open = false;
+        Ok(())
+    }
+
+    fn close_stream_lines(&mut self) -> io::Result<()> {
+        self.close_text_line()?;
+        self.close_thinking_line()
+    }
+
+    fn render_text_delta(&mut self, text: &str) -> io::Result<()> {
+        self.close_thinking_line()?;
+        self.close_in_flight("…")?;
+        self.out.write_all(text.as_bytes())?;
+        self.out.flush()?;
+        self.text_needs_newline = !text.is_empty() && !text.ends_with('\n');
+        Ok(())
+    }
+
+    fn render_thinking_delta(&mut self, text: &str) -> io::Result<()> {
+        self.close_text_line()?;
+        self.close_in_flight("…")?;
+        if !self.thinking_open {
+            let prefix = if self.parallel {
+                format!("  [{}] thinking: ", self.bead_id.as_str())
+            } else {
+                "  thinking: ".to_string()
+            };
+            if self.color {
+                self.out.write_all(ANSI_DIM.as_bytes())?;
+            }
+            self.out.write_all(prefix.as_bytes())?;
+            self.thinking_open = true;
+        } else if self.color {
+            self.out.write_all(ANSI_DIM.as_bytes())?;
+        }
+        self.out.write_all(text.as_bytes())?;
+        if self.color {
+            self.out.write_all(ANSI_RESET.as_bytes())?;
+        }
+        self.out.flush()?;
+        self.thinking_needs_newline = !text.is_empty() && !text.ends_with('\n');
+        if !self.thinking_needs_newline {
+            self.thinking_open = false;
+        }
+        Ok(())
+    }
+
     /// Print the per-bead header line.
     ///
     /// `▸ <bead-id>  <title>    [profile:<name>]`
@@ -395,12 +456,12 @@ impl TerminalRenderer {
 
     /// Render one [`AgentEvent`].
     ///
-    /// In `Default` mode: prints a one-line summary for `ToolCall` (name +
-    /// truncated path/range/cmd-prefix). Suppresses `MessageDelta`,
-    /// `ToolResult`, `TurnEnd`, and the compaction events.
+    /// In `Default` mode: streams assistant prose, prints a one-line
+    /// summary for `ToolCall`, and renders bounded tool output excerpts.
+    /// Thinking prose stays hidden.
     ///
-    /// In `Verbose` mode: also writes `MessageDelta.text` straight through
-    /// (no newline injection) and includes the tool-call args inline.
+    /// In `Verbose` mode: also streams thinking prose and uses wider
+    /// bounded tool bodies.
     pub fn render_event(&mut self, event: &AgentEvent) -> io::Result<()> {
         match event {
             AgentEvent::ToolCall {
@@ -410,6 +471,7 @@ impl TerminalRenderer {
                 params,
                 parent_tool_call_id,
             } => {
+                self.close_stream_lines()?;
                 // If another tool's running line (or buffered overflow)
                 // is in flight, finalize it before laying down a nested
                 // or sibling call.
@@ -474,6 +536,7 @@ impl TerminalRenderer {
                 output,
                 is_error,
             } => {
+                self.close_stream_lines()?;
                 // Finalize the running indicator if this result matches
                 // the open call. Non-matching results (which shouldn't
                 // happen in practice but might under nesting) close any
@@ -492,66 +555,82 @@ impl TerminalRenderer {
                     .as_ref()
                     .map(|p| ts_ms_delta(p.ts_ms, envelope.ts_ms));
                 let tool_name = pending.as_ref().map(|p| p.tool.as_str()).unwrap_or("");
+                let glyph = if *is_error { "✗" } else { "✓" };
                 if matches_running {
-                    let glyph = if *is_error { "✗" } else { "✓" };
                     self.finalize_running_with_glyph_dur(glyph, pair_duration)?;
                 } else if matches_buffered {
-                    let glyph = if *is_error { "✗" } else { "✓" };
                     self.finalize_buffered_with_glyph_dur(glyph, pair_duration)?;
                 } else {
                     self.close_in_flight("…")?;
-                    // Replay (non-indicator) path still needs to
-                    // surface the pair's final glyph + duration so
-                    // `loom logs` shows the same information as `loom
-                    // run`. Emit one indented closer line under the
-                    // already-printed tool-call summary.
-                    if !self.live {
-                        let glyph = if *is_error { "✗" } else { "✓" };
-                        let depth = self.indent_by_tool.get(id).copied().unwrap_or(0);
-                        let indent: String = "  ".repeat(depth + 1);
-                        let secs = pair_duration.unwrap_or(Duration::ZERO).as_secs_f64();
-                        let line = if self.parallel {
-                            format!("  [{}] {indent}{glyph} {secs:.1}s\n", self.bead_id.as_str())
-                        } else {
-                            format!("  {indent}{glyph} {secs:.1}s\n")
-                        };
-                        self.out.write_all(line.as_bytes())?;
-                        self.out.flush()?;
-                    }
+                    self.write_tool_status_line(id, glyph, pair_duration)?;
                 }
-                let render_body = match self.mode {
-                    RenderMode::Verbose => true,
-                    // Bash: hide on exit == 0 (is_error=false), render
-                    // first 10 lines on exit != 0 (is_error=true). All
-                    // other tools default to hidden in non-verbose mode.
-                    RenderMode::Default => tool_name == "Bash" && *is_error,
-                    _ => false,
+                let body = if matches!(self.mode, RenderMode::Verbose) && !output.is_empty() {
+                    Some(tool_body::cap_body_verbose(
+                        output,
+                        self.bead_id.as_str(),
+                        id.as_str(),
+                    ))
+                } else if matches!(
+                    self.mode,
+                    RenderMode::Default | RenderMode::Pretty | RenderMode::Plain
+                ) && Self::should_render_default_body(tool_name, *is_error, output)
+                {
+                    Some(tool_body::cap_body(
+                        output,
+                        self.bead_id.as_str(),
+                        id.as_str(),
+                    ))
+                } else {
+                    None
                 };
-                if render_body {
-                    let depth = self.indent_by_tool.get(id).copied().unwrap_or(0);
-                    let indent: String = "  ".repeat(depth + 1);
-                    let capped = tool_body::cap_body(output, self.bead_id.as_str(), id.as_str());
-                    for body_line in capped.lines() {
-                        let line = if self.parallel {
-                            format!("  [{}] {indent}{body_line}\n", self.bead_id.as_str(),)
-                        } else {
-                            format!("{indent}{body_line}\n")
-                        };
-                        self.out.write_all(line.as_bytes())?;
-                    }
+                if let Some(body) = body {
+                    self.write_body_lines(id, &body)?;
                     if *is_error && matches!(self.mode, RenderMode::Verbose) {
-                        let marker = format!("{indent}[tool error]\n");
-                        self.out.write_all(marker.as_bytes())?;
+                        self.write_body_lines(id, "[tool error]")?;
                     }
-                    self.out.flush()?;
                 }
             }
-            AgentEvent::TextDelta { text, .. } if matches!(self.mode, RenderMode::Verbose) => {
-                self.close_in_flight("…")?;
-                self.out.write_all(text.as_bytes())?;
-                self.out.flush()?;
+            AgentEvent::ToolProgress { id, text, .. } => {
+                self.close_stream_lines()?;
+                let matches_running = self
+                    .running
+                    .as_ref()
+                    .is_some_and(|(running_id, _, _, _)| running_id == id);
+                let matches_buffered = self
+                    .buffered_overflow
+                    .as_ref()
+                    .is_some_and(|(buffered_id, _, _, _)| buffered_id == id);
+                if matches_running {
+                    self.finalize_running_with_glyph_dur("…", None)?;
+                } else if matches_buffered {
+                    self.finalize_buffered_with_glyph_dur("…", None)?;
+                } else {
+                    self.close_in_flight("…")?;
+                }
+                self.write_progress_lines(id, text)?;
+            }
+            AgentEvent::TextDelta { text, .. }
+                if matches!(
+                    self.mode,
+                    RenderMode::Default
+                        | RenderMode::Verbose
+                        | RenderMode::Pretty
+                        | RenderMode::Plain
+                ) =>
+            {
+                self.render_text_delta(text)?;
+            }
+            AgentEvent::TextEnd { .. } => {
+                self.close_text_line()?;
+            }
+            AgentEvent::ThinkingDelta { text, .. } if matches!(self.mode, RenderMode::Verbose) => {
+                self.render_thinking_delta(text)?;
+            }
+            AgentEvent::ThinkingEnd { .. } if matches!(self.mode, RenderMode::Verbose) => {
+                self.close_thinking_line()?;
             }
             AgentEvent::Error { message, .. } => {
+                self.close_stream_lines()?;
                 self.close_in_flight("✗")?;
                 let line = if self.parallel {
                     format!("  [{}] error: {message}\n", self.bead_id.as_str())
@@ -566,6 +645,7 @@ impl TerminalRenderer {
                 summary,
                 ..
             } => {
+                self.close_stream_lines()?;
                 self.close_in_flight("…")?;
                 let kind_wire = driver_kind.as_wire();
                 let line = if self.parallel {
@@ -620,6 +700,61 @@ impl TerminalRenderer {
         self.finalize_buffered_with_glyph_dur(glyph, None)
     }
 
+    fn write_tool_status_line(
+        &mut self,
+        id: &ToolCallId,
+        glyph: &str,
+        pair_duration: Option<Duration>,
+    ) -> io::Result<()> {
+        let depth = self.indent_by_tool.get(id).copied().unwrap_or(0);
+        let indent: String = "  ".repeat(depth + 1);
+        let secs = pair_duration.unwrap_or(Duration::ZERO).as_secs_f64();
+        let line = if self.parallel {
+            format!("  [{}] {indent}{glyph} {secs:.1}s\n", self.bead_id.as_str())
+        } else {
+            format!("  {indent}{glyph} {secs:.1}s\n")
+        };
+        self.out.write_all(line.as_bytes())?;
+        self.out.flush()
+    }
+
+    fn write_body_lines(&mut self, id: &ToolCallId, body: &str) -> io::Result<()> {
+        let depth = self.indent_by_tool.get(id).copied().unwrap_or(0);
+        let indent: String = "  ".repeat(depth + 1);
+        for body_line in body.lines() {
+            let line = if self.parallel {
+                format!("  [{}] {indent}{body_line}\n", self.bead_id.as_str())
+            } else {
+                format!("{indent}{body_line}\n")
+            };
+            self.out.write_all(line.as_bytes())?;
+        }
+        self.out.flush()
+    }
+
+    fn write_progress_lines(&mut self, id: &ToolCallId, text: &str) -> io::Result<()> {
+        let capped = tool_body::cap_body(text, self.bead_id.as_str(), id.as_str());
+        let body = if capped.is_empty() {
+            "…".to_string()
+        } else {
+            capped
+                .lines()
+                .map(|line| format!("… {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        self.write_body_lines(id, &body)
+    }
+
+    fn should_render_default_body(tool_name: &str, is_error: bool, output: &str) -> bool {
+        !output.is_empty()
+            && (is_error
+                || matches!(
+                    tool_name,
+                    "Bash" | "Read" | "Grep" | "Glob" | "WebFetch" | "WebSearch" | "Task"
+                ))
+    }
+
     /// Emit the two-line summary cell for a buffered (overflow) top-level
     /// tool call: right-edge column right-aligned on line 1 so it stays
     /// fully visible at the terminal edge, followed by the full left-edge
@@ -669,6 +804,7 @@ impl TerminalRenderer {
     }
 
     fn write_finish(&mut self, outcome: BeadOutcome, elapsed: Duration) -> io::Result<()> {
+        self.close_stream_lines()?;
         // Close out any open running line before the bead's closing
         // summary so a cancelled / failed bead doesn't leave a dangling
         // `\r` region for the next renderer to inherit.
@@ -721,6 +857,9 @@ impl Drop for TerminalRenderer {
     /// region. The explicit cleanup contract still lives in
     /// [`finish`] — Drop is the safety net.
     fn drop(&mut self) {
+        if self.text_needs_newline || self.thinking_needs_newline {
+            let _ = self.close_stream_lines();
+        }
         if self.running.is_some() || self.buffered_overflow.is_some() {
             let _ = self.close_in_flight("⚠");
         }
@@ -987,7 +1126,7 @@ mod tests {
     }
 
     #[test]
-    fn default_mode_suppresses_message_deltas() {
+    fn default_mode_streams_message_deltas_as_prose() {
         let out = capture(RenderMode::Default, false, false, |r| {
             r.render_event(&AgentEvent::TextDelta {
                 envelope: sample_envelope(),
@@ -995,7 +1134,7 @@ mod tests {
             })
             .expect("render");
         });
-        assert_eq!(out, "");
+        assert_eq!(out, "hello world");
     }
 
     #[test]
@@ -1157,11 +1296,11 @@ mod tests {
         assert!(out.contains("diff"), "{out:?}");
     }
 
-    /// Verbose mode emits the `ToolResult` body, capped to 10 lines, with
-    /// the spec'd recovery hint when truncated.
+    /// Verbose mode emits a wider `ToolResult` body excerpt with a
+    /// safety hint when that wider cap is reached.
     #[test]
-    fn verbose_mode_renders_capped_tool_result_body_with_recovery_hint() {
-        let big_body: String = (1..=15)
+    fn verbose_mode_renders_wider_tool_result_body_with_safety_hint() {
+        let big_body: String = (1..=90)
             .map(|i| format!("output-line-{i}"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -1183,23 +1322,21 @@ mod tests {
             .expect("render result");
         });
         assert!(out.contains("output-line-1"), "{out:?}");
-        assert!(out.contains("output-line-10"), "{out:?}");
+        assert!(out.contains("output-line-80"), "{out:?}");
         assert!(
-            !out.contains("output-line-11"),
-            "body cap should drop line 11: {out:?}",
+            !out.contains("output-line-81"),
+            "verbose safety cap should drop line 81: {out:?}",
         );
-        assert!(out.contains("more lines"), "missing recovery hint: {out:?}",);
+        assert!(out.contains("safety cap"), "missing safety hint: {out:?}",);
         assert!(
-            out.contains("loom logs -b lm-1 --tool b1"),
-            "recovery hint must reference the bead and tool call id: {out:?}",
+            out.contains("tool b1"),
+            "recovery hint must reference the tool call id: {out:?}",
         );
     }
 
-    /// Default mode hides the Bash body when `exit == 0` (is_error=false).
-    /// Per the spec's per-tool body table — a clean Bash invocation is
-    /// summary-cell only so the eye learns the shape.
+    /// Default mode renders a bounded Bash success excerpt.
     #[test]
-    fn default_mode_hides_bash_body_on_success() {
+    fn default_mode_renders_bash_body_on_success() {
         let out = capture(RenderMode::Default, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
@@ -1218,7 +1355,7 @@ mod tests {
             .expect("render result");
         });
         assert!(out.contains("Bash"), "{out:?}");
-        assert!(!out.contains("result body"), "{out:?}");
+        assert!(out.contains("result body"), "{out:?}");
     }
 
     /// Default mode renders the Bash body when `exit != 0` (is_error=true),
@@ -1255,8 +1392,8 @@ mod tests {
         );
         assert!(out.contains("more lines"), "missing cap line: {out:?}");
         assert!(
-            out.contains("loom logs -b lm-1 --tool b1"),
-            "cap line must reference the bead and tool call id: {out:?}",
+            out.contains("loom logs -b lm-1 -v") && out.contains("tool b1"),
+            "cap line must reference verbose replay and the tool call id: {out:?}",
         );
     }
 
@@ -1290,11 +1427,10 @@ mod tests {
         );
     }
 
-    /// Default mode keeps non-Bash error bodies hidden — only Bash gets
-    /// the "first 10 lines on exit != 0" treatment in this bead's scope.
-    /// Other tools' default-mode body policy lives in separate beads.
+    /// Default mode renders non-Bash error bodies because failures need
+    /// prominent output regardless of the tool that produced them.
     #[test]
-    fn default_mode_hides_non_bash_error_body() {
+    fn default_mode_renders_non_bash_error_body() {
         let out = capture(RenderMode::Default, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
@@ -1313,7 +1449,7 @@ mod tests {
             .expect("render result");
         });
         assert!(out.contains("Read"), "{out:?}");
-        assert!(!out.contains("file-contents"), "{out:?}");
+        assert!(out.contains("file-contents"), "{out:?}");
     }
 
     /// Renderer wraps `ToolCall` summary cells in OSC 8 hyperlinks when
@@ -1783,6 +1919,159 @@ mod tests {
             summary: summary.to_string(),
             payload,
         }
+    }
+
+    #[test]
+    fn pretty_hides_thinking_by_default_verbose_shows_it() {
+        let default = capture(RenderMode::Default, false, false, |r| {
+            r.render_event(&AgentEvent::TextDelta {
+                envelope: sample_envelope(),
+                text: "visible reply".into(),
+            })
+            .expect("text");
+            r.render_event(&AgentEvent::ThinkingDelta {
+                envelope: sample_envelope(),
+                text: "private chain".into(),
+            })
+            .expect("thinking");
+            r.render_event(&AgentEvent::ThinkingEnd {
+                envelope: sample_envelope(),
+            })
+            .expect("thinking end");
+        });
+        assert!(default.contains("visible reply"), "{default:?}");
+        assert!(!default.contains("private chain"), "{default:?}");
+
+        let verbose = capture(RenderMode::Verbose, false, false, |r| {
+            r.render_event(&AgentEvent::ThinkingDelta {
+                envelope: sample_envelope(),
+                text: "private chain".into(),
+            })
+            .expect("thinking");
+            r.render_event(&AgentEvent::ThinkingEnd {
+                envelope: sample_envelope(),
+            })
+            .expect("thinking end");
+        });
+        assert!(verbose.contains("thinking:"), "{verbose:?}");
+        assert!(verbose.contains("private chain"), "{verbose:?}");
+    }
+
+    #[test]
+    fn pretty_tool_block_updates_from_pending_to_success_or_error() {
+        let out = capture(RenderMode::Default, false, true, |r| {
+            let (call, result) =
+                tool_pair_with_ts("t1", "Bash", json!({"command": "cargo test"}), 0, 2_000);
+            r.render_event(&call).expect("call");
+            r.render_event(&AgentEvent::ToolProgress {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("t1"),
+                text: "running unit tests".into(),
+            })
+            .expect("progress");
+            r.render_event(&result).expect("result");
+
+            let (err_call, err_result) =
+                tool_pair_with_ts("t2", "Bash", json!({"command": "false"}), 3_000, 4_000);
+            r.render_event(&err_call).expect("error call");
+            let AgentEvent::ToolResult {
+                envelope,
+                id,
+                output,
+                ..
+            } = err_result
+            else {
+                panic!("expected tool result");
+            };
+            r.render_event(&AgentEvent::ToolResult {
+                envelope,
+                id,
+                output,
+                is_error: true,
+            })
+            .expect("error result");
+        });
+        assert!(out.contains("running..."), "{out:?}");
+        assert!(out.contains("running unit tests"), "{out:?}");
+        assert!(out.contains('✓'), "{out:?}");
+        assert!(out.contains('✗'), "{out:?}");
+        assert!(out.contains("2.0s"), "{out:?}");
+        assert!(out.contains("1.0s"), "{out:?}");
+    }
+
+    #[test]
+    fn default_tool_rendering_is_useful_and_bounded_verbose_expands() {
+        let body: String = (1..=15)
+            .map(|i| format!("file-line-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let default = capture(RenderMode::Default, false, false, |r| {
+            r.render_event(&AgentEvent::ToolCall {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("r1"),
+                tool: "Read".into(),
+                params: json!({"file_path": "src/lib.rs"}),
+                parent_tool_call_id: None,
+            })
+            .expect("call");
+            r.render_event(&AgentEvent::ToolResult {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("r1"),
+                output: body.clone(),
+                is_error: false,
+            })
+            .expect("result");
+        });
+        assert!(default.contains("Read"), "{default:?}");
+        assert!(default.contains("file-line-1"), "{default:?}");
+        assert!(default.contains("file-line-10"), "{default:?}");
+        assert!(!default.contains("file-line-11"), "{default:?}");
+        assert!(default.contains("loom logs -b lm-1 -v"), "{default:?}");
+
+        let verbose = capture(RenderMode::Verbose, false, false, |r| {
+            r.render_event(&AgentEvent::ToolCall {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("r1"),
+                tool: "Read".into(),
+                params: json!({"file_path": "src/lib.rs"}),
+                parent_tool_call_id: None,
+            })
+            .expect("call");
+            r.render_event(&AgentEvent::ToolResult {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("r1"),
+                output: body,
+                is_error: false,
+            })
+            .expect("result");
+        });
+        assert!(verbose.contains("file-line-15"), "{verbose:?}");
+    }
+
+    #[test]
+    fn driver_events_render_interleaved_with_agent_events() {
+        let out = capture(RenderMode::Default, false, false, |r| {
+            r.render_event(&AgentEvent::TextDelta {
+                envelope: sample_envelope(),
+                text: "agent before".into(),
+            })
+            .expect("text before");
+            r.render_event(&driver_event(
+                "push_gate_walk",
+                "driver middle",
+                json!({"lane": "verify"}),
+            ))
+            .expect("driver");
+            r.render_event(&AgentEvent::TextDelta {
+                envelope: sample_envelope(),
+                text: "agent after".into(),
+            })
+            .expect("text after");
+        });
+        let before = out.find("agent before").expect("before text");
+        let middle = out.find("driver middle").expect("driver text");
+        let after = out.find("agent after").expect("after text");
+        assert!(before < middle && middle < after, "{out:?}");
     }
 
     /// `driver_event` variants render with the `→` arrow glyph followed by

@@ -293,13 +293,13 @@ not abort the run.
 - Formatted `loom logs` replay and live `loom loop` rendering share the same renderer pipeline
   [test](replay_renders_via_shared_renderer)
 - Pretty mode streams assistant text as prose, hides thinking prose by default, and renders thinking prose under `-v`
-  [test?](pretty_hides_thinking_by_default_verbose_shows_it)
+  [test](pretty_hides_thinking_by_default_verbose_shows_it)
 - Pretty mode renders each tool call as one pending/success/error block keyed by `ToolCallId` (`id` on the wire)
-  [test?](pretty_tool_block_updates_from_pending_to_success_or_error)
+  [test](pretty_tool_block_updates_from_pending_to_success_or_error)
 - Default tool rendering is useful but bounded, while verbose rendering expands details within safety caps
-  [test?](default_tool_rendering_is_useful_and_bounded_verbose_expands)
+  [test](default_tool_rendering_is_useful_and_bounded_verbose_expands)
 - Driver events render interleaved with agent events in chronological order
-  [test?](driver_events_render_interleaved_with_agent_events)
+  [test](driver_events_render_interleaved_with_agent_events)
 - Parallel Pretty/Plain rendering prefixes each line with the bead id and disables in-place spinners
   [test?](parallel_rendering_prefixes_lines_and_disables_spinners)
 - Cancellation finalizes any in-place running row before the closing output
