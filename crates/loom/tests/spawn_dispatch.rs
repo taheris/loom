@@ -31,6 +31,12 @@ use std::time::{Duration, Instant};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    loom_test_support::scrub_git_local_env(&mut command);
+    command
+}
+
 /// Resolve the absolute path to `bash` from `PATH`. Used so the shim's
 /// shebang points at a concrete interpreter rather than `/usr/bin/env`,
 /// which is not present in the default nix-build sandbox (`sandbox = true`).
@@ -265,14 +271,14 @@ fn seed_active_spec(workspace: &Path, _loom_bin: &str, label: &str) {
     )
     .expect("write spec index");
     let spec_path = format!("specs/{label}.md");
-    let add = std::process::Command::new("git")
+    let add = git_command()
         .arg("-C")
         .arg(workspace)
         .args(["add", "docs/README.md", &spec_path])
         .status()
         .expect("git add seeded spec");
     assert!(add.success(), "git add seeded spec failed: {add}");
-    let commit = std::process::Command::new("git")
+    let commit = git_command()
         .arg("-C")
         .arg(workspace)
         .args(["commit", "-q", "-m", "seed active spec"])

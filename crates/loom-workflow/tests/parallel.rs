@@ -26,8 +26,14 @@ use loom_workflow::r#loop::{
 };
 use tempfile::TempDir;
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    loom_test_support::scrub_git_local_env(&mut command);
+    command
+}
+
 fn git(repo: &Path, args: &[&str]) -> Result<()> {
-    let status = Command::new("git")
+    let status = git_command()
         .arg("-C")
         .arg(repo)
         .args(["-c", "commit.gpgsign=false"])
@@ -39,7 +45,7 @@ fn git(repo: &Path, args: &[&str]) -> Result<()> {
 }
 
 fn git_capture(repo: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
+    let out = git_command()
         .arg("-C")
         .arg(repo)
         .args(["-c", "commit.gpgsign=false"])
@@ -794,7 +800,7 @@ async fn integration_step_verifies_signatures_in_two_passes() -> Result<()> {
     git(&slot2.worktree.path, &["add", "worker.txt"])?;
     let signingkey_arg = format!("user.signingkey={}", key.display());
     let email_arg = format!("user.email={identity}");
-    let status = Command::new("git")
+    let status = git_command()
         .arg("-C")
         .arg(&slot2.worktree.path)
         .args([

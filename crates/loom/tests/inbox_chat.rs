@@ -11,6 +11,12 @@ use loom_driver::git::{
     status_porcelain_sync, sync_head_commit_sha, sync_rev_parse,
 };
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    loom_test_support::scrub_git_local_env(&mut command);
+    command
+}
+
 fn seed_bead(
     state_dir: &Path,
     id: &str,
@@ -759,7 +765,7 @@ fn inbox_apply_push_failure_aborts_batch() {
     let integration = env.workspace.join(".loom/integration");
     let pre_head = sync_head_commit_sha(&integration).expect("pre integration head");
     let origin_pre = sync_rev_parse(&bare_origin_path(&env.workspace), "main").expect("origin pre");
-    let remote = Command::new("git")
+    let remote = git_command()
         .arg("-C")
         .arg(&integration)
         .args(["remote", "set-url", "origin", "/definitely/missing/origin"])

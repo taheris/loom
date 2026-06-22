@@ -1,10 +1,8 @@
 //! Git hook-path resolution and local config writes for loom workspaces.
 
+use super::error::GitError;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
-
-use super::error::GitError;
 
 /// Env var exported by wrix devshell/profile images with the packaged prek hooks.
 pub const WRIX_PREK_HOOKS_ENV: &str = "WRIX_PREK_HOOKS";
@@ -83,7 +81,7 @@ fn resolve_from(inputs: &ResolveInputs) -> Result<PathBuf, GitError> {
 }
 
 fn sync_git_config(target_dir: &Path, key: &str, value: &str) -> Result<(), GitError> {
-    let output = StdCommand::new("git")
+    let output = super::environment::std_git_command()
         .arg("-C")
         .arg(target_dir)
         .args(["config", key, value])
@@ -99,7 +97,7 @@ fn sync_git_config(target_dir: &Path, key: &str, value: &str) -> Result<(), GitE
 }
 
 fn sync_git_config_get(target_dir: &Path, key: &str) -> Result<Option<String>, GitError> {
-    let output = StdCommand::new("git")
+    let output = super::environment::std_git_command()
         .arg("-C")
         .arg(target_dir)
         .args(["config", "--get", key])

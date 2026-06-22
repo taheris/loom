@@ -1,4 +1,4 @@
-//! Shared test-support items for loom proptest call sites.
+//! Shared test-support items for loom tests.
 //!
 //! Per `specs/tests.md` (Architecture / Property-Based Testing), the
 //! CI cap on `proptest` case counts is a single named constant — one place
@@ -20,3 +20,27 @@
 /// case count for that invocation without touching the source. The env
 /// var is therefore the local-loop knob; the constant is the CI floor.
 pub const CI_PROPTEST_CASES: u32 = 32;
+
+pub const GIT_LOCAL_ENV_VARS: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
+pub fn scrub_git_local_env(command: &mut std::process::Command) {
+    for &name in GIT_LOCAL_ENV_VARS {
+        command.env_remove(name);
+    }
+}

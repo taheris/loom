@@ -294,7 +294,7 @@ fn derive_public_key(signing_key: &Path) -> Result<String, GitError> {
 /// value. Synchronous: the callers (`loom init`, bead-clone materialization)
 /// are one-shot bootstrap paths.
 fn sync_git_config(target_dir: &Path, key: &str, value: &str) -> Result<(), GitError> {
-    let output = StdCommand::new("git")
+    let output = crate::git::environment::std_git_command()
         .arg("-C")
         .arg(target_dir)
         .args(["config", key, value])
@@ -310,7 +310,7 @@ fn sync_git_config(target_dir: &Path, key: &str, value: &str) -> Result<(), GitE
 }
 
 fn unset_git_config(target_dir: &Path, key: &str) -> Result<(), GitError> {
-    let output = StdCommand::new("git")
+    let output = crate::git::environment::std_git_command()
         .arg("-C")
         .arg(target_dir)
         .args(["config", "--unset-all", key])
@@ -435,7 +435,7 @@ mod tests {
     }
 
     fn init_git_repo(dir: &Path) {
-        let status = StdCommand::new("git")
+        let status = crate::git::environment::std_git_command()
             .arg("-C")
             .arg(dir)
             .args(["init", "-q"])
@@ -445,7 +445,7 @@ mod tests {
     }
 
     fn git_config_get(dir: &Path, key: &str) -> Option<String> {
-        let out = StdCommand::new("git")
+        let out = crate::git::environment::std_git_command()
             .arg("-C")
             .arg(dir)
             .args(["config", "--local", "--get", key])

@@ -50,7 +50,19 @@ require() {
 }
 
 require bd
+require git
 require podman
+
+scrub_git_local_env() {
+    local vars
+    local var
+    vars="$(git rev-parse --local-env-vars)"
+    while IFS= read -r var; do
+        if [[ -n "$var" ]]; then
+            unset "$var"
+        fi
+    done <<<"$vars"
+}
 
 LOOM_BIN="${LOOM_BIN:-loom}"
 if ! command -v "$LOOM_BIN" >/dev/null 2>&1; then
@@ -68,6 +80,7 @@ LOOM_TEST_IMAGE_SOURCE_KIND=${LOOM_TEST_IMAGE_SOURCE_KIND:-nix-descriptor}
 WORKSPACE="$(mktemp -d -t loom-smoke.XXXXXX)"
 log "workspace: $WORKSPACE"
 
+scrub_git_local_env
 cd "$WORKSPACE"
 git init -q
 git commit -q --allow-empty -m "smoke init"

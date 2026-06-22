@@ -28,8 +28,14 @@ use loom_driver::git::{
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 use tempfile::TempDir;
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    loom_test_support::scrub_git_local_env(&mut command);
+    command
+}
+
 fn git(repo: &Path, args: &[&str]) -> Result<()> {
-    let status = Command::new("git")
+    let status = git_command()
         .arg("-C")
         .arg(repo)
         .args(args)
@@ -60,7 +66,7 @@ fn fake_prek_hooks(repo: &Path) -> Result<std::path::PathBuf> {
 }
 
 fn git_config_get(repo: &Path, key: &str) -> Result<String> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(repo)
         .args(["config", "--get", key])
@@ -230,7 +236,7 @@ async fn merge_branch_non_conflicting_returns_ok() -> Result<()> {
     assert!(loom.join("main.txt").exists());
 
     let on_main = String::from_utf8(
-        std::process::Command::new("git")
+        git_command()
             .arg("-C")
             .arg(&loom)
             .args(["symbolic-ref", "--short", "HEAD"])
@@ -273,7 +279,7 @@ async fn merge_branch_uses_ff_only_and_rejects_non_ff_history() -> Result<()> {
     assert_eq!(result, MergeResult::Ok);
 
     let merges = String::from_utf8(
-        std::process::Command::new("git")
+        git_command()
             .arg("-C")
             .arg(&loom)
             .args(["log", "--merges", "--format=%H", &format!("{base}..HEAD")])
@@ -312,7 +318,7 @@ async fn merge_branch_rebases_bead_branch_onto_head_before_ff() -> Result<()> {
     assert_eq!(client.merge_branch("bead-a").await?, MergeResult::Ok);
 
     let bead_b_pre = String::from_utf8(
-        std::process::Command::new("git")
+        git_command()
             .arg("-C")
             .arg(&loom)
             .args(["rev-parse", "bead-b"])
@@ -325,7 +331,7 @@ async fn merge_branch_rebases_bead_branch_onto_head_before_ff() -> Result<()> {
     assert_eq!(client.merge_branch("bead-b").await?, MergeResult::Ok);
 
     let merges = String::from_utf8(
-        std::process::Command::new("git")
+        git_command()
             .arg("-C")
             .arg(&loom)
             .args(["log", "--merges", "--format=%H", &format!("{base}..HEAD")])
@@ -338,7 +344,7 @@ async fn merge_branch_rebases_bead_branch_onto_head_before_ff() -> Result<()> {
     );
 
     let bead_b_post = String::from_utf8(
-        std::process::Command::new("git")
+        git_command()
             .arg("-C")
             .arg(&loom)
             .args(["rev-parse", "bead-b"])
@@ -412,7 +418,7 @@ async fn merge_branch_replays_recorded_rerere_resolution() -> Result<()> {
     // distinctive merged value, stage it, and `--continue` (with a no-op
     // editor so the reused commit message needs no interaction). rerere
     // records the resolution keyed by the conflict's preimage.
-    let conflicting_rebase = Command::new("git")
+    let conflicting_rebase = git_command()
         .arg("-C")
         .arg(&loom)
         .args(["rebase", "main", "feature"])
@@ -487,7 +493,7 @@ async fn rebase_onto_integration_leaves_integration_branch_unmoved() -> Result<(
     // The rewritten commit is observable as `main..feature`, the pass-2
     // verification range.
     let rewritten = String::from_utf8(
-        Command::new("git")
+        git_command()
             .arg("-C")
             .arg(&loom)
             .args(["rev-list", "--count", "main..feature"])
@@ -953,7 +959,7 @@ async fn bead_workspace_reset_preserves_target_and_dotwrix() -> Result<()> {
         b"bind-mount staging\n",
     )?;
     let head_before = String::from_utf8(
-        Command::new("git")
+        git_command()
             .arg("-C")
             .arg(&created.path)
             .args(["rev-parse", "HEAD"])
@@ -967,7 +973,7 @@ async fn bead_workspace_reset_preserves_target_and_dotwrix() -> Result<()> {
 
     // HEAD is unchanged — `git reset --hard HEAD` does not drop commits.
     let head_after = String::from_utf8(
-        Command::new("git")
+        git_command()
             .arg("-C")
             .arg(&created.path)
             .args(["rev-parse", "HEAD"])
@@ -1036,7 +1042,7 @@ async fn create_worktree_does_not_disable_signing() -> Result<()> {
     let bead = BeadId::new("lm-sign.1")?;
     let created = client.create_worktree(&label, &bead).await?;
 
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(&created.path)
         .args(["config", "--local", "--get-all", "commit.gpgsign"])
@@ -1468,7 +1474,7 @@ async fn rebased_commits_verify_via_derived_allowed_signers() -> Result<()> {
     // block `write_signing_config` wrote and reports a good signature on its
     // stdout for the rewritten commit.
     let shown = String::from_utf8(
-        Command::new("git")
+        git_command()
             .arg("-C")
             .arg(&loom)
             .args(["log", "--show-signature", "-1", "feature"])
@@ -1542,7 +1548,7 @@ async fn bead_branch_tracks_integration_branch_for_push_scope() -> Result<()> {
     // The agent's commit is the only thing in the `@{u}..HEAD` push range —
     // exactly the scope the pre-push gate verifies.
     agent_commit(&created.path, "agent-change.txt", "agent work\n", "agent")?;
-    let count = Command::new("git")
+    let count = git_command()
         .arg("-C")
         .arg(&created.path)
         .args(["rev-list", "--count", "@{u}..HEAD"])
@@ -1561,7 +1567,7 @@ async fn bead_branch_tracks_integration_branch_for_push_scope() -> Result<()> {
 /// `git -C <repo> rev-parse <rev>` returning the resolved SHA, or `None`
 /// when `<rev>` does not resolve (e.g. a branch absent from this repo).
 fn rev_parse(repo: &Path, rev: &str) -> Option<String> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(repo)
         .args(["rev-parse", "--verify", "--quiet", rev])
@@ -1603,7 +1609,7 @@ async fn integration_branch_setting_honored_by_loop() -> Result<()> {
     assert_eq!(result, MergeResult::Ok, "merge into configured branch");
 
     let on_branch = String::from_utf8(
-        Command::new("git")
+        git_command()
             .arg("-C")
             .arg(&loom)
             .args(["symbolic-ref", "--short", "HEAD"])
@@ -1621,7 +1627,7 @@ async fn integration_branch_setting_honored_by_loop() -> Result<()> {
 
     let origin = loom_driver::git::bare_origin_path(&path);
     let origin_trunk = String::from_utf8(
-        Command::new("git")
+        git_command()
             .arg("-C")
             .arg(&origin)
             .args(["rev-parse", "trunk"])
@@ -1683,7 +1689,7 @@ async fn origin_push_reports_non_fast_forward_without_rebasing() -> Result<()> {
     );
 
     let origin_tree = String::from_utf8(
-        std::process::Command::new("git")
+        git_command()
             .arg("-C")
             .arg(&origin)
             .args(["ls-tree", "--name-only", "main"])
@@ -1707,7 +1713,7 @@ fn capture_head(repo: &Path) -> Result<String> {
 }
 
 fn capture_rev(repo: &Path, rev: &str) -> Result<String> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(repo)
         .args(["rev-parse", rev])
@@ -1936,7 +1942,7 @@ fn gen_signing_key(dir: &Path) -> Result<std::path::PathBuf> {
 /// Whether `rev`'s commit object carries a `gpgsig` header — the structural
 /// marker of a signed commit, present regardless of which key signed it.
 fn commit_has_gpgsig(repo: &Path, rev: &str) -> Result<bool> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(repo)
         .args(["cat-file", "commit", rev])
@@ -1949,7 +1955,7 @@ fn commit_has_gpgsig(repo: &Path, rev: &str) -> Result<bool> {
 }
 
 fn local_config(repo: &Path, key: &str) -> Result<Option<String>> {
-    let out = Command::new("git")
+    let out = git_command()
         .arg("-C")
         .arg(repo)
         .args(["config", "--local", "--get", key])

@@ -11,6 +11,7 @@
 //! `specs/harness.md` for the operation/backend split rationale.
 
 mod client;
+mod environment;
 mod error;
 mod hooks;
 mod signing;

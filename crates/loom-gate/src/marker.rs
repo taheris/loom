@@ -600,11 +600,20 @@ mod tests {
     }
 
     fn run_pre_push_checks(workspace: &Path, bin_dir: &Path) -> std::process::Output {
+        run_pre_push_checks_with_env(workspace, bin_dir, &[])
+    }
+
+    fn run_pre_push_checks_with_env(
+        workspace: &Path,
+        bin_dir: &Path,
+        envs: &[(&str, String)],
+    ) -> std::process::Output {
         let path_var = std::env::var_os("PATH").unwrap_or_default();
         let mut entries = vec![bin_dir.to_path_buf()];
         entries.extend(std::env::split_paths(&path_var));
         let new_path = std::env::join_paths(entries).expect("join PATH");
-        Cmd::new("pre-push-checks")
+        let mut command = Cmd::new("pre-push-checks");
+        command
             .args([
                 "--hook-id",
                 HOOK_ID,
@@ -616,9 +625,11 @@ mod tests {
                 "sentinel",
             ])
             .current_dir(workspace)
-            .env("PATH", new_path)
-            .output()
-            .expect("spawn pre-push-checks")
+            .env("PATH", new_path);
+        for (name, value) in envs {
+            command.env(*name, value);
+        }
+        command.output().expect("spawn pre-push-checks")
     }
 
     #[test]
@@ -689,6 +700,49 @@ mod tests {
         assert!(
             sentinel_marker.exists(),
             "missing marker must fall through: sentinel must execute (not short-circuit)",
+        );
+    }
+
+    #[test]
+    fn pre_push_checks_scrubs_git_hook_env_before_fallthrough() {
+        if !pre_push_checks_available() {
+            eprintln!("pre-push-checks not on PATH; skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path();
+        let bin_dir = workspace.join("bin");
+        let sentinel_marker = workspace.join("sentinel.flag");
+        install_executable(
+            &bin_dir,
+            "sentinel",
+            &format!(
+                "#!/bin/sh\n\
+                 if [ \"${{GIT_DIR+x}}\" = x ]; then exit 42; fi\n\
+                 if [ \"${{GIT_WORK_TREE+x}}\" = x ]; then exit 43; fi\n\
+                 if [ \"${{GIT_CONFIG_COUNT+x}}\" = x ]; then exit 44; fi\n\
+                 touch {}\n\
+                 exit 0\n",
+                sentinel_marker.display(),
+            ),
+        );
+        let envs = [
+            ("GIT_DIR", workspace.join(".git").display().to_string()),
+            ("GIT_WORK_TREE", workspace.display().to_string()),
+            ("GIT_CONFIG_COUNT", "0".to_string()),
+        ];
+
+        let output = run_pre_push_checks_with_env(workspace, &bin_dir, &envs);
+
+        assert!(
+            output.status.success(),
+            "wrapper must scrub hook-local git env before fall-through. stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(
+            sentinel_marker.exists(),
+            "sentinel must execute after env scrub"
         );
     }
 

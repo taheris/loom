@@ -8,6 +8,12 @@ fn loom_bin() -> &'static str {
     env!("CARGO_BIN_EXE_loom")
 }
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    loom_test_support::scrub_git_local_env(&mut command);
+    command
+}
+
 fn prepend_path(dir: &Path) -> std::ffi::OsString {
     let ambient = std::env::var_os("PATH").unwrap_or_default();
     let mut entries: Vec<PathBuf> = vec![dir.to_path_buf()];
@@ -22,7 +28,7 @@ fn write_executable(path: &Path, body: &str) {
 
 fn init_git(workspace: &Path) {
     let run = |args: &[&str]| {
-        let ok = Command::new("git")
+        let ok = git_command()
             .arg("-C")
             .arg(workspace)
             .args(args)

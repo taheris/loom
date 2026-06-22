@@ -14,11 +14,17 @@ use loom_templates::criterion_status::{CriterionResult, EvidenceState};
 use loom_workflow::todo::{build_criterion_status, criterion_id_for, criterion_text_for_line};
 use tempfile::TempDir;
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    loom_test_support::scrub_git_local_env(&mut command);
+    command
+}
+
 fn init_git_repo() -> TempDir {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path();
     let must = |args: &[&str]| {
-        let s = Command::new("git")
+        let s = git_command()
             .arg("-C")
             .arg(path)
             .args(args)
@@ -41,7 +47,7 @@ fn git_sha(raw: &str) -> GitSha {
 }
 
 fn head_sha(repo: &Path) -> String {
-    let out = Command::new("git")
+    let out = git_command()
         .arg("-C")
         .arg(repo)
         .args(["rev-parse", "HEAD"])
@@ -51,7 +57,7 @@ fn head_sha(repo: &Path) -> String {
 }
 
 fn add_empty_commit(repo: &Path, msg: &str) {
-    let s = Command::new("git")
+    let s = git_command()
         .arg("-C")
         .arg(repo)
         .args(["commit", "-q", "--allow-empty", "-m", msg])

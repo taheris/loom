@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::process::Command;
 use tokio::task::spawn_blocking;
 use tracing::{info, warn};
 
@@ -1710,8 +1709,7 @@ pub fn fast_forward_loom_workspace_to_origin(
 /// surface as [`GitError::Spawn`]; non-zero exits are the caller's to
 /// interpret.
 fn sync_git_raw(workspace: &Path, args: &[&str]) -> Result<std::process::Output, GitError> {
-    use std::process::Command as StdCommand;
-    StdCommand::new("git")
+    super::environment::std_git_command()
         .arg("-C")
         .arg(workspace)
         .args(args)
@@ -1870,8 +1868,7 @@ pub fn commit_all_in(workspace: &Path, msg: &str) -> Result<(), GitError> {
 }
 
 fn run_test_git(dir: &Path, args: &[&str]) -> Result<(), GitError> {
-    use std::process::Command as StdCommand;
-    let status = StdCommand::new("git")
+    let status = super::environment::std_git_command()
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -1893,8 +1890,7 @@ fn run_test_git(dir: &Path, args: &[&str]) -> Result<(), GitError> {
 /// Synchronous — used by `loom init`, which is a one-shot workspace
 /// bootstrap and not driven by tokio.
 pub fn read_origin_url(workdir: &Path) -> Result<Option<String>, GitError> {
-    use std::process::Command as StdCommand;
-    let output = StdCommand::new("git")
+    let output = super::environment::std_git_command()
         .arg("-C")
         .arg(workdir)
         .args(["config", "--get", "remote.origin.url"])
@@ -1921,7 +1917,6 @@ pub fn read_origin_url(workdir: &Path) -> Result<Option<String>, GitError> {
 /// Synchronous: `loom init` is not async, and the spec marks the operation
 /// as one-shot + infrequent (see § Git operations table).
 pub fn clone_loom_workspace(origin_url: &str, dest: &Path, branch: &str) -> Result<(), GitError> {
-    use std::process::Command as StdCommand;
     let parent = dest.parent().ok_or_else(|| GitError::GitCli {
         status: -1,
         stderr: format!(
@@ -1930,7 +1925,7 @@ pub fn clone_loom_workspace(origin_url: &str, dest: &Path, branch: &str) -> Resu
         ),
     })?;
     std::fs::create_dir_all(parent)?;
-    let output = StdCommand::new("git")
+    let output = super::environment::std_git_command()
         .arg("-C")
         .arg(parent)
         .args(["clone", "--quiet", "--branch", branch])
@@ -1976,8 +1971,7 @@ pub fn status_porcelain_sync(workspace: &Path) -> Result<String, GitError> {
 }
 
 fn sync_git_capture(workspace: &Path, args: &[&str]) -> Result<String, GitError> {
-    use std::process::Command as StdCommand;
-    let output = StdCommand::new("git")
+    let output = super::environment::std_git_command()
         .arg("-C")
         .arg(workspace)
         .args(args)
@@ -2275,7 +2269,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let mut cmd = Command::new("git");
+    let mut cmd = super::environment::tokio_git_command();
     cmd.arg("-C").arg(workdir);
     let mut argv_for_log: Vec<String> = Vec::new();
     for arg in args {

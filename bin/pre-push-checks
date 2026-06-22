@@ -5,6 +5,22 @@ usage() {
     echo "pre-push-checks: usage: pre-push-checks --hook-id <id> --hook-entry <entry> [--push-range <range>] -- <command> [args…]" >&2
 }
 
+scrub_git_local_env() {
+    local vars
+    local var
+    vars="$(git rev-parse --local-env-vars)"
+    while IFS= read -r var; do
+        if [[ -n "$var" ]]; then
+            unset "$var"
+        fi
+    done <<<"$vars"
+}
+
+exec_sanitized() {
+    scrub_git_local_env
+    exec "$@"
+}
+
 hook_id=""
 hook_entry=""
 push_range=""
@@ -51,11 +67,11 @@ if [[ $# -eq 0 ]]; then
 fi
 
 if [[ ! -f .loom/marker.json ]]; then
-    exec "$@"
+    exec_sanitized "$@"
 fi
 
 if [[ -z "$hook_id" || -z "$hook_entry" ]]; then
-    exec "$@"
+    exec_sanitized "$@"
 fi
 
 if [[ -z "$push_range" ]]; then
@@ -65,6 +81,8 @@ if [[ -z "$push_range" ]]; then
         push_range='@{u}..HEAD'
     fi
 fi
+
+scrub_git_local_env
 
 if ! command -v loom >/dev/null; then
     exec "$@"

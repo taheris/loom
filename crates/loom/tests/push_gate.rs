@@ -38,6 +38,12 @@ use loom_driver::identifier::{MoleculeId, SpecLabel};
 use loom_driver::state::{ActiveMolecule, CacheDb};
 use loom_workflow::review::DEFAULT_MAX_ITERATIONS;
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    loom_test_support::scrub_git_local_env(&mut command);
+    command
+}
+
 // -------------------------------------------------------------------
 // Workspace + state setup
 // -------------------------------------------------------------------
@@ -74,7 +80,7 @@ fn init_workspace_repo(workspace: &Path) -> String {
         &["config", "user.name", "Test"][..],
         &["config", "commit.gpgsign", "false"][..],
     ] {
-        let status = Command::new("git")
+        let status = git_command()
             .arg("-C")
             .arg(workspace)
             .args(args)
@@ -89,14 +95,14 @@ fn init_workspace_repo(workspace: &Path) -> String {
         "bd-state/\nbd-bin/\nbin/\n.loom-test-state/\n.loom/\n.wrix/\n*.tar\nprofile-images.json\n",
     )
     .expect("write .gitignore");
-    let status = Command::new("git")
+    let status = git_command()
         .arg("-C")
         .arg(workspace)
         .args(["add", "."])
         .status()
         .expect("git add spawn");
     assert!(status.success(), "git add failed: {status}");
-    let status = Command::new("git")
+    let status = git_command()
         .arg("-C")
         .arg(workspace)
         .args(["commit", "-q", "-m", "seed"])
@@ -109,7 +115,7 @@ fn init_workspace_repo(workspace: &Path) -> String {
         std::fs::create_dir_all(parent).expect("mkdir origin parent");
     }
     std::fs::create_dir_all(&origin_path).expect("mkdir origin");
-    let status = Command::new("git")
+    let status = git_command()
         .arg("-C")
         .arg(&origin_path)
         .args(["init", "-q", "--bare", "-b", "main"])
@@ -117,14 +123,14 @@ fn init_workspace_repo(workspace: &Path) -> String {
         .expect("bare init spawn");
     assert!(status.success(), "bare init failed: {status}");
     let origin_url = origin_path.to_string_lossy().into_owned();
-    let status = Command::new("git")
+    let status = git_command()
         .arg("-C")
         .arg(workspace)
         .args(["remote", "add", "origin", &origin_url])
         .status()
         .expect("git remote add spawn");
     assert!(status.success(), "git remote add failed: {status}");
-    let status = Command::new("git")
+    let status = git_command()
         .arg("-C")
         .arg(workspace)
         .args(["push", "-q", "-u", "origin", "main"])
@@ -143,7 +149,7 @@ fn init_workspace_repo(workspace: &Path) -> String {
         &["config", "user.name", "Test"][..],
         &["config", "commit.gpgsign", "false"][..],
     ] {
-        let status = Command::new("git")
+        let status = git_command()
             .arg("-C")
             .arg(&loom_workspace)
             .args(args)
@@ -154,7 +160,7 @@ fn init_workspace_repo(workspace: &Path) -> String {
     let hooks = fake_prek_hooks(workspace);
     loom_driver::git::write_hooks_config(&loom_workspace, &hooks).expect("write hooks config");
 
-    let out = Command::new("git")
+    let out = git_command()
         .arg("-C")
         .arg(workspace)
         .args(["rev-parse", "HEAD"])
@@ -168,21 +174,21 @@ fn init_workspace_repo(workspace: &Path) -> String {
 /// the new HEAD sha. Used by the integrity-finding scenario to land a
 /// spec mutation between the molecule's `base_commit` and `HEAD`.
 fn commit_all(workspace: &Path, msg: &str) -> String {
-    let status = Command::new("git")
+    let status = git_command()
         .arg("-C")
         .arg(workspace)
         .args(["add", "."])
         .status()
         .expect("git add spawn");
     assert!(status.success(), "git add failed");
-    let status = Command::new("git")
+    let status = git_command()
         .arg("-C")
         .arg(workspace)
         .args(["commit", "-q", "-m", msg])
         .status()
         .expect("git commit spawn");
     assert!(status.success(), "git commit failed");
-    let out = Command::new("git")
+    let out = git_command()
         .arg("-C")
         .arg(workspace)
         .args(["rev-parse", "HEAD"])

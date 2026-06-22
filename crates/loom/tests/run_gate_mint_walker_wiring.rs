@@ -25,6 +25,12 @@ use std::process::Command;
 
 const SPEC_LABEL: &str = "walker_pin";
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    loom_test_support::scrub_git_local_env(&mut command);
+    command
+}
+
 /// Install the `bd-shim` test helper as `bd` on a fresh PATH dir. The
 /// shim logs every invocation to `BD_STATE_DIR/.invocations.log`.
 fn install_bd_shim(dir: &Path) -> PathBuf {
@@ -86,7 +92,7 @@ fn run_gate_mint_tree_subprocess(workspace: &Path) -> (std::process::Output, Pat
 /// `current_commit` resolves the same shape mint uses in production.
 fn git_init_workspace(workspace: &Path) {
     let run = |args: &[&str]| {
-        let ok = Command::new("git")
+        let ok = git_command()
             .arg("-C")
             .arg(workspace)
             .args(args)

@@ -6,6 +6,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    loom_test_support::scrub_git_local_env(&mut command);
+    command
+}
+
 fn install_bd_shim(dir: &Path) -> PathBuf {
     let bin_dir = dir.join("bd-bin");
     std::fs::create_dir_all(&bin_dir).expect("mkdir bd-bin");
@@ -38,7 +44,7 @@ fn init_workspace(root: &Path) {
 }
 
 fn git(root: &Path, args: &[&str]) {
-    let output = Command::new("git")
+    let output = git_command()
         .args(args)
         .current_dir(root)
         .output()
@@ -52,7 +58,7 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 fn git_stdout(root: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = git_command()
         .args(args)
         .current_dir(root)
         .output()

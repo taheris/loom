@@ -19,12 +19,14 @@ use loom_workflow::todo::{
     ExitSignal, ProductionTodoController, TodoController, TodoError, run as run_todo_workflow,
 };
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    loom_test_support::scrub_git_local_env(&mut command);
+    command
+}
+
 fn run_git(workspace: &Path, args: &[&str]) -> Result<()> {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(args)
-        .status()?;
+    let status = git_command().arg("-C").arg(workspace).args(args).status()?;
     if !status.success() {
         return Err(anyhow!("git {args:?} failed: {status}"));
     }
@@ -32,11 +34,7 @@ fn run_git(workspace: &Path, args: &[&str]) -> Result<()> {
 }
 
 fn git_output(workspace: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(args)
-        .output()?;
+    let output = git_command().arg("-C").arg(workspace).args(args).output()?;
     if !output.status.success() {
         return Err(anyhow!("git {args:?} failed"));
     }

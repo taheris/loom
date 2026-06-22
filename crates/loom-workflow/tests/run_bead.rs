@@ -28,8 +28,14 @@ use loom_workflow::todo::ExitSignal;
 use std::time::SystemTime;
 use tempfile::TempDir;
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    loom_test_support::scrub_git_local_env(&mut command);
+    command
+}
+
 fn git(repo: &Path, args: &[&str]) -> Result<()> {
-    let status = Command::new("git")
+    let status = git_command()
         .arg("-C")
         .arg(repo)
         .args(args)
@@ -40,7 +46,7 @@ fn git(repo: &Path, args: &[&str]) -> Result<()> {
 }
 
 fn git_capture(repo: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
+    let out = git_command()
         .arg("-C")
         .arg(repo)
         .args(args)
@@ -483,7 +489,7 @@ async fn production_loop_preserves_worktree_on_merge_conflict() -> Result<()> {
     // The transient loom-workspace `loom/lm-conflict.1` ref is deleted
     // unconditionally on the conflict exit path.
     let loom_ws = workspace.join(".loom/integration");
-    let branches = std::process::Command::new("git")
+    let branches = git_command()
         .arg("-C")
         .arg(&loom_ws)
         .args(["branch", "--list", "loom/lm-conflict.1"])

@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+scrub_git_local_env() {
+  local vars
+  local var
+  vars="$(git rev-parse --local-env-vars)"
+  while IFS= read -r var; do
+    if [[ -n "$var" ]]; then
+      unset "$var"
+    fi
+  done <<<"$vars"
+}
+
 top_level="$(git rev-parse --show-toplevel)"
 
 if sccache_bin="$(command -v sccache)"; then
@@ -14,4 +25,5 @@ if sccache_bin="$(command -v sccache)"; then
   mkdir -p "$SCCACHE_DIR"
 fi
 
+scrub_git_local_env
 exec cargo run --bin loom --manifest-path "$top_level/Cargo.toml" -- "$@"
