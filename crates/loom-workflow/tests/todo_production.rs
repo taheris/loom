@@ -418,6 +418,33 @@ async fn todo_preflight_closes_spec_metadata_epics() -> Result<()> {
 }
 
 #[tokio::test]
+async fn todo_prompt_uses_container_visible_scratchpad_path() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (base, head) = init_workspace(dir.path())?;
+    let runner = CapturingRunner::new(preflight_responses(&base, &head));
+    let mut ctrl = controller(dir.path(), runner)?;
+
+    let session = ctrl.build_session().await?;
+    let prompt = session.config.initial_prompt;
+    let host_root = dir.path().to_string_lossy();
+
+    assert!(
+        prompt.contains("`/workspace/.loom/scratch/lm-work/scratch.md`"),
+        "prompt should name the container-visible scratchpad path: {prompt}"
+    );
+    assert!(
+        !prompt.contains(host_root.as_ref()),
+        "prompt leaked host workspace path into container instructions: {prompt}"
+    );
+    assert_eq!(
+        session.config.scratch_dir,
+        dir.path().join(".loom/scratch/lm-work"),
+        "spawn config must keep the host scratch dir for driver-side re-pin"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn todo_work_epic_starts_with_placeholder_title() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (base, _head) = init_multi_spec_workspace(dir.path())?;

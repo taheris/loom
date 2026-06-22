@@ -127,7 +127,7 @@ Before authoring any non-audit bead, you MUST:
 
 2. **Inspect representative implementations and verifier functions** for any row that is suspicious: missing evidence, stale annotation evidence, failed or skipped current evidence, a large commits-since value, or a verifier-target name whose body may not actually exercise the live system. A directory listing proves the file exists; it does not prove the file contains the named target, and it does not prove the named target exercises the contract the criterion asserts.
 
-The discipline is template-agnostic: it applies to whatever workspace layout the consumer has. "Representative implementations" means the production code path the criterion's verifier is supposed to exercise, under whatever organisation that consumer's repository uses.
+The discipline is template-agnostic: it applies to whatever workspace layout the consumer has. "Representative implementations" means the production code path the criterion's verifier is supposed to exercise, under whatever organisation that consumer's repository uses. It does **not** require blanket full-file reads across every changed spec; use the injected diffs and status rows first, then read targeted sections or verifier bodies only where the evidence is ambiguous.
 
 ### What the audit governs
 
@@ -172,7 +172,7 @@ A fixed decomposition axis applied across the board irrespective of evidence —
 
 ## Instructions
 
-1. Read every changed spec in the injected roster and any companion manifests listed above.
+1. Use the injected changed-spec roster, diffs, implementation notes, and Criterion Status rows as the starting evidence. Do **not** perform a blanket full-file read of every changed spec; read only targeted spec sections, companion manifests, representative code, or verifier bodies needed to resolve an actual ambiguity.
 2. Audit the Criterion Status rows before fan-out. `EvidenceState::Missing` and `EvidenceState::StaleAnnotation` are absence or staleness of evidence; inspect representative code and verifier bodies before creating non-audit beads.
 3. Create needed beads under the driver-created work epic:
    ```bash

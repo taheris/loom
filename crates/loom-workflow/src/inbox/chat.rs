@@ -25,6 +25,7 @@ use thiserror::Error;
 use tracing::info;
 
 use crate::skill::{SkillError, SkillPlan};
+use crate::spawn::container_workspace_path;
 
 use super::context::build_inbox_context;
 use super::list::{
@@ -171,12 +172,13 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     )?;
     let skill_session = skill_plan.materialize(scratch_dir, workspace)?;
     let companion_paths = load_companion_paths(workspace, opts.spec_filter.as_ref(), &visible)?;
+    let prompt_scratchpad_path = container_workspace_path(workspace, &scratchpad_path);
     let ctx = build_inbox_context(
         workspace,
         String::new(),
         companion_paths,
         &visible,
-        scratchpad_path.to_string_lossy().into_owned(),
+        prompt_scratchpad_path.to_string_lossy().into_owned(),
         skill_session.skill_index,
     );
     let prompt_body = ctx.render().map_err(|e| ChatError::Render(e.to_string()))?;

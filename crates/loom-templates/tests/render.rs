@@ -1577,3 +1577,22 @@ fn todo_template_renders_pre_decomposition_audit_clause() -> Result<()> {
     assert!(out.contains("driver-created work epic"));
     Ok(())
 }
+
+#[test]
+fn todo_template_forbids_blanket_full_spec_reads() -> Result<()> {
+    let out = todo_context(vec![], vec![]).render()?;
+
+    assert!(
+        out.contains("Do **not** perform a blanket full-file read of every changed spec"),
+        "todo prompt must explicitly steer away from context-burning full-spec reads: {out}"
+    );
+    assert!(
+        out.contains("read only targeted spec sections"),
+        "todo prompt must allow targeted source/spec inspection: {out}"
+    );
+    assert!(
+        !out.contains("Read every changed spec in the injected roster"),
+        "todo prompt reintroduced the old blanket-read instruction: {out}"
+    );
+    Ok(())
+}

@@ -41,6 +41,7 @@ use crate::review::{
     WalkOutputError, beads_summary, default_profile_for_spec, load_review_sources,
     parse_walk_output,
 };
+use crate::spawn::container_workspace_path;
 use crate::todo::ExitSignal;
 
 /// Resolved mint walk scope for the standing safety-net sweep.
@@ -388,7 +389,8 @@ where
             load_review_sources(&self.workspace, &self.workspace.join(&spec_path_rel))
                 .map_err(|e| WalkError::Rubric(e.to_string()))?;
         let key = resolve_scratch_key(Phase::Review, std::slice::from_ref(&self.label), None);
-        let scratchpad_path = ScratchSession::scratchpad_path_for(&self.workspace, &key)
+        let scratchpad_path = ScratchSession::scratchpad_path_for(&self.workspace, &key);
+        let prompt_scratchpad_path = container_workspace_path(&self.workspace, &scratchpad_path)
             .to_string_lossy()
             .into_owned();
         let ctx = ReviewContext {
@@ -402,7 +404,7 @@ where
             molecule_id,
             test_sources,
             judge_rubrics,
-            scratchpad_path,
+            scratchpad_path: prompt_scratchpad_path,
             style_rules: self.style_rules.clone(),
             lane: ReviewLane::Rubric,
             skill_index: SkillIndexMarkdown::empty(),

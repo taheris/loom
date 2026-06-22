@@ -53,6 +53,7 @@ use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
 use super::verdict::PushGateRefuseCause;
 use super::workspace_validator::WorkspaceFindingValidator;
 use crate::skill::SkillPlan;
+use crate::spawn::container_workspace_path;
 use crate::suppression::{has_ineffective_suppression_match, suppresses_rubric_finding};
 use crate::todo::ExitSignal;
 
@@ -501,6 +502,7 @@ where
             &self.skills_cfg,
         )?;
         let skill_session = skill_plan.materialize(scratch_dir, &self.workspace)?;
+        let prompt_scratchpad_path = container_workspace_path(&self.workspace, &scratchpad_path);
         let ctx = ReviewContext {
             pinned_context: String::new(),
             default_profile: default_profile_for_spec(&self.label),
@@ -512,7 +514,7 @@ where
             molecule_id,
             test_sources,
             judge_rubrics,
-            scratchpad_path: scratchpad_path.to_string_lossy().into_owned(),
+            scratchpad_path: prompt_scratchpad_path.to_string_lossy().into_owned(),
             style_rules: self.style_rules.clone(),
             lane: self.lane,
             skill_index: skill_session.skill_index,

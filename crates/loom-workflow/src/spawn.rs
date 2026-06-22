@@ -1,10 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use loom_driver::agent::{AgentRuntime, MountSpec, RePinContent, SpawnConfig, set_loom_inside};
 use loom_driver::profile_manifest::ImageEntry;
 use tracing::info;
 
 const WRIX_AGENT_ENV: &str = "WRIX_AGENT";
+const CONTAINER_WORKSPACE: &str = "/workspace";
 
 /// Structured spawn diagnostics emitted for every non-interactive Wrix spawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +81,13 @@ fn set_runtime_env(env: &mut Vec<(String, String)>, runtime_name: &str) {
     env.push((WRIX_AGENT_ENV.to_string(), runtime_name.to_string()));
 }
 
+pub fn container_workspace_path(host_workspace: &Path, host_path: &Path) -> PathBuf {
+    match host_path.strip_prefix(host_workspace) {
+        Ok(rel) => Path::new(CONTAINER_WORKSPACE).join(rel),
+        Err(_) => host_path.to_path_buf(),
+    }
+}
+
 pub fn log_spawn_diagnostics(
     runtime: AgentRuntime,
     runtime_name: &str,
@@ -128,6 +136,26 @@ mod tests {
             digest: Some(PathBuf::from("/nix/store/image-rust-pi-digest")),
             runtime: Some(AgentRuntime::Pi),
         }
+    }
+
+    #[test]
+    fn container_workspace_path_rewrites_host_workspace_prefix() {
+        let host_workspace = Path::new("/home/user/repo");
+        let host_path = Path::new("/home/user/repo/.loom/scratch/lm-1/scratch.md");
+        assert_eq!(
+            container_workspace_path(host_workspace, host_path),
+            PathBuf::from("/workspace/.loom/scratch/lm-1/scratch.md"),
+        );
+    }
+
+    #[test]
+    fn container_workspace_path_leaves_external_paths_unchanged() {
+        let host_workspace = Path::new("/home/user/repo");
+        let host_path = Path::new("/home/user/other");
+        assert_eq!(
+            container_workspace_path(host_workspace, host_path),
+            PathBuf::from("/home/user/other"),
+        );
     }
 
     #[test]

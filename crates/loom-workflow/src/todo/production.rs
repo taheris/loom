@@ -18,6 +18,7 @@ use loom_protocol::todo::{GitSha, TodoSpecOutcome, TodoSuccess};
 use tracing::{debug, info};
 
 use crate::skill::SkillPlan;
+use crate::spawn::container_workspace_path;
 
 use super::ExitSignal;
 use super::context::{
@@ -479,6 +480,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         )?;
         let skill_session = skill_plan.materialize(scratch_dir, &self.workspace)?;
         let spec_index = std::fs::read_to_string(self.workspace.join("docs/README.md"))?;
+        let prompt_scratchpad_path = container_workspace_path(&self.workspace, &scratchpad_path);
         let base = TemplateBaseFields {
             pinned_context: String::new(),
             spec_index,
@@ -489,7 +491,7 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             spec_epics,
             companion_paths,
             implementation_notes,
-            scratchpad_path: scratchpad_path.to_string_lossy().into_owned(),
+            scratchpad_path: prompt_scratchpad_path.to_string_lossy().into_owned(),
             skill_index: skill_session.skill_index,
         };
         let ctx = build_template_context(base, criterion_status);

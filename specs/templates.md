@@ -656,7 +656,9 @@ Before authoring any non-audit bead, the agent must:
    judges the verifier target may not exercise the live system per
    [spec-conventions.md](../docs/spec-conventions.md)'s "no tier-skipping"
    rule. A directory listing proves a file exists; it does not prove the
-   file contains the named target.
+   file contains the named target. The audit is targeted: the injected
+   diffs/status rows are first-class evidence, and the prompt must not tell
+   the agent to perform blanket full-file reads across every changed spec.
 3. Create implementation beads only under the injected `work_epic`, and
    label/bond each bead to the spec(s) it implements. Beads outside the work
    epic cannot satisfy `LOOM_TODO` validation.

@@ -10,7 +10,7 @@ Before authoring any non-audit bead, you MUST:
 
 2. **Inspect representative implementations and verifier functions** for any row that is suspicious: missing evidence, stale annotation evidence, failed or skipped current evidence, a large commits-since value, or a verifier-target name whose body may not actually exercise the live system. A directory listing proves the file exists; it does not prove the file contains the named target, and it does not prove the named target exercises the contract the criterion asserts.
 
-The discipline is template-agnostic: it applies to whatever workspace layout the consumer has. "Representative implementations" means the production code path the criterion's verifier is supposed to exercise, under whatever organisation that consumer's repository uses.
+The discipline is template-agnostic: it applies to whatever workspace layout the consumer has. "Representative implementations" means the production code path the criterion's verifier is supposed to exercise, under whatever organisation that consumer's repository uses. It does **not** require blanket full-file reads across every changed spec; use the injected diffs and status rows first, then read targeted sections or verifier bodies only where the evidence is ambiguous.
 
 ### What the audit governs
 

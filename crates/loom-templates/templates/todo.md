@@ -79,7 +79,7 @@ The status cache below shows the latest cached verifier verdict for each Success
 
 ## Instructions
 
-1. Read every changed spec in the injected roster and any companion manifests listed above.
+1. Use the injected changed-spec roster, diffs, implementation notes, and Criterion Status rows as the starting evidence. Do **not** perform a blanket full-file read of every changed spec; read only targeted spec sections, companion manifests, representative code, or verifier bodies needed to resolve an actual ambiguity.
 2. Audit the Criterion Status rows before fan-out. `EvidenceState::Missing` and `EvidenceState::StaleAnnotation` are absence or staleness of evidence; inspect representative code and verifier bodies before creating non-audit beads.
 3. Create needed beads under the driver-created work epic:
    ```bash

@@ -15,6 +15,7 @@ use loom_driver::scratch::{ScratchSession, resolve_plan_scratch_key};
 use loom_driver::state::CacheDb;
 
 use crate::skill::SkillPlan;
+use crate::spawn::container_workspace_path;
 
 use super::command::{WRIX_BIN, build_wrix_argv};
 use super::error::PlanError;
@@ -113,12 +114,13 @@ pub fn run_with_timeout(
         &cfg.skills,
     )?;
     let skill_session = skill_plan.materialize(scratch_dir, workspace)?;
+    let prompt_scratchpad_path = container_workspace_path(workspace, &scratchpad_path);
     let prompt_body = render_prompt(PlanPromptInputs {
         anchor_labels: anchor_labels.clone(),
         pinned_context,
         spec_index,
         companion_paths: companion_paths.clone(),
-        scratchpad_path: scratchpad_path.to_string_lossy().into_owned(),
+        scratchpad_path: prompt_scratchpad_path.to_string_lossy().into_owned(),
         spec_conventions: cfg.spec_conventions.clone(),
         skill_index: skill_session.skill_index,
     })?;

@@ -43,6 +43,8 @@ use super::driver_emit::BeadEmit;
 use super::error::LoopError;
 use super::outcome::{AgentOutcome, SessionResult};
 use super::runner::{AgentLoopController, PerBeadGateOutcome};
+use crate::spawn::container_workspace_path;
+
 use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 use super::tree_clean::dirty_paths_from_porcelain;
 use super::verify::{VerifyPass, verify_pass};
@@ -477,6 +479,7 @@ where
         let skill_session = skill_plan.materialize(scratch_dir, &worktree.path)?;
         let attempt = u32::from(is_retry);
         self.current_attempt = attempt;
+        let prompt_scratchpad_path = container_workspace_path(&worktree.path, &scratchpad_path);
         let initial_prompt = match render_loop_prompt(LoopContextInputs {
             label: self.label.clone(),
             spec_path: format!("specs/{}.md", self.label.as_str()),
@@ -489,7 +492,7 @@ where
             previous_failure: typed_previous_failure,
             review_notes: None,
             attempt,
-            scratchpad_path: scratchpad_path.to_string_lossy().into_owned(),
+            scratchpad_path: prompt_scratchpad_path.to_string_lossy().into_owned(),
             style_rules: self.style_rules.clone(),
             skill_index: skill_session.skill_index,
         }) {
