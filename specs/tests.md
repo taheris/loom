@@ -662,7 +662,7 @@ the rules:
 
 - `cargo clippy --workspace` is covered by the `loom-clippy` flake
       check with a shared cargoArtifacts cache
-  [check?](cargo run -p loom-walk -- workspace_compile_checks_exposed_as_flake_checks)
+  [check](cargo run -p loom-walk -- workspace_compile_checks_exposed_as_flake_checks)
 - No `derive(From)` / `derive(Into)` on tuple-struct newtypes
   [check](cargo run -p loom-walk -- no_derive_from_on_newtypes)
 - No `crates/*/src/{types,error}.rs` files at crate roots

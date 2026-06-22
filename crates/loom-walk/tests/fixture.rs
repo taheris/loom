@@ -3878,19 +3878,68 @@ fn audit_makes_no_bd_writes_outside_mint_module_ignores_doc_mentions() {
 }
 
 // ---------------------------------------------------------------------------
-// nix_flake_check_excludes_workspace_compile (pre-commit.md § Fast tier)
+// workspace_compile_checks_exposed_as_flake_checks (harness/tests Nix integration)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn nix_flake_check_excludes_workspace_compile_pass() {
-    let ws = make_workspace();
+fn seed_workspace_compile_checks_fixture(root: &Path) {
     seed(
-        ws.path(),
+        root,
         "nix/flake/checks.nix",
-        "_:\n{\n  perSystem = { loom-gate-check, ... }: {\n    checks = { inherit loom-gate-check; };\n  };\n}\n",
+        r#"_:
+{
+  perSystem = { loom, ... }:
+    let
+      inherit (loom) clippy nextest;
+    in
+    {
+      checks = {
+        loom-clippy = clippy;
+        loom-nextest = nextest;
+      };
+    };
+}
+"#,
     );
+    seed(
+        root,
+        "nix/workspace.nix",
+        r#"{ craneLib }:
+let
+  commonArgs = { };
+
+  cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+  clippy = craneLib.cargoClippy (
+    commonArgs
+    // {
+      inherit cargoArtifacts;
+    }
+  );
+
+  nextest = craneLib.cargoNextest (
+    commonArgs
+    // {
+      inherit cargoArtifacts;
+    }
+  );
+in
+{
+  inherit
+    cargoArtifacts
+    clippy
+    nextest
+    ;
+}
+"#,
+    );
+}
+
+#[test]
+fn workspace_compile_checks_exposed_as_flake_checks_pass() {
+    let ws = make_workspace();
+    seed_workspace_compile_checks_fixture(ws.path());
     let out = invoke(
-        &["nix_flake_check_excludes_workspace_compile"],
+        &["workspace_compile_checks_exposed_as_flake_checks"],
         Some(ws.path()),
         None,
     );
@@ -3898,35 +3947,106 @@ fn nix_flake_check_excludes_workspace_compile_pass() {
 }
 
 #[test]
-fn nix_flake_check_excludes_workspace_compile_fail_on_inherit() {
+fn workspace_compile_checks_exposed_as_flake_checks_fail_when_nextest_check_absent() {
     let ws = make_workspace();
+    seed_workspace_compile_checks_fixture(ws.path());
     seed(
         ws.path(),
         "nix/flake/checks.nix",
-        "_:\n{\n  perSystem = { loom, ... }: {\n    checks = { inherit (loom) bin clippy nextest; };\n  };\n}\n",
+        r#"_:
+{
+  perSystem = { loom, ... }:
+    let
+      inherit (loom) clippy nextest;
+    in
+    {
+      checks = {
+        loom-clippy = clippy;
+      };
+    };
+}
+"#,
     );
     let out = invoke(
-        &["nix_flake_check_excludes_workspace_compile"],
+        &["workspace_compile_checks_exposed_as_flake_checks"],
         Some(ws.path()),
         None,
     );
-    assert_fail(&out, "nix/flake/checks.nix");
+    assert_fail(&out, "checks.loom-nextest");
 }
 
 #[test]
-fn nix_flake_check_excludes_workspace_compile_fail_on_dotted_access() {
+fn workspace_compile_checks_exposed_as_flake_checks_fail_when_check_uses_ad_hoc_derivation() {
     let ws = make_workspace();
+    seed_workspace_compile_checks_fixture(ws.path());
     seed(
         ws.path(),
         "nix/flake/checks.nix",
-        "_:\n{\n  perSystem = { loom, ... }: {\n    checks.bin = loom.bin;\n  };\n}\n",
+        r#"_:
+{
+  perSystem = { pkgs, loom, ... }:
+    let
+      inherit (loom) nextest;
+    in
+    {
+      checks = {
+        loom-clippy = pkgs.runCommand "loom-clippy" { } "touch $out";
+        loom-nextest = nextest;
+      };
+    };
+}
+"#,
     );
     let out = invoke(
-        &["nix_flake_check_excludes_workspace_compile"],
+        &["workspace_compile_checks_exposed_as_flake_checks"],
         Some(ws.path()),
         None,
     );
-    assert_fail(&out, "loom.bin");
+    assert_fail(&out, "checks.loom-clippy");
+}
+
+#[test]
+fn workspace_compile_checks_exposed_as_flake_checks_fail_without_shared_cargo_artifacts() {
+    let ws = make_workspace();
+    seed_workspace_compile_checks_fixture(ws.path());
+    seed(
+        ws.path(),
+        "nix/workspace.nix",
+        r#"{ craneLib }:
+let
+  commonArgs = { };
+
+  cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+  clippy = craneLib.cargoClippy (
+    commonArgs
+    // {
+      src = ./.;
+    }
+  );
+
+  nextest = craneLib.cargoNextest (
+    commonArgs
+    // {
+      inherit cargoArtifacts;
+    }
+  );
+in
+{
+  inherit
+    cargoArtifacts
+    clippy
+    nextest
+    ;
+}
+"#,
+    );
+    let out = invoke(
+        &["workspace_compile_checks_exposed_as_flake_checks"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "clippy must inherit the shared cargoArtifacts cache");
 }
 
 // ---------------------------------------------------------------------------

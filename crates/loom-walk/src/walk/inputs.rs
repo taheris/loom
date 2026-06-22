@@ -153,9 +153,11 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         "loom_templates_snapshots_no_crate_root_allow" => {
             vec![root.join("crates/loom-templates/tests/snapshots.rs")]
         }
-        "loom_gate_check_derivation_exists" | "nix_flake_check_excludes_workspace_compile" => {
-            vec![root.join("nix/flake/checks.nix")]
-        }
+        "loom_gate_check_derivation_exists" => vec![root.join("nix/flake/checks.nix")],
+        "workspace_compile_checks_exposed_as_flake_checks" => vec![
+            root.join("nix/flake/checks.nix"),
+            root.join("nix/workspace.nix"),
+        ],
         "surface_conformance" => vec![
             root.join("specs/harness.md"),
             root.join("crates/loom/src/main.rs"),

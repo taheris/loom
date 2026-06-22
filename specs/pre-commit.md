@@ -340,11 +340,9 @@ declared as such.
 
 ### Fast tier composition
 
-- `nix flake check` performs no Rust workspace compile of the project
-  under test (the loom-deps / loom-0.1.0 / clippy / nextest derivations
-  are excluded from `flake check`; their work moves to dedicated
-  pre-push hooks against the host cache)
-  [check](cargo run -p loom-walk -- nix_flake_check_excludes_workspace_compile)
+- `nix flake check` exposes workspace clippy and nextest through the
+  shared `cargoArtifacts` derivation rather than ad hoc per-check builds
+  [check](cargo run -p loom-walk -- workspace_compile_checks_exposed_as_flake_checks)
 - `loom gate check` is exposed as a flake-check derivation distinct
   from the targeted pre-push hooks
   [check](cargo run -p loom-walk -- loom_gate_check_derivation_exists)

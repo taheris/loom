@@ -45,7 +45,6 @@ mod loom_templates_snapshots_no_crate_root_allow;
 mod loom_templates_workflow_templates_not_exported;
 mod loom_tune_deps;
 mod newtype_identifiers;
-mod nix_flake_check_excludes_workspace_compile;
 mod no_allow_dead_code;
 mod no_derive_from_on_newtypes;
 mod no_hardcoded_tmp_paths;
@@ -74,6 +73,7 @@ mod todo_contexts_carry_criterion_status;
 mod todo_template_uses_driver_created_work_epic;
 mod tune_surface_conformance;
 mod util;
+mod workspace_compile_checks_exposed_as_flake_checks;
 mod workspace_deps_pinned;
 mod workspace_edition;
 mod workspace_lints;
@@ -258,10 +258,6 @@ pub static REGISTRY: &[Walk] = &[
         run: newtype_identifiers::run,
     },
     Walk {
-        name: "nix_flake_check_excludes_workspace_compile",
-        run: nix_flake_check_excludes_workspace_compile::run,
-    },
-    Walk {
         name: "no_allow_dead_code",
         run: no_allow_dead_code::run,
     },
@@ -370,6 +366,10 @@ pub static REGISTRY: &[Walk] = &[
         run: tune_surface_conformance::run,
     },
     Walk {
+        name: "workspace_compile_checks_exposed_as_flake_checks",
+        run: workspace_compile_checks_exposed_as_flake_checks::run,
+    },
+    Walk {
         name: "workspace_deps_pinned",
         run: workspace_deps_pinned::run,
     },
@@ -453,7 +453,6 @@ mod tests {
             "single_event_channel",
             "surface_conformance",
             "newtype_identifiers",
-            "nix_flake_check_excludes_workspace_compile",
             "template_context_structs",
             "template_pinning_matrix",
             "template_wire_format_restatement",
@@ -474,6 +473,7 @@ mod tests {
             "no_tokio_timeout_outside_clock",
             "no_real_clock_outside_system_clock",
             "renderer_no_insta_dependency",
+            "workspace_compile_checks_exposed_as_flake_checks",
             "workspace_deps_pinned",
             "workspace_edition",
             "workspace_lints",

@@ -67,6 +67,7 @@ let
     "specs" = "${src}/specs";
     "docs" = "${src}/docs";
     "nix/flake" = "${src}/nix/flake";
+    "nix/workspace.nix" = "${src}/nix/workspace.nix";
     "scripts" = "${src}/scripts";
     ".pre-commit-config.yaml" = "${src}/.pre-commit-config.yaml";
   };
@@ -110,6 +111,7 @@ let
       nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
         pkgs.cacert
         pkgs.flock
+        pkgs.openssh
       ];
       # genai builds a reqwest TLS client eagerly; sandbox needs a CA bundle.
       preCheck = ''

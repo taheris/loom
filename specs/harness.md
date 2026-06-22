@@ -3589,7 +3589,7 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
 - `cargo clippy --workspace` and `cargo test --workspace` are
       covered by the `loom-clippy` and `loom-nextest` flake checks
       with a shared cargoArtifacts cache
-  [check?](cargo run -p loom-walk -- workspace_compile_checks_exposed_as_flake_checks)
+  [check](cargo run -p loom-walk -- workspace_compile_checks_exposed_as_flake_checks)
 
 ## Requirements
 
