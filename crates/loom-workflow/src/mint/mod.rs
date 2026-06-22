@@ -40,7 +40,7 @@ pub use walk::{
     walk,
 };
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use loom_driver::bd::{BdClient, Bead, CommandRunner, CreateOpts, ListOpts, UpdateOpts};
 use loom_driver::config::SuppressionConfig;
@@ -125,6 +125,19 @@ pub fn batch_fingerprint(findings: &[Finding]) -> String {
 }
 
 const BATCH_FINGERPRINT_HEX_LEN: usize = 12;
+const BD_TITLE_MAX_BYTES: usize = 500;
+const TRUNCATED_TITLE_SUFFIX: &str = "...";
+
+fn mint_error_message(err: &MintError) -> String {
+    let mut rendered = err.to_string();
+    let mut source = std::error::Error::source(err);
+    while let Some(err) = source {
+        rendered.push_str(": ");
+        rendered.push_str(&err.to_string());
+        source = err.source();
+    }
+    rendered
+}
 
 /// One processed batch's outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -748,7 +761,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
                 summary.record_status(finding, FindingStatusAction::Refused);
                 summary.record(BatchOutcome::Errored {
                     fingerprint,
-                    message: err.to_string(),
+                    message: mint_error_message(&err),
                 });
                 continue;
             }
@@ -877,9 +890,10 @@ async fn report_stale_candidates<R: CommandRunner>(
         Err(err) => {
             let fingerprint =
                 spec_filter.map_or_else(|| "stale:tree".to_owned(), |spec| format!("stale:{spec}"));
+            let err = MintError::from(err);
             summary.record(BatchOutcome::Errored {
                 fingerprint,
-                message: MintError::from(err).to_string(),
+                message: mint_error_message(&err),
             });
             return;
         }
@@ -986,8 +1000,9 @@ async fn dedup_live_finding<R: CommandRunner>(bd: &BdClient<R>, finding: &Findin
     {
         Ok(beads) => beads,
         Err(err) => {
+            let err = MintError::from(err);
             return FindingDedup::Errored {
-                message: MintError::from(err).to_string(),
+                message: mint_error_message(&err),
             };
         }
     };
@@ -1048,8 +1063,9 @@ async fn dedup_closed_same_molecule<R: CommandRunner>(
     {
         Ok(beads) => beads,
         Err(err) => {
+            let err = MintError::from(err);
             return FindingDedup::Errored {
-                message: MintError::from(err).to_string(),
+                message: mint_error_message(&err),
             };
         }
     };
@@ -1124,7 +1140,7 @@ async fn process_batch<R: CommandRunner>(
     }
 
     let labels = batch_labels(findings, &label, routing);
-    let title = batch_title(findings);
+    let title = batch_title(findings, lead_spec);
     let description = batch_description(findings, &fingerprint, routing);
     let Some(lead_epic) = lead_epic else {
         return BatchOutcome::Errored {
@@ -1135,13 +1151,13 @@ async fn process_batch<R: CommandRunner>(
     let parent = match BeadId::new(lead_epic.as_str()) {
         Ok(p) => p,
         Err(source) => {
+            let err = MintError::InvalidParentId {
+                molecule: lead_epic.to_string(),
+                source,
+            };
             return BatchOutcome::Errored {
                 fingerprint,
-                message: MintError::InvalidParentId {
-                    molecule: lead_epic.to_string(),
-                    source,
-                }
-                .to_string(),
+                message: mint_error_message(&err),
             };
         }
     };
@@ -1162,10 +1178,13 @@ async fn process_batch<R: CommandRunner>(
             lead_spec: lead_spec.clone(),
             findings_count: findings.len(),
         },
-        Err(err) => BatchOutcome::Errored {
-            fingerprint,
-            message: MintError::from(err).to_string(),
-        },
+        Err(err) => {
+            let err = MintError::from(err);
+            BatchOutcome::Errored {
+                fingerprint,
+                message: mint_error_message(&err),
+            }
+        }
     }
 }
 
@@ -1264,28 +1283,59 @@ fn batch_labels(findings: &[Finding], mint_label: &str, routing: FindingRouting)
 
 /// Deterministic title — the same batch always mints with the same
 /// title across runs, so a closed-then-reopened bead's title still
-/// matches the next walk's perceived shape. Multi-finding batches title
-/// off the sorted finding tuples; single-finding batches preserve the
-/// per-finding `<token>: <canonical_form>` shape.
-fn batch_title(findings: &[Finding]) -> String {
-    if findings.len() == 1 {
+/// matches the next walk's perceived shape. Multi-finding batches keep
+/// titles concise by summarising concern-token counts; full targets and
+/// evidence live in the description.
+fn batch_title(findings: &[Finding], lead_spec: &SpecLabel) -> String {
+    let title = if findings.len() == 1 {
         let f = &findings[0];
-        return format!(
+        format!(
             "{token}: {target}",
             token = f.token.as_wire(),
             target = f.target.canonical_form(),
-        );
+        )
+    } else {
+        format!(
+            "fix-up batch: {} findings for {} ({})",
+            findings.len(),
+            lead_spec,
+            concern_token_summary(findings),
+        )
+    };
+    cap_bd_title(title)
+}
+
+fn concern_token_summary(findings: &[Finding]) -> String {
+    let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for finding in findings {
+        *counts.entry(finding.token.as_wire()).or_default() += 1;
     }
-    let mut tuples: Vec<String> = findings
-        .iter()
-        .map(|f| format!("{}: {}", f.token.as_wire(), f.target.canonical_form()))
-        .collect();
-    tuples.sort();
-    format!(
-        "fix-up batch: {} findings ({})",
-        findings.len(),
-        tuples.join("; ")
-    )
+    let mut items = counts.into_iter().collect::<Vec<_>>();
+    items.sort_by(|(token_a, count_a), (token_b, count_b)| {
+        count_b.cmp(count_a).then_with(|| token_a.cmp(token_b))
+    });
+    items
+        .into_iter()
+        .map(|(token, count)| {
+            if count == 1 {
+                token.to_owned()
+            } else {
+                format!("{token}×{count}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn cap_bd_title(title: String) -> String {
+    if title.len() <= BD_TITLE_MAX_BYTES {
+        return title;
+    }
+    let mut keep = BD_TITLE_MAX_BYTES - TRUNCATED_TITLE_SUFFIX.len();
+    while !title.is_char_boundary(keep) {
+        keep -= 1;
+    }
+    format!("{}{TRUNCATED_TITLE_SUFFIX}", &title[..keep])
 }
 
 /// Description enumerates every finding in the batch and pins the
@@ -2614,8 +2664,7 @@ reason = "false positive"
     /// Spec contract `specs/gate.md` § *Per-batch processing* step 8:
     /// fix-up batches enumerate every finding in the bead description
     /// (one item per finding: token, target's canonical form, evidence
-    /// excerpt); the title is stable across runs for the same batch
-    /// (deterministic from the sorted finding tuples).
+    /// excerpt); the title is stable across runs for the same batch.
     #[tokio::test]
     async fn mint_batch_description_enumerates_finding_identity_and_title_is_stable() {
         let f1 = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence-A");
@@ -2693,9 +2742,8 @@ reason = "false positive"
             );
         }
 
-        // Second ordering of the same set: [f3, f1, f2]. Title is
-        // deterministic from sorted finding tuples — same set produces
-        // the same title.
+        // Second ordering of the same set: [f3, f1, f2]. The same set
+        // produces the same concern-token summary title.
         let runner2 = ScriptedRunner::new(vec![
             ok_stdout("[]"),
             ok_stdout(&epic_list("lm-gateepic", "gate")),
@@ -2718,7 +2766,91 @@ reason = "false positive"
         let title_second = create2[title_idx2 + 1].clone();
         assert_eq!(
             title_first, title_second,
-            "title is deterministic from sorted finding tuples regardless of stream order: {title_first:?} vs {title_second:?}",
+            "title is deterministic from the finding set regardless of stream order: {title_first:?} vs {title_second:?}",
+        );
+    }
+
+    #[test]
+    fn multi_finding_title_summarizes_tokens_without_truncating_description() {
+        let long_target = format!("nix run .#{}", "test".repeat(200));
+        let mut findings = (0..12)
+            .map(|idx| {
+                verifier_bypass_finding(
+                    vec![spec("gate")],
+                    &format!("{long_target}-{idx}"),
+                    "long target evidence",
+                )
+            })
+            .collect::<Vec<_>>();
+        findings.push(coherence_finding(
+            vec![spec("gate")],
+            "functional",
+            "coherence evidence",
+        ));
+
+        let title = batch_title(&findings, &spec("gate"));
+        assert_eq!(
+            title,
+            "fix-up batch: 13 findings for gate (verifier-bypass×12, spec-coherence-fail)",
+        );
+        assert!(
+            title.len() <= BD_TITLE_MAX_BYTES,
+            "bd title must fit the CLI limit: {} > {BD_TITLE_MAX_BYTES}: {title}",
+            title.len(),
+        );
+
+        let description = batch_description(
+            &findings,
+            &batch_fingerprint(&findings),
+            FindingRouting::Fixup,
+        );
+        assert!(
+            description.contains(&format!("{long_target}-11")),
+            "description retains the full finding target even when the title is summarised: {description}",
+        );
+    }
+
+    #[test]
+    fn single_finding_title_is_capped_to_bd_limit() {
+        let long_target = format!("nix run .#{}", "test".repeat(200));
+        let finding = verifier_bypass_finding(vec![spec("gate")], &long_target, "evidence");
+
+        let title = batch_title(&[finding], &spec("gate"));
+        assert!(
+            title.len() <= BD_TITLE_MAX_BYTES,
+            "bd title must fit the CLI limit: {} > {BD_TITLE_MAX_BYTES}: {title}",
+            title.len(),
+        );
+        assert!(
+            title.ends_with(TRUNCATED_TITLE_SUFFIX),
+            "over-limit single-finding titles should carry a truncation marker: {title}",
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_error_summary_includes_bd_cli_source() {
+        let finding = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence-A");
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
+            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            RunOutput {
+                status: 1,
+                stdout: Vec::new(),
+                stderr: b"Error: validation failed for issue lm-gateepic.1: title must be 500 characters or less (got 972)\n".to_vec(),
+            },
+        ]);
+        let bd = BdClient::with_runner(runner);
+
+        let summary = mint_findings(&bd, &[finding], "head-sha").await;
+        assert_eq!(summary.errors, 1, "bd create failure is an error");
+        let rendered = summary.render();
+        assert!(
+            rendered.contains("bd CLI failure while minting findings: `bd` exited with status 1"),
+            "summary must include the bd source error: {rendered}",
+        );
+        assert!(
+            rendered.contains("title must be 500 characters or less"),
+            "summary must include bd stderr: {rendered}",
         );
     }
 
