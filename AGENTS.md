@@ -46,10 +46,13 @@ git push origin main
 
 cd /workspace
 wrix beads push
+git worktree remove .loom/beads/<id>
+git branch -D loom/<id>
 ```
 
-Do not push `loom/<id>` branches. Work is complete only after main and beads are
-pushed.
+Do not push `loom/<id>` branches. `.loom/integration` is publish-only:
+fast-forward and push there, never edit or commit there. Remove only the bead
+worktree; do not run broad worktree pruning.
 
 ## Verify
 
