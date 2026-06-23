@@ -2024,16 +2024,29 @@ It has labels `loom:spec` and `spec:<label>`, exactly one exists per
 indexed spec, and its status does not affect cursor lookup. It carries
 `loom.todo_cursor=<full git sha>`, meaning: `loom todo` has
 successfully finalized decomposition coverage for this spec through
-that commit. Normal `loom todo` never creates implementation child
-beads under a spec epic.
+that commit. When a driver creates a missing spec epic, it closes the
+epic immediately as a metadata carrier; open/closed status remains
+ignored for lookup and repair. Normal implementation and remediation
+beads are never parented under a spec epic.
 
-**Work epic.** A work epic is the execution batch created by
-`loom todo` for a deterministic changed-spec set. The driver creates
-it before the todo agent runs, labels it `loom:todo`, and writes
-`loom.todo_head=<sha>`, `loom.todo_fingerprint=<TodoFingerprint>`,
-and the changed spec labels as metadata. While `loom:todo` is present,
-the epic is still in the decomposition stage and is not a default loop
-target. After a validated `LOOM_TODO` handoff, finalization removes
+**Work epic.** A work epic is a loopable execution batch. Two creation
+surfaces exist:
+
+- `loom todo` creates a pending decomposition work epic for one
+  deterministic changed-spec set. The driver creates it before the todo
+  agent runs, labels it `loom:todo`, and writes
+  `loom.todo_head=<sha>`, `loom.todo_fingerprint=<TodoFingerprint>`,
+  and the changed spec labels as metadata. While `loom:todo` is present,
+  the epic is still in the decomposition stage and is not a default loop
+  target.
+- `loom gate mint --tree` creates a standing remediation work epic only
+  when it has at least one actionable child bead to parent. The driver
+  parents every tree-scope fix-up / blocked-clarify / clarify bead from
+  that mint run under the one remediation epic, labels it `loom:active`,
+  removes `loom:active` from any previous work epic, and prints the epic
+  id plus the follow-up `loom loop` command.
+
+After a validated `LOOM_TODO` handoff, finalization removes
 `loom:todo`, adds `loom:active`, advances every changed spec epic's
 `loom.todo_cursor` to the preflight head, and removes `loom:active`
 from any previous work epic. At most one open work epic may carry
@@ -2042,6 +2055,15 @@ from any previous work epic. At most one open work epic may carry
 `loom:active` is an execution bookmark only: `loom loop` with no
 positional ids runs the sole active work epic. It is never consulted by
 `loom todo` changed-spec discovery.
+
+**No empty remediation epics.** A work epic may be temporarily childless
+only while it carries `loom:todo` and is awaiting the todo agent's
+validated handoff. Remediation work epics created by `loom gate mint
+--tree` must not remain open with zero child beads: no actionable
+findings means no epic is created, and a failure after epic allocation
+but before the first child bead is created closes or otherwise
+neutralizes that epic and restores the `loom:active` bookmark to its
+pre-run state before the command returns.
 
 **Lifecycle events:**
 
@@ -2056,8 +2078,8 @@ positional ids runs the sole active work epic. It is never consulted by
   1. Parse the current `docs/README.md` spec index and spec files; any
      inconsistency blocks.
   2. Ensure exactly one spec epic per indexed spec. Missing spec epic
-     is created by the driver and marks that spec uninitialized for
-     this preflight. More than one blocks.
+     is created and immediately closed by the driver, and marks that
+     spec uninitialized for this preflight. More than one blocks.
   3. Read each spec epic's `loom.todo_cursor`. Missing cursor on a
      newly-created spec epic is expected and makes the spec changed;
      missing cursor on an existing spec epic blocks with an exact
@@ -2111,9 +2133,12 @@ positional ids runs the sole active work epic. It is never consulted by
   sole `loom:active` work epic. With one or more positional ids, each
   id may be an epic (run ready child work under that epic/molecule) or
   a task bead (run exactly that bead). Loop never narrows by spec.
-- **`loom gate mint --tree`** — creates remediation work under work
-  epics; spec epics remain metadata carriers and never receive normal
-  implementation children. See [gate.md — Findings and
+- **`loom gate mint --tree`** — creates standing safety-net remediation
+  work under one active work epic for the run, after suppression/dedup
+  proves at least one actionable child bead remains. Spec epics remain
+  metadata carriers and never receive normal implementation children. If
+  no child bead is actionable, no work epic is created and `loom:active`
+  is unchanged. See [gate.md — Findings and
   Minting](gate.md#findings-and-minting).
 
 **Todo success protocol.** The final non-empty line of a successful
@@ -2874,6 +2899,23 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       treated as no criteria or no work. Malformed criteria block
       preflight
   [test?](todo_missing_criterion_evidence_is_missing_not_clean)
+- `loom gate mint --tree` creates one standing remediation work epic for
+      all actionable tree-scope fix-up / blocked-clarify / clarify
+      beads in the run, parents every child under that epic, applies
+      `loom:active` to it, clears `loom:active` from any previous work
+      epic, and prints the epic id plus the follow-up `loom loop`
+      command
+  [test?](mint_tree_sets_single_active_remediation_work_epic)
+- `loom gate mint --tree` creates no work epic and leaves
+      `loom:active` unchanged when no actionable child bead remains
+      after suppression, dedup, and structural validation
+  [test?](mint_tree_no_actionable_findings_leaves_active_unchanged)
+- `loom gate mint --tree` never returns with an open active remediation
+      work epic that has zero child beads; failure before the first child
+      closes or neutralizes the epic and restores `loom:active` to its
+      pre-run state, while failure after at least one child leaves the
+      non-empty epic open/active for dedup-friendly rerun
+  [test?](mint_tree_never_leaves_empty_active_remediation_epic)
 - `loom loop [OPTIONS] [BEAD_OR_EPIC_ID ...]` runs the sole
       `loom:active` work epic when no ids are provided. Positional ids
       may be task beads (run exactly that bead) or epics (run ready
@@ -3429,6 +3471,10 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       spec as uninitialized/changed, and blocks when an existing spec
       epic lacks `loom.todo_cursor` metadata
   [test](todo_missing_spec_epic_initializes_existing_missing_cursor_blocks)
+- `loom todo` closes driver-created or already-open spec metadata epics
+      with reason `spec metadata carrier`, so spec epics do not remain
+      open solely because they carry metadata
+  [test](todo_preflight_closes_spec_metadata_epics)
 - `loom todo` rejects malformed, missing, non-ancestor, or unknown
       `loom.todo_cursor` SHAs with diagnostics that name the spec epic
       and repair surface
