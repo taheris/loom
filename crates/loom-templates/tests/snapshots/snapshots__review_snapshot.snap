@@ -1,6 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
-assertion_line: 359
+assertion_line: 369
 expression: ctx.render().unwrap()
 ---
 # Post-Epic Review
@@ -218,7 +218,7 @@ body for the full wire-format contract.
 Mocks are not forbidden. Each mock needs a discernible reason: cost,
 flakiness, isolating an orthogonal concern, driving a hard-to-trigger
 error path. A mock standing in for the very thing the test claims to
-test flags `mock`.
+test flags `mock-discipline`.
 
 **Acceptable mocks (no flag):**
 
@@ -271,10 +271,12 @@ rubric dimension — `loom gate verify` is the deterministic audit (see
 FR13 in `specs/harness.md` and *Surface-conformance audit* in
 `specs/gate.md`). Do not duplicate it in the LLM walk.
 
-Surface-drift findings produced by `loom gate verify` are still part
-of this review's input set. If a surface failure appears in the gate
-inputs alongside the diff, surface it as `surface-drift` in the flag
-emission with the offending command / flag named in the detail.
+Surface failures produced by `loom gate verify` are still part of this
+review's input set. Treat them as deterministic gate evidence: cite them
+in prose when they explain a conformance problem, but do **not** emit a
+separate LLM concern token for surface drift. If the diff itself creates
+a spec/code mismatch beyond the deterministic failure, use
+`spec-coherence-fail` with a `Criterion` target.
 
 ## Cross-Spec Walk (`--tree` scope only)
 
@@ -294,6 +296,10 @@ At `--bead` or `--diff` scope this walk is out of scope; only the
 touched spec section + bonded sibling specs are in view, and any
 cross-spec discrepancy noticed there falls under the per-section
 invariant-clash walk above.
+
+For each clash, emit a finding line with `token = "cross-spec-clash"`,
+a `Criterion` target naming the primary spec/anchor, every involved spec
+in `bonds`, and the other side(s) quoted in `evidence`.
 
 ## Template-vs-Spec Drift Walk (`--tree` scope only)
 
@@ -358,10 +364,10 @@ against each edited spec section:
   surface it here too if the edit introduces it.
 
 For each violation, emit a finding line with
-`token = "spec-conventions-violation"`, the spec file/line range in
-`target`, and the convention section by name in `evidence`. Terminate
-the walk with `LOOM_CONCERN` carrying a one-sentence summary per the
-wire-format contract in *Findings — Streaming Wire Format*.
+`token = "spec-conventions-violation"`, a `Criterion` target naming the
+offending spec/anchor, and the convention section by name in `evidence`.
+Terminate the walk with `LOOM_CONCERN` carrying a one-sentence summary
+per the wire-format contract in *Findings — Streaming Wire Format*.
 
 ## Style-Rule Conformance
 
@@ -547,6 +553,8 @@ the driver parses one line at a time.
 | `judge-flag` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` |
 | `invariant-clash` | `{"kind":"Invariant","spec":"<spec>","section":"<section>","tag":"<tag>"}` |
 | `template-spec-drift` | `{"kind":"Template","path":"<path>"}` — `--tree` scope only |
+| `cross-spec-clash` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` — `--tree` scope only |
+| `spec-conventions-violation` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` — `--tree` scope only |
 
 `scope-creep` and `scope-shortfall` are per-bead-only tokens; do not
 emit them at `--tree` scope. `template-spec-drift`, `cross-spec-clash`,
@@ -577,7 +585,8 @@ LOOM_FINDING: {"token":"concurrency-untested","route":"deferred","bonds":["harne
   rejects a violating finding with a typed parse error and fails the
   mint invocation. This rule applies to every token whose canonical
   target is `Criterion` (`spec-coherence-fail`,
-  `verifier-too-narrow`, `judge-flag`) and the `Invariant` target
+  `verifier-too-narrow`, `judge-flag`, `cross-spec-clash`,
+  `spec-conventions-violation`) and the `Invariant` target
   (`invariant-clash`). For `Invariant`, `section` must name an actual
   heading in the spec, and `tag` must be a short slug made from words
   that appear in that invariant's prose; do not invent labels.
@@ -675,6 +684,14 @@ The remaining tokens cover the other rubric dimensions:
 - `template-spec-drift` — at `--tree` scope, a prompt template under
   `crates/loom-templates/templates/` directs agents toward behaviour
   a spec contradicts (Invariant 3 from `specs/gate.md`).
+- `cross-spec-clash` — at `--tree` scope, sibling specs make duplicate,
+  paraphrased, or contradictory claims about a shared surface. Use a
+  `Criterion` target for the primary spec/anchor, include every involved
+  spec in `bonds`, and quote the other side(s) in `evidence`.
+- `spec-conventions-violation` — at `--tree` scope, a spec violates
+  `docs/spec-conventions.md` in a way that requires intent-aware review.
+  Use a `Criterion` target for the offending spec/anchor and name the
+  convention section in `evidence`.
 
 ### Streaming + terminator pairing rule
 
@@ -697,9 +714,10 @@ LOOM_CONCERN: {"summary":"<one-sentence summary of the strongest concern>"}
 The driver parses the payload with the same `serde_json` pipeline
 that consumes `LOOM_FINDING:` lines. Parse failures — invalid JSON,
 missing `summary`, empty `summary` — surface as the typed
-`BadWalk::Concern { payload }` recovery cause. The summary is for the
-verdict log only; per-finding routing is decided from each streamed
-finding's `route`, not from the terminal marker.
+`BadWalk::Concern { payload, parsed_findings }` recovery cause,
+preserving any well-formed findings streamed before the bad terminator.
+The summary is for the verdict log only; per-finding routing is decided
+from each streamed finding's `route`, not from the terminal marker.
 
 | Findings streamed | Terminator | Verdict |
 |---|---|---|
@@ -707,7 +725,7 @@ finding's `route`, not from the terminal marker.
 | ≥1 | `LOOM_CONCERN: {"summary":"..."}` | recovery — findings minted, summary threaded into `previous_failure` |
 | 0 | `LOOM_CONCERN: {...}` | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration |
 | ≥1 | `LOOM_COMPLETE` | `BadWalk::FindingsWithoutConcern { finding_count }` — findings streamed but terminator claims clean |
-| any | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload }` — payload parse failure subsumes any finding count |
+| any well-formed stream | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload, parsed_findings }` — payload parse failure preserves the literal payload and any well-formed findings |
 | any | missing or duplicate marker | `SwallowedMarker` (existing) |
 
 **Agent's mental model.** Review the diff. Every time you identify a
@@ -785,14 +803,16 @@ exactly one, on its own line, as the final output of the session.
   costs or risks you cannot weigh, or your judgement of the
   evidence is itself contestable.
 
-  **Persist the question and the canonical options block to bead
-  state before emitting the marker** — either by `bd create` on
-  a new clarify bead or by `bd update --notes` + `bd update
-  --add-label=loom:clarify` on an existing bead, per the Options
-  Format Contract in `specs/gate.md`. The gate does NOT parse
-  your prose for options: prose `Recommended:` / `Alternative:`
-  headings are NOT the canonical block and will downgrade the
-  bead to `loom:blocked` with cause `clarify-without-options`.
+  **Persist the question and the canonical options block to the target
+  bead before emitting the marker** — use `bd update --notes` or
+  `bd update --description` on the bead under dispatch (`loop` /
+  `review`) or on the injected `loom:todo` work epic (`todo`), per the
+  Options Format Contract in `specs/gate.md`. Do not create a separate
+  clarify bead for direct `LOOM_CLARIFY`; the verdict gate validates the
+  target bead's persisted block and applies `loom:clarify`. The gate
+  does NOT parse your prose for options: prose `Recommended:` /
+  `Alternative:` headings are NOT the canonical block and will downgrade
+  the bead to `loom:blocked` with cause `clarify-without-options`.
   The block MUST use the canonical heading shape:
 
   ```markdown
@@ -828,7 +848,7 @@ exactly one, on its own line, as the final output of the session.
   persisted to bead state — breaks fast-reply with `-a <int>` and
   leaves the options invisible to `loom inbox`'s queue.
 
-  After persisting, the gate applies `loom:clarify` to *this*
+  After persisting, the gate applies `loom:clarify` to the target
   bead and exits without entering recovery; other beads in the
   molecule continue running. The labelled bead waits for `loom
   inbox` resolution.

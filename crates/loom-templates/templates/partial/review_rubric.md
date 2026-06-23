@@ -71,7 +71,7 @@ body for the full wire-format contract.
 Mocks are not forbidden. Each mock needs a discernible reason: cost,
 flakiness, isolating an orthogonal concern, driving a hard-to-trigger
 error path. A mock standing in for the very thing the test claims to
-test flags `mock`.
+test flags `mock-discipline`.
 
 **Acceptable mocks (no flag):**
 
@@ -124,10 +124,12 @@ rubric dimension — `loom gate verify` is the deterministic audit (see
 FR13 in `specs/harness.md` and *Surface-conformance audit* in
 `specs/gate.md`). Do not duplicate it in the LLM walk.
 
-Surface-drift findings produced by `loom gate verify` are still part
-of this review's input set. If a surface failure appears in the gate
-inputs alongside the diff, surface it as `surface-drift` in the flag
-emission with the offending command / flag named in the detail.
+Surface failures produced by `loom gate verify` are still part of this
+review's input set. Treat them as deterministic gate evidence: cite them
+in prose when they explain a conformance problem, but do **not** emit a
+separate LLM concern token for surface drift. If the diff itself creates
+a spec/code mismatch beyond the deterministic failure, use
+`spec-coherence-fail` with a `Criterion` target.
 
 ## Cross-Spec Walk (`--tree` scope only)
 
@@ -147,6 +149,10 @@ At `--bead` or `--diff` scope this walk is out of scope; only the
 touched spec section + bonded sibling specs are in view, and any
 cross-spec discrepancy noticed there falls under the per-section
 invariant-clash walk above.
+
+For each clash, emit a finding line with `token = "cross-spec-clash"`,
+a `Criterion` target naming the primary spec/anchor, every involved spec
+in `bonds`, and the other side(s) quoted in `evidence`.
 
 ## Template-vs-Spec Drift Walk (`--tree` scope only)
 
@@ -211,10 +217,10 @@ against each edited spec section:
   surface it here too if the edit introduces it.
 
 For each violation, emit a finding line with
-`token = "spec-conventions-violation"`, the spec file/line range in
-`target`, and the convention section by name in `evidence`. Terminate
-the walk with `LOOM_CONCERN` carrying a one-sentence summary per the
-wire-format contract in *Findings — Streaming Wire Format*.
+`token = "spec-conventions-violation"`, a `Criterion` target naming the
+offending spec/anchor, and the convention section by name in `evidence`.
+Terminate the walk with `LOOM_CONCERN` carrying a one-sentence summary
+per the wire-format contract in *Findings — Streaming Wire Format*.
 
 ## Style-Rule Conformance
 

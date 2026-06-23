@@ -51,6 +51,8 @@ the driver parses one line at a time.
 | `judge-flag` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` |
 | `invariant-clash` | `{"kind":"Invariant","spec":"<spec>","section":"<section>","tag":"<tag>"}` |
 | `template-spec-drift` | `{"kind":"Template","path":"<path>"}` — `--tree` scope only |
+| `cross-spec-clash` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` — `--tree` scope only |
+| `spec-conventions-violation` | `{"kind":"Criterion","spec":"<spec>","anchor":"<anchor>"}` — `--tree` scope only |
 
 `scope-creep` and `scope-shortfall` are per-bead-only tokens; do not
 emit them at `--tree` scope. `template-spec-drift`, `cross-spec-clash`,
@@ -81,7 +83,8 @@ LOOM_FINDING: {"token":"concurrency-untested","route":"deferred","bonds":["harne
   rejects a violating finding with a typed parse error and fails the
   mint invocation. This rule applies to every token whose canonical
   target is `Criterion` (`spec-coherence-fail`,
-  `verifier-too-narrow`, `judge-flag`) and the `Invariant` target
+  `verifier-too-narrow`, `judge-flag`, `cross-spec-clash`,
+  `spec-conventions-violation`) and the `Invariant` target
   (`invariant-clash`). For `Invariant`, `section` must name an actual
   heading in the spec, and `tag` must be a short slug made from words
   that appear in that invariant's prose; do not invent labels.
@@ -148,6 +151,14 @@ The remaining tokens cover the other rubric dimensions:
 - `template-spec-drift` — at `--tree` scope, a prompt template under
   `crates/loom-templates/templates/` directs agents toward behaviour
   a spec contradicts (Invariant 3 from `specs/gate.md`).
+- `cross-spec-clash` — at `--tree` scope, sibling specs make duplicate,
+  paraphrased, or contradictory claims about a shared surface. Use a
+  `Criterion` target for the primary spec/anchor, include every involved
+  spec in `bonds`, and quote the other side(s) in `evidence`.
+- `spec-conventions-violation` — at `--tree` scope, a spec violates
+  `docs/spec-conventions.md` in a way that requires intent-aware review.
+  Use a `Criterion` target for the offending spec/anchor and name the
+  convention section in `evidence`.
 
 ### Streaming + terminator pairing rule
 
@@ -170,9 +181,10 @@ LOOM_CONCERN: {"summary":"<one-sentence summary of the strongest concern>"}
 The driver parses the payload with the same `serde_json` pipeline
 that consumes `LOOM_FINDING:` lines. Parse failures — invalid JSON,
 missing `summary`, empty `summary` — surface as the typed
-`BadWalk::Concern { payload }` recovery cause. The summary is for the
-verdict log only; per-finding routing is decided from each streamed
-finding's `route`, not from the terminal marker.
+`BadWalk::Concern { payload, parsed_findings }` recovery cause,
+preserving any well-formed findings streamed before the bad terminator.
+The summary is for the verdict log only; per-finding routing is decided
+from each streamed finding's `route`, not from the terminal marker.
 
 | Findings streamed | Terminator | Verdict |
 |---|---|---|
@@ -180,7 +192,7 @@ finding's `route`, not from the terminal marker.
 | ≥1 | `LOOM_CONCERN: {"summary":"..."}` | recovery — findings minted, summary threaded into `previous_failure` |
 | 0 | `LOOM_CONCERN: {...}` | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration |
 | ≥1 | `LOOM_COMPLETE` | `BadWalk::FindingsWithoutConcern { finding_count }` — findings streamed but terminator claims clean |
-| any | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload }` — payload parse failure subsumes any finding count |
+| any well-formed stream | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload, parsed_findings }` — payload parse failure preserves the literal payload and any well-formed findings |
 | any | missing or duplicate marker | `SwallowedMarker` (existing) |
 
 **Agent's mental model.** Review the diff. Every time you identify a

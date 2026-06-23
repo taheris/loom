@@ -1,6 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
-assertion_line: 197
+assertion_line: 201
 expression: ctx.render().unwrap()
 ---
 # Implementation Step
@@ -237,14 +237,16 @@ exactly one, on its own line, as the final output of the session.
   costs or risks you cannot weigh, or your judgement of the
   evidence is itself contestable.
 
-  **Persist the question and the canonical options block to bead
-  state before emitting the marker** — either by `bd create` on
-  a new clarify bead or by `bd update --notes` + `bd update
-  --add-label=loom:clarify` on an existing bead, per the Options
-  Format Contract in `specs/gate.md`. The gate does NOT parse
-  your prose for options: prose `Recommended:` / `Alternative:`
-  headings are NOT the canonical block and will downgrade the
-  bead to `loom:blocked` with cause `clarify-without-options`.
+  **Persist the question and the canonical options block to the target
+  bead before emitting the marker** — use `bd update --notes` or
+  `bd update --description` on the bead under dispatch (`loop` /
+  `review`) or on the injected `loom:todo` work epic (`todo`), per the
+  Options Format Contract in `specs/gate.md`. Do not create a separate
+  clarify bead for direct `LOOM_CLARIFY`; the verdict gate validates the
+  target bead's persisted block and applies `loom:clarify`. The gate
+  does NOT parse your prose for options: prose `Recommended:` /
+  `Alternative:` headings are NOT the canonical block and will downgrade
+  the bead to `loom:blocked` with cause `clarify-without-options`.
   The block MUST use the canonical heading shape:
 
   ```markdown
@@ -280,7 +282,7 @@ exactly one, on its own line, as the final output of the session.
   persisted to bead state — breaks fast-reply with `-a <int>` and
   leaves the options invisible to `loom inbox`'s queue.
 
-  After persisting, the gate applies `loom:clarify` to *this*
+  After persisting, the gate applies `loom:clarify` to the target
   bead and exits without entering recovery; other beads in the
   molecule continue running. The labelled bead waits for `loom
   inbox` resolution.
