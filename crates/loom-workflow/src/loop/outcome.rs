@@ -107,13 +107,19 @@ pub enum AgentOutcome {
 /// `bd update --add-label loom:blocked --notes <cause>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BeadResult {
-    /// Bead succeeded. The driver does **not** call `bd close` — closure is
-    /// the agent's responsibility per `specs/harness.md`'s verdict-gate
+    /// Bead succeeded with integration work ready for the molecule-level
+    /// handoff. The driver does **not** call `bd close` — closure is the
+    /// agent's responsibility per `specs/harness.md`'s verdict-gate
     /// table, where `bd-closed` is an observable rather than a driver
     /// action. If the agent forgot to close on `LOOM_COMPLETE`, the next
     /// `loom review` invocation routes that to `incomplete-signaling`
     /// recovery.
     Done,
+
+    /// Agent intentionally contributed no integration commit (`LOOM_NOOP`).
+    /// The bead is terminal for this pass, but there is no new molecule diff
+    /// for the durable push gate to review.
+    Noop,
 
     /// Agent self-reported `LOOM_CLARIFY` or retries exhausted — caller
     /// flags the bead with `loom:clarify` and writes `note` as

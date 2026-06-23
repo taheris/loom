@@ -19,12 +19,11 @@
 //! 5. on bead success observes the agent's own `bd close` — the driver
 //!    never closes a dispatched bead (closure is the agent's job per the
 //!    verdict-gate `bd-closed` observable);
-//! 6. on molecule completion (no more ready beads) execs the FR1
-//!    handoff: `loom gate verify --diff <molecule.base_commit>..HEAD`
-//!    then `loom gate review --diff <molecule.base_commit>..HEAD` —
-//!    continuous mode only; scope is the molecule's own diff (not
-//!    `--tree`). The outer loop then re-polls `bd ready` and iterates
-//!    on any newly-ready fix-up beads, bounded by
+//! 6. after ready work drains, execs the FR1 handoff:
+//!    `loom gate verify --diff <molecule.base_commit>..HEAD` then
+//!    `loom gate review --diff <molecule.base_commit>..HEAD`; scope is
+//!    the molecule's own diff (not `--tree`). The outer loop then re-polls
+//!    `bd ready` and iterates on any newly-ready fix-up beads, bounded by
 //!    `[loop] max_iterations`.
 //!
 //! `--parallel N > 1` (worktree parallelism) lives in [`parallel`]. The
@@ -66,7 +65,7 @@ pub use profile::{DEFAULT_PROFILE, resolve_profile, resolve_profile_image};
 pub use retry::{RetryDecision, RetryPolicy};
 pub use runner::{
     AgentLoopController, CONFLICT_RETRY_LABEL, INFRA_PREFLIGHT_CAUSE, INFRA_REPEATED_CAUSE,
-    LoopMode, UNKNOWN_PROFILE_CAUSE, run_loop,
+    UNKNOWN_PROFILE_CAUSE, run_loop,
 };
 pub use spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 pub use tree_clean::{TREE_NOT_CLEAN_CAP, dirty_paths_from_porcelain};

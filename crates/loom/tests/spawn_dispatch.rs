@@ -109,8 +109,8 @@ fn install_wrix_shim(
 
 /// Install a wrix shim that commits one file in the bead workspace named by
 /// `SpawnConfig.workspace`, then delegates to mock-pi `happy-path` so the
-/// run-phase marker is `LOOM_COMPLETE`. This models a real worker that left
-/// `.loom/integration` ahead of origin after an explicit task-root loop.
+/// run-phase marker is `LOOM_COMPLETE`. The test review shim is deliberately
+/// push-free, so local integration advances remain visible between roots.
 fn install_wrix_commit_shim(dir: &Path, mock_agent: &Path) -> PathBuf {
     let shim = dir.join("wrix");
     let bash = find_bash();
@@ -647,10 +647,9 @@ fn loom_todo_writes_jsonl_log_under_workspace_logs_dir() {
 /// `<workspace>/.loom/logs/<spec>/<bead-id>-<utc>.jsonl`. Guards
 /// against the regression where the production sequential controller
 /// passed `None` for the sink and every agent event was discarded. The
-/// bd stub returns one ready bead so `LoopMode::Once` exercises the full
-/// `next_ready_bead` → `run_bead` → `close_bead` path; the wrix shim
-/// and mock-pi finish the protocol so the sink reaches `session_complete`
-/// before being dropped.
+/// bd stub returns one ready bead, and the wrix shim plus mock-pi finish
+/// the protocol so the sink reaches `session_complete` before being
+/// dropped.
 #[test]
 fn loom_loop_bead_writes_per_bead_jsonl_log() {
     let dir = tempfile::tempdir().unwrap();
@@ -936,6 +935,10 @@ fn loom_loop_multiple_task_roots_does_not_rerun_startup_fast_forward() {
         "both task roots must run in one invocation. stdout={stdout} stderr={stderr}",
     );
     assert!(
+        stdout.matches("gate=success").count() >= 2,
+        "each explicit task root must run the push-gate handoff. stdout={stdout} stderr={stderr}",
+    );
+    assert!(
         !stderr.contains("integration fast-forward failed"),
         "startup fast-forward must not rerun between positional task roots. stderr={stderr}",
     );
@@ -959,7 +962,7 @@ fn loom_loop_multiple_task_roots_does_not_rerun_startup_fast_forward() {
     assert_eq!(
         String::from_utf8_lossy(&ahead.stdout).trim(),
         "2",
-        "explicit task roots should leave two local integration commits and still complete the invocation",
+        "the push-free review stub leaves both local integration commits visible",
     );
 }
 

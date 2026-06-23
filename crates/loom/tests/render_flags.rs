@@ -62,6 +62,22 @@ fn write_minimal_manifest(dir: &Path) -> PathBuf {
     manifest
 }
 
+fn install_loom_gate_stub(dir: &Path) -> PathBuf {
+    let stub = dir.join("loom-gate-stub.sh");
+    std::fs::write(
+        &stub,
+        "#!/usr/bin/env bash\n\
+         set -euo pipefail\n\
+         if [[ \"${2:-}\" == \"review\" ]]; then\n\
+             echo 'LOOM_COMPLETE'\n\
+         fi\n",
+    )
+    .expect("write loom gate stub");
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod loom gate stub");
+    stub
+}
+
 fn run_loom_with_flags(
     workspace: &Path,
     bin_dir: &Path,
@@ -77,6 +93,7 @@ fn run_loom_with_flags(
 
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     let mock_agent = env!("CARGO_BIN_EXE_mock-loom-agent");
+    let loom_gate_stub = install_loom_gate_stub(workspace);
 
     Command::new(loom_bin)
         .arg("--workspace")
@@ -89,7 +106,7 @@ fn run_loom_with_flags(
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", mock_agent)
         .env("LOOM_TEST_AGENT_MODE", "complete-marker")
-        .env("LOOM_BIN", loom_bin)
+        .env("LOOM_BIN", loom_gate_stub)
         .env("LOOM_PROFILES_MANIFEST", manifest)
         .env("BD_STATE_DIR", state_dir)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))

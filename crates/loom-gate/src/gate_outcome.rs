@@ -430,7 +430,7 @@ pub enum GateFailReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoGateReason {
     NoBeadsReady,
-    OncePartial,
+    SelectionPartial,
 }
 
 #[must_use]

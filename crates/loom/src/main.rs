@@ -37,7 +37,7 @@ use loom_workflow::inbox::{
     find_by_proposal_id, parse_options_in,
 };
 use loom_workflow::r#loop::{
-    GateOutcome, LoopMode, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
+    GateOutcome, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
     REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV, REVIEW_SPEC_LABEL_ENV, RetryPolicy,
     SessionResult, run_loop,
 };
@@ -2547,10 +2547,9 @@ fn run_loop_cmd(
     }
 
     // Origin reconciliation is invocation startup, not per selected root.
-    // Explicit task roots can intentionally leave `.loom/integration` ahead
-    // of origin with a `NoGate` outcome; rerunning the startup fast-forward
-    // before the next positional bead would misclassify that in-invocation
-    // advance as pre-existing divergence.
+    // A root can leave `.loom/integration` ahead when its push gate fails;
+    // rerunning the startup fast-forward before the next positional bead
+    // would misclassify that in-invocation advance as pre-existing divergence.
     let mut startup_reconcile = StartupReconcile::FastForward;
     for root in &roots {
         let outcome = run_sequential_loop_root(
@@ -2621,7 +2620,7 @@ impl LoopOutcomeAccumulator {
                 reason: if self.beads_processed == 0 {
                     NoGateReason::NoBeadsReady
                 } else {
-                    NoGateReason::OncePartial
+                    NoGateReason::SelectionPartial
                 },
             },
         };
@@ -2710,10 +2709,6 @@ fn run_sequential_loop_root(
     let work_root_guard = acquire_work_root_lock(workspace, root.id.as_str())?;
     prepare_loop_root(runtime, workspace, root, &config.loom, startup_reconcile)?;
 
-    let mode = match &root.kind {
-        LoopWorkRootKind::Task => LoopMode::Once,
-        LoopWorkRootKind::Epic => LoopMode::Continuous,
-    };
     let label = root.label.clone();
     let fixed_bead = matches!(&root.kind, LoopWorkRootKind::Task).then(|| root.bead.clone());
     let ready_parent = root.ready_parent.clone();
@@ -2803,7 +2798,7 @@ fn run_sequential_loop_root(
             controller = controller.with_ready_parent(parent);
         }
         controller = controller.with_handoff_lock(work_root_guard);
-        run_loop(&mut controller, mode, retry_policy, max_iterations).await
+        run_loop(&mut controller, retry_policy, max_iterations).await
     })?;
     // The marker is minted inside the molecule-completion push gate's
     // critical section (review_loop's Clean path → `mint_marker` →
@@ -3173,7 +3168,7 @@ async fn run_parallel_loop(
         outer_iterations: 0,
         gate: GateOutcome::NoGate {
             beads_processed: processed,
-            reason: NoGateReason::OncePartial,
+            reason: NoGateReason::SelectionPartial,
         },
     })
 }

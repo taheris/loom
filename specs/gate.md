@@ -292,7 +292,7 @@ The verdict is encoded in [`GateOutcome`](harness.md#loop-outcome-types):
 `Success` only when the typed gate evidence matches the final
 pushable state; `Fail` on any failure with the reason explicit;
 `NoGate` only for legitimate "no work to gate" terminals
-(`NoBeadsReady`, `OncePartial`). The `GateSuccess` struct is sealed, so
+(`NoBeadsReady`, `SelectionPartial`). The `GateSuccess` struct is sealed, so
 a clean `loom loop` exit without the gate actually firing is
 unrepresentable. The standing safety net is scheduled, not
 load-bearing for any individual push — its job is to catch verifier-

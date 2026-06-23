@@ -18,7 +18,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use loom_driver::agent::{AgentRuntime, ProtocolError, SpawnConfig};
 use loom_driver::bd::{
@@ -881,15 +881,19 @@ where
         self.release_handoff_lock_for_child_gate();
         let actual = self.git.prepare_actual_push_range().await?;
         let diff_range = actual.range.clone();
-        let phase_when = SystemClock::new().wall_now();
+        let mut phase_when = SystemClock::new().wall_now();
+        let review_log_path = self.logs_root.as_deref().map(|root| {
+            let mut path = phase_log_path(root, &self.label, "review", phase_when);
+            while path.exists() {
+                phase_when += Duration::from_secs(1);
+                path = phase_log_path(root, &self.label, "review", phase_when);
+            }
+            path
+        });
         let phase_when_millis = phase_when
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0);
-        let review_log_path = self
-            .logs_root
-            .as_deref()
-            .map(|root| phase_log_path(root, &self.label, "review", phase_when));
         self.git.run_pre_push_chain().await?;
         let config_digest = pre_commit_config_digest(&self.workspace)?;
         if let Some(path) = review_log_path.as_deref() {
