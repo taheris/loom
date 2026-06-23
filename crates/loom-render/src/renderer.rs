@@ -158,6 +158,13 @@ fn display_width(s: &str) -> usize {
     width
 }
 
+fn driver_event_is_warning(payload: &Value) -> bool {
+    payload
+        .get("severity")
+        .and_then(Value::as_str)
+        .is_some_and(|severity| severity == "warning")
+}
+
 /// State captured at `ToolCall` time so the matching `ToolResult` can
 /// finalize the pair with the same context. The spec calls this out
 /// explicitly as the `HashMap<ToolCallId, PendingToolCall>` that lets a
@@ -696,15 +703,26 @@ impl TerminalRenderer {
             AgentEvent::DriverEvent {
                 driver_kind,
                 summary,
+                payload,
                 ..
             } => {
                 self.close_stream_lines()?;
                 self.close_in_flight("…")?;
                 let kind_wire = driver_kind.as_wire();
-                let line = if self.parallel {
-                    format!("  [{}] → {kind_wire}: {summary}\n", self.bead_id.as_str(),)
+                let warning = driver_event_is_warning(payload);
+                let glyph = if warning { "⚠" } else { "→" };
+                let glyph = if warning && self.color {
+                    format!("{ANSI_YELLOW}{glyph}{ANSI_RESET}")
                 } else {
-                    format!("  → {kind_wire}: {summary}\n")
+                    glyph.to_string()
+                };
+                let line = if self.parallel {
+                    format!(
+                        "  [{}] {glyph} {kind_wire}: {summary}\n",
+                        self.bead_id.as_str(),
+                    )
+                } else {
+                    format!("  {glyph} {kind_wire}: {summary}\n")
                 };
                 self.out.write_all(line.as_bytes())?;
                 self.out.flush()?;
@@ -2141,6 +2159,7 @@ mod tests {
             "container_spawn",
             "container_oom",
             "infra_failure",
+            "stall_watchdog",
             "token_usage",
             "offload",
             "duplicate_tool_result",

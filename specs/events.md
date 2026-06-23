@@ -139,13 +139,13 @@ loudly rather than silently mis-rendering a log.
 
 Driver events describe host-side work: bead dispatch, container spawn/OOM,
 verdict routing, retry dispatch, gate runs, push-gate walks/refusals/clean
-passes, bd state transitions, observer signals, token usage, and Direct
-output offload. They use `source: "driver"` and render as driver rows in the
-same chronological timeline as agent output.
+passes, bd state transitions, observer signals, stall watchdogs, token usage,
+and Direct output offload. They use `source: "driver"` and render as driver
+rows in the same chronological timeline as agent output.
 
 Known `driver_kind` wire values include `verdict_gate`, `retry_dispatch`,
 `push_gate_walk`, `push_gate_refuse`, `push_gate_clean`, `container_spawn`,
-`container_oom`, `infra_failure`, `token_usage`, `offload`,
+`container_oom`, `infra_failure`, `stall_watchdog`, `token_usage`, `offload`,
 `duplicate_tool_result`, `doom_loop_tripped`, `epic_auto_closed`,
 `bead_branch_pushed`, `merge_ok`, `merge_conflict`, `integration_conflict`,
 `signature_verification_failed`, `worktree_cleanup_ok`, and `tree_not_clean`.
@@ -305,11 +305,11 @@ not abort the run.
 - Cancellation finalizes any in-place running row before the closing output
   [test](run_finish_finalizes_dangling_running_indicator)
 - Agent-event bookkeeping tracing is trace-level diagnostics, not default terminal `INFO` output
-  [test?](agent_event_bookkeeping_uses_trace_level)
+  [test](agent_event_bookkeeping_uses_trace_level)
 - Stall watchdogs produce warning-severity driver rows without repeated timestamped terminal spam
-  [test?](stall_watchdog_renders_coalesced_warning_row)
+  [test](stall_watchdog_renders_coalesced_warning_row)
 - `loom loop --trace` mirrors raw Rust tracing diagnostics to stderr without changing event rendering
-  [test?](loop_trace_flag_mirrors_tracing_to_stderr)
+  [test](loop_trace_flag_mirrors_tracing_to_stderr)
 - Renderer mode selection supports Pretty, Plain, Json, and Raw
   [test](renderer_modes_present)
 - Plain mode is selected for non-TTY stdout, `NO_COLOR`, or `--plain`

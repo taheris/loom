@@ -27,7 +27,7 @@ use loom_driver::logging::{BeadOutcome, LogSink};
 use loom_events::{
     DriverKind, EnvelopeBuilder, EventSink, ParsedAgentEvent, SessionCommand, Source,
 };
-use tracing::{debug, info, warn};
+use tracing::{info, trace, warn};
 
 use crate::r#loop::SessionResult;
 use crate::observer::DefaultObserverChain;
@@ -154,19 +154,34 @@ pub async fn run_agent_classified<B: AgentBackend>(
         stall_warn_secs = stall_window.as_secs(),
         "agent spawned; sending initial prompt",
     );
-    let mut session =
-        match prompt_with_stall_warn(session, &config.initial_prompt, stall_window, &clock).await {
-            Ok(s) => s,
-            Err(err) => {
-                let error_str = err.to_string();
-                emit_midsession_failure_event(sink.as_mut(), envelope_builder.as_mut(), &error_str);
-                finish_sink(sink, BeadOutcome::Failed);
-                return SessionResult::MidSessionFailed { error: error_str };
-            }
-        };
+    let mut session = match prompt_with_stall_warn(
+        session,
+        &config.initial_prompt,
+        stall_window,
+        &clock,
+        &mut sink,
+        &mut envelope_builder,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(err) => {
+            let error_str = err.to_string();
+            emit_midsession_failure_event(sink.as_mut(), envelope_builder.as_mut(), &error_str);
+            finish_sink(sink, BeadOutcome::Failed);
+            return SessionResult::MidSessionFailed { error: error_str };
+        }
+    };
     info!("prompt sent; awaiting agent events");
     loop {
-        let next = next_event_with_stall_warn(&mut session, stall_window, &clock).await;
+        let next = next_event_with_stall_warn(
+            &mut session,
+            stall_window,
+            &clock,
+            &mut sink,
+            &mut envelope_builder,
+        )
+        .await;
         let parsed = match next {
             Ok(Some(event)) => event,
             Ok(None) => {
@@ -301,66 +316,165 @@ pub async fn run_agent_classified<B: AgentBackend>(
     }
 }
 
-/// Drive [`AgentSession::prompt`] to completion while emitting a periodic
-/// `warn!` every `stall_window` that the write hasn't returned. Closes the
-/// visibility gap between `B::spawn` returning and the first agent event:
-/// for the claude backend that window is the container starting up and
-/// claude opening stdin, and a slow consumer can leave the pipe write
-/// blocked with no log output. `stall_window == Duration::ZERO` disables
-/// the watchdog (used by tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DriverSeverity {
+    Warning,
+}
+
+impl DriverSeverity {
+    fn as_wire(self) -> &'static str {
+        match self {
+            DriverSeverity::Warning => "warning",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StallPhase {
+    PromptWrite,
+    AwaitEvent,
+}
+
+impl StallPhase {
+    fn as_wire(self) -> &'static str {
+        match self {
+            StallPhase::PromptWrite => "prompt_write",
+            StallPhase::AwaitEvent => "await_event",
+        }
+    }
+
+    fn summary(self) -> &'static str {
+        match self {
+            StallPhase::PromptWrite => {
+                "still writing initial prompt to agent — agent stdin not draining yet"
+            }
+            StallPhase::AwaitEvent => "no agent event for stall window — still waiting",
+        }
+    }
+}
+
+/// Drive [`AgentSession::prompt`] to completion while surfacing one
+/// coalesced stall watchdog event when the write remains pending past
+/// `stall_window`. Closes the visibility gap between `B::spawn` returning
+/// and the first agent event: for the claude backend that window is the
+/// container starting up and claude opening stdin, and a slow consumer can
+/// leave the pipe write blocked with no log output. `stall_window ==
+/// Duration::ZERO` disables the watchdog (used by tests).
 async fn prompt_with_stall_warn(
     session: AgentSession<Idle>,
     msg: &str,
     stall_window: Duration,
     clock: &dyn Clock,
+    sink: &mut Option<LogSink>,
+    envelope_builder: &mut Option<EnvelopeBuilder>,
 ) -> Result<AgentSession<Active>, ProtocolError> {
     let fut = session.prompt(msg);
     if stall_window.is_zero() {
         return fut.await;
     }
     tokio::pin!(fut);
+    let mut stall_event_emitted = false;
     loop {
         let sleep = clock.sleep(stall_window);
         tokio::select! {
             biased;
             result = &mut fut => return result,
-            () = sleep => warn!(
-                stall_secs = stall_window.as_secs(),
-                "still writing initial prompt to agent — agent stdin not draining yet",
+            () = sleep => record_stall_watchdog_tick(
+                sink,
+                envelope_builder,
+                StallPhase::PromptWrite,
+                stall_window,
+                &mut stall_event_emitted,
             ),
         }
     }
 }
 
-/// Poll [`AgentSession::next_event`] while emitting a periodic `warn!`
-/// every `stall_window` of silence. The warning does not abort the run —
-/// claude can legitimately think for minutes — but it ends the silent
-/// stare at the terminal so the operator can decide whether to intervene.
+/// Poll [`AgentSession::next_event`] while surfacing one coalesced stall
+/// watchdog event for a silence window. The warning does not abort the
+/// run — claude can legitimately think for minutes — but it ends the
+/// silent stare at the terminal so the operator can decide whether to
+/// intervene.
 ///
 /// `stall_window == Duration::ZERO` disables the watchdog explicitly. A
 /// fresh `clock.sleep(stall_window)` is created on every loop iteration so
-/// each warning resets the silence window.
+/// the trace-only diagnostic still tracks repeated watchdog ticks without
+/// emitting repeated renderer rows.
 async fn next_event_with_stall_warn(
     session: &mut AgentSession<Active>,
     stall_window: Duration,
     clock: &dyn Clock,
+    sink: &mut Option<LogSink>,
+    envelope_builder: &mut Option<EnvelopeBuilder>,
 ) -> Result<Option<ParsedAgentEvent>, ProtocolError> {
     let next = session.next_event();
     if stall_window.is_zero() {
         return next.await;
     }
     tokio::pin!(next);
+    let mut stall_event_emitted = false;
     loop {
         let sleep = clock.sleep(stall_window);
         tokio::select! {
             biased;
             result = &mut next => return result,
-            () = sleep => warn!(
-                stall_secs = stall_window.as_secs(),
-                "no agent event for stall window — still waiting",
+            () = sleep => record_stall_watchdog_tick(
+                sink,
+                envelope_builder,
+                StallPhase::AwaitEvent,
+                stall_window,
+                &mut stall_event_emitted,
             ),
         }
     }
+}
+
+fn record_stall_watchdog_tick(
+    sink: &mut Option<LogSink>,
+    envelope_builder: &mut Option<EnvelopeBuilder>,
+    phase: StallPhase,
+    stall_window: Duration,
+    stall_event_emitted: &mut bool,
+) {
+    let stall_secs = stall_window.as_secs();
+    if *stall_event_emitted {
+        trace!(
+            phase = phase.as_wire(),
+            stall_secs, "stall watchdog tick coalesced into prior driver event",
+        );
+        return;
+    }
+    *stall_event_emitted = true;
+    match phase {
+        StallPhase::PromptWrite => warn!(
+            stall_secs,
+            "still writing initial prompt to agent — agent stdin not draining yet",
+        ),
+        StallPhase::AwaitEvent => warn!(
+            stall_secs,
+            "no agent event for stall window — still waiting",
+        ),
+    }
+    emit_stall_watchdog_event(sink, envelope_builder, phase, stall_window);
+}
+
+fn emit_stall_watchdog_event(
+    sink: &mut Option<LogSink>,
+    envelope_builder: &mut Option<EnvelopeBuilder>,
+    phase: StallPhase,
+    stall_window: Duration,
+) {
+    emit_driver_event(
+        sink.as_mut(),
+        envelope_builder.as_mut(),
+        DriverKind::StallWatchdog,
+        phase.summary(),
+        serde_json::json!({
+            "severity": DriverSeverity::Warning.as_wire(),
+            "phase": phase.as_wire(),
+            "stall_secs": stall_window.as_secs(),
+        }),
+    );
 }
 
 /// Fallback `EnvelopeBuilder` for phase-level spawns (todo/check/inbox)
@@ -513,20 +627,7 @@ fn emit_midsession_failure_event(
 
 fn log_agent_event(event: &AgentEvent) {
     let summary = summarize_event(event);
-    if is_high_volume_log_event(event) {
-        debug!(event = %summary, "agent event");
-    } else {
-        info!(event = %summary, "agent event");
-    }
-}
-
-fn is_high_volume_log_event(event: &AgentEvent) -> bool {
-    matches!(
-        event,
-        AgentEvent::ThinkingDelta { .. }
-            | AgentEvent::ToolcallDelta { .. }
-            | AgentEvent::ToolProgress { .. }
-    )
+    trace!(event = %summary, "agent event");
 }
 
 fn summarize_event(event: &AgentEvent) -> String {
@@ -595,6 +696,25 @@ mod tests {
     use loom_events::identifier::{BeadId, SpecLabel};
     use std::path::PathBuf;
     use std::time::SystemTime;
+
+    #[derive(Clone)]
+    struct SharedBufferWriter {
+        inner: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+
+    impl std::io::Write for SharedBufferWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.inner
+                .lock()
+                .map_err(|_| std::io::Error::other("poisoned"))?
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn phase_bead_id_parses() {
@@ -789,24 +909,99 @@ mod tests {
         }));
     }
 
+    fn capture_agent_event_log(filter: &str, event: &AgentEvent) -> String {
+        let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = SharedBufferWriter {
+            inner: buffer.clone(),
+        };
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+            .with_writer(move || writer.clone())
+            .without_time()
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+        tracing::dispatcher::with_default(&dispatch, || log_agent_event(event));
+        let bytes = buffer.lock().expect("not poisoned").clone();
+        String::from_utf8(bytes).expect("utf-8 log output")
+    }
+
     #[test]
-    fn high_volume_agent_events_are_debug_only() {
-        assert!(!is_high_volume_log_event(&text_delta_event()));
-        assert!(is_high_volume_log_event(&AgentEvent::ThinkingDelta {
-            envelope: sample_envelope(),
-            text: "x".into(),
-        }));
-        assert!(is_high_volume_log_event(&AgentEvent::ToolcallDelta {
-            envelope: sample_envelope(),
-            id: loom_events::identifier::ToolCallId::new("tc-1"),
-            delta: "x".into(),
-        }));
-        assert!(is_high_volume_log_event(&AgentEvent::ToolProgress {
-            envelope: sample_envelope(),
-            id: loom_events::identifier::ToolCallId::new("tc-1"),
-            text: "progress".into(),
-        }));
-        assert!(!is_high_volume_log_event(&tool_call_event()));
+    fn agent_event_bookkeeping_uses_trace_level() {
+        let event = text_delta_event();
+        let debug_output = capture_agent_event_log("debug", &event);
+        assert!(
+            debug_output.is_empty(),
+            "agent event bookkeeping must not be debug/info output: {debug_output:?}",
+        );
+        let trace_output = capture_agent_event_log("trace", &event);
+        assert!(trace_output.contains("agent event"), "{trace_output:?}");
+        assert!(trace_output.contains("message_delta"), "{trace_output:?}");
+    }
+
+    #[test]
+    fn stall_watchdog_renders_coalesced_warning_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let label = SpecLabel::new("emit-test");
+        let bead = BeadId::new("lm-emit").expect("bead id");
+        let render_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let renderer = Box::new(loom_driver::logging::TerminalRenderer::new(
+            Box::new(SharedBufferWriter {
+                inner: render_buffer.clone(),
+            }),
+            loom_driver::logging::RenderMode::Default,
+            bead.clone(),
+            false,
+            false,
+        ));
+        let sink = LogSink::open_in_at(
+            dir.path(),
+            &label,
+            &bead,
+            Some(renderer),
+            SystemTime::UNIX_EPOCH,
+        )
+        .expect("open sink");
+        let path = sink.log_path().to_path_buf();
+        let mut sink = Some(sink);
+        let mut b = Some(builder());
+        let mut emitted = false;
+        record_stall_watchdog_tick(
+            &mut sink,
+            &mut b,
+            StallPhase::AwaitEvent,
+            Duration::from_secs(30),
+            &mut emitted,
+        );
+        record_stall_watchdog_tick(
+            &mut sink,
+            &mut b,
+            StallPhase::AwaitEvent,
+            Duration::from_secs(30),
+            &mut emitted,
+        );
+        finish_sink(sink, BeadOutcome::Failed);
+
+        let events = read_jsonl(&path);
+        assert_eq!(
+            events.len(),
+            1,
+            "repeated stall ticks in one silence window coalesce into one row",
+        );
+        assert_eq!(events[0]["kind"], "driver_event");
+        assert_eq!(events[0]["driver_kind"], "stall_watchdog");
+        assert_eq!(events[0]["source"], "driver");
+        assert_eq!(events[0]["payload"]["severity"], "warning");
+        assert_eq!(events[0]["payload"]["phase"], "await_event");
+        assert_eq!(events[0]["payload"]["stall_secs"], 30);
+
+        let render = String::from_utf8(render_buffer.lock().expect("not poisoned").clone())
+            .expect("utf-8 render");
+        assert!(render.contains('⚠'), "{render:?}");
+        assert!(render.contains("stall_watchdog"), "{render:?}");
+        assert!(
+            render.contains("no agent event for stall window"),
+            "{render:?}",
+        );
     }
 
     /// Spec criterion: "Driver treats any `SessionCommand::Abort`

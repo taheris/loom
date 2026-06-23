@@ -20,6 +20,10 @@ pub enum DriverKind {
     ContainerSpawn,
     ContainerOom,
     InfraFailure,
+    /// Agent session made no visible progress for the configured stall
+    /// watchdog window while the driver kept waiting. Payload fields:
+    /// `severity`, `phase`, `stall_secs`.
+    StallWatchdog,
     /// Per-call token accounting emitted by `llm` after every
     /// `complete*` so SaaS billing pipelines tail the live event stream
     /// instead of re-parsing provider responses.
@@ -106,6 +110,7 @@ impl DriverKind {
             DriverKind::ContainerSpawn => "container_spawn",
             DriverKind::ContainerOom => "container_oom",
             DriverKind::InfraFailure => "infra_failure",
+            DriverKind::StallWatchdog => "stall_watchdog",
             DriverKind::TokenUsage => "token_usage",
             DriverKind::Offload => "offload",
             DriverKind::DuplicateToolResult => "duplicate_tool_result",
@@ -139,6 +144,7 @@ impl DriverKind {
             "container_spawn" => DriverKind::ContainerSpawn,
             "container_oom" => DriverKind::ContainerOom,
             "infra_failure" => DriverKind::InfraFailure,
+            "stall_watchdog" => DriverKind::StallWatchdog,
             "token_usage" => DriverKind::TokenUsage,
             "offload" => DriverKind::Offload,
             "duplicate_tool_result" => DriverKind::DuplicateToolResult,
@@ -1290,6 +1296,7 @@ mod tests {
             "container_spawn",
             "container_oom",
             "infra_failure",
+            "stall_watchdog",
             "token_usage",
             "offload",
             "duplicate_tool_result",
@@ -1394,6 +1401,7 @@ mod tests {
             ("container_spawn", DriverKind::ContainerSpawn),
             ("container_oom", DriverKind::ContainerOom),
             ("infra_failure", DriverKind::InfraFailure),
+            ("stall_watchdog", DriverKind::StallWatchdog),
             ("token_usage", DriverKind::TokenUsage),
             ("offload", DriverKind::Offload),
             ("duplicate_tool_result", DriverKind::DuplicateToolResult),

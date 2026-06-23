@@ -509,6 +509,9 @@ enum Command {
         /// recovery hint. Mutually exclusive with `--raw`.
         #[arg(long, short = 'v', conflicts_with = "raw")]
         verbose: bool,
+        /// Mirror raw Rust tracing diagnostics to stderr.
+        #[arg(long)]
+        trace: bool,
     },
     /// Quality gate — annotation-dispatched verifiers and LLM rubric.
     Gate {
@@ -697,15 +700,32 @@ fn replace_commands_section(help: &str, grouped: &str) -> String {
     out
 }
 
-fn main() -> ExitCode {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+fn init_tracing(command: &Command) {
+    let Some(default_filter) = tracing_default_filter(command) else {
+        return;
+    };
+    let filter = match tracing_subscriber::EnvFilter::try_from_default_env() {
+        Ok(filter) => filter,
+        Err(_) => tracing_subscriber::EnvFilter::new(default_filter),
+    };
+    if let Err(error) = tracing_subscriber::fmt()
+        .with_env_filter(filter)
         .with_writer(std::io::stderr)
-        .try_init();
+        .try_init()
+    {
+        eprintln!("loom: failed to initialize tracing: {error}");
+    }
+}
 
+fn tracing_default_filter(command: &Command) -> Option<&'static str> {
+    match command {
+        Command::Loop { trace, .. } if *trace => Some("trace"),
+        Command::Loop { .. } => None,
+        _ => Some("info"),
+    }
+}
+
+fn main() -> ExitCode {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     if args_request_top_level_help(&raw_args) {
         print_grouped_help();
@@ -713,6 +733,7 @@ fn main() -> ExitCode {
     }
 
     let cli = Cli::parse();
+    init_tracing(&cli.command);
 
     if std::env::var_os(LOOM_INSIDE_ENV).is_some() && cli.command.refused_inside_loom() {
         eprintln!(
@@ -762,6 +783,7 @@ fn main() -> ExitCode {
             json,
             raw,
             verbose,
+            trace: _,
         } => run_loop_cmd(
             &workspace,
             work_roots,

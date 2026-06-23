@@ -62,13 +62,13 @@ fn write_minimal_manifest(dir: &Path) -> PathBuf {
     manifest
 }
 
-fn run_loom_with_flag(
+fn run_loom_with_flags(
     workspace: &Path,
     bin_dir: &Path,
     state_dir: &Path,
     manifest: &Path,
     bead_id: &str,
-    flag: &str,
+    flags: &[&str],
 ) -> std::process::Output {
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let mut entries: Vec<PathBuf> = vec![bin_dir.to_path_buf()];
@@ -85,7 +85,7 @@ fn run_loom_with_flag(
         .arg("pi")
         .arg("loop")
         .arg(bead_id)
-        .arg(flag)
+        .args(flags)
         .env("PATH", new_path)
         .env("LOOM_WRIX_BIN", mock_agent)
         .env("LOOM_TEST_AGENT_MODE", "complete-marker")
@@ -98,6 +98,17 @@ fn run_loom_with_flag(
         .env_remove("LOOM_INSIDE")
         .output()
         .expect("spawn loom")
+}
+
+fn run_loom_with_flag(
+    workspace: &Path,
+    bin_dir: &Path,
+    state_dir: &Path,
+    manifest: &Path,
+    bead_id: &str,
+    flag: &str,
+) -> std::process::Output {
+    run_loom_with_flags(workspace, bin_dir, state_dir, manifest, bead_id, &[flag])
 }
 
 fn setup(workspace: &Path) -> (PathBuf, PathBuf, PathBuf) {
@@ -242,6 +253,74 @@ fn loom_loop_plain_flag_emits_no_ansi_escapes_on_stdout() {
         !stdout.contains('\x1b'),
         "plain mode must not emit ANSI escape bytes in stdout: {stdout:?}",
     );
+}
+
+#[test]
+fn loom_loop_without_trace_keeps_agent_bookkeeping_off_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let (state_dir, bin_dir, manifest) = setup(workspace);
+
+    let bead = "lm-r5n";
+    let spec = "rendertest";
+    seed_bead(
+        &state_dir,
+        bead,
+        "render flag pin",
+        "Drives loom loop without raw tracing enabled.\n",
+        &[&format!("spec:{spec}"), "profile:base"],
+    );
+
+    let output = run_loom_with_flag(workspace, &bin_dir, &state_dir, &manifest, bead, "--plain");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "loom loop <bead-id> --plain must exit 0.\nstdout={stdout}\nstderr={stderr}",
+    );
+    assert!(
+        !stderr.contains("agent event") && !stderr.contains("message_delta"),
+        "agent bookkeeping must be hidden unless --trace is set: {stderr:?}",
+    );
+}
+
+#[test]
+fn loop_trace_flag_mirrors_tracing_to_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let (state_dir, bin_dir, manifest) = setup(workspace);
+
+    let bead = "lm-r5t";
+    let spec = "rendertest";
+    seed_bead(
+        &state_dir,
+        bead,
+        "render flag pin",
+        "Drives loom loop --trace against the mock agent.\n",
+        &[&format!("spec:{spec}"), "profile:base"],
+    );
+
+    let output = run_loom_with_flags(
+        workspace,
+        &bin_dir,
+        &state_dir,
+        &manifest,
+        bead,
+        &["--plain", "--trace"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "loom loop <bead-id> --plain --trace must exit 0.\nstdout={stdout}\nstderr={stderr}",
+    );
+    assert!(stdout.contains("LOOM_COMPLETE"), "{stdout:?}");
+    assert!(
+        !stdout.contains("agent event") && !stdout.contains("message_delta"),
+        "--trace must not change renderer stdout: {stdout:?}",
+    );
+    assert!(stderr.contains("agent event"), "{stderr:?}");
+    assert!(stderr.contains("message_delta"), "{stderr:?}");
 }
 
 #[test]

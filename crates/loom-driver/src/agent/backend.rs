@@ -133,9 +133,10 @@ pub struct SpawnConfig {
     )]
     pub handshake_timeout: Option<Duration>,
     /// Cadence for the run-loop stall watchdog: when no agent event arrives
-    /// within this window, [`run_agent`] emits a `warn!` line and keeps
-    /// waiting. `Some(Duration::ZERO)` disables the watchdog explicitly;
-    /// `None` means the workflow's [`DEFAULT_STALL_WARN_SECS`] applies.
+    /// within this window, [`run_agent`] emits a coalesced warning driver
+    /// event and keeps waiting. `Some(Duration::ZERO)` disables the watchdog
+    /// explicitly; `None` means the workflow's [`DEFAULT_STALL_WARN_SECS`]
+    /// applies.
     ///
     /// [`run_agent`]: ../../../loom_workflow/fn.run_agent.html
     #[serde(
