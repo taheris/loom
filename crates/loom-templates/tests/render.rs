@@ -934,6 +934,59 @@ fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> 
 }
 
 #[test]
+fn review_self_report_markers_do_not_authorize_bd_writes() -> Result<()> {
+    let ctx = ReviewContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        label: SpecLabel::new("alpha"),
+        spec_path: "specs/alpha.md".to_string(),
+        companion_paths: vec![],
+        beads_summary: None,
+        base_commit: None,
+        molecule_id: None,
+        test_sources: vec![],
+        judge_rubrics: vec![],
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        style_rules: "docs/style-rules.md".to_string(),
+        lane: ReviewLane::Both,
+        default_profile: ProfileName::new("base"),
+        skill_index: SkillIndexMarkdown::empty(),
+    };
+    let out = ctx.render()?;
+
+    assert!(
+        out.contains("Review Self-Report Markers"),
+        "review prompt must render the review-specific self-report partial: {out}",
+    );
+    assert!(
+        out.contains("Review is inspection-only") && out.contains("Do not mutate `bd` state"),
+        "review self-report guidance must forbid bd mutation: {out}",
+    );
+    for forbidden in [
+        "Persist the question and the canonical options block to the target",
+        "bead notes (`bd update <id> --notes",
+        "Cross-session follow-up work → a new bead (`bd create",
+        "After persisting, the gate applies `loom:clarify` to the target",
+        "`bd update --description` on the bead under dispatch",
+    ] {
+        assert!(
+            !out.contains(forbidden),
+            "review prompt must not render direct bd-backed self-report guidance `{forbidden}`: {out}",
+        );
+    }
+    assert!(
+        out.contains("do **not** use direct `LOOM_CLARIFY`")
+            && out.contains("`route=\"clarify\"`")
+            && out.contains("`evidence`"),
+        "review clarifications must route through finding evidence, not direct LOOM_CLARIFY: {out}",
+    );
+    assert!(
+        out.contains("use `LOOM_BLOCKED` instead"),
+        "review guidance must name LOOM_BLOCKED for no-options dead ends: {out}",
+    );
+    Ok(())
+}
+
+#[test]
 fn inbox_renders_clarify_items_with_options() -> Result<()> {
     let mut item = inbox_item(
         "lm-clar.1",

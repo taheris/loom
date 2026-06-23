@@ -20,18 +20,21 @@ lost.
   re-explore them.
 
 **What NOT to put here.** Anything that needs to outlive this session belongs
-in a durable destination, not the scratchpad:
+in a phase-authorized durable destination, not the scratchpad:
 
 - Decisions, design rationale, or open questions that future sessions need →
-  bead notes (`bd update <id> --notes "..."`) or the spec file (`specs/<label>.md`).
+  the durable surface this phase authorizes (spec/index markdown, bead state,
+  implementation notes, or finding evidence). If this phase is inspection-only,
+  surface the state through its output protocol instead of writing state directly.
 - Implementation context for future agents → spec file or `AGENTS.md` /
-  companion docs.
+  companion docs when this phase authorizes those edits.
 - Why a change was made → the commit message.
-- Cross-session follow-up work → a new bead (`bd create ...`).
+- Cross-session follow-up work → the phase-authorized work queue or output
+  protocol, never the scratchpad alone.
 
 The scratchpad will be deleted when this session ends. If a thought is worth
-keeping past session end, write it to one of the durable destinations above
-**before** you finish.
+keeping past session end, move it to the authorized durable destination for
+this phase **before** you finish.
 
 **How to append.** Append to the file directly — for example,
 `echo "..." >> .loom/scratch/<key>/scratch.md` or via the Edit tool.

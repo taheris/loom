@@ -31,12 +31,12 @@ exactly one, on its own line, as the final output of the session.
   evidence is itself contestable.
 
   **Persist the question and the canonical options block to the target
-  bead before emitting the marker** — use `bd update --notes` or
-  `bd update --description` on the bead under dispatch (`loop` /
-  `review`) or on the injected `loom:todo` work epic (`todo`), per the
-  Options Format Contract in `specs/gate.md`. Do not create a separate
-  clarify bead for direct `LOOM_CLARIFY`; the verdict gate validates the
-  target bead's persisted block and applies `loom:clarify`. The gate
+  bead/work epic before emitting the marker** — use `bd update --notes` or
+  `bd update --description` on the bead under dispatch (`loop`) or on the
+  injected `loom:todo` work epic (`todo`), per the Options Format Contract
+  in `specs/gate.md`. Do not create a separate clarify bead for direct
+  `LOOM_CLARIFY`; the verdict gate validates the target bead/work epic's
+  persisted block and applies `loom:clarify`. The gate
   does NOT parse your prose for options: prose `Recommended:` /
   `Alternative:` headings are NOT the canonical block and will downgrade
   the bead to `loom:blocked` with cause `clarify-without-options`.
@@ -45,17 +45,17 @@ exactly one, on its own line, as the final output of the session.
 {% include "partial/options_format.md" %}
 
   After persisting, the gate applies `loom:clarify` to the target
-  bead and exits without entering recovery; other beads in the
-  molecule continue running. The labelled bead waits for `loom
-  inbox` resolution.
+  bead/work epic and exits without entering recovery; other beads in the
+  molecule continue running. The labelled bead or work epic waits for
+  `loom inbox` resolution.
 - `LOOM_BLOCKED` — Genuine dead end: you cannot proceed and have
   no candidate resolutions to enumerate. Write the reason on the
   line immediately before the marker (the gate only reads the most
   recent non-empty prior line — multi-paragraph prose is NOT
-  captured). The gate applies `loom:blocked` to *this* bead and
-  exits without entering recovery; other beads in the molecule
-  continue running. The labelled bead waits for human resolution
-  via `loom inbox`. **If you can enumerate options, do NOT use
+  captured). The gate applies `loom:blocked` to the target bead/work epic
+  and exits without entering recovery; other beads in the molecule
+  continue running. The labelled bead or work epic waits for human
+  resolution via `loom inbox`. **If you can enumerate options, do NOT use
   `LOOM_BLOCKED`** — use `LOOM_CLARIFY` above so the candidate
   resolutions reach bead state.
 
@@ -64,8 +64,10 @@ by a decision you cannot make alone, with ≥2 viable resolutions?
 → CLARIFY (a recommended path with prose alternatives is NOT
 clarify — file the plan directly). dead end? → BLOCKED.
 
-**Worker-phase only.** These three self-report markers are valid
-in worker phases only (`loop`, `todo`, `review`). Interactive sessions
-(`plan`, `inbox`) emit `LOOM_COMPLETE` only — the human is in the room and resolves
-friction in-turn, so the cannot-finish terminators are out of
-scope for those templates.
+**Direct worker self-reports only.** These instructions apply to direct
+self-reports from `loop` and `todo`. `review` uses a review-specific
+self-report partial because review is inspection-only and routes
+clarify-worthy decisions through finding evidence instead of direct bd
+persistence. Interactive sessions (`plan`, `inbox`) emit `LOOM_COMPLETE`
+only — the human is in the room and resolves friction in-turn, so the
+cannot-finish terminators are out of scope for those templates.

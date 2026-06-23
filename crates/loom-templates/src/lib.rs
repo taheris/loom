@@ -131,10 +131,15 @@ pub const PARTIAL_PROGRESS_MARKERS: &str = include_str!("../templates/partial/pr
 /// success marker contract.
 pub const PARTIAL_TODO_SUCCESS: &str = include_str!("../templates/partial/todo_success.md");
 
-/// `partial/self_report_markers.md` — worker-phase cannot-finish
+/// `partial/self_report_markers.md` — direct loop/todo cannot-finish
 /// terminators (`LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`).
 pub const PARTIAL_SELF_REPORT_MARKERS: &str =
     include_str!("../templates/partial/self_report_markers.md");
+
+/// `partial/review_self_report_markers.md` — review-only cannot-complete
+/// guidance that preserves inspection-only review semantics.
+pub const PARTIAL_REVIEW_SELF_REPORT_MARKERS: &str =
+    include_str!("../templates/partial/review_self_report_markers.md");
 
 /// `partial/options_format.md` — canonical `## Options — <summary>` /
 /// `### Option N — <title>` markdown block consumed by `loom inbox`'s

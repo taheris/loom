@@ -889,18 +889,18 @@ converge on.
 The walk terminates with exactly one terminator on the final
 non-empty line (per [harness.md § Verdict
 Gate](harness.md#verdict-gate)): `LOOM_COMPLETE`, `LOOM_CONCERN`,
-`LOOM_RETRY`, `LOOM_BLOCKED`, or `LOOM_CLARIFY`. `LOOM_RETRY`
-indicates the walk could not complete for environmental reasons
-(logs corrupt, workspace inaccessible, transient IO) and a fresh
-dispatch should retry the walk — preferred over `LOOM_BLOCKED` for
-the "I couldn't review" failure mode unless the reviewer also has
-no candidate resolution to enumerate. `LOOM_BLOCKED` / `LOOM_CLARIFY`
-mean the walk could not complete and the reviewer either has no
-candidate resolution (blocked) or has a structured `## Options — …`
-to surface for human resolution (clarify); see the marker
-definitions for semantics. `LOOM_COMPLETE` and `LOOM_CONCERN` are
-the verdict-carrying terminators and are governed by the pairing
-rule below.
+`LOOM_RETRY`, or `LOOM_BLOCKED`. `LOOM_RETRY` indicates the walk could
+not complete for environmental reasons (logs corrupt, workspace
+inaccessible, transient IO) and a fresh dispatch should retry the walk —
+preferred over `LOOM_BLOCKED` for the "I couldn't review" failure mode
+unless the reviewer also has no candidate resolution to enumerate.
+`LOOM_BLOCKED` means the walk could not complete and the reviewer has no
+candidate resolution to surface. Direct `LOOM_CLARIFY` is not a review
+terminator: a reviewer that can enumerate options emits a
+`route="clarify"` finding with the Options block in `evidence` and
+terminates with `LOOM_CONCERN`. `LOOM_COMPLETE` and `LOOM_CONCERN` are
+the verdict-carrying terminators and are governed by the pairing rule
+below.
 
 **`LOOM_CONCERN` payload — JSON shape and parse discipline.** The
 payload is a JSON object with a single required field, `summary`,
@@ -964,9 +964,11 @@ match the stream: `LOOM_COMPLETE` means zero findings,
 templates that need to talk about these markers `{% include %}`
 that partial; they never restate the format. The bare-marker
 partials (`partial/progress_markers.md` for `LOOM_COMPLETE` /
-`LOOM_NOOP`, `partial/self_report_markers.md` for `LOOM_RETRY` /
-`LOOM_BLOCKED` / `LOOM_CLARIFY`) describe those markers' generic
-semantics; they do not redefine the review-walk markers.
+`LOOM_NOOP`, `partial/self_report_markers.md` for loop/todo
+`LOOM_RETRY` / `LOOM_BLOCKED` / `LOOM_CLARIFY`, and
+`partial/review_self_report_markers.md` for review cannot-complete
+self-reports) describe bare-marker semantics without redefining the
+review-walk markers.
 
 A `[check]`-tier verifier enforces this mechanically: it scans
 every file under `crates/loom-templates/templates/` for the literal
@@ -2367,7 +2369,7 @@ mode* on absence are uniform:
 | Path | Writer of the options block | Where the block lives | Validator | Failure mode |
 |---|---|---|---|---|
 | **Mint-from-finding** (worker phase emits `LOOM_FINDING` with a clarify-route token) | Rubric agent — embeds the block inside `evidence` | Mint extracts from `evidence` into the minted bead's description | `loom gate mint` (per *Deferred remediation processing* step 4) | Fall back to `loom:blocked` cause `clarify-without-options` |
-| **Direct-emit `LOOM_CLARIFY`** (worker phase emits the marker; target bead is the bead under dispatch for `loop` / `review`, the `loom:todo` work epic for `todo` per [templates.md — Decomposition Discipline](templates.md#decomposition-discipline)) | The worker agent itself, via `bd update --notes` / `bd update --description` against the target bead before emitting the marker | The target bead's notes or description | Verdict gate (per [harness.md § Verdict Gate](harness.md#verdict-gate) marker definitions) | Fall back to `loom:blocked` cause `clarify-without-options` |
+| **Direct-emit `LOOM_CLARIFY`** (`loop` / `todo` worker emits the marker; target is the bead under dispatch for `loop`, or the `loom:todo` work epic for `todo` per [templates.md — Decomposition Discipline](templates.md#decomposition-discipline)) | The worker agent itself, via `bd update --notes` / `bd update --description` against the target before emitting the marker | The target bead/work epic's notes or description | Verdict gate (per [harness.md § Verdict Gate](harness.md#verdict-gate) marker definitions) | Fall back to `loom:blocked` cause `clarify-without-options` |
 | **Existing-bead promotion** (chat agent in `loom inbox chat` upgrades a `loom:blocked` bead) | The chat agent, with human authorization | The bead's notes (added via `bd update --notes` before `bd update --add-label=loom:clarify`) | None — the chat agent has bd-write authority and the human authorizes each turn (per [harness.md § Inbox Modes](harness.md#inbox-modes)) | n/a (no automatic validation; if the chat agent skips the options write, the human catches it next turn) |
 
 The structural enforcement at the chokepoint is what makes
@@ -2381,7 +2383,9 @@ because chat is human-authoritative.
 **The gate does not scrape free-form stdout for `## Options` /
 `### Option N` blocks.** Only the structured locations above carry
 the canonical contract — `evidence` for mint-from-finding, bead
-notes/description for direct-emit and existing-bead paths.
+notes/description for loop/todo direct-emit and existing-bead paths.
+Review clarifications use the mint-from-finding path; review prompts do
+not direct agents to mutate bd state.
 
 ### Resolution lifecycle
 
@@ -2670,10 +2674,11 @@ and conservative fall-through for unowned queries.
   "route": "blocking|deferred|clarify", "bonds": [...], "target":
   {"kind": ..., ...}, "evidence": ...}`
   [test](mint_walk_emits_loom_finding_json_lines_streamed_per_finding)
-- The walk terminates with exactly one of `LOOM_COMPLETE`,
-  `LOOM_CONCERN: {"summary": "..."}`, `LOOM_RETRY`, `LOOM_BLOCKED`,
-  or `LOOM_CLARIFY`; a walk that emits `LOOM_FINDING:` lines without
-  a terminal marker fails the mint invocation with non-zero exit
+- The review walk terminates with exactly one of `LOOM_COMPLETE`,
+  `LOOM_CONCERN: {"summary": "..."}`, `LOOM_RETRY`, or `LOOM_BLOCKED`;
+  review clarifications are `route="clarify"` findings with Options in
+  `evidence`, and a walk that emits `LOOM_FINDING:` lines without a
+  terminal marker fails the mint invocation with non-zero exit
   [test](mint_walk_without_terminal_marker_fails_run)
 - A walk that terminates with `LOOM_RETRY` (review itself could not
   run for environmental reasons) routes to recovery cause

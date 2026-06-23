@@ -93,7 +93,8 @@ Current and target v1 set; pending additions are marked in the pinning matrix:
 | `skill_index.md` | Target v1 partial that renders the compact skill index produced by `loom-skills`: skill `name`, `description`, and paths when disclosure mode requires them. Full skill bodies are not pinned into the prompt. |
 | `progress_markers.md` | Document `LOOM_COMPLETE` success and the loop-only `LOOM_NOOP` empty-diff success terminator. **Not pinned in `todo.md`** because todo success is the typed `LOOM_TODO:` payload, not a generic complete/no-op marker. |
 | `todo_success.md` | Document the todo-specific success terminator `LOOM_TODO: <json>` and the `loom-protocol::todo::TodoSuccess` shape. Pinned only by `todo.md`. |
-| `self_report_markers.md` | Document worker-phase cannot-finish terminators `LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`. Pinned in worker phases (`todo`, `loop`, `review`) only. |
+| `self_report_markers.md` | Document direct loop/todo cannot-finish terminators `LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`, including bd-backed persistence for direct `LOOM_CLARIFY` in those phases. |
+| `review_self_report_markers.md` | Document review-only cannot-complete terminators while preserving inspection-only review: no bd mutation instructions, and clarify-worthy decisions route through `route="clarify"` findings instead of direct `LOOM_CLARIFY`. |
 | `options_format.md` | Carry the canonical `## Options — <summary>` / `### Option N — <title>` markdown block consumed by `loom inbox`'s chat-drafter, per [gate.md § Options Format Contract](gate.md#options-format-contract). |
 | `findings_walk.md` | Sole carrier of the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed review wire format per [gate.md § Findings and Minting](gate.md#findings-and-minting). Pinned only by `review.md`; an anti-drift verifier fails any other template that restates the wire format. |
 | `chat_marker_final_turn_only.md` | Restrict interactive-session terminal markers to the **final** assistant turn. `plan` may emit `LOOM_COMPLETE`; `inbox` may emit `LOOM_COMPLETE` or `LOOM_APPLY: {"proposals":[...]}`. Included by `plan` and `inbox`. |
@@ -151,7 +152,8 @@ walker input](gate.md#pending-support-in-structured-walker-input).
 | `skill_index.md` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `progress_markers.md` | ✓ |  | ✓ | ✓ |  |
 | `todo_success.md` |  | ✓ |  |  |  |
-| `self_report_markers.md` |  | ✓ | ✓ | ✓ |  |
+| `self_report_markers.md` |  | ✓ | ✓ |  |  |
+| `review_self_report_markers.md` |  |  |  | ✓ |  |
 | `findings_walk.md` |  |  |  | ✓ |  |
 | `options_format.md` |  | ✓ | ✓ | ✓ |  |
 | `chat_marker_final_turn_only.md` | ✓ |  |  |  | ✓ |
@@ -166,6 +168,14 @@ walker input](gate.md#pending-support-in-structured-walker-input).
 Pending cells mark planned include-graph updates whose prompt code has
 not landed yet. The walker permits those cells while absent and reports
 them as stale once the include graph catches up.
+
+**Self-report guidance is phase-specific.** `self_report_markers.md` is
+pinned only in `loop` and `todo`, where direct `LOOM_CLARIFY` persists
+the options block to the bead or work epic before the marker. `review`
+pins `review_self_report_markers.md` instead: review remains
+inspection-only, so clarify-worthy decisions are emitted as
+`route="clarify"` findings with Options in `evidence`, or as
+`LOOM_BLOCKED` when the reviewer cannot articulate options.
 
 **`style_rules.md` is pinned only in `loop` and `review`** — the two
 phases that write or evaluate code. Other phases don't write or
@@ -731,10 +741,12 @@ consuming the `LOOM_FINDING:` lines),
 — logs corrupt, workspace inaccessible, transient IO — and a fresh
 dispatch should retry it; per [harness.md § Verdict
 Gate](harness.md#verdict-gate) this consumes one
-`[loop] max_retries` slot), `LOOM_BLOCKED` (the walk cannot complete
-and the reviewer has no candidate resolution to enumerate), or
-`LOOM_CLARIFY` (the walk surfaces a spec ambiguity the reviewer can
-frame as `## Options — …` for human resolution).
+`[loop] max_retries` slot), or `LOOM_BLOCKED` (the walk cannot complete
+and the reviewer has no candidate resolution to enumerate).
+Direct `LOOM_CLARIFY` is not a review terminal: if the reviewer can
+frame options, it emits a `route="clarify"` finding with the canonical
+Options block in `evidence` and terminates with `LOOM_CONCERN`; if it
+cannot articulate options, it emits `LOOM_BLOCKED`.
 The terminator must satisfy the **pairing rule**: `LOOM_CONCERN`
 iff ≥1 findings streamed, `LOOM_COMPLETE` iff zero — a mismatch
 routes to `RecoveryCause::BadWalk(BadWalk)` per [harness.md §
@@ -1206,14 +1218,24 @@ documents in front of the agent with zero configuration.
   per the partial split documented in [gate.md § Findings and
   Minting](gate.md#findings-and-minting)
   [check](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/progress_markers.md")
-- `partial/self_report_markers.md` covers the worker-phase self-report
+- `partial/self_report_markers.md` covers direct loop/todo self-report
   markers (`LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`) and contains
   no `LOOM_CONCERN:` or `LOOM_FINDING:` literal
   [check](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/self_report_markers.md")
+- `partial/review_self_report_markers.md` covers review-only
+  cannot-complete guidance, forbids bd mutation, and contains no
+  `LOOM_CONCERN:` or `LOOM_FINDING:` literal
+  [check](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/review_self_report_markers.md")
+- Rendered `review.md` prompts include review-specific self-report
+  guidance that forbids bd mutation, omits direct bd-backed
+  `LOOM_CLARIFY` persistence instructions, and routes clarify-worthy
+  decisions through `route=\"clarify\"` finding evidence or
+  `LOOM_BLOCKED` when no options can be articulated
+  [test](review_self_report_markers_do_not_authorize_bd_writes)
 - Interactive-session templates (`plan.md`, `inbox.md`) deliberately
-  **omit** `self_report_markers.md` because the worker-phase
+  **omit** direct and review self-report partials because the worker-phase
   cannot-finish markers are not valid emit options for interactive
-  sessions — the human resolves friction in-turn. Including the partial
+  sessions — the human resolves friction in-turn. Including either partial
   would teach interactive agents about markers they cannot emit
   [check](cargo run -p loom-walk -- template_pinning_matrix)
 - The partial body names `LOOM_RETRY` semantics distinctively
@@ -1227,11 +1249,17 @@ documents in front of the agent with zero configuration.
   block. The discriminator (can the agent enumerate options?) is
   named explicitly
   [check](grep -qi 'candidate resolution\|enumerate options' crates/loom-templates/templates/partial/self_report_markers.md)
-- The partial body identifies the worker-phase scoping: `LOOM_RETRY`,
-  `LOOM_CLARIFY`, `LOOM_BLOCKED` are valid in worker phases (`loop`,
-  `todo`, `review`) only; interactive sessions (`plan`, `inbox`) do not emit
-  worker self-report markers because the human resolves friction in-turn
-  [check](grep -qi 'worker.*phase\|interactive.*session' crates/loom-templates/templates/partial/self_report_markers.md)
+- The direct partial body identifies the direct worker scope:
+  `LOOM_CLARIFY` persistence applies to `loop` and `todo`, while review
+  uses review-specific finding evidence; interactive sessions (`plan`,
+  `inbox`) do not emit worker self-report markers because the human
+  resolves friction in-turn
+  [check](grep -qi 'loop.*todo\|review-specific\|interactive.*session' crates/loom-templates/templates/partial/self_report_markers.md)
+- The review self-report partial names the review discriminator:
+  retry for fresh-dispatch environmental failures, clarify-worthy
+  decisions as `route="clarify"` findings, and dead ends with no options
+  as `LOOM_BLOCKED`
+  [check](grep -qi 'route="clarify"\|Review is inspection-only\|LOOM_BLOCKED' crates/loom-templates/templates/partial/review_self_report_markers.md)
 
 ### Mint default-profile
 
@@ -1611,7 +1639,7 @@ documents in front of the agent with zero configuration.
     `loom:todo` work epic, and use `LOOM_TODO: <json>` as the only
     success marker. `LOOM_CLARIFY` targets the work epic with a
     `## Options — …` block when coverage cannot be determined.
-18. **Self-report marker taxonomy.** The worker-phase self-report
+18. **Self-report marker taxonomy.** Direct loop/todo self-report
     markers form a three-way taxonomy carried by
     `partial/self_report_markers.md`:
     - `LOOM_RETRY` — this attempt cannot finish but a fresh dispatch
@@ -1624,22 +1652,28 @@ documents in front of the agent with zero configuration.
       driver populates `PreviousFailure::AgentRetry { reason }`
       with the prose the agent wrote on the line preceding the
       marker.
-    - `LOOM_CLARIFY` — the agent has framed a decision the human
-      must resolve and can enumerate the candidate paths as a
-      structured `## Options — …` block per
+    - `LOOM_CLARIFY` — in `loop` and `todo`, the agent has framed a
+      decision the human must resolve and can enumerate the candidate
+      paths as a structured `## Options — …` block per
       [gate.md § Options Format Contract](gate.md#options-format-contract).
-      Routes to `loom:clarify` for human resolution via `loom inbox`.
+      The agent persists the block to the bead/work epic before the
+      marker, and the verdict gate routes to `loom:clarify` for human
+      resolution via `loom inbox`.
     - `LOOM_BLOCKED` — genuine dead end: the agent cannot proceed
       and has no candidate resolutions to enumerate. Routes to
       `loom:blocked`; `loom inbox chat` walks the human through
       candidate enumeration in-session.
 
-    The semantic discriminator between the three is explicit and
-    grep-able in the partial body: "expect retry to succeed? →
-    RETRY. can you enumerate options? → CLARIFY. dead end? → BLOCKED."
-    The taxonomy applies to worker phases only (`loop`, `todo`,
-    `review`); interactive sessions (`plan`, `inbox`) do not emit worker
-    self-report markers — the human resolves friction in-turn. `inbox` may emit
+    Review uses `partial/review_self_report_markers.md` instead of the
+    direct partial. The review partial preserves inspection-only review:
+    it forbids bd mutation, treats direct `LOOM_CLARIFY` as the wrong
+    review path, and sends clarify-worthy decisions through
+    `route="clarify"` finding evidence with the canonical Options block.
+    The semantic discriminator remains explicit: "expect retry to
+    succeed? → RETRY. can you enumerate options? → CLARIFY (direct in
+    loop/todo, finding-routed in review). dead end? → BLOCKED."
+    Interactive sessions (`plan`, `inbox`) do not emit worker self-report
+    markers — the human resolves friction in-turn. `inbox` may emit
     `LOOM_APPLY: {"proposals":[...]}` when it requests the trusted driver to
     apply accepted tune proposals.
 19. **Options-block requirement on clarify-bound findings.**

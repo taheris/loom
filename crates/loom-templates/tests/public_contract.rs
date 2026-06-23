@@ -8,11 +8,12 @@ use loom_templates::{
     BadWalk, ConcernToken, Finding, FindingTarget, LoopContext,
     PARTIAL_CHAT_MARKER_FINAL_TURN_ONLY, PARTIAL_COMPANIONS_CONTEXT, PARTIAL_CONTEXT_PINNING,
     PARTIAL_FINDINGS_WALK, PARTIAL_INTERVIEW_MODES, PARTIAL_INVARIANT_CLASH,
-    PARTIAL_PLAN_STAGE_RUBRIC, PARTIAL_PROGRESS_MARKERS, PARTIAL_REVIEW_RUBRIC, PARTIAL_SCRATCHPAD,
-    PARTIAL_SELF_REPORT_MARKERS, PARTIAL_SIBLING_SPEC_EDITING, PARTIAL_SKILL_INDEX,
-    PARTIAL_SPEC_CONVENTIONS, PARTIAL_SPEC_HEADER, PARTIAL_STYLE_RULES, PARTIAL_TODO_SUCCESS,
-    PinnedContext, PlanContext, PreviousFailure, SkillIndexMarkdown, SpecImplementationNotes,
-    TodoChangedSpec, TodoContext, VerifierFailure,
+    PARTIAL_PLAN_STAGE_RUBRIC, PARTIAL_PROGRESS_MARKERS, PARTIAL_REVIEW_RUBRIC,
+    PARTIAL_REVIEW_SELF_REPORT_MARKERS, PARTIAL_SCRATCHPAD, PARTIAL_SELF_REPORT_MARKERS,
+    PARTIAL_SIBLING_SPEC_EDITING, PARTIAL_SKILL_INDEX, PARTIAL_SPEC_CONVENTIONS,
+    PARTIAL_SPEC_HEADER, PARTIAL_STYLE_RULES, PARTIAL_TODO_SUCCESS, PinnedContext, PlanContext,
+    PreviousFailure, SkillIndexMarkdown, SpecImplementationNotes, TodoChangedSpec, TodoContext,
+    VerifierFailure,
 };
 
 #[test]
@@ -40,6 +41,10 @@ fn partial_constants_carry_their_source_files() {
         ("plan_stage_rubric", PARTIAL_PLAN_STAGE_RUBRIC),
         ("progress_markers", PARTIAL_PROGRESS_MARKERS),
         ("review_rubric", PARTIAL_REVIEW_RUBRIC),
+        (
+            "review_self_report_markers",
+            PARTIAL_REVIEW_SELF_REPORT_MARKERS,
+        ),
         ("scratchpad", PARTIAL_SCRATCHPAD),
         ("skill_index", PARTIAL_SKILL_INDEX),
         ("self_report_markers", PARTIAL_SELF_REPORT_MARKERS),

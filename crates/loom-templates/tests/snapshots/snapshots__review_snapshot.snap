@@ -1,6 +1,5 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
-assertion_line: 369
 expression: ctx.render().unwrap()
 ---
 # Post-Epic Review
@@ -66,18 +65,21 @@ lost.
   re-explore them.
 
 **What NOT to put here.** Anything that needs to outlive this session belongs
-in a durable destination, not the scratchpad:
+in a phase-authorized durable destination, not the scratchpad:
 
 - Decisions, design rationale, or open questions that future sessions need →
-  bead notes (`bd update <id> --notes "..."`) or the spec file (`specs/<label>.md`).
+  the durable surface this phase authorizes (spec/index markdown, bead state,
+  implementation notes, or finding evidence). If this phase is inspection-only,
+  surface the state through its output protocol instead of writing state directly.
 - Implementation context for future agents → spec file or `AGENTS.md` /
-  companion docs.
+  companion docs when this phase authorizes those edits.
 - Why a change was made → the commit message.
-- Cross-session follow-up work → a new bead (`bd create ...`).
+- Cross-session follow-up work → the phase-authorized work queue or output
+  protocol, never the scratchpad alone.
 
 The scratchpad will be deleted when this session ends. If a thought is worth
-keeping past session end, write it to one of the durable destinations above
-**before** you finish.
+keeping past session end, move it to the authorized durable destination for
+this phase **before** you finish.
 
 **How to append.** Append to the file directly — for example,
 `echo "..." >> .loom/scratch/<key>/scratch.md` or via the Edit tool.
@@ -771,105 +773,33 @@ If you cannot finish — needing human input or a decision among
 multiple resolutions — emit one of the self-report markers
 documented separately (see *Self-Report Markers*).
 
-## Self-Report Markers
+## Review Self-Report Markers
 
-When you cannot complete the work, end your response with one of
-these markers instead of a progress marker. They are mutually
-exclusive with each other **and** with the progress markers — emit
-exactly one, on its own line, as the final output of the session.
+Review is inspection-only. Do not mutate `bd` state or persist review
+self-report state with bd commands. A completed review reports concerns
+through the streaming finding protocol above; these self-report markers are
+only for cases where the review walk itself cannot complete. When you use
+one, place exactly one marker on the final non-empty line.
 
-- `LOOM_RETRY` — This attempt cannot finish but a fresh dispatch is
-  likely to succeed. Two failure shapes warrant retry: (a)
-  **environmental** — tools failing mid-session, sandbox/cwd
-  unlinked, transient IO — and (b) **agent self-reset** —
-  stuck-but-not-blocked, prompt-context exhausted, approach
-  abandoned. Write the reason on the line immediately before the
-  marker; the driver captures it verbatim as
-  `PreviousFailure::AgentRetry { reason }` for the next attempt's
-  prompt. Each `LOOM_RETRY` consumes one slot in `[loop] max_retries`
-  (default 2); exhaustion escalates to `loom:blocked` with cause
-  `retry-exhausted`. If the same problem persists after retry,
-  escalate to `LOOM_BLOCKED` (no candidate resolutions) or
-  `LOOM_CLARIFY` (with a structured Options block) rather than
-  emitting `LOOM_RETRY` again.
-- `LOOM_CLARIFY` — A decision is **blocking your work** and has
-  two or more genuinely viable resolutions you cannot adjudicate
-  from the spec, the code, or research. **Not for ratifying a
-  recommended path** — if you can write "Recommended: X.
-  Alternative: Y" and X is your clear preference, you do not have
-  a clarify question, you have a plan; file or implement it
-  directly. Reserve `LOOM_CLARIFY` for the cases where the spec
-  is genuinely ambiguous, two paths carry materially different
-  costs or risks you cannot weigh, or your judgement of the
-  evidence is itself contestable.
+- `LOOM_RETRY` — The review attempt cannot finish but a fresh dispatch is
+  likely to succeed. Use this for environmental failures such as corrupt
+  logs, inaccessible workspace state, transient IO, or a missing prerequisite
+  that should be present. Write the reason on the line immediately before
+  the marker; the driver records it as retry context.
+- Clarify-worthy review decisions do **not** use direct `LOOM_CLARIFY`.
+  If you can enumerate candidate resolutions, emit a `route="clarify"`
+  `LOOM_FINDING` whose `evidence` embeds the canonical `## Options — …`
+  block, then finish the walk with `LOOM_CONCERN`. If you cannot articulate
+  options and the review cannot proceed, use `LOOM_BLOCKED` instead.
+- `LOOM_BLOCKED` — The review cannot proceed and you have no candidate
+  resolutions to enumerate. Write the dead-end reason on the line
+  immediately before the marker. Do not create, update, label, or close
+  beads from the review prompt.
 
-  **Persist the question and the canonical options block to the target
-  bead before emitting the marker** — use `bd update --notes` or
-  `bd update --description` on the bead under dispatch (`loop` /
-  `review`) or on the injected `loom:todo` work epic (`todo`), per the
-  Options Format Contract in `specs/gate.md`. Do not create a separate
-  clarify bead for direct `LOOM_CLARIFY`; the verdict gate validates the
-  target bead's persisted block and applies `loom:clarify`. The gate
-  does NOT parse your prose for options: prose `Recommended:` /
-  `Alternative:` headings are NOT the canonical block and will downgrade
-  the bead to `loom:blocked` with cause `clarify-without-options`.
-  The block MUST use the canonical heading shape:
+**Discriminator.** expect retry to succeed? → RETRY. can you enumerate
+options? → emit a clarify-route finding. dead end with no options? →
+BLOCKED.
 
-  ```markdown
-  ## Options — <one-line summary of the decision, ≤80 chars>
-
-  ### Option 1 — <short title>
-  <body paragraph(s) describing the option, naming its cost>
-
-  ### Option 2 — <short title>
-  <body, including cost>
-
-  ### Option 3 — <short title>
-  <body, including cost>
-  ```
-
-  **Rules:**
-
-  - The `## Options` header carries a one-line summary (≤50 chars)
-    separated from the word `Options` by em-dash `—` (default),
-    en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
-    tolerate any of these; emit em-dash by default.
-  - Each option is `### Option N — <title>` where `N` is 1-based
-    sequential. Numbering is required for `-a <int>` lookup to work.
-  - Each option body extends from its `### Option N` heading until
-    the next `### Option` or the next `##` heading; name the cost
-    (churn, debt, coupling, risk).
-  - Use contextual options per decision — typically 2–4, each
-    naming its cost. Do NOT emit a fixed A/B/C menu.
-
-  `loom inbox` parses this format to render the SUMMARY column,
-  enumerate options for view mode, and provide structured chat context.
-  A malformed block — or one that lives only in your prose, never
-  persisted to bead state — breaks fast-reply with `-a <int>` and
-  leaves the options invisible to `loom inbox`'s queue.
-
-  After persisting, the gate applies `loom:clarify` to the target
-  bead and exits without entering recovery; other beads in the
-  molecule continue running. The labelled bead waits for `loom
-  inbox` resolution.
-- `LOOM_BLOCKED` — Genuine dead end: you cannot proceed and have
-  no candidate resolutions to enumerate. Write the reason on the
-  line immediately before the marker (the gate only reads the most
-  recent non-empty prior line — multi-paragraph prose is NOT
-  captured). The gate applies `loom:blocked` to *this* bead and
-  exits without entering recovery; other beads in the molecule
-  continue running. The labelled bead waits for human resolution
-  via `loom inbox`. **If you can enumerate options, do NOT use
-  `LOOM_BLOCKED`** — use `LOOM_CLARIFY` above so the candidate
-  resolutions reach bead state.
-
-**Discriminator.** expect retry to succeed? → RETRY. **blocked**
-by a decision you cannot make alone, with ≥2 viable resolutions?
-→ CLARIFY (a recommended path with prose alternatives is NOT
-clarify — file the plan directly). dead end? → BLOCKED.
-
-**Worker-phase only.** These three self-report markers are valid
-in worker phases only (`loop`, `todo`, `review`). Interactive sessions
-(`plan`, `inbox`) emit `LOOM_COMPLETE` only — the human is in the room and resolves
-friction in-turn, so the cannot-finish terminators are out of
-scope for those templates.
+**Review-phase only.** These self-report rules apply only to `review`.
+`loop` and `todo` use the direct worker self-report partial; interactive
+sessions (`plan`, `inbox`) do not emit worker self-report markers.
