@@ -78,13 +78,13 @@ fn install_wrix_shim(
          \n\
          {{ for a in \"$@\"; do printf '%s\\n' \"$a\"; done; }} > \"$ARGV_FILE\"\n\
          \n\
-         {{ if [ -t 0 ]; then echo 'stdin_is_tty=1'; else echo 'stdin_is_tty=0'; fi\n\
-            if [ -p /dev/stdin ]; then echo 'stdin_is_pipe=1'; else echo 'stdin_is_pipe=0'; fi\n\
+         {{ if [[ -t 0 ]]; then echo 'stdin_is_tty=1'; else echo 'stdin_is_tty=0'; fi\n\
+            if [[ -p /dev/stdin ]]; then echo 'stdin_is_pipe=1'; else echo 'stdin_is_pipe=0'; fi\n\
          }} > \"$STDIN_INFO\"\n\
          \n\
          prev=''\n\
          for a in \"$@\"; do\n\
-             if [ \"$prev\" = '--spawn-config' ]; then\n\
+             if [[ \"$prev\" == '--spawn-config' ]]; then\n\
                  cp \"$a\" \"$SPAWN_CONFIG_COPY\"\n\
                  break\n\
              fi\n\
@@ -99,6 +99,54 @@ fn install_wrix_shim(
         copy = spawn_config_copy.display(),
         mock = mock_agent.display(),
         mode = mock_agent_mode,
+    );
+    std::fs::write(&shim, body).unwrap();
+    let mut perm = std::fs::metadata(&shim).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&shim, perm).unwrap();
+    shim
+}
+
+/// Install a wrix shim that commits one file in the bead workspace named by
+/// `SpawnConfig.workspace`, then delegates to mock-pi `happy-path` so the
+/// run-phase marker is `LOOM_COMPLETE`. This models a real worker that left
+/// `.loom/integration` ahead of origin after an explicit task-root loop.
+fn install_wrix_commit_shim(dir: &Path, mock_agent: &Path) -> PathBuf {
+    let shim = dir.join("wrix");
+    let bash = find_bash();
+    let body = format!(
+        "#!{bash}\n\
+         set -euo pipefail\n\
+         MOCK_AGENT='{mock}'\n\
+         spawn_config=''\n\
+         prev=''\n\
+         for a in \"$@\"; do\n\
+             if [[ \"$prev\" == '--spawn-config' ]]; then\n\
+                 spawn_config=\"$a\"\n\
+                 break\n\
+             fi\n\
+             prev=\"$a\"\n\
+         done\n\
+         if [[ -z \"$spawn_config\" ]]; then\n\
+             echo 'mock wrix: missing --spawn-config' >&2\n\
+             exit 2\n\
+         fi\n\
+         workspace=\"$(sed -n 's/.*\"workspace\":\"\\([^\"]*\\)\".*/\\1/p' \"$spawn_config\")\"\n\
+         if [[ -z \"$workspace\" ]]; then\n\
+             echo \"mock wrix: spawn config missing workspace: $spawn_config\" >&2\n\
+             exit 2\n\
+         fi\n\
+         bead_id=\"$(basename \"$workspace\")\"\n\
+         git -C \"$workspace\" config user.email test@example.com\n\
+         git -C \"$workspace\" config user.name Test\n\
+         git -C \"$workspace\" config commit.gpgsign false\n\
+         printf 'implemented %s\\n' \"$bead_id\" > \"$workspace/implemented-$bead_id.txt\"\n\
+         git -C \"$workspace\" add \"implemented-$bead_id.txt\"\n\
+         git -C \"$workspace\" commit -q -m \"implement $bead_id\"\n\
+         echo '[wrix] Starting container (mock)...' >&2\n\
+         exec '{bash}' \"$MOCK_AGENT\" happy-path\n",
+        bash = bash.display(),
+        mock = mock_agent.display(),
     );
     std::fs::write(&shim, body).unwrap();
     let mut perm = std::fs::metadata(&shim).unwrap().permissions();
@@ -826,6 +874,95 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
     }
 }
 
+#[test]
+fn loom_loop_multiple_task_roots_does_not_rerun_startup_fast_forward() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    init_workspace_repo(workspace);
+
+    let manifest_path = workspace.join("profile-images.json");
+    let image_source = workspace.join("base.tar");
+    std::fs::write(&image_source, "").unwrap();
+    let manifest_body = format!(
+        r#"{{
+          "base": {{ "pi": {{ "ref": "localhost/wrix-base-pi:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "claude": {{ "ref": "localhost/wrix-base-claude:test", "source": {source:?}, "source_kind": "nix-descriptor" }}, "direct": {{ "ref": "localhost/wrix-base-direct:test", "source": {source:?}, "source_kind": "nix-descriptor" }} }}
+        }}"#,
+        source = image_source.display().to_string(),
+    );
+    std::fs::write(&manifest_path, manifest_body).unwrap();
+
+    let shim_dir = workspace.join("shim");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    let shim = install_wrix_commit_shim(&shim_dir, &mock_pi_path());
+
+    let bd_bin_dir = install_bd_multi_root_stub(workspace);
+    let loom_noop_stub = install_loom_noop_stub(workspace);
+
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries = vec![bd_bin_dir];
+    path_entries.extend(std::env::split_paths(&path_var));
+    let new_path = std::env::join_paths(path_entries).unwrap();
+    let child_home = workspace.join("home");
+    std::fs::create_dir_all(&child_home).unwrap();
+
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let output = Command::new(loom_bin)
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--agent")
+        .arg("pi")
+        .arg("loop")
+        .arg("lm-multia")
+        .arg("lm-multib")
+        .env("PATH", new_path)
+        .env("LOOM_WRIX_BIN", &shim)
+        .env("LOOM_BIN", &loom_noop_stub)
+        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        .env("HOME", &child_home)
+        .env_remove("LOOM_INSIDE")
+        .env_remove("WRIX_SIGNING_KEY")
+        .output()
+        .expect("spawn loom");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "multi-task loom loop must continue after the first local integration advance. stdout={stdout} stderr={stderr}",
+    );
+    assert!(
+        stdout.contains("loom loop lm-multia:") && stdout.contains("loom loop lm-multib:"),
+        "both task roots must run in one invocation. stdout={stdout} stderr={stderr}",
+    );
+    assert!(
+        !stderr.contains("integration fast-forward failed"),
+        "startup fast-forward must not rerun between positional task roots. stderr={stderr}",
+    );
+
+    let integration = workspace.join(".loom/integration");
+    for bead in ["lm-multia", "lm-multib"] {
+        assert!(
+            integration
+                .join(format!("implemented-{bead}.txt"))
+                .is_file(),
+            "integration branch must contain {bead}'s committed file",
+        );
+    }
+    let ahead = git_command()
+        .arg("-C")
+        .arg(&integration)
+        .args(["rev-list", "--count", "origin/main..main"])
+        .output()
+        .expect("count unpushed integration commits");
+    assert!(ahead.status.success(), "git rev-list failed: {ahead:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&ahead.stdout).trim(),
+        "2",
+        "explicit task roots should leave two local integration commits and still complete the invocation",
+    );
+}
+
 /// `loom gate review` must write its phase log under
 /// `<workspace>/.loom/logs/<spec>/review-<utc>.jsonl` (same spec
 /// section as the run gate). Guards against the regression where the
@@ -983,6 +1120,44 @@ fn loom_gate_review_writes_phase_jsonl_log() {
         "first driver event must be push_gate_walk. got: {}",
         driver_events[0],
     );
+}
+
+fn install_bd_multi_root_stub(dir: &Path) -> PathBuf {
+    let bin_dir = dir.join("bd-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let bd = bin_dir.join("bd");
+    let bash = find_bash();
+    let body = format!(
+        "#!{bash}\n\
+         set -euo pipefail\n\
+         bead_a='{{\"id\":\"lm-multia\",\"title\":\"first bead\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'\n\
+         bead_b='{{\"id\":\"lm-multib\",\"title\":\"second bead\",\"description\":\"\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"labels\":[\"spec:agent\",\"profile:base\"]}}'\n\
+         if [[ \"${{1:-}}\" == 'create' ]]; then\n\
+             echo 'lm-work'\n\
+             exit 0\n\
+         fi\n\
+         if [[ \"${{1:-}}\" == 'show' ]]; then\n\
+             case \"${{2:-}}\" in\n\
+                 lm-multia) printf '[%s]\\n' \"$bead_a\" ;;\n\
+                 lm-multib) printf '[%s]\\n' \"$bead_b\" ;;\n\
+                 *) printf '[]\\n' ;;\n\
+             esac\n\
+             exit 0\n\
+         fi\n\
+         for arg in \"$@\"; do\n\
+             if [[ \"$arg\" == '--json' ]]; then\n\
+                 printf '[%s,%s]\\n' \"$bead_a\" \"$bead_b\"\n\
+                 exit 0\n\
+             fi\n\
+         done\n\
+         exit 0\n",
+        bash = bash.display(),
+    );
+    std::fs::write(&bd, body).unwrap();
+    let mut perm = std::fs::metadata(&bd).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&bd, perm).unwrap();
+    bin_dir
 }
 
 /// Install a `bd` shim that returns `bead_json` for JSON list subcommands,

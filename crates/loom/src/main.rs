@@ -2519,6 +2519,7 @@ fn run_loop_cmd(
         }
         let parallel_n = parallel.get();
         let render_mode = resolve_render_mode(render_flags);
+        let mut startup_reconcile = StartupReconcile::FastForward;
         for root in &roots {
             let outcome = run_parallel_loop_root(
                 &runtime,
@@ -2532,7 +2533,9 @@ fn run_loop_cmd(
                 phase_default.clone(),
                 &config,
                 render_mode,
+                startup_reconcile,
             )?;
+            startup_reconcile = StartupReconcile::AlreadyDone;
             print_parallel_loop_summary(multi_root, root, parallel_n, &outcome);
             aggregate.push(outcome);
         }
@@ -2543,6 +2546,12 @@ fn run_loop_cmd(
         return Ok(outcome);
     }
 
+    // Origin reconciliation is invocation startup, not per selected root.
+    // Explicit task roots can intentionally leave `.loom/integration` ahead
+    // of origin with a `NoGate` outcome; rerunning the startup fast-forward
+    // before the next positional bead would misclassify that in-invocation
+    // advance as pre-existing divergence.
+    let mut startup_reconcile = StartupReconcile::FastForward;
     for root in &roots {
         let outcome = run_sequential_loop_root(
             &runtime,
@@ -2556,7 +2565,9 @@ fn run_loop_cmd(
             &config,
             loom_bin.clone(),
             render_flags,
+            startup_reconcile,
         )?;
+        startup_reconcile = StartupReconcile::AlreadyDone;
         print_sequential_loop_summary(multi_root, root, &outcome);
         aggregate.push(outcome);
     }
@@ -2646,12 +2657,13 @@ fn run_parallel_loop_root(
     phase_default: ProfileName,
     config: &LoomConfig,
     render_mode: loom_render::RenderMode,
+    startup_reconcile: StartupReconcile,
 ) -> anyhow::Result<LoopOutcome> {
     if matches!(&root.kind, LoopWorkRootKind::Task) {
         anyhow::bail!("loom loop --parallel does not accept task bead roots");
     }
     let _guard = acquire_work_root_lock(workspace, root.id.as_str())?;
-    prepare_loop_root(runtime, workspace, root, &config.loom)?;
+    prepare_loop_root(runtime, workspace, root, &config.loom, startup_reconcile)?;
     let workspace_buf = workspace.to_path_buf();
     let label_for_async = root.label.clone();
     let ready_parent_for_async = root.ready_parent.clone();
@@ -2693,9 +2705,10 @@ fn run_sequential_loop_root(
     config: &LoomConfig,
     loom_bin: PathBuf,
     render_flags: RenderFlags,
+    startup_reconcile: StartupReconcile,
 ) -> anyhow::Result<LoopOutcome> {
     let work_root_guard = acquire_work_root_lock(workspace, root.id.as_str())?;
-    prepare_loop_root(runtime, workspace, root, &config.loom)?;
+    prepare_loop_root(runtime, workspace, root, &config.loom, startup_reconcile)?;
 
     let mode = match &root.kind {
         LoopWorkRootKind::Task => LoopMode::Once,
@@ -2801,32 +2814,43 @@ fn run_sequential_loop_root(
     Ok(outcome)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupReconcile {
+    FastForward,
+    AlreadyDone,
+}
+
 fn prepare_loop_root(
     runtime: &tokio::runtime::Runtime,
     workspace: &Path,
     root: &LoopWorkRoot,
     loom_cfg: &loom_driver::config::LoomTopConfig,
+    startup_reconcile: StartupReconcile,
 ) -> anyhow::Result<()> {
-    let ff_git =
-        GitClient::open_with_integration_branch(workspace, loom_cfg.integration_branch.clone())?;
-    let ff_workspace = workspace.to_path_buf();
-    runtime.block_on(async move {
-        let outcome = ff_git
-            .fast_forward_integration_to_origin()
-            .await
-            .with_context(|| {
-                format!(
-                    "loom loop startup: integration fast-forward failed in {}",
-                    ff_workspace.display(),
-                )
-            })?;
-        tracing::info!(
-            outcome = ?outcome,
-            workspace = %ff_workspace.display(),
-            "loom loop startup: integration line reconciled with origin",
-        );
-        anyhow::Ok(())
-    })?;
+    if matches!(startup_reconcile, StartupReconcile::FastForward) {
+        let ff_git = GitClient::open_with_integration_branch(
+            workspace,
+            loom_cfg.integration_branch.clone(),
+        )?;
+        let ff_workspace = workspace.to_path_buf();
+        runtime.block_on(async move {
+            let outcome = ff_git
+                .fast_forward_integration_to_origin()
+                .await
+                .with_context(|| {
+                    format!(
+                        "loom loop startup: integration fast-forward failed in {}",
+                        ff_workspace.display(),
+                    )
+                })?;
+            tracing::info!(
+                outcome = ?outcome,
+                workspace = %ff_workspace.display(),
+                "loom loop startup: integration line reconciled with origin",
+            );
+            anyhow::Ok(())
+        })?;
+    }
 
     let Some(gc_molecule) = gc_molecule_for_root(root) else {
         return Ok(());
