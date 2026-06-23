@@ -66,9 +66,8 @@ fn install_wrix_stub(dir: &Path) -> PathBuf {
     let bin = bin_dir.join("wrix-stub");
     let argv_log = dir.join("argv.log");
     let env_log = dir.join("env.log");
-    let script = format!(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
+    let script = loom_test_support::bash_script(&format!(
+        r#"set -euo pipefail
 
 argv_log={argv_log:?}
 env_log={env_log:?}
@@ -133,7 +132,7 @@ fi
 "#,
         argv_log = argv_log.display(),
         env_log = env_log.display(),
-    );
+    ));
     std::fs::write(&bin, script).expect("write stub");
     let mut perm = std::fs::metadata(&bin).expect("stat stub").permissions();
     perm.set_mode(0o755);
@@ -244,9 +243,8 @@ fn install_apply_loom_stub(dir: &Path) -> PathBuf {
     std::fs::create_dir_all(&bin_dir).expect("mkdir apply loom bin");
     let bin = bin_dir.join("loom-apply-stub");
     let log = dir.join("apply-loom.log");
-    let script = format!(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
+    let script = loom_test_support::bash_script(&format!(
+        r#"set -euo pipefail
 
 log={log:?}
 printf '%s\n' "$*" >> "$log"
@@ -284,7 +282,7 @@ case "${{1:-}} ${{2:-}}" in
 esac
 "#,
         log = log.display(),
-    );
+    ));
     std::fs::write(&bin, script).expect("write apply loom stub");
     let mut perm = std::fs::metadata(&bin)
         .expect("stat apply loom stub")

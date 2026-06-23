@@ -54,8 +54,11 @@ fn fake_prek_hooks(workspace: &Path) -> PathBuf {
     std::fs::create_dir_all(&hooks).expect("mkdir fake prek hooks");
     for hook in ["pre-commit", "pre-push"] {
         let script = hooks.join(hook);
-        std::fs::write(&script, "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n")
-            .expect("write fake hook");
+        std::fs::write(
+            &script,
+            loom_test_support::bash_script("set -euo pipefail\nexit 0\n"),
+        )
+        .expect("write fake hook");
         let mut perm = std::fs::metadata(&script)
             .expect("stat fake hook")
             .permissions();

@@ -2941,13 +2941,14 @@ mod tests {
         let stub = dir.path().join("loom-stub.sh");
         std::fs::write(
             &stub,
-            "#!/usr/bin/env bash\n\
-             set -euo pipefail\n\
+            loom_test_support::bash_script(
+                "set -euo pipefail\n\
              echo \"$*\" >> \"$PWD/argv.log\"\n\
              case \"$2\" in\n\
                  review|mint) echo \"$2 must not run in the per-bead hot path\" >&2; exit 99 ;;\n\
              esac\n\
              exit 0\n",
+            ),
         )
         .expect("write stub");
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
@@ -3018,9 +3019,8 @@ mod tests {
         let stub = dir.path().join("loom-stub.sh");
         std::fs::write(
             &stub,
-            format!(
-                "#!/usr/bin/env bash\n\
-                 set -euo pipefail\n\
+            loom_test_support::bash_script(&format!(
+                "set -euo pipefail\n\
                  exec 9>\"{}\"\n\
                  flock -n 9\n\
                  if [[ \"$2\" == \"review\" ]]; then\n\
@@ -3028,7 +3028,7 @@ mod tests {
                  fi\n\
                  exit 0\n",
                 lock_path.display(),
-            ),
+            )),
         )
         .expect("write stub");
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
@@ -3086,13 +3086,14 @@ mod tests {
         let stub = dir.path().join("loom-stub.sh");
         std::fs::write(
             &stub,
-            "#!/usr/bin/env bash\n\
-             set -euo pipefail\n\
+            loom_test_support::bash_script(
+                "set -euo pipefail\n\
              case \"$2\" in\n\
                  verify) echo 'verifier failed: cargo test' >&2; exit 1 ;;\n\
                  review|mint) echo \"$2 must not run after verify-fail\" ; exit 99 ;;\n\
              esac\n\
              exit 0\n",
+            ),
         )
         .expect("write stub");
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
@@ -3223,12 +3224,13 @@ mod tests {
         let stub = dir.path().join("loom-stub.sh");
         std::fs::write(
             &stub,
-            "#!/usr/bin/env bash\n\
-             set -euo pipefail\n\
+            loom_test_support::bash_script(
+                "set -euo pipefail\n\
              case \"$2\" in\n\
                  verify) echo 'verify stdout'; echo 'verify stderr' >&2; exit 2 ;;\n\
              esac\n\
              exit 0\n",
+            ),
         )
         .expect("write stub");
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
@@ -3338,12 +3340,13 @@ mod tests {
         let stub = dir.path().join("loom-stub.sh");
         std::fs::write(
             &stub,
-            "#!/usr/bin/env bash\n\
-             set -euo pipefail\n\
+            loom_test_support::bash_script(
+                "set -euo pipefail\n\
              case \"$2\" in\n\
                  verify) echo 'verifier failed' >&2; exit 1 ;;\n\
              esac\n\
              exit 0\n",
+            ),
         )
         .expect("write stub");
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))

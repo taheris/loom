@@ -74,11 +74,12 @@ fn install_loom_noop_stub(dir: &Path) -> PathBuf {
     let stub = dir.join("loom-noop-stub.sh");
     std::fs::write(
         &stub,
-        "#!/usr/bin/env bash\n\
-         set -euo pipefail\n\
+        loom_test_support::bash_script(
+            "set -euo pipefail\n\
          if [[ \"${2:-}\" == \"review\" ]]; then\n\
              echo 'LOOM_COMPLETE'\n\
          fi\n",
+        ),
     )
     .expect("write loom stub");
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))

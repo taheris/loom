@@ -112,11 +112,13 @@ fn verify_diff_runs_prek_pre_commit_lane_before_annotations() {
     .unwrap();
     write_executable(
         &workspace.join("check.sh"),
-        "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'check\n' >> \"$ORDER_LOG\"\n",
+        &loom_test_support::bash_script("set -euo pipefail\nprintf 'check\n' >> \"$ORDER_LOG\"\n"),
     );
     write_executable(
         &workspace.join("bin/prek"),
-        "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'prek %s\n' \"$*\" >> \"$ORDER_LOG\"\n",
+        &loom_test_support::bash_script(
+            "set -euo pipefail\nprintf 'prek %s\n' \"$*\" >> \"$ORDER_LOG\"\n",
+        ),
     );
     init_git(workspace);
 

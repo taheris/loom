@@ -44,3 +44,19 @@ pub fn scrub_git_local_env(command: &mut std::process::Command) {
         command.env_remove(name);
     }
 }
+
+pub fn bash_path() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join("bash");
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    std::path::PathBuf::from("/usr/bin/env bash")
+}
+
+pub fn bash_script(body: &str) -> String {
+    format!("#!{}\n{body}", bash_path().display())
+}

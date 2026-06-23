@@ -232,13 +232,13 @@ mod tests {
         let bin_dir = dir.join("bin");
         std::fs::create_dir_all(&bin_dir)?;
         let bin = bin_dir.join("wrix");
-        let script = format!(
-            "#!/usr/bin/env bash\nset -euo pipefail\nargv_log={:?}\nenv_log={:?}\nfor arg in \"$@\"; do\n    printf '%s\\n' \"$arg\" >> \"$argv_log\"\ndone\nprintf 'ref=%s\\nsource=%s\\nagent=%s\\n' \"${{{}:-}}\" \"${{{}:-}}\" \"${{WRIX_AGENT:-}}\" > \"$env_log\"\n",
+        let script = loom_test_support::bash_script(&format!(
+            "set -euo pipefail\nargv_log={:?}\nenv_log={:?}\nfor arg in \"$@\"; do\n    printf '%s\\n' \"$arg\" >> \"$argv_log\"\ndone\nprintf 'ref=%s\\nsource=%s\\nagent=%s\\n' \"${{{}:-}}\" \"${{{}:-}}\" \"${{WRIX_AGENT:-}}\" > \"$env_log\"\n",
             dir.join("argv.log").display().to_string(),
             dir.join("env.log").display().to_string(),
             WRIX_DEFAULT_IMAGE_REF,
             WRIX_DEFAULT_IMAGE_SOURCE,
-        );
+        ));
         std::fs::write(&bin, script)?;
         let mut perms = std::fs::metadata(&bin)?.permissions();
         perms.set_mode(0o755);
