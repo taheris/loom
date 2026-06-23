@@ -6,10 +6,18 @@ _:
       pkgs,
       loom,
       sandbox,
+      profileManifest,
       ...
     }:
     let
-      inherit (builtins) filter length;
+      inherit (builtins)
+        all
+        attrValues
+        concatLists
+        filter
+        length
+        mapAttrs
+        ;
       inherit (loom)
         bin
         cargoArtifacts
@@ -101,6 +109,20 @@ _:
             esac
             touch "$out"
           '';
+
+      profileManifestEntries = concatLists (
+        attrValues (mapAttrs (_profile: attrValues) profileManifest.passthru.manifest)
+      );
+      profileManifestKeepsRuntimePathContext = all (
+        entry:
+        builtins.hasContext entry.source
+        && (!(entry ? profile_config) || builtins.hasContext entry.profile_config)
+      ) profileManifestEntries;
+      profile-manifest-keeps-runtime-path-context =
+        assert profileManifestKeepsRuntimePathContext;
+        pkgs.runCommand "profile-manifest-keeps-runtime-path-context" { } ''
+          touch "$out"
+        '';
     in
     {
       checks = {
@@ -108,6 +130,7 @@ _:
         loom-nextest = nextest;
         inherit
           loom-gate-check
+          profile-manifest-keeps-runtime-path-context
           sandbox-profile-env-has-wrix
           test-sandbox-skips-unsupported-runtime
           ;

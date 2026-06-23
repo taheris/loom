@@ -76,12 +76,25 @@ in
         profileName: profileManifest:
         mapAttrs (
           runtime: entry:
+          let
+            image = images.${profileName}.${runtime};
+          in
           entry.${runtime}
           // {
             inherit runtime;
+            # wrix's manifest helper serializes path strings for portability,
+            # but strips their Nix string context. Re-attach the concrete
+            # image source here so LOOM_PROFILES_MANIFEST keeps runtime inputs
+            # alive in the store after GC / on fresh machines.
+            source = "${image.source or image}";
           }
-          // optionalAttrs (images.${profileName}.${runtime} ? digest) {
-            digest = "${images.${profileName}.${runtime}.digest}";
+          // optionalAttrs (image ? profileConfig) {
+            # `wrix spawn` now requires the immutable ProfileConfig path; keep
+            # it as a real Nix reference, not just inert JSON text.
+            profile_config = "${image.profileConfig}";
+          }
+          // optionalAttrs (image ? digest) {
+            digest = "${image.digest}";
           }
         ) profileManifest.passthru.manifest
       ) profileManifests;
