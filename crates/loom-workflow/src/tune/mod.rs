@@ -24,6 +24,7 @@ use loom_tune::config::{FileConfig as TuneFileConfig, TuneConfig};
 use loom_tune::evidence::{
     Item, ItemId, RootReport, Snapshot as EvidenceSnapshot, SplitError, Splitter,
 };
+use loom_tune::gate::{self as tune_gate, Outcome as GateOutcome, State as GateState};
 use loom_tune::plan::{self, FrozenPlan, PlanError};
 use loom_tune::proposal::{
     Caps, CaseCounts, LocalPaths, ManifestInput, OutcomeCounts, ProposalManifest, State,
@@ -452,11 +453,17 @@ async fn create_proposal(
     let branch = format!("loom/tune/{bead_id}");
     clone_repo(&context.workspace, &repo, &context.base_commit, &branch).await?;
     let touched = write_candidate_files(&context, proposal, &prepared.targets, &repo)?;
-    let validation = validate_candidate(&repo, &prepared.targets, &touched)?;
+    let candidate_validation = validate_candidate(
+        &repo,
+        &prepared.frozen,
+        &context.checker_registry,
+        &prepared.targets,
+        &touched,
+    )?;
     commit_candidate(&repo, proposal.surface, proposal.level, &bead_id).await?;
     let proposal_head = GitClient::open(&repo)?.head_commit_sha().await?.to_string();
-    let state = proposal_state(&validation);
-    let outcome_counts = OutcomeCounts::pending(prepared.frozen.outcome_skeletons.len());
+    let state = proposal_state(&candidate_validation.rows);
+    let outcome_counts = candidate_validation.outcome_counts.clone();
     let manifest = ProposalManifest::from_plan(ManifestInput {
         proposal_id: bead_id.clone(),
         workspace_path: context.workspace.clone(),
@@ -470,7 +477,8 @@ async fn create_proposal(
         proposal_branch: branch.clone(),
         proposal_head: proposal_head.clone(),
         case_counts: prepared.case_counts.clone(),
-        validation: validation.clone(),
+        outcome_counts: outcome_counts.clone(),
+        validation: candidate_validation.rows.clone(),
         caps: Caps::from(&context.tune_config.checks),
         local_paths: relative_local_paths(&local_paths, &context.workspace),
     });
@@ -484,7 +492,7 @@ async fn create_proposal(
         branch: &branch,
         proposal_head: &proposal_head,
         outcome_counts: &outcome_counts,
-        validation: &validation,
+        validation: &candidate_validation.rows,
         local_paths: &local_paths,
     })
     .await?;
@@ -962,11 +970,19 @@ fn append_candidate_note(path: &Path, level: Level, target: &Target) -> Result<(
     write_parented(path, &body)
 }
 
+#[derive(Debug, Clone)]
+struct CandidateValidation {
+    rows: Vec<ValidationRow>,
+    outcome_counts: OutcomeCounts,
+}
+
 fn validate_candidate(
     repo: &Path,
+    plan: &FrozenPlan,
+    registry: &CheckerRegistry,
     targets: &[Target],
     touched: &[PathBuf],
-) -> Result<Vec<ValidationRow>, TuneError> {
+) -> Result<CandidateValidation, TuneError> {
     let mut rows = vec![ValidationRow {
         check: "candidate-files".to_owned(),
         status: ValidationStatus::Passed,
@@ -978,7 +994,70 @@ fn validate_candidate(
     {
         rows.extend(validate_templates(repo));
     }
-    Ok(rows)
+    let behavior = validate_behavioral_cases(plan, registry);
+    rows.extend(behavior.rows);
+    Ok(CandidateValidation {
+        rows,
+        outcome_counts: behavior.outcome_counts,
+    })
+}
+
+fn validate_behavioral_cases(plan: &FrozenPlan, registry: &CheckerRegistry) -> CandidateValidation {
+    if plan.selected_cases.is_empty() {
+        return CandidateValidation {
+            rows: Vec::new(),
+            outcome_counts: OutcomeCounts::pending(0),
+        };
+    }
+    match tune_gate::evaluate(plan, Vec::<tune_gate::CaseResult>::new(), registry) {
+        Ok(report) => CandidateValidation {
+            rows: vec![ValidationRow {
+                check: "behavioral-cases".to_owned(),
+                status: gate_validation_status(report.state),
+                detail: format!(
+                    "{} selected behavioral case(s) evaluated",
+                    report.cases.len()
+                ),
+            }],
+            outcome_counts: outcome_counts_from_gate(&report),
+        },
+        Err(source) => CandidateValidation {
+            rows: vec![ValidationRow {
+                check: "behavioral-cases".to_owned(),
+                status: ValidationStatus::Failed,
+                detail: source.to_string(),
+            }],
+            outcome_counts: OutcomeCounts {
+                pending: 0,
+                passed: 0,
+                failed: 0,
+                blocked: plan.selected_cases.len(),
+            },
+        },
+    }
+}
+
+fn gate_validation_status(state: GateState) -> ValidationStatus {
+    match state {
+        GateState::Passed => ValidationStatus::Passed,
+        GateState::Blocked => ValidationStatus::Failed,
+    }
+}
+
+fn outcome_counts_from_gate(report: &tune_gate::Report) -> OutcomeCounts {
+    let mut counts = OutcomeCounts {
+        pending: 0,
+        passed: 0,
+        failed: 0,
+        blocked: 0,
+    };
+    for case in &report.cases {
+        match case.outcome {
+            GateOutcome::Improved | GateOutcome::StableSuccess => counts.passed += 1,
+            GateOutcome::Regressed | GateOutcome::PersistentFail => counts.failed += 1,
+        }
+    }
+    counts
 }
 
 fn validate_templates(repo: &Path) -> Vec<ValidationRow> {

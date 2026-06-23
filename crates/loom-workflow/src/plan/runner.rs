@@ -7,7 +7,6 @@ use tracing::info;
 
 use loom_driver::agent::AgentKind;
 use loom_driver::config::{LoomConfig, Phase};
-use loom_driver::git::GitClient;
 use loom_driver::identifier::{ProfileName, SpecLabel};
 use loom_driver::lock::LockManager;
 use loom_driver::profile_manifest::{ImageEntry, ProfileImageManifest};
@@ -99,15 +98,8 @@ pub fn run_with_timeout(
     let scratch_dir = scratchpad_path.parent().ok_or_else(|| PlanError::Spawn {
         source: io::Error::other("scratchpad path has no parent"),
     })?;
-    let tracked_files = if cfg.skills.paths.is_empty() {
-        Vec::new()
-    } else {
-        let git = GitClient::open(workspace)?;
-        git.tracked_files_sync()?
-    };
-    let skill_plan = SkillPlan::resolve(
+    let skill_plan = SkillPlan::resolve_from_workspace_sync(
         workspace,
-        &tracked_files,
         Phase::Plan.as_str(),
         &profile,
         agent_kind,

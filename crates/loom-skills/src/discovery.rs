@@ -122,6 +122,7 @@ pub fn discover_workspace(
     for rel in tracked_files
         .iter()
         .filter(|path| file_name_ci(path, SKILL_DOCUMENT))
+        .filter(|path| !is_override_path(path))
         .filter(|path| !embedded_paths.contains(&comparable_path(path)))
     {
         let path = workspace.join(rel);
@@ -370,6 +371,10 @@ fn comparable_path(path: &Path) -> PathBuf {
         out.push(component.as_os_str());
     }
     out
+}
+
+fn is_override_path(path: &Path) -> bool {
+    comparable_path(path).starts_with(Path::new(OVERRIDE_ROOT))
 }
 
 fn embedded_catalog_source_paths(tracked_files: &[PathBuf]) -> BTreeSet<PathBuf> {

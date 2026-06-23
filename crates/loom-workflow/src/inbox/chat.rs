@@ -16,7 +16,7 @@ use displaydoc::Display;
 use loom_driver::agent::AgentKind;
 use loom_driver::bd::{BdClient, ListOpts};
 use loom_driver::config::{LoomConfig, Phase};
-use loom_driver::git::{GitClient, GitError};
+use loom_driver::git::GitError;
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::{ImageEntry, ProfileError, ProfileImageManifest};
 use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
@@ -156,15 +156,8 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     let scratch_dir = scratchpad_path.parent().ok_or_else(|| {
         ChatError::Scratch(std::io::Error::other("scratchpad path has no parent"))
     })?;
-    let tracked_files = if cfg.skills.paths.is_empty() {
-        Vec::new()
-    } else {
-        let git = GitClient::open(workspace)?;
-        git.tracked_files_sync()?
-    };
-    let skill_plan = SkillPlan::resolve(
+    let skill_plan = SkillPlan::resolve_from_workspace_sync(
         workspace,
-        &tracked_files,
         Phase::Inbox.as_str(),
         &profile,
         agent_kind,

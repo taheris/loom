@@ -717,11 +717,11 @@ requires explicit reauthorization in a later inbox chat.
 - `registration = "auto"` natively registers skills for native-capable backends
   and fails on registration failure; `registration = "prompt"` disables native
   registration globally
-  [test?](skill_registration_policy_auto_and_prompt)
+  [test](skill_registration_policy_auto_and_prompt)
 - The skill-index prompt partial renders name/description only for native mode,
   adds paths for prompt-disclosure mode, and adds paths to native mode only when
   `show_paths = "always"`
-  [test?](skill_prompt_index_disclosure_modes)
+  [test](skill_prompt_index_disclosure_modes)
 - `loom tune` with no subcommand prints help; `loom tune skill`, `phase`,
   `partial`, `checker`, and `all` list surfaces/checkers; proposal creation
   requires explicit `fast`, `run`, or `full` after `skill`/`phase`/`partial`/`all`;

@@ -130,11 +130,23 @@ mod tests {
             &override_file,
             &skill_markdown(
                 "loom-final-reporting",
-                "Use when testing built-in overrides.",
+                "Use when testing loose built-in overrides.",
                 "",
             ),
         );
-        let tracked = vec![PathBuf::from("skills/review/Skill.md")];
+        let override_package = repo.path().join(".loom-override/skills/verify/skill.md");
+        write(
+            &override_package,
+            &skill_markdown(
+                "loom-verify-after-edit",
+                "Use when testing tracked package built-in overrides.",
+                "",
+            ),
+        );
+        let tracked = vec![
+            PathBuf::from("skills/review/Skill.md"),
+            PathBuf::from(".loom-override/skills/verify/skill.md"),
+        ];
         let report = load_workspace(repo.path(), &tracked, &[PathBuf::from("configured")])
             .expect("workspace skills load");
         let names = report
@@ -147,6 +159,15 @@ mod tests {
         assert!(names.contains(&"configured-loose"));
         assert!(names.contains(&"configured-extra"));
         assert!(names.contains(&"loom-final-reporting"));
+        assert!(names.contains(&"loom-verify-after-edit"));
+        let override_sources = report
+            .set()
+            .skills()
+            .iter()
+            .filter(|skill| skill.name().as_str() == "loom-verify-after-edit")
+            .map(NamedSkill::source)
+            .collect::<Vec<_>>();
+        assert_eq!(override_sources, vec![SkillSource::Override]);
 
         let duplicate = repo.path().join("skills/review/skill.md");
         write(

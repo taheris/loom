@@ -444,20 +444,14 @@ where
                 "scratchpad path has no parent",
             )))
         })?;
-        let tracked_files = if self.skills_cfg.paths.is_empty() {
-            Vec::new()
-        } else {
-            let git = GitClient::open(&self.workspace)?;
-            git.tracked_files().await?
-        };
-        let skill_plan = SkillPlan::resolve(
+        let skill_plan = SkillPlan::resolve_from_workspace(
             &self.workspace,
-            &tracked_files,
             Phase::Review.as_str(),
             &self.phase_default,
             self.runtime,
             &self.skills_cfg,
-        )?;
+        )
+        .await?;
         let skill_session = skill_plan.materialize(scratch_dir, &self.workspace)?;
         let prompt_scratchpad_path = container_workspace_path(&self.workspace, &scratchpad_path);
         let ctx = ReviewContext {
