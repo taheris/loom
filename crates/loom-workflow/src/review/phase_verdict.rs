@@ -157,10 +157,11 @@ pub enum RecoveryCause {
     /// cause `retry-exhausted` (`DriverNoticeCause::RetryExhausted`).
     AgentRetry { reason: String },
     /// Defense-in-depth: a worker-phase-only marker (`LOOM_RETRY`,
-    /// `LOOM_BLOCKED`, `LOOM_CLARIFY`) or a review-phase-only marker
-    /// (`LOOM_CONCERN`) was emitted from a phase that does not admit it.
-    /// `marker_name` is the literal marker text; `phase_kind` names the
-    /// rejecting phase class (`"interactive"` or `"worker"`). The agent
+    /// `LOOM_BLOCKED`, `LOOM_CLARIFY`), a loop/todo-only direct
+    /// `LOOM_CLARIFY`, or a review-phase-only marker (`LOOM_CONCERN`) was
+    /// emitted from a phase that does not admit it. `marker_name` is the
+    /// literal marker text; `phase_kind` names the rejecting phase class
+    /// (`"interactive"`, `"review"`, or `"worker"`). The agent
     /// should never reach this branch because the partial-pinning matrix
     /// scopes each marker per phase; the gate enforces the rule
     /// mechanically per `specs/harness.md` § Marker definitions.
@@ -288,9 +289,11 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
 
 /// Class of phase from the marker-admissibility perspective.
 ///
-/// Worker phases (`loop`, `todo_*`, `review`) admit the worker-phase-only
-/// self-report markers (`LOOM_RETRY`, `LOOM_BLOCKED`, `LOOM_CLARIFY`) and
-/// the review walk's `LOOM_CONCERN` (in the `review` phase only).
+/// Direct worker phases (`loop`, `todo_*`) admit direct
+/// `LOOM_CLARIFY`. Review is also single-shot, but remains
+/// inspection-only: it admits `LOOM_RETRY` / `LOOM_BLOCKED` for
+/// cannot-complete self-reports and routes clarify-worthy decisions
+/// through `route="clarify"` findings instead of direct `LOOM_CLARIFY`.
 /// Interactive phases (`plan_*`, `inbox`) admit `LOOM_COMPLETE` only because
 /// the human is in the room to resolve friction in-turn — the
 /// cannot-finish self-report set has no role to play there per
@@ -298,9 +301,12 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
 /// partial is pinned in worker phases only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseKind {
-    /// `loop`, `todo_*`, `review` — single-shot worker phases that admit
-    /// the worker-phase-only self-report marker set.
+    /// `loop`, `todo_*` — single-shot worker phases that admit direct
+    /// self-report markers including `LOOM_CLARIFY`.
     Worker,
+    /// `loom gate review` — single-shot inspection phase with a
+    /// review-specific terminal contract.
+    Review,
     /// `plan_*`, `inbox` — multi-turn interactive sessions that admit
     /// `LOOM_COMPLETE` only.
     Interactive,
@@ -310,6 +316,7 @@ impl PhaseKind {
     fn label(self) -> &'static str {
         match self {
             Self::Worker => "worker",
+            Self::Review => "review",
             Self::Interactive => "interactive",
         }
     }
@@ -330,26 +337,44 @@ pub fn decide_for_phase(
     inputs: GateInputs,
     phase: PhaseKind,
 ) -> PhaseVerdict {
-    if matches!(phase, PhaseKind::Interactive)
-        && let Some(rejected) = reject_worker_only_marker_in_interactive(marker)
-    {
+    if let Some(rejected) = reject_marker_for_phase(marker, phase) {
         return rejected;
     }
     decide(marker, inputs)
 }
 
-fn reject_worker_only_marker_in_interactive(marker: Option<&ExitSignal>) -> Option<PhaseVerdict> {
-    let name = match marker? {
-        ExitSignal::Retry { .. } => "LOOM_RETRY",
-        ExitSignal::Blocked { .. } => "LOOM_BLOCKED",
-        ExitSignal::Clarify { .. } => "LOOM_CLARIFY",
-        ExitSignal::Concern { .. } | ExitSignal::BadWalk(_) => "LOOM_CONCERN",
-        ExitSignal::Complete | ExitSignal::Noop => return None,
+fn reject_marker_for_phase(marker: Option<&ExitSignal>, phase: PhaseKind) -> Option<PhaseVerdict> {
+    let name = match (phase, marker?) {
+        (PhaseKind::Interactive, ExitSignal::Retry { .. }) => "LOOM_RETRY",
+        (PhaseKind::Interactive, ExitSignal::Blocked { .. }) => "LOOM_BLOCKED",
+        (PhaseKind::Interactive | PhaseKind::Review, ExitSignal::Clarify { .. }) => "LOOM_CLARIFY",
+        (PhaseKind::Interactive, ExitSignal::Concern { .. } | ExitSignal::BadWalk(_)) => {
+            "LOOM_CONCERN"
+        }
+        (PhaseKind::Review, ExitSignal::Noop) => "LOOM_NOOP",
+        (PhaseKind::Worker, ExitSignal::Concern { .. } | ExitSignal::BadWalk(_)) => "LOOM_CONCERN",
+        (
+            PhaseKind::Worker,
+            ExitSignal::Complete
+            | ExitSignal::Noop
+            | ExitSignal::Retry { .. }
+            | ExitSignal::Blocked { .. }
+            | ExitSignal::Clarify { .. },
+        )
+        | (
+            PhaseKind::Review,
+            ExitSignal::Complete
+            | ExitSignal::Retry { .. }
+            | ExitSignal::Blocked { .. }
+            | ExitSignal::Concern { .. }
+            | ExitSignal::BadWalk(_),
+        )
+        | (PhaseKind::Interactive, ExitSignal::Complete | ExitSignal::Noop) => return None,
     };
     Some(PhaseVerdict::Recovery {
         cause: RecoveryCause::WrongPhaseMarker {
             marker_name: name,
-            phase_kind: PhaseKind::Interactive.label(),
+            phase_kind: phase.label(),
         },
     })
 }
@@ -1090,8 +1115,9 @@ mod tests {
     }
 
     /// `decide_for_phase(_, _, PhaseKind::Worker)` delegates to `decide`
-    /// — every worker-phase-admissible marker (`LOOM_RETRY`,
-    /// `LOOM_BLOCKED`, `LOOM_CLARIFY`) routes through unchanged.
+    /// for loop/todo worker self-reports — every direct worker marker
+    /// (`LOOM_RETRY`, `LOOM_BLOCKED`, `LOOM_CLARIFY`) routes through
+    /// unchanged.
     #[test]
     fn retry_marker_admitted_under_worker_phase() {
         let m = ExitSignal::Retry {
@@ -1104,6 +1130,79 @@ mod tests {
                 assert_eq!(reason, "transient io");
             }
             other => panic!("expected Recovery::AgentRetry under worker phase, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clarify_marker_admitted_under_worker_phase() {
+        let m = ExitSignal::Clarify {
+            question: "additive only?".into(),
+        };
+        match decide_for_phase(Some(&m), GateInputs::default(), PhaseKind::Worker) {
+            PhaseVerdict::Clarify { question } => assert_eq!(question, "additive only?"),
+            other => panic!("expected Clarify under worker phase, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clarify_marker_from_review_phase_is_wrong_review_path() {
+        let m = ExitSignal::Clarify {
+            question: "additive only?".into(),
+        };
+        match decide_for_phase(Some(&m), GateInputs::default(), PhaseKind::Review) {
+            PhaseVerdict::Recovery {
+                cause:
+                    RecoveryCause::WrongPhaseMarker {
+                        marker_name,
+                        phase_kind,
+                    },
+            } => {
+                assert_eq!(marker_name, "LOOM_CLARIFY");
+                assert_eq!(phase_kind, "review");
+            }
+            other => panic!("expected Recovery::WrongPhaseMarker under review, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retry_and_blocked_markers_are_admitted_under_review_phase() {
+        let retry = ExitSignal::Retry {
+            reason: "logs disappeared".into(),
+        };
+        match decide_for_phase(Some(&retry), GateInputs::default(), PhaseKind::Review) {
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::AgentRetry { reason },
+            } => assert_eq!(reason, "logs disappeared"),
+            other => panic!("expected AgentRetry under review, got {other:?}"),
+        }
+
+        let blocked = ExitSignal::Blocked {
+            reason: "workspace cannot be read".into(),
+        };
+        match decide_for_phase(Some(&blocked), GateInputs::default(), PhaseKind::Review) {
+            PhaseVerdict::Blocked { reason } => assert_eq!(reason, "workspace cannot be read"),
+            other => panic!("expected Blocked under review, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn noop_marker_from_review_phase_is_wrong_phase_marker() {
+        match decide_for_phase(
+            Some(&ExitSignal::Noop),
+            GateInputs::default(),
+            PhaseKind::Review,
+        ) {
+            PhaseVerdict::Recovery {
+                cause:
+                    RecoveryCause::WrongPhaseMarker {
+                        marker_name,
+                        phase_kind,
+                    },
+            } => {
+                assert_eq!(marker_name, "LOOM_NOOP");
+                assert_eq!(phase_kind, "review");
+            }
+            other => panic!("expected Recovery::WrongPhaseMarker for review NOOP, got {other:?}"),
         }
     }
 

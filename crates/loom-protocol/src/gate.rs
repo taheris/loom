@@ -1254,7 +1254,16 @@ pub enum WalkOutputError {
     Finding(#[from] FindingParseError),
     /// walk output violated the LOOM_FINDING / terminal-marker pairing rule: {bad_walk:?}
     BadWalk { bad_walk: BadWalk },
-    /// walk emitted {findings_count} LOOM_FINDING line(s) but no terminal marker (LOOM_COMPLETE / LOOM_CONCERN / LOOM_BLOCKED / LOOM_CLARIFY)
+    /// review walk emitted direct LOOM_CLARIFY; emit a route="clarify" LOOM_FINDING with Options evidence and LOOM_CONCERN instead (question: {question})
+    WrongReviewPath { question: String },
+    /// review walk could not complete: {marker} {reason}
+    CannotComplete {
+        marker: &'static str,
+        reason: String,
+    },
+    /// review walk used invalid terminal {marker}; expected LOOM_COMPLETE / LOOM_CONCERN / LOOM_RETRY / LOOM_BLOCKED
+    InvalidTerminal { marker: &'static str },
+    /// walk emitted {findings_count} LOOM_FINDING line(s) but no terminal marker (LOOM_COMPLETE / LOOM_CONCERN)
     MissingTerminalMarker { findings_count: usize },
 }
 
@@ -1401,6 +1410,9 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
     }
 
     match walk.terminal() {
+        TerminalSurface::Clarify { question } => Err(WalkOutputError::WrongReviewPath {
+            question: question.clone(),
+        }),
         TerminalSurface::Concern { summary } if walk.findings().is_empty() => {
             Err(WalkOutputError::BadWalk {
                 bad_walk: BadWalk::ConcernWithoutFindings {
@@ -1415,17 +1427,14 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
                 parsed_findings: walk.findings().to_vec(),
             },
         }),
-        TerminalSurface::Complete | TerminalSurface::Noop if !walk.findings().is_empty() => {
-            Err(WalkOutputError::BadWalk {
-                bad_walk: BadWalk::FindingsWithoutConcern {
-                    finding_count: walk.findings().len(),
-                    findings: walk.findings().to_vec(),
-                },
-            })
-        }
-        TerminalSurface::Blocked { .. }
-        | TerminalSurface::Clarify { .. }
-        | TerminalSurface::Retry { .. }
+        TerminalSurface::Noop => Err(WalkOutputError::InvalidTerminal { marker: NOOP }),
+        TerminalSurface::Complete if !walk.findings().is_empty() => Err(WalkOutputError::BadWalk {
+            bad_walk: BadWalk::FindingsWithoutConcern {
+                finding_count: walk.findings().len(),
+                findings: walk.findings().to_vec(),
+            },
+        }),
+        TerminalSurface::Blocked { .. } | TerminalSurface::Retry { .. }
             if !walk.findings().is_empty() =>
         {
             Err(WalkOutputError::BadWalk {
@@ -1440,12 +1449,15 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
                 findings_count: walk.findings().len(),
             })
         }
-        TerminalSurface::Missing
-        | TerminalSurface::Complete
-        | TerminalSurface::Noop
-        | TerminalSurface::Blocked { .. }
-        | TerminalSurface::Clarify { .. }
-        | TerminalSurface::Retry { .. } => Ok(Vec::new()),
+        TerminalSurface::Blocked { reason } => Err(WalkOutputError::CannotComplete {
+            marker: BLOCKED,
+            reason: reason.clone(),
+        }),
+        TerminalSurface::Retry { reason } => Err(WalkOutputError::CannotComplete {
+            marker: RETRY,
+            reason: reason.clone(),
+        }),
+        TerminalSurface::Missing | TerminalSurface::Complete => Ok(Vec::new()),
     }
 }
 
@@ -2322,6 +2334,72 @@ mod tests {
         let findings =
             parse_walk_output(output, DispatchScope::Tree, &AlwaysValid).expect("vacuous case");
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn direct_clarify_terminal_is_wrong_review_path() {
+        let output = "Should the reviewer pick a schema path?\nLOOM_CLARIFY\n";
+        match parse_walk_output(output, DispatchScope::Tree, &AlwaysValid) {
+            Err(WalkOutputError::WrongReviewPath { question }) => {
+                assert_eq!(question, "Should the reviewer pick a schema path?");
+            }
+            other => panic!("expected WrongReviewPath for direct LOOM_CLARIFY, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cannot_complete_review_terminals_do_not_parse_as_empty_success() {
+        for (output, expected_marker, expected_reason) in [
+            (
+                "review logs were truncated\nLOOM_RETRY\n",
+                "LOOM_RETRY",
+                "review logs were truncated",
+            ),
+            (
+                "cannot access the workspace\nLOOM_BLOCKED\n",
+                "LOOM_BLOCKED",
+                "cannot access the workspace",
+            ),
+        ] {
+            match parse_walk_output(output, DispatchScope::Tree, &AlwaysValid) {
+                Err(WalkOutputError::CannotComplete { marker, reason }) => {
+                    assert_eq!(marker, expected_marker);
+                    assert_eq!(reason, expected_reason);
+                }
+                other => panic!("expected CannotComplete for {expected_marker}, got {other:?}",),
+            }
+        }
+    }
+
+    #[test]
+    fn noop_terminal_is_not_a_review_walk_success() {
+        match parse_walk_output("LOOM_NOOP\n", DispatchScope::Tree, &AlwaysValid) {
+            Err(WalkOutputError::InvalidTerminal { marker }) => assert_eq!(marker, "LOOM_NOOP"),
+            other => panic!("expected InvalidTerminal for LOOM_NOOP, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clarify_route_finding_with_options_and_concern_reaches_mint_pipeline() {
+        let gate = spec("gate");
+        let finding = Finding {
+            token: ConcernToken::SpecCoherenceFail,
+            route: FindingRoute::Clarify,
+            bonds: vec![gate.clone()],
+            target: FindingTarget::Criterion {
+                spec: gate,
+                anchor: "review-terminal-contract".to_owned(),
+            },
+            evidence: "Needs human choice.\n\n## Options — pick path\n\n### Option 1 — Keep current\nCost: debt.\n\n### Option 2 — Change contract\nCost: churn."
+                .to_owned(),
+        };
+        let payload = serde_json::to_string(&finding).expect("serialize clarify finding");
+        let output = format!(
+            "preamble\n{LOOM_FINDING_PREFIX} {payload}\nLOOM_CONCERN: {{\"summary\":\"clarify needed\"}}\n",
+        );
+        let findings = parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid)
+            .expect("clarify-route finding parses");
+        assert_eq!(findings, vec![finding]);
     }
 
     #[test]

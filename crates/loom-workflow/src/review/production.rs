@@ -49,7 +49,9 @@ use tracing::{info, warn};
 use super::context::{beads_summary, default_profile_for_spec, load_review_sources};
 use super::error::ReviewError;
 use super::finding::{DispatchScope, FindingValidator, TerminalSurface, WalkOutput};
-use super::phase_verdict::{GateInputs, PhaseVerdict, RecoveryCause, decide};
+use super::phase_verdict::{
+    GateInputs, PhaseKind, PhaseVerdict, RecoveryCause, decide, decide_for_phase,
+};
 use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
 use super::verdict::PushGateRefuseCause;
 use super::workspace_validator::WorkspaceFindingValidator;
@@ -508,9 +510,9 @@ fn classify_review_phase_with_suppressions(
     suppressions: &[SuppressionConfig],
 ) -> ReviewOutcome {
     let marker = exit_signal_from_terminal(walk.terminal());
-    if matches!(marker, Some(ExitSignal::Complete | ExitSignal::Noop)) && exit_code != 0 {
+    if matches!(marker, Some(ExitSignal::Complete)) && exit_code != 0 {
         return ReviewOutcome::Incomplete {
-            detail: format!("agent emitted COMPLETE/NOOP but exited code {exit_code}"),
+            detail: format!("agent emitted COMPLETE but exited code {exit_code}"),
         };
     }
     match phase_verdict_from_walk_with_suppressions(walk, suppressions) {
@@ -538,17 +540,42 @@ fn classify_review_phase_with_suppressions(
             cause: RecoveryCause::SwallowedMarker,
         } => ReviewOutcome::Incomplete {
             detail: if exit_code == 0 {
-                "agent exited 0 without LOOM_COMPLETE / LOOM_BLOCKED / LOOM_CLARIFY marker \
-                 (swallowed marker)"
+                "agent exited 0 without LOOM_COMPLETE / LOOM_CONCERN / LOOM_RETRY / \
+                 LOOM_BLOCKED marker (swallowed marker)"
                     .to_string()
             } else {
                 format!("agent exited with code {exit_code}")
             },
         },
+        PhaseVerdict::Recovery {
+            cause:
+                RecoveryCause::WrongPhaseMarker {
+                    marker_name,
+                    phase_kind,
+                },
+        } => ReviewOutcome::Incomplete {
+            detail: wrong_phase_marker_detail(marker_name, phase_kind),
+        },
         PhaseVerdict::Recovery { cause } => ReviewOutcome::Incomplete {
             detail: format!("unexpected gate verdict: {}", cause.as_str()),
         },
     }
+}
+
+fn wrong_phase_marker_detail(marker_name: &str, phase_kind: &str) -> String {
+    if phase_kind == "review" && marker_name == "LOOM_CLARIFY" {
+        return "wrong-review-path: direct LOOM_CLARIFY is not a review terminal; emit a \
+                route=\"clarify\" LOOM_FINDING with the canonical Options block in evidence, \
+                then terminate with LOOM_CONCERN"
+            .to_string();
+    }
+    if phase_kind == "review" {
+        return format!(
+            "wrong-review-path: {marker_name} is not a review terminal; expected \
+             LOOM_COMPLETE, LOOM_CONCERN, LOOM_RETRY, or LOOM_BLOCKED",
+        );
+    }
+    format!("wrong-phase-marker: {marker_name} is not valid in {phase_kind} phase")
 }
 
 /// Apply the verdict-gate decision table to a parsed [`WalkOutput`],
@@ -558,13 +585,29 @@ fn classify_review_phase_with_suppressions(
 /// Per-line `LOOM_FINDING:` parse failures route through
 /// [`BadWalk::MalformedFinding`] alongside the typed terminal surface
 /// before the pairing-rule checks fire. Otherwise the gate's
-/// [`decide`] function is consulted with the typed marker and any
-/// well-formed findings; a malformed terminal payload paired with
-/// well-formed findings threads both into
+/// [`decide`] gate function is consulted with the typed marker and any
+/// well-formed findings, then the review-only marker restrictions are
+/// layered on via [`decide_for_phase`]. A malformed terminal payload paired
+/// with well-formed findings threads both into
 /// [`BadWalk::Concern { payload, parsed_findings }`].
 #[cfg(test)]
 fn phase_verdict_from_walk(walk: &WalkOutput) -> PhaseVerdict {
     phase_verdict_from_walk_with_suppressions(walk, &[])
+}
+
+fn decide_review_phase(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
+    let baseline = decide(marker, inputs.clone());
+    let review_verdict = decide_for_phase(marker, inputs, PhaseKind::Review);
+    if matches!(
+        review_verdict,
+        PhaseVerdict::Recovery {
+            cause: RecoveryCause::WrongPhaseMarker { .. }
+        }
+    ) {
+        review_verdict
+    } else {
+        baseline
+    }
 }
 
 fn phase_verdict_from_walk_with_suppressions(
@@ -589,7 +632,7 @@ fn phase_verdict_from_walk_with_suppressions(
         streamed_findings: walk.findings().to_vec(),
         ..GateInputs::default()
     };
-    let mut verdict = decide(marker.as_ref(), inputs);
+    let mut verdict = decide_review_phase(marker.as_ref(), inputs);
     if let PhaseVerdict::Recovery {
         cause:
             RecoveryCause::BadWalk(loom_templates::previous_failure::BadWalk::Concern {
@@ -1144,13 +1187,13 @@ mod tests {
     }
 
     /// FR12 — `loom review`'s phase-end MUST route the reviewer's marker
-    /// through the canonical [`decide`] gate function rather than its own
+    /// through the canonical [`decide_for_phase`] gate function rather than its own
     /// ad-hoc `match` on `exit_code`. This test pins the marker → outcome
-    /// mapping that `decide()` produces for the review phase: `COMPLETE`
-    /// reaches `Complete`, `BLOCKED`/`CLARIFY` self-reports surface as
-    /// `Incomplete` carrying the marker text, and a missing marker routes
-    /// to `swallowed-marker` recovery (mapped to `Incomplete`). Combined
-    /// with the source-level `decide()` import in `classify_review_phase`,
+    /// mapping that `decide_for_phase(..., Review)` produces for the review phase:
+    /// `COMPLETE` reaches `Complete`, `BLOCKED` surfaces as `Incomplete`,
+    /// direct `CLARIFY` is rejected as the wrong review path, and a missing
+    /// marker routes to `swallowed-marker` recovery (mapped to `Incomplete`). Combined
+    /// with the source-level `decide_for_phase()` import in `classify_review_phase`,
     /// the two together fence the FR12 contract.
     fn walk_with_terminal(terminal: TerminalSurface) -> WalkOutput {
         let stdout = match terminal {
@@ -1170,7 +1213,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_review_phase_routes_marker_through_phase_verdict_decide() {
+    fn classify_review_phase_routes_marker_through_phase_verdict_decide_for_review_phase() {
         // `COMPLETE` + clean exit → review phase passes.
         assert_eq!(
             classify_review_phase(&walk_with_terminal(TerminalSurface::Complete), 0),
@@ -1189,7 +1232,22 @@ mod tests {
             ),
             other => panic!("expected Incomplete, got {other:?}"),
         }
-        // `CLARIFY` self-report surfaces as `Incomplete` carrying the question.
+        // `RETRY` routes to an incomplete recovery outcome instead of a
+        // clean empty review.
+        match classify_review_phase(
+            &walk_with_terminal(TerminalSurface::Retry {
+                reason: "logs disappeared".into(),
+            }),
+            0,
+        ) {
+            ReviewOutcome::Incomplete { detail } => assert!(
+                detail.contains("agent-retry"),
+                "retry detail should name recovery cause: {detail}",
+            ),
+            other => panic!("expected Incomplete, got {other:?}"),
+        }
+        // Direct `CLARIFY` is the wrong review path: review clarifications
+        // must route through finding evidence and terminate with CONCERN.
         match classify_review_phase(
             &walk_with_terminal(TerminalSurface::Clarify {
                 question: "additive only?".into(),
@@ -1197,8 +1255,11 @@ mod tests {
             0,
         ) {
             ReviewOutcome::Incomplete { detail } => assert!(
-                detail.contains("LOOM_CLARIFY") && detail.contains("additive only?"),
-                "clarify detail missing question: {detail}",
+                detail.contains("wrong-review-path")
+                    && detail.contains("LOOM_CLARIFY")
+                    && detail.contains("route=\"clarify\"")
+                    && detail.contains("LOOM_CONCERN"),
+                "clarify detail should explain the review-only route: {detail}",
             ),
             other => panic!("expected Incomplete, got {other:?}"),
         }
@@ -1467,6 +1528,22 @@ mod tests {
                     let tokens: Vec<_> = findings.iter().map(|f| f.token).collect();
                     assert_eq!(&tokens, expected_tokens, "[{}] findings", cell.name);
                 }
+                (
+                    CellExpect::WrongPhaseMarker {
+                        marker_name: expected_marker,
+                        phase_kind: expected_phase,
+                    },
+                    PhaseVerdict::Recovery {
+                        cause:
+                            RecoveryCause::WrongPhaseMarker {
+                                marker_name,
+                                phase_kind,
+                            },
+                    },
+                ) => {
+                    assert_eq!(marker_name, expected_marker, "[{}] marker", cell.name);
+                    assert_eq!(phase_kind, expected_phase, "[{}] phase", cell.name);
+                }
                 (_, actual) => panic!(
                     "[{}] verdict mismatch: expected {:?}, got {actual:?}",
                     cell.name, cell.expect,
@@ -1533,6 +1610,10 @@ mod tests {
             summary: String,
             finding_tokens: Vec<loom_templates::finding::ConcernToken>,
         },
+        WrongPhaseMarker {
+            marker_name: &'static str,
+            phase_kind: &'static str,
+        },
     }
 
     /// Render the variant through `Display for PreviousFailure` for the
@@ -1559,6 +1640,13 @@ mod tests {
             PhaseVerdict::Recovery {
                 cause: RecoveryCause::SwallowedMarker,
             } => None,
+            PhaseVerdict::Recovery {
+                cause:
+                    RecoveryCause::WrongPhaseMarker {
+                        marker_name,
+                        phase_kind,
+                    },
+            } => Some(wrong_phase_marker_detail(marker_name, phase_kind)),
             PhaseVerdict::Recovery { .. } => None,
         }
     }
@@ -1634,8 +1722,11 @@ mod tests {
             stdout: make_stdout("S0", "T_noop"),
             expected_well_formed_findings: 0,
             expected_malformed_findings: 0,
-            expect: CellExpect::Done,
-            display_contains: vec![],
+            expect: CellExpect::WrongPhaseMarker {
+                marker_name: "LOOM_NOOP",
+                phase_kind: "review",
+            },
+            display_contains: vec!["wrong-review-path".to_string(), "LOOM_NOOP".to_string()],
             both_pieces_tokens: vec![],
         });
         cells.push(MatrixCell {
@@ -1695,15 +1786,16 @@ mod tests {
             display_contains: vec!["LOOM_COMPLETE".to_string(), "LOOM_FINDING".to_string()],
             both_pieces_tokens: vec![f1, f2],
         });
-        // NOOP + findings is not addressed by the spec table; current
-        // pipeline reduces to Done. The matrix pins the residual.
         cells.push(MatrixCell {
             name: "S1×T_noop",
             stdout: make_stdout("S1", "T_noop"),
             expected_well_formed_findings: 2,
             expected_malformed_findings: 0,
-            expect: CellExpect::Done,
-            display_contains: vec![],
+            expect: CellExpect::WrongPhaseMarker {
+                marker_name: "LOOM_NOOP",
+                phase_kind: "review",
+            },
+            display_contains: vec!["wrong-review-path".to_string(), "LOOM_NOOP".to_string()],
             both_pieces_tokens: vec![],
         });
         cells.push(MatrixCell {

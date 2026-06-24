@@ -1,5 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
+assertion_line: 369
 expression: ctx.render().unwrap()
 ---
 # Post-Epic Review
@@ -489,9 +490,10 @@ three-paths principle above shape the actual options):
 gate routes on mechanical signals (the streamed finding lines,
 the terminal marker, `bd-closed`, diff emptiness); it does not scrape
 your reasoning for `### Option N` blocks. The canonical block reaches
-bead state **only** through the `evidence` field of an
-`invariant-clash` finding line — the driver's mint step lifts
-it into the minted clarify bead's description. If the canonical block
+the mint pipeline **only** through the `evidence` field of a
+`route="clarify"` finding line — the driver's mint step lifts
+it into the minted clarify bead's description. Do not try to persist
+review options yourself with `bd` commands. If the canonical block
 lives only in your stdout body or the review log, `loom inbox` will not
 find it.
 

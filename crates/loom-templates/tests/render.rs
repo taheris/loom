@@ -831,6 +831,18 @@ fn review_renders_options_format_contract_embedded_in_evidence() -> Result<()> {
         "contract scope must remain universal across clarify-worthy decisions: {out}",
     );
     assert!(
+        out.contains("`route=\"clarify\"` finding line"),
+        "persistence text must name any clarify-route finding, not a token-specific path: {out}",
+    );
+    assert!(
+        !out.contains("only** through the `evidence` field of an\n`invariant-clash`"),
+        "persistence text must not say only invariant-clash findings carry Options blocks: {out}",
+    );
+    assert!(
+        out.contains("Do not try to persist\nreview options yourself with `bd` commands"),
+        "review prompt must forbid reviewer-side bd persistence for options: {out}",
+    );
+    assert!(
         out.contains("gate does NOT parse your prose")
             || out.contains("does not scrape")
             || out.contains("does NOT parse your prose"),
