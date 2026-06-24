@@ -6,8 +6,8 @@
 //! `finding:<hash>` dedup happen before metadata spec-epic validation,
 //! and lead specs affect grouping plus `spec:<label>` labels only. The
 //! legacy molecule recovery path still materializes batches under a
-//! caller-selected work epic until the tree materializer consumes the new
-//! plan shape.
+//! caller-selected work epic; tree-scope mint materializes the actionable
+//! plan under one standing remediation work epic.
 //!
 //! The end-of-run [`MintSummary::render`] surface is stdout-only — the
 //! mint pipeline performs no other writes outside the dedup + mint flow.
@@ -23,7 +23,7 @@ pub use walk::{
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use loom_driver::bd::{BdClient, Bead, CommandRunner, CreateOpts, ListOpts, UpdateOpts};
+use loom_driver::bd::{BdClient, Bead, CommandRunner, CreateOpts, Label, ListOpts, UpdateOpts};
 use loom_driver::config::SuppressionConfig;
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 use loom_gate::IntegrityFinding;
@@ -72,7 +72,9 @@ pub const MINT_LABEL_PREFIX: &str = "loom:fixup:";
 /// Bd label prefix for the per-finding dedup key.
 pub const FINDING_LABEL_PREFIX: &str = "finding:";
 
+const ACTIVE_LABEL: &str = "loom:active";
 const DEFERRED_LABEL: &str = "loom:deferred";
+const EMPTY_TREE_EPIC_CLOSE_REASON: &str = "empty tree mint remediation cleanup";
 
 /// Live bd statuses that count as a per-finding dedup hit.
 const DEDUP_STATUSES: &str = "open,in_progress,blocked,deferred";
@@ -304,6 +306,7 @@ pub struct MintOptions {
 pub struct MintSummary {
     pub batches: Vec<BatchOutcome>,
     pub statuses: Vec<FindingStatusRecord>,
+    pub active_epic: Option<BeadId>,
     pub minted: usize,
     pub planned: usize,
     pub would_mint: usize,
@@ -399,6 +402,10 @@ impl MintSummary {
             ));
         }
         out.push('\n');
+        if let Some(epic) = &self.active_epic {
+            out.push_str(&format!("active remediation epic: {epic}\n"));
+            out.push_str("next: loom loop\n");
+        }
         for status in &self.statuses {
             match status.render() {
                 Ok(line) => {
@@ -594,22 +601,220 @@ impl From<FindingRouting> for TreeMintBatchRouting {
     }
 }
 
+impl From<TreeMintBatchRouting> for FindingRouting {
+    fn from(value: TreeMintBatchRouting) -> Self {
+        match value {
+            TreeMintBatchRouting::Fixup => Self::Fixup,
+            TreeMintBatchRouting::Clarify => Self::Clarify,
+            TreeMintBatchRouting::BlockedClarifyWithoutOptions => {
+                Self::BlockedClarifyWithoutOptions
+            }
+        }
+    }
+}
+
 pub async fn mint_tree_findings_with_options<R: CommandRunner>(
     bd: &BdClient<R>,
     findings: &[Finding],
+    head_commit: &str,
     opts: &MintOptions,
 ) -> MintSummary {
-    let (plan, mut summary) = plan_tree_mint_with_options(bd, findings, opts).await;
+    let (plan, summary) = plan_tree_mint_with_options(bd, findings, opts).await;
+    materialize_tree_plan(bd, plan, head_commit, opts, summary).await
+}
+
+async fn materialize_tree_plan<R: CommandRunner>(
+    bd: &BdClient<R>,
+    plan: TreeMintPlan,
+    head_commit: &str,
+    opts: &MintOptions,
+    mut summary: MintSummary,
+) -> MintSummary {
+    if plan.is_empty() {
+        return summary;
+    }
+    if opts.dry_run {
+        record_dry_run_tree_plan(plan, &mut summary);
+        return summary;
+    }
+
+    let active_before = match active_work_epics(bd).await {
+        Ok(active) => active,
+        Err(err) => {
+            summary.record(BatchOutcome::Errored {
+                fingerprint: "tree-active".to_owned(),
+                message: mint_error_message(&err),
+            });
+            return summary;
+        }
+    };
+    let epic = match create_tree_remediation_epic(bd, &plan, head_commit).await {
+        Ok(epic) => epic,
+        Err(err) => {
+            summary.record(BatchOutcome::Errored {
+                fingerprint: "tree-epic".to_owned(),
+                message: mint_error_message(&err),
+            });
+            return summary;
+        }
+    };
+
+    let mut minted_specs = HashSet::new();
+    let mut created_children = 0_usize;
+    let mut active_applied = false;
     for batch in plan.batches {
-        let outcome = BatchOutcome::Planned {
+        let routing = FindingRouting::from(batch.routing);
+        let outcome =
+            create_batch_under_parent(bd, &batch.findings, &batch.lead_spec, &epic, routing).await;
+        let child_created = matches!(outcome, BatchOutcome::Minted { .. });
+        record_batch_status(&mut summary, &batch.findings, &outcome);
+        track_minted(&outcome, &batch.lead_spec, &mut summary, &mut minted_specs);
+        summary.record(outcome);
+
+        if child_created {
+            created_children += 1;
+            if !active_applied {
+                match activate_tree_remediation_epic(bd, &epic, &active_before).await {
+                    Ok(()) => {
+                        summary.active_epic = Some(epic.clone());
+                        active_applied = true;
+                    }
+                    Err(err) => {
+                        summary.record(BatchOutcome::Errored {
+                            fingerprint: format!("active:{epic}"),
+                            message: mint_error_message(&err),
+                        });
+                        break;
+                    }
+                }
+            }
+        } else if created_children == 0 {
+            neutralize_empty_tree_epic(bd, &epic, &mut summary).await;
+            break;
+        }
+    }
+    summary.specs_across_minted = minted_specs.len();
+    summary
+}
+
+fn record_dry_run_tree_plan(plan: TreeMintPlan, summary: &mut MintSummary) {
+    for batch in plan.batches {
+        let outcome = BatchOutcome::WouldMint {
             fingerprint: batch.fingerprint,
             lead_spec: batch.lead_spec,
             findings_count: batch.findings.len(),
         };
-        record_batch_status(&mut summary, &batch.findings, &outcome);
+        record_batch_status(summary, &batch.findings, &outcome);
         summary.record(outcome);
     }
-    summary
+}
+
+async fn active_work_epics<R: CommandRunner>(bd: &BdClient<R>) -> Result<Vec<Bead>, MintError> {
+    let beads = bd
+        .list(ListOpts {
+            issue_type: Some("epic".to_string()),
+            label: Some(ACTIVE_LABEL.to_string()),
+            status: Some("open".to_string()),
+            ..ListOpts::default()
+        })
+        .await?;
+    Ok(beads
+        .into_iter()
+        .filter(|bead| bead.labels.iter().any(Label::is_active))
+        .collect())
+}
+
+async fn create_tree_remediation_epic<R: CommandRunner>(
+    bd: &BdClient<R>,
+    plan: &TreeMintPlan,
+    head_commit: &str,
+) -> Result<BeadId, MintError> {
+    let batch_count = plan.batches.len();
+    let finding_count = plan
+        .batches
+        .iter()
+        .map(|batch| batch.findings.len())
+        .sum::<usize>();
+    let metadata = serde_json::json!({ "loom.base_commit": head_commit }).to_string();
+    Ok(bd
+        .create(CreateOpts {
+            title: cap_bd_title(format!(
+                "tree remediation: {batch_count} batches ({finding_count} findings)",
+            )),
+            description: tree_remediation_epic_description(batch_count, finding_count),
+            issue_type: Some("epic".to_string()),
+            priority: Some(2),
+            labels: tree_remediation_epic_labels(plan),
+            metadata: Some(metadata),
+            ..CreateOpts::default()
+        })
+        .await?)
+}
+
+fn tree_remediation_epic_description(batch_count: usize, finding_count: usize) -> String {
+    format!(
+        "Standing remediation work epic for `loom gate mint --tree`.\n\nChild batches: {batch_count}\nFindings: {finding_count}\n\nRun `loom loop` to process this active remediation epic.\n",
+    )
+}
+
+fn tree_remediation_epic_labels(plan: &TreeMintPlan) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut labels = Vec::new();
+    for batch in &plan.batches {
+        for finding in &batch.findings {
+            for spec in &finding.bonds {
+                if seen.insert(spec.as_str().to_owned()) {
+                    labels.push(format!("spec:{spec}"));
+                }
+            }
+        }
+    }
+    labels
+}
+
+async fn activate_tree_remediation_epic<R: CommandRunner>(
+    bd: &BdClient<R>,
+    epic: &BeadId,
+    active_before: &[Bead],
+) -> Result<(), MintError> {
+    bd.update(
+        epic,
+        UpdateOpts {
+            add_labels: vec![ACTIVE_LABEL.to_string()],
+            ..UpdateOpts::default()
+        },
+    )
+    .await?;
+    for active in active_before {
+        if &active.id == epic {
+            continue;
+        }
+        bd.update(
+            &active.id,
+            UpdateOpts {
+                remove_labels: vec![ACTIVE_LABEL.to_string()],
+                ..UpdateOpts::default()
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn neutralize_empty_tree_epic<R: CommandRunner>(
+    bd: &BdClient<R>,
+    epic: &BeadId,
+    summary: &mut MintSummary,
+) {
+    if let Err(err) = bd.close(epic, Some(EMPTY_TREE_EPIC_CLOSE_REASON)).await {
+        summary.record(BatchOutcome::Errored {
+            fingerprint: format!("tree-epic:{epic}"),
+            message: format!(
+                "failed to close empty tree remediation epic `{epic}`: {}",
+                mint_error_message(&MintError::from(err)),
+            ),
+        });
+    }
 }
 
 pub async fn plan_tree_mint_with_options<R: CommandRunner>(
@@ -1396,7 +1601,6 @@ async fn process_batch<R: CommandRunner>(
     opts: &MintOptions,
 ) -> BatchOutcome {
     let fingerprint = batch_fingerprint(findings);
-    let label = mint_label(&fingerprint);
 
     if opts.dry_run {
         return BatchOutcome::WouldMint {
@@ -1406,9 +1610,6 @@ async fn process_batch<R: CommandRunner>(
         };
     }
 
-    let labels = batch_labels(findings, &label, routing);
-    let title = batch_title(findings, lead_spec);
-    let description = batch_description(findings, &fingerprint, routing);
     let Some(lead_epic) = lead_epic else {
         return BatchOutcome::Errored {
             fingerprint,
@@ -1428,13 +1629,28 @@ async fn process_batch<R: CommandRunner>(
             };
         }
     };
+    create_batch_under_parent(bd, findings, lead_spec, &parent, routing).await
+}
+
+async fn create_batch_under_parent<R: CommandRunner>(
+    bd: &BdClient<R>,
+    findings: &[Finding],
+    lead_spec: &SpecLabel,
+    parent: &BeadId,
+    routing: FindingRouting,
+) -> BatchOutcome {
+    let fingerprint = batch_fingerprint(findings);
+    let label = mint_label(&fingerprint);
+    let labels = batch_labels(findings, &label, routing);
+    let title = batch_title(findings, lead_spec);
+    let description = batch_description(findings, &fingerprint, routing);
     match bd
         .create(CreateOpts {
             title,
             description,
             issue_type: Some("task".to_string()),
             labels,
-            parent: Some(parent),
+            parent: Some(parent.clone()),
             ..CreateOpts::default()
         })
         .await
@@ -1870,6 +2086,24 @@ mod tests {
 
     fn spec_epic_list(id: &str, label: &str, status: &str) -> String {
         format!("[{}]", spec_epic_row(id, label, status))
+    }
+
+    fn active_epic_row(id: &str, labels: &[&str]) -> String {
+        let labels_json = labels
+            .iter()
+            .map(|label| format!("{label:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            r#"{{
+                "id": "{id}",
+                "title": "active work",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "epic",
+                "labels": [{labels_json}]
+            }}"#,
+        )
     }
 
     fn fixup_row(id: &str, hash: &str) -> String {
@@ -2614,15 +2848,16 @@ reason = "false positive"
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
-        let summary =
-            mint_tree_findings_with_options(&bd, &[finding], &MintOptions::default()).await;
+        let (plan, summary) =
+            plan_tree_mint_with_options(&bd, &[finding], &MintOptions::default()).await;
 
-        assert_eq!(summary.planned, 1, "one actionable tree batch is planned");
+        assert_eq!(
+            plan.batches().len(),
+            1,
+            "one actionable tree batch is planned"
+        );
         assert_eq!(summary.minted, 0, "planning does not create child work");
-        match &summary.batches[0] {
-            BatchOutcome::Planned { lead_spec, .. } => assert_eq!(lead_spec.as_str(), "alpha"),
-            other => panic!("expected Planned, got {other:?}"),
-        }
+        assert_eq!(plan.batches()[0].lead_spec.as_str(), "alpha");
         let calls = rendered_calls(&invocations);
         assert!(
             calls
@@ -2670,7 +2905,8 @@ reason = "false positive"
         let bd = BdClient::with_runner(runner);
 
         let summary =
-            mint_tree_findings_with_options(&bd, &[finding], &MintOptions::default()).await;
+            mint_tree_findings_with_options(&bd, &[finding], "head-sha", &MintOptions::default())
+                .await;
 
         assert_eq!(summary.refused, 1, "duplicate metadata epics refuse");
         assert_eq!(summary.planned, 0, "no actionable plan survives refusal");
@@ -2700,7 +2936,8 @@ reason = "false positive"
         let bd = BdClient::with_runner(runner);
 
         let summary =
-            mint_tree_findings_with_options(&bd, &[finding], &MintOptions::default()).await;
+            mint_tree_findings_with_options(&bd, &[finding], "head-sha", &MintOptions::default())
+                .await;
 
         assert_eq!(summary.skipped, 1, "live finding dedups");
         assert_eq!(summary.planned, 0, "deduped findings are not actionable");
@@ -2712,6 +2949,369 @@ reason = "false positive"
                 .iter()
                 .all(|call| !call.iter().any(|arg| arg == "create")),
             "no work or metadata epic is created for non-actionable findings: {calls:?}",
+        );
+    }
+
+    #[derive(Debug)]
+    struct MixedTreeRun {
+        summary: MintSummary,
+        calls: Vec<Vec<String>>,
+        fix_label: String,
+        clarify_label: String,
+        blocked_label: String,
+    }
+
+    async fn run_mixed_tree_materialization() -> MixedTreeRun {
+        let fix = contract_finding(
+            vec![spec("gate"), spec("harness")],
+            "cross-spec-contract",
+            "fix evidence",
+        );
+        let clarify = invariant_clash_finding(
+            vec![spec("harness")],
+            spec("harness"),
+            "Out of Scope",
+            "clarify-it",
+            "## Options — choose\n\n### Option 1 — fix\nfix it.\n",
+        );
+        let blocked = invariant_clash_finding(
+            vec![spec("agent")],
+            spec("agent"),
+            "Out of Scope",
+            "blocked-it",
+            "missing options",
+        );
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
+            ok_stdout("[]"),
+            ok_stdout("[]"),
+            ok_stdout(&spec_epic_list("lm-gatespec", "gate", "closed")),
+            ok_stdout(&spec_epic_list("lm-harnessspec", "harness", "closed")),
+            ok_stdout(&spec_epic_list("lm-agentspec", "agent", "closed")),
+            ok_stdout(&format!(
+                "[{}]",
+                active_epic_row("lm-prev", &[ACTIVE_LABEL, "spec:old"]),
+            )),
+            ok_stdout("lm-tree\n"),
+            ok_stdout("lm-tree.1\n"),
+            ok_stdout(""),
+            ok_stdout(""),
+            ok_stdout("lm-tree.2\n"),
+            ok_stdout("lm-tree.3\n"),
+        ]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+        let summary = mint_tree_findings_with_options(
+            &bd,
+            &[fix.clone(), clarify.clone(), blocked.clone()],
+            "head-sha",
+            &MintOptions::default(),
+        )
+        .await;
+        MixedTreeRun {
+            summary,
+            calls: rendered_calls(&invocations),
+            fix_label: finding_label(&fix),
+            clarify_label: finding_label(&clarify),
+            blocked_label: finding_label(&blocked),
+        }
+    }
+
+    #[tokio::test]
+    async fn mint_tree_scope_mints_single_active_work_epic_for_all_actionable_batches() {
+        let run = run_mixed_tree_materialization().await;
+
+        assert_eq!(run.summary.minted, 3, "mixed children mint: {run:?}");
+        assert_eq!(
+            run.summary.active_epic.as_ref().map(BeadId::as_str),
+            Some("lm-tree"),
+        );
+        let render = run.summary.render();
+        assert!(
+            render.contains("active remediation epic: lm-tree") && render.contains("loom loop"),
+            "summary names active epic and follow-up command: {render}",
+        );
+
+        let epic_create = run
+            .calls
+            .iter()
+            .find(|call| {
+                call.iter().any(|arg| arg == "create")
+                    && call
+                        .windows(2)
+                        .any(|pair| pair[0] == "--type" && pair[1] == "epic")
+            })
+            .expect("standing remediation epic create recorded");
+        let epic_labels = labels_arg(epic_create);
+        for label in ["spec:agent", "spec:gate", "spec:harness"] {
+            assert!(epic_labels.contains(&label), "epic labels: {epic_labels:?}");
+        }
+        assert!(
+            !epic_labels.contains(&ACTIVE_LABEL),
+            "active is applied only after a child exists: {epic_labels:?}",
+        );
+        let metadata: serde_json::Value =
+            serde_json::from_str(flag_arg(epic_create, "--metadata")).expect("metadata json");
+        assert_eq!(metadata["loom.base_commit"], "head-sha");
+
+        assert!(
+            run.calls.iter().any(|call| call
+                == &[
+                    "update".to_string(),
+                    "lm-tree".to_string(),
+                    "--add-label".to_string(),
+                    ACTIVE_LABEL.to_string(),
+                ]),
+            "new remediation epic is activated after child creation: {:?}",
+            run.calls,
+        );
+        assert!(
+            run.calls.iter().any(|call| call
+                == &[
+                    "update".to_string(),
+                    "lm-prev".to_string(),
+                    "--remove-label".to_string(),
+                    ACTIVE_LABEL.to_string(),
+                ]),
+            "previous active epic is cleared: {:?}",
+            run.calls,
+        );
+        assert!(
+            run.calls.iter().flatten().all(|arg| {
+                !arg.contains("current_spec")
+                    && !arg.contains("current-spec")
+                    && !arg.contains("loom.current")
+            }),
+            "tree mint must not write current-spec or pointer-table state: {:?}",
+            run.calls,
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_tree_sets_single_active_remediation_work_epic() {
+        let run = run_mixed_tree_materialization().await;
+        let task_creates = run
+            .calls
+            .iter()
+            .filter(|call| {
+                call.iter().any(|arg| arg == "create")
+                    && call
+                        .windows(2)
+                        .any(|pair| pair[0] == "--type" && pair[1] == "task")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(task_creates.len(), 3, "all actionable children mint");
+        assert_eq!(
+            run.summary.active_epic.as_ref().map(BeadId::as_str),
+            Some("lm-tree"),
+        );
+        assert!(
+            task_creates
+                .iter()
+                .all(|call| flag_arg(call, "--parent") == "lm-tree"),
+            "every child is under the active remediation epic: {task_creates:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_batches_parent_under_scope_selected_work_epic_with_union_spec_labels() {
+        let run = run_mixed_tree_materialization().await;
+        let task_creates = run
+            .calls
+            .iter()
+            .filter(|call| {
+                call.iter().any(|arg| arg == "create")
+                    && call
+                        .windows(2)
+                        .any(|pair| pair[0] == "--type" && pair[1] == "task")
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            task_creates
+                .iter()
+                .all(|call| flag_arg(call, "--parent") == "lm-tree"),
+            "tree children use the standing work epic: {task_creates:?}",
+        );
+
+        let fixup = task_creates
+            .iter()
+            .find(|call| labels_arg(call).contains(&run.fix_label.as_str()))
+            .expect("fix-up child create");
+        let fixup_labels = labels_arg(fixup);
+        assert!(
+            fixup_labels.contains(&"spec:gate"),
+            "labels: {fixup_labels:?}"
+        );
+        assert!(
+            fixup_labels.contains(&"spec:harness"),
+            "multi-spec finding contributes union spec labels: {fixup_labels:?}",
+        );
+        assert!(
+            task_creates.iter().any(
+                |call| labels_arg(call).contains(&run.clarify_label.as_str())
+                    && labels_arg(call).contains(&"loom:clarify")
+            ),
+            "clarify child carries loom:clarify: {task_creates:?}",
+        );
+        assert!(
+            task_creates.iter().any(|call| {
+                let labels = labels_arg(call);
+                labels.contains(&run.blocked_label.as_str())
+                    && labels.contains(&"loom:blocked")
+                    && !labels.contains(&"loom:clarify")
+            }),
+            "blocked-clarify child carries loom:blocked only: {task_creates:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_tree_no_actionable_findings_leaves_active_unchanged() {
+        let finding = coherence_finding(vec![spec("alpha")], "x", "evidence");
+        let hash = finding.hash();
+        let runner = ScriptedRunner::new(vec![ok_stdout(&format!(
+            "[{}]",
+            fixup_row("lm-existing.1", &hash),
+        ))]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+
+        let summary =
+            mint_tree_findings_with_options(&bd, &[finding], "head-sha", &MintOptions::default())
+                .await;
+
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(summary.minted, 0);
+        assert!(summary.active_epic.is_none());
+        let calls = rendered_calls(&invocations);
+        assert!(
+            calls.iter().all(|call| {
+                !call.iter().any(|arg| arg == "create")
+                    && !call.iter().any(|arg| arg == "update")
+                    && !call.iter().any(|arg| arg.contains(ACTIVE_LABEL))
+            }),
+            "active bookmark is untouched when nothing actionable remains: {calls:?}",
+        );
+    }
+
+    async fn run_empty_tree_failure_cleanup() -> (MintSummary, Vec<Vec<String>>) {
+        let finding = coherence_finding(vec![spec("gate")], "x", "evidence");
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
+            ok_stdout(&spec_epic_list("lm-gatespec", "gate", "closed")),
+            ok_stdout(&format!(
+                "[{}]",
+                active_epic_row("lm-prev", &[ACTIVE_LABEL, "spec:gate"]),
+            )),
+            ok_stdout("lm-empty\n"),
+            err_stderr("child create failed"),
+            ok_stdout(""),
+        ]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+        let summary =
+            mint_tree_findings_with_options(&bd, &[finding], "head-sha", &MintOptions::default())
+                .await;
+        (summary, rendered_calls(&invocations))
+    }
+
+    #[tokio::test]
+    async fn mint_tree_partial_failure_never_leaves_empty_active_epic() {
+        let (summary, calls) = run_empty_tree_failure_cleanup().await;
+
+        assert_eq!(summary.minted, 0);
+        assert_eq!(summary.errors, 1, "child failure is reported");
+        assert!(summary.active_epic.is_none());
+        assert!(
+            calls.iter().any(|call| call
+                == &[
+                    "close".to_string(),
+                    "lm-empty".to_string(),
+                    "--reason".to_string(),
+                    EMPTY_TREE_EPIC_CLOSE_REASON.to_string(),
+                ]),
+            "empty remediation epic is neutralized: {calls:?}",
+        );
+        assert!(
+            calls
+                .iter()
+                .all(|call| !call.iter().any(|arg| arg == "update")),
+            "active labels are not touched before the first child exists: {calls:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_tree_never_leaves_empty_active_remediation_epic() {
+        let (summary, calls) = run_empty_tree_failure_cleanup().await;
+
+        assert_eq!(summary.minted, 0);
+        assert!(summary.active_epic.is_none());
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.first().map(String::as_str) == Some("close")),
+            "empty failed epic is closed or neutralized: {calls:?}",
+        );
+        assert!(
+            calls
+                .iter()
+                .all(|call| !call.iter().any(|arg| arg == ACTIVE_LABEL)),
+            "no open active empty remediation epic is left behind: {calls:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_tree_non_empty_partial_failure_leaves_active_epic_for_dedup_rerun() {
+        let first = coherence_finding(vec![spec("gate")], "x", "first");
+        let second = contract_finding(vec![spec("harness")], "y", "second");
+        let first_label = finding_label(&first);
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
+            ok_stdout("[]"),
+            ok_stdout(&spec_epic_list("lm-gatespec", "gate", "closed")),
+            ok_stdout(&spec_epic_list("lm-harnessspec", "harness", "closed")),
+            ok_stdout("[]"),
+            ok_stdout("lm-tree\n"),
+            ok_stdout("lm-tree.1\n"),
+            ok_stdout(""),
+            err_stderr("second child failed"),
+        ]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+
+        let summary = mint_tree_findings_with_options(
+            &bd,
+            &[first, second],
+            "head-sha",
+            &MintOptions::default(),
+        )
+        .await;
+
+        assert_eq!(summary.minted, 1);
+        assert_eq!(summary.errors, 1);
+        assert_eq!(
+            summary.active_epic.as_ref().map(BeadId::as_str),
+            Some("lm-tree"),
+        );
+        let calls = rendered_calls(&invocations);
+        assert!(
+            calls
+                .iter()
+                .all(|call| call.first().map(String::as_str) != Some("close")),
+            "non-empty remediation epic remains open: {calls:?}",
+        );
+        let first_child = calls
+            .iter()
+            .find(|call| {
+                call.iter().any(|arg| arg == "create")
+                    && call
+                        .windows(2)
+                        .any(|pair| pair[0] == "--type" && pair[1] == "task")
+            })
+            .expect("first child create");
+        assert!(
+            labels_arg(first_child).contains(&first_label.as_str()),
+            "created child carries finding hash for rerun dedup: {first_child:?}",
         );
     }
 

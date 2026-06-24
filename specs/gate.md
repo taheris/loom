@@ -2688,7 +2688,7 @@ and conservative fall-through for unowned queries.
   that epic, clears `loom:active` from any previous work epic, names the
   active epic id and `loom loop` command in the summary, and writes no
   current-spec or pointer-table state
-  [test?](mint_tree_scope_mints_single_active_work_epic_for_all_actionable_batches)
+  [test](mint_tree_scope_mints_single_active_work_epic_for_all_actionable_batches)
 - `loom gate mint --tree` creates no remediation work epic and leaves
   `loom:active` unchanged when no unsuppressed actionable finding remains
   after suppression, dedup, and structural validation
@@ -2831,7 +2831,7 @@ and conservative fall-through for unowned queries.
   remediation work epic for `--tree`) and carries one `finding:<hash>`
   label per contained finding plus one `spec:<X>` label per unique entry
   across the union of `bonds` over the batch's findings
-  [test?](mint_batches_parent_under_scope_selected_work_epic_with_union_spec_labels)
+  [test](mint_batches_parent_under_scope_selected_work_epic_with_union_spec_labels)
 - The bonding lead is the first element of each finding's `bonds` array
   after validating unique spec epics for bonded specs. Findings sharing a
   lead may bundle into the same lead-spec remediation batch, but the lead
@@ -2888,7 +2888,7 @@ and conservative fall-through for unowned queries.
   restores the `loom:active` bookmark to its pre-run state; if at least
   one child bead was created, the non-empty epic remains open/active and
   rerun dedups the completed children
-  [test?](mint_tree_partial_failure_never_leaves_empty_active_epic)
+  [test](mint_tree_partial_failure_never_leaves_empty_active_epic)
 - `mint --dry-run` prints proposed bd writes and makes zero bd writes;
   at `--tree` it still walks the rubric/verifiers, and at
   `-m/--molecule` it previews deferred-promotion changes

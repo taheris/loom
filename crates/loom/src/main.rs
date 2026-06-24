@@ -2224,10 +2224,13 @@ fn run_gate_mint(
                     )?;
                     findings.extend(parsed);
                 }
-                Ok(
-                    loom_workflow::mint::mint_tree_findings_with_options(&bd, &findings, &opts)
-                        .await,
+                Ok(loom_workflow::mint::mint_tree_findings_with_options(
+                    &bd,
+                    &findings,
+                    &head_commit,
+                    &opts,
                 )
+                .await)
             })?
         }
     };
@@ -2261,7 +2264,7 @@ async fn mint_via_walker<W, V, R>(
     scope: &loom_workflow::mint::MintScope,
     validator: &V,
     bd: &BdClient<R>,
-    _head_commit: &str,
+    head_commit: &str,
     opts: &loom_workflow::mint::MintOptions,
 ) -> anyhow::Result<loom_workflow::mint::MintSummary>
 where
@@ -2270,7 +2273,10 @@ where
     R: loom_driver::bd::CommandRunner,
 {
     let findings = loom_workflow::mint::walk(walker, scope, validator).await?;
-    Ok(loom_workflow::mint::mint_tree_findings_with_options(bd, &findings, opts).await)
+    Ok(
+        loom_workflow::mint::mint_tree_findings_with_options(bd, &findings, head_commit, opts)
+            .await,
+    )
 }
 
 #[derive(Debug)]
@@ -4459,6 +4465,7 @@ mod tests {
         let mk = |minted: usize, promoted_deferred: usize, skipped: usize| MintSummary {
             batches: Vec::new(),
             statuses: Vec::new(),
+            active_epic: None,
             minted,
             planned: 0,
             would_mint: 0,
@@ -4506,6 +4513,7 @@ mod tests {
         let mk = |refused: usize, errors: usize| MintSummary {
             batches: Vec::new(),
             statuses: Vec::new(),
+            active_epic: None,
             minted: 0,
             planned: 0,
             would_mint: 0,
@@ -5063,7 +5071,7 @@ mod tests {
 
     /// [`mint_via_walker`] must obtain its `Vec<Finding>` from
     /// `walk(walker, scope, validator)` and feed it into
-    /// `mint_findings_with_options`. Drives the helper seam with a
+    /// tree materialization. Drives the helper seam with a
     /// recording [`MintWalker`]; the live-path subprocess verifier
     /// under `specs/gate.md` § *Production walker wiring* pins that
     /// `run_gate_mint` actually reaches the helper, closing off the

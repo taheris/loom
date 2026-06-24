@@ -2905,17 +2905,17 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `loom:active` to it, clears `loom:active` from any previous work
       epic, and prints the epic id plus the follow-up `loom loop`
       command
-  [test?](mint_tree_sets_single_active_remediation_work_epic)
+  [test](mint_tree_sets_single_active_remediation_work_epic)
 - `loom gate mint --tree` creates no work epic and leaves
       `loom:active` unchanged when no actionable child bead remains
       after suppression, dedup, and structural validation
-  [test?](mint_tree_no_actionable_findings_leaves_active_unchanged)
+  [test](mint_tree_no_actionable_findings_leaves_active_unchanged)
 - `loom gate mint --tree` never returns with an open active remediation
       work epic that has zero child beads; failure before the first child
       closes or neutralizes the epic and restores `loom:active` to its
       pre-run state, while failure after at least one child leaves the
       non-empty epic open/active for dedup-friendly rerun
-  [test?](mint_tree_never_leaves_empty_active_remediation_epic)
+  [test](mint_tree_never_leaves_empty_active_remediation_epic)
 - `loom loop [OPTIONS] [BEAD_OR_EPIC_ID ...]` runs the sole
       `loom:active` work epic when no ids are provided. Positional ids
       may be task beads (run exactly that bead) or epics (run ready
