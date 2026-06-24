@@ -1,32 +1,13 @@
 //! Driver-side mint pipeline.
 //!
 //! Consumes [`Finding`] records produced by either the LLM rubric's
-//! `LOOM_FINDING:` lines or the deterministic verifier verdict normaliser
-//! and processes them as a per-batch pipeline pinned in `specs/gate.md`
-//! § *Per-batch processing*:
-//!
-//! 1. **Group findings by lead-spec.** For each well-formed finding,
-//!    ensure each bonded spec has exactly one resolvable epic, then pick
-//!    the first `bonds` element as the lead. Findings with the same lead
-//!    group into the same per-spec candidate.
-//! 2. **Partition by routing within each group.** Each lead-spec group
-//!    yields at most one fix-up batch (non-clarify-bound findings) plus
-//!    N single-finding clarify batches (one per clarify-bound finding,
-//!    since each carries its own `## Options — …` block).
-//! 3. **Dedup per finding** — each finding queries live beads by its
-//!    `finding:<hash>` label. Zero proceeds; one skips that finding;
-//!    more than one refuses as a structural violation.
-//! 4. **Compute the optional batch receipt** via [`batch_fingerprint`]
-//!    from the sorted set of contained finding hashes. The receipt is
-//!    emitted as `loom:fixup:<fp>` for traceability only.
-//! 5. **Mint the batch bead** — one `bd create --type=task
-//!    --parent=<lead-epic> --labels=finding:<hash>,loom:fixup:<fp>,spec:<X>,...`.
-//!    Spec labels are the union of `bonds` over every finding in the batch.
-//!    The [`FindingRouting::Clarify`] carve-out for single-finding
-//!    clarify batches tacks on `loom:clarify` and trusts the rubric to
-//!    have emitted the canonical `## Options — …` block in the
-//!    finding's `evidence` field. Clarify-bound findings whose evidence
-//!    is malformed downgrade to `loom:blocked`.
+//! `LOOM_FINDING:` lines or the deterministic verifier verdict normaliser.
+//! Tree-scope mint first builds an actionable plan: suppression and
+//! `finding:<hash>` dedup happen before metadata spec-epic validation,
+//! and lead specs affect grouping plus `spec:<label>` labels only. The
+//! legacy molecule recovery path still materializes batches under a
+//! caller-selected work epic until the tree materializer consumes the new
+//! plan shape.
 //!
 //! The end-of-run [`MintSummary::render`] surface is stdout-only — the
 //! mint pipeline performs no other writes outside the dedup + mint flow.
@@ -50,7 +31,9 @@ use loom_protocol::gate::options::has_well_formed_block;
 use serde::Serialize;
 
 use crate::gate_clarify::CLARIFY_WITHOUT_OPTIONS_CAUSE;
-use crate::resolve::{ResolveError, resolve_open_epic, resolve_or_mint_open_epic};
+use crate::resolve::{
+    ResolveError, ensure_spec_metadata_epic, resolve_open_epic, resolve_or_mint_open_epic,
+};
 use crate::review::{ConcernToken, Finding, FindingRoute, FindingTarget};
 use crate::suppression::{has_ineffective_suppression_match, suppresses_rubric_finding};
 
@@ -151,6 +134,13 @@ pub enum BatchOutcome {
         lead_spec: SpecLabel,
         findings_count: usize,
     },
+    /// Tree planning selected an actionable batch, but materialization is
+    /// deferred until a tree work epic exists.
+    Planned {
+        fingerprint: String,
+        lead_spec: SpecLabel,
+        findings_count: usize,
+    },
     /// `--dry-run` mode: the pipeline resolved the bonding lead and
     /// would have created a fix-up batch, but did not invoke `bd create`.
     WouldMint {
@@ -220,6 +210,7 @@ impl BatchOutcome {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Minted { .. } => "minted",
+            Self::Planned { .. } => "planned",
             Self::WouldMint { .. } => "would-mint",
             Self::SkippedDedup { .. } => "skipped-dedup",
             Self::SkippedFilter { .. } => "skipped-filter",
@@ -314,6 +305,7 @@ pub struct MintSummary {
     pub batches: Vec<BatchOutcome>,
     pub statuses: Vec<FindingStatusRecord>,
     pub minted: usize,
+    pub planned: usize,
     pub would_mint: usize,
     pub promoted_deferred: usize,
     pub would_promote_deferred: usize,
@@ -347,6 +339,7 @@ impl MintSummary {
     fn record(&mut self, outcome: BatchOutcome) {
         match &outcome {
             BatchOutcome::Minted { .. } => self.minted += 1,
+            BatchOutcome::Planned { .. } => self.planned += 1,
             BatchOutcome::WouldMint { .. } => self.would_mint += 1,
             BatchOutcome::PromotedDeferred { .. } => self.promoted_deferred += 1,
             BatchOutcome::WouldPromoteDeferred { .. } => self.would_promote_deferred += 1,
@@ -378,6 +371,9 @@ impl MintSummary {
             self.refused,
             self.errors,
         );
+        if self.planned > 0 {
+            out.push_str(&format!(", planned {} tree batches", self.planned));
+        }
         if self.would_mint > 0 {
             out.push_str(&format!(", would-mint {} (dry-run)", self.would_mint));
         }
@@ -424,6 +420,15 @@ impl MintSummary {
                 } => {
                     out.push_str(&format!(
                         "  minted {fingerprint} → {bead_id} (spec:{lead_spec}, {findings_count} findings)\n",
+                    ));
+                }
+                BatchOutcome::Planned {
+                    fingerprint,
+                    lead_spec,
+                    findings_count,
+                } => {
+                    out.push_str(&format!(
+                        "  planned {fingerprint} (spec:{lead_spec}, {findings_count} findings)\n",
                     ));
                 }
                 BatchOutcome::WouldMint {
@@ -545,6 +550,268 @@ pub async fn mint_integrity_recovery<R: CommandRunner>(
         .filter_map(IntegrityFinding::to_finding)
         .collect();
     mint_findings_with_options(bd, &typed, head_commit, &MintOptions::default()).await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TreeMintPlan {
+    batches: Vec<TreeMintBatch>,
+}
+
+impl TreeMintPlan {
+    #[must_use]
+    pub fn batches(&self) -> &[TreeMintBatch] {
+        &self.batches
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.batches.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeMintBatch {
+    pub fingerprint: String,
+    pub lead_spec: SpecLabel,
+    pub findings: Vec<Finding>,
+    pub routing: TreeMintBatchRouting,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeMintBatchRouting {
+    Fixup,
+    Clarify,
+    BlockedClarifyWithoutOptions,
+}
+
+impl From<FindingRouting> for TreeMintBatchRouting {
+    fn from(value: FindingRouting) -> Self {
+        match value {
+            FindingRouting::Fixup => Self::Fixup,
+            FindingRouting::Clarify => Self::Clarify,
+            FindingRouting::BlockedClarifyWithoutOptions => Self::BlockedClarifyWithoutOptions,
+        }
+    }
+}
+
+pub async fn mint_tree_findings_with_options<R: CommandRunner>(
+    bd: &BdClient<R>,
+    findings: &[Finding],
+    opts: &MintOptions,
+) -> MintSummary {
+    let (plan, mut summary) = plan_tree_mint_with_options(bd, findings, opts).await;
+    for batch in plan.batches {
+        let outcome = BatchOutcome::Planned {
+            fingerprint: batch.fingerprint,
+            lead_spec: batch.lead_spec,
+            findings_count: batch.findings.len(),
+        };
+        record_batch_status(&mut summary, &batch.findings, &outcome);
+        summary.record(outcome);
+    }
+    summary
+}
+
+pub async fn plan_tree_mint_with_options<R: CommandRunner>(
+    bd: &BdClient<R>,
+    findings: &[Finding],
+    opts: &MintOptions,
+) -> (TreeMintPlan, MintSummary) {
+    let mut summary = MintSummary::default();
+    let mut fingerprints = Vec::with_capacity(findings.len());
+    let mut ids_by_hash: HashMap<String, String> = HashMap::new();
+    for finding in findings {
+        let finding_id = finding.id();
+        let finding_hash = finding.hash();
+        if let Some(existing_id) = ids_by_hash.get(&finding_hash) {
+            if existing_id != &finding_id {
+                summary.record_status(finding, FindingStatusAction::Refused);
+                summary.record(BatchOutcome::Refused {
+                    fingerprint: finding_hash,
+                    reason: format!(
+                        "finding hash collision: `{existing_id}` and `{finding_id}` share one hash",
+                    ),
+                });
+                return (TreeMintPlan::default(), summary);
+            }
+        } else {
+            ids_by_hash.insert(finding_hash.clone(), finding_id);
+        }
+        fingerprints.push((finding, finding_hash));
+    }
+
+    let mut survivors = Vec::new();
+    let mut current_hashes: HashSet<String> = HashSet::new();
+    for (finding, finding_hash) in fingerprints {
+        if suppresses_rubric_finding(&opts.suppressions, finding) {
+            summary.record_status(finding, FindingStatusAction::Suppressed);
+            continue;
+        }
+        current_hashes.insert(finding_hash.clone());
+        if has_ineffective_suppression_match(&opts.suppressions, finding) {
+            summary.ineffective_suppressions += 1;
+        }
+        match dedup_live_finding(bd, finding).await {
+            FindingDedup::Untracked | FindingDedup::Closed(_) => {}
+            FindingDedup::Tracked(existing_bead) => {
+                summary.record_status(finding, FindingStatusAction::SkippedLive);
+                summary.record(BatchOutcome::SkippedDedup {
+                    fingerprint: finding_hash,
+                    existing_bead,
+                    findings_count: 1,
+                });
+                continue;
+            }
+            FindingDedup::Duplicate { reason } => {
+                summary.record_status(finding, FindingStatusAction::Refused);
+                summary.record(BatchOutcome::Refused {
+                    fingerprint: finding_hash,
+                    reason,
+                });
+                return (TreeMintPlan::default(), summary);
+            }
+            FindingDedup::Errored { message } => {
+                summary.record_status(finding, FindingStatusAction::Refused);
+                summary.record(BatchOutcome::Errored {
+                    fingerprint: finding_hash,
+                    message,
+                });
+                return (TreeMintPlan::default(), summary);
+            }
+        }
+        survivors.push(finding.clone());
+    }
+
+    if survivors.is_empty() {
+        if opts.report_stale {
+            report_stale_candidates(bd, &mut summary, &current_hashes, opts.spec_filter.as_ref())
+                .await;
+        }
+        return (TreeMintPlan::default(), summary);
+    }
+
+    if let Err(outcome) = ensure_tree_spec_metadata(bd, &survivors, opts.dry_run).await {
+        summary.record(outcome);
+        if opts.report_stale {
+            report_stale_candidates(bd, &mut summary, &current_hashes, opts.spec_filter.as_ref())
+                .await;
+        }
+        return (TreeMintPlan::default(), summary);
+    }
+
+    let filtered = apply_tree_spec_filter(&mut summary, survivors, opts.spec_filter.as_ref());
+    let batches = tree_plan_batches(filtered);
+    if opts.report_stale {
+        report_stale_candidates(bd, &mut summary, &current_hashes, opts.spec_filter.as_ref()).await;
+    }
+    (TreeMintPlan { batches }, summary)
+}
+
+async fn ensure_tree_spec_metadata<R: CommandRunner>(
+    bd: &BdClient<R>,
+    findings: &[Finding],
+    dry_run: bool,
+) -> Result<(), BatchOutcome> {
+    let mut seen = HashSet::new();
+    let mut specs = Vec::new();
+    for finding in findings {
+        for spec in &finding.bonds {
+            if seen.insert(spec.as_str().to_owned()) {
+                specs.push(spec.clone());
+            }
+        }
+    }
+    for spec in specs {
+        match ensure_spec_metadata_epic(bd, &spec, dry_run).await {
+            Ok(_) => {}
+            Err(ResolveError::DuplicateSpecEpics { label, ids }) => {
+                return Err(BatchOutcome::Refused {
+                    fingerprint: format!("spec:{label}"),
+                    reason: format!(
+                        "duplicate loom:spec epics for spec `{label}` — close or relabel all but one before re-running (ids: {ids})",
+                    ),
+                });
+            }
+            Err(err) => {
+                let err = MintError::Resolve(err);
+                return Err(BatchOutcome::Errored {
+                    fingerprint: format!("spec:{spec}"),
+                    message: mint_error_message(&err),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_tree_spec_filter(
+    summary: &mut MintSummary,
+    findings: Vec<Finding>,
+    spec_filter: Option<&SpecLabel>,
+) -> Vec<Finding> {
+    let mut filtered = Vec::new();
+    for finding in findings {
+        let Some(lead_spec) = finding.bonds.first().cloned() else {
+            let fingerprint = batch_fingerprint(std::slice::from_ref(&finding));
+            summary.record_status(&finding, FindingStatusAction::Refused);
+            summary.record(BatchOutcome::Errored {
+                fingerprint,
+                message: mint_error_message(&MintError::EmptyBonds),
+            });
+            continue;
+        };
+        if let Some(requested) = spec_filter
+            && &lead_spec != requested
+        {
+            let fingerprint = batch_fingerprint(std::slice::from_ref(&finding));
+            summary.record_status(&finding, FindingStatusAction::Reported);
+            summary.record(BatchOutcome::SkippedFilter {
+                fingerprint,
+                lead_spec,
+                requested: requested.clone(),
+                findings_count: 1,
+            });
+            continue;
+        }
+        filtered.push(finding);
+    }
+    filtered
+}
+
+fn tree_plan_batches(findings: Vec<Finding>) -> Vec<TreeMintBatch> {
+    let mut by_spec: Vec<(SpecLabel, Vec<Finding>)> = Vec::new();
+    for finding in findings {
+        let Some(lead_spec) = finding.bonds.first().cloned() else {
+            continue;
+        };
+        if let Some(slot) = by_spec.iter_mut().find(|(spec, _)| *spec == lead_spec) {
+            slot.1.push(finding);
+        } else {
+            by_spec.push((lead_spec, vec![finding]));
+        }
+    }
+    by_spec.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    let mut batches = Vec::new();
+    for (lead_spec, group) in by_spec {
+        let (fix_up, clarifies) = partition_group(group);
+        if !fix_up.is_empty() {
+            batches.push(TreeMintBatch {
+                fingerprint: batch_fingerprint(&fix_up),
+                lead_spec: lead_spec.clone(),
+                findings: fix_up,
+                routing: TreeMintBatchRouting::Fixup,
+            });
+        }
+        for (finding, routing) in clarifies {
+            batches.push(TreeMintBatch {
+                fingerprint: batch_fingerprint(std::slice::from_ref(&finding)),
+                lead_spec: lead_spec.clone(),
+                findings: vec![finding],
+                routing: routing.into(),
+            });
+        }
+    }
+    batches
 }
 
 /// Promote one molecule's deferred remediation beads to ready work.
@@ -947,9 +1214,9 @@ fn track_minted(
 fn record_batch_status(summary: &mut MintSummary, findings: &[Finding], outcome: &BatchOutcome) {
     let action = match outcome {
         BatchOutcome::Minted { .. } => FindingStatusAction::Minted,
-        BatchOutcome::WouldMint { .. } | BatchOutcome::SkippedFilter { .. } => {
-            FindingStatusAction::Reported
-        }
+        BatchOutcome::Planned { .. }
+        | BatchOutcome::WouldMint { .. }
+        | BatchOutcome::SkippedFilter { .. } => FindingStatusAction::Reported,
         BatchOutcome::Refused { .. } | BatchOutcome::Errored { .. } => FindingStatusAction::Refused,
         BatchOutcome::SkippedDedup { .. } => FindingStatusAction::SkippedLive,
         BatchOutcome::SkippedClosed { .. }
@@ -1548,18 +1815,6 @@ mod tests {
         flag_arg(args, "--labels").split(',').collect()
     }
 
-    fn task_create_call(calls: &[Vec<String>]) -> &Vec<String> {
-        calls
-            .iter()
-            .find(|call| {
-                call.iter().any(|arg| arg == "create")
-                    && call
-                        .windows(2)
-                        .any(|pair| pair[0] == "--type" && pair[1] == "task")
-            })
-            .expect("bd task create recorded")
-    }
-
     impl CommandRunner for ScriptedRunner {
         async fn run(&self, args: Vec<OsString>, _t: Duration) -> Result<RunOutput, BdError> {
             self.invocations.lock().expect("not poisoned").push(args);
@@ -1598,6 +1853,23 @@ mod tests {
 
     fn epic_list(id: &str, label: &str) -> String {
         format!("[{}]", epic_row(id, label))
+    }
+
+    fn spec_epic_row(id: &str, label: &str, status: &str) -> String {
+        format!(
+            r#"{{
+                "id": "{id}",
+                "title": "loom spec: {label}",
+                "status": "{status}",
+                "priority": 2,
+                "issue_type": "epic",
+                "labels": ["loom:spec", "spec:{label}"]
+            }}"#,
+        )
+    }
+
+    fn spec_epic_list(id: &str, label: &str, status: &str) -> String {
+        format!("[{}]", spec_epic_row(id, label, status))
     }
 
     fn fixup_row(id: &str, hash: &str) -> String {
@@ -2330,78 +2602,121 @@ reason = "false positive"
         );
     }
 
-    /// Spec contract `specs/gate.md` § *Findings and Minting*:
-    /// the minted batch bead is `--parent`-ed to the lead spec's open
-    /// epic and carries one `finding:<hash>` label per finding plus one
-    /// `spec:<X>` label per unique entry across the union of `bonds`
-    /// over the batch's findings.
     #[tokio::test]
-    async fn mint_creates_batch_under_work_epic_with_finding_hash_and_union_spec_labels() {
-        let f1 = contract_finding(
-            vec![spec("gate"), spec("harness")],
-            "molecule-lifecycle",
-            "evidence-1",
-        );
-        let f2 = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence-2");
-        let f3 = style_finding(vec![spec("gate"), spec("templates")], "RS-19", "evidence-3");
-        let finding_labels = [finding_label(&f1), finding_label(&f2), finding_label(&f3)];
+    async fn mint_tree_scope_resolves_bonded_spec_epics_without_per_spec_work_epics() {
+        let finding = contract_finding(vec![spec("alpha"), spec("beta")], "x", "evidence");
         let runner = ScriptedRunner::new(vec![
             ok_stdout("[]"),
-            ok_stdout(&epic_list("lm-gateepic", "gate")),
+            ok_stdout(&spec_epic_list("lm-alphaspec", "alpha", "closed")),
             ok_stdout("[]"),
-            ok_stdout("[]"),
-            ok_stdout("lm-harn\n"),
-            ok_stdout("[]"),
-            ok_stdout("[]"),
-            ok_stdout("[]"),
-            ok_stdout("[]"),
-            ok_stdout("lm-tmpl\n"),
-            ok_stdout("lm-batch.1\n"),
+            ok_stdout("lm-betaspec\n"),
+            ok_stdout(""),
         ]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
-        let opts = MintOptions {
-            suppress_closed_same_molecule: false,
-            report_stale: false,
-            ..MintOptions::default()
-        };
-        let summary = mint_findings_with_options(&bd, &[f1, f2, f3], "head-sha", &opts).await;
-        assert_eq!(summary.minted, 1, "one batch minted: {summary:?}");
+        let summary =
+            mint_tree_findings_with_options(&bd, &[finding], &MintOptions::default()).await;
+
+        assert_eq!(summary.planned, 1, "one actionable tree batch is planned");
+        assert_eq!(summary.minted, 0, "planning does not create child work");
+        match &summary.batches[0] {
+            BatchOutcome::Planned { lead_spec, .. } => assert_eq!(lead_spec.as_str(), "alpha"),
+            other => panic!("expected Planned, got {other:?}"),
+        }
         let calls = rendered_calls(&invocations);
-        let create = task_create_call(&calls);
-
-        assert_eq!(flag_arg(create, "--parent"), "lm-gateepic");
-
-        let labels = labels_arg(create);
-        let finding_label_count = labels
-            .iter()
-            .filter(|label| label.starts_with(FINDING_LABEL_PREFIX))
-            .count();
-        assert_eq!(
-            finding_label_count,
-            finding_labels.len(),
-            "labels: {labels:?}"
+        assert!(
+            calls
+                .iter()
+                .any(|call| call.iter().any(|arg| arg == "loom:spec,spec:beta")),
+            "missing metadata epic is created with loom:spec + spec label: {calls:?}",
         );
-        for finding_label in finding_labels {
-            assert!(
-                labels.contains(&finding_label.as_str()),
-                "labels missing finding hash label {finding_label}: {labels:?}",
-            );
-        }
-        for spec_label in ["spec:gate", "spec:harness", "spec:templates"] {
-            assert!(
-                labels.contains(&spec_label),
-                "labels missing union spec label {spec_label}: {labels:?}",
-            );
-        }
-
-        assert_eq!(flag_arg(create, "--type"), "task");
+        let expected_close = vec![
+            "close".to_string(),
+            "lm-betaspec".to_string(),
+            "--reason".to_string(),
+            "spec metadata carrier".to_string(),
+        ];
+        assert!(
+            calls.iter().any(|call| call == &expected_close),
+            "driver-created metadata epic is immediately closed: {calls:?}",
+        );
+        assert!(
+            calls
+                .iter()
+                .all(|call| !call.iter().any(|arg| arg == "--parent")),
+            "tree planning must not select a per-spec parent work epic: {calls:?}",
+        );
+        assert!(
+            calls.iter().all(|call| {
+                !(call.iter().any(|arg| arg == "create")
+                    && call
+                        .windows(2)
+                        .any(|pair| pair[0] == "--type" && pair[1] == "task"))
+            }),
+            "tree planning creates metadata only, not child tasks: {calls:?}",
+        );
     }
 
-    /// Spec contract: lead selection and batching are placement choices;
-    /// they do not rewrite the id/hash identity of contained findings.
     #[tokio::test]
-    async fn mint_bonding_lead_groups_findings_without_affecting_identity() {
+    async fn mint_tree_scope_duplicate_metadata_epics_refuse_before_child_work() {
+        let finding = coherence_finding(vec![spec("alpha")], "x", "evidence");
+        let duplicate = format!(
+            "[{},{}]",
+            spec_epic_row("lm-alphaa", "alpha", "open"),
+            spec_epic_row("lm-alphab", "alpha", "closed"),
+        );
+        let runner = ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout(&duplicate)]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+
+        let summary =
+            mint_tree_findings_with_options(&bd, &[finding], &MintOptions::default()).await;
+
+        assert_eq!(summary.refused, 1, "duplicate metadata epics refuse");
+        assert_eq!(summary.planned, 0, "no actionable plan survives refusal");
+        assert!(
+            summary.render().contains("lm-alphaa") && summary.render().contains("lm-alphab"),
+            "summary names conflicting metadata epics: {}",
+            summary.render(),
+        );
+        let calls = rendered_calls(&invocations);
+        assert!(
+            calls
+                .iter()
+                .all(|call| !call.iter().any(|arg| arg == "create")),
+            "refusal happens before remediation child creation: {calls:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_tree_scope_without_actionable_findings_creates_no_epic() {
+        let finding = coherence_finding(vec![spec("alpha")], "x", "evidence");
+        let hash = finding.hash();
+        let runner = ScriptedRunner::new(vec![ok_stdout(&format!(
+            "[{}]",
+            fixup_row("lm-existing.1", &hash),
+        ))]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+
+        let summary =
+            mint_tree_findings_with_options(&bd, &[finding], &MintOptions::default()).await;
+
+        assert_eq!(summary.skipped, 1, "live finding dedups");
+        assert_eq!(summary.planned, 0, "deduped findings are not actionable");
+        assert_eq!(summary.minted, 0, "no remediation work is created");
+        let calls = rendered_calls(&invocations);
+        assert_eq!(calls.len(), 1, "only the live dedup query runs: {calls:?}");
+        assert!(
+            calls
+                .iter()
+                .all(|call| !call.iter().any(|arg| arg == "create")),
+            "no work or metadata epic is created for non-actionable findings: {calls:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_bonding_lead_groups_findings_without_selecting_tree_parent_epic() {
         let f1 = contract_finding(
             vec![spec("harness"), spec("gate")],
             "molecule-lifecycle",
@@ -2412,138 +2727,56 @@ reason = "false positive"
             "verifier-honesty",
             "second",
         );
-        let expected_identity = [
+        let runner = ScriptedRunner::new(vec![
+            ok_stdout("[]"),
+            ok_stdout("[]"),
+            ok_stdout(&spec_epic_list("lm-harnessspec", "harness", "closed")),
+            ok_stdout(&spec_epic_list("lm-gatespec", "gate", "closed")),
+        ]);
+        let invocations = runner.invocations_handle();
+        let bd = BdClient::with_runner(runner);
+
+        let (plan, summary) =
+            plan_tree_mint_with_options(&bd, &[f1.clone(), f2.clone()], &MintOptions::default())
+                .await;
+
+        assert_eq!(summary.refused, 0, "planning should be clean: {summary:?}");
+        assert_eq!(plan.batches().len(), 1, "same lead groups into one batch");
+        let batch = &plan.batches()[0];
+        assert_eq!(batch.lead_spec.as_str(), "harness");
+        assert_eq!(batch.findings.len(), 2);
+        let labels = batch_labels(
+            &batch.findings,
+            &mint_label(&batch.fingerprint),
+            FindingRouting::Fixup,
+        );
+        for (id, hash, label) in [
             (f1.id(), f1.hash(), finding_label(&f1)),
             (f2.id(), f2.hash(), finding_label(&f2)),
-        ];
-        let runner = ScriptedRunner::new(vec![
-            ok_stdout("[]"),
-            ok_stdout("[]"),
-            ok_stdout("[]"),
-            ok_stdout("lm-harn\n"),
-            ok_stdout("[]"),
-            ok_stdout("[]"),
-            ok_stdout("lm-gateepic\n"),
-            ok_stdout("[]"),
-            ok_stdout("lm-batch.1\n"),
-        ]);
-        let invocations = runner.invocations_handle();
-        let bd = BdClient::with_runner(runner);
-        let opts = MintOptions {
-            suppress_closed_same_molecule: false,
-            report_stale: false,
-            ..MintOptions::default()
-        };
-        let summary = mint_findings_with_options(&bd, &[f1, f2], "head-sha", &opts).await;
-        assert_eq!(summary.minted, 1, "two findings → one batch: {summary:?}");
-        match &summary.batches[0] {
-            BatchOutcome::Minted {
-                lead_spec,
-                findings_count,
-                ..
-            } => {
-                assert_eq!(lead_spec.as_str(), "harness");
-                assert_eq!(*findings_count, 2);
-            }
-            other => panic!("expected Minted, got {other:?}"),
-        }
-
-        let calls = rendered_calls(&invocations);
-        let create = task_create_call(&calls);
-        assert_eq!(flag_arg(create, "--parent"), "lm-harn");
-        let labels = labels_arg(create);
-        let description = flag_arg(create, "--description");
-        for (id, hash, label) in expected_identity {
-            assert!(labels.contains(&label.as_str()), "labels: {labels:?}");
+        ] {
+            assert!(labels.contains(&label), "labels: {labels:?}");
             assert!(
-                description.contains(&format!("id: `{id}`")),
-                "{description}"
-            );
-            assert!(
-                description.contains(&format!("hash: `{hash}`")),
-                "{description}"
+                batch
+                    .findings
+                    .iter()
+                    .any(|finding| finding.id() == id && finding.hash() == hash),
+                "plan preserves finding identity",
             );
         }
-    }
-
-    /// Spec contract `specs/gate.md` § *Standing-safety-net bonding*:
-    /// `loom gate mint --tree` resolves the lead from `bonds[0]` after
-    /// ensuring every bonded spec has an epic. Missing sibling spec epics
-    /// are bootstrapped before the remediation task is parented under the
-    /// lead work epic.
-    #[tokio::test]
-    async fn mint_tree_scope_resolves_lead_spec_and_ensures_spec_epic() {
-        let finding = contract_finding(vec![spec("alpha"), spec("beta")], "x", "evidence");
-        let runner = ScriptedRunner::new(vec![
-            ok_stdout("[]"),
-            ok_stdout(&epic_list("lm-alphaepic", "alpha")),
-            ok_stdout("[]"),
-            ok_stdout("[]"),
-            ok_stdout("lm-betaepic\n"),
-            ok_stdout("lm-fix.1\n"),
-        ]);
-        let invocations = runner.invocations_handle();
-        let bd = BdClient::with_runner(runner);
-        let opts = MintOptions {
-            suppress_closed_same_molecule: false,
-            report_stale: false,
-            ..MintOptions::default()
-        };
-        let summary = mint_findings_with_options(&bd, &[finding], "deadbeef", &opts).await;
-        assert_eq!(summary.minted, 1, "summary: {summary:?}");
-        match &summary.batches[0] {
-            BatchOutcome::Minted { lead_spec, .. } => assert_eq!(lead_spec.as_str(), "alpha"),
-            other => panic!("expected Minted, got {other:?}"),
-        }
+        assert!(labels.contains(&"spec:harness".to_string()), "{labels:?}");
+        assert!(labels.contains(&"spec:gate".to_string()), "{labels:?}");
         let calls = rendered_calls(&invocations);
         assert!(
             calls
                 .iter()
-                .any(|call| call.iter().any(|arg| arg == "create")
-                    && call
-                        .windows(2)
-                        .any(|pair| pair[0] == "--type" && pair[1] == "epic")
-                    && call
-                        .windows(2)
-                        .any(|pair| pair[0] == "--labels" && pair[1] == "spec:beta")),
-            "missing bonded spec must be bootstrapped as an epic: {calls:?}",
+                .all(|call| !call.iter().any(|arg| arg == "--parent")),
+            "lead spec groups only; it does not choose a tree parent: {calls:?}",
         );
-        let create = task_create_call(&calls);
-        assert_eq!(flag_arg(create, "--parent"), "lm-alphaepic");
-    }
-
-    /// Spec contract: when the lead query returns one open epic, the
-    /// pipeline bonds the batch to that existing epic — it MUST NOT
-    /// mint a duplicate molecule.
-    #[tokio::test]
-    async fn mint_tree_scope_per_spec_resolution_does_not_clobber_existing_epics() {
-        let finding = coherence_finding(vec![spec("alpha")], "x", "evidence");
-        let runner = ScriptedRunner::new(vec![
-            ok_stdout("[]"),
-            ok_stdout(&epic_list("lm-alphaexist", "alpha")),
-            ok_stdout("lm-fix.1\n"),
-        ]);
-        let invocations = runner.invocations_handle();
-        let bd = BdClient::with_runner(runner);
-        let summary = mint_findings(&bd, &[finding], "head-sha").await;
-        let calls = rendered_calls(&invocations);
-        let create_calls = calls
-            .iter()
-            .filter(|c| c.iter().any(|a| a == "create"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            create_calls.len(),
-            1,
-            "exactly one bd create (the fix-up bead) — no duplicate epic creation: {create_calls:?}",
-        );
-        let create = create_calls[0];
-        let type_idx = create
-            .iter()
-            .position(|a| a == "--type")
-            .expect("--type flag");
-        assert_eq!(create[type_idx + 1], "task");
         assert!(
-            matches!(summary.batches[0], BatchOutcome::Minted { ref lead_spec, .. } if lead_spec.as_str() == "alpha"),
+            calls
+                .iter()
+                .all(|call| !call.iter().any(|arg| arg == "create")),
+            "existing metadata epics need no writes and no work epic is selected: {calls:?}",
         );
     }
 

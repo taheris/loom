@@ -1,26 +1,103 @@
-//! Spec → molecule resolution via `bd find`.
+//! Spec metadata and legacy molecule resolution helpers.
 //!
-//! Under the at-most-one-open-work-epic-per-spec invariant, the spec's
-//! active/current molecule is the non-`loom:spec` open epic returned by
-//! `bd find --type=epic --label=spec:<X> --status=open`. Spec epics are
-//! durable metadata carriers and are ignored here. Zero work-epic results
-//! means no molecule (callers either mint one or treat the spec as
-//! pristine); more than one is a structural invariant violation that
-//! refuses to proceed.
+//! Tree-scope mint validates `loom:spec spec:<label>` epics as metadata
+//! carriers only. Missing metadata epics are created and immediately
+//! closed; duplicate metadata epics refuse the tree plan before
+//! remediation work is allocated. The open work-epic resolver remains for
+//! legacy molecule-scoped recovery paths that still need a loopable parent.
 
 use displaydoc::Display;
 use thiserror::Error;
 
 use loom_driver::bd::{BdClient, BdError, CommandRunner, CreateOpts, ListOpts};
-use loom_driver::identifier::{MoleculeId, SpecLabel};
+use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 
-/// Failures from [`resolve_open_epic`].
+pub const SPEC_METADATA_CLOSE_REASON: &str = "spec metadata carrier";
+
+const SPEC_METADATA_STATUSES: &str = "open,in_progress,blocked,deferred,closed";
+
+/// Failures from spec metadata or legacy work-epic resolution.
 #[derive(Debug, Display, Error)]
 pub enum ResolveError {
     /// bd query failed while resolving the active molecule
     Bd(#[from] BdError),
     /// multiple open epics found for spec `{label}`: {ids}; close all but one before re-running
     InvariantViolation { label: String, ids: String },
+    /// duplicate loom:spec epics found for spec `{label}`: {ids}; close or relabel all but one before re-running
+    DuplicateSpecEpics { label: String, ids: String },
+}
+
+/// Metadata-epic resolution result for one indexed spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSpecEpic {
+    pub label: SpecLabel,
+    pub action: SpecEpicAction,
+}
+
+/// Action tree-mint planning took while ensuring one metadata epic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpecEpicAction {
+    Existing(BeadId),
+    Created(BeadId),
+    WouldCreate,
+}
+
+/// Ensure exactly one `loom:spec spec:<label>` metadata epic exists.
+pub async fn ensure_spec_metadata_epic<R: CommandRunner>(
+    bd: &BdClient<R>,
+    label: &SpecLabel,
+    dry_run: bool,
+) -> Result<ResolvedSpecEpic, ResolveError> {
+    let beads = bd
+        .list(ListOpts {
+            issue_type: Some("epic".to_string()),
+            label: Some(format!("spec:{}", label.as_str())),
+            status: Some(SPEC_METADATA_STATUSES.to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let spec_epics = beads
+        .into_iter()
+        .filter(|bead| bead.labels.iter().any(|label| label.is_spec_epic()))
+        .collect::<Vec<_>>();
+    match spec_epics.len() {
+        0 if dry_run => Ok(ResolvedSpecEpic {
+            label: label.clone(),
+            action: SpecEpicAction::WouldCreate,
+        }),
+        0 => {
+            let bead_id = bd
+                .create(CreateOpts {
+                    title: format!("loom spec: {label}"),
+                    description: format!("Spec metadata epic for `{label}`."),
+                    issue_type: Some("epic".to_string()),
+                    priority: Some(2),
+                    labels: vec!["loom:spec".to_string(), format!("spec:{label}")],
+                    ..CreateOpts::default()
+                })
+                .await?;
+            bd.close(&bead_id, Some(SPEC_METADATA_CLOSE_REASON)).await?;
+            Ok(ResolvedSpecEpic {
+                label: label.clone(),
+                action: SpecEpicAction::Created(bead_id),
+            })
+        }
+        1 => Ok(ResolvedSpecEpic {
+            label: label.clone(),
+            action: SpecEpicAction::Existing(spec_epics[0].id.clone()),
+        }),
+        _ => {
+            let ids = spec_epics
+                .iter()
+                .map(|b| b.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(ResolveError::DuplicateSpecEpics {
+                label: label.to_string(),
+                ids,
+            })
+        }
+    }
 }
 
 /// Resolve the spec's active/current molecule via `bd find --type=epic
@@ -61,11 +138,9 @@ pub async fn resolve_open_epic<R: CommandRunner>(
     }
 }
 
-/// One spec's resolved bonding target for the standing safety net.
+/// One spec's resolved legacy work-epic bonding target.
 /// `was_minted` is true when [`resolve_or_mint_open_epic`] minted a
-/// fresh epic because no open epic existed; the binary uses that to
-/// surface "auto-create" lines on stdout per `specs/gate.md`
-/// § *Standing-safety-net bonding*.
+/// fresh work epic because no open work epic existed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedEpic {
     pub label: SpecLabel,
@@ -73,9 +148,9 @@ pub struct ResolvedEpic {
     pub was_minted: bool,
 }
 
-/// Per-spec resolve-or-mint loop for `loom gate mint --tree`. Calls
-/// [`resolve_or_mint_open_epic`] for every label in `labels` and returns
-/// the resolved epics in the same order. Stops on the first
+/// Per-spec resolve-or-mint loop for legacy molecule-scoped recovery.
+/// Calls [`resolve_or_mint_open_epic`] for every label in `labels` and
+/// returns the resolved epics in the same order. Stops on the first
 /// [`ResolveError::InvariantViolation`] so the operator sees the
 /// conflicting epic IDs before any further work happens.
 pub async fn resolve_or_mint_open_epics<R: CommandRunner>(
@@ -90,16 +165,15 @@ pub async fn resolve_or_mint_open_epics<R: CommandRunner>(
     Ok(resolved)
 }
 
-/// Single-tier bonding-target resolver for `loom gate mint --tree`.
+/// Resolve or mint one legacy work epic for a spec.
 ///
 /// Runs the same `bd find --type=epic --label=spec:<X> --status=open`
 /// query as [`resolve_open_epic`], ignoring `loom:spec` metadata epics;
-/// on zero work-epic results, mints a fresh epic
-/// via `bd create --type=epic --title="<X>" --labels="spec:<X>"
-/// --metadata "loom.base_commit=<head_commit>"` and returns it with
-/// `was_minted = true`. More-than-one open epics propagate as
-/// [`ResolveError::InvariantViolation`], matching the gate.md
-/// "structural invariant violation, refuse to proceed" branch.
+/// on zero work-epic results, mints a fresh epic via
+/// `bd create --type=epic --title="<X>" --labels="spec:<X>" --metadata
+/// "loom.base_commit=<head_commit>"` and returns it with
+/// `was_minted = true`. More-than-one open work epics propagate as
+/// [`ResolveError::InvariantViolation`].
 pub async fn resolve_or_mint_open_epic<R: CommandRunner>(
     bd: &BdClient<R>,
     label: &SpecLabel,
@@ -252,92 +326,92 @@ mod tests {
         }
     }
 
-    /// `loom gate mint --tree` (all-specs sweep) mints a fresh epic per
-    /// spec when the single-tier resolution returns zero open epics. Pins
-    /// the safety property from `specs/gate.md` § *Standing-safety-net
-    /// bonding*: concerns about a spec with no active work get a fresh
-    /// container, not silently dropped. The orchestrator is the
-    /// `loom-workflow::resolve` helper that walks `labels` and resolves
-    /// each spec independently — every spec the mint visits must mint
-    /// its own molecule + epic when the bd query returns zero.
     #[tokio::test]
-    async fn tree_scope_auto_creates_epics_for_missing_current_molecule_specs() {
-        let runner = ScriptedRunner::new(vec![
-            ok_stdout("[]"),
-            ok_stdout("lm-newalpha\n"),
-            ok_stdout("[]"),
-            ok_stdout("lm-newbeta\n"),
-        ]);
+    async fn ensure_spec_metadata_epic_creates_and_closes_missing_metadata_carrier() {
+        let runner =
+            ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("lm-spec\n"), ok_stdout("")]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
-        let labels = [SpecLabel::new("alpha"), SpecLabel::new("beta")];
-        let resolved = resolve_or_mint_open_epics(&bd, &labels, "head-sha")
+        let label = SpecLabel::new("alpha");
+
+        let resolved = ensure_spec_metadata_epic(&bd, &label, false)
             .await
-            .expect("resolve_or_mint_open_epics ok");
+            .expect("metadata ensure ok");
 
-        assert_eq!(resolved.len(), 2);
-        assert_eq!(resolved[0].label, SpecLabel::new("alpha"));
-        assert_eq!(resolved[0].molecule_id, MoleculeId::new("lm-newalpha"));
-        assert!(
-            resolved[0].was_minted,
-            "alpha must report was_minted=true so the binary can surface the auto-create line",
+        assert_eq!(resolved.label, label);
+        assert_eq!(
+            resolved.action,
+            SpecEpicAction::Created(BeadId::new("lm-spec").expect("valid bead id")),
         );
-        assert_eq!(resolved[1].label, SpecLabel::new("beta"));
-        assert_eq!(resolved[1].molecule_id, MoleculeId::new("lm-newbeta"));
-        assert!(resolved[1].was_minted);
-
         let calls = invocations.lock().unwrap().clone();
-        let creates: Vec<_> = calls
+        assert_eq!(calls.len(), 3, "list, create, close: {calls:?}");
+        let create: Vec<String> = calls[1]
             .iter()
-            .filter(|args| args.iter().any(|a| a == "create"))
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(create.iter().any(|arg| arg == "create"), "{create:?}");
+        assert!(
+            create.iter().any(|arg| arg == "loom:spec,spec:alpha"),
+            "{create:?}"
+        );
+        let close: Vec<String> = calls[2]
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         assert_eq!(
-            creates.len(),
-            2,
-            "one bd create per spec with no open epic. calls={calls:?}",
+            close,
+            ["close", "lm-spec", "--reason", SPEC_METADATA_CLOSE_REASON],
         );
     }
 
-    /// `loom gate mint --tree` MUST NOT clobber an existing open epic for
-    /// a spec: when the single-tier resolution returns one result, the
-    /// orchestrator bonds fix-ups to that molecule without minting a new
-    /// one. Pins `specs/gate.md` § *Standing-safety-net bonding*'s
-    /// "one result → bonds fix-ups to its molecule" branch.
     #[tokio::test]
-    async fn tree_scope_orchestrator_does_not_clobber_existing_current_molecule() {
+    async fn ensure_spec_metadata_epic_accepts_existing_closed_metadata_carrier() {
         let existing = r#"[{
             "id": "lm-existing",
-            "title": "alpha",
-            "status": "open",
+            "title": "loom spec: alpha",
+            "status": "closed",
             "priority": 2,
             "issue_type": "epic",
-            "labels": ["spec:alpha"],
+            "labels": ["loom:spec", "spec:alpha"],
             "metadata": {}
         }]"#;
         let runner = ScriptedRunner::new(vec![ok_stdout(existing)]);
         let invocations = runner.invocations_handle();
         let bd = BdClient::with_runner(runner);
-        let labels = [SpecLabel::new("alpha")];
-        let resolved = resolve_or_mint_open_epics(&bd, &labels, "head-sha")
+
+        let resolved = ensure_spec_metadata_epic(&bd, &SpecLabel::new("alpha"), false)
             .await
-            .expect("resolve ok");
+            .expect("metadata ensure ok");
 
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].molecule_id, MoleculeId::new("lm-existing"));
-        assert!(
-            !resolved[0].was_minted,
-            "existing epic must NOT be reported as minted — mint bonds fix-ups to it",
-        );
-
-        let calls = invocations.lock().unwrap().clone();
-        let create_count = calls
-            .iter()
-            .filter(|args| args.iter().any(|a| a == "create"))
-            .count();
         assert_eq!(
-            create_count, 0,
-            "no bd create must fire when an open epic already exists. calls={calls:?}",
+            resolved.action,
+            SpecEpicAction::Existing(BeadId::new("lm-existing").expect("valid bead id")),
         );
+        let calls = invocations.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "existing metadata epic needs no writes");
+    }
+
+    #[tokio::test]
+    async fn ensure_spec_metadata_epic_refuses_duplicate_metadata_carriers() {
+        let duplicate = r#"[
+            {"id":"lm-a","title":"loom spec: alpha","status":"open","priority":2,"issue_type":"epic","labels":["loom:spec","spec:alpha"],"metadata":{}},
+            {"id":"lm-b","title":"loom spec: alpha","status":"closed","priority":2,"issue_type":"epic","labels":["loom:spec","spec:alpha"],"metadata":{}}
+        ]"#;
+        let runner = ScriptedRunner::new(vec![ok_stdout(duplicate)]);
+        let bd = BdClient::with_runner(runner);
+
+        let err = ensure_spec_metadata_epic(&bd, &SpecLabel::new("alpha"), false)
+            .await
+            .expect_err("duplicate metadata epics refuse");
+
+        match err {
+            ResolveError::DuplicateSpecEpics { label, ids } => {
+                assert_eq!(label, "alpha");
+                assert!(ids.contains("lm-a"), "{ids}");
+                assert!(ids.contains("lm-b"), "{ids}");
+            }
+            other => panic!("expected DuplicateSpecEpics, got {other:?}"),
+        }
     }
 
     #[tokio::test]

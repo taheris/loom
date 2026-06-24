@@ -2681,7 +2681,7 @@ and conservative fall-through for unowned queries.
   Lifecycle](harness.md#spec-and-work-epic-lifecycle)), auto-creates
   and immediately closes missing metadata-only spec epics, and refuses
   duplicate spec epics before creating remediation work
-  [test?](mint_tree_scope_resolves_bonded_spec_epics_without_per_spec_work_epics)
+  [test](mint_tree_scope_resolves_bonded_spec_epics_without_per_spec_work_epics)
 - `loom gate mint --tree` creates exactly one remediation work epic for
   all actionable tree-scope batches in a run, parents every fix-up,
   blocked-clarify, and clarify bead under it, applies `loom:active` to
@@ -2692,7 +2692,7 @@ and conservative fall-through for unowned queries.
 - `loom gate mint --tree` creates no remediation work epic and leaves
   `loom:active` unchanged when no unsuppressed actionable finding remains
   after suppression, dedup, and structural validation
-  [test?](mint_tree_scope_without_actionable_findings_creates_no_epic)
+  [test](mint_tree_scope_without_actionable_findings_creates_no_epic)
 - `loom gate audit --tree` is inspection-only: it walks the same
   rubric `mint --tree` walks and prints findings to stdout, but
   produces zero bd writes
@@ -2837,7 +2837,7 @@ and conservative fall-through for unowned queries.
   lead may bundle into the same lead-spec remediation batch, but the lead
   affects grouping/labels only and does not create a per-spec parent epic
   for tree-scope minting; finding ids and hashes remain unchanged
-  [test?](mint_bonding_lead_groups_findings_without_selecting_tree_parent_epic)
+  [test](mint_bonding_lead_groups_findings_without_selecting_tree_parent_epic)
 - For target variants that carry a spec field (currently
   `Criterion` and `Invariant`), `target.spec` MUST appear in that
   finding's `bonds`; a finding that violates this is rejected with

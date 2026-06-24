@@ -2224,13 +2224,10 @@ fn run_gate_mint(
                     )?;
                     findings.extend(parsed);
                 }
-                Ok(loom_workflow::mint::mint_findings_with_options(
-                    &bd,
-                    &findings,
-                    &head_commit,
-                    &opts,
+                Ok(
+                    loom_workflow::mint::mint_tree_findings_with_options(&bd, &findings, &opts)
+                        .await,
                 )
-                .await)
             })?
         }
     };
@@ -2257,14 +2254,14 @@ fn mint_summary_exit_code(summary: &loom_workflow::mint::MintSummary) -> i32 {
 /// production walker and delegates here so the dispatch path is
 /// exercisable under a recording [`MintWalker`] in tests. Per
 /// `specs/gate.md` § *Production walker wiring*: findings reach
-/// `mint_findings_with_options` only via `mint::walk::walk(walker, …)`;
-/// no `Vec::<Finding>::new()` shortcut.
+/// tree planning only via `mint::walk::walk(walker, …)`; no
+/// `Vec::<Finding>::new()` shortcut.
 async fn mint_via_walker<W, V, R>(
     walker: &mut W,
     scope: &loom_workflow::mint::MintScope,
     validator: &V,
     bd: &BdClient<R>,
-    head_commit: &str,
+    _head_commit: &str,
     opts: &loom_workflow::mint::MintOptions,
 ) -> anyhow::Result<loom_workflow::mint::MintSummary>
 where
@@ -2273,7 +2270,7 @@ where
     R: loom_driver::bd::CommandRunner,
 {
     let findings = loom_workflow::mint::walk(walker, scope, validator).await?;
-    Ok(loom_workflow::mint::mint_findings_with_options(bd, &findings, head_commit, opts).await)
+    Ok(loom_workflow::mint::mint_tree_findings_with_options(bd, &findings, opts).await)
 }
 
 #[derive(Debug)]
@@ -4463,6 +4460,7 @@ mod tests {
             batches: Vec::new(),
             statuses: Vec::new(),
             minted,
+            planned: 0,
             would_mint: 0,
             promoted_deferred,
             would_promote_deferred: 0,
@@ -4509,6 +4507,7 @@ mod tests {
             batches: Vec::new(),
             statuses: Vec::new(),
             minted: 0,
+            planned: 0,
             would_mint: 0,
             promoted_deferred: 0,
             would_promote_deferred: 0,
