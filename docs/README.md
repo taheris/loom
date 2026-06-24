@@ -38,6 +38,8 @@ sessions.
 | **JSONL** | JSON Lines — one complete JSON object per `\n`-terminated line; protocol framing for pi-mono RPC, Claude stream-json, Direct runner streams, and Loom event logs |
 | **Loom** | Rust workflow orchestrator: spec-to-implementation pipeline with pi-mono, Claude Code, and Direct (loom-llm) backends |
 | **loom:clarify** | Bead label for items awaiting human response via `loom inbox` |
+| **loom:blocked** | Bead label for semantic worker/gate dead ends that need human resolution via `loom inbox`; distinct from generic `status=blocked` and from `loom:infra` diagnostics |
+| **loom:infra** | Bead label for static or exhausted infrastructure / transport diagnostics; surfaced in `loom inbox` as kind `infra`, distinct from semantic `loom:blocked` |
 | **Agent runtime** | Closed-set backend runtime selected by `agent.backend`: `pi`, `claude`, or `direct` |
 | **Molecule** | Cross-cutting work grouping in Beads; Loom's CLI-facing decomposition container is the work epic for a changed-spec batch. |
 | **pi** | Pi-mono stdio-RPC agent runtime; one backend Loom drives |
@@ -49,4 +51,5 @@ sessions.
 | **SpecLabel** | The kebab-case identifier matching a `specs/<label>.md` file |
 | **Tune proposal** | Tune bead plus local `.loom/tune/<bead-id>/` envelope (`repo/`, manifest, evidence appendix) containing SkillOpt-style candidate edits awaiting human review through `loom inbox` |
 | **Tuning case** | Strict TOML `loom-case` block in `docs/tuning.md` or package `tuning.md`, naming a built-in behavioral checker and explicit tune targets |
+| **Workspace recovery stash** | Driver-created git stash preserving dirty `.loom/beads/<id>/` work before a `loom loop` dispatch; exposed to the worker as `workspace_recovery` context |
 | **Work epic** | Per-`loom todo` decomposition batch epic; `loom:todo` while pending, `loom:active` when it is the default `loom loop` target |

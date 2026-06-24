@@ -177,7 +177,7 @@ native registrar requires it.
 | `base` | `loom-todo-decomposition` | `todo` | Produce small, testable, dependency-aware work beads from specs/issues. |
 | `base` | `loom-verify-after-edit` | `loop`, `tune` | Run relevant verification after edits and report skipped/failed checks honestly. |
 | `base` | `loom-review-finding-recall` | `review`, `gate` | Systematically check diffs against spec/style/test expectations and avoid dropping findings. |
-| `base` | `loom-inbox-resolution` | `inbox` | Resolve clarify/blocked/tune items through chat rather than host-side mutation menus. |
+| `base` | `loom-inbox-resolution` | `inbox` | Resolve clarify/blocked/infra/tune items through chat rather than host-side mutation menus. |
 | `base` | `loom-tune-proposal-handoff` | `inbox`, `tune` | Treat tune proposals as review artifacts; authorize apply via `LOOM_APPLY`, never chat-side push. |
 | `base` | `loom-final-reporting` | `loop`, `gate`, `inbox` | End with concise changed-files, verifier, risk, and status summaries. |
 | `rust` | `loom-rust-change-planning` | `todo`, `loop` | Plan Rust changes around module/API boundaries, ownership, and tests. |
@@ -640,13 +640,14 @@ Common tune flags for proposal-creating commands:
 
 ### Human Review Through Inbox
 
-`loom inbox` replaces `loom msg` as the human decision queue. There is no `loom
-msg` alias. The inbox contains outstanding `loom:clarify` beads,
-`loom:blocked` beads, and tune proposals.
+`loom inbox` replaces `loom msg` as the human decision and operator diagnostic
+queue. There is no `loom msg` alias. The inbox contains outstanding
+`loom:clarify` beads, semantic `loom:blocked` beads, `loom:infra`
+diagnostics, and tune proposals.
 
 | Command | Meaning |
 |---------|---------|
-| `loom inbox` / `loom inbox list` | List pending human-decision items. |
+| `loom inbox` / `loom inbox list` | List pending human-decision and operator diagnostic items. |
 | `loom inbox view <N>` | View list item number `N`. |
 | `loom inbox view -b <bead-id>` | View a specific bead. |
 | `loom inbox view -p <proposal-id>` | View a specific tune proposal. |
@@ -661,13 +662,14 @@ resolution path; `view` prints durable ids and local paths so the user can use
 manual escape hatches (`bd`, file deletion/repair) if no chat-capable backend is
 available.
 
-`-s/--spec <label>` and `-k/--kind <clarify|blocked|tune>` filter list and chat
-queues. Absence of `--kind` means all kinds; there is no `--kind all`. Filters
-narrow the queue before positional numbering. The default list order is
+`-s/--spec <label>` and `-k/--kind <clarify|blocked|infra|tune>` filter list
+and chat queues. Absence of `--kind` means all kinds; there is no `--kind all`.
+Filters narrow the queue before positional numbering. The default list order is
 group-first, then FIFO within each group: `clarify` oldest→newest, then
-`blocked` oldest→newest, then `tune` oldest→newest. A corrupt or unavailable
-tune proposal remains `kind = tune` with blocked status/framing; it appears in
-default and `-k tune` queues, not as a generic blocked bead.
+`blocked` oldest→newest, then `infra` oldest→newest, then `tune` oldest→newest.
+A corrupt or unavailable tune proposal remains `kind = tune` with blocked
+status/framing; it appears in default and `-k tune` queues, not as a generic
+blocked bead.
 
 `loom inbox chat` normally loads the visible queue and works through items one at
 a time, often resolving all of them in one session. Targeted chat forms are
@@ -808,8 +810,9 @@ requires explicit reauthorization in a later inbox chat.
     checkout or push automatically.
 12. **Template validation.** Phase and partial template proposals must validate
     in their proposal worktree before entering `loom inbox` as pending.
-13. **Inbox command rename.** `loom inbox` is the human-decision surface for
-    clarifies, blocked items, and tune proposals. `loom msg` is removed, with no
+13. **Inbox command rename.** `loom inbox` is the human-decision and operator
+    diagnostic surface for clarifies, semantic blocked dead ends, infra
+    diagnostics, and tune proposals. `loom msg` is removed, with no
     compatibility alias. `loom inbox chat` is the only Loom-managed resolution
     path in v1.
 14. **Tune apply handoff.** Accepted tune proposals are applied only by the

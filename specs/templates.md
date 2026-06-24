@@ -94,6 +94,7 @@ Current and target v1 set; pending additions are marked in the pinning matrix:
 | `progress_markers.md` | Document `LOOM_COMPLETE` success and the loop-only `LOOM_NOOP` empty-diff success terminator. **Not pinned in `todo.md`** because todo success is the typed `LOOM_TODO:` payload, not a generic complete/no-op marker. |
 | `todo_success.md` | Document the todo-specific success terminator `LOOM_TODO: <json>` and the `loom-protocol::todo::TodoSuccess` shape. Pinned only by `todo.md`. |
 | `self_report_markers.md` | Document direct loop/todo cannot-finish terminators `LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`, including bd-backed persistence for direct `LOOM_CLARIFY` in those phases. |
+| `workspace_recovery.md` | Loop-only recovery context for dirty bead workspaces saved to an unapplied git stash before dispatch; instructs the worker to inspect the stash before normal work and mention stash handling in its final summary. |
 | `review_self_report_markers.md` | Document review-only cannot-complete terminators while preserving inspection-only review: no bd mutation instructions, and clarify-worthy decisions route through `route="clarify"` findings instead of direct `LOOM_CLARIFY`. |
 | `options_format.md` | Carry the canonical `## Options — <summary>` / `### Option N — <title>` markdown block consumed by `loom inbox`'s chat-drafter, per [gate.md § Options Format Contract](gate.md#options-format-contract). |
 | `findings_walk.md` | Sole carrier of the `LOOM_FINDING:` / `LOOM_CONCERN:` colon-suffixed review wire format per [gate.md § Findings and Minting](gate.md#findings-and-minting). Pinned only by `review.md`; an anti-drift verifier fails any other template that restates the wire format. |
@@ -153,6 +154,7 @@ walker input](gate.md#pending-support-in-structured-walker-input).
 | `progress_markers.md` | ✓ |  | ✓ | ✓ |  |
 | `todo_success.md` |  | ✓ |  |  |  |
 | `self_report_markers.md` |  | ✓ | ✓ |  |  |
+| `workspace_recovery.md` |  |  | ? |  |  |
 | `review_self_report_markers.md` |  |  |  | ✓ |  |
 | `findings_walk.md` |  |  |  | ✓ |  |
 | `options_format.md` |  | ✓ | ✓ | ✓ |  |
@@ -220,6 +222,7 @@ parse-don't-validate boundary defined in [harness.md](harness.md#parse-dont-vali
 | `title` | `Option<String>` | `loop` |
 | `description` | `Option<String>` | `loop` |
 | `previous_failure` | `Option<PreviousFailure>` | `loop` (retry only; typed enum — see *Typed `PreviousFailure`* below) |
+| `workspace_recovery` | `Option<WorkspaceRecovery>` | `loop` (dirty-workspace preservation only; see *Workspace-Recovery Surface* below) |
 | `review_notes` | `Option<String>` | `loop` |
 | `attempt` | `u32` | `loop` |
 | `beads_summary` | `Option<String>` | `review` |
@@ -259,6 +262,54 @@ skills. The partial must preserve the templates/skills boundary:
   instruct the agent to read the path when the skill is relevant.
 - It states that skills are additive strategy guidance and cannot override phase
   protocol, terminal markers, or gate requirements.
+
+### Workspace-Recovery Surface
+
+`workspace_recovery` is loop-only prompt context produced when the driver
+preserved dirty bead-workspace state before dispatch. It is separate from
+`previous_failure`: it does not mean the prior worker failed, and it does not
+increment or render the retry `attempt` counter. Both contexts may appear in
+the same `loop.md` prompt; `previous_failure` renders first as failure context,
+then `workspace_recovery` renders as the before-editing instruction to inspect
+preserved local work. The partial is a recovery hint plus accountability
+surface, not a typed terminal handoff.
+
+```rust
+pub struct WorkspaceRecovery {
+    pub pre_stash_status: String,
+    pub stash: RecoveryStash,
+    pub integration_tip: GitSha,
+    pub alignment: WorkspaceAlignment,
+}
+
+pub struct RecoveryStash {
+    pub selector: String,     // e.g. "stash@{0}" at dispatch time
+    pub commit: GitSha,      // stable stash commit for show/apply commands
+    pub message: String,
+}
+
+pub enum WorkspaceAlignment {
+    Clean,
+    Rebased { previous_head: GitSha, current_head: GitSha },
+    Conflict { files: Vec<String> },
+}
+```
+
+`partial/workspace_recovery.md` renders only when this value is present.
+It tells the worker to inspect the saved work before normal implementation
+using the stable stash commit (`git stash show --stat <commit>` and
+`git stash show -p <commit>`), then intentionally apply/cherry-pick,
+leave, or drop the stash. When `alignment` is `Conflict`, the partial frames
+that as agent-owned merge-conflict recovery: inspect the conflict files,
+resolve and continue/abort/retry the rebase as appropriate, or emit
+`LOOM_CLARIFY` with options if the conflict needs a human decision.
+
+The worker's normal prose summary before `LOOM_COMPLETE` should include one
+line naming how the recovery stash was handled (applied, left for follow-up,
+not relevant, or needs clarification) with brief rationale. The driver does
+not parse that line and does not reject `LOOM_COMPLETE` solely because the
+stash still exists; review can raise a concern if the agent ignored relevant
+preserved work.
 
 ### Criterion-Status Surface
 
@@ -529,7 +580,7 @@ decided by `loom gate mint`.
 - `BuildFailure` → `"Build failed at {stage}:\n{output}"`
 - `TreeNotClean` → `"Working tree was not clean after the bead committed:\n\n{path list, one per line}\n\nStage these into a follow-up commit or revert them."` with a `"+N more"` suffix line when the list is truncated to 30 entries
 - `PostIntegrateFail { failures, gate_log_path }` → `"After rebasing onto the integration branch, the post-integration verify failed.\n\nGate log: {gate_log_path}\n\n{N blocks: target + exit + stderr}\n\nReconcile the cross-bead interaction — your bead's verify passed at its own workspace; the failure is in the integrated tree."`
-- `AgentRetry { reason }` → `"Previous attempt requested retry — reason: {reason}\n\nIf the same problem persists after this attempt, escalate to LOOM_BLOCKED (no candidate resolutions) or LOOM_CLARIFY (with a structured Options block) rather than emitting LOOM_RETRY again."`
+- `AgentRetry { reason }` → `"Previous attempt requested retry — reason: {reason}\n\nIf the same problem persists after this attempt, escalate to LOOM_BLOCKED (explain why no candidate options can be enumerated) or LOOM_CLARIFY (with a structured Options block) rather than emitting LOOM_RETRY again."`
 - `review_notes` (when set, after the primary block) → heading `"Review notes:"` then content
 
 Driver maps verdict-gate causes to variants per the table in
@@ -693,8 +744,9 @@ Decision-needed or dead-end outcomes use worker self-report markers:
   `loom:clarify` to that work epic; the human resolves via `loom inbox`, and a
   subsequent `loom todo` invocation reuses the matching pending work epic.
 - **Blocked on the work epic.** When the agent has no candidate resolutions
-  to enumerate, it emits `LOOM_BLOCKED`; the work epic remains non-active
-  and spec cursors do not advance.
+  to enumerate, it emits `LOOM_BLOCKED` with a reason explaining why options
+  cannot be safely surfaced; the work epic remains non-active and spec cursors
+  do not advance.
 
 Per-bead `loom:clarify` is not appropriate in todo because the child beads
 under negotiation may not exist yet, or may be exactly the set whose
@@ -741,12 +793,14 @@ consuming the `LOOM_FINDING:` lines),
 — logs corrupt, workspace inaccessible, transient IO — and a fresh
 dispatch should retry it; per [harness.md § Verdict
 Gate](harness.md#verdict-gate) this consumes one
-`[loop] max_retries` slot), or `LOOM_BLOCKED` (the walk cannot complete
-and the reviewer has no candidate resolution to enumerate).
+`[loop] max_retries` slot), or `LOOM_BLOCKED` (the walk cannot complete,
+the reviewer has no candidate resolution to enumerate, and the reason says
+why options cannot be safely surfaced).
 Direct `LOOM_CLARIFY` is not a review terminal: if the reviewer can
 frame options, it emits a `route="clarify"` finding with the canonical
 Options block in `evidence` and terminates with `LOOM_CONCERN`; if it
-cannot articulate options, it emits `LOOM_BLOCKED`.
+cannot articulate options, it emits `LOOM_BLOCKED` with that no-options
+rationale.
 The terminator must satisfy the **pairing rule**: `LOOM_CONCERN`
 iff ≥1 findings streamed, `LOOM_COMPLETE` iff zero — a mismatch
 routes to `RecoveryCause::BadWalk(BadWalk)` per [harness.md §
@@ -787,8 +841,9 @@ description per the *Options Format Contract*. A clarify-bound
 finding whose evidence lacks a well-formed options block is refused
 at mint time and falls back to `loom:blocked` with cause
 `clarify-without-options`; the agent should emit `LOOM_BLOCKED`
-directly when it cannot articulate options rather than emitting a
-clarify-bound finding without them.
+directly when it cannot articulate options, with a reason explaining why
+no options can be safely surfaced, rather than emitting a clarify-bound
+finding without them.
 
 ### Mint Default-Profile
 
@@ -927,6 +982,8 @@ templates from `templates`' exposed building blocks:
   `PreviousFailure::ReviewConcern` is owned by `loom-workflow`
   (per [gate.md § Findings and Minting](gate.md#findings-and-minting))
   and re-exported here as a typed dependency.
+- `WorkspaceRecovery`, `RecoveryStash`, `WorkspaceAlignment` (the
+  loop-only dirty-workspace recovery surface)
 - `CriterionStatus`, `EvidenceState`, `CriterionId`,
   `CriterionAnnotation` (the decomposition-phase criterion-evidence
   surface; consumers writing decomposition-style tools reuse this shape
@@ -1180,6 +1237,33 @@ documents in front of the agent with zero configuration.
   else `UnneededPendingMarker` fires
   [check](grep -qi 'UnneededPendingMarker\|self-cleaning\|drop the.*marker' crates/loom-templates/templates/partial/plan_stage_rubric.md)
 
+### Workspace recovery
+
+- `LoopContext` carries `workspace_recovery: Option<WorkspaceRecovery>`
+      separately from `previous_failure`; rendering it does not require or
+      increment the retry `attempt` counter
+  [test?](loop_context_renders_workspace_recovery_without_retry_attempt)
+- `WorkspaceRecovery` carries pre-stash status, stable stash commit,
+      stash selector/message, target integration tip, and alignment state
+      (`Clean`, `Rebased`, or `Conflict { files }`)
+  [check?](grep -q 'pub struct WorkspaceRecovery' crates/loom-templates/src/workspace_recovery.rs)
+- `partial/workspace_recovery.md` tells the worker to inspect the stash
+      with `git stash show --stat` and `git stash show -p`, then
+      intentionally apply/cherry-pick, leave, or drop it; conflict
+      alignment is framed as agent-owned merge-conflict recovery with
+      `LOOM_CLARIFY` as the human-decision fallback
+  [check?](bash -c "grep -qi 'git stash show --stat' crates/loom-templates/templates/partial/workspace_recovery.md && grep -qi 'LOOM_CLARIFY' crates/loom-templates/templates/partial/workspace_recovery.md")
+- When both `previous_failure` and `workspace_recovery` are present,
+      `loop.md` renders `previous_failure` first and `workspace_recovery`
+      second so the worker sees why the prior attempt failed before inspecting
+      preserved dirty work
+  [test?](loop_template_renders_previous_failure_before_workspace_recovery)
+- When `workspace_recovery` is present, the worker's final prose summary
+      is prompted to mention how the stash was handled, but the driver does
+      not parse that prose or fail `LOOM_COMPLETE` solely because the stash
+      remains
+  [test?](workspace_recovery_summary_prompt_is_non_authoritative)
+
 ### Todo success shape
 
 - `partial/todo_success.md` is the single source of truth for the
@@ -1244,10 +1328,10 @@ documents in front of the agent with zero configuration.
   `retry-exhausted` on exhaustion) so a grep for the rule succeeds
   [check](grep -qi 'LOOM_RETRY' crates/loom-templates/templates/partial/self_report_markers.md)
 - The partial body distinguishes `LOOM_BLOCKED` from `LOOM_CLARIFY`:
-  blocked = genuine dead end, no candidate resolutions; clarify =
-  decision the agent can frame as a structured `## Options — …`
-  block. The discriminator (can the agent enumerate options?) is
-  named explicitly
+  blocked = genuine dead end, no candidate resolutions, with a reason
+  explaining why options cannot be enumerated; clarify = decision the
+  agent can frame as a structured `## Options — …` block. The
+  discriminator (can the agent enumerate options?) is named explicitly
   [check](grep -qi 'candidate resolution\|enumerate options' crates/loom-templates/templates/partial/self_report_markers.md)
 - The direct partial body identifies the direct worker scope:
   `LOOM_CLARIFY` persistence applies to `loop` and `todo`, while review
@@ -1292,8 +1376,8 @@ documents in front of the agent with zero configuration.
   [check](grep -q 'AgentRetry' crates/loom-templates/src/previous_failure.rs)
 - The `Display for PreviousFailure` rendering of `AgentRetry`
   surfaces the agent's prior `reason` and instructs the retry
-  attempt to escalate to `LOOM_BLOCKED` or `LOOM_CLARIFY` if the
-  same problem persists after retry
+  attempt to escalate to `LOOM_BLOCKED` (with no-options rationale) or
+  `LOOM_CLARIFY` if the same problem persists after retry
   [test](agent_retry_display_renders_reason_and_escalation_guidance)
 - `BadWalk` enum carries `Concern { payload: String, parsed_findings: Vec<Finding> }`,
   `ConcernWithoutFindings { summary: String }`,
@@ -1424,10 +1508,11 @@ documents in front of the agent with zero configuration.
 ### Public surface
 
 - `templates` exposes `PreviousFailure`, `VerifierFailure`,
-  `BadWalk`, `DriverNoticeCause`, `CriterionStatus`,
-  `EvidenceState`, `CriterionId`, `CriterionAnnotation`,
-  `LoopContext`, `ReviewContext`, `PlanContext`, `TodoContext`, and
-  `PinnedContext` as public types consumable from external crates
+  `BadWalk`, `DriverNoticeCause`, `WorkspaceRecovery`, `RecoveryStash`,
+  `WorkspaceAlignment`, `CriterionStatus`, `EvidenceState`,
+  `CriterionId`, `CriterionAnnotation`, `LoopContext`, `ReviewContext`,
+  `PlanContext`, `TodoContext`, and `PinnedContext` as public types
+  consumable from external crates
   [check](cargo run -p loom-walk -- loom_templates_public_types)
 - Each partial in the *Partials* table is also exposed as a public
   `&'static str` constant (e.g. `SCRATCHPAD_PARTIAL`,
@@ -1547,7 +1632,8 @@ documents in front of the agent with zero configuration.
     detail lives in the previous-failure block itself.
 14. **Public surface for consumers.** `templates` is a
     public-contract crate. Exposed: `PreviousFailure` (and its
-    sub-types), `CriterionStatus`, `EvidenceState`, `CriterionId`,
+    sub-types), `WorkspaceRecovery` (and its sub-types),
+    `CriterionStatus`, `EvidenceState`, `CriterionId`,
     `CriterionAnnotation`, `SkillIndexMarkdown`, `PlanContext`, `TodoContext`,
     `LoopContext`, `ReviewContext`, `PinnedContext`, and the partial-string
     constants for each entry in the *Partials* table. Loom's workflow template
@@ -1660,7 +1746,8 @@ documents in front of the agent with zero configuration.
       marker, and the verdict gate routes to `loom:clarify` for human
       resolution via `loom inbox`.
     - `LOOM_BLOCKED` — genuine dead end: the agent cannot proceed
-      and has no candidate resolutions to enumerate. Routes to
+      and has no candidate resolutions to enumerate. The reason must
+      explain why no options can be safely surfaced. Routes to
       `loom:blocked`; `loom inbox chat` walks the human through
       candidate enumeration in-session.
 
@@ -1690,8 +1777,21 @@ documents in front of the agent with zero configuration.
     No wire-format extension to the `LOOM_FINDING:` JSON payload —
     the contract lives in the `evidence` field's content, with the
     enforcement at the mint chokepoint. The agent should emit
-    `LOOM_BLOCKED` directly when it cannot articulate options
-    rather than emitting a clarify-bound finding without them.
+    `LOOM_BLOCKED` directly when it cannot articulate options, with a
+    reason explaining why no options can be safely surfaced, rather
+    than emitting a clarify-bound finding without them.
+20. **Workspace recovery in `loop`.** `partial/workspace_recovery.md`,
+    pinned in `loop` only, renders the driver-created recovery stash
+    context for dirty bead workspaces. It is separate from
+    `PreviousFailure` and retry `attempt`, but may render in the same loop
+    prompt after `PreviousFailure`: it tells the worker which
+    stash commit/message preserves prior dirty work, the pre-stash git
+    status, the target integration tip, and whether branch alignment is
+    clean, rebased, or conflicted. The worker inspects the stash before
+    normal work, handles or deliberately leaves it, mentions that choice
+    in final prose, and uses `LOOM_CLARIFY` when recovery needs a human
+    decision. `LOOM_COMPLETE` remains payload-free; the driver does not
+    parse stash-handling prose or fail solely because the stash remains.
 
 ### Non-Functional
 

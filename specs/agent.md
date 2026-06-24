@@ -668,16 +668,35 @@ external compaction event at all. The asymmetry is fundamental to
 how each underlying agent (or LLM) manages context, not a Loom
 design choice.
 
-**Claude backend:**
-- Before spawn, the harness writes `repin.sh` and a `claude-settings.json`
-  fragment registering it under `SessionStart[matcher: compact]` into the
-  container's runtime directory.
+**Interactive shell-outs are still delivery paths.** `loom plan` and
+`loom inbox chat` bypass the non-interactive `SpawnConfig`, but they do not
+bypass the compaction contract. The interactive launcher must pass a
+backend-specific re-pin surface into the actual child process before the
+initial prompt can receive user-visible output. For Claude, that means the
+launched `claude` process loads the scratch session's compact `SessionStart`
+hook (or an equivalent hook/config path) rather than merely leaving
+`claude-settings.json` on disk. For Pi, a raw REPL shell-out is valid only if
+it exposes an equivalent compaction event plus steer/re-pin path; otherwise
+that phase/backend combination fails fast or uses a controlled interactive
+bridge. A phase must not continue in an interactive session whose compaction
+path would be summary-only.
+
+**Claude non-interactive backend:**
+- Before `wrix spawn`, the harness writes `repin.sh` and a
+  `claude-settings.json` fragment registering it under
+  `SessionStart[matcher: compact]` into the container's runtime directory.
 - Claude Code's hook system runs `repin.sh` on each compaction; the
   script emits a JSON envelope assembled from the scratch directory's
   `prompt.txt` and `scratch.md`. The driver is not involved at compaction
   time.
 
-**Pi backend:**
+**Claude interactive shell-out:**
+- Before `wrix run` accepts the initial prompt, the launcher passes the same
+  compact `SessionStart` hook surface to the launched `claude` process. A
+  hook fragment left only in `.loom/scratch/<key>/` is not sufficient unless
+  the child process loads it.
+
+**Pi non-interactive backend:**
 - Knows the per-key scratch directory path from the harness's
   `SpawnConfig`.
 - When a `compaction_start` event arrives in the JSONL stream, reads
@@ -703,6 +722,12 @@ design choice.
   (a fresh `compaction_start` arrives), the driver re-reads the scratch
   directory and re-pins again — the scratchpad may have grown between
   compactions.
+
+**Pi interactive shell-out:**
+- The raw `pi` REPL path is supported only if Loom can observe compaction and
+  send the same full-prompt re-pin before trusting post-compaction output. If
+  the selected Pi interactive command cannot provide that controlled path,
+  phase selection fails before launch.
 
 **Direct backend:**
 - Compaction is not a provider-driven event in Direct — `loom-llm`
@@ -1113,6 +1138,17 @@ the entrypoint run the wrong runtime.
   [test](plan_phase_default_profile_alone_picks_manifest_entry)
 - Direct backend selection for `loom plan` or `loom inbox chat` fails before spawning Wrix because Direct has no interactive REPL command
   [test](interactive_shell_out_rejects_direct_backend)
+- Claude interactive shell-outs (`loom plan`, `loom inbox chat`) load the
+      scratch session's compact `SessionStart` hook into the actual launched
+      `claude` process; an integration test may use a mock `wrix run`
+      launcher/mock `claude`, but a test that only runs `repin.sh` directly
+      does not satisfy this criterion
+  [test?](interactive_claude_shell_out_loads_compaction_hook)
+- Pi interactive shell-outs either expose a controlled compaction event plus
+      steer/re-pin path equivalent to the non-interactive backend, or fail
+      phase selection before launching; raw summary-only REPL compaction is
+      not an allowed state
+  [test?](interactive_pi_shell_out_has_repin_or_fails_fast)
 
 ### Container integration
 

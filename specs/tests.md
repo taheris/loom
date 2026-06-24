@@ -477,6 +477,7 @@ Modes (selected via `argv[1]`):
 | `echo-prompt` | wire-shape assertion test | Probe ok, then echoes the prompt payload as a `message_delta` |
 | `steering` | mid-session steer test | Probe ok, prompt → first turn, then echoes the steer payload on the next turn |
 | `compaction` | re-pin-via-steer test | Probe ok, emits `compaction_start`, expects the re-pin steer, echoes it back, emits `compaction_end` |
+| `interactive-compaction-canary` | conditional plan/inbox re-pin behavioral canary | Required only if Pi interactive compaction is supported; after forced compaction, answers the `do a polish` probe correctly only when the delivered re-pin contains the full interview-mode definition and a test-only nonce. If Pi interactive is unsupported, the verifier is the fail-fast phase-selection test instead. |
 | `set-model` | per-phase model override test | Probe ok, expects `set_model { provider, modelId }`, echoes the pair into a later `message_delta` |
 | `set-model-reject` | model override failure test | Probe ok, rejects `set_model` so the backend hard-fails the handshake |
 | `happy-path` | container smoke | Probe ok, prompt → `message_delta` → `agent_end` |
@@ -494,6 +495,7 @@ Code's stream-json framing (also JSONL) on stdin/stdout.
 |------|---------|---------------|
 | `steering` | mid-session steer test | Emits one assistant turn, waits for a stream-json user message on stdin, emits a second assistant turn echoing the steer payload, then `result/success` |
 | `ignore-stdin` | shutdown watchdog test | Emits `result/success`, ignores SIGTERM and stdin close so the test exercises the SIGTERM → SIGKILL escalation |
+| `interactive-compaction-canary` | plan/inbox re-pin behavioral canary | Simulates the launched interactive Claude process: verifies the compact hook/config is loaded through the production `wrix run` path, triggers the hook, then answers a post-compaction `do a polish` probe correctly only when the hook-supplied context contains the full interview-mode definition and a test-only nonce |
 | `happy-path` | container smoke | system → assistant → `result/success` |
 
 ### Nix Integration
@@ -640,6 +642,12 @@ in Functional #4.
       same `AgentEvent` stream — capturing both yields line-for-line
       equality on the log side
   [test](run_single_event_sink_property)
+- Mock-agent compaction canaries exercise post-compaction behavior, not just
+      payload assembly: the fixture fails when the delivered context contains
+      only a compacted summary and passes only when the post-compaction
+      `do a polish` probe can rely on both the full report-only/no-edit mode
+      definition and a test-only nonce
+  [test?](mock_agent_compaction_canary_requires_rehydrated_mode_definition)
 
 ### Container smoke
 
@@ -789,17 +797,20 @@ the rules:
    - **Mock pi** (`tests/mock-pi/pi.sh`) — narrowly scoped scenario
      modes that exercise the *pipe-level* paths the parser unit tests
      can't reach (probe round-trip, prompt ack, mid-session steer,
-     compaction re-pin via steer, `set_model` from phase config, plus
-     `happy-path` for the container smoke).
+     compaction re-pin via steer, interactive compaction canary,
+     `set_model` from phase config, plus `happy-path` for the container
+     smoke).
    - **Mock claude** (`tests/mock-claude/claude.sh`) — modes for
      mid-session steering via stream-json user message, the shutdown
-     watchdog SIGTERM→SIGKILL escalation, plus `happy-path` for the
-     container smoke.
+     watchdog SIGTERM→SIGKILL escalation, interactive compaction canary,
+     plus `happy-path` for the container smoke.
    - **Out of scope for mocks**: tool-call simulation, malformed-JSONL
-     injection, hang/timeout simulation, multi-turn — the parser unit
-     tests cover these with inline string literals, where regressions
-     are easier to read in PR diffs and fixtures don't bit-rot when
-     pi/claude release new event shapes.
+     injection, hang/timeout simulation, and general multi-turn behavior.
+     The narrow interactive compaction canary is the only scripted multi-turn
+     exception because the bug is visible only after a post-compaction probe.
+     Parser unit tests cover the broader cases with inline string literals,
+     where regressions are easier to read in PR diffs and fixtures don't
+     bit-rot when pi/claude release new event shapes.
 
 3. **Unit test coverage by crate** — every crate has inline
    `#[cfg(test)] mod tests` blocks plus integration tests under
@@ -1250,9 +1261,11 @@ the rules:
   `SessionOutcome.cost_usd` is populated for pi sessions, parallel to
   the existing claude `result/total_cost_usd` extraction.
 - **Mock-script protocol breadth** — tool-call simulation, malformed-JSONL
-  injection, hang/timeout simulation, multi-turn conversations. These
-  belong in parser unit tests with inline string literals, not in mock
-  scripts.
+  injection, hang/timeout simulation, and general multi-turn conversations.
+  These belong in parser unit tests with inline string literals, not in mock
+  scripts. The interactive compaction canary is the only scripted multi-turn
+  exception, because it verifies a post-compaction turn rather than protocol
+  breadth.
 - **Per-repo verifier registry separate from `loom.toml`** —
   annotations carry the verifier directly (target name for `[test]`
   / `[judge]`, command for `[check]` / `[system]`); no separate

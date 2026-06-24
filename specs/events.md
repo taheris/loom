@@ -148,7 +148,8 @@ Known `driver_kind` wire values include `verdict_gate`, `retry_dispatch`,
 `container_oom`, `infra_failure`, `stall_watchdog`, `token_usage`, `offload`,
 `duplicate_tool_result`, `doom_loop_tripped`, `epic_auto_closed`,
 `bead_branch_pushed`, `merge_ok`, `merge_conflict`, `integration_conflict`,
-`signature_verification_failed`, `worktree_cleanup_ok`, and `tree_not_clean`.
+`signature_verification_failed`, `worktree_cleanup_ok`, `tree_not_clean`,
+and `workspace_recovery`.
 Gate lifecycle values carried by the same field are `gate_run_start`,
 `gate_run_scope`, `gate_run_lane`, `gate_run_end`, and `gate_run_skipped`;
 [gate.md](gate.md) owns their GateRun semantics. Unknown future strings must
@@ -278,7 +279,8 @@ not abort the run.
   [test](agent_event_payload_fields_match_spec)
 - Unknown `driver_kind` wire values deserialize as forward-compatible driver events
   [test](driver_event_accepts_unknown_driver_kind)
-- Core driver event kinds deserialize as `source: "driver"` events
+- Core driver event kinds deserialize as `source: "driver"` events, including
+      the loop dirty-work preservation event `workspace_recovery`
   [test](driver_kinds_present_for_spec_emission_sites)
 - Gate lifecycle driver event kinds serialize through `driver_event.driver_kind` rather than new top-level `AgentEvent` variants
   [test](driver_kind_typed_enum_carries_gate_lifecycle_values)

@@ -65,7 +65,7 @@ orientation.
 | Loop | `loom loop <label>` | `<label>.lock` | Beads, agent | Code changes, bead transitions |
 | Gate (verify) | `loom gate verify` | none | Spec annotations | Deterministic pass/fail |
 | Gate (review) | `loom gate review` | none | Diff, judge rubrics | LLM verdict |
-| Inbox | `loom inbox` / `loom inbox chat` | targeted chat locks addressed bead | `loom:clarify`, `loom:blocked`, tune proposal beads | Human decision list/view/chat |
+| Inbox | `loom inbox` / `loom inbox chat` | targeted chat locks addressed bead | `loom:clarify`, `loom:blocked`, `loom:infra`, tune proposal beads | Human decision / diagnostic list/view/chat |
 
 See [`../specs/harness.md`](../specs/harness.md) for the lock matrix and full
 command set; [`../specs/gate.md`](../specs/gate.md) for the verification

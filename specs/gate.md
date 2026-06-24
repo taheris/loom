@@ -901,8 +901,9 @@ not complete for environmental reasons (logs corrupt, workspace
 inaccessible, transient IO) and a fresh dispatch should retry the walk —
 preferred over `LOOM_BLOCKED` for the "I couldn't review" failure mode
 unless the reviewer also has no candidate resolution to enumerate.
-`LOOM_BLOCKED` means the walk could not complete and the reviewer has no
-candidate resolution to surface. Direct `LOOM_CLARIFY` is not a review
+`LOOM_BLOCKED` means the walk could not complete, the reviewer has no
+candidate resolution to surface, and the reason explains why options
+cannot be safely enumerated. Direct `LOOM_CLARIFY` is not a review
 terminator: a reviewer that can enumerate options emits a
 `route="clarify"` finding with the Options block in `evidence` and
 terminates with `LOOM_CONCERN`. `LOOM_COMPLETE` and `LOOM_CONCERN` are
@@ -2402,8 +2403,9 @@ The structural enforcement at the chokepoint is what makes
 "stranded clarify bead the chat-drafter cannot resolve"
 unrepresentable for the two worker-phase paths — the agent either
 provides a well-formed options block (clarify applied) or emits
-`LOOM_BLOCKED` directly (no clarify ever applied). The
-existing-bead promotion path is not subject to the chokepoint
+`LOOM_BLOCKED` directly with a reason explaining why options cannot be
+enumerated (no clarify ever applied). The existing-bead promotion path
+is not subject to the chokepoint
 because chat is human-authoritative.
 
 **The gate does not scrape free-form stdout for `## Options` /
@@ -2712,8 +2714,9 @@ and conservative fall-through for unowned queries.
   [test](mint_walk_emits_loom_finding_json_lines_streamed_per_finding)
 - The review walk terminates with exactly one of `LOOM_COMPLETE`,
   `LOOM_CONCERN: {"summary": "..."}`, `LOOM_RETRY`, or `LOOM_BLOCKED`;
-  review clarifications are `route="clarify"` findings with Options in
-  `evidence`, and a walk that emits `LOOM_FINDING:` lines without a
+  `LOOM_BLOCKED` includes a reason explaining why no options can be safely
+  surfaced, review clarifications are `route="clarify"` findings with Options
+  in `evidence`, and a walk that emits `LOOM_FINDING:` lines without a
   terminal marker fails the mint invocation with non-zero exit
   [test](mint_walk_without_terminal_marker_fails_run)
 - A walk that terminates with `LOOM_RETRY` (review itself could not

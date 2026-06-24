@@ -144,18 +144,50 @@ first dispatch and persists across attempts, recovery iterations,
 and `loom loop` invocations. It is reaped when the bead transitions
 to `closed` (via the agent's `bd close` on success, the operator's
 `loom inbox` resolution, or a direct `bd close`). Within that lifetime
-every fresh dispatch attempt sees a clean working tree: the
-dispatch path runs `git reset --hard HEAD` plus
-`git clean -fdx --exclude=target --exclude=.git --exclude=.wrix`
-before handing off to the agent. On the first attempt this is a
-no-op against a freshly-cloned tree; on retries it discards any
-mid-session leftovers and preserves the agent's prior commits on
-the bead branch — the agent is responsible for amending or
-branch-resetting if `previous_failure` context calls for a
-different approach. `target/` survives so cargo + sccache start
-warm; `.git/` and `.wrix/` (extra-mount staging) survive.
+every fresh dispatch attempt first runs a non-destructive workspace
+preflight. If the bead workspace has tracked modifications, staged
+changes, or untracked files outside the ignore set, the driver saves
+that work to a named recovery stash before any reset, clean, rebase,
+or checkout. After stashing — or immediately when the workspace was
+already clean — the driver rebases any local bead commits onto the current
+integration-branch tip (or fast-forwards when there are no local bead commits)
+and runs the normal reset/clean path only when no rebase conflict remains.
+`target/` survives so cargo + sccache start warm; `.git/` and `.wrix/`
+(extra-mount staging) survive.
 `create_worktree` is idempotent at the directory level: directory
 exists → reuse; missing → clone fresh from the loom workspace.
+
+**Workspace recovery stashes.** The pre-dispatch dirty-work check is
+specific to `loom loop` bead workspaces. Dirty means tracked
+modifications, staged changes, or untracked files outside the ignore
+set. The driver saves dirty work with
+`git stash push --include-untracked -m "loom workspace-recovery <bead-id> <timestamp>"`,
+records the pre-stash `git status --short --branch`, stash selector,
+stash commit, stash message, and target integration tip, then leaves
+the stash unapplied. Ignored build/cache paths are not stashed. The
+loop prompt receives this as `workspace_recovery` context, separate from
+`previous_failure`; it does not consume retry counters. The worker must
+inspect the stash before normal work and decide whether to apply,
+cherry-pick, ignore, or ask for clarification.
+
+After the stash is created, the driver rebases local bead commits onto the
+configured integration branch tip, or fast-forwards when the bead branch has no
+local commits. If the rebase conflicts, the driver does not discard the stash
+and does not route directly to human resolution; it dispatches the worker in
+the conflict state with `workspace_recovery` naming the stash and conflict
+files. A simple merge conflict is agent work. If the worker cannot resolve it,
+it emits `LOOM_CLARIFY` with options. If stash creation itself fails, the
+driver aborts before destructive cleanup, pauses the bead as `status=blocked`,
+labels it `loom:infra` with cause `workspace-recovery-failed`, and never falls
+back to reset/clean that would lose work.
+
+Every recovery-stash preflight emits a `DriverKind::WorkspaceRecovery`
+event with the bead id, pre-stash status, stash selector/message, stash
+commit, integration tip, alignment outcome, and conflict files when any.
+Recovery stashes are preservation context, not a typed success handoff.
+The driver does not reject `LOOM_COMPLETE` solely because a recovery
+stash still exists; the review gate may judge an ignored relevant stash
+as a quality concern from the recovery event and final summary.
 
 **Garbage collection.** At `loom loop` startup, under the spec
 advisory lock, loom enumerates `.loom/beads/` and drops closed bead
@@ -306,7 +338,7 @@ the module; callers see only typed Rust methods.
 | Read commit graph / HEAD | `gix` | mature |
 | **Create loom workspace** (`loom init`) | `git clone <origin> .loom/integration` (CLI) | one-shot, infrequent; `gix-clone` is unchecked |
 | **Create bead clone** | `git clone --local .loom/integration .loom/beads/<id>`, `git checkout -b loom/<id>`, then `git branch --set-upstream-to origin/<integration-branch>` (CLI) | hardlinks loom workspace's `.git/objects`; self-contained `.git/` inside bind mount; upstream makes `@{u}..HEAD` resolve for the push-gate hook |
-| **Pre-attempt reset of bead clone** | `git reset --hard HEAD` + `git clean -fdx --exclude=target --exclude=.git --exclude=.wrix` (CLI) | clean working tree at bead-branch HEAD while preserving `target/`, `.git/`, and `.wrix/` |
+| **Pre-attempt prepare of bead clone** | `git status --short --branch`; if dirty, `git stash push --include-untracked -m "loom workspace-recovery <bead-id> <timestamp>"`; then rebase local bead commits onto the integration tip (or fast-forward when there are no local commits); finally `git reset --hard HEAD` + `git clean -fdx --exclude=target --exclude=.git --exclude=.wrix` when no conflict remains (CLI) | preserves uncommitted/staged/untracked work as an unapplied recovery stash, preserves committed bead work by rebasing it onto the integration tip, and gives clean starts except intentional conflict-recovery dispatches |
 | **Fetch bead branch from bead workspace** | `git fetch <bead-workspace-path> loom/<id>:loom/<id>` (CLI) | filesystem path as ad-hoc URL; runs in loom workspace inside `index.lock` |
 | **Verify commit signatures** | `git verify-commit <commits>` (CLI) | gates integration on signed-by-wrix-key; conditional on signing key resolving (see [Commit signing](#commit-signing)) |
 | **Rebase + ff into integration branch** | `git rebase` + `git merge --ff-only` (CLI) | `gix-merge` cannot persist `MERGE_HEAD`/`MERGE_MSG`; avoids index dance |
@@ -544,12 +576,14 @@ Per-bead dispatch is:
    value of `--profile` if set on the CLI).
 2. Resolve the phase backend to an `AgentRuntime` (`claude`, `pi`, or
    `direct`).
-3. Look up `(X, AgentRuntime)` in the parsed manifest. Missing profile →
-   exit immediately as `loom:blocked` with cause `unknown-profile`; missing
-   runtime under an existing profile → `unknown-agent-runtime-for-profile`.
-   The note names the requested profile/runtime and the manifest's declared
-   set so the operator can relabel or rebuild the manifest. Same routing as
-   `infra-preflight` (see *Verdict gate* below).
+3. Look up `(X, AgentRuntime)` in the parsed manifest. Missing profile or
+   runtime is a static infra diagnostic, not a semantic worker blocker: the
+   bead is paused with `status=blocked`, labelled `loom:infra` (not
+   `loom:blocked`), and surfaced in `loom inbox` as kind `infra` without
+   transport retries. The note names the requested profile/runtime and the
+   manifest's declared set so the operator can relabel or rebuild the
+   manifest. Same routing as static infra diagnostics in
+   [Verdict Gate](#verdict-gate).
 4. Build `SpawnConfig` with `image_ref = entry.ref`, `image_source =
    entry.source`, `image_source_kind = entry.source_kind`, and host-only
    `profile_config = entry.profile_config` when present. Hand it to
@@ -889,9 +923,10 @@ application, no bead-status changes, no `loom gate verify` /
 `loom gate review` against the session's effects, no remediation bead
 minting. On mid-session failure (container OOM, observer abort,
 marker swallowed) the driver exits non-zero with a diagnostic
-without auto-retry — the one-free-retry infra-failure path applies
-to expensive worker dispatches; an interactive session re-invocation
-is cheap and the user is right there to redispatch.
+without auto-retry — the `[loop.infra].max_attempts` round-robin
+infra budget applies to expensive worker dispatches; an interactive
+session re-invocation is cheap and the user is right there to
+redispatch.
 
 The decision table below therefore documents the per-bead `loop`
 worker-session success path. Interactive sessions short-circuit before
@@ -985,20 +1020,20 @@ resolution).
 
 **Tree-clean check.** After the agent emits `LOOM_COMPLETE` or
 `LOOM_NOOP` and the bead is bd-closed, the driver runs `git status
---porcelain` against the bead's workspace. The pre-attempt reset
-described in [Bead Dispatch](#bead-dispatch) — `git reset --hard
-HEAD` plus `git clean -fdx` (with `target/`, `.git/`, `.wrix/`
-excluded) — is the load-bearing source of the empty-starting-tree
-guarantee. The bead workspace persists across attempts under the
-per-bead-close lifecycle, so freshness from `create_worktree` is
-*not* what the gate relies on; the reset re-establishes the
-invariant on every dispatch. A non-empty porcelain output post-bead
-is therefore unambiguously either the agent's own intra-session
-leftover *or* a reset-step bug — both are surfaced as
-`tree-not-clean` so the failure mode lands in recovery rather than
-masquerading as dispatch success. The operator's `/workspace` is a
-separate clone and cannot leak edits into a bead workspace. A
-non-empty result — tracked files modified-but-not-staged,
+--porcelain` against the bead's workspace. The pre-attempt prepare described
+in [Bead Dispatch](#bead-dispatch) stashes dirty work before cleanup and
+re-establishes the empty-starting-tree guarantee for normal dispatches. The
+bead workspace persists across attempts under the per-bead-close lifecycle, so
+freshness from `create_worktree` is *not* what the gate relies on. A dispatch
+may intentionally begin with a rebase conflict only when `workspace_recovery`
+names the preserved stash and conflict files; even then, `LOOM_COMPLETE` /
+`LOOM_NOOP` require the worker to leave a clean tree. A non-empty porcelain
+output post-bead is therefore either the agent's own intra-session leftover, an
+unresolved recovery conflict, or a pre-attempt-prepare bug — all are surfaced as
+`tree-not-clean` so the failure mode lands in recovery rather than masquerading
+as dispatch success. The operator's `/workspace` is a separate clone and cannot
+leak edits into a bead workspace. A non-empty result — tracked files
+modified-but-not-staged,
 staged-but-not-committed, or untracked files outside the ignore
 set — routes to `recovery` with cause `tree-not-clean`, taking
 precedence over the verify / review steps (running verifiers
@@ -1126,10 +1161,10 @@ not bonded to a molecule by the time it leaves the gate is a bug.
 Bonding is load-bearing in two places:
 
 1. The **push gate** refuses to push while any bead in the molecule
-   carries `loom:blocked`, `loom:clarify`, or `loom:deferred`. Orphan
-   remediation beads are invisible to that check, so a molecule could
-   push with unresolved work attached to a shadow bead the gate never
-   saw.
+   carries `loom:blocked`, `loom:clarify`, `loom:deferred`, or
+   `loom:infra`. Orphan remediation beads are invisible to that check,
+   so a molecule could push with unresolved work attached to a shadow bead
+   the gate never saw.
 2. **Auto-iteration** (Push gate, Functional #9) walks `bd mol
    progress <id>` to decide whether the molecule is clean. Orphan
    remediation beads are absent from that walk; the molecule looks done
@@ -1164,7 +1199,7 @@ capped, total truncated to `PREVIOUS_FAILURE_MAX_LEN = 4000` chars):
 | `bad-walk` (malformed-finding) | `BadWalk(BadWalk::MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface })` | "One or more `LOOM_FINDING:` lines failed parse." Per-line errors are enumerated; the well-formed terminal is rendered alongside so the agent fixes the malformation (typically: drop the surrounding markdown fence) without losing the surrounding well-formed context. This is the variant that fires on backtick-wrapped finding lines whose JSON otherwise would have parsed. |
 | `integration-conflict` | `IntegrationConflict { files: Vec<PathBuf>, new_base_sha: GitOid }` | "Your bead branch could not be rebased onto integration — files conflict: <files>. The new integration tip is <new_base_sha>. Rebase your bead workspace onto the new tip, resolve, and re-commit." Single-retry cap (not full `[loop] max_retries`); a second rebase-conflict escalates the bead to `loom:clarify` with the same cause. The `signature-verification-failed` cause does **not** appear in this table because it routes to `loom:blocked` immediately without an agent-retry pass — there is no next dispatch and thus no `PreviousFailure` context. |
 | `post-integrate-fail` | `PostIntegrateFail { failures: Vec<VerifierFailure>, gate_log_path: PathBuf }` | "After your bead was rebased onto the integration branch and ff'd, the post-integration verify failed at the loom workspace. The integration was rolled back. Gate log: <path>. Specific failure: <verifier-failure blocks>." Used for cross-bead deterministic breakage where the bead-workspace self-check may have passed but the integrated tree's verify failed. The default per-bead hot path has no focused review session, so review-style findings route at molecule completion via `review-concern` / `bad-walk` rather than `post-integrate-fail`. Capped at the shared `PREVIOUS_FAILURE_MAX_LEN` budget; the path is outside the truncation budget. |
-| `agent-retry` | `AgentRetry { reason: String }` | "Previous attempt requested retry: <reason>. A fresh dispatch was scheduled." `reason` is the verbatim prose the agent wrote on the line preceding `LOOM_RETRY` (environmental detail or stuck-on-approach summary). Consumes one `[loop] max_retries` slot; on exhaustion the target bead is marked `loom:blocked` with cause `retry-exhausted`. The recovery prompt instructs the retry attempt to escalate to `LOOM_BLOCKED` (no candidate resolutions) or `LOOM_CLARIFY` (with `## Options — …`) if the same problem persists rather than emitting `LOOM_RETRY` again. |
+| `agent-retry` | `AgentRetry { reason: String }` | "Previous attempt requested retry: <reason>. A fresh dispatch was scheduled." `reason` is the verbatim prose the agent wrote on the line preceding `LOOM_RETRY` (environmental detail or stuck-on-approach summary). Consumes one `[loop] max_retries` slot; on exhaustion the target bead is marked `loom:blocked` with cause `retry-exhausted`. The recovery prompt instructs the retry attempt to escalate to `LOOM_BLOCKED` (with a reason explaining why no candidate options can be enumerated) or `LOOM_CLARIFY` (with `## Options — …`) if the same problem persists rather than emitting `LOOM_RETRY` again. |
 
 When `previous_failure.is_some() && attempt > 0`, the `loop.md`
 template prepends a first-instruction reframe: *"Re-read the
@@ -1179,16 +1214,25 @@ its own session log if it needs prior tool-call context.
 
 **Labels.**
 
-- `loom:blocked` is applied by either: (a) the `LOOM_BLOCKED` agent marker, or
-  (b) driver-detected gate failure with recovery exhausted, or (c)
+- `loom:blocked` is a semantic human-resolution label for genuine dead
+  ends, not a generic failure tag. Agent-applied `LOOM_BLOCKED` reasons
+  must explain why candidate options cannot be safely enumerated. It is
+  applied by either: (a) the `LOOM_BLOCKED` agent marker, or (b) driver-detected
+  work/gate failure with semantic recovery exhausted, or (c)
   `loom gate mint` refusing to apply `loom:clarify` to a
   clarify-route finding whose `evidence` lacks a well-formed
   `## Options — …` block (cause `clarify-without-options` — the
   agent should have emitted `LOOM_BLOCKED` directly, but the driver
   falls back to blocked rather than minting a stranded clarify bead
   the chat-drafter cannot resolve). All meanings are uniform from
-  the human's perspective — the bead is blocked and `loom inbox` is
-  the resolution channel.
+  the human's perspective — the worker or gate reached a semantic
+  judgement and `loom inbox` resolves it as kind `blocked`.
+- `loom:infra` is an infrastructure/operator diagnostic label. It is
+  paired with `status=blocked` to pause scheduler selection after a
+  static infra diagnostic or exhausted retryable infra budget, but it
+  is never paired with `loom:blocked` for the same cause. It surfaces in
+  `loom inbox` as kind `infra`, with framing that says the worker did
+  not reach semantic judgement.
 - `loom:clarify` is applied by either: (a) the direct `LOOM_CLARIFY`
   agent marker from `loop` / `todo`, (b) `loom gate mint` lifting a
   clarify-route finding whose `evidence` carries a well-formed
@@ -1230,10 +1274,14 @@ its own session log if it needs prior tool-call context.
   `clarify-without-options`) is preserved in the bead's notes.
   Per-cause sub-labels can be stacked on top later if filtering
   becomes important; the gate's terminal label stays `loom:blocked`.
-- Closing a bead does not automatically remove stale `loom:blocked` or
-  `loom:clarify` labels. `loom inbox` filters out closed beads regardless
-  of labels, so label cleanup is not a prerequisite for hiding resolved
-  work from the human queue.
+- The cause of `loom:infra` (`infra-preflight`, `infra-interrupted`,
+  `unknown-profile`, `unknown-agent-runtime-for-profile`, or another
+  static infra diagnostic) is preserved in the bead's notes with the
+  latest attempt summary and log path.
+- Closing a bead does not automatically remove stale `loom:blocked`,
+  `loom:clarify`, or `loom:infra` labels. `loom inbox` filters out
+  closed beads regardless of labels, so label cleanup is not a
+  prerequisite for hiding resolved work from the human queue.
 
 **Routing observability.** Every terminal-marker/finding route emits a
 `DriverKind::MarkerRouted` event. A clarify-bound route that falls back
@@ -1295,18 +1343,19 @@ success/self-report markers below.
   (`plan`, `inbox`).
 - `LOOM_BLOCKED` — the agent cannot proceed and is self-reporting a
   **genuine dead end** — no candidate resolutions to enumerate, no
-  retry path the agent expects to succeed. Use `LOOM_RETRY` for
-  environmental failures or stuck-on-this-approach cases; in `loop` /
-  `todo`, use `LOOM_CLARIFY` when the agent can frame the decision-point
-  as a structured `## Options — …` block. In `review`, frame that
-  decision as a `route="clarify"` finding instead. Write the reason on
-  prior lines before the marker; the gate applies `loom:blocked` to the
-  target bead/work epic (the bead under dispatch for `loop` / `review`, the
-  `loom:todo` work epic for `todo`) and exits the verdict evaluation
-  without entering recovery. Other beads in the molecule continue
-  running; the labelled bead or work epic waits for human resolution via
-  `loom inbox` (where `loom inbox chat` walks the human through candidate
-  enumeration in-session). Valid in worker phases only — invalid in
+  retry path the agent expects to succeed. The reason before the marker
+  must explain why the agent cannot safely enumerate options. Use
+  `LOOM_RETRY` for environmental failures or stuck-on-this-approach
+  cases; in `loop` / `todo`, use `LOOM_CLARIFY` when the agent can
+  frame the decision-point as a structured `## Options — …` block. In
+  `review`, frame that decision as a `route="clarify"` finding instead.
+  Write the reason on prior lines before the marker; the gate applies
+  `loom:blocked` to the target bead/work epic (the bead under dispatch
+  for `loop` / `review`, the `loom:todo` work epic for `todo`) and exits
+  the verdict evaluation without entering recovery. Other beads in the
+  molecule continue running; the labelled bead or work epic waits for human
+  resolution via `loom inbox` (where `loom inbox chat` walks the human through
+  candidate enumeration in-session). Valid in worker phases only — invalid in
   interactive sessions (`plan`, `inbox`).
 - `LOOM_CLARIFY` — a `loop` or `todo` agent has a specific question
   with structured options for the human (per the [Options Format
@@ -1364,8 +1413,9 @@ success/self-report markers below.
   environmental reasons" — distinct from `LOOM_BLOCKED` (genuine
   dead end) and from `LOOM_CONCERN` (I reviewed and found a problem).
 - `LOOM_BLOCKED` — review cannot run and the reviewer has no
-  candidate resolution to enumerate. Reserve for genuine dead ends;
-  prefer `LOOM_RETRY` for transient infrastructure failures.
+  candidate resolution to enumerate. The reason must explain why no
+  options can be safely surfaced. Reserve for genuine dead ends; prefer
+  `LOOM_RETRY` for transient infrastructure failures.
 
 Direct `LOOM_CLARIFY` is not a review terminal. When review surfaces a
 spec ambiguity the reviewer can frame as a `## Options — …` block, it
@@ -1387,13 +1437,67 @@ exclusive, exactly one valid marker is expected on that line.
 `exit_code` alone is insufficient because backend errors,
 swallowed-marker turns, and successful self-reports all exit 0.
 
-**Infra failures bypass the gate.** Pre-flight failures (image load, container
-start) exit immediately as `blocked` with cause `infra-preflight` — there is
-no agent output to evaluate. Mid-session failures (agent process exit
-non-zero, container OOM, IO errors) get one free retry per `loom loop`,
-tracked in driver memory; a second mid-session failure exits as `blocked`
-with cause `infra-repeated`. This counter is separate from
-`[loop] max_iterations` and does not persist across `loom loop` invocations.
+**Infra failures bypass the semantic verdict gate.** A worker reaches
+semantic judgement only after the driver observes a usable agent event
+stream and a terminal marker. Spawn, handshake, transport, framing,
+container, and event-stream failures before that point are infrastructure
+incidents: the driver retries and diagnoses them, but it does not apply
+`loom:blocked` unless the worker explicitly emitted `LOOM_BLOCKED`.
+
+The session driver classifies infra failures with a `first_event_seen`
+bit. `first_event_seen` means at least one canonical `AgentEvent` with
+`source = "agent"` was observed from the backend/session stream. Events emitted
+by the driver, such as `container_spawn`, `retry_dispatch`, `stall_watchdog`, or
+`infra_failure`, do not set the bit.
+
+- **Static dispatch diagnostics** — unknown profile/runtime after the
+  profile-image manifest has parsed, invalid spawn config, missing agent
+  binary, or `workspace-recovery-failed` — skip transport retry because
+  re-running the same dispatch cannot repair them safely. The bead is paused
+  with `status=blocked`, labelled `loom:infra`, and surfaced in `loom inbox` as
+  kind `infra`. A missing or malformed `LOOM_PROFILES_MANIFEST` remains a
+  startup/global error before bead selection, not bead-scoped `loom:infra`.
+- **Pre-stream infra** — spawn failure that may be transient, handshake
+  timeout, EOF, non-zero process exit, container OOM, malformed first
+  frame, or IO/sink failure before the first such agent event — is
+  retryable as `infra-preflight`.
+- **Interrupted infra** — EOF, IO error, non-zero process exit,
+  container OOM, malformed framing, or sink failure after at least one
+  such agent event but before `session_complete` — is retryable as
+  `infra-interrupted`.
+- **Semantic worker blocked** — the session reaches terminal output and
+  the worker emits `LOOM_BLOCKED` — remains `loom:blocked` / kind
+  `blocked`; infra classification never rewrites that marker.
+
+Retryable infra uses a per-bead, per-`loom loop` attempt budget from
+`[loop.infra] max_attempts` (default 3). The budget is independent of
+`[loop] max_retries` and `[loop] max_iterations`. There is no wall-clock
+cooldown/backoff in v1: an infra-failed bead moves to the tail of an
+in-memory infra retry queue, other ready beads continue, and the driver
+retries infra beads again when selected and attempts remain. A fresh
+`loom loop` invocation gets a fresh infra budget.
+
+When a retryable infra class exhausts its per-run budget, the driver
+pauses the bead with `status=blocked`, applies `loom:infra` (not
+`loom:blocked`), writes a durable diagnostic note, emits an
+`infra_failure` driver event, and exits the overall loop non-zero after
+all dispatchable work for the selected work root has drained. The next
+`loom loop` for the same work root proactively picks up `loom:infra`
+beads, clears stale infra state when redispatching, and tries again with
+a fresh budget.
+
+A later infra failure cannot overwrite a prior meaningful worker result.
+If an earlier attempt reached `session_complete` and the driver scheduled
+a retry because of verifier/recovery state, a subsequent pre-stream EOF is
+recorded as infra on the retry path; it does not convert the bead into a
+semantic blocked item or erase the earlier session's outcome.
+
+Every `DriverKind::InfraFailure` event carries a payload with `phase`,
+`first_event_seen`, `attempt`, `max_attempts`, the infra class/cause,
+agent/container exit status when known, and either `stderr_tail` or
+`spawn_error` when available. The rendered infra summary distinguishes
+pre-stream EOF, interrupted stream EOF, and spawn failure; marker-routed
+logs separately identify worker-declared blocked.
 
 ### Loop Outcome Types
 
@@ -1534,15 +1638,18 @@ exit. Wrapper scripts must consume this signal.
 
 ### Inbox Modes
 
-`loom inbox` is the human decision queue for outstanding `loom:blocked`
-beads, `loom:clarify` beads, and tune proposals. `loom msg` is removed;
-there is no compatibility alias.
+`loom inbox` is the human decision and operator diagnostic queue for
+outstanding `loom:blocked` beads, `loom:clarify` beads, `loom:infra`
+diagnostics, and tune proposals. `loom msg` is removed; there is no
+compatibility alias.
 
 Clarify beads carry their options in the *Options Format Contract* defined in
-[gate.md](gate.md#options-format-contract). Tune proposals use a tune bead as
-the canonical durable report/state and `.loom/tune/<bead-id>/` as a local
-execution cache. `loom inbox` consumes both shapes through list / view / chat.
-There is no host-side pick/reply/resolve/apply mutation surface in v1.
+[gate.md](gate.md#options-format-contract). Infra beads carry diagnostic notes
+and event-log breadcrumbs explaining why the worker did not get a fair chance
+to produce a semantic marker. Tune proposals use a tune bead as the canonical
+durable report/state and `.loom/tune/<bead-id>/` as a local execution cache.
+`loom inbox` consumes these shapes through list / view / chat. There is no
+host-side pick/reply/resolve/apply mutation surface in v1.
 
 **Modes:**
 
@@ -1562,7 +1669,7 @@ There is no host-side pick/reply/resolve/apply mutation surface in v1.
 | Flag | Argument | Purpose |
 |------|----------|---------|
 | `-s`, `--spec` | `<label>` | Filter queue entries to `spec:<label>` |
-| `-k`, `--kind` | `clarify\|blocked\|tune` | Filter queue entries by kind; absence means all kinds |
+| `-k`, `--kind` | `clarify\|blocked\|infra\|tune` | Filter queue entries by kind; absence means all kinds |
 | `-b`, `--bead` | `<bead-id>` | Address a bead-backed item for `view` / `chat` |
 | `-p`, `--proposal` | `<proposal-id>` | Address a tune proposal for `view` / `chat` |
 
@@ -1571,22 +1678,24 @@ There is no `-c/--chat` flag; chat is a subcommand. There is no
 `loom inbox apply` in v1. Options blocks are structured context for view/chat,
 not a host-executable menu.
 
-**Cross-spec by default.** Bare `loom inbox` lists every outstanding open
-`loom:blocked` and `loom:clarify` bead across all specs plus pending/blocked/
-apply-failed tune proposal beads. Closed beads are excluded even if their labels
-remain on the bead. No active-spec cache or work-epic selection is consulted for
-any inbox mode. Filters narrow the queue before positional numbering. Default
-ordering is kind-group first, then FIFO within each group: `clarify`
-oldest→newest, then `blocked` oldest→newest, then `tune` oldest→newest. A
-corrupt or unavailable tune proposal remains `kind = tune` with blocked
-status/framing; it appears in the default and `-k tune` queues, not as a generic
-blocked bead.
+**Cross-spec by default.** Bare `loom inbox` lists every outstanding non-closed
+bead carrying `loom:blocked`, `loom:clarify`, or `loom:infra` across all specs,
+plus pending/blocked/apply-failed tune proposal beads. Closed beads are excluded
+even if their labels remain on the bead. No active-spec cache or work-epic
+selection is consulted for any inbox mode. Filters narrow the queue before
+positional numbering. Default ordering is kind-group first, then FIFO within
+each group: `clarify` oldest→newest, then `blocked` oldest→newest, then `infra`
+oldest→newest, then `tune` oldest→newest. A corrupt or unavailable tune proposal
+remains `kind = tune` with blocked status/framing; it appears in the default and
+`-k tune` queues, not as a generic blocked bead.
 
 **View semantics.** `loom inbox view` renders the canonical bead/proposal body,
-structured options when present, durable ids, proposal branch/head commits, and
-local artifact paths. If no chat-capable backend is available, view output gives
-manual escape-hatch surfaces (`bd`, local proposal paths, and repair/drop
-instructions) rather than mutating state.
+structured options when present, durable ids, infra diagnostic fields (phase,
+first-event-seen, attempt/max, exit status, stderr/spawn error tail, and log
+path) when present, proposal branch/head commits, and local artifact paths. If
+no chat-capable backend is available, view output gives manual escape-hatch
+surfaces (`bd`, local proposal paths, and repair/drop instructions) rather than
+mutating state.
 
 **Chat session shape.** `loom inbox chat` launches the resolved profile/runtime
 via interactive `wrix run`, runs the selected chat-capable agent with the
@@ -1636,7 +1745,8 @@ tune items appear in the next inbox and are not retried automatically; a later
 chat must explicitly repair/reauthorize a subset or drop/regenerate them.
 
 **Chat queue framing.** The chat session queue includes `loom:clarify` beads,
-`loom:blocked` beads, and tune proposals, with separate rendered framing:
+`loom:blocked` beads, `loom:infra` diagnostics, and tune proposals, with
+separate rendered framing:
 
 - **`loom:clarify`** beads carry options under the *Options Format Contract*.
   The drafter helps the user discuss and choose among existing options; it does
@@ -1644,6 +1754,10 @@ chat must explicitly repair/reauthorize a subset or drop/regenerate them.
 - **`loom:blocked`** beads do not necessarily carry options. The drafter walks
   the user through enumerating candidate resolutions first, then helps them
   pick or update bead state.
+- **`loom:infra`** beads are explicitly framed as infrastructure diagnostics,
+  not worker judgement. The drafter shows the captured phase, first-event-seen
+  flag, attempts, exit status, stderr/spawn error tail, and log path, then helps
+  the user retry/requeue, leave paused, or repair environment/config state.
 - **Tune proposals** present the tune bead body, changed files, local
   `evidence.md` appendix when present, checker results, and candidate commits.
   Chat may mark proposals accepted/rejected/blocked/apply_failed only with
@@ -1653,8 +1767,9 @@ chat must explicitly repair/reauthorize a subset or drop/regenerate them.
   into the bead's `--notes`. The inbox reads options from notes ∪ description so
   notes-carried options are surfaced alongside description-carried ones.
 - **Epic exclusion.** Epic beads (`issue_type == "epic"`) are filtered out of
-  the chat queue: workers target leaf beads, and an epic carrying `loom:blocked`
-  would surface as a non-actionable container.
+  the chat queue: workers target leaf beads, and an epic carrying a terminal
+  inbox label (`loom:blocked`, `loom:clarify`, or `loom:infra`) would surface
+  as a non-actionable container.
 
 ### Tune Modes
 
@@ -1861,11 +1976,11 @@ template composition, and the snapshot-test contract all live there.
 - Parses output into typed structs (`Bead`, `Molecule`, `MolProgress`).
   Bead labels deserialize into a `Label` newtype that pre-parses the
   `spec:`/`profile:`/`loom:spec`/`loom:todo`/`loom:active`/
-  `loom:clarify`/`loom:blocked` prefix families once at the boundary,
-  so call sites read through typed accessors (`spec_label()`,
+  `loom:clarify`/`loom:blocked`/`loom:infra` prefix families once at the
+  boundary, so call sites read through typed accessors (`spec_label()`,
   `profile_name()`, `is_spec_epic()`, `is_todo_stage()`,
-  `is_active()`, `is_clarify()`, `is_blocked()`) rather than re-doing
-  `strip_prefix` walks. `loom:active` is an execution bookmark for the
+  `is_active()`, `is_clarify()`, `is_blocked()`, `is_infra()`) rather than
+  re-doing `strip_prefix` walks. `loom:active` is an execution bookmark for the
   default work epic, never a spec-discovery filter.
 - Maps CLI errors to typed error variants
 - All subprocess calls have a 60-second timeout (configurable). Prevents
@@ -2246,6 +2361,22 @@ defined by the pinned prompt (for example, `do a polish`) must continue to
 drive behavior after compaction. If Loom cannot assemble or deliver the full
 pin before accepting or using post-compaction workflow output, it blocks,
 restarts, or fails loudly rather than proceeding with summary-only context.
+Every agent-bearing phase path, including interactive `loom plan` and
+`loom inbox chat` shell-outs, installs its backend delivery mechanism before
+the initial prompt can produce user-visible output; an interactive path is not
+exempt merely because it bypasses `SpawnConfig`.
+
+**Behavioral canary.** Byte-level tests that inspect `prompt.txt`,
+`repin.sh`, or a queued steer are necessary but not sufficient proof of the
+effective invariant. The verifier set includes a post-compaction turn canary:
+seed the initial prompt with an instruction/mode definition and a test-only
+nonce that are both absent from the compacted summary, force or simulate
+compaction through the production phase path, ask a follow-up whose correct
+answer requires that definition and nonce, and fail unless the answer reflects
+both. `do a polish` is the canonical semantics probe because the required
+answer is specific — report-only review, propose edits/findings, and do not
+edit files unless explicitly asked — but the nonce is what prevents a model
+from passing via priors or a vague summary.
 
 **Per-session scratch directory.** At session start the driver creates
 `.loom/scratch/<key>/`:
@@ -2354,6 +2485,15 @@ max_iterations = 10
 # inside one `process_one_bead` call. Independent of
 # `max_iterations`; the two counters never share slots.
 max_retries = 2
+
+[loop.infra]
+# Per-bead infrastructure attempt budget for one `loom loop` invocation.
+# Retryable spawn / handshake / transport / container failures use this
+# round-robin budget and do not consume `[loop] max_retries`. There is no
+# wall-clock cooldown/backoff in v1: an infra-failed bead moves to the tail
+# of the retry queue while other ready work proceeds, then retries again when
+# selected and attempts remain. A fresh `loom loop` gets a fresh budget.
+max_attempts = 3
 
 [logs]
 # Event-log retention; see specs/events.md. 0 disables sweeping.
@@ -2657,10 +2797,34 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
 - A bead workspace is reaped on the first `loom loop` iteration that
       observes the bead in `closed` status
   [test?](bead_workspace_reaped_on_bd_close)
-- Every dispatch attempt sees a clean working tree against the bead
-      workspace's current HEAD; `target/`, `.git/`, and `.wrix/`
-      survive the pre-attempt reset
-  [test](bead_workspace_reset_preserves_target_and_dotwrix)
+- Pre-dispatch dirty bead workspaces are preserved before destructive
+      cleanup: tracked modifications, staged changes, and untracked files
+      outside the ignore set are saved with a named `git stash push
+      --include-untracked`; the driver records pre-stash status, stash
+      selector/message, stash commit, and target integration tip
+  [test?](pre_dispatch_dirty_workspace_creates_recovery_stash)
+- After a recovery stash is created, the driver leaves it unapplied,
+      rebases committed bead work onto the current integration tip (or
+      fast-forwards when no local commits exist), and injects
+      `workspace_recovery` prompt context without consuming
+      `[loop] max_retries`
+  [test?](workspace_recovery_stash_left_unapplied_and_context_injected)
+- Clean pre-dispatch workspaces, and dirty workspaces after successful
+      recovery stashing/alignment, still run the reset/clean path that
+      preserves `target/`, `.git/`, and `.wrix/`
+  [test?](bead_workspace_prepare_preserves_target_and_dotwrix)
+- If branch alignment conflicts after recovery stashing, the worker is
+      dispatched in the conflict state with stash/conflict context rather
+      than immediately routing to `loom:clarify` or `loom:blocked`
+  [test?](workspace_recovery_rebase_conflict_dispatches_agent_with_context)
+- `LOOM_COMPLETE` is not rejected solely because a recovery stash still
+      exists; stash relevance is judged by review/gate evidence rather
+      than a hard driver state machine
+  [test?](loop_complete_does_not_require_recovery_stash_removed)
+- Recovery-stash preflight emits `DriverKind::WorkspaceRecovery` with bead
+      id, pre-stash status, stash selector/message, stash commit,
+      integration tip, alignment outcome, and conflict files when present
+  [test?](workspace_recovery_event_records_stash_and_alignment)
 - `loom loop` / `loom init` startup fast-forwards the loom
       workspace's integration branch to `origin/<integration-branch>`
       before any bead clone is materialized, so `loom/<id>` always
@@ -3040,7 +3204,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       exhaustion
   [test?](continuous_outer_loop_promotes_deferred_remediation_then_exits_on_stall)
 - Push gate is a typed-evidence AND: no unresolved blocked/clarify/
-      deferred molecule state, successful deterministic pre-push
+      deferred/infra molecule state, successful deterministic pre-push
       `GateRun`/`VerifiedScope`, successful `ReviewedScope`, no
       terminal integrity finding, and marker coverage for the hooks the
       push will encounter. Failure on any input refuses the push. The
@@ -3053,7 +3217,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `.loom/marker.json` **immediately before** `git push`, inside
       the gate's critical section, after deterministic pre-push and
       review have both covered the actual push range. A **refused**
-      push (blocked/clarify/deferred bead, pre-push failure,
+      push (blocked/clarify/deferred/infra bead, pre-push failure,
       verify-fail, review-concern, integrity finding, or missing
       marker coverage) mints nothing. A missing or invalid marker falls
       the pre-push consumer through to running hooks rather than failing
@@ -3104,26 +3268,27 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `loom:active` work epic, interspersed options, and absence of
       `--spec` / `--once` / `--all-specs`
   [test](loom_loop_help_documents_work_roots_and_removed_selectors)
-- Bare `loom inbox` / `loom inbox list` lists every outstanding open
-      `loom:blocked` and `loom:clarify` bead across all specs plus pending,
-      blocked, and apply-failed tune proposal beads (cross-spec default); no
-      active-spec cache value is consulted, and closed beads are excluded even
-      when labels remain
-  [test](inbox_list_excludes_closed_blocked_or_clarify_beads)
+- Bare `loom inbox` / `loom inbox list` lists every outstanding non-closed
+      bead carrying `loom:blocked`, `loom:clarify`, or `loom:infra` across all
+      specs plus pending, blocked, and apply-failed tune proposal beads
+      (cross-spec default); no active-spec cache value is consulted, and closed
+      beads are excluded even when labels remain
+  [test?](inbox_list_includes_infra_and_excludes_closed_items)
 - `loom inbox list -s <label>` (alias `--spec`) filters the list to items
       carrying the `spec:<label>` bead label or proposal metadata
   [test](inbox_spec_filter_narrows_list_to_matching_spec)
-- `loom inbox list -k clarify|blocked|tune` filters by exclusive item kind;
-      absence of `--kind` means all kinds. Filters narrow before positional
-      numbering and default ordering is group-first (`clarify`, `blocked`,
-      `tune`) then FIFO within each group
-  [test](inbox_kind_filter_narrows_list)
+- `loom inbox list -k clarify|blocked|infra|tune` filters by exclusive item
+      kind; absence of `--kind` means all kinds. Filters narrow before
+      positional numbering and default ordering is group-first (`clarify`,
+      `blocked`, `infra`, `tune`) then FIFO within each group
+  [test?](inbox_kind_filter_narrows_list_including_infra)
 - `loom inbox view <N>` / `loom inbox view -b <id>` /
       `loom inbox view -p <proposal-id>` renders the addressed item host-side
-      without launching a container, including durable ids and manual repair
-      paths; corrupt/unavailable tune proposals remain tune-kind items with
-      blocked status rather than being skipped
-  [test](inbox_view_modes_render_host_side)
+      without launching a container, including durable ids, infra diagnostic
+      fields when present, and manual repair paths; corrupt/unavailable tune
+      proposals remain tune-kind items with blocked status rather than being
+      skipped
+  [test?](inbox_view_modes_render_host_side_with_infra_diagnostics)
 - `loom inbox` exposes no host-side `pick`, `reply`, `resolve`, `apply`,
       `--option`, `--text`, `-c/--chat`, or `-d/--dismiss`; conflicting address
       flags error before any side effects
@@ -3211,9 +3376,13 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `LOOM_BLOCKED` / `LOOM_CLARIFY` without calling `bd close` and
       asserting the bead remains open after the run finishes.
   [test](loom_loop_never_invokes_bd_close_on_dispatched_bead_across_all_markers)
-- `LOOM_BLOCKED` agent marker → bead transitions to `[blocked]`,
-      recovery loop is skipped
+- `LOOM_BLOCKED` agent marker with a non-empty reason transitions the bead
+      to `[blocked]` and skips the recovery loop
   [test](blocked_marker_routes_to_blocked_with_reason)
+- Worker/review guidance reserves `LOOM_BLOCKED` for semantic dead ends
+      whose reason explains why candidate options cannot be enumerated;
+      `LOOM_CLARIFY` is required when options can be framed
+  [judge](../tests/judges/loom.sh#judge_blocked_no_options_rationale)
 - `LOOM_CLARIFY` agent marker → bead transitions to `[clarify]`,
       recovery loop is skipped
   [test](clarify_marker_routes_to_clarify_with_question)
@@ -3359,9 +3528,9 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
   [test](refused_outcome_applies_unbonded_origin_blocked_to_origin)
 - The push gate walks `bd mol progress <id>` and refuses to push when
       any bead in the molecule — including bonded remediation beads —
-      carries `loom:blocked`, `loom:clarify`, or `loom:deferred`; an
-      orphan remediation bead would slip past this check, so the bond
-      invariant is what makes the gate sound
+      carries `loom:blocked`, `loom:clarify`, `loom:deferred`, or
+      `loom:infra`; an orphan remediation bead would slip past this check,
+      so the bond invariant is what makes the gate sound
   [test?](remediation_beads_under_cap_auto_iterate)
 - Recovery iter ≥ max_iterations → applies `loom:blocked` with cause
       in `bd update --notes`
@@ -3371,25 +3540,50 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       survives `retry → [running]` round-trips; every promoted
       remediation pass consumes one slot of `[loop] max_iterations`
   [test](iteration_counter_round_trips_through_cache_db)
-- Pre-flight infra failures (image load, container start) exit
-      immediately as `loom:blocked` with cause `infra-preflight`; no retry
-  [test](infra_preflight_routes_to_blocked_without_retry)
-- Per-bead dispatch with an undeclared `profile:X` label exits
-      immediately as `loom:blocked` with cause `unknown-profile`;
-      the bead's notes name the requested profile + the manifest's
-      declared set; the loop continues with the next ready bead
-      rather than aborting the workflow
-  [test](unknown_profile_routes_to_blocked_without_retry_then_continues)
-- Mid-session infra failures (agent process exit non-zero, container
-      OOM, IO errors) get one free retry per `loom loop`; second mid-
-      session failure → `loom:blocked` with cause `infra-repeated`
-  [test](infra_midsession_one_retry_then_blocks_on_repeat)
-- Infra-retry counter is driver-memory only; resets on a fresh
-      `loom loop` invocation; does not consume `[loop] max_iterations`
-  [test](infra_retry_counter_does_not_consume_max_retries)
+- Agent event-stream failures are classified by `first_event_seen`:
+      EOF before the first canonical `source = "agent"` event is retryable
+      `infra-preflight`; EOF after one or more agent-sourced events but before
+      `session_complete` is retryable `infra-interrupted`; an explicit
+      worker `LOOM_BLOCKED` remains semantic `loom:blocked`
+  [test?](agent_stream_failure_classifier_distinguishes_preflight_interrupted_and_blocked)
+- Retryable infra failures use a per-bead, per-`loom loop` budget from
+      `[loop.infra] max_attempts` (default 3), move failed beads to the
+      tail of an in-memory retry queue, continue other ready work, and
+      retry without wall-clock cooldown/backoff while attempts remain
+  [test?](infra_failures_round_robin_per_bead_without_cooldown)
+- EOF before the first agent event retries under the infra budget; after
+      exhaustion the bead is paused as `status=blocked` + `loom:infra`
+      and never labelled `loom:blocked`
+  [test?](preflight_eof_retries_then_surfaces_infra_not_semantic_blocked)
+- Partial event stream followed by EOF routes to `infra-interrupted`,
+      includes `first_event_seen=true`, and follows the same infra retry
+      budget instead of semantic worker recovery
+  [test?](partial_stream_eof_classifies_interrupted_infra)
+- Driver infra-failure events include phase, first-event-seen,
+      attempt/max attempts, infra class/cause, agent/container exit
+      status when known, and stderr tail or spawn error when available
+  [test?](infra_failure_driver_event_payload_carries_stream_diagnostics)
+- Static dispatch diagnostics such as undeclared `profile:X`, missing
+      runtime for a declared profile, invalid spawn config, missing agent
+      binary, or `workspace-recovery-failed` skip transport retry and
+      surface immediately as `status=blocked` + `loom:infra` with notes
+      naming the requested value, declared/available set, or preserved
+      workspace-recovery failure detail. Missing or malformed
+      `LOOM_PROFILES_MANIFEST` remains a startup/global error before bead
+      selection.
+  [test?](static_dispatch_failures_surface_as_infra_without_retry)
+- A prior attempt that reached `session_complete` is not overwritten by
+      a later retry's pre-stream EOF; the later failure records infra
+      diagnostics without converting the bead to semantic `loom:blocked`
+  [test?](prior_session_complete_not_overwritten_by_later_preflight_eof)
+- Infra retry budget is driver-memory only; a fresh `loom loop`
+      invocation gets a fresh per-bead budget and proactively retries
+      selected work-root beads labelled `loom:infra`, clearing stale infra
+      state when redispatching
+  [test?](fresh_loop_retries_loom_infra_beads_with_fresh_budget)
 - The push gate refuses to push while any bead in the molecule carries
-      `loom:blocked` or `loom:clarify`
-  [test](clarify_present_stops_without_pushing)
+      `loom:blocked`, `loom:clarify`, or `loom:infra`
+  [test?](clarify_or_infra_present_stops_without_pushing)
 - Observer-driven abort (`EventSink::react()` returning
       `SessionCommand::Abort`) classifies as recovery cause
       `observer-abort` with detail naming the responsible observer +
@@ -3600,9 +3794,15 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       edits applied unless explicitly asked, resumes with that definition
       still present
   [test](compacted_resume_preserves_polish_mode_definition)
-- A post-compaction `do a polish` canary fails if resumed context contains
-      only a vague summary instead of the full report-only mode definition
+- The context-assembly unit canary rejects a vague compacted summary as a
+      substitute for the full `polish` report-only mode definition
   [test](post_compaction_polish_canary_requires_full_mode_definition)
+- A production-path behavioral canary for a planning session forces or
+      simulates compaction, asks `do a polish` after compaction, and fails
+      unless the post-compaction answer preserves both the full report-only,
+      propose-edits/no-file-edits-unless-asked semantics and a test-only
+      nonce from the initial rendered prompt
+  [test?](loom_plan_compaction_repin_polish_canary)
 - A simulated planning compaction with a fixture `Interview Modes`
       section defining `one by one` as one design question per turn
       resumes with that definition still present
@@ -3611,6 +3811,17 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       protocol, and mode sections verbatim and removes ordinary history
       before pinned instruction text
   [test](hard_limit_fallback_preserves_pinned_instruction_sections)
+- Interactive `loom plan` and `loom inbox chat` shell-outs install the
+      backend-specific compaction re-pin delivery surface into the launched
+      agent process before the prompt is accepted; an integration test may use
+      a mock `wrix run` launcher, but merely writing an unused scratch file or
+      hook fragment does not satisfy this criterion
+  [test?](interactive_shell_out_installs_compaction_repin_delivery)
+- The compaction-recovery verifier set includes at least one post-compaction
+      behavioral canary that requires a non-inferable nonce, not only
+      byte-presence checks of `prompt.txt`, `repin.sh`, hook JSON, or steer
+      payloads
+  [judge?](../tests/judges/compaction-repin.sh#judge_effective_repin_behavior)
 - `claude-settings.json` registers `repin.sh` under
       `SessionStart[matcher: compact]`
   [test](claude_settings_registers_repin_under_session_start_compact)
@@ -3681,8 +3892,11 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
      positional may be a task bead (run exactly that bead) or an epic
      (run ready child work under that epic/molecule). Options may
      appear before, between, or after ids. The loop pulls ready child
-     beads filtered to exclude `loom:blocked` / `loom:clarify` beads;
-     an epic positional is a work root, never a worker task itself.
+     beads filtered to exclude semantic `loom:blocked` / `loom:clarify`
+     beads; `loom:infra` diagnostic beads are a driver-owned retry queue
+     and are retried under the infra policy before a work root is
+     considered fully stuck. An epic positional is a work root, never a
+     worker task itself.
      Under `--parallel N`, a clarify or block on one of the N
      concurrent beads does not cancel the others. On work-epic
      completion, the driver fetches/rebases against
@@ -3711,8 +3925,9 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
      `-m/--molecule <id>` or `--tree` and has no bare default. The
      surface-conformance walk (FR13) ships as a `[check]`-tier verifier
      dispatched by `loom gate check`.
-   - `loom inbox` — human decision queue for clarifies, blocked beads, and
-     tune proposals. Bare `loom inbox` and `loom inbox list` are read-only;
+   - `loom inbox` — human decision and operator diagnostic queue for
+     clarifies, semantic blocked beads, infra diagnostics, and tune proposals.
+     Bare `loom inbox` and `loom inbox list` are read-only;
      `loom inbox view` renders a numbered, bead-addressed, or proposal-addressed
      item; and `loom inbox chat` launches the interactive resolution agent.
      There is no host-side pick/reply/resolve/apply path in v1.
@@ -3795,15 +4010,20 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
 5. **Profile/runtime selection** — reads `profile:X` labels from beads,
    resolves the phase backend to an `AgentRuntime`, and resolves the pair
    via the [Profile-Image Manifest](#profile-image-manifest). Unknown
-   labels or missing runtime variants fail at dispatch (no silent default).
+   labels or missing runtime variants fail at dispatch as static
+   `loom:infra` diagnostics (no silent default, no transport retry).
    `--profile` overrides bead labels.
 6. **Bead dispatch** — `loom loop --parallel N` (alias `-p N`) dispatches
    up to N ready beads, each in its own clone of the loom workspace
    under `.loom/beads/<id>/` on a per-bead branch. The operator's
    `/workspace` is never the bead's workdir. `--parallel 1` (default)
    runs one bead at a time; `--parallel N > 1` runs N concurrently.
-   After workers finish, the driver fetches each bead branch from its
-   bead workspace path into the loom workspace, then rebases +
+   Before each bead-worker dispatch, Loom preserves any dirty bead
+   workspace work in an unapplied recovery stash, rebases committed bead
+   work onto the current integration tip when possible, and exposes the
+   stash/alignment result through loop-only `workspace_recovery` prompt
+   context. After workers finish, the driver fetches each bead branch
+   from its bead workspace path into the loom workspace, then rebases +
    fast-forwards into the integration branch sequentially (per
    [Verdict Gate § Loom-workspace integration outcomes](#verdict-gate)).
    Workers never push.
@@ -3851,8 +4071,8 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
    `GateSuccess`" as a structural invariant.
 
    1. **Molecule state.** Every bead in the molecule has reached
-      `[done]` — no `loom:blocked`, `loom:clarify`, or `loom:deferred`
-      outstanding.
+      `[done]` — no `loom:blocked`, `loom:clarify`, `loom:deferred`, or
+      `loom:infra` outstanding.
    2. **Origin-synchronized push range.** The driver has fetched origin,
       rebased local integration commits if needed, and resolved the
       actual range `origin/<integration-branch>..HEAD` that `git push`
@@ -4063,5 +4283,14 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
   agent sessions to observe tmux / browser logs and create beads for
   detected issues. Independent of the workflow phase set; deferred to
   a follow-up spec if and when the use case re-emerges.
+- **Preserve-on-GC for dirty closed bead workspaces** — routine closed-bead
+  workspace cleanup stays simple. Loom preserves dirty work before worker
+  dispatch via recovery stashes, but it does not add a special move-aside
+  branch for the unusual case where a bead is already closed/reapable while
+  its workspace still contains useful uncommitted work.
 - **Session persistence across container restarts** — each container starts a
   fresh agent session.
+- **Wall-clock infra cooldown/backoff** — v1 infra resilience uses
+  round-robin retry with an attempt cap, not timer-based sleeps. Adding
+  exponential backoff later is an additive scheduler policy if evidence shows
+  it is useful.
