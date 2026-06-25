@@ -2172,6 +2172,7 @@ mod tests {
             "signature_verification_failed",
             "worktree_cleanup_ok",
             "tree_not_clean",
+            "workspace_recovery",
             "gate_run_start",
             "gate_run_scope",
             "gate_run_lane",

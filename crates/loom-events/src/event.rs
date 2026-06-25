@@ -81,6 +81,12 @@ pub enum DriverKind {
     /// next-retry `TreeNotClean` stash. Payload fields: `bead_id`,
     /// `dirty_paths` (capped list of paths).
     TreeNotClean,
+    /// Dirty bead workspace work was preserved in a recovery stash before
+    /// loop dispatch cleanup/alignment. Payload fields: `bead_id`,
+    /// `pre_stash_status`, `stash_selector`, `stash_message`,
+    /// `stash_commit`, `integration_tip`, `alignment_outcome`, and
+    /// `conflict_files` when alignment conflicted.
+    WorkspaceRecovery,
     /// Gate invocation accepted and lifecycle logging began.
     GateRunStart,
     /// Gate invocation scope resolved to concrete inputs.
@@ -123,6 +129,7 @@ impl DriverKind {
             DriverKind::SignatureVerificationFailed => "signature_verification_failed",
             DriverKind::WorktreeCleanupOk => "worktree_cleanup_ok",
             DriverKind::TreeNotClean => "tree_not_clean",
+            DriverKind::WorkspaceRecovery => "workspace_recovery",
             DriverKind::GateRunStart => "gate_run_start",
             DriverKind::GateRunScope => "gate_run_scope",
             DriverKind::GateRunLane => "gate_run_lane",
@@ -157,6 +164,7 @@ impl DriverKind {
             "signature_verification_failed" => DriverKind::SignatureVerificationFailed,
             "worktree_cleanup_ok" => DriverKind::WorktreeCleanupOk,
             "tree_not_clean" => DriverKind::TreeNotClean,
+            "workspace_recovery" => DriverKind::WorkspaceRecovery,
             "gate_run_start" => DriverKind::GateRunStart,
             "gate_run_scope" => DriverKind::GateRunScope,
             "gate_run_lane" => DriverKind::GateRunLane,
@@ -1280,11 +1288,11 @@ mod tests {
 
     /// Every spec-enumerated `driver_kind` round-trips as a `DriverEvent`
     /// carrying `source: "driver"`. Pins the event-schema contract:
-    /// verdict gate, retry dispatch, push gate (walk/refuse/clean), and
-    /// container lifecycle (spawn/oom) plus the catch-all infra failure
-    /// all live as additive `driver_kind` strings under the same variant.
-    /// Acts as the rust-side check that the emission sites have a wire
-    /// shape to emit into.
+    /// verdict gate, retry dispatch, push gate (walk/refuse/clean),
+    /// container lifecycle (spawn/oom), recovery-stash preflight, and the
+    /// catch-all infra failure all live as additive `driver_kind` strings
+    /// under the same variant. Acts as the rust-side check that the
+    /// emission sites have a wire shape to emit into.
     #[test]
     fn driver_kinds_present_for_spec_emission_sites() {
         let kinds = [
@@ -1309,6 +1317,7 @@ mod tests {
             "signature_verification_failed",
             "worktree_cleanup_ok",
             "tree_not_clean",
+            "workspace_recovery",
             "gate_run_start",
             "gate_run_scope",
             "gate_run_lane",
@@ -1417,6 +1426,7 @@ mod tests {
             ),
             ("worktree_cleanup_ok", DriverKind::WorktreeCleanupOk),
             ("tree_not_clean", DriverKind::TreeNotClean),
+            ("workspace_recovery", DriverKind::WorkspaceRecovery),
             ("gate_run_start", DriverKind::GateRunStart),
             ("gate_run_scope", DriverKind::GateRunScope),
             ("gate_run_lane", DriverKind::GateRunLane),
