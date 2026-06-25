@@ -72,17 +72,14 @@ pub enum AgentOutcome {
     /// and the offending commit. Per `specs/harness.md` § Verdict Gate.
     SignatureVerificationFailed { detail: String },
 
-    /// Pre-flight infra failure (image load, container start) — `B::spawn`
-    /// returned an error before the agent process produced any output.
-    /// Bypasses retry and routes straight to `loom:blocked` per
-    /// `specs/harness.md` § "Verdict Gate · Infra failures bypass the
-    /// gate".
+    /// Pre-stream infra failure: spawn/setup failed, or the stream ended with
+    /// EOF/framing/IO failure before any canonical `source = agent` event was
+    /// observed.
     InfraPreflight { error: String },
 
-    /// Mid-session infra failure (agent process exit non-zero, container
-    /// OOM, IO errors). Eligible for one driver-memory retry per `loom loop`
-    /// invocation. A second mid-session failure inside the same
-    /// `run_loop` invocation routes to `loom:blocked`.
+    /// Interrupted infra failure: EOF/framing/IO/process failure after at
+    /// least one canonical `source = agent` event but before
+    /// `session_complete`.
     InfraMidSession { error: String },
 
     /// The bead's requested `profile:X` label (or the CLI `--profile`
@@ -135,8 +132,8 @@ pub enum BeadResult {
 }
 
 /// Output of one classified agent dispatch. The run-loop closure produces
-/// this so [`super::runner::process_one_bead`] can route preflight vs
-/// mid-session failures to the right verdict-gate path.
+/// this so [`super::runner::process_one_bead`] can route pre-stream vs
+/// interrupted infra failures to the right verdict-gate path.
 #[derive(Debug, Clone)]
 pub enum SessionResult {
     /// `B::spawn` succeeded and the session reached `SessionComplete`.
@@ -144,13 +141,13 @@ pub enum SessionResult {
     /// caller distinguishes that from infra failures via the variant.
     Complete(SessionOutcome),
 
-    /// `B::spawn` itself failed (image load, container start). No agent
-    /// output exists; routes to `loom:blocked` cause `infra-preflight`.
+    /// No canonical `source = agent` event was observed before the infra
+    /// failure: spawn/setup, prompt write, pre-stream EOF, framing, process,
+    /// or sink failure.
     PreflightFailed { error: String },
 
-    /// Spawn succeeded but the session terminated before
-    /// `SessionComplete` — process EOF, IO error, OOM kill, etc. Eligible
-    /// for one driver-memory retry per `loom loop`.
+    /// At least one canonical `source = agent` event was observed before the
+    /// infra failure, but the session did not reach `SessionComplete`.
     MidSessionFailed { error: String },
 
     /// An `EventSink::react()` returned `SessionCommand::Abort` and the

@@ -28,6 +28,21 @@ pub struct AgentSession<S> {
     _state: PhantomData<S>,
 }
 
+fn process_exit_code(status: std::process::ExitStatus) -> Option<i32> {
+    if let Some(code) = status.code() {
+        return Some(code);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal().map(|signal| 128 + signal)
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
 impl AgentSession<Idle> {
     /// Build an idle session from the parts a backend's `spawn` already owns.
     /// Backends in `agent` call this immediately after launching the
@@ -85,7 +100,19 @@ impl AgentSession<Active> {
         loop {
             let line_owned = match self.reader.next_line().await? {
                 Some(line) => line.to_owned(),
-                None => return Ok(None),
+                None => {
+                    if let Some(status) = self.child.try_wait()?
+                        && !status.success()
+                    {
+                        if let Some(code) = process_exit_code(status) {
+                            return Err(ProtocolError::ProcessExit(code));
+                        }
+                        return Err(ProtocolError::Io(std::io::Error::other(
+                            "agent process exited without status code",
+                        )));
+                    }
+                    return Ok(None);
+                }
             };
             let parsed = self.parser.parse_line(&line_owned)?;
             if let Some(response) = parsed.response {
