@@ -6,8 +6,8 @@
 //! subprocess capture, no JSONL parsing, and no event tee.
 //!
 //! `[phase.plan]` selects both the profile image and agent command used for
-//! the interactive shell-out. A Pi sandbox runs `pi`; a Claude sandbox runs
-//! `claude`.
+//! the interactive shell-out. Claude runs with its per-session compact hook;
+//! Pi fails fast until a controlled interactive re-pin bridge exists.
 //!
 //! Flow per `specs/harness.md`:
 //!

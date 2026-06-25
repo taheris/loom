@@ -11,6 +11,9 @@ use loom_driver::git::{
     status_porcelain_sync, sync_head_commit_sha, sync_rev_parse,
 };
 
+const CANARY_NONCE: &str = "LOOM_COMPACTION_CANARY_NONCE_4f0b3f0f";
+const POLISH_NO_EDIT_PHRASE: &str = "Propose specific edits or findings, but do not apply edits unless explicitly asked to apply them.";
+
 fn git_command() -> Command {
     let mut command = Command::new("git");
     loom_test_support::scrub_git_local_env(&mut command);
@@ -60,17 +63,30 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
     bin_dir
 }
 
+fn mock_claude_path() -> PathBuf {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for ancestor in manifest_dir.ancestors() {
+        let candidate = ancestor.join("tests/mock-claude/claude.sh");
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    panic!("could not locate tests/mock-claude/claude.sh");
+}
+
 fn install_wrix_stub(dir: &Path) -> PathBuf {
     let bin_dir = dir.join("wrix-bin");
     std::fs::create_dir_all(&bin_dir).expect("mkdir wrix-bin");
     let bin = bin_dir.join("wrix-stub");
     let argv_log = dir.join("argv.log");
     let env_log = dir.join("env.log");
+    let mock_claude = mock_claude_path();
     let script = loom_test_support::bash_script(&format!(
         r#"set -euo pipefail
 
 argv_log={argv_log:?}
 env_log={env_log:?}
+mock_claude={mock_claude:?}
 
 for a in "$@"; do
     printf '%s\n' "$a" >> "$argv_log"
@@ -81,11 +97,7 @@ printf 'WRIX_DEFAULT_IMAGE_REF=%s\n' "${{WRIX_DEFAULT_IMAGE_REF:-}}" >> "$env_lo
 printf 'WRIX_DEFAULT_IMAGE_SOURCE=%s\n' "${{WRIX_DEFAULT_IMAGE_SOURCE:-}}" >> "$env_log"
 printf 'WRIX_AGENT=%s\n' "${{WRIX_AGENT:-}}" >> "$env_log"
 
-if [[ "${{3:-}}" == "pi" ]]; then
-    prompt="${{4:-}}"
-else
-    prompt="${{5:-}}"
-fi
+prompt="${{!#}}"
 
 if [[ -n "${{WRIX_STUB_PROMPT_DUMP:-}}" ]]; then
     printf '%s' "$prompt" > "$WRIX_STUB_PROMPT_DUMP"
@@ -93,6 +105,24 @@ fi
 
 mode="${{WRIX_STUB_MODE:-resolve-none}}"
 case "$mode" in
+    interactive-compaction-canary)
+        workspace="${{2:?}}"
+        agent="${{3:-}}"
+        if [[ "$agent" != "claude" ]]; then
+            printf 'expected claude child, got: %s\n' "$agent" >&2
+            exit 2
+        fi
+        shift 3
+        mapped=()
+        for arg in "$@"; do
+            if [[ "$arg" == /workspace/* ]]; then
+                mapped+=("$workspace/${{arg#/workspace/}}")
+            else
+                mapped+=("$arg")
+            fi
+        done
+        exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}"
+        ;;
     resolve-all)
         while IFS= read -r id; do
             bd update "$id" --notes "resolved via inbox chat (stub $id)" --remove-label loom:clarify --status open
@@ -132,6 +162,7 @@ fi
 "#,
         argv_log = argv_log.display(),
         env_log = env_log.display(),
+        mock_claude = mock_claude.display(),
     ));
     std::fs::write(&bin, script).expect("write stub");
     let mut perm = std::fs::metadata(&bin).expect("stat stub").permissions();
@@ -394,6 +425,13 @@ fn loom_inbox_chat_launches_container() {
     assert_eq!(lines[0], "run");
     assert_eq!(lines[1], env.workspace.to_string_lossy());
     assert_eq!(lines[2], "claude");
+    assert!(lines.contains(&"--settings"), "{argv}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.ends_with("claude-settings.json")),
+        "{argv}"
+    );
     assert!(lines.contains(&"--dangerously-skip-permissions"), "{argv}");
     assert!(!lines.contains(&"--stdio"), "{argv}");
     assert!(!lines.contains(&"--spawn-config"), "{argv}");
@@ -407,7 +445,7 @@ fn inbox_chat_passes_resolved_profile_runtime_to_wrix_run() {
     let env = setup_chat();
     std::fs::write(
         env.workspace.join("loom.toml"),
-        "[phase.inbox]\nprofile = \"base\"\nagent.backend = \"pi\"\n",
+        "[phase.inbox]\nprofile = \"base\"\nagent.backend = \"claude\"\n",
     )
     .expect("write config");
     seed_bead(
@@ -427,11 +465,70 @@ fn inbox_chat_passes_resolved_profile_runtime_to_wrix_run() {
     );
     let argv = std::fs::read_to_string(&env.argv_log).expect("argv log");
     let lines: Vec<&str> = argv.lines().collect();
-    assert_eq!(lines[2], "pi");
-    assert!(!lines.contains(&"--dangerously-skip-permissions"), "{argv}");
+    assert_eq!(lines[2], "claude");
+    assert!(lines.contains(&"--settings"), "{argv}");
+    assert!(lines.contains(&"--dangerously-skip-permissions"), "{argv}");
     let env_log = std::fs::read_to_string(&env.env_log).expect("env log");
-    assert!(env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-base-pi:test"));
-    assert!(env_log.contains("WRIX_AGENT=pi"));
+    assert!(env_log.contains("WRIX_DEFAULT_IMAGE_REF=localhost/wrix-base-claude:test"));
+    assert!(env_log.contains("WRIX_AGENT=claude"));
+}
+
+#[test]
+fn inbox_chat_rejects_pi_backend_before_wrix_run() {
+    let env = setup_chat();
+    std::fs::write(
+        env.workspace.join("loom.toml"),
+        "[phase.inbox]\nagent.backend = \"pi\"\n",
+    )
+    .expect("write config");
+    seed_bead(
+        &env.state_dir,
+        "lm-pi",
+        "pi rejected",
+        "blocked",
+        "open",
+        &["loom:blocked"],
+    );
+
+    let output = run_chat(&env, "resolve-none", &[]);
+    assert!(!output.status.success(), "pi inbox chat must fail");
+    assert!(!env.argv_log.exists(), "wrix must not be spawned");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("pi backend cannot run interactive `loom inbox chat` without a controlled compaction re-pin bridge"),
+        "{stderr}",
+    );
+}
+
+#[test]
+fn inbox_chat_installs_compaction_repin_delivery() {
+    let env = setup_chat();
+    let body = format!(
+        "## Options — pick\n\n### Option 1 — A\n{POLISH_NO_EDIT_PHRASE}\n\nNonce: {CANARY_NONCE}\n"
+    );
+    seed_bead(
+        &env.state_dir,
+        "lm-canary",
+        "canary",
+        &body,
+        "open",
+        &["loom:clarify", "spec:agent"],
+    );
+
+    let output = run_chat(&env, "interactive-compaction-canary", &[]);
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let argv = std::fs::read_to_string(&env.argv_log).expect("argv log");
+    assert!(argv.lines().any(|line| line == "--settings"), "{argv}");
+    assert!(
+        argv.lines()
+            .any(|line| line.ends_with("claude-settings.json")),
+        "{argv}"
+    );
 }
 
 #[test]

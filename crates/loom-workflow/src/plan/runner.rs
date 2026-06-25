@@ -122,7 +122,13 @@ pub fn run_with_timeout(
         .map_err(|source| PlanError::Spawn { source })?;
     let _restored_skills = skill_plan.materialize(scratch.path(), workspace)?;
 
-    let argv = build_wrix_argv(workspace, &prompt_body, agent_kind);
+    let claude_settings_path = container_workspace_path(workspace, &scratch.claude_settings());
+    let argv = build_wrix_argv(
+        workspace,
+        &prompt_body,
+        agent_kind,
+        Some(&claude_settings_path),
+    );
     let bin: PathBuf = opts.wrix_bin.unwrap_or_else(|| PathBuf::from(WRIX_BIN));
     info!(
         anchors = %key,
@@ -178,8 +184,10 @@ fn resolve_plan_selection(
     if let Some(kind) = agent_override {
         selection.kind = kind;
     }
-    if matches!(selection.kind, AgentKind::Direct) {
-        return Err(PlanError::DirectInteractive);
+    match selection.kind {
+        AgentKind::Pi => return Err(PlanError::PiInteractiveUnsupported),
+        AgentKind::Direct => return Err(PlanError::DirectInteractive),
+        AgentKind::Claude => {}
     }
     Ok((selection.profile, selection.kind))
 }
@@ -211,6 +219,9 @@ mod tests {
     use anyhow::Result;
     use loom_driver::profile_manifest::ProfileError;
     use std::os::unix::fs::PermissionsExt;
+
+    const CANARY_NONCE: &str = "LOOM_COMPACTION_CANARY_NONCE_4f0b3f0f";
+    const POLISH_NO_EDIT_PHRASE: &str = "Propose specific edits or findings, but do not apply edits unless explicitly asked to apply them.";
 
     fn three_profile_manifest(dir: &Path) -> Result<ProfileImageManifest> {
         let manifest_path = dir.join("profile-images.json");
@@ -246,6 +257,69 @@ mod tests {
         Ok(bin)
     }
 
+    fn mock_script_path(rel: &str) -> PathBuf {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for ancestor in manifest_dir.ancestors() {
+            let candidate = ancestor.join("tests").join(rel);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+        panic!("could not locate tests/{rel}");
+    }
+
+    fn stub_wrix_invokes_mock_claude(dir: &Path) -> Result<PathBuf> {
+        let bin_dir = dir.join("bin");
+        std::fs::create_dir_all(&bin_dir)?;
+        let bin = bin_dir.join("wrix");
+        let mock_claude = mock_script_path("mock-claude/claude.sh");
+        let script = loom_test_support::bash_script(&format!(
+            r#"set -euo pipefail
+argv_log={argv_log:?}
+env_log={env_log:?}
+mock_claude={mock_claude:?}
+canary_log={canary_log:?}
+
+for arg in "$@"; do
+    printf '%s\n' "$arg" >> "$argv_log"
+done
+printf 'ref=%s\nsource=%s\nagent=%s\n' "${{{ref_env}:-}}" "${{{source_env}:-}}" "${{WRIX_AGENT:-}}" > "$env_log"
+
+if [[ "${{1:-}}" != "run" ]]; then
+    printf 'expected wrix run, got: %s\n' "${{1:-}}" >&2
+    exit 2
+fi
+workspace="${{2:?}}"
+agent="${{3:-}}"
+if [[ "$agent" != "claude" ]]; then
+    printf 'expected claude child, got: %s\n' "$agent" >&2
+    exit 2
+fi
+shift 3
+mapped=()
+for arg in "$@"; do
+    if [[ "$arg" == /workspace/* ]]; then
+        mapped+=("$workspace/${{arg#/workspace/}}")
+    else
+        mapped+=("$arg")
+    fi
+done
+exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$canary_log"
+"#,
+            argv_log = dir.join("argv.log").display().to_string(),
+            env_log = dir.join("env.log").display().to_string(),
+            mock_claude = mock_claude.display().to_string(),
+            canary_log = dir.join("canary.log").display().to_string(),
+            ref_env = WRIX_DEFAULT_IMAGE_REF,
+            source_env = WRIX_DEFAULT_IMAGE_SOURCE,
+        ));
+        std::fs::write(&bin, script)?;
+        let mut perms = std::fs::metadata(&bin)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin, perms)?;
+        Ok(bin)
+    }
+
     fn plan_opts(
         anchor_labels: Vec<SpecLabel>,
         bin: PathBuf,
@@ -270,6 +344,30 @@ mod tests {
         )?;
         let _db = CacheDb::open(dir.join(".loom/cache.db"))?;
         Ok(())
+    }
+
+    fn seed_workspace_with_canary(dir: &Path) -> Result<()> {
+        seed_workspace(dir)?;
+        std::fs::write(
+            dir.join("docs/README.md"),
+            format!("# Loom Docs\n\nCompaction canary nonce: {CANARY_NONCE}\n"),
+        )?;
+        Ok(())
+    }
+
+    fn run_plan_compaction_canary() -> Result<String> {
+        let dir = tempfile::tempdir()?;
+        seed_workspace_with_canary(dir.path())?;
+        let manifest = three_profile_manifest(dir.path())?;
+        let bin = stub_wrix_invokes_mock_claude(dir.path())?;
+
+        run_with_timeout(
+            dir.path(),
+            plan_opts(Vec::new(), bin, manifest),
+            Duration::from_secs(1),
+        )?;
+
+        Ok(std::fs::read_to_string(dir.path().join("argv.log"))?)
     }
 
     #[test]
@@ -380,31 +478,39 @@ mod tests {
         let bin = stub_wrix(dir.path())?;
         let mut opts = plan_opts(vec![SpecLabel::new("harness")], bin, manifest);
         opts.cli_profile = Some(ProfileName::new("rust"));
-        opts.agent_override = Some(AgentKind::Pi);
+        opts.agent_override = Some(AgentKind::Claude);
 
         run_with_timeout(dir.path(), opts, Duration::from_secs(1))?;
 
         let argv_log = std::fs::read_to_string(dir.path().join("argv.log"))?;
         let argv: Vec<&str> = argv_log.lines().collect();
-        assert!(argv.contains(&"pi"), "expected pi argv: {argv_log}");
+        assert!(argv.contains(&"claude"), "expected claude argv: {argv_log}");
         assert!(
-            !argv.contains(&"claude"),
-            "pi run must not call claude: {argv_log}"
+            argv.contains(&"--settings"),
+            "settings not loaded: {argv_log}"
+        );
+        assert!(
+            argv.iter().any(|arg| arg.ends_with("claude-settings.json")),
+            "settings path missing: {argv_log}"
+        );
+        assert!(
+            !argv.contains(&"pi"),
+            "claude run must not call pi: {argv_log}"
         );
         assert!(
             !argv.contains(&"--profile"),
             "wrix run must not receive --profile: {argv_log}"
         );
         assert!(
-            !argv.contains(&"--dangerously-skip-permissions"),
-            "pi run must not receive claude flags: {argv_log}",
+            argv.contains(&"--dangerously-skip-permissions"),
+            "claude run must receive claude flags: {argv_log}",
         );
 
         let env_log = std::fs::read_to_string(dir.path().join("env.log"))?;
-        assert!(env_log.contains("ref=localhost/wrix-rust-pi:def"));
+        assert!(env_log.contains("ref=localhost/wrix-rust-claude:def"));
         assert!(env_log.contains("source="));
         assert!(env_log.contains("rust.tar"));
-        assert!(env_log.contains("agent=pi"));
+        assert!(env_log.contains("agent=claude"));
         Ok(())
     }
 
@@ -427,6 +533,96 @@ mod tests {
 
         let env_log = std::fs::read_to_string(dir.path().join("env.log"))?;
         assert!(env_log.contains("localhost/wrix-python-claude:ghi"));
+        Ok(())
+    }
+
+    #[test]
+    fn interactive_claude_shell_out_loads_compaction_hook() -> Result<()> {
+        let argv_log = run_plan_compaction_canary()?;
+        let argv: Vec<&str> = argv_log.lines().collect();
+        assert!(
+            argv.contains(&"--settings"),
+            "settings arg missing: {argv_log}"
+        );
+        assert!(
+            argv.iter().any(|arg| arg.ends_with("claude-settings.json")),
+            "settings path missing: {argv_log}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn loom_plan_compaction_repin_polish_canary() -> Result<()> {
+        let argv_log = run_plan_compaction_canary()?;
+        assert!(
+            argv_log.contains("--dangerously-skip-permissions"),
+            "mock canary should run through the launched claude argv: {argv_log}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn interactive_shell_out_installs_compaction_repin_delivery() -> Result<()> {
+        let argv_log = run_plan_compaction_canary()?;
+        assert!(
+            argv_log.lines().any(|arg| arg == "--settings"),
+            "delivery surface must be passed to child claude before prompt: {argv_log}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mock_agent_compaction_canary_requires_rehydrated_mode_definition() -> Result<()> {
+        let summary_only = "Summary: do a polish means report-only.";
+        for rel in ["mock-claude/claude.sh", "mock-pi/pi.sh"] {
+            let failed = std::process::Command::new("bash")
+                .arg(mock_script_path(rel))
+                .arg("interactive-compaction-canary")
+                .env("LOOM_COMPACTION_CANARY_CONTEXT", summary_only)
+                .output()?;
+            assert!(
+                !failed.status.success(),
+                "{rel} canary must reject summary-only context; stdout={} stderr={}",
+                String::from_utf8_lossy(&failed.stdout),
+                String::from_utf8_lossy(&failed.stderr),
+            );
+
+            let full_context = format!("{POLISH_NO_EDIT_PHRASE}\n{CANARY_NONCE}");
+            let passed = std::process::Command::new("bash")
+                .arg(mock_script_path(rel))
+                .arg("interactive-compaction-canary")
+                .env("LOOM_COMPACTION_CANARY_CONTEXT", full_context)
+                .output()?;
+            assert!(
+                passed.status.success(),
+                "{rel} canary must accept full rehydrated context; stdout={} stderr={}",
+                String::from_utf8_lossy(&passed.stdout),
+                String::from_utf8_lossy(&passed.stderr),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn interactive_pi_shell_out_has_repin_or_fails_fast() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        seed_workspace(dir.path())?;
+        std::fs::write(
+            dir.path().join("loom.toml"),
+            "[phase.plan]\nagent.backend = \"pi\"\n",
+        )?;
+        let manifest = three_profile_manifest(dir.path())?;
+        let bin = stub_wrix(dir.path())?;
+
+        let err = run_with_timeout(
+            dir.path(),
+            plan_opts(vec![SpecLabel::new("harness")], bin, manifest),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, PlanError::PiInteractiveUnsupported));
+        assert!(!dir.path().join("argv.log").exists());
         Ok(())
     }
 

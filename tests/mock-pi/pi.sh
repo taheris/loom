@@ -43,6 +43,9 @@
 #                               agent_end. Used by the container smoke
 #                               and any test that wants the full
 #                               single-turn lifecycle.
+#   interactive-compaction-canary
+#                             — verify a controlled interactive Pi bridge
+#                               delivered full re-pin context before output.
 #   hang-probe                — read the get_state line and then sleep
 #                               forever without responding. Drives the
 #                               HandshakeTimeout path in spawn_with_handshake.
@@ -74,6 +77,8 @@ if [ -z "${MOCK_PI_REEXEC:-}" ]; then
 fi
 
 MODE="${1:-default}"
+CANARY_NONCE="LOOM_COMPACTION_CANARY_NONCE_4f0b3f0f"
+POLISH_NO_EDIT_PHRASE="Propose specific edits or findings, but do not apply edits unless explicitly asked to apply them."
 
 emit() {
     printf '%s\n' "$1"
@@ -118,6 +123,33 @@ emit_compaction_start() {
 
 emit_compaction_end() {
     emit '{"type":"compaction_end","aborted":false,"reason":"threshold","willRetry":false}'
+}
+
+interactive_canary_context() {
+    if [[ -n "${LOOM_COMPACTION_CANARY_CONTEXT+x}" ]]; then
+        printf '%s\n' "$LOOM_COMPACTION_CANARY_CONTEXT"
+        return
+    fi
+    if [[ "$#" -gt 0 && -f "$1" ]]; then
+        cat "$1"
+        return
+    fi
+    echo "mock-pi: interactive canary requires delivered context" >&2
+    exit 3
+}
+
+run_interactive_compaction_canary() {
+    local context
+    context="$(interactive_canary_context "${@:2}")"
+    if [[ "$context" != *"$POLISH_NO_EDIT_PHRASE"* ]]; then
+        echo "mock-pi: canary missing full polish no-edit definition" >&2
+        exit 4
+    fi
+    if [[ "$context" != *"$CANARY_NONCE"* ]]; then
+        echo "mock-pi: canary missing nonce" >&2
+        exit 4
+    fi
+    printf 'LOOM_COMPLETE\n'
 }
 
 todo_payload_from_prompt() {
@@ -335,6 +367,9 @@ case "$MODE" in
         ;;
     happy-path)
         run_happy_path
+        ;;
+    interactive-compaction-canary)
+        run_interactive_compaction_canary "$@"
         ;;
     hang-probe)
         run_hang_probe

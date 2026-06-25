@@ -17,12 +17,18 @@
 #                    container smoke runner; covers the minimum
 #                    single-turn lifecycle.
 #
+#   interactive-compaction-canary
+#                  — verify interactive `claude --settings <file>` loads
+#                    the compact SessionStart hook before emitting output.
+#
 # Modes are deliberately small — every mode is shaped to exactly one
 # Rust test (or the smoke runner). The script is not a general-purpose
 # claude emulator.
 set -euo pipefail
 
 MODE="${1:-default}"
+CANARY_NONCE="LOOM_COMPACTION_CANARY_NONCE_4f0b3f0f"
+POLISH_NO_EDIT_PHRASE="Propose specific edits or findings, but do not apply edits unless explicitly asked to apply them."
 
 # stream-json envelopes are JSONL: one complete object per line. unbuffer
 # stdout (stdbuf -oL) so the consumer reads each line as soon as it is
@@ -48,6 +54,96 @@ emit_assistant_text() {
 
 emit_result_success() {
     emit '{"type":"result","subtype":"success","total_cost_usd":0.0,"duration_ms":1,"num_turns":1,"is_error":false}'
+}
+
+extract_settings_arg() {
+    local settings=""
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            --settings)
+                if [[ "$#" -lt 2 ]]; then
+                    echo "mock-claude: --settings requires a path" >&2
+                    exit 2
+                fi
+                settings="$2"
+                shift 2
+                ;;
+            --settings=*)
+                settings="${1#--settings=}"
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+    printf '%s\n' "$settings"
+}
+
+hook_command_from_settings() {
+    local settings_path="$1"
+    local line command=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ \"command\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+            command="${BASH_REMATCH[1]}"
+            break
+        fi
+    done < "$settings_path"
+    if [[ -z "$command" ]]; then
+        echo "mock-claude: settings missing compact hook command" >&2
+        exit 3
+    fi
+    printf '%s\n' "$command"
+}
+
+context_from_settings() {
+    local settings_path="$1"
+    local hook_cmd workspace
+    if [[ ! -f "$settings_path" ]]; then
+        echo "mock-claude: settings file not found: $settings_path" >&2
+        exit 3
+    fi
+    hook_cmd="$(hook_command_from_settings "$settings_path")"
+    workspace="$PWD"
+    case "$settings_path" in
+        */.loom/scratch/*/claude-settings.json)
+            workspace="${settings_path%%/.loom/scratch/*}"
+            ;;
+    esac
+    if [[ "$hook_cmd" == /* ]]; then
+        bash "$hook_cmd"
+    else
+        (cd "$workspace" && bash "$hook_cmd")
+    fi
+}
+
+canary_context() {
+    if [[ -n "${LOOM_COMPACTION_CANARY_CONTEXT+x}" ]]; then
+        printf '%s\n' "$LOOM_COMPACTION_CANARY_CONTEXT"
+        return
+    fi
+    local settings_path
+    settings_path="$(extract_settings_arg "$@")"
+    if [[ -z "$settings_path" ]]; then
+        echo "mock-claude: interactive canary requires --settings" >&2
+        exit 3
+    fi
+    context_from_settings "$settings_path"
+}
+
+run_interactive_compaction_canary() {
+    local context
+    context="$(canary_context "$@")"
+    if [[ "$context" != *"$POLISH_NO_EDIT_PHRASE"* ]]; then
+        echo "mock-claude: canary missing full polish no-edit definition" >&2
+        exit 4
+    fi
+    if [[ "$context" != *"$CANARY_NONCE"* ]]; then
+        echo "mock-claude: canary missing nonce" >&2
+        exit 4
+    fi
+    emit_assistant_text "post-compaction polish canary ok $CANARY_NONCE"
+    printf 'LOOM_COMPLETE\n'
 }
 
 todo_payload_from_prompt() {
@@ -119,6 +215,10 @@ case "$MODE" in
         IFS= read -r _initial
         emit_assistant_text "ack"
         emit_result_success
+        exit 0
+        ;;
+    interactive-compaction-canary)
+        run_interactive_compaction_canary "${@:2}"
         exit 0
         ;;
     *)

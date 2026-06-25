@@ -304,13 +304,15 @@ mod tests {
         let cmd = parsed["hooks"]["SessionStart"][0]["hooks"][0]["command"]
             .as_str()
             .expect("hook command");
-        let repin_script = scratch.repin_script();
-        assert_eq!(cmd, repin_script.to_string_lossy().as_ref());
+        assert!(cmd.ends_with("repin.sh"), "hook command: {cmd}");
 
-        let out = std::process::Command::new("bash")
-            .arg(cmd)
-            .output()
-            .expect("run repin.sh");
+        let mut command = std::process::Command::new("bash");
+        command.arg(cmd);
+        if !Path::new(cmd).is_absolute() {
+            let workspace = scratch.path().ancestors().nth(3).expect("workspace path");
+            command.current_dir(workspace);
+        }
+        let out = command.output().expect("run repin.sh");
         assert!(
             out.status.success(),
             "repin.sh failed: stderr={}",

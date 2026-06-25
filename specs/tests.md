@@ -647,7 +647,7 @@ in Functional #4.
       only a compacted summary and passes only when the post-compaction
       `do a polish` probe can rely on both the full report-only/no-edit mode
       definition and a test-only nonce
-  [test?](mock_agent_compaction_canary_requires_rehydrated_mode_definition)
+  [test](mock_agent_compaction_canary_requires_rehydrated_mode_definition)
 
 ### Container smoke
 

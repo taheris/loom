@@ -178,7 +178,13 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
 
     let scratch = ScratchSession::open(workspace, &key, &prompt_body, "loom inbox chat")?;
     let _restored_skills = skill_plan.materialize(scratch.path(), workspace)?;
-    let argv = build_wrix_argv(workspace, &prompt_body, agent_kind);
+    let claude_settings_path = container_workspace_path(workspace, &scratch.claude_settings());
+    let argv = build_wrix_argv(
+        workspace,
+        &prompt_body,
+        agent_kind,
+        Some(&claude_settings_path),
+    );
     let bin: PathBuf = opts
         .wrix_bin
         .or_else(|| std::env::var_os("LOOM_WRIX_BIN").map(PathBuf::from))
@@ -274,13 +280,22 @@ fn run_wrix_and_capture_stdout(mut command: Command) -> std::io::Result<WrixOutp
     Ok(WrixOutput { status, stdout })
 }
 
-pub fn build_wrix_argv(workspace: &Path, prompt_body: &str, agent_kind: AgentKind) -> Vec<String> {
+pub fn build_wrix_argv(
+    workspace: &Path,
+    prompt_body: &str,
+    agent_kind: AgentKind,
+    claude_settings: Option<&Path>,
+) -> Vec<String> {
     let mut argv = vec![
         "run".to_string(),
         workspace.to_string_lossy().into_owned(),
         agent_command(agent_kind).to_string(),
     ];
     if matches!(agent_kind, AgentKind::Claude) {
+        if let Some(settings) = claude_settings {
+            argv.push("--settings".to_string());
+            argv.push(settings.to_string_lossy().into_owned());
+        }
         argv.push("--dangerously-skip-permissions".to_string());
     }
     argv.push(prompt_body.to_string());
@@ -367,10 +382,18 @@ fn resolve_chat_selection(
     if let Some(kind) = agent_override {
         selection.kind = kind;
     }
-    if matches!(selection.kind, AgentKind::Direct) {
-        return Err(ChatError::AgentSelection(
-            "direct backend cannot run interactive `loom inbox chat`".to_string(),
-        ));
+    match selection.kind {
+        AgentKind::Pi => {
+            return Err(ChatError::AgentSelection(
+                "pi backend cannot run interactive `loom inbox chat` without a controlled compaction re-pin bridge".to_string(),
+            ));
+        }
+        AgentKind::Direct => {
+            return Err(ChatError::AgentSelection(
+                "direct backend cannot run interactive `loom inbox chat`".to_string(),
+            ));
+        }
+        AgentKind::Claude => {}
     }
     Ok((selection.profile, selection.kind))
 }
@@ -382,7 +405,13 @@ mod tests {
 
     #[test]
     fn argv_starts_with_wrix_run_and_workspace() {
-        let argv = build_wrix_argv(&PathBuf::from("/work"), "PROMPT", AgentKind::Claude);
+        let settings = PathBuf::from("/workspace/.loom/scratch/inbox/claude-settings.json");
+        let argv = build_wrix_argv(
+            &PathBuf::from("/work"),
+            "PROMPT",
+            AgentKind::Claude,
+            Some(&settings),
+        );
         assert_eq!(argv[0], "run");
         assert_eq!(argv[1], "/work");
         assert_eq!(argv[2], "claude");
@@ -390,23 +419,38 @@ mod tests {
 
     #[test]
     fn argv_passes_prompt_to_claude_with_skip_permissions() {
-        let argv = build_wrix_argv(&PathBuf::from("/work"), "PROMPT BODY", AgentKind::Claude);
+        let settings = PathBuf::from("/workspace/.loom/scratch/inbox/claude-settings.json");
+        let argv = build_wrix_argv(
+            &PathBuf::from("/work"),
+            "PROMPT BODY",
+            AgentKind::Claude,
+            Some(&settings),
+        );
         assert_eq!(argv[2], "claude");
-        assert_eq!(argv[3], "--dangerously-skip-permissions");
-        assert_eq!(argv[4], "PROMPT BODY");
+        assert_eq!(argv[3], "--settings");
+        assert_eq!(argv[4], settings.to_string_lossy());
+        assert_eq!(argv[5], "--dangerously-skip-permissions");
+        assert_eq!(argv[6], "PROMPT BODY");
     }
 
     #[test]
     fn argv_passes_prompt_to_pi_without_claude_flags() {
-        let argv = build_wrix_argv(&PathBuf::from("/work"), "PROMPT BODY", AgentKind::Pi);
+        let argv = build_wrix_argv(&PathBuf::from("/work"), "PROMPT BODY", AgentKind::Pi, None);
         assert_eq!(argv[2], "pi");
         assert_eq!(argv[3], "PROMPT BODY");
         assert!(!argv.iter().any(|a| a == "--dangerously-skip-permissions"));
+        assert!(!argv.iter().any(|a| a == "--settings"));
     }
 
     #[test]
     fn argv_never_contains_profile_spawn_or_stdio_or_spawn_config() {
-        let argv = build_wrix_argv(&PathBuf::from("/work"), "PROMPT", AgentKind::Claude);
+        let settings = PathBuf::from("/workspace/.loom/scratch/inbox/claude-settings.json");
+        let argv = build_wrix_argv(
+            &PathBuf::from("/work"),
+            "PROMPT",
+            AgentKind::Claude,
+            Some(&settings),
+        );
         assert!(!argv.iter().any(|a| a == "--profile"));
         assert!(!argv.iter().any(|a| a == "spawn"));
         assert!(!argv.iter().any(|a| a == "--stdio"));

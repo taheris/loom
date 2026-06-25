@@ -1143,12 +1143,12 @@ the entrypoint run the wrong runtime.
       `claude` process; an integration test may use a mock `wrix run`
       launcher/mock `claude`, but a test that only runs `repin.sh` directly
       does not satisfy this criterion
-  [test?](interactive_claude_shell_out_loads_compaction_hook)
+  [test](interactive_claude_shell_out_loads_compaction_hook)
 - Pi interactive shell-outs either expose a controlled compaction event plus
       steer/re-pin path equivalent to the non-interactive backend, or fail
       phase selection before launching; raw summary-only REPL compaction is
       not an allowed state
-  [test?](interactive_pi_shell_out_has_repin_or_fails_fast)
+  [test](interactive_pi_shell_out_has_repin_or_fails_fast)
 
 ### Container integration
 

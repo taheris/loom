@@ -105,7 +105,7 @@ impl ScratchSession {
         fs::write(path.join("prompt.txt"), prompt)?;
         fs::write(path.join("scratch.md"), "")?;
         write_repin_script(&path, banner)?;
-        write_claude_settings(&path)?;
+        write_claude_settings(&path, key)?;
         Ok(Self { path })
     }
 
@@ -172,8 +172,8 @@ fn write_repin_script(dir: &Path, banner: &str) -> io::Result<()> {
     set_executable(&path)
 }
 
-fn write_claude_settings(dir: &Path) -> io::Result<()> {
-    let script_path = dir.join("repin.sh");
+fn write_claude_settings(dir: &Path, key: &str) -> io::Result<()> {
+    let script_path = Path::new(SCRATCH_SUBDIR).join(key).join("repin.sh");
     let settings = json!({
         "hooks": {
             "SessionStart": [

@@ -3802,7 +3802,7 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       unless the post-compaction answer preserves both the full report-only,
       propose-edits/no-file-edits-unless-asked semantics and a test-only
       nonce from the initial rendered prompt
-  [test?](loom_plan_compaction_repin_polish_canary)
+  [test](loom_plan_compaction_repin_polish_canary)
 - A simulated planning compaction with a fixture `Interview Modes`
       section defining `one by one` as one design question per turn
       resumes with that definition still present
@@ -3816,7 +3816,7 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       agent process before the prompt is accepted; an integration test may use
       a mock `wrix run` launcher, but merely writing an unused scratch file or
       hook fragment does not satisfy this criterion
-  [test?](interactive_shell_out_installs_compaction_repin_delivery)
+  [test](interactive_shell_out_installs_compaction_repin_delivery)
 - The compaction-recovery verifier set includes at least one post-compaction
       behavioral canary that requires a non-inferable nonce, not only
       byte-presence checks of `prompt.txt`, `repin.sh`, hook JSON, or steer
