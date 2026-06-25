@@ -1156,7 +1156,9 @@ fn review_self_report_markers_do_not_authorize_bd_writes() -> Result<()> {
         "review clarifications must route through finding evidence, not direct LOOM_CLARIFY: {out}",
     );
     assert!(
-        out.contains("use `LOOM_BLOCKED` instead"),
+        out.contains("`LOOM_BLOCKED` instead")
+            && out.contains("explaining why options cannot be safely")
+            && out.contains("surfaced"),
         "review guidance must name LOOM_BLOCKED for no-options dead ends: {out}",
     );
     Ok(())
@@ -1425,6 +1427,15 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
             "loom loop missing shared section: {shared}"
         );
     }
+    assert!(
+        out.contains("Semantic dead end with no safe options to enumerate?")
+            && out.contains("why options cannot be safely enumerated"),
+        "loop prompt must reserve LOOM_BLOCKED for no-options semantic dead ends: {out}",
+    );
+    assert!(
+        !out.contains("Need user input? → write the reason on a prior line, then `LOOM_BLOCKED`"),
+        "loop prompt must not route generic user input to LOOM_BLOCKED: {out}",
+    );
     Ok(())
 }
 

@@ -171,3 +171,17 @@ judge_loop_preflight_exact_range_and_self_review() {
   judge_criterion \
     "The rendered loop.md worker prompt MUST direct the bead-container worker to complete the exact injected-range self-check before emitting LOOM_COMPLETE. Pass iff all four conditions hold before the progress-marker partial: (1) EXACT RANGE COMMAND — the prompt names 'loom gate verify --diff <bead-base>..HEAD' as the default command and allows 'loom gate verify --diff @{u}..HEAD' only when the branch upstream is the injected base; (2) HEAD SHORTHAND REJECTED — the prompt does NOT name 'loom gate verify --diff HEAD' as the completion contract and does not allow a working-tree-vs-HEAD shorthand to satisfy final self-check; (3) RERUN DISCIPLINE — the prompt tells the worker to rerun the self-check after any later commit, formatter or hook tree change, or other invalidating change; (4) PROMPT-LEVEL SELF-REVIEW — the prompt requires the worker to re-read criteria, inspect the committed diff, verify style/spec fit, and fix issues or emit LOOM_RETRY / LOOM_CLARIFY / LOOM_BLOCKED before the final marker. In-session resolution remains required: findings from the self-check must be resolved in the current session, not deferred to a follow-up bead. Non-goals: do NOT check that the driver proves the preflight ran; this is a prompt-level feedback contract. Fail naming each missing piece: 'exact range absent', 'HEAD shorthand allowed', 'rerun discipline absent', 'self-review absent', or 'in-session resolution absent'."
 }
+
+judge_blocked_no_options_rationale() {
+  judge_files \
+    "crates/loom-templates/templates/loop.md" \
+    "crates/loom-templates/templates/review.md" \
+    "crates/loom-templates/templates/partial/self_report_markers.md" \
+    "crates/loom-templates/templates/partial/review_self_report_markers.md" \
+    "crates/loom-templates/templates/partial/decomposition_discipline.md" \
+    "crates/loom-templates/src/previous_failure.rs" \
+    "crates/loom-protocol/src/gate.rs" \
+    "crates/loom-workflow/src/review/phase_verdict.rs"
+  judge_criterion \
+    "Worker and review guidance must reserve LOOM_BLOCKED for semantic no-options dead ends, not generic user input or ordinary decisions. Pass iff: (1) loop/todo self-report guidance says LOOM_BLOCKED is only for a semantic dead end where retry is not expected and candidate options cannot be safely enumerated; (2) it requires a non-empty prior-line reason explaining why options cannot be safely enumerated; (3) loop/todo guidance directs agents to LOOM_CLARIFY with a persisted Options block whenever candidate options can be framed; (4) review guidance forbids direct LOOM_CLARIFY, routes frameable decisions through route=\"clarify\" finding evidence with an Options block, and uses LOOM_BLOCKED only when no options can be safely articulated; (5) decomposition discipline and loop.md no longer contain generic phrasing like 'Need user input? -> LOOM_BLOCKED' without the no-options discriminator; (6) PreviousFailure::AgentRetry retry guidance carries the same discriminator instead of generic 'blocked (no candidate resolutions)' wording; and (7) protocol/verdict code rejects or recovers a LOOM_BLOCKED marker with an empty reason so it cannot route to loom:blocked. Fail if any prompt can be read as sending a worker/reviewer to LOOM_BLOCKED merely because human input is needed, if it omits the no-options rationale requirement, or if empty-reason LOOM_BLOCKED still reaches the blocked verdict."
+}

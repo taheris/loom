@@ -112,8 +112,9 @@ Port templates to Askama.
    - All tests pass
    - Lint checks pass
    - Changes committed
-6. **Blocked vs Waiting**: Distinguish dependency blocks from true blocks:
-   - Need user input? → write the reason on a prior line, then `LOOM_BLOCKED`
+6. **Blocked vs Waiting**: Distinguish dependency waits, clarify decisions, and true dead ends:
+   - Need user input and can frame candidate options? → persist the Options block, then `LOOM_CLARIFY`
+   - Semantic dead end with no safe options to enumerate? → write that no-options rationale on a prior line, then `LOOM_BLOCKED`
    - Need other beads done? → Add dep with `bd dep add`, output `LOOM_COMPLETE`
 7. **Already Implemented**: If the task's work is already done in the codebase,
    verify correctness, run `bd close lm-3hhwq.10`,
@@ -217,9 +218,11 @@ exactly one, on its own line, as the final output of the session.
   prompt. Each `LOOM_RETRY` consumes one slot in `[loop] max_retries`
   (default 2); exhaustion escalates to `loom:blocked` with cause
   `retry-exhausted`. If the same problem persists after retry,
-  escalate to `LOOM_BLOCKED` (no candidate resolutions) or
-  `LOOM_CLARIFY` (with a structured Options block) rather than
-  emitting `LOOM_RETRY` again.
+  escalate to `LOOM_BLOCKED` only for a semantic dead end whose
+  prior-line reason explains why candidate options cannot be safely
+  enumerated, or to `LOOM_CLARIFY` when a structured Options block can
+  frame the candidate resolutions, rather than emitting `LOOM_RETRY`
+  again.
 - `LOOM_CLARIFY` — A decision is **blocking your work** and has
   two or more genuinely viable resolutions you cannot adjudicate
   from the spec, the code, or research. **Not for ratifying a
@@ -280,21 +283,23 @@ exactly one, on its own line, as the final output of the session.
   bead/work epic and exits without entering recovery; other beads in the
   molecule continue running. The labelled bead or work epic waits for
   `loom inbox` resolution.
-- `LOOM_BLOCKED` — Genuine dead end: you cannot proceed and have
-  no candidate resolutions to enumerate. Write the reason on the
-  line immediately before the marker (the gate only reads the most
-  recent non-empty prior line — multi-paragraph prose is NOT
-  captured). The gate applies `loom:blocked` to the target bead/work epic
-  and exits without entering recovery; other beads in the molecule
-  continue running. The labelled bead or work epic waits for human
-  resolution via `loom inbox`. **If you can enumerate options, do NOT use
-  `LOOM_BLOCKED`** — use `LOOM_CLARIFY` above so the candidate
+- `LOOM_BLOCKED` — Genuine semantic dead end: you cannot proceed,
+  do not expect retry to succeed, and cannot safely enumerate candidate
+  resolutions. Write a non-empty reason on the line immediately before
+  the marker explaining why options cannot be safely enumerated (the gate
+  only reads the most recent non-empty prior line — multi-paragraph prose
+  is NOT captured). The gate applies `loom:blocked` to the target
+  bead/work epic and exits without entering recovery; other beads in the
+  molecule continue running. The labelled bead or work epic waits for
+  human resolution via `loom inbox`. **If you can enumerate options, do
+  NOT use `LOOM_BLOCKED`** — use `LOOM_CLARIFY` above so the candidate
   resolutions reach bead state.
 
-**Discriminator.** expect retry to succeed? → RETRY. **blocked**
-by a decision you cannot make alone, with ≥2 viable resolutions?
-→ CLARIFY (a recommended path with prose alternatives is NOT
-clarify — file the plan directly). dead end? → BLOCKED.
+**Discriminator.** expect retry to succeed? → RETRY. Can you
+safely enumerate candidate options for the human? → CLARIFY (a
+recommended path with prose alternatives is NOT clarify — file the plan
+or implement it directly). Semantic dead end with no safe options to
+surface? → BLOCKED with the no-options rationale on the prior line.
 
 **Direct worker self-reports only.** These instructions apply to direct
 self-reports from `loop` and `todo`. `review` uses a review-specific

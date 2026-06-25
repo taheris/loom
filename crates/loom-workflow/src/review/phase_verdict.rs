@@ -198,7 +198,8 @@ impl RecoveryCause {
 pub enum PhaseVerdict {
     /// Phase passed every gate stage — caller advances state.
     Done,
-    /// Agent emitted `LOOM_BLOCKED` — surface to user without retry.
+    /// Agent emitted `LOOM_BLOCKED` with a non-empty reason — surface to
+    /// user without retry.
     Blocked { reason: String },
     /// Agent emitted `LOOM_CLARIFY` — apply `loom:clarify` and stop.
     Clarify { question: String },
@@ -256,6 +257,11 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
         None => PhaseVerdict::Recovery {
             cause: RecoveryCause::SwallowedMarker,
         },
+        Some(ExitSignal::Blocked { reason }) if reason.trim().is_empty() => {
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::SwallowedMarker,
+            }
+        }
         Some(ExitSignal::Blocked { reason }) => PhaseVerdict::Blocked {
             reason: reason.clone(),
         },
@@ -639,6 +645,19 @@ mod tests {
             PhaseVerdict::Blocked { reason } => assert_eq!(reason, "missing schema"),
             other => panic!("expected Blocked, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn blocked_marker_without_reason_routes_to_swallowed_marker_recovery() {
+        let m = ExitSignal::Blocked {
+            reason: "  ".into(),
+        };
+        assert_eq!(
+            decide(Some(&m), GateInputs::default()),
+            PhaseVerdict::Recovery {
+                cause: RecoveryCause::SwallowedMarker,
+            },
+        );
     }
 
     #[test]
@@ -1182,6 +1201,21 @@ mod tests {
         match decide_for_phase(Some(&blocked), GateInputs::default(), PhaseKind::Review) {
             PhaseVerdict::Blocked { reason } => assert_eq!(reason, "workspace cannot be read"),
             other => panic!("expected Blocked under review, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn blocked_marker_without_reason_is_not_admitted_under_worker_or_review_phase() {
+        let marker = ExitSignal::Blocked {
+            reason: String::new(),
+        };
+        for phase in [PhaseKind::Worker, PhaseKind::Review] {
+            assert_eq!(
+                decide_for_phase(Some(&marker), GateInputs::default(), phase),
+                PhaseVerdict::Recovery {
+                    cause: RecoveryCause::SwallowedMarker,
+                },
+            );
         }
     }
 

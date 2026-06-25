@@ -59,8 +59,9 @@ Review notes:
    - All tests pass
    - Lint checks pass
    - Changes committed
-6. **Blocked vs Waiting**: Distinguish dependency blocks from true blocks:
-   - Need user input? → write the reason on a prior line, then `LOOM_BLOCKED`
+6. **Blocked vs Waiting**: Distinguish dependency waits, clarify decisions, and true dead ends:
+   - Need user input and can frame candidate options? → persist the Options block, then `LOOM_CLARIFY`
+   - Semantic dead end with no safe options to enumerate? → write that no-options rationale on a prior line, then `LOOM_BLOCKED`
    - Need other beads done? → Add dep with `bd dep add`, output `LOOM_COMPLETE`
 7. **Already Implemented**: If the task's work is already done in the codebase,
    verify correctness, run `bd close {% match issue_id %}{% when Some with (id) %}{{ id }}{% when None %}<issue-id>{% endmatch %}`,

@@ -1026,7 +1026,7 @@ pub enum TerminalSurface {
     /// `LOOM_NOOP` on the final non-empty line.
     Noop,
     /// `LOOM_BLOCKED` on the final non-empty line; `reason` is the
-    /// adjacent prose read by the parser.
+    /// non-empty adjacent prose read by the parser.
     Blocked { reason: String },
     /// `LOOM_CLARIFY` on the final non-empty line; `question` is the
     /// adjacent prose read by the parser.
@@ -1084,8 +1084,8 @@ pub enum ExitSignal {
     /// empty diff is treated as zero-progress.
     Noop,
 
-    /// Agent could not proceed; the driver surfaces the reason to the user
-    /// without advancing state.
+    /// Agent could not proceed; the driver surfaces the non-empty reason
+    /// to the user without advancing state.
     Blocked { reason: String },
 
     /// Agent needs human input; the driver applies the `loom:clarify`
@@ -1143,6 +1143,7 @@ const CONCERN: &str = "LOOM_CONCERN";
 /// no trailing payload. The reason / question is read from the text
 /// **before** the marker on the final line, falling back to the most recent
 /// non-empty line before the final line if the same-line prefix is empty.
+/// `LOOM_BLOCKED` is accepted only when that captured reason is non-empty.
 ///
 /// `LOOM_CONCERN` carries a JSON payload on the final line:
 /// `LOOM_CONCERN: {"summary": "<non-empty string>"}`. A well-formed payload
@@ -1167,7 +1168,7 @@ pub fn parse_exit_signal(output: &str) -> Option<ExitSignal> {
     if let Some(idx) = final_line.find(CONCERN) {
         return Some(parse_concern(&final_line[idx + CONCERN.len()..]));
     }
-    if let Some(reason) = reason_for(BLOCKED, final_line, prior) {
+    if let Some(reason) = required_reason_for(BLOCKED, final_line, prior) {
         return Some(ExitSignal::Blocked { reason });
     }
     if let Some(question) = reason_for(CLARIFY, final_line, prior) {
@@ -1203,6 +1204,14 @@ fn has_multiple_markers(line: &str) -> bool {
     false
 }
 
+fn final_line_contains_marker(output: &str, marker: &str) -> bool {
+    output
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.contains(marker))
+}
+
 #[derive(Deserialize)]
 struct ConcernPayload {
     summary: String,
@@ -1226,6 +1235,15 @@ fn parse_concern(after_marker: &str) -> ExitSignal {
             payload: payload.to_string(),
             parsed_findings: Vec::new(),
         }),
+    }
+}
+
+fn required_reason_for(marker: &str, line: &str, prior: &[&str]) -> Option<String> {
+    let reason = reason_for(marker, line, prior)?;
+    if reason.is_empty() {
+        None
+    } else {
+        Some(reason)
     }
 }
 
@@ -1443,6 +1461,9 @@ pub fn parse_walk_output<V: FindingValidator + ?Sized>(
                     findings: walk.findings().to_vec(),
                 },
             })
+        }
+        TerminalSurface::Missing if final_line_contains_marker(output, BLOCKED) => {
+            Err(WalkOutputError::InvalidTerminal { marker: BLOCKED })
         }
         TerminalSurface::Missing if !walk.findings().is_empty() => {
             Err(WalkOutputError::MissingTerminalMarker {
@@ -1784,12 +1805,9 @@ mod tests {
     }
 
     #[test]
-    fn marker_at_start_with_no_prior_lines_yields_empty_reason() {
+    fn blocked_marker_without_prior_reason_is_not_a_valid_exit_signal() {
         let out = "LOOM_BLOCKED";
-        match parse_exit_signal(out) {
-            Some(ExitSignal::Blocked { reason }) => assert!(reason.is_empty()),
-            other => panic!("expected Blocked with empty reason, got {other:?}"),
-        }
+        assert_eq!(parse_exit_signal(out), None);
     }
 
     #[test]
@@ -2368,6 +2386,14 @@ mod tests {
                 }
                 other => panic!("expected CannotComplete for {expected_marker}, got {other:?}",),
             }
+        }
+    }
+
+    #[test]
+    fn blocked_review_terminal_without_reason_is_invalid_not_clean() {
+        match parse_walk_output("LOOM_BLOCKED\n", DispatchScope::Tree, &AlwaysValid) {
+            Err(WalkOutputError::InvalidTerminal { marker }) => assert_eq!(marker, "LOOM_BLOCKED"),
+            other => panic!("expected InvalidTerminal for reasonless LOOM_BLOCKED, got {other:?}"),
         }
     }
 

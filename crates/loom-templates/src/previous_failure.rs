@@ -207,7 +207,9 @@ fn render_agent_retry(reason: &str) -> String {
     format!(
         "Previous attempt requested retry — reason: {reason}\n\n\
          If the same problem persists after this attempt, escalate to LOOM_BLOCKED \
-         (no candidate resolutions) or LOOM_CLARIFY (with a structured Options block) \
+         only for a semantic dead end whose prior-line reason explains why no \
+         candidate options can be safely enumerated, or use LOOM_CLARIFY with a \
+         structured Options block when candidate resolutions can be framed, \
          rather than emitting LOOM_RETRY again.",
     )
 }
@@ -732,8 +734,9 @@ mod tests {
 
     /// `Display` on `AgentRetry { reason }` surfaces the agent's verbatim
     /// `reason` and instructs the next attempt to escalate to
-    /// `LOOM_BLOCKED` or `LOOM_CLARIFY` if the same problem persists,
-    /// rather than emitting `LOOM_RETRY` again. Criterion:
+    /// `LOOM_BLOCKED` only with a no-options rationale, or to
+    /// `LOOM_CLARIFY` when candidate resolutions can be framed, rather
+    /// than emitting `LOOM_RETRY` again. Criterion:
     /// `agent_retry_display_renders_reason_and_escalation_guidance`.
     #[test]
     fn agent_retry_display_renders_reason_and_escalation_guidance() {
@@ -754,7 +757,13 @@ mod tests {
             "escalation to LOOM_BLOCKED missing: {rendered}",
         );
         assert!(
-            rendered.contains("LOOM_CLARIFY"),
+            rendered.contains("semantic dead end")
+                && rendered.contains("why no candidate options can be safely enumerated"),
+            "LOOM_BLOCKED no-options rationale missing: {rendered}",
+        );
+        assert!(
+            rendered.contains("LOOM_CLARIFY")
+                && rendered.contains("candidate resolutions can be framed"),
             "escalation to LOOM_CLARIFY missing: {rendered}",
         );
     }
