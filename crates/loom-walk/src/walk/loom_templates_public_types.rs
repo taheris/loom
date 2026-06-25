@@ -2,9 +2,10 @@
 //! following typed building blocks are part of the consumer-facing
 //! surface and must be defined as publicly reachable `pub struct` or
 //! `pub enum` items under `crates/loom-templates/src/`: `PreviousFailure`,
-//! `VerifierFailure`, `BadWalk`, `DriverNoticeCause`, `CriterionStatus`,
-//! `EvidenceState`, `CriterionId`, `CriterionAnnotation`, `PlanContext`,
-//! `TodoContext`, `LoopContext`, `ReviewContext`, `PinnedContext`. A `pub use`
+//! `VerifierFailure`, `BadWalk`, `DriverNoticeCause`, `WorkspaceRecovery`,
+//! `RecoveryStash`, `WorkspaceAlignment`, `CriterionStatus`, `EvidenceState`,
+//! `CriterionId`, `CriterionAnnotation`, `PlanContext`, `TodoContext`,
+//! `LoopContext`, `ReviewContext`, `PinnedContext`. A `pub use`
 //! re-export from any source file under that crate also counts.
 
 use std::collections::HashSet;
@@ -20,6 +21,9 @@ const REQUIRED: &[&str] = &[
     "VerifierFailure",
     "BadWalk",
     "DriverNoticeCause",
+    "WorkspaceRecovery",
+    "RecoveryStash",
+    "WorkspaceAlignment",
     "CriterionStatus",
     "EvidenceState",
     "CriterionId",

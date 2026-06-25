@@ -3245,6 +3245,7 @@ async fn dispatch_for_slot(
         title: slot.bead.title.clone(),
         description: slot.bead.description.clone(),
         previous_failure: None,
+        workspace_recovery: None,
         review_notes: None,
         attempt: 0,
         scratchpad_path: scratchpad_path.to_string_lossy().into_owned(),

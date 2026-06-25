@@ -32,7 +32,7 @@ Title: <agent-output>{% match title %}{% when Some with (t) %}{{ t }}{% when Non
 Review notes:
 <agent-output>
 {{ notes }}
-</agent-output>{% when None %}{% endmatch %}{% when None %}{% endmatch %}
+</agent-output>{% when None %}{% endmatch %}{% when None %}{% endmatch %}{% include "partial/workspace_recovery.md" %}
 
 ## Instructions
 

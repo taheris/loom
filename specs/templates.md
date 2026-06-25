@@ -154,7 +154,7 @@ walker input](gate.md#pending-support-in-structured-walker-input).
 | `progress_markers.md` | ✓ |  | ✓ | ✓ |  |
 | `todo_success.md` |  | ✓ |  |  |  |
 | `self_report_markers.md` |  | ✓ | ✓ |  |  |
-| `workspace_recovery.md` |  |  | ? |  |  |
+| `workspace_recovery.md` |  |  | ✓ |  |  |
 | `review_self_report_markers.md` |  |  |  | ✓ |  |
 | `findings_walk.md` |  |  |  | ✓ |  |
 | `options_format.md` |  | ✓ | ✓ | ✓ |  |
@@ -1242,27 +1242,27 @@ documents in front of the agent with zero configuration.
 - `LoopContext` carries `workspace_recovery: Option<WorkspaceRecovery>`
       separately from `previous_failure`; rendering it does not require or
       increment the retry `attempt` counter
-  [test?](loop_context_renders_workspace_recovery_without_retry_attempt)
+  [test](loop_context_renders_workspace_recovery_without_retry_attempt)
 - `WorkspaceRecovery` carries pre-stash status, stable stash commit,
       stash selector/message, target integration tip, and alignment state
       (`Clean`, `Rebased`, or `Conflict { files }`)
-  [check?](grep -q 'pub struct WorkspaceRecovery' crates/loom-templates/src/workspace_recovery.rs)
+  [check](grep -q 'pub struct WorkspaceRecovery' crates/loom-templates/src/workspace_recovery.rs)
 - `partial/workspace_recovery.md` tells the worker to inspect the stash
       with `git stash show --stat` and `git stash show -p`, then
       intentionally apply/cherry-pick, leave, or drop it; conflict
       alignment is framed as agent-owned merge-conflict recovery with
       `LOOM_CLARIFY` as the human-decision fallback
-  [check?](bash -c "grep -qi 'git stash show --stat' crates/loom-templates/templates/partial/workspace_recovery.md && grep -qi 'LOOM_CLARIFY' crates/loom-templates/templates/partial/workspace_recovery.md")
+  [check](bash -c "grep -qi 'git stash show --stat' crates/loom-templates/templates/partial/workspace_recovery.md && grep -qi 'LOOM_CLARIFY' crates/loom-templates/templates/partial/workspace_recovery.md")
 - When both `previous_failure` and `workspace_recovery` are present,
       `loop.md` renders `previous_failure` first and `workspace_recovery`
       second so the worker sees why the prior attempt failed before inspecting
       preserved dirty work
-  [test?](loop_template_renders_previous_failure_before_workspace_recovery)
+  [test](loop_template_renders_previous_failure_before_workspace_recovery)
 - When `workspace_recovery` is present, the worker's final prose summary
       is prompted to mention how the stash was handled, but the driver does
       not parse that prose or fail `LOOM_COMPLETE` solely because the stash
       remains
-  [test?](workspace_recovery_summary_prompt_is_non_authoritative)
+  [test](workspace_recovery_summary_prompt_is_non_authoritative)
 
 ### Todo success shape
 

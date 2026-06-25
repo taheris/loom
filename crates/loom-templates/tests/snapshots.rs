@@ -20,7 +20,10 @@ use loom_templates::finding::{ConcernToken, Finding, FindingTarget};
 use loom_templates::inbox::{ClarifyOption, InboxContext, InboxItem, ItemKind};
 use loom_templates::plan::PlanContext;
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
-use loom_templates::run::{DriverNoticeCause, LoopContext, PreviousFailure, VerifierFailure};
+use loom_templates::run::{
+    DriverNoticeCause, LoopContext, PreviousFailure, RecoveryStash, VerifierFailure,
+    WorkspaceAlignment, WorkspaceRecovery,
+};
 use loom_templates::todo::{
     SpecEpicContext, SpecImplementationNotes, TodoChangedSpec, TodoContext,
 };
@@ -55,6 +58,20 @@ fn inbox_item(id: &str, spec: &str, title: &str, kind: ItemKind) -> InboxItem {
 )]
 fn git_sha(raw: &str) -> GitSha {
     GitSha::new(raw).unwrap()
+}
+
+fn workspace_recovery(alignment: WorkspaceAlignment) -> WorkspaceRecovery {
+    WorkspaceRecovery {
+        pre_stash_status:
+            "## loom/lm-3hhwq.10\n M crates/loom-templates/src/run/mod.rs\n?? scratch.txt".into(),
+        stash: RecoveryStash {
+            selector: "stash@{0}".into(),
+            commit: git_sha(TEST_SHA_2),
+            message: "loom workspace-recovery lm-3hhwq.10 1716250000".into(),
+        },
+        integration_tip: git_sha(TEST_SHA_3),
+        alignment,
+    }
 }
 
 #[expect(
@@ -192,6 +209,7 @@ fn run_snapshot() {
         previous_failure: Some(PreviousFailure::from_agent_error(
             "error: cargo test failed",
         )),
+        workspace_recovery: None,
         review_notes: None,
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
@@ -217,8 +235,36 @@ fn run_snapshot_no_failure() {
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: None,
+        workspace_recovery: None,
         review_notes: None,
         attempt: 0,
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
+    };
+    insta::assert_snapshot!(ctx.render().unwrap());
+}
+
+#[test]
+fn run_snapshot_workspace_recovery() {
+    let ctx = LoopContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        label: SpecLabel::new("harness"),
+        spec_path: "specs/harness.md".to_string(),
+        companion_paths: vec!["lib/sandbox/".into()],
+        molecule_id: Some(MoleculeId::new("lm-3hhwq")),
+        issue_id: Some(BeadId::new("lm-3hhwq.10").unwrap()),
+        title: Some("port templates".into()),
+        description: Some("Port templates to Askama.".into()),
+        previous_failure: Some(PreviousFailure::DriverNotice {
+            cause: DriverNoticeCause::ZeroProgress,
+            detail: "Marker `LOOM_COMPLETE` emitted with empty diff.".into(),
+        }),
+        workspace_recovery: Some(workspace_recovery(WorkspaceAlignment::Conflict {
+            files: vec!["crates/loom-templates/src/run/mod.rs".into()],
+        })),
+        review_notes: None,
+        attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
         style_rules: "docs/style-rules.md".to_string(),
         skill_index: SkillIndexMarkdown::empty(),
@@ -244,6 +290,7 @@ fn run_snapshot_driver_notice() {
             detail: "Marker `LOOM_COMPLETE` emitted but bead `lm-3hhwq.10` was not bd-closed."
                 .into(),
         }),
+        workspace_recovery: None,
         review_notes: None,
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
@@ -271,6 +318,7 @@ fn run_snapshot_verify_failures() {
             1,
             "assertion failed: expected reframe in prompt\n",
         )])),
+        workspace_recovery: None,
         review_notes: None,
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
@@ -305,6 +353,7 @@ fn run_snapshot_review_concern() {
                 evidence: "test mocks the agent backend instead of running the live driver".into(),
             }],
         }),
+        workspace_recovery: None,
         review_notes: None,
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
@@ -333,6 +382,7 @@ fn run_snapshot_build_failure() {
             stage: "cargo check".into(),
             output: "error[E0382]: borrow of moved value: `ctx`".into(),
         }),
+        workspace_recovery: None,
         review_notes: None,
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),

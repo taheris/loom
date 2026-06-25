@@ -9,6 +9,7 @@ pub use crate::previous_failure::{
     BadWalk, DriverNoticeCause, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, STDERR_TAIL_PER_BLOCK,
     VerifierFailure,
 };
+pub use crate::workspace_recovery::{RecoveryStash, WorkspaceAlignment, WorkspaceRecovery};
 
 /// Context for `loom loop` executing a single bead.
 #[derive(Template)]
@@ -25,6 +26,8 @@ pub struct LoopContext {
     /// Typed retry context — variants render with their documented framing
     /// (see `crate::previous_failure::PreviousFailure`'s `Display` impl).
     pub previous_failure: Option<PreviousFailure>,
+    /// Dirty-workspace recovery stash context, independent of retry state.
+    pub workspace_recovery: Option<WorkspaceRecovery>,
     /// Companion ~1000-char review-notes block appended under
     /// `Review notes:` when `previous_failure` is `VerifyFailures` and the
     /// reviewer also raised a concern. Independent of the `previous_failure`

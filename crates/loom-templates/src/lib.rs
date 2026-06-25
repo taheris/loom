@@ -13,8 +13,8 @@
 //! `templates` is a public-contract crate. External Rust consumers
 //! (e.g. RAG pipelines, domain-specific review tools) compose their own
 //! templates from the exposed typed building blocks
-//! ([`PinnedContext`], [`PreviousFailure`], [`PlanContext`], [`TodoContext`],
-//! [`LoopContext`], [`ReviewContext`]) and the `PARTIAL_*` partial-string
+//! ([`PinnedContext`], [`PreviousFailure`], [`WorkspaceRecovery`],
+//! [`PlanContext`], [`TodoContext`], [`LoopContext`], [`ReviewContext`]) and the `PARTIAL_*` partial-string
 //! constants below. Loom's own workflow templates (`plan`, `todo`, `loop`,
 //! `review`, `inbox`) are internal — consumers compose with the partials and
 //! typed contexts, not with the workflow shells.
@@ -29,6 +29,7 @@ pub mod previous_failure;
 pub mod review;
 pub mod run;
 pub mod todo;
+pub mod workspace_recovery;
 
 pub use criterion_status::{
     AnnotationTarget, AnnotationTier, CriterionAnnotation, CriterionId, CriterionResult,
@@ -47,6 +48,7 @@ pub use previous_failure::{
 pub use review::{ReviewContext, ReviewSource};
 pub use run::LoopContext;
 pub use todo::{SpecEpicContext, SpecImplementationNotes, TodoChangedSpec, TodoContext};
+pub use workspace_recovery::{RecoveryStash, WorkspaceAlignment, WorkspaceRecovery};
 
 /// Project-overview + style-rules pinning shape, exposed as a typed
 /// building block external consumers can embed in their own template
@@ -126,6 +128,11 @@ pub const PARTIAL_FINDINGS_WALK: &str = include_str!("../templates/partial/findi
 /// the two "work is done" terminators. Not pinned in `todo` because todo
 /// success uses the typed `LOOM_TODO:` payload.
 pub const PARTIAL_PROGRESS_MARKERS: &str = include_str!("../templates/partial/progress_markers.md");
+
+/// `partial/workspace_recovery.md` — loop-only dirty-workspace recovery stash
+/// guidance and accountability surface.
+pub const PARTIAL_WORKSPACE_RECOVERY: &str =
+    include_str!("../templates/partial/workspace_recovery.md");
 
 /// `partial/todo_success.md` — sole source for the typed `LOOM_TODO:`
 /// success marker contract.

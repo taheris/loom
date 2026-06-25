@@ -1,0 +1,348 @@
+---
+source: crates/loom-templates/tests/snapshots.rs
+assertion_line: 271
+expression: ctx.render().unwrap()
+---
+# Implementation Step
+
+## Context Pinning
+
+First, read the project overview to understand project terminology and context:
+
+# Project Overview
+
+Loom orchestrates the spec-to-implementation workflow.
+
+## Current Feature
+
+Label: harness
+Spec file: specs/harness.md
+
+## Companions
+
+The following companion directories are in scope. Read each one's `manifest.md` on demand:
+
+- lib/sandbox/
+
+
+## Style Rules
+
+Before writing or modifying code, read `docs/style-rules.md` end-to-end. The
+document is organized into rule families; discover the families from the
+document itself — do not assume a fixed prefix list. Apply every rule that
+is applicable to the diff you are about to produce, citing each rule by the
+id it is given in the document.
+
+## Scratchpad
+
+You have a per-session scratchpad at `/workspace/.loom/scratch/lm-3hhwq.10/scratch.md`. The file starts empty; append to it as the session progresses.
+
+**Purpose.** This is a **compaction-recovery aid, not durable storage.** The
+file lives only for the lifetime of this session: the driver creates it at
+session start and removes it at session end on every exit path. After
+compaction, the harness re-pins the original prompt plus the scratchpad's
+current contents so you regain the working notes you would otherwise have
+lost.
+
+**What to append:**
+
+- Decisions you have made and the reasoning that tipped them, so you do not
+  re-litigate them after compaction.
+- Open questions you are tracking and what would resolve them.
+- TODOs for the remainder of this session — files to touch next, checks to
+  re-run, follow-ups inside this session's scope.
+- Hypotheses you have already ruled out (with the evidence), so you do not
+  re-explore them.
+
+**What NOT to put here.** Anything that needs to outlive this session belongs
+in a phase-authorized durable destination, not the scratchpad:
+
+- Decisions, design rationale, or open questions that future sessions need →
+  the durable surface this phase authorizes (spec/index markdown, bead state,
+  implementation notes, or finding evidence). If this phase is inspection-only,
+  surface the state through its output protocol instead of writing state directly.
+- Implementation context for future agents → spec file or `AGENTS.md` /
+  companion docs when this phase authorizes those edits.
+- Why a change was made → the commit message.
+- Cross-session follow-up work → the phase-authorized work queue or output
+  protocol, never the scratchpad alone.
+
+The scratchpad will be deleted when this session ends. If a thought is worth
+keeping past session end, move it to the authorized durable destination for
+this phase **before** you finish.
+
+**How to append.** Append to the file directly — for example,
+`echo "..." >> .loom/scratch/<key>/scratch.md` or via the Edit tool.
+Do not rewrite or truncate prior contents; the recovery payload is the full
+running log.
+
+## Current Spec
+
+Read: specs/harness.md
+
+## Issue Details
+
+Issue: lm-3hhwq.10
+Title: <agent-output>port templates</agent-output>
+
+<agent-output>
+Port templates to Askama.
+</agent-output>
+
+Retry attempt 1 — previous attempt failed with:
+
+<agent-output>
+Previous attempt: Marker `LOOM_COMPLETE` emitted with empty diff.
+</agent-output>
+
+## Workspace Recovery
+
+A dirty bead workspace was preserved before this dispatch. This context is separate from retry failure state; inspect it before normal implementation work and decide deliberately how the saved work relates to this bead.
+
+**Pre-stash status:**
+
+```text
+## loom/lm-3hhwq.10
+ M crates/loom-templates/src/run/mod.rs
+?? scratch.txt
+```
+
+- **Recovery stash selector at dispatch**: `stash@{0}`
+- **Stable recovery stash commit**: `1111111111111111111111111111111111111111`
+- **Recovery stash message**: `loom workspace-recovery lm-3hhwq.10 1716250000`
+- **Target integration tip**: `2222222222222222222222222222222222222222`
+- **Workspace alignment**: Conflict (crates/loom-templates/src/run/mod.rs)
+
+Inspect the stable stash commit, not a moving stash selector, before editing:
+
+```bash
+git stash show --stat 1111111111111111111111111111111111111111
+git stash show -p 1111111111111111111111111111111111111111
+```
+
+Then intentionally choose one recovery path: apply the stash, cherry-pick relevant hunks, leave it unapplied for a justified follow-up, or drop it when it is irrelevant after inspection. Do not silently ignore preserved local work.
+
+Alignment is in conflict. Treat this as agent-owned merge-conflict recovery: inspect the conflict files, resolve them, and continue, abort, or retry the rebase as appropriate before normal implementation work. Conflict files rendered by the driver:
+- `crates/loom-templates/src/run/mod.rs`
+
+Use `LOOM_CLARIFY` with a persisted Options block if the conflict requires a human decision.
+
+In your final prose before the terminal marker, include one short line naming how you handled the recovery stash (applied, partly cherry-picked, left for follow-up, dropped as irrelevant, or needs clarification) and why. That prose is accountability for reviewers; the driver does not parse it and does not reject `LOOM_COMPLETE` solely because the stash still exists.
+
+
+## Instructions
+
+> Re-read the previous failure block above and address its specific
+> concern before re-implementing.
+
+1. **Understand**: Read the spec and issue thoroughly before making changes
+2. **Test Strategy**: Decide between:
+   - Property-based tests: For functions with clear invariants, mathematical properties
+   - Unit tests: For specific behaviors, edge cases, integration points
+3. **Implement**: Write code following the spec
+4. **Discovered Work**: If you find tasks outside this issue's scope:
+   - Create the issue as a child of the molecule:
+     ```bash
+     NEW_ID=$(bd create --title="..." --type=task --labels="spec:harness" \
+       --parent="lm-3hhwq" --silent)
+     ```
+   - Set execution order if needed:
+     - **Blocks current task**: `bd dep add lm-3hhwq.10 $NEW_ID` (current waits for new)
+     - **Depends on current task**: `bd dep add $NEW_ID lm-3hhwq.10` (new waits for current)
+     - **Independent**: No dep needed—`bd ready` will surface it when unblocked
+   - Do NOT implement discovered tasks in this session—stay focused
+5. **Quality Gates**: Before completing, ensure:
+   - All tests pass
+   - Lint checks pass
+   - Changes committed
+6. **Blocked vs Waiting**: Distinguish dependency blocks from true blocks:
+   - Need user input? → write the reason on a prior line, then `LOOM_BLOCKED`
+   - Need other beads done? → Add dep with `bd dep add`, output `LOOM_COMPLETE`
+7. **Already Implemented**: If the task's work is already done in the codebase,
+   verify correctness, run `bd close lm-3hhwq.10`,
+   and emit `LOOM_NOOP` (empty diff means no-op, not zero-progress).
+8. **Closing the bead**: After committing your changes and before emitting
+   `LOOM_COMPLETE`, run `bd close lm-3hhwq.10`.
+   The verdict gate observes `bd-closed` as the agent's responsibility — a
+   `LOOM_COMPLETE` without a closed bead is treated as `incomplete-signaling`
+   and enters recovery.
+
+## Spec Verifications
+
+After implementing the issue, check the spec's Success Criteria for
+`[check]` / `[test]` / `[system]` / `[judge]` annotations whose targets
+are relevant to this issue's work.
+
+- **`[check]` annotations**: The target is a shell command (e.g.
+  `cargo run -p loom-walk -- foo`) — no file to create. If the command's
+  first token doesn't yet exist on PATH or the walk it names isn't yet
+  wired, land that wiring in this issue.
+- **`[test]` annotations**: The target is a language-native path. For
+  Rust (`crate::module::test_name`), add the `#[test]` function in the
+  matching module. For shell (`tests/foo.sh#test_x`), create the
+  referenced file if it doesn't exist; the function exits 0 on success,
+  non-zero on failure, uses `set -euo pipefail`, and exits 77 to skip
+  (e.g. platform not available).
+- **`[system]` annotations**: The target is a system-level command
+  (`nix run .#test-loom`, container build). Same rules as `[check]` —
+  it's a command string, not a file to create. Make sure the system
+  invocation actually exists.
+- **`[judge]` annotations**: Create the referenced judge rubric file if
+  it doesn't exist. Each function calls `judge_files "path/to/source"`
+  and `judge_criterion "what to evaluate"`. See `tests/judges/example.sh`
+  for format.
+- Only create verifiers for criteria related to the current issue — don't
+  implement all spec verifications, just the ones relevant to your work.
+- If the test file already exists, add your function to it rather than
+  overwriting.
+
+## Quality Gates
+
+Before outputting LOOM_COMPLETE:
+- Tests written and passing
+- Lint checks pass
+- Changes staged (`git add`)
+- Spec verification test files created for relevant criteria
+- Bead closed (`bd close lm-3hhwq.10`)
+- Preflight self-check: run `loom gate verify --diff <bead-base>..HEAD` using the exact bead base injected for this dispatch. If the branch upstream is that injected base, `loom gate verify --diff @{u}..HEAD` is acceptable. Resolve any findings in-session before emitting `LOOM_COMPLETE` — do not defer findings to a follow-up bead.
+- Rerun the self-check after any later commit, formatter or hook tree change, or other change that could invalidate the prior run.
+- Prompt-level self-review: before the final marker, re-read the issue criteria, inspect the committed diff, verify style/spec fit, and either fix issues or emit `LOOM_RETRY`, `LOOM_CLARIFY`, or `LOOM_BLOCKED` with the required self-report framing.
+
+Post-step hooks verify compliance automatically.
+
+## Land the Plane
+
+Before outputting LOOM_COMPLETE, follow the **Session Protocol** in `AGENTS.md`.
+
+## Progress Markers
+
+End your response with exactly **one** marker on its own line, as
+the final output of the session. The orchestrator parses **only the
+final non-empty line** verbatim to derive the gate's verdict —
+markers emitted on any earlier line are treated as
+`swallowed-marker`, and multiple markers on the final line are
+likewise rejected. Markers are mutually exclusive: emit one and
+only one.
+
+Progress markers report that the session's work is **done**:
+
+- `LOOM_COMPLETE` — The work succeeded. For worker phases
+  (`loom loop`), this also means the bead's acceptance criteria are
+  met and the bead has been closed via `bd close`. The diff must be
+  non-empty (real changes); see `LOOM_NOOP` below for the zero-diff
+  variant.
+- `LOOM_NOOP` — The work was already done in tree and this phase
+  intentionally produced an empty diff. Close the bead with
+  `bd close` before emitting. Use `LOOM_NOOP` instead of
+  `LOOM_COMPLETE` whenever the diff is empty — an empty diff with
+  `LOOM_COMPLETE` is treated as `zero-progress` and enters recovery.
+  Only valid in worker phases.
+
+If you cannot finish — needing human input or a decision among
+multiple resolutions — emit one of the self-report markers
+documented separately (see *Self-Report Markers*).
+
+## Self-Report Markers
+
+When you cannot complete the work, end your response with one of
+these markers instead of a progress marker. They are mutually
+exclusive with each other **and** with the progress markers — emit
+exactly one, on its own line, as the final output of the session.
+
+- `LOOM_RETRY` — This attempt cannot finish but a fresh dispatch is
+  likely to succeed. Two failure shapes warrant retry: (a)
+  **environmental** — tools failing mid-session, sandbox/cwd
+  unlinked, transient IO — and (b) **agent self-reset** —
+  stuck-but-not-blocked, prompt-context exhausted, approach
+  abandoned. Write the reason on the line immediately before the
+  marker; the driver captures it verbatim as
+  `PreviousFailure::AgentRetry { reason }` for the next attempt's
+  prompt. Each `LOOM_RETRY` consumes one slot in `[loop] max_retries`
+  (default 2); exhaustion escalates to `loom:blocked` with cause
+  `retry-exhausted`. If the same problem persists after retry,
+  escalate to `LOOM_BLOCKED` (no candidate resolutions) or
+  `LOOM_CLARIFY` (with a structured Options block) rather than
+  emitting `LOOM_RETRY` again.
+- `LOOM_CLARIFY` — A decision is **blocking your work** and has
+  two or more genuinely viable resolutions you cannot adjudicate
+  from the spec, the code, or research. **Not for ratifying a
+  recommended path** — if you can write "Recommended: X.
+  Alternative: Y" and X is your clear preference, you do not have
+  a clarify question, you have a plan; file or implement it
+  directly. Reserve `LOOM_CLARIFY` for the cases where the spec
+  is genuinely ambiguous, two paths carry materially different
+  costs or risks you cannot weigh, or your judgement of the
+  evidence is itself contestable.
+
+  **Persist the question and the canonical options block to the target
+  bead/work epic before emitting the marker** — use `bd update --notes` or
+  `bd update --description` on the bead under dispatch (`loop`) or on the
+  injected `loom:todo` work epic (`todo`), per the Options Format Contract
+  in `specs/gate.md`. Do not create a separate clarify bead for direct
+  `LOOM_CLARIFY`; the verdict gate validates the target bead/work epic's
+  persisted block and applies `loom:clarify`. The gate
+  does NOT parse your prose for options: prose `Recommended:` /
+  `Alternative:` headings are NOT the canonical block and will downgrade
+  the bead to `loom:blocked` with cause `clarify-without-options`.
+  The block MUST use the canonical heading shape:
+
+  ```markdown
+  ## Options — <one-line summary of the decision, ≤80 chars>
+
+  ### Option 1 — <short title>
+  <body paragraph(s) describing the option, naming its cost>
+
+  ### Option 2 — <short title>
+  <body, including cost>
+
+  ### Option 3 — <short title>
+  <body, including cost>
+  ```
+
+  **Rules:**
+
+  - The `## Options` header carries a one-line summary (≤50 chars)
+    separated from the word `Options` by em-dash `—` (default),
+    en-dash `–`, single hyphen `-`, or double hyphen `--`. Parsers
+    tolerate any of these; emit em-dash by default.
+  - Each option is `### Option N — <title>` where `N` is 1-based
+    sequential. Numbering is required for `-a <int>` lookup to work.
+  - Each option body extends from its `### Option N` heading until
+    the next `### Option` or the next `##` heading; name the cost
+    (churn, debt, coupling, risk).
+  - Use contextual options per decision — typically 2–4, each
+    naming its cost. Do NOT emit a fixed A/B/C menu.
+
+  `loom inbox` parses this format to render the SUMMARY column,
+  enumerate options for view mode, and provide structured chat context.
+  A malformed block — or one that lives only in your prose, never
+  persisted to bead state — breaks fast-reply with `-a <int>` and
+  leaves the options invisible to `loom inbox`'s queue.
+
+  After persisting, the gate applies `loom:clarify` to the target
+  bead/work epic and exits without entering recovery; other beads in the
+  molecule continue running. The labelled bead or work epic waits for
+  `loom inbox` resolution.
+- `LOOM_BLOCKED` — Genuine dead end: you cannot proceed and have
+  no candidate resolutions to enumerate. Write the reason on the
+  line immediately before the marker (the gate only reads the most
+  recent non-empty prior line — multi-paragraph prose is NOT
+  captured). The gate applies `loom:blocked` to the target bead/work epic
+  and exits without entering recovery; other beads in the molecule
+  continue running. The labelled bead or work epic waits for human
+  resolution via `loom inbox`. **If you can enumerate options, do NOT use
+  `LOOM_BLOCKED`** — use `LOOM_CLARIFY` above so the candidate
+  resolutions reach bead state.
+
+**Discriminator.** expect retry to succeed? → RETRY. **blocked**
+by a decision you cannot make alone, with ≥2 viable resolutions?
+→ CLARIFY (a recommended path with prose alternatives is NOT
+clarify — file the plan directly). dead end? → BLOCKED.
+
+**Direct worker self-reports only.** These instructions apply to direct
+self-reports from `loop` and `todo`. `review` uses a review-specific
+self-report partial because review is inspection-only and routes
+clarify-worthy decisions through finding evidence instead of direct bd
+persistence. Interactive sessions (`plan`, `inbox`) emit `LOOM_COMPLETE`
+only — the human is in the room and resolves friction in-turn, so the
+cannot-finish terminators are out of scope for those templates.

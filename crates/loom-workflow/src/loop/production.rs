@@ -492,6 +492,7 @@ where
             title: bead.title.clone(),
             description: bead.description.clone(),
             previous_failure: typed_previous_failure,
+            workspace_recovery: None,
             review_notes: None,
             attempt,
             scratchpad_path: prompt_scratchpad_path.to_string_lossy().into_owned(),

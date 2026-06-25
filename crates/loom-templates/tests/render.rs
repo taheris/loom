@@ -20,7 +20,8 @@ use loom_templates::inbox::{ClarifyOption, InboxContext, InboxItem, ItemKind, Tu
 use loom_templates::plan::PlanContext;
 use loom_templates::review::{ReviewContext, ReviewLane, ReviewSource};
 use loom_templates::run::{
-    DriverNoticeCause, LoopContext, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, VerifierFailure,
+    DriverNoticeCause, LoopContext, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, RecoveryStash,
+    VerifierFailure, WorkspaceAlignment, WorkspaceRecovery,
 };
 use loom_templates::todo::{
     SpecEpicContext, SpecImplementationNotes, TodoChangedSpec, TodoContext,
@@ -68,6 +69,19 @@ fn inbox_ctx(items: Vec<InboxItem>) -> InboxContext {
 )]
 fn git_sha(raw: &str) -> GitSha {
     GitSha::new(raw).expect("valid git sha")
+}
+
+fn workspace_recovery(alignment: WorkspaceAlignment) -> WorkspaceRecovery {
+    WorkspaceRecovery {
+        pre_stash_status: "## loom/lm-demo.1\n M crates/demo/src/lib.rs\n?? notes.txt".into(),
+        stash: RecoveryStash {
+            selector: "stash@{0}".into(),
+            commit: git_sha(TEST_SHA_2),
+            message: "loom workspace-recovery lm-demo.1 1716250000".into(),
+        },
+        integration_tip: git_sha(TEST_SHA_3),
+        alignment,
+    }
 }
 
 #[expect(
@@ -145,6 +159,7 @@ fn skill_index_partial_renders_precomputed_markdown() -> Result<()> {
         title: Some("wire skills".into()),
         description: Some("Render skills.".into()),
         previous_failure: None,
+        workspace_recovery: None,
         review_notes: None,
         attempt: 0,
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
@@ -269,6 +284,7 @@ fn run_wraps_agent_supplied_fields_in_agent_output() -> Result<()> {
         previous_failure: Some(PreviousFailure::from_agent_error(
             "error: cargo test failed",
         )),
+        workspace_recovery: None,
         review_notes: None,
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
@@ -304,6 +320,7 @@ fn run_template_omits_attempt_line_when_zero() -> Result<()> {
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: None,
+        workspace_recovery: None,
         review_notes: None,
         attempt: 0,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
@@ -333,6 +350,7 @@ fn run_template_renders_attempt_line_on_retry() -> Result<()> {
             cause: DriverNoticeCause::ZeroProgress,
             detail: "Marker `LOOM_COMPLETE` emitted with empty diff.".into(),
         }),
+        workspace_recovery: None,
         review_notes: None,
         attempt: 2,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
@@ -367,6 +385,7 @@ fn run_template_prepends_first_instruction_reframe_on_retry() -> Result<()> {
             cause: DriverNoticeCause::ZeroProgress,
             detail: "Marker `LOOM_COMPLETE` emitted with empty diff.".into(),
         }),
+        workspace_recovery: None,
         review_notes: None,
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
@@ -405,6 +424,7 @@ fn run_template_omits_first_instruction_reframe_on_fresh_dispatch() -> Result<()
         title: Some("port templates".into()),
         description: Some("Port templates to Askama.".into()),
         previous_failure: None,
+        workspace_recovery: None,
         review_notes: None,
         attempt: 0,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
@@ -439,6 +459,7 @@ fn run_template_omits_first_instruction_reframe_when_attempt_zero() -> Result<()
             cause: DriverNoticeCause::ZeroProgress,
             detail: "stray previous_failure with attempt=0".into(),
         }),
+        workspace_recovery: None,
         review_notes: None,
         attempt: 0,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
@@ -469,6 +490,7 @@ fn run_template_renders_review_notes_block_when_set() -> Result<()> {
             1,
             "boom\n",
         )])),
+        workspace_recovery: None,
         review_notes: Some("[verifier-bypass] test mocks the agent backend".into()),
         attempt: 1,
         scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
@@ -480,6 +502,148 @@ fn run_template_renders_review_notes_block_when_set() -> Result<()> {
     assert!(
         out.contains("[verifier-bypass] test mocks the agent backend"),
         "review-notes body missing: {out}",
+    );
+    Ok(())
+}
+
+#[test]
+fn loop_context_renders_workspace_recovery_without_retry_attempt() -> Result<()> {
+    let ctx = LoopContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        label: SpecLabel::new("harness"),
+        spec_path: "specs/harness.md".to_string(),
+        companion_paths: vec![],
+        molecule_id: None,
+        issue_id: Some(BeadId::new("lm-3hhwq.10")?),
+        title: Some("port templates".into()),
+        description: Some("Port templates to Askama.".into()),
+        previous_failure: None,
+        workspace_recovery: Some(workspace_recovery(WorkspaceAlignment::Clean)),
+        review_notes: None,
+        attempt: 0,
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
+    };
+    let out = ctx.render()?;
+
+    assert!(
+        out.contains("## Workspace Recovery"),
+        "recovery block missing: {out}"
+    );
+    assert!(
+        out.contains(&format!("git stash show --stat {TEST_SHA_2}")),
+        "stable stat command missing: {out}",
+    );
+    assert!(
+        out.contains(&format!("git stash show -p {TEST_SHA_2}")),
+        "stable patch command missing: {out}",
+    );
+    assert!(
+        out.contains("apply the stash, cherry-pick relevant hunks, leave it unapplied"),
+        "intentional recovery choices missing: {out}",
+    );
+    assert!(
+        !out.contains("Retry attempt"),
+        "workspace recovery must not imply a retry attempt: {out}",
+    );
+    assert!(
+        !out.contains("Re-read the previous failure block above"),
+        "workspace recovery must not render the retry reframe: {out}",
+    );
+    Ok(())
+}
+
+#[test]
+fn loop_template_renders_previous_failure_before_workspace_recovery() -> Result<()> {
+    let ctx = LoopContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        label: SpecLabel::new("harness"),
+        spec_path: "specs/harness.md".to_string(),
+        companion_paths: vec![],
+        molecule_id: None,
+        issue_id: Some(BeadId::new("lm-3hhwq.10")?),
+        title: Some("port templates".into()),
+        description: Some("Port templates to Askama.".into()),
+        previous_failure: Some(PreviousFailure::DriverNotice {
+            cause: DriverNoticeCause::ZeroProgress,
+            detail: "Marker `LOOM_COMPLETE` emitted with empty diff.".into(),
+        }),
+        workspace_recovery: Some(workspace_recovery(WorkspaceAlignment::Rebased {
+            previous_head: git_sha(TEST_SHA_4),
+            current_head: git_sha(TEST_SHA_5),
+        })),
+        review_notes: None,
+        attempt: 1,
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
+    };
+    let out = ctx.render()?;
+
+    let previous_failure_pos = out
+        .find("Previous attempt:")
+        .expect("previous failure block present");
+    let workspace_recovery_pos = out
+        .find("## Workspace Recovery")
+        .expect("workspace recovery block present");
+    assert!(
+        previous_failure_pos < workspace_recovery_pos,
+        "previous failure must render before workspace recovery: {out}",
+    );
+    assert!(
+        out.contains("Rebased (previous head"),
+        "rebased alignment detail missing: {out}",
+    );
+    Ok(())
+}
+
+#[test]
+fn workspace_recovery_summary_prompt_is_non_authoritative() -> Result<()> {
+    let ctx = LoopContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        label: SpecLabel::new("harness"),
+        spec_path: "specs/harness.md".to_string(),
+        companion_paths: vec![],
+        molecule_id: None,
+        issue_id: Some(BeadId::new("lm-3hhwq.10")?),
+        title: Some("port templates".into()),
+        description: Some("Port templates to Askama.".into()),
+        previous_failure: None,
+        workspace_recovery: Some(workspace_recovery(WorkspaceAlignment::Conflict {
+            files: vec!["crates/demo/src/lib.rs".into(), "Cargo.toml".into()],
+        })),
+        review_notes: None,
+        attempt: 0,
+        scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),
+        style_rules: "docs/style-rules.md".to_string(),
+        skill_index: SkillIndexMarkdown::empty(),
+    };
+    let out = ctx.render()?;
+
+    assert!(
+        out.contains("agent-owned merge-conflict recovery"),
+        "conflict recovery framing missing: {out}",
+    );
+    assert!(
+        out.contains("crates/demo/src/lib.rs"),
+        "conflict file missing: {out}"
+    );
+    assert!(
+        out.contains("LOOM_CLARIFY"),
+        "clarify fallback missing: {out}"
+    );
+    assert!(
+        out.contains("final prose before the terminal marker"),
+        "final-summary instruction missing: {out}",
+    );
+    assert!(
+        out.contains("the driver does not parse it"),
+        "driver prose non-authority clause missing: {out}",
+    );
+    assert!(
+        out.contains("does not reject `LOOM_COMPLETE` solely because the stash still exists"),
+        "stash-still-exists non-rejection clause missing: {out}",
     );
     Ok(())
 }
@@ -1171,6 +1335,7 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
         title: Some("the title".into()),
         description: Some("the description".into()),
         previous_failure: None,
+        workspace_recovery: None,
         review_notes: None,
         attempt: 0,
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
@@ -1231,6 +1396,7 @@ fn run_renders_expected_sections_for_shared_inputs() -> Result<()> {
         title: Some("the title".into()),
         description: Some("the description".into()),
         previous_failure: None,
+        workspace_recovery: None,
         review_notes: None,
         attempt: 0,
         scratchpad_path: "/workspace/.loom/scratch/lm-mol.1/scratch.md".into(),
@@ -1274,6 +1440,7 @@ fn run_template_uses_injected_self_check_range_not_head_shorthand() -> Result<()
         title: Some("the title".into()),
         description: Some("the description".into()),
         previous_failure: None,
+        workspace_recovery: None,
         review_notes: None,
         attempt: 0,
         scratchpad_path: "/workspace/.loom/scratch/lm-mol.1/scratch.md".into(),
@@ -1319,6 +1486,7 @@ fn run_template_requires_self_check_rerun_after_post_check_changes() -> Result<(
         title: Some("the title".into()),
         description: Some("the description".into()),
         previous_failure: None,
+        workspace_recovery: None,
         review_notes: None,
         attempt: 0,
         scratchpad_path: "/workspace/.loom/scratch/lm-mol.1/scratch.md".into(),
@@ -1379,6 +1547,7 @@ fn agent_output_markers_wrap_each_agent_supplied_field() -> Result<()> {
         title: Some("AGENTOUT_TITLE_TOKEN".into()),
         description: Some("AGENTOUT_DESC_TOKEN".into()),
         previous_failure: Some(PreviousFailure::from_agent_error("AGENTOUT_FAILURE_TOKEN")),
+        workspace_recovery: None,
         review_notes: None,
         attempt: 1,
         scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
@@ -1437,6 +1606,7 @@ fn template_renders_are_byte_stable_across_runs() -> Result<()> {
             previous_failure: Some(PreviousFailure::from_agent_error(
                 "error: cargo test failed",
             )),
+            workspace_recovery: None,
             review_notes: None,
             attempt: 1,
             scratchpad_path: "/workspace/.loom/scratch/lm-3hhwq.10/scratch.md".to_string(),

@@ -2155,6 +2155,9 @@ const TEMPLATES_PUBLIC_TYPES_BODY: &str = "pub struct PreviousFailure;\n\
      pub struct VerifierFailure;\n\
      pub enum BadWalk { Concern { payload: String } }\n\
      pub enum DriverNoticeCause { RetryExhausted }\n\
+     pub struct WorkspaceRecovery;\n\
+     pub struct RecoveryStash;\n\
+     pub enum WorkspaceAlignment { Clean }\n\
      pub struct CriterionStatus;\n\
      pub enum EvidenceState { Missing }\n\
      pub struct CriterionId;\n\
@@ -2184,7 +2187,7 @@ fn loom_templates_public_types_pass_when_reexported_via_pub_use() {
         ws.path(),
         "crates/loom-templates/src/lib.rs",
         "pub mod inner;\n\
-         pub use inner::{PreviousFailure, VerifierFailure, BadWalk, DriverNoticeCause, CriterionStatus, EvidenceState, CriterionId, CriterionAnnotation, PlanContext, TodoContext, LoopContext, ReviewContext, PinnedContext};\n",
+         pub use inner::{PreviousFailure, VerifierFailure, BadWalk, DriverNoticeCause, WorkspaceRecovery, RecoveryStash, WorkspaceAlignment, CriterionStatus, EvidenceState, CriterionId, CriterionAnnotation, PlanContext, TodoContext, LoopContext, ReviewContext, PinnedContext};\n",
     );
     seed(
         ws.path(),
@@ -2202,6 +2205,9 @@ fn loom_templates_public_types_fail_when_one_missing() {
                 pub struct VerifierFailure;\n\
                 pub enum BadWalk { Concern { payload: String } }\n\
                 pub enum DriverNoticeCause { RetryExhausted }\n\
+                pub struct WorkspaceRecovery;\n\
+                pub struct RecoveryStash;\n\
+                pub enum WorkspaceAlignment { Clean }\n\
                 pub struct CriterionStatus;\n\
                 pub enum EvidenceState { Missing }\n\
                 pub struct CriterionId;\n\
@@ -2222,6 +2228,9 @@ fn loom_templates_public_types_fail_when_private() {
                 struct VerifierFailure;\n\
                 enum BadWalk { Concern { payload: String } }\n\
                 enum DriverNoticeCause { RetryExhausted }\n\
+                struct WorkspaceRecovery;\n\
+                struct RecoveryStash;\n\
+                enum WorkspaceAlignment { Clean }\n\
                 struct CriterionStatus;\n\
                 enum EvidenceState { Missing }\n\
                 struct CriterionId;\n\

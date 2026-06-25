@@ -11,9 +11,10 @@ use loom_templates::{
     PARTIAL_PLAN_STAGE_RUBRIC, PARTIAL_PROGRESS_MARKERS, PARTIAL_REVIEW_RUBRIC,
     PARTIAL_REVIEW_SELF_REPORT_MARKERS, PARTIAL_SCRATCHPAD, PARTIAL_SELF_REPORT_MARKERS,
     PARTIAL_SIBLING_SPEC_EDITING, PARTIAL_SKILL_INDEX, PARTIAL_SPEC_CONVENTIONS,
-    PARTIAL_SPEC_HEADER, PARTIAL_STYLE_RULES, PARTIAL_TODO_SUCCESS, PinnedContext, PlanContext,
-    PreviousFailure, SkillIndexMarkdown, SpecImplementationNotes, TodoChangedSpec, TodoContext,
-    VerifierFailure,
+    PARTIAL_SPEC_HEADER, PARTIAL_STYLE_RULES, PARTIAL_TODO_SUCCESS, PARTIAL_WORKSPACE_RECOVERY,
+    PinnedContext, PlanContext, PreviousFailure, RecoveryStash, SkillIndexMarkdown,
+    SpecImplementationNotes, TodoChangedSpec, TodoContext, VerifierFailure, WorkspaceAlignment,
+    WorkspaceRecovery,
 };
 
 #[test]
@@ -53,6 +54,7 @@ fn partial_constants_carry_their_source_files() {
         ("spec_header", PARTIAL_SPEC_HEADER),
         ("style_rules", PARTIAL_STYLE_RULES),
         ("todo_success", PARTIAL_TODO_SUCCESS),
+        ("workspace_recovery", PARTIAL_WORKSPACE_RECOVERY),
     ] {
         assert!(
             !body.is_empty(),
@@ -75,6 +77,30 @@ fn partial_style_rules_renders_style_rules_variable() {
         PARTIAL_STYLE_RULES.contains("{{ style_rules"),
         "style_rules partial must render the `style_rules` variable",
     );
+}
+
+#[test]
+fn workspace_recovery_context_is_publicly_constructible_from_crate_root() {
+    let ctx = WorkspaceRecovery {
+        pre_stash_status: "## loom/demo\n M src/lib.rs".into(),
+        stash: RecoveryStash {
+            selector: "stash@{0}".into(),
+            commit: loom_protocol::todo::GitSha::new("0123456789abcdef0123456789abcdef01234567")
+                .expect("valid git sha"),
+            message: "loom workspace-recovery lm-demo.1 1716250000".into(),
+        },
+        integration_tip: loom_protocol::todo::GitSha::new(
+            "1111111111111111111111111111111111111111",
+        )
+        .expect("valid git sha"),
+        alignment: WorkspaceAlignment::Conflict {
+            files: vec!["src/lib.rs".into()],
+        },
+    };
+
+    assert_eq!(ctx.stash.selector, "stash@{0}");
+    assert!(ctx.alignment.is_conflict());
+    assert_eq!(ctx.alignment.conflict_files(), &["src/lib.rs".to_string()]);
 }
 
 #[test]
@@ -180,6 +206,7 @@ fn run_context_is_publicly_constructible_from_crate_root() {
         title: None,
         description: None,
         previous_failure: None,
+        workspace_recovery: None,
         review_notes: None,
         attempt: 0,
         scratchpad_path: String::new(),
