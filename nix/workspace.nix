@@ -111,6 +111,7 @@ let
       nativeBuildInputs = commonArgs.nativeBuildInputs ++ [
         pkgs.cacert
         pkgs.flock
+        pkgs.jq
         pkgs.openssh
       ];
       # genai builds a reqwest TLS client eagerly; sandbox needs a CA bundle.
