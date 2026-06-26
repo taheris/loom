@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use tokio::task::spawn_blocking;
 use tracing::{info, warn};
@@ -55,6 +55,7 @@ const INDEX_LOCK_BACKOFF: Duration = Duration::from_millis(20);
 /// `LoomConfig`; only test fixtures and one-shot CLI utilities take the
 /// default.
 const DEFAULT_INTEGRATION_BRANCH: &str = "main";
+const RECOVERY_STASH_SELECTOR: &str = "stash@{0}";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActualPushRange {
@@ -386,6 +387,7 @@ impl GitClient {
         let rel = PathBuf::from(WORKTREE_BASE).join(bead_id.as_str());
         let path = self.workdir.join(&rel);
         if path.exists() {
+            ensure_wrix_mount_dir(&path)?;
             self.repair_bead_hooks_path(&path).await?;
             return Ok(CreatedWorktree { path, branch });
         }
@@ -508,19 +510,47 @@ impl GitClient {
         Ok(env)
     }
 
+    /// Preserve dirty bead-workspace state, align committed bead work with
+    /// the current integration tip, and clean non-conflicted workspaces for
+    /// dispatch.
+    pub async fn prepare_bead_clone(
+        &self,
+        path: &Path,
+        bead_id: &BeadId,
+    ) -> Result<BeadClonePreparation, GitError> {
+        let status_before = self.status_short_branch_at(path).await?;
+        let recovery = if status_short_branch_is_dirty(&status_before) {
+            Some(
+                self.create_workspace_recovery_stash(path, bead_id, &status_before)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let integration_ref = self.fetch_bead_integration_ref(path).await?;
+        let integration_tip = self
+            .rev_parse_at(path, &format!("{integration_ref}^{{commit}}"))
+            .await?;
+        let alignment = self.align_bead_clone(path, &integration_ref).await?;
+        if !matches!(alignment, BeadCloneAlignment::Conflict { .. }) {
+            self.reset_bead_clone(path).await?;
+        }
+        Ok(BeadClonePreparation {
+            status_before,
+            recovery,
+            integration_tip,
+            alignment,
+        })
+    }
+
     /// Reset a per-bead workspace's working tree to its current `HEAD` and
     /// drop everything outside the tracked content + the preserved
     /// scratch dirs. Runs `git reset --hard HEAD` followed by
     /// `git clean -fdx --exclude=target --exclude=.git --exclude=.wrix`.
     ///
-    /// Called by the dispatch path immediately before every agent session
-    /// attempt — first attempt (where it is a no-op against a freshly-cloned
-    /// tree) and every recovery iteration (where it discards mid-session
-    /// leftovers while preserving the agent's prior commits on the bead
-    /// branch). Idempotent. `target/` survives so cargo + sccache stay warm;
-    /// `.git/` survives so refs and the bead branch stay intact; `.wrix/`
-    /// survives so extra-mount staging (e.g. dolt socket landing point)
-    /// persists across attempts.
+    /// This is the destructive cleanup primitive. Dispatch paths that may
+    /// encounter prior dirty work should call [`Self::prepare_bead_clone`]
+    /// so the work is preserved before this reset/clean pair runs.
     pub async fn reset_bead_clone(&self, path: &Path) -> Result<(), GitError> {
         run_git(
             path,
@@ -543,6 +573,149 @@ impl GitClient {
             None,
         )
         .await
+    }
+
+    async fn status_short_branch_at(&self, path: &Path) -> Result<String, GitError> {
+        let output = run_git_raw(
+            path,
+            self.clock.as_ref(),
+            ["status", "--short", "--branch"],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(cli_error(&output));
+        }
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
+    async fn create_workspace_recovery_stash(
+        &self,
+        path: &Path,
+        bead_id: &BeadId,
+        pre_stash_status: &str,
+    ) -> Result<BeadCloneRecovery, GitError> {
+        let message = self.workspace_recovery_stash_message(bead_id)?;
+        let output = run_git_raw(
+            path,
+            self.clock.as_ref(),
+            ["stash", "push", "--include-untracked", "-m", &message],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(cli_error(&output));
+        }
+        let commit = self
+            .rev_parse_at(path, &format!("{RECOVERY_STASH_SELECTOR}^{{commit}}"))
+            .await?;
+        Ok(BeadCloneRecovery {
+            pre_stash_status: pre_stash_status.to_string(),
+            stash: WorkspaceRecoveryStash {
+                selector: RECOVERY_STASH_SELECTOR.to_string(),
+                commit,
+                message,
+            },
+        })
+    }
+
+    fn workspace_recovery_stash_message(&self, bead_id: &BeadId) -> Result<String, GitError> {
+        let timestamp = self
+            .clock
+            .wall_now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(GitError::ClockBeforeUnixEpoch)?
+            .as_secs();
+        Ok(format!("loom workspace-recovery {bead_id} {timestamp}"))
+    }
+
+    async fn fetch_bead_integration_ref(&self, path: &Path) -> Result<String, GitError> {
+        let branch = self.integration_branch.as_str();
+        let remote_ref = format!("refs/remotes/origin/{branch}");
+        let refspec = format!("+refs/heads/{branch}:{remote_ref}");
+        run_git(
+            path,
+            self.clock.as_ref(),
+            ["fetch", "--quiet", "origin", &refspec],
+            None,
+        )
+        .await?;
+        Ok(remote_ref)
+    }
+
+    async fn align_bead_clone(
+        &self,
+        path: &Path,
+        integration_ref: &str,
+    ) -> Result<BeadCloneAlignment, GitError> {
+        let previous_head = self.rev_parse_at(path, "HEAD^{commit}").await?;
+        let local_commits = self
+            .rev_count_at(path, &format!("{integration_ref}..HEAD"))
+            .await?;
+        if local_commits == 0 {
+            let output = run_git_raw(
+                path,
+                self.clock.as_ref(),
+                ["merge", "--ff-only", "--quiet", integration_ref],
+                None,
+            )
+            .await?;
+            if output.status.success() {
+                return Ok(BeadCloneAlignment::Clean);
+            }
+            return Err(cli_error(&output));
+        }
+
+        let output =
+            run_git_raw(path, self.clock.as_ref(), ["rebase", integration_ref], None).await?;
+        if output.status.success() {
+            let current_head = self.rev_parse_at(path, "HEAD^{commit}").await?;
+            return Ok(BeadCloneAlignment::Rebased {
+                previous_head,
+                current_head,
+            });
+        }
+        let files = self.unmerged_paths(path).await?;
+        if files.is_empty() {
+            return Err(cli_error(&output));
+        }
+        Ok(BeadCloneAlignment::Conflict { files })
+    }
+
+    async fn rev_parse_at(&self, path: &Path, rev: &str) -> Result<GitOid, GitError> {
+        let output = run_git_raw(
+            path,
+            self.clock.as_ref(),
+            ["rev-parse", "--verify", rev],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(cli_error(&output));
+        }
+        let raw = String::from_utf8(output.stdout)?;
+        Ok(GitOid::new(raw.trim())?)
+    }
+
+    async fn rev_count_at(&self, path: &Path, range: &str) -> Result<u32, GitError> {
+        let output = run_git_raw(
+            path,
+            self.clock.as_ref(),
+            ["rev-list", "--count", range],
+            None,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(cli_error(&output));
+        }
+        let stdout = String::from_utf8(output.stdout)?;
+        stdout
+            .trim()
+            .parse()
+            .map_err(|e: std::num::ParseIntError| GitError::GitCli {
+                status: 0,
+                stderr: format!("rev-list --count returned non-integer `{stdout}`: {e}"),
+            })
     }
 
     /// Configure a bead clone's local `core.hooksPath` from wrix's
@@ -2007,6 +2180,43 @@ pub struct CreatedWorktree {
     pub branch: String,
 }
 
+/// Result of [`GitClient::prepare_bead_clone`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BeadClonePreparation {
+    pub status_before: String,
+    pub recovery: Option<BeadCloneRecovery>,
+    pub integration_tip: GitOid,
+    pub alignment: BeadCloneAlignment,
+}
+
+/// Dirty workspace state preserved before bead dispatch cleanup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BeadCloneRecovery {
+    pub pre_stash_status: String,
+    pub stash: WorkspaceRecoveryStash,
+}
+
+/// Git stash identity captured at bead-dispatch time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceRecoveryStash {
+    pub selector: String,
+    pub commit: GitOid,
+    pub message: String,
+}
+
+/// Committed bead-work alignment after dirty workspace preservation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BeadCloneAlignment {
+    Clean,
+    Rebased {
+        previous_head: GitOid,
+        current_head: GitOid,
+    },
+    Conflict {
+        files: Vec<PathBuf>,
+    },
+}
+
 /// Linked worktree as reported by `gix`.
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
@@ -2086,6 +2296,12 @@ pub enum MergeResult {
         files: Vec<PathBuf>,
         new_base_sha: GitOid,
     },
+}
+
+fn status_short_branch_is_dirty(status: &str) -> bool {
+    status
+        .lines()
+        .any(|line| !line.trim().is_empty() && !line.starts_with("## "))
 }
 
 /// Run `git` with an explicit `-C <workdir>`, no shell, 60s ceiling. Returns

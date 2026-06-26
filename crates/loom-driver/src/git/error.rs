@@ -1,5 +1,6 @@
 use std::io;
 use std::path::PathBuf;
+use std::time::SystemTimeError;
 
 use displaydoc::Display;
 use thiserror::Error;
@@ -45,6 +46,9 @@ pub enum GitError {
 
     /// git CLI returned a malformed OID
     ParseOid(#[from] ParseGitOidError),
+
+    /// wall-clock timestamp is before the Unix epoch
+    ClockBeforeUnixEpoch(#[source] SystemTimeError),
 
     /// $WRIX_SIGNING_KEY points at a non-existent file: {path}
     SigningKeyMissing { path: PathBuf },

@@ -22,8 +22,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use loom_driver::bd::{BdClient, BdError, CommandRunner, RunOutput};
 use loom_driver::git::{
-    FastForwardOutcome, GitClient, GitError, MergeResult, RebaseOutcome, SignatureCheck,
-    StatusKind, write_signing_config,
+    BeadCloneAlignment, FastForwardOutcome, GitClient, GitError, MergeResult, RebaseOutcome,
+    SignatureCheck, StatusKind, write_signing_config,
 };
 use loom_driver::identifier::{BeadId, MoleculeId, SpecLabel};
 use tempfile::TempDir;
@@ -76,6 +76,21 @@ fn git_config_get(repo: &Path, key: &str) -> Result<String> {
         output.status.success(),
         "git config --get {key} exited with {}",
         output.status,
+    );
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+fn git_capture(repo: &Path, args: &[&str]) -> Result<String> {
+    let output = git_command()
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .with_context(|| format!("spawn git {args:?}"))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "git {args:?} exited with {}",
+        output.status
     );
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
@@ -887,6 +902,205 @@ async fn bead_dispatch_creates_clone_under_loom_beads() -> Result<()> {
     let again = client.create_worktree(&label, &bead).await?;
     assert_eq!(again.path, created.path);
     assert_eq!(again.branch, created.branch);
+
+    client.remove_worktree(&created.path).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn pre_dispatch_dirty_workspace_creates_recovery_stash() -> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("lm-prepare.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+
+    std::fs::write(created.path.join("README.md"), "tracked edit\n")?;
+    std::fs::write(created.path.join("staged.txt"), "staged\n")?;
+    git(&created.path, &["add", "staged.txt"])?;
+    std::fs::write(created.path.join("untracked.txt"), "untracked\n")?;
+
+    let prepared = client.prepare_bead_clone(&created.path, &bead).await?;
+    let recovery = prepared
+        .recovery
+        .as_ref()
+        .context("dirty workspace must produce recovery stash context")?;
+
+    assert_eq!(recovery.stash.selector, "stash@{0}");
+    assert!(
+        recovery
+            .stash
+            .message
+            .starts_with("loom workspace-recovery lm-prepare.1 "),
+        "unexpected recovery stash message: {}",
+        recovery.stash.message,
+    );
+    assert!(recovery.pre_stash_status.contains(" M README.md"));
+    assert!(recovery.pre_stash_status.contains("A  staged.txt"));
+    assert!(recovery.pre_stash_status.contains("?? untracked.txt"));
+    assert_eq!(prepared.status_before, recovery.pre_stash_status);
+    assert_eq!(
+        prepared.integration_tip.to_string(),
+        capture_rev(&created.path, "origin/main")?
+    );
+    assert!(matches!(prepared.alignment, BeadCloneAlignment::Clean));
+
+    let stash_stat = git_capture(
+        &created.path,
+        &[
+            "stash",
+            "show",
+            "--include-untracked",
+            "--stat",
+            recovery.stash.commit.as_str(),
+        ],
+    )?;
+    assert!(stash_stat.contains("README.md"), "stash stat: {stash_stat}");
+    assert!(
+        stash_stat.contains("staged.txt"),
+        "stash stat: {stash_stat}"
+    );
+    assert!(
+        stash_stat.contains("untracked.txt"),
+        "stash stat: {stash_stat}"
+    );
+    assert!(
+        client.status_porcelain_at(&created.path).await?.is_empty(),
+        "prepare should leave non-conflicted dispatch workspace clean",
+    );
+
+    client.remove_worktree(&created.path).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn workspace_recovery_stash_left_unapplied_and_context_injected() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("lm-stash.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+
+    agent_commit(&created.path, "bead.txt", "bead work\n", "bead work")?;
+    std::fs::write(loom.join("integration.txt"), "integration work\n")?;
+    git(&loom, &["add", "integration.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "integration work"])?;
+    std::fs::write(created.path.join("README.md"), "preserved edit\n")?;
+
+    let prepared = client.prepare_bead_clone(&created.path, &bead).await?;
+    let recovery = prepared
+        .recovery
+        .context("dirty workspace must return recovery context")?;
+
+    let stash_head = capture_rev(&created.path, "stash@{0}")?;
+    assert_eq!(stash_head, recovery.stash.commit.to_string());
+    let stash_list = git_capture(&created.path, &["stash", "list", "--format=%gs"])?;
+    assert!(
+        stash_list.contains(&recovery.stash.message),
+        "stash list must retain the recovery message: {stash_list}",
+    );
+    assert!(
+        matches!(prepared.alignment, BeadCloneAlignment::Rebased { .. }),
+        "local bead commits must be rebased onto the integration tip: {:?}",
+        prepared.alignment,
+    );
+    assert_eq!(
+        std::fs::read_to_string(created.path.join("README.md"))?,
+        "initial\n",
+        "prepare must leave the recovery stash unapplied",
+    );
+    assert!(created.path.join("bead.txt").exists());
+    assert!(created.path.join("integration.txt").exists());
+    assert!(
+        recovery.pre_stash_status.contains(" M README.md"),
+        "typed recovery context must carry pre-stash status: {}",
+        recovery.pre_stash_status,
+    );
+
+    client.remove_worktree(&created.path).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn bead_workspace_prepare_preserves_target_and_dotwrix() -> Result<()> {
+    let repo = init_repo()?;
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("lm-preserve.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+
+    std::fs::create_dir_all(created.path.join("target/debug"))?;
+    std::fs::write(created.path.join("target/debug/sentinel"), "cargo\n")?;
+    std::fs::write(created.path.join(".wrix/dolt.sock-marker"), "wrix\n")?;
+    std::fs::write(created.path.join("scratch.txt"), "dirty scratch\n")?;
+
+    let prepared = client.prepare_bead_clone(&created.path, &bead).await?;
+
+    assert!(
+        prepared.recovery.is_some(),
+        "scratch.txt must be stashed first"
+    );
+    assert!(created.path.join("target/debug/sentinel").exists());
+    assert!(created.path.join(".git").is_dir());
+    assert!(created.path.join(".wrix/dolt.sock-marker").exists());
+    assert!(
+        !created.path.join("scratch.txt").exists(),
+        "untracked dirty work should be in the recovery stash, not applied",
+    );
+    assert!(
+        client.status_porcelain_at(&created.path).await?.is_empty(),
+        "non-conflicted prepare should finish with clean porcelain",
+    );
+
+    client.remove_worktree(&created.path).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn workspace_recovery_rebase_conflict_dispatches_agent_with_context() -> Result<()> {
+    let repo = init_repo()?;
+    let loom = loom_path(repo.path());
+    let client = GitClient::open(repo.path())?;
+    let label = SpecLabel::new("harness");
+    let bead = BeadId::new("lm-conflict.1")?;
+    let created = client.create_worktree(&label, &bead).await?;
+
+    agent_commit(&created.path, "README.md", "bead edit\n", "bead edit")?;
+    std::fs::write(loom.join("README.md"), "integration edit\n")?;
+    git(&loom, &["add", "README.md"])?;
+    git(&loom, &["commit", "-q", "-m", "integration edit"])?;
+    std::fs::write(created.path.join("scratch.txt"), "dirty scratch\n")?;
+
+    let prepared = client.prepare_bead_clone(&created.path, &bead).await?;
+    let recovery = prepared
+        .recovery
+        .context("dirty workspace must be stashed before alignment conflict")?;
+
+    match prepared.alignment {
+        BeadCloneAlignment::Conflict { files } => {
+            assert_eq!(files, vec![std::path::PathBuf::from("README.md")]);
+        }
+        other => anyhow::bail!("expected conflict alignment, got {other:?}"),
+    }
+    assert_eq!(
+        capture_rev(&created.path, "stash@{0}")?,
+        recovery.stash.commit.to_string()
+    );
+    let porcelain = client.status_porcelain_at(&created.path).await?;
+    assert!(
+        porcelain.contains("UU README.md"),
+        "prepare must leave conflict state for dispatch, got: {porcelain:?}",
+    );
+    let readme = std::fs::read_to_string(created.path.join("README.md"))?;
+    assert!(
+        readme.contains("<<<<<<<"),
+        "conflict markers missing: {readme}"
+    );
+    assert!(
+        !created.path.join("scratch.txt").exists(),
+        "dirty scratch should remain in the unapplied recovery stash",
+    );
 
     client.remove_worktree(&created.path).await?;
     Ok(())

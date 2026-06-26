@@ -2802,21 +2802,21 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       outside the ignore set are saved with a named `git stash push
       --include-untracked`; the driver records pre-stash status, stash
       selector/message, stash commit, and target integration tip
-  [test?](pre_dispatch_dirty_workspace_creates_recovery_stash)
+  [test](pre_dispatch_dirty_workspace_creates_recovery_stash)
 - After a recovery stash is created, the driver leaves it unapplied,
       rebases committed bead work onto the current integration tip (or
       fast-forwards when no local commits exist), and injects
       `workspace_recovery` prompt context without consuming
       `[loop] max_retries`
-  [test?](workspace_recovery_stash_left_unapplied_and_context_injected)
+  [test](workspace_recovery_stash_left_unapplied_and_context_injected)
 - Clean pre-dispatch workspaces, and dirty workspaces after successful
       recovery stashing/alignment, still run the reset/clean path that
       preserves `target/`, `.git/`, and `.wrix/`
-  [test?](bead_workspace_prepare_preserves_target_and_dotwrix)
+  [test](bead_workspace_prepare_preserves_target_and_dotwrix)
 - If branch alignment conflicts after recovery stashing, the worker is
       dispatched in the conflict state with stash/conflict context rather
       than immediately routing to `loom:clarify` or `loom:blocked`
-  [test?](workspace_recovery_rebase_conflict_dispatches_agent_with_context)
+  [test](workspace_recovery_rebase_conflict_dispatches_agent_with_context)
 - `LOOM_COMPLETE` is not rejected solely because a recovery stash still
       exists; stash relevance is judged by review/gate evidence rather
       than a hard driver state machine
