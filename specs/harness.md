@@ -612,9 +612,11 @@ between the workspace positional and the in-container command are
 forwarded into the container as the command vector, so the env-var
 hand-off is the sole image-selection contract on this path. Claude uses
 `claude --dangerously-skip-permissions`. Pi-backed `loom inbox chat`
-resolves the same manifest entry but uses `wrix spawn --stdio` through a
-controlled RPC bridge so the driver can deliver compaction re-pins before
-continuing the chat.
+resolves the same manifest entry and, when attached to a terminal, uses
+native `wrix run ... pi` with a scratch-local Pi session directory and a
+re-pin extension so the user keeps Pi's normal TUI. In non-TTY execution it
+uses `wrix spawn --stdio` through a controlled RPC bridge so the driver can
+deliver compaction re-pins before continuing the chat.
 
 ### Concurrency & Locking
 
@@ -1702,9 +1704,10 @@ mutating state.
 **Chat session shape.** `loom inbox chat` launches the resolved
 profile/runtime with the `inbox.md` template and normally works through the
 visible queue one item at a time. Claude-backed chat uses interactive
-`wrix run`; Pi-backed chat uses the controlled RPC bridge over
-`wrix spawn --stdio` so compaction re-pins remain observable. Targeted chat
-forms focus a single item. The chat-capable backend/profile comes from
+`wrix run`; Pi-backed chat uses native `wrix run ... pi` when stdio is a TTY
+and falls back to the controlled RPC bridge over `wrix spawn --stdio` for
+non-TTY execution, with both Pi paths carrying a compaction re-pin surface.
+Targeted chat forms focus a single item. The chat-capable backend/profile comes from
 `[phase.inbox]` or normal phase defaults; Direct is rejected because it has no
 interactive REPL command.
 
@@ -3825,6 +3828,10 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       merely writing an unused scratch file or hook fragment does not satisfy
       this criterion
   [test](interactive_shell_out_installs_compaction_repin_delivery)
+- The Pi-backed `loom inbox chat` native-TUI path launches `wrix run ... pi`
+      with a scratch-local session directory and re-pin extension instead of
+      the raw RPC renderer
+  [test](inbox_chat_pi_tui_force_uses_native_wrix_run)
 - The Pi-backed `loom inbox chat` RPC bridge sends the backend-specific
       compaction re-pin after observing `compaction_start`; merely queuing an
       unused steer payload does not satisfy this criterion

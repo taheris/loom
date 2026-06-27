@@ -923,8 +923,9 @@ the rules:
    - Profile/runtime selection from bead labels plus resolved backend
      (parse, fallback to base, flag override, missing runtime failure)
    - Interactive `plan` / Claude-backed `inbox chat` command construction
-     exports backend-derived `WRIX_AGENT`, Pi-backed `inbox chat` uses the
-     controlled RPC bridge, and Direct is rejected before spawning Wrix
+     exports backend-derived `WRIX_AGENT`, Pi-backed `inbox chat` preserves
+     the native Pi TUI on the TTY path while using the controlled RPC bridge
+     on the non-TTY path, and Direct is rejected before spawning Wrix
    - Retry logic (failure count tracking, `loom:clarify` label after max
      retries)
    - Push gate logic (clean completion, fix-up beads, iteration cap)

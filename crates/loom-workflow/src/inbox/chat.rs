@@ -1,10 +1,11 @@
 //! `loom inbox chat` — interactive human-decision session.
 //!
-//! Mirrors `loom plan`'s Claude runner shape for Claude-backed chat, and
-//! uses a controlled Pi RPC bridge for Pi-backed chat so compaction re-pins
-//! are observable before post-compaction output is trusted.
+//! Mirrors `loom plan`'s Claude runner shape for Claude-backed chat. Pi-backed
+//! chat prefers the native Pi TUI when attached to a real terminal, with a
+//! controlled RPC bridge retained for non-TTY execution and tests.
 
-use std::io::{Read, Write};
+use std::fs;
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
@@ -224,25 +225,46 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
             output.stdout
         }
         AgentKind::Pi => {
-            let mut spawn_config = build_pi_bridge_spawn_config(
-                workspace,
-                image,
-                &selection,
-                prompt_body.clone(),
-                scratch.path().to_path_buf(),
-                &cfg,
-            )?;
-            spawn_config.skills = Some(restored_skills.registered);
-            info!(
-                wrix_bin = %bin.display(),
-                items_surfaced,
-                profile = %selection.profile,
-                agent = ?selection.kind,
-                image_ref = %image.r#ref,
-                scratch_dir = %scratch.path().display(),
-                "loom inbox chat: starting controlled pi RPC bridge",
-            );
-            runtime.block_on(run_pi_bridge(spawn_config, &bin))?
+            if should_use_pi_tui_shell_out() {
+                let launch =
+                    prepare_pi_tui_launch(workspace, &selection, &prompt_body, scratch.path())?;
+                info!(
+                    wrix_bin = %bin.display(),
+                    items_surfaced,
+                    profile = %selection.profile,
+                    agent = ?selection.kind,
+                    image_ref = %image.r#ref,
+                    scratch_dir = %scratch.path().display(),
+                    "loom inbox chat: shelling out to native pi TUI",
+                );
+                let mut command = Command::new(&bin);
+                command
+                    .args(&launch.argv)
+                    .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
+                    .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
+                    .env("WRIX_AGENT", selection.kind.as_str());
+                run_pi_tui_shell_out(command, &launch.session_dir)?
+            } else {
+                let mut spawn_config = build_pi_bridge_spawn_config(
+                    workspace,
+                    image,
+                    &selection,
+                    prompt_body.clone(),
+                    scratch.path().to_path_buf(),
+                    &cfg,
+                )?;
+                spawn_config.skills = Some(restored_skills.registered);
+                info!(
+                    wrix_bin = %bin.display(),
+                    items_surfaced,
+                    profile = %selection.profile,
+                    agent = ?selection.kind,
+                    image_ref = %image.r#ref,
+                    scratch_dir = %scratch.path().display(),
+                    "loom inbox chat: starting controlled pi RPC bridge",
+                );
+                runtime.block_on(run_pi_bridge(spawn_config, &bin))?
+            }
         }
         AgentKind::Direct => {
             return Err(ChatError::AgentSelection(
@@ -374,14 +396,20 @@ fn render_pi_bridge_event(event: &AgentEvent, output: &mut String) -> Result<(),
             std::io::stdout().flush()?;
         }
         AgentEvent::ToolCall { tool, params, .. } => {
-            println!("\n[tool] {tool} {params}");
+            if verbose_pi_bridge_tools() {
+                println!("\n[tool] {tool} {params}");
+            } else {
+                println!("\n[tool] {tool}");
+            }
         }
         AgentEvent::ToolResult {
             output: body,
             is_error,
             ..
         } => {
-            if let Some(body) = renderable_tool_body(body, *is_error) {
+            if (*is_error || verbose_pi_bridge_tools())
+                && let Some(body) = renderable_tool_body(body, *is_error)
+            {
                 let label = if *is_error {
                     "tool error"
                 } else {
@@ -391,7 +419,9 @@ fn render_pi_bridge_event(event: &AgentEvent, output: &mut String) -> Result<(),
             }
         }
         AgentEvent::ToolProgress { text, .. } => {
-            if let Some(body) = renderable_tool_body(text, false) {
+            if verbose_pi_bridge_tools()
+                && let Some(body) = renderable_tool_body(text, false)
+            {
                 println!("\n[tool progress] {body}");
             }
         }
@@ -433,6 +463,236 @@ fn ensure_bridge_output_newline(output: &mut String) -> Result<(), std::io::Erro
         output.push('\n');
     }
     Ok(())
+}
+
+const LOOM_INBOX_PI_FORCE_TUI: &str = "LOOM_INBOX_PI_FORCE_TUI";
+const LOOM_INBOX_PI_FORCE_BRIDGE: &str = "LOOM_INBOX_PI_FORCE_BRIDGE";
+const LOOM_INBOX_PI_VERBOSE_TOOLS: &str = "LOOM_INBOX_PI_VERBOSE_TOOLS";
+
+fn should_use_pi_tui_shell_out() -> bool {
+    if truthy_env(LOOM_INBOX_PI_FORCE_BRIDGE) {
+        return false;
+    }
+    truthy_env(LOOM_INBOX_PI_FORCE_TUI)
+        || (std::io::stdin().is_terminal() && std::io::stdout().is_terminal())
+}
+
+fn truthy_env(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| {
+        let value = value.trim();
+        value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
+    })
+}
+
+fn verbose_pi_bridge_tools() -> bool {
+    truthy_env(LOOM_INBOX_PI_VERBOSE_TOOLS)
+}
+
+struct PiTuiLaunch {
+    argv: Vec<String>,
+    session_dir: PathBuf,
+}
+
+fn prepare_pi_tui_launch(
+    workspace: &Path,
+    selection: &AgentSelection,
+    prompt_body: &str,
+    scratch_dir: &Path,
+) -> Result<PiTuiLaunch, ChatError> {
+    let session_dir = scratch_dir.join("pi-sessions");
+    fs::create_dir_all(&session_dir)?;
+
+    let extension_path = scratch_dir.join("loom-pi-repin-extension.js");
+    let prompt_path = container_workspace_path(workspace, &scratch_dir.join("prompt.txt"));
+    let scratchpad_path = container_workspace_path(workspace, &scratch_dir.join("scratch.md"));
+    fs::write(
+        &extension_path,
+        pi_repin_extension_source(&prompt_path, &scratchpad_path)?,
+    )?;
+
+    let container_session_dir = container_workspace_path(workspace, &session_dir);
+    let container_extension_path = container_workspace_path(workspace, &extension_path);
+    let argv = build_pi_tui_wrix_argv(
+        workspace,
+        prompt_body,
+        selection,
+        &container_session_dir,
+        &container_extension_path,
+    );
+    Ok(PiTuiLaunch { argv, session_dir })
+}
+
+fn pi_repin_extension_source(
+    prompt_path: &Path,
+    scratchpad_path: &Path,
+) -> Result<String, ChatError> {
+    let prompt_path = serde_json::to_string(&prompt_path.to_string_lossy())
+        .map_err(|e| ChatError::Config(format!("quote pi prompt path: {e}")))?;
+    let scratchpad_path = serde_json::to_string(&scratchpad_path.to_string_lossy())
+        .map_err(|e| ChatError::Config(format!("quote pi scratchpad path: {e}")))?;
+    Ok(format!(
+        r###"import {{ readFileSync }} from "node:fs";
+
+export default function(pi) {{
+  const promptPath = {prompt_path};
+  const scratchpadPath = {scratchpad_path};
+
+  function readText(path) {{
+    try {{
+      return readFileSync(path, "utf8");
+    }} catch (_err) {{
+      return "";
+    }}
+  }}
+
+  function contentText(content) {{
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content.map((block) => {{
+      if (!block || typeof block !== "object") return "";
+      if (block.type === "text") return block.text ?? block.content ?? "";
+      if (block.type === "thinking") return block.thinking ?? "";
+      if (block.type === "toolCall") return `${{block.name ?? "tool"}} ${{JSON.stringify(block.arguments ?? {{}})}}`;
+      return "";
+    }}).join("");
+  }}
+
+  function messageText(message) {{
+    if (!message || typeof message !== "object") return "";
+    return contentText(message.content);
+  }}
+
+  pi.on("context", async (event) => {{
+    const prompt = readText(promptPath);
+    if (!prompt || !Array.isArray(event.messages)) return;
+    if (event.messages.some((message) => messageText(message).includes(prompt))) return;
+
+    const scratchpad = readText(scratchpadPath).trimEnd();
+    const pinned = [
+      "Loom post-compaction pinned context. Continue following this phase prompt and scratchpad exactly.",
+      "",
+      "## Original Loom prompt",
+      prompt,
+      "",
+      "## Loom scratchpad",
+      scratchpad || "(empty)",
+    ].join("\n");
+
+    return {{
+      messages: [{{
+        role: "custom",
+        customType: "loom-repin",
+        content: pinned,
+        display: false,
+        timestamp: Date.now(),
+      }}, ...event.messages],
+    }};
+  }});
+}}
+"###
+    ))
+}
+
+fn run_pi_tui_shell_out(mut command: Command, session_dir: &Path) -> Result<String, ChatError> {
+    let captured = if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        let status = command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()?;
+        WrixOutput {
+            status,
+            stdout: String::new(),
+        }
+    } else {
+        run_wrix_and_capture_stdout(command)?
+    };
+
+    if !captured.status.success() {
+        return Err(ChatError::WrixExit {
+            status: captured.status.to_string(),
+        });
+    }
+    if parse_terminal_marker(&captured.stdout).is_ok() {
+        return Ok(captured.stdout);
+    }
+
+    let transcript = read_pi_session_transcript(session_dir)?;
+    if transcript.trim().is_empty() {
+        Ok(captured.stdout)
+    } else {
+        Ok(transcript)
+    }
+}
+
+fn read_pi_session_transcript(session_dir: &Path) -> Result<String, ChatError> {
+    let Some(path) = latest_pi_session_file(session_dir)? else {
+        return Ok(String::new());
+    };
+    let raw = fs::read_to_string(path)?;
+    Ok(pi_session_transcript_from_str(&raw))
+}
+
+fn latest_pi_session_file(session_dir: &Path) -> Result<Option<PathBuf>, ChatError> {
+    let entries = match fs::read_dir(session_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(ChatError::Scratch(err)),
+    };
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let modified = entry
+            .metadata()?
+            .modified()
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if newest
+            .as_ref()
+            .is_none_or(|(newest_modified, _)| modified > *newest_modified)
+        {
+            newest = Some((modified, path));
+        }
+    }
+    Ok(newest.map(|(_, path)| path))
+}
+
+fn pi_session_transcript_from_str(raw: &str) -> String {
+    raw.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|entry| {
+            let message = entry.get("message")?;
+            if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+                return None;
+            }
+            let text = pi_content_text(message.get("content"));
+            (!text.trim().is_empty()).then_some(text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn pi_content_text(content: Option<&serde_json::Value>) -> String {
+    match content {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| {
+                if block.get("type").and_then(serde_json::Value::as_str) != Some("text") {
+                    return None;
+                }
+                block
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| block.get("content").and_then(serde_json::Value::as_str))
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
 }
 
 struct WrixOutput {
@@ -489,6 +749,38 @@ pub fn build_wrix_argv(
             argv.push(settings.to_string_lossy().into_owned());
         }
         argv.push("--dangerously-skip-permissions".to_string());
+    }
+    argv.push(prompt_body.to_string());
+    argv
+}
+
+fn build_pi_tui_wrix_argv(
+    workspace: &Path,
+    prompt_body: &str,
+    selection: &AgentSelection,
+    session_dir: &Path,
+    extension_path: &Path,
+) -> Vec<String> {
+    let mut argv = vec![
+        "run".to_string(),
+        workspace.to_string_lossy().into_owned(),
+        "pi".to_string(),
+        "--session-dir".to_string(),
+        session_dir.to_string_lossy().into_owned(),
+        "-e".to_string(),
+        extension_path.to_string_lossy().into_owned(),
+    ];
+    if let Some(provider) = &selection.provider {
+        argv.push("--provider".to_string());
+        argv.push(provider.clone());
+    }
+    if let Some(model_id) = &selection.model_id {
+        argv.push("--model".to_string());
+        argv.push(model_id.clone());
+    }
+    if let Some(level) = selection.thinking_level {
+        argv.push("--thinking".to_string());
+        argv.push(level.as_str().to_string());
     }
     argv.push(prompt_body.to_string());
     argv
@@ -631,6 +923,56 @@ mod tests {
         assert_eq!(argv[3], "PROMPT BODY");
         assert!(!argv.iter().any(|a| a == "--dangerously-skip-permissions"));
         assert!(!argv.iter().any(|a| a == "--settings"));
+    }
+
+    #[test]
+    fn pi_tui_argv_uses_wrix_run_with_session_extension_and_model_args() {
+        let selection = AgentSelection {
+            profile: ProfileName::new("base"),
+            kind: AgentKind::Pi,
+            provider: Some("openai".to_string()),
+            model_id: Some("gpt-4o".to_string()),
+            thinking_level: Some(loom_driver::agent::ThinkingLevel::High),
+            claude_settings: None,
+        };
+        let argv = build_pi_tui_wrix_argv(
+            &PathBuf::from("/work"),
+            "PROMPT BODY",
+            &selection,
+            &PathBuf::from("/work/.loom/scratch/inbox/pi-sessions"),
+            &PathBuf::from("/work/.loom/scratch/inbox/loom-pi-repin-extension.js"),
+        );
+        assert_eq!(argv[0], "run");
+        assert_eq!(argv[1], "/work");
+        assert_eq!(argv[2], "pi");
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--provider" && w[1] == "openai")
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--model" && w[1] == "gpt-4o")
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--thinking" && w[1] == "high")
+        );
+        assert!(argv.iter().any(|a| a == "-e"));
+        assert!(argv.iter().any(|a| a == "--session-dir"));
+        assert_eq!(argv.last().map(String::as_str), Some("PROMPT BODY"));
+        assert!(!argv.iter().any(|a| a == "spawn"));
+        assert!(!argv.iter().any(|a| a == "--stdio"));
+    }
+
+    #[test]
+    fn pi_session_transcript_extracts_assistant_text_blocks_for_marker_parse() {
+        let raw = [
+            serde_json::json!({"type":"session","version":3,"id":"s","timestamp":"now","cwd":"/work"}).to_string(),
+            serde_json::json!({"type":"message","id":"u","parentId":null,"timestamp":"now","message":{"role":"user","content":"hi"}}).to_string(),
+            serde_json::json!({"type":"message","id":"a","parentId":"u","timestamp":"now","message":{"role":"assistant","content":[{"type":"text","text":"Done\n"},{"type":"text","text":"LOOM_COMPLETE"}]}}).to_string(),
+        ]
+        .join("\n");
+        assert_eq!(pi_session_transcript_from_str(&raw), "Done\nLOOM_COMPLETE");
     }
 
     #[test]

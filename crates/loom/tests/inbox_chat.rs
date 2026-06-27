@@ -552,6 +552,53 @@ fn inbox_chat_runs_pi_backend_through_controlled_bridge() {
 }
 
 #[test]
+fn inbox_chat_pi_tui_force_uses_native_wrix_run() {
+    let env = setup_chat();
+    std::fs::write(
+        env.workspace.join("loom.toml"),
+        "[phase.inbox]\nagent.backend = \"pi\"\n",
+    )
+    .expect("write config");
+    seed_bead(
+        &env.state_dir,
+        "lm-pitui",
+        "pi tui",
+        "blocked",
+        "open",
+        &["loom:blocked"],
+    );
+
+    let output = run_chat_extra(
+        &env,
+        "resolve-none",
+        &[],
+        &[("LOOM_INBOX_PI_FORCE_TUI", "1")],
+    );
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let argv = std::fs::read_to_string(&env.argv_log).expect("argv log");
+    let lines: Vec<_> = argv.lines().collect();
+    assert!(lines.contains(&"run"), "{argv}");
+    assert!(lines.contains(&"pi"), "{argv}");
+    assert!(lines.contains(&"--session-dir"), "{argv}");
+    assert!(lines.contains(&"-e"), "{argv}");
+    assert!(
+        !lines.contains(&"spawn"),
+        "native pi TUI must not use spawn: {argv}"
+    );
+    assert!(
+        !lines.contains(&"--stdio"),
+        "native pi TUI must not use stdio RPC: {argv}"
+    );
+    let env_log = std::fs::read_to_string(&env.env_log).expect("env log");
+    assert!(env_log.contains("WRIX_AGENT=pi"), "{env_log}");
+}
+
+#[test]
 fn inbox_chat_installs_compaction_repin_delivery() {
     let env = setup_chat();
     let body = format!(

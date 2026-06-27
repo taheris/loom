@@ -91,11 +91,16 @@ inherited stdio. They invoke
 process attach directly to the controlling terminal; the driver-side
 stream-json parser does not run on this path. The command is
 `claude --dangerously-skip-permissions` for Claude. Pi-backed
-`loom inbox chat` uses a controlled RPC bridge over `wrix spawn --stdio`
-instead of raw `wrix run`, so Loom can observe `compaction_start` and send
-the same scratch-dir re-pin before accepting post-compaction output. Pi is
-still not a valid `loom plan` interactive backend until an equivalent
-planning bridge exists. Direct has no interactive REPL command; selecting
+`loom inbox chat` prefers the native Pi TUI via `wrix run` whenever the
+loom process is attached to an interactive terminal; Loom adds a dedicated
+Pi session directory plus a CLI extension that re-injects the scratch-dir
+`prompt.txt`/`scratch.md` through Pi's `context` hook after compaction. In
+non-TTY execution (including integration tests), Pi chat falls back to a
+controlled RPC bridge over `wrix spawn --stdio`, where Loom can observe
+`compaction_start` and send the same scratch-dir re-pin before accepting
+post-compaction output. Pi is still not a valid `loom plan` interactive
+backend until an equivalent planning bridge exists. Direct has no
+interactive REPL command; selecting
 `agent.backend = "direct"` for `plan` or `inbox chat` is a configuration
 error before any Wrix child process is spawned.
 
@@ -116,10 +121,10 @@ the command vector (the entrypoint would exec them literally and exit
 
 `wrix run` reads those env vars (when no `--spawn-config` is supplied)
 to pick the same profile/runtime image the non-interactive `wrix spawn`
-path selects. Pi-backed `loom inbox chat` uses `SpawnConfig` instead of
-that env hand-off, but it resolves the same profile/runtime manifest
-entry — both launch paths must select the same image for the same profile
-name and backend runtime.
+path selects. Pi-backed `loom inbox chat` uses the env hand-off on its
+native TUI path and `SpawnConfig` on the non-TTY RPC bridge path, but both
+resolve the same profile/runtime manifest entry — both launch paths must
+select the same image for the same profile name and backend runtime.
 
 ### Agent Backend Trait
 
@@ -681,11 +686,12 @@ backend-specific re-pin surface into the actual child process before the
 initial prompt can receive user-visible output. For Claude, that means the
 launched `claude` process loads the scratch session's compact `SessionStart`
 hook (or an equivalent hook/config path) rather than merely leaving
-`claude-settings.json` on disk. For Pi, a raw REPL shell-out is valid only if
-it exposes an equivalent compaction event plus steer/re-pin path; otherwise
-that phase/backend combination fails fast or uses a controlled interactive
-bridge. A phase must not continue in an interactive session whose compaction
-path would be summary-only.
+`claude-settings.json` on disk. For Pi, the native REPL shell-out is valid
+only when Loom can install an equivalent re-pin surface (currently a CLI
+extension that injects the original prompt plus scratchpad through Pi's
+`context` hook after compaction); otherwise that phase/backend combination
+fails fast or uses the controlled RPC bridge. A phase must not continue in an
+interactive session whose compaction path would be summary-only.
 
 **Claude non-interactive backend:**
 - Before `wrix spawn`, the harness writes `repin.sh` and a
@@ -730,14 +736,19 @@ path would be summary-only.
   compactions.
 
 **Pi interactive chat:**
-- `loom inbox chat` uses a Pi RPC bridge instead of the raw `pi` REPL. The
-  bridge observes `compaction_start`, sends the same full-prompt re-pin from
-  the scratch directory, and treats overflow auto-retry output with the
+- When `loom inbox chat` has a real terminal, it launches the native `pi` TUI
+  with inherited stdio so the user gets Pi's normal editor, message queue,
+  footer, and tool rendering. Loom passes `--session-dir` under the scratch
+  directory so it can parse the final assistant marker after the user exits
+  Pi, and passes `-e <loom-pi-repin-extension.js>` so post-compaction context
+  rebuilds include the full `prompt.txt` plus live `scratch.md` whenever the
+  original prompt has fallen out of Pi's retained messages.
+- When `loom inbox chat` is not attached to a TTY, it uses the Pi RPC bridge.
+  The bridge observes `compaction_start`, sends the same full-prompt re-pin
+  from the scratch directory, and treats overflow auto-retry output with the
   non-interactive Pi policy before continuing the chat.
-- The raw `pi` REPL path is supported only if Loom can observe compaction and
-  send the same full-prompt re-pin before trusting post-compaction output. If
-  the selected Pi interactive command cannot provide that controlled path,
-  phase selection fails before launch; this remains the `loom plan` Pi path.
+- `loom plan` remains unsupported for Pi until it has either the native-TUI
+  extension/session parsing path or an equivalent controlled bridge.
 
 **Direct backend:**
 - Compaction is not a provider-driven event in Direct — `loom-llm`
@@ -1154,8 +1165,11 @@ the entrypoint run the wrong runtime.
       launcher/mock `claude`, but a test that only runs `repin.sh` directly
       does not satisfy this criterion
   [test](interactive_claude_shell_out_loads_compaction_hook)
-- Pi-backed `loom inbox chat` runs through a controlled RPC bridge instead
-      of raw `wrix run`, so compaction events remain observable before
+- Pi-backed `loom inbox chat` uses native `wrix run ... pi` plus a scratch-dir
+      session and re-pin extension on its TTY path, preserving Pi's normal TUI
+  [test](inbox_chat_pi_tui_force_uses_native_wrix_run)
+- Pi-backed `loom inbox chat` runs through a controlled RPC bridge in
+      non-TTY execution, so compaction events remain observable before
       trusting post-compaction output
   [test](inbox_chat_runs_pi_backend_through_controlled_bridge)
 - Pi-backed `loom inbox chat` sends the scratch-dir re-pin when the RPC
@@ -1271,9 +1285,11 @@ the entrypoint run the wrong runtime.
    and extra argv tokens between the workspace positional and agent command
    would be forwarded into the container as the command vector (exit 127).
    Pi-backed `loom inbox chat` resolves the same profile/runtime manifest
-   entry but launches a controlled `wrix spawn --stdio` RPC bridge so
-   compaction re-pin delivery remains observable. Pi-backed `loom plan` and
-   Direct-backed interactive phases are rejected before Wrix spawn/run.
+   entry and uses native `wrix run ... pi` with a scratch-local session and
+   re-pin extension when attached to a TTY; in non-TTY execution it launches
+   the controlled `wrix spawn --stdio` RPC bridge so compaction re-pin
+   delivery remains observable. Pi-backed `loom plan` and Direct-backed
+   interactive phases are rejected before Wrix spawn/run.
 9. **Agent runtime layer** — the image builder composes two orthogonal axes:
    *workspace profile* (base, rust, python) and *agent runtime* (claude, pi,
    direct). The bundled profile manifest contains concrete entries for the
