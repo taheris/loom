@@ -11,8 +11,8 @@ use serde::Serialize;
 use tracing::{debug, trace, warn};
 
 use super::messages::{
-    AbortCommand, AssistantMessageDelta, ExtensionUiResponse, PiEnvelope, PiEvent, PiResponse,
-    PiUiRequest, PromptCommand, SteerCommand,
+    AbortCommand, AssistantMessageDelta, ExtensionUiResponse, FollowUpCommand, PiEnvelope, PiEvent,
+    PiResponse, PiUiRequest, PromptCommand, SteerCommand,
 };
 
 /// Pi-mono RPC line parser.
@@ -518,6 +518,13 @@ impl LineParse for PiParser {
     fn encode_steer(&self, msg: &str) -> Result<String, ProtocolError> {
         encode_command(&SteerCommand {
             kind: "steer",
+            message: msg,
+        })
+    }
+
+    fn encode_follow_up(&self, msg: &str) -> Result<String, ProtocolError> {
+        encode_command(&FollowUpCommand {
+            kind: "follow_up",
             message: msg,
         })
     }
@@ -1200,6 +1207,18 @@ mod tests {
             serde_json::from_str(line.trim_end()).expect("encoded steer is valid JSON");
         assert_eq!(v["type"], "steer");
         assert_eq!(v["message"], "hi");
+    }
+
+    #[test]
+    fn encode_follow_up_emits_follow_up_command() {
+        let parser = PiParser::new();
+        let line = parser
+            .encode_follow_up("next")
+            .expect("encoder should succeed");
+        let v: serde_json::Value =
+            serde_json::from_str(line.trim_end()).expect("encoded follow_up is valid JSON");
+        assert_eq!(v["type"], "follow_up");
+        assert_eq!(v["message"], "next");
     }
 
     #[test]

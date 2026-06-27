@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use loom_driver::agent::{AgentRuntime, MountSpec, RePinContent, SpawnConfig, set_loom_inside};
+use loom_driver::git::{
+    GitError, WRIX_DEPLOY_KEY_ENV, WRIX_SIGNING_KEY_ENV, resolve_deploy_key, resolve_signing_key,
+};
 use loom_driver::profile_manifest::ImageEntry;
 use tracing::info;
 
@@ -86,6 +89,26 @@ pub fn container_workspace_path(host_workspace: &Path, host_path: &Path) -> Path
         Ok(rel) => Path::new(CONTAINER_WORKSPACE).join(rel),
         Err(_) => host_path.to_path_buf(),
     }
+}
+
+pub fn launcher_key_env_for_checkout(workspace: &Path) -> Result<Vec<(String, String)>, GitError> {
+    if !workspace.join(".git").exists() {
+        return Ok(Vec::new());
+    }
+    let mut env = Vec::new();
+    if let Some(key) = resolve_signing_key(workspace)? {
+        env.push((
+            WRIX_SIGNING_KEY_ENV.to_string(),
+            key.to_string_lossy().into_owned(),
+        ));
+    }
+    if let Some(key) = resolve_deploy_key(workspace)? {
+        env.push((
+            WRIX_DEPLOY_KEY_ENV.to_string(),
+            key.to_string_lossy().into_owned(),
+        ));
+    }
+    Ok(env)
 }
 
 pub fn log_spawn_diagnostics(

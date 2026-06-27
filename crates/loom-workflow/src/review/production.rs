@@ -4,9 +4,9 @@
 //! `tokio::process::Command` shell-outs for `git push`, `beads-push`, and
 //! the auto-iterate `loom loop` handoff, and a caller-provided dispatch
 //! closure for the reviewer agent invocation. The closure pattern keeps
-//! backend selection (`PiBackend`, `ClaudeBackend`, or `DirectBackend`) inside
-//! the binary's `dispatch` match — `loom-workflow` never sees the concrete
-//! backend types, mirroring [`ProductionTodoController`](super::super::todo::ProductionTodoController)
+//! review backend selection (`PiBackend`, `ClaudeBackend`, or `DirectBackend`)
+//! inside the binary's `dispatch` match, mirroring
+//! [`ProductionTodoController`](super::super::todo::ProductionTodoController)
 //! and [`ProductionAgentLoopController`](super::super::run::ProductionAgentLoopController).
 //!
 //! Iteration-counter accessors read/write `molecules.iteration_count` for
@@ -56,7 +56,7 @@ use super::runner::{ReviewController, ReviewOutcome, RunReviewOutput};
 use super::verdict::PushGateRefuseCause;
 use super::workspace_validator::WorkspaceFindingValidator;
 use crate::skill::SkillPlan;
-use crate::spawn::container_workspace_path;
+use crate::spawn::{container_workspace_path, launcher_key_env_for_checkout};
 use crate::suppression::{has_ineffective_suppression_match, suppresses_rubric_finding};
 use crate::todo::ExitSignal;
 
@@ -770,7 +770,7 @@ where
             vec![],
             vec![],
             vec![],
-            vec![],
+            launcher_key_env_for_checkout(&self.workspace)?,
         );
         let skill_session = built_prompt
             .skill_plan

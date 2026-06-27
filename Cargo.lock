@@ -2666,6 +2666,7 @@ dependencies = [
  "askama",
  "blake3",
  "displaydoc",
+ "loom-agent",
  "loom-driver",
  "loom-events",
  "loom-gate",

@@ -599,9 +599,9 @@ launcher env before podman startup and passes the same value to the
 entrypoint — see [agent.md — Entrypoint Agent
 Selection](agent.md#entrypoint-agent-selection).
 
-`loom plan` and `loom inbox chat` are interactive, so they shell out to
-`wrix run` (TTY-attached) rather than `wrix spawn`. To keep one
-resolution path, both commands look up their profile/runtime pair (per
+`loom plan` and Claude-backed `loom inbox chat` are TTY interactive, so
+they shell out to `wrix run` rather than `wrix spawn`. To keep one
+resolution path, those shell-outs look up their profile/runtime pair (per
 [Configuration](#configuration); default `base`) in the manifest and
 export `WRIX_DEFAULT_IMAGE_REF=<entry.ref>`,
 `WRIX_DEFAULT_IMAGE_SOURCE=<entry.source>`, and
@@ -610,9 +610,11 @@ export `WRIX_DEFAULT_IMAGE_REF=<entry.ref>`,
 is supplied. `wrix run` has no `--profile` argv parser; any extra tokens
 between the workspace positional and the in-container command are
 forwarded into the container as the command vector, so the env-var
-hand-off is the sole image-selection contract on this path. The
-in-container command is selected from the resolved phase backend: Claude
-uses `claude --dangerously-skip-permissions`, while Pi uses `pi`.
+hand-off is the sole image-selection contract on this path. Claude uses
+`claude --dangerously-skip-permissions`. Pi-backed `loom inbox chat`
+resolves the same manifest entry but uses `wrix spawn --stdio` through a
+controlled RPC bridge so the driver can deliver compaction re-pins before
+continuing the chat.
 
 ### Concurrency & Locking
 
@@ -1697,12 +1699,14 @@ no chat-capable backend is available, view output gives manual escape-hatch
 surfaces (`bd`, local proposal paths, and repair/drop instructions) rather than
 mutating state.
 
-**Chat session shape.** `loom inbox chat` launches the resolved profile/runtime
-via interactive `wrix run`, runs the selected chat-capable agent with the
-`inbox.md` template, and normally works through the visible queue one item at a
-time. Targeted chat forms focus a single item. The chat-capable backend/profile
-comes from `[phase.inbox]` or normal phase defaults; Direct is rejected because
-it has no interactive REPL command.
+**Chat session shape.** `loom inbox chat` launches the resolved
+profile/runtime with the `inbox.md` template and normally works through the
+visible queue one item at a time. Claude-backed chat uses interactive
+`wrix run`; Pi-backed chat uses the controlled RPC bridge over
+`wrix spawn --stdio` so compaction re-pins remain observable. Targeted chat
+forms focus a single item. The chat-capable backend/profile comes from
+`[phase.inbox]` or normal phase defaults; Direct is rejected because it has no
+interactive REPL command.
 
 The session has **full bd-write authority** on bead-backed items in its queue:
 notes via `bd update --notes`, label add/remove via `bd update --add-label` /
@@ -3008,6 +3012,10 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `SpawnConfig.launcher_env` and keeps them out of the
       in-container `SpawnConfig.env` allowlist
   [test](launcher_env_threads_onto_spawn_config_not_container_env)
+- Review dispatch threads the checkout-resolved launcher keys onto the
+      reviewer `wrix spawn` child process so host deploy/signing keys are
+      available before container setup resolves git auth and SSH signing
+  [test](loom_gate_review_writes_phase_jsonl_log)
 - `SpawnConfig.launcher_env` is `#[serde(skip)]`-excluded from the
       spawn-config JSON so host key paths never leak into the
       world-readable file the wrapper reads
@@ -3811,12 +3819,16 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       protocol, and mode sections verbatim and removes ordinary history
       before pinned instruction text
   [test](hard_limit_fallback_preserves_pinned_instruction_sections)
-- Interactive `loom plan` and `loom inbox chat` shell-outs install the
-      backend-specific compaction re-pin delivery surface into the launched
-      agent process before the prompt is accepted; an integration test may use
-      a mock `wrix run` launcher, but merely writing an unused scratch file or
-      hook fragment does not satisfy this criterion
+- Interactive `loom plan` and Claude-backed `loom inbox chat` shell-outs
+      install the backend-specific compaction re-pin delivery surface before
+      the prompt is accepted; an integration test may use a mock launcher, but
+      merely writing an unused scratch file or hook fragment does not satisfy
+      this criterion
   [test](interactive_shell_out_installs_compaction_repin_delivery)
+- The Pi-backed `loom inbox chat` RPC bridge sends the backend-specific
+      compaction re-pin after observing `compaction_start`; merely queuing an
+      unused steer payload does not satisfy this criterion
+  [test](inbox_chat_pi_bridge_repins_on_compaction_start)
 - The compaction-recovery verifier set includes at least one post-compaction
       behavioral canary that requires a non-inferable nonce, not only
       byte-presence checks of `prompt.txt`, `repin.sh`, hook JSON, or steer

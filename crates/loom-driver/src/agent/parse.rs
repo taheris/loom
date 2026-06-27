@@ -45,6 +45,12 @@ pub trait LineParse: Send {
     /// [`Self::encode_prompt`].
     fn encode_steer(&self, msg: &str) -> Result<String, ProtocolError>;
 
+    /// Encode a post-turn follow-up message. Backends without a distinct
+    /// follow-up verb reuse their steering frame.
+    fn encode_follow_up(&self, msg: &str) -> Result<String, ProtocolError> {
+        self.encode_steer(msg)
+    }
+
     /// Encode an abort command, or `None` if the backend has no abort wire
     /// command (claude is killed via signals instead).
     fn encode_abort(&self) -> Result<Option<String>, ProtocolError>;

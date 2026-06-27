@@ -63,15 +63,23 @@ fn install_bd_shim(dir: &Path) -> PathBuf {
     bin_dir
 }
 
-fn mock_claude_path() -> PathBuf {
+fn mock_script_path(rel: &str) -> PathBuf {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     for ancestor in manifest_dir.ancestors() {
-        let candidate = ancestor.join("tests/mock-claude/claude.sh");
+        let candidate = ancestor.join("tests").join(rel);
         if candidate.is_file() {
             return candidate;
         }
     }
-    panic!("could not locate tests/mock-claude/claude.sh");
+    panic!("could not locate tests/{rel}");
+}
+
+fn mock_claude_path() -> PathBuf {
+    mock_script_path("mock-claude/claude.sh")
+}
+
+fn mock_pi_path() -> PathBuf {
+    mock_script_path("mock-pi/pi.sh")
 }
 
 fn install_wrix_stub(dir: &Path) -> PathBuf {
@@ -81,12 +89,14 @@ fn install_wrix_stub(dir: &Path) -> PathBuf {
     let argv_log = dir.join("argv.log");
     let env_log = dir.join("env.log");
     let mock_claude = mock_claude_path();
+    let mock_pi = mock_pi_path();
     let script = loom_test_support::bash_script(&format!(
         r#"set -euo pipefail
 
 argv_log={argv_log:?}
 env_log={env_log:?}
 mock_claude={mock_claude:?}
+mock_pi={mock_pi:?}
 
 for a in "$@"; do
     printf '%s\n' "$a" >> "$argv_log"
@@ -96,6 +106,11 @@ printf -- '---\n' >> "$argv_log"
 printf 'WRIX_DEFAULT_IMAGE_REF=%s\n' "${{WRIX_DEFAULT_IMAGE_REF:-}}" >> "$env_log"
 printf 'WRIX_DEFAULT_IMAGE_SOURCE=%s\n' "${{WRIX_DEFAULT_IMAGE_SOURCE:-}}" >> "$env_log"
 printf 'WRIX_AGENT=%s\n' "${{WRIX_AGENT:-}}" >> "$env_log"
+
+if [[ "${{1:-}}" == "spawn" || "${{2:-}}" == "spawn" ]]; then
+    printf '[wrix] Starting container (mock)...\n' >&2
+    exec bash "$mock_pi" "${{WRIX_STUB_PI_MODE:-happy-path}}"
+fi
 
 prompt="${{!#}}"
 
@@ -163,6 +178,7 @@ fi
         argv_log = argv_log.display(),
         env_log = env_log.display(),
         mock_claude = mock_claude.display(),
+        mock_pi = mock_pi.display(),
     ));
     std::fs::write(&bin, script).expect("write stub");
     let mut perm = std::fs::metadata(&bin).expect("stat stub").permissions();
@@ -474,7 +490,7 @@ fn inbox_chat_passes_resolved_profile_runtime_to_wrix_run() {
 }
 
 #[test]
-fn inbox_chat_rejects_pi_backend_before_wrix_run() {
+fn inbox_chat_runs_pi_backend_through_controlled_bridge() {
     let env = setup_chat();
     std::fs::write(
         env.workspace.join("loom.toml"),
@@ -484,20 +500,28 @@ fn inbox_chat_rejects_pi_backend_before_wrix_run() {
     seed_bead(
         &env.state_dir,
         "lm-pi",
-        "pi rejected",
+        "pi bridge",
         "blocked",
         "open",
         &["loom:blocked"],
     );
 
     let output = run_chat(&env, "resolve-none", &[]);
-    assert!(!output.status.success(), "pi inbox chat must fail");
-    assert!(!env.argv_log.exists(), "wrix must not be spawned");
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("pi backend cannot run interactive `loom inbox chat` without a controlled compaction re-pin bridge"),
-        "{stderr}",
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
+    let argv = std::fs::read_to_string(&env.argv_log).expect("argv log");
+    assert!(argv.lines().any(|line| line == "spawn"), "{argv}");
+    assert!(argv.lines().any(|line| line == "--stdio"), "{argv}");
+    assert!(
+        !argv.lines().any(|line| line == "run"),
+        "pi bridge must not use raw wrix run: {argv}",
+    );
+    let env_log = std::fs::read_to_string(&env.env_log).expect("env log");
+    assert!(env_log.contains("WRIX_AGENT=pi"), "{env_log}");
 }
 
 #[test]
@@ -528,6 +552,40 @@ fn inbox_chat_installs_compaction_repin_delivery() {
         argv.lines()
             .any(|line| line.ends_with("claude-settings.json")),
         "{argv}"
+    );
+}
+
+#[test]
+fn inbox_chat_pi_bridge_repins_on_compaction_start() {
+    let env = setup_chat();
+    std::fs::write(
+        env.workspace.join("loom.toml"),
+        "[phase.inbox]\nagent.backend = \"pi\"\n",
+    )
+    .expect("write config");
+    let body = format!(
+        "## Options — pick\n\n### Option 1 — A\n{POLISH_NO_EDIT_PHRASE}\n\nNonce: {CANARY_NONCE}\n"
+    );
+    seed_bead(
+        &env.state_dir,
+        "lm-picanary",
+        "pi canary",
+        &body,
+        "open",
+        &["loom:clarify", "spec:agent"],
+    );
+
+    let output = run_chat_extra(
+        &env,
+        "resolve-none",
+        &[],
+        &[("WRIX_STUB_PI_MODE", "interactive-bridge-canary")],
+    );
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
 }
 

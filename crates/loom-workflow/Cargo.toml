@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 askama = { workspace = true }
 blake3 = { workspace = true }
+loom-agent = { workspace = true }
 loom-driver = { workspace = true }
 loom-events = { workspace = true }
 loom-gate = { workspace = true }

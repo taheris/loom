@@ -139,6 +139,14 @@ impl AgentSession<Active> {
         Ok(())
     }
 
+    /// Send a post-turn follow-up message while keeping the process alive.
+    pub async fn follow_up(&mut self, msg: &str) -> Result<(), ProtocolError> {
+        let line = self.parser.encode_follow_up(msg)?;
+        self.stdin.write_all(line.as_bytes()).await?;
+        self.stdin.flush().await?;
+        Ok(())
+    }
+
     /// Abort the in-flight operation and return the session to [`Idle`].
     ///
     /// If the parser provides an abort wire command (pi), it is written to

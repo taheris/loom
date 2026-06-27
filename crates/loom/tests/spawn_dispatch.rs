@@ -80,6 +80,8 @@ fn install_wrix_shim(
          \n\
          {{ if [[ -t 0 ]]; then echo 'stdin_is_tty=1'; else echo 'stdin_is_tty=0'; fi\n\
             if [[ -p /dev/stdin ]]; then echo 'stdin_is_pipe=1'; else echo 'stdin_is_pipe=0'; fi\n\
+            printf 'WRIX_DEPLOY_KEY=%s\\n' \"${{WRIX_DEPLOY_KEY:-}}\"\n\
+            printf 'WRIX_SIGNING_KEY=%s\\n' \"${{WRIX_SIGNING_KEY:-}}\"\n\
          }} > \"$STDIN_INFO\"\n\
          \n\
          prev=''\n\
@@ -1013,6 +1015,27 @@ fn loom_gate_review_writes_phase_jsonl_log() {
         "happy-path",
     );
 
+    let home = workspace.join("home");
+    let deploy_key_dir = home.join(".ssh/deploy_keys");
+    std::fs::create_dir_all(&deploy_key_dir).unwrap();
+    let host = "testhost";
+    let deploy_key = deploy_key_dir.join(format!("loom-{host}"));
+    let signing_key = deploy_key_dir.join(format!("loom-{host}-signing"));
+    std::fs::write(&deploy_key, "deploy-key").unwrap();
+    std::fs::write(&signing_key, "signing-key").unwrap();
+    let set_origin = git_command()
+        .arg("-C")
+        .arg(workspace)
+        .args([
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:taheris/loom.git",
+        ])
+        .status()
+        .expect("set github origin");
+    assert!(set_origin.success(), "set origin failed: {set_origin}");
+
     {
         use loom_driver::identifier::SpecLabel;
         use loom_driver::state::CacheDb;
@@ -1025,6 +1048,18 @@ fn loom_gate_review_writes_phase_jsonl_log() {
     // ReviewResult::PushBlocked, no push gates fire.
     let bead_json = r#"[{"id":"lm-reviewtest","title":"review gate bead","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","loom:clarify"]}]"#;
     let bd_bin_dir = install_bd_bead_stub(workspace, bead_json);
+    let hostname = bd_bin_dir.join("hostname");
+    std::fs::write(
+        &hostname,
+        format!(
+            "#!{}\nset -euo pipefail\nprintf '%s\\n' testhost\n",
+            find_bash().display()
+        ),
+    )
+    .unwrap();
+    let mut hostname_perm = std::fs::metadata(&hostname).unwrap().permissions();
+    hostname_perm.set_mode(0o755);
+    std::fs::set_permissions(&hostname, hostname_perm).unwrap();
 
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let mut path_entries = vec![bd_bin_dir];
@@ -1046,6 +1081,9 @@ fn loom_gate_review_writes_phase_jsonl_log() {
         .env("LOOM_BIN", loom_bin)
         .env("LOOM_PROFILES_MANIFEST", &manifest_path)
         .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        .env("HOME", &home)
+        .env_remove("WRIX_DEPLOY_KEY")
+        .env_remove("WRIX_SIGNING_KEY")
         // Bypass the nested-loom guard so cargo test inside a loom container
         // still reaches the review dispatch path under test.
         .env_remove("LOOM_INSIDE")
@@ -1080,6 +1118,16 @@ fn loom_gate_review_writes_phase_jsonl_log() {
         entries.len(),
         1,
         "exactly one phase JSONL file must appear at `<logs>/loom-agent/review-*.jsonl`: got {entries:?}",
+    );
+
+    let env_info = std::fs::read_to_string(&stdin_info).expect("read shim env info");
+    assert!(
+        env_info.contains(&format!("WRIX_DEPLOY_KEY={}", deploy_key.display())),
+        "review wrix spawn must receive resolved deploy key env: {env_info}",
+    );
+    assert!(
+        env_info.contains(&format!("WRIX_SIGNING_KEY={}", signing_key.display())),
+        "review wrix spawn must receive resolved signing key env: {env_info}",
     );
 
     let body = std::fs::read_to_string(&entries[0]).expect("read log");

@@ -46,6 +46,9 @@
 #   interactive-compaction-canary
 #                             — verify a controlled interactive Pi bridge
 #                               delivered full re-pin context before output.
+#   interactive-bridge-canary — probe ok; prompt emits compaction_start,
+#                               validates the re-pin steer payload, then
+#                               emits LOOM_COMPLETE.
 #   hang-probe                — read the get_state line and then sleep
 #                               forever without responding. Drives the
 #                               HandshakeTimeout path in spawn_with_handshake.
@@ -150,6 +153,25 @@ run_interactive_compaction_canary() {
         exit 4
     fi
     printf 'LOOM_COMPLETE\n'
+}
+
+run_interactive_bridge_canary() {
+    handle_probe 0
+    local _prompt steer_line
+    IFS= read -r _prompt
+    emit_compaction_start
+    IFS= read -r steer_line
+    if [[ "$steer_line" != *"$POLISH_NO_EDIT_PHRASE"* ]]; then
+        echo "mock-pi: bridge canary missing full polish no-edit definition" >&2
+        exit 4
+    fi
+    if [[ "$steer_line" != *"$CANARY_NONCE"* ]]; then
+        echo "mock-pi: bridge canary missing nonce" >&2
+        exit 4
+    fi
+    emit_compaction_end
+    emit_message_delta "LOOM_COMPLETE"
+    emit_agent_end
 }
 
 todo_payload_from_prompt() {
@@ -370,6 +392,9 @@ case "$MODE" in
         ;;
     interactive-compaction-canary)
         run_interactive_compaction_canary "$@"
+        ;;
+    interactive-bridge-canary)
+        run_interactive_bridge_canary
         ;;
     hang-probe)
         run_hang_probe

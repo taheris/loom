@@ -495,7 +495,7 @@ Code's stream-json framing (also JSONL) on stdin/stdout.
 |------|---------|---------------|
 | `steering` | mid-session steer test | Emits one assistant turn, waits for a stream-json user message on stdin, emits a second assistant turn echoing the steer payload, then `result/success` |
 | `ignore-stdin` | shutdown watchdog test | Emits `result/success`, ignores SIGTERM and stdin close so the test exercises the SIGTERM → SIGKILL escalation |
-| `interactive-compaction-canary` | plan/inbox re-pin behavioral canary | Simulates the launched interactive Claude process: verifies the compact hook/config is loaded through the production `wrix run` path, triggers the hook, then answers a post-compaction `do a polish` probe correctly only when the hook-supplied context contains the full interview-mode definition and a test-only nonce |
+| `interactive-compaction-canary` / `interactive-bridge-canary` | plan/inbox re-pin behavioral canary | Simulates the launched interactive Claude process or controlled Pi inbox bridge: verifies the compact hook/config or re-pin steer is loaded through the production launch path, triggers compaction, then answers a post-compaction probe correctly only when the delivered context contains the full interview-mode definition and a test-only nonce |
 | `happy-path` | container smoke | system → assistant → `result/success` |
 
 ### Nix Integration
@@ -922,9 +922,9 @@ the rules:
      and work epic
    - Profile/runtime selection from bead labels plus resolved backend
      (parse, fallback to base, flag override, missing runtime failure)
-   - Interactive `plan` / `inbox chat` command construction exports
-     backend-derived `WRIX_AGENT` for Pi/Claude and rejects Direct before
-     spawning Wrix
+   - Interactive `plan` / Claude-backed `inbox chat` command construction
+     exports backend-derived `WRIX_AGENT`, Pi-backed `inbox chat` uses the
+     controlled RPC bridge, and Direct is rejected before spawning Wrix
    - Retry logic (failure count tracking, `loom:clarify` label after max
      retries)
    - Push gate logic (clean completion, fix-up beads, iteration cap)

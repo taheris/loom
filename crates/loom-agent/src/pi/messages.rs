@@ -260,6 +260,14 @@ pub struct SteerCommand<'a> {
     pub message: &'a str,
 }
 
+/// `follow_up` command body — post-turn interactive reply.
+#[derive(Debug, Serialize)]
+pub struct FollowUpCommand<'a> {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub message: &'a str,
+}
+
 /// `abort` command body — terminates the in-flight operation.
 #[derive(Debug, Serialize)]
 pub struct AbortCommand {

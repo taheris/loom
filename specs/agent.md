@@ -84,36 +84,42 @@ production code change.
 
 ### Interactive Shell-Out
 
-`loom plan` and `loom inbox chat` bypass the agent-backend abstraction
-and shell out to an interactive REPL with inherited stdio. Both invoke
+`loom plan` and Claude-backed `loom inbox chat` bypass the
+agent-backend abstraction and shell out to an interactive REPL with
+inherited stdio. They invoke
 `wrix run <workspace> <agent command> ... <prompt>` and let the spawned
 process attach directly to the controlling terminal; the driver-side
-stream-json parser does not run on this path. The command is selected
-from the resolved chat-capable phase backend:
-`claude --dangerously-skip-permissions` for Claude and `pi` for Pi.
-Direct has no interactive REPL command; selecting
+stream-json parser does not run on this path. The command is
+`claude --dangerously-skip-permissions` for Claude. Pi-backed
+`loom inbox chat` uses a controlled RPC bridge over `wrix spawn --stdio`
+instead of raw `wrix run`, so Loom can observe `compaction_start` and send
+the same scratch-dir re-pin before accepting post-compaction output. Pi is
+still not a valid `loom plan` interactive backend until an equivalent
+planning bridge exists. Direct has no interactive REPL command; selecting
 `agent.backend = "direct"` for `plan` or `inbox chat` is a configuration
 error before any Wrix child process is spawned.
 
 Per-phase config still resolves: each phase's `profile` key flows
 through `LoomConfig::agent_for(Phase)` exactly like the non-interactive
 phases. The resolved profile/runtime pair is looked up in the
-profile-image manifest and the resulting `ImageEntry` is exported to
-`wrix run` via the `WRIX_DEFAULT_IMAGE_REF` /
-`WRIX_DEFAULT_IMAGE_SOURCE` env vars
-documented in [harness.md — Profile-Image
-Manifest](harness.md#profile-image-manifest). Loom also sets the
-backend-derived `WRIX_AGENT` on the `wrix run` child process so launcher
-host-side setup matches the selected runtime. The env-var hand-off is
-the sole image-selection contract on this path: `wrix run` has no
-`--profile` parser, and any extra tokens between the workspace
+profile-image manifest. For `wrix run` shell-outs, the resulting
+`ImageEntry` is exported via the `WRIX_DEFAULT_IMAGE_REF` /
+`WRIX_DEFAULT_IMAGE_SOURCE` env vars documented in [harness.md —
+Profile-Image Manifest](harness.md#profile-image-manifest). Loom also
+sets the backend-derived `WRIX_AGENT` on the `wrix run` child process so
+launcher host-side setup matches the selected runtime. The env-var
+hand-off is the sole image-selection contract on this path: `wrix run`
+has no `--profile` parser, and any extra tokens between the workspace
 positional and the agent command would be forwarded into the container as
-the command vector (the entrypoint would exec them literally and exit 127).
+the command vector (the entrypoint would exec them literally and exit
+127).
 
 `wrix run` reads those env vars (when no `--spawn-config` is supplied)
 to pick the same profile/runtime image the non-interactive `wrix spawn`
-path selects — the two paths must select the same image for the same
-profile name and backend runtime.
+path selects. Pi-backed `loom inbox chat` uses `SpawnConfig` instead of
+that env hand-off, but it resolves the same profile/runtime manifest
+entry — both launch paths must select the same image for the same profile
+name and backend runtime.
 
 ### Agent Backend Trait
 
@@ -723,11 +729,15 @@ path would be summary-only.
   directory and re-pins again — the scratchpad may have grown between
   compactions.
 
-**Pi interactive shell-out:**
+**Pi interactive chat:**
+- `loom inbox chat` uses a Pi RPC bridge instead of the raw `pi` REPL. The
+  bridge observes `compaction_start`, sends the same full-prompt re-pin from
+  the scratch directory, and treats overflow auto-retry output with the
+  non-interactive Pi policy before continuing the chat.
 - The raw `pi` REPL path is supported only if Loom can observe compaction and
   send the same full-prompt re-pin before trusting post-compaction output. If
   the selected Pi interactive command cannot provide that controlled path,
-  phase selection fails before launch.
+  phase selection fails before launch; this remains the `loom plan` Pi path.
 
 **Direct backend:**
 - Compaction is not a provider-driven event in Direct — `loom-llm`
@@ -1132,7 +1142,7 @@ the entrypoint run the wrong runtime.
 
 - `loom plan` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` and backend-derived `WRIX_AGENT` to `wrix run` (no `--profile` argv flag — `wrix run` has no parser for it), with the profile/runtime image resolved through `LoomConfig::agent_for(Phase::Plan)`
   [test](plan_runner_passes_resolved_profile_runtime_to_wrix_run)
-- `loom inbox chat` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` and backend-derived `WRIX_AGENT` to `wrix run` (no `--profile` argv flag), with the profile/runtime image resolved through `LoomConfig::agent_for(Phase::Inbox)`
+- Claude-backed `loom inbox chat` exports `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` and backend-derived `WRIX_AGENT` to `wrix run` (no `--profile` argv flag), with the profile/runtime image resolved through `LoomConfig::agent_for(Phase::Inbox)`
   [test](inbox_chat_passes_resolved_profile_runtime_to_wrix_run)
 - `[phase.default].profile` alone (no per-phase override, no CLI override) reaches `Phase::Plan` via the env-var hand-off
   [test](plan_phase_default_profile_alone_picks_manifest_entry)
@@ -1144,10 +1154,15 @@ the entrypoint run the wrong runtime.
       launcher/mock `claude`, but a test that only runs `repin.sh` directly
       does not satisfy this criterion
   [test](interactive_claude_shell_out_loads_compaction_hook)
-- Pi interactive shell-outs either expose a controlled compaction event plus
-      steer/re-pin path equivalent to the non-interactive backend, or fail
-      phase selection before launching; raw summary-only REPL compaction is
-      not an allowed state
+- Pi-backed `loom inbox chat` runs through a controlled RPC bridge instead
+      of raw `wrix run`, so compaction events remain observable before
+      trusting post-compaction output
+  [test](inbox_chat_runs_pi_backend_through_controlled_bridge)
+- Pi-backed `loom inbox chat` sends the scratch-dir re-pin when the RPC
+      bridge observes `compaction_start`
+  [test](inbox_chat_pi_bridge_repins_on_compaction_start)
+- Pi-backed `loom plan` still fails phase selection before launching because
+      raw summary-only REPL compaction is not an allowed state there
   [test](interactive_pi_shell_out_has_repin_or_fails_fast)
 
 ### Container integration
@@ -1242,20 +1257,23 @@ the entrypoint run the wrong runtime.
    backends and treats registration failure as fatal; `registration = "prompt"`
    disables native registration globally. Direct has no native skill registry
    and always consumes the prompt-disclosure index plus readable paths.
-8. **Interactive shell-out profile contract** — `loom plan` and
-   `loom inbox chat` bypass the agent-backend abstraction (so stdio can attach
-   as a REPL) and invoke `wrix run <workspace> <agent command> ... <prompt>`
-   directly. The profile and chat-capable backend resolved by
-   `LoomConfig::agent_for(Phase)` select the image and command together:
-   Claude uses `claude --dangerously-skip-permissions`, while Pi uses `pi`.
-   Direct is rejected for these interactive phases before Wrix spawn/run.
-   The matching profile/runtime `ImageEntry` is exported to `wrix run`
-   via the `WRIX_DEFAULT_IMAGE_REF` / `WRIX_DEFAULT_IMAGE_SOURCE` env vars,
-   and the backend-derived `WRIX_AGENT` is set on the child process. The
-   env-var hand-off is the sole image-selection contract on this path;
-   `wrix run` has no `--profile` parser, and extra argv tokens between the
-   workspace positional and agent command would be forwarded into the
-   container as the command vector (exit 127).
+8. **Interactive launch profile contract** — `loom plan` and Claude-backed
+   `loom inbox chat` bypass the agent-backend abstraction (so stdio can
+   attach as a REPL) and invoke
+   `wrix run <workspace> <agent command> ... <prompt>` directly. The profile
+   and chat-capable backend resolved by `LoomConfig::agent_for(Phase)` select
+   the image and command together; Claude uses
+   `claude --dangerously-skip-permissions`. The matching profile/runtime
+   `ImageEntry` is exported to `wrix run` via the `WRIX_DEFAULT_IMAGE_REF` /
+   `WRIX_DEFAULT_IMAGE_SOURCE` env vars, and backend-derived `WRIX_AGENT` is
+   set on the child process. The env-var hand-off is the sole image-selection
+   contract on the raw `wrix run` path; `wrix run` has no `--profile` parser,
+   and extra argv tokens between the workspace positional and agent command
+   would be forwarded into the container as the command vector (exit 127).
+   Pi-backed `loom inbox chat` resolves the same profile/runtime manifest
+   entry but launches a controlled `wrix spawn --stdio` RPC bridge so
+   compaction re-pin delivery remains observable. Pi-backed `loom plan` and
+   Direct-backed interactive phases are rejected before Wrix spawn/run.
 9. **Agent runtime layer** — the image builder composes two orthogonal axes:
    *workspace profile* (base, rust, python) and *agent runtime* (claude, pi,
    direct). The bundled profile manifest contains concrete entries for the

@@ -89,12 +89,14 @@ static SPAWN_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// `run_agent::<ClaudeBackend>(..)`).
 pub struct PiBackend;
 
-impl AgentBackend for PiBackend {
-    async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+impl PiBackend {
+    pub async fn spawn_with_wrix_bin(
+        config: &SpawnConfig,
+        wrix_bin: &OsStr,
+    ) -> Result<AgentSession<Idle>, ProtocolError> {
         register_native_skills::<NoNativeRegistrar>(config)?;
         let spawn_config_path = write_spawn_config(config)?;
 
-        let wrix_bin = std::env::var_os(ENV_WRIX_BIN).unwrap_or_else(|| OsString::from("wrix"));
         let handshake_budget = config
             .handshake_timeout
             .unwrap_or_else(|| Duration::from_secs(DEFAULT_HANDSHAKE_TIMEOUT_SECS));
@@ -106,7 +108,7 @@ impl AgentBackend for PiBackend {
         );
 
         let mut cmd = build_wrix_command(
-            &wrix_bin,
+            wrix_bin,
             config.profile_config.as_deref(),
             &spawn_config_path,
         );
@@ -123,6 +125,13 @@ impl AgentBackend for PiBackend {
             &SystemClock::new(),
         )
         .await
+    }
+}
+
+impl AgentBackend for PiBackend {
+    async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+        let wrix_bin = std::env::var_os(ENV_WRIX_BIN).unwrap_or_else(|| OsString::from("wrix"));
+        Self::spawn_with_wrix_bin(config, &wrix_bin).await
     }
 
     async fn on_compaction_start(
