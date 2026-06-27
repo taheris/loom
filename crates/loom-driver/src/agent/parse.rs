@@ -45,8 +45,9 @@ pub trait LineParse: Send {
     /// [`Self::encode_prompt`].
     fn encode_steer(&self, msg: &str) -> Result<String, ProtocolError>;
 
-    /// Encode a post-turn follow-up message. Backends without a distinct
-    /// follow-up verb reuse their steering frame.
+    /// Encode a post-turn follow-up message. Backends choose the wire verb
+    /// that starts the next turn from an idle prompt cycle; some reuse their
+    /// initial prompt frame rather than a queue-only follow-up command.
     fn encode_follow_up(&self, msg: &str) -> Result<String, ProtocolError> {
         self.encode_steer(msg)
     }

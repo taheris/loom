@@ -381,15 +381,19 @@ fn render_pi_bridge_event(event: &AgentEvent, output: &mut String) -> Result<(),
             is_error,
             ..
         } => {
-            let label = if *is_error {
-                "tool error"
-            } else {
-                "tool result"
-            };
-            println!("\n[{label}] {body}");
+            if let Some(body) = renderable_tool_body(body, *is_error) {
+                let label = if *is_error {
+                    "tool error"
+                } else {
+                    "tool result"
+                };
+                println!("\n[{label}] {body}");
+            }
         }
         AgentEvent::ToolProgress { text, .. } => {
-            println!("\n[tool progress] {text}");
+            if let Some(body) = renderable_tool_body(text, false) {
+                println!("\n[tool progress] {body}");
+            }
         }
         AgentEvent::Error { message, .. } => {
             eprintln!("\n[agent error] {message}");
@@ -397,6 +401,14 @@ fn render_pi_bridge_event(event: &AgentEvent, output: &mut String) -> Result<(),
         _ => {}
     }
     Ok(())
+}
+
+fn renderable_tool_body(body: &str, is_error: bool) -> Option<&str> {
+    let trimmed = body.trim();
+    if !is_error && (trimmed.is_empty() || trimmed == "(no output)") {
+        return None;
+    }
+    Some(trimmed)
 }
 
 async fn read_pi_bridge_follow_up(session: &mut AgentSession<Active>) -> Result<bool, ChatError> {
@@ -574,6 +586,13 @@ fn resolve_chat_selection(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn pi_bridge_suppresses_empty_success_tool_bodies() {
+        assert_eq!(renderable_tool_body("", false), None);
+        assert_eq!(renderable_tool_body("  (no output)\n", false), None);
+        assert_eq!(renderable_tool_body("failure", true), Some("failure"));
+    }
 
     #[test]
     fn argv_starts_with_wrix_run_and_workspace() {

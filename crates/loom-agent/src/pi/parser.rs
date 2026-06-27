@@ -11,8 +11,8 @@ use serde::Serialize;
 use tracing::{debug, trace, warn};
 
 use super::messages::{
-    AbortCommand, AssistantMessageDelta, ExtensionUiResponse, FollowUpCommand, PiEnvelope, PiEvent,
-    PiResponse, PiUiRequest, PromptCommand, SteerCommand,
+    AbortCommand, AssistantMessageDelta, ExtensionUiResponse, PiEnvelope, PiEvent, PiResponse,
+    PiUiRequest, PromptCommand, SteerCommand,
 };
 
 /// Pi-mono RPC line parser.
@@ -257,6 +257,21 @@ fn text_block_text(block: &serde_json::Value) -> Option<&str> {
         .or_else(|| block.get("content").and_then(serde_json::Value::as_str))
 }
 
+fn tool_payload_text(value: serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::Object(map) => {
+            let object = serde_json::Value::Object(map);
+            if let Some(content) = object.get("content") {
+                return content_text(Some(content));
+            }
+            object.to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
 fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, ProtocolError> {
     if parser.terminal_after_untrusted_retry()? {
         trace!("pi event ignored after unsafe overflow auto-retry fail-fast");
@@ -347,11 +362,7 @@ fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, Protocol
             result,
             is_error,
         } => {
-            let output = match result {
-                serde_json::Value::String(s) => s,
-                serde_json::Value::Null => String::new(),
-                other => other.to_string(),
-            };
+            let output = tool_payload_text(result);
             // Pop the Task stack BEFORE building the event — a Task's
             // own tool_result closes that subagent, and subsequent tool
             // calls are siblings of the Task, not children.
@@ -407,11 +418,7 @@ fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, Protocol
             tool_call_id,
             partial_result,
         } => {
-            let text = match partial_result {
-                serde_json::Value::String(s) => s,
-                serde_json::Value::Null => String::new(),
-                other => other.to_string(),
-            };
+            let text = tool_payload_text(partial_result);
             ParsedLine {
                 events: vec![ParsedAgentEvent::ToolProgress {
                     id: tool_call_id,
@@ -523,8 +530,11 @@ impl LineParse for PiParser {
     }
 
     fn encode_follow_up(&self, msg: &str) -> Result<String, ProtocolError> {
-        encode_command(&FollowUpCommand {
-            kind: "follow_up",
+        // The inbox bridge asks after `agent_end`, when Pi is idle. The
+        // RPC `follow_up` verb only queues work for an active prompt loop;
+        // an idle human reply must start the next prompt cycle.
+        encode_command(&PromptCommand {
+            kind: "prompt",
             message: msg,
         })
     }
@@ -1086,6 +1096,32 @@ mod tests {
     }
 
     #[test]
+    fn pi_tool_execution_update_extracts_text_content_blocks() {
+        let line = r#"{"type":"tool_execution_update","toolCallId":"tc-7","partialResult":{"content":[{"type":"text","text":"halfway"}]}}"#;
+        let p = parse(line);
+        assert_eq!(p.events.len(), 1);
+        match &p.events[0] {
+            ParsedAgentEvent::ToolProgress { text, .. } => {
+                assert_eq!(text, "halfway");
+            }
+            other => panic!("expected ToolProgress, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pi_tool_execution_end_extracts_text_content_blocks() {
+        let line = r#"{"type":"tool_execution_end","toolCallId":"tc-8","result":{"content":[{"type":"text","text":"done"}]},"isError":false}"#;
+        let p = parse(line);
+        assert_eq!(p.events.len(), 1);
+        match &p.events[0] {
+            ParsedAgentEvent::ToolResult { output, .. } => {
+                assert_eq!(output, "done");
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn pi_auto_retry_start_yields_auto_retry_event() {
         // pi auto_retry telemetry surfaces so the renderer can show
         // transient-failure progress (attempt/N + delay + reason).
@@ -1210,14 +1246,14 @@ mod tests {
     }
 
     #[test]
-    fn encode_follow_up_emits_follow_up_command() {
+    fn encode_follow_up_emits_idle_prompt_command() {
         let parser = PiParser::new();
         let line = parser
             .encode_follow_up("next")
             .expect("encoder should succeed");
         let v: serde_json::Value =
-            serde_json::from_str(line.trim_end()).expect("encoded follow_up is valid JSON");
-        assert_eq!(v["type"], "follow_up");
+            serde_json::from_str(line.trim_end()).expect("encoded follow-up is valid JSON");
+        assert_eq!(v["type"], "prompt");
         assert_eq!(v["message"], "next");
     }
 

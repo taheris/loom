@@ -2,9 +2,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use loom_driver::git::{
     GitClient, bare_origin_path, commit_all_in, init_test_repo_with_integration,
@@ -240,6 +241,32 @@ fn run_chat_extra(
     args: &[&str],
     extra_env: &[(&str, &str)],
 ) -> std::process::Output {
+    chat_command(env, mode, args, extra_env)
+        .output()
+        .expect("spawn loom")
+}
+
+fn run_chat_with_stdin(
+    env: &ChatRun,
+    mode: &str,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+    stdin: &str,
+) -> std::process::Output {
+    let mut child = chat_command(env, mode, args, extra_env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn loom");
+    {
+        let mut input = child.stdin.take().expect("stdin piped");
+        input.write_all(stdin.as_bytes()).expect("write stdin");
+    }
+    child.wait_with_output().expect("wait loom")
+}
+
+fn chat_command(env: &ChatRun, mode: &str, args: &[&str], extra_env: &[(&str, &str)]) -> Command {
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let mut entries: Vec<PathBuf> = vec![env.bd_bin_dir.clone()];
     entries.extend(std::env::split_paths(&path_var));
@@ -261,7 +288,7 @@ fn run_chat_extra(
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
-    cmd.output().expect("spawn loom")
+    cmd
 }
 
 fn read_invocation_log(state_dir: &Path) -> String {
@@ -587,6 +614,40 @@ fn inbox_chat_pi_bridge_repins_on_compaction_start() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+#[test]
+fn inbox_chat_pi_bridge_sends_human_reply_as_next_prompt() {
+    let env = setup_chat();
+    std::fs::write(
+        env.workspace.join("loom.toml"),
+        "[phase.inbox]\nagent.backend = \"pi\"\n",
+    )
+    .expect("write config");
+    seed_bead(
+        &env.state_dir,
+        "lm-pifollow",
+        "pi follow-up",
+        "blocked",
+        "open",
+        &["loom:blocked"],
+    );
+
+    let output = run_chat_with_stdin(
+        &env,
+        "resolve-none",
+        &[],
+        &[("WRIX_STUB_PI_MODE", "interactive-followup")],
+        "please finish\n",
+    );
+    assert!(
+        output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("loom inbox pi>"), "{stdout}");
 }
 
 #[test]

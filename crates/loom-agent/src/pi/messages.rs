@@ -260,7 +260,8 @@ pub struct SteerCommand<'a> {
     pub message: &'a str,
 }
 
-/// `follow_up` command body — post-turn interactive reply.
+/// `follow_up` command body — queue a reply while a prompt cycle is still
+/// running. Idle, post-`agent_end` human replies use another `prompt` command.
 #[derive(Debug, Serialize)]
 pub struct FollowUpCommand<'a> {
     #[serde(rename = "type")]
