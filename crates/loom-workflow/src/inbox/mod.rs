@@ -1,8 +1,8 @@
 //! `loom inbox` — human decision queue.
 //!
 //! Lists, views, and launches chat for outstanding `loom:clarify`,
-//! `loom:blocked`, and tune proposal items. Host-side modes are read-only;
-//! resolution happens in `loom inbox chat`.
+//! `loom:blocked`, `loom:infra`, and tune proposal items. Host-side modes are
+//! read-only; resolution happens in `loom inbox chat`.
 
 mod apply;
 pub mod chat;
@@ -16,7 +16,7 @@ pub use apply::{ApplyError, ApplyReport, apply_proposals, ensure_integration_cle
 pub use context::build_inbox_context;
 pub use error::InboxError;
 pub use list::{
-    InboxItem, InboxKind, InboxRow, TuneInfo, build_queue, build_rows, find_by_bead_id,
+    InboxItem, InboxKind, InboxRow, InfraInfo, TuneInfo, build_queue, build_rows, find_by_bead_id,
     find_by_index, find_by_proposal_id, kind_of, spec_label_of,
 };
 pub use options::{

@@ -39,7 +39,7 @@ pub use finding::{
     ConcernToken, Finding, FindingParseError, FindingRoute, FindingTarget, FindingValidator,
     LOOM_FINDING_PREFIX, TargetKind,
 };
-pub use inbox::{ClarifyOption, InboxContext, InboxItem, ItemKind, TuneItem};
+pub use inbox::{ClarifyOption, InboxContext, InboxItem, InfraItem, ItemKind, TuneItem};
 pub use plan::PlanContext;
 pub use previous_failure::{
     BadWalk, DriverNoticeCause, PREVIOUS_FAILURE_MAX_LEN, PreviousFailure, STDERR_TAIL_PER_BLOCK,

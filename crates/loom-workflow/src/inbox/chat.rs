@@ -40,6 +40,8 @@ use super::list::{
 use super::terminal::{TerminalMarker, TerminalMarkerError, parse as parse_terminal_marker};
 use super::{ApplyError, apply_proposals, ensure_integration_clean_after_chat};
 
+const INBOX_NON_CLOSED_STATUSES: &str = "open,in_progress,blocked,deferred";
+
 /// Default name of the wrix launcher binary on PATH.
 pub const WRIX_BIN: &str = "wrix";
 
@@ -135,7 +137,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     let beads = runtime
         .block_on(async {
             let bd = BdClient::new();
-            bd.list(ListOpts::default()).await
+            bd.list(inbox_list_opts()).await
         })
         .map_err(|e| ChatError::BdList(e.to_string()))?;
     let queue = build_queue(&beads, opts.spec_filter.as_ref(), opts.kind_filter, false);
@@ -286,7 +288,7 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
     let beads_after = runtime
         .block_on(async {
             let bd = BdClient::new();
-            bd.list(ListOpts::default()).await
+            bd.list(inbox_list_opts()).await
         })
         .map_err(|e| ChatError::BdList(e.to_string()))?;
     let remaining = build_queue(
@@ -300,6 +302,13 @@ pub fn run(workspace: &Path, opts: ChatOpts) -> Result<ChatReport, ChatError> {
         items_remaining: remaining.len(),
         applied_proposals,
     })
+}
+
+fn inbox_list_opts() -> ListOpts {
+    ListOpts {
+        status: Some(INBOX_NON_CLOSED_STATUSES.to_string()),
+        ..ListOpts::default()
+    }
 }
 
 fn build_pi_bridge_spawn_config(
@@ -877,7 +886,23 @@ fn resolve_chat_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loom_driver::bd::{Bead, Label};
     use std::path::PathBuf;
+
+    fn bead(id: &str, labels: &[&str]) -> Bead {
+        Bead {
+            id: BeadId::new(id).expect("valid bead id"),
+            title: id.to_string(),
+            description: String::new(),
+            status: "open".into(),
+            priority: 2,
+            issue_type: "task".into(),
+            labels: labels.iter().map(|label| Label::new(*label)).collect(),
+            parent: None,
+            metadata: Default::default(),
+            notes: None,
+        }
+    }
 
     #[test]
     fn pi_bridge_suppresses_empty_success_tool_bodies() {
@@ -962,6 +987,19 @@ mod tests {
         assert_eq!(argv.last().map(String::as_str), Some("PROMPT BODY"));
         assert!(!argv.iter().any(|a| a == "spawn"));
         assert!(!argv.iter().any(|a| a == "--stdio"));
+    }
+
+    #[test]
+    fn chat_kind_filter_can_surface_infra_items() {
+        let beads = vec![
+            bead("lm-blocked", &["loom:blocked"]),
+            bead("lm-infra", &["loom:infra"]),
+        ];
+        let queue = build_queue(&beads, None, Some(InboxKind::Infra), false);
+        let visible = select_visible(queue, Some(&ChatTarget::Index(1))).expect("visible infra");
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].kind, InboxKind::Infra);
+        assert_eq!(visible[0].bead.id, BeadId::new("lm-infra").expect("valid"));
     }
 
     #[test]

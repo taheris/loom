@@ -588,7 +588,11 @@ mod tests {
         let client = BdClient::with_runner(runner);
         client
             .list(ListOpts {
-                label_any: vec!["loom:clarify".into(), "loom:blocked".into()],
+                label_any: vec![
+                    "loom:clarify".into(),
+                    "loom:blocked".into(),
+                    "loom:infra".into(),
+                ],
                 ..ListOpts::default()
             })
             .await?;
@@ -600,6 +604,7 @@ mod tests {
                 "--json".into(),
                 "--label-any=loom:clarify".into(),
                 "--label-any=loom:blocked".into(),
+                "--label-any=loom:infra".into(),
             ]
         );
         Ok(())

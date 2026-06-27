@@ -347,10 +347,10 @@ where
         if let Some(queue) = self.fixed_queue.as_mut() {
             return Ok(queue.pop_front());
         }
-        // Dedup of clarify/blocked beads relies on the paired
-        // `status=blocked` transition that `apply_clarify` / `apply_blocked`
-        // write alongside the label. `bd ready` natively excludes
-        // status=blocked, so no exclude-label flag is needed.
+        // Dedup of parked beads primarily relies on their paired blocked or
+        // deferred status. The explicit label guard below catches stale or
+        // partially-written `loom:*` parked state, so no exclude-label flag is
+        // needed here.
         //
         // Epic-typed beads are skipped: workers dispatch leaf work, not
         // molecule containers. A stray ready epic surfaces as one info-log
@@ -1111,10 +1111,9 @@ where
 
 fn bead_has_parked_state(bead: &Bead) -> bool {
     bead.status == "blocked"
-        || bead
-            .labels
-            .iter()
-            .any(|label| label.is_blocked() || label.is_clarify())
+        || bead.labels.iter().any(|label| {
+            label.is_blocked() || label.is_clarify() || label.is_deferred() || label.is_infra()
+        })
 }
 
 fn gate_log_root(logs_root: Option<&std::path::Path>, workspace: &std::path::Path) -> PathBuf {
@@ -1695,6 +1694,18 @@ mod tests {
             parent: None,
             metadata: Default::default(),
             notes: None,
+        }
+    }
+
+    #[test]
+    fn parked_state_includes_infra_and_deferred_labels() {
+        for label in ["loom:infra", "loom:deferred"] {
+            let mut bead = bead("lm-parked");
+            bead.labels.push(Label::new(label));
+            assert!(
+                bead_has_parked_state(&bead),
+                "{label} must suppress ready dispatch",
+            );
         }
     }
 

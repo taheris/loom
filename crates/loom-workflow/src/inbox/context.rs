@@ -2,7 +2,7 @@ use std::path::Path;
 
 use loom_templates::SkillIndexMarkdown;
 use loom_templates::inbox::{
-    ClarifyOption, InboxContext, InboxItem as TemplateItem, ItemKind, TuneItem,
+    ClarifyOption, InboxContext, InboxItem as TemplateItem, InfraItem, ItemKind, TuneItem,
 };
 
 use super::list::{InboxItem, InboxKind};
@@ -62,8 +62,19 @@ fn to_template_item(workspace: &Path, item: &InboxItem) -> TemplateItem {
         kind: match item.kind {
             InboxKind::Clarify => ItemKind::Clarify,
             InboxKind::Blocked => ItemKind::Blocked,
+            InboxKind::Infra => ItemKind::Infra,
             InboxKind::Tune => ItemKind::Tune,
         },
+        infra: item.infra.as_ref().map(|infra| InfraItem {
+            phase: infra.phase.clone(),
+            first_event_seen: infra.first_event_seen,
+            attempt: infra.attempt.clone(),
+            max_attempts: infra.max_attempts.clone(),
+            exit_status: infra.exit_status.clone(),
+            stderr_tail: infra.stderr_tail.clone(),
+            spawn_error_tail: infra.spawn_error_tail.clone(),
+            log_path: infra.log_path.clone(),
+        }),
         tune: item.tune.as_ref().map(|tune| {
             let envelope = workspace.join(".loom/tune").join(&tune.proposal_id);
             TuneItem {
@@ -158,6 +169,56 @@ mod tests {
         assert_eq!(tune.state, "pending");
         assert_eq!(tune.repo_path, "/work/.loom/tune/lm-tune/repo");
         assert_eq!(item.spec_label, "—");
+    }
+
+    #[test]
+    fn infra_template_item_carries_diagnostics() {
+        let mut infra = bead("lm-infra", "Infra issue", "diag", &["loom:infra"]);
+        infra
+            .metadata
+            .insert("loom.infra.phase".into(), json!("interrupted"));
+        infra
+            .metadata
+            .insert("loom.infra.first_event_seen".into(), json!(true));
+        infra.metadata.insert("loom.infra.attempt".into(), json!(1));
+        infra
+            .metadata
+            .insert("loom.infra.max_attempts".into(), json!(3));
+        infra
+            .metadata
+            .insert("loom.infra.exit_status".into(), json!(137));
+        infra
+            .metadata
+            .insert("loom.infra.stderr_tail".into(), json!("stderr tail"));
+        infra
+            .metadata
+            .insert("loom.infra.spawn_error_tail".into(), json!("spawn tail"));
+        infra
+            .metadata
+            .insert("loom.infra.log_path".into(), json!("log.jsonl"));
+
+        let items = super::super::list::build_queue(&[infra], None, None, true);
+        let ctx = build_inbox_context(
+            Path::new("/workspace"),
+            String::new(),
+            Vec::new(),
+            &items,
+            "/workspace/.loom/scratch/inbox/scratch.md".into(),
+            SkillIndexMarkdown::empty(),
+        );
+        let body = askama::Template::render(&ctx).expect("render");
+        assert!(body.contains("[infra]"), "{body}");
+        assert!(
+            body.contains("worker did not reach semantic judgement"),
+            "{body}"
+        );
+        assert!(body.contains("Phase: `interrupted`"), "{body}");
+        assert!(body.contains("First event seen: `true`"), "{body}");
+        assert!(body.contains("Attempt: `1/3`"), "{body}");
+        assert!(body.contains("Exit status: `137`"), "{body}");
+        assert!(body.contains("stderr tail"), "{body}");
+        assert!(body.contains("spawn tail"), "{body}");
+        assert!(body.contains("Log path: `log.jsonl`"), "{body}");
     }
 
     #[test]

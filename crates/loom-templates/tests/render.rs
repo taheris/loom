@@ -49,6 +49,7 @@ fn inbox_item(id: &str, spec: &str, title: &str, kind: ItemKind) -> InboxItem {
         options_summary: None,
         options: Vec::new(),
         kind,
+        infra: None,
         tune: None,
     }
 }

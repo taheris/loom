@@ -240,6 +240,7 @@ enum NoteAction {
 enum InboxKindArg {
     Clarify,
     Blocked,
+    Infra,
     Tune,
 }
 
@@ -248,6 +249,7 @@ impl From<InboxKindArg> for InboxKind {
         match arg {
             InboxKindArg::Clarify => InboxKind::Clarify,
             InboxKindArg::Blocked => InboxKind::Blocked,
+            InboxKindArg::Infra => InboxKind::Infra,
             InboxKindArg::Tune => InboxKind::Tune,
         }
     }
@@ -279,7 +281,7 @@ impl InboxArgs {
 
 #[derive(Debug, Subcommand)]
 enum InboxAction {
-    /// List pending human-decision items.
+    /// List pending human-decision and diagnostic items.
     List(InboxListArgs),
     /// Render one item host-side.
     View(InboxViewArgs),
@@ -518,7 +520,7 @@ enum Command {
         #[command(subcommand)]
         subcommand: Option<GateSubcommand>,
     },
-    /// Human decision queue for clarifies, blockers, and tune proposals.
+    /// Human decision and diagnostic queue.
     Inbox(InboxArgs),
     /// Tune skills and templates through isolated proposals.
     Tune(TuneArgs),
@@ -3897,7 +3899,11 @@ fn load_inbox_beads() -> anyhow::Result<Vec<Bead>> {
     let runtime = tokio::runtime::Runtime::new()?;
     Ok(runtime.block_on(async {
         let bd = BdClient::new();
-        bd.list(ListOpts::default()).await
+        bd.list(ListOpts {
+            status: Some("open,in_progress,blocked,deferred".to_string()),
+            ..ListOpts::default()
+        })
+        .await
     })?)
 }
 
@@ -3949,70 +3955,134 @@ fn chat_target(
 }
 
 fn render_inbox_item_view(workspace: &Path, item: &InboxItem) {
-    println!(
-        "inbox item {} [{}] ({})",
-        item.durable_id(),
-        item.kind.tag(),
-        item.bead.status,
+    print!("{}", render_inbox_item_view_text(workspace, item));
+}
+
+fn render_inbox_item_view_text(workspace: &Path, item: &InboxItem) -> String {
+    let mut out = String::new();
+    push_line(
+        &mut out,
+        format!(
+            "inbox item {} [{}] ({})",
+            item.durable_id(),
+            item.kind.tag(),
+            item.bead.status,
+        ),
     );
-    println!("bead: {}", item.bead.id);
+    push_line(&mut out, format!("bead: {}", item.bead.id));
     if let Some(spec) = &item.spec {
-        println!("spec: {spec}");
+        push_line(&mut out, format!("spec: {spec}"));
     }
-    println!("title: {}", item.bead.title);
+    push_line(&mut out, format!("title: {}", item.bead.title));
+    if let Some(infra) = &item.infra {
+        push_infra_diagnostics(&mut out, infra);
+    }
     if let Some(tune) = &item.tune {
-        println!("tune state: {}", tune.state);
+        push_line(&mut out, format!("tune state: {}", tune.state));
         if let Some(branch) = &tune.proposal_branch {
-            println!("proposal branch: {branch}");
+            push_line(&mut out, format!("proposal branch: {branch}"));
         }
         if let Some(base) = &tune.base_commit {
-            println!("base commit: {base}");
+            push_line(&mut out, format!("base commit: {base}"));
         }
         if let Some(head) = &tune.proposal_head {
-            println!("proposal head: {head}");
+            push_line(&mut out, format!("proposal head: {head}"));
         }
         let envelope = workspace.join(".loom/tune").join(&tune.proposal_id);
-        println!("artifacts:");
-        print_artifact("envelope", &envelope);
-        print_artifact("repo", &envelope.join("repo"));
-        print_artifact("manifest", &envelope.join("manifest.json"));
-        print_artifact("evidence", &envelope.join("evidence.md"));
+        push_line(&mut out, "artifacts:");
+        push_artifact(&mut out, "envelope", &envelope);
+        push_artifact(&mut out, "repo", &envelope.join("repo"));
+        push_artifact(&mut out, "manifest", &envelope.join("manifest.json"));
+        push_artifact(&mut out, "evidence", &envelope.join("evidence.md"));
     }
-    println!();
-    println!("description:\n{}", item.bead.description);
+    push_blank(&mut out);
+    push_line(&mut out, format!("description:\n{}", item.bead.description));
     if let Some(notes) = item.bead.notes.as_deref().filter(|notes| !notes.is_empty()) {
-        println!();
-        println!("notes:\n{notes}");
+        push_blank(&mut out);
+        push_line(&mut out, format!("notes:\n{notes}"));
     }
     let parsed = parse_options_in(item.bead.notes.as_deref(), &item.bead.description);
     if !parsed.summary.is_empty() || !parsed.options.is_empty() {
-        println!();
-        println!("options summary: {}", parsed.summary);
+        push_blank(&mut out);
+        push_line(&mut out, format!("options summary: {}", parsed.summary));
         for option in parsed.options {
-            println!("option {}: {}", option.n, option.title);
+            push_line(&mut out, format!("option {}: {}", option.n, option.title));
             if !option.body.is_empty() {
-                println!("{}", option.body);
+                push_line(&mut out, option.body);
             }
         }
     }
-    println!();
-    println!("manual escape hatches:");
-    println!("  bd show {}", item.bead.id);
+    push_blank(&mut out);
+    push_line(&mut out, "manual escape hatches:");
+    push_line(&mut out, format!("  bd show {}", item.bead.id));
     if item.tune.is_some() {
-        println!("  loom inbox chat -p {}", item.durable_id());
-        println!(
-            "  inspect {}/.loom/tune/{}",
-            workspace.display(),
-            item.durable_id()
+        push_line(
+            &mut out,
+            format!("  loom inbox chat -p {}", item.durable_id()),
+        );
+        push_line(
+            &mut out,
+            format!(
+                "  inspect {}/.loom/tune/{}",
+                workspace.display(),
+                item.durable_id()
+            ),
         );
     } else {
-        println!("  loom inbox chat -b {}", item.bead.id);
+        push_line(&mut out, format!("  loom inbox chat -b {}", item.bead.id));
+        if item.kind == InboxKind::Infra {
+            push_line(
+                &mut out,
+                format!(
+                    "  bd update {} --remove-label=loom:infra --status=open",
+                    item.bead.id
+                ),
+            );
+        }
+    }
+    out
+}
+
+fn push_infra_diagnostics(out: &mut String, infra: &loom_workflow::inbox::InfraInfo) {
+    push_line(
+        out,
+        "flow: loom:infra — infrastructure/operator diagnostic; worker did not reach semantic judgement.",
+    );
+    push_line(out, "infra diagnostics:");
+    push_optional_line(out, "phase", infra.phase.as_deref());
+    if let Some(seen) = infra.first_event_seen {
+        push_line(out, format!("  first_event_seen: {seen}"));
+    }
+    match (infra.attempt.as_deref(), infra.max_attempts.as_deref()) {
+        (Some(attempt), Some(max)) => push_line(out, format!("  attempt: {attempt}/{max}")),
+        (Some(attempt), None) => push_line(out, format!("  attempt: {attempt}")),
+        (None, Some(max)) => push_line(out, format!("  max_attempts: {max}")),
+        (None, None) => {}
+    }
+    push_optional_line(out, "exit_status", infra.exit_status.as_deref());
+    push_optional_line(out, "stderr_tail", infra.stderr_tail.as_deref());
+    push_optional_line(out, "spawn_error_tail", infra.spawn_error_tail.as_deref());
+    push_optional_line(out, "log_path", infra.log_path.as_deref());
+}
+
+fn push_optional_line(out: &mut String, label: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        push_line(out, format!("  {label}: {value}"));
     }
 }
 
-fn print_artifact(label: &str, path: &Path) {
+fn push_line(out: &mut String, line: impl AsRef<str>) {
+    out.push_str(line.as_ref());
+    out.push('\n');
+}
+
+fn push_blank(out: &mut String) {
+    out.push('\n');
+}
+
+fn push_artifact(out: &mut String, label: &str, path: &Path) {
     let state = if path.exists() { "present" } else { "missing" };
-    println!("  {label}: {} ({state})", path.display());
+    push_line(out, format!("  {label}: {} ({state})", path.display()));
 }
 
 fn run_todo(
@@ -4434,6 +4504,82 @@ mod tests {
                 opts.add_labels,
             );
         }
+    }
+
+    #[test]
+    fn inbox_kind_arg_accepts_infra() {
+        let cli = Cli::try_parse_from(["loom", "inbox", "list", "--kind", "infra"])
+            .expect("parse inbox infra kind");
+        let Command::Inbox(args) = cli.command else {
+            panic!("expected inbox command");
+        };
+        let Some(InboxAction::List(list)) = args.action else {
+            panic!("expected inbox list action");
+        };
+        assert_eq!(list.filters.kind, Some(InboxKindArg::Infra));
+    }
+
+    #[test]
+    fn inbox_view_text_renders_infra_diagnostics() {
+        let mut bead = Bead {
+            id: BeadId::new("lm-infra").expect("valid bead id"),
+            title: "Infra diagnostic".into(),
+            description: "worker never started".into(),
+            status: "blocked".into(),
+            priority: 2,
+            issue_type: "task".into(),
+            labels: vec![
+                loom_driver::bd::Label::new("spec:harness"),
+                loom_driver::bd::Label::new("loom:infra"),
+            ],
+            parent: None,
+            metadata: Default::default(),
+            notes: Some("infra-preflight: image load failed".into()),
+        };
+        bead.metadata
+            .insert("loom.infra.phase".into(), serde_json::json!("pre-stream"));
+        bead.metadata.insert(
+            "loom.infra.first_event_seen".into(),
+            serde_json::json!(false),
+        );
+        bead.metadata
+            .insert("loom.infra.attempt".into(), serde_json::json!(2));
+        bead.metadata
+            .insert("loom.infra.max_attempts".into(), serde_json::json!(3));
+        bead.metadata
+            .insert("loom.infra.exit_status".into(), serde_json::json!(127));
+        bead.metadata.insert(
+            "loom.infra.stderr_tail".into(),
+            serde_json::json!("container stderr"),
+        );
+        bead.metadata.insert(
+            "loom.infra.spawn_error_tail".into(),
+            serde_json::json!("spawn failed"),
+        );
+        bead.metadata
+            .insert("loom.infra.log_path".into(), serde_json::json!("log.jsonl"));
+
+        let items = build_queue(&[bead], None, Some(InboxKind::Infra), true);
+        let body = render_inbox_item_view_text(Path::new("/workspace"), &items[0]);
+        assert!(
+            body.contains("inbox item lm-infra [infra] (blocked)"),
+            "{body}"
+        );
+        assert!(
+            body.contains("worker did not reach semantic judgement"),
+            "{body}"
+        );
+        assert!(body.contains("phase: pre-stream"), "{body}");
+        assert!(body.contains("first_event_seen: false"), "{body}");
+        assert!(body.contains("attempt: 2/3"), "{body}");
+        assert!(body.contains("exit_status: 127"), "{body}");
+        assert!(body.contains("stderr_tail: container stderr"), "{body}");
+        assert!(body.contains("spawn_error_tail: spawn failed"), "{body}");
+        assert!(body.contains("log_path: log.jsonl"), "{body}");
+        assert!(
+            body.contains("--remove-label=loom:infra --status=open"),
+            "{body}"
+        );
     }
 
     /// Spec contract `specs/gate.md` § *Standing-safety-net checks*:

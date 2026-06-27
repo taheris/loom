@@ -17,8 +17,8 @@ use crate::todo::ExitSignal;
 /// the methods to:
 ///
 /// - `pre_snapshot` / `post_snapshot` → `BdClient::list { label: "spec:<L>" }`
-/// - `blocked_ids` / `clarify_ids` → filter the same list for `loom:blocked`
-///   and `loom:clarify` respectively
+/// - terminal label IDs → filter the same list for `loom:blocked`,
+///   `loom:clarify`, `loom:deferred`, and `loom:infra`
 /// - `run_review` → render review.md, build SpawnConfig, drive
 ///   `AgentBackend`, tee the event stream into the log sink, parse the
 ///   exit signal
@@ -240,13 +240,14 @@ pub enum ReviewResult {
     /// Push succeeded; iteration counter was reset.
     Pushed,
 
-    /// `PushBlocked` verdict — gate stopped without pushing because at
-    /// least one molecule bead carries `loom:blocked` or `loom:clarify`.
-    /// Caller surfaces both ID lists to the user via the `loom inbox`
-    /// pointer.
+    /// `PushBlocked` verdict — gate stopped without pushing because at least
+    /// one molecule bead carries a terminal inbox or deferred label. Caller
+    /// surfaces the ID lists to the user via the `loom inbox` pointer.
     PushBlocked {
         blocked_ids: Vec<BeadId>,
         clarify_ids: Vec<BeadId>,
+        deferred_ids: Vec<BeadId>,
+        infra_ids: Vec<BeadId>,
     },
 
     /// Auto-iteration was triggered. The driver execs `loom loop`; if the
@@ -259,11 +260,45 @@ pub enum ReviewResult {
     Escalated { escalate_id: BeadId, cap: u32 },
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct UnresolvedBeadState {
+    blocked_ids: Vec<BeadId>,
+    clarify_ids: Vec<BeadId>,
+    deferred_ids: Vec<BeadId>,
+    infra_ids: Vec<BeadId>,
+}
+
+impl UnresolvedBeadState {
+    fn from_beads(beads: &[Bead]) -> Self {
+        Self {
+            blocked_ids: ids_with_label(beads, Label::is_blocked),
+            clarify_ids: ids_with_label(beads, Label::is_clarify),
+            deferred_ids: ids_with_label(beads, Label::is_deferred),
+            infra_ids: ids_with_label(beads, Label::is_infra),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.blocked_ids.is_empty()
+            && self.clarify_ids.is_empty()
+            && self.deferred_ids.is_empty()
+            && self.infra_ids.is_empty()
+    }
+}
+
+fn ids_with_label(beads: &[Bead], predicate: impl Fn(&Label) -> bool) -> Vec<BeadId> {
+    beads
+        .iter()
+        .filter(|bead| bead.labels.iter().any(&predicate))
+        .map(|bead| bead.id.clone())
+        .collect()
+}
+
 /// Drive one `loom review` invocation through the gate.
 ///
 /// 1. Snapshot beads carrying `spec:<label>` (`pre`).
 /// 2. Run the reviewer agent.
-/// 3. Snapshot again (`post`); compute new bead IDs and clarify membership.
+/// 3. Snapshot again (`post`); compute new bead IDs and unresolved labels.
 /// 4. Apply the verdict (push / clarify-stop / auto-iterate / escalate).
 pub async fn review_loop<C: ReviewController>(
     controller: &mut C,
@@ -295,22 +330,12 @@ pub async fn review_loop<C: ReviewController>(
     let post = controller.list_spec_beads().await?;
     let post_ids: Vec<BeadId> = post.iter().map(|b| b.id.clone()).collect();
     let new_ids = diff_new_bead_ids(&pre_ids, &post_ids);
-    let blocked_ids: Vec<BeadId> = post
-        .iter()
-        .filter(|b| b.labels.iter().any(Label::is_blocked))
-        .map(|b| b.id.clone())
-        .collect();
-    let clarify_ids: Vec<BeadId> = post
-        .iter()
-        .filter(|b| b.labels.iter().any(Label::is_clarify))
-        .map(|b| b.id.clone())
-        .collect();
+    let unresolved = UnresolvedBeadState::from_beads(&post);
 
     let integrity_findings = controller.integrity_findings().await?;
     let verdict = decide_verdict(
         &new_ids,
-        &blocked_ids,
-        &clarify_ids,
+        &unresolved,
         marker.as_ref(),
         &integrity_findings,
         cap,
@@ -421,18 +446,19 @@ async fn auto_close_completed_epics<C: ReviewController>(
 /// persisted iteration counter.
 async fn decide_verdict<C: ReviewController>(
     new_ids: &[BeadId],
-    blocked_ids: &[BeadId],
-    clarify_ids: &[BeadId],
+    unresolved: &UnresolvedBeadState,
     review_marker: Option<&ExitSignal>,
     integrity_findings: &[IntegrityFinding],
     cap: IterationCap,
     controller: &mut C,
 ) -> Result<ReviewVerdict, ReviewError> {
-    if !blocked_ids.is_empty() || !clarify_ids.is_empty() {
+    if !unresolved.is_empty() {
         return Ok(ReviewVerdict::PushBlocked {
             cause: PushGateRefuseCause::BeadNotDone,
-            blocked_ids: blocked_ids.to_vec(),
-            clarify_ids: clarify_ids.to_vec(),
+            blocked_ids: unresolved.blocked_ids.clone(),
+            clarify_ids: unresolved.clarify_ids.clone(),
+            deferred_ids: unresolved.deferred_ids.clone(),
+            infra_ids: unresolved.infra_ids.clone(),
             integrity_findings: vec![],
         });
     }
@@ -442,6 +468,8 @@ async fn decide_verdict<C: ReviewController>(
             cause: PushGateRefuseCause::ReviewConcern,
             blocked_ids: vec![],
             clarify_ids: vec![],
+            deferred_ids: vec![],
+            infra_ids: vec![],
             integrity_findings: vec![],
         });
     }
@@ -457,6 +485,8 @@ async fn decide_verdict<C: ReviewController>(
                 cause: PushGateRefuseCause::IntegrityFinding,
                 blocked_ids: vec![],
                 clarify_ids: vec![],
+                deferred_ids: vec![],
+                infra_ids: vec![],
                 integrity_findings: integrity_findings.to_vec(),
             });
         }
@@ -550,6 +580,8 @@ async fn apply_verdict<C: ReviewController>(
             cause,
             blocked_ids,
             clarify_ids,
+            deferred_ids,
+            infra_ids,
             integrity_findings,
         } => {
             controller.emit_driver_event(
@@ -559,6 +591,8 @@ async fn apply_verdict<C: ReviewController>(
                     "cause": cause.as_str(),
                     "blocked_ids": blocked_ids.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
                     "clarify_ids": clarify_ids.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+                    "deferred_ids": deferred_ids.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+                    "infra_ids": infra_ids.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
                 }),
             );
             let parked_ids = controller
@@ -585,6 +619,8 @@ async fn apply_verdict<C: ReviewController>(
             Ok(ReviewResult::PushBlocked {
                 blocked_ids,
                 clarify_ids,
+                deferred_ids,
+                infra_ids,
             })
         }
         ReviewVerdict::AutoIterate {
@@ -1119,6 +1155,7 @@ mod tests {
             ReviewResult::PushBlocked {
                 blocked_ids,
                 clarify_ids,
+                ..
             } => {
                 assert!(blocked_ids.is_empty(), "no blocked beads in this scenario");
                 assert_eq!(clarify_ids, vec![BeadId::new("lm-2").expect("valid")]);
@@ -1161,6 +1198,7 @@ mod tests {
             ReviewResult::PushBlocked {
                 blocked_ids,
                 clarify_ids,
+                ..
             } => {
                 assert_eq!(blocked_ids, vec![BeadId::new("lm-2").expect("valid")]);
                 assert!(clarify_ids.is_empty(), "no clarify beads in this scenario");
@@ -1186,6 +1224,7 @@ mod tests {
             ReviewResult::PushBlocked {
                 blocked_ids,
                 clarify_ids,
+                ..
             } => {
                 assert_eq!(blocked_ids, vec![BeadId::new("lm-1").expect("valid")]);
                 assert!(clarify_ids.is_empty());
@@ -1213,6 +1252,7 @@ mod tests {
             ReviewResult::PushBlocked {
                 blocked_ids,
                 clarify_ids,
+                ..
             } => {
                 assert_eq!(blocked_ids, vec![BeadId::new("lm-2").expect("valid")]);
                 assert_eq!(clarify_ids, vec![BeadId::new("lm-3").expect("valid")]);
@@ -1222,6 +1262,54 @@ mod tests {
         assert_eq!(c.git_push_calls, 0);
         assert_eq!(c.beads_push_calls, 0);
         assert_eq!(c.exec_run_calls, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn infra_and_deferred_present_stop_without_pushing() -> Result<(), ReviewError> {
+        let mut c = FakeController {
+            pre_beads: vec![bead("lm-1", &["spec:harness"])],
+            post_beads: vec![
+                bead("lm-1", &["spec:harness"]),
+                bead("lm-2", &["spec:harness", "loom:infra"]),
+                bead("lm-3", &["spec:harness", "loom:deferred"]),
+            ],
+            ..FakeController::default()
+        };
+
+        let result = review_loop(&mut c, IterationCap::default()).await?;
+        match result {
+            ReviewResult::PushBlocked {
+                blocked_ids,
+                clarify_ids,
+                deferred_ids,
+                infra_ids,
+            } => {
+                assert!(blocked_ids.is_empty());
+                assert!(clarify_ids.is_empty());
+                assert_eq!(deferred_ids, vec![BeadId::new("lm-3").expect("valid")]);
+                assert_eq!(infra_ids, vec![BeadId::new("lm-2").expect("valid")]);
+            }
+            other => panic!("expected PushBlocked, got {other:?}"),
+        }
+        assert_eq!(c.git_push_calls, 0, "infra/deferred never pushes");
+        let refuse = c
+            .driver_events
+            .iter()
+            .find(|(k, _, _)| k == "push_gate_refuse")
+            .expect("refuse event present");
+        assert!(
+            refuse.2["infra_ids"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id == "lm-2")),
+            "infra id payload missing: {refuse:?}",
+        );
+        assert!(
+            refuse.2["deferred_ids"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id == "lm-3")),
+            "deferred id payload missing: {refuse:?}",
+        );
         Ok(())
     }
 
@@ -1678,6 +1766,22 @@ mod tests {
                 },
             ),
             (
+                "bead-not-done",
+                FakeController {
+                    pre_beads: vec![bead("lm-1", &["spec:harness"])],
+                    post_beads: vec![bead("lm-1", &["spec:harness", "loom:infra"])],
+                    ..FakeController::default()
+                },
+            ),
+            (
+                "bead-not-done",
+                FakeController {
+                    pre_beads: vec![bead("lm-1", &["spec:harness"])],
+                    post_beads: vec![bead("lm-1", &["spec:harness", "loom:deferred"])],
+                    ..FakeController::default()
+                },
+            ),
+            (
                 "review-concern",
                 FakeController {
                     review: Some(ReviewOutcome::Incomplete {
@@ -1805,10 +1909,9 @@ mod tests {
 
     /// No-fire #3: when the push-gate refuses (any non-Clean verdict),
     /// the auto-close walk does not run even if children happen to be
-    /// closed. Pinned across all three non-Clean push-refusal markers
-    /// the review phase can produce: a bead carrying `loom:clarify`
-    /// (bead-not-done), a `loom:blocked` bead, and a `LOOM_CONCERN`
-    /// review marker.
+    /// closed. Pinned across non-Clean push-refusal markers the review phase
+    /// can produce: a bead carrying `loom:clarify` (bead-not-done),
+    /// `loom:blocked`, `loom:infra`, and a `LOOM_CONCERN` review marker.
     #[tokio::test]
     async fn epic_does_not_auto_close_on_non_clean_review_verdict() -> Result<(), ReviewError> {
         let leaf_clarify = {
@@ -1821,6 +1924,11 @@ mod tests {
             b.labels = vec![Label::new("loom:blocked")];
             b
         };
+        let leaf_infra = {
+            let mut b = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
+            b.labels = vec![Label::new("loom:infra")];
+            b
+        };
         let leaf_clean = shaped_bead("lm-leaf.1", "task", "closed", Some("lm-epic"));
         let epic = shaped_bead("lm-epic", "epic", "open", None);
 
@@ -1830,6 +1938,9 @@ mod tests {
             }),
             ("blocked-on-leaf", {
                 controller_with_ancestry(vec![leaf_blocked], vec![epic.clone()])
+            }),
+            ("infra-on-leaf", {
+                controller_with_ancestry(vec![leaf_infra], vec![epic.clone()])
             }),
             ("loom_concern-marker", {
                 let mut c = controller_with_ancestry(vec![leaf_clean], vec![epic.clone()]);

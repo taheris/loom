@@ -7,8 +7,8 @@ use loom_gate::IntegrityFinding;
 /// from the payload shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushGateRefuseCause {
-    /// Some bead in the molecule still carries `loom:blocked` or
-    /// `loom:clarify`.
+    /// Some bead in the molecule still carries a terminal inbox or deferred
+    /// label.
     BeadNotDone,
     /// `loom gate verify --diff <molecule.base_commit>..HEAD` exited
     /// non-zero (or a dispatch error counted as a fail).
@@ -35,7 +35,7 @@ impl PushGateRefuseCause {
 
 /// Snapshot of bead state taken on either side of the reviewer agent. The
 /// driver pre-counts beads with `spec:<label>`, runs the reviewer, then
-/// re-counts and inspects the same query for `loom:blocked`/`loom:clarify`
+/// re-counts and inspects the same query for terminal inbox/deferred label
 /// membership.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BeadSnapshot {
@@ -45,6 +45,10 @@ pub struct BeadSnapshot {
     pub blocked_ids: Vec<BeadId>,
     /// IDs of beads currently labelled `loom:clarify` within the spec.
     pub clarify_ids: Vec<BeadId>,
+    /// IDs of beads currently labelled `loom:deferred` within the spec.
+    pub deferred_ids: Vec<BeadId>,
+    /// IDs of beads currently labelled `loom:infra` within the spec.
+    pub infra_ids: Vec<BeadId>,
     /// IDs that appeared after the reviewer ran. Only populated for the
     /// post-snapshot — set is computed by [`super::diff_snapshots`].
     pub new_bead_ids: Vec<BeadId>,
@@ -55,25 +59,26 @@ pub struct BeadSnapshot {
 /// `loom loop`, etc.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewVerdict {
-    /// No new beads + no `loom:blocked` + no `loom:clarify` → push code +
-    /// beads.
+    /// No new beads + no terminal inbox/deferred labels → push code + beads.
     Clean,
 
     /// Push gate refused. `cause` names which of the four conditions
-    /// failed; `blocked_ids`/`clarify_ids` populate only when
-    /// `cause = BeadNotDone` and are empty for the other three causes;
-    /// `integrity_findings` populates only when `cause =
-    /// IntegrityFinding` and is empty otherwise. Per the four-condition
+    /// failed; label-id lists populate only when `cause = BeadNotDone` and
+    /// are empty for the other three causes; `integrity_findings` populates
+    /// only when `cause = IntegrityFinding` and is empty otherwise. Per the four-condition
     /// AND in `specs/harness.md` FR9, push fires only when every
     /// condition passes.
     PushBlocked {
         cause: PushGateRefuseCause,
         blocked_ids: Vec<BeadId>,
         clarify_ids: Vec<BeadId>,
+        deferred_ids: Vec<BeadId>,
+        infra_ids: Vec<BeadId>,
         integrity_findings: Vec<IntegrityFinding>,
     },
 
-    /// New fix-up beads, no blocked/clarify, iteration cap not reached → exec
+    /// New fix-up beads, no terminal inbox/deferred labels, iteration cap not
+    /// reached → exec
     /// `loom loop` for another forward pass. The driver increments the
     /// counter before returning this variant.
     AutoIterate {
@@ -94,7 +99,8 @@ pub enum ReviewVerdict {
         next_iteration: u32,
     },
 
-    /// New fix-up beads, no blocked/clarify, iteration cap exhausted →
+    /// New fix-up beads, no terminal inbox/deferred labels, iteration cap
+    /// exhausted →
     /// escalate the newest fix-up bead to `loom:clarify` and stop.
     IterationCap {
         new_bead_ids: Vec<BeadId>,

@@ -28,12 +28,17 @@ pub struct InboxItem {
     pub options_summary: Option<String>,
     pub options: Vec<ClarifyOption>,
     pub kind: ItemKind,
+    pub infra: Option<InfraItem>,
     pub tune: Option<TuneItem>,
 }
 
 impl InboxItem {
     pub fn is_blocked(&self) -> bool {
         matches!(self.kind, ItemKind::Blocked)
+    }
+
+    pub fn is_infra(&self) -> bool {
+        matches!(self.kind, ItemKind::Infra)
     }
 
     pub fn is_tune(&self) -> bool {
@@ -50,6 +55,7 @@ impl ItemKind {
         match self {
             Self::Clarify => "clarify",
             Self::Blocked => "blocked",
+            Self::Infra => "infra",
             Self::Tune => "tune",
         }
     }
@@ -60,6 +66,7 @@ impl ItemKind {
 pub enum ItemKind {
     Clarify,
     Blocked,
+    Infra,
     Tune,
 }
 
@@ -69,6 +76,19 @@ pub struct ClarifyOption {
     pub n: u32,
     pub title: Option<String>,
     pub body: Option<String>,
+}
+
+/// Infra diagnostics rendered for operator-resolution inbox items.
+#[derive(Debug, Clone)]
+pub struct InfraItem {
+    pub phase: Option<String>,
+    pub first_event_seen: Option<bool>,
+    pub attempt: Option<String>,
+    pub max_attempts: Option<String>,
+    pub exit_status: Option<String>,
+    pub stderr_tail: Option<String>,
+    pub spawn_error_tail: Option<String>,
+    pub log_path: Option<String>,
 }
 
 /// Tune proposal metadata rendered for tune inbox items.

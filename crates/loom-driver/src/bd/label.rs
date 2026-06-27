@@ -18,6 +18,8 @@ const PROFILE_PREFIX: &str = "profile:";
 const ACTIVE: &str = "loom:active";
 const BLOCKED: &str = "loom:blocked";
 const CLARIFY: &str = "loom:clarify";
+const DEFERRED: &str = "loom:deferred";
+const INFRA: &str = "loom:infra";
 const SPEC: &str = "loom:spec";
 const TODO: &str = "loom:todo";
 
@@ -55,6 +57,16 @@ impl Label {
         self.0 == CLARIFY
     }
 
+    /// `true` when the label is exactly `loom:deferred`.
+    pub fn is_deferred(&self) -> bool {
+        self.0 == DEFERRED
+    }
+
+    /// `true` when the label is exactly `loom:infra`.
+    pub fn is_infra(&self) -> bool {
+        self.0 == INFRA
+    }
+
     /// `true` when the label is exactly `loom:spec`.
     pub fn is_spec_epic(&self) -> bool {
         self.0 == SPEC
@@ -84,6 +96,8 @@ mod tests {
         assert!(l.profile_name().is_none());
         assert!(!l.is_blocked());
         assert!(!l.is_clarify());
+        assert!(!l.is_deferred());
+        assert!(!l.is_infra());
     }
 
     #[test]
@@ -94,13 +108,18 @@ mod tests {
     }
 
     #[test]
-    fn loom_blocked_and_clarify_are_exact_match() {
+    fn loom_resolution_labels_are_exact_match() {
         assert!(Label::new("loom:blocked").is_blocked());
         assert!(Label::new("loom:clarify").is_clarify());
+        assert!(Label::new("loom:deferred").is_deferred());
+        assert!(Label::new("loom:infra").is_infra());
         assert!(!Label::new("loom:blocked-cause").is_blocked());
         assert!(!Label::new("loom:clarify-soon").is_clarify());
+        assert!(!Label::new("loom:deferred-work").is_deferred());
+        assert!(!Label::new("loom:infra-retry").is_infra());
         assert!(!Label::new("loom:blocked").is_clarify());
         assert!(!Label::new("loom:clarify").is_blocked());
+        assert!(!Label::new("loom:infra").is_blocked());
     }
 
     #[test]
@@ -110,6 +129,8 @@ mod tests {
         assert!(l.profile_name().is_none());
         assert!(!l.is_blocked());
         assert!(!l.is_clarify());
+        assert!(!l.is_deferred());
+        assert!(!l.is_infra());
         assert_eq!(l.as_str(), "urgent");
         assert_eq!(l.to_string(), "urgent");
     }

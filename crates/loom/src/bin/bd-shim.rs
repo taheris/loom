@@ -21,7 +21,7 @@
 //! Supported subcommands (the subset `loom loop` / `loom gate` /
 //! `loom inbox` actually invoke):
 //!
-//! - `bd list --json [--label-any=<L> …] [--parent=<id>]`
+//! - `bd list --json [--status=<csv>] [--label-any=<L> …] [--parent=<id>]`
 //! - `bd ready --json [--limit=N] [--label=<L>] [--exclude-label=<L> …]`
 //! - `bd show <id> --json`
 //! - `bd create --silent --title <t> --description <t> [--type <t>] [--priority <n>] [--labels <csv>] [--metadata <json>]`
@@ -164,6 +164,15 @@ fn metadata_json(state_dir: &Path, id: &str) -> serde_json::Value {
     }
 }
 
+fn extend_csv_filter(filters: &mut Vec<String>, raw: &str) {
+    filters.extend(
+        raw.split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(String::from),
+    );
+}
+
 fn list_bead_ids(state_dir: &Path) -> Vec<String> {
     let entries = match fs::read_dir(state_dir) {
         Ok(e) => e,
@@ -181,7 +190,7 @@ fn list_bead_ids(state_dir: &Path) -> Vec<String> {
 
 fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
     let mut label_any: Vec<String> = Vec::new();
-    let mut status_filter: Option<String> = None;
+    let mut status_filters: Vec<String> = Vec::new();
     let mut label_eq: Option<String> = None;
     let mut type_filter: Option<String> = None;
     let mut parent_filter: Option<String> = None;
@@ -196,7 +205,7 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
             label_eq = Some(v.to_string());
             i += 1;
         } else if let Some(v) = a.strip_prefix("--status=") {
-            status_filter = Some(v.to_string());
+            extend_csv_filter(&mut status_filters, v);
             i += 1;
         } else if let Some(v) = a.strip_prefix("--type=") {
             type_filter = Some(v.to_string());
@@ -214,7 +223,9 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
             label_eq = Some(args.get(i + 1).cloned().unwrap_or_default());
             i += 2;
         } else if a == "--status" {
-            status_filter = Some(args.get(i + 1).cloned().unwrap_or_default());
+            if let Some(v) = args.get(i + 1) {
+                extend_csv_filter(&mut status_filters, v);
+            }
             i += 2;
         } else if a == "--type" {
             type_filter = Some(args.get(i + 1).cloned().unwrap_or_default());
@@ -242,10 +253,11 @@ fn cmd_list(state_dir: &Path, args: &[String]) -> ExitCode {
         {
             continue;
         }
-        if let Some(want) = &status_filter
-            && read_field(state_dir, &id, "status").trim() != want
-        {
-            continue;
+        if !status_filters.is_empty() {
+            let status = read_field(state_dir, &id, "status");
+            if !status_filters.iter().any(|want| want == status.trim()) {
+                continue;
+            }
         }
         if let Some(want) = &type_filter
             && read_field(state_dir, &id, "issue_type").trim() != want
