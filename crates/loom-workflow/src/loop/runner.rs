@@ -29,6 +29,15 @@ pub const UNKNOWN_PROFILE_CAUSE: &str = "unknown-profile";
 /// selected agent runtime in the profile-image manifest.
 pub const UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE: &str = "unknown-agent-runtime-for-profile";
 
+/// Spec-table cause string for static spawn-config diagnostics.
+pub const INVALID_SPAWN_CONFIG_CAUSE: &str = "invalid-spawn-config";
+
+/// Spec-table cause string for a selected image/runtime missing its agent binary.
+pub const MISSING_AGENT_BINARY_CAUSE: &str = "missing-agent-binary";
+
+/// Spec-table cause string for failed dirty-work preservation before cleanup.
+pub const WORKSPACE_RECOVERY_FAILED_CAUSE: &str = "workspace-recovery-failed";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InfraRetryPolicy {
     pub max_attempts: u32,
@@ -70,6 +79,13 @@ impl RetryableInfraClass {
 
     const fn first_event_seen(self) -> bool {
         matches!(self, Self::Interrupted)
+    }
+
+    const fn infra_class(self) -> &'static str {
+        match self {
+            Self::Preflight => "infra-preflight",
+            Self::Interrupted => "infra-interrupted",
+        }
     }
 }
 
@@ -672,6 +688,11 @@ async fn process_one_bead<C: AgentLoopController>(
                     error,
                 ));
             }
+            AgentOutcome::StaticInfra { cause, error } => {
+                let diagnostic = InfraDiagnostic::static_diagnostic(&cause, error);
+                emit_infra_failure(controller, bead, &diagnostic);
+                return terminal(BeadResult::Infra { diagnostic });
+            }
             AgentOutcome::UnknownProfile { error } => {
                 let diagnostic = InfraDiagnostic::static_diagnostic(UNKNOWN_PROFILE_CAUSE, error);
                 emit_infra_failure(controller, bead, &diagnostic);
@@ -734,6 +755,7 @@ fn handle_retryable_infra<C: AgentLoopController>(
     let max_attempts = infra_policy.effective_max_attempts();
     let diagnostic = InfraDiagnostic::retryable(
         class.cause(),
+        class.infra_class(),
         error,
         state.infra_attempts,
         max_attempts,
@@ -765,6 +787,7 @@ fn emit_infra_failure<C: AgentLoopController>(
             "first_event_seen": diagnostic.first_event_seen,
             "attempt": diagnostic.attempt,
             "max_attempts": diagnostic.max_attempts,
+            "infra_class": diagnostic.infra_class,
             "cause": diagnostic.cause,
             "error": diagnostic.error,
         }),
@@ -1260,6 +1283,7 @@ mod tests {
         assert_eq!(c.infra[0].0, BeadId::new("lm-1").expect("valid"));
         let diagnostic = &c.infra[0].1;
         assert_eq!(diagnostic.cause, INFRA_PREFLIGHT_CAUSE);
+        assert_eq!(diagnostic.infra_class, "infra-preflight");
         assert_eq!(diagnostic.attempt, Some(2));
         assert_eq!(diagnostic.max_attempts, Some(2));
         assert_eq!(diagnostic.first_event_seen, Some(false));
@@ -1294,6 +1318,7 @@ mod tests {
         assert_eq!(c.infra[0].0, BeadId::new("lm-bad").expect("valid"));
         let diagnostic = &c.infra[0].1;
         assert_eq!(diagnostic.cause, UNKNOWN_PROFILE_CAUSE);
+        assert_eq!(diagnostic.infra_class, "static");
         assert_eq!(diagnostic.attempt, None);
         assert!(diagnostic.error.contains("profile:nonexistent"));
         assert!(diagnostic.error.contains("profile:base"));
@@ -1317,8 +1342,43 @@ mod tests {
         assert!(c.blocked.is_empty());
         assert_eq!(c.infra.len(), 1);
         assert_eq!(c.infra[0].1.cause, UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE);
+        assert_eq!(c.infra[0].1.infra_class, "static");
         assert!(c.infra[0].1.error.contains("runtime direct"));
         assert_eq!(summary.beads_blocked, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn static_infra_outcome_surfaces_without_retry() -> Result<(), LoopError> {
+        for (cause, error) in [
+            (INVALID_SPAWN_CONFIG_CAUSE, "spawn config omitted image_ref"),
+            (
+                MISSING_AGENT_BINARY_CAUSE,
+                "agent process exited with code 127",
+            ),
+            (
+                WORKSPACE_RECOVERY_FAILED_CAUSE,
+                "git stash failed before cleanup",
+            ),
+        ] {
+            let mut c = FakeController::default();
+            c.ready_queue.push_back(bead("lm-static", &[]));
+            c.agent_outcomes.push_back(AgentOutcome::StaticInfra {
+                cause: cause.to_string(),
+                error: error.to_string(),
+            });
+
+            let summary = run_loop(&mut c, RetryPolicy::default(), 10).await?;
+
+            assert_eq!(c.run_calls.len(), 1, "{cause} must not retry");
+            assert!(c.blocked.is_empty(), "{cause} must not be loom:blocked");
+            assert_eq!(c.infra.len(), 1, "{cause} must park as loom:infra");
+            assert_eq!(c.infra[0].1.cause, cause);
+            assert_eq!(c.infra[0].1.infra_class, "static");
+            assert_eq!(c.infra[0].1.attempt, None);
+            assert_eq!(c.infra[0].1.error, error);
+            assert_eq!(summary.beads_blocked, 1);
+        }
         Ok(())
     }
 
@@ -1376,6 +1436,7 @@ mod tests {
         assert_eq!(event.2["first_event_seen"].as_bool(), Some(true));
         assert_eq!(event.2["attempt"].as_u64(), Some(1));
         assert_eq!(event.2["max_attempts"].as_u64(), Some(1));
+        assert_eq!(event.2["infra_class"].as_str(), Some("infra-interrupted"));
         assert_eq!(event.2["cause"].as_str(), Some(INFRA_INTERRUPTED_CAUSE));
         assert_eq!(event.2["error"].as_str(), Some("exit 137"));
         Ok(())

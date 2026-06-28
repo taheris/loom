@@ -4,9 +4,9 @@ use loom_driver::agent::{AgentRuntime, MountSpec, SpawnConfig};
 use loom_driver::bd::Bead;
 use loom_driver::config::LoomTopConfig;
 use loom_driver::identifier::ProfileName;
-use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
+use loom_driver::profile_manifest::{ImageEntry, ProfileError, ProfileImageManifest};
 
-use super::profile::resolve_profile_image;
+use super::profile::resolve_profile;
 
 /// Workspace-relative host path of the `wrix-beads` dolt socket. Held as a
 /// constant so the bead-container mount and any future host-side consumer of
@@ -95,7 +95,9 @@ pub fn build_spawn_config_from_manifest(
     mounts: Vec<MountSpec>,
     launcher_env: Vec<(String, String)>,
 ) -> Result<SpawnConfig, ProfileError> {
-    let entry = resolve_profile_image(manifest, &bead.labels, override_, phase_default, runtime)?;
+    let profile = resolve_profile(&bead.labels, override_, phase_default);
+    let entry = manifest.lookup(&profile, runtime)?;
+    validate_spawn_manifest_entry(manifest, &profile, runtime, entry)?;
     Ok(crate::spawn::build_spawn_config(
         entry,
         runtime,
@@ -107,6 +109,30 @@ pub fn build_spawn_config_from_manifest(
         mounts,
         launcher_env,
     ))
+}
+
+fn validate_spawn_manifest_entry(
+    manifest: &ProfileImageManifest,
+    profile: &ProfileName,
+    runtime: AgentRuntime,
+    entry: &ImageEntry,
+) -> Result<(), ProfileError> {
+    let reason = if entry.r#ref.trim().is_empty() {
+        Some("image ref is empty")
+    } else if entry.source.as_os_str().is_empty() {
+        Some("image source is empty")
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        return Err(ProfileError::InvalidSpawnConfig {
+            profile: profile.clone(),
+            runtime,
+            reason: reason.to_string(),
+            manifest_path: manifest.manifest_path().to_path_buf(),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -635,6 +661,51 @@ mod tests {
             "launcher keys must NOT leak into the in-container env allowlist: {:?}",
             cfg.env,
         );
+    }
+
+    #[test]
+    fn invalid_manifest_entry_returns_typed_spawn_config_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("profile-images.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "base": { "pi": { "ref": "", "source": "/nix/store/aaa-image-base-pi", "source_kind": "nix-descriptor" } }
+            }"#,
+        )
+        .expect("write manifest");
+        let manifest = ProfileImageManifest::from_path(&path).expect("parse manifest");
+        let bead = bead_with_labels("lm-1", &["profile:base"]);
+
+        let err = build_spawn_config_from_manifest(
+            &manifest,
+            &bead,
+            None,
+            &base(),
+            AgentRuntime::Pi,
+            PathBuf::from("/work"),
+            "p".into(),
+            dir.path().join("scratch"),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        )
+        .expect_err("expected invalid spawn config");
+
+        match err {
+            ProfileError::InvalidSpawnConfig {
+                profile,
+                runtime,
+                reason,
+                ..
+            } => {
+                assert_eq!(profile, ProfileName::new("base"));
+                assert_eq!(runtime, AgentRuntime::Pi);
+                assert!(reason.contains("image ref"), "{reason}");
+            }
+            other => panic!("expected InvalidSpawnConfig, got {other:?}"),
+        }
     }
 
     /// A bead with a `profile:X` not declared in the manifest fails

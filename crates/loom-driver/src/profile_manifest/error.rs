@@ -46,6 +46,14 @@ pub enum ProfileError {
         manifest_path: PathBuf,
     },
 
+    /// manifest entry for profile {profile} runtime {runtime} cannot produce a valid spawn config at {manifest_path}: {reason}
+    InvalidSpawnConfig {
+        profile: ProfileName,
+        runtime: AgentRuntime,
+        reason: String,
+        manifest_path: PathBuf,
+    },
+
     /// manifest entry for profile {profile} is keyed by runtime {runtime_key} but declares runtime {entry_runtime} at {manifest_path}
     RuntimeMetadataMismatch {
         profile: ProfileName,

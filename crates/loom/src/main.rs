@@ -3305,9 +3305,9 @@ async fn dispatch_for_slot(
     let marker = parse_exit_signal(&output);
     match result {
         SessionResult::Complete(outcome) => Ok((outcome, marker)),
-        SessionResult::PreflightFailed { error } | SessionResult::MidSessionFailed { error } => {
-            Err(anyhow::anyhow!(error))
-        }
+        SessionResult::PreflightFailed { error }
+        | SessionResult::MidSessionFailed { error }
+        | SessionResult::StaticInfra { error, .. } => Err(anyhow::anyhow!(error)),
         SessionResult::ObserverAbort { reason } => {
             Err(anyhow::anyhow!("Session aborted by observer: {reason}"))
         }

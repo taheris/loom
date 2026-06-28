@@ -504,6 +504,7 @@ async fn merge_back_one(
         | AgentOutcome::ZeroProgress { detail: error }
         | AgentOutcome::InfraPreflight { error }
         | AgentOutcome::InfraMidSession { error }
+        | AgentOutcome::StaticInfra { error, .. }
         | AgentOutcome::UnknownProfile { error }
         | AgentOutcome::UnknownRuntimeForProfile { error } => {
             warn!(bead = %bead.id, %error, "agent failed — worktree preserved for recovery");

@@ -44,7 +44,7 @@ use super::context::{LoopContextInputs, render_loop_prompt};
 use super::driver_emit::BeadEmit;
 use super::error::LoopError;
 use super::outcome::{AgentOutcome, InfraDiagnostic, SessionResult};
-use super::runner::{AgentLoopController, PerBeadGateOutcome};
+use super::runner::{AgentLoopController, INVALID_SPAWN_CONFIG_CAUSE, PerBeadGateOutcome};
 use crate::spawn::container_workspace_path;
 
 use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
@@ -621,6 +621,14 @@ where
                     ),
                 });
             }
+            Err(e @ ProfileError::InvalidSpawnConfig { .. })
+            | Err(e @ ProfileError::RuntimeMetadataMismatch { .. }) => {
+                drop(scratch);
+                return Ok(AgentOutcome::StaticInfra {
+                    cause: INVALID_SPAWN_CONFIG_CAUSE.to_string(),
+                    error: e.to_string(),
+                });
+            }
             Err(e) => {
                 drop(scratch);
                 return Err(LoopError::Profile(e));
@@ -933,6 +941,10 @@ where
         let mut metadata = vec![
             ("loom.infra.cause".to_string(), diagnostic.cause.clone()),
             ("loom.infra.phase".to_string(), "loop".to_string()),
+            (
+                "loom.infra.class".to_string(),
+                diagnostic.infra_class.clone(),
+            ),
         ];
         if let Some(first_event_seen) = diagnostic.first_event_seen {
             metadata.push((
@@ -1411,6 +1423,7 @@ pub fn classify_session(session: SessionResult, marker: Option<ExitSignal>) -> A
     match session {
         SessionResult::PreflightFailed { error } => AgentOutcome::InfraPreflight { error },
         SessionResult::MidSessionFailed { error } => AgentOutcome::InfraMidSession { error },
+        SessionResult::StaticInfra { cause, error } => AgentOutcome::StaticInfra { cause, error },
         SessionResult::ObserverAbort { reason } => verdict_to_outcome(
             PhaseVerdict::Recovery {
                 cause: RecoveryCause::ObserverAbort { reason },
@@ -1521,6 +1534,7 @@ pub async fn list_open_for_spec(bd: &BdClient, label: &SpecLabel) -> Result<Vec<
 
 #[cfg(test)]
 mod tests {
+    use super::super::runner::MISSING_AGENT_BINARY_CAUSE;
     use super::*;
     use loom_driver::agent::SessionOutcome;
     use loom_driver::bd::{BdError, Label, RunOutput};
@@ -1668,6 +1682,25 @@ mod tests {
                 "swallowed-marker text missing: {error}",
             ),
             other => panic!("expected Failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_session_preserves_static_infra_cause() {
+        let outcome = classify_session(
+            SessionResult::StaticInfra {
+                cause: MISSING_AGENT_BINARY_CAUSE.to_string(),
+                error: "agent process exited with code 127".into(),
+            },
+            None,
+        );
+
+        match outcome {
+            AgentOutcome::StaticInfra { cause, error } => {
+                assert_eq!(cause, MISSING_AGENT_BINARY_CAUSE);
+                assert!(error.contains("code 127"));
+            }
+            other => panic!("expected StaticInfra, got {other:?}"),
         }
     }
 
@@ -2327,6 +2360,48 @@ mod tests {
                 );
             }
             other => panic!("expected UnknownProfile, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_bead_translates_invalid_spawn_config_into_static_infra() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let path = dir.path().join("profile-images.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "base": { "pi": { "ref": "", "source": "/nix/store/aaa-image-base-pi", "source_kind": "nix-descriptor" } }
+            }"#,
+        )
+        .expect("write manifest");
+        let manifest = Arc::new(ProfileImageManifest::from_path(&path).expect("parse manifest"));
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            SpecLabel::new("spec-x"),
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                panic!("spawn closure must not run for invalid spawn config");
+            },
+        );
+
+        let outcome = controller
+            .run_bead(&bead("lm-invalid"), None)
+            .await
+            .expect("run_bead ok");
+
+        match outcome {
+            AgentOutcome::StaticInfra { cause, error } => {
+                assert_eq!(cause, INVALID_SPAWN_CONFIG_CAUSE);
+                assert!(error.contains("image ref"), "{error}");
+            }
+            other => panic!("expected StaticInfra, got {other:?}"),
         }
     }
 
@@ -3049,6 +3124,7 @@ mod tests {
         let bead_id = BeadId::new("lm-infra.1").expect("bead id");
         let diagnostic = InfraDiagnostic::retryable(
             "infra-preflight",
+            "infra-preflight",
             "podman load failed".to_string(),
             2,
             3,
@@ -3075,6 +3151,11 @@ mod tests {
         assert!(
             argv.windows(2)
                 .any(|w| w[0] == "--set-metadata" && w[1] == "loom.infra.attempt=2"),
+            "{argv:?}",
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--set-metadata" && w[1] == "loom.infra.class=infra-preflight"),
             "{argv:?}",
         );
         assert!(

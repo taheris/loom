@@ -29,7 +29,7 @@ use loom_events::{
 };
 use tracing::{info, trace, warn};
 
-use crate::r#loop::SessionResult;
+use crate::r#loop::{MISSING_AGENT_BINARY_CAUSE, SessionResult};
 use crate::observer::DefaultObserverChain;
 
 /// Drive `B` through one full session: spawn, prompt, then consume events
@@ -57,7 +57,9 @@ pub async fn run_agent<B: AgentBackend>(
         // surface. The run-loop dispatch path in `main.rs` calls
         // `run_agent_classified` directly so it can preserve the
         // pre-stream/interrupted distinction the verdict gate relies on.
-        SessionResult::PreflightFailed { error } | SessionResult::MidSessionFailed { error } => {
+        SessionResult::PreflightFailed { error }
+        | SessionResult::MidSessionFailed { error }
+        | SessionResult::StaticInfra { error, .. } => {
             Err(ProtocolError::Io(std::io::Error::other(error)))
         }
         SessionResult::ObserverAbort { reason } => Err(ProtocolError::Io(std::io::Error::other(
@@ -128,7 +130,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
             let error_str = err.to_string();
             emit_spawn_failure_event(sink.as_mut(), envelope_builder.as_mut(), &err, &error_str);
             finish_sink(sink, BeadOutcome::Failed);
-            return SessionResult::PreflightFailed { error: error_str };
+            return spawn_error_session_result(&err, error_str);
         }
     };
     info!(
@@ -157,7 +159,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
                 &error_str,
             );
             finish_sink(sink, BeadOutcome::Failed);
-            return infra_session_result(first_event_seen, error_str);
+            return protocol_error_session_result(first_event_seen, &err, error_str);
         }
     };
     info!("prompt sent; awaiting agent events");
@@ -183,7 +185,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
                     &error_str,
                 );
                 finish_sink(sink, BeadOutcome::Failed);
-                return infra_session_result(first_event_seen, error_str);
+                return protocol_error_session_result(first_event_seen, &err, error_str);
             }
             Err(err) => {
                 let error_str = err.to_string();
@@ -195,7 +197,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
                     &error_str,
                 );
                 finish_sink(sink, BeadOutcome::Failed);
-                return infra_session_result(first_event_seen, error_str);
+                return protocol_error_session_result(first_event_seen, &err, error_str);
             }
         };
         // RS-12: the session yields the parser's payload only; the
@@ -285,7 +287,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
                                 &error_str,
                             );
                             finish_sink(sink, BeadOutcome::Failed);
-                            return infra_session_result(first_event_seen, error_str);
+                            return protocol_error_session_result(first_event_seen, &e, error_str);
                         }
                     }
                 }
@@ -319,7 +321,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
                 &error_str,
             );
             finish_sink(sink, BeadOutcome::Failed);
-            return infra_session_result(first_event_seen, error_str);
+            return protocol_error_session_result(first_event_seen, &e, error_str);
         }
         if let AgentEvent::SessionComplete {
             exit_code,
@@ -649,6 +651,24 @@ fn stream_infra_phase(first_event_seen: bool) -> InfraPhase {
     } else {
         InfraPhase::PreStream
     }
+}
+
+fn spawn_error_session_result(err: &ProtocolError, error: String) -> SessionResult {
+    protocol_error_session_result(false, err, error)
+}
+
+fn protocol_error_session_result(
+    first_event_seen: bool,
+    err: &ProtocolError,
+    error: String,
+) -> SessionResult {
+    if !first_event_seen && matches!(err, ProtocolError::ProcessExit(127)) {
+        return SessionResult::StaticInfra {
+            cause: MISSING_AGENT_BINARY_CAUSE.to_string(),
+            error,
+        };
+    }
+    infra_session_result(first_event_seen, error)
 }
 
 fn infra_session_result(first_event_seen: bool, error: String) -> SessionResult {
@@ -1020,6 +1040,7 @@ mod tests {
                     response: None,
                 }),
                 "exit7" => Err(ProtocolError::ProcessExit(7)),
+                "exit127" => Err(ProtocolError::ProcessExit(127)),
                 other => Err(ProtocolError::invalid_protocol_line(
                     other,
                     serde_json::from_str::<serde_json::Value>(other).expect_err("invalid JSON"),
@@ -1548,6 +1569,30 @@ mod tests {
         assert_eq!(infra["payload"]["first_event_seen"], false);
         assert_eq!(infra["payload"]["cause"], "process_exit");
         assert_eq!(infra["payload"]["exit_status"], 7);
+    }
+
+    #[tokio::test]
+    async fn pre_stream_exit_127_routes_static_missing_agent_binary() {
+        struct MissingBinaryBackend;
+        impl AgentBackend for MissingBinaryBackend {
+            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+                spawn_script("IFS= read -r _; printf '%s\\n' exit127; exit 0")
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = sample_spawn_config(dir.path());
+        let result =
+            run_agent_classified::<MissingBinaryBackend>(&cfg, None, None, None, Some(builder()))
+                .await;
+
+        match result {
+            SessionResult::StaticInfra { cause, error } => {
+                assert_eq!(cause, MISSING_AGENT_BINARY_CAUSE);
+                assert!(error.contains("code 127"), "missing detail: {error}");
+            }
+            other => panic!("expected StaticInfra, got {other:?}"),
+        }
     }
 
     #[tokio::test]

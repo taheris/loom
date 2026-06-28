@@ -82,6 +82,11 @@ pub enum AgentOutcome {
     /// `session_complete`.
     InfraMidSession { error: String },
 
+    /// Static infrastructure diagnostic that cannot be repaired by
+    /// re-running the same transport attempt. Routes straight to
+    /// `loom:infra` with the supplied stable `cause`.
+    StaticInfra { cause: String, error: String },
+
     /// The bead's requested `profile:X` label (or the CLI `--profile`
     /// override) is not declared in the profile-image manifest. Routes
     /// straight to `loom:infra` cause `unknown-profile` — no retry, and
@@ -100,6 +105,7 @@ pub enum AgentOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InfraDiagnostic {
     pub cause: String,
+    pub infra_class: String,
     pub error: String,
     pub attempt: Option<u32>,
     pub max_attempts: Option<u32>,
@@ -109,6 +115,7 @@ pub struct InfraDiagnostic {
 impl InfraDiagnostic {
     pub fn retryable(
         cause: &str,
+        infra_class: &str,
         error: String,
         attempt: u32,
         max_attempts: u32,
@@ -116,6 +123,7 @@ impl InfraDiagnostic {
     ) -> Self {
         Self {
             cause: cause.to_string(),
+            infra_class: infra_class.to_string(),
             error,
             attempt: Some(attempt),
             max_attempts: Some(max_attempts),
@@ -126,6 +134,7 @@ impl InfraDiagnostic {
     pub fn static_diagnostic(cause: &str, error: String) -> Self {
         Self {
             cause: cause.to_string(),
+            infra_class: "static".to_string(),
             error,
             attempt: None,
             max_attempts: None,
@@ -189,6 +198,11 @@ pub enum SessionResult {
     /// At least one canonical `source = agent` event was observed before the
     /// infra failure, but the session did not reach `SessionComplete`.
     MidSessionFailed { error: String },
+
+    /// Static infrastructure diagnostic detected before the worker reached a
+    /// semantic marker. The loop parks the bead as `loom:infra` without
+    /// consuming the retryable transport budget.
+    StaticInfra { cause: String, error: String },
 
     /// An `EventSink::react()` returned `SessionCommand::Abort` and the
     /// driver cancelled the session. Per `specs/harness.md`

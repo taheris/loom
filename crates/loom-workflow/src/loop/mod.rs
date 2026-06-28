@@ -65,8 +65,9 @@ pub use profile::{DEFAULT_PROFILE, resolve_profile, resolve_profile_image};
 pub use retry::{RetryDecision, RetryPolicy};
 pub use runner::{
     AgentLoopController, CONFLICT_RETRY_LABEL, INFRA_INTERRUPTED_CAUSE, INFRA_PREFLIGHT_CAUSE,
-    InfraRetryPolicy, UNKNOWN_PROFILE_CAUSE, UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE, run_loop,
-    run_loop_with_infra_policy,
+    INVALID_SPAWN_CONFIG_CAUSE, InfraRetryPolicy, MISSING_AGENT_BINARY_CAUSE,
+    UNKNOWN_PROFILE_CAUSE, UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE, WORKSPACE_RECOVERY_FAILED_CAUSE,
+    run_loop, run_loop_with_infra_policy,
 };
 pub use spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 pub use tree_clean::{TREE_NOT_CLEAN_CAP, dirty_paths_from_porcelain};
