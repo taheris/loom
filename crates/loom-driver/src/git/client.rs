@@ -1017,6 +1017,8 @@ impl GitClient {
     /// times. Other push failures (auth, pre-push hook, network) are
     /// surfaced as [`GitError::GitCli`] without retry.
     ///
+    /// Refreshes the loom-workspace signing config before invoking git so
+    /// stale host-key paths are replaced by the current repo signing key.
     /// Uses [`Self::hook_timeout`] (configurable via
     /// `[loom] git_hook_timeout_secs`, default [`GIT_HOOK_TIMEOUT`])
     /// because the remote's pre-push hook (or loom's own pre-push hook on
@@ -1054,6 +1056,7 @@ impl GitClient {
 
     pub async fn run_pre_push_chain(&self) -> Result<(), GitError> {
         self.validate_loom_hooks_path_configured().await?;
+        self.refresh_loom_signing_config()?;
         let workdir = self.loom_workspace();
         let output = run_git_raw_with_timeout(
             &workdir,
@@ -1076,6 +1079,7 @@ impl GitClient {
 
     pub async fn push_once(&self) -> Result<(), GitError> {
         self.validate_loom_hooks_path_configured().await?;
+        self.refresh_loom_signing_config()?;
         let workdir = self.loom_workspace();
         let output = run_git_raw_with_timeout(
             &workdir,

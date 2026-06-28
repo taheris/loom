@@ -2985,6 +2985,10 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       loom workspace prints `Good "git" signature` using the derived
       allowed_signers file
   [test](rebased_commits_verify_via_derived_allowed_signers)
+- `GitClient::push` refreshes the loom-workspace signing config
+      before invoking `git push`, replacing stale host/GPG config with
+      the resolved repo signing key
+  [test](push_refreshes_stale_signing_config_before_origin_push)
 - `$WRIX_SIGNING_KEY` set to a non-existent file aborts loom
       startup with a non-zero exit and an error naming the missing
       path

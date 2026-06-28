@@ -1922,6 +1922,59 @@ async fn origin_push_reports_non_fast_forward_without_rebasing() -> Result<()> {
     Ok(())
 }
 
+/// Spec contract (`specs/harness.md` § Success Criteria · Commit signing):
+/// origin push refreshes loom-workspace signing config before invoking
+/// `git push`, replacing stale host/GPG config with the repo signing key.
+/// The regression uses a temp key injected through the test seam, never the
+/// live repo key from ambient `$WRIX_SIGNING_KEY`.
+#[tokio::test]
+async fn push_refreshes_stale_signing_config_before_origin_push() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let loom = loom_path(path);
+    let key = gen_signing_key(path)?;
+
+    std::fs::write(loom.join("loom-side.txt"), "loom\n")?;
+    git(&loom, &["add", "loom-side.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "loom commit"])?;
+
+    let stale_key = path.join("missing-host-signing-key");
+    let stale_signers = path.join("missing-allowed-signers");
+    git(&loom, &["config", "gpg.format", "openpgp"])?;
+    git(
+        &loom,
+        &[
+            "config",
+            "user.signingkey",
+            stale_key.to_string_lossy().as_ref(),
+        ],
+    )?;
+    git(&loom, &["config", "commit.gpgsign", "true"])?;
+    git(
+        &loom,
+        &[
+            "config",
+            "gpg.ssh.allowedSignersFile",
+            stale_signers.to_string_lossy().as_ref(),
+        ],
+    )?;
+
+    let mut client = GitClient::open(path)?;
+    client.set_signing_key_override(key.clone());
+    client.push().await?;
+
+    assert_eq!(git_config_get(&loom, "gpg.format")?, "ssh");
+    assert_eq!(
+        git_config_get(&loom, "user.signingkey")?,
+        key.to_string_lossy().as_ref(),
+    );
+    assert_eq!(git_config_get(&loom, "commit.gpgsign")?, "true");
+    assert_eq!(local_config(&loom, "push.gpgSign")?, None);
+    assert!(loom.join(".git/loom-allowed-signers").is_file());
+
+    Ok(())
+}
+
 fn capture_head(repo: &Path) -> Result<String> {
     capture_rev(repo, "HEAD")
 }
