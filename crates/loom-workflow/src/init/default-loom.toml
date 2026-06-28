@@ -33,6 +33,12 @@ max_iterations = 10
 # `process_one_bead` call. Independent of `max_iterations`.
 max_retries = 2
 
+[loop.infra]
+# Per-bead infrastructure attempt budget for one `loom loop` invocation.
+# Retryable spawn / handshake / transport / container failures use this
+# round-robin budget and do not consume `[loop] max_retries`.
+max_attempts = 3
+
 [logs]
 # Delete log files under .loom/logs/ older than this many days on
 # `loom loop` startup. 0 disables sweeping (keep forever).

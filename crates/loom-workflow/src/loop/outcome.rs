@@ -84,7 +84,7 @@ pub enum AgentOutcome {
 
     /// The bead's requested `profile:X` label (or the CLI `--profile`
     /// override) is not declared in the profile-image manifest. Routes
-    /// straight to `loom:blocked` cause `unknown-profile` — no retry, and
+    /// straight to `loom:infra` cause `unknown-profile` — no retry, and
     /// the loop continues with the next ready bead so a stray label on one
     /// bead does not stall the molecule. `error` carries the requested
     /// profile name and the manifest's declared set so the operator can
@@ -92,16 +92,54 @@ pub enum AgentOutcome {
     UnknownProfile { error: String },
 
     /// The selected agent runtime is missing under an existing profile in
-    /// the profile-image manifest. Routes straight to `loom:blocked` cause
+    /// the profile-image manifest. Routes straight to `loom:infra` cause
     /// `unknown-agent-runtime-for-profile` — no retry.
     UnknownRuntimeForProfile { error: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InfraDiagnostic {
+    pub cause: String,
+    pub error: String,
+    pub attempt: Option<u32>,
+    pub max_attempts: Option<u32>,
+    pub first_event_seen: Option<bool>,
+}
+
+impl InfraDiagnostic {
+    pub fn retryable(
+        cause: &str,
+        error: String,
+        attempt: u32,
+        max_attempts: u32,
+        first_event_seen: bool,
+    ) -> Self {
+        Self {
+            cause: cause.to_string(),
+            error,
+            attempt: Some(attempt),
+            max_attempts: Some(max_attempts),
+            first_event_seen: Some(first_event_seen),
+        }
+    }
+
+    pub fn static_diagnostic(cause: &str, error: String) -> Self {
+        Self {
+            cause: cause.to_string(),
+            error,
+            attempt: None,
+            max_attempts: None,
+            first_event_seen: Some(false),
+        }
+    }
 }
 
 /// Final state of one bead after retries have been exhausted (or the agent
 /// succeeded on first try). Drives the bd-side cleanup: success → driver
 /// observes the agent's own `bd close` (no driver-side close), clarified →
 /// `bd update --add-label loom:clarify --notes <question>`, blocked →
-/// `bd update --add-label loom:blocked --notes <cause>`.
+/// `bd update --add-label loom:blocked --notes <cause>`, infra →
+/// `bd update --add-label loom:infra --status blocked --notes <cause>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BeadResult {
     /// Bead succeeded with integration work ready for the molecule-level
@@ -124,11 +162,13 @@ pub enum BeadResult {
     /// retry-exhaustion it is the last failure body.
     Clarified { note: String },
 
-    /// Routed to `loom:blocked`. `cause` is the stable identifier
-    /// (`infra-preflight`, `infra-repeated`, `agent-blocked`) the driver
-    /// writes into `bd update --notes`; `error` carries the raw failure
-    /// body or agent reason for human triage.
+    /// Routed to `loom:blocked`. `cause` is the stable identifier the
+    /// driver writes into `bd update --notes`; `error` carries the raw
+    /// failure body or agent reason for human triage.
     Blocked { cause: String, error: String },
+
+    /// Routed to `loom:infra`, never `loom:blocked`.
+    Infra { diagnostic: InfraDiagnostic },
 }
 
 /// Output of one classified agent dispatch. The run-loop closure produces

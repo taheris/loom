@@ -3561,19 +3561,19 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `[loop.infra] max_attempts` (default 3), move failed beads to the
       tail of an in-memory retry queue, continue other ready work, and
       retry without wall-clock cooldown/backoff while attempts remain
-  [test?](infra_failures_round_robin_per_bead_without_cooldown)
+  [test](infra_failures_round_robin_per_bead_without_cooldown)
 - EOF before the first agent event retries under the infra budget; after
       exhaustion the bead is paused as `status=blocked` + `loom:infra`
       and never labelled `loom:blocked`
-  [test?](preflight_eof_retries_then_surfaces_infra_not_semantic_blocked)
+  [test](preflight_eof_retries_then_surfaces_infra_not_semantic_blocked)
 - Partial event stream followed by EOF routes to `infra-interrupted`,
       includes `first_event_seen=true`, and follows the same infra retry
       budget instead of semantic worker recovery
-  [test?](partial_stream_eof_classifies_interrupted_infra)
+  [test](partial_stream_eof_classifies_interrupted_infra)
 - Driver infra-failure events include phase, first-event-seen,
       attempt/max attempts, infra class/cause, agent/container exit
       status when known, and stderr tail or spawn error when available
-  [test?](infra_failure_driver_event_payload_carries_stream_diagnostics)
+  [test](infra_failure_driver_event_payload_carries_stream_diagnostics)
 - Static dispatch diagnostics such as undeclared `profile:X`, missing
       runtime for a declared profile, invalid spawn config, missing agent
       binary, or `workspace-recovery-failed` skip transport retry and
@@ -3582,16 +3582,16 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       workspace-recovery failure detail. Missing or malformed
       `LOOM_PROFILES_MANIFEST` remains a startup/global error before bead
       selection.
-  [test?](static_dispatch_failures_surface_as_infra_without_retry)
+  [test](static_dispatch_failures_surface_as_infra_without_retry)
 - A prior attempt that reached `session_complete` is not overwritten by
       a later retry's pre-stream EOF; the later failure records infra
       diagnostics without converting the bead to semantic `loom:blocked`
-  [test?](prior_session_complete_not_overwritten_by_later_preflight_eof)
+  [test](prior_session_complete_not_overwritten_by_later_preflight_eof)
 - Infra retry budget is driver-memory only; a fresh `loom loop`
       invocation gets a fresh per-bead budget and proactively retries
       selected work-root beads labelled `loom:infra`, clearing stale infra
       state when redispatching
-  [test?](fresh_loop_retries_loom_infra_beads_with_fresh_budget)
+  [test](fresh_loop_retries_loom_infra_beads_with_fresh_budget)
 - The push gate refuses to push while any bead in the molecule carries
       `loom:blocked`, `loom:clarify`, or `loom:infra`
   [test?](clarify_or_infra_present_stops_without_pushing)

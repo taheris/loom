@@ -43,7 +43,7 @@ use loom_gate::{
 use super::context::{LoopContextInputs, render_loop_prompt};
 use super::driver_emit::BeadEmit;
 use super::error::LoopError;
-use super::outcome::{AgentOutcome, SessionResult};
+use super::outcome::{AgentOutcome, InfraDiagnostic, SessionResult};
 use super::runner::{AgentLoopController, PerBeadGateOutcome};
 use crate::spawn::container_workspace_path;
 
@@ -164,6 +164,8 @@ where
     /// into durable post-integrate gate logs.
     current_attempt: u32,
     fixed_queue: Option<VecDeque<Bead>>,
+    infra_queue: VecDeque<Bead>,
+    infra_queue_loaded: bool,
     /// Optional work-epic scope for active/explicit epic loops. When set,
     /// ready lookup is constrained to descendants of this work root rather
     /// than to a single `spec:<label>` so multi-spec todo batches can run.
@@ -209,6 +211,8 @@ where
             pre_integration_tip: None,
             current_attempt: 0,
             fixed_queue: None,
+            infra_queue: VecDeque::new(),
+            infra_queue_loaded: false,
             ready_parent: None,
         }
     }
@@ -256,6 +260,28 @@ where
 
     fn release_handoff_lock_for_child_gate(&mut self) {
         self.lock.take();
+    }
+
+    async fn load_infra_queue(&mut self) -> Result<(), LoopError> {
+        if self.infra_queue_loaded {
+            return Ok(());
+        }
+        let beads = self
+            .bd
+            .list(ListOpts {
+                status: Some("blocked".to_string()),
+                label: self
+                    .ready_parent
+                    .is_none()
+                    .then(|| self.spec_label_filter()),
+                label_any: vec!["loom:infra".to_string()],
+                parent: self.ready_parent.clone(),
+                ..ListOpts::default()
+            })
+            .await?;
+        self.infra_queue = beads.into_iter().collect();
+        self.infra_queue_loaded = true;
+        Ok(())
     }
 
     /// Override the style-rules pin used in the rendered run prompt.
@@ -343,7 +369,7 @@ where
     S: Fn(SpawnConfig, BeadId) -> F + Send,
     F: std::future::Future<Output = (SessionResult, Option<ExitSignal>)> + Send,
 {
-    async fn next_ready_bead(&mut self) -> Result<Option<Bead>, LoopError> {
+    async fn next_ready_bead(&mut self, deferred: &[BeadId]) -> Result<Option<Bead>, LoopError> {
         if let Some(queue) = self.fixed_queue.as_mut() {
             return Ok(queue.pop_front());
         }
@@ -368,6 +394,9 @@ where
             })
             .await?;
         for bead in beads {
+            if deferred.iter().any(|id| id == &bead.id) {
+                continue;
+            }
             if bead.issue_type == "epic" {
                 info!(
                     bead = %bead.id,
@@ -400,6 +429,21 @@ where
             }
             return Ok(Some(bead));
         }
+        self.load_infra_queue().await?;
+        while let Some(bead) = self.infra_queue.pop_front() {
+            if deferred.iter().any(|id| id == &bead.id) {
+                continue;
+            }
+            if bead.issue_type == "epic" {
+                info!(
+                    bead = %bead.id,
+                    spec = %self.label,
+                    "loom loop: skipping epic-typed infra bead — workers dispatch leaves only",
+                );
+                continue;
+            }
+            return Ok(Some(bead));
+        }
         Ok(None)
     }
 
@@ -408,6 +452,19 @@ where
         bead: &Bead,
         previous_failure: Option<String>,
     ) -> Result<AgentOutcome, LoopError> {
+        self.current_emit = None;
+        if bead.labels.iter().any(loom_driver::bd::Label::is_infra) {
+            self.bd
+                .update(
+                    &bead.id,
+                    UpdateOpts {
+                        status: Some("open".to_string()),
+                        remove_labels: vec!["loom:infra".to_string()],
+                        ..UpdateOpts::default()
+                    },
+                )
+                .await?;
+        }
         let banner = format!("loom loop @ {}", bead.id);
         let is_retry = previous_failure.is_some();
         // The stash is per-retry-sequence: a fresh dispatch
@@ -853,17 +910,7 @@ where
         cause: &str,
         error: &str,
     ) -> Result<(), LoopError> {
-        // Notes layout pins the cause string at the head so `bd show
-        // --notes` greps cleanly for `infra-preflight` / `infra-repeated`
-        // even when the raw error body is multi-line. Spec
-        // (`harness.md` §"Verdict Gate · Infra failures") names the
-        // cause as the routing identifier; the error detail is for human
-        // triage only.
-        let notes = if error.is_empty() {
-            cause.to_string()
-        } else {
-            format!("{cause}: {error}")
-        };
+        let notes = diagnostic_notes(cause, error);
         self.bd
             .update(
                 bead,
@@ -871,6 +918,45 @@ where
                     status: Some("blocked".to_string()),
                     add_labels: vec!["loom:blocked".to_string()],
                     notes: Some(notes),
+                    ..UpdateOpts::default()
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn apply_infra(
+        &mut self,
+        bead: &BeadId,
+        diagnostic: &InfraDiagnostic,
+    ) -> Result<(), LoopError> {
+        let mut metadata = vec![
+            ("loom.infra.cause".to_string(), diagnostic.cause.clone()),
+            ("loom.infra.phase".to_string(), "loop".to_string()),
+        ];
+        if let Some(first_event_seen) = diagnostic.first_event_seen {
+            metadata.push((
+                "loom.infra.first_event_seen".to_string(),
+                first_event_seen.to_string(),
+            ));
+        }
+        if let Some(attempt) = diagnostic.attempt {
+            metadata.push(("loom.infra.attempt".to_string(), attempt.to_string()));
+        }
+        if let Some(max_attempts) = diagnostic.max_attempts {
+            metadata.push((
+                "loom.infra.max_attempts".to_string(),
+                max_attempts.to_string(),
+            ));
+        }
+        self.bd
+            .update(
+                bead,
+                UpdateOpts {
+                    status: Some("blocked".to_string()),
+                    add_labels: vec!["loom:infra".to_string()],
+                    notes: Some(diagnostic_notes(&diagnostic.cause, &diagnostic.error)),
+                    set_metadata: metadata,
                     ..UpdateOpts::default()
                 },
             )
@@ -1111,9 +1197,18 @@ where
 
 fn bead_has_parked_state(bead: &Bead) -> bool {
     bead.status == "blocked"
-        || bead.labels.iter().any(|label| {
-            label.is_blocked() || label.is_clarify() || label.is_deferred() || label.is_infra()
-        })
+        || bead
+            .labels
+            .iter()
+            .any(|label| label.is_blocked() || label.is_clarify() || label.is_deferred())
+}
+
+fn diagnostic_notes(cause: &str, error: &str) -> String {
+    if error.is_empty() {
+        cause.to_string()
+    } else {
+        format!("{cause}: {error}")
+    }
 }
 
 fn gate_log_root(logs_root: Option<&std::path::Path>, workspace: &std::path::Path) -> PathBuf {
@@ -1698,15 +1793,133 @@ mod tests {
     }
 
     #[test]
-    fn parked_state_includes_infra_and_deferred_labels() {
-        for label in ["loom:infra", "loom:deferred"] {
-            let mut bead = bead("lm-parked");
-            bead.labels.push(Label::new(label));
-            assert!(
-                bead_has_parked_state(&bead),
-                "{label} must suppress ready dispatch",
-            );
-        }
+    fn parked_state_excludes_semantic_and_deferred_labels_but_not_infra() {
+        let mut deferred = bead("lm-deferred");
+        deferred.labels.push(Label::new("loom:deferred"));
+        assert!(bead_has_parked_state(&deferred));
+
+        let mut infra = bead("lm-infra");
+        infra.labels.push(Label::new("loom:infra"));
+        assert!(!bead_has_parked_state(&infra));
+    }
+
+    #[tokio::test]
+    async fn next_ready_bead_loads_blocked_infra_when_ready_queue_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let infra = br#"[{
+            "id":"lm-infra",
+            "title":"infra",
+            "status":"blocked",
+            "priority":2,
+            "issue_type":"task",
+            "labels":["spec:gate","profile:base","loom:infra"]
+        }]"#;
+        let scripted = ScriptedBd::new([ok_stdout(b"[]\n"), ok_stdout(infra)]);
+        let calls = scripted.calls_handle();
+        let bd = BdClient::with_runner(scripted);
+        let mut controller = ProductionAgentLoopController::new(
+            bd,
+            SpecLabel::new("gate"),
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        );
+
+        let picked = controller
+            .next_ready_bead(&[])
+            .await
+            .expect("ready lookup ok")
+            .expect("infra bead selected");
+
+        assert_eq!(picked.id, BeadId::new("lm-infra").expect("valid"));
+        let captured = calls.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        let infra_argv: Vec<String> = captured[1]
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(infra_argv[0], "list");
+        assert!(infra_argv.contains(&"--status=blocked".to_string()));
+        assert!(infra_argv.contains(&"--label=spec:gate".to_string()));
+        assert!(infra_argv.contains(&"--label-any=loom:infra".to_string()));
+    }
+
+    #[tokio::test]
+    async fn run_bead_clears_stale_infra_state_before_dispatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let scripted = ScriptedBd::new([ok_stdout(b"")]);
+        let calls = scripted.calls_handle();
+        let bd = BdClient::with_runner(scripted);
+        let mut controller = ProductionAgentLoopController::new(
+            bd,
+            SpecLabel::new("spec-x"),
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |cfg: SpawnConfig, _bead_id: BeadId| async move {
+                std::fs::write(cfg.workspace.join("spawn.txt"), "spawned\n")
+                    .expect("write spawn file");
+                loom_driver::git::commit_all_in(&cfg.workspace, "spawn work")
+                    .expect("commit spawn work");
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        );
+        let mut infra_bead = bead("lm-infra");
+        infra_bead.status = "blocked".to_string();
+        infra_bead.labels.push(Label::new("loom:infra"));
+
+        let outcome = controller
+            .run_bead(&infra_bead, None)
+            .await
+            .expect("run_bead ok");
+
+        assert_eq!(outcome, AgentOutcome::Success);
+        let captured = calls.lock().unwrap();
+        let update: Vec<String> = captured[0]
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(update[0], "update");
+        assert_eq!(update[1], "lm-infra");
+        assert!(
+            update
+                .windows(2)
+                .any(|w| w[0] == "--status" && w[1] == "open"),
+            "redispatch must reopen stale infra bead: {update:?}",
+        );
+        assert!(
+            update
+                .windows(2)
+                .any(|w| w[0] == "--remove-label" && w[1] == "loom:infra"),
+            "redispatch must clear stale infra label: {update:?}",
+        );
     }
 
     #[tokio::test]
@@ -1753,7 +1966,10 @@ mod tests {
             },
         );
 
-        let next = controller.next_ready_bead().await.expect("ready lookup ok");
+        let next = controller
+            .next_ready_bead(&[])
+            .await
+            .expect("ready lookup ok");
         assert!(next.is_none(), "parked parent suppresses child dispatch");
     }
 
@@ -1972,10 +2188,8 @@ mod tests {
     }
 
     /// Spec gate: a [`SessionResult::PreflightFailed`] from the dispatch
-    /// closure must surface as [`AgentOutcome::InfraPreflight`] so
-    /// `process_one_bead` routes it straight to `loom:blocked` cause
-    /// `infra-preflight`. Dual to the run-loop unit test — verifies the
-    /// production controller plumbing carries the variant intact.
+    /// closure must surface as [`AgentOutcome::InfraPreflight`] so the
+    /// run-loop infra budget can retry it before any `loom:infra` route.
     #[tokio::test]
     async fn run_bead_translates_preflight_failure_into_infra_preflight() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2017,7 +2231,7 @@ mod tests {
 
     /// Spec gate: a [`SessionResult::MidSessionFailed`] from the dispatch
     /// closure must surface as [`AgentOutcome::InfraMidSession`] so the
-    /// driver-memory budget can absorb one occurrence per `loom loop`.
+    /// per-bead infra budget can retry interrupted streams.
     #[tokio::test]
     async fn run_bead_translates_midsession_failure_into_infra_midsession() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2061,7 +2275,7 @@ mod tests {
     /// is missing from the manifest must surface as
     /// [`AgentOutcome::UnknownProfile`] (NOT [`AgentOutcome::Failure`])
     /// so [`process_one_bead`](crate::r#loop::run_loop) routes it straight to
-    /// `loom:blocked` cause `unknown-profile` without consuming a retry slot.
+    /// `loom:infra` cause `unknown-profile` without consuming a retry slot.
     /// The error string must name the requested profile and the manifest's
     /// declared set so the operator can relabel without re-reading the
     /// manifest.
@@ -2777,7 +2991,7 @@ mod tests {
         );
         let bead_id = BeadId::new("lm-blocked.1").expect("bead id");
         controller
-            .apply_blocked(&bead_id, "infra-preflight", "podman load failed")
+            .apply_blocked(&bead_id, "agent-blocked", "operator decision needed")
             .await
             .expect("apply_blocked ok");
         let captured = calls.lock().unwrap();
@@ -2797,6 +3011,77 @@ mod tests {
                 .any(|w| w[0] == "--status" && w[1] == "blocked"),
             "apply_blocked must pair --status blocked with --add-label so \
              `bd ready` excludes via its native status filter: {argv:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_infra_pairs_status_blocked_with_infra_label_and_metadata() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let scripted = ScriptedBd::new([RunOutput {
+            status: 0,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }]);
+        let calls = scripted.calls_handle();
+        let bd = BdClient::with_runner(scripted);
+        let mut controller = ProductionAgentLoopController::new(
+            bd,
+            SpecLabel::new("gate"),
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                (
+                    SessionResult::Complete(SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    }),
+                    Some(ExitSignal::Complete),
+                )
+            },
+        );
+        let bead_id = BeadId::new("lm-infra.1").expect("bead id");
+        let diagnostic = InfraDiagnostic::retryable(
+            "infra-preflight",
+            "podman load failed".to_string(),
+            2,
+            3,
+            false,
+        );
+
+        controller
+            .apply_infra(&bead_id, &diagnostic)
+            .await
+            .expect("apply_infra ok");
+
+        let captured = calls.lock().unwrap();
+        let argv: Vec<String> = captured[0]
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(argv.iter().any(|a| a == "loom:infra"), "{argv:?}");
+        assert!(!argv.iter().any(|a| a == "loom:blocked"), "{argv:?}");
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--status" && w[1] == "blocked"),
+            "{argv:?}",
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--set-metadata" && w[1] == "loom.infra.attempt=2"),
+            "{argv:?}",
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--notes"
+                    && w[1].starts_with("infra-preflight: podman load failed")),
+            "{argv:?}",
         );
     }
 
@@ -2832,9 +3117,13 @@ mod tests {
                 )
             },
         );
-        let _ = controller.next_ready_bead().await.expect("ready ok");
+        let _ = controller.next_ready_bead(&[]).await.expect("ready ok");
         let captured = calls.lock().unwrap();
-        assert_eq!(captured.len(), 1, "exactly one bd invocation expected");
+        assert_eq!(
+            captured.len(),
+            2,
+            "ready lookup then infra fallback expected"
+        );
         let argv: Vec<String> = captured[0]
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
@@ -2875,9 +3164,13 @@ mod tests {
             },
         )
         .with_ready_parent(BeadId::new("lm-root").expect("valid bead id"));
-        let _ = controller.next_ready_bead().await.expect("ready ok");
+        let _ = controller.next_ready_bead(&[]).await.expect("ready ok");
         let captured = calls.lock().unwrap();
-        assert_eq!(captured.len(), 1, "exactly one bd invocation expected");
+        assert_eq!(
+            captured.len(),
+            2,
+            "ready lookup then infra fallback expected"
+        );
         let argv: Vec<String> = captured[0]
             .iter()
             .map(|s| s.to_string_lossy().into_owned())
@@ -2929,7 +3222,7 @@ mod tests {
             },
         );
         let picked = controller
-            .next_ready_bead()
+            .next_ready_bead(&[])
             .await
             .expect("ready ok")
             .expect("a non-epic bead must surface");

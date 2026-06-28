@@ -37,9 +37,9 @@ use loom_workflow::inbox::{
     find_by_proposal_id, parse_options_in,
 };
 use loom_workflow::r#loop::{
-    GateOutcome, LoopOutcome, NoGateReason, Parallelism, ProductionAgentLoopController,
-    REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV, REVIEW_SPEC_LABEL_ENV, RetryPolicy,
-    SessionResult, run_loop,
+    GateOutcome, InfraRetryPolicy, LoopOutcome, NoGateReason, Parallelism,
+    ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV,
+    REVIEW_SPEC_LABEL_ENV, RetryPolicy, SessionResult, run_loop_with_infra_policy,
 };
 use loom_workflow::mint::{FindingStatusAction, FindingStatusRecord, MintWalker};
 use loom_workflow::review::{
@@ -2730,6 +2730,9 @@ fn run_sequential_loop_root(
     let retry_policy = RetryPolicy {
         max_retries: config.loop_.max_retries,
     };
+    let infra_policy = InfraRetryPolicy {
+        max_attempts: config.loop_.infra.max_attempts,
+    };
     let max_iterations = config.loop_.max_iterations;
     let git =
         GitClient::open_with_integration_branch(workspace, config.loom.integration_branch.clone())?
@@ -2803,7 +2806,8 @@ fn run_sequential_loop_root(
             controller = controller.with_ready_parent(parent);
         }
         controller = controller.with_handoff_lock(work_root_guard);
-        run_loop(&mut controller, retry_policy, max_iterations).await
+        run_loop_with_infra_policy(&mut controller, retry_policy, infra_policy, max_iterations)
+            .await
     })?;
     // The marker is minted inside the molecule-completion push gate's
     // critical section (review_loop's Clean path → `mint_marker` →

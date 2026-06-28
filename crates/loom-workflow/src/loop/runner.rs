@@ -1,3 +1,5 @@
+use std::collections::{HashMap, VecDeque};
+
 use loom_driver::bd::Bead;
 use loom_driver::identifier::BeadId;
 use loom_events::DriverKind;
@@ -6,17 +8,16 @@ use tracing::info;
 use loom_gate::{GateFail, GateOutcome, GateSuccess, HandoffEvidence, LoopOutcome, NoGateReason};
 
 use super::error::LoopError;
-use super::outcome::{AgentOutcome, BeadResult};
+use super::outcome::{AgentOutcome, BeadResult, InfraDiagnostic};
 use super::retry::{RetryDecision, RetryPolicy};
 
-/// Spec-table cause string written to `bd update --notes` when a pre-flight
-/// infra failure routes a bead to `loom:blocked`.
+/// Spec-table cause string written to `bd update --notes` when pre-stream
+/// infra attempts exhaust their per-bead budget.
 pub const INFRA_PREFLIGHT_CAUSE: &str = "infra-preflight";
 
-/// Spec-table cause string written to `bd update --notes` when the
-/// driver-memory infra-retry budget is exhausted by a second mid-session
-/// infra failure inside the same `loom loop` invocation.
-pub const INFRA_REPEATED_CAUSE: &str = "infra-repeated";
+/// Spec-table cause string written to `bd update --notes` when interrupted
+/// infra attempts exhaust their per-bead budget.
+pub const INFRA_INTERRUPTED_CAUSE: &str = "infra-interrupted";
 
 /// Spec-table cause string written to `bd update --notes` when a bead's
 /// requested `profile:X` label is not declared in the profile-image
@@ -28,11 +29,55 @@ pub const UNKNOWN_PROFILE_CAUSE: &str = "unknown-profile";
 /// selected agent runtime in the profile-image manifest.
 pub const UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE: &str = "unknown-agent-runtime-for-profile";
 
-/// Driver-memory budget for mid-session infra retries. Spec
-/// (`specs/harness.md` §"Verdict Gate · Infra failures bypass the gate"):
-/// "one free retry per `loom loop`". The counter is separate from
-/// `[loop] max_iterations` and resets on every fresh `loom loop` invocation.
-const INFRA_MIDSESSION_RETRY_BUDGET: u32 = 1;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InfraRetryPolicy {
+    pub max_attempts: u32,
+}
+
+impl InfraRetryPolicy {
+    fn effective_max_attempts(self) -> u32 {
+        self.max_attempts.max(1)
+    }
+}
+
+impl Default for InfraRetryPolicy {
+    fn default() -> Self {
+        Self { max_attempts: 3 }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct BeadRunState {
+    retries_used: u32,
+    previous_failure: Option<String>,
+    integration_conflict_used: bool,
+    infra_attempts: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetryableInfraClass {
+    Preflight,
+    Interrupted,
+}
+
+impl RetryableInfraClass {
+    const fn cause(self) -> &'static str {
+        match self {
+            Self::Preflight => INFRA_PREFLIGHT_CAUSE,
+            Self::Interrupted => INFRA_INTERRUPTED_CAUSE,
+        }
+    }
+
+    const fn first_event_seen(self) -> bool {
+        matches!(self, Self::Interrupted)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProcessOneResult {
+    Terminal(BeadResult),
+    RetryInfra,
+}
 
 /// Running tally [`run_loop`] threads through the outer loop while the
 /// final [`LoopOutcome`] is being assembled. Distinct from `LoopOutcome` —
@@ -59,6 +104,7 @@ struct LoopProgress {
 ///   tee `AgentEvent` stream into `LogSink`, parse exit signal
 /// - `apply_clarify` → `BdClient::update --add-label loom:clarify`
 /// - `apply_blocked` → `BdClient::update --add-label loom:blocked --notes <cause>`
+/// - `apply_infra` → `BdClient::update --add-label loom:infra --notes <cause>`
 /// - `exec_review` → `tokio::process::Command` invocations of
 ///   `loom gate verify --diff <molecule.base_commit>..HEAD` then
 ///   `loom gate review --diff <molecule.base_commit>..HEAD` (FR1
@@ -72,9 +118,12 @@ struct LoopProgress {
 /// every marker into `done` and silently masks `LOOM_BLOCKED` /
 /// `LOOM_CLARIFY` self-reports — the bug that motivated this trait shape.
 pub trait AgentLoopController: Send {
-    /// Pull the next ready bead. Returns `None` when the molecule is done.
+    /// Pull the next ready bead. `deferred` contains bead ids already parked
+    /// in the in-memory infra retry queue for this loop invocation.
+    /// Returns `None` when no non-deferred ready work is available.
     fn next_ready_bead(
         &mut self,
+        deferred: &[BeadId],
     ) -> impl std::future::Future<Output = Result<Option<Bead>, LoopError>> + Send;
 
     /// Run one agent attempt against `bead`, threading `previous_failure` if
@@ -100,14 +149,22 @@ pub trait AgentLoopController: Send {
     ) -> impl std::future::Future<Output = Result<(), LoopError>> + Send;
 
     /// Add the `loom:blocked` label and write `cause` (plus any error
-    /// detail) to `bd update --notes`. Called when an infra failure or
-    /// an agent `LOOM_BLOCKED` self-report routes the bead straight to
-    /// blocked per the verdict-gate spec.
+    /// detail) to `bd update --notes`. Called when an agent
+    /// `LOOM_BLOCKED` self-report or semantic driver failure routes the
+    /// bead straight to blocked per the verdict-gate spec.
     fn apply_blocked(
         &mut self,
         bead: &BeadId,
         cause: &str,
         error: &str,
+    ) -> impl std::future::Future<Output = Result<(), LoopError>> + Send;
+
+    /// Add the `loom:infra` label, pause the bead, and persist the latest
+    /// infra diagnostic details.
+    fn apply_infra(
+        &mut self,
+        bead: &BeadId,
+        diagnostic: &InfraDiagnostic,
     ) -> impl std::future::Future<Output = Result<(), LoopError>> + Send;
 
     /// Molecule-completion handoff (FR1). Invokes `loom gate verify
@@ -278,6 +335,21 @@ pub enum PerBeadGateOutcome {
     Recovery { detail: String },
 }
 
+/// Run the per-bead loop with the default infra budget.
+pub async fn run_loop<C: AgentLoopController>(
+    controller: &mut C,
+    policy: RetryPolicy,
+    max_iterations: u32,
+) -> Result<LoopOutcome, LoopError> {
+    run_loop_with_infra_policy(
+        controller,
+        policy,
+        InfraRetryPolicy::default(),
+        max_iterations,
+    )
+    .await
+}
+
 /// Run the per-bead loop.
 ///
 /// The function is deliberately not generic over `RetryPolicy` (the policy is
@@ -288,55 +360,62 @@ pub enum PerBeadGateOutcome {
 /// outer-loop counter reached `max_iterations` per FR1 (each pass = process
 /// ready queue + invoke `exec_review`).
 ///
-/// `infra_retries_used` is driver-memory only: it lives on the stack of
-/// this single `run_loop` invocation and is **not** persisted. A new
-/// `loom loop` starts with a fresh budget per spec §"Verdict Gate · Infra
-/// failures bypass the gate".
-pub async fn run_loop<C: AgentLoopController>(
+/// Infra retry state is driver-memory only: it lives on the stack of this
+/// single invocation and is **not** persisted. A new `loom loop` starts with a
+/// fresh per-bead budget per spec §"Verdict Gate · Infra failures bypass the
+/// gate".
+pub async fn run_loop_with_infra_policy<C: AgentLoopController>(
     controller: &mut C,
     policy: RetryPolicy,
+    infra_policy: InfraRetryPolicy,
     max_iterations: u32,
 ) -> Result<LoopOutcome, LoopError> {
     let mut progress = LoopProgress::default();
-    let mut infra_retries_used: u32 = 0;
+    let mut bead_states: HashMap<BeadId, BeadRunState> = HashMap::new();
+    let mut infra_retry_queue: VecDeque<Bead> = VecDeque::new();
     let mut stalled_at_max_iterations = false;
     'outer: loop {
         let mut beads_this_pass: u32 = 0;
         let mut handoff_this_pass = false;
-        // Drain the ready queue; fix-up beads bonded during this pass become
-        // eligible on the next `bd ready` call.
         loop {
-            let bead = match controller.next_ready_bead().await? {
+            let deferred = deferred_ids(&infra_retry_queue);
+            let bead = match controller.next_ready_bead(&deferred).await? {
                 Some(b) => b,
-                None => break,
+                None => match infra_retry_queue.pop_front() {
+                    Some(b) => b,
+                    None => break,
+                },
             };
 
-            let result =
-                process_one_bead(controller, &bead, policy, &mut infra_retries_used).await?;
-            progress.beads_processed += 1;
-            beads_this_pass += 1;
+            let state = bead_states.entry(bead.id.clone()).or_default();
+            let result = process_one_bead(controller, &bead, policy, infra_policy, state).await?;
 
             match result {
-                BeadResult::Done => {
-                    // No driver-side `bd close`. The agent owns closure (per
-                    // the verdict-gate table's `bd-closed` observable); if
-                    // it forgot to call `bd close` on `LOOM_COMPLETE`,
-                    // `loom review` routes that to `incomplete-signaling`
-                    // recovery on its next walk.
-                    handoff_this_pass = true;
+                ProcessOneResult::RetryInfra => {
+                    infra_retry_queue.push_back(bead);
                 }
-                BeadResult::Noop => {
-                    // Intentional empty diff: no molecule-level handoff is
-                    // needed because there is no newly integrated commit to
-                    // review or push.
-                }
-                BeadResult::Clarified { note } => {
-                    controller.apply_clarify(&bead.id, &note).await?;
-                    progress.beads_clarified += 1;
-                }
-                BeadResult::Blocked { cause, error } => {
-                    controller.apply_blocked(&bead.id, &cause, &error).await?;
-                    progress.beads_blocked += 1;
+                ProcessOneResult::Terminal(result) => {
+                    bead_states.remove(&bead.id);
+                    progress.beads_processed += 1;
+                    beads_this_pass += 1;
+                    match result {
+                        BeadResult::Done => {
+                            handoff_this_pass = true;
+                        }
+                        BeadResult::Noop => {}
+                        BeadResult::Clarified { note } => {
+                            controller.apply_clarify(&bead.id, &note).await?;
+                            progress.beads_clarified += 1;
+                        }
+                        BeadResult::Blocked { cause, error } => {
+                            controller.apply_blocked(&bead.id, &cause, &error).await?;
+                            progress.beads_blocked += 1;
+                        }
+                        BeadResult::Infra { diagnostic } => {
+                            controller.apply_infra(&bead.id, &diagnostic).await?;
+                            progress.beads_blocked += 1;
+                        }
+                    }
                 }
             }
         }
@@ -397,6 +476,10 @@ pub async fn run_loop<C: AgentLoopController>(
     Ok(finalize(progress, stalled_at_max_iterations))
 }
 
+fn deferred_ids(queue: &VecDeque<Bead>) -> Vec<BeadId> {
+    queue.iter().map(|bead| bead.id.clone()).collect()
+}
+
 /// Build the final [`LoopOutcome`] from the running tally + final handoff
 /// evidence. Mints the sealed [`GateSuccess`] through its `pub(crate)`
 /// constructor; falls back to [`GateOutcome::Fail`] / [`GateOutcome::NoGate`]
@@ -439,64 +522,42 @@ fn finalize(progress: LoopProgress, stalled_at_max_iterations: bool) -> LoopOutc
     }
 }
 
-/// Run a single bead through the retry state machine.
-///
-/// Pre-flight infra failures exit immediately as
-/// [`BeadResult::Blocked`] with cause [`INFRA_PREFLIGHT_CAUSE`]; agent
-/// output is never evaluated. Mid-session infra failures consume a slot in
-/// the caller-owned `infra_retries_used` counter (capped at
-/// [`INFRA_MIDSESSION_RETRY_BUDGET`] across the entire `loom loop`); a
-/// second occurrence routes to [`BeadResult::Blocked`] with cause
-/// [`INFRA_REPEATED_CAUSE`]. Neither path consumes the agent-side
-/// `[loop] max_iterations` retry budget owned by [`RetryPolicy`].
+/// Run a single bead through the retry state machine until it reaches a
+/// terminal result or one retryable infra attempt needs to move to the
+/// run-loop's tail queue.
 async fn process_one_bead<C: AgentLoopController>(
     controller: &mut C,
     bead: &Bead,
     policy: RetryPolicy,
-    infra_retries_used: &mut u32,
-) -> Result<BeadResult, LoopError> {
-    let mut retries_used: u32 = 0;
-    let mut previous_failure: Option<String> = None;
-    // The integration-conflict recovery budget is a single retry,
-    // independent of `policy.max_retries` (per `specs/harness.md`
-    // § Verdict Gate). Tracked separately so a bead that also hits
-    // ordinary agent-retries does not borrow this slot.
-    let mut integration_conflict_used = false;
+    infra_policy: InfraRetryPolicy,
+    state: &mut BeadRunState,
+) -> Result<ProcessOneResult, LoopError> {
     loop {
-        match controller.run_bead(bead, previous_failure.clone()).await? {
-            AgentOutcome::Noop => return Ok(BeadResult::Noop),
+        match controller
+            .run_bead(bead, state.previous_failure.clone())
+            .await?
+        {
+            AgentOutcome::Noop => return terminal(BeadResult::Noop),
             AgentOutcome::Success => match controller.exec_per_bead_gate(&bead.id).await? {
-                PerBeadGateOutcome::Clean => return Ok(BeadResult::Done),
+                PerBeadGateOutcome::Clean => return terminal(BeadResult::Done),
                 PerBeadGateOutcome::StructuralViolation { detail } => {
-                    return Ok(BeadResult::Blocked {
+                    return terminal(BeadResult::Blocked {
                         cause: MINT_STRUCTURAL_VIOLATION_CAUSE.to_string(),
                         error: detail,
                     });
                 }
                 PerBeadGateOutcome::Recovery { detail } => {
                     let exhausted_detail = detail.clone();
-                    match policy.decide(retries_used, detail) {
+                    match policy.decide(state.retries_used, detail) {
                         RetryDecision::Retry {
                             previous_failure: pf,
                         } => {
-                            retries_used += 1;
-                            controller.emit_driver_event(
-                                DriverKind::RetryDispatch,
-                                &format!(
-                                    "retry dispatch — attempt {retries_used}/{max} for bead {bead_id}",
-                                    max = policy.max_retries,
-                                    bead_id = bead.id,
-                                ),
-                                serde_json::json!({
-                                    "bead_id": bead.id.to_string(),
-                                    "attempt": retries_used,
-                                    "max_attempts": policy.max_retries,
-                                }),
-                            );
-                            previous_failure = Some(pf);
+                            state.retries_used += 1;
+                            emit_retry_dispatch(controller, bead, state.retries_used, policy);
+                            state.previous_failure = Some(pf);
                         }
                         RetryDecision::GiveUp => {
-                            return Ok(BeadResult::Blocked {
+                            return terminal(BeadResult::Blocked {
                                 cause: RETRY_EXHAUSTED_CAUSE.to_string(),
                                 error: exhausted_detail,
                             });
@@ -506,82 +567,63 @@ async fn process_one_bead<C: AgentLoopController>(
             },
             AgentOutcome::Failure { error } => {
                 let exhausted_detail = error.clone();
-                match policy.decide(retries_used, error) {
+                match policy.decide(state.retries_used, error) {
                     RetryDecision::Retry {
                         previous_failure: pf,
                     } => {
-                        retries_used += 1;
-                        controller.emit_driver_event(
-                            DriverKind::RetryDispatch,
-                            &format!(
-                                "retry dispatch — attempt {retries_used}/{max} for bead {bead_id}",
-                                max = policy.max_retries,
-                                bead_id = bead.id,
-                            ),
-                            serde_json::json!({
-                                "bead_id": bead.id.to_string(),
-                                "attempt": retries_used,
-                                "max_attempts": policy.max_retries,
-                            }),
-                        );
-                        previous_failure = Some(pf);
+                        state.retries_used += 1;
+                        emit_retry_dispatch(controller, bead, state.retries_used, policy);
+                        state.previous_failure = Some(pf);
                     }
                     RetryDecision::GiveUp => {
-                        return Ok(BeadResult::Blocked {
+                        return terminal(BeadResult::Blocked {
                             cause: RETRY_EXHAUSTED_CAUSE.to_string(),
                             error: exhausted_detail,
                         });
                     }
                 }
             }
-            AgentOutcome::Retry { reason } => match policy.decide(retries_used, reason.clone()) {
-                RetryDecision::Retry {
-                    previous_failure: pf,
-                } => {
-                    retries_used += 1;
-                    controller.emit_driver_event(
-                        DriverKind::RetryDispatch,
-                        &format!(
-                            "retry dispatch (LOOM_RETRY) — attempt {retries_used}/{max} for bead {bead_id}",
-                            max = policy.max_retries,
-                            bead_id = bead.id,
-                        ),
-                        serde_json::json!({
-                            "bead_id": bead.id.to_string(),
-                            "attempt": retries_used,
-                            "max_attempts": policy.max_retries,
-                            "cause": "agent-retry",
-                        }),
-                    );
-                    previous_failure = Some(pf);
+            AgentOutcome::Retry { reason } => {
+                match policy.decide(state.retries_used, reason.clone()) {
+                    RetryDecision::Retry {
+                        previous_failure: pf,
+                    } => {
+                        state.retries_used += 1;
+                        controller.emit_driver_event(
+                            DriverKind::RetryDispatch,
+                            &format!(
+                                "retry dispatch (LOOM_RETRY) — attempt {attempt}/{max} for bead {bead_id}",
+                                attempt = state.retries_used,
+                                max = policy.max_retries,
+                                bead_id = bead.id,
+                            ),
+                            serde_json::json!({
+                                "bead_id": bead.id.to_string(),
+                                "attempt": state.retries_used,
+                                "max_attempts": policy.max_retries,
+                                "cause": "agent-retry",
+                            }),
+                        );
+                        state.previous_failure = Some(pf);
+                    }
+                    RetryDecision::GiveUp => {
+                        return terminal(BeadResult::Blocked {
+                            cause: RETRY_EXHAUSTED_CAUSE.to_string(),
+                            error: reason,
+                        });
+                    }
                 }
-                RetryDecision::GiveUp => {
-                    // Consecutive `LOOM_RETRY` exits exhausted the
-                    // `[loop] max_retries` counter — escalate to
-                    // `loom:blocked` with cause `retry-exhausted` per
-                    // `specs/harness.md` § Marker definitions (the
-                    // self-reported retry-shape failure has no candidate
-                    // resolution; clarify is the wrong terminal).
-                    return Ok(BeadResult::Blocked {
-                        cause: RETRY_EXHAUSTED_CAUSE.to_string(),
-                        error: reason,
-                    });
-                }
-            },
+            }
             AgentOutcome::IntegrationConflict {
                 files,
                 new_base_sha,
             } => {
-                if integration_conflict_used {
-                    // Second rebase-conflict on the single retry —
-                    // escalate to `loom:clarify` with a synthesized
-                    // Options block (resolve-in-bead-clone /
-                    // abandon-the-bead) the gate persists to bead state.
-                    return Ok(BeadResult::Clarified {
+                if state.integration_conflict_used {
+                    return terminal(BeadResult::Clarified {
                         note: synthesize_integration_conflict_options(&files, &new_base_sha),
                     });
                 }
-                integration_conflict_used = true;
+                state.integration_conflict_used = true;
                 controller.emit_driver_event(
                     DriverKind::RetryDispatch,
                     &format!(
@@ -594,67 +636,139 @@ async fn process_one_bead<C: AgentLoopController>(
                         "new_base_sha": new_base_sha.as_str(),
                     }),
                 );
-                // The typed `PreviousFailure::IntegrationConflict` was
-                // stashed by `run_bead`; this string only marks the next
-                // dispatch as a retry so the stash is consumed.
-                previous_failure = Some(format!(
+                state.previous_failure = Some(format!(
                     "{INTEGRATION_CONFLICT_CAUSE}: rebase onto {} conflicted",
                     new_base_sha.as_str(),
                 ));
             }
             AgentOutcome::SignatureVerificationFailed { detail } => {
-                return Ok(BeadResult::Blocked {
+                return terminal(BeadResult::Blocked {
                     cause: SIGNATURE_VERIFICATION_FAILED_CAUSE.to_string(),
                     error: detail,
                 });
             }
             AgentOutcome::ZeroProgress { detail } => {
-                return Ok(BeadResult::Blocked {
+                return terminal(BeadResult::Blocked {
                     cause: ZERO_PROGRESS_CAUSE.to_string(),
                     error: detail,
                 });
             }
             AgentOutcome::Blocked { reason } => {
-                return Ok(BeadResult::Blocked {
+                return terminal(BeadResult::Blocked {
                     cause: AGENT_BLOCKED_CAUSE.to_string(),
                     error: reason,
                 });
             }
             AgentOutcome::Clarify { question } => {
-                return Ok(BeadResult::Clarified { note: question });
+                return terminal(BeadResult::Clarified { note: question });
             }
             AgentOutcome::InfraPreflight { error } => {
-                return Ok(BeadResult::Blocked {
-                    cause: INFRA_PREFLIGHT_CAUSE.to_string(),
+                return Ok(handle_retryable_infra(
+                    controller,
+                    bead,
+                    state,
+                    infra_policy,
+                    RetryableInfraClass::Preflight,
                     error,
-                });
+                ));
             }
             AgentOutcome::UnknownProfile { error } => {
-                return Ok(BeadResult::Blocked {
-                    cause: UNKNOWN_PROFILE_CAUSE.to_string(),
-                    error,
-                });
+                let diagnostic = InfraDiagnostic::static_diagnostic(UNKNOWN_PROFILE_CAUSE, error);
+                emit_infra_failure(controller, bead, &diagnostic);
+                return terminal(BeadResult::Infra { diagnostic });
             }
             AgentOutcome::UnknownRuntimeForProfile { error } => {
-                return Ok(BeadResult::Blocked {
-                    cause: UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE.to_string(),
-                    error,
-                });
+                let diagnostic =
+                    InfraDiagnostic::static_diagnostic(UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE, error);
+                emit_infra_failure(controller, bead, &diagnostic);
+                return terminal(BeadResult::Infra { diagnostic });
             }
             AgentOutcome::InfraMidSession { error } => {
-                if *infra_retries_used >= INFRA_MIDSESSION_RETRY_BUDGET {
-                    return Ok(BeadResult::Blocked {
-                        cause: INFRA_REPEATED_CAUSE.to_string(),
-                        error,
-                    });
-                }
-                *infra_retries_used += 1;
-                // Infra retry does NOT consume `policy.max_retries` and
-                // does NOT thread `previous_failure` — the agent never
-                // produced a meaningful failure body, the container died.
+                return Ok(handle_retryable_infra(
+                    controller,
+                    bead,
+                    state,
+                    infra_policy,
+                    RetryableInfraClass::Interrupted,
+                    error,
+                ));
             }
         }
     }
+}
+
+fn terminal(result: BeadResult) -> Result<ProcessOneResult, LoopError> {
+    Ok(ProcessOneResult::Terminal(result))
+}
+
+fn emit_retry_dispatch<C: AgentLoopController>(
+    controller: &mut C,
+    bead: &Bead,
+    attempt: u32,
+    policy: RetryPolicy,
+) {
+    controller.emit_driver_event(
+        DriverKind::RetryDispatch,
+        &format!(
+            "retry dispatch — attempt {attempt}/{max} for bead {bead_id}",
+            max = policy.max_retries,
+            bead_id = bead.id,
+        ),
+        serde_json::json!({
+            "bead_id": bead.id.to_string(),
+            "attempt": attempt,
+            "max_attempts": policy.max_retries,
+        }),
+    );
+}
+
+fn handle_retryable_infra<C: AgentLoopController>(
+    controller: &mut C,
+    bead: &Bead,
+    state: &mut BeadRunState,
+    infra_policy: InfraRetryPolicy,
+    class: RetryableInfraClass,
+    error: String,
+) -> ProcessOneResult {
+    state.infra_attempts += 1;
+    let max_attempts = infra_policy.effective_max_attempts();
+    let diagnostic = InfraDiagnostic::retryable(
+        class.cause(),
+        error,
+        state.infra_attempts,
+        max_attempts,
+        class.first_event_seen(),
+    );
+    emit_infra_failure(controller, bead, &diagnostic);
+    if state.infra_attempts >= max_attempts {
+        ProcessOneResult::Terminal(BeadResult::Infra { diagnostic })
+    } else {
+        ProcessOneResult::RetryInfra
+    }
+}
+
+fn emit_infra_failure<C: AgentLoopController>(
+    controller: &mut C,
+    bead: &Bead,
+    diagnostic: &InfraDiagnostic,
+) {
+    controller.emit_driver_event(
+        DriverKind::InfraFailure,
+        &format!(
+            "infra failure — {cause} for bead {bead_id}",
+            cause = diagnostic.cause,
+            bead_id = bead.id,
+        ),
+        serde_json::json!({
+            "bead_id": bead.id.to_string(),
+            "phase": "loop",
+            "first_event_seen": diagnostic.first_event_seen,
+            "attempt": diagnostic.attempt,
+            "max_attempts": diagnostic.max_attempts,
+            "cause": diagnostic.cause,
+            "error": diagnostic.error,
+        }),
+    );
 }
 
 #[cfg(test)]
@@ -679,6 +793,7 @@ mod tests {
         run_calls: Vec<(BeadId, Option<String>)>,
         clarified: Vec<(BeadId, String)>,
         blocked: Vec<(BeadId, String, String)>,
+        infra: Vec<(BeadId, InfraDiagnostic)>,
         review_calls: u32,
         /// Beads pushed onto `ready_queue` on each `exec_review` call. One
         /// entry per call; an empty entry means the handoff produced no
@@ -739,8 +854,18 @@ mod tests {
     }
 
     impl AgentLoopController for FakeController {
-        async fn next_ready_bead(&mut self) -> Result<Option<Bead>, LoopError> {
-            Ok(self.ready_queue.pop_front())
+        async fn next_ready_bead(
+            &mut self,
+            deferred: &[BeadId],
+        ) -> Result<Option<Bead>, LoopError> {
+            let Some(index) = self
+                .ready_queue
+                .iter()
+                .position(|bead| !deferred.iter().any(|id| id == &bead.id))
+            else {
+                return Ok(None);
+            };
+            Ok(self.ready_queue.remove(index))
         }
 
         async fn run_bead(
@@ -768,6 +893,15 @@ mod tests {
         ) -> Result<(), LoopError> {
             self.blocked
                 .push((bead.clone(), cause.to_string(), error.to_string()));
+            Ok(())
+        }
+
+        async fn apply_infra(
+            &mut self,
+            bead: &BeadId,
+            diagnostic: &InfraDiagnostic,
+        ) -> Result<(), LoopError> {
+            self.infra.push((bead.clone(), diagnostic.clone()));
             Ok(())
         }
 
@@ -1100,46 +1234,42 @@ mod tests {
         Ok(())
     }
 
-    /// Spec gate: pre-flight infra failures bypass retry entirely and
-    /// route the bead to `loom:blocked` cause `infra-preflight` on the
-    /// first occurrence. No agent output is ever evaluated.
     #[tokio::test]
-    async fn infra_preflight_routes_to_blocked_without_retry() -> Result<(), LoopError> {
+    async fn preflight_eof_retries_then_surfaces_infra_not_semantic_blocked()
+    -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("lm-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::InfraPreflight {
-            error: "image load failed".into(),
+            error: "pre-stream EOF".into(),
         });
-        // If the gate ever falls through, this Success would close the bead
-        // and the assertion below would fail.
-        c.agent_outcomes.push_back(AgentOutcome::Success);
+        c.agent_outcomes.push_back(AgentOutcome::InfraPreflight {
+            error: "pre-stream EOF again".into(),
+        });
 
-        let summary = run_loop(&mut c, RetryPolicy { max_retries: 2 }, 10).await?;
+        let summary = run_loop_with_infra_policy(
+            &mut c,
+            RetryPolicy { max_retries: 2 },
+            InfraRetryPolicy { max_attempts: 2 },
+            10,
+        )
+        .await?;
 
-        assert_eq!(c.run_calls.len(), 1, "preflight must not retry");
-        assert!(c.clarified.is_empty());
-        assert_eq!(c.blocked.len(), 1);
-        assert_eq!(c.blocked[0].0, BeadId::new("lm-1").expect("valid"));
-        assert_eq!(c.blocked[0].1, INFRA_PREFLIGHT_CAUSE);
-        assert!(
-            c.blocked[0].2.contains("image load failed"),
-            "blocked notes must carry the raw error: {:?}",
-            c.blocked[0].2,
-        );
+        assert_eq!(c.run_calls.len(), 2, "initial attempt + one infra retry");
+        assert!(c.blocked.is_empty(), "infra must not apply loom:blocked");
+        assert_eq!(c.infra.len(), 1);
+        assert_eq!(c.infra[0].0, BeadId::new("lm-1").expect("valid"));
+        let diagnostic = &c.infra[0].1;
+        assert_eq!(diagnostic.cause, INFRA_PREFLIGHT_CAUSE);
+        assert_eq!(diagnostic.attempt, Some(2));
+        assert_eq!(diagnostic.max_attempts, Some(2));
+        assert_eq!(diagnostic.first_event_seen, Some(false));
+        assert!(diagnostic.error.contains("again"));
         assert_eq!(summary.beads_blocked, 1);
         Ok(())
     }
 
-    /// Spec gate (Implementation Note 6): a bead whose `profile:X` label
-    /// is missing from the manifest exits immediately as `loom:blocked`
-    /// cause `unknown-profile` — no retry — and the loop continues with
-    /// the next ready bead so a stray label on one bead does not stall
-    /// the molecule. The note carries enough detail (requested profile +
-    /// declared set) for the operator to relabel without re-reading the
-    /// manifest.
     #[tokio::test]
-    async fn unknown_profile_routes_to_blocked_without_retry_then_continues()
-    -> Result<(), LoopError> {
+    async fn static_dispatch_failures_surface_as_infra_without_retry() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue
             .push_back(bead("lm-bad", &["profile:nonexistent"]));
@@ -1152,85 +1282,132 @@ mod tests {
 
         let summary = run_loop(&mut c, RetryPolicy { max_retries: 2 }, 10).await?;
 
-        // Bad bead: one attempt, no retry, routed to blocked.
-        // Good bead: one attempt, reaches Done.
-        assert_eq!(
-            c.run_calls.len(),
-            2,
-            "unknown-profile must not retry and must not prevent the next bead from dispatching"
-        );
+        assert_eq!(c.run_calls.len(), 2);
         assert_eq!(c.run_calls[0].0, BeadId::new("lm-bad").expect("valid"));
         assert_eq!(c.run_calls[1].0, BeadId::new("lm-ok").expect("valid"));
-        assert_eq!(
-            c.run_calls[0].1, None,
-            "unknown-profile must not thread a previous-failure body — there is no agent output",
-        );
-
-        assert_eq!(c.blocked.len(), 1, "exactly one bead blocked");
-        assert_eq!(c.blocked[0].0, BeadId::new("lm-bad").expect("valid"));
-        assert_eq!(c.blocked[0].1, UNKNOWN_PROFILE_CAUSE);
-        // The note must contain the unknown-profile cause token, the
-        // requested profile name, and at least one declared profile name
-        // so the operator can relabel without re-reading the manifest.
-        let note = &c.blocked[0].2;
+        assert_eq!(c.run_calls[0].1, None);
         assert!(
-            note.contains("profile:nonexistent"),
-            "blocked notes must name the requested profile: {note}",
+            c.blocked.is_empty(),
+            "static infra must not be semantic blocked"
         );
-        assert!(
-            note.contains("profile:base"),
-            "blocked notes must name at least one declared profile: {note}",
-        );
-
-        assert!(
-            c.clarified.is_empty(),
-            "unknown-profile must not route through the clarify branch",
-        );
+        assert_eq!(c.infra.len(), 1);
+        assert_eq!(c.infra[0].0, BeadId::new("lm-bad").expect("valid"));
+        let diagnostic = &c.infra[0].1;
+        assert_eq!(diagnostic.cause, UNKNOWN_PROFILE_CAUSE);
+        assert_eq!(diagnostic.attempt, None);
+        assert!(diagnostic.error.contains("profile:nonexistent"));
+        assert!(diagnostic.error.contains("profile:base"));
         assert_eq!(summary.beads_blocked, 1);
         Ok(())
     }
 
-    /// Spec gate: the first mid-session infra failure inside a `loom loop`
-    /// gets one free retry; the second one routes to `loom:blocked`
-    /// cause `infra-repeated`. Both occurrences here happen on the same
-    /// bead so the per-run counter is the only thing distinguishing them.
     #[tokio::test]
-    async fn infra_midsession_one_retry_then_blocks_on_repeat() -> Result<(), LoopError> {
+    async fn missing_runtime_for_profile_surfaces_as_infra_without_retry() -> Result<(), LoopError>
+    {
+        let mut c = FakeController::default();
+        c.ready_queue.push_back(bead("lm-bad", &["profile:rust"]));
+        c.agent_outcomes
+            .push_back(AgentOutcome::UnknownRuntimeForProfile {
+                error: "profile:rust lacks runtime direct; declared: claude, pi".into(),
+            });
+
+        let summary = run_loop(&mut c, RetryPolicy::default(), 10).await?;
+
+        assert_eq!(c.run_calls.len(), 1);
+        assert!(c.blocked.is_empty());
+        assert_eq!(c.infra.len(), 1);
+        assert_eq!(c.infra[0].1.cause, UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE);
+        assert!(c.infra[0].1.error.contains("runtime direct"));
+        assert_eq!(summary.beads_blocked, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn partial_stream_eof_classifies_interrupted_infra() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("lm-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::InfraMidSession {
-            error: "process exit 137 (OOM)".into(),
-        });
-        c.agent_outcomes.push_back(AgentOutcome::InfraMidSession {
-            error: "io timeout".into(),
+            error: "stream ended after text_delta".into(),
         });
 
-        let summary = run_loop(&mut c, RetryPolicy { max_retries: 2 }, 10).await?;
+        let summary = run_loop_with_infra_policy(
+            &mut c,
+            RetryPolicy::default(),
+            InfraRetryPolicy { max_attempts: 1 },
+            10,
+        )
+        .await?;
 
-        assert_eq!(
-            c.run_calls.len(),
-            2,
-            "first mid-session failure consumes the one free retry"
-        );
-        // Infra retries do NOT thread previous_failure into the agent
-        // prompt — the spec calls them out as driver-memory state, not
-        // agent-visible signal.
-        assert_eq!(c.run_calls[0].1, None);
-        assert_eq!(c.run_calls[1].1, None);
-        assert_eq!(c.blocked.len(), 1);
-        assert_eq!(c.blocked[0].1, INFRA_REPEATED_CAUSE);
-        assert!(
-            c.blocked[0].2.contains("io timeout"),
-            "blocked notes must carry the second error body: {:?}",
-            c.blocked[0].2,
-        );
+        assert_eq!(c.run_calls.len(), 1);
+        assert!(c.blocked.is_empty());
+        assert_eq!(c.infra.len(), 1);
+        let diagnostic = &c.infra[0].1;
+        assert_eq!(diagnostic.cause, INFRA_INTERRUPTED_CAUSE);
+        assert_eq!(diagnostic.first_event_seen, Some(true));
+        assert_eq!(diagnostic.attempt, Some(1));
+        assert_eq!(diagnostic.max_attempts, Some(1));
         assert_eq!(summary.beads_blocked, 1);
         Ok(())
     }
 
-    /// Spec gate: a successful retry after one mid-session failure consumes
-    /// the budget without touching `[loop] max_iterations`. Verifies the
-    /// happy path of the one-free-retry rule.
+    #[tokio::test]
+    async fn infra_failure_driver_event_payload_carries_stream_diagnostics() -> Result<(), LoopError>
+    {
+        let mut c = FakeController::default();
+        c.ready_queue.push_back(bead("lm-1", &[]));
+        c.agent_outcomes.push_back(AgentOutcome::InfraMidSession {
+            error: "exit 137".into(),
+        });
+
+        let _summary = run_loop_with_infra_policy(
+            &mut c,
+            RetryPolicy::default(),
+            InfraRetryPolicy { max_attempts: 1 },
+            10,
+        )
+        .await?;
+
+        let event = c
+            .driver_events
+            .iter()
+            .find(|(kind, _, _)| kind == "infra_failure")
+            .expect("infra_failure event emitted");
+        assert_eq!(event.2["phase"].as_str(), Some("loop"));
+        assert_eq!(event.2["first_event_seen"].as_bool(), Some(true));
+        assert_eq!(event.2["attempt"].as_u64(), Some(1));
+        assert_eq!(event.2["max_attempts"].as_u64(), Some(1));
+        assert_eq!(event.2["cause"].as_str(), Some(INFRA_INTERRUPTED_CAUSE));
+        assert_eq!(event.2["error"].as_str(), Some("exit 137"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn infra_failures_round_robin_per_bead_without_cooldown() -> Result<(), LoopError> {
+        let mut c = FakeController::default();
+        c.ready_queue.push_back(bead("lm-a", &[]));
+        c.ready_queue.push_back(bead("lm-b", &[]));
+        c.agent_outcomes.push_back(AgentOutcome::InfraPreflight {
+            error: "a transient".into(),
+        });
+        c.agent_outcomes.push_back(AgentOutcome::Success);
+        c.agent_outcomes.push_back(AgentOutcome::Success);
+
+        let summary = run_loop_with_infra_policy(
+            &mut c,
+            RetryPolicy::default(),
+            InfraRetryPolicy { max_attempts: 2 },
+            10,
+        )
+        .await?;
+
+        let order: Vec<String> = c.run_calls.iter().map(|(id, _)| id.to_string()).collect();
+        assert_eq!(order, vec!["lm-a", "lm-b", "lm-a"]);
+        assert!(c.infra.is_empty());
+        assert!(c.blocked.is_empty());
+        assert_eq!(summary.beads_processed, 2);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn infra_midsession_retry_succeeds_within_budget() -> Result<(), LoopError> {
         let mut c = FakeController::default();
@@ -1243,23 +1420,17 @@ mod tests {
         let summary = run_loop(&mut c, RetryPolicy { max_retries: 2 }, 10).await?;
 
         assert_eq!(c.run_calls.len(), 2);
-        // Done — driver does not close, no blocked.
         assert!(c.clarified.is_empty());
-        assert!(c.blocked.is_empty(), "successful retry must not block");
+        assert!(c.blocked.is_empty());
+        assert!(c.infra.is_empty());
         assert_eq!(summary.beads_blocked, 0);
         Ok(())
     }
 
-    /// Spec gate: the infra-retry counter is driver-memory and does NOT
-    /// consume slots in `[loop] max_iterations`. After absorbing one
-    /// mid-session infra failure, the agent-side retry policy still has
-    /// its full budget for genuine `AgentOutcome::Failure` retries.
     #[tokio::test]
     async fn infra_retry_counter_does_not_consume_max_retries() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("lm-1", &[]));
-        // 1 infra mid-session, then `max_retries=2` worth of agent failures
-        // (initial attempt + 2 retries = 3 agent attempts) before clarify.
         c.agent_outcomes.push_back(AgentOutcome::InfraMidSession {
             error: "kernel oom".into(),
         });
@@ -1271,21 +1442,13 @@ mod tests {
 
         let summary = run_loop(&mut c, RetryPolicy { max_retries: 2 }, 10).await?;
 
-        assert_eq!(
-            c.run_calls.len(),
-            4,
-            "1 infra retry + 3 agent attempts (initial + 2 max_retries)",
-        );
-        // First attempt: no previous_failure.
+        assert_eq!(c.run_calls.len(), 4);
         assert_eq!(c.run_calls[0].1, None);
-        // Second attempt is the infra retry — also no previous_failure
-        // (driver-memory only, never threaded to agent).
         assert_eq!(c.run_calls[1].1, None);
-        // Third attempt sees the first agent-side failure body.
         assert_eq!(c.run_calls[2].1.as_deref(), Some("agent-err-0"));
         assert_eq!(c.run_calls[3].1.as_deref(), Some("agent-err-1"));
-        // The bead exhausts agent retries and blocks with the final failure detail.
-        assert!(c.clarified.is_empty(), "retry exhaustion must not clarify");
+        assert!(c.clarified.is_empty());
+        assert!(c.infra.is_empty());
         assert_eq!(c.blocked.len(), 1);
         assert_eq!(c.blocked[0].0, BeadId::new("lm-1").expect("valid"));
         assert_eq!(c.blocked[0].1, RETRY_EXHAUSTED_CAUSE);
@@ -1294,35 +1457,69 @@ mod tests {
         Ok(())
     }
 
-    /// Companion to the counter-separate test: the budget is per
-    /// `loom loop` invocation, not per bead. A second bead's first
-    /// mid-session failure inside the same run hits the spent budget
-    /// and routes straight to `infra-repeated`.
     #[tokio::test]
-    async fn infra_budget_is_per_run_not_per_bead() -> Result<(), LoopError> {
+    async fn prior_session_complete_not_overwritten_by_later_preflight_eof() -> Result<(), LoopError>
+    {
         let mut c = FakeController::default();
-        c.ready_queue.push_back(bead("lm-a", &[]));
-        c.ready_queue.push_back(bead("lm-b", &[]));
-        // Bead A: one infra mid-session, then succeeds (consumes budget).
-        c.agent_outcomes.push_back(AgentOutcome::InfraMidSession {
-            error: "first".into(),
-        });
+        c.ready_queue.push_back(bead("lm-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::Success);
-        // Bead B: first attempt is a mid-session infra failure with no
-        // budget left → blocked cause `infra-repeated`.
-        c.agent_outcomes.push_back(AgentOutcome::InfraMidSession {
-            error: "second".into(),
+        c.per_bead_gate_outcomes
+            .push_back(PerBeadGateOutcome::Recovery {
+                detail: "verify failed".into(),
+            });
+        c.agent_outcomes.push_back(AgentOutcome::InfraPreflight {
+            error: "retry spawn EOF".into(),
         });
 
-        let summary = run_loop(&mut c, RetryPolicy::default(), 10).await?;
+        let summary = run_loop_with_infra_policy(
+            &mut c,
+            RetryPolicy { max_retries: 2 },
+            InfraRetryPolicy { max_attempts: 1 },
+            10,
+        )
+        .await?;
 
-        assert_eq!(c.run_calls.len(), 3);
-        // Bead A reaches Done (no clarify, no blocked for it).
-        assert!(c.clarified.is_empty());
-        assert_eq!(c.blocked.len(), 1);
-        assert_eq!(c.blocked[0].0, BeadId::new("lm-b").expect("valid"));
-        assert_eq!(c.blocked[0].1, INFRA_REPEATED_CAUSE);
+        assert_eq!(c.run_calls.len(), 2);
+        assert_eq!(c.run_calls[1].1.as_deref(), Some("verify failed"));
+        assert!(c.blocked.is_empty());
+        assert_eq!(c.infra.len(), 1);
+        assert_eq!(c.infra[0].1.cause, INFRA_PREFLIGHT_CAUSE);
         assert_eq!(summary.beads_blocked, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fresh_loop_retries_loom_infra_beads_with_fresh_budget() -> Result<(), LoopError> {
+        let mut first = FakeController::default();
+        first.ready_queue.push_back(bead("lm-1", &["loom:infra"]));
+        first
+            .agent_outcomes
+            .push_back(AgentOutcome::InfraPreflight {
+                error: "eof".into(),
+            });
+        let _ = run_loop_with_infra_policy(
+            &mut first,
+            RetryPolicy::default(),
+            InfraRetryPolicy { max_attempts: 1 },
+            10,
+        )
+        .await?;
+        assert_eq!(first.infra.len(), 1);
+
+        let mut second = FakeController::default();
+        second.ready_queue.push_back(bead("lm-1", &["loom:infra"]));
+        second.agent_outcomes.push_back(AgentOutcome::Success);
+        let summary = run_loop_with_infra_policy(
+            &mut second,
+            RetryPolicy::default(),
+            InfraRetryPolicy { max_attempts: 1 },
+            10,
+        )
+        .await?;
+
+        assert_eq!(second.run_calls.len(), 1);
+        assert!(second.infra.is_empty());
+        assert_eq!(summary.beads_processed, 1);
         Ok(())
     }
 

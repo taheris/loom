@@ -51,7 +51,7 @@ pub use error::LoopError;
 pub use loom_gate::{
     GateFail, GateFailReason, GateOutcome, GateSuccess, HandoffEvidence, LoopOutcome, NoGateReason,
 };
-pub use outcome::{AgentOutcome, BeadResult, SessionResult};
+pub use outcome::{AgentOutcome, BeadResult, InfraDiagnostic, SessionResult};
 pub use parallel::{
     BatchOutcome, BatchResult, BatchSlot, WorktreeBead, create_worktrees, merge_back,
     merge_back_with_logs, run_concurrent_spawns, run_parallel_batch, run_parallel_batch_with_logs,
@@ -64,8 +64,9 @@ pub use production::{
 pub use profile::{DEFAULT_PROFILE, resolve_profile, resolve_profile_image};
 pub use retry::{RetryDecision, RetryPolicy};
 pub use runner::{
-    AgentLoopController, CONFLICT_RETRY_LABEL, INFRA_PREFLIGHT_CAUSE, INFRA_REPEATED_CAUSE,
-    UNKNOWN_PROFILE_CAUSE, run_loop,
+    AgentLoopController, CONFLICT_RETRY_LABEL, INFRA_INTERRUPTED_CAUSE, INFRA_PREFLIGHT_CAUSE,
+    InfraRetryPolicy, UNKNOWN_PROFILE_CAUSE, UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE, run_loop,
+    run_loop_with_infra_policy,
 };
 pub use spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
 pub use tree_clean::{TREE_NOT_CLEAN_CAP, dirty_paths_from_porcelain};

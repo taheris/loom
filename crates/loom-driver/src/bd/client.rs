@@ -323,8 +323,8 @@ pub struct UpdateOpts {
     /// Full issue body forwarded to `bd update --description <text>`.
     pub description: Option<String>,
     /// Free-text body forwarded to `bd update --notes <text>`. Used by the
-    /// run-loop infra-failure path to record `infra-preflight` /
-    /// `infra-repeated` causes alongside the `loom:blocked` label.
+    /// run-loop parking paths to record stable cause strings alongside the
+    /// applied terminal label.
     pub notes: Option<String>,
     /// Additive metadata writes forwarded as repeated `bd update
     /// --set-metadata key=value` flags. Each entry sets one key without
@@ -842,7 +842,7 @@ mod tests {
                 &BeadId::new("lm-x")?,
                 UpdateOpts {
                     add_labels: vec!["loom:blocked".into()],
-                    notes: Some("infra-preflight: image load failed".into()),
+                    notes: Some("agent-blocked: needs operator".into()),
                     ..UpdateOpts::default()
                 },
             )
@@ -854,7 +854,7 @@ mod tests {
             .iter()
             .position(|a| a == "--notes")
             .ok_or_else(|| anyhow!("--notes flag missing in argv: {argv:?}"))?;
-        assert_eq!(argv[notes_idx + 1], "infra-preflight: image load failed");
+        assert_eq!(argv[notes_idx + 1], "agent-blocked: needs operator");
         // The label and notes must travel together.
         assert!(argv.contains(&"--add-label".to_string()));
         assert!(argv.contains(&"loom:blocked".to_string()));

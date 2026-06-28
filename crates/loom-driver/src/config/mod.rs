@@ -41,7 +41,7 @@ pub use loom_section::{
     LoomTopConfig, default_git_hook_timeout_secs, default_integration_branch,
     default_sccache_container_path,
 };
-pub use loop_config::LoopConfig;
+pub use loop_config::{LoopConfig, LoopInfraConfig};
 pub use runner::{Parser, RunnerConfig, RunnerEntry, RunnerTier};
 pub use security::SecurityConfig;
 pub use skills::{SkillPathDisplay, SkillRegistration, SkillsConfig};
@@ -354,6 +354,10 @@ max_iterations = 10
 # `process_one_bead` call. Independent of `max_iterations`.
 max_retries = 2
 
+[loop.infra]
+# Per-bead infrastructure attempt budget for one `loom loop` invocation.
+max_attempts = 3
+
 [logs]
 # Delete log files under .loom/logs/ older than this many days on
 # `loom loop` startup. 0 disables sweeping (keep forever).
@@ -623,12 +627,25 @@ max_retries = 5
         assert_eq!(cfg.loop_.max_retries, 5);
         // Other [loop] fields fall back to defaults.
         assert_eq!(cfg.loop_.max_iterations, 10);
+        assert_eq!(cfg.loop_.infra.max_attempts, 3);
         // Whole sections that are absent stay at defaults.
         assert_eq!(cfg.beads, BeadsConfig::default());
         assert!(cfg.phase.is_empty());
         assert_eq!(cfg.claude, ClaudeConfig::default());
         assert_eq!(cfg.security, SecurityConfig::default());
         assert!(cfg.runner.0.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn loop_infra_max_attempts_parses_nested_table() -> Result<()> {
+        let src = r#"
+[loop.infra]
+max_attempts = 7
+"#;
+        let cfg = LoomConfig::from_toml_str(src)?;
+        assert_eq!(cfg.loop_.infra.max_attempts, 7);
+        assert_eq!(cfg.loop_.max_retries, 2);
         Ok(())
     }
 
