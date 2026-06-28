@@ -2827,11 +2827,11 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
 - `LOOM_COMPLETE` is not rejected solely because a recovery stash still
       exists; stash relevance is judged by review/gate evidence rather
       than a hard driver state machine
-  [test?](loop_complete_does_not_require_recovery_stash_removed)
+  [test](loop_complete_does_not_require_recovery_stash_removed)
 - Recovery-stash preflight emits `DriverKind::WorkspaceRecovery` with bead
       id, pre-stash status, stash selector/message, stash commit,
       integration tip, alignment outcome, and conflict files when present
-  [test?](workspace_recovery_event_records_stash_and_alignment)
+  [test](workspace_recovery_event_records_stash_and_alignment)
 - `loom loop` / `loom init` startup fast-forwards the loom
       workspace's integration branch to `origin/<integration-branch>`
       before any bead clone is materialized, so `loom/<id>` always

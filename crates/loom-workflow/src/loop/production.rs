@@ -26,7 +26,9 @@ use loom_driver::bd::{
 };
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::config::{LoomConfig, LoomTopConfig, Phase, SkillsConfig};
-use loom_driver::git::{CreatedWorktree, GitClient, GitOid, RebaseOutcome};
+use loom_driver::git::{
+    BeadCloneAlignment, BeadClonePreparation, CreatedWorktree, GitClient, GitOid, RebaseOutcome,
+};
 use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::lock::LockGuard;
 use loom_driver::logging::phase_log_path;
@@ -44,7 +46,10 @@ use super::context::{LoopContextInputs, render_loop_prompt};
 use super::driver_emit::BeadEmit;
 use super::error::LoopError;
 use super::outcome::{AgentOutcome, InfraDiagnostic, SessionResult};
-use super::runner::{AgentLoopController, INVALID_SPAWN_CONFIG_CAUSE, PerBeadGateOutcome};
+use super::runner::{
+    AgentLoopController, INVALID_SPAWN_CONFIG_CAUSE, PerBeadGateOutcome,
+    WORKSPACE_RECOVERY_FAILED_CAUSE,
+};
 use crate::spawn::container_workspace_path;
 
 use super::spawn::{build_spawn_config_from_manifest, dolt_socket_mount, sccache_mount};
@@ -58,7 +63,7 @@ use crate::skill::SkillPlan;
 use crate::suppression::suppresses_rubric_finding;
 use crate::todo::{ExitSignal, parse_exit_signal};
 use loom_templates::previous_failure::{TerminalSurface, VerifierFailure};
-use loom_templates::run::PreviousFailure;
+use loom_templates::run::{PreviousFailure, RecoveryStash, WorkspaceAlignment, WorkspaceRecovery};
 
 /// Env var the molecule-completion handoff sets when spawning `loom gate
 /// review` so the child re-uses the parent's pinned `phase_when`
@@ -79,6 +84,79 @@ pub const REVIEW_EMIT_STDOUT_ENV: &str = "LOOM_REVIEW_EMIT_STDOUT";
 /// the parent controller without adding a public `--spec` gate filter. The
 /// value is context only: `--diff` remains the trust-bearing scope.
 pub const REVIEW_SPEC_LABEL_ENV: &str = "LOOM_REVIEW_SPEC_LABEL";
+
+struct DriverEventDraft {
+    summary: String,
+    payload: serde_json::Value,
+}
+
+fn workspace_recovery_from_preparation(
+    preparation: &BeadClonePreparation,
+) -> Option<WorkspaceRecovery> {
+    let recovery = preparation.recovery.as_ref()?;
+    Some(WorkspaceRecovery {
+        pre_stash_status: recovery.pre_stash_status.clone(),
+        stash: RecoveryStash {
+            selector: recovery.stash.selector.clone(),
+            commit: recovery.stash.commit.clone(),
+            message: recovery.stash.message.clone(),
+        },
+        integration_tip: preparation.integration_tip.clone(),
+        alignment: workspace_alignment_from_git(&preparation.alignment),
+    })
+}
+
+fn workspace_alignment_from_git(alignment: &BeadCloneAlignment) -> WorkspaceAlignment {
+    match alignment {
+        BeadCloneAlignment::Clean => WorkspaceAlignment::Clean,
+        BeadCloneAlignment::Rebased {
+            previous_head,
+            current_head,
+        } => WorkspaceAlignment::Rebased {
+            previous_head: previous_head.clone(),
+            current_head: current_head.clone(),
+        },
+        BeadCloneAlignment::Conflict { files } => WorkspaceAlignment::Conflict {
+            files: files
+                .iter()
+                .map(|file| file.to_string_lossy().into_owned())
+                .collect(),
+        },
+    }
+}
+
+fn workspace_recovery_event_draft(
+    bead_id: &BeadId,
+    recovery: &WorkspaceRecovery,
+) -> DriverEventDraft {
+    let (alignment_outcome, previous_head, current_head) = match &recovery.alignment {
+        WorkspaceAlignment::Clean => ("clean", None, None),
+        WorkspaceAlignment::Rebased {
+            previous_head,
+            current_head,
+        } => (
+            "rebased",
+            Some(previous_head.as_str()),
+            Some(current_head.as_str()),
+        ),
+        WorkspaceAlignment::Conflict { .. } => ("conflict", None, None),
+    };
+    DriverEventDraft {
+        summary: format!("workspace recovery stash preserved for bead {bead_id}"),
+        payload: serde_json::json!({
+            "bead_id": bead_id.to_string(),
+            "pre_stash_status": recovery.pre_stash_status.as_str(),
+            "stash_selector": recovery.stash.selector.as_str(),
+            "stash_message": recovery.stash.message.as_str(),
+            "stash_commit": recovery.stash.commit.as_str(),
+            "integration_tip": recovery.integration_tip.as_str(),
+            "alignment_outcome": alignment_outcome,
+            "alignment_previous_head": previous_head,
+            "alignment_current_head": current_head,
+            "conflict_files": recovery.alignment.conflict_files(),
+        }),
+    }
+}
 
 /// Wires the [`AgentLoopController`] trait against the real `BdClient`, a
 /// caller-provided agent dispatch closure, and a child `loom review` exec for
@@ -502,11 +580,21 @@ where
             branch = %worktree.branch,
             "dispatching agent against per-bead workspace",
         );
-        // Drop any uncommitted mid-session leftovers from a prior attempt
-        // while preserving the bead branch's HEAD (i.e. the agent's prior
-        // commits) and the warm caches under `target/` + `.wrix/`. No-op
-        // on the first attempt against a freshly-cloned tree.
-        self.git.reset_bead_clone(&worktree.path).await?;
+        let preparation = match self.git.prepare_bead_clone(&worktree.path, &bead.id).await {
+            Ok(preparation) => preparation,
+            Err(source) => {
+                return Ok(AgentOutcome::StaticInfra {
+                    cause: WORKSPACE_RECOVERY_FAILED_CAUSE.to_string(),
+                    error: format!(
+                        "workspace recovery pre-dispatch prepare failed before cleanup: {source}"
+                    ),
+                });
+            }
+        };
+        let workspace_recovery = workspace_recovery_from_preparation(&preparation);
+        let workspace_recovery_event = workspace_recovery
+            .as_ref()
+            .map(|recovery| workspace_recovery_event_draft(&bead.id, recovery));
 
         let key = resolve_scratch_key(
             Phase::Loop,
@@ -549,7 +637,7 @@ where
             title: bead.title.clone(),
             description: bead.description.clone(),
             previous_failure: typed_previous_failure,
-            workspace_recovery: None,
+            workspace_recovery,
             review_notes: None,
             attempt,
             scratchpad_path: prompt_scratchpad_path.to_string_lossy().into_owned(),
@@ -650,15 +738,18 @@ where
         // to so subsequent driver events (tree-not-clean / merge / push /
         // cleanup) land in the same JSONL the agent's events live in.
         self.prepare_emit_state(&bead.id);
+        if let Some(event) = workspace_recovery_event {
+            self.emit_to_log(DriverKind::WorkspaceRecovery, &event.summary, event.payload);
+        }
 
         let outcome = classify_session(session, marker);
         if outcome == AgentOutcome::Success {
             // Tree-clean precedes verify-fail / review-concern per
             // `specs/harness.md` § Verdict Gate. The pre-attempt
-            // `reset_bead_clone` (run before dispatch) is what
-            // guarantees the agent saw an empty starting tree, so any
-            // dirty porcelain entry is necessarily an agent leftover
-            // or a reset-step bug — running verifiers against a
+            // `prepare_bead_clone` path stashes preserved dirty work and
+            // resets non-conflicted dispatches, so any dirty porcelain
+            // entry is necessarily an agent leftover, unresolved recovery
+            // conflict, or prepare-step bug — running verifiers against a
             // half-staged tree would conflate the agent's intended
             // diff with its leftover scratch.
             let porcelain = self.git.status_porcelain_at(&worktree.path).await?;
@@ -685,8 +776,9 @@ where
                 // (`specs/harness.md` § Verdict Gate — the per-bead-close
                 // lifecycle preserves the clone until `bd close`). The next
                 // attempt reuses it via the idempotent `create_worktree` +
-                // `reset_bead_clone`, which drops these dirty leftovers while
-                // keeping any committed work on the bead branch.
+                // `prepare_bead_clone`, which preserves these dirty leftovers
+                // in recovery context before cleanup while keeping any
+                // committed work on the bead branch.
                 self.stashed_previous_failure =
                     Some(PreviousFailure::TreeNotClean { dirty_paths: dirty });
                 return Ok(AgentOutcome::Failure {
@@ -2175,6 +2267,360 @@ mod tests {
         // surfaces the phase prompt under compaction recovery.
         let written = prompt_seen.lock().unwrap().take().expect("prompt.txt seen");
         assert_eq!(written, cfg.initial_prompt);
+    }
+
+    #[tokio::test]
+    async fn loop_complete_does_not_require_recovery_stash_removed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let label = SpecLabel::new("harness");
+        let bead_id = BeadId::new("lm-stashok").expect("valid bead id");
+        let created = git
+            .create_worktree(&label, &bead_id)
+            .await
+            .expect("create worktree");
+        std::fs::write(created.path.join("dirty.txt"), "preserved local work\n")
+            .expect("write dirty file");
+        let captured_prompt: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_prompt_inner = Arc::clone(&captured_prompt);
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            label,
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            move |cfg: SpawnConfig, _bead_id: BeadId| {
+                let captured_prompt = Arc::clone(&captured_prompt_inner);
+                async move {
+                    *captured_prompt.lock().unwrap() = Some(cfg.initial_prompt.clone());
+                    std::fs::write(cfg.workspace.join("spawn.txt"), "spawned\n")
+                        .expect("write spawn file");
+                    loom_driver::git::commit_all_in(&cfg.workspace, "spawn work")
+                        .expect("commit spawn work");
+                    (
+                        SessionResult::Complete(SessionOutcome {
+                            exit_code: 0,
+                            cost_usd: None,
+                        }),
+                        Some(ExitSignal::Complete),
+                    )
+                }
+            },
+        );
+
+        let outcome = controller
+            .run_bead(&bead("lm-stashok"), None)
+            .await
+            .expect("run_bead ok");
+
+        assert_eq!(outcome, AgentOutcome::Success);
+        let prompt = captured_prompt
+            .lock()
+            .unwrap()
+            .take()
+            .expect("prompt captured");
+        assert!(
+            prompt.contains("## Workspace Recovery"),
+            "workspace recovery context missing: {prompt}",
+        );
+        assert!(
+            prompt.contains("git stash show --stat"),
+            "stash inspection command missing: {prompt}",
+        );
+        assert!(
+            !prompt.contains("Retry attempt 1"),
+            "recovery stash context must not consume retry attempt: {prompt}",
+        );
+        let stash_reflog = std::fs::read_to_string(created.path.join(".git/logs/refs/stash"))
+            .expect("stash reflog readable");
+        assert!(
+            stash_reflog.contains("loom workspace-recovery lm-stashok"),
+            "successful completion must not require dropping the recovery stash: {stash_reflog}",
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_recovery_rebase_conflict_dispatches_agent_with_context() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let label = SpecLabel::new("harness");
+        let bead_id = BeadId::new("lm-conflict").expect("valid bead id");
+        let created = git
+            .create_worktree(&label, &bead_id)
+            .await
+            .expect("create worktree");
+        std::fs::write(created.path.join("README.md"), "bead edit\n").expect("write bead edit");
+        loom_driver::git::commit_all_in(&created.path, "bead edit").expect("commit bead edit");
+        let loom = git.loom_workspace();
+        std::fs::write(loom.join("README.md"), "integration edit\n")
+            .expect("write integration edit");
+        loom_driver::git::commit_all_in(&loom, "integration edit")
+            .expect("commit integration edit");
+        std::fs::write(created.path.join("scratch.txt"), "dirty scratch\n")
+            .expect("write dirty scratch");
+        let captured_prompt: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let conflict_body: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_prompt_inner = Arc::clone(&captured_prompt);
+        let conflict_body_inner = Arc::clone(&conflict_body);
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            label,
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            move |cfg: SpawnConfig, _bead_id: BeadId| {
+                let captured_prompt = Arc::clone(&captured_prompt_inner);
+                let conflict_body = Arc::clone(&conflict_body_inner);
+                async move {
+                    *captured_prompt.lock().unwrap() = Some(cfg.initial_prompt.clone());
+                    *conflict_body.lock().unwrap() = Some(
+                        std::fs::read_to_string(cfg.workspace.join("README.md"))
+                            .expect("conflict file readable"),
+                    );
+                    (
+                        SessionResult::Complete(SessionOutcome {
+                            exit_code: 1,
+                            cost_usd: None,
+                        }),
+                        None,
+                    )
+                }
+            },
+        );
+
+        let outcome = controller
+            .run_bead(&bead("lm-conflict"), None)
+            .await
+            .expect("run_bead ok");
+
+        assert!(matches!(outcome, AgentOutcome::Failure { .. }));
+        let prompt = captured_prompt
+            .lock()
+            .unwrap()
+            .take()
+            .expect("prompt captured");
+        assert!(
+            prompt.contains("Alignment is in conflict"),
+            "conflict guidance missing: {prompt}",
+        );
+        assert!(
+            prompt.contains("- `README.md`"),
+            "conflict file missing from prompt: {prompt}",
+        );
+        assert!(
+            prompt.contains("LOOM_CLARIFY"),
+            "prompt must route human-needed conflicts through clarify: {prompt}",
+        );
+        assert!(
+            !prompt.contains("Retry attempt 1"),
+            "workspace recovery conflict dispatch must not consume retry attempt: {prompt}",
+        );
+        let readme = conflict_body
+            .lock()
+            .unwrap()
+            .take()
+            .expect("conflict file captured");
+        assert!(
+            readme.contains("<<<<<<<"),
+            "worker saw no conflict markers: {readme}"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_recovery_event_records_stash_and_alignment() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let label = SpecLabel::new("harness");
+        let bead_id = BeadId::new("lm-event").expect("valid bead id");
+        let created = git
+            .create_worktree(&label, &bead_id)
+            .await
+            .expect("create worktree");
+        std::fs::write(created.path.join("README.md"), "bead edit\n").expect("write bead edit");
+        loom_driver::git::commit_all_in(&created.path, "bead edit").expect("commit bead edit");
+        let loom = git.loom_workspace();
+        std::fs::write(loom.join("README.md"), "integration edit\n")
+            .expect("write integration edit");
+        loom_driver::git::commit_all_in(&loom, "integration edit")
+            .expect("commit integration edit");
+        std::fs::write(created.path.join("scratch.txt"), "dirty scratch\n")
+            .expect("write dirty scratch");
+        let logs_root = dir.path().join("logs");
+        let logs_root_for_closure = logs_root.clone();
+        let label_for_closure = label.clone();
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            label.clone(),
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            move |_cfg: SpawnConfig, bead_id: BeadId| {
+                let logs_root = logs_root_for_closure.clone();
+                let label = label_for_closure.clone();
+                async move {
+                    let mut sink = loom_driver::logging::LogSink::open_in_at(
+                        &logs_root,
+                        &label,
+                        &bead_id,
+                        None,
+                        SystemTime::UNIX_EPOCH,
+                    )
+                    .expect("open bead log");
+                    sink.finish(loom_driver::logging::BeadOutcome::Failed)
+                        .expect("finish bead log");
+                    (
+                        SessionResult::Complete(SessionOutcome {
+                            exit_code: 1,
+                            cost_usd: None,
+                        }),
+                        None,
+                    )
+                }
+            },
+        )
+        .with_phase_log_root(logs_root.clone());
+
+        let outcome = controller
+            .run_bead(&bead("lm-event"), None)
+            .await
+            .expect("run_bead ok");
+
+        assert!(matches!(outcome, AgentOutcome::Failure { .. }));
+        let log_path = loom_driver::logging::bead_log_path(
+            &logs_root,
+            &label,
+            &bead_id,
+            SystemTime::UNIX_EPOCH,
+        );
+        let body = std::fs::read_to_string(&log_path).expect("driver event log readable");
+        let event = body
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event json"))
+            .find(|event| event["driver_kind"] == "workspace_recovery")
+            .unwrap_or_else(|| panic!("workspace_recovery event missing from {body}"));
+        assert_eq!(event["source"], "driver");
+        assert_eq!(event["payload"]["bead_id"], "lm-event");
+        assert!(
+            event["payload"]["pre_stash_status"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("scratch.txt"),
+            "pre-stash status missing dirty file: {event}",
+        );
+        assert_eq!(event["payload"]["stash_selector"], "stash@{0}");
+        assert!(
+            event["payload"]["stash_message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("loom workspace-recovery lm-event"),
+            "stash message missing bead id: {event}",
+        );
+        assert!(
+            event["payload"]["stash_commit"]
+                .as_str()
+                .is_some_and(|s| s.len() == 40 || s.len() == 64),
+            "stash commit must be a stable git oid: {event}",
+        );
+        assert!(
+            event["payload"]["integration_tip"]
+                .as_str()
+                .is_some_and(|s| s.len() == 40 || s.len() == 64),
+            "integration tip must be recorded: {event}",
+        );
+        assert_eq!(event["payload"]["alignment_outcome"], "conflict");
+        assert_eq!(
+            event["payload"]["conflict_files"],
+            serde_json::json!(["README.md"]),
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_recovery_stash_failure_routes_static_infra_without_cleanup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let label = SpecLabel::new("harness");
+        let bead_id = BeadId::new("lm-stashfail").expect("valid bead id");
+        let created = git
+            .create_worktree(&label, &bead_id)
+            .await
+            .expect("create worktree");
+        std::fs::write(created.path.join("README.md"), "bead edit\n").expect("write bead edit");
+        loom_driver::git::commit_all_in(&created.path, "bead edit").expect("commit bead edit");
+        let loom = git.loom_workspace();
+        std::fs::write(loom.join("README.md"), "integration edit\n")
+            .expect("write integration edit");
+        loom_driver::git::commit_all_in(&loom, "integration edit")
+            .expect("commit integration edit");
+        let preexisting_conflict = GitClient::open(&created.path)
+            .expect("open bead git")
+            .prepare_bead_clone(&created.path, &bead_id)
+            .await
+            .expect("seed pre-existing conflict");
+        assert!(
+            matches!(
+                preexisting_conflict.alignment,
+                BeadCloneAlignment::Conflict { .. }
+            ),
+            "setup prepare should leave an unmerged index",
+        );
+        let before = std::fs::read_to_string(created.path.join("README.md"))
+            .expect("conflict file readable");
+        assert!(
+            before.contains("<<<<<<<"),
+            "conflict setup failed: {before}"
+        );
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            label,
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig, _bead_id: BeadId| async move {
+                panic!("spawn closure must not run after recovery stash failure");
+            },
+        );
+
+        let outcome = controller
+            .run_bead(&bead("lm-stashfail"), None)
+            .await
+            .expect("run_bead ok");
+
+        match outcome {
+            AgentOutcome::StaticInfra { cause, error } => {
+                assert_eq!(cause, WORKSPACE_RECOVERY_FAILED_CAUSE);
+                assert!(
+                    error.contains("workspace recovery pre-dispatch prepare failed"),
+                    "diagnostic must name prepare failure: {error}",
+                );
+            }
+            other => panic!("expected StaticInfra, got {other:?}"),
+        }
+        let after = std::fs::read_to_string(created.path.join("README.md"))
+            .expect("conflict file readable after failure");
+        assert!(
+            after.contains("<<<<<<<"),
+            "stash failure must abort before destructive cleanup: {after}",
+        );
     }
 
     #[tokio::test]
