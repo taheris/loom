@@ -86,11 +86,26 @@ pub fn default_profile_for_spec(spec: &SpecLabel) -> ProfileName {
 ///
 /// Returns `(test_sources, judge_rubrics)` in the order the annotations
 /// appear in the spec. Bubbles up [`SpecError::Io`] when a referenced file
-/// is missing — the gate must fail loudly rather than review with a
-/// truncated context.
+/// needed by the selected review lane is missing — the gate must fail
+/// loudly rather than review with a truncated context.
 pub fn load_review_sources(
     workspace: &Path,
     spec_path: &Path,
+) -> Result<(Vec<ReviewSource>, Vec<ReviewSource>), SpecError> {
+    load_review_sources_for_lane(workspace, spec_path, ReviewLane::Both)
+}
+
+/// Lane-aware variant of [`load_review_sources`]. The rubric-only lane never
+/// renders the `[judge]` section, so it must not read judge rubric files while
+/// building the prompt; unresolved or unreadable judge targets are already
+/// surfaced by the deterministic integrity walk as `unresolved-annotation` /
+/// `inputs-protocol-error` findings. Avoiding unused reads keeps one broken
+/// judge script from aborting a full tree-scope mint before earlier findings
+/// can be materialized.
+pub fn load_review_sources_for_lane(
+    workspace: &Path,
+    spec_path: &Path,
+    lane: ReviewLane,
 ) -> Result<(Vec<ReviewSource>, Vec<ReviewSource>), SpecError> {
     let body = fs::read_to_string(spec_path).map_err(|source| SpecError::Io {
         path: spec_path.to_path_buf(),
@@ -112,7 +127,7 @@ pub fn load_review_sources(
             Tier::Test => {
                 push_unique(workspace, spec_dir, annotation, &mut tests, &mut seen_test)?;
             }
-            Tier::Judge => {
+            Tier::Judge if lane.includes_judge() => {
                 push_unique(
                     workspace,
                     spec_dir,
@@ -121,7 +136,7 @@ pub fn load_review_sources(
                     &mut seen_judge,
                 )?;
             }
-            Tier::Check | Tier::System => {}
+            Tier::Judge | Tier::Check | Tier::System => {}
         }
     }
     Ok((tests, judges))
@@ -342,6 +357,27 @@ mod tests {
             matches!(err, SpecError::Io { .. }),
             "expected SpecError::Io, got {err:?}",
         );
+    }
+
+    #[test]
+    fn rubric_lane_does_not_read_unused_judge_rubric_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = dir.path();
+        write(
+            &ws.join("specs/alpha.md"),
+            "## Success Criteria\n\n\
+             - test body still renders [test](../tests/alpha.sh#test_one)\n\
+             - rubric lane suppresses this section [judge](../tests/judges/missing.sh#judge_one)\n",
+        );
+        write(&ws.join("tests/alpha.sh"), "TEST_BODY\n");
+
+        let (tests, judges) =
+            load_review_sources_for_lane(ws, &ws.join("specs/alpha.md"), ReviewLane::Rubric)
+                .expect("rubric lane must not fail over an unused judge source");
+
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].path, "tests/alpha.sh");
+        assert!(judges.is_empty(), "rubric lane suppresses judge sources");
     }
 
     #[test]

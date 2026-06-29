@@ -34,7 +34,7 @@ mod workspace_validator;
 
 pub use context::{
     ReviewContextInputs, beads_summary, build_review_context, default_profile_for_spec,
-    load_review_sources,
+    load_review_sources, load_review_sources_for_lane,
 };
 pub use error::ReviewError;
 pub use finding::{

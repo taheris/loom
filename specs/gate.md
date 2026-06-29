@@ -3142,11 +3142,15 @@ deferred bd findings and does not fabricate a new `Vec<Finding>`.
   dispatch outcome. Both methods are used only for `MintScope::Tree`
   [test](production_mint_walker_exists_and_dispatches_rubric_and_verifiers)
 - `run_gate_mint` in the loom CLI binary dispatches by scope:
-  `--tree` constructs the production walker and calls
-  `mint::walk::walk(walker, scope, validator)` to obtain the
-  `Vec<Finding>` it passes to the minting pipeline; `-m/--molecule`
-  calls the deferred-promotion path and never constructs a placeholder
-  empty findings vector
+  `--tree` constructs production walker(s) and obtains findings only
+  through the `MintWalker` trait (`run_verifiers` once for the tree,
+  then `run_rubric` per walked spec) before passing collected findings
+  to the minting pipeline. A verifier/rubric source failure records an
+  error in the mint summary and exits non-zero, but does not discard
+  findings already collected from other specs; stale-candidate reporting
+  is suppressed for that incomplete tree walk. `-m/--molecule` calls the
+  deferred-promotion path and never constructs a placeholder empty
+  findings vector
   [test](run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion)
 - `loom loop`'s per-bead path routes a loop-phase `Success` outcome
   through exactly one post-integration deterministic gate result; a

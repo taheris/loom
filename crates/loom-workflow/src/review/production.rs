@@ -46,7 +46,7 @@ use loom_templates::review::{ReviewContext, ReviewLane};
 use tokio::process::Command;
 use tracing::{info, warn};
 
-use super::context::{beads_summary, default_profile_for_spec, load_review_sources};
+use super::context::{beads_summary, default_profile_for_spec, load_review_sources_for_lane};
 use super::error::ReviewError;
 use super::finding::{DispatchScope, FindingValidator, TerminalSurface, WalkOutput};
 use super::phase_verdict::{
@@ -436,8 +436,11 @@ where
             None => None,
         };
         let spec_path = format!("specs/{}.md", self.label.as_str());
-        let (test_sources, judge_rubrics) =
-            load_review_sources(&self.workspace, &self.workspace.join(&spec_path))?;
+        let (test_sources, judge_rubrics) = load_review_sources_for_lane(
+            &self.workspace,
+            &self.workspace.join(&spec_path),
+            self.lane,
+        )?;
         let key = resolve_scratch_key(Phase::Review, std::slice::from_ref(&self.label), None);
         let scratchpad_path =
             loom_driver::scratch::ScratchSession::scratchpad_path_for(&self.workspace, &key);

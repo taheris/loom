@@ -12,7 +12,7 @@
 //! The walker's `run_rubric` issues `bd list` against the spec label
 //! *before* the manifest lookup that fails — so a bd-shim invocation
 //! log carrying a matching `list --json --label=spec:<X>` line proves
-//! `mint_via_walker` was reached from `run_gate_mint`. A regression
+//! the production walker was reached from `run_gate_mint`. A regression
 //! that bypassed the walker would leave the invocation log empty and
 //! the command would exit zero with no findings minted, failing both
 //! assertions below.
@@ -207,8 +207,13 @@ fn run_gate_mint_dispatches_tree_through_walker_and_molecule_through_promotion()
         "production MintWalker.build_rubric_prompt must have issued a \
          `bd list --label=spec:{SPEC_LABEL}` call before the manifest \
          lookup failed; an empty invocation log proves run_gate_mint \
-         bypassed mint_via_walker (e.g. via Vec::<Finding>::new()). \
+         bypassed the production walker (e.g. via Vec::<Finding>::new()). \
          bd-invocations:\n{log}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stdout.contains("errors 1") && stdout.contains("walk:rubric:"),
+        "tree mint must preserve the walker failure in the mint summary \
+         instead of aborting before summary rendering. stdout={stdout}\nstderr={stderr}",
     );
 
     let molecule_workspace = tempfile::tempdir().expect("molecule tempdir");

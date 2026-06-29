@@ -38,7 +38,7 @@ use thiserror::Error;
 
 use crate::review::{
     ConcernToken, DispatchScope, Finding, FindingRoute, FindingTarget, FindingValidator,
-    WalkOutputError, beads_summary, default_profile_for_spec, load_review_sources,
+    WalkOutputError, beads_summary, default_profile_for_spec, load_review_sources_for_lane,
     parse_walk_output,
 };
 use crate::spawn::container_workspace_path;
@@ -385,9 +385,12 @@ where
             None => None,
         };
         let spec_path_rel = format!("specs/{}.md", self.label.as_str());
-        let (test_sources, judge_rubrics) =
-            load_review_sources(&self.workspace, &self.workspace.join(&spec_path_rel))
-                .map_err(|e| WalkError::Rubric(e.to_string()))?;
+        let (test_sources, judge_rubrics) = load_review_sources_for_lane(
+            &self.workspace,
+            &self.workspace.join(&spec_path_rel),
+            ReviewLane::Rubric,
+        )
+        .map_err(|e| WalkError::Rubric(e.to_string()))?;
         let key = resolve_scratch_key(Phase::Review, std::slice::from_ref(&self.label), None);
         let scratchpad_path = ScratchSession::scratchpad_path_for(&self.workspace, &key);
         let prompt_scratchpad_path = container_workspace_path(&self.workspace, &scratchpad_path)

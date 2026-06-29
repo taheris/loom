@@ -2122,58 +2122,16 @@ fn run_gate_mint(
                 let bd = BdClient::new();
                 let scope = loom_workflow::mint::MintScope::Tree;
                 let validator = WorkspaceFindingValidator::new(workspace);
-                if labels.len() == 1 {
-                    let label = labels.into_iter().next().ok_or_else(|| {
-                        anyhow::anyhow!("loom gate mint --tree found no specs to walk")
-                    })?;
-                    let label_for_sink = label.clone();
-                    let logs_root_for_spawn = logs_root.clone();
-                    let mut walker = loom_workflow::mint::ProductionMintWalker::new(
-                        BdClient::new(),
-                        label,
-                        workspace_buf,
-                        state,
-                        manifest,
-                        phase_default,
-                        move |spawn_cfg: SpawnConfig| {
-                            let logs_root = logs_root_for_spawn.clone();
-                            let label = label_for_sink.clone();
-                            async move {
-                                let sink = LogSink::open_phase_at(
-                                    &logs_root, &label, "mint", None, phase_when,
-                                )
-                                .map_err(|e| {
-                                    ProtocolError::Io(std::io::Error::other(e.to_string()))
-                                })?;
-                                let mut output = String::new();
-                                let outcome = dispatch(
-                                    kind,
-                                    spawn_cfg,
-                                    shutdown_grace,
-                                    Some(sink),
-                                    Some(&mut output),
-                                )
-                                .await?;
-                                let marker = parse_exit_signal(&output);
-                                Ok((outcome, marker, output))
-                            }
-                        },
-                    )
-                    .with_style_rules(style_rules)
-                    .with_agent_runtime(kind);
-                    return mint_via_walker(
-                        &mut walker,
-                        &scope,
-                        &validator,
-                        &bd,
-                        &head_commit,
-                        &opts,
-                    )
-                    .await;
+                if labels.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "loom gate mint --tree found no specs to walk"
+                    ));
                 }
 
                 let mut findings = Vec::new();
+                let mut walk_errors: Vec<(String, String)> = Vec::new();
                 for (index, label) in labels.into_iter().enumerate() {
+                    let label_name = label.as_str().to_owned();
                     let label_for_sink = label.clone();
                     let logs_root_for_spawn = logs_root.clone();
                     let workspace_for_walker = workspace_buf.clone();
@@ -2215,27 +2173,59 @@ fn run_gate_mint(
                     .with_style_rules(style_rules_for_walker)
                     .with_agent_runtime(kind);
                     if index == 0 {
-                        for failure in walker.run_verifiers(&scope).await? {
-                            findings.push(loom_workflow::mint::walk::verifier_failure_to_finding(
-                                failure,
-                            )?);
+                        match walker.run_verifiers(&scope).await {
+                            Ok(failures) => {
+                                for failure in failures {
+                                    match loom_workflow::mint::walk::verifier_failure_to_finding(
+                                        failure,
+                                    ) {
+                                        Ok(finding) => findings.push(finding),
+                                        Err(err) => walk_errors.push((
+                                            "walk:verifier-normalize".to_owned(),
+                                            err.to_string(),
+                                        )),
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                walk_errors.push(("walk:verifiers".to_owned(), err.to_string()))
+                            }
                         }
                     }
-                    let stdout = walker.run_rubric(&scope).await?;
-                    let parsed = loom_workflow::review::parse_walk_output(
-                        &stdout,
-                        scope.dispatch_scope(),
-                        &validator,
-                    )?;
-                    findings.extend(parsed);
+                    match walker.run_rubric(&scope).await {
+                        Ok(stdout) => match loom_workflow::review::parse_walk_output(
+                            &stdout,
+                            scope.dispatch_scope(),
+                            &validator,
+                        ) {
+                            Ok(parsed) => findings.extend(parsed),
+                            Err(err) => walk_errors
+                                .push((format!("walk:parse:{label_name}"), err.to_string())),
+                        },
+                        Err(err) => {
+                            walk_errors.push((format!("walk:rubric:{label_name}"), err.to_string()))
+                        }
+                    }
                 }
-                Ok(loom_workflow::mint::mint_tree_findings_with_options(
+                let mut mint_opts = opts;
+                if !walk_errors.is_empty() {
+                    // Stale reporting needs a complete tree walk. When one
+                    // spec's verifier/rubric pass failed, avoid presenting
+                    // live findings from the missing slice as stale while
+                    // still materializing every finding we did collect.
+                    mint_opts.report_stale = false;
+                }
+                let mut summary = loom_workflow::mint::mint_tree_findings_with_options(
                     &bd,
                     &findings,
                     &head_commit,
-                    &opts,
+                    &mint_opts,
                 )
-                .await)
+                .await;
+                for (fingerprint, message) in walk_errors {
+                    summary.record_error(fingerprint, message);
+                }
+                Ok(summary)
             })?
         }
     };
@@ -2258,12 +2248,12 @@ fn mint_summary_exit_code(summary: &loom_workflow::mint::MintSummary) -> i32 {
     }
 }
 
-/// Walk-then-mint pipeline seam. `run_gate_mint` constructs the
-/// production walker and delegates here so the dispatch path is
-/// exercisable under a recording [`MintWalker`] in tests. Per
-/// `specs/gate.md` § *Production walker wiring*: findings reach
-/// tree planning only via `mint::walk::walk(walker, …)`; no
-/// `Vec::<Finding>::new()` shortcut.
+/// Strict walk-then-mint test seam. Production `run_gate_mint --tree`
+/// performs a loss-preserving multi-spec walk so one failed rubric source
+/// does not discard findings already collected from other specs; this helper
+/// keeps the direct `mint::walk::walk(walker, …)` path exercisable under
+/// recording fakes.
+#[cfg(test)]
 async fn mint_via_walker<W, V, R>(
     walker: &mut W,
     scope: &loom_workflow::mint::MintScope,
@@ -5534,10 +5524,10 @@ mod tests {
 
     /// [`mint_via_walker`] must obtain its `Vec<Finding>` from
     /// `walk(walker, scope, validator)` and feed it into
-    /// tree materialization. Drives the helper seam with a
+    /// tree materialization. Drives the strict helper seam with a
     /// recording [`MintWalker`]; the live-path subprocess verifier
     /// under `specs/gate.md` § *Production walker wiring* pins that
-    /// `run_gate_mint` actually reaches the helper, closing off the
+    /// `run_gate_mint` reaches the production walker, closing off the
     /// `Vec::<Finding>::new()` shortcut.
     #[tokio::test]
     async fn mint_via_walker_obtains_findings_from_walker_run_rubric() {

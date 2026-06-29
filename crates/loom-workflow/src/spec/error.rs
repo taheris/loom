@@ -8,7 +8,7 @@ use thiserror::Error;
 /// [`super::deps::collect_deps`].
 #[derive(Debug, Display, Error)]
 pub enum SpecError {
-    /// io failure while reading {path}
+    /// io failure while reading {path}: {source}
     Io {
         path: PathBuf,
         #[source]

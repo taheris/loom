@@ -325,6 +325,18 @@ pub struct MintSummary {
 }
 
 impl MintSummary {
+    /// Append a non-finding infrastructure/walk error to the rendered summary.
+    ///
+    /// Tree-scope mint uses this when a verifier or rubric source fails after
+    /// other findings were collected: already-collected findings can still be
+    /// materialized, while the process exits non-zero via the `errors` tally.
+    pub fn record_error(&mut self, fingerprint: impl Into<String>, message: impl Into<String>) {
+        self.record(BatchOutcome::Errored {
+            fingerprint: fingerprint.into(),
+            message: message.into(),
+        });
+    }
+
     fn record_status(&mut self, finding: &Finding, action: FindingStatusAction) {
         match action {
             FindingStatusAction::Suppressed => self.suppressed += 1,
