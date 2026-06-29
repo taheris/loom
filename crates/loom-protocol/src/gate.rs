@@ -688,8 +688,8 @@ pub trait FindingValidator {
 }
 
 /// Per-layer parse / validation failure. Every variant carries the
-/// offending line's 1-based number and verbatim text so a re-run prompt
-/// has the evidence it needs (per `specs/gate.md` § *Strict
+/// offending record's 1-based start line and verbatim text so a re-run
+/// prompt has the evidence it needs (per `specs/gate.md` § *Strict
 /// parse-time validation*).
 ///
 /// Clone / PartialEq / Eq are required so this error type can ride
@@ -981,19 +981,19 @@ pub enum BadWalk {
     /// `{"summary": "<non-empty>"}` — invalid JSON, missing
     /// `summary` field, or empty `summary`. The literal post-marker
     /// text is preserved for the recovery prompt, alongside any
-    /// `LOOM_FINDING:` lines that streamed cleanly before the bad
+    /// `LOOM_FINDING:` records that streamed cleanly before the bad
     /// terminator.
     Concern {
         payload: String,
         parsed_findings: Vec<Finding>,
     },
 
-    /// Terminator claimed concern but zero `LOOM_FINDING:` lines
+    /// Terminator claimed concern but zero `LOOM_FINDING:` records
     /// streamed during the walk. The parsed summary is preserved
     /// so the recovery prompt can quote it back.
     ConcernWithoutFindings { summary: String },
 
-    /// One or more `LOOM_FINDING:` lines streamed but the
+    /// One or more `LOOM_FINDING:` records streamed but the
     /// terminator was `LOOM_COMPLETE`. The parsed findings ride
     /// through so the next iteration's prompt can name them
     /// per the pairing-rule table in `specs/gate.md`.
@@ -1002,9 +1002,9 @@ pub enum BadWalk {
         findings: Vec<Finding>,
     },
 
-    /// One or more `LOOM_FINDING:` lines failed strict validation.
+    /// One or more `LOOM_FINDING:` records failed strict validation.
     /// The well-formed terminal surface rides through alongside the
-    /// per-line errors so the recovery prompt can name both pieces
+    /// per-record errors so the recovery prompt can name both pieces
     /// (when the terminator was also malformed, it is preserved via
     /// `TerminalSurface::Malformed { payload }`).
     MalformedFinding {
@@ -1107,7 +1107,7 @@ pub enum ExitSignal {
     /// Review-phase concern. Carries the parsed `summary` field from the
     /// terminal `LOOM_CONCERN: {"summary": "..."}` marker. The summary is
     /// for the verdict log only; per-finding routing is decided on each
-    /// streamed `LOOM_FINDING:` line's token per `specs/gate.md` §
+    /// streamed `LOOM_FINDING:` record's token per `specs/gate.md` §
     /// LOOM_CONCERN payload. Review-phase-only — emitting `LOOM_CONCERN`
     /// from any other phase is a `wrong-phase-marker` error in the verdict
     /// gate per `specs/harness.md` § Marker definitions.
@@ -1262,13 +1262,13 @@ fn reason_for(marker: &str, line: &str, prior: &[&str]) -> Option<String> {
     Some(String::new())
 }
 
-/// Top-level error for [`parse_walk_output`]. Either a per-line
+/// Top-level error for [`parse_walk_output`]. Either a per-record
 /// validation failure or the terminal-marker enforcement — a walk that
-/// emits `LOOM_FINDING:` lines without a terminal marker per
+/// emits `LOOM_FINDING:` records without a terminal marker per
 /// `specs/gate.md` § *Findings and Minting*.
 #[derive(Debug, Display, Error)]
 pub enum WalkOutputError {
-    /// walk output contained an invalid LOOM_FINDING line
+    /// walk output contained an invalid LOOM_FINDING record
     Finding(#[from] FindingParseError),
     /// walk output violated the LOOM_FINDING / terminal-marker pairing rule: {bad_walk:?}
     BadWalk { bad_walk: BadWalk },
@@ -1281,14 +1281,14 @@ pub enum WalkOutputError {
     },
     /// review walk used invalid terminal {marker}; expected LOOM_COMPLETE / LOOM_CONCERN / LOOM_RETRY / LOOM_BLOCKED
     InvalidTerminal { marker: &'static str },
-    /// walk emitted {findings_count} LOOM_FINDING line(s) but no terminal marker (LOOM_COMPLETE / LOOM_CONCERN)
+    /// walk emitted {findings_count} LOOM_FINDING record(s) but no terminal marker (LOOM_COMPLETE / LOOM_CONCERN)
     MissingTerminalMarker { findings_count: usize },
 }
 
 /// Typed product the review-phase classifier consumes — a single
 /// pre-parsed snapshot of the agent's stdout containing the typed
 /// terminal surface, the well-formed [`Finding`] records, and any
-/// per-line parse errors.
+/// per-record parse errors.
 ///
 /// `WalkOutput`'s fields are private at the `loom-protocol` crate
 /// boundary. The silent-loss failure class — production caller
@@ -1311,16 +1311,217 @@ pub struct WalkOutput {
     /// Findings that passed strict per-layer validation. Order
     /// preserves stdout emission order.
     findings: Vec<Finding>,
-    /// Per-line parse failures for `LOOM_FINDING:` substring matches
+    /// Per-record parse failures for `LOOM_FINDING:` substring matches
     /// that did not pass strict validation. Carries the offending
-    /// 1-based line number and verbatim line text so the recovery
+    /// 1-based start line and verbatim record text so the recovery
     /// prompt can quote it back.
     finding_errors: Vec<FindingParseError>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RawFindingRecord {
+    line_number: usize,
+    raw: String,
+    payload: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CapturedRecord {
+    record: RawFindingRecord,
+    next_offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JsonObjectScan {
+    end: usize,
+    normalized: String,
+}
+
+fn finding_records(output: &str) -> Vec<RawFindingRecord> {
+    let mut records = Vec::new();
+    let mut offset = 0;
+    while let Some(relative_start) = output[offset..].find(LOOM_FINDING_PREFIX) {
+        let prefix_start = offset + relative_start;
+        let line_number = line_number_at(output, prefix_start);
+        let line_start = line_start_at(output, prefix_start);
+        let payload_start = prefix_start + LOOM_FINDING_PREFIX.len();
+        let object_start = skip_horizontal_whitespace(output, payload_start);
+        let captured = if output[object_start..].starts_with('{') {
+            capture_object_record(output, line_start, payload_start, object_start, line_number)
+        } else {
+            capture_line_record(output, line_start, payload_start, line_number)
+        };
+        offset = captured.next_offset;
+        records.push(captured.record);
+    }
+    records
+}
+
+fn capture_object_record(
+    output: &str,
+    line_start: usize,
+    payload_start: usize,
+    object_start: usize,
+    line_number: usize,
+) -> CapturedRecord {
+    let line_end = line_end_after(output, payload_start);
+    let line_payload = output[payload_start..line_end].trim_start();
+    if !payload_needs_multiline_scan(line_payload) {
+        return capture_line_record(output, line_start, payload_start, line_number);
+    }
+    let Some(scan) = scan_json_object(output, object_start) else {
+        return capture_line_record(output, line_start, payload_start, line_number);
+    };
+    let line_end = line_end_after(output, scan.end);
+    let trailing = &output[scan.end..line_end];
+    let payload = if trailing.trim().is_empty() {
+        scan.normalized
+    } else {
+        output[object_start..line_end].to_owned()
+    };
+    CapturedRecord {
+        record: RawFindingRecord {
+            line_number,
+            raw: output[line_start..line_end].to_owned(),
+            payload,
+        },
+        next_offset: next_line_offset(output, line_end),
+    }
+}
+
+fn capture_line_record(
+    output: &str,
+    line_start: usize,
+    payload_start: usize,
+    line_number: usize,
+) -> CapturedRecord {
+    let line_end = line_end_after(output, payload_start);
+    CapturedRecord {
+        record: RawFindingRecord {
+            line_number,
+            raw: output[line_start..line_end].to_owned(),
+            payload: output[payload_start..line_end].trim_start().to_owned(),
+        },
+        next_offset: next_line_offset(output, line_end),
+    }
+}
+
+fn payload_needs_multiline_scan(payload: &str) -> bool {
+    match serde_json::from_str::<serde_json::Value>(payload) {
+        Ok(_) => false,
+        Err(err) => matches!(err.classify(), serde_json::error::Category::Eof),
+    }
+}
+
+fn scan_json_object(output: &str, object_start: usize) -> Option<JsonObjectScan> {
+    let mut normalized = String::new();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaping = false;
+    let mut chars = output[object_start..].char_indices().peekable();
+    while let Some((relative_index, ch)) = chars.next() {
+        let absolute_index = object_start + relative_index;
+        if in_string {
+            if escaping {
+                normalized.push(ch);
+                escaping = false;
+                continue;
+            }
+            match ch {
+                '\\' => {
+                    normalized.push(ch);
+                    escaping = true;
+                }
+                '"' => {
+                    normalized.push(ch);
+                    in_string = false;
+                }
+                '\r' => {
+                    normalized.push_str("\\n");
+                    if chars.peek().is_some_and(|(_, next)| *next == '\n') {
+                        chars.next();
+                    }
+                }
+                '\n' => normalized.push_str("\\n"),
+                c if c.is_control() => push_control_escape(&mut normalized, c),
+                c => normalized.push(c),
+            }
+            continue;
+        }
+        match ch {
+            '"' => {
+                normalized.push(ch);
+                in_string = true;
+            }
+            '{' => {
+                normalized.push(ch);
+                depth += 1;
+            }
+            '}' => {
+                if depth == 0 {
+                    return None;
+                }
+                normalized.push(ch);
+                depth -= 1;
+                if depth == 0 {
+                    return Some(JsonObjectScan {
+                        end: absolute_index + ch.len_utf8(),
+                        normalized,
+                    });
+                }
+            }
+            c => normalized.push(c),
+        }
+    }
+    None
+}
+
+fn push_control_escape(out: &mut String, ch: char) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let code = ch as u32;
+    out.push_str("\\u00");
+    out.push(HEX[((code >> 4) & 0x0f) as usize] as char);
+    out.push(HEX[(code & 0x0f) as usize] as char);
+}
+
+fn line_number_at(output: &str, byte_index: usize) -> usize {
+    output[..byte_index].bytes().filter(|b| *b == b'\n').count() + 1
+}
+
+fn line_start_at(output: &str, byte_index: usize) -> usize {
+    output[..byte_index]
+        .rfind('\n')
+        .map_or(0, |newline| newline + 1)
+}
+
+fn line_end_after(output: &str, byte_index: usize) -> usize {
+    output[byte_index..]
+        .find('\n')
+        .map_or(output.len(), |relative_end| byte_index + relative_end)
+}
+
+fn next_line_offset(output: &str, line_end: usize) -> usize {
+    if line_end < output.len() {
+        line_end + 1
+    } else {
+        line_end
+    }
+}
+
+fn skip_horizontal_whitespace(output: &str, byte_index: usize) -> usize {
+    let mut index = byte_index;
+    while let Some(ch) = output[index..].chars().next() {
+        if ch != ' ' && ch != '\t' {
+            return index;
+        }
+        index += ch.len_utf8();
+    }
+    index
+}
+
 impl WalkOutput {
     /// Parse the agent's combined stdout into a typed `WalkOutput`.
-    /// Runs `LOOM_FINDING:` substring search, strict per-line
+    /// Runs `LOOM_FINDING:` substring search, strict per-record
     /// validation against `validator`, and terminal-marker
     /// classification through [`parse_exit_signal`] — once, here, so
     /// downstream classifier code consumes the typed product and
@@ -1337,15 +1538,12 @@ impl WalkOutput {
     ) -> Self {
         let mut findings = Vec::new();
         let mut finding_errors = Vec::new();
-        for (idx, line) in output.lines().enumerate() {
-            let line_number = idx + 1;
-            let Some(payload_start) = line.find(LOOM_FINDING_PREFIX) else {
-                continue;
-            };
-            let payload = line[payload_start + LOOM_FINDING_PREFIX.len()..].trim_start();
-            match Finding::parse_payload(payload, line_number, line, scope)
-                .and_then(|f| f.validate(line_number, line, validator).map(|()| f))
-            {
+        for record in finding_records(output) {
+            match Finding::parse_payload(&record.payload, record.line_number, &record.raw, scope)
+                .and_then(|f| {
+                    f.validate(record.line_number, &record.raw, validator)
+                        .map(|()| f)
+                }) {
                 Ok(finding) => findings.push(finding),
                 Err(e) => finding_errors.push(e),
             }
@@ -1371,7 +1569,7 @@ impl WalkOutput {
         &self.findings
     }
 
-    /// Per-line parse failures for `LOOM_FINDING:` substring matches
+    /// Per-record parse failures for `LOOM_FINDING:` substring matches
     /// that did not pass strict validation.
     #[must_use]
     pub fn finding_errors(&self) -> &[FindingParseError] {
@@ -1400,7 +1598,7 @@ fn terminal_surface_from_stdout(output: &str) -> TerminalSurface {
     }
 }
 
-/// Scan `output` for `LOOM_FINDING:` lines, parse and fully-validate
+/// Scan `output` for `LOOM_FINDING:` records, parse and fully-validate
 /// each (Layers 1–5 plus the `target.spec ∈ bonds` rule), then enforce
 /// the review-walk pairing rule before returning findings to mint.
 /// Findings may reach mint only when the raw stream and terminal agree:
@@ -2284,6 +2482,23 @@ mod tests {
     }
 
     #[test]
+    fn malformed_syntax_record_does_not_swallow_later_valid_finding() {
+        let good_line = finding_line(
+            "spec-coherence-fail",
+            &["gate"],
+            r#"{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"}"#,
+            "well-formed after malformed syntax",
+        );
+        let output = format!(
+            "{LOOM_FINDING_PREFIX} {{not valid json\n}}\n{good_line}\nLOOM_CONCERN: {{\"summary\":\"mixed\"}}\n"
+        );
+        let walk = WalkOutput::from_stdout(&output, DispatchScope::Tree, &AlwaysValid);
+        assert_eq!(walk.finding_errors().len(), 1);
+        assert_eq!(walk.findings().len(), 1);
+        assert_eq!(walk.findings()[0].token, ConcernToken::SpecCoherenceFail);
+    }
+
+    #[test]
     fn loom_finding_substring_match_requires_uppercase_and_colon_suffix() {
         let no_colon = "the LOOM_FINDING marker is mentioned in prose";
         let lowercase = format!("loom_finding: {}", "{\"token\":\"x\"}");
@@ -2426,6 +2641,42 @@ mod tests {
         let findings = parse_walk_output(&output, DispatchScope::Tree, &AlwaysValid)
             .expect("clarify-route finding parses");
         assert_eq!(findings, vec![finding]);
+    }
+
+    #[test]
+    fn raw_multiline_evidence_is_normalized_before_strict_validation() {
+        let output = concat!(
+            "preamble\n",
+            "LOOM_FINDING: {\"token\":\"invariant-clash\",\"route\":\"clarify\",\"bonds\":[\"gate\"],\"target\":{\"kind\":\"Invariant\",\"spec\":\"gate\",\"section\":\"Out of Scope\",\"tag\":\"loom-runs-podman\"},\"evidence\":\"The implementation conflicts with the invariant.\n",
+            "\n",
+            "## Options — resolve invariant clash\n",
+            "\n",
+            "### Option 1 — Preserve invariant\n",
+            "Cost: more implementation churn.\n",
+            "\n",
+            "### Option 2 — Change invariant\n",
+            "Cost: spec update and follow-up work.\"}\n",
+            "LOOM_CONCERN: {\"summary\":\"clarify invariant clash\"}\n",
+        );
+        let findings = parse_walk_output(output, DispatchScope::Tree, &AlwaysValid)
+            .expect("raw multiline evidence parses");
+        let [finding] = findings.as_slice() else {
+            panic!("expected one finding, got {findings:?}");
+        };
+        assert_eq!(finding.token, ConcernToken::InvariantClash);
+        assert_eq!(finding.route, FindingRoute::Clarify);
+        assert!(
+            finding
+                .evidence
+                .contains("## Options — resolve invariant clash\n\n### Option 1"),
+            "evidence preserves raw line breaks: {:?}",
+            finding.evidence,
+        );
+        assert!(
+            finding.evidence.contains("### Option 2 — Change invariant"),
+            "second option survived normalization: {:?}",
+            finding.evidence,
+        );
     }
 
     #[test]

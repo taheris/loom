@@ -1,5 +1,6 @@
 ---
 source: crates/loom-templates/tests/snapshots.rs
+assertion_line: 420
 expression: ctx.render().unwrap()
 ---
 # Post-Epic Review
@@ -506,8 +507,8 @@ find it.
 ## Findings — Streaming Wire Format
 
 You communicate every concern by emitting one `LOOM_FINDING:` JSON
-line per finding on stdout, **streamed as findings are identified**
-(not batched at end-of-walk). The driver parses each line
+record per finding on stdout, **streamed as findings are identified**
+(not batched at end-of-walk). The driver parses each record
 incrementally and mints the corresponding fix-up beads itself — the
 agent never invokes `bd create` / `bd update` / `bd mol bond`.
 
@@ -536,8 +537,11 @@ LOOM_FINDING: {"token":"<token>","route":"blocking|deferred|clarify","bonds":["<
   this **MUST** embed the canonical `## Options — …` block per the
   Options Format Contract.
 
-One JSON object per line. Do not pretty-print across multiple lines —
-the driver parses one line at a time.
+Emit compact one-line JSON when possible. For long evidence or
+`route="clarify"` Options blocks, prefer `\n` escape sequences inside the
+`evidence` string; if you emit raw line breaks inside a JSON string, the
+driver normalizes them before strict validation. Do not split field names,
+tokens, target JSON, or other structural JSON across prose outside the object.
 
 ### Canonical target shapes per token
 
@@ -600,13 +604,14 @@ LOOM_FINDING: {"token":"concurrency-untested","route":"deferred","bonds":["harne
   block in their `evidence` field**. The driver lifts the block into
   the minted clarify bead's description; if it is missing, mint falls
   back to `loom:blocked` with cause `clarify-without-options`.
-- **Malformed lines fail the run.** A `LOOM_FINDING:` line that does
-  not parse — invalid JSON, unknown token, a `bonds` element that
+- **Malformed records fail the run.** A `LOOM_FINDING:` record that
+  does not parse after raw line breaks inside JSON strings are
+  normalized — invalid JSON, unknown token, a `bonds` element that
   does not resolve to a workspace spec, a `target` variant
   mismatching the token's expected variant, or unresolved target
   content (criterion anchor not in spec, file path absent on disk) —
-  is rejected with a typed error naming the offending line. No
-  silent skip.
+  is rejected with a typed error naming the offending record's start
+  line. No silent skip.
 
 ### Concern tokens
 
@@ -698,14 +703,14 @@ The remaining tokens cover the other rubric dimensions:
 
 ### Streaming + terminator pairing rule
 
-The walk is a streaming process: `LOOM_FINDING:` lines are emitted
+The walk is a streaming process: `LOOM_FINDING:` records are emitted
 as concerns are identified; a single terminator is the final line.
 The driver cross-checks the two — if the terminator and the stream
 disagree on the walk's verdict, the run fails with a typed
 `BadWalk` recovery cause.
 
 `LOOM_CONCERN:` is the verdict-carrying terminator for a walk that
-streamed at least one `LOOM_FINDING:` line; `LOOM_COMPLETE` is the
+streamed at least one `LOOM_FINDING:` record; `LOOM_COMPLETE` is the
 clean-walk terminator. The payload of `LOOM_CONCERN:` is a JSON
 object with a single required field, `summary`, whose value is a
 non-empty string:
@@ -715,7 +720,7 @@ LOOM_CONCERN: {"summary":"<one-sentence summary of the strongest concern>"}
 ```
 
 The driver parses the payload with the same `serde_json` pipeline
-that consumes `LOOM_FINDING:` lines. Parse failures — invalid JSON,
+that consumes `LOOM_FINDING:` records. Parse failures — invalid JSON,
 missing `summary`, empty `summary` — surface as the typed
 `BadWalk::Concern { payload, parsed_findings }` recovery cause,
 preserving any well-formed findings streamed before the bad terminator.
@@ -732,16 +737,16 @@ from each streamed finding's `route`, not from the terminal marker.
 | any | missing or duplicate marker | `SwallowedMarker` (existing) |
 
 **Agent's mental model.** Review the diff. Every time you identify a
-concern, immediately emit a `LOOM_FINDING:` line with the structured
+concern, immediately emit a `LOOM_FINDING:` record with the structured
 JSON detail and continue reviewing. When the walk is complete, end
 your response with `LOOM_COMPLETE` if you found nothing, or
 `LOOM_CONCERN: {"summary":"<one-sentence summary>"}` if you emitted
-one or more `LOOM_FINDING:` lines. The terminator must match the
+one or more `LOOM_FINDING:` records. The terminator must match the
 stream: `LOOM_COMPLETE` means zero findings, `LOOM_CONCERN` means
 ≥1 finding. The two are mutually exclusive — never emit both, and
 never alongside any other marker.
 
-A walk that emits `LOOM_FINDING:` lines without a terminal marker is
+A walk that emits `LOOM_FINDING:` records without a terminal marker is
 a crashed run; the driver fails the mint invocation with non-zero
 exit. Emitting `LOOM_CONCERN:` from any non-review phase is a
 `wrong-phase-marker` error in the verdict gate.

@@ -149,7 +149,7 @@ selecting what kind of inspection or act path runs:
 | **`loom gate check`** | Deterministic, one tier | Runs only `[check]`-tier spec annotations for an explicit scope or exact `--target`. |
 | **`loom gate test`** | Deterministic, one tier | Runs only `[test]`-tier spec annotations for an explicit scope or exact `--target`, batched into one runner subprocess per invocation. |
 | **`loom gate system`** | Deterministic, one tier | Runs only `[system]`-tier spec annotations for an explicit scope or exact `--target`. Slow by default; used by `verify --tree`, CI, standing sweeps, or an operator's explicit `system` invocation. |
-| **`loom gate review`** | LLM judge, inspection | Runs the LLM rubric for an explicit `--diff` or `--tree` scope. Inspection-only: emits `LOOM_FINDING:` lines + terminal marker to stdout, makes no bd writes, and does not mint a marker. Push-eligible review consumes a typed `VerifiedScope` for the same resolved content/scope rather than a scalar exit-code flag. |
+| **`loom gate review`** | LLM judge, inspection | Runs the LLM rubric for an explicit `--diff` or `--tree` scope. Inspection-only: emits `LOOM_FINDING:` records + terminal marker to stdout, makes no bd writes, and does not mint a marker. Push-eligible review consumes a typed `VerifiedScope` for the same resolved content/scope rather than a scalar exit-code flag. |
 | **`loom gate judge`** | LLM judge, one lane | Runs criterion-attached `[judge]` verifiers for an explicit scope or exact `--target`; skips the rubric walk. Inspection-only, like `review`. |
 | **`loom gate rubric`** | LLM judge, one lane | Runs only the rubric walk for an explicit `--diff` or `--tree` scope; skips criterion-attached judges. Inspection-only, like `review`. |
 | **`loom gate mint`** | Act | Materializes findings into bd work. `loom gate mint -m/--molecule <id>` promotes that molecule's deferred remediation batches after original work drains; `loom gate mint --tree` runs the standing safety-net sweep and creates or updates ready remediation batches under one active work epic when actionable findings remain. `mint` has no per-bead, diff, file, spec-filter, or target surface. Clarify-route findings still materialize as one `loom:clarify` bead per finding so each carries one `## Options — …` block. See [*Findings and Minting*](#findings-and-minting). |
@@ -629,7 +629,7 @@ existing anti-drift walker covers both surfaces.
 and live in different crates with different purposes. `ConcernToken`
 (in
 `loom-protocol::gate`) is the **wire-level identifier** on each
-streamed `LOOM_FINDING:` line — the closed set of tokens
+streamed `LOOM_FINDING:` record — the closed set of tokens
 (`spec-coherence-fail`, `orphan-integration`, `verifier-bypass`,
 …) the rubric emits and `loom gate mint` routes on. `ReviewConcern`
 (in `loom-workflow::review::phase_verdict`) is a separate 12-variant
@@ -637,7 +637,7 @@ enum that previously named the terminal `LOOM_CONCERN` token; under
 the retired terminal-token contract (per the review rubric's
 *Streaming + terminator pairing rule*), the terminal carries only
 `{"summary": "..."}` and per-finding routing is decided on each
-`LOOM_FINDING:` line's `ConcernToken`, not on the terminal.
+`LOOM_FINDING:` record's `ConcernToken`, not on the terminal.
 `ReviewConcern` survives as a **display vocabulary** for
 `bd update --notes` and verdict-log human-readable cause labels
 (derived from `findings[0].token` or a "multiple" label when
@@ -780,9 +780,9 @@ structurally unrepresentable as a mismatch. See [`spec-conventions.md`
 
 ### Emit shape
 
-The LLM rubric walk emits findings as streaming lines on stdout
-from the agent's subprocess. Each line is a `LOOM_FINDING:` prefix
-followed by a JSON payload:
+The LLM rubric walk emits findings as streaming records on stdout
+from the agent's subprocess. Each record starts with a `LOOM_FINDING:`
+prefix followed by a JSON payload:
 
 ```
 LOOM_FINDING: {"token":"<token>","route":"blocking|deferred|clarify","bonds":["<spec>",...],"target":<target>,"evidence":"<evidence>"}
@@ -834,41 +834,45 @@ finding's id and hash.
 {"kind":"Template","path":"crates/loom-templates/templates/review.md"}
 ```
 
-One JSON object per line, emitted as the finding is identified
-(not batched at end-of-walk). The driver parses each line
-incrementally with a typed deserializer (`serde_json` into the
-typed `Finding` struct), streaming rather than block-at-end. JSON
-was chosen over pipe-delimited specifically because LLM emit is
-more reliable on JSON than on bespoke formats — the target's
-tagged-union shape encodes naturally, escaping is well-known, and
-field-order independence avoids one class of malformed emit.
+Emit compact one-line JSON where possible, as the finding is
+identified (not batched at end-of-walk). Long evidence and
+`route="clarify"` Options blocks are allowed to span lines inside JSON
+string values: before `serde_json` deserialization, the driver
+normalizes raw line breaks that appear inside a JSON string to `\n`
+escapes, then applies the same typed validation. Newlines outside
+strings are accepted only as ordinary JSON whitespace within the same
+object. JSON was chosen over pipe-delimited
+specifically because LLM emit is more reliable on JSON than on bespoke
+formats — the target's tagged-union shape encodes naturally, escaping
+is well-known, and field-order independence avoids one class of
+malformed emit.
 
 **Strict parse-time validation.** The `LOOM_FINDING:` prefix is
-matched by substring search on each line of the agent's stdout, so
-backtick-wrapped, markdown-fenced, or prose-prefixed lines are still
-detected. The match is case-sensitive on the literal string
-`LOOM_FINDING:` (with the trailing colon); bare-prose mentions
-without the colon (e.g. *"the `LOOM_FINDING` marker"*) do not match
-by design.
+matched by substring search in the agent's stdout, so backtick-wrapped,
+markdown-fenced, or prose-prefixed records are still detected. The
+match is case-sensitive on the literal string `LOOM_FINDING:` (with the
+trailing colon); bare-prose mentions without the colon (e.g. *"the
+`LOOM_FINDING` marker"*) do not match by design.
 
-A line that matches the substring but fails the strict validation
-that follows — malformed JSON (most common: trailing backticks from
-markdown fencing), unknown `token`, any element of `bonds` that
-doesn't resolve to a workspace spec label, `target` variant
-mismatching `token`'s expected variant, or unresolved target content
-(criterion anchor not in spec, file path absent on disk) — surfaces
-as `BadWalk::MalformedFinding { errors, terminal }` per the
-pairing-rule table below, with the well-formed terminal preserved
-alongside the per-line errors. **No silent skip.** The substring-
-then-strict-validate shape catches accidentally-fenced finding
-emit while loudly typing the malformation, which is what makes the
-wire format observable rather than fragile.
+A record that matches the substring but fails the strict validation
+that follows — malformed JSON after raw string line-break
+normalization (most common: trailing backticks from markdown fencing),
+unknown `token`, any element of `bonds` that doesn't resolve to a
+workspace spec label, `target` variant mismatching `token`'s expected
+variant, or unresolved target content (criterion anchor not in spec,
+file path absent on disk) — surfaces as
+`BadWalk::MalformedFinding { errors, terminal }` per the pairing-rule
+table below, with the well-formed terminal preserved alongside the
+per-record errors. **No silent skip.** The substring-then-strict-
+validate shape catches accidentally-fenced finding emit while loudly
+typing the malformation, which is what makes the wire format observable
+rather than fragile.
 
 The walk is assumed to be retry-friendly: a re-run typically gets
 the shape right; a persistently-malformed emit is signal that the
 prompt or rubric needs adjusting.
 
-Deterministic verifiers do **not** emit `LOOM_FINDING:` lines — they
+Deterministic verifiers do **not** emit `LOOM_FINDING:` records — they
 continue to follow the existing *Verifier-runner contract* (JSON verdict
 on stdout, exit codes). In push and tree act contexts, the driver
 normalizes each failed verifier verdict into the same typed Finding
@@ -915,21 +919,21 @@ payload is a JSON object with a single required field, `summary`,
 whose value is a non-empty string:
 `LOOM_CONCERN: {"summary": "<one-sentence summary>"}`. The driver
 parses the payload with the same `serde_json` pipeline that
-consumes `LOOM_FINDING:` lines. Parse failures — invalid JSON,
+consumes `LOOM_FINDING:` records. Parse failures — invalid JSON,
 missing `summary`, empty `summary` — surface as the typed
 `BadWalk::Concern { payload }` recovery cause (defined in
 [harness.md](harness.md#verdict-gate)) so the recovery prompt can
 carry the literal text that failed and the agent can fix the
 shape on the next iteration. The summary is for the verdict log
 only; the actionable detail lives in the streamed `LOOM_FINDING:`
-lines, and per-finding routing is decided by `loom gate mint` on
+records, and per-finding routing is decided by `loom gate mint` on
 each finding's token, not on the terminal marker. The terminal
 token-and-reason form (`<token> -- <reason>`) is retired; the
 terminal token only ever duplicated the strongest finding's token
 at the cost of structural complexity.
 
 **Streaming + terminator pairing rule.** The walk is a streaming
-process: `LOOM_FINDING:` lines are emitted as concerns are
+process: `LOOM_FINDING:` records are emitted as concerns are
 identified; the terminator is the final line. The driver first
 cross-checks the raw stream against the terminator for wire-shape
 honesty; suppression is applied only after the shape is well-formed.
@@ -942,7 +946,7 @@ If the terminator and raw stream disagree, the run fails with a typed
 | ≥1 well-formed | `LOOM_CONCERN: {"summary":"..."}` | Apply rubric suppressions to the parsed findings. If ≥1 unsuppressed finding remains: recovery — `RecoveryCause::ReviewConcern { summary, findings: Vec<Finding> }` threaded into `previous_failure` (mint consumes separately). If every parsed finding is suppressed: clean — status output records the suppressed findings and the phase completes. |
 | 0 | `LOOM_CONCERN: {"summary":"..."}` | `BadWalk::ConcernWithoutFindings { summary }` — concern claimed without enumeration |
 | ≥1 well-formed | `LOOM_COMPLETE` | `BadWalk::FindingsWithoutConcern { finding_count, findings: Vec<Finding> }` — findings streamed but terminator claims clean; the parsed findings ride through so the next iteration's prompt can name them |
-| ≥1 line failed parse | any | `BadWalk::MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface }` — per-line errors are preserved alongside the typed terminal surface (well-formed terminal kept as-is; when the terminator also fails parse, the terminal is carried via `TerminalSurface::Malformed { payload }` so both failure pieces ride through the `MalformedFinding` variant) |
+| ≥1 record failed parse | any | `BadWalk::MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface }` — per-record errors are preserved alongside the typed terminal surface (well-formed terminal kept as-is; when the terminator also fails parse, the terminal is carried via `TerminalSurface::Malformed { payload }` so both failure pieces ride through the `MalformedFinding` variant) |
 | any well-formed (only) | `LOOM_CONCERN:` with malformed JSON / missing / empty `summary` | `BadWalk::Concern { payload, parsed_findings: Vec<Finding> }` — payload parse failure carries the literal malformed text AND any well-formed findings that streamed ahead of the bad terminator |
 | any | missing or duplicate marker | `SwallowedMarker` (existing) |
 
@@ -958,11 +962,11 @@ relies on to produce a useful recovery prompt regardless of which
 piece failed parsing.
 
 **Agent's mental model.** Review the diff. Every time you identify
-a concern, immediately emit a `LOOM_FINDING:` line with the
+a concern, immediately emit a `LOOM_FINDING:` record with the
 structured JSON detail and continue reviewing. When the walk is
 complete, end your response with `LOOM_COMPLETE` if you found
 nothing, or `LOOM_CONCERN: {"summary": "<one-sentence summary>"}` if you
-emitted one or more `LOOM_FINDING:` lines. The terminator must
+emitted one or more `LOOM_FINDING:` records. The terminator must
 match the stream: `LOOM_COMPLETE` means zero findings,
 `LOOM_CONCERN` means ≥1 finding.
 
@@ -1022,7 +1026,7 @@ invariant pinning the typed Finding's round-trip identity.
 **Behavioral matrix (enumerable cells).** A parameterised test walks every cell of the
 (stream-shape × terminal-shape) failure surface:
 
-- **Stream-shape axis (4 cells):** zero `LOOM_FINDING:` lines; N
+- **Stream-shape axis (4 cells):** zero `LOOM_FINDING:` records; N
   well-formed findings; N well-formed + M malformed (mixed); all-
   malformed.
 - **Terminal-shape axis (6 cells):** `LOOM_COMPLETE`; `LOOM_NOOP`;
@@ -1047,7 +1051,7 @@ load-bearing class coverage.
 **Round-trip property invariant.** For every constructible
 `Finding` (every `ConcernToken` × `FindingTarget` canonical
 combination), `serde_json::to_string(&finding)` → embed in
-`LOOM_FINDING:` line → embed in a synthetic walk output with an
+`LOOM_FINDING:` record → embed in a synthetic walk output with an
 arbitrary well-formed terminator → `parse_walk_output` → assert
 byte-equal to the input `Finding` and finding id / hash identical.
 Extends `loom-protocol::gate::tests::finding_identity_is_stable_across_runs`
@@ -1242,8 +1246,8 @@ records, but they materialize differently depending on route and scope.
 block the push; at tree scope the canonical walker emits `deferred` or
 `clarify`, and a stray `blocking` route is treated as ready remediation.
 
-1. **Parse** each `LOOM_FINDING:` line into typed fields:
-   `{ token, route, bonds, target, evidence }`. Per-line parse errors
+1. **Parse** each `LOOM_FINDING:` record into typed fields:
+   `{ token, route, bonds, target, evidence }`. Per-record parse errors
    surface as `BadWalk::MalformedFinding` (see *Emit shape*) and the
    run is refused; the recovery cause carries the well-formed remainder
    so a re-run can fix the malformation.
@@ -2706,17 +2710,21 @@ and conservative fall-through for unowned queries.
   non-zero with a deterministic error message and producing no bd
   writes
   [test](mint_refuses_when_loom_inside_env_is_set)
-- The walk emits `LOOM_FINDING: <json>` lines on stdout, one
+- The walk emits `LOOM_FINDING: <json>` records on stdout, one
   JSON object per finding, streamed as findings are identified
   (not batched at end-of-walk). The JSON shape is `{"token": ...,
   "route": "blocking|deferred|clarify", "bonds": [...], "target":
   {"kind": ..., ...}, "evidence": ...}`
   [test](mint_walk_emits_loom_finding_json_lines_streamed_per_finding)
+- Long evidence may include raw line breaks inside JSON strings; the
+  driver normalizes them before typed validation and preserves the
+  resulting evidence line breaks
+  [test](raw_multiline_evidence_is_normalized_before_strict_validation)
 - The review walk terminates with exactly one of `LOOM_COMPLETE`,
   `LOOM_CONCERN: {"summary": "..."}`, `LOOM_RETRY`, or `LOOM_BLOCKED`;
   `LOOM_BLOCKED` includes a reason explaining why no options can be safely
   surfaced, review clarifications are `route="clarify"` findings with Options
-  in `evidence`, and a walk that emits `LOOM_FINDING:` lines without a
+  in `evidence`, and a walk that emits `LOOM_FINDING:` records without a
   terminal marker fails the mint invocation with non-zero exit
   [test](mint_walk_without_terminal_marker_fails_run)
 - A walk that terminates with `LOOM_RETRY` (review itself could not
@@ -2727,7 +2735,7 @@ and conservative fall-through for unowned queries.
   [test](retry_marker_routes_to_agent_retry_recovery_cause)
 - `LOOM_CONCERN:` payload parses as JSON `{"summary": "<non-empty
   string>"}` via the same `serde_json` pipeline that consumes
-  `LOOM_FINDING:` lines; the parsed summary becomes the verdict-log
+  `LOOM_FINDING:` records; the parsed summary becomes the verdict-log
   entry for the walk
   [test](concern_payload_parses_as_json_with_summary_field)
 - Parse failures on the `LOOM_CONCERN:` payload — invalid JSON, missing
@@ -2737,10 +2745,10 @@ and conservative fall-through for unowned queries.
   to the agent
   [test](concern_malformed_payload_routes_to_bad_walk_concern_with_literal_payload)
 - A walk that emits `LOOM_CONCERN:` with zero preceding `LOOM_FINDING:`
-  lines surfaces as `RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings
+  records surfaces as `RecoveryCause::BadWalk(BadWalk::ConcernWithoutFindings
   { summary })` — concern claimed without enumeration
   [test](concern_without_streamed_findings_routes_to_badwalk_concern_without_findings)
-- A walk that streams one or more `LOOM_FINDING:` lines and terminates
+- A walk that streams one or more `LOOM_FINDING:` records and terminates
   with `LOOM_COMPLETE` surfaces as `RecoveryCause::BadWalk(BadWalk::
   FindingsWithoutConcern { finding_count })`
   [test](findings_streamed_with_complete_terminator_routes_to_badwalk_findings_without_concern)
@@ -2765,10 +2773,11 @@ and conservative fall-through for unowned queries.
   an internally-tagged enum whose variant is selected by `kind`,
   validated against the `token`'s expected variant
   [test](mint_parses_loom_finding_json_into_typed_record_with_tagged_target)
-- A malformed `LOOM_FINDING:` line — invalid JSON, unknown token,
-  unknown spec, target variant mismatching token, or unresolved
-  target content — fails the mint invocation with a typed parse
-  error naming the offending line; no silent skip
+- A malformed `LOOM_FINDING:` record — invalid JSON after raw string
+  line-break normalization, unknown token, unknown spec, target variant
+  mismatching token, or unresolved target content — fails the mint
+  invocation with a typed parse error naming the offending record's
+  start line; no silent skip
   [test](mint_malformed_loom_finding_fails_run_with_typed_error)
 - The driver computes a versioned lower-kebab finding id from each
   validated typed finding; evidence text, options prose, line numbers,
@@ -2997,12 +3006,12 @@ depends on.
 
 ### Wire-format strict validation and max-context preservation
 
-- A `LOOM_FINDING:` line whose JSON payload fails parse — invalid
-  JSON (most common: trailing backticks from markdown fencing),
-  unknown `token`, target/token variant mismatch, unresolved spec
-  label or anchor — surfaces as
+- A `LOOM_FINDING:` record whose JSON payload fails parse after raw
+  string line-break normalization — invalid JSON (most common: trailing
+  backticks from markdown fencing), unknown `token`, target/token
+  variant mismatch, unresolved spec label or anchor — surfaces as
   `RecoveryCause::BadWalk(BadWalk::MalformedFinding { errors, terminal })`
-  with the well-formed terminal preserved alongside the per-line
+  with the well-formed terminal preserved alongside the per-record
   parse errors
   [test](backtick_wrapped_loom_finding_line_routes_to_bad_walk_malformed_finding_with_terminal_preserved)
 - The `LOOM_FINDING:` substring match is case-sensitive and
@@ -3018,7 +3027,7 @@ depends on.
   can both consume them
   [test](bad_walk_findings_without_concern_carries_parsed_findings_vec)
 - The `BadWalk::MalformedFinding { errors, terminal }` variant
-  carries every per-line parse error AND the well-formed terminal
+  carries every per-record parse error AND the well-formed terminal
   surface (or a typed `Missing`/`Malformed` variant when the
   terminal itself failed). Construction without both pieces is a
   compile error
@@ -3041,7 +3050,7 @@ depends on.
   [test](walk_output_failure_matrix_routes_every_cell_with_typed_outcome_and_preserves_max_context)
 - Every constructible `Finding` (each `ConcernToken` × canonical
   `FindingTarget` combination) round-trips byte-equal through
-  `serde_json::to_string` → embed in a `LOOM_FINDING:` line →
+  `serde_json::to_string` → embed in a `LOOM_FINDING:` record →
   embed in a synthetic walk output → `parse_walk_output`, with
   stable finding id and hash
   [test](every_finding_round_trips_through_wire_format_with_stable_identity)

@@ -340,7 +340,7 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
             out
         }
         BadWalk::ConcernWithoutFindings { summary } => format!(
-            "You emitted LOOM_CONCERN ({summary}) but no LOOM_FINDING: lines streamed. \
+            "You emitted LOOM_CONCERN ({summary}) but no LOOM_FINDING: records streamed. \
              Either emit findings before the terminator or use LOOM_COMPLETE.",
         ),
         BadWalk::FindingsWithoutConcern {
@@ -348,7 +348,7 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
             findings,
         } => {
             let mut out = format!(
-                "You streamed {finding_count} LOOM_FINDING line(s) but terminated with \
+                "You streamed {finding_count} LOOM_FINDING record(s) but terminated with \
                  LOOM_COMPLETE. Use LOOM_CONCERN: {{\"summary\": \"...\"}} when findings are emitted.",
             );
             if !findings.is_empty() {
@@ -361,9 +361,10 @@ fn render_bad_walk(badwalk: &BadWalk) -> String {
         }
         BadWalk::MalformedFinding { errors, terminal } => {
             let mut out = String::from(
-                "One or more LOOM_FINDING: lines failed strict validation. \
-                 Re-emit each finding as a single line: \
-                 `LOOM_FINDING: {\"token\":\"...\",\"route\":\"blocking|deferred|clarify\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}`.",
+                "One or more LOOM_FINDING: records failed strict validation. \
+                 Re-emit each finding as JSON: \
+                 `LOOM_FINDING: {\"token\":\"...\",\"route\":\"blocking|deferred|clarify\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}`. \
+                 Use \\n escapes or raw line breaks only inside JSON strings.",
             );
             for err in errors {
                 out.push_str("\n\n");
@@ -646,7 +647,7 @@ mod tests {
         })
         .to_string();
         assert!(
-            bad_walk_no_concern.starts_with("You streamed 3 LOOM_FINDING line(s)"),
+            bad_walk_no_concern.starts_with("You streamed 3 LOOM_FINDING record(s)"),
             "{bad_walk_no_concern}",
         );
 
@@ -873,7 +874,7 @@ mod tests {
         });
         let rendered = pf.to_string();
         assert!(
-            rendered.contains("2 LOOM_FINDING line(s)"),
+            rendered.contains("2 LOOM_FINDING record(s)"),
             "count missing: {rendered}",
         );
         assert!(
@@ -891,9 +892,9 @@ mod tests {
     }
 
     /// `Display` on `BadWalk::MalformedFinding { errors, terminal }`
-    /// enumerates per-line errors and surfaces the rendered terminal
-    /// (`TerminalSurface::label()`) so the agent can fix the malformed
-    /// lines without losing the well-formed surrounding context.
+    /// enumerates per-record errors and surfaces the rendered terminal
+    /// (`TerminalSurface::label()`) so the agent can fix malformed
+    /// records without losing the well-formed surrounding context.
     /// Criterion:
     /// `bad_walk_malformed_finding_display_surfaces_terminal_and_per_line_errors`.
     #[test]
@@ -1006,7 +1007,7 @@ mod tests {
         });
         let rendered = pf.to_string();
         assert!(
-            rendered.contains("1 LOOM_FINDING line(s)"),
+            rendered.contains("1 LOOM_FINDING record(s)"),
             "count missing: {rendered}",
         );
         assert!(
@@ -1020,7 +1021,7 @@ mod tests {
     }
 
     /// `BadWalk::MalformedFinding { errors, terminal }` carries the
-    /// per-line errors *and* the typed terminal surface so the recovery
+    /// per-record errors *and* the typed terminal surface so the recovery
     /// prompt can name both pieces — per `specs/gate.md` § *Maximum-
     /// context preservation invariant*. Criteria:
     /// `bad_walk_malformed_finding_variant_carries_errors_and_terminal_by_struct_shape`
