@@ -1167,7 +1167,8 @@ the entrypoint run the wrong runtime.
   [test](interactive_claude_shell_out_loads_compaction_hook)
 - Pi-backed `loom inbox chat` uses native `wrix run ... pi` plus a scratch-dir
       session and re-pin extension on its TTY path, preserving Pi's normal TUI
-  [test](inbox_chat_pi_tui_force_uses_native_wrix_run)
+      with inherited stdio
+  [test](inbox_chat_pi_tty_uses_native_wrix_run_with_inherited_stdio)
 - Pi-backed `loom inbox chat` runs through a controlled RPC bridge in
       non-TTY execution, so compaction events remain observable before
       trusting post-compaction output

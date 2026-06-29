@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -107,6 +107,10 @@ printf -- '---\n' >> "$argv_log"
 printf 'WRIX_DEFAULT_IMAGE_REF=%s\n' "${{WRIX_DEFAULT_IMAGE_REF:-}}" >> "$env_log"
 printf 'WRIX_DEFAULT_IMAGE_SOURCE=%s\n' "${{WRIX_DEFAULT_IMAGE_SOURCE:-}}" >> "$env_log"
 printf 'WRIX_AGENT=%s\n' "${{WRIX_AGENT:-}}" >> "$env_log"
+if [[ -t 0 ]]; then stdin_tty=1; else stdin_tty=0; fi
+if [[ -t 1 ]]; then stdout_tty=1; else stdout_tty=0; fi
+printf 'WRIX_STDIN_TTY=%s\n' "$stdin_tty" >> "$env_log"
+printf 'WRIX_STDOUT_TTY=%s\n' "$stdout_tty" >> "$env_log"
 
 if [[ "${{1:-}}" == "spawn" || "${{2:-}}" == "spawn" ]]; then
     printf '[wrix] Starting container (mock)...\n' >&2
@@ -117,6 +121,27 @@ prompt="${{!#}}"
 
 if [[ -n "${{WRIX_STUB_PROMPT_DUMP:-}}" ]]; then
     printf '%s' "$prompt" > "$WRIX_STUB_PROMPT_DUMP"
+fi
+
+if [[ "${{3:-}}" == "pi" ]]; then
+    session_dir=""
+    previous=""
+    for arg in "$@"; do
+        if [[ "$previous" == "--session-dir" ]]; then
+            session_dir="$arg"
+            previous=""
+            continue
+        fi
+        previous="$arg"
+    done
+    if [[ -n "$session_dir" ]]; then
+        workspace="${{2:?}}"
+        if [[ "$session_dir" == /workspace/* ]]; then
+            session_dir="$workspace/${{session_dir#/workspace/}}"
+        fi
+        mkdir -p "$session_dir"
+        printf '%s\n' '{{"message":{{"role":"assistant","content":[{{"type":"text","text":"LOOM_COMPLETE"}}]}}}}' > "$session_dir/0001.jsonl"
+    fi
 fi
 
 mode="${{WRIX_STUB_MODE:-resolve-none}}"
@@ -264,6 +289,50 @@ fn run_chat_with_stdin(
         input.write_all(stdin.as_bytes()).expect("write stdin");
     }
     child.wait_with_output().expect("wait loom")
+}
+
+fn run_chat_in_pty(
+    env: &ChatRun,
+    mode: &str,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+) -> std::process::Output {
+    run_command_in_pty(chat_command(env, mode, args, extra_env))
+}
+
+fn run_command_in_pty(command: Command) -> std::process::Output {
+    let pty = nix::pty::openpty(None, None).expect("open pty");
+    let mut master = std::fs::File::from(pty.master);
+    let slave = std::fs::File::from(pty.slave);
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match master.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => bytes.extend_from_slice(&buffer[..n]),
+                Err(err) if err.raw_os_error() == Some(nix::errno::Errno::EIO as i32) => break,
+                Err(err) => panic!("read pty: {err}"),
+            }
+        }
+        bytes
+    });
+    let mut child = {
+        let mut command = command;
+        command
+            .stdin(Stdio::from(slave.try_clone().expect("clone pty stdin")))
+            .stdout(Stdio::from(slave.try_clone().expect("clone pty stdout")))
+            .stderr(Stdio::from(slave.try_clone().expect("clone pty stderr")));
+        command.spawn().expect("spawn loom in pty")
+    };
+    drop(slave);
+    let status = child.wait().expect("wait loom");
+    let stdout = reader.join().expect("join pty reader");
+    std::process::Output {
+        status,
+        stdout,
+        stderr: Vec::new(),
+    }
 }
 
 fn chat_command(env: &ChatRun, mode: &str, args: &[&str], extra_env: &[(&str, &str)]) -> Command {
@@ -552,7 +621,7 @@ fn inbox_chat_runs_pi_backend_through_controlled_bridge() {
 }
 
 #[test]
-fn inbox_chat_pi_tui_force_uses_native_wrix_run() {
+fn inbox_chat_pi_tty_uses_native_wrix_run_with_inherited_stdio() {
     let env = setup_chat();
     std::fs::write(
         env.workspace.join("loom.toml"),
@@ -568,12 +637,7 @@ fn inbox_chat_pi_tui_force_uses_native_wrix_run() {
         &["loom:blocked"],
     );
 
-    let output = run_chat_extra(
-        &env,
-        "resolve-none",
-        &[],
-        &[("LOOM_INBOX_PI_FORCE_TUI", "1")],
-    );
+    let output = run_chat_in_pty(&env, "resolve-none", &[], &[]);
     assert!(
         output.status.success(),
         "stdout={} stderr={}",
@@ -596,6 +660,8 @@ fn inbox_chat_pi_tui_force_uses_native_wrix_run() {
     );
     let env_log = std::fs::read_to_string(&env.env_log).expect("env log");
     assert!(env_log.contains("WRIX_AGENT=pi"), "{env_log}");
+    assert!(env_log.contains("WRIX_STDIN_TTY=1"), "{env_log}");
+    assert!(env_log.contains("WRIX_STDOUT_TTY=1"), "{env_log}");
 }
 
 #[test]

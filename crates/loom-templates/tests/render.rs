@@ -1313,6 +1313,7 @@ fn every_multi_turn_template_includes_chat_marker_partial() -> Result<()> {
         );
         assert!(
             out.contains("Do **NOT** append `LOOM_COMPLETE` to intermediate turns")
+                || out.contains("these markers to intermediate turns")
                 || out.contains("not on intermediate turns"),
             "{name}: chat-restrictions must explicitly forbid intermediate-turn markers: {out}",
         );

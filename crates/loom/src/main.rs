@@ -2209,10 +2209,7 @@ fn run_gate_mint(
                 }
                 let mut mint_opts = opts;
                 if !walk_errors.is_empty() {
-                    // Stale reporting needs a complete tree walk. When one
-                    // spec's verifier/rubric pass failed, avoid presenting
-                    // live findings from the missing slice as stale while
-                    // still materializing every finding we did collect.
+                    // Disable stale reporting when the tree walk missed any spec slice.
                     mint_opts.report_stale = false;
                 }
                 let mut summary = loom_workflow::mint::mint_tree_findings_with_options(

@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use loom_driver::bd::{Bead, Label};
 use loom_driver::identifier::SpecLabel;
+use tracing::warn;
 
 use super::options::parse_options_in;
 
@@ -401,7 +402,13 @@ fn metadata_display_string(
 fn metadata_bool(metadata: &BTreeMap<String, serde_json::Value>, key: &str) -> Option<bool> {
     match metadata.get(key)? {
         serde_json::Value::Bool(value) => Some(*value),
-        serde_json::Value::String(value) => value.parse().ok(),
+        serde_json::Value::String(value) => match value.parse() {
+            Ok(parsed) => Some(parsed),
+            Err(err) => {
+                warn!(key, error = ?err, "ignoring malformed boolean inbox metadata");
+                None
+            }
+        },
         _ => None,
     }
 }
@@ -551,6 +558,14 @@ mod tests {
         assert_eq!(info.stderr_tail.as_deref(), Some("stderr tail"));
         assert_eq!(info.spawn_error_tail.as_deref(), Some("spawn tail"));
         assert_eq!(info.log_path.as_deref(), Some(".loom/logs/run.jsonl"));
+    }
+
+    #[test]
+    fn malformed_bool_metadata_is_reported_as_absent() {
+        let mut metadata = BTreeMap::new();
+        metadata.insert(INFRA_FIRST_EVENT_SEEN_KEY.into(), json!("not-a-bool"));
+
+        assert_eq!(metadata_bool(&metadata, INFRA_FIRST_EVENT_SEEN_KEY), None);
     }
 
     #[test]

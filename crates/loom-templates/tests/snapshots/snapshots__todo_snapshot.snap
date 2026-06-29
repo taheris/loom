@@ -322,9 +322,12 @@ surface? → BLOCKED with the no-options rationale on the prior line.
 self-reports from `loop` and `todo`. `review` uses a review-specific
 self-report partial because review is inspection-only and routes
 clarify-worthy decisions through finding evidence instead of direct bd
-persistence. Interactive sessions (`plan`, `inbox`) emit `LOOM_COMPLETE`
-only — the human is in the room and resolves friction in-turn, so the
-cannot-finish terminators are out of scope for those templates.
+persistence. Interactive sessions (`plan`, `inbox`) do not emit worker
+self-report markers — `plan` ends with `LOOM_COMPLETE`, while `inbox`
+ends with `LOOM_COMPLETE` or `LOOM_APPLY: {"proposals":[...]}` when the
+trusted driver apply handoff is requested. The human is in the room and
+resolves friction in-turn, so the cannot-finish terminators are out of
+scope for those templates.
 
 ## Todo Success Marker
 

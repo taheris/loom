@@ -10,7 +10,7 @@ open until the user resolves it.
 Every requirement the user expressed must have a checkable surface in the
 spec:
 
-- A *Success Criteria* bullet carrying a `[verify]` or `[judge]` annotation
+- A *Success Criteria* bullet carrying a `[check]`, `[test]`, `[system]`, or `[judge]` annotation
 - A lifecycle / decision / contract table row
 - An explicit `## Out of Scope` declaration
 

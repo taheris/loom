@@ -27,7 +27,7 @@ use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
 use loom_driver::state::CacheDb;
 use loom_events::{EnvelopeBuilder, Source};
 use thiserror::Error;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::r#loop::{dolt_socket_mount, sccache_mount};
 use crate::skill::{SkillError, SkillPlan};
@@ -387,14 +387,30 @@ fn pi_bridge_envelope_builder() -> Result<EnvelopeBuilder, ChatError> {
         None,
         0,
         Source::Agent,
-        move || {
-            clock
-                .wall_now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as i64
-        },
+        move || unix_timestamp_millis(&clock),
     ))
+}
+
+fn unix_timestamp_millis(clock: &SystemClock) -> i64 {
+    match clock.wall_now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => match i64::try_from(duration.as_millis()) {
+            Ok(timestamp) => timestamp,
+            Err(err) => {
+                warn!(error = ?err, "pi bridge event timestamp exceeded i64 range");
+                i64::MAX
+            }
+        },
+        Err(err) => {
+            warn!(error = ?err, "system clock is before unix epoch while stamping pi bridge event");
+            match i64::try_from(err.duration().as_millis()) {
+                Ok(timestamp) => -timestamp,
+                Err(err) => {
+                    warn!(error = ?err, "pi bridge event timestamp exceeded negative i64 range");
+                    i64::MIN
+                }
+            }
+        }
+    }
 }
 
 fn render_pi_bridge_event(event: &AgentEvent, output: &mut String) -> Result<(), std::io::Error> {
@@ -474,7 +490,6 @@ fn ensure_bridge_output_newline(output: &mut String) -> Result<(), std::io::Erro
     Ok(())
 }
 
-const LOOM_INBOX_PI_FORCE_TUI: &str = "LOOM_INBOX_PI_FORCE_TUI";
 const LOOM_INBOX_PI_FORCE_BRIDGE: &str = "LOOM_INBOX_PI_FORCE_BRIDGE";
 const LOOM_INBOX_PI_VERBOSE_TOOLS: &str = "LOOM_INBOX_PI_VERBOSE_TOOLS";
 
@@ -482,8 +497,7 @@ fn should_use_pi_tui_shell_out() -> bool {
     if truthy_env(LOOM_INBOX_PI_FORCE_BRIDGE) {
         return false;
     }
-    truthy_env(LOOM_INBOX_PI_FORCE_TUI)
-        || (std::io::stdin().is_terminal() && std::io::stdout().is_terminal())
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
 fn truthy_env(name: &str) -> bool {
@@ -639,7 +653,7 @@ fn read_pi_session_transcript(session_dir: &Path) -> Result<String, ChatError> {
         return Ok(String::new());
     };
     let raw = fs::read_to_string(path)?;
-    Ok(pi_session_transcript_from_str(&raw))
+    pi_session_transcript_from_str(&raw)
 }
 
 fn latest_pi_session_file(session_dir: &Path) -> Result<Option<PathBuf>, ChatError> {
@@ -655,10 +669,7 @@ fn latest_pi_session_file(session_dir: &Path) -> Result<Option<PathBuf>, ChatErr
         if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
             continue;
         }
-        let modified = entry
-            .metadata()?
-            .modified()
-            .unwrap_or(std::time::UNIX_EPOCH);
+        let modified = entry.metadata()?.modified()?;
         if newest
             .as_ref()
             .is_none_or(|(newest_modified, _)| modified > *newest_modified)
@@ -669,19 +680,26 @@ fn latest_pi_session_file(session_dir: &Path) -> Result<Option<PathBuf>, ChatErr
     Ok(newest.map(|(_, path)| path))
 }
 
-fn pi_session_transcript_from_str(raw: &str) -> String {
-    raw.lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter_map(|entry| {
-            let message = entry.get("message")?;
-            if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
-                return None;
-            }
-            let text = pi_content_text(message.get("content"));
-            (!text.trim().is_empty()).then_some(text)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+fn pi_session_transcript_from_str(raw: &str) -> Result<String, ChatError> {
+    let mut messages = Vec::new();
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry = serde_json::from_str::<serde_json::Value>(line)
+            .map_err(|err| ProtocolError::invalid_protocol_line(line, err))?;
+        let Some(message) = entry.get("message") else {
+            continue;
+        };
+        if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let text = pi_content_text(message.get("content"));
+        if !text.trim().is_empty() {
+            messages.push(text);
+        }
+    }
+    Ok(messages.join("\n"))
 }
 
 fn pi_content_text(content: Option<&serde_json::Value>) -> String {
@@ -1010,7 +1028,20 @@ mod tests {
             serde_json::json!({"type":"message","id":"a","parentId":"u","timestamp":"now","message":{"role":"assistant","content":[{"type":"text","text":"Done\n"},{"type":"text","text":"LOOM_COMPLETE"}]}}).to_string(),
         ]
         .join("\n");
-        assert_eq!(pi_session_transcript_from_str(&raw), "Done\nLOOM_COMPLETE");
+        let transcript = pi_session_transcript_from_str(&raw).expect("transcript parses");
+        assert_eq!(transcript, "Done\nLOOM_COMPLETE");
+    }
+
+    #[test]
+    fn pi_session_transcript_rejects_malformed_jsonl_record() {
+        let err = pi_session_transcript_from_str("{not json}\n").expect_err("malformed record");
+        assert!(
+            matches!(
+                err,
+                ChatError::Protocol(ProtocolError::InvalidProtocolLine { .. })
+            ),
+            "malformed transcript record must surface the parse error: {err}"
+        );
     }
 
     #[test]

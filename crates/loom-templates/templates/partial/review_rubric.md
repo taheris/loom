@@ -210,8 +210,8 @@ against each edited spec section:
   `## History` sections in the spec body → flag.
 - Internal file paths, line numbers, or module-layout claims with no
   architectural role → flag.
-- A `[verify]` annotation on a claim that requires judgement (mock
-  discipline, scope, prose style rule) — tier-skip → flag.
+- A `[check]`, `[test]`, or `[system]` annotation on a claim that requires
+  judgement (mock discipline, scope, prose style rule) — tier-skip → flag.
 - A criterion bullet with no annotation, or whose annotation points at
   a missing or stubbed verifier → already a `loom gate verify` flag;
   surface it here too if the edit introduces it.

@@ -300,11 +300,9 @@ pub fn decide(marker: Option<&ExitSignal>, inputs: GateInputs) -> PhaseVerdict {
 /// inspection-only: it admits `LOOM_RETRY` / `LOOM_BLOCKED` for
 /// cannot-complete self-reports and routes clarify-worthy decisions
 /// through `route="clarify"` findings instead of direct `LOOM_CLARIFY`.
-/// Interactive phases (`plan_*`, `inbox`) admit `LOOM_COMPLETE` only because
-/// the human is in the room to resolve friction in-turn — the
-/// cannot-finish self-report set has no role to play there per
-/// `specs/templates.md` § Pinning Policy (the `self_report_markers.md`
-/// partial is pinned in worker phases only).
+/// Interactive phases use the generic completion surface here because the
+/// human is in the room to resolve friction in-turn; `loom inbox chat` parses
+/// its `LOOM_APPLY` handoff in `inbox::terminal` before this layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseKind {
     /// `loop`, `todo_*` — single-shot worker phases that admit direct
@@ -313,8 +311,8 @@ pub enum PhaseKind {
     /// `loom gate review` — single-shot inspection phase with a
     /// review-specific terminal contract.
     Review,
-    /// `plan_*`, `inbox` — multi-turn interactive sessions that admit
-    /// `LOOM_COMPLETE` only.
+    /// `plan_*`, `inbox` — multi-turn interactive sessions handled by the
+    /// generic completion surface at this layer.
     Interactive,
 }
 

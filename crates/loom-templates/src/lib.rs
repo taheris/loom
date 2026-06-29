@@ -154,15 +154,13 @@ pub const PARTIAL_REVIEW_SELF_REPORT_MARKERS: &str =
 /// stream a clarify-bound finding.
 pub const PARTIAL_OPTIONS_FORMAT: &str = include_str!("../templates/partial/options_format.md");
 
-/// `partial/chat_marker_final_turn_only.md` — restrict `LOOM_COMPLETE`
-/// emission to the **final** assistant turn of a multi-turn chat
-/// session. Multi-turn templates (`inbox`, `plan`)
-/// include this alongside the progress / self-report marker partials
-/// so the "end your response with the marker" instruction does not
-/// get read as "every response." One-shot worker templates (`todo`,
-/// `loop`, `review`) deliberately omit this partial — every response in
-/// those phases IS the final output, so the wrap-up restriction does not
-/// apply.
+/// `partial/chat_marker_final_turn_only.md` — restrict interactive terminal
+/// marker emission to the **final** assistant turn of a multi-turn chat
+/// session. Multi-turn templates (`inbox`, `plan`) include this so the
+/// "end your response with the marker" instruction does not get read as
+/// "every response." One-shot worker templates (`todo`, `loop`, `review`)
+/// deliberately omit this partial — every response in those phases IS the
+/// final output, so the wrap-up restriction does not apply.
 pub const PARTIAL_CHAT_MARKER_FINAL_TURN_ONLY: &str =
     include_str!("../templates/partial/chat_marker_final_turn_only.md");
 

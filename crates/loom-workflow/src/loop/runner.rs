@@ -1663,8 +1663,7 @@ mod tests {
     /// emitted by the review handoff carries no retry state from the
     /// failing bead that spawned it; its first `run_bead` call must
     /// thread `previous_failure = None` so the rendered prompt's
-    /// `attempt` starts at zero (the production controller derives
-    /// `attempt = u32::from(previous_failure.is_some())`).
+    /// `attempt` starts at zero.
     #[tokio::test]
     async fn fix_up_bead_starts_at_attempt_zero() -> Result<(), LoopError> {
         let mut c = FakeController::default();

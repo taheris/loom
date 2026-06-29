@@ -1198,9 +1198,9 @@ capped, total truncated to `PREVIOUS_FAILURE_MAX_LEN = 4000` chars):
 | `verify-fail` | `VerifyFailures(Vec<VerifierFailure>)` | One `VerifierFailure { target, exit_code, stderr_tail }` per failing project hook or spec verifier in the relevant gate scope. Diff-scope per-bead verification includes project pre-commit plus affected `[check]` / `[test]`; tree/system scopes may include `[system]`. All failing verifiers are included; the budget is split across them with later failures truncated first; each `stderr_tail` is capped at ~1500 chars before split. If a separate review phase also raised a concern, its reasoning is set as `review_notes` (separate ~1000-char budget) rendered under a `Review notes:` heading. |
 | `review-concern` | `ReviewConcern { summary: String, findings: Vec<Finding> }` | Summary is the parsed `summary` field from the terminal `LOOM_CONCERN: {"summary": "..."}` marker. `findings` is the buffered list of unsuppressed `LOOM_FINDING:` records after rubric suppression filtering (per the typed `Finding` record in [gate.md § Findings and Minting](gate.md#findings-and-minting)); a well-formed concern whose findings are all suppressed becomes a clean effective review, not this cause. Per-finding tokens drive `mint`'s routing: clarify-route findings mint as single-finding clarify beads (one per finding), all other findings bundle into per-spec remediation batches (one batch per lead-spec). The recovery prompt renders the summary plus a one-line-per-finding `evidence` digest. The in-code recovery cause is `RecoveryCause::ReviewConcern`. |
 | `bad-walk` (concern-malformed) | `BadWalk(BadWalk::Concern { payload: String, parsed_findings: Vec<Finding> })` | "Your `LOOM_CONCERN:` payload did not parse as `{"summary": "<non-empty>"}`. Literal payload after the marker: `<payload>`." When `parsed_findings` is non-empty, append a per-finding digest so the agent's diagnosis from the well-formed streamed findings is not lost. Wrapped-enum pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)`. |
-| `bad-walk` (concern-without-findings) | `BadWalk(BadWalk::ConcernWithoutFindings { summary: String })` | "You emitted `LOOM_CONCERN` with summary `<summary>` but no `LOOM_FINDING:` lines streamed. Either emit findings before the terminator or terminate with `LOOM_COMPLETE`." |
-| `bad-walk` (findings-without-concern) | `BadWalk(BadWalk::FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> })` | "You streamed `<finding_count>` `LOOM_FINDING:` line(s) but terminated with `LOOM_COMPLETE`. Use `LOOM_CONCERN: {"summary": "..."}` when findings are emitted." Per-finding digest of `findings` is appended so the agent's next iteration sees the diagnosis it just emitted. |
-| `bad-walk` (malformed-finding) | `BadWalk(BadWalk::MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface })` | "One or more `LOOM_FINDING:` lines failed parse." Per-line errors are enumerated; the well-formed terminal is rendered alongside so the agent fixes the malformation (typically: drop the surrounding markdown fence) without losing the surrounding well-formed context. This is the variant that fires on backtick-wrapped finding lines whose JSON otherwise would have parsed. |
+| `bad-walk` (concern-without-findings) | `BadWalk(BadWalk::ConcernWithoutFindings { summary: String })` | "You emitted `LOOM_CONCERN` with summary `<summary>` but no `LOOM_FINDING:` records streamed. Either emit findings before the terminator or terminate with `LOOM_COMPLETE`." |
+| `bad-walk` (findings-without-concern) | `BadWalk(BadWalk::FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> })` | "You streamed `<finding_count>` `LOOM_FINDING:` record(s) but terminated with `LOOM_COMPLETE`. Use `LOOM_CONCERN: {"summary": "..."}` when findings are emitted." Per-finding digest of `findings` is appended so the agent's next iteration sees the diagnosis it just emitted. |
+| `bad-walk` (malformed-finding) | `BadWalk(BadWalk::MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface })` | "One or more `LOOM_FINDING:` records failed parse." Per-record errors are enumerated; the well-formed terminal is rendered alongside so the agent fixes the malformation (typically: drop the surrounding markdown fence) without losing the surrounding well-formed context. This is the variant that fires on backtick-wrapped finding records whose JSON otherwise would have parsed. |
 | `integration-conflict` | `IntegrationConflict { files: Vec<PathBuf>, new_base_sha: GitOid }` | "Your bead branch could not be rebased onto integration — files conflict: <files>. The new integration tip is <new_base_sha>. Rebase your bead workspace onto the new tip, resolve, and re-commit." Single-retry cap (not full `[loop] max_retries`); a second rebase-conflict escalates the bead to `loom:clarify` with the same cause. The `signature-verification-failed` cause does **not** appear in this table because it routes to `loom:blocked` immediately without an agent-retry pass — there is no next dispatch and thus no `PreviousFailure` context. |
 | `post-integrate-fail` | `PostIntegrateFail { failures: Vec<VerifierFailure>, gate_log_path: PathBuf }` | "After your bead was rebased onto the integration branch and ff'd, the post-integration verify failed at the loom workspace. The integration was rolled back. Gate log: <path>. Specific failure: <verifier-failure blocks>." Used for cross-bead deterministic breakage where the bead-workspace self-check may have passed but the integrated tree's verify failed. The default per-bead hot path has no focused review session, so review-style findings route at molecule completion via `review-concern` / `bad-walk` rather than `post-integrate-fail`. Capped at the shared `PREVIOUS_FAILURE_MAX_LEN` budget; the path is outside the truncation budget. |
 | `agent-retry` | `AgentRetry { reason: String }` | "Previous attempt requested retry: <reason>. A fresh dispatch was scheduled." `reason` is the verbatim prose the agent wrote on the line preceding `LOOM_RETRY` (environmental detail or stuck-on-approach summary). Consumes one `[loop] max_retries` slot; on exhaustion the target bead is marked `loom:blocked` with cause `retry-exhausted`. The recovery prompt instructs the retry attempt to escalate to `LOOM_BLOCKED` (with a reason explaining why no candidate options can be enumerated) or `LOOM_CLARIFY` (with `## Options — …`) if the same problem persists rather than emitting `LOOM_RETRY` again. |
@@ -1393,7 +1393,7 @@ success/self-report markers below.
   is a verdict-log entry, nothing else. Per-finding routing
   (concern token → remediation bead, `invariant-clash` → clarify,
   per-spec bonding) is decided by `loom gate mint` on each
-  `LOOM_FINDING:` line the walk streamed before the terminator.
+  `LOOM_FINDING:` record the walk streamed before the terminator.
   The walk must satisfy the streaming + terminator **pairing
   rule** defined in [gate.md § Findings and
   Minting](gate.md#findings-and-minting): `LOOM_CONCERN` iff
@@ -1407,7 +1407,7 @@ success/self-report markers below.
 
 - `LOOM_COMPLETE` — clean review, no concerns.
 - `LOOM_CONCERN: {"summary": "..."}` — review found one or more
-  quality issues (each emitted as a streaming `LOOM_FINDING:` line
+  quality issues (each emitted as a streaming `LOOM_FINDING:` record
   during the walk); push refused, molecule re-enters recovery.
 - `LOOM_RETRY` — review *itself* cannot run for an environmental
   reason (logs corrupt, workspace inaccessible, transient IO,
@@ -1429,7 +1429,7 @@ uses `LOOM_BLOCKED`.
 
 The four terminal shapes are mutually exclusive — exactly one per session. The
 common case is `LOOM_COMPLETE` xor `LOOM_CONCERN`. Multiple
-concerns are emitted as multiple `LOOM_FINDING:` lines during the
+concerns are emitted as multiple `LOOM_FINDING:` records during the
 walk — each carries its own structured detail; the terminal
 `LOOM_CONCERN` summary names the strongest only as a verdict-log
 entry. The streamed findings are buffered into `previous_failure`
@@ -3168,7 +3168,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       Types](#loop-outcome-types)
   [test?](handoff_evidence_populates_typed_gate_scope_values)
 - When the molecule-completion audit review produces ≥1 unsuppressed
-      streamed `LOOM_FINDING:` line and a `LOOM_CONCERN:` terminator,
+      streamed `LOOM_FINDING:` record and a `LOOM_CONCERN:` terminator,
       `route="deferred"` findings merge into the molecule's deferred
       remediation set and cause another stabilization pass within the
       molecule iteration cap; `route="clarify"` findings materialize
@@ -3509,7 +3509,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
       `crates/loom-workflow/src/review/production.rs` invokes
       `parse_walk_output` against the agent's combined stdout before
       constructing `GateInputs`. A well-formed `LOOM_CONCERN` with `≥1`
-      streamed `LOOM_FINDING:` lines routes to
+      streamed `LOOM_FINDING:` records routes to
       `RecoveryCause::ReviewConcern { summary, findings }`, never
       collapses to `BadWalk::ConcernWithoutFindings` because the
       findings were left at default. The loop classifier
@@ -3833,9 +3833,9 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       this criterion
   [test](interactive_shell_out_installs_compaction_repin_delivery)
 - The Pi-backed `loom inbox chat` native-TUI path launches `wrix run ... pi`
-      with a scratch-local session directory and re-pin extension instead of
-      the raw RPC renderer
-  [test](inbox_chat_pi_tui_force_uses_native_wrix_run)
+      with inherited stdio, a scratch-local session directory, and re-pin
+      extension instead of the raw RPC renderer
+  [test](inbox_chat_pi_tty_uses_native_wrix_run_with_inherited_stdio)
 - The Pi-backed `loom inbox chat` RPC bridge sends the backend-specific
       compaction re-pin after observing `compaction_start`; merely queuing an
       unused steer payload does not satisfy this criterion

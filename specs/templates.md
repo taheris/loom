@@ -452,6 +452,15 @@ pub enum PreviousFailure {
         gate_log_path: PathBuf,
     },
 
+    /// Driver-side rebase of the bead branch onto the integration tip
+    /// hit textual conflicts. The next dispatch gets the conflict files
+    /// plus the new base SHA for one agent retry; a second conflict
+    /// escalates to `loom:clarify` with driver-authored Options.
+    IntegrationConflict {
+        files: Vec<PathBuf>,
+        new_base_sha: GitOid,
+    },
+
     /// Worker phase emitted `LOOM_RETRY` — the agent self-reported
     /// that this attempt could not finish but a fresh dispatch is
     /// likely to succeed (environmental failure: tools failing
@@ -487,31 +496,31 @@ pub enum BadWalk {
     /// `{"summary": "<non-empty>"}` — invalid JSON, missing
     /// `summary` field, or empty `summary`. The literal post-marker
     /// text is preserved for the recovery prompt, AND any
-    /// well-formed `LOOM_FINDING:` lines that streamed ahead of
+    /// well-formed `LOOM_FINDING:` records that streamed ahead of
     /// the bad terminator are preserved in `parsed_findings` so the
     /// agent's diagnosis is not lost when only the terminal was
     /// malformed.
     Concern { payload: String, parsed_findings: Vec<Finding> },
 
-    /// Terminator claimed concern but zero `LOOM_FINDING:` lines
+    /// Terminator claimed concern but zero `LOOM_FINDING:` records
     /// streamed during the walk. The parsed summary is preserved
     /// so the recovery prompt can quote it back.
     ConcernWithoutFindings { summary: String },
 
-    /// One or more `LOOM_FINDING:` lines streamed but the
+    /// One or more `LOOM_FINDING:` records streamed but the
     /// terminator was `LOOM_COMPLETE`. The count AND the parsed
     /// findings are preserved so the next iteration's prompt can
     /// name them, and so `loom gate mint` can consume the same
     /// records on the next walk rather than re-deriving them.
     FindingsWithoutConcern { finding_count: usize, findings: Vec<Finding> },
 
-    /// One or more `LOOM_FINDING:` lines failed parse (most
+    /// One or more `LOOM_FINDING:` records failed parse (most
     /// common: trailing backticks from markdown fencing on an
     /// otherwise-valid JSON payload). `errors` is one
-    /// `FindingParseError` per malformed line. `terminal` is the
+    /// `FindingParseError` per malformed record. `terminal` is the
     /// well-formed terminator (or its typed
     /// `Missing`/`Malformed` placeholder) so the agent's next
-    /// iteration sees BOTH the per-line malformation detail AND
+    /// iteration sees BOTH the per-record malformation detail AND
     /// the surrounding well-formed context that was preserved.
     MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface },
 }
@@ -536,8 +545,8 @@ pub enum TerminalSurface {
 (per [gate.md § Findings and Minting](gate.md#findings-and-minting)) —
 the typed wire-format error the parser produces. Carrying a
 `Vec<FindingParseError>` in `BadWalk::MalformedFinding` means each
-per-line malformation rides through with its `line_number`, the
-literal `raw` line text, and the typed reason (`Json`,
+per-record malformation rides through with its starting `line_number`,
+the literal `raw` record text, and the typed reason (`Json`,
 `UnknownToken`, `TokenVariantMismatch`, `UnknownBondSpec`,
 `UnresolvedTarget`, `TargetSpecNotInBonds`).
 
@@ -574,12 +583,13 @@ decided by `loom gate mint`.
 - `VerifyFailures` → `"Verifier failures from previous attempt:\n\n{N blocks: target + exit + stderr}"`
 - `ReviewConcern` → `"Review raised {N} concern(s) — {summary}\n\n{per-finding digest: token + evidence first line}"`
 - `BadWalk(Concern { payload, parsed_findings })` → `"Your LOOM_CONCERN payload did not parse as {\"summary\": \"<non-empty>\"}. Literal payload: {payload}"`, followed (when `parsed_findings` is non-empty) by `"\n\n{N} finding(s) parsed cleanly before the malformed terminator:\n{per-finding digest: token + first line of evidence}"` so the agent's diagnosis from the streamed findings is not lost when only the terminal was malformed.
-- `BadWalk(ConcernWithoutFindings { summary })` → `"You emitted LOOM_CONCERN ({summary}) but no LOOM_FINDING: lines streamed. Either emit findings before the terminator or use LOOM_COMPLETE."`
-- `BadWalk(FindingsWithoutConcern { finding_count, findings })` → `"You streamed {finding_count} LOOM_FINDING line(s) but terminated with LOOM_COMPLETE. Use LOOM_CONCERN: {\"summary\": \"...\"} when findings are emitted."`, followed by `"\n\nFindings streamed:\n{per-finding digest}"` so the agent's next iteration sees the diagnosis it just emitted.
-- `BadWalk(MalformedFinding { errors, terminal })` → `"One or more LOOM_FINDING: lines failed strict validation. Re-emit each finding as a single line: `LOOM_FINDING: {\"token\":\"...\",\"route\":\"blocking|deferred|clarify\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}`.\n{per-line: 'Line N: <reason> — raw: <line text>'}\n\nYour terminal was: {terminal-rendered}"`. The terminal rendering uses the typed `TerminalSurface` variant: `Complete` → `"LOOM_COMPLETE"`, `Concern { summary }` → `"LOOM_CONCERN: {summary}"`, `Malformed { payload }` → `"LOOM_CONCERN: <malformed: {payload}>"`, `Missing` → `"(no terminal on the final non-empty line)"`. Surfacing both pieces lets the agent fix the malformed lines (typically: add the missing `route` field or drop the surrounding markdown fence) without losing the well-formed context.
+- `BadWalk(ConcernWithoutFindings { summary })` → `"You emitted LOOM_CONCERN ({summary}) but no LOOM_FINDING records streamed. Either emit findings before the terminator or use LOOM_COMPLETE."`
+- `BadWalk(FindingsWithoutConcern { finding_count, findings })` → `"You streamed {finding_count} LOOM_FINDING record(s) but terminated with LOOM_COMPLETE. Use LOOM_CONCERN: {\"summary\": \"...\"} when findings are emitted."`, followed by `"\n\nFindings streamed:\n{per-finding digest}"` so the agent's next iteration sees the diagnosis it just emitted.
+- `BadWalk(MalformedFinding { errors, terminal })` → `"One or more LOOM_FINDING records failed strict validation. Re-emit each finding as a valid `LOOM_FINDING: {\"token\":\"...\",\"route\":\"blocking|deferred|clarify\",\"bonds\":[...],\"target\":{...},\"evidence\":\"...\"}` record; compact one-line JSON is preferred, while raw line breaks are allowed only inside JSON strings and are normalized before validation.\n{per-record: 'Record starting at line N: <reason> — raw: <record text>'}\n\nYour terminal was: {terminal-rendered}"`. The terminal rendering uses the typed `TerminalSurface` variant: `Complete` → `"LOOM_COMPLETE"`, `Concern { summary }` → `"LOOM_CONCERN: {summary}"`, `Malformed { payload }` → `"LOOM_CONCERN: <malformed: {payload}>"`, `Missing` → `"(no terminal on the final non-empty line)"`. Surfacing both pieces lets the agent fix malformed records (typically: add the missing `route` field or drop the surrounding markdown fence) without losing the well-formed context.
 - `BuildFailure` → `"Build failed at {stage}:\n{output}"`
 - `TreeNotClean` → `"Working tree was not clean after the bead committed:\n\n{path list, one per line}\n\nStage these into a follow-up commit or revert them."` with a `"+N more"` suffix line when the list is truncated to 30 entries
 - `PostIntegrateFail { failures, gate_log_path }` → `"After rebasing onto the integration branch, the post-integration verify failed.\n\nGate log: {gate_log_path}\n\n{N blocks: target + exit + stderr}\n\nReconcile the cross-bead interaction — your bead's verify passed at its own workspace; the failure is in the integrated tree."`
+- `IntegrationConflict { files, new_base_sha }` → `"Your bead branch could not be rebased onto the integration branch — files conflict: <files>. The new integration tip is <new_base_sha>. Rebase your bead workspace onto the new tip, resolve, and re-commit."`
 - `AgentRetry { reason }` → `"Previous attempt requested retry — reason: {reason}\n\nIf the same problem persists after this attempt, escalate to LOOM_BLOCKED (explain why no candidate options can be enumerated) or LOOM_CLARIFY (with a structured Options block) rather than emitting LOOM_RETRY again."`
 - `review_notes` (when set, after the primary block) → heading `"Review notes:"` then content
 
@@ -776,19 +786,25 @@ same discipline against their own layouts.
 ### Review Emit Shape
 
 `review.md` is the LLM-rubric walk's prompt template. The reviewing
-agent emits findings as streaming `LOOM_FINDING:` lines on stdout —
-one line per finding, identified as the walk proceeds, with a JSON
+agent emits findings as streaming `LOOM_FINDING:` records on stdout —
+one record per finding, identified as the walk proceeds, with a JSON
 payload after the prefix:
 
 ```
 LOOM_FINDING: {"token": "...", "route": "blocking|deferred|clarify", "bonds": ["..."], "target": {"kind": "...", ...}, "evidence": "..."}
 ```
 
+Emit compact one-line JSON when possible. Long evidence and
+`route="clarify"` Options blocks may include raw line breaks inside JSON
+string values; the driver normalizes those breaks to `\n` escapes before
+`serde_json` deserialization and typed validation. Newlines outside strings
+are accepted only as JSON whitespace within the same object.
+
 Followed by exactly one terminal marker:
 `LOOM_COMPLETE` (zero findings emitted),
 `LOOM_CONCERN: {"summary": "<one sentence>"}` (≥1 findings emitted —
 JSON-shaped payload, parsed by the same `serde_json` pipeline
-consuming the `LOOM_FINDING:` lines),
+consuming the `LOOM_FINDING:` records),
 `LOOM_RETRY` (the walk could not complete for environmental reasons
 — logs corrupt, workspace inaccessible, transient IO — and a fresh
 dispatch should retry it; per [harness.md § Verdict
@@ -817,7 +833,7 @@ names the spec(s) the fix-up should bond to (bonding info); the
 JSON was chosen over pipe-delimited shapes because LLM emit is more
 reliable on JSON, and the tagged-union encoding of `target` is
 naturally JSON-shaped. The terminator's `summary` is a verdict-log
-entry only — per-finding routing is decided from the streamed line's
+entry only — per-finding routing is decided from the streamed record's
 `route`, not from the terminal token.
 
 **The review template makes no bd writes.** Earlier revisions of
@@ -825,7 +841,7 @@ this spec authorized `bd create` / `bd update` / `bd mol bond` from
 inside the review prompt — those instructions are removed. The
 agent's job is to identify findings and emit them; the driver
 (`loom gate mint`) is the sole chokepoint that mints fix-up beads
-from the typed `LOOM_FINDING:` lines, applying fingerprint dedup
+from the typed `LOOM_FINDING:` records, applying fingerprint dedup
 and per-spec molecule resolution. A review run that mutates bd
 state from inside the prompt is a protocol violation.
 
@@ -865,7 +881,7 @@ This was previously a `review.md` template concern (`bd create
 --labels=…` examples were rendered with `profile:{{ default_profile }}`).
 After unification, `review.md` no longer emits `bd create` calls;
 the driver applies the default profile when minting from
-`LOOM_FINDING:` lines.
+`LOOM_FINDING:` records.
 
 ### Planning-Rubric Pending Discipline
 
@@ -1365,7 +1381,8 @@ documents in front of the agent with zero configuration.
   `VerifyFailures(Vec<VerifierFailure>)`,
   `ReviewConcern { summary, findings }`, `BadWalk(BadWalk)`,
   `BuildFailure`, `TreeNotClean { dirty_paths: Vec<String> }`,
-  `PostIntegrateFail { failures }`, and
+  `PostIntegrateFail { failures, gate_log_path }`,
+  `IntegrationConflict { files, new_base_sha }`, and
   `AgentRetry { reason: String }` — not a free string
   [check](grep -q 'pub enum PreviousFailure' crates/loom-templates/src/previous_failure.rs)
 - `PreviousFailure::AgentRetry { reason }` variant exists and
@@ -1391,7 +1408,7 @@ documents in front of the agent with zero configuration.
   malformed terminator); `BadWalk::FindingsWithoutConcern` carries
   `findings` (the parsed Vec<Finding> the agent emitted); and
   `BadWalk::MalformedFinding` carries the well-formed `terminal`
-  alongside the per-line errors. Construction of any variant
+  alongside the per-record errors. Construction of any variant
   without its max-context fields is a compile error
   [test](bad_walk_variants_preserve_max_context_invariant_by_struct_shape)
 - `TerminalSurface` enum mirrors `ExitSignal` with explicit
@@ -1401,7 +1418,7 @@ documents in front of the agent with zero configuration.
   [check](grep -q 'pub enum TerminalSurface' crates/loom-protocol/src/gate.rs)
 - `FindingParseError` is defined in `loom-protocol::gate` and
   re-exported from `loom-templates::finding` /
-  `loom-workflow::review::finding` as the per-line wire-format error
+  `loom-workflow::review::finding` as the per-record wire-format error
   consumed by `BadWalk::MalformedFinding.errors`
   [check](grep -q 'pub enum FindingParseError' crates/loom-protocol/src/gate.rs)
 - The `Display for PreviousFailure` rendering of
@@ -1416,7 +1433,7 @@ documents in front of the agent with zero configuration.
   just emitted
   [test](bad_walk_findings_without_concern_display_renders_findings_digest)
 - The `Display for PreviousFailure` rendering of
-  `BadWalk(MalformedFinding)` enumerates per-line errors AND
+  `BadWalk(MalformedFinding)` enumerates per-record errors AND
   surfaces the well-formed `terminal` via its rendered form so the
   agent fixes the fence/format without losing the surrounding
   context
@@ -1431,6 +1448,10 @@ documents in front of the agent with zero configuration.
   bead workspace. Review concerns are not a possible cause — they
   route through `ReviewConcern` / `BadWalk` after verify succeeds.
   [check](grep -q 'gate_log_path' crates/loom-templates/src/previous_failure.rs)
+- `IntegrationConflict` variant carries the conflict file list and new
+  integration base SHA for the single agent retry after a driver-side
+  rebase conflict
+  [check](grep -q 'IntegrationConflict' crates/loom-templates/src/previous_failure.rs)
 - `DriverNoticeCause` enum covers `SwallowedMarker`,
   `IncompleteSignaling`, `ZeroProgress`, `ObserverAbort`,
   `RetryExhausted`, `UnbondedOrigin`
@@ -1455,7 +1476,9 @@ documents in front of the agent with zero configuration.
   malformation, `BuildFailure` → "Build failed at ...:",
   `TreeNotClean` → "Working tree was not clean after the bead
   committed:", `PostIntegrateFail` → "After rebasing onto the
-  integration branch, the post-integration verify failed.")
+  integration branch, the post-integration verify failed.", and
+  `IntegrationConflict` → "Your bead branch could not be rebased onto
+  the integration branch")
   [test](previous_failure_variant_framings_match_spec)
 - `TreeNotClean` renders the dirty-path list one-per-line and
   appends a `"+N more"` suffix line when the upstream driver
@@ -1612,7 +1635,8 @@ documents in front of the agent with zero configuration.
    `Option<PreviousFailure>` where `PreviousFailure` is a tagged
    enum (`DriverNotice`, `VerifyFailures`, `ReviewConcern`,
    `BadWalk(BadWalk)`, `BuildFailure`, `TreeNotClean`,
-   `PostIntegrateFail`, `AgentRetry { reason: String }`). The driver
+   `PostIntegrateFail`, `IntegrationConflict`,
+   `AgentRetry { reason: String }`). The driver
    populates the right variant from the verdict-gate cause
    classification. Each variant renders with distinct framing per
    *Typed `PreviousFailure`* above. Caps:

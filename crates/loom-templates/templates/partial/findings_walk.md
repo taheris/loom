@@ -62,7 +62,7 @@ emit them at `--tree` scope. `template-spec-drift`, `cross-spec-clash`,
 and `spec-conventions-violation` apply at `--tree` scope only (see
 `specs/gate.md` § *Standing-safety-net checks*).
 
-Example lines:
+Example records:
 
 ```text
 LOOM_FINDING: {"token":"spec-coherence-fail","route":"deferred","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"The bead claims to verify live-path coverage but every annotation mocks the binary."}

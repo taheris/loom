@@ -360,8 +360,8 @@ against each edited spec section:
   `## History` sections in the spec body → flag.
 - Internal file paths, line numbers, or module-layout claims with no
   architectural role → flag.
-- A `[verify]` annotation on a claim that requires judgement (mock
-  discipline, scope, prose style rule) — tier-skip → flag.
+- A `[check]`, `[test]`, or `[system]` annotation on a claim that requires
+  judgement (mock discipline, scope, prose style rule) — tier-skip → flag.
 - A criterion bullet with no annotation, or whose annotation points at
   a missing or stubbed verifier → already a `loom gate verify` flag;
   surface it here too if the edit introduces it.
@@ -568,7 +568,7 @@ emit them at `--tree` scope. `template-spec-drift`, `cross-spec-clash`,
 and `spec-conventions-violation` apply at `--tree` scope only (see
 `specs/gate.md` § *Standing-safety-net checks*).
 
-Example lines:
+Example records:
 
 ```text
 LOOM_FINDING: {"token":"spec-coherence-fail","route":"deferred","bonds":["gate"],"target":{"kind":"Criterion","spec":"gate","anchor":"verifier-honesty"},"evidence":"The bead claims to verify live-path coverage but every annotation mocks the binary."}

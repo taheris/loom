@@ -624,7 +624,11 @@ where
             &self.skills_cfg,
         )?;
         let skill_session = skill_plan.materialize(scratch_dir, &worktree.path)?;
-        let attempt = u32::from(is_retry);
+        let attempt = if is_retry {
+            self.current_attempt.saturating_add(1)
+        } else {
+            0
+        };
         self.current_attempt = attempt;
         let prompt_scratchpad_path = container_workspace_path(&worktree.path, &scratchpad_path);
         let initial_prompt = match render_loop_prompt(LoopContextInputs {
@@ -2048,6 +2052,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retry_attempt_counter_increments_per_bead_retry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path().join("ws");
+        let git = git_workspace(&workspace);
+        let manifest = write_manifest(dir.path());
+        let captured_prompts = Arc::new(Mutex::new(Vec::new()));
+        let captured_prompts_inner = Arc::clone(&captured_prompts);
+        let mut controller = ProductionAgentLoopController::new(
+            BdClient::new(),
+            SpecLabel::new("templates"),
+            PathBuf::from("/loom/bin"),
+            workspace,
+            git,
+            manifest,
+            None,
+            ProfileName::new("base"),
+            move |cfg: SpawnConfig, _bead_id: BeadId| {
+                let captured_prompts = Arc::clone(&captured_prompts_inner);
+                async move {
+                    captured_prompts.lock().unwrap().push(cfg.initial_prompt);
+                    (
+                        SessionResult::Complete(SessionOutcome {
+                            exit_code: 1,
+                            cost_usd: None,
+                        }),
+                        None,
+                    )
+                }
+            },
+        );
+        let bead = bead("lm-retry");
+
+        for previous_failure in [
+            None,
+            Some("failed once".to_string()),
+            Some("failed twice".to_string()),
+        ] {
+            let outcome = controller
+                .run_bead(&bead, previous_failure)
+                .await
+                .expect("run_bead ok");
+            assert!(matches!(outcome, AgentOutcome::Failure { .. }));
+        }
+
+        let prompts = captured_prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 3);
+        assert!(!prompts[0].contains("Retry attempt"));
+        assert!(
+            prompts[1].contains("Retry attempt 1 — previous attempt failed with:"),
+            "first retry prompt must render attempt 1: {}",
+            prompts[1],
+        );
+        assert!(
+            prompts[2].contains("Retry attempt 2 — previous attempt failed with:"),
+            "second retry prompt must render attempt 2: {}",
+            prompts[2],
+        );
+    }
+
+    #[tokio::test]
     async fn next_ready_skips_child_of_parked_parent() {
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
@@ -3247,7 +3311,7 @@ mod tests {
     /// `specs/harness.md`
     /// § *molecule_completion_review_threads_findings_into_previous_failure_review_concern*:
     /// when the molecule-completion review's stdout carries ≥1
-    /// `LOOM_FINDING:` line and a well-formed `LOOM_CONCERN:` terminator,
+    /// `LOOM_FINDING:` record and a well-formed `LOOM_CONCERN:` terminator,
     /// `exec_review` MUST parse the streamed `Vec<Finding>` via
     /// `WalkOutput::from_stdout` and stash a typed
     /// `PreviousFailure::ReviewConcern { summary, findings }` so the next
@@ -3266,10 +3330,7 @@ mod tests {
         let workspace = dir.path().to_path_buf();
         seed_spec(&workspace, "alpha");
 
-        // Stub: `gate verify` is a no-op (exit 0); `gate review` emits one
-        // streamed `LOOM_FINDING:` line and a well-formed `LOOM_CONCERN:`
-        // terminator on stdout. The parent captures stdout via
-        // `Command::output` and runs `WalkOutput::from_stdout` on it.
+        // The stub emits one review finding so the production parser must preserve it.
         let argv_log = dir.path().join("argv.log");
         let stub = dir.path().join("loom-stub.sh");
         let finding_payload = r#"{"token":"verifier-bypass","route":"deferred","bonds":["alpha"],"target":{"kind":"Annotation","target_string":"cargo test --lib sample"},"evidence":"test mocks the agent backend"}"#;
