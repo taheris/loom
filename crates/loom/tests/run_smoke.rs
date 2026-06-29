@@ -114,6 +114,55 @@ exit 0
     bin_dir
 }
 
+fn install_bd_parallel_infra_stub(dir: &Path, argv_log: &Path) -> std::path::PathBuf {
+    let bin_dir = dir.join("parallel-infra-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let bd = bin_dir.join("bd");
+    let active = r#"[{"id":"lm-active","title":"active","status":"open","priority":2,"issue_type":"epic","labels":["loom:active","spec:agent"],"metadata":{}}]"#;
+    let ready = r#"[{"id":"lm-miss","title":"bad profile","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","profile:base"],"metadata":{}}]"#;
+    let script = format!(
+        r#"#!/bin/sh
+for a in "$@"; do printf '%s\t' "$a"; done >> {log}
+printf '\n' >> {log}
+
+cmd="${{1:-}}"
+has_json=0
+label_active=0
+for arg in "$@"; do
+  case "$arg" in
+    --json) has_json=1 ;;
+    --label=loom:active) label_active=1 ;;
+  esac
+done
+
+if [ "$cmd" = "list" ] && [ "$has_json" = "1" ] && [ "$label_active" = "1" ]; then
+  printf '%s' '{active}'
+  exit 0
+fi
+if [ "$cmd" = "ready" ] && [ "$has_json" = "1" ]; then
+  printf '%s' '{ready}'
+  exit 0
+fi
+if [ "$cmd" = "update" ]; then
+  exit 0
+fi
+if [ "$has_json" = "1" ]; then
+  printf '%s' '[]'
+  exit 0
+fi
+exit 0
+"#,
+        log = argv_log.display(),
+        active = active,
+        ready = ready,
+    );
+    std::fs::write(&bd, script).unwrap();
+    let mut perm = std::fs::metadata(&bd).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&bd, perm).unwrap();
+    bin_dir
+}
+
 #[test]
 fn loom_loop_removed_selectors_are_rejected() {
     let loom_bin = env!("CARGO_BIN_EXE_loom");
@@ -347,6 +396,70 @@ fn parallel_codepath_returns_loop_outcome_with_gate_field() {
     assert!(
         stdout.contains("gate=no-gate"),
         "empty bd queue under --parallel must produce GateOutcome::NoGate. stdout={stdout}",
+    );
+}
+
+#[test]
+fn loom_loop_parallel_static_infra_parks_as_loom_infra() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    init_workspace_repo(workspace);
+    std::fs::create_dir_all(workspace.join("specs")).unwrap();
+    std::fs::write(workspace.join("specs/agent.md"), "# agent\n").unwrap();
+
+    let argv_log = workspace.join("bd-argv.log");
+    let bin_dir = install_bd_parallel_infra_stub(workspace, &argv_log);
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries = vec![bin_dir];
+    path_entries.extend(std::env::split_paths(&path));
+    let new_path = std::env::join_paths(path_entries).unwrap();
+
+    let manifest_path = workspace.join("profile-images.json");
+    std::fs::write(&manifest_path, "{}").unwrap();
+
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let output = Command::new(loom_bin)
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--agent")
+        .arg("pi")
+        .arg("loop")
+        .arg("--parallel")
+        .arg("2")
+        .env("PATH", new_path)
+        .env("LOOM_PROFILES_MANIFEST", &manifest_path)
+        .env("LOOM_BIN", loom_bin)
+        .env("XDG_STATE_HOME", workspace.join(".loom-test-state"))
+        .env_remove("LOOM_INSIDE")
+        .output()
+        .expect("spawn loom");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "parallel static infra should park the bead and exit zero. stdout={stdout} stderr={stderr}",
+    );
+    let log = std::fs::read_to_string(&argv_log)
+        .unwrap_or_else(|_| panic!("bd argv log {} must exist", argv_log.display()));
+    let update = log
+        .lines()
+        .find(|line| line.starts_with("update\tlm-miss\t"))
+        .unwrap_or_else(|| panic!("no update call for infra bead:\n{log}"));
+    let argv = update.split('\t').collect::<Vec<_>>();
+    assert!(argv.windows(2).any(|w| w == ["--status", "blocked"]));
+    assert!(
+        argv.windows(2).any(|w| w == ["--add-label", "loom:infra"]),
+        "update argv must add loom:infra: {argv:?}",
+    );
+    assert!(
+        argv.iter()
+            .any(|arg| arg == &"loom.infra.cause=unknown-profile"),
+        "update argv must persist infra cause metadata: {argv:?}",
+    );
+    assert!(
+        !log.contains("loom:blocked"),
+        "static infra must not apply semantic loom:blocked: {log}",
     );
 }
 

@@ -21,8 +21,8 @@ use loom_driver::bd::{Bead, Label};
 use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, SpecLabel};
 use loom_workflow::r#loop::{
-    AgentOutcome, BatchResult, BatchSlot, CONFLICT_RETRY_LABEL, Parallelism, ParallelismError,
-    create_worktrees, merge_back,
+    AgentOutcome, BatchInfraFailure, BatchResult, BatchSlot, CONFLICT_RETRY_LABEL, Parallelism,
+    ParallelismError, create_worktrees, merge_back,
 };
 use tempfile::TempDir;
 
@@ -456,6 +456,7 @@ async fn workspace_persists_on_all_failure_paths() -> Result<()> {
             .iter()
             .find(|r| match r {
                 BatchResult::AgentFailed { bead, .. }
+                | BatchResult::AgentInfra { bead, .. }
                 | BatchResult::AgentBlocked { bead, .. }
                 | BatchResult::AgentClarify { bead, .. } => *bead == slot.bead.id,
                 _ => false,
@@ -479,6 +480,66 @@ async fn workspace_persists_on_all_failure_paths() -> Result<()> {
             !branch.trim().is_empty(),
             "bead branch {} must survive in the preserved clone",
             slot.worktree.branch,
+        );
+    }
+    Ok(())
+}
+
+/// Parallel infra outcomes must remain distinguishable from semantic agent
+/// failures so the CLI can apply `[loop.infra]` retry budgets and
+/// `loom:infra` parking instead of routing them through `AgentFailed`.
+#[tokio::test]
+async fn parallel_infra_outcomes_surface_as_batch_infra() -> Result<()> {
+    let repo = init_repo()?;
+    let client = unsigned_client(repo.path())?;
+    let label = SpecLabel::new("harness");
+    let beads = vec![
+        fake_bead("lm-preflight"),
+        fake_bead("lm-interrupted"),
+        fake_bead("lm-static"),
+    ];
+    let slots = create_worktrees(&client, &label, beads.clone()).await?;
+    let outcomes = [
+        AgentOutcome::InfraPreflight {
+            error: "spawn EOF".to_string(),
+        },
+        AgentOutcome::InfraMidSession {
+            error: "stream EOF".to_string(),
+        },
+        AgentOutcome::StaticInfra {
+            cause: "missing-agent-binary".to_string(),
+            error: "exit 127".to_string(),
+        },
+    ];
+    let batch_slots = slots
+        .iter()
+        .zip(outcomes)
+        .map(|(slot, outcome)| BatchSlot {
+            bead: slot.bead.clone(),
+            worktree: slot.worktree.clone(),
+            outcome,
+        })
+        .collect();
+
+    let outcome = merge_back(&client, batch_slots).await?;
+
+    assert_eq!(outcome.failure_ids(), Vec::<BeadId>::new());
+    let infra = outcome.infra();
+    assert_eq!(infra.len(), 3, "infra results: {infra:?}");
+    assert!(matches!(infra[0].1, BatchInfraFailure::Preflight { .. }));
+    assert!(matches!(infra[1].1, BatchInfraFailure::Interrupted { .. }));
+    match &infra[2].1 {
+        BatchInfraFailure::Static { cause, error } => {
+            assert_eq!(cause, "missing-agent-binary");
+            assert_eq!(error, "exit 127");
+        }
+        other => panic!("expected static infra, got {other:?}"),
+    }
+    for slot in &slots {
+        assert!(
+            slot.worktree.path.exists(),
+            "infra result must preserve worktree {:?}",
+            slot.worktree.path,
         );
     }
     Ok(())
@@ -668,6 +729,7 @@ async fn merge_back_preserves_input_slot_order() -> Result<()> {
             BatchResult::Merged { bead } => bead.as_str(),
             BatchResult::Conflict { bead, .. } => bead.as_str(),
             BatchResult::AgentFailed { bead, .. } => bead.as_str(),
+            BatchResult::AgentInfra { bead, .. } => bead.as_str(),
             BatchResult::AgentBlocked { bead, .. } => bead.as_str(),
             BatchResult::AgentClarify { bead, .. } => bead.as_str(),
         })

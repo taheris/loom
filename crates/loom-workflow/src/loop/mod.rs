@@ -53,13 +53,15 @@ pub use loom_gate::{
 };
 pub use outcome::{AgentOutcome, BeadResult, InfraDiagnostic, SessionResult};
 pub use parallel::{
-    BatchOutcome, BatchResult, BatchSlot, WorktreeBead, create_worktrees, merge_back,
-    merge_back_with_logs, run_concurrent_spawns, run_parallel_batch, run_parallel_batch_with_logs,
+    BatchInfraFailure, BatchOutcome, BatchResult, BatchSlot, WorktreeBead, create_worktrees,
+    merge_back, merge_back_with_logs, run_concurrent_spawns, run_parallel_batch,
+    run_parallel_batch_with_logs,
 };
 pub use parallelism::{Parallelism, ParallelismError};
 pub use production::{
     ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV,
-    REVIEW_SPEC_LABEL_ENV, format_unknown_profile_error, list_open_for_spec,
+    REVIEW_SPEC_LABEL_ENV, classify_session, format_unknown_profile_error,
+    format_unknown_runtime_for_profile_error, list_open_for_spec,
 };
 pub use profile::{DEFAULT_PROFILE, resolve_profile, resolve_profile_image};
 pub use retry::{RetryDecision, RetryPolicy};

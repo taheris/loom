@@ -6,6 +6,7 @@
 //! `tune`. There is no `sync` — Askama compiled templates make per-project
 //! sync unnecessary (see `specs/harness.md`).
 
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -23,7 +24,7 @@ use loom_driver::git::GitClient;
 use loom_driver::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel};
 use loom_driver::lock::{LockGuard, LockManager};
 use loom_driver::logging::{LogSink, sweep_retention_at};
-use loom_driver::profile_manifest::ProfileImageManifest;
+use loom_driver::profile_manifest::{ProfileError, ProfileImageManifest};
 use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::CacheDb;
 use loom_gate::{
@@ -37,9 +38,11 @@ use loom_workflow::inbox::{
     find_by_proposal_id, parse_options_in,
 };
 use loom_workflow::r#loop::{
-    GateOutcome, InfraRetryPolicy, LoopOutcome, NoGateReason, Parallelism,
-    ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV, REVIEW_PHASE_WHEN_ENV,
-    REVIEW_SPEC_LABEL_ENV, RetryPolicy, SessionResult, run_loop_with_infra_policy,
+    BatchInfraFailure, BatchResult, GateOutcome, InfraDiagnostic, InfraRetryPolicy, LoopOutcome,
+    NoGateReason, Parallelism, ProductionAgentLoopController, REVIEW_EMIT_STDOUT_ENV,
+    REVIEW_PHASE_WHEN_ENV, REVIEW_SPEC_LABEL_ENV, RetryPolicy, SessionResult, classify_session,
+    format_unknown_profile_error, format_unknown_runtime_for_profile_error,
+    run_loop_with_infra_policy,
 };
 use loom_workflow::mint::{FindingStatusAction, FindingStatusRecord, MintWalker};
 use loom_workflow::review::{
@@ -47,7 +50,7 @@ use loom_workflow::review::{
     WalkOutput, WorkspaceFindingValidator, review_loop as run_review_loop,
 };
 use loom_workflow::todo::{
-    ExitSignal, ProductionTodoController, TodoError, parse_exit_signal, run as run_todo_workflow,
+    ProductionTodoController, TodoError, parse_exit_signal, run as run_todo_workflow,
 };
 use loom_workflow::{DefaultObserverChain, init, logs_cmd, plan, spec, status, use_spec};
 use loom_workflow::{run_agent, run_agent_classified};
@@ -2675,6 +2678,9 @@ fn run_parallel_loop_root(
     let loom_cfg_for_async = config.loom.clone();
     let skills_cfg_for_async = config.skills.clone();
     let observer_config = config.agent.clone();
+    let infra_policy = InfraRetryPolicy {
+        max_attempts: config.loop_.infra.max_attempts,
+    };
     runtime.block_on(async move {
         run_parallel_loop(
             workspace_buf,
@@ -2691,6 +2697,7 @@ fn run_parallel_loop_root(
             skills_cfg_for_async,
             observer_config,
             render_mode,
+            infra_policy,
         )
         .await
     })
@@ -2982,204 +2989,403 @@ async fn run_parallel_loop(
     skills_cfg: loom_driver::config::SkillsConfig,
     observer_config: AgentObserversConfig,
     render_mode: loom_render::RenderMode,
+    infra_policy: InfraRetryPolicy,
 ) -> anyhow::Result<LoopOutcome> {
     use loom_driver::bd::UpdateOpts;
     use loom_workflow::r#loop::AgentOutcome;
 
     let bd = BdClient::new();
-    let beads = bd
-        .ready(loom_driver::bd::ReadyOpts {
-            limit: Some(parallel_n),
-            label: ready_parent
-                .is_none()
-                .then(|| format!("spec:{}", label.as_str())),
-            parent: ready_parent,
-            // Dedup of clarify/blocked beads relies on the paired
-            // `status=blocked` transition that the apply paths write
-            // alongside the label. `bd ready` natively excludes
-            // status=blocked, so no exclude-label flag is needed.
-            exclude_label: vec![],
-        })
-        .await?;
-    if beads.is_empty() {
-        return Ok(LoopOutcome {
-            beads_processed: 0,
-            beads_clarified: 0,
-            beads_blocked: 0,
-            outer_iterations: 0,
-            gate: GateOutcome::NoGate {
-                beads_processed: 0,
-                reason: NoGateReason::NoBeadsReady,
-            },
-        });
-    }
-
     let git = GitClient::open_with_integration_branch(
         workspace.clone(),
         loom_cfg.integration_branch.clone(),
     )?
     .with_hook_timeout(loom_cfg.git_hook_timeout());
-    // Resolve the host deploy/signing key paths once for the whole batch —
-    // every bead shares the same loom workspace, so the launcher env is
-    // identical across slots. Each `wrix spawn` child receives these so the
-    // wrapper mounts the keys into the bead container (`specs/harness.md`
-    // § Commit signing).
     let launcher_env = git.launcher_key_env()?;
     let logs_root = workspace.join(".loom/logs");
-    let logs_root_for_merge = logs_root.clone();
-    let label_for_closure = label.clone();
-    let workspace_for_closure = workspace.clone();
-    let outcome = loom_workflow::r#loop::run_parallel_batch_with_logs(
-        &git,
-        &label,
-        beads,
-        Some(&logs_root_for_merge),
-        move |slot| {
-            let manifest_inner = Arc::clone(&manifest);
-            let cli_profile_inner = cli_profile.clone();
-            let phase_default_inner = phase_default.clone();
-            let logs_root_inner = logs_root.clone();
-            let label_inner = label_for_closure.clone();
-            let style_rules_inner = style_rules.clone();
-            let workspace_inner = workspace_for_closure.clone();
-            let loom_cfg_inner = loom_cfg.clone();
-            let skills_cfg_inner = skills_cfg.clone();
-            let observer_config_inner = observer_config.clone();
-            let launcher_env_inner = launcher_env.clone();
-            async move {
-                // Marker is the primary signal here too — without it, parallel
-                // mode would swallow `LOOM_BLOCKED` / `LOOM_CLARIFY` self-reports
-                // the same way the sequential path used to.
-                match dispatch_for_slot(
-                    kind,
-                    shutdown_grace,
-                    slot,
-                    &manifest_inner,
-                    cli_profile_inner.as_ref(),
-                    &phase_default_inner,
-                    &logs_root_inner,
-                    &label_inner,
-                    &style_rules_inner,
-                    &workspace_inner,
-                    &loom_cfg_inner,
-                    &skills_cfg_inner,
-                    &observer_config_inner,
-                    launcher_env_inner,
-                    render_mode,
-                )
-                .await
-                {
-                    Ok((session, marker)) => match (marker, session.exit_code) {
-                        (Some(ExitSignal::Blocked { reason }), _) => {
-                            AgentOutcome::Blocked { reason }
+    let batch_limit = parallel_n as usize;
+    let mut infra_budget = ParallelInfraBudget::new(infra_policy);
+    let mut infra_retry_queue: VecDeque<Bead> = VecDeque::new();
+    let mut infra_queue_loaded = false;
+    let mut finished_ids: HashSet<BeadId> = HashSet::new();
+    let mut processed = 0_u32;
+    let mut clarified = 0_u32;
+    let mut blocked = 0_u32;
+
+    loop {
+        let deferred_ids = infra_retry_queue
+            .iter()
+            .map(|bead| bead.id.clone())
+            .collect::<Vec<_>>();
+        let mut batch_beads = parallel_ready_batch(
+            &bd,
+            &label,
+            ready_parent.as_ref(),
+            batch_limit,
+            &deferred_ids,
+            &finished_ids,
+        )
+        .await?;
+        if batch_beads.is_empty() {
+            if !infra_queue_loaded {
+                infra_retry_queue
+                    .extend(load_parallel_infra_queue(&bd, &label, ready_parent.as_ref()).await?);
+                infra_queue_loaded = true;
+            }
+            while batch_beads.len() < batch_limit {
+                let Some(bead) = infra_retry_queue.pop_front() else {
+                    break;
+                };
+                if finished_ids.contains(&bead.id) {
+                    continue;
+                }
+                batch_beads.push(bead);
+            }
+        }
+        if batch_beads.is_empty() {
+            break;
+        }
+
+        clear_parallel_infra_state(&bd, &batch_beads).await?;
+        let batch_by_id = batch_beads
+            .iter()
+            .map(|bead| (bead.id.clone(), bead.clone()))
+            .collect::<HashMap<_, _>>();
+        let logs_root_for_merge = logs_root.clone();
+        let logs_root_for_spawn = logs_root.clone();
+        let label_for_closure = label.clone();
+        let workspace_for_closure = workspace.clone();
+        let manifest_for_batch = Arc::clone(&manifest);
+        let cli_profile_for_batch = cli_profile.clone();
+        let phase_default_for_batch = phase_default.clone();
+        let style_rules_for_batch = style_rules.clone();
+        let loom_cfg_for_batch = loom_cfg.clone();
+        let skills_cfg_for_batch = skills_cfg.clone();
+        let observer_config_for_batch = observer_config.clone();
+        let launcher_env_for_batch = launcher_env.clone();
+        let outcome = loom_workflow::r#loop::run_parallel_batch_with_logs(
+            &git,
+            &label,
+            batch_beads,
+            Some(&logs_root_for_merge),
+            move |slot| {
+                let manifest_inner = Arc::clone(&manifest_for_batch);
+                let cli_profile_inner = cli_profile_for_batch.clone();
+                let phase_default_inner = phase_default_for_batch.clone();
+                let logs_root_inner = logs_root_for_spawn.clone();
+                let label_inner = label_for_closure.clone();
+                let style_rules_inner = style_rules_for_batch.clone();
+                let workspace_inner = workspace_for_closure.clone();
+                let loom_cfg_inner = loom_cfg_for_batch.clone();
+                let skills_cfg_inner = skills_cfg_for_batch.clone();
+                let observer_config_inner = observer_config_for_batch.clone();
+                let launcher_env_inner = launcher_env_for_batch.clone();
+                async move {
+                    match dispatch_for_slot(
+                        kind,
+                        shutdown_grace,
+                        slot,
+                        &manifest_inner,
+                        cli_profile_inner.as_ref(),
+                        &phase_default_inner,
+                        &logs_root_inner,
+                        &label_inner,
+                        &style_rules_inner,
+                        &workspace_inner,
+                        &loom_cfg_inner,
+                        &skills_cfg_inner,
+                        &observer_config_inner,
+                        launcher_env_inner,
+                        render_mode,
+                    )
+                    .await
+                    {
+                        Ok(outcome) => outcome,
+                        Err(e) => AgentOutcome::Failure {
+                            error: format!("{e:#}"),
+                        },
+                    }
+                }
+            },
+        )
+        .await?;
+
+        for result in outcome.results {
+            match result {
+                BatchResult::Merged { bead } => {
+                    infra_budget.clear(&bead);
+                    finished_ids.insert(bead);
+                    processed = processed.saturating_add(1);
+                }
+                BatchResult::Conflict { bead, .. } => {
+                    tracing::warn!(
+                        bead = %bead,
+                        "loom loop: integration conflict — marking for single retry; rerun loom loop to re-dispatch against the moved tip",
+                    );
+                    bd.update(
+                        &bead,
+                        UpdateOpts {
+                            add_labels: vec![
+                                loom_workflow::r#loop::CONFLICT_RETRY_LABEL.to_string(),
+                            ],
+                            ..UpdateOpts::default()
+                        },
+                    )
+                    .await?;
+                    infra_budget.clear(&bead);
+                    finished_ids.insert(bead);
+                    processed = processed.saturating_add(1);
+                }
+                BatchResult::AgentFailed { bead, .. } => {
+                    infra_budget.clear(&bead);
+                    finished_ids.insert(bead);
+                    processed = processed.saturating_add(1);
+                }
+                BatchResult::AgentInfra { bead, failure } => {
+                    let route = infra_budget.record(&bead, &failure);
+                    match route {
+                        ParallelInfraRoute::Retry { diagnostic } => {
+                            tracing::warn!(
+                                bead = %bead,
+                                cause = %diagnostic.cause,
+                                attempt = ?diagnostic.attempt,
+                                "loom loop: infra failure queued for retry",
+                            );
+                            let retry_bead = batch_by_id.get(&bead).cloned().ok_or_else(|| {
+                                anyhow::anyhow!("parallel infra result missing bead {bead}")
+                            })?;
+                            infra_retry_queue.push_back(retry_bead);
                         }
-                        (Some(ExitSignal::Clarify { question }), _) => {
-                            AgentOutcome::Clarify { question }
+                        ParallelInfraRoute::Park { diagnostic } => {
+                            bd.update(&bead, parallel_infra_update(&diagnostic)).await?;
+                            finished_ids.insert(bead);
+                            processed = processed.saturating_add(1);
+                            blocked = blocked.saturating_add(1);
                         }
-                        (Some(ExitSignal::Retry { reason }), _) => AgentOutcome::Retry { reason },
-                        (Some(ExitSignal::Concern { summary }), _) => AgentOutcome::Failure {
-                            error: format!(
-                                "wrong-phase-marker: LOOM_CONCERN ({summary}) is review-phase only",
-                            ),
-                        },
-                        (Some(ExitSignal::BadWalk(_)), _) => AgentOutcome::Failure {
-                            error: "wrong-phase-marker: LOOM_CONCERN is review-phase only"
-                                .to_string(),
-                        },
-                        (Some(ExitSignal::Complete | ExitSignal::Noop), 0) => AgentOutcome::Success,
-                        (Some(ExitSignal::Complete | ExitSignal::Noop), code) => {
-                            AgentOutcome::Failure {
-                                error: format!(
-                                    "agent emitted COMPLETE/NOOP but exited code {code}"
-                                ),
-                            }
-                        }
-                        (None, 0) => AgentOutcome::Failure {
-                            error: "agent exited 0 without LOOM_* marker (swallowed marker)"
-                                .to_string(),
-                        },
-                        (None, code) => AgentOutcome::Failure {
-                            error: format!("agent exited with code {code}"),
-                        },
-                    },
-                    Err(e) => AgentOutcome::Failure {
-                        error: format!("{e:#}"),
-                    },
+                    }
+                }
+                BatchResult::AgentBlocked { bead, reason } => {
+                    let notes = if reason.is_empty() {
+                        "agent-blocked".to_string()
+                    } else {
+                        format!("agent-blocked: {reason}")
+                    };
+                    bd.update(&bead, parallel_park_update("loom:blocked", Some(notes)))
+                        .await?;
+                    infra_budget.clear(&bead);
+                    finished_ids.insert(bead);
+                    processed = processed.saturating_add(1);
+                    blocked = blocked.saturating_add(1);
+                }
+                BatchResult::AgentClarify { bead, question } => {
+                    let notes = if question.is_empty() {
+                        None
+                    } else {
+                        Some(question)
+                    };
+                    bd.update(&bead, parallel_park_update("loom:clarify", notes))
+                        .await?;
+                    infra_budget.clear(&bead);
+                    finished_ids.insert(bead);
+                    processed = processed.saturating_add(1);
+                    clarified = clarified.saturating_add(1);
                 }
             }
-        },
-    )
-    .await?;
-
-    // Apply labels for marker self-reports. The bd-side cleanup mirrors the
-    // sequential path's `apply_clarify` / `apply_blocked` so a clarify in
-    // parallel mode is indistinguishable from one in sequential mode.
-    let bd_label = BdClient::new();
-    for (bead, question) in outcome.clarified() {
-        let notes = if question.is_empty() {
-            None
-        } else {
-            Some(question)
-        };
-        bd_label
-            .update(&bead, parallel_park_update("loom:clarify", notes))
-            .await?;
-    }
-    for (bead, reason) in outcome.blocked() {
-        let notes = if reason.is_empty() {
-            "agent-blocked".to_string()
-        } else {
-            format!("agent-blocked: {reason}")
-        };
-        bd_label
-            .update(&bead, parallel_park_update("loom:blocked", Some(notes)))
-            .await?;
+        }
     }
 
-    // First-conflict integration failures (worktree preserved) get the
-    // single-retry marker label so the bead stays ready and the next
-    // `loom loop` re-dispatches it against the moved integration tip; a
-    // second conflict is read off this label by `merge_back_one` and
-    // escalates to `loom:clarify` (handled in the `clarified()` loop above).
-    // This is the parallel-shaped home for the serial path's in-process
-    // integration-conflict counter (`specs/harness.md` § Verdict Gate
-    // phase 3).
-    let conflict_ids = outcome.conflict_ids();
-    for bead in &conflict_ids {
-        tracing::warn!(
-            bead = %bead,
-            "loom loop: integration conflict — marking for single retry; rerun loom loop to re-dispatch against the moved tip",
-        );
-        bd_label
-            .update(
-                bead,
-                UpdateOpts {
-                    add_labels: vec![loom_workflow::r#loop::CONFLICT_RETRY_LABEL.to_string()],
-                    ..UpdateOpts::default()
-                },
-            )
-            .await?;
-    }
-
-    let merged = u32::try_from(outcome.merged_ids().len()).unwrap_or(u32::MAX);
-    let clarified = u32::try_from(outcome.clarified().len()).unwrap_or(u32::MAX);
-    let blocked_n = u32::try_from(outcome.blocked().len()).unwrap_or(u32::MAX);
-    let conflict_n = u32::try_from(conflict_ids.len()).unwrap_or(u32::MAX);
-    let processed = merged
-        .saturating_add(clarified)
-        .saturating_add(blocked_n)
-        .saturating_add(u32::try_from(outcome.failure_ids().len()).unwrap_or(u32::MAX))
-        .saturating_add(conflict_n);
     Ok(LoopOutcome {
         beads_processed: processed,
         beads_clarified: clarified,
-        beads_blocked: blocked_n,
+        beads_blocked: blocked,
         outer_iterations: 0,
         gate: GateOutcome::NoGate {
             beads_processed: processed,
-            reason: NoGateReason::SelectionPartial,
+            reason: if processed == 0 {
+                NoGateReason::NoBeadsReady
+            } else {
+                NoGateReason::SelectionPartial
+            },
         },
     })
+}
+
+#[derive(Debug)]
+struct ParallelInfraBudget {
+    attempts: HashMap<BeadId, u32>,
+    max_attempts: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParallelInfraRoute {
+    Retry { diagnostic: InfraDiagnostic },
+    Park { diagnostic: InfraDiagnostic },
+}
+
+impl ParallelInfraBudget {
+    fn new(policy: InfraRetryPolicy) -> Self {
+        Self {
+            attempts: HashMap::new(),
+            max_attempts: policy.max_attempts.max(1),
+        }
+    }
+
+    fn record(&mut self, bead: &BeadId, failure: &BatchInfraFailure) -> ParallelInfraRoute {
+        if !failure.is_retryable() {
+            self.clear(bead);
+            return ParallelInfraRoute::Park {
+                diagnostic: failure.diagnostic(0, self.max_attempts),
+            };
+        }
+        let attempt = self
+            .attempts
+            .get(bead)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.attempts.insert(bead.clone(), attempt);
+        let diagnostic = failure.diagnostic(attempt, self.max_attempts);
+        if attempt >= self.max_attempts {
+            self.clear(bead);
+            ParallelInfraRoute::Park { diagnostic }
+        } else {
+            ParallelInfraRoute::Retry { diagnostic }
+        }
+    }
+
+    fn clear(&mut self, bead: &BeadId) {
+        self.attempts.remove(bead);
+    }
+}
+
+async fn parallel_ready_batch(
+    bd: &BdClient,
+    label: &SpecLabel,
+    ready_parent: Option<&BeadId>,
+    batch_limit: usize,
+    deferred: &[BeadId],
+    finished: &HashSet<BeadId>,
+) -> anyhow::Result<Vec<Bead>> {
+    let beads = bd
+        .ready(loom_driver::bd::ReadyOpts {
+            limit: None,
+            label: ready_parent
+                .is_none()
+                .then(|| format!("spec:{}", label.as_str())),
+            parent: ready_parent.cloned(),
+            exclude_label: vec![],
+        })
+        .await?;
+    let mut out = Vec::with_capacity(batch_limit);
+    for bead in beads {
+        if out.len() >= batch_limit {
+            break;
+        }
+        if deferred.iter().any(|id| id == &bead.id) || finished.contains(&bead.id) {
+            continue;
+        }
+        if bead.issue_type == "epic" {
+            tracing::info!(
+                bead = %bead.id,
+                spec = %label,
+                "loom loop: skipping epic-typed ready bead — workers dispatch leaves only",
+            );
+            continue;
+        }
+        out.push(bead);
+    }
+    Ok(out)
+}
+
+async fn load_parallel_infra_queue(
+    bd: &BdClient,
+    label: &SpecLabel,
+    ready_parent: Option<&BeadId>,
+) -> anyhow::Result<VecDeque<Bead>> {
+    let beads = bd
+        .list(ListOpts {
+            status: Some("blocked".to_string()),
+            label: ready_parent
+                .is_none()
+                .then(|| format!("spec:{}", label.as_str())),
+            label_any: vec!["loom:infra".to_string()],
+            parent: ready_parent.cloned(),
+            ..ListOpts::default()
+        })
+        .await?;
+    let mut queue = VecDeque::new();
+    for bead in beads {
+        if bead.issue_type == "epic" {
+            tracing::info!(
+                bead = %bead.id,
+                spec = %label,
+                "loom loop: skipping epic-typed infra bead — workers dispatch leaves only",
+            );
+            continue;
+        }
+        queue.push_back(bead);
+    }
+    Ok(queue)
+}
+
+async fn clear_parallel_infra_state(bd: &BdClient, beads: &[Bead]) -> anyhow::Result<()> {
+    for bead in beads {
+        if bead.labels.iter().any(loom_driver::bd::Label::is_infra) {
+            bd.update(&bead.id, parallel_clear_infra_update()).await?;
+        }
+    }
+    Ok(())
+}
+
+fn parallel_clear_infra_update() -> UpdateOpts {
+    UpdateOpts {
+        status: Some("open".to_string()),
+        remove_labels: vec!["loom:infra".to_string()],
+        ..UpdateOpts::default()
+    }
+}
+
+fn parallel_infra_update(diagnostic: &InfraDiagnostic) -> UpdateOpts {
+    let mut metadata = vec![
+        ("loom.infra.cause".to_string(), diagnostic.cause.clone()),
+        ("loom.infra.phase".to_string(), "loop".to_string()),
+        (
+            "loom.infra.class".to_string(),
+            diagnostic.infra_class.clone(),
+        ),
+    ];
+    if let Some(first_event_seen) = diagnostic.first_event_seen {
+        metadata.push((
+            "loom.infra.first_event_seen".to_string(),
+            first_event_seen.to_string(),
+        ));
+    }
+    if let Some(attempt) = diagnostic.attempt {
+        metadata.push(("loom.infra.attempt".to_string(), attempt.to_string()));
+    }
+    if let Some(max_attempts) = diagnostic.max_attempts {
+        metadata.push((
+            "loom.infra.max_attempts".to_string(),
+            max_attempts.to_string(),
+        ));
+    }
+    UpdateOpts {
+        status: Some("blocked".to_string()),
+        add_labels: vec!["loom:infra".to_string()],
+        notes: Some(parallel_diagnostic_notes(
+            &diagnostic.cause,
+            &diagnostic.error,
+        )),
+        set_metadata: metadata,
+        ..UpdateOpts::default()
+    }
+}
+
+fn parallel_diagnostic_notes(cause: &str, error: &str) -> String {
+    if error.is_empty() {
+        cause.to_string()
+    } else {
+        format!("{cause}: {error}")
+    }
 }
 
 /// One slot's dispatch: build the per-bead [`SpawnConfig`] against the
@@ -3188,9 +3394,9 @@ async fn run_parallel_loop(
 /// — this used to reload `LoomConfig` and re-resolve the backend per slot,
 /// which let the sequential and parallel paths drift if the on-disk config
 /// changed mid-run. A missing manifest entry surfaces as
-/// [`ProfileError::UnknownProfile`] (via `LoopError::Profile`) so the caller
-/// converts it to a typed [`AgentOutcome::Failure`] without falling back to
-/// a silent default.
+/// [`ProfileError::UnknownProfile`] and sibling static diagnostics become
+/// typed [`AgentOutcome`] variants so the caller can apply infra routing
+/// without falling back to a silent default.
 ///
 /// [`ProfileError::UnknownProfile`]: loom_driver::profile_manifest::ProfileError::UnknownProfile
 #[expect(clippy::too_many_arguments, reason = "fan-out wiring surface")]
@@ -3210,11 +3416,11 @@ async fn dispatch_for_slot(
     observer_config: &AgentObserversConfig,
     launcher_env: Vec<(String, String)>,
     render_mode: loom_render::RenderMode,
-) -> anyhow::Result<(SessionOutcome, Option<ExitSignal>)> {
+) -> anyhow::Result<loom_workflow::r#loop::AgentOutcome> {
     use loom_driver::scratch::ScratchSession;
     use loom_workflow::r#loop::{
-        LoopContextInputs, build_spawn_config_from_manifest, dolt_socket_mount, render_loop_prompt,
-        sccache_mount,
+        AgentOutcome, LoopContextInputs, build_spawn_config_from_manifest, dolt_socket_mount,
+        render_loop_prompt, sccache_mount,
     };
     use loom_workflow::skill::SkillPlan;
 
@@ -3264,7 +3470,7 @@ async fn dispatch_for_slot(
         mounts.push(spec);
     }
     let extra_env = loom_cfg.container_sccache_env();
-    let mut spawn_config = build_spawn_config_from_manifest(
+    let mut spawn_config = match build_spawn_config_from_manifest(
         manifest,
         &slot.bead,
         cli_profile,
@@ -3277,18 +3483,61 @@ async fn dispatch_for_slot(
         vec![],
         mounts,
         launcher_env,
-    )?;
+    ) {
+        Ok(config) => config,
+        Err(ProfileError::UnknownProfile { name, .. }) => {
+            drop(scratch);
+            return Ok(AgentOutcome::UnknownProfile {
+                error: format_unknown_profile_error(&name, manifest),
+            });
+        }
+        Err(ProfileError::UnknownRuntimeForProfile {
+            profile,
+            runtime,
+            declared_runtimes,
+            ..
+        }) => {
+            drop(scratch);
+            return Ok(AgentOutcome::UnknownRuntimeForProfile {
+                error: format_unknown_runtime_for_profile_error(
+                    &profile,
+                    runtime,
+                    &declared_runtimes,
+                ),
+            });
+        }
+        Err(e @ ProfileError::InvalidSpawnConfig { .. })
+        | Err(e @ ProfileError::RuntimeMetadataMismatch { .. }) => {
+            drop(scratch);
+            return Ok(AgentOutcome::StaticInfra {
+                cause: loom_workflow::r#loop::INVALID_SPAWN_CONFIG_CAUSE.to_string(),
+                error: e.to_string(),
+            });
+        }
+        Err(e) => {
+            drop(scratch);
+            return Err(e.into());
+        }
+    };
     let skill_session = skill_plan.materialize(scratch.path(), &slot.worktree.path)?;
     spawn_config.skills = Some(skill_session.registered);
 
-    let sink = open_bead_sink_with_renderer(
+    let sink = match open_bead_sink_with_renderer(
         logs_root,
         label,
         &slot.bead.id,
         render_mode,
         &slot.worktree.path,
         true,
-    )?;
+    ) {
+        Ok(sink) => sink,
+        Err(err) => {
+            drop(scratch);
+            return Ok(AgentOutcome::InfraPreflight {
+                error: format!("open log sink: {err:#}"),
+            });
+        }
+    };
     let mut output = String::new();
     let envelope_builder = build_envelope_builder(slot.bead.id.clone());
     let result = dispatch_classified(
@@ -3303,15 +3552,7 @@ async fn dispatch_for_slot(
     .await;
     drop(scratch);
     let marker = parse_exit_signal(&output);
-    match result {
-        SessionResult::Complete(outcome) => Ok((outcome, marker)),
-        SessionResult::PreflightFailed { error }
-        | SessionResult::MidSessionFailed { error }
-        | SessionResult::StaticInfra { error, .. } => Err(anyhow::anyhow!(error)),
-        SessionResult::ObserverAbort { reason } => {
-            Err(anyhow::anyhow!("Session aborted by observer: {reason}"))
-        }
-    }
+    Ok(classify_session(result, marker))
 }
 
 /// Backend-agnostic dispatcher. The match is the only place in the binary
@@ -4508,6 +4749,77 @@ mod tests {
                 opts.add_labels,
             );
         }
+    }
+
+    #[test]
+    fn parallel_infra_budget_retries_then_parks_with_attempt_metadata() {
+        let bead = BeadId::new("lm-infra").expect("valid bead id");
+        let mut budget = ParallelInfraBudget::new(InfraRetryPolicy { max_attempts: 2 });
+        let failure = BatchInfraFailure::Preflight {
+            error: "spawn eof".to_string(),
+        };
+
+        let first = budget.record(&bead, &failure);
+        match first {
+            ParallelInfraRoute::Retry { diagnostic } => {
+                assert_eq!(diagnostic.cause, "infra-preflight");
+                assert_eq!(diagnostic.attempt, Some(1));
+                assert_eq!(diagnostic.max_attempts, Some(2));
+                assert_eq!(diagnostic.first_event_seen, Some(false));
+            }
+            other => panic!("first preflight failure should retry, got {other:?}"),
+        }
+        let second = budget.record(&bead, &failure);
+        match second {
+            ParallelInfraRoute::Park { diagnostic } => {
+                assert_eq!(diagnostic.cause, "infra-preflight");
+                assert_eq!(diagnostic.attempt, Some(2));
+                assert_eq!(diagnostic.max_attempts, Some(2));
+            }
+            other => panic!("second preflight failure should park, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parallel_infra_update_pairs_status_label_and_metadata() {
+        let diagnostic = InfraDiagnostic::retryable(
+            "infra-interrupted",
+            "infra-interrupted",
+            "stream eof".to_string(),
+            2,
+            3,
+            true,
+        );
+
+        let opts = parallel_infra_update(&diagnostic);
+
+        assert_eq!(opts.status.as_deref(), Some("blocked"));
+        assert!(opts.add_labels.iter().any(|label| label == "loom:infra"));
+        assert_eq!(opts.notes.as_deref(), Some("infra-interrupted: stream eof"),);
+        assert!(opts.set_metadata.contains(&(
+            "loom.infra.cause".to_string(),
+            "infra-interrupted".to_string(),
+        )));
+        assert!(opts.set_metadata.contains(&(
+            "loom.infra.first_event_seen".to_string(),
+            "true".to_string(),
+        )));
+        assert!(
+            opts.set_metadata
+                .contains(&("loom.infra.attempt".to_string(), "2".to_string(),))
+        );
+        assert!(
+            opts.set_metadata
+                .contains(&("loom.infra.max_attempts".to_string(), "3".to_string(),))
+        );
+    }
+
+    #[test]
+    fn parallel_clear_infra_update_reopens_and_removes_label() {
+        let opts = parallel_clear_infra_update();
+
+        assert_eq!(opts.status.as_deref(), Some("open"));
+        assert!(opts.remove_labels.iter().any(|label| label == "loom:infra"),);
     }
 
     #[test]

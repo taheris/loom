@@ -10,8 +10,11 @@ use tracing::{info, warn};
 
 use super::driver_emit::BeadEmit;
 use super::error::LoopError;
-use super::outcome::AgentOutcome;
-use super::runner::{CONFLICT_RETRY_LABEL, synthesize_integration_conflict_options};
+use super::outcome::{AgentOutcome, InfraDiagnostic};
+use super::runner::{
+    CONFLICT_RETRY_LABEL, INFRA_INTERRUPTED_CAUSE, INFRA_PREFLIGHT_CAUSE, UNKNOWN_PROFILE_CAUSE,
+    UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE, synthesize_integration_conflict_options,
+};
 use super::verify::{VerifyPass, verify_pass};
 
 /// Pairing of a bead with the worktree that was created for it. Built by
@@ -31,12 +34,53 @@ pub struct BatchSlot {
     pub outcome: AgentOutcome,
 }
 
+/// Infrastructure class surfaced by the parallel merge-back path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchInfraFailure {
+    /// Pre-stream infra failure before the first canonical agent event.
+    Preflight { error: String },
+    /// Interrupted infra after at least one canonical agent event.
+    Interrupted { error: String },
+    /// Static diagnostic that cannot be repaired by transport retry.
+    Static { cause: String, error: String },
+}
+
+impl BatchInfraFailure {
+    pub const fn is_retryable(&self) -> bool {
+        matches!(self, Self::Preflight { .. } | Self::Interrupted { .. })
+    }
+
+    pub fn diagnostic(&self, attempt: u32, max_attempts: u32) -> InfraDiagnostic {
+        match self {
+            Self::Preflight { error } => InfraDiagnostic::retryable(
+                INFRA_PREFLIGHT_CAUSE,
+                "infra-preflight",
+                error.clone(),
+                attempt,
+                max_attempts,
+                false,
+            ),
+            Self::Interrupted { error } => InfraDiagnostic::retryable(
+                INFRA_INTERRUPTED_CAUSE,
+                "infra-interrupted",
+                error.clone(),
+                attempt,
+                max_attempts,
+                true,
+            ),
+            Self::Static { cause, error } => {
+                InfraDiagnostic::static_diagnostic(cause, error.clone())
+            }
+        }
+    }
+}
+
 /// Per-bead result after merge-back. Drives the bd-side cleanup the caller
 /// will perform: `Merged` → driver observes the agent's `bd close` (no
 /// driver-side close), `Conflict` → mark failed (worktree preserved),
-/// `AgentFailed` → re-queue per the retry policy, `AgentBlocked` /
-/// `AgentClarify` → apply the matching `loom:*` label with the agent's
-/// reason / question as notes.
+/// `AgentFailed` → re-queue per the retry policy, `AgentInfra` → retry or
+/// park under `loom:infra`, `AgentBlocked` / `AgentClarify` → apply the
+/// matching `loom:*` label with the agent's reason / question as notes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchResult {
     /// Agent finished cleanly and the bead branch merged into the driver
@@ -63,6 +107,14 @@ pub enum BatchResult {
     /// retry budget accounting). The per-bead-close lifecycle reaps the
     /// workspace at `bd close`.
     AgentFailed { bead: BeadId, error: String },
+
+    /// Driver-classified infrastructure failure. The bead workspace is
+    /// **preserved**; the caller owns the `[loop.infra]` budget, retry queue,
+    /// and `loom:infra` parking.
+    AgentInfra {
+        bead: BeadId,
+        failure: BatchInfraFailure,
+    },
 
     /// Agent emitted `LOOM_BLOCKED`, or a driver-side signature pass
     /// rejected the bead. The bead workspace is **preserved** for recovery;
@@ -120,6 +172,16 @@ impl BatchOutcome {
             .iter()
             .filter_map(|r| match r {
                 BatchResult::AgentBlocked { bead, reason } => Some((bead.clone(), reason.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn infra(&self) -> Vec<(BeadId, BatchInfraFailure)> {
+        self.results
+            .iter()
+            .filter_map(|r| match r {
+                BatchResult::AgentInfra { bead, failure } => Some((bead.clone(), failure.clone())),
                 _ => None,
             })
             .collect()
@@ -273,11 +335,13 @@ where
 ///   [`BatchResult::Conflict`] (caller applies the retry marker), on a
 ///   second conflict (marker present) escalate to
 ///   [`BatchResult::AgentClarify`] with the synthesized Options block.
-/// - [`AgentOutcome::Failure`] (and the other infra/profile failure
-///   variants) → **preserve** the bead workspace for recovery, delete
-///   nothing, return [`BatchResult::AgentFailed`] (the caller owns retry
-///   accounting; the per-bead-close lifecycle reaps the workspace at
-///   `bd close`).
+/// - [`AgentOutcome::Failure`] → **preserve** the bead workspace for
+///   recovery, delete nothing, return [`BatchResult::AgentFailed`] (the
+///   caller owns retry accounting; the per-bead-close lifecycle reaps the
+///   workspace at `bd close`).
+/// - Infra/profile variants → **preserve** the bead workspace and return
+///   [`BatchResult::AgentInfra`] so the caller can apply the `[loop.infra]`
+///   retry budget instead of collapsing infrastructure into semantic failure.
 pub async fn merge_back(git: &GitClient, slots: Vec<BatchSlot>) -> Result<BatchOutcome, LoopError> {
     let mut results = Vec::with_capacity(slots.len());
     for slot in slots {
@@ -500,17 +564,52 @@ async fn merge_back_one(
         // destroy an agent's partial work and force a full re-implementation
         // (`specs/harness.md` § Verdict Gate — workspace persists on all
         // failure paths).
-        AgentOutcome::Failure { error }
-        | AgentOutcome::ZeroProgress { detail: error }
-        | AgentOutcome::InfraPreflight { error }
-        | AgentOutcome::InfraMidSession { error }
-        | AgentOutcome::StaticInfra { error, .. }
-        | AgentOutcome::UnknownProfile { error }
-        | AgentOutcome::UnknownRuntimeForProfile { error } => {
+        AgentOutcome::Failure { error } | AgentOutcome::ZeroProgress { detail: error } => {
             warn!(bead = %bead.id, %error, "agent failed — worktree preserved for recovery");
             Ok(BatchResult::AgentFailed {
                 bead: bead.id,
                 error,
+            })
+        }
+        AgentOutcome::InfraPreflight { error } => {
+            warn!(bead = %bead.id, %error, "agent hit preflight infra — worktree preserved for retry");
+            Ok(BatchResult::AgentInfra {
+                bead: bead.id,
+                failure: BatchInfraFailure::Preflight { error },
+            })
+        }
+        AgentOutcome::InfraMidSession { error } => {
+            warn!(bead = %bead.id, %error, "agent hit interrupted infra — worktree preserved for retry");
+            Ok(BatchResult::AgentInfra {
+                bead: bead.id,
+                failure: BatchInfraFailure::Interrupted { error },
+            })
+        }
+        AgentOutcome::StaticInfra { cause, error } => {
+            warn!(bead = %bead.id, %cause, %error, "agent hit static infra — worktree preserved for diagnostic");
+            Ok(BatchResult::AgentInfra {
+                bead: bead.id,
+                failure: BatchInfraFailure::Static { cause, error },
+            })
+        }
+        AgentOutcome::UnknownProfile { error } => {
+            warn!(bead = %bead.id, %error, "unknown profile — worktree preserved for diagnostic");
+            Ok(BatchResult::AgentInfra {
+                bead: bead.id,
+                failure: BatchInfraFailure::Static {
+                    cause: UNKNOWN_PROFILE_CAUSE.to_string(),
+                    error,
+                },
+            })
+        }
+        AgentOutcome::UnknownRuntimeForProfile { error } => {
+            warn!(bead = %bead.id, %error, "unknown runtime for profile — worktree preserved for diagnostic");
+            Ok(BatchResult::AgentInfra {
+                bead: bead.id,
+                failure: BatchInfraFailure::Static {
+                    cause: UNKNOWN_RUNTIME_FOR_PROFILE_CAUSE.to_string(),
+                    error,
+                },
             })
         }
         AgentOutcome::Retry { reason } => {
