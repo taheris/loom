@@ -143,47 +143,24 @@ pre-commit hooks run uniformly across host and bead-container contexts.
 
 ### Marker integration
 
-`MarkerProof` is the content-addressed trust-bearing artifact defined
-in [gate.md § Marker](gate.md#marker). Lifecycle within this spec's
-scope:
+`MarkerProof` is the content-addressed trust-bearing artifact whose
+lifecycle, validation fields, mint trigger, and diagnostic
+`loom gate verify-marker` contract are canonical in
+[gate.md § Marker](gate.md#marker). This spec only binds that
+Gate-owned marker surface to the pre-push hook composition:
 
-1. Driver-side push gate fetches origin, rebases local integration
-   commits if needed, resolves the actual push range
-   `origin/<integration-branch>..HEAD`, and runs the actual prek
-   pre-push chain for that range inside the `index.lock` critical
-   section. The chain includes the canonical
-   `loom gate verify --diff <push-range>` hook, which emits the typed
-   deterministic evidence.
-2. On deterministic success, the driver runs
-   `loom gate review --diff <push-range>` for the same range.
-3. On typed `GateSuccess`, the verdict gate mints `MarkerProof` and
-   atomically writes it to `.loom/marker.json` in the loom workspace.
-4. The loom workspace runs `git push origin <integration-branch>` —
-   still inside the critical section.
-5. prek's pre-push chain fires for the push. Each hook entry routes
-   through the `pre-push-checks` wrapper, which validates the marker's
-   workspace fingerprint and hook coverage for the current hook. On
-   covered match the wrapper exits 0 without execing the underlying
-   command. On marker absent, mismatch, dirty tree, config/range drift,
-   missing evidence, or uncovered hook, the wrapper falls through and
-   execs the underlying command.
-
-There is no standalone `loom gate verify-marker` prek hook. The
-binary stays as a callable subcommand (used by the wrapper, available
-for diagnostic invocation), but registering it as its own gating
-first hook would block operator-manual pushes — the wrapper is the
-sole hook-chain consumer of the marker, and "no marker" is a normal
-operator-push condition the wrapper handles by falling through, not a
-failure that should stop the push.
-
-Operator-manual pushes from the operator's `/workspace` clone have no
-`MarkerProof` (different clone — the verdict gate never wrote a marker
-there). The wrapper's marker check returns "no valid marker", and
-because the wrapper treats that as fall-through (not failure), prek's
-pre-push chain runs the configured hooks against the operator's host
-cache. No `--no-verify` is required — the operator-manual push is a
-first-class, supported path that pays the targeted hook chain exactly
-once per push.
+- The driver push gate runs the configured pre-push chain for the
+  actual push range before Gate mints a marker.
+- Each pre-push hook entry in `.pre-commit-config.yaml` invokes the
+  repo-local `bin/pre-push-checks` wrapper with stable `--hook-id` and
+  `--hook-entry` metadata. The wrapper asks Gate to validate the marker
+  for the current hook and short-circuits only on covered success;
+  marker absence, mismatch, dirty tree, config/range drift, missing
+  evidence, or uncovered hooks fall through to the underlying command.
+- `.pre-commit-config.yaml` does not register `loom gate verify-marker`
+  as a standalone hook. That subcommand remains a diagnostic and wrapper
+  dependency per Gate; marker absence is a fall-through condition for
+  operator pushes, not a hook failure.
 
 ### Plumbing (owned upstream)
 
@@ -319,12 +296,12 @@ declared as such.
 - Each pre-push hook entry routes through the repo-local
   `bin/pre-push-checks` wrapper so marker coverage can be checked per
   hook without relying on ambient PATH
-  [check](grep -q 'bin/pre-push-checks' .pre-commit-config.yaml)
+  [check](cargo run -p loom-walk -- pre_push_config_marker_wrapper_contract)
 - Hooks whose entry runs `nix` are wrapped with
   `skip-if-missing nix --` so they no-op in the bead container
   (which has no `nix`) while running normally on the host devShell
   and in CI
-  [check](grep -q 'skip-if-missing nix --' .pre-commit-config.yaml)
+  [check](cargo run -p loom-walk -- pre_push_config_marker_wrapper_contract)
 - The pre-push stage runs `loom gate verify --diff` against the pushed
   range; scope-derived gate policy excludes `[system]` by default and
   project-specific hook selection stays in `.pre-commit-config.yaml`

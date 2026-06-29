@@ -2651,6 +2651,7 @@ dependencies = [
  "proc-macro2",
  "serde",
  "serde_json",
+ "shlex",
  "syn",
  "tempfile",
  "thiserror",

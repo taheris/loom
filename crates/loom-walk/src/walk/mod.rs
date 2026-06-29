@@ -58,6 +58,7 @@ mod no_tokio_timeout_outside_clock;
 mod no_types_or_error_files;
 mod observers_in_loom_llm;
 mod phase_verdict_decide_called_from_production;
+mod pre_push_config_marker_wrapper_contract;
 mod public_contract_crates;
 mod renderer_no_insta_dependency;
 mod result_hasher_single_call_site;
@@ -310,6 +311,10 @@ pub static REGISTRY: &[Walk] = &[
         run: phase_verdict_decide_called_from_production::run,
     },
     Walk {
+        name: "pre_push_config_marker_wrapper_contract",
+        run: pre_push_config_marker_wrapper_contract::run,
+    },
+    Walk {
         name: "public_contract_crates",
         run: public_contract_crates::run,
     },
@@ -446,6 +451,7 @@ mod tests {
             "no_panics_in_production",
             "observers_in_loom_llm",
             "phase_verdict_decide_called_from_production",
+            "pre_push_config_marker_wrapper_contract",
             "public_contract_crates",
             "result_hasher_single_call_site",
             "session_trait_does_not_expose_typestate",

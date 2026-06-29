@@ -69,6 +69,7 @@ let
     "nix/flake" = "${src}/nix/flake";
     "nix/workspace.nix" = "${src}/nix/workspace.nix";
     "scripts" = "${src}/scripts";
+    "bin/pre-push-checks" = "${src}/bin/pre-push-checks";
     ".pre-commit-config.yaml" = "${src}/.pre-commit-config.yaml";
   };
 

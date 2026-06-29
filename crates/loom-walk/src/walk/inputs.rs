@@ -166,6 +166,7 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
             root.join("crates/loom-workflow/src/loop/production.rs"),
             root.join("crates/loom-workflow/src/review/production.rs"),
         ],
+        "pre_push_config_marker_wrapper_contract" => vec![root.join(".pre-commit-config.yaml")],
         "session_trait_in_loom_events" => {
             let mut out = vec![root.join("crates/loom-events/src/lib.rs")];
             out.extend(rs_files_recursive(&root.join("crates/loom-driver/src")));
@@ -339,6 +340,16 @@ mod tests {
         assert_eq!(
             inputs_for("loom_llm_deps", &root),
             vec![manifest(&root, "loom-llm")]
+        );
+    }
+
+    /// A walk reading the pre-push hook config reports exactly that file.
+    #[test]
+    fn pre_push_config_walk_reports_pre_commit_config() {
+        let root = workspace_root();
+        assert_eq!(
+            rel_inputs("pre_push_config_marker_wrapper_contract", &root),
+            vec![".pre-commit-config.yaml".to_string()],
         );
     }
 

@@ -399,6 +399,48 @@ mod tests {
     const HOOK_ENTRY: &str = "loom gate verify --diff @{u}..HEAD";
     const PUSH_RANGE: &str = "origin/main..HEAD";
 
+    static LOOM_CLI_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
+    fn run_verify_marker_cli(workspace: &Path) -> std::process::Output {
+        let _guard = LOOM_CLI_LOCK.lock().expect("loom cli lock");
+        match std::env::var_os("CARGO_BIN_EXE_loom") {
+            Some(bin) => Cmd::new(bin)
+                .args(["gate", "verify-marker"])
+                .current_dir(workspace)
+                .output()
+                .expect("spawn loom gate verify-marker"),
+            None => Cmd::new("cargo")
+                .args(["run", "--quiet", "--manifest-path"])
+                .arg(repo_root().join("Cargo.toml"))
+                .args(["-p", "loom", "--bin", "loom", "--", "gate", "verify-marker"])
+                .current_dir(workspace)
+                .output()
+                .expect("spawn cargo run -p loom gate verify-marker"),
+        }
+    }
+
+    fn assert_cli_failed_with(output: &std::process::Output, expected: &str) {
+        assert!(
+            !output.status.success(),
+            "verify-marker CLI must fail. stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(expected),
+            "verify-marker CLI stderr must contain {expected:?}. stderr={stderr:?}",
+        );
+    }
+
     fn init_test_workspace() -> TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         loom_driver::git::init_test_repo(dir.path()).expect("init test repo");
@@ -463,10 +505,14 @@ mod tests {
         let workspace = dir.path();
         let marker = marker_for_workspace(workspace);
         write_marker_at(workspace, &marker);
-        let result = verify_marker(workspace);
+
+        let output = run_verify_marker_cli(workspace);
+
         assert!(
-            result.is_ok(),
-            "verify-marker must succeed for matching marker: {result:?}",
+            output.status.success(),
+            "verify-marker CLI must succeed for matching marker. stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
     }
 
@@ -474,11 +520,10 @@ mod tests {
     fn verify_marker_exits_nonzero_on_missing() {
         let dir = init_test_workspace();
         let workspace = dir.path();
-        let result = verify_marker(workspace);
-        match result {
-            Err(MarkerError::MissingMarker { .. }) => {}
-            other => panic!("expected MissingMarker, got {other:?}"),
-        }
+
+        let output = run_verify_marker_cli(workspace);
+
+        assert_cli_failed_with(&output, "marker file not present");
     }
 
     #[test]
@@ -489,11 +534,10 @@ mod tests {
         marker.tree_oid =
             GitOid::new("deadbeefcafe1234567890abcdef0123456789ab").expect("tree oid");
         write_marker_at(workspace, &marker);
-        let result = verify_marker(workspace);
-        match result {
-            Err(MarkerError::FingerprintMismatch { .. }) => {}
-            other => panic!("expected FingerprintMismatch, got {other:?}"),
-        }
+
+        let output = run_verify_marker_cli(workspace);
+
+        assert_cli_failed_with(&output, "does not match marker");
     }
 
     #[test]
@@ -503,11 +547,10 @@ mod tests {
         let marker = marker_for_workspace(workspace);
         write_marker_at(workspace, &marker);
         std::fs::write(workspace.join("README.md"), "dirty contents\n").expect("dirty edit");
-        let result = verify_marker(workspace);
-        match result {
-            Err(MarkerError::PorcelainDirty) => {}
-            other => panic!("expected PorcelainDirty, got {other:?}"),
-        }
+
+        let output = run_verify_marker_cli(workspace);
+
+        assert_cli_failed_with(&output, "workspace porcelain is not clean");
     }
 
     #[test]
@@ -586,11 +629,16 @@ mod tests {
         std::fs::set_permissions(&path, perm).expect("chmod");
     }
 
-    fn pre_push_checks_available() -> bool {
-        Cmd::new("pre-push-checks")
-            .arg("nonexistent-command-zzz")
-            .output()
-            .is_ok()
+    fn install_repo_pre_push_checks(workspace: &Path) {
+        let source = repo_root().join("bin/pre-push-checks");
+        let dest = workspace.join("bin/pre-push-checks");
+        std::fs::create_dir_all(dest.parent().expect("wrapper parent")).expect("mkdir bin");
+        std::fs::copy(&source, &dest).expect("copy repo-local pre-push-checks");
+        let mut perm = std::fs::metadata(&dest)
+            .expect("stat wrapper")
+            .permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&dest, perm).expect("chmod wrapper");
     }
 
     fn seed_marker(workspace: &Path) {
@@ -612,7 +660,8 @@ mod tests {
         let mut entries = vec![bin_dir.to_path_buf()];
         entries.extend(std::env::split_paths(&path_var));
         let new_path = std::env::join_paths(entries).expect("join PATH");
-        let mut command = Cmd::new("pre-push-checks");
+        install_repo_pre_push_checks(workspace);
+        let mut command = Cmd::new("bin/pre-push-checks");
         command
             .args([
                 "--hook-id",
@@ -634,10 +683,6 @@ mod tests {
 
     #[test]
     fn pre_push_checks_short_circuits_on_valid_marker() {
-        if !pre_push_checks_available() {
-            eprintln!("pre-push-checks not on PATH; skipping");
-            return;
-        }
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path();
         seed_marker(workspace);
@@ -671,10 +716,6 @@ mod tests {
     /// A regression here forces operators to `--no-verify` to land work.
     #[test]
     fn pre_push_checks_falls_through_on_missing_marker() {
-        if !pre_push_checks_available() {
-            eprintln!("pre-push-checks not on PATH; skipping");
-            return;
-        }
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path();
         assert!(
@@ -705,10 +746,6 @@ mod tests {
 
     #[test]
     fn pre_push_checks_scrubs_git_hook_env_before_fallthrough() {
-        if !pre_push_checks_available() {
-            eprintln!("pre-push-checks not on PATH; skipping");
-            return;
-        }
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path();
         let bin_dir = workspace.join("bin");
@@ -748,10 +785,6 @@ mod tests {
 
     #[test]
     fn pre_push_checks_falls_through_on_invalid_marker() {
-        if !pre_push_checks_available() {
-            eprintln!("pre-push-checks not on PATH; skipping");
-            return;
-        }
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path();
         seed_marker(workspace);
@@ -787,10 +820,6 @@ mod tests {
     /// to, against a real git workspace and the real mint code path.
     #[test]
     fn mint_and_pre_push_checks_short_circuit_joint_path() {
-        if !pre_push_checks_available() {
-            eprintln!("pre-push-checks not on PATH; skipping");
-            return;
-        }
         let dir = init_test_workspace();
         let workspace = dir.path();
         let (_log, success) = good_gate_success(workspace);
