@@ -1037,8 +1037,8 @@ the entrypoint run the wrong runtime.
   [test](pi_overflow_retry_waits_for_effective_repin)
 - Pi backend handles malformed JSONL gracefully (logs warning, continues)
   [test](malformed_json_returns_invalid_json_error)
-- Pi backend logs extension_ui_request at debug level without responding
-  [test](extension_ui_notify_leaves_response_none)
+- Pi backend replies with a cancelled extension_ui_response for extension UI methods that require a host response
+  [test](extension_ui_select_yields_auto_cancel_response)
 
 ### Claude backend
 

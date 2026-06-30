@@ -79,13 +79,13 @@ if ! load_out=$("$sandbox_image" | podman "${podman_args[@]}" load 2>&1); then
     exit 1
 fi
 
-ref=$(printf '%s\n' "$load_out" | sed -nE 's/^Loaded image: (.+)$/\1/p' | head -n1)
+ref=$(printf '%s\n' "$load_out" | sed -nE 's/^Loaded image: (.+)$/\1/p; s/^Loaded image\(s\): (.+)$/\1/p' | head -n1)
 if [[ -z "$ref" ]]; then
     printf 'test-sandbox: could not parse image ref from podman load output:\n%s\n' "$load_out" >&2
     exit 1
 fi
 
-if ! run_out=$(podman "${podman_args[@]}" run --rm --network=none --cgroups=disabled --entrypoint=/bin/bash "$ref" -c 'set -euo pipefail; pi --version >/dev/null' 2>&1); then
+if ! run_out=$(podman "${podman_args[@]}" run --rm --network=none --cgroups=disabled --entrypoint=/bin/bash "$ref" -lc 'set -euo pipefail; pi --version >/dev/null' 2>&1); then
     if is_unsupported_container_runtime_error "$run_out"; then
         skip_unsupported_container_runtime "$run_out"
     fi

@@ -474,6 +474,13 @@ fn parse_ui_request(req: PiUiRequest) -> Result<ParsedLine, ProtocolError> {
     })
 }
 
+fn encode_prompt_cycle(msg: &str) -> Result<String, ProtocolError> {
+    encode_command(&PromptCommand {
+        kind: "prompt",
+        message: msg,
+    })
+}
+
 impl LineParse for PiParser {
     fn parse_line(&self, line: &str) -> Result<ParsedLine, ProtocolError> {
         let env: PiEnvelope = match serde_json::from_str(line) {
@@ -516,10 +523,7 @@ impl LineParse for PiParser {
     }
 
     fn encode_prompt(&self, msg: &str) -> Result<String, ProtocolError> {
-        encode_command(&PromptCommand {
-            kind: "prompt",
-            message: msg,
-        })
+        encode_prompt_cycle(msg)
     }
 
     fn encode_steer(&self, msg: &str) -> Result<String, ProtocolError> {
@@ -530,13 +534,7 @@ impl LineParse for PiParser {
     }
 
     fn encode_follow_up(&self, msg: &str) -> Result<String, ProtocolError> {
-        // The inbox bridge asks after `agent_end`, when Pi is idle. The
-        // RPC `follow_up` verb only queues work for an active prompt loop;
-        // an idle human reply must start the next prompt cycle.
-        encode_command(&PromptCommand {
-            kind: "prompt",
-            message: msg,
-        })
+        encode_prompt_cycle(msg)
     }
 
     fn encode_abort(&self) -> Result<Option<String>, ProtocolError> {

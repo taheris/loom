@@ -119,12 +119,23 @@ fi
 
 prompt="${{!#}}"
 
+map_workspace_path() {{
+    local path="$1"
+    local workspace="$2"
+    if [[ "$path" == /workspace/* ]]; then
+        printf '%s/%s' "$workspace" "${{path#/workspace/}}"
+    else
+        printf '%s' "$path"
+    fi
+}}
+
 if [[ -n "${{WRIX_STUB_PROMPT_DUMP:-}}" ]]; then
     printf '%s' "$prompt" > "$WRIX_STUB_PROMPT_DUMP"
 fi
 
 if [[ "${{3:-}}" == "pi" ]]; then
     session_dir=""
+    extension_path=""
     previous=""
     for arg in "$@"; do
         if [[ "$previous" == "--session-dir" ]]; then
@@ -132,13 +143,39 @@ if [[ "${{3:-}}" == "pi" ]]; then
             previous=""
             continue
         fi
+        if [[ "$previous" == "-e" ]]; then
+            extension_path="$arg"
+            previous=""
+            continue
+        fi
         previous="$arg"
     done
-    if [[ -n "$session_dir" ]]; then
-        workspace="${{2:?}}"
-        if [[ "$session_dir" == /workspace/* ]]; then
-            session_dir="$workspace/${{session_dir#/workspace/}}"
+    workspace="${{2:?}}"
+    if [[ -n "$extension_path" ]]; then
+        host_extension_path="$(map_workspace_path "$extension_path" "$workspace")"
+        extension_exists=0
+        extension_has_context_hook=0
+        extension_has_prompt_read=0
+        extension_has_scratchpad_read=0
+        if [[ -f "$host_extension_path" ]]; then
+            extension_exists=1
+            if grep -q 'pi.on("context"' "$host_extension_path"; then
+                extension_has_context_hook=1
+            fi
+            if grep -q 'readRequiredText(promptPath, "prompt")' "$host_extension_path"; then
+                extension_has_prompt_read=1
+            fi
+            if grep -q 'readRequiredText(scratchpadPath, "scratchpad")' "$host_extension_path"; then
+                extension_has_scratchpad_read=1
+            fi
         fi
+        printf 'WRIX_PI_EXTENSION_EXISTS=%s\n' "$extension_exists" >> "$env_log"
+        printf 'WRIX_PI_EXTENSION_CONTEXT_HOOK=%s\n' "$extension_has_context_hook" >> "$env_log"
+        printf 'WRIX_PI_EXTENSION_PROMPT_READ=%s\n' "$extension_has_prompt_read" >> "$env_log"
+        printf 'WRIX_PI_EXTENSION_SCRATCHPAD_READ=%s\n' "$extension_has_scratchpad_read" >> "$env_log"
+    fi
+    if [[ -n "$session_dir" ]]; then
+        session_dir="$(map_workspace_path "$session_dir" "$workspace")"
         mkdir -p "$session_dir"
         printf '%s\n' '{{"message":{{"role":"assistant","content":[{{"type":"text","text":"LOOM_COMPLETE"}}]}}}}' > "$session_dir/0001.jsonl"
     fi
@@ -196,7 +233,7 @@ case "$mode" in
         ;;
 esac
 
-marker="${{WRIX_STUB_MARKER:-LOOM_COMPLETE}}"
+marker="${{WRIX_STUB_MARKER-LOOM_COMPLETE}}"
 if [[ -n "$marker" ]]; then
     printf '%s\n' "$marker"
 fi
@@ -637,7 +674,7 @@ fn inbox_chat_pi_tty_uses_native_wrix_run_with_inherited_stdio() {
         &["loom:blocked"],
     );
 
-    let output = run_chat_in_pty(&env, "resolve-none", &[], &[]);
+    let output = run_chat_in_pty(&env, "resolve-none", &[], &[("WRIX_STUB_MARKER", "")]);
     assert!(
         output.status.success(),
         "stdout={} stderr={}",
@@ -658,10 +695,25 @@ fn inbox_chat_pi_tty_uses_native_wrix_run_with_inherited_stdio() {
         !lines.contains(&"--stdio"),
         "native pi TUI must not use stdio RPC: {argv}"
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("LOOM_COMPLETE"), "{stdout}");
     let env_log = std::fs::read_to_string(&env.env_log).expect("env log");
     assert!(env_log.contains("WRIX_AGENT=pi"), "{env_log}");
     assert!(env_log.contains("WRIX_STDIN_TTY=1"), "{env_log}");
     assert!(env_log.contains("WRIX_STDOUT_TTY=1"), "{env_log}");
+    assert!(env_log.contains("WRIX_PI_EXTENSION_EXISTS=1"), "{env_log}");
+    assert!(
+        env_log.contains("WRIX_PI_EXTENSION_CONTEXT_HOOK=1"),
+        "{env_log}"
+    );
+    assert!(
+        env_log.contains("WRIX_PI_EXTENSION_PROMPT_READ=1"),
+        "{env_log}"
+    );
+    assert!(
+        env_log.contains("WRIX_PI_EXTENSION_SCRATCHPAD_READ=1"),
+        "{env_log}"
+    );
 }
 
 #[test]
