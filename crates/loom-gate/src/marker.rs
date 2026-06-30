@@ -816,8 +816,9 @@ mod tests {
         entries.extend(std::env::split_paths(&path_var));
         let new_path = std::env::join_paths(entries).expect("join PATH");
         install_repo_pre_push_checks(workspace);
-        let mut command = Cmd::new("bin/pre-push-checks");
+        let mut command = Cmd::new("bash");
         command
+            .arg("bin/pre-push-checks")
             .args([
                 "--hook-id",
                 HOOK_ID,
