@@ -8,9 +8,9 @@ pub use super::time::format_utc_timestamp;
 /// Resolve the per-bead JSONL log path under
 /// `<logs_root>/<spec-label>/<bead-id>-<utc-timestamp>.jsonl`.
 ///
-/// `logs_root` is typically `<workspace>/.loom/logs`. Per-bead — not
-/// per-session — so concurrent batches never interleave inside a single file
-/// (see `specs/harness.md` *Run UX & Logging*).
+/// `logs_root` is typically `<workspace>/.loom/logs`. The base path carries
+/// the bead id plus timestamp; `LogSink` adds a collision suffix when a retry
+/// claims the same timestamp.
 ///
 /// The function is pure: it does not create directories or files. Callers
 /// (`LogSink::open_in`) handle directory creation.

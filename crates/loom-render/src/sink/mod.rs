@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -15,6 +16,25 @@ pub use error::LogError;
 use crate::clock::{Clock, SystemClock};
 use crate::path::{bead_log_path, phase_log_path};
 use crate::renderer::{BeadOutcome, Renderer};
+
+const MAX_LOG_PATH_COLLISIONS: u16 = 1000;
+
+fn suffixed_log_path(base: &Path, suffix: u16) -> PathBuf {
+    if suffix == 0 {
+        return base.to_path_buf();
+    }
+    let mut file_name = base.file_stem().map_or_else(OsString::new, OsString::from);
+    file_name.push("_");
+    file_name.push(suffix.to_string());
+    if let Some(extension) = base.extension() {
+        file_name.push(".");
+        file_name.push(extension);
+    }
+    match base.parent() {
+        Some(parent) => parent.join(&file_name),
+        None => PathBuf::from(file_name),
+    }
+}
 
 /// Tee-style sink that drives the per-bead JSONL log file *and* the
 /// [`TerminalRenderer`] from the same `emit` call.
@@ -35,10 +55,10 @@ pub struct LogSink {
 
 impl LogSink {
     /// Open a per-bead sink under
-    /// `<logs_root>/<spec-label>/<bead-id>-<utc>.jsonl`. `renderer` is
-    /// optional so non-interactive callers (the run/parallel dispatch closure
-    /// in the binary) can write only the on-disk JSONL without instantiating
-    /// a `TerminalRenderer`.
+    /// `<logs_root>/<spec-label>/<bead-id>-<utc>.jsonl`. If another spawn
+    /// already claimed that timestamp, a numeric suffix is added before the
+    /// extension. `renderer` is optional so non-interactive callers can write
+    /// only the on-disk JSONL without instantiating a `TerminalRenderer`.
     pub fn open_in_at(
         logs_root: &Path,
         spec_label: &SpecLabel,
@@ -46,13 +66,13 @@ impl LogSink {
         renderer: Option<Box<dyn Renderer>>,
         when: SystemTime,
     ) -> Result<Self, LogError> {
-        let log_path = bead_log_path(logs_root, spec_label, bead_id, when);
-        let sink = Self::open_at_path(log_path.clone(), renderer)?;
+        let base_path = bead_log_path(logs_root, spec_label, bead_id, when);
+        let sink = Self::open_unique_at_path(base_path, renderer)?;
         info!(
             target: "loom_driver::logging::sink",
             spec_label = spec_label.as_str(),
             bead_id = bead_id.as_str(),
-            log_path = %log_path.display(),
+            log_path = %sink.log_path.display(),
             "spawn started — log path",
         );
         Ok(sink)
@@ -74,7 +94,7 @@ impl LogSink {
         when: SystemTime,
     ) -> Result<Self, LogError> {
         let log_path = phase_log_path(logs_root, spec_label, phase, when);
-        let sink = Self::open_at_path(log_path.clone(), renderer)?;
+        let sink = Self::open_append_at_path(log_path.clone(), renderer)?;
         info!(
             target: "loom_driver::logging::sink",
             spec_label = spec_label.as_str(),
@@ -92,19 +112,45 @@ impl LogSink {
     /// from `(label, bead_id, when)`, so the sink-construction helper
     /// must accept the resolved path verbatim.
     pub fn open_at_path_append(log_path: &Path) -> Result<Self, LogError> {
-        Self::open_at_path(log_path.to_path_buf(), None)
+        Self::open_append_at_path(log_path.to_path_buf(), None)
     }
 
-    fn open_at_path(
+    fn open_unique_at_path(
+        log_path: PathBuf,
+        mut renderer: Option<Box<dyn Renderer>>,
+    ) -> Result<Self, LogError> {
+        Self::create_parent_dir(&log_path)?;
+        for suffix in 0..MAX_LOG_PATH_COLLISIONS {
+            let candidate = suffixed_log_path(&log_path, suffix);
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => return Ok(Self::from_file(candidate, file, renderer.take())),
+                Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(source) => {
+                    return Err(LogError::OpenFile {
+                        path: candidate,
+                        source,
+                    });
+                }
+            }
+        }
+        Err(LogError::OpenFile {
+            path: log_path,
+            source: std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "could not allocate unique log path",
+            ),
+        })
+    }
+
+    fn open_append_at_path(
         log_path: PathBuf,
         renderer: Option<Box<dyn Renderer>>,
     ) -> Result<Self, LogError> {
-        if let Some(dir) = log_path.parent() {
-            fs::create_dir_all(dir).map_err(|source| LogError::CreateDir {
-                path: dir.to_path_buf(),
-                source,
-            })?;
-        }
+        Self::create_parent_dir(&log_path)?;
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -113,14 +159,28 @@ impl LogSink {
                 path: log_path.clone(),
                 source,
             })?;
+        Ok(Self::from_file(log_path, file, renderer))
+    }
+
+    fn create_parent_dir(log_path: &Path) -> Result<(), LogError> {
+        if let Some(dir) = log_path.parent() {
+            fs::create_dir_all(dir).map_err(|source| LogError::CreateDir {
+                path: dir.to_path_buf(),
+                source,
+            })?;
+        }
+        Ok(())
+    }
+
+    fn from_file(log_path: PathBuf, file: File, renderer: Option<Box<dyn Renderer>>) -> Self {
         let clock = SystemClock::new();
-        Ok(Self {
+        Self {
             file: BufWriter::new(file),
             renderer,
             log_path,
             started: clock.now(),
             finished: false,
-        })
+        }
     }
 
     /// Write `event` to the on-disk JSONL log AND drive the terminal
@@ -370,6 +430,48 @@ mod tests {
         )
         .expect("open");
         assert!(sink.log_path().parent().expect("parent").is_dir());
+    }
+
+    #[test]
+    fn same_second_bead_spawns_allocate_distinct_log_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let logs = dir.path().join(".loom/logs");
+        let label = SpecLabel::new("alpha");
+        let bead = BeadId::new("lm-1").expect("valid bead id");
+        let when = SystemTime::UNIX_EPOCH;
+        let (mut first, _) =
+            open_sink_with_sink_writer(&logs, &label, &bead, when).expect("open first");
+        let (mut second, _) =
+            open_sink_with_sink_writer(&logs, &label, &bead, when).expect("open second");
+        assert_ne!(first.log_path(), second.log_path());
+        assert_eq!(
+            second.log_path().file_name().and_then(|name| name.to_str()),
+            Some("lm-1-19700101T000000Z_1.jsonl"),
+        );
+
+        first
+            .emit(&AgentEvent::TextDelta {
+                envelope: sample_envelope(),
+                text: "first".to_string(),
+            })
+            .expect("emit first");
+        second
+            .emit(&AgentEvent::TextDelta {
+                envelope: sample_envelope(),
+                text: "second".to_string(),
+            })
+            .expect("emit second");
+        let first_path = first.log_path().to_path_buf();
+        let second_path = second.log_path().to_path_buf();
+        first.finish(BeadOutcome::Done).expect("finish first");
+        second.finish(BeadOutcome::Done).expect("finish second");
+
+        let first_body = std::fs::read_to_string(first_path).expect("read first");
+        let second_body = std::fs::read_to_string(second_path).expect("read second");
+        assert!(first_body.contains("first"), "{first_body}");
+        assert!(!first_body.contains("second"), "{first_body}");
+        assert!(second_body.contains("second"), "{second_body}");
+        assert!(!second_body.contains("first"), "{second_body}");
     }
 
     /// `LogSink` is the trait's first implementor: events emitted via the

@@ -672,17 +672,7 @@ fn loom_loop_bead_writes_per_bead_jsonl_log() {
 
     let shim_dir = workspace.join("shim");
     std::fs::create_dir_all(&shim_dir).unwrap();
-    let argv_file = shim_dir.join("argv.txt");
-    let stdin_info = shim_dir.join("stdin-info.txt");
-    let spawn_copy = shim_dir.join("spawn-config.json");
-    let shim = install_wrix_shim(
-        &shim_dir,
-        &argv_file,
-        &stdin_info,
-        &spawn_copy,
-        &mock_pi_path(),
-        "happy-path",
-    );
+    let shim = install_wrix_commit_shim(&shim_dir, &mock_pi_path());
 
     let bead_json = r#"[{"id":"lm-runtest","title":"run gate bead","description":"","status":"open","priority":2,"issue_type":"task","labels":["spec:agent","profile:base"]}]"#;
     let bd_bin_dir = install_bd_bead_stub(workspace, bead_json);
