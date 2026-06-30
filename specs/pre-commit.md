@@ -358,12 +358,12 @@ declared as such.
 - The `pre-push-checks` wrapper exits 0 without execing its argument
   command only when marker validation proves matching tree/config/range
   and hook coverage for the wrapped hook id/entry
-  [test?](marker::tests::pre_push_checks_short_circuits_only_on_covered_marker)
+  [test](marker::tests::pre_push_checks_short_circuits_only_on_covered_marker)
 - The `pre-push-checks` wrapper execs its argument command when marker
   validation fails because the marker is stale, dirty, config/range-
   mismatched, missing gate-log evidence, or does not cover the wrapped
   hook
-  [test?](marker::tests::pre_push_checks_falls_through_on_uncovered_or_invalid_marker)
+  [test](marker::tests::pre_push_checks_falls_through_on_uncovered_or_invalid_marker)
 - The `pre-push-checks` wrapper execs its argument command (does not
   fail the push) when the marker file is absent, so operator-manual
   pushes from a clone with no `.loom/marker.json` progress through the

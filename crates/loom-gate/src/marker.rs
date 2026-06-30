@@ -15,10 +15,11 @@
 //! produce a `GateSuccess`.
 //!
 //! The verify path ([`MarkerProof::read_and_validate`]) deserialises the
-//! marker, asserts the workspace porcelain is clean, and matches the
-//! marker's tree OID against `HEAD`'s tree OID. A returned `Ok` value
-//! corresponds to "the gate ran AND the workspace still matches at the
-//! moment this value was constructed" by construction.
+//! marker, asserts the workspace porcelain is clean, matches the marker's
+//! tree OID against `HEAD`'s tree OID, and checks the referenced gate-log
+//! evidence still proves the recorded verify/review scopes. A returned
+//! `Ok` value corresponds to "the gate ran AND the workspace still matches
+//! at the moment this value was constructed" by construction.
 
 use std::fs;
 use std::io;
@@ -31,11 +32,14 @@ use loom_driver::git::{self, GitError as DriverGitError, GitOid};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::gate_outcome::{GateSuccess, HookCoverage};
+use crate::gate_outcome::{
+    GateRun, GateSuccess, HookCoverage, ReviewedScope, VerifiedScope, parse_gate_runs_from_jsonl,
+    scope_fingerprint,
+};
 
 /// Marker schema version this binary understands. Higher versions are
 /// rejected with `MarkerError::UnsupportedSchema`.
-const CURRENT_VERSION: u32 = 2;
+const CURRENT_VERSION: u32 = 3;
 
 /// Canonical marker location relative to the workspace root, per
 /// `specs/gate.md` § Marker — *File location and lifecycle*.
@@ -57,6 +61,8 @@ pub struct MarkerProof {
     covered_hooks: Vec<HookCoverage>,
     verified_scope_fingerprint: String,
     reviewed_scope_fingerprint: String,
+    #[serde(default)]
+    gate_log_paths: Vec<PathBuf>,
     minted_at_ms: u128,
 }
 
@@ -113,6 +119,7 @@ impl MarkerProof {
             covered_hooks: success.pre_push.hooks,
             verified_scope_fingerprint: success.pre_push.verified_scope_fingerprint,
             reviewed_scope_fingerprint: success.pre_push.reviewed_scope_fingerprint,
+            gate_log_paths: success.gate_log_paths,
             minted_at_ms,
         })
     }
@@ -161,7 +168,8 @@ impl MarkerProof {
     /// current tree fingerprint.
     ///
     /// Returns `Ok` iff the marker's tree OID matches `HEAD`'s tree OID,
-    /// porcelain is clean, and the schema version is supported.
+    /// porcelain is clean, the schema version is supported, and the
+    /// referenced gate-log evidence still proves the recorded scopes.
     pub fn read_and_validate(path: &Path, workspace: &Path) -> Result<Self, MarkerError> {
         let bytes = fs::read(path).map_err(|source| match source.kind() {
             io::ErrorKind::NotFound => MarkerError::MissingMarker {
@@ -202,9 +210,11 @@ impl MarkerProof {
         if marker.covered_hooks.is_empty()
             || marker.verified_scope_fingerprint.is_empty()
             || marker.reviewed_scope_fingerprint.is_empty()
+            || marker.gate_log_paths.is_empty()
         {
             return Err(MarkerError::ScopeEvidenceMissing);
         }
+        marker.validate_gate_log_evidence(workspace)?;
         Ok(marker)
     }
 
@@ -229,6 +239,61 @@ impl MarkerProof {
             });
         }
         Ok(marker)
+    }
+
+    fn validate_gate_log_evidence(&self, workspace: &Path) -> Result<(), MarkerError> {
+        let runs = self.gate_log_runs(workspace)?;
+        let tree_oid = self.tree_oid.to_string();
+        let verified = runs
+            .iter()
+            .any(|run| self.matches_verified_run(run, &tree_oid));
+        if !verified {
+            return Err(MarkerError::GateLogEvidenceMismatch {
+                reason: "verified scope".to_owned(),
+            });
+        }
+        let reviewed = runs
+            .iter()
+            .any(|run| self.matches_reviewed_run(run, &tree_oid));
+        if !reviewed {
+            return Err(MarkerError::GateLogEvidenceMismatch {
+                reason: "reviewed scope".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn gate_log_runs(&self, workspace: &Path) -> Result<Vec<GateRun>, MarkerError> {
+        let mut runs = Vec::new();
+        for path in &self.gate_log_paths {
+            let resolved = workspace_path(workspace, path);
+            if !resolved.is_file() {
+                return Err(MarkerError::GateLogEvidenceMissing { path: resolved });
+            }
+            let mut parsed = parse_gate_runs_from_jsonl(&resolved);
+            if parsed.is_empty() {
+                return Err(MarkerError::GateLogEvidenceMissing { path: resolved });
+            }
+            runs.append(&mut parsed);
+        }
+        Ok(runs)
+    }
+
+    fn matches_verified_run(&self, run: &GateRun, tree_oid: &str) -> bool {
+        VerifiedScope::from_run(run).is_some()
+            && run.push_range.as_str() == self.push_range.as_str()
+            && run.tree_oid.as_str() == tree_oid
+            && run.config_digest.as_str() == self.pre_commit_config_digest.as_str()
+            && run.covered_hooks.as_slice() == self.covered_hooks.as_slice()
+            && scope_fingerprint(run).as_str() == self.verified_scope_fingerprint.as_str()
+    }
+
+    fn matches_reviewed_run(&self, run: &GateRun, tree_oid: &str) -> bool {
+        ReviewedScope::from_run(run).is_some()
+            && run.push_range.as_str() == self.push_range.as_str()
+            && run.tree_oid.as_str() == tree_oid
+            && run.config_digest.as_str() == self.pre_commit_config_digest.as_str()
+            && scope_fingerprint(run).as_str() == self.reviewed_scope_fingerprint.as_str()
     }
 
     /// Schema version this marker was minted under.
@@ -274,6 +339,14 @@ pub fn verify_marker_for_hook(
 ) -> Result<MarkerProof, MarkerError> {
     let path = workspace.join(MARKER_PATH);
     MarkerProof::read_and_validate_for_hook(&path, workspace, request)
+}
+
+fn workspace_path(workspace: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workspace.join(path)
+    }
 }
 
 /// Failure modes of [`MarkerProof::mint`] / [`MarkerProof::from_gate_success`].
@@ -365,6 +438,10 @@ pub enum MarkerError {
     },
     /// marker is missing verify/review scope evidence
     ScopeEvidenceMissing,
+    /// marker gate-log evidence is missing or unreadable at `{path}`
+    GateLogEvidenceMissing { path: PathBuf },
+    /// marker gate-log evidence does not match recorded scope: {reason}
+    GateLogEvidenceMismatch { reason: String },
     /// marker does not cover the current hook invocation: {reason}
     CoverageMismatch { reason: String },
     /// failed to read workspace git state
@@ -485,7 +562,39 @@ mod tests {
         }
     }
 
+    fn write_successful_gate_log(workspace: &Path) -> (PathBuf, String, String) {
+        let path = workspace.join(".loom/logs/gate/marker-test.jsonl");
+        if path.exists() {
+            std::fs::remove_file(&path).expect("remove stale gate log");
+        }
+        let tree = head_tree(workspace).to_string();
+        let config_digest = pre_commit_config_digest(workspace).expect("config digest");
+        let verify = crate::gate_outcome::GateRun::successful_verify(
+            PUSH_RANGE.to_owned(),
+            tree.clone(),
+            config_digest.clone(),
+            path.clone(),
+            vec![hook()],
+        );
+        let verified_scope_fingerprint = scope_fingerprint(&verify);
+        crate::gate_outcome::append_gate_run_lifecycle_events(&path, &verify)
+            .expect("write verify gate events");
+        let review = crate::gate_outcome::GateRun::successful_review(
+            PUSH_RANGE.to_owned(),
+            tree,
+            config_digest,
+            path.clone(),
+            loom_protocol::gate::ExitSignal::Complete,
+        );
+        let reviewed_scope_fingerprint = scope_fingerprint(&review);
+        crate::gate_outcome::append_gate_run_lifecycle_events(&path, &review)
+            .expect("write review gate events");
+        (path, verified_scope_fingerprint, reviewed_scope_fingerprint)
+    }
+
     fn marker_for_workspace(workspace: &Path) -> MarkerProof {
+        let (gate_log_path, verified_scope_fingerprint, reviewed_scope_fingerprint) =
+            write_successful_gate_log(workspace);
         MarkerProof {
             version: CURRENT_VERSION,
             commit_sha: head_sha(workspace),
@@ -493,8 +602,9 @@ mod tests {
             pre_commit_config_digest: pre_commit_config_digest(workspace).expect("config digest"),
             push_range: PUSH_RANGE.to_owned(),
             covered_hooks: vec![hook()],
-            verified_scope_fingerprint: "verified-scope".to_owned(),
-            reviewed_scope_fingerprint: "reviewed-scope".to_owned(),
+            verified_scope_fingerprint,
+            reviewed_scope_fingerprint,
+            gate_log_paths: vec![gate_log_path],
             minted_at_ms: 0,
         }
     }
@@ -612,12 +722,56 @@ mod tests {
     }
 
     #[test]
+    fn verify_marker_rejects_missing_gate_log_evidence() {
+        let dir = init_test_workspace();
+        let workspace = dir.path();
+        let marker = marker_for_workspace(workspace);
+        let gate_log_path = marker.gate_log_paths[0].clone();
+        write_marker_at(workspace, &marker);
+        std::fs::remove_file(&gate_log_path).expect("remove gate log evidence");
+        match verify_marker_for_hook(workspace, &request()) {
+            Err(MarkerError::GateLogEvidenceMissing { path }) if path == gate_log_path => {}
+            other => panic!("expected GateLogEvidenceMissing, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn verify_marker_accepts_valid_covered_hook() {
         let dir = init_test_workspace();
         let workspace = dir.path();
         write_marker_at(workspace, &marker_for_workspace(workspace));
         let validated = verify_marker_for_hook(workspace, &request()).expect("covered hook");
         assert_eq!(validated.push_range(), PUSH_RANGE);
+    }
+
+    #[test]
+    fn marker_short_circuit_requires_hook_coverage_for_same_tree_config_and_range() {
+        let dir = init_test_workspace();
+        let workspace = dir.path();
+        let marker = marker_for_workspace(workspace);
+        let gate_log_path = marker.gate_log_paths[0].clone();
+        write_marker_at(workspace, &marker);
+        verify_marker_for_hook(workspace, &request()).expect("complete marker evidence");
+
+        let mut wrong_range = request();
+        wrong_range.push_range = "origin/other..HEAD".to_owned();
+        assert!(matches!(
+            verify_marker_for_hook(workspace, &wrong_range),
+            Err(MarkerError::CoverageMismatch { reason }) if reason == "push range"
+        ));
+
+        let mut wrong_hook = request();
+        wrong_hook.hook_id = "cargo-clippy".to_owned();
+        assert!(matches!(
+            verify_marker_for_hook(workspace, &wrong_hook),
+            Err(MarkerError::CoverageMismatch { reason }) if reason == "hook id/entry"
+        ));
+
+        std::fs::remove_file(&gate_log_path).expect("remove gate log evidence");
+        assert!(matches!(
+            verify_marker_for_hook(workspace, &request()),
+            Err(MarkerError::GateLogEvidenceMissing { path }) if path == gate_log_path
+        ));
     }
 
     fn install_executable(bin_dir: &Path, name: &str, body: &str) {
@@ -656,6 +810,7 @@ mod tests {
         bin_dir: &Path,
         envs: &[(&str, String)],
     ) -> std::process::Output {
+        let _guard = LOOM_CLI_LOCK.lock().expect("loom cli lock");
         let path_var = std::env::var_os("PATH").unwrap_or_default();
         let mut entries = vec![bin_dir.to_path_buf()];
         entries.extend(std::env::split_paths(&path_var));
@@ -682,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn pre_push_checks_short_circuits_on_valid_marker() {
+    fn pre_push_checks_short_circuits_only_on_covered_marker() {
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path();
         seed_marker(workspace);
@@ -784,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn pre_push_checks_falls_through_on_invalid_marker() {
+    fn pre_push_checks_falls_through_on_uncovered_or_invalid_marker() {
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path();
         seed_marker(workspace);

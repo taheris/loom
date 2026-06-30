@@ -849,7 +849,7 @@ fn hook_coverage_from_json(value: &serde_json::Value) -> Option<HookCoverage> {
     })
 }
 
-fn scope_fingerprint(run: &GateRun) -> String {
+pub(crate) fn scope_fingerprint(run: &GateRun) -> String {
     let phase = match run.phase {
         GatePhase::Verify => "verify",
         GatePhase::Review => "review",

@@ -2967,7 +2967,7 @@ and conservative fall-through for unowned queries.
   successful pre-push `GateRun` containing that hook id/entry as
   passed, and successful `VerifiedScope` + `ReviewedScope` for the
   same range; otherwise `pre-push-checks` falls through
-  [test?](marker_short_circuit_requires_hook_coverage_for_same_tree_config_and_range)
+  [test](marker_short_circuit_requires_hook_coverage_for_same_tree_config_and_range)
 
 ### Wire-format wiring and dead-code excision
 
