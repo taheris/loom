@@ -2508,7 +2508,17 @@ fn loom_llm_has_no_skill_registry_surface_fail_on_public_skill_type() {
 // loom_llm_public_surface
 // ---------------------------------------------------------------------------
 
-const LLM_PUBLIC_SURFACE_BODY: &str = "pub trait LlmClient {}\n\
+const LLM_PUBLIC_SURFACE_BODY: &str = "pub type BoxFuture<'a, T> = core::pin::Pin<Box<dyn core::future::Future<Output = T> + Send + 'a>>;\n\
+     pub struct CompletionResponse;\n\
+     pub trait LlmClient {\n\
+         fn schema(&self) -> SchemaKind;\n\
+         fn supports(&self, model: &ModelId) -> bool;\n\
+         fn complete<'a>(&'a self, req: CompletionRequest) -> BoxFuture<'a, Result<CompletionResponse, LlmError>>;\n\
+         fn complete_structured_raw<'a>(&'a self, req: CompletionRequest, schema: serde_json::Value, type_name: String) -> BoxFuture<'a, Result<String, LlmError>>;\n\
+     }\n\
+     pub trait LlmClientExt: LlmClient {\n\
+         fn complete_structured<'a, T>(&'a self, req: CompletionRequest) -> BoxFuture<'a, Result<T, LlmError>> where T: Send + 'static;\n\
+     }\n\
      pub struct CompletionRequest;\n\
      pub enum Message { Text }\n\
      pub enum MessageContent { Text(String) }\n\
@@ -2543,7 +2553,7 @@ fn loom_llm_public_surface_pass_when_reexported_via_pub_use() {
         ws.path(),
         "crates/loom-llm/src/lib.rs",
         "pub mod inner;\n\
-         pub use inner::{LlmClient, CompletionRequest, Message, MessageContent, BinaryContent, MimeType, ModelId, SchemaKind, CacheControl, Tool, Conversation, LlmError, LlmCapability, RetryAdvice, ApiKey};\n",
+         pub use inner::{LlmClient, LlmClientExt, CompletionRequest, Message, MessageContent, BinaryContent, MimeType, ModelId, SchemaKind, CacheControl, Tool, Conversation, LlmError, LlmCapability, RetryAdvice, ApiKey};\n",
     );
     seed(
         ws.path(),
@@ -2566,6 +2576,31 @@ fn loom_llm_public_surface_fail_when_one_missing() {
     seed(ws.path(), "crates/loom-llm/src/lib.rs", body);
     let out = invoke(&["loom_llm_public_surface"], Some(ws.path()), None);
     assert_fail(&out, "Conversation");
+}
+
+#[test]
+fn loom_llm_public_surface_fails_when_generic_structured_is_on_llmclient() {
+    let ws = make_workspace();
+    let body = LLM_PUBLIC_SURFACE_BODY.replace(
+        "fn complete_structured_raw<'a>(&'a self, req: CompletionRequest, schema: serde_json::Value, type_name: String) -> BoxFuture<'a, Result<String, LlmError>>;",
+        "fn complete_structured<T>(&self, req: CompletionRequest) -> Result<T, LlmError>;",
+    );
+    seed(ws.path(), "crates/loom-llm/src/lib.rs", &body);
+    let out = invoke(&["loom_llm_public_surface"], Some(ws.path()), None);
+    assert_fail(&out, "complete_structured_raw");
+    assert_fail(&out, "LlmClient::complete_structured");
+}
+
+#[test]
+fn loom_llm_public_surface_fails_when_raw_structured_is_generic() {
+    let ws = make_workspace();
+    let body = LLM_PUBLIC_SURFACE_BODY.replace(
+        "fn complete_structured_raw<'a>(&'a self",
+        "fn complete_structured_raw<'a, T>(&'a self",
+    );
+    seed(ws.path(), "crates/loom-llm/src/lib.rs", &body);
+    let out = invoke(&["loom_llm_public_surface"], Some(ws.path()), None);
+    assert_fail(&out, "type-erased");
 }
 
 // ---------------------------------------------------------------------------

@@ -86,17 +86,33 @@ wrapper:
 Object-safe trait; per-schema Client types implement it. The
 trait carries the schema-kind discriminator so the
 Client–`ModelId` compatibility check is structural rather than
-stringly-typed:
+stringly-typed. The dyn surface uses boxed futures and an erased
+structured-output method; the typed generic helper lives on a
+blanket extension trait:
 
 ```rust
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
 pub trait LlmClient: Send + Sync {
     fn schema(&self) -> SchemaKind;
     fn supports(&self, model: &ModelId) -> bool {
         model.schema() == self.schema()
     }
-    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError>;
-    async fn complete_structured<T>(&self, req: CompletionRequest) -> Result<T, LlmError>
-        where T: DeserializeOwned + JsonSchema;
+    fn complete<'a>(&'a self, req: CompletionRequest)
+        -> BoxFuture<'a, Result<CompletionResponse, LlmError>>;
+    fn complete_structured_raw<'a>(
+        &'a self,
+        req: CompletionRequest,
+        schema: serde_json::Value,
+        type_name: String,
+    ) -> BoxFuture<'a, Result<String, LlmError>>;
+}
+
+pub trait LlmClientExt: LlmClient {
+    fn complete_structured<'a, T>(&'a self, req: CompletionRequest)
+        -> BoxFuture<'a, Result<T, LlmError>>
+    where
+        T: DeserializeOwned + JsonSchema + Send + 'static;
 }
 ```
 
@@ -114,7 +130,11 @@ request.
 The trait is object-safe so `Arc<dyn LlmClient>` works for
 runtime polymorphism — per-tenant Client caches, mock impls in
 tests, and external-crate `LlmClient` impls compose through the
-same dyn surface.
+same dyn surface. `LlmClientExt` is blanket-implemented for every
+`LlmClient` (including `dyn LlmClient`), so consumers still call
+`complete_structured::<T>` through either a concrete Client or an
+`Arc<dyn LlmClient>` without putting a generic method on the dyn
+trait itself.
 
 ### `SchemaKind`
 
@@ -316,13 +336,14 @@ cache markers (e.g. OpenAI today) no-op the marker without error.
 
 ### Structured Output
 
-`complete_structured::<T>(req)` is **one method** that hides the
-provider-specific structured-output mechanism. Internally
-`llm` picks the right path per provider — synthetic
-forced-tool for Anthropic, `response_format` for OpenAI,
-`response_schema` for Gemini — and deserializes into `T`. The
-bound `T: DeserializeOwned + JsonSchema` means the type carries
-its own schema via `schemars`. Consumers never write
+`LlmClientExt::complete_structured::<T>(req)` is **one generic
+consumer method** that hides the provider-specific
+structured-output mechanism. Internally `llm` picks the right path
+per provider — synthetic forced-tool for Anthropic,
+`response_format` for OpenAI, `response_schema` for Gemini — via
+`LlmClient::complete_structured_raw`, then deserializes into `T`.
+The bound `T: DeserializeOwned + JsonSchema` means the type
+carries its own schema via `schemars`. Consumers never write
 provider-specific code or see the mechanism difference; switching
 providers swaps both the Client type and the `ModelId` variant,
 with the call shape unchanged. Multimodal content parts are
@@ -617,9 +638,9 @@ and `--no-default-features` to catch feature-gating regressions.
 
 ### Public surface
 
-- `llm` exposes object-safe `LlmClient` trait with `schema(&self) -> SchemaKind`, `supports(&self, &ModelId) -> bool` (default impl), `complete(req)`, and `complete_structured::<T>(req)`; no `embed` in v1
+- `llm` exposes object-safe `LlmClient` trait with `schema(&self) -> SchemaKind`, `supports(&self, &ModelId) -> bool` (default impl), `complete(req)`, and dyn-safe `complete_structured_raw(req, schema, type_name)`; `LlmClientExt` exposes blanket `complete_structured::<T>(req)`; no `embed` in v1
   [check](cargo run -p loom-walk -- loom_llm_public_surface)
-- `LlmClient` is object-safe — `Arc<dyn LlmClient>` compiles and dispatches `complete` / `complete_structured` correctly
+- `LlmClient` is object-safe — `Arc<dyn LlmClient>` compiles and dispatches `complete` plus `LlmClientExt::complete_structured` correctly through the dyn-safe raw method
   [test](llm_client_trait_is_object_safe)
 - `CompletionRequest::new(ModelId)` requires model as positional argument; constructing a request without a model is a compile error
   [test](completion_request_requires_model_at_construction)
@@ -627,7 +648,7 @@ and `--no-default-features` to catch feature-gating regressions.
   [test](modelid_outer_variants_match_schema_kind_one_to_one)
 - `SchemaKind` is `#[non_exhaustive]` with one variant per `ModelId` outer variant; `ModelId::schema(&self) -> SchemaKind` returns the matching tag for every variant
   [test](modelid_schema_method_returns_matching_schema_kind)
-- `complete_structured::<T>` hides provider mechanism: same call shape works for Anthropic (synthetic forced-tool), OpenAI (`response_format`), Gemini (`response_schema`); returned `T: DeserializeOwned + JsonSchema` is deserialized regardless of provider
+- `LlmClientExt::complete_structured::<T>` hides provider mechanism: same call shape works for Anthropic (synthetic forced-tool), OpenAI (`response_format`), Gemini (`response_schema`); returned `T: DeserializeOwned + JsonSchema` is deserialized regardless of provider
   [test](complete_structured_returns_typed_t_across_providers)
 - `CompletionResponse` carries `usage: TokenUsage { input, output, cache_read, cache_write }` (raw token counts only — no `cost_cents`) on every successful call
   [test](completion_response_carries_token_usage_without_cost)
@@ -670,7 +691,7 @@ and `--no-default-features` to catch feature-gating regressions.
   [test?](unsupported_multimodal_request_returns_typed_error_not_panic)
 - Empty binary payloads return `LlmError::IncompatibleRequest` before network I/O
   [test](empty_binary_payload_returns_incompatible_request)
-- `complete_structured::<T>` accepts requests containing multimodal content parts using the same call shape as text-only structured output
+- `LlmClientExt::complete_structured::<T>` accepts requests containing multimodal content parts using the same call shape as text-only structured output
   [test](complete_structured_accepts_multimodal_messages)
 
 ### Client types
@@ -742,7 +763,7 @@ and `--no-default-features` to catch feature-gating regressions.
 
 ### Wrapper boundary
 
-- `llm` is a typed wrapper, not a thin re-export: the public surface (`LlmClient`, `CompletionRequest`, `Message`, `ModelId`, `SchemaKind`, `CacheControl`, `Tool`, `Conversation`, `LlmError`, `RetryAdvice`, and the per-schema Client types) is defined in `llm`, not re-exported from the underlying multi-provider crate
+- `llm` is a typed wrapper, not a thin re-export: the public surface (`LlmClient`, `LlmClientExt`, `CompletionRequest`, `Message`, `ModelId`, `SchemaKind`, `CacheControl`, `Tool`, `Conversation`, `LlmError`, `RetryAdvice`, and the per-schema Client types) is defined in `llm`, not re-exported from the underlying multi-provider crate
   [check](cargo run -p loom-walk -- loom_llm_no_underlying_crate_reexports)
 - No Client constructor or public method signature references `genai::Client`, `genai::Error`, or any other `genai` type — `genai` remains an internal implementation dependency
   [check](cargo run -p loom-walk -- loom_llm_no_public_genai_types)
@@ -802,7 +823,9 @@ and `--no-default-features` to catch feature-gating regressions.
    trait exposes `schema(&self) -> SchemaKind`, `supports(&self,
    &ModelId) -> bool` (default impl checks
    `model.schema() == self.schema()`), `complete(req)`, and
-   `complete_structured::<T>(req)`. Per-call model selection via
+   dyn-safe `complete_structured_raw(req, schema, type_name)`.
+   `LlmClientExt` exposes blanket `complete_structured::<T>(req)`
+   for the typed consumer path. Per-call model selection via
    required positional `ModelId` on the request. Schema is fixed
    at Client construction; per-call selection varies the model
    within that schema. Requests carry typed text and binary
@@ -813,14 +836,15 @@ and `--no-default-features` to catch feature-gating regressions.
    prompt-cache breakpoint API. Per-content-part granularity.
    Other providers no-op the marker.
 3. **Provider-mechanism-hidden structured output.**
-   `complete_structured::<T: DeserializeOwned + JsonSchema>(req)`
-   is one method; internally picks the right underlying mechanism
-   per provider (synthetic forced-tool / `response_format` /
-   `response_schema`) and deserializes into `T`. Multimodal
-   content parts remain compatible with this call shape.
-   Schema-violation failures surface as
-   `LlmError::SchemaViolation`; malformed JSON as
-   `LlmError::MalformedJson`.
+   `LlmClientExt::complete_structured::<T: DeserializeOwned + JsonSchema>(req)`
+   is one generic consumer method; internally it passes `T`'s
+   schema to the object-safe `LlmClient::complete_structured_raw`,
+   which picks the right underlying mechanism per provider
+   (synthetic forced-tool / `response_format` / `response_schema`).
+   The extension method deserializes into `T`. Multimodal content
+   parts remain compatible with this call shape. Schema-violation
+   failures surface as `LlmError::SchemaViolation`; malformed JSON
+   as `LlmError::MalformedJson`.
 4. **`TokenUsage` on every response — raw counts only.**
    `CompletionResponse.usage` carries
    `{ input, output, cache_read, cache_write }`. No `cost_cents`;
@@ -859,7 +883,7 @@ and `--no-default-features` to catch feature-gating regressions.
    config (`[agent.doom_loop]` / `[agent.duplicate_result]`) or
    per-`Conversation` via the builder.
 10. **Wrapper, not re-export.** Public surface
-    (`LlmClient`, `CompletionRequest`, `Message`,
+    (`LlmClient`, `LlmClientExt`, `CompletionRequest`, `Message`,
     `MessageContent`, `BinaryContent`, `MimeType`, `ModelId`,
     `SchemaKind`, `CacheControl`, `Tool`, `Conversation`,
     `LlmError`, `RetryAdvice`, per-schema Client types) is

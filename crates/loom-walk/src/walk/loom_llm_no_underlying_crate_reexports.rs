@@ -1,7 +1,7 @@
 //! `llm` is a typed wrapper — not a thin re-export of the
 //! underlying multi-provider LLM crate. Each public type spec'd in
-//! `specs/llm.md` (`LlmClient`, `CompletionRequest`, `Message`,
-//! `MessageContent`, `BinaryContent`, `MimeType`, `ModelId`,
+//! `specs/llm.md` (`LlmClient`, `LlmClientExt`, `CompletionRequest`,
+//! `Message`, `MessageContent`, `BinaryContent`, `MimeType`, `ModelId`,
 //! `SchemaKind`, `CacheControl`, `Tool`, `Conversation`, `LlmError`,
 //! `LlmCapability`, `RetryAdvice`, `ApiKey`) must be **defined** inside
 //! `crates/loom-llm/src/` (a `pub`/private `struct`, `enum`, or
@@ -21,6 +21,7 @@ const RULE: &str = "loom_llm_no_underlying_crate_reexports — public types defi
 
 const REQUIRED: &[&str] = &[
     "LlmClient",
+    "LlmClientExt",
     "CompletionRequest",
     "Message",
     "MessageContent",
