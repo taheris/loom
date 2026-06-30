@@ -4,9 +4,10 @@ Hook composition policy for this project's `.pre-commit-config.yaml`:
 which checks fire at commit time vs push time, what each guarantees,
 how the agent self-verifies inside its bead container, and how the
 content-addressed `MarkerProof` short-circuits redundant pre-push work
-on driver-loop integration pushes. The hook plumbing (lock, shim shape,
-devshell wiring, install lifecycle, marker-check wrapper) is owned
-upstream by `wrix.prekHooks`.
+on driver-loop integration pushes. Generic hook plumbing (lock, shim
+shape, devshell wiring, install lifecycle, `push-verified`, and
+`skip-if-missing`) is owned upstream by `wrix.prekHooks`; Loom owns the
+repo-local marker-aware policy wrapper at `bin/pre-push-checks`.
 
 ## Problem Statement
 
@@ -135,8 +136,8 @@ bypass driver verification by emitting a structured "I verified" report.
 The bead container has no `nix`. Hooks whose entry runs `nix` are
 wrapped as `entry: skip-if-missing nix -- <command>` in
 `.pre-commit-config.yaml` (the wrapper is shipped from
-`wrix.prekHooks` per *Plumbing* below); inside the bead container
-the wrapper observes `nix` absent on `PATH` and exits 0 silently,
+`wrix.prekHooks` per *Plumbing ownership split* below); inside the bead
+container the wrapper observes `nix` absent on `PATH` and exits 0 silently,
 no-op-ing the hook. Outside the bead container (host devShell + CI)
 the same wrapper finds `nix` and execs normally. Non-`nix`
 pre-commit hooks run uniformly across host and bead-container contexts.
@@ -162,7 +163,7 @@ Gate-owned marker surface to the pre-push hook composition:
   dependency per Gate; marker absence is a fall-through condition for
   operator pushes, not a hook failure.
 
-### Plumbing (owned upstream)
+### Plumbing ownership split
 
 `core.hooksPath`, the hook shim scripts, the flock that serializes
 prek's stash/restore window across overlapping commits, the
@@ -175,9 +176,12 @@ contexts, notably `nix` inside the bead container) are packaged in the
 this project's `nix develop` is entered. The marker-aware
 `pre-push-checks` wrapper is repo-local at `bin/pre-push-checks`, and
 pre-push hook entries invoke it by that path rather than relying on
-ambient PATH. **The same packaged hooks are available inside the bead
-container**: bead-container entrypoints from profile images that build
-on `wrixLib` put the packaged wrappers on `PATH`, and Loom configures
+ambient PATH. Loom owns that wrapper's hook-id, hook-entry, push-range,
+marker-validation, and fall-through policy; wrix owns the reusable hook
+shim, lock, install, stamp, and skip-if-missing plumbing around it. **The
+same packaged hooks are available inside the bead container**:
+bead-container entrypoints from profile images that build on `wrixLib`
+put the packaged wrappers on `PATH`, and Loom configures
 the bead clone's `core.hooksPath` before spawning the agent. The agent's
 `git commit` fires the prek pre-commit chain uniformly with the host;
 workers do not rely on `git push` for final self-verification. The
@@ -226,6 +230,7 @@ runs at pre-commit / pre-push. It has four consumers:
 This spec owns:
 
 - `.pre-commit-config.yaml`
+- `bin/pre-push-checks`
 - `scripts/check-shell-reexec`
 
 `loom gate review` is the driver-only addition — not a prek hook. It
@@ -297,6 +302,10 @@ declared as such.
   `bin/pre-push-checks` wrapper so marker coverage can be checked per
   hook without relying on ambient PATH
   [check](cargo run -p loom-walk -- pre_push_config_marker_wrapper_contract)
+- Nix workspace staging includes the repo-local `bin/pre-push-checks`
+  wrapper so flake checks and verifier builds can read the Loom-owned
+  marker policy
+  [check](grep -q '"bin/pre-push-checks"' nix/workspace.nix)
 - Hooks whose entry runs `nix` are wrapped with
   `skip-if-missing nix --` so they no-op in the bead container
   (which has no `nix`) while running normally on the host devShell
@@ -439,18 +448,20 @@ declared as such.
 
 ## Out of Scope
 
-- **Hook plumbing.** Locks, shim shape, install lifecycle, the
+- **Generic hook plumbing.** Locks, shim shape, install lifecycle, the
   `push-verified` SHA stamp (SSH-decoupling mechanism, written by the
-  pre-push shim on overall pre-push success), the `pre-push-checks`
-  wrapper script (per-hook marker-aware short-circuit), and the
+  pre-push shim on overall pre-push success), and the
   `skip-if-missing` wrapper (PATH-conditional exec for hooks whose
-  binary may be absent in some contexts) are all owned upstream by
+  binary may be absent in some contexts) are owned upstream by
   `wrix.prekHooks`. Failures in serialization, prek shim
-  regeneration, wrapper-script behaviour, or stamp lifecycle belong to
-  that project. Loom-owned `core.hooksPath` placement in
-  `.loom/integration` and bead clones is specified in
-  [harness.md](harness.md); this spec consumes the canonical path and
-  hook wrappers by name in `.pre-commit-config.yaml`.
+  regeneration, generic wrapper-script behaviour, or stamp lifecycle
+  belong to that project. The repo-local marker-aware policy wrapper is
+  not part of this out-of-scope set; this spec owns it via
+  `bin/pre-push-checks` and the Marker integration contract above.
+  Loom-owned `core.hooksPath` placement in `.loom/integration` and bead
+  clones is specified in [harness.md](harness.md); this spec consumes
+  the canonical path and hook wrappers by name in
+  `.pre-commit-config.yaml`.
 
 - **Per-user `pre-commit install`.** Installation flows through
   `wrixLib.mkDevShell` exclusively. The
