@@ -83,6 +83,10 @@ fn mock_pi_path() -> PathBuf {
     mock_script_path("mock-pi/pi.sh")
 }
 
+fn inbox_bridge_pi_followup_path() -> PathBuf {
+    mock_script_path("inbox-bridge/pi-followup.sh")
+}
+
 fn install_wrix_stub(dir: &Path) -> PathBuf {
     let bin_dir = dir.join("wrix-bin");
     std::fs::create_dir_all(&bin_dir).expect("mkdir wrix-bin");
@@ -91,6 +95,7 @@ fn install_wrix_stub(dir: &Path) -> PathBuf {
     let env_log = dir.join("env.log");
     let mock_claude = mock_claude_path();
     let mock_pi = mock_pi_path();
+    let pi_followup = inbox_bridge_pi_followup_path();
     let script = loom_test_support::bash_script(&format!(
         r#"set -euo pipefail
 
@@ -98,6 +103,7 @@ argv_log={argv_log:?}
 env_log={env_log:?}
 mock_claude={mock_claude:?}
 mock_pi={mock_pi:?}
+pi_followup={pi_followup:?}
 
 for a in "$@"; do
     printf '%s\n' "$a" >> "$argv_log"
@@ -114,7 +120,18 @@ printf 'WRIX_STDOUT_TTY=%s\n' "$stdout_tty" >> "$env_log"
 
 if [[ "${{1:-}}" == "spawn" || "${{2:-}}" == "spawn" ]]; then
     printf '[wrix] Starting container (mock)...\n' >&2
-    exec bash "$mock_pi" "${{WRIX_STUB_PI_MODE:-happy-path}}"
+    case "${{WRIX_STUB_PI_BRIDGE_FIXTURE:-}}" in
+        followup)
+            exec bash "$pi_followup"
+            ;;
+        "")
+            exec bash "$mock_pi" "${{WRIX_STUB_PI_MODE:-happy-path}}"
+            ;;
+        *)
+            printf 'wrix-stub: unknown pi bridge fixture %s\n' "${{WRIX_STUB_PI_BRIDGE_FIXTURE:-}}" >&2
+            exit 2
+            ;;
+    esac
 fi
 
 prompt="${{!#}}"
@@ -242,6 +259,7 @@ fi
         env_log = env_log.display(),
         mock_claude = mock_claude.display(),
         mock_pi = mock_pi.display(),
+        pi_followup = pi_followup.display(),
     ));
     std::fs::write(&bin, script).expect("write stub");
     let mut perm = std::fs::metadata(&bin).expect("stat stub").permissions();
@@ -335,6 +353,52 @@ fn run_chat_in_pty(
     extra_env: &[(&str, &str)],
 ) -> std::process::Output {
     run_command_in_pty(chat_command(env, mode, args, extra_env))
+}
+
+/// Pins the external pipe lifecycle that an in-process parser test cannot exercise.
+#[test]
+fn inbox_bridge_pi_followup_fixture_accepts_one_prompt_reply() {
+    let mut child = Command::new("bash")
+        .arg(inbox_bridge_pi_followup_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn pi follow-up fixture");
+    {
+        let mut input = child.stdin.take().expect("stdin piped");
+        input
+            .write_all(
+                b"{\"type\":\"get_state\",\"id\":\"probe\"}\n{\"type\":\"prompt\",\"message\":\"start\"}\n{\"type\":\"prompt\",\"message\":\"please finish\"}\n",
+            )
+            .expect("write fixture stdin");
+    }
+    let output = child.wait_with_output().expect("wait fixture");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let events: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("fixture emits JSONL"))
+        .collect();
+    assert_eq!(events.len(), 6, "{stdout}");
+    assert_eq!(events[0]["type"], "response");
+    assert_eq!(events[0]["command"], "get_state");
+    assert_eq!(
+        events[1]["assistantMessageEvent"]["text"],
+        "Please answer before I finish."
+    );
+    assert_eq!(events[2]["type"], "agent_end");
+    assert_eq!(events[3]["type"], "response");
+    assert_eq!(events[3]["command"], "prompt");
+    assert_eq!(
+        events[4]["assistantMessageEvent"]["text"],
+        "\nLOOM_COMPLETE"
+    );
+    assert_eq!(events[5]["type"], "agent_end");
 }
 
 fn run_command_in_pty(command: Command) -> std::process::Output {
@@ -802,7 +866,7 @@ fn inbox_chat_pi_bridge_sends_human_reply_as_next_prompt() {
         &env,
         "resolve-none",
         &[],
-        &[("WRIX_STUB_PI_MODE", "interactive-followup")],
+        &[("WRIX_STUB_PI_BRIDGE_FIXTURE", "followup")],
         "please finish\n",
     );
     assert!(

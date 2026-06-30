@@ -49,9 +49,6 @@
 #   interactive-bridge-canary — probe ok; prompt emits compaction_start,
 #                               validates the re-pin steer payload, then
 #                               emits LOOM_COMPLETE.
-#   interactive-followup      — probe ok; first prompt asks for human input,
-#                               then expects the bridge to send the reply as
-#                               a fresh prompt command and emits LOOM_COMPLETE.
 #   hang-probe                — read the get_state line and then sleep
 #                               forever without responding. Drives the
 #                               HandshakeTimeout path in spawn_with_handshake.
@@ -77,7 +74,7 @@ set -euo pipefail
 # the default nix-build sandbox (`sandbox = true`) where `/usr/bin/env`
 # is absent. Running `bash "$0"` reads pi.sh as a plain script and
 # bypasses the kernel-level interpreter lookup entirely.
-if [ -z "${MOCK_PI_REEXEC:-}" ]; then
+if [[ -z "${MOCK_PI_REEXEC:-}" ]]; then
     export MOCK_PI_REEXEC=1
     exec stdbuf -oL bash "$0" "$@"
 fi
@@ -174,29 +171,6 @@ run_interactive_bridge_canary() {
     fi
     emit_compaction_end
     emit_message_delta "LOOM_COMPLETE"
-    emit_agent_end
-}
-
-run_interactive_followup() {
-    handle_probe 0
-    local _prompt reply_line reply_type reply_msg
-    IFS= read -r _prompt
-    emit_message_delta "Please answer before I finish."
-    emit_agent_end
-
-    IFS= read -r reply_line
-    reply_type="$(extract_field type "$reply_line")"
-    reply_msg="$(extract_field message "$reply_line")"
-    if [[ "$reply_type" != "prompt" ]]; then
-        echo "mock-pi: expected follow-up reply as prompt, got: ${reply_type:-missing}" >&2
-        exit 5
-    fi
-    if [[ "$reply_msg" != *"please finish"* ]]; then
-        echo "mock-pi: follow-up prompt missing user reply" >&2
-        exit 5
-    fi
-    emit '{"type":"response","command":"prompt","success":true}'
-    emit_message_delta $'\nLOOM_COMPLETE'
     emit_agent_end
 }
 
@@ -421,9 +395,6 @@ case "$MODE" in
         ;;
     interactive-bridge-canary)
         run_interactive_bridge_canary
-        ;;
-    interactive-followup)
-        run_interactive_followup
         ;;
     hang-probe)
         run_hang_probe

@@ -486,6 +486,16 @@ Each mode is single-shot: the script runs until the conversation it
 encodes completes, then exits. The Rust test owns the assertions; the
 mock owns the wire framing.
 
+### Inbox Bridge Fixture
+
+The Pi inbox bridge follow-up fixture is separate from the mock-pi mode table.
+Its whole contract is one startup probe, one initial prompt that completes
+without a terminal marker, one human reply encoded as a fresh `prompt`, and
+then a terminal marker. It exists only because the bridge keeps the same
+process pipes alive across a post-completion human reply; parser unit tests do
+not exercise that process lifecycle. A conformance test drives this exact JSONL
+exchange so the fixture does not grow into another Pi protocol emulator.
+
 ### Mock Claude Design
 
 Mock claude follows the same pattern as mock pi but speaks Claude
@@ -648,6 +658,10 @@ in Functional #4.
       `do a polish` probe can rely on both the full report-only/no-edit mode
       definition and a test-only nonce
   [test](mock_agent_compaction_canary_requires_rehydrated_mode_definition)
+- The dedicated Pi inbox-bridge follow-up fixture stays outside the mock-pi
+      mode table and covers only the probe → prompt → one human follow-up
+      prompt → terminal-marker exchange
+  [test](inbox_bridge_pi_followup_fixture_accepts_one_prompt_reply)
 
 ### Container smoke
 
@@ -1262,10 +1276,12 @@ the rules:
   the existing claude `result/total_cost_usd` extraction.
 - **Mock-script protocol breadth** — tool-call simulation, malformed-JSONL
   injection, hang/timeout simulation, and general multi-turn conversations.
-  These belong in parser unit tests with inline string literals, not in mock
-  scripts. The interactive compaction canary is the only scripted multi-turn
-  exception, because it verifies a post-compaction turn rather than protocol
-  breadth.
+  These belong in parser unit tests with inline string literals, not in the
+  general mock-pi/mock-claude scripts. The interactive compaction canary is
+  the only multi-turn exception in those mode tables, because it verifies a
+  post-compaction turn rather than protocol breadth. Dedicated bridge fixtures
+  remain single-purpose and carry their own conformance tests instead of being
+  folded into the general mock-agent mode tables.
 - **Per-repo verifier registry separate from `loom.toml`** —
   annotations carry the verifier directly (target name for `[test]`
   / `[judge]`, command for `[check]` / `[system]`); no separate
