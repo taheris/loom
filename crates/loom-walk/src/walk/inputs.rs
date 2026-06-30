@@ -71,12 +71,13 @@ fn rel_inputs(name: &str, root: &Path) -> Vec<String> {
     out
 }
 
-/// The ten target v1 workspace member crates whose manifests the
+/// The target v1 workspace member crates whose manifests the
 /// `workspace_edition` / `workspace_lints` walks inherit-check, mirroring
 /// `crate_structure_includes_loom_tune`'s binary + library crate set.
 const MEMBER_CRATES: &[&str] = &[
     "loom",
     "loom-events",
+    "loom-protocol",
     "loom-llm",
     "loom-templates",
     "loom-skills",
@@ -181,10 +182,7 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
         "loom_templates_deps" => vec![manifest(root, "loom-templates")],
         "loom_tune_deps" => vec![manifest(root, "loom-tune")],
         "loom_events_is_leaf" | "loom_events_minimal_deps" => vec![manifest(root, "loom-events")],
-        "public_contract_crates" => ["loom-events", "loom-llm", "loom-templates", "loom-skills"]
-            .iter()
-            .map(|c| manifest(root, c))
-            .collect(),
+        "public_contract_crates" => crate_manifests(root),
         "workspace_deps_pinned" => vec![root.join("Cargo.toml")],
         "workspace_edition" | "workspace_lints" => {
             let mut out = vec![root.join("Cargo.toml")];
@@ -258,6 +256,13 @@ fn files_under(dir: &Path, ext: Option<&str>) -> Vec<PathBuf> {
             Some(want) => p.extension().and_then(|s| s.to_str()) == Some(want),
             None => true,
         })
+        .collect()
+}
+
+fn crate_manifests(root: &Path) -> Vec<PathBuf> {
+    immediate_children(&root.join("crates"))
+        .into_iter()
+        .map(|crate_dir| crate_dir.join("Cargo.toml"))
         .collect()
 }
 

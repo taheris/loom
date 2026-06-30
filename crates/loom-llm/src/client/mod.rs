@@ -20,6 +20,7 @@ pub use openai_compat::OpenAiCompatClient;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
 use displaydoc::Display;
@@ -65,6 +66,85 @@ impl fmt::Debug for CompletionResponse {
     }
 }
 
+/// Provider-stable identifier for a model-issued tool call.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct ToolCallId(String);
+
+impl ToolCallId {
+    /// Parse and validate a provider tool-call identifier.
+    pub fn parse(raw: impl Into<String>) -> Result<Self, ParseToolCallIdError> {
+        let raw = raw.into();
+        validate_tool_call_id(&raw)?;
+        Ok(Self(raw))
+    }
+
+    /// Borrow the validated identifier string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ToolCallId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ToolCallId").field(&self.as_str()).finish()
+    }
+}
+
+impl fmt::Display for ToolCallId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ToolCallId {
+    type Err = ParseToolCallIdError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+impl TryFrom<String> for ToolCallId {
+    type Error = ParseToolCallIdError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl TryFrom<&str> for ToolCallId {
+    type Error = ParseToolCallIdError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+/// invalid tool call id: {value}
+#[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
+pub struct ParseToolCallIdError {
+    value: String,
+}
+
+impl ParseToolCallIdError {
+    fn new(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+        }
+    }
+}
+
+fn validate_tool_call_id(raw: &str) -> Result<(), ParseToolCallIdError> {
+    if raw.is_empty()
+        || !raw
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'|'))
+    {
+        return Err(ParseToolCallIdError::new(raw));
+    }
+    Ok(())
+}
+
 /// One tool call the model emitted on a turn. The conversation loop
 /// dispatches each call to the registered [`crate::Tool`] whose `name`
 /// matches and appends the result as a tool-role message on the next
@@ -73,7 +153,7 @@ impl fmt::Debug for CompletionResponse {
 pub struct ToolUseRequest {
     /// Provider-stable identifier the loop echoes back on the matching
     /// tool result so the model correlates request to response.
-    pub call_id: String,
+    pub call_id: ToolCallId,
     /// Name of the tool the model wants to invoke; matches a registered
     /// [`crate::Tool`]'s `name()`.
     pub name: String,
@@ -466,9 +546,18 @@ impl<C: LlmClient + ?Sized> LlmClientExt for C {
         let type_name = sanitize_schema_name(&T::schema_name());
         Box::pin(async move {
             let text = self.complete_structured_raw(req, schema, type_name).await?;
-            serde_json::from_str::<T>(&text).map_err(|err| LlmError::MalformedJson(err.to_string()))
+            parse_structured_payload::<T>(&text)
         })
     }
+}
+
+fn parse_structured_payload<T>(text: &str) -> Result<T, LlmError>
+where
+    T: DeserializeOwned,
+{
+    let value = serde_json::from_str::<serde_json::Value>(text)
+        .map_err(|err| LlmError::MalformedJson(err.to_string()))?;
+    serde_json::from_value(value).map_err(|err| LlmError::SchemaViolation(err.to_string()))
 }
 
 /// Sanitize a schemars-derived schema name for the OpenAI
@@ -494,6 +583,22 @@ mod tests {
     use super::*;
     use crate::model_id::AnthropicModel;
     use crate::usage::TokenUsage;
+
+    #[test]
+    fn tool_call_id_validates_provider_identifiers() {
+        for raw in [
+            "toolu_01",
+            "call-1",
+            "call_es8xfFZpiG9eU4F6ONqu9AC5|fc_084fe1d174a690c2016a234c2e4d108191a893f4d1bf036187",
+        ] {
+            let parsed = ToolCallId::parse(raw).expect("valid tool call id parses");
+            assert_eq!(parsed.as_str(), raw);
+        }
+
+        for raw in ["", "tool call", "tool.call", "tool/call", "tool;call"] {
+            assert!(ToolCallId::parse(raw).is_err(), "{raw:?} rejects");
+        }
+    }
 
     /// `Arc<dyn LlmClient>` compiles and dispatches `complete` through
     /// the trait object — the object-safety promise the spec pins under
@@ -651,6 +756,28 @@ mod tests {
                 *want,
                 "client_schema={client_schema:?} model={model:?}",
             );
+        }
+    }
+
+    #[test]
+    fn structured_payload_distinguishes_malformed_json_from_schema_violation() {
+        #[derive(Debug, PartialEq, serde::Deserialize)]
+        struct Shape {
+            count: u32,
+        }
+
+        let parsed = parse_structured_payload::<Shape>(r#"{"count":7}"#)
+            .expect("valid JSON and valid schema parses");
+        assert_eq!(parsed, Shape { count: 7 });
+
+        match parse_structured_payload::<Shape>("not json") {
+            Err(LlmError::MalformedJson(_)) => {}
+            other => panic!("expected MalformedJson, got {other:?}"),
+        }
+
+        match parse_structured_payload::<Shape>(r#"{"count":"seven"}"#) {
+            Err(LlmError::SchemaViolation(_)) => {}
+            other => panic!("expected SchemaViolation, got {other:?}"),
         }
     }
 

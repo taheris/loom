@@ -5,9 +5,10 @@
 //!
 //! # Public Contract
 //!
-//! `llm` is one of three public-contract crates in the loom
-//! workspace (alongside `loom-events` and `templates`). External
-//! Rust consumers depend on this crate directly for typed LLM access
+//! `llm` is one of five public-contract crates in the loom
+//! workspace (alongside `loom-events`, `loom-protocol`, `templates`,
+//! and `loom-skills`). External Rust consumers depend on this crate
+//! directly for typed LLM access
 //! without taking on Loom's CLI / workflow / beads surface. The
 //! consumer-facing surface (re-exported below) is the only stable API:
 //! additive type / variant changes are minor version bumps; removing
@@ -35,12 +36,10 @@ pub use cache::{CacheControl, CacheTtl};
 pub use client::OpenAiCompatClient;
 pub use client::{
     AnthropicClient, BoxFuture, CompletionResponse, DEFAULT_RETRY_AFTER, GeminiClient,
-    LlmCapability, LlmClient, LlmClientExt, LlmError, OpenAiClient, RetryAdvice, ToolUseRequest,
-    parse_retry_after,
+    LlmCapability, LlmClient, LlmClientExt, LlmError, OpenAiClient, ParseToolCallIdError,
+    RetryAdvice, ToolCallId, ToolUseRequest, parse_retry_after,
 };
-pub use conversation::{
-    ContextBudget, Conversation, ConversationBuildError, ConversationError, LoopOutcome,
-};
+pub use conversation::{ContextBudget, Conversation, ConversationError, LoopOutcome};
 pub use model_id::{AnthropicModel, GeminiModel, ModelId, OpenAiModel, SchemaKind};
 pub use observer::{
     DoomLoopConfig, DoomLoopObserver, DuplicateDetection, DuplicateResultConfig,

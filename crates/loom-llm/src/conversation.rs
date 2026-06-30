@@ -16,12 +16,12 @@
 
 use displaydoc::Display;
 use loom_events::event::Source;
-use loom_events::identifier::{BeadId, ParseBeadIdError, ToolCallId};
+use loom_events::identifier::{BeadId, ToolCallId as EventToolCallId};
 use loom_events::{AgentEvent, EnvelopeBuilder, EventSink, SessionCommand};
 use thiserror::Error;
 
 use crate::cache::CacheControl;
-use crate::client::{CompletionResponse, LlmClient, LlmError};
+use crate::client::{CompletionResponse, LlmClient, LlmError, ToolCallId as LlmToolCallId};
 use crate::model_id::ModelId;
 #[cfg(test)]
 use crate::model_id::SchemaKind;
@@ -61,16 +61,6 @@ impl ContextBudget {
     pub const fn max_request_bytes_value(self) -> usize {
         self.max_request_bytes
     }
-}
-
-/// Failure modes for [`Conversation`] construction. Surfaced when an
-/// internal invariant of the synthetic default state cannot be
-/// established — for example, the hardcoded synthetic bead id used by
-/// the default [`EnvelopeBuilder`] failing to parse.
-#[derive(Debug, Display, Error)]
-pub enum ConversationBuildError {
-    /// failed to construct the synthetic default `EnvelopeBuilder`
-    DefaultBead(#[from] ParseBeadIdError),
 }
 
 /// Loop-control errors [`Conversation::run`] surfaces above and beyond
@@ -119,7 +109,7 @@ pub struct Conversation {
     context_budget: Option<ContextBudget>,
     doom_loop: Option<DoomLoopObserver>,
     duplicate_result: Option<DuplicateResultObserver>,
-    envelope_builder: EnvelopeBuilder,
+    envelope_builder: Option<EnvelopeBuilder>,
     pending_steers: Vec<String>,
 }
 
@@ -138,7 +128,7 @@ impl Conversation {
     /// [`Conversation::duplicate_result`] /
     /// [`Conversation::doom_loop_disabled`] /
     /// [`Conversation::duplicate_result_disabled`].
-    pub fn new(model: ModelId) -> Result<Self, ConversationBuildError> {
+    pub fn new(model: ModelId) -> Self {
         Self::with_observer_configs(
             model,
             DoomLoopConfig::default(),
@@ -154,8 +144,8 @@ impl Conversation {
         model: ModelId,
         doom_loop: DoomLoopConfig,
         duplicate_result: DuplicateResultConfig,
-    ) -> Result<Self, ConversationBuildError> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             model,
             system: None,
             tools: Vec::new(),
@@ -166,9 +156,9 @@ impl Conversation {
             context_budget: None,
             doom_loop: build_doom_loop_observer(&doom_loop),
             duplicate_result: build_duplicate_result_observer(&duplicate_result),
-            envelope_builder: default_envelope_builder()?,
+            envelope_builder: default_envelope_builder(),
             pending_steers: Vec::new(),
-        })
+        }
     }
 
     /// Set the system instruction prefix the loop carries on every
@@ -259,7 +249,7 @@ impl Conversation {
     /// observers key on `(CallKey, ResultHash)` rather than the
     /// timestamp, so the default is observationally inert.
     pub fn with_envelope_builder(mut self, envelope_builder: EnvelopeBuilder) -> Self {
-        self.envelope_builder = envelope_builder;
+        self.envelope_builder = Some(envelope_builder);
         self
     }
 
@@ -327,7 +317,7 @@ impl Conversation {
             ));
 
             for call in &response.tool_calls {
-                self.observe_tool_call(call.call_id.clone(), &call.name, &call.args);
+                self.observe_tool_call(&call.call_id, &call.name, &call.args);
                 if let Some(reason) = self.process_react_commands() {
                     return Err(ConversationError::ObserverAbort { reason });
                 }
@@ -347,7 +337,7 @@ impl Conversation {
                     output.is_error,
                 ));
 
-                self.observe_tool_result(call.call_id.clone(), &content, output.is_error);
+                self.observe_tool_result(&call.call_id, &content, output.is_error);
                 if let Some(reason) = self.process_react_commands() {
                     return Err(ConversationError::ObserverAbort { reason });
                 }
@@ -368,13 +358,18 @@ impl Conversation {
         }
     }
 
-    fn observe_tool_call(&mut self, call_id: String, tool: &str, params: &serde_json::Value) {
-        if self.doom_loop.is_none() && self.duplicate_result.is_none() {
+    fn observe_tool_call(
+        &mut self,
+        call_id: &LlmToolCallId,
+        tool: &str,
+        params: &serde_json::Value,
+    ) {
+        let Some(envelope) = self.next_observer_envelope() else {
             return;
-        }
+        };
         let event = AgentEvent::ToolCall {
-            envelope: self.envelope_builder.build_with_source(Source::Agent),
-            id: ToolCallId::new(call_id),
+            envelope,
+            id: EventToolCallId::new(call_id.as_str()),
             tool: tool.to_owned(),
             params: params.clone(),
             parent_tool_call_id: None,
@@ -387,13 +382,13 @@ impl Conversation {
         }
     }
 
-    fn observe_tool_result(&mut self, call_id: String, output: &str, is_error: bool) {
-        if self.doom_loop.is_none() && self.duplicate_result.is_none() {
+    fn observe_tool_result(&mut self, call_id: &LlmToolCallId, output: &str, is_error: bool) {
+        let Some(envelope) = self.next_observer_envelope() else {
             return;
-        }
+        };
         let event = AgentEvent::ToolResult {
-            envelope: self.envelope_builder.build_with_source(Source::Agent),
-            id: ToolCallId::new(call_id),
+            envelope,
+            id: EventToolCallId::new(call_id.as_str()),
             output: output.to_owned(),
             is_error,
         };
@@ -403,6 +398,15 @@ impl Conversation {
         if let Some(observer) = self.duplicate_result.as_mut() {
             observer.emit(&event);
         }
+    }
+
+    fn next_observer_envelope(&mut self) -> Option<loom_events::EventEnvelope> {
+        if self.doom_loop.is_none() && self.duplicate_result.is_none() {
+            return None;
+        }
+        self.envelope_builder
+            .as_mut()
+            .map(|builder| builder.build_with_source(Source::Agent))
     }
 
     /// Drain composed observers' `react()` queues in registration order.
@@ -576,11 +580,14 @@ fn estimate_message_bytes(message: &Message) -> usize {
     let tool_call_bytes = message.tool_calls.iter().fold(0usize, |total, call| {
         total
             .saturating_add(TOOL_CALL_OVERHEAD_BYTES)
-            .saturating_add(call.call_id.len())
+            .saturating_add(call.call_id.as_str().len())
             .saturating_add(call.name.len())
             .saturating_add(call.args.to_string().len())
     });
-    let tool_result_id_bytes = message.tool_call_id.as_ref().map_or(0, |id| id.len());
+    let tool_result_id_bytes = message
+        .tool_call_id
+        .as_ref()
+        .map_or(0, |id| id.as_str().len());
 
     MESSAGE_OVERHEAD_BYTES
         .saturating_add(content_bytes)
@@ -615,9 +622,11 @@ fn estimate_tool_def_bytes(tool: &ToolDef) -> usize {
 /// the synthesised events supply their own builder via
 /// [`Conversation::with_envelope_builder`] (the only path that draws on
 /// the dedicated `SystemClock` impls in `loom-driver` / `loom-render`).
-fn default_envelope_builder() -> Result<EnvelopeBuilder, ConversationBuildError> {
-    let bead = BeadId::new("lm-conv")?;
-    Ok(EnvelopeBuilder::new(bead, None, 0, Source::Agent, || 0))
+fn default_envelope_builder() -> Option<EnvelopeBuilder> {
+    match BeadId::new("lm-conv") {
+        Ok(bead) => Some(EnvelopeBuilder::new(bead, None, 0, Source::Agent, || 0)),
+        Err(_err) => None,
+    }
 }
 
 fn build_doom_loop_observer(config: &DoomLoopConfig) -> Option<DoomLoopObserver> {
@@ -809,7 +818,7 @@ mod tests {
             text: String::new(),
             usage: TokenUsage::default(),
             tool_calls: vec![ToolUseRequest {
-                call_id: call_id.to_string(),
+                call_id: LlmToolCallId::parse(call_id).expect("test tool call id parses"),
                 name: name.to_string(),
                 args,
             }],
@@ -823,7 +832,6 @@ mod tests {
     fn conversation_context_budget_trims_ordinary_history_before_pinned_prompt() {
         let (client, captured) = CapturingClient::new(no_calls("done"));
         let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds")
             .context_budget(ContextBudget::max_request_bytes(1));
         conv.user_cached_pinned("PINNED INSTRUCTIONS", CacheControl::None);
         conv.user("ordinary history should be dropped");
@@ -850,7 +858,6 @@ mod tests {
     fn conversation_builder_accepts_documented_knobs() {
         let (tool, _seen) = EchoTool::new();
         let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds")
             .system("be terse")
             .register(tool)
             .max_iterations(7)
@@ -883,9 +890,8 @@ mod tests {
             no_calls("done"),
         ]);
 
-        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds")
-            .register(tool);
+        let mut conv =
+            Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46)).register(tool);
         conv.user("do the thing");
 
         let resp = tokio_test::block_on(conv.run(&client)).expect("run completes");
@@ -901,7 +907,10 @@ mod tests {
         assert_eq!(roles, vec![Role::User, Role::Assistant, Role::Tool]);
         assert_eq!(history[1].tool_calls.len(), 1);
         assert_eq!(history[1].tool_calls[0].name, "echo");
-        assert_eq!(history[2].tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(
+            history[2].tool_call_id.as_ref().map(|id| id.as_str()),
+            Some("call-1"),
+        );
     }
 
     /// The loop honours `max_iterations`; an unending tool-call stream
@@ -917,7 +926,6 @@ mod tests {
         let (client, calls) = ScriptedClient::new(infinite);
 
         let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds")
             .register(tool)
             .max_iterations(3);
         conv.user("loop");
@@ -941,7 +949,6 @@ mod tests {
         ]);
 
         let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds")
             .register(tool)
             .max_iterations(2)
             .on_iteration_exhausted(LoopOutcome::ReturnLast);
@@ -949,7 +956,7 @@ mod tests {
 
         let resp = tokio_test::block_on(conv.run(&client)).expect("returns last response");
         assert_eq!(resp.tool_calls.len(), 1);
-        assert_eq!(resp.tool_calls[0].call_id, "call-b");
+        assert_eq!(resp.tool_calls[0].call_id.as_str(), "call-b");
     }
 
     /// The default `DuplicateResultObserver` ships enabled, and the
@@ -958,11 +965,9 @@ mod tests {
     /// CLI-side config.
     #[test]
     fn duplicate_result_config_disable_path() {
-        let on = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds");
+        let on = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46));
         assert!(on.duplicate_result_enabled());
         let off = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds")
             .duplicate_result_disabled();
         assert!(!off.duplicate_result_enabled());
     }
@@ -972,11 +977,9 @@ mod tests {
     /// false` in the CLI-side config.
     #[test]
     fn doom_loop_config_disable_path() {
-        let on = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds");
+        let on = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46));
         assert!(on.doom_loop_enabled());
         let off = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds")
             .doom_loop_disabled();
         assert!(!off.doom_loop_enabled());
     }
@@ -986,8 +989,7 @@ mod tests {
     /// `Conversation` runs get the safety nets out of the box.
     #[test]
     fn conversation_new_default_constructs_observers() {
-        let conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds");
+        let conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46));
         let doom = conv.doom_loop_observer().expect("doom loop composed");
         assert_eq!(doom.window(), 5);
         assert_eq!(doom.threshold(), 3);
@@ -1007,7 +1009,6 @@ mod tests {
     #[test]
     fn observer_builder_knobs_apply_custom_config() {
         let conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds")
             .doom_loop(DoomLoopConfig {
                 enabled: true,
                 window: 8,
@@ -1034,7 +1035,6 @@ mod tests {
     #[test]
     fn observer_config_enabled_false_drops_observer() {
         let conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds")
             .doom_loop(DoomLoopConfig {
                 enabled: false,
                 ..DoomLoopConfig::default()
@@ -1062,8 +1062,7 @@ mod tests {
                 ..DoomLoopConfig::default()
             },
             DuplicateResultConfig::default(),
-        )
-        .expect("conversation builds");
+        );
         assert!(!conv.doom_loop_enabled());
         assert!(conv.duplicate_result_enabled());
     }
@@ -1095,7 +1094,6 @@ mod tests {
         let (client, calls) = ScriptedClient::new(vec![with_call("pending", "call-1", json!({}))]);
 
         let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds")
             .register(PendingTool);
         conv.user("hang");
 
@@ -1121,7 +1119,6 @@ mod tests {
         let (client, calls) = ScriptedClient::new(scripted);
 
         let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds")
             .register(tool)
             .doom_loop(DoomLoopConfig {
                 enabled: true,
@@ -1159,7 +1156,6 @@ mod tests {
         let (client, _calls) = ScriptedClient::new(scripted);
 
         let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds")
             .register(tool)
             .doom_loop(DoomLoopConfig {
                 enabled: true,
@@ -1198,7 +1194,6 @@ mod tests {
         let (client, _calls) = ScriptedClient::new(scripted);
 
         let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .expect("conversation builds")
             .register(tool)
             .doom_loop_disabled()
             .duplicate_result_disabled()

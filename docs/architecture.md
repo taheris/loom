@@ -47,6 +47,7 @@ orientation.
 | `loom-driver` | State store (SQLite), bd shim, lock manager, scratchpads, git client |
 | `loom-events` | Typed event identifiers (`BeadId`, `SpecLabel`, `MoleculeId`, …) |
 | `loom-gate` | Quality gate: `loom gate verify` (deterministic) + `loom gate review` (LLM judge) |
+| `loom-protocol` | Public-contract wire protocol types parsed by workflow, templates, and external consumers |
 | `loom-llm` | Public-contract LLM primitives: `LlmClient`, `Conversation`, observers |
 | `loom-render` | Streaming output formatters and event sinks |
 | `loom-skills` | Public skill artifact model and registry stages |

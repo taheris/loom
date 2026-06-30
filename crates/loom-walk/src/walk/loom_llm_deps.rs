@@ -1,6 +1,7 @@
-//! `llm` is a public-contract leaf alongside `loom-events` and
-//! `templates`. Its `[dependencies]` table must depend on no
-//! internal crate other than `loom-events` — pulling `loom-driver`,
+//! `llm` is a public-contract leaf alongside `loom-events`,
+//! `loom-protocol`, `templates`, and `loom-skills`. Its
+//! `[dependencies]` table must depend on no internal crate other than
+//! `loom-events` — pulling `loom-driver`,
 //! `agent`, `loom-workflow`, `loom-skills`, or `loom-tune` would invert
 //! the consumer-facing dependency direction the spec preserves.
 

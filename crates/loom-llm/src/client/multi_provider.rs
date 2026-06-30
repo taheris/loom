@@ -9,6 +9,7 @@
 //! wrapper insulates consumers from the underlying crate's API churn.
 
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 
 use base64::Engine;
 use genai::chat::{
@@ -18,15 +19,17 @@ use genai::chat::{
     ToolResponse as GenAiToolResponse, Usage as GenAiUsage,
 };
 use loom_events::event::Source;
+use loom_events::identifier::BeadId;
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, EventSink};
 #[cfg(test)]
 use schemars::{JsonSchema, SchemaGenerator};
-#[cfg(test)]
-use serde::de::DeserializeOwned;
 
 use crate::api_key::ApiKey;
 use crate::cache::{CacheControl, CacheTtl};
-use crate::client::{BoxFuture, CompletionResponse, LlmClient, LlmError, ToolUseRequest};
+use crate::client::{
+    BoxFuture, CompletionResponse, DEFAULT_RETRY_AFTER, LlmClient, LlmError, ToolCallId,
+    ToolUseRequest, parse_retry_after,
+};
 use crate::model_id::{ModelId, SchemaKind};
 use crate::request::{CompletionRequest, Message, MessageContent, Role};
 use crate::tool::ToolDef;
@@ -65,7 +68,7 @@ impl AnthropicClient {
             inner: shared_genai_client(),
             api_key,
             sinks: Mutex::new(Vec::new()),
-            envelope_builder: Mutex::new(None),
+            envelope_builder: Mutex::new(default_envelope_builder()),
         }
     }
 
@@ -135,10 +138,8 @@ impl LlmClient for AnthropicClient {
                 .inner
                 .exec_chat(&model_name, chat_req, Some(&options))
                 .await
-                .map_err(|err| LlmError::Provider {
-                    message: err.to_string(),
-                })?;
-            let response = chat_response_to_completion(resp);
+                .map_err(genai_error_to_llm)?;
+            let response = chat_response_to_completion(resp)?;
             self.emit_usage(&model, &response.usage);
             Ok(response)
         })
@@ -169,10 +170,8 @@ impl LlmClient for AnthropicClient {
                 .inner
                 .exec_chat(&model_name, chat_req, Some(&options))
                 .await
-                .map_err(|err| LlmError::Provider {
-                    message: err.to_string(),
-                })?;
-            let completion = chat_response_to_completion(resp);
+                .map_err(genai_error_to_llm)?;
+            let completion = chat_response_to_completion(resp)?;
             self.emit_usage(&model, &completion.usage);
             Ok(completion.text)
         })
@@ -199,8 +198,14 @@ impl OpenAiClient {
             inner: shared_genai_client(),
             api_key,
             sinks: Mutex::new(Vec::new()),
-            envelope_builder: Mutex::new(None),
+            envelope_builder: Mutex::new(default_envelope_builder()),
         }
+    }
+
+    #[cfg(test)]
+    fn with_genai_client(mut self, inner: Arc<genai::Client>) -> Self {
+        self.inner = inner;
+        self
     }
 
     /// Attach an [`EventSink`] to this Client's chain.
@@ -263,10 +268,8 @@ impl LlmClient for OpenAiClient {
                 .inner
                 .exec_chat(&model_name, chat_req, Some(&options))
                 .await
-                .map_err(|err| LlmError::Provider {
-                    message: err.to_string(),
-                })?;
-            let response = chat_response_to_completion(resp);
+                .map_err(genai_error_to_llm)?;
+            let response = chat_response_to_completion(resp)?;
             self.emit_usage(&model, &response.usage);
             Ok(response)
         })
@@ -297,10 +300,8 @@ impl LlmClient for OpenAiClient {
                 .inner
                 .exec_chat(&model_name, chat_req, Some(&options))
                 .await
-                .map_err(|err| LlmError::Provider {
-                    message: err.to_string(),
-                })?;
-            let completion = chat_response_to_completion(resp);
+                .map_err(genai_error_to_llm)?;
+            let completion = chat_response_to_completion(resp)?;
             self.emit_usage(&model, &completion.usage);
             Ok(completion.text)
         })
@@ -327,7 +328,7 @@ impl GeminiClient {
             inner: shared_genai_client(),
             api_key,
             sinks: Mutex::new(Vec::new()),
-            envelope_builder: Mutex::new(None),
+            envelope_builder: Mutex::new(default_envelope_builder()),
         }
     }
 
@@ -391,10 +392,8 @@ impl LlmClient for GeminiClient {
                 .inner
                 .exec_chat(&model_name, chat_req, Some(&options))
                 .await
-                .map_err(|err| LlmError::Provider {
-                    message: err.to_string(),
-                })?;
-            let response = chat_response_to_completion(resp);
+                .map_err(genai_error_to_llm)?;
+            let response = chat_response_to_completion(resp)?;
             self.emit_usage(&model, &response.usage);
             Ok(response)
         })
@@ -425,13 +424,18 @@ impl LlmClient for GeminiClient {
                 .inner
                 .exec_chat(&model_name, chat_req, Some(&options))
                 .await
-                .map_err(|err| LlmError::Provider {
-                    message: err.to_string(),
-                })?;
-            let completion = chat_response_to_completion(resp);
+                .map_err(genai_error_to_llm)?;
+            let completion = chat_response_to_completion(resp)?;
             self.emit_usage(&model, &completion.usage);
             Ok(completion.text)
         })
+    }
+}
+
+pub(super) fn default_envelope_builder() -> Option<EnvelopeBuilder> {
+    match BeadId::new("lm-llm") {
+        Ok(bead) => Some(EnvelopeBuilder::new(bead, None, 0, Source::Driver, || 0)),
+        Err(_err) => None,
     }
 }
 
@@ -500,6 +504,127 @@ pub(super) fn debug_per_schema_client(
         .finish()
 }
 
+fn genai_error_to_llm(err: genai::Error) -> LlmError {
+    let diagnostic = err.to_string();
+    match err {
+        genai::Error::ChatReqHasNoMessages { .. }
+        | genai::Error::LastChatMessageIsNotUser { .. }
+        | genai::Error::MessageRoleNotSupported { .. }
+        | genai::Error::MessageContentTypeNotSupported { .. }
+        | genai::Error::JsonModeWithoutInstruction
+        | genai::Error::VerbosityParsing { .. }
+        | genai::Error::ReasoningParsingError { .. }
+        | genai::Error::ServiceTierParsing { .. }
+        | genai::Error::PromptCacheRetentionParsing { .. }
+        | genai::Error::AdapterNotSupported { .. }
+        | genai::Error::AdapterKindMismatch { .. } => {
+            LlmError::IncompatibleRequest { reason: diagnostic }
+        }
+        genai::Error::NoChatResponse { .. }
+        | genai::Error::InvalidJsonResponseElement { .. }
+        | genai::Error::ChatResponseGeneration { .. }
+        | genai::Error::StreamParse { .. }
+        | genai::Error::JsonValueExt(_)
+        | genai::Error::SerdeJson(_) => LlmError::MalformedJson(diagnostic),
+        genai::Error::RequiresApiKey { .. }
+        | genai::Error::NoAuthResolver { .. }
+        | genai::Error::NoAuthData { .. } => LlmError::AuthFailed { reason: diagnostic },
+        genai::Error::ModelMapperFailed { cause, .. } => resolver_error_to_llm(cause),
+        genai::Error::Resolver { resolver_error, .. } => resolver_error_to_llm(resolver_error),
+        genai::Error::WebAdapterCall { webc_error, .. }
+        | genai::Error::WebModelCall { webc_error, .. } => webc_error_to_llm(webc_error),
+        genai::Error::WebStream { cause, .. } => LlmError::Transport(cause),
+        genai::Error::HttpError { status, body, .. } => {
+            classify_status_code(status.as_u16(), None, body, current_system_time())
+        }
+        genai::Error::ChatResponse { body, .. } => LlmError::Provider {
+            message: body.to_string(),
+        },
+        genai::Error::Internal(message) => LlmError::Provider { message },
+    }
+}
+
+fn resolver_error_to_llm(err: genai::resolver::Error) -> LlmError {
+    let diagnostic = err.to_string();
+    match err {
+        genai::resolver::Error::ApiKeyEnvNotFound { .. }
+        | genai::resolver::Error::ResolverAuthDataNotSingleValue => {
+            LlmError::AuthFailed { reason: diagnostic }
+        }
+        genai::resolver::Error::Custom(message) => LlmError::Provider { message },
+    }
+}
+
+fn webc_error_to_llm(err: genai::webc::Error) -> LlmError {
+    let diagnostic = err.to_string();
+    match err {
+        genai::webc::Error::ResponseFailedNotJson { .. }
+        | genai::webc::Error::ResponseFailedInvalidJson { .. }
+        | genai::webc::Error::JsonValueExt(_) => LlmError::MalformedJson(diagnostic),
+        genai::webc::Error::ResponseFailedStatus {
+            status,
+            body,
+            headers,
+        } => {
+            let retry_after = match headers.get("retry-after") {
+                Some(value) => match value.to_str() {
+                    Ok(raw) => parse_retry_after(raw, current_system_time()),
+                    Err(_err) => DEFAULT_RETRY_AFTER,
+                },
+                None => DEFAULT_RETRY_AFTER,
+            };
+            classify_status_code_with_retry_after(status.as_u16(), retry_after, body)
+        }
+        genai::webc::Error::Reqwest(err) => {
+            if err.is_timeout() {
+                LlmError::Timeout
+            } else if err.is_decode() {
+                LlmError::MalformedJson(err.to_string())
+            } else if let Some(status) = err.status() {
+                classify_status_code(
+                    status.as_u16(),
+                    None,
+                    err.to_string(),
+                    current_system_time(),
+                )
+            } else {
+                LlmError::Transport(err.to_string())
+            }
+        }
+    }
+}
+
+fn classify_status_code(
+    status: u16,
+    retry_after_header: Option<&str>,
+    body: String,
+    now: SystemTime,
+) -> LlmError {
+    let retry_after =
+        retry_after_header.map_or(DEFAULT_RETRY_AFTER, |raw| parse_retry_after(raw, now));
+    classify_status_code_with_retry_after(status, retry_after, body)
+}
+
+fn classify_status_code_with_retry_after(
+    status: u16,
+    retry_after: std::time::Duration,
+    body: String,
+) -> LlmError {
+    match status {
+        401 | 403 => LlmError::AuthFailed { reason: body },
+        429 => LlmError::RateLimited { retry_after },
+        other => LlmError::ProviderHttp {
+            status: other,
+            body,
+        },
+    }
+}
+
+fn current_system_time() -> SystemTime {
+    let now = SystemTime::now;
+    now()
+}
+
 /// Lower a [`CompletionRequest`] to the genai chat request + options
 /// pair and attach the supplied JSON schema as the structured-output
 /// spec. The same `JsonSpec` round-trips through every adapter —
@@ -543,11 +668,6 @@ fn json_spec_name<T: JsonSchema>() -> String {
             }
         })
         .collect()
-}
-
-#[cfg(test)]
-pub(crate) fn parse_structured_text<T: DeserializeOwned>(text: &str) -> Result<T, LlmError> {
-    serde_json::from_str(text).map_err(|err| LlmError::MalformedJson(err.to_string()))
 }
 
 /// Map a typed [`ModelId`] to the underlying crate's model-name string.
@@ -608,7 +728,7 @@ fn to_chat_message(msg: Message) -> ChatMessage {
 
 fn build_message_content(msg: &Message) -> GenAiMessageContent {
     if let Some(call_id) = msg.tool_call_id.as_ref() {
-        let response = GenAiToolResponse::new(call_id.clone(), msg.text_content());
+        let response = GenAiToolResponse::new(call_id.as_str().to_owned(), msg.text_content());
         return GenAiMessageContent::from(response);
     }
     if !msg.tool_calls.is_empty() {
@@ -655,19 +775,20 @@ pub(crate) fn validate_binary_payloads(req: &CompletionRequest) -> Result<(), Ll
 
 fn to_genai_tool_call(call: &ToolUseRequest) -> GenAiToolCall {
     GenAiToolCall {
-        call_id: call.call_id.clone(),
+        call_id: call.call_id.as_str().to_owned(),
         fn_name: call.name.clone(),
         fn_arguments: call.args.clone(),
         thought_signatures: None,
     }
 }
 
-fn chat_tool_call_to_request(call: &GenAiToolCall) -> ToolUseRequest {
-    ToolUseRequest {
-        call_id: call.call_id.clone(),
+fn chat_tool_call_to_request(call: &GenAiToolCall) -> Result<ToolUseRequest, LlmError> {
+    Ok(ToolUseRequest {
+        call_id: ToolCallId::parse(call.call_id.clone())
+            .map_err(|err| LlmError::MalformedJson(err.to_string()))?,
         name: call.fn_name.clone(),
         args: call.fn_arguments.clone(),
-    }
+    })
 }
 
 pub(crate) fn cache_control_to_genai(cache: &CacheControl) -> Option<GenAiCacheControl> {
@@ -679,19 +800,21 @@ pub(crate) fn cache_control_to_genai(cache: &CacheControl) -> Option<GenAiCacheC
     }
 }
 
-pub(crate) fn chat_response_to_completion(resp: ChatResponse) -> CompletionResponse {
+pub(crate) fn chat_response_to_completion(
+    resp: ChatResponse,
+) -> Result<CompletionResponse, LlmError> {
     let usage = usage_to_token_usage(&resp.usage);
     let tool_calls: Vec<ToolUseRequest> = resp
         .tool_calls()
         .into_iter()
         .map(chat_tool_call_to_request)
-        .collect();
+        .collect::<Result<_, _>>()?;
     let text = resp.into_first_text().unwrap_or_default();
-    CompletionResponse {
+    Ok(CompletionResponse {
         text,
         usage,
         tool_calls,
-    }
+    })
 }
 
 fn usage_to_token_usage(usage: &GenAiUsage) -> TokenUsage {
@@ -719,12 +842,15 @@ fn usage_to_token_usage(usage: &GenAiUsage) -> TokenUsage {
 mod tests {
     use super::*;
     use crate::cache::CacheTtl;
+    use crate::client::LlmClientExt;
     use crate::model_id::{AnthropicModel, GeminiModel, OpenAiModel};
-    use genai::ModelIden;
     use genai::adapter::AdapterKind;
     use genai::chat::{PromptTokensDetails, Usage as GenAiUsage};
-    use loom_events::identifier::BeadId;
+    use genai::resolver::{AuthData, Endpoint};
+    use genai::{ModelIden, ServiceTarget};
     use std::sync::{Arc, Mutex};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_api_key() -> ApiKey {
         ApiKey::new("test-key".to_string()).expect("non-empty key")
@@ -828,44 +954,70 @@ mod tests {
         }
     }
 
-    fn test_envelope_builder() -> EnvelopeBuilder {
-        let mut clock = 0_i64;
-        EnvelopeBuilder::new(
-            BeadId::new("lm-test").expect("valid bead id"),
-            None,
-            0,
-            Source::Agent,
-            move || {
-                clock += 1;
-                clock
-            },
+    fn genai_client_for_mock_openai(base_url: String) -> Arc<genai::Client> {
+        Arc::new(
+            genai::Client::builder()
+                .with_adapter_kind(AdapterKind::OpenAI)
+                .with_service_target_resolver_fn(move |mut target: ServiceTarget| {
+                    target.endpoint = Endpoint::from_owned(base_url.clone());
+                    target.auth = AuthData::from_single("sk-test");
+                    Ok(target)
+                })
+                .build(),
         )
     }
 
+    fn openai_completion_payload(input: u32, output: u32, text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "gpt-5.5",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": input,
+                "completion_tokens": output,
+                "total_tokens": input + output
+            }
+        })
+    }
+
     /// Attaching two sinks via repeated `.with_event_sink(...)` builder
-    /// calls accumulates them into a chain; a synthetic `emit_usage`
-    /// drives the same private emission path `complete*` exercises, and
-    /// every attached sink records exactly one `DriverKind::TokenUsage`
-    /// event.
-    #[test]
-    fn client_with_event_sink_attaches_chain_and_receives_usage_events() {
+    /// calls accumulates them into a chain; a successful `complete`
+    /// call emits token usage into both sinks without requiring callers
+    /// to install an explicit envelope builder.
+    #[tokio::test]
+    async fn client_with_event_sink_attaches_chain_and_receives_usage_events() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(openai_completion_payload(10, 5, "ok")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
         let sink_a = RecordingSink::default();
         let sink_b = RecordingSink::default();
         let recorded_a = sink_a.events.clone();
         let recorded_b = sink_b.events.clone();
-
-        let client = AnthropicClient::new(test_api_key())
-            .with_envelope_builder(test_envelope_builder())
+        let client = OpenAiClient::new(test_api_key())
+            .with_genai_client(genai_client_for_mock_openai(format!("{}/", server.uri())))
             .with_event_sink(sink_a)
             .with_event_sink(sink_b);
 
-        let usage = TokenUsage {
-            input: 10,
-            output: 5,
-            cache_read: 0,
-            cache_write: 0,
-        };
-        client.emit_usage(&ModelId::Anthropic(AnthropicModel::ClaudeSonnet46), &usage);
+        let req = CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Gpt55)).user("hi");
+        let response = client
+            .complete(req)
+            .await
+            .expect("mock completion succeeds");
+        assert_eq!(response.usage.input, 10);
+        assert_eq!(response.usage.output, 5);
 
         let events_a = recorded_a.lock().expect("sink_a mutex");
         let events_b = recorded_b.lock().expect("sink_b mutex");
@@ -873,8 +1025,15 @@ mod tests {
         assert_eq!(events_b.len(), 1, "sink_b sees the event");
         for events in [&events_a, &events_b] {
             match &events[0] {
-                AgentEvent::DriverEvent { driver_kind, .. } => {
+                AgentEvent::DriverEvent {
+                    driver_kind,
+                    payload,
+                    ..
+                } => {
                     assert_eq!(*driver_kind, DriverKind::TokenUsage);
+                    assert_eq!(payload["model"], "gpt-5.5");
+                    assert_eq!(payload["input"], 10);
+                    assert_eq!(payload["output"], 5);
                 }
                 other => panic!("expected DriverEvent, got {other:?}"),
             }
@@ -1111,7 +1270,7 @@ mod tests {
         let usage = make_usage(1_000, 250, 600, 400);
         let resp = make_response(usage);
 
-        let completion = chat_response_to_completion(resp);
+        let completion = chat_response_to_completion(resp).expect("response converts");
         assert_eq!(completion.text, "the answer");
         let TokenUsage {
             input,
@@ -1169,13 +1328,11 @@ mod tests {
         }
     }
 
-    /// `parse_structured_text::<T>` deserializes the same canonical JSON
-    /// payload into the same `T` regardless of which provider produced
-    /// it. The downstream `complete_structured` code path treats all
-    /// three adapters identically — only the `ModelId`-driven route
-    /// through the underlying crate differs, so the "same call shape,
-    /// same returned `T`" promise holds across Anthropic, OpenAI, and
-    /// Gemini.
+    /// `complete_structured::<T>` deserializes the same canonical JSON
+    /// payload into the same `T` regardless of which provider schema
+    /// produced it. The test drives the public typed method, not the
+    /// lower-level parser, so a regression in the structured-output
+    /// extension path breaks the criterion.
     #[test]
     fn complete_structured_returns_typed_t_across_providers() {
         #[derive(Debug, PartialEq, serde::Deserialize, schemars::JsonSchema)]
@@ -1184,16 +1341,63 @@ mod tests {
             count: u32,
         }
 
-        let json_text = r#"{"title":"forty-two","count":42}"#;
+        struct StructuredStub {
+            schema: SchemaKind,
+            payload: &'static str,
+        }
+
+        impl LlmClient for StructuredStub {
+            fn schema(&self) -> SchemaKind {
+                self.schema
+            }
+
+            fn complete<'a>(
+                &'a self,
+                _req: CompletionRequest,
+            ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+                Box::pin(async move {
+                    Err(LlmError::Provider {
+                        message: "complete not used by structured test".into(),
+                    })
+                })
+            }
+
+            fn complete_structured_raw<'a>(
+                &'a self,
+                req: CompletionRequest,
+                schema: serde_json::Value,
+                type_name: String,
+            ) -> BoxFuture<'a, Result<String, LlmError>> {
+                Box::pin(async move {
+                    assert_eq!(req.model.schema(), self.schema);
+                    assert!(schema.get("properties").is_some());
+                    assert_eq!(type_name, "AnswerShape");
+                    Ok(self.payload.to_string())
+                })
+            }
+        }
+
         let providers = [
             (
+                StructuredStub {
+                    schema: SchemaKind::Anthropic,
+                    payload: r#"{"title":"forty-two","count":42}"#,
+                },
                 ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
-                AdapterKind::Anthropic,
             ),
-            (ModelId::OpenAi(OpenAiModel::Gpt55), AdapterKind::OpenAI),
             (
+                StructuredStub {
+                    schema: SchemaKind::OpenAi,
+                    payload: r#"{"title":"forty-two","count":42}"#,
+                },
+                ModelId::OpenAi(OpenAiModel::Gpt55),
+            ),
+            (
+                StructuredStub {
+                    schema: SchemaKind::Gemini,
+                    payload: r#"{"title":"forty-two","count":42}"#,
+                },
                 ModelId::Gemini(GeminiModel::Gemini31Pro),
-                AdapterKind::Gemini,
             ),
         ];
         let expected = AnswerShape {
@@ -1201,30 +1405,11 @@ mod tests {
             count: 42,
         };
 
-        for (model_id, adapter_kind) in providers {
-            let resp = make_text_response(
-                adapter_kind,
-                &model_id_to_provider_name(&model_id),
-                json_text,
-            );
-            let completion = chat_response_to_completion(resp);
-            let value: AnswerShape =
-                parse_structured_text(&completion.text).expect("structured payload parses");
-            assert_eq!(value, expected, "same T across providers: {adapter_kind:?}",);
-        }
-    }
-
-    fn make_text_response(adapter: AdapterKind, model_name: &str, text: &str) -> ChatResponse {
-        let model = ModelIden::new(adapter, model_name.to_string());
-        ChatResponse {
-            content: GenAiMessageContent::from_text(text),
-            reasoning_content: None,
-            model_iden: model.clone(),
-            provider_model_iden: model,
-            stop_reason: None,
-            usage: GenAiUsage::default(),
-            captured_raw_body: None,
-            response_id: None,
+        for (client, model_id) in providers {
+            let req = CompletionRequest::new(model_id);
+            let value: AnswerShape = tokio_test::block_on(client.complete_structured(req))
+                .expect("structured payload parses");
+            assert_eq!(value, expected, "same T for {:?}", client.schema);
         }
     }
 
@@ -1233,26 +1418,33 @@ mod tests {
     /// chain. The event's payload carries the four-field `TokenUsage`
     /// plus the model identifier so SaaS billing pipelines see cache
     /// hits and compute their own per-tenant cost from the raw counts.
-    ///
-    /// `complete()` itself requires a live provider, so this test
-    /// invokes the private emission helper that `complete()` calls
-    /// after every successful response — the same code path, exercised
-    /// without the network round-trip.
-    #[test]
-    fn complete_emits_token_usage_driver_event() {
+    #[tokio::test]
+    async fn complete_emits_token_usage_driver_event() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(openai_completion_payload(
+                    1_000,
+                    250,
+                    "the answer",
+                )),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
         let sink = RecordingSink::default();
         let recorded = sink.events.clone();
-        let client = AnthropicClient::new(test_api_key())
-            .with_envelope_builder(test_envelope_builder())
+        let client = OpenAiClient::new(test_api_key())
+            .with_genai_client(genai_client_for_mock_openai(format!("{}/", server.uri())))
             .with_event_sink(sink);
-
-        let usage = TokenUsage {
-            input: 1_000,
-            output: 250,
-            cache_read: 600,
-            cache_write: 400,
-        };
-        client.emit_usage(&ModelId::Anthropic(AnthropicModel::ClaudeSonnet46), &usage);
+        let req = CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Gpt55)).user("hi");
+        let response = client
+            .complete(req)
+            .await
+            .expect("mock completion succeeds");
+        assert_eq!(response.text, "the answer");
 
         let events = recorded.lock().expect("recording sink mutex");
         assert_eq!(events.len(), 1, "exactly one driver event emitted");
@@ -1265,11 +1457,11 @@ mod tests {
             } => {
                 assert_eq!(*driver_kind, DriverKind::TokenUsage);
                 assert_eq!(envelope.source, Source::Driver);
-                assert_eq!(payload["model"], "claude-sonnet-4-6");
+                assert_eq!(payload["model"], "gpt-5.5");
                 assert_eq!(payload["input"], 1_000);
                 assert_eq!(payload["output"], 250);
-                assert_eq!(payload["cache_read"], 600);
-                assert_eq!(payload["cache_write"], 400);
+                assert_eq!(payload["cache_read"], 0);
+                assert_eq!(payload["cache_write"], 0);
                 let obj = payload.as_object().expect("payload is JSON object");
                 let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
                 keys.sort_unstable();
@@ -1279,8 +1471,8 @@ mod tests {
                     "payload pins the spec'd field set with no extras",
                 );
                 assert!(
-                    summary.contains("claude-sonnet-4-6"),
-                    "summary names the model: {summary}",
+                    summary.contains("gpt-5.5"),
+                    "summary names the model: {summary}"
                 );
             }
             other => panic!("expected DriverEvent, got {other:?}"),

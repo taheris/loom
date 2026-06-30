@@ -11,7 +11,7 @@ use displaydoc::Display;
 use thiserror::Error;
 
 use crate::cache::CacheControl;
-use crate::client::ToolUseRequest;
+use crate::client::{ParseToolCallIdError, ToolCallId, ToolUseRequest};
 use crate::model_id::ModelId;
 use crate::tool::ToolDef;
 
@@ -174,7 +174,7 @@ pub struct Message {
     /// Provider-stable identifier of the originating tool call (only
     /// populated on `Role::Tool` messages — the result the loop carries
     /// back to the model).
-    pub tool_call_id: Option<String>,
+    pub tool_call_id: Option<ToolCallId>,
     /// True when this tool-result message reports an error from the
     /// tool handler. Providers that distinguish error tool-results
     /// surface this; others ignore it.
@@ -424,19 +424,28 @@ impl Message {
 
     /// Construct a tool-result turn the loop forwards back to the model
     /// after dispatching an assistant tool call.
-    pub fn tool_result(
-        call_id: impl Into<String>,
-        content: impl Into<String>,
-        is_error: bool,
-    ) -> Self {
+    pub fn tool_result(call_id: ToolCallId, content: impl Into<String>, is_error: bool) -> Self {
         Self {
             role: Role::Tool,
             content: vec![MessageContent::Text(content.into())],
             cache: CacheControl::None,
             tool_calls: Vec::new(),
-            tool_call_id: Some(call_id.into()),
+            tool_call_id: Some(call_id),
             tool_is_error: is_error,
         }
+    }
+
+    /// Parse a raw tool-call id and construct a tool-result turn.
+    pub fn try_tool_result(
+        call_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+    ) -> Result<Self, ParseToolCallIdError> {
+        Ok(Self::tool_result(
+            ToolCallId::parse(call_id)?,
+            content,
+            is_error,
+        ))
     }
 
     /// Concatenate text parts in order, omitting binary parts.

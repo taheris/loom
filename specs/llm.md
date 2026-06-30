@@ -944,10 +944,10 @@ and `--no-default-features` to catch feature-gating regressions.
 
 ### Non-Functional
 
-1. **Public-contract crate.** `llm` is one of four
+1. **Public-contract crate.** `llm` is one of five
    public-contract crates in the loom workspace (alongside
-   `loom-events`, `templates`, and `loom-skills`). External Rust consumers
-   depend on it directly. Stability rules: additive type / variant
+   `loom-events`, `loom-protocol`, `templates`, and `loom-skills`). External
+   Rust consumers depend on it directly. Stability rules: additive type / variant
    changes are minor bumps; removing or renaming public types,
    methods, or `ModelId` variants is a major bump.
 2. **Dep-graph leaf.** `llm` depends on `loom-events` only

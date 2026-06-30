@@ -876,6 +876,7 @@ fn loom_does_not_invoke_podman_fail_direct_command_new() {
 
 const STRUCTURE_LIB_NAMES: &[&str] = &[
     "loom-events",
+    "loom-protocol",
     "loom-llm",
     "loom-templates",
     "loom-skills",
@@ -908,7 +909,7 @@ fn seed_full_crate_set(ws: &TempDir) {
 }
 
 #[test]
-fn crate_structure_includes_loom_tune_pass_all_ten_present() {
+fn crate_structure_includes_loom_tune_pass_all_target_crates_present() {
     let ws = make_workspace();
     seed_full_crate_set(&ws);
     let out = invoke(
@@ -2119,6 +2120,7 @@ fn seed_contract_manifest(ws: &TempDir, name: &str, declare: bool) {
 fn public_contract_crates_pass() {
     let ws = make_workspace();
     seed_contract_manifest(&ws, "loom-events", true);
+    seed_contract_manifest(&ws, "loom-protocol", true);
     seed_contract_manifest(&ws, "loom-llm", true);
     seed_contract_manifest(&ws, "loom-templates", true);
     seed_contract_manifest(&ws, "loom-skills", true);
@@ -2130,6 +2132,7 @@ fn public_contract_crates_pass() {
 fn public_contract_crates_fail_when_missing_marker() {
     let ws = make_workspace();
     seed_contract_manifest(&ws, "loom-events", true);
+    seed_contract_manifest(&ws, "loom-protocol", true);
     seed_contract_manifest(&ws, "loom-llm", false);
     seed_contract_manifest(&ws, "loom-templates", true);
     seed_contract_manifest(&ws, "loom-skills", true);
@@ -2141,10 +2144,25 @@ fn public_contract_crates_fail_when_missing_marker() {
 fn public_contract_crates_fail_when_manifest_missing() {
     let ws = make_workspace();
     seed_contract_manifest(&ws, "loom-events", true);
+    seed_contract_manifest(&ws, "loom-protocol", true);
     seed_contract_manifest(&ws, "loom-llm", true);
     seed_contract_manifest(&ws, "loom-templates", true);
     let out = invoke(&["public_contract_crates"], Some(ws.path()), None);
     assert_fail(&out, "loom-skills");
+}
+
+#[test]
+fn public_contract_crates_fail_when_extra_crate_declares_marker() {
+    let ws = make_workspace();
+    seed_contract_manifest(&ws, "loom-events", true);
+    seed_contract_manifest(&ws, "loom-protocol", true);
+    seed_contract_manifest(&ws, "loom-llm", true);
+    seed_contract_manifest(&ws, "loom-templates", true);
+    seed_contract_manifest(&ws, "loom-skills", true);
+    seed_contract_manifest(&ws, "loom-gate", true);
+    let out = invoke(&["public_contract_crates"], Some(ws.path()), None);
+    assert_fail(&out, "unexpected");
+    assert_fail(&out, "loom-gate");
 }
 
 // ---------------------------------------------------------------------------

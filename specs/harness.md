@@ -1832,15 +1832,16 @@ worktree before they enter `loom inbox` as pending.
 
 ### Crate Layout
 
-The target v1 workspace layout has ten member crates. Four are
+The target v1 workspace layout has a fixed member-crate set. Five are
 **public-contract** crates (downstream consumers import them as Rust
-dependencies); the other six are internal organization. Pending verifier markers
+dependencies); the other crates are internal organization. Pending verifier markers
 below identify target v1 crate rows that are specified before implementation.
 
 | Crate | Tier | Role |
 |-------|------|------|
 | `loom` | internal | CLI binary — arg parsing, entry point, dispatch. |
 | `loom-events` | **public** | `AgentEvent` enum, ID newtypes (`BeadId`, `MoleculeId`, `ToolCallId`, `SpecLabel`, `ProfileName`, `SessionId`, `RequestId`), `DriverKind`, `Session` trait, `EventSink` trait, `SessionCommand`. Frontends, SSE bridges, and external log tools depend only on this. |
+| `loom-protocol` | **public** | Cross-crate wire protocol types (`gate`, `todo`, and future protocol modules) that external consumers use to parse Loom subprocess output without depending on workflow internals. See [gate.md](gate.md). |
 | `llm` | **public** | Typed wrapper over a multi-provider LLM crate. `LlmClient` trait, `Conversation` with built-in tool-use loop, `ModelId`, `CacheControl`, `complete_structured::<T>` (provider-agnostic), `TokenUsage`. Hosts the agent-loop observers (`DoomLoopObserver`, `DuplicateResultObserver`) so consumers driving via `Conversation` get the same safety nets Loom's binary uses. See [llm.md](llm.md). |
 | `templates` | **public** | Askama templates + typed context structs. Consumers compose their own templates from the exposed typed building blocks (`PinnedContext`, `PreviousFailure`, `LoopContext`, partial strings). Loom's workflow templates themselves stay internal. See [templates.md](templates.md). |
 | `loom-skills` | **public** | Agent skill artifact model, typed discovery/diagnostics, duplicate/override resolution, phase/profile filtering, and materialization for backend registration. The tuning engine is internal in v1. See [skills.md](skills.md). |
@@ -1858,6 +1859,10 @@ Load-bearing constraints on the dep graph:
   contract crate's dep footprint is `serde + serde_json +
   thiserror + futures-core` only (`futures-core` carries the
   `Stream` trait referenced by `Session::Events`).
+- `loom-protocol` is a **leaf** public-contract crate for wire
+  protocols. It depends on `loom-events` for shared IDs plus its
+  closed parser/JSON/error/hash deps; it imports no templates,
+  workflow, gate, driver, or agent crate.
 - `llm` depends on `loom-events` only (no `loom-driver`,
   `agent`, or `loom-workflow` import). Its dep footprint is
   the public-contract floor plus the underlying multi-provider
@@ -1885,7 +1890,7 @@ Load-bearing constraints on the dep graph:
   case, evidence, scoring, and metadata types. `loom-events` is the bottom of
   the internal-crate stack and `loom-workflow` is the top.
 
-`loom-events`'s, `llm`'s, `templates`'s, and `loom-skills`'s
+`loom-events`'s, `loom-protocol`'s, `llm`'s, `templates`'s, and `loom-skills`'s
 leaf-or-near-leaf status is what makes each contract version-able in isolation
 — a public-API change shows up as a single-crate bump, not as accidental
 coupling through a deeper crate.
@@ -1901,9 +1906,10 @@ per [`docs/style-rules.md`](../docs/style-rules.md) RS-3.
 `loom-events` is the contract-crate dependency-floor: its dep
 footprint is `serde + serde_json + thiserror + futures-core` only —
 no internal crates, no timestamps crate, no `ulid`, no `uuid`. The
-contract stays small. `llm`, `templates`, and `loom-skills` carry their own
-small public-surface dep sets (LLM crate + `schemars` for `llm`; Askama for
-`templates`; Markdown/frontmatter parsing and diagnostics for `loom-skills`).
+contract stays small. `loom-protocol`, `llm`, `templates`, and `loom-skills`
+carry their own small public-surface dep sets (parser/JSON/error/hash deps for
+`loom-protocol`; LLM crate + `schemars` for `llm`; Askama for `templates`;
+Markdown/frontmatter parsing and diagnostics for `loom-skills`).
 
 ### Workspace Lints
 
@@ -2640,11 +2646,11 @@ without carve-outs. Set `LOOM_CONFIG` to relocate.
 
 - Workspace builds with `cargo build` from `loom/` root
   [check](cargo build --workspace)
-- Target v1 crate set present: loom, loom-events, loom-llm, loom-templates,
-      loom-skills, loom-tune, loom-driver, loom-render, loom-agent,
-      loom-workflow
+- Target v1 crate set present: loom, loom-events, loom-protocol, loom-llm,
+      loom-templates, loom-skills, loom-tune, loom-driver, loom-render,
+      loom-agent, loom-workflow
   [check](cargo run -p loom-walk -- crate_structure_includes_loom_tune)
-- Four public-contract crates declared in workspace manifest metadata: loom-events, loom-llm, loom-templates, loom-skills
+- Five public-contract crates declared in workspace manifest metadata: loom-events, loom-protocol, loom-llm, loom-templates, loom-skills; no other crate declares the marker
   [check](cargo run -p loom-walk -- public_contract_crates)
 - Workspace uses edition 2024 and resolver "3"
   [check](cargo run -p loom-walk -- workspace_edition)

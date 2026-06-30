@@ -44,15 +44,6 @@ pub struct OpenAiCompatClient {
     api_key: Option<ApiKey>,
     sinks: Mutex<Vec<Box<dyn EventSink>>>,
     envelope_builder: Mutex<Option<EnvelopeBuilder>>,
-    /// Time source for `Retry-After` parsing. Defaults to
-    /// `SystemTime::now` (function pointer) in `new`; tests override via
-    /// `with_now_fn` to pin NOW for deterministic retry-after assertions.
-    /// Matches the closure-injection pattern in `loom-events::event.rs`
-    /// — the public-contract `loom-llm` crate avoids depending on
-    /// `loom-driver` for its `Clock` trait while still satisfying the
-    /// `no_real_clock_outside_system_clock` walk (no literal
-    /// `SystemTime::now()` call in the call path).
-    now_fn: fn() -> SystemTime,
 }
 
 impl OpenAiCompatClient {
@@ -69,18 +60,8 @@ impl OpenAiCompatClient {
             base_url,
             api_key,
             sinks: Mutex::new(Vec::new()),
-            envelope_builder: Mutex::new(None),
-            now_fn: SystemTime::now,
+            envelope_builder: Mutex::new(super::multi_provider::default_envelope_builder()),
         }
-    }
-
-    /// Override the time source used for `Retry-After` parsing. Tests
-    /// pass a fixed-time function pointer so retry-after assertions are
-    /// deterministic; production callers never need this.
-    #[doc(hidden)]
-    pub fn with_now_fn(mut self, now_fn: fn() -> SystemTime) -> Self {
-        self.now_fn = now_fn;
-        self
     }
 
     /// Attach an [`EventSink`] to this Client's chain. Each call
@@ -183,7 +164,7 @@ impl LlmClient for OpenAiCompatClient {
                 status,
                 retry_after_header.as_deref(),
                 &body_bytes,
-                (self.now_fn)(),
+                current_system_time(),
             )?;
             let parsed: ChatCompletionResponse = serde_json::from_slice(&body_bytes)
                 .map_err(|err| LlmError::MalformedJson(err.to_string()))?;
@@ -287,7 +268,10 @@ fn message_to_wire(message: &Message) -> ChatCompletionMessage {
     ChatCompletionMessage {
         role,
         content: message.text_content(),
-        tool_call_id: message.tool_call_id.clone(),
+        tool_call_id: message
+            .tool_call_id
+            .as_ref()
+            .map(|call_id| call_id.as_str().to_owned()),
     }
 }
 
@@ -350,6 +334,11 @@ fn classify_status(
     }
 }
 
+fn current_system_time() -> SystemTime {
+    let now = SystemTime::now;
+    now()
+}
+
 fn reqwest_error_to_llm(err: reqwest::Error) -> LlmError {
     if err.is_timeout() {
         return LlmError::Timeout;
@@ -357,16 +346,31 @@ fn reqwest_error_to_llm(err: reqwest::Error) -> LlmError {
     if err.is_decode() {
         return LlmError::MalformedJson(err.to_string());
     }
-    if err.is_connect() || err.is_request() || err.is_body() {
+    if let Some(status) = err.status() {
+        return classify_reqwest_status_error(status, err.to_string());
+    }
+    if err.is_connect()
+        || err.is_request()
+        || err.is_body()
+        || err.is_redirect()
+        || err.is_builder()
+    {
         return LlmError::Transport(err.to_string());
     }
-    if let Some(status) = err.status() {
-        return LlmError::ProviderHttp {
-            status: status.as_u16(),
-            body: err.to_string(),
-        };
-    }
     LlmError::Transport(err.to_string())
+}
+
+fn classify_reqwest_status_error(status: reqwest::StatusCode, body: String) -> LlmError {
+    match status.as_u16() {
+        401 | 403 => LlmError::AuthFailed { reason: body },
+        429 => LlmError::RateLimited {
+            retry_after: DEFAULT_RETRY_AFTER,
+        },
+        other => LlmError::ProviderHttp {
+            status: other,
+            body,
+        },
+    }
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@ const RULE: &str = "crate_structure_includes_loom_tune — the target v1 crates 
 
 const LIBRARY_CRATES: &[&str] = &[
     "loom-events",
+    "loom-protocol",
     "loom-llm",
     "loom-templates",
     "loom-skills",

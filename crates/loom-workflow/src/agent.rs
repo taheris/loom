@@ -1039,6 +1039,12 @@ mod tests {
                     }],
                     response: None,
                 }),
+                "call1" => Ok(tool_call_line("tc-1")),
+                "call2" => Ok(tool_call_line("tc-2")),
+                "call3" => Ok(tool_call_line("tc-3")),
+                "result1" => Ok(tool_result_line("tc-1")),
+                "result2" => Ok(tool_result_line("tc-2")),
+                "result3" => Ok(tool_result_line("tc-3")),
                 "exit7" => Err(ProtocolError::ProcessExit(7)),
                 "exit127" => Err(ProtocolError::ProcessExit(127)),
                 other => Err(ProtocolError::invalid_protocol_line(
@@ -1058,6 +1064,32 @@ mod tests {
 
         fn encode_abort(&self) -> Result<Option<String>, ProtocolError> {
             Ok(None)
+        }
+    }
+
+    fn tool_call_line(id: &str) -> ParsedLine {
+        ParsedLine {
+            events: vec![ParsedAgentEvent::ToolCall {
+                id: loom_events::identifier::ToolCallId::new(id),
+                tool: "read_file".to_string(),
+                params: serde_json::json!({"path": "/tmp/same"}),
+                parent_tool_call_id: None,
+            }],
+            response: None,
+        }
+    }
+
+    fn tool_result_line(id: &str) -> ParsedLine {
+        ParsedLine {
+            events: vec![ParsedAgentEvent::ToolResult {
+                id: loom_events::identifier::ToolCallId::new(id),
+                output: serde_json::json!({
+                    "content": "x".repeat(512),
+                })
+                .to_string(),
+                is_error: false,
+            }],
+            response: None,
         }
     }
 
@@ -1111,6 +1143,53 @@ mod tests {
         assert_eq!(events[0]["driver_kind"], "container_spawn");
         assert_eq!(events[0]["source"], "driver");
         assert_eq!(events[0]["payload"]["image_ref"], "img:tag");
+    }
+
+    #[tokio::test]
+    async fn run_agent_lifts_observer_payloads_into_driver_events() {
+        struct ObserverBackend;
+        impl AgentBackend for ObserverBackend {
+            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+                spawn_script(
+                    "IFS= read -r _; printf 'call1\\nresult1\\ncall2\\nresult2\\ncall3\\nresult3\\n'; IFS= read -r _; printf 'complete\\n'",
+                )
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (sink, path) = open_test_sink(dir.path());
+        let scratch = dir.path().join("scratch-root");
+        let cfg = sample_spawn_config(&scratch);
+        let mut observer = DefaultObserverChain::from_config(
+            &loom_driver::config::AgentObserversConfig::default(),
+        )
+        .expect("default observer chain is enabled");
+        let result = run_agent_classified::<ObserverBackend>(
+            &cfg,
+            Some(sink),
+            Some(&mut observer),
+            None,
+            Some(builder()),
+        )
+        .await;
+        assert!(
+            matches!(result, SessionResult::Complete { .. }),
+            "expected complete session, got {result:?}",
+        );
+
+        let events = read_jsonl(&path);
+        assert!(
+            events.iter().any(|event| {
+                event["kind"] == "driver_event" && event["driver_kind"] == "doom_loop_tripped"
+            }),
+            "doom-loop observer payload must be lifted into a DriverEvent: {events:?}",
+        );
+        assert!(
+            events.iter().any(|event| {
+                event["kind"] == "driver_event" && event["driver_kind"] == "duplicate_tool_result"
+            }),
+            "duplicate-result observer payload must be lifted into a DriverEvent: {events:?}",
+        );
     }
 
     #[test]

@@ -30,7 +30,7 @@ use loom_llm::cache::{CacheControl, CacheTtl};
 use loom_llm::client::{
     AnthropicClient, BoxFuture, CompletionResponse, GeminiClient, LlmClient, LlmError, OpenAiClient,
 };
-use loom_llm::conversation::{ContextBudget, Conversation, ConversationBuildError};
+use loom_llm::conversation::{ContextBudget, Conversation};
 use loom_llm::model_id::{AnthropicModel, ModelId, SchemaKind};
 use loom_llm::request::{CompletionRequest, Message, Role};
 use loom_llm::tool::Tool;
@@ -74,23 +74,20 @@ pub fn six_tools(ctx: ToolContext) -> Vec<Box<dyn Tool>> {
 /// the field is absent the runner falls back to [`DEFAULT_MODEL`]. The
 /// six sandbox-aware tools are registered in the canonical order, and
 /// both default observers stay enabled.
-pub fn build_conversation(config: &SpawnConfig) -> Result<Conversation, ConversationBuildError> {
+pub fn build_conversation(config: &SpawnConfig) -> Conversation {
     build_conversation_with_context(config, tool_context(config))
 }
 
-fn build_conversation_with_context(
-    config: &SpawnConfig,
-    ctx: ToolContext,
-) -> Result<Conversation, ConversationBuildError> {
+fn build_conversation_with_context(config: &SpawnConfig, ctx: ToolContext) -> Conversation {
     let model = config
         .model
         .as_ref()
         .map_or(DEFAULT_MODEL, |sel| ModelId::from_str(&sel.model_id));
-    let mut conv = Conversation::new(model)?;
+    let mut conv = Conversation::new(model);
     for tool in six_tools(ctx) {
         conv = conv.register_boxed(tool);
     }
-    Ok(conv)
+    conv
 }
 
 fn tool_context(config: &SpawnConfig) -> ToolContext {
@@ -174,7 +171,7 @@ where
 {
     let ctx = tool_context(&config);
     let mut conv =
-        build_conversation_with_context(&config, ctx.clone())?.context_budget(context_budget);
+        build_conversation_with_context(&config, ctx.clone()).context_budget(context_budget);
     let usages = Arc::new(Mutex::new(Vec::<UsageRecord>::new()));
     let recording = UsageRecordingClient {
         inner: client,
@@ -388,23 +385,22 @@ fn events_from_history(message: &Message) -> Vec<DirectEvent> {
             .tool_calls
             .iter()
             .map(|call| DirectEvent::ToolCall {
-                id: ToolCallId::new(&call.call_id),
+                id: ToolCallId::new(call.call_id.as_str()),
                 tool: call.name.clone(),
                 params: call.args.clone(),
                 parent_tool_call_id: None,
             })
             .collect(),
-        Role::Tool => {
-            let call_id = message
-                .tool_call_id
-                .clone()
-                .unwrap_or_else(|| String::from("unknown"));
-            vec![DirectEvent::ToolResult {
-                id: ToolCallId::new(&call_id),
-                output: tool_result_payload(&message.text_content()),
-                is_error: message.tool_is_error,
-            }]
-        }
+        Role::Tool => message
+            .tool_call_id
+            .as_ref()
+            .map_or_else(Vec::new, |call_id| {
+                vec![DirectEvent::ToolResult {
+                    id: ToolCallId::new(call_id.as_str()),
+                    output: tool_result_payload(&message.text_content()),
+                    is_error: message.tool_is_error,
+                }]
+            }),
     }
 }
 
@@ -449,8 +445,6 @@ pub enum RunnerError {
     EncodeJson(#[source] serde_json::Error),
     /// llm error during conversation run: {0}
     Llm(String),
-    /// failed to build runner Conversation
-    Build(#[from] ConversationBuildError),
     /// Direct tool context failure
     ToolContext(#[source] ToolContextError),
     /// invalid API key sourced from {var}: {source}
@@ -475,7 +469,9 @@ mod tests {
     use loom_driver::agent::{ModelSelection, OutputLimits, RePinContent};
     use loom_events::identifier::BeadId;
     use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
-    use loom_llm::client::{CompletionResponse, LlmError, ToolUseRequest};
+    use loom_llm::client::{
+        CompletionResponse, LlmError, ToolCallId as LlmToolCallId, ToolUseRequest,
+    };
     use loom_llm::request::CompletionRequest;
     use loom_llm::usage::TokenUsage;
     use serde_json::json;
@@ -599,7 +595,7 @@ mod tests {
     /// surface is the only opt-out path.
     #[test]
     fn direct_runner_composes_default_observers() {
-        let conv = build_conversation(&sample_config(None)).expect("conversation builds");
+        let conv = build_conversation(&sample_config(None));
         assert!(
             conv.doom_loop_enabled(),
             "DoomLoopObserver enabled by default in runner Conversation",
@@ -617,21 +613,19 @@ mod tests {
     /// consumers can name not-yet-supported models without a minor bump.
     #[test]
     fn direct_model_id_respects_phase_config() {
-        let conv = build_conversation(&sample_config(Some("claude-sonnet-4-6")))
-            .expect("conversation builds");
+        let conv = build_conversation(&sample_config(Some("claude-sonnet-4-6")));
         assert_eq!(
             *conv.model(),
             ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
         );
 
-        let conv_unknown = build_conversation(&sample_config(Some("claude-future-x")))
-            .expect("conversation builds");
+        let conv_unknown = build_conversation(&sample_config(Some("claude-future-x")));
         assert_eq!(
             *conv_unknown.model(),
             ModelId::Anthropic(AnthropicModel::Other("claude-future-x".to_string())),
         );
 
-        let conv_default = build_conversation(&sample_config(None)).expect("conversation builds");
+        let conv_default = build_conversation(&sample_config(None));
         assert_eq!(*conv_default.model(), DEFAULT_MODEL);
     }
 
@@ -724,7 +718,7 @@ mod tests {
             text: String::new(),
             usage: TokenUsage::default(),
             tool_calls: vec![ToolUseRequest {
-                call_id: "call-1".into(),
+                call_id: LlmToolCallId::parse("call-1").expect("test tool call id parses"),
                 name: "Read".into(),
                 args: json!({ "file_path": target }),
             }],
@@ -1084,7 +1078,7 @@ mod tests {
                 cache_write: 50,
             },
             tool_calls: vec![ToolUseRequest {
-                call_id: "call-1".into(),
+                call_id: LlmToolCallId::parse("call-1").expect("test tool call id parses"),
                 name: "Read".into(),
                 args: json!({ "file_path": cargo }),
             }],
@@ -1179,7 +1173,7 @@ mod tests {
             text: String::new(),
             usage: TokenUsage::default(),
             tool_calls: vec![ToolUseRequest {
-                call_id: "call-1".into(),
+                call_id: LlmToolCallId::parse("call-1").expect("test tool call id parses"),
                 name: "Read".into(),
                 args: json!({ "file_path": target }),
             }],
