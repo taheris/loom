@@ -876,7 +876,13 @@ fn inbox_chat_pi_bridge_sends_human_reply_as_next_prompt() {
         String::from_utf8_lossy(&output.stderr),
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Please answer before I finish."),
+        "{stdout}"
+    );
     assert!(stdout.contains("loom inbox pi>"), "{stdout}");
+    assert!(stdout.contains("LOOM_COMPLETE"), "{stdout}");
+    assert_eq!(stdout.matches("loom inbox pi>").count(), 1, "{stdout}");
 }
 
 #[test]

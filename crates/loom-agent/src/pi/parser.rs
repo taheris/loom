@@ -23,6 +23,13 @@ pub struct PiParser {
     task_stack: std::sync::Mutex<Vec<loom_events::identifier::ToolCallId>>,
     message_capture: std::sync::Mutex<MessageCapture>,
     compaction_policy: std::sync::Mutex<CompactionPolicy>,
+    agent_end_mode: AgentEndMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentEndMode {
+    SessionComplete,
+    AgentEnd,
 }
 
 #[derive(Debug, Default)]
@@ -65,10 +72,15 @@ impl NativeCompactionReason {
 
 impl PiParser {
     pub fn new() -> Self {
+        Self::with_agent_end_mode(AgentEndMode::SessionComplete)
+    }
+
+    pub(crate) fn with_agent_end_mode(agent_end_mode: AgentEndMode) -> Self {
         Self {
             task_stack: std::sync::Mutex::new(Vec::new()),
             message_capture: std::sync::Mutex::new(MessageCapture::default()),
             compaction_policy: std::sync::Mutex::new(CompactionPolicy::default()),
+            agent_end_mode,
         }
     }
 
@@ -193,6 +205,16 @@ impl PiParser {
             .lock()
             .map_err(|_| ProtocolError::LockPoisoned)?;
         Ok(policy.terminal_after_untrusted_retry)
+    }
+
+    fn agent_end_events(&self) -> Vec<ParsedAgentEvent> {
+        match self.agent_end_mode {
+            AgentEndMode::SessionComplete => vec![ParsedAgentEvent::SessionComplete {
+                exit_code: 0,
+                cost_usd: None,
+            }],
+            AgentEndMode::AgentEnd => vec![ParsedAgentEvent::AgentEnd],
+        }
     }
 }
 
@@ -386,10 +408,7 @@ fn parse_event(parser: &PiParser, event: PiEvent) -> Result<ParsedLine, Protocol
             }
         }
         PiEvent::AgentEnd { .. } => ParsedLine {
-            events: vec![ParsedAgentEvent::SessionComplete {
-                exit_code: 0,
-                cost_usd: None,
-            }],
+            events: parser.agent_end_events(),
             response: None,
         },
         PiEvent::CompactionStart { reason } => {
@@ -896,6 +915,25 @@ mod tests {
             }
             other => panic!("expected SessionComplete, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pi_agent_end_bridge_mode_yields_agent_end_not_session_complete() {
+        let default = PiParser::new()
+            .parse_line(r#"{"type":"agent_end","messages":[]}"#)
+            .expect("default agent_end parses");
+        assert!(matches!(
+            default.events[..],
+            [ParsedAgentEvent::SessionComplete {
+                exit_code: 0,
+                cost_usd: None,
+            }]
+        ));
+
+        let bridge = PiParser::with_agent_end_mode(AgentEndMode::AgentEnd)
+            .parse_line(r#"{"type":"agent_end","messages":[]}"#)
+            .expect("bridge agent_end parses");
+        assert!(matches!(bridge.events[..], [ParsedAgentEvent::AgentEnd]));
     }
 
     #[test]

@@ -16,9 +16,10 @@ pub struct Idle;
 pub struct Active;
 
 /// Live agent session. The state parameter `S` enforces protocol order at
-/// compile time: `prompt` only exists on [`Idle`], `next_event`/`steer` only
-/// on [`Active`]. Backend implementations construct the session with
-/// [`Self::new`] and hand it back through `AgentBackend::spawn`.
+/// compile time: `prompt` only exists on [`Idle`], while event reads and
+/// in-flight commands only exist on [`Active`]. Backend implementations
+/// construct the session with [`Self::new`] and hand it back through
+/// `AgentBackend::spawn`.
 pub struct AgentSession<S> {
     child: Child,
     stdin: BufWriter<ChildStdin>,

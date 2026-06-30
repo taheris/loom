@@ -216,8 +216,10 @@ State-machine rules for host-side subprocess sessions:
 
 - **Idle session** must be prompted before events can be read. The
   prompt operation consumes the idle session and yields an active one.
-- **Active session** exposes `next_event`, `steer`, and `abort`. It
-  cannot be prompted again — only completed or aborted.
+- **Active session** exposes `next_event`, `steer`, `follow_up`, and
+  `abort`. It cannot receive another initial prompt; `follow_up` is reserved
+  for backend protocols that keep the process alive across prompt-cycle
+  boundaries. `SessionComplete` remains terminal.
 - **Aborting** returns to idle: if the backend has a wire abort command
   (pi), the parser encodes it and the session is reusable; if not
   (claude), the typestate still returns to idle but the underlying
@@ -261,8 +263,10 @@ parser populates the field; the session does the IO. The list of events
 is a list (not a single event) because some inbound messages map to
 multiple events — claude's `result/success` produces `TurnEnd` +
 `SessionComplete`; `result/error` produces `Error` + `SessionComplete`.
-Pi's `turn_end` and `agent_end` are separate inbound events that each
-map to one outbound event.
+Pi's `turn_end` and `agent_end` are separate inbound events: `turn_end`
+maps to `TurnEnd`; `agent_end` maps to either the default terminal
+`SessionComplete` or the inbox RPC bridge's non-terminal `AgentEnd`
+prompt-cycle marker.
 
 ### AgentEvent
 
@@ -539,7 +543,7 @@ Loom must surface that text exactly once so terminal markers are not lost.
 | `turn_start` | — | logged at `trace!`, skipped |
 | `turn_end` | `message`, `toolResults` | fallback final text if needed, then `AgentEvent::TurnEnd` |
 | `agent_start` | — | logged at `trace!`, skipped |
-| `agent_end` | `messages` | `AgentEvent::SessionComplete` (`exit_code: 0`, synthesized) — see note below |
+| `agent_end` | `messages` | Default: `AgentEvent::SessionComplete` (`exit_code: 0`, synthesized); inbox RPC bridge: `AgentEvent::AgentEnd` — see note below |
 | `compaction_start` | `reason` | `AgentEvent::CompactionStart` |
 | `compaction_end` | `aborted`, `reason`, `result?`, `willRetry`, `errorMessage?` | `AgentEvent::CompactionEnd` |
 | `queue_update` | `steering`, `followUp` | logged at `trace!`, skipped |
@@ -553,11 +557,16 @@ Loom must surface that text exactly once so terminal markers are not lost.
 are the only reasons emitted by pi as of v0.72.
 
 **`agent_end` semantics:** In pi, `agent_end` signals "this prompt cycle is
-done" — the process keeps accepting commands. Loom's per-bead-container
-model maps this to `SessionComplete` because each container handles exactly
-one prompt; after `agent_end`, loom tears down the container rather than
-sending another command. The mapping assumes one prompt per container; pi's
-`agent_end` carries no exit code, so loom synthesizes `0`.
+done" — the process keeps accepting commands. Loom keeps that prompt-cycle
+boundary distinct from session completion. Normal per-bead containers still
+handle exactly one prompt: the default Pi parser maps `agent_end` to
+`SessionComplete`, synthesizes exit code `0`, and the workflow tears down the
+container instead of sending another command. The non-TTY `loom inbox chat`
+Pi RPC bridge uses a bridge parser mode that maps `agent_end` to the
+non-terminal `AgentEnd` lifecycle marker; when the accumulated assistant text
+has no terminal inbox marker, the bridge may send the human reply as the next
+`prompt` on the same Pi process. A real `SessionComplete` remains terminal for
+the bridge.
 
 **`message_update` delta mapping:**
 
@@ -1177,6 +1186,13 @@ the entrypoint run the wrong runtime.
       non-TTY execution, so compaction events remain observable before
       trusting post-compaction output
   [test](inbox_chat_runs_pi_backend_through_controlled_bridge)
+- Pi parser preserves the normal per-bead `agent_end` → `SessionComplete`
+      mapping while exposing a bridge mode where `agent_end` is a non-terminal
+      `AgentEnd` prompt-cycle marker
+  [test](pi_agent_end_bridge_mode_yields_agent_end_not_session_complete)
+- Pi-backed `loom inbox chat` RPC bridge sends a human reply as the next
+      `prompt` on the same Pi process after a marker-less `agent_end`
+  [test](inbox_chat_pi_bridge_sends_human_reply_as_next_prompt)
 - Pi-backed `loom inbox chat` sends the scratch-dir re-pin when the RPC
       bridge observes `compaction_start`
   [test](inbox_chat_pi_bridge_repins_on_compaction_start)

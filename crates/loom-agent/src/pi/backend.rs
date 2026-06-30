@@ -36,7 +36,7 @@ use tokio::process::{ChildStderr, ChildStdin, Command};
 use tracing::{debug, error, info, warn};
 
 use super::messages::{PiEnvelope, PiResponse, SetThinkingLevelCommand};
-use super::parser::PiParser;
+use super::parser::{AgentEndMode, PiParser};
 use crate::apply_launcher_env;
 use crate::skill::{NoNativeRegistrar, register_native_skills};
 
@@ -94,6 +94,26 @@ impl PiBackend {
         config: &SpawnConfig,
         wrix_bin: &OsStr,
     ) -> Result<AgentSession<Idle>, ProtocolError> {
+        Self::spawn_with_wrix_bin_and_agent_end_mode(
+            config,
+            wrix_bin,
+            AgentEndMode::SessionComplete,
+        )
+        .await
+    }
+
+    pub async fn spawn_bridge_with_wrix_bin(
+        config: &SpawnConfig,
+        wrix_bin: &OsStr,
+    ) -> Result<AgentSession<Idle>, ProtocolError> {
+        Self::spawn_with_wrix_bin_and_agent_end_mode(config, wrix_bin, AgentEndMode::AgentEnd).await
+    }
+
+    async fn spawn_with_wrix_bin_and_agent_end_mode(
+        config: &SpawnConfig,
+        wrix_bin: &OsStr,
+        agent_end_mode: AgentEndMode,
+    ) -> Result<AgentSession<Idle>, ProtocolError> {
         register_native_skills::<NoNativeRegistrar>(config)?;
         let spawn_config_path = write_spawn_config(config)?;
 
@@ -123,6 +143,7 @@ impl PiBackend {
             config.thinking_level,
             handshake_budget,
             &SystemClock::new(),
+            agent_end_mode,
         )
         .await
     }
@@ -226,7 +247,16 @@ pub async fn spawn_with_handshake(
     handshake_timeout: Duration,
     clock: &dyn Clock,
 ) -> Result<AgentSession<Idle>, ProtocolError> {
-    spawn_with_handshake_inner(cmd, model, thinking_level, handshake_timeout, clock, false).await
+    spawn_with_handshake_inner(
+        cmd,
+        model,
+        thinking_level,
+        handshake_timeout,
+        clock,
+        false,
+        AgentEndMode::SessionComplete,
+    )
+    .await
 }
 
 async fn spawn_with_handshake_after_wrix_start(
@@ -235,8 +265,18 @@ async fn spawn_with_handshake_after_wrix_start(
     thinking_level: Option<ThinkingLevel>,
     handshake_timeout: Duration,
     clock: &dyn Clock,
+    agent_end_mode: AgentEndMode,
 ) -> Result<AgentSession<Idle>, ProtocolError> {
-    spawn_with_handshake_inner(cmd, model, thinking_level, handshake_timeout, clock, true).await
+    spawn_with_handshake_inner(
+        cmd,
+        model,
+        thinking_level,
+        handshake_timeout,
+        clock,
+        true,
+        agent_end_mode,
+    )
+    .await
 }
 
 async fn spawn_with_handshake_inner(
@@ -246,6 +286,7 @@ async fn spawn_with_handshake_inner(
     handshake_timeout: Duration,
     clock: &dyn Clock,
     wait_for_wrix_start: bool,
+    agent_end_mode: AgentEndMode,
 ) -> Result<AgentSession<Idle>, ProtocolError> {
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
@@ -287,7 +328,7 @@ async fn spawn_with_handshake_inner(
         run_set_thinking_level(&mut writer, &mut reader, level, handshake_timeout, clock).await?;
     }
 
-    let parser = PiParser::new();
+    let parser = PiParser::with_agent_end_mode(agent_end_mode);
     Ok(AgentSession::new(child, writer, reader, Box::new(parser)))
 }
 

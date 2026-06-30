@@ -345,7 +345,7 @@ fn build_pi_bridge_spawn_config(
 }
 
 async fn run_pi_bridge(config: SpawnConfig, wrix_bin: &Path) -> Result<String, ChatError> {
-    let session = PiBackend::spawn_with_wrix_bin(&config, wrix_bin.as_os_str()).await?;
+    let session = PiBackend::spawn_bridge_with_wrix_bin(&config, wrix_bin.as_os_str()).await?;
     let mut session = session.prompt(&config.initial_prompt).await?;
     let mut output = String::new();
     let mut envelope_builder = pi_bridge_envelope_builder()?;
@@ -359,11 +359,8 @@ async fn run_pi_bridge(config: SpawnConfig, wrix_bin: &Path) -> Result<String, C
         if matches!(event, AgentEvent::CompactionStart { .. }) {
             PiBackend::on_compaction_start(&mut session, &config).await?;
         }
-        if let AgentEvent::SessionComplete { exit_code, .. } = event {
-            if exit_code != 0 {
-                return Err(ChatError::Protocol(ProtocolError::ProcessExit(exit_code)));
-            }
-            match parse_terminal_marker(&output) {
+        match event {
+            AgentEvent::AgentEnd { .. } => match parse_terminal_marker(&output) {
                 Ok(_) => {
                     ensure_bridge_output_newline(&mut output)?;
                     return Ok(output);
@@ -374,7 +371,21 @@ async fn run_pi_bridge(config: SpawnConfig, wrix_bin: &Path) -> Result<String, C
                     }
                 }
                 Err(err) => return Err(ChatError::Terminal(err)),
+            },
+            AgentEvent::SessionComplete { exit_code, .. } => {
+                if exit_code != 0 {
+                    return Err(ChatError::Protocol(ProtocolError::ProcessExit(exit_code)));
+                }
+                match parse_terminal_marker(&output) {
+                    Ok(_) => {
+                        ensure_bridge_output_newline(&mut output)?;
+                        return Ok(output);
+                    }
+                    Err(TerminalMarkerError::Missing) => return Ok(output),
+                    Err(err) => return Err(ChatError::Terminal(err)),
+                }
             }
+            _ => {}
         }
     }
 }
