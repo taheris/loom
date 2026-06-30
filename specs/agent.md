@@ -578,13 +578,16 @@ by the top-level `tool_execution_*` and `turn_end` events.
 | `done` | logged at `trace!`, skipped (reasons: `"stop"`, `"length"`, `"toolUse"`) |
 
 **Extension UI passthrough:** Pi emits `extension_ui_request` messages for
-extension-defined UI. Loom logs these at `debug!` level — no pi extensions
-are loaded in the wrix sandbox, so this should not arise in practice.
-However, the timeout on these requests is set by the *extension*, not
-enforced by pi: if an extension does not specify `timeout?` and the host
-does not respond, the extension's promise hangs forever and may stall the
-agent. As a defensive fallback, when loom observes an
-`extension_ui_request` whose `method` requires a response
+extension-defined UI. Loom logs these at `debug!` level. The RPC backend
+and non-TTY bridge do not load arbitrary Pi extensions; the only permitted
+extension surface is the native-TUI chat re-pin `context` hook described in
+[Compaction Handling](#compaction-handling), which does not define UI
+methods. These requests therefore should not arise in expected Loom
+launches. However, the timeout on these requests is set by the
+*extension*, not enforced by pi: if an extension does not specify
+`timeout?` and the host does not respond, the extension's promise hangs
+forever and may stall the agent. As a defensive fallback, when loom
+observes an `extension_ui_request` whose `method` requires a response
 (`select`/`confirm`/`input`/`editor`), it replies with
 `{"type":"extension_ui_response","id":"<request_id>","cancelled":true}`.
 Methods that don't need a response (`notify`/`setStatus`/`setWidget`/
@@ -1166,8 +1169,9 @@ the entrypoint run the wrong runtime.
       does not satisfy this criterion
   [test](interactive_claude_shell_out_loads_compaction_hook)
 - Pi-backed `loom inbox chat` uses native `wrix run ... pi` plus a scratch-dir
-      session and re-pin extension on its TTY path, preserving Pi's normal TUI
-      with inherited stdio
+      session and re-pin extension on its TTY path; the extension is loaded
+      with `-e`, reads scratch-dir `prompt.txt`/`scratch.md`, registers Pi's
+      `context` hook, and preserves Pi's normal TUI with inherited stdio
   [test](inbox_chat_pi_tty_uses_native_wrix_run_with_inherited_stdio)
 - Pi-backed `loom inbox chat` runs through a controlled RPC bridge in
       non-TTY execution, so compaction events remain observable before
@@ -1340,8 +1344,14 @@ the entrypoint run the wrong runtime.
 
 ## Out of Scope
 
-- **Pi-mono extensions** — Loom controls pi via RPC, not via pi's extension
-  system. No TypeScript extensions are written or loaded.
+- **General Pi-mono extension integration** — Loom does not adopt arbitrary
+  or user-supplied Pi extensions, custom extension tools or commands,
+  provider registration, UI widgets, or broad extension lifecycle ownership.
+  The sole in-scope exception is the Loom-generated native-TUI
+  `loom inbox chat` re-pin extension loaded with `pi -e`, limited to reading
+  the session scratch `prompt.txt`/`scratch.md` and injecting pinned context
+  through Pi's `context` hook after compaction. Non-interactive workflow
+  control remains RPC/bridge-owned.
 - **Pi-mono web-ui** — terminal-only integration.
 - **Pi-mono forking or vendoring** — consumed as an npm package bundled by
   Nix. No source-level fork.
