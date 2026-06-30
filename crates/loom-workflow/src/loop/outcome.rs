@@ -29,7 +29,9 @@ pub enum AgentOutcome {
 
     /// The agent emitted success, but the fetched bead branch did not
     /// advance the integration line. This usually means the work happened
-    /// outside the mounted bead clone or was never committed.
+    /// outside the mounted bead clone or was never committed. Routed through
+    /// the recovery loop with cause `zero-progress` so the next attempt sees
+    /// why `LOOM_NOOP` was the correct empty-diff signal.
     ZeroProgress { detail: String },
 
     /// Agent emitted `LOOM_CLARIFY` — self-reported it needs a human answer.

@@ -969,17 +969,12 @@ fn loom_loop_multiple_task_roots_does_not_rerun_startup_fast_forward() {
     );
 }
 
-/// `loom gate review` must write its phase log under
-/// `<workspace>/.loom/logs/<spec>/review-<utc>.jsonl` (same spec
-/// section as the run gate). Guards against the regression where the
-/// production review controller passed `None` for the sink and the
-/// reviewer agent's events were discarded. The bd stub returns one bead
-/// carrying `loom:clarify` so the post-snapshot diff yields
-/// `ReviewVerdict::PushBlocked` and the gate
-/// exits without touching `git push` / `beads-push` / `loom loop` — keeping
-/// the test environment-independent.
+/// `loom gate review` must thread checkout-resolved launcher key paths to
+/// the reviewer `wrix spawn` child. The same live invocation also writes a
+/// review phase log, guarding the shared dispatch path from discarding agent
+/// events while it passes launcher-only host env.
 #[test]
-fn loom_gate_review_writes_phase_jsonl_log() {
+fn loom_gate_review_threads_launcher_keys_to_wrix_spawn() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);

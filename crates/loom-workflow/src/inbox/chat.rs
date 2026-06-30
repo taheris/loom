@@ -560,11 +560,13 @@ export default function(pi) {{
   const promptPath = {prompt_path};
   const scratchpadPath = {scratchpad_path};
 
-  function readText(path) {{
+  function readRequiredText(path, label) {{
     try {{
       return readFileSync(path, "utf8");
-    }} catch (_err) {{
-      return "";
+    }} catch (err) {{
+      const message = err instanceof Error ? err.message : String(err);
+      const detail = "Loom compaction recovery could not read " + label + " at " + path + ": " + message;
+      throw new Error(detail);
     }}
   }}
 
@@ -586,11 +588,14 @@ export default function(pi) {{
   }}
 
   pi.on("context", async (event) => {{
-    const prompt = readText(promptPath);
-    if (!prompt || !Array.isArray(event.messages)) return;
+    const prompt = readRequiredText(promptPath, "prompt");
+    if (!prompt) {{
+      throw new Error("Loom compaction recovery prompt is empty at " + promptPath);
+    }}
+    if (!Array.isArray(event.messages)) return;
     if (event.messages.some((message) => messageText(message).includes(prompt))) return;
 
-    const scratchpad = readText(scratchpadPath).trimEnd();
+    const scratchpad = readRequiredText(scratchpadPath, "scratchpad").trimEnd();
     const pinned = [
       "Loom post-compaction pinned context. Continue following this phase prompt and scratchpad exactly.",
       "",
@@ -1005,6 +1010,20 @@ mod tests {
         assert_eq!(argv.last().map(String::as_str), Some("PROMPT BODY"));
         assert!(!argv.iter().any(|a| a == "spawn"));
         assert!(!argv.iter().any(|a| a == "--stdio"));
+    }
+
+    #[test]
+    fn pi_repin_extension_raises_errors_when_repin_files_cannot_be_read() {
+        let source = pi_repin_extension_source(
+            &PathBuf::from("/workspace/.loom/scratch/inbox/prompt.txt"),
+            &PathBuf::from("/workspace/.loom/scratch/inbox/scratch.md"),
+        )
+        .expect("extension source renders");
+
+        assert!(source.contains("readRequiredText(promptPath, \"prompt\")"));
+        assert!(source.contains("readRequiredText(scratchpadPath, \"scratchpad\")"));
+        assert!(source.contains("Loom compaction recovery could not read"));
+        assert!(!source.contains("catch (_err)"));
     }
 
     #[test]

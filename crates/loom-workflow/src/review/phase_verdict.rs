@@ -695,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn complete_with_empty_diff_routes_to_zero_progress() {
+    fn phase_verdict_complete_with_empty_diff_routes_to_zero_progress() {
         assert_eq!(
             decide(Some(&ExitSignal::Complete), inputs(true, true, true, None)),
             PhaseVerdict::Recovery {

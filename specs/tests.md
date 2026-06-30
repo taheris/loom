@@ -922,10 +922,9 @@ the rules:
      and work epic
    - Profile/runtime selection from bead labels plus resolved backend
      (parse, fallback to base, flag override, missing runtime failure)
-   - Interactive `plan` / Claude-backed `inbox chat` command construction
-     exports backend-derived `WRIX_AGENT`, Pi-backed `inbox chat` preserves
-     the native Pi TUI on the TTY path while using the controlled RPC bridge
-     on the non-TTY path, and Direct is rejected before spawning Wrix
+   - Interactive `plan` / `inbox chat` command-construction tests cover the
+     backend-specific launch matrix owned by
+     [agent.md § Interactive Shell-Out](agent.md#interactive-shell-out)
    - Retry logic (failure count tracking, `loom:clarify` label after max
      retries)
    - Push gate logic (clean completion, fix-up beads, iteration cap)

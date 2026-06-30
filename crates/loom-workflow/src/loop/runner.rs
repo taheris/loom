@@ -664,10 +664,23 @@ async fn process_one_bead<C: AgentLoopController>(
                 });
             }
             AgentOutcome::ZeroProgress { detail } => {
-                return terminal(BeadResult::Blocked {
-                    cause: ZERO_PROGRESS_CAUSE.to_string(),
-                    error: detail,
-                });
+                let error = zero_progress_recovery_detail(&detail);
+                let exhausted_detail = error.clone();
+                match policy.decide(state.retries_used, error) {
+                    RetryDecision::Retry {
+                        previous_failure: pf,
+                    } => {
+                        state.retries_used += 1;
+                        emit_retry_dispatch(controller, bead, state.retries_used, policy);
+                        state.previous_failure = Some(pf);
+                    }
+                    RetryDecision::GiveUp => {
+                        return terminal(BeadResult::Blocked {
+                            cause: RETRY_EXHAUSTED_CAUSE.to_string(),
+                            error: exhausted_detail,
+                        });
+                    }
+                }
             }
             AgentOutcome::Blocked { reason } => {
                 return terminal(BeadResult::Blocked {
@@ -720,6 +733,14 @@ async fn process_one_bead<C: AgentLoopController>(
 
 fn terminal(result: BeadResult) -> Result<ProcessOneResult, LoopError> {
     Ok(ProcessOneResult::Terminal(result))
+}
+
+fn zero_progress_recovery_detail(detail: &str) -> String {
+    if detail.is_empty() {
+        ZERO_PROGRESS_CAUSE.to_string()
+    } else {
+        format!("{ZERO_PROGRESS_CAUSE}: {detail}")
+    }
 }
 
 fn emit_retry_dispatch<C: AgentLoopController>(
@@ -1188,21 +1209,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zero_progress_blocks_without_retry() -> Result<(), LoopError> {
+    async fn complete_with_empty_diff_routes_to_zero_progress() -> Result<(), LoopError> {
         let mut c = FakeController::default();
         c.ready_queue.push_back(bead("lm-1", &[]));
         c.agent_outcomes.push_back(AgentOutcome::ZeroProgress {
             detail: "preserved workspace".into(),
         });
+        c.agent_outcomes.push_back(AgentOutcome::Success);
 
         let summary = run_loop(&mut c, RetryPolicy { max_retries: 2 }, 10).await?;
 
-        assert_eq!(c.run_calls.len(), 1, "zero-progress does not retry");
-        assert_eq!(c.blocked.len(), 1);
-        assert_eq!(c.blocked[0].0, BeadId::new("lm-1").expect("valid"));
-        assert_eq!(c.blocked[0].1, ZERO_PROGRESS_CAUSE);
-        assert_eq!(c.blocked[0].2, "preserved workspace");
-        assert_eq!(summary.beads_blocked, 1);
+        assert_eq!(c.run_calls.len(), 2, "zero-progress re-enters recovery");
+        assert_eq!(
+            c.run_calls[1].1.as_deref(),
+            Some("zero-progress: preserved workspace"),
+        );
+        assert!(c.blocked.is_empty());
+        assert_eq!(summary.beads_blocked, 0);
         Ok(())
     }
 

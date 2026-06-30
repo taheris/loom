@@ -1272,25 +1272,13 @@ the entrypoint run the wrong runtime.
    backends and treats registration failure as fatal; `registration = "prompt"`
    disables native registration globally. Direct has no native skill registry
    and always consumes the prompt-disclosure index plus readable paths.
-8. **Interactive launch profile contract** — `loom plan` and Claude-backed
-   `loom inbox chat` bypass the agent-backend abstraction (so stdio can
-   attach as a REPL) and invoke
-   `wrix run <workspace> <agent command> ... <prompt>` directly. The profile
-   and chat-capable backend resolved by `LoomConfig::agent_for(Phase)` select
-   the image and command together; Claude uses
-   `claude --dangerously-skip-permissions`. The matching profile/runtime
-   `ImageEntry` is exported to `wrix run` via the `WRIX_DEFAULT_IMAGE_REF` /
-   `WRIX_DEFAULT_IMAGE_SOURCE` env vars, and backend-derived `WRIX_AGENT` is
-   set on the child process. The env-var hand-off is the sole image-selection
-   contract on the raw `wrix run` path; `wrix run` has no `--profile` parser,
-   and extra argv tokens between the workspace positional and agent command
-   would be forwarded into the container as the command vector (exit 127).
-   Pi-backed `loom inbox chat` resolves the same profile/runtime manifest
-   entry and uses native `wrix run ... pi` with a scratch-local session and
-   re-pin extension when attached to a TTY; in non-TTY execution it launches
-   the controlled `wrix spawn --stdio` RPC bridge so compaction re-pin
-   delivery remains observable. Pi-backed `loom plan` and Direct-backed
-   interactive phases are rejected before Wrix spawn/run.
+8. **Interactive launch profile contract** — The launch matrix, Pi chat
+   TTY/RPC split, and unsupported phase/backend rejections are defined once
+   in [Interactive Shell-Out](#interactive-shell-out). Image-selection
+   env-var hand-off details stay with
+   [harness.md § Profile-Image Manifest](harness.md#profile-image-manifest);
+   implementations and sibling specs reference those sections rather than
+   defining second chat-launch or image-selection contracts.
 9. **Agent runtime layer** — the image builder composes two orthogonal axes:
    *workspace profile* (base, rust, python) and *agent runtime* (claude, pi,
    direct). The bundled profile manifest contains concrete entries for the

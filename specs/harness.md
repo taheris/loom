@@ -599,24 +599,20 @@ launcher env before podman startup and passes the same value to the
 entrypoint — see [agent.md — Entrypoint Agent
 Selection](agent.md#entrypoint-agent-selection).
 
-`loom plan` and Claude-backed `loom inbox chat` are TTY interactive, so
-they shell out to `wrix run` rather than `wrix spawn`. To keep one
-resolution path, those shell-outs look up their profile/runtime pair (per
-[Configuration](#configuration); default `base`) in the manifest and
-export `WRIX_DEFAULT_IMAGE_REF=<entry.ref>`,
+Interactive shell-outs that bypass `SpawnConfig` still use the same
+manifest lookup; the per-backend plan/chat launch shapes are owned by
+[agent.md § Interactive Shell-Out](agent.md#interactive-shell-out). This
+section owns only the image-selection hand-off: those shell-outs look up
+their profile/runtime pair (per [Configuration](#configuration); default
+`base`) in the manifest and export
+`WRIX_DEFAULT_IMAGE_REF=<entry.ref>`,
 `WRIX_DEFAULT_IMAGE_SOURCE=<entry.source>`, and
 `WRIX_AGENT=<runtime>` into the child environment before exec'ing
 `wrix run`. The launcher reads those env vars when no `--spawn-config`
 is supplied. `wrix run` has no `--profile` argv parser; any extra tokens
 between the workspace positional and the in-container command are
 forwarded into the container as the command vector, so the env-var
-hand-off is the sole image-selection contract on this path. Claude uses
-`claude --dangerously-skip-permissions`. Pi-backed `loom inbox chat`
-resolves the same manifest entry and, when attached to a terminal, uses
-native `wrix run ... pi` with a scratch-local Pi session directory and a
-re-pin extension so the user keeps Pi's normal TUI. In non-TTY execution it
-uses `wrix spawn --stdio` through a controlled RPC bridge so the driver can
-deliver compaction re-pins before continuing the chat.
+hand-off is the sole image-selection contract on this path.
 
 ### Concurrency & Locking
 
@@ -1703,13 +1699,12 @@ mutating state.
 
 **Chat session shape.** `loom inbox chat` launches the resolved
 profile/runtime with the `inbox.md` template and normally works through the
-visible queue one item at a time. Claude-backed chat uses interactive
-`wrix run`; Pi-backed chat uses native `wrix run ... pi` when stdio is a TTY
-and falls back to the controlled RPC bridge over `wrix spawn --stdio` for
-non-TTY execution, with both Pi paths carrying a compaction re-pin surface.
-Targeted chat forms focus a single item. The chat-capable backend/profile comes from
-`[phase.inbox]` or normal phase defaults; Direct is rejected because it has no
-interactive REPL command.
+visible queue one item at a time. The backend-specific launch mechanics are
+owned by [agent.md § Interactive Shell-Out](agent.md#interactive-shell-out);
+this section owns queue targeting and inbox-state authority. Targeted chat
+forms focus a single item. The chat-capable backend/profile comes from
+`[phase.inbox]` or normal phase defaults; backend capability and rejection
+rules are delegated to the agent spec's launch matrix.
 
 The session has **full bd-write authority** on bead-backed items in its queue:
 notes via `bd update --notes`, label add/remove via `bd update --add-label` /
@@ -3028,7 +3023,7 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
 - Review dispatch threads the checkout-resolved launcher keys onto the
       reviewer `wrix spawn` child process so host deploy/signing keys are
       available before container setup resolves git auth and SSH signing
-  [test](loom_gate_review_writes_phase_jsonl_log)
+  [test](loom_gate_review_threads_launcher_keys_to_wrix_spawn)
 - `SpawnConfig.launcher_env` is `#[serde(skip)]`-excluded from the
       spawn-config JSON so host key paths never leak into the
       world-readable file the wrapper reads
