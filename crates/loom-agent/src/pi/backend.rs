@@ -65,10 +65,13 @@ const REQUIRED_STATE_FIELDS: &[&str] = &[
     "pendingMessageCount",
 ];
 
-/// Verbose wrix stderr line emitted after image load/staging and immediately
-/// before `podman run`. Waiting for this boundary keeps image materialization
-/// out of Pi's RPC probe timeout.
-const WRIX_CONTAINER_START_MARKER: &str = "Starting container";
+/// Wrix stderr markers proving the sandbox reached the container-start
+/// boundary. Older shell launchers emit `Starting container` on the host just
+/// before `podman run`; newer Rust launchers may only expose the in-container
+/// entrypoint's `Network mode:` line after `podman run` succeeds. Either line
+/// keeps image materialization out of Pi's RPC probe timeout without waiting
+/// for a marker the selected launcher never prints.
+const WRIX_CONTAINER_START_MARKERS: &[&str] = &["Starting container", "Network mode:"];
 
 /// Upper bound for wrix image materialization + launcher setup. Separate
 /// from the Pi probe budget: a cold image load may be slow, but it is not an
@@ -369,12 +372,18 @@ async fn await_wrix_container_start_marker(stderr: ChildStderr) -> Result<(), Pr
             return Err(ProtocolError::UnexpectedEof);
         }
         relay_stderr_line(&line).await?;
-        if line.contains(WRIX_CONTAINER_START_MARKER) {
+        if is_wrix_container_start_marker(&line) {
             debug!("wrix container start marker observed; starting Pi RPC probe");
             tokio::spawn(relay_remaining_stderr(reader));
             return Ok(());
         }
     }
+}
+
+fn is_wrix_container_start_marker(line: &str) -> bool {
+    WRIX_CONTAINER_START_MARKERS
+        .iter()
+        .any(|marker| line.contains(marker))
 }
 
 async fn relay_remaining_stderr(mut reader: BufReader<ChildStderr>) {
@@ -699,14 +708,19 @@ mod tests {
     }
 
     fn install_wrix_pi_shim(dir: &Path) -> PathBuf {
+        install_wrix_pi_shim_with_startup_line(dir, "[wrix] Starting container (mock)...")
+    }
+
+    fn install_wrix_pi_shim_with_startup_line(dir: &Path, startup_line: &str) -> PathBuf {
         let shim = dir.join("wrix");
         let bash = bash_path();
+        let startup_line = startup_line.replace('\'', r"'\''");
         let body = format!(
             "#!{bash}\n\
              set -euo pipefail\n\
              : \"${{MOCK_PI:?}}\"\n\
              : \"${{MOCK_PI_MODE:?}}\"\n\
-             printf '[wrix] Starting container (mock)...\\n' >&2\n\
+             printf '%s\\n' '{startup_line}' >&2\n\
              exec '{bash}' \"$MOCK_PI\" \"$MOCK_PI_MODE\"\n",
             bash = bash.display(),
         );
@@ -792,6 +806,48 @@ mod tests {
             stall_warn_interval: None,
             launcher_env: Vec::new(),
         }
+    }
+
+    #[test]
+    fn wrix_container_start_marker_accepts_legacy_and_entrypoint_lines() {
+        assert!(is_wrix_container_start_marker(
+            "[wrix] Starting container (cpus=8, memory=8192m)..."
+        ));
+        assert!(is_wrix_container_start_marker(
+            "Network mode: open (local-network baseline enforced; firewall=nft)"
+        ));
+        assert!(!is_wrix_container_start_marker("image already present"));
+    }
+
+    #[tokio::test]
+    async fn spawn_through_wrix_accepts_entrypoint_network_marker() {
+        let wrix_dir = tempfile::tempdir().expect("tempdir");
+        let wrix = install_wrix_pi_shim_with_startup_line(
+            wrix_dir.path(),
+            "Network mode: open (local-network baseline enforced; firewall=nft)",
+        );
+        let mut spawn = sample_config(None);
+        spawn.handshake_timeout = Some(TEST_HANDSHAKE_BUDGET);
+        spawn.launcher_env = vec![
+            (
+                "MOCK_PI".to_string(),
+                mock_pi_path().to_string_lossy().into_owned(),
+            ),
+            ("MOCK_PI_MODE".to_string(), "happy-path".to_string()),
+        ];
+
+        let session = PiBackend::spawn_with_wrix_bin(&spawn, wrix.as_os_str())
+            .await
+            .expect("spawn should treat entrypoint Network mode line as container start");
+        let mut session = session.prompt("hi").await.expect("prompt ok");
+        loop {
+            match session.next_event().await.expect("event ok") {
+                Some(ParsedAgentEvent::SessionComplete { .. }) => break,
+                Some(_) => continue,
+                None => panic!("unexpected EOF"),
+            }
+        }
+        drop(wrix_dir);
     }
 
     #[test]
