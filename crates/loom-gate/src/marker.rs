@@ -788,20 +788,12 @@ mod tests {
         format!("'{}'", raw.replace("'", "'\\''"))
     }
 
-    fn install_real_loom_delegate(bin_dir: &Path) {
-        let manifest = shell_single_quote(&repo_root().join("Cargo.toml"));
-        install_executable(
-            bin_dir,
-            "loom",
-            &format!(
-                "#!/usr/bin/env bash\n\
-                 set -euo pipefail\n\
-                 if [[ -n \"${{CARGO_BIN_EXE_loom:-}}\" ]]; then\n\
-                     exec \"${{CARGO_BIN_EXE_loom}}\" \"$@\"\n\
-                 fi\n\
-                 exec cargo run --quiet --manifest-path {manifest} -p loom --bin loom -- \"$@\"\n"
-            ),
-        );
+    fn install_loom_stub(bin_dir: &Path, exit_code: u8) {
+        // These wrapper tests pin `pre-push-checks` control flow. The real
+        // marker validation semantics are covered by the `verify_marker_*`
+        // tests above; avoiding `cargo run` here keeps nextest/Nix runs
+        // deterministic instead of racing nested Cargo invocations.
+        install_executable(bin_dir, "loom", &format!("#!/bin/sh\nexit {exit_code}\n"));
     }
 
     fn install_sentinel(bin_dir: &Path, marker: &Path) {
@@ -809,7 +801,7 @@ mod tests {
         install_executable(
             bin_dir,
             "sentinel",
-            &format!("#!/usr/bin/env bash\nset -euo pipefail\ntouch {marker}\n"),
+            &format!("#!/bin/sh\nset -eu\ntouch {marker}\n"),
         );
     }
 
@@ -880,7 +872,7 @@ mod tests {
         write_marker_at(workspace, &marker_for_workspace(workspace));
 
         let tools = tempfile::tempdir().expect("tools tempdir");
-        install_real_loom_delegate(tools.path());
+        install_loom_stub(tools.path(), 0);
         let sentinel_marker = tools.path().join("sentinel.flag");
         install_sentinel(tools.path(), &sentinel_marker);
 
@@ -978,7 +970,7 @@ mod tests {
         seed_marker(workspace);
 
         let tools = tempfile::tempdir().expect("tools tempdir");
-        install_real_loom_delegate(tools.path());
+        install_loom_stub(tools.path(), 1);
         let sentinel_marker = tools.path().join("sentinel.flag");
         install_sentinel(tools.path(), &sentinel_marker);
 
@@ -1016,7 +1008,7 @@ mod tests {
         );
 
         let tools = tempfile::tempdir().expect("tools tempdir");
-        install_real_loom_delegate(tools.path());
+        install_loom_stub(tools.path(), 0);
         let sentinel_marker = tools.path().join("sentinel.flag");
         install_sentinel(tools.path(), &sentinel_marker);
 
