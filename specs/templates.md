@@ -195,9 +195,10 @@ and emit `LOOM_TODO:` as the success marker.
 
 ### Template Variables
 
-Each variable is bound to a typed field on the relevant context struct.
-`String`-typed values arriving from beads or config flow through the
-parse-don't-validate boundary defined in [harness.md](harness.md#parse-dont-validate).
+Each top-level value rendered by a template or exposed on a workflow context
+is bound to a typed field on the relevant context struct. `String`-typed values
+arriving from beads or config flow through the parse-don't-validate boundary
+defined in [harness.md](harness.md#parse-dont-validate).
 
 | Variable | Type | Used By |
 |----------|------|---------|
@@ -207,6 +208,7 @@ parse-don't-validate boundary defined in [harness.md](harness.md#parse-dont-vali
 | `anchor_labels` | `Vec<SpecLabel>` | `plan` |
 | `spec_index` | `String` | `plan`, `todo` |
 | `label` | `SpecLabel` | `loop`, `review` |
+| `spec_path` | `String` | `loop`, `review` |
 | `changed_specs` | `Vec<TodoChangedSpec>` | `todo` |
 | `work_epic` | `BeadId` | `todo` |
 | `todo_head` | `GitSha` | `todo` |
@@ -217,7 +219,7 @@ parse-don't-validate boundary defined in [harness.md](harness.md#parse-dont-vali
 | `implementation_notes` | `Vec<SpecImplementationNotes>` | `todo` |
 | `criterion_status` | `Vec<CriterionStatus>` | `todo` (see *Criterion-Status Surface* below) |
 | `inbox_items` | `Vec<InboxItem>` | `inbox` |
-| `molecule_id` | `Option<MoleculeId>` | `loop` |
+| `molecule_id` | `Option<MoleculeId>` | `loop`, `review` |
 | `issue_id` | `Option<BeadId>` | `loop` |
 | `title` | `Option<String>` | `loop` |
 | `description` | `Option<String>` | `loop` |
@@ -227,14 +229,18 @@ parse-don't-validate boundary defined in [harness.md](harness.md#parse-dont-vali
 | `attempt` | `u32` | `loop` |
 | `beads_summary` | `Option<String>` | `review` |
 | `base_commit` | `Option<String>` | `review` |
+| `test_sources` | `Vec<ReviewSource>` | `review` |
+| `judge_rubrics` | `Vec<ReviewSource>` | `review` |
+| `lane` | `ReviewLane` | `review` |
+| `default_profile` | `ProfileName` | `review` (driver mint metadata; not rendered) |
 | `scratchpad_path` | `String` | all |
 
-The newtypes (`SpecLabel`, `MoleculeId`, `BeadId`, `GitSha`,
+The newtypes (`SpecLabel`, `MoleculeId`, `BeadId`, `ProfileName`, `GitSha`,
 `TodoFingerprint`, `CriterionId`) are architecture-bearing parse-boundary
 types. `GitSha`, `TodoFingerprint`, and the todo success protocol live in
-`loom-protocol::todo`; `SpecLabel`, `MoleculeId`, and `BeadId` are defined
-in [harness.md](harness.md#parse-dont-validate). The template treats them
-as opaque typed values.
+`loom-protocol::todo`; `SpecLabel`, `MoleculeId`, `BeadId`, and `ProfileName`
+are defined in [harness.md](harness.md#parse-dont-validate). The template
+treats them as opaque typed values.
 
 `implementation_notes` is sourced from `.loom/cache.db`'s `notes` table
 (kind = `implementation`); see *Notes lifecycle* in
@@ -564,8 +570,11 @@ check fired — `verifier-bypass`, `spec-coherence-fail`, etc.)
 lives on each `Finding`'s `token` field per [gate.md § Concern
 tokens and target variants](gate.md#concern-tokens-and-target-variants),
 not on the `PreviousFailure::ReviewConcern` variant itself. The
-terminal marker is verdict-log shape only; per-finding routing is
-decided by `loom gate mint`.
+human-readable label in the retry prompt is derived from the streamed
+findings: `findings[0].token` when the token set is homogeneous,
+`multiple` when heterogeneous, and `review-concern` only when the vector
+is empty. The terminal marker is verdict-log shape only; per-finding
+routing is decided by `loom gate mint`.
 
 **Caps:**
 
@@ -581,7 +590,9 @@ decided by `loom gate mint`.
 
 - `DriverNotice` → `"Previous attempt: {detail}"`
 - `VerifyFailures` → `"Verifier failures from previous attempt:\n\n{N blocks: target + exit + stderr}"`
-- `ReviewConcern` → `"Review raised {N} concern(s) — {summary}\n\n{per-finding digest: token + evidence first line}"`
+- `ReviewConcern` → `"Review raised a concern ({label}): {summary}\n\n{per-finding digest: token + target + evidence}"`,
+  where `{label}` is derived from the streamed finding tokens as described
+  above
 - `BadWalk(Concern { payload, parsed_findings })` → `"Your LOOM_CONCERN payload did not parse as {\"summary\": \"<non-empty>\"}. Literal payload: {payload}"`, followed (when `parsed_findings` is non-empty) by `"\n\n{N} finding(s) parsed cleanly before the malformed terminator:\n{per-finding digest: token + first line of evidence}"` so the agent's diagnosis from the streamed findings is not lost when only the terminal was malformed.
 - `BadWalk(ConcernWithoutFindings { summary })` → `"You emitted LOOM_CONCERN ({summary}) but no LOOM_FINDING records streamed. Either emit findings before the terminator or use LOOM_COMPLETE."`
 - `BadWalk(FindingsWithoutConcern { finding_count, findings })` → `"You streamed {finding_count} LOOM_FINDING record(s) but terminated with LOOM_COMPLETE. Use LOOM_CONCERN: {\"summary\": \"...\"} when findings are emitted."`, followed by `"\n\nFindings streamed:\n{per-finding digest}"` so the agent's next iteration sees the diagnosis it just emitted.
@@ -618,8 +629,8 @@ attempt failed with: …"` followed by the typed
 
 ### First-instruction reframe
 
-When `previous_failure.is_some()`, `loop.md` prepends to its first
-user instruction:
+When `attempt > 0 && previous_failure.is_some()`, `loop.md` prepends to its
+first user instruction:
 
 > "Re-read the previous failure block above and address its
 > specific concern before re-implementing."
@@ -995,7 +1006,7 @@ templates from `templates`' exposed building blocks:
 - `PreviousFailure`, `VerifierFailure`, `BadWalk`,
   `DriverNoticeCause` (the typed retry-context surface). The
   per-finding `Finding` record carried inside
-  `PreviousFailure::ReviewConcern` is owned by `loom-workflow`
+  `PreviousFailure::ReviewConcern` is owned by `loom-protocol::gate`
   (per [gate.md § Findings and Minting](gate.md#findings-and-minting))
   and re-exported here as a typed dependency.
 - `WorkspaceRecovery`, `RecoveryStash`, `WorkspaceAlignment` (the
@@ -1140,10 +1151,12 @@ documents in front of the agent with zero configuration.
   is the only workflow-template location that describes skill discovery/loading
   semantics
   [check](cargo run -p loom-walk -- template_pinning_matrix)
-- `partial/skill_index.md` renders `{{ skill_index }}` and contains no full
-  built-in skill body literals; disclosure fields are generated by
-  `loom-skills`, not hard-coded in templates
-  [check](grep -q '{{ skill_index' crates/loom-templates/templates/partial/skill_index.md)
+- `partial/skill_index.md` renders `{{ skill_index }}`, contains no full
+  built-in skill body literals, explains native-registered vs
+  prompt-disclosure loading, and states that skills are additive guidance
+  that cannot override phase protocol, terminal markers, or gate
+  requirements
+  [test](skill_index_partial_renders_precomputed_markdown)
 - `partial/interview_modes.md` exists, is included by `plan.md` only,
   and is omitted from non-planning templates
   [check](cargo run -p loom-walk -- template_pinning_matrix)
@@ -1262,7 +1275,7 @@ documents in front of the agent with zero configuration.
 - `WorkspaceRecovery` carries pre-stash status, stable stash commit,
       stash selector/message, target integration tip, and alignment state
       (`Clean`, `Rebased`, or `Conflict { files }`)
-  [check](grep -q 'pub struct WorkspaceRecovery' crates/loom-templates/src/workspace_recovery.rs)
+  [test](workspace_recovery_context_is_publicly_constructible_from_crate_root)
 - `partial/workspace_recovery.md` tells the worker to inspect the stash
       with `git stash show --stat` and `git stash show -p`, then
       intentionally apply/cherry-pick, leave, or drop it; conflict
@@ -1304,7 +1317,7 @@ documents in front of the agent with zero configuration.
   documents the `{"token","route","bonds","target","evidence"}` finding
   payload with tagged `target` variants, the JSON CONCERN
   terminator, and the streaming + terminator pairing rule
-  [check](grep -q 'LOOM_FINDING:' crates/loom-templates/templates/partial/findings_walk.md)
+  [test](review_prompt_is_inspection_only_and_documents_loom_finding_wire_format)
 - `review.md` includes `findings_walk.md` via `{% include %}` rather
   than restating the wire format
   [check](grep -q 'partial/findings_walk.md' crates/loom-templates/templates/review.md)
@@ -1318,6 +1331,11 @@ documents in front of the agent with zero configuration.
   per the partial split documented in [gate.md § Findings and
   Minting](gate.md#findings-and-minting)
   [check](bash -c "! grep -nE 'LOOM_CONCERN:|LOOM_FINDING:' crates/loom-templates/templates/partial/progress_markers.md")
+- Rendered progress-marker guidance distinguishes review
+  `LOOM_COMPLETE` (clean inspection, no diff expected) from loop
+  `LOOM_COMPLETE` (closed bead with non-empty diff) and keeps
+  `LOOM_NOOP` loop-only
+  [test](progress_markers_render_phase_specific_diff_rules)
 - `partial/self_report_markers.md` covers direct loop/todo self-report
   markers (`LOOM_RETRY`, `LOOM_CLARIFY`, `LOOM_BLOCKED`) and contains
   no `LOOM_CONCERN:` or `LOOM_FINDING:` literal
@@ -1384,13 +1402,13 @@ documents in front of the agent with zero configuration.
   `PostIntegrateFail { failures, gate_log_path }`,
   `IntegrationConflict { files, new_base_sha }`, and
   `AgentRetry { reason: String }` — not a free string
-  [check](grep -q 'pub enum PreviousFailure' crates/loom-templates/src/previous_failure.rs)
+  [test](previous_failure_public_variant_contract_is_constructible)
 - `PreviousFailure::AgentRetry { reason }` variant exists and
   carries the verbatim prose the agent wrote on the line preceding
   the `LOOM_RETRY` marker; populated by the driver when a worker
   phase exits with `LOOM_RETRY` per
   [harness.md § Verdict Gate](harness.md#verdict-gate)
-  [check](grep -q 'AgentRetry' crates/loom-templates/src/previous_failure.rs)
+  [test](agent_retry_display_renders_reason_and_escalation_guidance)
 - The `Display for PreviousFailure` rendering of `AgentRetry`
   surfaces the agent's prior `reason` and instructs the retry
   attempt to escalate to `LOOM_BLOCKED` (with no-options rationale) or
@@ -1402,7 +1420,7 @@ documents in front of the agent with zero configuration.
   and `MalformedFinding { errors: Vec<FindingParseError>, terminal: TerminalSurface }`;
   the wrapped pattern mirrors `RecoveryCause::ReviewConcern(ReviewFlag)` at the
   type level
-  [check](grep -q 'pub enum BadWalk' crates/loom-protocol/src/gate.rs)
+  [test](bad_walk_variants_preserve_max_context_invariant_by_struct_shape)
 - Maximum-context preservation invariant: `BadWalk::Concern` carries
   `parsed_findings` (any well-formed findings streamed ahead of the
   malformed terminator); `BadWalk::FindingsWithoutConcern` carries
@@ -1415,12 +1433,12 @@ documents in front of the agent with zero configuration.
   `Malformed { payload: String }` and `Missing` variants so
   `BadWalk::MalformedFinding`'s `terminal` field can carry the
   terminal state regardless of whether the terminal itself parsed
-  [check](grep -q 'pub enum TerminalSurface' crates/loom-protocol/src/gate.rs)
+  [test](terminal_surface_carries_malformed_and_missing_variants)
 - `FindingParseError` is defined in `loom-protocol::gate` and
   re-exported from `loom-templates::finding` /
   `loom-workflow::review::finding` as the per-record wire-format error
   consumed by `BadWalk::MalformedFinding.errors`
-  [check](grep -q 'pub enum FindingParseError' crates/loom-protocol/src/gate.rs)
+  [test](loom_templates_re_exports_finding_contract_from_loom_protocol)
 - The `Display for PreviousFailure` rendering of
   `BadWalk(Concern)` appends a per-finding digest of
   `parsed_findings` when non-empty (the agent's diagnosis from the
@@ -1471,14 +1489,14 @@ documents in front of the agent with zero configuration.
 - Each `PreviousFailure` variant renders with its documented
   framing prefix (`DriverNotice` → "Previous attempt:",
   `VerifyFailures` → "Verifier failures from previous attempt:",
-  `ReviewConcern` → "Review raised {N} concern(s) — {summary}",
-  `BadWalk` → per-variant fragment naming the specific
-  malformation, `BuildFailure` → "Build failed at ...:",
-  `TreeNotClean` → "Working tree was not clean after the bead
-  committed:", `PostIntegrateFail` → "After rebasing onto the
-  integration branch, the post-integration verify failed.", and
-  `IntegrationConflict` → "Your bead branch could not be rebased onto
-  the integration branch")
+  `ReviewConcern` → "Review raised a concern ({label}): {summary}"
+  with `{label}` derived from streamed finding tokens, `BadWalk` →
+  per-variant fragment naming the specific malformation, `BuildFailure`
+  → "Build failed at ...:", `TreeNotClean` → "Working tree was not
+  clean after the bead committed:", `PostIntegrateFail` → "After
+  rebasing onto the integration branch, the post-integration verify
+  failed.", and `IntegrationConflict` → "Your bead branch could not be
+  rebased onto the integration branch")
   [test](previous_failure_variant_framings_match_spec)
 - `TreeNotClean` renders the dirty-path list one-per-line and
   appends a `"+N more"` suffix line when the upstream driver
@@ -1505,10 +1523,13 @@ documents in front of the agent with zero configuration.
 
 - `loop.md` prepends "Re-read the previous failure block above and
   address its specific concern before re-implementing." when
-  `previous_failure.is_some()`
+  `attempt > 0 && previous_failure.is_some()`
   [test](run_template_prepends_first_instruction_reframe_on_retry)
 - Reframe is omitted when `previous_failure.is_none()`
   [test](run_template_omits_first_instruction_reframe_on_fresh_dispatch)
+- Reframe is omitted when `attempt == 0`, even if a `previous_failure`
+  value is present
+  [test](run_template_omits_first_instruction_reframe_when_attempt_zero)
 - Reframe wording is generic (one form regardless of variant);
   per-variant detail lives inside the previous-failure block itself
   [check](grep -q 'Re-read the previous failure block above' crates/loom-templates/templates/loop.md)
@@ -1555,7 +1576,7 @@ documents in front of the agent with zero configuration.
   `criterion_id`, `criterion_text`, `annotation`, and `evidence`;
   `EvidenceState` is a tagged enum with variants `Current`, `Missing`,
   and `StaleAnnotation`
-  [check](grep -q 'pub struct CriterionStatus' crates/loom-templates/src/criterion_status.rs)
+  [test](criterion_status_public_shape_carries_annotation_and_evidence_states)
 - `todo.md` rendered prompts surface every changed spec's
   `CriterionStatus` rows with criterion text, annotation, and evidence
   state so the agent can distinguish current pass evidence from stale or
@@ -1650,9 +1671,9 @@ documents in front of the agent with zero configuration.
     the agent. `loop.md` renders the attempt line when `attempt > 0
     && previous_failure.is_some()`, omits it otherwise.
 13. **First-instruction reframe.** When
-    `previous_failure.is_some()`, `loop.md` prepends "Re-read the
-    previous failure block above and address its specific concern
-    before re-implementing." Single generic form — per-variant
+    `attempt > 0 && previous_failure.is_some()`, `loop.md` prepends
+    "Re-read the previous failure block above and address its specific
+    concern before re-implementing." Single generic form — per-variant
     detail lives in the previous-failure block itself.
 14. **Public surface for consumers.** `templates` is a
     public-contract crate. Exposed: `PreviousFailure` (and its

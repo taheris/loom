@@ -5,16 +5,17 @@
 //! without touching any workflow-template internals.
 
 use loom_templates::{
-    BadWalk, ConcernToken, Finding, FindingTarget, LoopContext,
-    PARTIAL_CHAT_MARKER_FINAL_TURN_ONLY, PARTIAL_COMPANIONS_CONTEXT, PARTIAL_CONTEXT_PINNING,
-    PARTIAL_FINDINGS_WALK, PARTIAL_INTERVIEW_MODES, PARTIAL_INVARIANT_CLASH,
-    PARTIAL_PLAN_STAGE_RUBRIC, PARTIAL_PROGRESS_MARKERS, PARTIAL_REVIEW_RUBRIC,
-    PARTIAL_REVIEW_SELF_REPORT_MARKERS, PARTIAL_SCRATCHPAD, PARTIAL_SELF_REPORT_MARKERS,
-    PARTIAL_SIBLING_SPEC_EDITING, PARTIAL_SKILL_INDEX, PARTIAL_SPEC_CONVENTIONS,
-    PARTIAL_SPEC_HEADER, PARTIAL_STYLE_RULES, PARTIAL_TODO_SUCCESS, PARTIAL_WORKSPACE_RECOVERY,
-    PinnedContext, PlanContext, PreviousFailure, RecoveryStash, SkillIndexMarkdown,
-    SpecImplementationNotes, TodoChangedSpec, TodoContext, VerifierFailure, WorkspaceAlignment,
-    WorkspaceRecovery,
+    AnnotationTarget, AnnotationTier, BadWalk, ConcernToken, CriterionAnnotation, CriterionId,
+    CriterionResult, CriterionStatus, DriverNoticeCause, EvidenceState, Finding, FindingTarget,
+    LoopContext, PARTIAL_CHAT_MARKER_FINAL_TURN_ONLY, PARTIAL_COMPANIONS_CONTEXT,
+    PARTIAL_CONTEXT_PINNING, PARTIAL_FINDINGS_WALK, PARTIAL_INTERVIEW_MODES,
+    PARTIAL_INVARIANT_CLASH, PARTIAL_PLAN_STAGE_RUBRIC, PARTIAL_PROGRESS_MARKERS,
+    PARTIAL_REVIEW_RUBRIC, PARTIAL_REVIEW_SELF_REPORT_MARKERS, PARTIAL_SCRATCHPAD,
+    PARTIAL_SELF_REPORT_MARKERS, PARTIAL_SIBLING_SPEC_EDITING, PARTIAL_SKILL_INDEX,
+    PARTIAL_SPEC_CONVENTIONS, PARTIAL_SPEC_HEADER, PARTIAL_STYLE_RULES, PARTIAL_TODO_SUCCESS,
+    PARTIAL_WORKSPACE_RECOVERY, PinnedContext, PlanContext, PreviousFailure, RecoveryStash,
+    SkillIndexMarkdown, SpecImplementationNotes, TodoChangedSpec, TodoContext, VerifierFailure,
+    WorkspaceAlignment, WorkspaceRecovery,
 };
 
 #[test]
@@ -81,26 +82,148 @@ fn partial_style_rules_renders_style_rules_variable() {
 
 #[test]
 fn workspace_recovery_context_is_publicly_constructible_from_crate_root() {
+    let commit = loom_protocol::todo::GitSha::new("0123456789abcdef0123456789abcdef01234567")
+        .expect("valid git sha");
+    let integration_tip =
+        loom_protocol::todo::GitSha::new("1111111111111111111111111111111111111111")
+            .expect("valid git sha");
     let ctx = WorkspaceRecovery {
         pre_stash_status: "## loom/demo\n M src/lib.rs".into(),
         stash: RecoveryStash {
             selector: "stash@{0}".into(),
-            commit: loom_protocol::todo::GitSha::new("0123456789abcdef0123456789abcdef01234567")
-                .expect("valid git sha"),
+            commit: commit.clone(),
             message: "loom workspace-recovery lm-demo.1 1716250000".into(),
         },
-        integration_tip: loom_protocol::todo::GitSha::new(
-            "1111111111111111111111111111111111111111",
-        )
-        .expect("valid git sha"),
+        integration_tip: integration_tip.clone(),
         alignment: WorkspaceAlignment::Conflict {
             files: vec!["src/lib.rs".into()],
         },
     };
 
+    assert_eq!(ctx.pre_stash_status, "## loom/demo\n M src/lib.rs");
     assert_eq!(ctx.stash.selector, "stash@{0}");
+    assert_eq!(ctx.stash.commit, commit);
+    assert_eq!(ctx.integration_tip, integration_tip);
     assert!(ctx.alignment.is_conflict());
     assert_eq!(ctx.alignment.conflict_files(), &["src/lib.rs".to_string()]);
+
+    let clean = WorkspaceAlignment::Clean;
+    assert!(!clean.is_conflict());
+    assert_eq!(clean.to_string(), "Clean");
+
+    let rebased = WorkspaceAlignment::Rebased {
+        previous_head: loom_protocol::todo::GitSha::new("2222222222222222222222222222222222222222")
+            .expect("valid git sha"),
+        current_head: loom_protocol::todo::GitSha::new("3333333333333333333333333333333333333333")
+            .expect("valid git sha"),
+    };
+    assert!(!rebased.is_conflict());
+    assert!(rebased.to_string().contains("Rebased"));
+}
+
+#[test]
+fn criterion_status_public_shape_carries_annotation_and_evidence_states() {
+    let spec_label = loom_events::identifier::SpecLabel::new("templates");
+    let criterion_id = CriterionId::new("criterion-status-surface");
+    let annotation = CriterionAnnotation {
+        tier: AnnotationTier::Check,
+        target: AnnotationTarget::new("cargo run -p loom-walk -- template_pinning_matrix"),
+        pending: false,
+    };
+    let current = CriterionStatus {
+        spec_label: spec_label.clone(),
+        criterion_id: criterion_id.clone(),
+        criterion_text: "CriterionStatus rows carry evidence.".into(),
+        annotation: annotation.clone(),
+        evidence: EvidenceState::Current {
+            result: CriterionResult::Pass,
+            last_timestamp_ms: 1_716_300_000_000,
+            last_commit: loom_protocol::todo::GitSha::new(
+                "0123456789abcdef0123456789abcdef01234567",
+            )
+            .expect("valid git sha"),
+            commits_since: 0,
+        },
+    };
+    assert_eq!(current.spec_label, spec_label);
+    assert_eq!(current.criterion_id, criterion_id);
+    assert_eq!(
+        current.criterion_text,
+        "CriterionStatus rows carry evidence."
+    );
+    assert_eq!(current.annotation.tier, AnnotationTier::Check);
+    assert_eq!(current.evidence.as_str(), "Current");
+    assert_eq!(current.evidence.result_label(), "Pass");
+
+    let missing = EvidenceState::Missing;
+    assert_eq!(missing.as_str(), "Missing");
+    assert_eq!(missing.result_label(), "—");
+
+    let stale = EvidenceState::StaleAnnotation {
+        cached_annotation: annotation,
+        last_timestamp_ms: 1_716_000_000_000,
+        last_commit: loom_protocol::todo::GitSha::new("1111111111111111111111111111111111111111")
+            .expect("valid git sha"),
+        commits_since: 2,
+    };
+    assert_eq!(stale.as_str(), "StaleAnnotation");
+    assert_eq!(stale.commits_since_label(), "2");
+    assert!(stale.cached_annotation_label().contains("[check]"));
+}
+
+#[test]
+fn previous_failure_public_variant_contract_is_constructible() {
+    let spec = loom_events::identifier::SpecLabel::new("templates");
+    let finding = Finding {
+        token: ConcernToken::SpecCoherenceFail,
+        route: loom_protocol::gate::FindingRoute::Deferred,
+        bonds: vec![spec.clone()],
+        target: FindingTarget::Criterion {
+            spec,
+            anchor: "typed-previousfailure".into(),
+        },
+        evidence: "typed retry context carries the finding".into(),
+    };
+    let verifier = VerifierFailure::new("cargo test -p loom-templates", 101, "compile error");
+    let variants = vec![
+        PreviousFailure::DriverNotice {
+            cause: DriverNoticeCause::ZeroProgress,
+            detail: "empty diff".into(),
+        },
+        PreviousFailure::VerifyFailures(vec![verifier.clone()]),
+        PreviousFailure::ReviewConcern {
+            summary: "review summary".into(),
+            findings: vec![finding],
+        },
+        PreviousFailure::BadWalk(BadWalk::ConcernWithoutFindings {
+            summary: "missing streamed finding".into(),
+        }),
+        PreviousFailure::BuildFailure {
+            stage: "cargo".into(),
+            output: "build failed".into(),
+        },
+        PreviousFailure::TreeNotClean {
+            dirty_paths: vec!["src/lib.rs".into()],
+        },
+        PreviousFailure::PostIntegrateFail {
+            failures: vec![verifier],
+            gate_log_path: std::path::PathBuf::from(".loom/logs/gate.json"),
+        },
+        PreviousFailure::IntegrationConflict {
+            files: vec![std::path::PathBuf::from("src/lib.rs")],
+            new_base_sha: loom_protocol::oid::GitOid::new(
+                "deadbeefcafe1234567890abcdef0123456789ab",
+            )
+            .expect("valid git oid"),
+        },
+        PreviousFailure::AgentRetry {
+            reason: "sandbox cwd disappeared".into(),
+        },
+    ];
+
+    for variant in variants {
+        assert!(!variant.to_string().is_empty());
+    }
 }
 
 #[test]

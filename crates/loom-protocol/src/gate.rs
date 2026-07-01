@@ -2212,6 +2212,16 @@ mod tests {
             other => panic!("expected BadWalk::Concern, got {other:?}"),
         }
 
+        let concern_without_findings = BadWalk::ConcernWithoutFindings {
+            summary: "terminal concern with no stream".to_owned(),
+        };
+        match &concern_without_findings {
+            BadWalk::ConcernWithoutFindings { summary } => {
+                assert_eq!(summary, "terminal concern with no stream");
+            }
+            other => panic!("expected BadWalk::ConcernWithoutFindings, got {other:?}"),
+        }
+
         let findings: Vec<Finding> = Vec::new();
         let no_concern = BadWalk::FindingsWithoutConcern {
             finding_count: findings.len(),
@@ -2244,6 +2254,20 @@ mod tests {
             }
             other => panic!("expected BadWalk::MalformedFinding, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn terminal_surface_carries_malformed_and_missing_variants() {
+        let malformed = TerminalSurface::Malformed {
+            payload: "{not json}".to_owned(),
+        };
+        assert_eq!(malformed.label(), "LOOM_CONCERN (malformed payload)");
+
+        let missing = TerminalSurface::Missing;
+        assert_eq!(
+            missing.label(),
+            "no terminal marker on the final non-empty line",
+        );
     }
 
     #[test]

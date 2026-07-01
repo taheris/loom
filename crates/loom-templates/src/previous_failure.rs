@@ -6,7 +6,7 @@
 //! `BadWalk`, `VerifierFailure`) are part of the `templates` public contract —
 //! consumers compose them into their own retry prompts. The per-finding
 //! `Finding` record carried inside [`PreviousFailure::ReviewConcern`] is
-//! spec-owned by `loom-workflow` (per `specs/gate.md` § Findings and Minting)
+//! owned by `loom-protocol::gate` (per `specs/gate.md` § Findings and Minting)
 //! and re-exported from this crate to thread it through the typed
 //! retry-context surface.
 //!

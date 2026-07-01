@@ -172,6 +172,14 @@ fn skill_index_partial_renders_precomputed_markdown() -> Result<()> {
     let out = ctx.render()?;
 
     assert!(out.contains("## Skills"));
+    assert!(out.contains("Full skill bodies are not pinned here"));
+    assert!(out.contains("Native-registered mode"));
+    assert!(out.contains("Prompt-disclosure mode"));
+    assert!(out.contains("read that path"));
+    assert!(out.contains("before applying the skill"));
+    assert!(out.contains("cannot override phase protocol"));
+    assert!(out.contains("terminal markers"));
+    assert!(out.contains("gate requirements"));
     assert!(out.contains("`rust-review`"));
     assert!(out.contains("/workspace/skills/rust-review.md"));
     Ok(())
@@ -1107,6 +1115,19 @@ fn review_prompt_is_inspection_only_and_documents_loom_finding_wire_format() -> 
         out.contains("target.spec") && out.contains("MUST appear in `bonds`"),
         "validation rule (Criterion/Invariant target.spec ∈ bonds) must be documented: {out}",
     );
+    assert!(
+        out.contains(r#"LOOM_CONCERN: {"summary":"#),
+        "LOOM_CONCERN JSON terminator shape must be documented: {out}",
+    );
+    assert!(
+        out.contains("Streaming + terminator pairing rule"),
+        "pairing rule heading missing: {out}",
+    );
+    assert!(
+        out.contains("`LOOM_COMPLETE` means zero findings")
+            && out.contains("`LOOM_CONCERN` means\n≥1 finding"),
+        "pairing rule semantics missing: {out}",
+    );
     Ok(())
 }
 
@@ -1382,6 +1403,46 @@ fn worker_templates_omit_chat_final_turn_clause() -> Result<()> {
             "{name}: worker template must not include the chat-only final-turn clause; output: {out}",
         );
     }
+    Ok(())
+}
+
+#[test]
+fn progress_markers_render_phase_specific_diff_rules() -> Result<()> {
+    let review_out = ReviewContext {
+        pinned_context: PINNED_CONTEXT_BODY.to_string(),
+        label: SpecLabel::new("harness"),
+        spec_path: "specs/harness.md".to_string(),
+        companion_paths: vec![],
+        beads_summary: None,
+        base_commit: None,
+        molecule_id: None,
+        test_sources: vec![],
+        judge_rubrics: vec![],
+        scratchpad_path: SCRATCHPAD_PATH_BODY.to_string(),
+        style_rules: "docs/style-rules.md".to_string(),
+        lane: ReviewLane::Both,
+        default_profile: ProfileName::new("base"),
+        skill_index: SkillIndexMarkdown::empty(),
+    }
+    .render()?;
+
+    assert!(
+        review_out.contains("clean inspection with zero findings"),
+        "review LOOM_COMPLETE must not inherit loop diff semantics: {review_out}",
+    );
+    assert!(
+        review_out.contains("no diff is expected"),
+        "review prompt must say no diff is expected for clean review: {review_out}",
+    );
+    assert!(
+        review_out.contains("`LOOM_NOOP` is not a review, plan, todo")
+            && review_out.contains("inbox terminal"),
+        "LOOM_NOOP must stay loop-only: {review_out}",
+    );
+    assert!(
+        review_out.contains("empty loop diff with `LOOM_COMPLETE`"),
+        "loop zero-progress rule must stay scoped to loop: {review_out}",
+    );
     Ok(())
 }
 

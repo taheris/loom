@@ -14,10 +14,12 @@
 //! (e.g. RAG pipelines, domain-specific review tools) compose their own
 //! templates from the exposed typed building blocks
 //! ([`PinnedContext`], [`PreviousFailure`], [`WorkspaceRecovery`],
-//! [`PlanContext`], [`TodoContext`], [`LoopContext`], [`ReviewContext`]) and the `PARTIAL_*` partial-string
-//! constants below. Loom's own workflow templates (`plan`, `todo`, `loop`,
-//! `review`, `inbox`) are internal — consumers compose with the partials and
-//! typed contexts, not with the workflow shells.
+//! [`CriterionStatus`], [`EvidenceState`], [`SkillIndexMarkdown`],
+//! [`PlanContext`], [`TodoContext`], [`LoopContext`], [`ReviewContext`])
+//! and the `PARTIAL_*` partial-string constants below. Loom's own workflow
+//! templates (`plan`, `todo`, `loop`, `review`, `inbox`) are internal —
+//! consumers compose with the partials and typed contexts, not with the
+//! workflow shells.
 
 use std::fmt;
 
