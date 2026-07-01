@@ -7,7 +7,6 @@ Decompose the deterministic changed specs into the todo work epic
 Usage: loom todo [OPTIONS]
 
 Options:
-      --since <COMMIT>    Override the anchor's `base_commit` for tier-1 detection
   -w, --workspace <PATH>  Workspace root. Defaults to the current working directory
   -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
   -h, --help              Print help

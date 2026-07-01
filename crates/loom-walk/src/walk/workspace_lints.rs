@@ -13,12 +13,20 @@ use super::{Verdict, WalkInput};
 const RULE: &str = "workspace_lints — root declares workspace lint sections; every member uses [lints] workspace = true";
 
 const LIBRARY_CRATES: &[&str] = &[
-    "loom-events",
     "loom-driver",
+    "loom-events",
+    "loom-llm",
+    "loom-skills",
+    "loom-tune",
     "loom-render",
     "loom-agent",
+    "loom-direct-runner",
+    "loom-gate",
+    "loom-protocol",
     "loom-workflow",
     "loom-templates",
+    "loom-test-support",
+    "loom-walk",
 ];
 
 const BINARY_CRATE: &str = "loom";

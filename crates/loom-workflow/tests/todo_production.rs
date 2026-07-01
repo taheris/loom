@@ -294,7 +294,6 @@ fn controller(
         ProfileName::new("base"),
         Arc::new(GitClient::open(workspace)?),
         Arc::new(BdClient::with_runner(runner)),
-        None,
     ))
 }
 
@@ -953,7 +952,6 @@ async fn todo_consumes_notes_only_after_validated_finalization() -> Result<()> {
         ProfileName::new("base"),
         Arc::new(GitClient::open(dir.path())?),
         Arc::new(BdClient::with_runner(runner)),
-        None,
     );
     let session = ctrl.build_session().await?;
     let success = todo_success_with_specs(
@@ -994,7 +992,6 @@ async fn todo_consumes_notes_only_after_validated_finalization() -> Result<()> {
         ProfileName::new("base"),
         Arc::new(GitClient::open(invalid_dir.path())?),
         Arc::new(BdClient::with_runner(invalid_runner)),
-        None,
     );
     let invalid_session = invalid_ctrl.build_session().await?;
     let invalid_success = todo_success(&invalid_session.config.initial_prompt, &["alpha"])?;

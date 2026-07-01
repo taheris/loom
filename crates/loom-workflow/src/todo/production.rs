@@ -43,11 +43,6 @@ pub struct ProductionTodoController<R: CommandRunner = TokioRunner> {
     runtime: AgentRuntime,
     git: Arc<GitClient>,
     bd: Arc<BdClient<R>>,
-    #[expect(
-        dead_code,
-        reason = "CLI flag retained until the deterministic todo surface removes --since"
-    )]
-    since: Option<String>,
     preflight: Option<Preflight>,
     loom_cfg: LoomTopConfig,
     skills_cfg: SkillsConfig,
@@ -82,7 +77,6 @@ struct BuiltTodoPrompt {
 }
 
 impl<R: CommandRunner> ProductionTodoController<R> {
-    #[expect(clippy::too_many_arguments, reason = "controller construction surface")]
     pub fn new(
         _label: SpecLabel,
         workspace: PathBuf,
@@ -91,9 +85,8 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         phase_default: ProfileName,
         git: Arc<GitClient>,
         bd: Arc<BdClient<R>>,
-        since: Option<String>,
     ) -> Self {
-        Self::for_workspace(workspace, state, manifest, phase_default, git, bd, since)
+        Self::for_workspace(workspace, state, manifest, phase_default, git, bd)
     }
 
     pub fn for_workspace(
@@ -103,7 +96,6 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         phase_default: ProfileName,
         git: Arc<GitClient>,
         bd: Arc<BdClient<R>>,
-        since: Option<String>,
     ) -> Self {
         Self {
             workspace,
@@ -113,7 +105,6 @@ impl<R: CommandRunner> ProductionTodoController<R> {
             runtime: AgentRuntime::Pi,
             git,
             bd,
-            since,
             preflight: None,
             loom_cfg: LoomTopConfig::default(),
             skills_cfg: SkillsConfig::default(),

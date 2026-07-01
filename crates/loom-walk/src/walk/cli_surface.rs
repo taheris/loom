@@ -36,6 +36,23 @@ pub fn enum_variant_names(
     Ok(out)
 }
 
+pub fn enum_variant_flags(
+    file: &syn::File,
+    enum_name: &str,
+    variant_name: &str,
+    rel_path: &str,
+) -> Result<Vec<Flag>, String> {
+    let item = enum_item(file, enum_name, rel_path)?;
+    for variant in &item.variants {
+        let name = command_name_for_variant(variant, rel_path)?
+            .unwrap_or_else(|| ident_to_kebab(&variant.ident));
+        if name == variant_name {
+            return flags_from_fields(&variant.fields, rel_path, &variant.ident.to_string());
+        }
+    }
+    Ok(Vec::new())
+}
+
 pub fn enum_variant_shape(
     file: &syn::File,
     enum_name: &str,
@@ -83,28 +100,7 @@ pub fn struct_flags(
     rel_path: &str,
 ) -> Result<Vec<Flag>, String> {
     let item = struct_item(file, struct_name, rel_path)?;
-    let Fields::Named(fields) = &item.fields else {
-        return Err(format!(
-            "{rel_path} struct `{struct_name}` has no named fields"
-        ));
-    };
-    let mut out = Vec::new();
-    for field in &fields.named {
-        let field_name = field
-            .ident
-            .as_ref()
-            .map(std::string::ToString::to_string)
-            .unwrap_or_default();
-        for attr in &field.attrs {
-            if !attr.path().is_ident("arg") {
-                continue;
-            }
-            if let Some(flag) = arg_flag(attr, &field_name, rel_path, struct_name)? {
-                out.push(flag);
-            }
-        }
-    }
-    Ok(out)
+    flags_from_named_fields(&item.fields, rel_path, struct_name)
 }
 
 pub fn struct_long_flags(
@@ -193,6 +189,40 @@ fn enum_item<'a>(
             _ => None,
         })
         .ok_or_else(|| format!("{rel_path} no `{enum_name}` enum"))
+}
+
+fn flags_from_fields(fields: &Fields, rel_path: &str, owner: &str) -> Result<Vec<Flag>, String> {
+    match fields {
+        Fields::Named(_) => flags_from_named_fields(fields, rel_path, owner),
+        Fields::Unit | Fields::Unnamed(_) => Ok(Vec::new()),
+    }
+}
+
+fn flags_from_named_fields(
+    fields: &Fields,
+    rel_path: &str,
+    owner: &str,
+) -> Result<Vec<Flag>, String> {
+    let Fields::Named(fields) = fields else {
+        return Err(format!("{rel_path} `{owner}` has no named fields"));
+    };
+    let mut out = Vec::new();
+    for field in &fields.named {
+        let field_name = field
+            .ident
+            .as_ref()
+            .map(std::string::ToString::to_string)
+            .unwrap_or_default();
+        for attr in &field.attrs {
+            if !attr.path().is_ident("arg") {
+                continue;
+            }
+            if let Some(flag) = arg_flag(attr, &field_name, rel_path, owner)? {
+                out.push(flag);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn struct_item<'a>(

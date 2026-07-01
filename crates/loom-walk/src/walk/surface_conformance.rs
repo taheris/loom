@@ -11,10 +11,10 @@
 //! - **Grouping order** — the order of `**Workflow** / **Inspection**
 //!   / **State**` sub-sections in FR1 (and per-group bullet order) ↔
 //!   the order of `HELP_GROUPS` tuples (and per-tuple slice order).
-//! - **Flag set (partial)** — long flag names in the *Logs UX* and
+//! - **Flag set** — long flag names in the *Logs UX* and
 //!   *Inbox Modes* tables ↔ the corresponding clap `#[arg(...)]`
-//!   declarations. FR1 scope-flag inline prose (`loom gate <sub>`
-//!   flags) is not yet covered.
+//!   declarations; removed flags are checked against top-level command
+//!   variants and nested inbox args.
 //!
 //! `HELP_GROUPS` is the canonical declaration the binary regroups
 //! clap's flat `Commands:` block against, so parsing it as text is the
@@ -239,18 +239,32 @@ fn check_removed_surface_absent(
                 }
             }
             RemovedEntry::Subcommand { .. } => {}
-            RemovedEntry::Flag { command, flag } if command == "inbox" => {
-                if inbox_flags
-                    .iter()
-                    .any(|candidate| removed_flag_matches(flag, candidate))
+            RemovedEntry::Flag { command, flag } => {
+                if command == "inbox"
+                    && inbox_flags
+                        .iter()
+                        .any(|candidate| removed_flag_matches(flag, candidate))
                 {
                     violations.push(format!(
                         "{MAIN_RS} inbox args re-declare `{}` — listed in {SPEC} Removed surface table",
                         format_removed_flag(flag),
                     ));
                 }
+                match cli_surface::enum_variant_flags(main_file, "Command", command, MAIN_RS) {
+                    Ok(flags) => {
+                        if flags
+                            .iter()
+                            .any(|candidate| removed_flag_matches(flag, candidate))
+                        {
+                            violations.push(format!(
+                                "{MAIN_RS} `loom {command}` re-declares `{}` — listed in {SPEC} Removed surface table",
+                                format_removed_flag(flag),
+                            ));
+                        }
+                    }
+                    Err(e) => violations.push(e),
+                }
             }
-            RemovedEntry::Flag { .. } => {}
         }
     }
 }

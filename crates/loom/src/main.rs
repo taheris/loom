@@ -57,7 +57,7 @@ use loom_workflow::{run_agent, run_agent_classified};
 
 /// Top-level CLI surface.
 #[derive(Debug, Parser)]
-#[command(name = "loom", version, about = "Loom harness CLI")]
+#[command(name = "loom", version, about = "Run the Loom workflow harness.")]
 struct Cli {
     /// Workspace root. Defaults to the current working directory.
     #[arg(long, short = 'w', global = true, value_name = "PATH")]
@@ -528,11 +528,7 @@ enum Command {
     /// Tune skills and templates through isolated proposals.
     Tune(TuneArgs),
     /// Decompose the deterministic changed specs into the todo work epic.
-    Todo {
-        /// Override the anchor's `base_commit` for tier-1 detection.
-        #[arg(long, value_name = "COMMIT")]
-        since: Option<String>,
-    },
+    Todo,
     /// Manage notes for a spec.
     Note {
         #[command(subcommand)]
@@ -582,7 +578,7 @@ impl Command {
             | Command::Loop { .. }
             | Command::Gate { .. }
             | Command::Note { .. }
-            | Command::Todo { .. } => true,
+            | Command::Todo => true,
         }
     }
 }
@@ -654,6 +650,7 @@ fn print_grouped_help() {
                 .get_subcommands()
                 .find(|s| s.get_name() == *name)
                 .and_then(|s| s.get_about().map(|d| d.to_string()))
+                .map(|text| help_sentence(&text))
                 .unwrap_or_default();
             let _ = writeln!(grouped, "  {name:<width$}  {about}", width = width);
         }
@@ -663,7 +660,10 @@ fn print_grouped_help() {
         .get_subcommands()
         .find(|s| s.get_name() == "help")
         .and_then(|s| s.get_about().map(|d| d.to_string()))
-        .unwrap_or_else(|| "Print this message or the help of the given subcommand(s)".to_string());
+        .map(|text| help_sentence(&text))
+        .unwrap_or_else(|| {
+            "Print this message or the help of the given subcommand(s).".to_string()
+        });
     let _ = writeln!(
         grouped,
         "  {help:<width$}  {help_about}",
@@ -672,6 +672,15 @@ fn print_grouped_help() {
     );
 
     print!("{}", replace_commands_section(&default_help, &grouped));
+}
+
+fn help_sentence(text: &str) -> String {
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() || trimmed.ends_with('.') {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}.")
+    }
 }
 
 /// Replace clap's auto-generated `Commands:` block in `help` with `grouped`.
@@ -810,9 +819,7 @@ fn main() -> ExitCode {
             run_inbox(&workspace, args, agent_override).map(|()| ExitCode::SUCCESS)
         }
         Command::Tune(args) => run_tune(&workspace, args).map(|()| ExitCode::SUCCESS),
-        Command::Todo { since } => {
-            run_todo(&workspace, since, agent_override).map(|()| ExitCode::SUCCESS)
-        }
+        Command::Todo => run_todo(&workspace, agent_override).map(|()| ExitCode::SUCCESS),
         Command::Note { action } => run_note(&workspace, action).map(|()| ExitCode::SUCCESS),
     };
 
@@ -4317,11 +4324,7 @@ fn push_artifact(out: &mut String, label: &str, path: &Path) {
     push_line(out, format!("  {label}: {} ({state})", path.display()));
 }
 
-fn run_todo(
-    workspace: &Path,
-    since: Option<String>,
-    agent_override: Option<AgentKind>,
-) -> anyhow::Result<()> {
+fn run_todo(workspace: &Path, agent_override: Option<AgentKind>) -> anyhow::Result<()> {
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
     let lock_mgr = LockManager::new(workspace)?;
     let _guard = lock_mgr.acquire_todo()?;
@@ -4352,7 +4355,6 @@ fn run_todo(
             phase_default,
             git,
             bd,
-            since,
         )
         .with_loom_config(loom_cfg_for_todo)
         .with_agent_runtime(kind)

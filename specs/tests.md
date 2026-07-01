@@ -8,7 +8,7 @@ Loom is a Rust binary that orchestrates per-bead agent sessions
 across a multi-crate workspace. Testing has to cover three things at
 once: protocol parsing across subprocess agent protocols (pi-mono RPC,
 Claude stream-json, plus Direct runner JSONL compatibility), workflow
-orchestration (cache DB, locking, worktree parallelism, push gate), and
+orchestration (cache DB, locking, bead-clone parallelism, push gate), and
 host↔container plumbing (entrypoint branching, bind mounts,
 profile/runtime selection). All three need
 first-class coverage in a Rust-native test framework with explicit
@@ -295,7 +295,7 @@ JSONL framing under adversarial input), it's exposed as
 `insta` snapshots for **contract surfaces** — outputs whose shape is
 the contract:
 
-- Templates (`templates`) — every Askama template × representative
+- Templates (`loom-templates`) — every Askama template × representative
   input set produces a `.snap` checked into
   `crates/loom-templates/tests/snapshots/`. Reviewers see the
   rendered diff in PRs.
@@ -620,10 +620,10 @@ in Functional #4.
   [test](wrix_spawn_child_env_sets_backend_derived_wrix_agent)
 - Parallel run end-to-end: `loom loop --parallel 2` with two ready
       beads dispatches two mock-agent spawns concurrently, each in its
-      own worktree, then merges both branches back to driver
+      own bead clone, then integrates both branches back to the driver
   [test](parallel_run_two_beads_e2e)
-- `GitClient` round-trip: create worktree, list, status, merge
-      (clean / non-conflicting / conflict variants), remove — all
+- `GitClient` round-trip: create bead clone, status, rebase + fast-forward
+      integration (clean / non-conflicting / conflict variants), remove — all
       against a temp repo via the typed Rust API
   [test](create_and_remove_worktree_round_trip)
 - Cache DB lifecycle: `open` on fresh path creates schema; `rebuild`
@@ -959,9 +959,10 @@ the rules:
      lock races)
    - On worker failure, the bead clone persists (per-bead-close
      lifecycle) and the bead is queued for retry per the retry policy
-   - On merge conflict, the bead clone is preserved and the bead is
-     routed to `Blocked` per the verdict gate (does not silently
-     overwrite or auto-resolve)
+   - On integration merge conflict, the bead clone is preserved and the
+     verdict gate gives the agent one `integration-conflict` retry; a
+     second conflict escalates to `loom:clarify` with the conflict files
+     and new integration tip
 
    #### Concurrency & locking (loom-driver)
    - `flock` wrapper acquires/releases an exclusive lock on a file path;
@@ -1007,16 +1008,14 @@ the rules:
      retention, and tracing-boundary tests are owned by [events.md](events.md)
 
    #### GitClient (loom-driver)
-   - `GitClient::create_worktree(label, bead_id)` creates a worktree under
-     `.wrix/worktree/<label>/<bead-id>/` on a fresh branch
-     `loom/<label>/<bead-id>` from HEAD
-   - `GitClient::list_worktrees` returns worktrees registered with the
-     repo (parity with `git worktree list --porcelain`)
-   - `GitClient::remove_worktree(path)` removes the worktree directory
-     and its registration; idempotent if already removed
-   - `GitClient::merge(branch)` merges a bead branch into the current
-     branch; returns a typed `MergeResult` distinguishing fast-forward,
-     non-conflicting merge commit, and conflict
+   - `GitClient::create_worktree(label, bead_id)` materializes a standalone
+     bead clone under `.loom/beads/<bead-id>/` on branch
+     `loom/<bead-id>` from the loom workspace
+   - `GitClient::remove_worktree(path)` removes the bead clone directory;
+     idempotent if already removed
+   - `GitClient::merge_branch(branch)` rebases a bead branch onto the
+     configured integration branch and fast-forwards it; returns a typed
+     `MergeResult` distinguishing success and conflict
    - `GitClient::status` reports working-tree changes against HEAD
    - Hybrid implementation: callers see only the typed Rust API.
      Whichever path is used internally (gix vs `git` CLI) is

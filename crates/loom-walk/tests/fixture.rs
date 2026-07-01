@@ -874,37 +874,73 @@ fn loom_does_not_invoke_podman_fail_direct_command_new() {
 // crate_structure_includes_loom_tune
 // ---------------------------------------------------------------------------
 
-const STRUCTURE_LIB_NAMES: &[&str] = &[
+const STRUCTURE_CRATE_NAMES: &[&str] = &[
+    "loom",
+    "loom-driver",
     "loom-events",
-    "loom-protocol",
     "loom-llm",
-    "loom-templates",
     "loom-skills",
     "loom-tune",
-    "loom-driver",
     "loom-render",
     "loom-agent",
+    "loom-direct-runner",
+    "loom-gate",
+    "loom-protocol",
     "loom-workflow",
+    "loom-templates",
+    "loom-test-support",
+    "loom-walk",
+];
+
+const STRUCTURE_LIB_NAMES: &[&str] = &[
+    "loom-driver",
+    "loom-events",
+    "loom-llm",
+    "loom-skills",
+    "loom-tune",
+    "loom-render",
+    "loom-agent",
+    "loom-direct-runner",
+    "loom-gate",
+    "loom-protocol",
+    "loom-workflow",
+    "loom-templates",
+    "loom-test-support",
+    "loom-walk",
 ];
 
 fn seed_full_crate_set(ws: &TempDir) {
-    seed(
-        ws.path(),
-        "crates/loom/Cargo.toml",
-        "[package]\nname=\"loom\"\n",
-    );
-    seed(ws.path(), "crates/loom/src/main.rs", "fn main() {}\n");
-    for name in STRUCTURE_LIB_NAMES {
+    let members = STRUCTURE_CRATE_NAMES
+        .iter()
+        .map(|name| format!("\"crates/{name}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    std::fs::write(
+        ws.path().join("Cargo.toml"),
+        format!("[workspace]\nresolver = \"3\"\nmembers = [{members}]\n"),
+    )
+    .unwrap();
+    for name in STRUCTURE_CRATE_NAMES {
         seed(
             ws.path(),
             &format!("crates/{name}/Cargo.toml"),
             &format!("[package]\nname=\"{name}\"\n"),
         );
-        seed(
-            ws.path(),
-            &format!("crates/{name}/src/lib.rs"),
-            "pub fn ok() {}\n",
-        );
+        for entry in structure_entries(name) {
+            seed(
+                ws.path(),
+                &format!("crates/{name}/{entry}"),
+                "pub fn ok() {}\n",
+            );
+        }
+    }
+}
+
+fn structure_entries(name: &str) -> &'static [&'static str] {
+    match name {
+        "loom" | "loom-walk" => &["src/main.rs"],
+        "loom-direct-runner" => &["src/lib.rs", "src/main.rs"],
+        _ => &["src/lib.rs"],
     }
 }
 
@@ -944,6 +980,42 @@ fn crate_structure_includes_loom_tune_fail_missing_loom_tune() {
         None,
     );
     assert_fail(&out, "loom-tune");
+}
+
+#[test]
+fn crate_structure_includes_loom_tune_fail_extra_workspace_member() {
+    let ws = make_workspace();
+    seed_full_crate_set(&ws);
+    let mut cargo = std::fs::read_to_string(ws.path().join("Cargo.toml")).unwrap();
+    cargo = cargo.replace("\"]\n", "\", \"crates/extra\"]\n");
+    std::fs::write(ws.path().join("Cargo.toml"), cargo).unwrap();
+    seed(
+        ws.path(),
+        "crates/extra/Cargo.toml",
+        "[package]\nname=\"extra\"\n",
+    );
+    seed(ws.path(), "crates/extra/src/lib.rs", "pub fn ok() {}\n");
+    let out = invoke(
+        &["crate_structure_includes_loom_tune"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "crates/extra");
+}
+
+#[test]
+fn crate_structure_includes_loom_tune_fail_missing_workspace_member() {
+    let ws = make_workspace();
+    seed_full_crate_set(&ws);
+    let mut cargo = std::fs::read_to_string(ws.path().join("Cargo.toml")).unwrap();
+    cargo = cargo.replace("\"crates/loom-walk\"", "");
+    std::fs::write(ws.path().join("Cargo.toml"), cargo).unwrap();
+    let out = invoke(
+        &["crate_structure_includes_loom_tune"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "crates/loom-walk");
 }
 
 // ---------------------------------------------------------------------------
@@ -1583,6 +1655,10 @@ const COMMAND_ENUM_DEFAULT: &str = concat!(
     "        raw: bool,\n",
     "    },\n",
     "    Inbox(InboxArgs),\n",
+    "    Todo {\n",
+    "        #[arg(long)]\n",
+    "        since: Option<String>,\n",
+    "    },\n",
     "}\n",
     "struct InboxArgs { action: Option<InboxAction> }\n",
     "struct InboxFilterArgs {\n",
@@ -1771,6 +1847,43 @@ fn surface_conformance_fail_when_removed_inbox_subcommand_resurfaces() {
     );
     let out = invoke(&["surface_conformance"], Some(ws.path()), None);
     assert_fail(&out, "loom inbox apply");
+}
+
+#[test]
+fn surface_conformance_fail_when_removed_top_level_flag_resurfaces() {
+    let ws = make_workspace();
+    seed_surface_spec(
+        &ws,
+        &SPEC_FR1_MINIMAL.replace(
+            "   | `loom doctor` | because |",
+            "   | `loom doctor` | because |\n   | `loom todo --since` | because |",
+        ),
+    );
+    seed_surface_main(&ws, HELP_GROUPS_MINIMAL);
+    let out = invoke(&["surface_conformance"], Some(ws.path()), None);
+    assert_fail(&out, "loom todo");
+}
+
+#[test]
+fn surface_conformance_pass_when_removed_top_level_flag_stays_absent() {
+    let ws = make_workspace();
+    seed_surface_spec(
+        &ws,
+        &SPEC_FR1_MINIMAL.replace(
+            "   | `loom doctor` | because |",
+            "   | `loom doctor` | because |\n   | `loom todo --since` | because |",
+        ),
+    );
+    seed_surface_main_with(
+        &ws,
+        HELP_GROUPS_MINIMAL,
+        &COMMAND_ENUM_DEFAULT.replace(
+            "    Todo {\n        #[arg(long)]\n        since: Option<String>,\n    },\n",
+            "    Todo,\n",
+        ),
+    );
+    let out = invoke(&["surface_conformance"], Some(ws.path()), None);
+    assert_pass(&out);
 }
 
 #[test]

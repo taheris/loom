@@ -76,16 +76,20 @@ fn rel_inputs(name: &str, root: &Path) -> Vec<String> {
 /// `crate_structure_includes_loom_tune`'s binary + library crate set.
 const MEMBER_CRATES: &[&str] = &[
     "loom",
+    "loom-driver",
     "loom-events",
-    "loom-protocol",
     "loom-llm",
-    "loom-templates",
     "loom-skills",
     "loom-tune",
-    "loom-driver",
     "loom-render",
     "loom-agent",
+    "loom-direct-runner",
+    "loom-gate",
+    "loom-protocol",
     "loom-workflow",
+    "loom-templates",
+    "loom-test-support",
+    "loom-walk",
 ];
 
 /// Files this walk scans, as absolute paths under `root`. An unknown name
@@ -265,21 +269,25 @@ fn crate_manifests(root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// `crate_structure_includes_loom_tune`'s scope: each member crate's
-/// `Cargo.toml` plus its entry source (`src/main.rs` for the binary,
-/// `src/lib.rs` for libraries).
+/// `crate_structure_includes_loom_tune`'s scope: the root manifest,
+/// each member crate's `Cargo.toml`, and each canonical entry source.
 fn crate_structure_inputs(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
+    let mut out = vec![root.join("Cargo.toml")];
     for krate in MEMBER_CRATES {
         out.push(manifest(root, krate));
-        let entry = if *krate == "loom" {
-            "src/main.rs"
-        } else {
-            "src/lib.rs"
-        };
-        out.push(root.join(format!("crates/{krate}/{entry}")));
+        for entry in crate_entries(krate) {
+            out.push(root.join(format!("crates/{krate}/{entry}")));
+        }
     }
     out
+}
+
+fn crate_entries(krate: &str) -> &'static [&'static str] {
+    match krate {
+        "loom" | "loom-walk" => &["src/main.rs"],
+        "loom-direct-runner" => &["src/lib.rs", "src/main.rs"],
+        _ => &["src/lib.rs"],
+    }
 }
 
 /// `no_types_or_error_files`'s scope: the forbidden `src/types.rs` and

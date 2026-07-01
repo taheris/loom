@@ -98,6 +98,15 @@ fn loom_help_groups_workflow_inspection_state_in_order() {
         );
     }
 
+    for line in out.lines().filter(|line| {
+        line.starts_with("  ") && !line.trim_start().starts_with('-') && line.contains("  ")
+    }) {
+        assert!(
+            line.trim_end().ends_with('.'),
+            "top-level help row must end with a period: {line:?}\n{out}",
+        );
+    }
+
     // `doctor` was folded into `loom gate <subcommand>` and must not
     // surface in the top-level help — its absence is part of the user
     // contract (spec § Functional #1).
@@ -384,6 +393,21 @@ fn loom_todo_help_documents_multispec_fail_loud_behavior() {
     assert!(
         out.contains("changed specs") || out.contains("multi-spec"),
         "todo help must describe deterministic changed-spec decomposition: {out}",
+    );
+}
+
+#[test]
+fn loom_todo_since_flag_is_removed() {
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let output = Command::new(loom_bin)
+        .args(["todo", "--since", "HEAD~1"])
+        .env("COLUMNS", "100")
+        .env("CLAP_TERM_WIDTH", "100")
+        .output()
+        .expect("spawn loom");
+    assert!(
+        !output.status.success(),
+        "removed `loom todo --since` flag must be rejected",
     );
 }
 

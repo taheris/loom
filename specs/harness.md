@@ -1829,22 +1829,26 @@ worktree before they enter `loom inbox` as pending.
 
 The target v1 workspace layout has a fixed member-crate set. Five are
 **public-contract** crates (downstream consumers import them as Rust
-dependencies); the other crates are internal organization. Pending verifier markers
-below identify target v1 crate rows that are specified before implementation.
+dependencies); the other crates are internal organization. The root
+`Cargo.toml` workspace members must match this set exactly.
 
 | Crate | Tier | Role |
 |-------|------|------|
 | `loom` | internal | CLI binary — arg parsing, entry point, dispatch. |
+| `loom-driver` | internal | Host-side runtime — `AgentBackend` trait, `CacheDb`, `Config`, `BdClient`, `Clock`, profile manifest, skill registry wiring, lock files, scratch dir, git ops, workflow-layer driver-event emission (verdict-gate, push-gate, container-spawn). |
 | `loom-events` | **public** | `AgentEvent` enum, ID newtypes (`BeadId`, `MoleculeId`, `ToolCallId`, `SpecLabel`, `ProfileName`, `SessionId`, `RequestId`), `DriverKind`, `Session` trait, `EventSink` trait, `SessionCommand`. Frontends, SSE bridges, and external log tools depend only on this. |
-| `loom-protocol` | **public** | Cross-crate wire protocol types (`gate`, `todo`, and future protocol modules) that external consumers use to parse Loom subprocess output without depending on workflow internals. See [gate.md](gate.md). |
-| `llm` | **public** | Typed wrapper over a multi-provider LLM crate. Object-safe `LlmClient` trait, `LlmClientExt::complete_structured::<T>` (provider-agnostic), `Conversation` with built-in tool-use loop, `ModelId`, `CacheControl`, `TokenUsage`. Hosts the agent-loop observers (`DoomLoopObserver`, `DuplicateResultObserver`) so consumers driving via `Conversation` get the same safety nets Loom's binary uses. See [llm.md](llm.md). |
-| `templates` | **public** | Askama templates + typed context structs. Consumers compose their own templates from the exposed typed building blocks (`PinnedContext`, `PreviousFailure`, `LoopContext`, partial strings). Loom's workflow templates themselves stay internal. See [templates.md](templates.md). |
+| `loom-llm` | **public** | Typed wrapper over a multi-provider LLM crate. Object-safe `LlmClient` trait, `LlmClientExt::complete_structured::<T>` (provider-agnostic), `Conversation` with built-in tool-use loop, `ModelId`, `CacheControl`, `TokenUsage`. Hosts the agent-loop observers (`DoomLoopObserver`, `DuplicateResultObserver`) so consumers driving via `Conversation` get the same safety nets Loom's binary uses. See [llm.md](llm.md). |
 | `loom-skills` | **public** | Agent skill artifact model, typed discovery/diagnostics, duplicate/override resolution, phase/profile filtering, and materialization for backend registration. The tuning engine is internal in v1. See [skills.md](skills.md). |
 | `loom-tune` | internal | SkillOpt-style tuning internals — typed checker registry, `loom-case` schemas/validation, evidence indexing/splits, scoring summaries, tune metadata structs, and proposal manifest types. Orchestration stays in `loom-workflow`; apply stays in the driver. |
-| `loom-driver` | internal | Host-side runtime — `AgentBackend` trait, `CacheDb`, `Config`, `BdClient`, `Clock`, profile manifest, skill registry wiring, lock files, scratch dir, git ops, workflow-layer driver-event emission (verdict-gate, push-gate, container-spawn). |
 | `loom-render` | internal | `Renderer` trait + `Pretty` / `Plain` / `Json` / `Raw` impls; `LogSink` (impl `EventSink`) driving disk JSONL from the same event stream the renderer consumes. |
-| `agent` | internal | `AgentBackend` implementations (pi, claude, direct). Pi/Claude drive subprocess agents; `direct` composes `llm` with Loom's six sandbox-aware tools behind the Direct runner. Adapters flatten backend wire schemas into `loom-events` variants. |
+| `loom-agent` | internal | `AgentBackend` implementations (pi, claude, direct). Pi/Claude drive subprocess agents; `direct` composes `loom-llm` with Loom's six sandbox-aware tools behind the Direct runner. Adapters flatten backend wire schemas into `loom-events` variants. |
+| `loom-direct-runner` | internal | Container entrypoint binary for the Direct backend; constructs the in-container `loom-llm::Conversation`, registers Direct tools, and emits canonical events. See [agent.md](agent.md). |
+| `loom-gate` | internal | Quality-gate implementation: annotation dispatch, deterministic lanes, judge/rubric lanes, status cache, marker validation, and finding minting. See [gate.md](gate.md). |
+| `loom-protocol` | **public** | Cross-crate wire protocol types (`gate`, `todo`, and future protocol modules) that external consumers use to parse Loom subprocess output without depending on workflow internals. See [gate.md](gate.md). |
 | `loom-workflow` | internal | Workflow engine — plan, todo, loop, gate, inbox, tune. Selects concrete backends per phase and drives the shared session lifecycle. Owns orchestration loop, bead lifecycle, retry logic, push gate, verdict gate, tune proposal staging, and inbox resolution. |
+| `loom-templates` | **public** | Askama templates + typed context structs. Consumers compose their own templates from the exposed typed building blocks (`PinnedContext`, `PreviousFailure`, `LoopContext`, partial strings). Loom's workflow templates themselves stay internal. See [templates.md](templates.md). |
+| `loom-test-support` | internal | Shared fixtures, fakes, and helpers used by Loom's Rust tests; not part of the runtime or public API. |
+| `loom-walk` | internal | `[check]`-tier source/spec walk binary used by `loom gate verify`; each named walk is a deterministic verifier wired from spec annotations. |
 
 ### Dependency Graph
 
@@ -1856,39 +1860,48 @@ Load-bearing constraints on the dep graph:
   `Stream` trait referenced by `Session::Events`).
 - `loom-protocol` is a **leaf** public-contract crate for wire
   protocols. It depends on `loom-events` for shared IDs plus its
-  closed parser/JSON/error/hash deps; it imports no templates,
-  workflow, gate, driver, or agent crate.
-- `llm` depends on `loom-events` only (no `loom-driver`,
-  `agent`, or `loom-workflow` import). Its dep footprint is
+  closed parser/JSON/error/hash deps; it imports no `loom-templates`,
+  `loom-workflow`, `loom-gate`, `loom-driver`, or `loom-agent` crate.
+- `loom-llm` depends on `loom-events` only (no `loom-driver`,
+  `loom-agent`, or `loom-workflow` import). Its dep footprint is
   the public-contract floor plus the underlying multi-provider
   LLM crate and `schemars`. The crate is independently versionable
   for the same reason `loom-events` is.
-- `templates` depends on `loom-events` only (typed contexts
+- `loom-templates` depends on `loom-events` only (typed contexts
   reference `BeadId` / `SpecLabel` / etc.). The Askama compile
   machinery is a build-time concern, not a runtime dep.
 - `loom-skills` depends on `loom-events` for shared newtypes and on
   parsing/diagnostic libraries only; it does not depend on `loom-driver`,
-  `agent`, `templates`, `loom-tune`, or `loom-workflow`.
+  `loom-agent`, `loom-templates`, `loom-tune`, or `loom-workflow`.
 - `loom-tune` depends on `loom-events`, `loom-skills`, and parsing/scoring
   libraries for registry/case/evidence/metadata types; it does not depend on
-  `loom-driver`, `agent`, or `loom-workflow`.
+  `loom-driver`, `loom-agent`, or `loom-workflow`.
 - `loom-render` depends on `loom-events` for the event contract and may use
   rendering/support crates, but it imports neither `loom-driver` nor
   `loom-workflow`. A renderer regression must be local to `loom-render`.
-- `agent` depends on `llm` (its `direct` backend wraps
+- `loom-agent` depends on `loom-llm` (its `direct` backend wraps
   `Conversation`), `loom-events` (the `Session` trait, `AgentEvent`), and
   `loom-skills` for materialized registry/disclosure types consumed during
   backend setup.
+- `loom-direct-runner` depends on `loom-agent` for Direct tools, on
+  `loom-llm` for `Conversation`, and on `loom-events` for event emission.
+- `loom-gate` depends on `loom-events` and `loom-protocol` for typed
+  gate output, plus parser/runner support crates; it does not import
+  workflow orchestration.
 - `loom-workflow` depends on the internal orchestration crates, on
   `loom-skills` because it resolves the effective skill registry before
   rendering prompts/spawning backends, and on `loom-tune` for tuning registry,
   case, evidence, scoring, and metadata types. `loom-events` is the bottom of
   the internal-crate stack and `loom-workflow` is the top.
+- `loom-test-support` is test-only support code; production crates do not
+  depend on it.
+- `loom-walk` is a verifier binary and may parse workspace source/spec files;
+  runtime crates do not depend on it.
 
-`loom-events`'s, `loom-protocol`'s, `llm`'s, `templates`'s, and `loom-skills`'s
-leaf-or-near-leaf status is what makes each contract version-able in isolation
-— a public-API change shows up as a single-crate bump, not as accidental
-coupling through a deeper crate.
+`loom-events`'s, `loom-protocol`'s, `loom-llm`'s, `loom-templates`'s, and
+`loom-skills`'s leaf-or-near-leaf status is what makes each contract
+version-able in isolation — a public-API change shows up as a single-crate
+bump, not as accidental coupling through a deeper crate.
 
 ### Workspace Dependencies
 
@@ -1901,10 +1914,11 @@ per [`docs/style-rules.md`](../docs/style-rules.md) RS-3.
 `loom-events` is the contract-crate dependency-floor: its dep
 footprint is `serde + serde_json + thiserror + futures-core` only —
 no internal crates, no timestamps crate, no `ulid`, no `uuid`. The
-contract stays small. `loom-protocol`, `llm`, `templates`, and `loom-skills`
-carry their own small public-surface dep sets (parser/JSON/error/hash deps for
-`loom-protocol`; LLM crate + `schemars` for `llm`; Askama for `templates`;
-Markdown/frontmatter parsing and diagnostics for `loom-skills`).
+contract stays small. `loom-protocol`, `loom-llm`, `loom-templates`, and
+`loom-skills` carry their own small public-surface dep sets
+(parser/JSON/error/hash deps for `loom-protocol`; LLM crate + `schemars` for
+`loom-llm`; Askama for `loom-templates`; Markdown/frontmatter parsing and
+diagnostics for `loom-skills`).
 
 ### Workspace Lints
 
@@ -1968,7 +1982,7 @@ per-template typed context structs, partials inventory, per-phase
 pinning policy, typed `PreviousFailure`, attempt counter,
 agent-output markers, public-contract building blocks for consumer
 template composition, and the snapshot-test contract all live there.
-`templates` is the crate (public-contract);
+`loom-templates` is the crate (public-contract);
 [templates.md](templates.md) is the spec.
 
 ### Beads CLI Wrapper
@@ -2427,7 +2441,7 @@ See [llm.md](llm.md) — the `LlmClient` trait, typed
 output, `TokenUsage`, `Conversation` with built-in tool-use loop,
 the `Tool` trait, and the two agent-loop observers
 (`DoomLoopObserver`, `DuplicateResultObserver`) all live there.
-`llm` is the crate (public-contract);
+`loom-llm` is the crate (public-contract);
 [llm.md](llm.md) is the spec.
 
 The observers are configured CLI-side via the
@@ -2641,9 +2655,11 @@ without carve-outs. Set `LOOM_CONFIG` to relocate.
 
 - Workspace builds with `cargo build` from `loom/` root
   [check](cargo build --workspace)
-- Target v1 crate set present: loom, loom-events, loom-protocol, loom-llm,
-      loom-templates, loom-skills, loom-tune, loom-driver, loom-render,
-      loom-agent, loom-workflow
+- Target v1 crate set matches the fixed workspace members exactly: loom,
+      loom-driver, loom-events, loom-llm, loom-skills, loom-tune,
+      loom-render, loom-agent, loom-direct-runner, loom-gate,
+      loom-protocol, loom-workflow, loom-templates, loom-test-support,
+      and loom-walk
   [check](cargo run -p loom-walk -- crate_structure_includes_loom_tune)
 - Five public-contract crates declared in workspace manifest metadata: loom-events, loom-protocol, loom-llm, loom-templates, loom-skills; no other crate declares the marker
   [check](cargo run -p loom-walk -- public_contract_crates)
@@ -2756,19 +2772,19 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
 
 ### Dependency graph
 
-- `loom-events` is a leaf crate — no internal deps on `loom-driver` / `loom-render` / `loom-workflow` / `templates` / `llm` / `agent` / `loom-skills` / `loom-tune`
+- `loom-events` is a leaf crate — no internal deps on `loom-driver` / `loom-render` / `loom-workflow` / `loom-templates` / `loom-llm` / `loom-agent` / `loom-skills` / `loom-tune`
   [check](cargo run -p loom-walk -- loom_events_is_leaf)
-- `llm` depends on `loom-events` only (no `loom-driver` / `agent` / `loom-workflow` / `loom-skills` / `loom-tune` import)
+- `loom-llm` depends on `loom-events` only (no `loom-driver` / `loom-agent` / `loom-workflow` / `loom-skills` / `loom-tune` import)
   [check](cargo run -p loom-walk -- loom_llm_deps)
-- `templates` depends on `loom-events` only (no `loom-driver` / `llm` / `agent` / `loom-workflow` / `loom-skills` / `loom-tune` import)
+- `loom-templates` depends on `loom-events` only (no `loom-driver` / `loom-llm` / `loom-agent` / `loom-workflow` / `loom-skills` / `loom-tune` import)
   [check](cargo run -p loom-walk -- loom_templates_deps)
-- `loom-skills` depends on `loom-events` but not `loom-driver` / `agent` / `templates` / `loom-tune` / `loom-workflow`
+- `loom-skills` depends on `loom-events` but not `loom-driver` / `loom-agent` / `loom-templates` / `loom-tune` / `loom-workflow`
   [check](cargo run -p loom-walk -- loom_skills_deps)
-- `loom-tune` depends on `loom-events` and `loom-skills`, but not `loom-driver` / `agent` / `loom-workflow`
+- `loom-tune` depends on `loom-events` and `loom-skills`, but not `loom-driver` / `loom-agent` / `loom-workflow`
   [check](cargo run -p loom-walk -- loom_tune_deps)
 - `loom-render` depends on `loom-events` and does not depend on `loom-driver` or `loom-workflow`
   [check](cargo run -p loom-walk -- loom_render_deps)
-- `agent` depends on `llm`, `loom-events`, and `loom-skills`; its `direct` backend wraps `loom-llm::Conversation`
+- `loom-agent` depends on `loom-llm`, `loom-events`, and `loom-skills`; its `direct` backend wraps `loom-llm::Conversation`
   [check](cargo run -p loom-walk -- loom_agent_deps)
 
 ### Bead dispatch
@@ -3933,22 +3949,12 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
      whose `gate: GateOutcome` field is non-optional; the binary's exit
      code is a pure function of the `GateOutcome` variant.**
    - `loom gate` — quality gate (annotation-dispatched verifiers +
-     LLM rubric). Subcommands per [gate.md](gate.md)
-     Commands table: bare `loom gate` prints subcommand help;
-     `loom gate status` reads the status cache for an explicit scope;
-     `loom gate audit` runs verify then review for explicit `--diff` or
-     `--tree`; `loom gate verify` runs scope-derived deterministic
-     lanes; per-tier subcommands (`loom gate check`, `loom gate test`,
-     `loom gate system`) run one tier in isolation; `loom gate review`
-     runs the LLM rubric; `loom gate judge` / `loom gate rubric` run one
-     lane each. Inspection subcommands require explicit `--files`,
-     `--diff`, `--tree`, or exact `--target` where valid; no gate
-     subcommand accepts `--spec` or a positional selector. `--bead` is
-     review context only and must be paired with `--diff`; deterministic
-     trust paths use explicit diffs. `mint` accepts only
-     `-m/--molecule <id>` or `--tree` and has no bare default. The
-     surface-conformance walk (FR13) ships as a `[check]`-tier verifier
-     dispatched by `loom gate check`.
+     LLM rubric). The gate command table, subcommand meanings, scope
+     flags, and removed gate selector surface are owned by
+     [gate.md § Commands](gate.md#commands) and
+     [gate.md § Scope flags](gate.md#scope-flags); this harness spec
+     owns only that `loom gate` is the workflow command in this slot and
+     that the surface-conformance walk is dispatched by `loom gate check`.
    - `loom inbox` — human decision and operator diagnostic queue for
      clarifies, semantic blocked beads, infra diagnostics, and tune proposals.
      Bare `loom inbox` and `loom inbox list` are read-only;
@@ -4002,6 +4008,7 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
    | `loom doctor` | replaced by `loom gate <subcommand>` per-tier dispatch |
    | `loom check` | renamed to `loom gate <subcommand>` per [gate.md](gate.md) |
    | `loom run` | renamed to `loom loop` (current name describes the iteration shape) |
+   | `loom todo --since` | deterministic todo discovery uses durable spec cursors rather than a caller-supplied base override |
    | `loom sync` | Askama-compiled workflow templates make per-project sync unnecessary |
    | `loom msg` | renamed/replaced by `loom inbox`; no compatibility alias |
    | `loom inbox -c` / `loom inbox --chat` | chat is the `loom inbox chat` subcommand |
@@ -4012,8 +4019,8 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
 2. **Compiled templates with consumer-composable typed building blocks** —
    Askama engine, per-phase templates, partials, and per-phase pinning
    policy live in [templates.md](templates.md). The crate that
-   builds them (`templates`) is one of the workspace crates enumerated above.
-   `templates` is **public-contract**: it exposes its typed context
+   builds them (`loom-templates`) is one of the workspace crates enumerated above.
+   `loom-templates` is **public-contract**: it exposes its typed context
    structs (`PinnedContext`, `PreviousFailure`, `LoopContext`, etc.) and
    partial-string constants so external Rust consumers can compose their
    own templates from the same building blocks Loom's workflow uses.
@@ -4212,7 +4219,7 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
     points to a stub, or where production behaviour diverges from
     the unit-tested function the verifier exercises — the gate runs
     the verifier each time and reports current truth.
-15. **`llm` public-contract crate** — typed multi-provider
+15. **`loom-llm` public-contract crate** — typed multi-provider
     LLM primitives + `Conversation` with built-in tool-use loop +
     agent-loop observers. Surface, dependency graph constraints,
     and observer behavior owned by [llm.md](llm.md).
@@ -4225,7 +4232,7 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
     non-streaming event and processes returned
     `SessionCommand`s with `Abort` as terminal priority. The
     `EventSink` trait lives in `loom-events` so any AgentEvent
-    consumer (Loom binary, external `llm` `Conversation`
+    consumer (Loom binary, external `loom-llm` `Conversation`
     consumer, SSE bridge, log analyzer) can implement and compose
     it.
 17. **Observer-abort verdict-gate routing** — when an
@@ -4290,8 +4297,8 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
   hot-override mechanism for Loom's own workflow templates. Project-specific
   prompt tweaks to Loom's workflow happen via `pinned_context`, `style_rules`,
   skills, and per-spec implementation notes. Consumers writing their *own*
-  templates (for their own LLM calls via `llm`) compose them from `templates`'
-  exposed typed building blocks — that path is supported and is *not* what this
+  templates (for their own LLM calls via `loom-llm`) compose them from
+  `loom-templates`' exposed typed building blocks — that path is supported and is *not* what this
   exclusion covers.
 - **Runtime template engine for consumer overrides of Loom's
   workflow templates** — adding a runtime engine (e.g. `minijinja`)

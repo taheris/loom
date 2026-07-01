@@ -12,9 +12,6 @@ use thiserror::Error;
 /// Errors raised by the `loom todo` driver.
 #[derive(Debug, Display, Error)]
 pub enum TodoError {
-    /// the `--since {commit}` override does not refer to a reachable commit
-    InvalidSinceCommit { commit: String },
-
     /// multiple open epics found for spec `{label}`: {ids}; close all but one before re-running
     InvariantViolation { label: String, ids: String },
 
