@@ -2,9 +2,9 @@
 set -euo pipefail
 
 is_unsupported_container_runtime_error() {
-    local text="$1"
+    local text="${1,,}"
     case "$text" in
-        *"/dev/fuse"* | *"/dev/net/tun"* | *"fuse-overlayfs"* | *"mount proc"* | *"cannot clone"* | *"cannot re-exec process"* | *"newuidmap"* | *"newgidmap"* | *"Operation not permitted"* | *"operation not permitted"* | *"netavark"* | *"pasta"* | *"slirp4netns"*)
+        *"/dev/fuse"* | *"/dev/net/tun"* | *"fuse-overlayfs"* | *"mount proc"* | *mount*proc*permission*denied* | *"oci permission denied"* | *"cannot clone"* | *"cannot re-exec process"* | *"newuidmap"* | *"newgidmap"* | *"operation not permitted"* | *"netavark"* | *"pasta"* | *"slirp4netns"*)
             return 0
             ;;
         *)
@@ -26,6 +26,9 @@ running_inside_container() {
 require_nested_device() {
     local path="$1"
     local reason="$2"
+    if [[ "${LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS:-}" == "1" ]]; then
+        return
+    fi
     if running_inside_container && [[ ! -e "$path" ]]; then
         skip_unsupported_container_runtime "$reason"
     fi
@@ -71,7 +74,7 @@ if [[ -z "$sandbox_image" ]]; then
     fi
 fi
 
-if ! load_out=$("$sandbox_image" | podman "${podman_args[@]}" load 2>&1); then
+if ! load_out=$({ "$sandbox_image" | podman "${podman_args[@]}" load; } 2>&1); then
     if is_unsupported_container_runtime_error "$load_out"; then
         skip_unsupported_container_runtime "$load_out"
     fi

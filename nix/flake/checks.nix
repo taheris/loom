@@ -77,6 +77,42 @@ _:
         exit 125
       '';
 
+      fakeSandboxImage = pkgs.writeShellScript "fake-sandbox-image" ''
+        set -euo pipefail
+        printf 'fake image payload\n'
+        printf 'Adding base layer 1 from fake/layer.tar\n' >&2
+      '';
+
+      fakePodmanRunOciPermissionDenied = pkgs.writeShellScript "podman" ''
+        set -euo pipefail
+        cmd=""
+        for arg in "$@"; do
+          case "$arg" in
+            info | load | run)
+              cmd="$arg"
+              break
+              ;;
+          esac
+        done
+        case "$cmd" in
+          info)
+            exit 0
+            ;;
+          load)
+            cat >/dev/null
+            printf 'Loaded image: localhost/fake:latest\n'
+            ;;
+          run)
+            printf 'Error: crun: mount `proc` to `proc`: OCI permission denied\n' >&2
+            exit 126
+            ;;
+          *)
+            printf 'unexpected podman args: %s\n' "$*" >&2
+            exit 2
+            ;;
+        esac
+      '';
+
       test-sandbox-skips-unsupported-runtime =
         pkgs.runCommand "test-sandbox-skips-unsupported-runtime" { }
           ''
@@ -86,6 +122,7 @@ _:
             export PATH="$fakebin:${
               pkgs.lib.makeBinPath [
                 pkgs.coreutils
+                pkgs.gnused
                 pkgs.bash
               ]
             }"
@@ -102,6 +139,40 @@ _:
                 ;;
               *)
                 printf 'expected test-sandbox skip output, got:\n%s\n' "$script_output" >&2
+                exit 1
+                ;;
+            esac
+            touch "$out"
+          '';
+
+      test-sandbox-skips-oci-permission-denied =
+        pkgs.runCommand "test-sandbox-skips-oci-permission-denied" { }
+          ''
+            set -euo pipefail
+            fakebin=$(mktemp -d)
+            ln -s ${fakePodmanRunOciPermissionDenied} "$fakebin/podman"
+            export PATH="$fakebin:${
+              pkgs.lib.makeBinPath [
+                pkgs.coreutils
+                pkgs.gnused
+                pkgs.bash
+              ]
+            }"
+            export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
+            export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
+            set +e
+            script_output=$(bash ${../../scripts/test-sandbox.sh} 2>&1)
+            rc=$?
+            set -e
+            if [[ "$rc" -ne 77 ]]; then
+              printf 'expected test-sandbox skip exit 77, got %s\n%s\n' "$rc" "$script_output" >&2
+              exit 1
+            fi
+            case "$script_output" in
+              *"test-sandbox: skipped"*"OCI permission denied"*)
+                ;;
+              *)
+                printf 'expected OCI permission skip output, got:\n%s\n' "$script_output" >&2
                 exit 1
                 ;;
             esac
@@ -128,6 +199,7 @@ _:
           loom-gate-check
           profile-manifest-keeps-runtime-path-context
           sandbox-profile-env-has-wrix
+          test-sandbox-skips-oci-permission-denied
           test-sandbox-skips-unsupported-runtime
           ;
       };
