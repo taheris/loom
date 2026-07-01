@@ -1025,7 +1025,11 @@ mod tests {
         let cached_blocks: Vec<&Message> = requests[0]
             .messages
             .iter()
-            .filter(|m| matches!(m.cache, CacheControl::Ephemeral(_)))
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|part| matches!(part.cache(), CacheControl::Ephemeral(_)))
+            })
             .collect();
         assert_eq!(
             cached_blocks.len(),
@@ -1033,19 +1037,20 @@ mod tests {
             "the first prompt becomes a cached user block: {:?}",
             requests[0].messages,
         );
+        let first_cache = cached_blocks[0].content[0].cache();
         assert!(
-            matches!(
-                cached_blocks[0].cache,
-                CacheControl::Ephemeral(CacheTtl::Hours1),
-            ),
-            "ephemeral 1h marker reaches the request: {:?}",
-            cached_blocks[0].cache,
+            matches!(first_cache, CacheControl::Ephemeral(CacheTtl::Hours1)),
+            "ephemeral 1h marker reaches the request: {first_cache:?}",
         );
 
         let second_cached: Vec<&Message> = requests[1]
             .messages
             .iter()
-            .filter(|m| matches!(m.cache, CacheControl::Ephemeral(_)))
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|part| matches!(part.cache(), CacheControl::Ephemeral(_)))
+            })
             .collect();
         assert_eq!(
             second_cached.len(),

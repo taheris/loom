@@ -46,6 +46,25 @@ impl Default for DoomLoopConfig {
     }
 }
 
+/// Closed set of doom-loop response stages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoomLoopStage {
+    /// Stage 1 sends a steering nudge.
+    Steer,
+    /// Stage 2 aborts the session.
+    Abort,
+}
+
+impl DoomLoopStage {
+    /// Numeric payload value used by `DriverKind::DoomLoopTripped`.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Steer => 1,
+            Self::Abort => 2,
+        }
+    }
+}
+
 /// Observability payload drained by [`DoomLoopObserver::take_pending`]
 /// and lifted into a `DriverKind::DoomLoopTripped` `AgentEvent` by the
 /// sink-chain wiring. The observer cannot synthesize the wire event
@@ -53,8 +72,8 @@ impl Default for DoomLoopConfig {
 /// payload-shaped struct and lets the chain assemble the event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DoomLoopTripped {
-    /// Stage that fired: `1` for `Steer`, `2` for `Abort`.
-    pub stage: u8,
+    /// Stage that fired.
+    pub stage: DoomLoopStage,
     /// Tool name from the originating `ToolCall`.
     pub tool: String,
     /// Canonical params from the originating `ToolCall`.
@@ -265,7 +284,7 @@ impl DoomLoopObserver {
         );
         self.pending_commands.push(SessionCommand::Steer(message));
         self.pending_tripped.push(DoomLoopTripped {
-            stage: 1,
+            stage: DoomLoopStage::Steer,
             tool: tool.to_owned(),
             params: params.clone(),
             call_id: call_id.clone(),
@@ -276,7 +295,7 @@ impl DoomLoopObserver {
         let reason = format!("doom-loop: {tool}");
         self.pending_commands.push(SessionCommand::Abort(reason));
         self.pending_tripped.push(DoomLoopTripped {
-            stage: 2,
+            stage: DoomLoopStage::Abort,
             tool: tool.to_owned(),
             params: params.clone(),
             call_id: call_id.clone(),
@@ -477,11 +496,11 @@ mod tests {
         );
     }
 
-    /// Stage 1 also lands a `DoomLoopTripped { stage: 1, ... }` payload
-    /// in the observability bin for the sink-chain wiring to lift into
-    /// a `DriverKind::DoomLoopTripped` event.
+    /// Stage 1 also lands a `DoomLoopTripped { stage: Steer, ... }`
+    /// payload in the observability bin for the sink-chain wiring to
+    /// lift into a `DriverKind::DoomLoopTripped` event.
     #[test]
-    fn doom_loop_stage_1_emits_driver_event() {
+    fn doom_loop_stage_1_queues_tripped_payload() {
         let mut obs = DoomLoopObserver::new();
         let mut seq = 0u64;
         let params = json!({"path": "/etc/hosts"});
@@ -491,7 +510,7 @@ mod tests {
         }
         let tripped = obs.take_pending();
         assert_eq!(tripped.len(), 1);
-        assert_eq!(tripped[0].stage, 1);
+        assert_eq!(tripped[0].stage, DoomLoopStage::Steer);
         assert_eq!(tripped[0].tool, "read_file");
         assert_eq!(tripped[0].params, params);
         assert_eq!(tripped[0].call_id.as_str(), "c");
@@ -531,9 +550,9 @@ mod tests {
         }
     }
 
-    /// Stage 2 also emits a `DoomLoopTripped { stage: 2, ... }` payload.
+    /// Stage 2 also queues a `DoomLoopTripped { stage: Abort, ... }` payload.
     #[test]
-    fn doom_loop_stage_2_emits_driver_event() {
+    fn doom_loop_stage_2_queues_tripped_payload() {
         let mut obs = DoomLoopObserver::new().with_stage_2_after_stage_1(1);
         let mut seq = 0u64;
         let params = json!({"path": "/etc/hosts"});
@@ -543,8 +562,8 @@ mod tests {
             drive_call(&mut obs, &mut seq, id, params.clone(), same);
         }
         let tripped = obs.take_pending();
-        let stages: Vec<u8> = tripped.iter().map(|t| t.stage).collect();
-        assert_eq!(stages, vec![1, 2]);
+        let stages: Vec<DoomLoopStage> = tripped.iter().map(|t| t.stage).collect();
+        assert_eq!(stages, vec![DoomLoopStage::Steer, DoomLoopStage::Abort]);
         assert_eq!(tripped[1].tool, "read_file");
         assert_eq!(tripped[1].params, params);
         assert_eq!(tripped[1].call_id.as_str(), "c4");

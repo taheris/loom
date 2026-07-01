@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_result_event_payload_carries_bytes_wasted() {
+    fn duplicate_result_detection_payload_carries_bytes_wasted() {
         let mut obs = DuplicateResultObserver::new();
         let payload = big_payload("size-check");
         let canonical_len = ResultHasher::canonical_len(

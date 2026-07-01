@@ -17,7 +17,7 @@
 use displaydoc::Display;
 use loom_events::event::Source;
 use loom_events::identifier::{BeadId, ToolCallId as EventToolCallId};
-use loom_events::{AgentEvent, EnvelopeBuilder, EventSink, SessionCommand};
+use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, EventSink, SessionCommand};
 use thiserror::Error;
 
 use crate::cache::CacheControl;
@@ -318,7 +318,7 @@ impl Conversation {
 
             for call in &response.tool_calls {
                 self.observe_tool_call(&call.call_id, &call.name, &call.args);
-                if let Some(reason) = self.process_react_commands() {
+                if let Some(reason) = self.process_observer_updates(client) {
                     return Err(ConversationError::ObserverAbort { reason });
                 }
 
@@ -338,7 +338,7 @@ impl Conversation {
                 ));
 
                 self.observe_tool_result(&call.call_id, &content, output.is_error);
-                if let Some(reason) = self.process_react_commands() {
+                if let Some(reason) = self.process_observer_updates(client) {
                     return Err(ConversationError::ObserverAbort { reason });
                 }
             }
@@ -407,6 +407,80 @@ impl Conversation {
         self.envelope_builder
             .as_mut()
             .map(|builder| builder.build_with_source(Source::Agent))
+    }
+
+    fn process_observer_updates<C: LlmClient + ?Sized>(&mut self, client: &C) -> Option<String> {
+        self.emit_pending_observer_events(client);
+        self.process_react_commands()
+    }
+
+    fn emit_pending_observer_events<C: LlmClient + ?Sized>(&mut self, client: &C) {
+        if let Some(observer) = self.doom_loop.as_mut() {
+            let tripped = observer.take_pending();
+            for trip in tripped {
+                if let Some(event) = self.doom_loop_driver_event(trip) {
+                    client.emit_event(&event);
+                }
+            }
+        }
+        if let Some(observer) = self.duplicate_result.as_mut() {
+            let detections = observer.take_pending();
+            for detection in detections {
+                if let Some(event) = self.duplicate_result_driver_event(detection) {
+                    client.emit_event(&event);
+                }
+            }
+        }
+    }
+
+    fn doom_loop_driver_event(
+        &mut self,
+        trip: crate::observer::doom_loop::DoomLoopTripped,
+    ) -> Option<AgentEvent> {
+        let envelope = self.next_driver_envelope()?;
+        let stage = trip.stage.as_u8();
+        let summary = format!(
+            "doom-loop stage {stage} for tool `{}` on call {}",
+            trip.tool, trip.call_id,
+        );
+        Some(AgentEvent::DriverEvent {
+            envelope,
+            driver_kind: DriverKind::DoomLoopTripped,
+            summary,
+            payload: serde_json::json!({
+                "stage": stage,
+                "tool": trip.tool,
+                "params": trip.params,
+                "call_id": trip.call_id.as_str(),
+            }),
+        })
+    }
+
+    fn duplicate_result_driver_event(
+        &mut self,
+        detection: crate::observer::duplicate_result::DuplicateDetection,
+    ) -> Option<AgentEvent> {
+        let envelope = self.next_driver_envelope()?;
+        let summary = format!(
+            "duplicate tool result: {} repeated {}; {} bytes wasted",
+            detection.original_call_id, detection.repeated_call_id, detection.bytes_wasted,
+        );
+        Some(AgentEvent::DriverEvent {
+            envelope,
+            driver_kind: DriverKind::DuplicateToolResult,
+            summary,
+            payload: serde_json::json!({
+                "original_call_id": detection.original_call_id.as_str(),
+                "repeated_call_id": detection.repeated_call_id.as_str(),
+                "bytes_wasted": detection.bytes_wasted,
+            }),
+        })
+    }
+
+    fn next_driver_envelope(&mut self) -> Option<loom_events::EventEnvelope> {
+        self.envelope_builder
+            .as_mut()
+            .map(|builder| builder.build_with_source(Source::Driver))
     }
 
     /// Drain composed observers' `react()` queues in registration order.
@@ -597,8 +671,8 @@ fn estimate_message_bytes(message: &Message) -> usize {
 
 fn estimate_content_bytes(part: &MessageContent) -> usize {
     match part {
-        MessageContent::Text(text) => text.len(),
-        MessageContent::Binary(binary) => binary
+        MessageContent::Text { text, .. } => text.len(),
+        MessageContent::Binary { binary, .. } => binary
             .bytes
             .len()
             .saturating_add(binary.mime_type.as_str().len())
@@ -693,20 +767,32 @@ mod tests {
     /// Scripted client that returns each scripted response in order so
     /// the loop test can drive multi-iteration flows without a live
     /// provider.
+    type CallCount = Arc<Mutex<u32>>;
+    type RecordedEvents = Arc<Mutex<Vec<AgentEvent>>>;
+
     struct ScriptedClient {
         responses: Mutex<Vec<CompletionResponse>>,
-        calls: Arc<Mutex<u32>>,
+        calls: CallCount,
+        events: RecordedEvents,
     }
 
     impl ScriptedClient {
-        fn new(responses: Vec<CompletionResponse>) -> (Self, Arc<Mutex<u32>>) {
+        fn new(responses: Vec<CompletionResponse>) -> (Self, CallCount) {
+            let (client, calls, _events) = Self::new_recording(responses);
+            (client, calls)
+        }
+
+        fn new_recording(responses: Vec<CompletionResponse>) -> (Self, CallCount, RecordedEvents) {
             let calls = Arc::new(Mutex::new(0));
+            let events = Arc::new(Mutex::new(Vec::new()));
             (
                 Self {
                     responses: Mutex::new(responses),
                     calls: calls.clone(),
+                    events: events.clone(),
                 },
                 calls,
+                events,
             )
         }
     }
@@ -718,6 +804,13 @@ mod tests {
 
         fn supports(&self, _model: &ModelId) -> bool {
             true
+        }
+
+        fn emit_event(&self, event: &AgentEvent) {
+            self.events
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(event.clone());
         }
 
         fn complete<'a>(
@@ -1142,6 +1235,151 @@ mod tests {
             "loop must short-circuit by iteration 4 (stage 1 at 3, stage 2 at 4); \
              saw {observed} completions",
         );
+    }
+
+    /// Stage 1 emits a live `DriverKind::DoomLoopTripped` event through
+    /// the LLM client's sink path while still steering the next turn.
+    #[test]
+    fn doom_loop_stage_1_emits_driver_event() {
+        let (tool, _seen) = EchoTool::new();
+        let scripted = vec![
+            with_call("echo", "stage1-a", json!({ "text": "spin" })),
+            with_call("echo", "stage1-b", json!({ "text": "spin" })),
+            with_call("echo", "stage1-c", json!({ "text": "spin" })),
+            no_calls("done"),
+        ];
+        let (client, _calls, events) = ScriptedClient::new_recording(scripted);
+
+        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+            .register(tool)
+            .doom_loop(DoomLoopConfig {
+                enabled: true,
+                window: 5,
+                threshold: 3,
+                stage_2_after_stage_1: 10,
+            })
+            .max_iterations(10);
+        conv.user("spin forever");
+
+        let resp = tokio_test::block_on(conv.run(&client)).expect("stage 1 only steers");
+        assert_eq!(resp.text, "done");
+
+        let recorded = events.lock().unwrap_or_else(|p| p.into_inner());
+        assert_eq!(recorded.len(), 1);
+        match &recorded[0] {
+            AgentEvent::DriverEvent {
+                envelope,
+                driver_kind,
+                payload,
+                ..
+            } => {
+                assert_eq!(*driver_kind, DriverKind::DoomLoopTripped);
+                assert_eq!(envelope.source, Source::Driver);
+                assert_eq!(payload["stage"], 1);
+                assert_eq!(payload["tool"], "echo");
+                assert_eq!(payload["call_id"], "stage1-c");
+            }
+            other => panic!("expected doom-loop driver event, got {other:?}"),
+        }
+    }
+
+    /// Stage 2 emits the live `DriverKind::DoomLoopTripped` event before
+    /// the observer abort short-circuits the loop.
+    #[test]
+    fn doom_loop_stage_2_emits_driver_event() {
+        let (tool, _seen) = EchoTool::new();
+        let scripted = vec![
+            with_call("echo", "stage2-a", json!({ "text": "spin" })),
+            with_call("echo", "stage2-b", json!({ "text": "spin" })),
+            with_call("echo", "stage2-c", json!({ "text": "spin" })),
+            with_call("echo", "stage2-d", json!({ "text": "spin" })),
+        ];
+        let (client, _calls, events) = ScriptedClient::new_recording(scripted);
+
+        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+            .register(tool)
+            .doom_loop(DoomLoopConfig {
+                enabled: true,
+                window: 5,
+                threshold: 3,
+                stage_2_after_stage_1: 1,
+            })
+            .max_iterations(10);
+        conv.user("spin forever");
+
+        let err = tokio_test::block_on(conv.run(&client)).expect_err("stage 2 aborts");
+        match err {
+            ConversationError::ObserverAbort { reason } => assert_eq!(reason, "doom-loop: echo"),
+            other => panic!("expected ObserverAbort, got {other:?}"),
+        }
+
+        let recorded = events.lock().unwrap_or_else(|p| p.into_inner());
+        let stages: Vec<u64> = recorded
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::DriverEvent {
+                    driver_kind,
+                    payload,
+                    ..
+                } if *driver_kind == DriverKind::DoomLoopTripped => payload["stage"].as_u64(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stages, vec![1, 2]);
+        match recorded.last().expect("stage 2 event present") {
+            AgentEvent::DriverEvent { payload, .. } => {
+                assert_eq!(payload["call_id"], "stage2-d");
+                assert_eq!(payload["tool"], "echo");
+            }
+            other => panic!("expected driver event, got {other:?}"),
+        }
+    }
+
+    /// Duplicate-result observability emits a live
+    /// `DriverKind::DuplicateToolResult` event whose payload carries the
+    /// original call, repeated call, and canonical bytes wasted.
+    #[test]
+    fn duplicate_result_event_payload_carries_bytes_wasted() {
+        let (tool, _seen) = EchoTool::new();
+        let scripted = vec![
+            with_call("echo", "dup-a", json!({ "text": "same" })),
+            with_call("echo", "dup-b", json!({ "text": "same" })),
+            no_calls("done"),
+        ];
+        let (client, _calls, events) = ScriptedClient::new_recording(scripted);
+
+        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+            .register(tool)
+            .doom_loop_disabled()
+            .duplicate_result(DuplicateResultConfig {
+                enabled: true,
+                min_bytes: 1,
+            })
+            .max_iterations(10);
+        conv.user("fetch duplicates");
+
+        tokio_test::block_on(conv.run(&client)).expect("duplicate observer is non-terminal");
+        let expected_bytes = serde_json::to_string(&json!({ "echoed": { "text": "same" } }))
+            .expect("fixture serializes")
+            .len() as u64;
+
+        let recorded = events.lock().unwrap_or_else(|p| p.into_inner());
+        assert_eq!(recorded.len(), 1);
+        match &recorded[0] {
+            AgentEvent::DriverEvent {
+                envelope,
+                driver_kind,
+                payload,
+                ..
+            } => {
+                assert_eq!(*driver_kind, DriverKind::DuplicateToolResult);
+                assert_eq!(envelope.source, Source::Driver);
+                assert_eq!(payload["original_call_id"], "dup-a");
+                assert_eq!(payload["repeated_call_id"], "dup-b");
+                assert_eq!(payload["bytes_wasted"], expected_bytes);
+            }
+            other => panic!("expected duplicate-result driver event, got {other:?}"),
+        }
     }
 
     /// `SessionCommand::Steer` returned from a composed observer is

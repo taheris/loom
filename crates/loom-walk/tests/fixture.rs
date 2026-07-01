@@ -2577,6 +2577,7 @@ const LLM_PUBLIC_SURFACE_BODY: &str = "pub type BoxFuture<'a, T> = core::pin::Pi
      pub trait LlmClient {\n\
          fn schema(&self) -> SchemaKind;\n\
          fn supports(&self, model: &ModelId) -> bool;\n\
+         fn emit_event(&self, event: &AgentEvent);\n\
          fn complete<'a>(&'a self, req: CompletionRequest) -> BoxFuture<'a, Result<CompletionResponse, LlmError>>;\n\
          fn complete_structured_raw<'a>(&'a self, req: CompletionRequest, schema: serde_json::Value, type_name: String) -> BoxFuture<'a, Result<String, LlmError>>;\n\
      }\n\

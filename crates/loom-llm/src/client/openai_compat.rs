@@ -17,12 +17,13 @@
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use loom_events::{EnvelopeBuilder, EventSink};
+use loom_events::{AgentEvent, EnvelopeBuilder, EventSink};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::multi_provider::{
-    debug_per_schema_client, emit_usage_to_chain, push_sink, set_envelope_builder,
+    debug_per_schema_client, emit_event_to_chain, emit_usage_to_chain, push_sink,
+    set_envelope_builder,
 };
 use crate::api_key::ApiKey;
 use crate::client::{
@@ -121,6 +122,10 @@ impl LlmClient for OpenAiCompatClient {
         Self::SCHEMA
     }
 
+    fn emit_event(&self, event: &AgentEvent) {
+        emit_event_to_chain(&self.sinks, event);
+    }
+
     fn complete<'a>(
         &'a self,
         req: CompletionRequest,
@@ -154,11 +159,13 @@ impl LlmClient for OpenAiCompatClient {
             }
             let response = request.send().await.map_err(reqwest_error_to_llm)?;
             let status = response.status();
-            let retry_after_header = response
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
+            let retry_after_header = match response.headers().get(reqwest::header::RETRY_AFTER) {
+                Some(value) => match value.to_str() {
+                    Ok(raw) => Some(raw.to_string()),
+                    Err(_invalid_header) => None,
+                },
+                None => None,
+            };
             let body_bytes = response.bytes().await.map_err(reqwest_error_to_llm)?;
             classify_status(
                 status,
@@ -280,10 +287,10 @@ fn first_binary_capability(req: &CompletionRequest) -> Option<LlmCapability> {
         .iter()
         .flat_map(|message| message.content.iter())
         .find_map(|part| match part {
-            MessageContent::Binary(binary) => Some(LlmCapability::MultimodalBinary {
+            MessageContent::Binary { binary, .. } => Some(LlmCapability::MultimodalBinary {
                 mime_type: binary.mime_type.clone(),
             }),
-            MessageContent::Text(_) => None,
+            MessageContent::Text { .. } => None,
         })
 }
 

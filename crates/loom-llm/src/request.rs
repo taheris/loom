@@ -136,20 +136,83 @@ impl fmt::Debug for BinaryContent {
 /// One ordered content part in a message.
 #[derive(Clone, PartialEq, Eq)]
 pub enum MessageContent {
-    /// Text prompt part.
-    Text(String),
-    /// Binary payload part.
-    Binary(BinaryContent),
+    /// Text prompt part with its cache marker.
+    Text {
+        /// Prompt text.
+        text: String,
+        /// Cache-control marker for this part.
+        cache: CacheControl,
+    },
+    /// Binary payload part with its cache marker.
+    Binary {
+        /// Binary payload.
+        binary: BinaryContent,
+        /// Cache-control marker for this part.
+        cache: CacheControl,
+    },
+}
+
+impl MessageContent {
+    /// Construct a text part without a cache marker.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::text_cached(text, CacheControl::None)
+    }
+
+    /// Construct a text part with a cache marker.
+    pub fn text_cached(text: impl Into<String>, cache: CacheControl) -> Self {
+        Self::Text {
+            text: text.into(),
+            cache,
+        }
+    }
+
+    /// Construct a binary part without a cache marker.
+    pub fn binary(binary: BinaryContent) -> Self {
+        Self::binary_cached(binary, CacheControl::None)
+    }
+
+    /// Construct a binary part with a cache marker.
+    pub fn binary_cached(binary: BinaryContent, cache: CacheControl) -> Self {
+        Self::Binary { binary, cache }
+    }
+
+    /// Borrow this part's cache marker.
+    pub fn cache(&self) -> &CacheControl {
+        match self {
+            MessageContent::Text { cache, .. } | MessageContent::Binary { cache, .. } => cache,
+        }
+    }
+
+    /// Borrow the text payload when this part is text.
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            MessageContent::Text { text, .. } => Some(text),
+            MessageContent::Binary { .. } => None,
+        }
+    }
+
+    /// Borrow the binary payload when this part is binary.
+    pub fn as_binary(&self) -> Option<&BinaryContent> {
+        match self {
+            MessageContent::Text { .. } => None,
+            MessageContent::Binary { binary, .. } => Some(binary),
+        }
+    }
 }
 
 impl fmt::Debug for MessageContent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            MessageContent::Text(text) => f
+            MessageContent::Text { text, cache } => f
                 .debug_struct("Text")
                 .field("char_len", &text.chars().count())
+                .field("cache", cache)
                 .finish(),
-            MessageContent::Binary(binary) => fmt::Debug::fmt(binary, f),
+            MessageContent::Binary { binary, cache } => f
+                .debug_struct("Binary")
+                .field("content", binary)
+                .field("cache", cache)
+                .finish(),
         }
     }
 }
@@ -161,12 +224,10 @@ impl fmt::Debug for MessageContent {
 pub struct Message {
     /// Speaker role.
     pub role: Role,
-    /// Ordered text and binary content parts.
+    /// Ordered text and binary content parts. Each part carries its own
+    /// cache marker so providers can place prompt-cache breakpoints at
+    /// part granularity.
     pub content: Vec<MessageContent>,
-    /// Cache-control marker for this content block. Providers that do
-    /// not support typed per-block cache markers no-op the marker
-    /// without error.
-    pub cache: CacheControl,
     /// Tool calls the assistant emitted on this turn (only populated on
     /// `Role::Assistant` messages produced by the loop after a
     /// tool-calling completion).
@@ -186,7 +247,6 @@ impl fmt::Debug for Message {
         f.debug_struct("Message")
             .field("role", &self.role)
             .field("content", &self.content)
-            .field("cache", &self.cache)
             .field("tool_call_count", &self.tool_calls.len())
             .field("tool_call_id", &self.tool_call_id)
             .field("tool_is_error", &self.tool_is_error)
@@ -350,7 +410,7 @@ impl CompletionRequest {
 
     fn append_binary(&mut self, role: Role, binary: BinaryContent) {
         if let Some(message) = self.messages.iter_mut().rev().find(|m| m.role == role) {
-            message.content.push(MessageContent::Binary(binary));
+            message.content.push(MessageContent::binary(binary));
         } else {
             self.messages.push(Message::binary(role, binary));
         }
@@ -414,8 +474,7 @@ impl Message {
     pub fn assistant_tool_use(content: impl Into<String>, tool_calls: Vec<ToolUseRequest>) -> Self {
         Self {
             role: Role::Assistant,
-            content: vec![MessageContent::Text(content.into())],
-            cache: CacheControl::None,
+            content: vec![MessageContent::text(content)],
             tool_calls,
             tool_call_id: None,
             tool_is_error: false,
@@ -427,8 +486,7 @@ impl Message {
     pub fn tool_result(call_id: ToolCallId, content: impl Into<String>, is_error: bool) -> Self {
         Self {
             role: Role::Tool,
-            content: vec![MessageContent::Text(content.into())],
-            cache: CacheControl::None,
+            content: vec![MessageContent::text(content)],
             tool_calls: Vec::new(),
             tool_call_id: Some(call_id),
             tool_is_error: is_error,
@@ -453,8 +511,8 @@ impl Message {
         self.content
             .iter()
             .filter_map(|part| match part {
-                MessageContent::Text(text) => Some(text.as_str()),
-                MessageContent::Binary(_) => None,
+                MessageContent::Text { text, .. } => Some(text.as_str()),
+                MessageContent::Binary { .. } => None,
             })
             .collect()
     }
@@ -462,8 +520,7 @@ impl Message {
     fn text(role: Role, content: impl Into<String>, cache: CacheControl) -> Self {
         Self {
             role,
-            content: vec![MessageContent::Text(content.into())],
-            cache,
+            content: vec![MessageContent::text_cached(content, cache)],
             tool_calls: Vec::new(),
             tool_call_id: None,
             tool_is_error: false,
@@ -473,8 +530,7 @@ impl Message {
     fn binary(role: Role, binary: BinaryContent) -> Self {
         Self {
             role,
-            content: vec![MessageContent::Binary(binary)],
-            cache: CacheControl::None,
+            content: vec![MessageContent::binary(binary)],
             tool_calls: Vec::new(),
             tool_call_id: None,
             tool_is_error: false,
@@ -541,12 +597,15 @@ mod tests {
         assert_eq!(req.messages[0].role, Role::User);
         assert_eq!(
             req.messages[0].content,
-            vec![MessageContent::Text("question".into())]
+            vec![MessageContent::text("question")]
         );
-        assert!(matches!(req.messages[0].cache, CacheControl::None));
+        assert!(matches!(
+            req.messages[0].content[0].cache(),
+            CacheControl::None,
+        ));
         assert_eq!(req.messages[1].role, Role::User);
         assert!(matches!(
-            req.messages[1].cache,
+            req.messages[1].content[0].cache(),
             CacheControl::Ephemeral(CacheTtl::Hours1),
         ));
     }
@@ -560,10 +619,13 @@ mod tests {
         .assistant_cached("cached reply", CacheControl::Ephemeral(CacheTtl::Minutes5));
         assert_eq!(req.messages.len(), 2);
         assert_eq!(req.messages[0].role, Role::Assistant);
-        assert!(matches!(req.messages[0].cache, CacheControl::None));
+        assert!(matches!(
+            req.messages[0].content[0].cache(),
+            CacheControl::None,
+        ));
         assert_eq!(req.messages[1].role, Role::Assistant);
         assert!(matches!(
-            req.messages[1].cache,
+            req.messages[1].content[0].cache(),
             CacheControl::Ephemeral(CacheTtl::Minutes5),
         ));
     }
@@ -572,12 +634,18 @@ mod tests {
     fn completion_request_text_only_api_remains_compatible() {
         let msg = Message::assistant("reply");
         assert_eq!(msg.role, Role::Assistant);
-        assert_eq!(msg.content, vec![MessageContent::Text("reply".into())]);
+        assert_eq!(msg.content, vec![MessageContent::text("reply")]);
 
         let cached = Message::user_cached("doc", CacheControl::Ephemeral(CacheTtl::Hours24));
-        assert_eq!(cached.content, vec![MessageContent::Text("doc".into())]);
+        assert_eq!(
+            cached.content,
+            vec![MessageContent::text_cached(
+                "doc",
+                CacheControl::Ephemeral(CacheTtl::Hours24),
+            )]
+        );
         assert!(matches!(
-            cached.cache,
+            cached.content[0].cache(),
             CacheControl::Ephemeral(CacheTtl::Hours24),
         ));
     }
@@ -593,16 +661,14 @@ mod tests {
         assert_eq!(req.messages[0].content.len(), 2);
         assert_eq!(
             req.messages[0].content[0],
-            MessageContent::Text("Summarize this PDF".into()),
+            MessageContent::text("Summarize this PDF"),
         );
-        match &req.messages[0].content[1] {
-            MessageContent::Binary(binary) => {
-                assert_eq!(binary.mime_type, MimeType::APPLICATION_PDF);
-                assert_eq!(binary.bytes.as_ref(), &[1_u8, 2, 3]);
-                assert_eq!(binary.name, None);
-            }
-            other => panic!("expected binary part, got {other:?}"),
-        }
+        let binary = req.messages[0].content[1]
+            .as_binary()
+            .expect("expected binary part");
+        assert_eq!(binary.mime_type, MimeType::APPLICATION_PDF);
+        assert_eq!(binary.bytes.as_ref(), &[1_u8, 2, 3]);
+        assert_eq!(binary.name, None);
     }
 
     #[test]
@@ -618,12 +684,10 @@ mod tests {
         assert_eq!(req.messages[0].content.len(), 2);
         assert_eq!(req.messages[1].role, Role::Assistant);
         assert_eq!(req.messages[1].content.len(), 2);
-        match &req.messages[0].content[1] {
-            MessageContent::Binary(binary) => {
-                assert_eq!(binary.name.as_deref(), Some("diagram.png"));
-            }
-            other => panic!("expected named binary part, got {other:?}"),
-        }
+        let binary = req.messages[0].content[1]
+            .as_binary()
+            .expect("expected named binary part");
+        assert_eq!(binary.name.as_deref(), Some("diagram.png"));
     }
 
     #[test]
@@ -633,13 +697,11 @@ mod tests {
 
         assert_eq!(req.messages.len(), 1);
         assert_eq!(req.messages[0].role, Role::Assistant);
-        match &req.messages[0].content[0] {
-            MessageContent::Binary(binary) => {
-                assert_eq!(binary.mime_type, MimeType::IMAGE_JPEG);
-                assert_eq!(binary.name.as_deref(), Some("photo.jpg"));
-            }
-            other => panic!("expected binary part, got {other:?}"),
-        }
+        let binary = req.messages[0].content[0]
+            .as_binary()
+            .expect("expected binary part");
+        assert_eq!(binary.mime_type, MimeType::IMAGE_JPEG);
+        assert_eq!(binary.name.as_deref(), Some("photo.jpg"));
     }
 
     #[test]

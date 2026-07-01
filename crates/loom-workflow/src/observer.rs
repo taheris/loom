@@ -85,13 +85,13 @@ impl DefaultObserverChain {
         let mut out = Vec::new();
         if let Some(observer) = self.doom_loop.as_mut() {
             for tripped in observer.take_pending() {
+                let stage = tripped.stage.as_u8();
                 let summary = format!(
                     "doom-loop tripped stage {stage} for tool `{tool}`",
-                    stage = tripped.stage,
-                    tool = tripped.tool,
+                    tool = tripped.tool.as_str(),
                 );
                 let payload = serde_json::json!({
-                    "stage": tripped.stage,
+                    "stage": stage,
                     "tool": tripped.tool,
                     "params": tripped.params,
                     "call_id": tripped.call_id.as_str(),

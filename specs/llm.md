@@ -98,6 +98,7 @@ pub trait LlmClient: Send + Sync {
     fn supports(&self, model: &ModelId) -> bool {
         model.schema() == self.schema()
     }
+    fn emit_event(&self, event: &AgentEvent) {}
     fn complete<'a>(&'a self, req: CompletionRequest)
         -> BoxFuture<'a, Result<CompletionResponse, LlmError>>;
     fn complete_structured_raw<'a>(
@@ -115,6 +116,10 @@ pub trait LlmClientExt: LlmClient {
         T: DeserializeOwned + JsonSchema + Send + 'static;
 }
 ```
+
+`emit_event` is a dyn-safe hook with a default no-op; built-in Clients
+fan observer `DriverKind` events into the same sink chain that receives
+token-usage events.
 
 Model is required positional on the request (`CompletionRequest::new(ModelId)`);
 the type system forbids constructing a request without naming the
@@ -223,8 +228,8 @@ provider JSON:
 
 ```rust
 pub enum MessageContent {
-    Text(String),
-    Binary(BinaryContent),
+    Text { text: String, cache: CacheControl },
+    Binary { binary: BinaryContent, cache: CacheControl },
 }
 
 pub struct BinaryContent {
@@ -272,8 +277,9 @@ than handing in JSON objects.
 
 One Client type per `SchemaKind`. Each implements `LlmClient`
 and exposes a `pub const SCHEMA: SchemaKind`. The genai-backed
-Clients share `genai::Client` internally; **`genai` does not
-appear in any public signature** — see [Wrapper Thickness](#wrapper-thickness).
+Clients each own a `genai::Client` configured with the constructor
+credential; **`genai` does not appear in any public signature** —
+see [Wrapper Thickness](#wrapper-thickness).
 
 ```rust
 pub struct AnthropicClient    { /* genai::Client inside */ }
@@ -312,8 +318,9 @@ Each Client supports attaching an `EventSink` chain (`EventSink`
 is defined in `loom-events`; see [events.md](events.md)) via a
 `.with_event_sink(impl EventSink)` builder method called after
 `::new`. The chain receives `DriverKind::TokenUsage` events
-and agent-loop observer commands during `complete*` calls — see
-[Conversation and the Built-in Tool-Use Loop](#conversation-and-the-built-in-tool-use-loop).
+during `complete*` calls and `Conversation`-lifted observer
+`DriverKind` events during tool-loop runs — see [Conversation and
+the Built-in Tool-Use Loop](#conversation-and-the-built-in-tool-use-loop).
 
 `OpenAiCompatClient` is gated behind the `openai-compat` Cargo
 feature (default-off — see [Feature Flags](#feature-flags));
@@ -638,7 +645,7 @@ and `--no-default-features` to catch feature-gating regressions.
 
 ### Public surface
 
-- `llm` exposes object-safe `LlmClient` trait with `schema(&self) -> SchemaKind`, `supports(&self, &ModelId) -> bool` (default impl), `complete(req)`, and dyn-safe `complete_structured_raw(req, schema, type_name)`; `LlmClientExt` exposes blanket `complete_structured::<T>(req)`; no `embed` in v1
+- `llm` exposes object-safe `LlmClient` trait with `schema(&self) -> SchemaKind`, `supports(&self, &ModelId) -> bool` (default impl), dyn-safe `emit_event(&AgentEvent)` default no-op, `complete(req)`, and dyn-safe `complete_structured_raw(req, schema, type_name)`; `LlmClientExt` exposes blanket `complete_structured::<T>(req)`; no `embed` in v1
   [check](cargo run -p loom-walk -- loom_llm_public_surface)
 - `LlmClient` is object-safe — `Arc<dyn LlmClient>` compiles and dispatches `complete` plus `LlmClientExt::complete_structured` correctly through the dyn-safe raw method
   [test](llm_client_trait_is_object_safe)
@@ -751,7 +758,7 @@ and `--no-default-features` to catch feature-gating regressions.
 - `Conversation::new(ModelId)` returns a builder accepting `system`, tool registration via `register(impl Tool)`, `max_iterations`, `on_iteration_exhausted(LoopOutcome)`
   [test](conversation_builder_accepts_documented_knobs)
 - `Tool` trait has `name`, `description`, `input_schema`, async `invoke(args) -> Result<ToolOutput>` — no closure-only registration
-  [check](grep -q 'pub trait Tool' crates/loom-llm/src/tool.rs)
+  [test](tool_trait_contract_methods_exist_and_invoke_returns_tool_output)
 - `Conversation::run(&client)` runs the tool-use loop to completion and returns the final `CompletionResponse`; live event observation during the loop happens via the `EventSink` chain attached to the driving `LlmClient` (see `complete_emits_token_usage_driver_event`), not via a separate streaming entry point
   [test](conversation_run_completes_loop_and_returns_final_response)
 - Loop respects `max_iterations`; on exhaustion behaves per `on_iteration_exhausted` (default `LoopOutcome::Error`)
@@ -822,7 +829,8 @@ and `--no-default-features` to catch feature-gating regressions.
 1. **Typed multi-provider LLM access.** Object-safe `LlmClient`
    trait exposes `schema(&self) -> SchemaKind`, `supports(&self,
    &ModelId) -> bool` (default impl checks
-   `model.schema() == self.schema()`), `complete(req)`, and
+   `model.schema() == self.schema()`), dyn-safe `emit_event(&AgentEvent)`
+   defaulting to no-op for custom Clients, `complete(req)`, and
    dyn-safe `complete_structured_raw(req, schema, type_name)`.
    `LlmClientExt` exposes blanket `complete_structured::<T>(req)`
    for the typed consumer path. Per-call model selection via
@@ -910,8 +918,9 @@ and `--no-default-features` to catch feature-gating regressions.
     credential or base URL. Each Client supports
     `.with_event_sink(impl EventSink)` (from `loom-events`) as a
     builder method called after `::new`; the attached chain
-    receives `DriverKind::TokenUsage` events and observer
-    `SessionCommand`s during `complete*` calls.
+    receives `DriverKind::TokenUsage` events during `complete*`
+    calls and `Conversation`-lifted observer `DriverKind` events
+    during tool-loop runs.
 13. **OpenAI-compatible adapter.** `OpenAiCompatClient` routes
     OpenAI Chat-Completions-shaped JSON to a configured
     `base_url`, with an optional `ApiKey`. Targets local
@@ -974,9 +983,8 @@ and `--no-default-features` to catch feature-gating regressions.
    Rust consumers depend on it directly. Stability rules: additive type / variant
    changes are minor bumps; removing or renaming public types,
    methods, or `ModelId` variants is a major bump.
-2. **Dep-graph leaf.** `llm` depends on `loom-events` only
-   among internal crates. No `loom-driver`, `agent`, or
-   `loom-workflow` imports.
+2. **Dep-graph leaf.** The internal-crate dependency constraint for
+   `loom-llm` is owned by [harness.md — Dependency Graph](harness.md#dependency-graph).
 3. **Sensitive-data logging.** Default logs and debug output do
    not include prompt bodies, response bodies, binary bytes, or
    base64-encoded payloads. MIME type, optional name, and byte

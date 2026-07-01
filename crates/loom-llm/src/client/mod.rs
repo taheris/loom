@@ -28,6 +28,8 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 
+use loom_events::AgentEvent;
+
 use crate::model_id::{ModelId, SchemaKind};
 use crate::request::{CompletionRequest, MimeType};
 use crate::usage::TokenUsage;
@@ -352,26 +354,51 @@ pub fn parse_retry_after(value: &str, now: SystemTime) -> Duration {
     if let Ok(secs) = trimmed.parse::<u64>() {
         return Duration::from_secs(secs);
     }
-    if let Some(target) = parse_imf_fixdate(trimmed) {
-        return target.duration_since(now).unwrap_or(Duration::ZERO);
+    match parse_imf_fixdate(trimmed) {
+        Ok(target) => match target.duration_since(now) {
+            Ok(duration) => duration,
+            Err(_past_date) => Duration::ZERO,
+        },
+        Err(_invalid_date) => DEFAULT_RETRY_AFTER,
     }
-    DEFAULT_RETRY_AFTER
+}
+
+/// invalid IMF-fixdate: {reason}
+#[derive(Debug, Clone, PartialEq, Eq, Display, Error)]
+struct ImfFixdateParseError {
+    reason: &'static str,
+}
+
+impl ImfFixdateParseError {
+    const fn new(reason: &'static str) -> Self {
+        Self { reason }
+    }
 }
 
 /// Parse the RFC 7231 §7.1.1.1 IMF-fixdate format
 /// (`"Sun, 06 Nov 1994 08:49:37 GMT"`) into a [`SystemTime`]. The
-/// obsolete RFC 850 and asctime formats fall through to `None`; callers
-/// (see [`parse_retry_after`]) handle the fallback. Returns `None` when
-/// any field cannot be parsed.
-fn parse_imf_fixdate(s: &str) -> Option<SystemTime> {
+/// obsolete RFC 850 and asctime formats return a typed parse error;
+/// callers (see [`parse_retry_after`]) handle the documented fallback.
+fn parse_imf_fixdate(s: &str) -> Result<SystemTime, ImfFixdateParseError> {
     let s = s.trim();
-    let comma = s.find(", ")?;
-    let rest = s.get(comma + 2..)?;
+    let comma = s
+        .find(", ")
+        .ok_or(ImfFixdateParseError::new("missing weekday comma"))?;
+    let rest = s
+        .get(comma + 2..)
+        .ok_or(ImfFixdateParseError::new("missing date fields"))?;
     if rest.len() < 23 {
-        return None;
+        return Err(ImfFixdateParseError::new("date is too short"));
     }
-    let day = rest.get(0..2)?.parse::<u32>().ok()?;
-    let month = match rest.get(3..6)? {
+    let day = parse_decimal::<u32>(
+        rest.get(0..2)
+            .ok_or(ImfFixdateParseError::new("missing day"))?,
+        "invalid day",
+    )?;
+    let month = match rest
+        .get(3..6)
+        .ok_or(ImfFixdateParseError::new("missing month"))?
+    {
         "Jan" => 1,
         "Feb" => 2,
         "Mar" => 3,
@@ -384,42 +411,80 @@ fn parse_imf_fixdate(s: &str) -> Option<SystemTime> {
         "Oct" => 10,
         "Nov" => 11,
         "Dec" => 12,
-        _ => return None,
+        _ => return Err(ImfFixdateParseError::new("invalid month")),
     };
-    let year = rest.get(7..11)?.parse::<i64>().ok()?;
-    let hour = rest.get(12..14)?.parse::<u64>().ok()?;
-    let min = rest.get(15..17)?.parse::<u64>().ok()?;
-    let sec = rest.get(18..20)?.parse::<u64>().ok()?;
-    if rest.get(20..23)? != " GM" || !rest.ends_with("GMT") {
-        return None;
+    let year = parse_decimal::<i64>(
+        rest.get(7..11)
+            .ok_or(ImfFixdateParseError::new("missing year"))?,
+        "invalid year",
+    )?;
+    let hour = parse_decimal::<u64>(
+        rest.get(12..14)
+            .ok_or(ImfFixdateParseError::new("missing hour"))?,
+        "invalid hour",
+    )?;
+    let min = parse_decimal::<u64>(
+        rest.get(15..17)
+            .ok_or(ImfFixdateParseError::new("missing minute"))?,
+        "invalid minute",
+    )?;
+    let sec = parse_decimal::<u64>(
+        rest.get(18..20)
+            .ok_or(ImfFixdateParseError::new("missing second"))?,
+        "invalid second",
+    )?;
+    if rest
+        .get(20..23)
+        .ok_or(ImfFixdateParseError::new("missing GMT marker"))?
+        != " GM"
+        || !rest.ends_with("GMT")
+    {
+        return Err(ImfFixdateParseError::new("invalid GMT marker"));
     }
     if !(1..=31).contains(&day) || hour > 23 || min > 59 || sec > 60 {
-        return None;
+        return Err(ImfFixdateParseError::new("date field out of range"));
     }
     let days = days_from_civil(year, month, day)?;
+    let seconds = i64::try_from(hour * 3_600 + min * 60 + sec)
+        .map_err(|_| ImfFixdateParseError::new("time field overflow"))?;
     let unix_seconds = days
-        .checked_mul(86_400)?
-        .checked_add((hour * 3_600 + min * 60 + sec) as i64)?;
+        .checked_mul(86_400)
+        .and_then(|days| days.checked_add(seconds))
+        .ok_or(ImfFixdateParseError::new("timestamp overflow"))?;
     if unix_seconds < 0 {
-        let neg = u64::try_from(-unix_seconds).ok()?;
-        SystemTime::UNIX_EPOCH.checked_sub(Duration::from_secs(neg))
+        let neg = u64::try_from(-unix_seconds)
+            .map_err(|_| ImfFixdateParseError::new("negative timestamp overflow"))?;
+        SystemTime::UNIX_EPOCH
+            .checked_sub(Duration::from_secs(neg))
+            .ok_or(ImfFixdateParseError::new("system time underflow"))
     } else {
-        let pos = u64::try_from(unix_seconds).ok()?;
-        SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(pos))
+        let pos = u64::try_from(unix_seconds)
+            .map_err(|_| ImfFixdateParseError::new("positive timestamp overflow"))?;
+        SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(pos))
+            .ok_or(ImfFixdateParseError::new("system time overflow"))
     }
+}
+
+fn parse_decimal<T>(raw: &str, reason: &'static str) -> Result<T, ImfFixdateParseError>
+where
+    T: FromStr,
+{
+    raw.parse::<T>()
+        .map_err(|_| ImfFixdateParseError::new(reason))
 }
 
 /// Days from the proleptic-Gregorian civil date `(y, m, d)` to the
 /// Unix epoch (1970-01-01), per Howard Hinnant's `days_from_civil`
-/// algorithm. Negative for dates before 1970-01-01. Returns `None`
-/// when month or day is outside the valid 1..=12 / 1..=31 range.
-fn days_from_civil(y: i64, m: u32, d: u32) -> Option<i64> {
+/// algorithm. Negative for dates before 1970-01-01.
+fn days_from_civil(y: i64, m: u32, d: u32) -> Result<i64, ImfFixdateParseError> {
     if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
-        return None;
+        return Err(ImfFixdateParseError::new("civil date out of range"));
     }
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = u64::try_from(y - era * 400).ok()?;
+    let yoe = u64::try_from(y - era * 400)
+        .map_err(|_| ImfFixdateParseError::new("year offset out of range"))?;
     let m_shifted: u64 = if m > 2 {
         u64::from(m) - 3
     } else {
@@ -427,10 +492,12 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> Option<i64> {
     };
     let doy = (153 * m_shifted + 2) / 5 + u64::from(d) - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let doe_i = i64::try_from(doe).ok()?;
-    era.checked_mul(146_097)?
-        .checked_add(doe_i)?
-        .checked_sub(719_468)
+    let doe_i =
+        i64::try_from(doe).map_err(|_| ImfFixdateParseError::new("day offset out of range"))?;
+    era.checked_mul(146_097)
+        .and_then(|era_days| era_days.checked_add(doe_i))
+        .and_then(|days| days.checked_sub(719_468))
+        .ok_or(ImfFixdateParseError::new("civil date overflow"))
 }
 
 /// The public agent-side LLM contract.
@@ -460,6 +527,12 @@ pub trait LlmClient: Send + Sync {
     fn supports(&self, model: &ModelId) -> bool {
         model.schema() == self.schema()
     }
+
+    /// Fan a driver/observer event into this Client's active sink chain.
+    /// Custom Clients may ignore events by using this default no-op;
+    /// built-in Clients override it so `Conversation` observer signals
+    /// reach the same chain as token-usage events.
+    fn emit_event(&self, _event: &AgentEvent) {}
 
     /// Run a completion against the request's `ModelId`. Returns the
     /// final assistant text plus token usage.
@@ -491,6 +564,10 @@ impl<C: LlmClient + ?Sized> LlmClient for Box<C> {
 
     fn supports(&self, model: &ModelId) -> bool {
         (**self).supports(model)
+    }
+
+    fn emit_event(&self, event: &AgentEvent) {
+        (**self).emit_event(event);
     }
 
     fn complete<'a>(

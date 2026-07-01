@@ -2,22 +2,27 @@
 //! crate.
 //!
 //! Each [`SchemaKind`] gets a dedicated Client type: [`AnthropicClient`],
-//! [`OpenAiClient`], [`GeminiClient`]. The three genai-backed Clients
-//! share a process-wide [`genai::Client`] via [`shared_genai_client`] so
-//! connection pooling and rate-limit tracking work across schemas in the
-//! same process. No public signature mentions `genai::Client` — the
-//! wrapper insulates consumers from the underlying crate's API churn.
+//! [`OpenAiClient`], [`GeminiClient`]. Each Client owns a `genai::Client`
+//! configured with the credential supplied at construction. No public
+//! signature mentions `genai::Client` — the wrapper insulates consumers
+//! from the underlying crate's API churn.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use base64::Engine;
+#[cfg(test)]
+use genai::ServiceTarget;
+use genai::adapter::AdapterKind;
 use genai::chat::{
     CacheControl as GenAiCacheControl, ChatMessage, ChatOptions, ChatRequest, ChatResponse,
     ChatResponseFormat, ChatRole, ContentPart, JsonSpec, MessageContent as GenAiMessageContent,
     MessageOptions, Tool as GenAiTool, ToolCall as GenAiToolCall,
     ToolResponse as GenAiToolResponse, Usage as GenAiUsage,
 };
+use genai::resolver::AuthData;
+#[cfg(test)]
+use genai::resolver::Endpoint;
 use loom_events::event::Source;
 use loom_events::identifier::BeadId;
 use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, EventSink};
@@ -35,19 +40,40 @@ use crate::request::{CompletionRequest, Message, MessageContent, Role};
 use crate::tool::ToolDef;
 use crate::usage::TokenUsage;
 
-/// Process-wide shared `genai::Client`. Built once on first use and
-/// handed out as `Arc::clone` to every per-schema Client so connection
-/// pooling and rate-limit tracking flow across schemas in the same
-/// process. Constructing a fresh `genai::Client` per Client type would
-/// defeat both.
-fn shared_genai_client() -> Arc<genai::Client> {
-    static CELL: OnceLock<Arc<genai::Client>> = OnceLock::new();
-    CELL.get_or_init(|| Arc::new(genai::Client::default()))
-        .clone()
+const ANTHROPIC_ADAPTER: AdapterKind = AdapterKind::Anthropic;
+const OPENAI_ADAPTER: AdapterKind = AdapterKind::OpenAI;
+const GEMINI_ADAPTER: AdapterKind = AdapterKind::Gemini;
+
+fn genai_client_for_schema(adapter_kind: AdapterKind, api_key: &ApiKey) -> Arc<genai::Client> {
+    let key = api_key.expose().to_owned();
+    Arc::new(
+        genai::Client::builder()
+            .with_adapter_kind(adapter_kind)
+            .with_auth_resolver_fn(move |_model| Ok(Some(AuthData::from_single(key.clone()))))
+            .build(),
+    )
 }
 
-/// Client targeting the [`SchemaKind::Anthropic`] schema. Built on top
-/// of the shared [`genai::Client`].
+#[cfg(test)]
+fn genai_client_for_schema_endpoint(
+    adapter_kind: AdapterKind,
+    api_key: &ApiKey,
+    base_url: String,
+) -> Arc<genai::Client> {
+    let key = api_key.expose().to_owned();
+    Arc::new(
+        genai::Client::builder()
+            .with_adapter_kind(adapter_kind)
+            .with_service_target_resolver_fn(move |mut target: ServiceTarget| {
+                target.endpoint = Endpoint::from_owned(base_url.clone());
+                target.auth = AuthData::from_single(key.clone());
+                Ok(target)
+            })
+            .build(),
+    )
+}
+
+/// Client targeting the [`SchemaKind::Anthropic`] schema.
 pub struct AnthropicClient {
     inner: Arc<genai::Client>,
     api_key: ApiKey,
@@ -61,15 +87,21 @@ impl AnthropicClient {
     /// this schema.
     pub const SCHEMA: SchemaKind = SchemaKind::Anthropic;
 
-    /// Construct a Client carrying `api_key` as its credential and
-    /// sharing the process-wide [`genai::Client`].
+    /// Construct a Client carrying `api_key` as its credential.
     pub fn new(api_key: ApiKey) -> Self {
+        let inner = genai_client_for_schema(ANTHROPIC_ADAPTER, &api_key);
         Self {
-            inner: shared_genai_client(),
+            inner,
             api_key,
             sinks: Mutex::new(Vec::new()),
             envelope_builder: Mutex::new(default_envelope_builder()),
         }
+    }
+
+    #[cfg(test)]
+    fn with_mock_endpoint(mut self, base_url: String) -> Self {
+        self.inner = genai_client_for_schema_endpoint(ANTHROPIC_ADAPTER, &self.api_key, base_url);
+        self
     }
 
     /// Attach an [`EventSink`] to this Client's chain. Each call
@@ -115,6 +147,10 @@ impl LlmClient for AnthropicClient {
         Self::SCHEMA
     }
 
+    fn emit_event(&self, event: &AgentEvent) {
+        emit_event_to_chain(&self.sinks, event);
+    }
+
     fn complete<'a>(
         &'a self,
         req: CompletionRequest,
@@ -178,8 +214,7 @@ impl LlmClient for AnthropicClient {
     }
 }
 
-/// Client targeting the [`SchemaKind::OpenAi`] schema. Built on top of
-/// the shared [`genai::Client`].
+/// Client targeting the [`SchemaKind::OpenAi`] schema.
 pub struct OpenAiClient {
     inner: Arc<genai::Client>,
     api_key: ApiKey,
@@ -191,11 +226,11 @@ impl OpenAiClient {
     /// Wire-format discriminator this Client targets.
     pub const SCHEMA: SchemaKind = SchemaKind::OpenAi;
 
-    /// Construct a Client carrying `api_key` and sharing the process-
-    /// wide [`genai::Client`].
+    /// Construct a Client carrying `api_key` as its credential.
     pub fn new(api_key: ApiKey) -> Self {
+        let inner = genai_client_for_schema(OPENAI_ADAPTER, &api_key);
         Self {
-            inner: shared_genai_client(),
+            inner,
             api_key,
             sinks: Mutex::new(Vec::new()),
             envelope_builder: Mutex::new(default_envelope_builder()),
@@ -203,8 +238,8 @@ impl OpenAiClient {
     }
 
     #[cfg(test)]
-    fn with_genai_client(mut self, inner: Arc<genai::Client>) -> Self {
-        self.inner = inner;
+    fn with_mock_endpoint(mut self, base_url: String) -> Self {
+        self.inner = genai_client_for_schema_endpoint(OPENAI_ADAPTER, &self.api_key, base_url);
         self
     }
 
@@ -245,6 +280,10 @@ impl LlmClient for OpenAiClient {
         Self::SCHEMA
     }
 
+    fn emit_event(&self, event: &AgentEvent) {
+        emit_event_to_chain(&self.sinks, event);
+    }
+
     fn complete<'a>(
         &'a self,
         req: CompletionRequest,
@@ -308,8 +347,7 @@ impl LlmClient for OpenAiClient {
     }
 }
 
-/// Client targeting the [`SchemaKind::Gemini`] schema. Built on top of
-/// the shared [`genai::Client`].
+/// Client targeting the [`SchemaKind::Gemini`] schema.
 pub struct GeminiClient {
     inner: Arc<genai::Client>,
     api_key: ApiKey,
@@ -321,15 +359,21 @@ impl GeminiClient {
     /// Wire-format discriminator this Client targets.
     pub const SCHEMA: SchemaKind = SchemaKind::Gemini;
 
-    /// Construct a Client carrying `api_key` and sharing the process-
-    /// wide [`genai::Client`].
+    /// Construct a Client carrying `api_key` as its credential.
     pub fn new(api_key: ApiKey) -> Self {
+        let inner = genai_client_for_schema(GEMINI_ADAPTER, &api_key);
         Self {
-            inner: shared_genai_client(),
+            inner,
             api_key,
             sinks: Mutex::new(Vec::new()),
             envelope_builder: Mutex::new(default_envelope_builder()),
         }
+    }
+
+    #[cfg(test)]
+    fn with_mock_endpoint(mut self, base_url: String) -> Self {
+        self.inner = genai_client_for_schema_endpoint(GEMINI_ADAPTER, &self.api_key, base_url);
+        self
     }
 
     /// Attach an [`EventSink`] to this Client's chain.
@@ -367,6 +411,10 @@ impl std::fmt::Debug for GeminiClient {
 impl LlmClient for GeminiClient {
     fn schema(&self) -> SchemaKind {
         Self::SCHEMA
+    }
+
+    fn emit_event(&self, event: &AgentEvent) {
+        emit_event_to_chain(&self.sinks, event);
     }
 
     fn complete<'a>(
@@ -450,6 +498,13 @@ pub(super) fn set_envelope_builder(
     *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(envelope_builder);
 }
 
+pub(super) fn emit_event_to_chain(sinks: &Mutex<Vec<Box<dyn EventSink>>>, event: &AgentEvent) {
+    let mut guard = sinks.lock().unwrap_or_else(|p| p.into_inner());
+    for sink in guard.iter_mut() {
+        sink.emit(event);
+    }
+}
+
 pub(super) fn emit_usage_to_chain(
     envelope_builder: &Mutex<Option<EnvelopeBuilder>>,
     sinks: &Mutex<Vec<Box<dyn EventSink>>>,
@@ -482,10 +537,7 @@ pub(super) fn emit_usage_to_chain(
             "cache_write": usage.cache_write,
         }),
     };
-    let mut guard = sinks.lock().unwrap_or_else(|p| p.into_inner());
-    for sink in guard.iter_mut() {
-        sink.emit(&event);
-    }
+    emit_event_to_chain(sinks, &event);
 }
 
 pub(super) fn debug_per_schema_client(
@@ -686,7 +738,7 @@ pub(crate) fn to_genai_chat_request(req: CompletionRequest) -> (ChatRequest, Cha
         tools,
     } = req;
 
-    let chat_messages: Vec<ChatMessage> = messages.into_iter().map(to_chat_message).collect();
+    let chat_messages: Vec<ChatMessage> = messages.into_iter().flat_map(to_chat_messages).collect();
 
     let mut chat_req = ChatRequest::new(chat_messages);
     if let Some(prefix) = system {
@@ -710,16 +762,52 @@ fn to_genai_tool(def: ToolDef) -> GenAiTool {
         .with_schema(def.input_schema)
 }
 
-fn to_chat_message(msg: Message) -> ChatMessage {
-    let role = match msg.role {
+fn to_chat_messages(msg: Message) -> Vec<ChatMessage> {
+    let role = chat_role(msg.role);
+    if msg.tool_call_id.is_some() || !msg.tool_calls.is_empty() {
+        return vec![chat_message_with_cache(
+            role,
+            build_message_content(&msg),
+            CacheControl::None,
+        )];
+    }
+
+    let mut groups: Vec<(CacheControl, Vec<ContentPart>)> = Vec::new();
+    for part in &msg.content {
+        let cache = *part.cache();
+        let content = to_genai_content_part(part);
+        if let Some((last_cache, parts)) = groups.last_mut()
+            && *last_cache == cache
+        {
+            parts.push(content);
+            continue;
+        }
+        groups.push((cache, vec![content]));
+    }
+
+    groups
+        .into_iter()
+        .map(|(cache, parts)| {
+            chat_message_with_cache(role.clone(), GenAiMessageContent::from_parts(parts), cache)
+        })
+        .collect()
+}
+
+fn chat_role(role: Role) -> ChatRole {
+    match role {
         Role::User => ChatRole::User,
         Role::Assistant => ChatRole::Assistant,
         Role::Tool => ChatRole::Tool,
-    };
+    }
+}
 
-    let content = build_message_content(&msg);
+fn chat_message_with_cache(
+    role: ChatRole,
+    content: GenAiMessageContent,
+    cache: CacheControl,
+) -> ChatMessage {
     let mut chat_msg = ChatMessage::new(role, content);
-    if let Some(cache) = cache_control_to_genai(&msg.cache) {
+    if let Some(cache) = cache_control_to_genai(&cache) {
         let opts = MessageOptions::default().with_cache_control(cache);
         chat_msg = chat_msg.with_options(opts);
     }
@@ -750,8 +838,8 @@ fn build_message_content(msg: &Message) -> GenAiMessageContent {
 
 fn to_genai_content_part(part: &MessageContent) -> ContentPart {
     match part {
-        MessageContent::Text(text) => ContentPart::Text(text.clone()),
-        MessageContent::Binary(binary) => {
+        MessageContent::Text { text, .. } => ContentPart::Text(text.clone()),
+        MessageContent::Binary { binary, .. } => {
             let encoded = base64::engine::general_purpose::STANDARD.encode(binary.bytes.as_ref());
             ContentPart::from_binary_base64(binary.mime_type.as_str(), encoded, binary.name.clone())
         }
@@ -761,7 +849,7 @@ fn to_genai_content_part(part: &MessageContent) -> ContentPart {
 pub(crate) fn validate_binary_payloads(req: &CompletionRequest) -> Result<(), LlmError> {
     for message in &req.messages {
         for part in &message.content {
-            if let MessageContent::Binary(binary) = part
+            if let MessageContent::Binary { binary, .. } = part
                 && binary.bytes.is_empty()
             {
                 return Err(LlmError::IncompatibleRequest {
@@ -844,12 +932,10 @@ mod tests {
     use crate::cache::CacheTtl;
     use crate::client::LlmClientExt;
     use crate::model_id::{AnthropicModel, GeminiModel, OpenAiModel};
-    use genai::adapter::AdapterKind;
+    use genai::ModelIden;
     use genai::chat::{PromptTokensDetails, Usage as GenAiUsage};
-    use genai::resolver::{AuthData, Endpoint};
-    use genai::{ModelIden, ServiceTarget};
     use std::sync::{Arc, Mutex};
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_partial_json, body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_api_key() -> ApiKey {
@@ -954,19 +1040,6 @@ mod tests {
         }
     }
 
-    fn genai_client_for_mock_openai(base_url: String) -> Arc<genai::Client> {
-        Arc::new(
-            genai::Client::builder()
-                .with_adapter_kind(AdapterKind::OpenAI)
-                .with_service_target_resolver_fn(move |mut target: ServiceTarget| {
-                    target.endpoint = Endpoint::from_owned(base_url.clone());
-                    target.auth = AuthData::from_single("sk-test");
-                    Ok(target)
-                })
-                .build(),
-        )
-    }
-
     fn openai_completion_payload(input: u32, output: u32, text: &str) -> serde_json::Value {
         serde_json::json!({
             "id": "chatcmpl-test",
@@ -1007,7 +1080,7 @@ mod tests {
         let recorded_a = sink_a.events.clone();
         let recorded_b = sink_b.events.clone();
         let client = OpenAiClient::new(test_api_key())
-            .with_genai_client(genai_client_for_mock_openai(format!("{}/", server.uri())))
+            .with_mock_endpoint(format!("{}/", server.uri()))
             .with_event_sink(sink_a)
             .with_event_sink(sink_b);
 
@@ -1042,8 +1115,8 @@ mod tests {
 
     /// Calling `complete` with a `ModelId` whose `schema()` does not
     /// match the Client's `SCHEMA` returns `LlmError::IncompatibleModel`
-    /// synchronously without issuing a network call. The Client wraps
-    /// the shared `genai::Client` but never invokes `exec_chat`; the
+    /// synchronously without issuing a network call. The Client checks
+    /// schema compatibility before invoking `exec_chat`; the
     /// check sits at the top of the impl ahead of any wire setup, so
     /// the test reads the error without a real provider round-trip.
     #[test]
@@ -1137,24 +1210,25 @@ mod tests {
         );
     }
 
-    /// Cache markers land on the matching message in the lowered
+    /// Cache markers land on the matching content part in the lowered
     /// `ChatRequest`, so the Anthropic adapter places the cache
     /// breakpoint at the per-content-block position the consumer
-    /// chose. Adjacent uncached messages carry no `MessageOptions` so
-    /// the wire payload reflects the per-block precision the typed
-    /// surface promises.
+    /// chose. Adjacent uncached parts carry no `MessageOptions` so the
+    /// wire payload reflects the per-block precision the typed surface
+    /// promises.
     #[test]
     fn message_text_cached_marks_per_block_in_anthropic_request() {
         let req = CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
             .system("be terse")
             .user("hi")
             .user_cached("doc", CacheControl::Ephemeral(CacheTtl::Hours1))
+            .user_binary(crate::request::MimeType::APPLICATION_PDF, vec![1_u8, 2, 3])
             .max_tokens(512);
 
         let (chat_req, options) = to_genai_chat_request(req);
 
         assert_eq!(chat_req.system.as_deref(), Some("be terse"));
-        assert_eq!(chat_req.messages.len(), 2);
+        assert_eq!(chat_req.messages.len(), 3);
         assert_eq!(chat_req.messages[0].role, ChatRole::User);
         assert!(chat_req.messages[0].options.is_none());
         assert_eq!(chat_req.messages[1].role, ChatRole::User);
@@ -1162,8 +1236,15 @@ mod tests {
             .options
             .as_ref()
             .and_then(|o| o.cache_control.as_ref())
-            .expect("second message carries cache_control");
+            .expect("cached text part carries cache_control");
         assert_eq!(cache, &GenAiCacheControl::Ephemeral1h);
+        assert_eq!(chat_req.messages[2].role, ChatRole::User);
+        assert!(
+            chat_req.messages[2].options.is_none(),
+            "uncached binary part must not inherit text cache marker",
+        );
+        let parts: Vec<&ContentPart> = (&chat_req.messages[2].content).into_iter().collect();
+        assert!(matches!(parts.as_slice(), [ContentPart::Binary(_)]));
         assert_eq!(options.max_tokens, Some(512));
     }
 
@@ -1328,89 +1409,142 @@ mod tests {
         }
     }
 
-    /// `complete_structured::<T>` deserializes the same canonical JSON
-    /// payload into the same `T` regardless of which provider schema
-    /// produced it. The test drives the public typed method, not the
-    /// lower-level parser, so a regression in the structured-output
-    /// extension path breaks the criterion.
-    #[test]
-    fn complete_structured_returns_typed_t_across_providers() {
+    /// `complete_structured::<T>` drives the concrete Anthropic,
+    /// OpenAI, and Gemini Clients through their generated provider
+    /// requests. Each mock asserts the provider-specific structured
+    /// output field is present, then returns that provider's native
+    /// response shape carrying a JSON string that the public typed
+    /// method deserializes into `T`.
+    #[tokio::test]
+    async fn complete_structured_returns_typed_t_across_providers() {
         #[derive(Debug, PartialEq, serde::Deserialize, schemars::JsonSchema)]
         struct AnswerShape {
             title: String,
             count: u32,
         }
 
-        struct StructuredStub {
-            schema: SchemaKind,
-            payload: &'static str,
-        }
+        let anthropic_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .and(header("x-api-key", "test-key"))
+            .and(body_partial_json(serde_json::json!({
+                "output_config": { "format": { "type": "json_schema" } }
+            })))
+            .and(body_string_contains("\"title\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-4-6",
+                "content": [{
+                    "type": "text",
+                    "text": "{\"title\":\"anthropic\",\"count\":11}"
+                }],
+                "stop_reason": "end_turn",
+                "stop_sequence": null,
+                "usage": { "input_tokens": 8, "output_tokens": 4 }
+            })))
+            .expect(1)
+            .mount(&anthropic_server)
+            .await;
 
-        impl LlmClient for StructuredStub {
-            fn schema(&self) -> SchemaKind {
-                self.schema
+        let anthropic = AnthropicClient::new(test_api_key())
+            .with_mock_endpoint(format!("{}/", anthropic_server.uri()));
+        let anthropic_value: AnswerShape = anthropic
+            .complete_structured(
+                CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+                    .user("structured please"),
+            )
+            .await
+            .expect("anthropic structured response parses");
+        assert_eq!(
+            anthropic_value,
+            AnswerShape {
+                title: "anthropic".into(),
+                count: 11,
             }
+        );
 
-            fn complete<'a>(
-                &'a self,
-                _req: CompletionRequest,
-            ) -> BoxFuture<'a, Result<CompletionResponse, LlmError>> {
-                Box::pin(async move {
-                    Err(LlmError::Provider {
-                        message: "complete not used by structured test".into(),
-                    })
-                })
+        let openai_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(body_partial_json(serde_json::json!({
+                "response_format": { "type": "json_schema" }
+            })))
+            .and(body_string_contains("\"title\""))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(openai_completion_payload(
+                    9,
+                    5,
+                    "{\"title\":\"openai\",\"count\":22}",
+                )),
+            )
+            .expect(1)
+            .mount(&openai_server)
+            .await;
+
+        let openai = OpenAiClient::new(test_api_key())
+            .with_mock_endpoint(format!("{}/", openai_server.uri()));
+        let openai_value: AnswerShape = openai
+            .complete_structured(
+                CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Gpt55))
+                    .user("structured please"),
+            )
+            .await
+            .expect("openai structured response parses");
+        assert_eq!(
+            openai_value,
+            AnswerShape {
+                title: "openai".into(),
+                count: 22,
             }
+        );
 
-            fn complete_structured_raw<'a>(
-                &'a self,
-                req: CompletionRequest,
-                schema: serde_json::Value,
-                type_name: String,
-            ) -> BoxFuture<'a, Result<String, LlmError>> {
-                Box::pin(async move {
-                    assert_eq!(req.model.schema(), self.schema);
-                    assert!(schema.get("properties").is_some());
-                    assert_eq!(type_name, "AnswerShape");
-                    Ok(self.payload.to_string())
-                })
+        let gemini_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/models/gemini-3.1-pro:generateContent"))
+            .and(header("x-goog-api-key", "test-key"))
+            .and(body_partial_json(serde_json::json!({
+                "generationConfig": { "responseMimeType": "application/json" }
+            })))
+            .and(body_string_contains("responseJsonSchema"))
+            .and(body_string_contains("\"title\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "text": "{\"title\":\"gemini\",\"count\":33}"
+                        }]
+                    },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 7,
+                    "candidatesTokenCount": 3,
+                    "totalTokenCount": 10
+                }
+            })))
+            .expect(1)
+            .mount(&gemini_server)
+            .await;
+
+        let gemini = GeminiClient::new(test_api_key())
+            .with_mock_endpoint(format!("{}/", gemini_server.uri()));
+        let gemini_value: AnswerShape = gemini
+            .complete_structured(
+                CompletionRequest::new(ModelId::Gemini(GeminiModel::Gemini31Pro))
+                    .user("structured please"),
+            )
+            .await
+            .expect("gemini structured response parses");
+        assert_eq!(
+            gemini_value,
+            AnswerShape {
+                title: "gemini".into(),
+                count: 33,
             }
-        }
-
-        let providers = [
-            (
-                StructuredStub {
-                    schema: SchemaKind::Anthropic,
-                    payload: r#"{"title":"forty-two","count":42}"#,
-                },
-                ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
-            ),
-            (
-                StructuredStub {
-                    schema: SchemaKind::OpenAi,
-                    payload: r#"{"title":"forty-two","count":42}"#,
-                },
-                ModelId::OpenAi(OpenAiModel::Gpt55),
-            ),
-            (
-                StructuredStub {
-                    schema: SchemaKind::Gemini,
-                    payload: r#"{"title":"forty-two","count":42}"#,
-                },
-                ModelId::Gemini(GeminiModel::Gemini31Pro),
-            ),
-        ];
-        let expected = AnswerShape {
-            title: "forty-two".to_string(),
-            count: 42,
-        };
-
-        for (client, model_id) in providers {
-            let req = CompletionRequest::new(model_id);
-            let value: AnswerShape = tokio_test::block_on(client.complete_structured(req))
-                .expect("structured payload parses");
-            assert_eq!(value, expected, "same T for {:?}", client.schema);
-        }
+        );
     }
 
     /// Every successful `complete*` call emits a
@@ -1437,7 +1571,7 @@ mod tests {
         let sink = RecordingSink::default();
         let recorded = sink.events.clone();
         let client = OpenAiClient::new(test_api_key())
-            .with_genai_client(genai_client_for_mock_openai(format!("{}/", server.uri())))
+            .with_mock_endpoint(format!("{}/", server.uri()))
             .with_event_sink(sink);
         let req = CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Gpt55)).user("hi");
         let response = client
@@ -1495,15 +1629,57 @@ mod tests {
         client.emit_usage(&ModelId::Anthropic(AnthropicModel::ClaudeSonnet46), &usage);
     }
 
-    /// The shared `genai::Client` is one process-wide instance: the
-    /// `OnceLock` cell hands the same `Arc` to every per-schema Client
-    /// construction. `Arc::ptr_eq` confirms they point at the same
-    /// inner — the invariant the bead's connection-pool sharing relies
-    /// on.
-    #[test]
-    fn shared_genai_client_is_process_wide_arc() {
-        let a = shared_genai_client();
-        let b = shared_genai_client();
-        assert!(Arc::ptr_eq(&a, &b));
+    /// Each Client owns the credential supplied to its constructor.
+    /// Two OpenAI Clients pointed at the same mock endpoint emit
+    /// different Authorization headers, proving per-tenant credentials
+    /// are Client-local rather than process-global.
+    #[tokio::test]
+    async fn per_client_api_key_reaches_provider_auth_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer tenant-a"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(openai_completion_payload(1, 1, "a")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("authorization", "Bearer tenant-b"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(openai_completion_payload(1, 1, "b")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let endpoint = format!("{}/", server.uri());
+        let client_a =
+            OpenAiClient::new(ApiKey::new("tenant-a".to_string()).expect("non-empty tenant key"))
+                .with_mock_endpoint(endpoint.clone());
+        let client_b =
+            OpenAiClient::new(ApiKey::new("tenant-b".to_string()).expect("non-empty tenant key"))
+                .with_mock_endpoint(endpoint);
+
+        let req_a = CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Gpt55)).user("hi");
+        let req_b = CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Gpt55)).user("hi");
+        assert_eq!(
+            client_a
+                .complete(req_a)
+                .await
+                .expect("tenant a succeeds")
+                .text,
+            "a"
+        );
+        assert_eq!(
+            client_b
+                .complete(req_b)
+                .await
+                .expect("tenant b succeeds")
+                .text,
+            "b"
+        );
     }
 }

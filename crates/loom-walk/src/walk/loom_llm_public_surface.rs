@@ -10,6 +10,9 @@
 //! The same walk pins the structured-output trait split: `LlmClient`
 //! owns the object-safe `complete_structured_raw` method, while the
 //! generic `complete_structured::<T>` method lives on `LlmClientExt`.
+//! It also pins the dyn-safe `emit_event` hook that lets
+//! `Conversation` forward observer driver events into a Client's sink
+//! chain.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -38,7 +41,13 @@ const REQUIRED: &[&str] = &[
     "ApiKey",
 ];
 
-const LLM_CLIENT_METHODS: &[&str] = &["schema", "supports", "complete", "complete_structured_raw"];
+const LLM_CLIENT_METHODS: &[&str] = &[
+    "schema",
+    "supports",
+    "emit_event",
+    "complete",
+    "complete_structured_raw",
+];
 
 const SRC_DIR: &str = "crates/loom-llm/src";
 

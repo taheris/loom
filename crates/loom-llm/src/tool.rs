@@ -180,6 +180,22 @@ mod tests {
         );
     }
 
+    /// The public `Tool` contract exposes name, description,
+    /// input_schema, and async invoke(args) -> ToolOutput through one
+    /// trait-object boundary.
+    #[test]
+    fn tool_trait_contract_methods_exist_and_invoke_returns_tool_output() {
+        let tool: Box<dyn Tool> = Box::new(SampleEchoTool);
+        assert_eq!(tool.name(), "echo");
+        assert!(tool.description().contains("Echo"));
+        assert_eq!(tool.input_schema()["required"], json!(["text"]));
+
+        let output = tokio_test::block_on(tool.invoke(json!({ "text": "contract" })))
+            .expect("invoke succeeds");
+        assert!(!output.is_error);
+        assert_eq!(output.content, json!({ "echo": "contract" }));
+    }
+
     /// `Tool` is dyn-compatible — concrete handlers compose into the
     /// conversation loop's `Vec<Box<dyn Tool>>` registry without
     /// per-type monomorphisation. The async `invoke` returns the
