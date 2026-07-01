@@ -730,7 +730,11 @@ fn review_renders_review_context_fields() -> Result<()> {
     assert!(out.contains("# Post-Epic Review"));
     assert!(out.contains("Base commit**: abc1234"));
     assert!(out.contains("Molecule**: lm-3hhwq"));
-    assert!(out.contains("git diff abc1234..HEAD"));
+    assert!(out.contains("For `--diff <range>` reviews"));
+    assert!(out.contains("usual range is `abc1234..HEAD`"));
+    assert!(out.contains("For `--tree` reviews"));
+    assert!(out.contains("do **not** use a base-to-HEAD diff or log as the review scope"));
+    assert!(!out.contains("**Run `git diff abc1234..HEAD`**"));
     assert!(out.contains("- lm-3hhwq.10: closed"));
 
     assert!(out.contains("## Deterministic-Verifier Sources"));

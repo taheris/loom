@@ -69,8 +69,9 @@ referenced by the annotation to read the per-criterion rubric.
 
 1. **Read the spec** at `{{ spec_path }}` thoroughly
 2. **Explore the codebase** — read implementation code, test files, `AGENTS.md`, and related specs as needed
-3. **Run `git diff {% match base_commit %}{% when Some with (commit) %}{{ commit }}{% when None %}<base>{% endmatch %}..HEAD`** to see all changes made during implementation
-4. **Run `git log {% match base_commit %}{% when Some with (commit) %}{{ commit }}{% when None %}<base>{% endmatch %}..HEAD --oneline`** to understand the commit history
+3. **Respect the dispatch scope** shown in the pinned context or command line:
+   - For `--diff <range>` reviews, run `git diff <range>` and `git log <range> --oneline` against the exact range the driver supplied. {% match base_commit %}{% when Some with (commit) %}For the current molecule context, the usual range is `{{ commit }}..HEAD` unless the driver pinned a different `--diff` range.{% when None %}Use the driver-pinned range rather than inventing one.{% endmatch %}
+   - For `--tree` reviews, do **not** use a base-to-HEAD diff or log as the review scope. The scope is every file in the workspace; use `git status --short`, `git ls-files`, and targeted reads/tests as needed.
 
 {% if lane.includes_rubric() %}## Review Dimensions
 

@@ -134,8 +134,9 @@ judge_live_path_coverage() { :; }
 
 1. **Read the spec** at `specs/harness.md` thoroughly
 2. **Explore the codebase** — read implementation code, test files, `AGENTS.md`, and related specs as needed
-3. **Run `git diff abc1234..HEAD`** to see all changes made during implementation
-4. **Run `git log abc1234..HEAD --oneline`** to understand the commit history
+3. **Respect the dispatch scope** shown in the pinned context or command line:
+   - For `--diff <range>` reviews, run `git diff <range>` and `git log <range> --oneline` against the exact range the driver supplied. For the current molecule context, the usual range is `abc1234..HEAD` unless the driver pinned a different `--diff` range.
+   - For `--tree` reviews, do **not** use a base-to-HEAD diff or log as the review scope. The scope is every file in the workspace; use `git status --short`, `git ls-files`, and targeted reads/tests as needed.
 
 ## Review Dimensions
 

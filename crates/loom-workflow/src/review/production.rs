@@ -170,6 +170,34 @@ struct BuiltReviewPrompt {
     key: String,
 }
 
+fn review_dispatch_scope_pin(scope: DispatchScope, range: Option<&str>) -> String {
+    match (scope, range) {
+        (DispatchScope::Tree, _) => concat!(
+            "Current dispatch scope: `--tree`. The input set is every file in the ",
+            "workspace; do not narrow review to a base-to-HEAD diff or log range.\n",
+        )
+        .to_owned(),
+        (DispatchScope::PerBead, Some(range)) => format!(
+            "Current dispatch scope: `--diff {range}`. The input set is \
+             `git diff {range} --name-only`; use that exact range for diff/log evidence.\n",
+        ),
+        (DispatchScope::PerBead, None) => concat!(
+            "Current dispatch scope: finite diff / per-bead. Use the driver-supplied ",
+            "diff range for diff/log evidence; do not infer tree scope.\n",
+        )
+        .to_owned(),
+        (DispatchScope::PushGate, Some(range)) => format!(
+            "Current dispatch scope: push-gate `{range}`. Use that push range for \
+             diff/log evidence.\n",
+        ),
+        (DispatchScope::PushGate, None) => concat!(
+            "Current dispatch scope: push-gate. Use the driver-supplied push range ",
+            "for diff/log evidence.\n",
+        )
+        .to_owned(),
+    }
+}
+
 impl<S, F, R: CommandRunner> ProductionReviewController<S, F, R>
 where
     S: Fn(SpawnConfig) -> F + Send + Sync,
@@ -460,7 +488,10 @@ where
         let skill_session = skill_plan.materialize(scratch_dir, &self.workspace)?;
         let prompt_scratchpad_path = container_workspace_path(&self.workspace, &scratchpad_path);
         let ctx = ReviewContext {
-            pinned_context: String::new(),
+            pinned_context: review_dispatch_scope_pin(
+                self.dispatch_scope,
+                self.push_range.as_deref(),
+            ),
             default_profile: default_profile_for_spec(&self.label),
             label: self.label.clone(),
             spec_path,
@@ -2587,6 +2618,70 @@ mod tests {
         assert!(
             prompt.contains("file and line range") || prompt.contains("file/line range"),
             "citation contract (file/line range) not described: {prompt}",
+        );
+    }
+
+    #[tokio::test]
+    async fn build_review_prompt_pins_dispatch_scope_without_reusing_diff_for_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+        let label = "alpha";
+        seed_empty_spec(workspace, label);
+
+        let diff_ctrl = ProductionReviewController::new(
+            no_beads_bd(),
+            SpecLabel::new(label),
+            PathBuf::from("/usr/bin/loom"),
+            workspace.to_path_buf(),
+            empty_state(workspace),
+            stub_manifest(workspace),
+            ProfileName::new("base"),
+            noop_spawn,
+        )
+        .with_push_range(Some("abc123..def456".to_owned()));
+        let diff_prompt = match diff_ctrl.build_review_prompt().await {
+            Ok(p) => p.prompt,
+            Err(ReviewError::Bd(_)) => return,
+            Err(e) => panic!("unexpected error: {e:?}"),
+        };
+        assert!(
+            diff_prompt.contains("Current dispatch scope: `--diff abc123..def456`"),
+            "diff prompt must pin the exact diff scope: {diff_prompt}",
+        );
+        assert!(
+            diff_prompt.contains("`git diff abc123..def456 --name-only`"),
+            "diff prompt must name the exact scope input set: {diff_prompt}",
+        );
+
+        let tree_ctrl = ProductionReviewController::new(
+            no_beads_bd(),
+            SpecLabel::new(label),
+            PathBuf::from("/usr/bin/loom"),
+            workspace.to_path_buf(),
+            empty_state(workspace),
+            stub_manifest(workspace),
+            ProfileName::new("base"),
+            noop_spawn,
+        )
+        .with_dispatch_scope(DispatchScope::Tree)
+        .with_push_range(Some("abc123..def456".to_owned()));
+        let tree_prompt = match tree_ctrl.build_review_prompt().await {
+            Ok(p) => p.prompt,
+            Err(ReviewError::Bd(_)) => return,
+            Err(e) => panic!("unexpected error: {e:?}"),
+        };
+        assert!(
+            tree_prompt.contains("Current dispatch scope: `--tree`")
+                && tree_prompt.contains("every file in the workspace"),
+            "tree prompt must pin whole-workspace scope: {tree_prompt}",
+        );
+        assert!(
+            tree_prompt.contains("do not narrow review to a base-to-HEAD diff or log range"),
+            "tree prompt must reject diff/log as scope: {tree_prompt}",
+        );
+        assert!(
+            !tree_prompt.contains("`git diff abc123..def456 --name-only`"),
+            "tree prompt must not reuse the diff range as its input set: {tree_prompt}",
         );
     }
 
