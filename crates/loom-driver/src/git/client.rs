@@ -2009,6 +2009,14 @@ fn ensure_test_prek_hooks(path: &Path) -> Result<PathBuf, GitError> {
     Ok(hooks)
 }
 
+const TEST_PRE_COMMIT_CONFIG: &str = r#"repos:
+  - repo: local
+    hooks:
+      - id: pre-push
+        entry: bin/pre-push-checks --hook-id pre-push --hook-entry 'true' -- true
+        stages: [pre-push]
+"#;
+
 fn init_bare_test_repo(path: &Path, branch: &str) -> Result<GitClient, GitError> {
     std::fs::create_dir_all(path)?;
     run_test_git(path, &["init", "-q", "-b", branch])?;
@@ -2020,7 +2028,11 @@ fn init_bare_test_repo(path: &Path, branch: &str) -> Result<GitClient, GitError>
     // `.loom/integration/` does not show as untracked in the
     // operator workspace's `git status`.
     std::fs::write(path.join(".gitignore"), ".loom/\n.wrix/\ntarget/\n")?;
-    run_test_git(path, &["add", "README.md", ".gitignore"])?;
+    std::fs::write(path.join(".pre-commit-config.yaml"), TEST_PRE_COMMIT_CONFIG)?;
+    run_test_git(
+        path,
+        &["add", "README.md", ".gitignore", ".pre-commit-config.yaml"],
+    )?;
     run_test_git(path, &["commit", "-q", "-m", "initial"])?;
     let origin_path = bare_origin_path(path);
     if let Some(parent) = origin_path.parent() {

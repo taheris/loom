@@ -25,6 +25,7 @@ pub mod gate_outcome;
 pub mod inputs;
 pub mod integrity;
 pub mod marker;
+pub mod pre_commit;
 pub mod runner;
 pub mod scope;
 
@@ -53,6 +54,10 @@ pub use integrity::{
 pub use marker::{
     MARKER_PATH, MarkerError, MarkerProof, MarkerValidationRequest, MintError, verify_marker,
     verify_marker_for_hook,
+};
+pub use pre_commit::{
+    ConfigError as PreCommitConfigError, pre_push_hook_coverage_from_config,
+    pre_push_hook_coverage_from_path,
 };
 pub use runner::{
     BuiltinParser, MatchedAnnotation, ParsedVerdict, RunnerError, RunnerGroup, RunnerKind,

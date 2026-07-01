@@ -30,6 +30,9 @@ pub enum LoopError {
     /// io operation failed during `loom loop`
     Io(#[from] std::io::Error),
 
+    /// pre-commit config parsing failed during `loom loop`
+    PreCommitConfig(#[from] loom_gate::PreCommitConfigError),
+
     /// profile-image manifest dispatch failed during `loom loop`
     Profile(#[from] ProfileError),
 

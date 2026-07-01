@@ -1090,7 +1090,9 @@ where
             .map(|d| d.as_millis())
             .unwrap_or(0);
         self.git.run_pre_push_chain().await?;
-        let config_digest = pre_commit_config_digest(&self.workspace)?;
+        let gate_workspace = self.git.loom_workspace();
+        let config_digest = pre_commit_config_digest(&gate_workspace)?;
+        let hook_coverage = loom_gate::pre_push_hook_coverage_from_config(&gate_workspace)?;
         if let Some(path) = review_log_path.as_deref() {
             append_gate_run_lifecycle_events(
                 path,
@@ -1099,7 +1101,7 @@ where
                     actual.tree_oid.to_string(),
                     config_digest.clone(),
                     path.to_path_buf(),
-                    pre_push_hook_coverage(),
+                    hook_coverage,
                 ),
             )?;
         }
@@ -1108,9 +1110,8 @@ where
             diff = %diff_range,
             "loom loop: molecule handoff — pre-push chain finished",
         );
-        let gate_workspace = self.git.loom_workspace();
         let review_output = Command::new(&self.loom_bin)
-            .current_dir(gate_workspace)
+            .current_dir(&gate_workspace)
             .env(REVIEW_PHASE_WHEN_ENV, phase_when_millis.to_string())
             .env(REVIEW_EMIT_STDOUT_ENV, "1")
             .env(REVIEW_SPEC_LABEL_ENV, self.label.as_str())
@@ -1324,27 +1325,6 @@ fn gate_log_root(logs_root: Option<&std::path::Path>, workspace: &std::path::Pat
         || workspace.join(".loom/logs/gate"),
         |root| root.join("gate"),
     )
-}
-
-fn pre_push_hook_coverage() -> Vec<loom_gate::HookCoverage> {
-    [
-        ("nix-flake-check", "skip-if-missing nix -- nix flake check"),
-        (
-            "cargo-clippy",
-            "cargo clippy --workspace --all-targets -- -D warnings",
-        ),
-        (
-            "loom-gate-verify-diff",
-            "loom gate verify --diff @{u}..HEAD",
-        ),
-        ("container-smoke", "skip-if-missing nix -- nix run .#test"),
-    ]
-    .into_iter()
-    .map(|(id, entry)| loom_gate::HookCoverage {
-        id: id.to_owned(),
-        entry: entry.to_owned(),
-    })
-    .collect()
 }
 
 fn pre_commit_config_digest(workspace: &std::path::Path) -> Result<String, LoopError> {

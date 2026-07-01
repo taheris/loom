@@ -12,8 +12,7 @@ use loom_driver::config::{LoomConfig, LoomConfigError};
 use loom_driver::git::{GitClient, GitError, MergeResult, head_tree_oid_sync};
 use loom_driver::identifier::BeadId;
 use loom_gate::{
-    GateRun, GateSuccess, HandoffEvidence, HookCoverage, MarkerProof,
-    append_gate_run_lifecycle_events,
+    GateRun, GateSuccess, HandoffEvidence, MarkerProof, append_gate_run_lifecycle_events,
 };
 use loom_protocol::gate::{ExitSignal, parse_exit_signal};
 use serde_json::json;
@@ -464,6 +463,8 @@ fn mint_marker(git: &GitClient, diff_range: &str, log_path: &Path) -> Result<(),
         .to_string();
     let config_digest =
         pre_commit_config_digest(&marker_workspace).map_err(|source| source.to_string())?;
+    let hook_coverage = loom_gate::pre_push_hook_coverage_from_config(&marker_workspace)
+        .map_err(|source| source.to_string())?;
     append_gate_run_lifecycle_events(
         log_path,
         &GateRun::successful_verify(
@@ -471,7 +472,7 @@ fn mint_marker(git: &GitClient, diff_range: &str, log_path: &Path) -> Result<(),
             tree.clone(),
             config_digest.clone(),
             log_path.to_path_buf(),
-            pre_push_hook_coverage(),
+            hook_coverage,
         ),
     )
     .map_err(|source| source.to_string())?;
@@ -500,27 +501,6 @@ fn remove_marker(workspace: &Path) -> Result<(), ApplyError> {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(ApplyError::Io { path, source }),
     }
-}
-
-fn pre_push_hook_coverage() -> Vec<HookCoverage> {
-    [
-        ("nix-flake-check", "skip-if-missing nix -- nix flake check"),
-        (
-            "cargo-clippy",
-            "cargo clippy --workspace --all-targets -- -D warnings",
-        ),
-        (
-            "loom-gate-verify-diff",
-            "loom gate verify --diff @{u}..HEAD",
-        ),
-        ("container-smoke", "skip-if-missing nix -- nix run .#test"),
-    ]
-    .into_iter()
-    .map(|(id, entry)| HookCoverage {
-        id: id.to_owned(),
-        entry: entry.to_owned(),
-    })
-    .collect()
 }
 
 fn pre_commit_config_digest(workspace: &Path) -> Result<String, std::io::Error> {
