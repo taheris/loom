@@ -783,6 +783,41 @@ mod tests {
         std::fs::set_permissions(&path, perm).expect("chmod");
     }
 
+    fn shell_single_quote(path: &Path) -> String {
+        let raw = path.display().to_string();
+        format!("'{}'", raw.replace("'", "'\\''"))
+    }
+
+    fn install_real_loom_delegate(bin_dir: &Path) {
+        let manifest = shell_single_quote(&repo_root().join("Cargo.toml"));
+        install_executable(
+            bin_dir,
+            "loom",
+            &format!(
+                "#!/usr/bin/env bash\n\
+                 set -euo pipefail\n\
+                 if [[ -n \"${{CARGO_BIN_EXE_loom:-}}\" ]]; then\n\
+                     exec \"${{CARGO_BIN_EXE_loom}}\" \"$@\"\n\
+                 fi\n\
+                 exec cargo run --quiet --manifest-path {manifest} -p loom --bin loom -- \"$@\"\n"
+            ),
+        );
+    }
+
+    fn install_sentinel(bin_dir: &Path, marker: &Path) {
+        let marker = shell_single_quote(marker);
+        install_executable(
+            bin_dir,
+            "sentinel",
+            &format!("#!/usr/bin/env bash\nset -euo pipefail\ntouch {marker}\n"),
+        );
+    }
+
+    fn commit_repo_pre_push_checks(workspace: &Path) {
+        install_repo_pre_push_checks(workspace);
+        loom_driver::git::commit_all_in(workspace, "add pre-push wrapper").expect("commit wrapper");
+    }
+
     fn install_repo_pre_push_checks(workspace: &Path) {
         let source = repo_root().join("bin/pre-push-checks");
         let dest = workspace.join("bin/pre-push-checks");
@@ -839,20 +874,17 @@ mod tests {
 
     #[test]
     fn pre_push_checks_short_circuits_only_on_covered_marker() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = init_test_workspace();
         let workspace = dir.path();
-        seed_marker(workspace);
+        commit_repo_pre_push_checks(workspace);
+        write_marker_at(workspace, &marker_for_workspace(workspace));
 
-        let bin_dir = workspace.join("bin");
-        install_executable(&bin_dir, "loom", "#!/bin/sh\nexit 0\n");
-        let sentinel_marker = workspace.join("sentinel.flag");
-        install_executable(
-            &bin_dir,
-            "sentinel",
-            &format!("#!/bin/sh\ntouch {}\nexit 0\n", sentinel_marker.display()),
-        );
+        let tools = tempfile::tempdir().expect("tools tempdir");
+        install_real_loom_delegate(tools.path());
+        let sentinel_marker = tools.path().join("sentinel.flag");
+        install_sentinel(tools.path(), &sentinel_marker);
 
-        let output = run_pre_push_checks(workspace, &bin_dir);
+        let output = run_pre_push_checks(workspace, tools.path());
         assert!(
             output.status.success(),
             "wrapper must exit 0 on valid marker. stdout={:?} stderr={:?}",
@@ -945,16 +977,12 @@ mod tests {
         let workspace = dir.path();
         seed_marker(workspace);
 
-        let bin_dir = workspace.join("bin");
-        install_executable(&bin_dir, "loom", "#!/bin/sh\nexit 1\n");
-        let sentinel_marker = workspace.join("sentinel.flag");
-        install_executable(
-            &bin_dir,
-            "sentinel",
-            &format!("#!/bin/sh\ntouch {}\nexit 0\n", sentinel_marker.display()),
-        );
+        let tools = tempfile::tempdir().expect("tools tempdir");
+        install_real_loom_delegate(tools.path());
+        let sentinel_marker = tools.path().join("sentinel.flag");
+        install_sentinel(tools.path(), &sentinel_marker);
 
-        let output = run_pre_push_checks(workspace, &bin_dir);
+        let output = run_pre_push_checks(workspace, tools.path());
         assert!(
             output.status.success(),
             "wrapper must propagate sentinel exit (0). stdout={:?} stderr={:?}",
@@ -978,6 +1006,7 @@ mod tests {
     fn mint_and_pre_push_checks_short_circuit_joint_path() {
         let dir = init_test_workspace();
         let workspace = dir.path();
+        commit_repo_pre_push_checks(workspace);
         let (_log, success) = good_gate_success(workspace);
         let clock = loom_driver::clock::SystemClock::new();
         MarkerProof::mint(success, workspace, &clock).expect("mint succeeds");
@@ -986,16 +1015,12 @@ mod tests {
             "mint must write to the canonical {MARKER_PATH}",
         );
 
-        let bin_dir = workspace.join("bin");
-        install_executable(&bin_dir, "loom", "#!/bin/sh\nexit 0\n");
-        let sentinel_marker = workspace.join("sentinel.flag");
-        install_executable(
-            &bin_dir,
-            "sentinel",
-            &format!("#!/bin/sh\ntouch {}\nexit 0\n", sentinel_marker.display()),
-        );
+        let tools = tempfile::tempdir().expect("tools tempdir");
+        install_real_loom_delegate(tools.path());
+        let sentinel_marker = tools.path().join("sentinel.flag");
+        install_sentinel(tools.path(), &sentinel_marker);
 
-        let output = run_pre_push_checks(workspace, &bin_dir);
+        let output = run_pre_push_checks(workspace, tools.path());
         assert!(
             output.status.success(),
             "wrapper must exit 0 after MarkerProof::mint. stdout={:?} stderr={:?}",

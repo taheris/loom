@@ -4,7 +4,7 @@ use std::path::Path;
 use super::util::{rel, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "pre_push_config_marker_wrapper_contract — every pre-push hook uses bin/pre-push-checks, and nix commands use skip-if-missing nix --";
+const RULE: &str = "pre_push_config_marker_wrapper_contract — first pre-push hook is nix flake check, every pre-push hook uses bin/pre-push-checks, --hook-entry matches the wrapped command, and nix commands use skip-if-missing nix --";
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Hook {
@@ -49,6 +49,9 @@ fn violations(path: &str, source: &str) -> Vec<String> {
         violations.push(format!("{path}:0 no pre-push hooks declared"));
         return violations;
     }
+    if let Some(message) = first_pre_push_hook_violation(pre_push_hooks[0]) {
+        violations.push(format!("{path}:{} {message}", pre_push_hooks[0].line));
+    }
     for hook in pre_push_hooks {
         let Some(entry) = hook.entry.as_deref() else {
             violations.push(format!(
@@ -71,6 +74,26 @@ fn violations(path: &str, source: &str) -> Vec<String> {
     violations
 }
 
+fn first_pre_push_hook_violation(hook: &Hook) -> Option<String> {
+    if hook.id != "nix-flake-check" {
+        return Some(format!(
+            "first pre-push hook is `{}`, expected `nix-flake-check` fast tier",
+            hook.id
+        ));
+    }
+    let entry = hook.entry.as_deref()?.trim();
+    let words = shlex::split(entry)?;
+    let command = wrapped_command_words(&words).unwrap_or(words.as_slice());
+    if command_runs_nix_flake_check(command) {
+        None
+    } else {
+        Some(format!(
+            "first pre-push hook `nix-flake-check` does not run `nix flake check`: {}",
+            command.join(" ")
+        ))
+    }
+}
+
 fn wrapper_violation(hook: &Hook, entry: &str) -> Option<String> {
     let entry = entry.trim();
     let Some(words) = shlex::split(entry) else {
@@ -85,31 +108,55 @@ fn wrapper_violation(hook: &Hook, entry: &str) -> Option<String> {
             hook.id
         ));
     }
-    if !has_arg_value(&words, "--hook-id", &hook.id) {
+    let Some(separator) = wrapper_separator_index(&words) else {
+        return Some(format!(
+            "pre-push hook `{}` does not separate wrapper args from the hook command with ` -- `: {entry}",
+            hook.id
+        ));
+    };
+    let wrapper_args = &words[..separator];
+    if !has_arg_value(wrapper_args, "--hook-id", &hook.id) {
         return Some(format!(
             "pre-push hook `{}` does not pass its own id to `--hook-id`: {entry}",
             hook.id
         ));
     }
-    if !words.iter().any(|word| word == "--hook-entry") {
+    let Some(hook_entry) = arg_value(wrapper_args, "--hook-entry") else {
         return Some(format!(
             "pre-push hook `{}` does not pass `--hook-entry`: {entry}",
             hook.id
         ));
-    }
-    if wrapped_command_words(&words).is_none() {
+    };
+    let Some(command_words) = command_after_separator(&words, separator) else {
         return Some(format!(
             "pre-push hook `{}` does not separate wrapper args from the hook command with ` -- `: {entry}",
             hook.id
+        ));
+    };
+    let Some(hook_entry_words) = shlex::split(hook_entry) else {
+        return Some(format!(
+            "pre-push hook `{}` `--hook-entry` is not parseable as shell words: {hook_entry}",
+            hook.id
+        ));
+    };
+    if hook_entry_words.as_slice() != command_words {
+        return Some(format!(
+            "pre-push hook `{}` `--hook-entry` does not match wrapped command after `--`: `{hook_entry}` != `{}`",
+            hook.id,
+            command_words.join(" ")
         ));
     }
     None
 }
 
-fn has_arg_value(words: &[String], arg: &str, expected: &str) -> bool {
+fn arg_value<'a>(words: &'a [String], arg: &str) -> Option<&'a str> {
     words
         .windows(2)
-        .any(|pair| pair[0] == arg && pair[1] == expected)
+        .find_map(|pair| (pair[0] == arg).then_some(pair[1].as_str()))
+}
+
+fn has_arg_value(words: &[String], arg: &str, expected: &str) -> bool {
+    arg_value(words, arg) == Some(expected)
 }
 
 fn wrapped_command(entry: &str) -> Option<String> {
@@ -122,14 +169,38 @@ fn wrapped_command_words(words: &[String]) -> Option<&[String]> {
     if words.first().map(String::as_str) != Some("bin/pre-push-checks") {
         return None;
     }
-    let index = words.iter().position(|word| word == "--")?;
-    let command = words.get((index + 1)..)?;
+    let separator = wrapper_separator_index(words)?;
+    command_after_separator(words, separator)
+}
+
+fn wrapper_separator_index(words: &[String]) -> Option<usize> {
+    words.iter().position(|word| word == "--")
+}
+
+fn command_after_separator(words: &[String], separator: usize) -> Option<&[String]> {
+    let command = words.get((separator + 1)..)?;
     (!command.is_empty()).then_some(command)
 }
 
 fn command_runs_nix(command: &str) -> bool {
     let command = command.trim();
     command.starts_with("nix ") || command.starts_with("skip-if-missing nix -- nix ")
+}
+
+fn command_runs_nix_flake_check(words: &[String]) -> bool {
+    command_starts_with(words, &["nix", "flake", "check"])
+        || command_starts_with(
+            words,
+            &["skip-if-missing", "nix", "--", "nix", "flake", "check"],
+        )
+}
+
+fn command_starts_with(words: &[String], prefix: &[&str]) -> bool {
+    words.len() >= prefix.len()
+        && words
+            .iter()
+            .zip(prefix.iter())
+            .all(|(word, expected)| word.as_str() == *expected)
 }
 
 fn parse_hooks(source: &str) -> Vec<Hook> {
@@ -218,6 +289,9 @@ repos:
 repos:
   - repo: local
     hooks:
+      - id: nix-flake-check
+        entry: bin/pre-push-checks --hook-id nix-flake-check --hook-entry 'skip-if-missing nix -- nix flake check' -- skip-if-missing nix -- nix flake check
+        stages: [pre-push]
       - id: cargo-clippy
         entry: cargo clippy --workspace --all-targets -- -D warnings
         stages:
@@ -234,6 +308,9 @@ repos:
 repos:
   - repo: local
     hooks:
+      - id: nix-flake-check
+        entry: bin/pre-push-checks --hook-id nix-flake-check --hook-entry 'skip-if-missing nix -- nix flake check' -- skip-if-missing nix -- nix flake check
+        stages: [pre-push]
       - id: cargo-clippy
         entry: cargo clippy --workspace --all-targets -- -D warnings
         stages: [pre-push]
@@ -245,11 +322,55 @@ repos:
     }
 
     #[test]
+    fn rejects_hook_entry_metadata_that_does_not_match_wrapped_command() {
+        let config = r#"
+repos:
+  - repo: local
+    hooks:
+      - id: nix-flake-check
+        entry: bin/pre-push-checks --hook-id nix-flake-check --hook-entry 'skip-if-missing nix -- nix flake check' -- skip-if-missing nix -- nix flake check
+        stages: [pre-push]
+      - id: cargo-clippy
+        entry: bin/pre-push-checks --hook-id cargo-clippy --hook-entry 'nix flake check' -- cargo clippy --workspace --all-targets -- -D warnings
+        stages: [pre-push]
+"#;
+        let got = violations(".pre-commit-config.yaml", config);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].contains("cargo-clippy"), "got: {got:?}");
+        assert!(
+            got[0].contains("does not match wrapped command"),
+            "got: {got:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_first_pre_push_hook_that_is_not_nix_flake_check() {
+        let config = r#"
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-clippy
+        entry: bin/pre-push-checks --hook-id cargo-clippy --hook-entry 'cargo clippy --workspace --all-targets -- -D warnings' -- cargo clippy --workspace --all-targets -- -D warnings
+        stages: [pre-push]
+      - id: nix-flake-check
+        entry: bin/pre-push-checks --hook-id nix-flake-check --hook-entry 'skip-if-missing nix -- nix flake check' -- skip-if-missing nix -- nix flake check
+        stages: [pre-push]
+"#;
+        let got = violations(".pre-commit-config.yaml", config);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].contains("first pre-push hook"), "got: {got:?}");
+        assert!(got[0].contains("nix-flake-check"), "got: {got:?}");
+    }
+
+    #[test]
     fn rejects_nix_command_without_skip_if_missing_wrapper() {
         let config = r#"
 repos:
   - repo: local
     hooks:
+      - id: nix-flake-check
+        entry: bin/pre-push-checks --hook-id nix-flake-check --hook-entry 'skip-if-missing nix -- nix flake check' -- skip-if-missing nix -- nix flake check
+        stages: [pre-push]
       - id: container-smoke
         entry: bin/pre-push-checks --hook-id container-smoke --hook-entry 'nix run .#test' -- nix run .#test
         stages: [pre-push]
