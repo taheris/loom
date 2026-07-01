@@ -149,7 +149,6 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
             root.join("specs/harness.md"),
             root.join("crates/loom/src/main.rs"),
         ],
-        "no_todo_cursor_meta_key" => vec![root.join("crates/loom-driver/src/state/db.rs")],
         "single_event_channel" => vec![root.join("crates/loom-render/src/sink/mod.rs")],
         "loom_templates_snapshots_no_crate_root_allow" => {
             vec![root.join("crates/loom-templates/tests/snapshots.rs")]

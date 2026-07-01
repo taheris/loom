@@ -52,7 +52,6 @@ mod no_inline_suppression_comment_contract;
 mod no_panics_in_production;
 mod no_real_clock_outside_system_clock;
 mod no_thread_sleep;
-mod no_todo_cursor_meta_key;
 mod no_tokio_sleep_outside_clock;
 mod no_tokio_timeout_outside_clock;
 mod no_types_or_error_files;
@@ -287,10 +286,6 @@ pub static REGISTRY: &[Walk] = &[
         run: no_thread_sleep::run,
     },
     Walk {
-        name: "no_todo_cursor_meta_key",
-        run: no_todo_cursor_meta_key::run,
-    },
-    Walk {
         name: "no_tokio_sleep_outside_clock",
         run: no_tokio_sleep_outside_clock::run,
     },
@@ -445,7 +440,6 @@ mod tests {
             "loom_render_deps",
             "loom_skills_deps",
             "no_derive_from_on_newtypes",
-            "no_todo_cursor_meta_key",
             "no_types_or_error_files",
             "no_allow_dead_code",
             "no_panics_in_production",

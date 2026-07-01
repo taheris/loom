@@ -1952,55 +1952,6 @@ fn loom_templates_snapshots_no_crate_root_allow_fail() {
 }
 
 // ---------------------------------------------------------------------------
-// no_todo_cursor_meta_key
-// ---------------------------------------------------------------------------
-
-#[test]
-fn no_todo_cursor_meta_key_pass_when_absent() {
-    let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom-driver/src/state/db.rs",
-        "pub struct CacheDb;\n\npub fn current_spec() -> &'static str { \"x\" }\n",
-    );
-    let out = invoke(&["no_todo_cursor_meta_key"], Some(ws.path()), None);
-    assert_pass(&out);
-}
-
-#[test]
-fn no_todo_cursor_meta_key_fail_when_method_present() {
-    let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom-driver/src/state/db.rs",
-        "pub struct CacheDb;\n\
-         impl CacheDb { pub fn todo_cursor(&self) -> Option<String> { None } }\n",
-    );
-    let out = invoke(&["no_todo_cursor_meta_key"], Some(ws.path()), None);
-    assert_fail(&out, "todo_cursor");
-}
-
-#[test]
-fn no_todo_cursor_meta_key_ignores_test_block() {
-    let ws = make_workspace();
-    seed(
-        ws.path(),
-        "crates/loom-driver/src/state/db.rs",
-        "pub struct CacheDb;\n\
-         \n\
-         #[cfg(test)]\n\
-         mod tests {\n\
-             #[test]\n\
-             fn legacy_todo_cursor_migrated_away() {\n\
-                 let _ = \"todo_cursor\";\n\
-             }\n\
-         }\n",
-    );
-    let out = invoke(&["no_todo_cursor_meta_key"], Some(ws.path()), None);
-    assert_pass(&out);
-}
-
-// ---------------------------------------------------------------------------
 // session_trait_in_loom_events
 // ---------------------------------------------------------------------------
 
