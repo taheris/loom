@@ -1,11 +1,10 @@
 # Exposes user-facing `nix run` entry points:
 #
-# - `.#test`: container smoke harness.
+# - `.#test`: full required suite for pre-push and manual verification.
+# - `.#smoke`: container smoke harness.
 #   Linux runs `tests/run-tests.sh`; Darwin returns a no-op stub.
 # - `.#test-sandbox`: boots `.#sandbox` and checks the selected Pi runtime.
 #   Skips with exit 77 when the platform cannot run the container runtime.
-# - `.#test-ci`: slow CI-only suite split out of the interactive pre-push
-#   path (full workspace nextest + system/container verifiers).
 # - `.#fuzz-loom`: on-demand `cargo fuzz` driver.
 #   This is intentionally not gated by `nix flake check`.
 #
@@ -29,8 +28,8 @@ _:
 
       smokeApp = testsDeriv.loom-smoke;
 
-      testCiApp = pkgs.writeShellApplication {
-        name = "test-ci";
+      testApp = pkgs.writeShellApplication {
+        name = "test";
         runtimeInputs = [
           pkgs.cargo-nextest
           pkgs.git
@@ -89,7 +88,12 @@ _:
       apps = {
         test = {
           type = "app";
-          program = "${smokeApp}/bin/test";
+          program = "${testApp}/bin/test";
+          meta.description = "Full required suite: flake check, clippy, full nextest, and system/container verifiers";
+        };
+        smoke = {
+          type = "app";
+          program = "${smokeApp}/bin/smoke";
           meta.description = "Container smoke harness (Linux only; Darwin stub)";
         };
         test-sandbox = {
@@ -97,11 +101,7 @@ _:
           program = "${sandboxSmokeApp}/bin/test-sandbox";
           meta.description = "Runtime check that the selected Pi agent responds to --version inside the sandbox image (Linux only; Darwin stub)";
         };
-        test-ci = {
-          type = "app";
-          program = "${testCiApp}/bin/test-ci";
-          meta.description = "Slow CI-only suite: flake check, clippy, full nextest, and system/container verifiers";
-        };
+
         fuzz-loom = {
           type = "app";
           program = "${fuzzApp}/bin/fuzz-loom";

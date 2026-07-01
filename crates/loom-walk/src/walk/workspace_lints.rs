@@ -2,8 +2,8 @@
 //! `[workspace.lints.rust]` and `[workspace.lints.clippy]`; every member
 //! crate declares `[lints] workspace = true` so the workspace policy
 //! applies uniformly. The criterion is the inheritance shape — `cargo
-//! clippy --workspace` covers the lint *outcome* via the `loom-clippy`
-//! flake check.
+//! clippy --workspace` covers the lint *outcome* via the full `nix run
+//! .#test` suite.
 
 use std::path::Path;
 

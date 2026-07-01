@@ -371,13 +371,13 @@ repos:
       - id: nix-flake-check
         entry: bin/pre-push-checks --hook-id nix-flake-check --hook-entry 'skip-if-missing nix -- nix flake check' -- skip-if-missing nix -- nix flake check
         stages: [pre-push]
-      - id: container-smoke
-        entry: bin/pre-push-checks --hook-id container-smoke --hook-entry 'nix run .#test' -- nix run .#test
+      - id: full-test-suite
+        entry: bin/pre-push-checks --hook-id full-test-suite --hook-entry 'nix run .#test' -- nix run .#test
         stages: [pre-push]
 "#;
         let got = violations(".pre-commit-config.yaml", config);
         assert_eq!(got.len(), 1);
-        assert!(got[0].contains("container-smoke"), "got: {got:?}");
+        assert!(got[0].contains("full-test-suite"), "got: {got:?}");
         assert!(got[0].contains("skip-if-missing nix --"), "got: {got:?}");
     }
 }

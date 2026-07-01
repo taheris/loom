@@ -21,9 +21,7 @@ _:
       inherit (loom)
         bin
         cargoArtifacts
-        clippy
         craneLib
-        nextest
         stagedSrc
         ;
 
@@ -126,8 +124,6 @@ _:
     in
     {
       checks = {
-        loom-clippy = clippy;
-        loom-nextest = nextest;
         inherit
           loom-gate-check
           profile-manifest-keeps-runtime-path-context

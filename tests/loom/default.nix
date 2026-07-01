@@ -7,13 +7,13 @@
 #               tiers run inside the Nix build sandbox. The `[system]`
 #               tier is excluded because its verifiers shell out to
 #               `nix run` / `podman`, neither of which is available
-#               under `nix flake check`.
+#               inside the Nix build sandbox.
 #
 #   loom-smoke — Linux-only `writeShellApplication` wrapping the
 #               container smoke harness (`tests/run-tests.sh`). On
 #               Darwin a stub script exits 0 with the documented
 #               "container smoke not available on Darwin" message so
-#               `nix run .#test` is a no-op rather than an error.
+#               `nix run .#smoke` is a no-op rather than an error.
 #
 # Spec: specs/tests.md § Nix Integration / Cross-platform / CI integration.
 { pkgs, loomPackage, ... }:
@@ -64,7 +64,7 @@ let
   };
 
   smokeApp = pkgs.writeShellApplication {
-    name = "test";
+    name = "smoke";
     runtimeInputs = [
       bin
       pkgs.podman
@@ -75,7 +75,7 @@ let
   };
 
   darwinStub = pkgs.writeShellApplication {
-    name = "test";
+    name = "smoke";
     text = ''
       echo "container smoke not available on Darwin"
       exit 0

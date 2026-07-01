@@ -1,9 +1,9 @@
 # tests/default.nix
 #
 # Aggregates the derivations produced by tests/loom/default.nix and
-# groups them under `rustChecks` for the flake's `checks.<system>` set.
+# groups them under `rustChecks` for consumers that want the derivation.
 # `loom-tests` is the `loom gate verify` derivation; the container smoke
-# is exposed separately as a `nix run .#test` app, not a flake check.
+# is exposed separately as a `nix run .#smoke` app, not a flake check.
 #
 # Spec: specs/tests.md § Nix Integration / CI integration.
 { pkgs, loomPackage, ... }:

@@ -10,7 +10,8 @@ backend over `loom-llm`).
 ```bash
 nix build              # Build the loom binary
 nix run -- --help      # CLI overview
-nix flake check        # Clippy + nextest
+nix flake check        # Fast checks
+nix run .#test         # Full suite
 ```
 
 Inside `nix develop`, the pinned Rust toolchain (`rust-toolchain.toml`),

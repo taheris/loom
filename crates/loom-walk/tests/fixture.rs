@@ -4005,7 +4005,7 @@ fn audit_makes_no_bd_writes_outside_mint_module_ignores_doc_mentions() {
 }
 
 // ---------------------------------------------------------------------------
-// workspace_compile_checks_exposed_as_flake_checks (harness/tests Nix integration)
+// workspace_compile_checks_are_full_test_app_only (harness/tests Nix integration)
 // ---------------------------------------------------------------------------
 
 fn seed_workspace_compile_checks_fixture(root: &Path) {
@@ -4014,15 +4014,33 @@ fn seed_workspace_compile_checks_fixture(root: &Path) {
         "nix/flake/checks.nix",
         r#"_:
 {
-  perSystem = { loom, ... }:
+  perSystem = { pkgs, ... }: {
+    checks = {
+      loom-gate-check = pkgs.runCommand "loom-gate-check" { } "touch $out";
+    };
+  };
+}
+"#,
+    );
+    seed(
+        root,
+        "nix/flake/apps.nix",
+        r#"_:
+{
+  perSystem = { pkgs, loom, ... }:
     let
-      inherit (loom) clippy nextest;
+      testApp = pkgs.writeShellApplication {
+        name = "test";
+        text = ''
+          nix flake check --no-warn-dirty
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo nextest run --workspace
+          ${loom.bin}/bin/loom gate system --tree
+        '';
+      };
     in
     {
-      checks = {
-        loom-clippy = clippy;
-        loom-nextest = nextest;
-      };
+      apps.test.program = "${testApp}/bin/test";
     };
 }
 "#,
@@ -4062,11 +4080,11 @@ in
 }
 
 #[test]
-fn workspace_compile_checks_exposed_as_flake_checks_pass() {
+fn workspace_compile_checks_are_full_test_app_only_pass() {
     let ws = make_workspace();
     seed_workspace_compile_checks_fixture(ws.path());
     let out = invoke(
-        &["workspace_compile_checks_exposed_as_flake_checks"],
+        &["workspace_compile_checks_are_full_test_app_only"],
         Some(ws.path()),
         None,
     );
@@ -4074,7 +4092,7 @@ fn workspace_compile_checks_exposed_as_flake_checks_pass() {
 }
 
 #[test]
-fn workspace_compile_checks_exposed_as_flake_checks_fail_when_nextest_check_absent() {
+fn workspace_compile_checks_are_full_test_app_only_fail_when_flake_check_exposes_clippy() {
     let ws = make_workspace();
     seed_workspace_compile_checks_fixture(ws.path());
     seed(
@@ -4084,7 +4102,7 @@ fn workspace_compile_checks_exposed_as_flake_checks_fail_when_nextest_check_abse
 {
   perSystem = { loom, ... }:
     let
-      inherit (loom) clippy nextest;
+      inherit (loom) clippy;
     in
     {
       checks = {
@@ -4095,45 +4113,85 @@ fn workspace_compile_checks_exposed_as_flake_checks_fail_when_nextest_check_abse
 "#,
     );
     let out = invoke(
-        &["workspace_compile_checks_exposed_as_flake_checks"],
+        &["workspace_compile_checks_are_full_test_app_only"],
         Some(ws.path()),
         None,
     );
-    assert_fail(&out, "checks.loom-nextest");
+    assert_fail(&out, "workspace compile surface");
 }
 
 #[test]
-fn workspace_compile_checks_exposed_as_flake_checks_fail_when_check_uses_ad_hoc_derivation() {
+fn workspace_compile_checks_are_full_test_app_only_fail_when_full_app_omits_nextest() {
     let ws = make_workspace();
     seed_workspace_compile_checks_fixture(ws.path());
     seed(
         ws.path(),
-        "nix/flake/checks.nix",
+        "nix/flake/apps.nix",
         r#"_:
 {
-  perSystem = { pkgs, loom, ... }:
+  perSystem = { pkgs, ... }:
     let
-      inherit (loom) nextest;
+      testApp = pkgs.writeShellApplication {
+        name = "test";
+        text = ''
+          nix flake check --no-warn-dirty
+          cargo clippy --workspace --all-targets -- -D warnings
+          loom gate system --tree
+        '';
+      };
     in
     {
-      checks = {
-        loom-clippy = pkgs.runCommand "loom-clippy" { } "touch $out";
-        loom-nextest = nextest;
-      };
+      apps.test.program = "${testApp}/bin/test";
     };
 }
 "#,
     );
     let out = invoke(
-        &["workspace_compile_checks_exposed_as_flake_checks"],
+        &["workspace_compile_checks_are_full_test_app_only"],
         Some(ws.path()),
         None,
     );
-    assert_fail(&out, "checks.loom-clippy");
+    assert_fail(&out, "full nextest");
 }
 
 #[test]
-fn workspace_compile_checks_exposed_as_flake_checks_fail_without_shared_cargo_artifacts() {
+fn workspace_compile_checks_are_full_test_app_only_fail_when_test_ci_app_remains() {
+    let ws = make_workspace();
+    seed_workspace_compile_checks_fixture(ws.path());
+    seed(
+        ws.path(),
+        "nix/flake/apps.nix",
+        r#"_:
+{
+  perSystem = { pkgs, ... }:
+    let
+      testApp = pkgs.writeShellApplication {
+        name = "test";
+        text = ''
+          nix flake check --no-warn-dirty
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo nextest run --workspace
+          loom gate system --tree
+        '';
+      };
+    in
+    {
+      apps.test.program = "${testApp}/bin/test";
+      apps.test-ci.program = "${testApp}/bin/test";
+    };
+}
+"#,
+    );
+    let out = invoke(
+        &["workspace_compile_checks_are_full_test_app_only"],
+        Some(ws.path()),
+        None,
+    );
+    assert_fail(&out, "test-ci");
+}
+
+#[test]
+fn workspace_compile_checks_are_full_test_app_only_fail_without_shared_cargo_artifacts() {
     let ws = make_workspace();
     seed_workspace_compile_checks_fixture(ws.path());
     seed(
@@ -4169,7 +4227,7 @@ in
 "#,
     );
     let out = invoke(
-        &["workspace_compile_checks_exposed_as_flake_checks"],
+        &["workspace_compile_checks_are_full_test_app_only"],
         Some(ws.path()),
         None,
     );

@@ -73,7 +73,7 @@ mod todo_contexts_carry_criterion_status;
 mod todo_template_uses_driver_created_work_epic;
 mod tune_surface_conformance;
 mod util;
-mod workspace_compile_checks_exposed_as_flake_checks;
+mod workspace_compile_checks_are_full_test_app_only;
 mod workspace_deps_pinned;
 mod workspace_edition;
 mod workspace_lints;
@@ -366,8 +366,8 @@ pub static REGISTRY: &[Walk] = &[
         run: tune_surface_conformance::run,
     },
     Walk {
-        name: "workspace_compile_checks_exposed_as_flake_checks",
-        run: workspace_compile_checks_exposed_as_flake_checks::run,
+        name: "workspace_compile_checks_are_full_test_app_only",
+        run: workspace_compile_checks_are_full_test_app_only::run,
     },
     Walk {
         name: "workspace_deps_pinned",
@@ -473,7 +473,7 @@ mod tests {
             "no_tokio_timeout_outside_clock",
             "no_real_clock_outside_system_clock",
             "renderer_no_insta_dependency",
-            "workspace_compile_checks_exposed_as_flake_checks",
+            "workspace_compile_checks_are_full_test_app_only",
             "workspace_deps_pinned",
             "workspace_edition",
             "workspace_lints",

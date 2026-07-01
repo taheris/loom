@@ -2702,7 +2702,7 @@ Criteria.
       invoking podman with `image_ref` as the ref; the selected ProfileConfig
       image digest lets wrix skip reloading bytes if the same content already
       exists in the local image store
-  [system](nix run .#test)
+  [system](nix run .#smoke)
 - Per-bead profile/runtime selection: two beads with different profile
       labels or backend runtimes result in `wrix spawn` invocations with
       the matching `image_ref`, `image_source`, `image_source_kind`, and
@@ -3893,10 +3893,11 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
   [system](nix build .#loom)
 - Loom binary is available in the devShell
   [system](nix develop -c loom --version)
-- `cargo clippy --workspace` and `cargo test --workspace` are
-      covered by the `loom-clippy` and `loom-nextest` flake checks
-      with a shared cargoArtifacts cache
-  [check](cargo run -p loom-walk -- workspace_compile_checks_exposed_as_flake_checks)
+- `cargo clippy --workspace` and full workspace nextest are covered by
+      `nix run .#test`, while fast flake checks omit those workspace
+      compile surfaces and the workspace derivations retain a shared
+      cargoArtifacts cache
+  [check](cargo run -p loom-walk -- workspace_compile_checks_are_full_test_app_only)
 
 ## Requirements
 
@@ -4273,9 +4274,10 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
    `RequestId` for protocol identifiers. No bare `String` for typed IDs.
    `AgentRuntime` is an enum (`Pi`, `Claude`, `Direct`), not a newtype.
 3. **Nix integration** — built via the wrix Rust package builder.
-   `packages.loom` consumes `.bin` so devshell rebuilds skip the clippy/nextest
-   passes; those land as separate `loom-clippy` / `loom-nextest` entries in
-   `nix flake check`. Binary is included in the devShell.
+   `packages.loom` consumes `.bin` so devshell rebuilds skip the
+   clippy/nextest passes; those land in the explicit `nix run .#test`
+   full-suite app rather than the fast `nix flake check` set. Binary is
+   included in the devShell.
 
 ## Out of Scope
 

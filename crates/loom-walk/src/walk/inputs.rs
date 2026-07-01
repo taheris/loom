@@ -158,7 +158,8 @@ pub fn inputs_for(name: &str, root: &Path) -> Vec<PathBuf> {
             vec![root.join("crates/loom-templates/tests/snapshots.rs")]
         }
         "loom_gate_check_derivation_exists" => vec![root.join("nix/flake/checks.nix")],
-        "workspace_compile_checks_exposed_as_flake_checks" => vec![
+        "workspace_compile_checks_are_full_test_app_only" => vec![
+            root.join("nix/flake/apps.nix"),
             root.join("nix/flake/checks.nix"),
             root.join("nix/workspace.nix"),
         ],

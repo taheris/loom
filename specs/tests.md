@@ -544,30 +544,29 @@ in
     '';
   };
 
-  # Container smoke — invoked via `nix run .#test`. Excluded from
+  # Container smoke — invoked via `nix run .#smoke`. Excluded from
   # `flake check` because it needs podman at runtime. Annotated as
-  # [system](nix run .#test) on its acceptance criterion.
+  # [system](nix run .#smoke) on its acceptance criterion.
   loom-smoke = pkgs.writeShellApplication {
-    name = "test";
+    name = "smoke";
     runtimeInputs = [ loom bd pkgs.podman pkgs.jq ];
     text = builtins.readFile ./run-tests.sh;
   };
 }
 ```
 
-`loomTests` is exposed via `tests/default.nix` (as
-`loom-tests = loomDeriv.loomTests` under `rustChecks`, joining the flake
-`checks` set) and lifted to `packages.loom-tests` in
-`nix/flake/tests.nix`. It runs alongside `loom-nextest` (the bare
-`cargo nextest run` derivation): the gate-driven variant batches the
-`[test]`-annotated targets and runs the `[check]` walks across every
-spec under `specs/`, while `loom-nextest` continues to cover every
-workspace test as a wide safety net. Grep-tier `[check]` annotations
-across specs use paths relative to the staged-source root (which mirrors
-the `loom/` workspace flattened to `$out/` plus host files like
-`lib/sandbox/linux/entrypoint.sh` mirrored under their host paths), so
-the explicit tier commands run at tree scope with no `--spec` filter.
-`loom-smoke` is exposed as an app on Linux only.
+`loomTests` is exposed via `tests/default.nix` and lifted to
+`packages.loom-tests` in `nix/flake/tests.nix`; it is not part of the
+flake `checks` set. The fast `nix flake check` surface stays limited to
+non-workspace-compile derivations. The full required suite is the
+`nix run .#test` app in `nix/flake/apps.nix`: it runs the fast flake
+tier, workspace clippy, full workspace nextest, and `loom gate system
+--tree`. Grep-tier `[check]` annotations across specs use paths relative
+to the staged-source root (which mirrors the `loom/` workspace flattened
+to `$out/` plus host files like `lib/sandbox/linux/entrypoint.sh`
+mirrored under their host paths), so the explicit tier commands run at
+tree scope with no `--spec` filter. `loom-smoke` is exposed as
+`nix run .#smoke` on Linux only.
 
 ## Success Criteria
 
@@ -665,11 +664,11 @@ in Functional #4.
 
 ### Container smoke
 
-- `nix run .#test` spawns a real podman container, unsets the
+- `nix run .#smoke` spawns a real podman container, unsets the
       parent-shell `WRIX_AGENT`, runs `loom loop <bead-id>` against a
       Pi-backed bead with child env `WRIX_AGENT=pi` and
       `MOCK_PI_SCENARIO=happy-path`, exits 0 with the bead closed
-  [system](nix run .#test)
+  [system](nix run .#smoke)
 
 ### Style enforcement
 
@@ -682,9 +681,10 @@ in Functional #4.
 **Outcome** — these tests check that the *codebase complies* with
 the rules:
 
-- `cargo clippy --workspace` is covered by the `loom-clippy` flake
-      check with a shared cargoArtifacts cache
-  [check](cargo run -p loom-walk -- workspace_compile_checks_exposed_as_flake_checks)
+- `cargo clippy --workspace` and full workspace nextest are covered by
+      the `nix run .#test` full-suite app, while `nix flake check`
+      omits them from the fast checks set
+  [check](cargo run -p loom-walk -- workspace_compile_checks_are_full_test_app_only)
 - No `derive(From)` / `derive(Into)` on tuple-struct newtypes
   [check](cargo run -p loom-walk -- no_derive_from_on_newtypes)
 - No `crates/*/src/{types,error}.rs` files at crate roots
@@ -754,26 +754,28 @@ the rules:
 
 ### Cross-platform
 
-- `flake.nix` declares `tests` under `checks.<system>` for
+- `loom-tests` remains buildable as a package for
       `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, `aarch64-darwin`
-  [check](grep -q 'loomTests = craneLib.mkCargoDerivation' tests/loom/default.nix)
-- `nix run .#test` is exposed only on Linux systems
+  [check](grep -q 'packages.loom-tests' nix/flake/tests.nix)
+- `nix run .#smoke` selects the real podman smoke implementation only
+      on Linux systems
   [check](grep -q 'isLinux' tests/loom/default.nix)
-- `nix run .#test` on Darwin exits 0 with a clear "not
+- `nix run .#smoke` on Darwin exits 0 with a clear "not
       available on Darwin" message
   [check](grep -q 'container smoke not available on Darwin' tests/loom/default.nix)
 
 ### CI integration
 
 - `tests` derivation is exposed for `nix build` and invokes explicit
-      `loom gate check --tree` / `loom gate test --tree` tier commands
-      (batching `cargo nextest run` for `[test]` and dispatching
-      per-annotation subprocesses for `[check]`); it joins the flake
-      `checks` set under `rustChecks`
-  [check](grep -q 'loom-tests = loomDeriv.loomTests' tests/default.nix)
-- `nix run .#test` exists as a `writeShellApplication` exposed
-      on Linux platforms
-  [check](grep -q 'name = "test"' tests/loom/default.nix)
+      deterministic gate tiers (batching `cargo nextest run` for
+      `[test]` and dispatching per-annotation subprocesses for `[check]`);
+      it is not part of the flake `checks` set
+  [check](grep -q 'packages.loom-tests' nix/flake/tests.nix)
+- `nix run .#test` exists as the full required suite app
+  [check](grep -q 'name = "test"' nix/flake/apps.nix)
+- `nix run .#smoke` exists as a `writeShellApplication` with a Linux
+      implementation and Darwin stub
+  [check](grep -q 'name = "smoke"' tests/loom/default.nix)
 - `nix run .#fuzz-loom` exists for on-demand `cargo fuzz` runs
       (not gated by `nix flake check`)
   [check](grep -q 'name = "fuzz-loom"' nix/flake/apps.nix)
@@ -803,7 +805,7 @@ the rules:
      the bead closes. Validates host↔container plumbing
      (entrypoint.sh, bind mounts, `WRIX_AGENT` branching, container
      teardown) — *not* protocol depth, which the integration level
-     already covers. Annotated `[system](nix run .#test)`; run
+     already covers. Annotated `[system](nix run .#smoke)`; run
      via `loom gate system`. Linux-only (no podman in Darwin CI).
 
 2. **Mock agent processes** — process-level fixtures driven over real pipes
@@ -1198,23 +1200,25 @@ the rules:
    smoke (single scenario) gets its own pre-seeded `.beads/` snapshot
    in a tempdir, fully isolated from any concurrent peers running
    against the workspace.
-5. **CI-friendly** — `nix flake check` runs the fast deterministic
-   derivations that stay inside the interactive push budget. Full
-   workspace nextest plus `[system]`/container verifiers live in the
-   CI-only `nix run .#test-ci` app. The container smoke remains exposed
-   as a separate `nix run .#test` app because it needs podman at runtime;
-   its acceptance criterion is annotated `[system](nix run .#test)`.
-   Pre-push runs clippy plus targeted `loom gate verify --diff`; scope-
-   derived gate policy excludes `[system]` from finite diff verification
-   while project-specific hook composition, stage budgets, and lock
-   semantics live in [pre-commit.md](pre-commit.md).
+5. **Push-friendly full suite** — `nix flake check` runs the fast
+   deterministic derivations that stay inside the interactive push
+   budget. Full workspace nextest plus `[system]`/container verifiers
+   live in the explicit `nix run .#test` full-suite app, which pre-push
+   invokes because this repository has no separate CI safety net. The
+   container smoke remains exposed as `nix run .#smoke` because it needs
+   podman at runtime; its acceptance criterion is annotated
+   `[system](nix run .#smoke)`. Pre-push also runs clippy plus targeted
+   `loom gate verify --diff`; scope-derived gate policy excludes
+   `[system]` from finite diff verification while project-specific hook
+   composition, stage budgets, and lock semantics live in
+   [pre-commit.md](pre-commit.md).
 6. **Real bd** — the container smoke runs against live `bd` (not a
    mock). The integration tier may mock `bd` where the test concern
    is orthogonal to the issue tracker, but the smoke validates that
    loom and `bd` interact correctly under realistic conditions.
 7. **Cross-platform** — unit and integration tests pass on Linux *and*
    Darwin (`x86_64`/`aarch64` for both). The container smoke is
-   Linux-only (podman dependency); on Darwin the `test` app exits
+   Linux-only (podman dependency); on Darwin the `smoke` app exits
    0 with a clear "container smoke not available on Darwin" message.
    Tests use `tempfile::tempdir` exclusively, never hardcoded
    `/tmp/...` paths — Nix's Darwin build sandbox doesn't grant access

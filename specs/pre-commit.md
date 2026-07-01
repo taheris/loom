@@ -30,13 +30,13 @@ shape the architecture:
 
 This spec resolves both: the agent's bead container inherits the prek
 hook chain so commits self-verify in-session; `nix flake check` is
-restructured to a sub-10s fast derivation; the workspace cargo dance
-runs as per-hook prek entries against the host's warm cache; and a
-content-addressed `MarkerProof` minted by the driver-side verdict gate
-lets prek's pre-push short-circuit redundant covered hooks on driver-
-loop integration pushes. Operator-manual pushes pay the targeted hook
-chain exactly once per push (~30–90s warm) against the host cache — a
-first-class, supported path, no `--no-verify` required.
+restructured to a sub-10s fast derivation; workspace cargo and system
+coverage run as explicit pre-push hooks outside the flake-check budget;
+and a content-addressed `MarkerProof` minted by the driver-side verdict
+gate lets prek's pre-push short-circuit redundant covered hooks on
+driver-loop integration pushes. Operator-manual pushes pay the full
+hook chain once per push against the host cache — a first-class,
+supported path, no `--no-verify` required.
 
 ## Architecture
 
@@ -45,7 +45,7 @@ first-class, supported path, no `--no-verify` required.
 | Stage      | Wall-time target          | Hooks |
 |------------|---------------------------|-------|
 | pre-commit | ~1s target; bounded by staged-file annotation selectivity | `repo: builtin` `trailing-whitespace`, `end-of-file-fixer` (excludes `.beads/config.yaml`), `check-merge-conflict`; `treefmt --fail-on-change`; `shell-reexec-explicit-interpreter`; `loom gate verify --files` (spec annotation lane only: affected `[check]` / `[test]` verifiers scoped to staged files per [gate.md § Verifier inputs](gate.md); `[system]` excluded) |
-| pre-push   | <10s fast + targeted slow  | repo-local `bin/pre-push-checks` wrapping `skip-if-missing nix -- nix flake check` (fast derivations; no-ops in the bead container with no `nix`; marker-aware like the rest of the push path); `bin/pre-push-checks` wrapping `cargo clippy --workspace --all-targets -- -D warnings` (file-gated on `\.rs$`); `bin/pre-push-checks` wrapping `loom gate verify --diff <push-range>` (scope-derived project pre-commit lane + affected `[check]` / `[test]`; `[system]` excluded unless added as an explicit hook); `bin/pre-push-checks` wrapping `skip-if-missing nix -- nix run .#test` (`container-smoke`; gated on `^crates/[^/]+/tests/properties\.rs$`; nested wrappers compose) |
+| pre-push   | <10s fast tier + full required suite | repo-local `bin/pre-push-checks` wrapping `skip-if-missing nix -- nix flake check` (fast derivations; no-ops in the bead container with no `nix`; marker-aware like the rest of the push path); `bin/pre-push-checks` wrapping `cargo clippy --workspace --all-targets -- -D warnings` (file-gated on `\.rs$`); `bin/pre-push-checks` wrapping `loom gate verify --diff <push-range>` (scope-derived project pre-commit lane + affected `[check]` / `[test]`; `[system]` excluded unless added as an explicit hook); `bin/pre-push-checks` wrapping `skip-if-missing nix -- nix run .#test` (full suite: fast flake tier + workspace clippy + full nextest + gate/system checks; always runs when not marker-covered) |
 
 There is no standalone `loom gate verify-marker` hook; the marker is
 consulted by the `pre-push-checks` wrapper per-hook (see *Marker
@@ -70,11 +70,11 @@ falls through and executes the hook. Coverage, not a fast/slow label,
 controls the shortcut.
 
 `nix flake check` is still budgeted as the fast derivation set. It runs
-unconditionally in CI — no CI marker shortcut, no file gating. On
-pre-push it is routed through repo-local `bin/pre-push-checks`, so a
-driver-minted marker may skip it only if the marker's `GateSuccess`
-proves the hook ran and passed. Its derivation chain contains checks
-that don't require
+as the first pre-push hook and inside the full-suite app, but it does
+not expose full workspace clippy or nextest checks. On pre-push it is
+routed through repo-local `bin/pre-push-checks`, so a driver-minted
+marker may skip it only if the marker's `GateSuccess` proves the hook
+ran and passed. Its derivation chain contains checks that don't require
 compiling the workspace under test: the treefmt-check derivation plus a
 `loom gate check` derivation that runs `[check]`-tier verifiers + the
 integrity gate + the surface-conformance audit. The loom binary itself
@@ -82,22 +82,26 @@ is precompiled (via crane's `cargoArtifacts` chain, reused), so the
 derivation's wall-clock budget is the checks themselves, not the build.
 Target: <10s warm when it runs.
 
-The targeted hooks are clippy + `loom gate verify --diff <push-range>`
-+ gated `container-smoke`. `loom gate verify --diff` uses the scope-
-derived contract in [gate.md](gate.md): project pre-commit hooks for
-the range, then affected `[check]` / `[test]` annotations; no
-`LOOM_VERIFY_TIERS` environment override exists. Each hook runs as an
-independent prek entry with its own `files:` regex where applicable so
-file-pattern selectivity composes with marker-aware fallthrough. On the
-driver-loop integration push the wrapper can short-circuit every covered
-hook in sub-second time; on operator-manual pushes (no marker present
-in the operator's clone) the wrapper falls through and the hooks run
-against the host's warm cache.
+The full required suite lives at `nix run .#test`, not in flake checks.
+That app runs the fast flake tier, `cargo clippy --workspace
+--all-targets -- -D warnings`, full workspace `cargo nextest run
+--workspace`, and `loom gate system --tree`. The current container smoke
+surface is the separate `nix run .#smoke` app owned by [tests.md](tests.md)
+and reached through the system tier. This repository has no separate CI
+safety net, so the full-suite app is a pre-push hook rather than a
+CI-only surface.
 
-CI is the immovable defence-in-depth: it invokes the same prek hooks
-plus the CI-only `nix run .#test-ci` slow suite and `loom gate review`
-in a nix-pure sandbox with no marker shortcut, so the per-PR cycle
-re-derives every check fresh.
+The targeted hooks are clippy + `loom gate verify --diff <push-range>`
++ `nix run .#test`. `loom gate verify --diff` uses the scope-derived
+contract in [gate.md](gate.md): project pre-commit hooks for the range,
+then affected `[check]` / `[test]` annotations; no `LOOM_VERIFY_TIERS`
+environment override exists. Each hook runs as an independent prek entry
+with its own `files:` regex where applicable so file-pattern selectivity
+composes with marker-aware fallthrough. On the driver-loop integration
+push the wrapper can short-circuit every covered hook in sub-second
+time; on operator-manual pushes (no marker present in the operator's
+clone) the wrapper falls through and the hooks run against the host's
+warm cache.
 
 ### Agent self-verify in the bead container
 
@@ -123,8 +127,8 @@ What this catches in-session:
   failures on the final self-check range
   (`loom gate verify --diff <bead-base>..HEAD`), including hooks such
   as clippy when the project config places them in the pre-commit lane.
-  Full workspace nextest and `[system]` verifiers are CI/standing or
-  explicit pre-push responsibilities.
+  Full workspace nextest and `[system]` verifiers are explicit
+  pre-push/full-suite or operator-invoked responsibilities.
 
 What it does *not* do: act as the trust source for the driver-side
 verdict gate. The agent's hook chain is **feedback only**. The driver
@@ -138,8 +142,8 @@ wrapped as `entry: skip-if-missing nix -- <command>` in
 `.pre-commit-config.yaml` (the wrapper is shipped from
 `wrix.prekHooks` per *Plumbing ownership split* below); inside the bead
 container the wrapper observes `nix` absent on `PATH` and exits 0 silently,
-no-op-ing the hook. Outside the bead container (host devShell + CI)
-the same wrapper finds `nix` and execs normally. Non-`nix`
+no-op-ing the hook. Outside the bead container (host devShell, pre-push, and full-suite
+contexts) the same wrapper finds `nix` and execs normally. Non-`nix`
 pre-commit hooks run uniformly across host and bead-container contexts.
 
 ### Marker integration
@@ -215,7 +219,8 @@ point of use.
 ### Source-of-truth files
 
 `.pre-commit-config.yaml` is the **single source of truth** for what
-runs at pre-commit / pre-push. It has four consumers:
+runs at pre-commit / pre-push. It has three mandatory consumers plus
+any external CI that opts into the same hook chain:
 
 1. The bead container's prek (pre-commit on agent commits, plus any
    manual pre-push the agent invokes, for feedback only).
@@ -224,8 +229,8 @@ runs at pre-commit / pre-push. It has four consumers:
 3. The driver's push gate, which invokes `prek run --hook-stage
    pre-push --from-ref <base> --to-ref <head>` programmatically against
    the loom workspace's actual push range.
-4. CI, which invokes the same prek-configured hooks plus `loom gate
-   review` in its sandbox.
+4. Optional external CI, when configured, which invokes the same
+   prek-configured hooks in its sandbox.
 
 This spec owns:
 
@@ -234,10 +239,11 @@ This spec owns:
 - `scripts/check-shell-reexec`
 
 `loom gate review` is the driver-only addition — not a prek hook. It
-runs at the verdict gate's molecule-completion audit and at CI; it
-does not run in the bead container (self-review is structurally weak)
-and does not run on operator-manual pushes (operators get review
-coverage from CI on the next PR).
+runs at the verdict gate's molecule-completion audit; it does not run in
+the bead container (self-review is structurally weak) and does not run on
+operator-manual pushes. Operator-manual pushes get deterministic pre-push
+coverage; review coverage requires the driver verdict gate or an
+external CI that invokes review.
 
 ### Plan-only commits and the integrity gate
 
@@ -308,16 +314,16 @@ declared as such.
   [check](grep -q '"bin/pre-push-checks"' nix/workspace.nix)
 - Hooks whose entry runs `nix` are wrapped with
   `skip-if-missing nix --` so they no-op in the bead container
-  (which has no `nix`) while running normally on the host devShell
-  and in CI
+  (which has no `nix`) while running normally on host devShell and
+  pre-push/full-suite contexts
   [check](cargo run -p loom-walk -- pre_push_config_marker_wrapper_contract)
 - The pre-push stage runs `loom gate verify --diff` against the pushed
   range; scope-derived gate policy excludes `[system]` by default and
   project-specific hook selection stays in `.pre-commit-config.yaml`
   [test?](pre_push_config_runs_verify_diff_for_pushed_range)
-- The pre-push stage includes a container-smoke hook gated on
-  `crates/*/tests/properties.rs`
-  [check](grep -q 'tests/properties.rs' .pre-commit-config.yaml)
+- The pre-push stage includes an always-run full-suite hook that invokes
+  `nix run .#test`
+  [check](grep -q 'full-test-suite' .pre-commit-config.yaml)
 
 ### Shell re-exec discipline
 
@@ -326,9 +332,10 @@ declared as such.
 
 ### Fast tier composition
 
-- `nix flake check` exposes workspace clippy and nextest through the
-  shared `cargoArtifacts` derivation rather than ad hoc per-check builds
-  [check](cargo run -p loom-walk -- workspace_compile_checks_exposed_as_flake_checks)
+- `nix flake check` omits workspace clippy and nextest from the flake
+  checks set, while `nix run .#test` covers workspace clippy, full
+  nextest, and system verifiers
+  [check](cargo run -p loom-walk -- workspace_compile_checks_are_full_test_app_only)
 - `loom gate check` is exposed as a flake-check derivation distinct
   from the targeted pre-push hooks
   [check](cargo run -p loom-walk -- loom_gate_check_derivation_exists)
@@ -389,7 +396,7 @@ declared as such.
    `shell-reexec-explicit-interpreter`, and `loom gate verify --files`
    against staged files. Pre-push runs per-hook entries (`nix flake
    check`, `cargo clippy`, `loom gate verify --diff <push-range>`,
-   `container-smoke`), each routed through the `pre-push-checks`
+   `full-test-suite`), each routed through the `pre-push-checks`
    wrapper. A valid marker short-circuits only hooks covered by typed
    `GateSuccess` evidence for the same tree/config/range; on operator-
    manual pushes (no marker present) the wrapper falls through and the
@@ -406,7 +413,8 @@ declared as such.
    canonical SOT for deterministic project hooks, consumed uniformly by:
    the bead container's pre-commit feedback, the operator's host prek,
    the driver-side push gate (`prek run --hook-stage pre-push --from-ref
-   <base> --to-ref <head>`), and CI.
+   <base> --to-ref <head>`), and any external CI that invokes the same
+   hook chain.
 
 4. **Agent self-verify.** The bead container has `core.hooksPath`
    configured to the canonical `wrix.prekHooks` path so prek fires on
@@ -433,12 +441,11 @@ declared as such.
    verifiers implement input queries; that is a verifier-contract issue,
    not a hook-bypass reason.
 
-2. **Sub-1-min driver-loop pre-push.** On the driver-loop integration
+2. **Marker-fast driver-loop pre-push.** On the driver-loop integration
    push, the marker short-circuits covered hooks so pre-push completes
    in marker-validation time for those hooks and normal runtime for any
-   uncovered hook. Operator-manual pushes pay the full hook chain
-   (~30–90s warm for targeted slow hooks), accepted as the rare-case
-   latency.
+   uncovered hook. Operator-manual pushes pay the full hook chain,
+   including the full-suite app, accepted as the rare-case latency.
 
 3. **Forgery-resistant trust.** The bead-container agent cannot mint
    a `MarkerProof`. The driver-side verdict gate is the sole mint
@@ -468,9 +475,9 @@ declared as such.
   `.pre-commit-config.yaml` shape is portable but documenting a
   manual-install path is not this spec's concern.
 
-- **Container smoke runner.** `nix run .#test` is owned by
-  [tests.md](tests.md); this spec only specifies when the hook fires
-  it.
+- **Full test and smoke runners.** `nix run .#test` and
+  `nix run .#smoke` are owned by [tests.md](tests.md); this spec only
+  specifies when the pre-push hook fires the full suite.
 
 - **Binary cache for `nix flake check`.** A wrix-side binary cache
   (cachix / attic / S3 substituter) would let CI and cold operator

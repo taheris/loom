@@ -1,31 +1,45 @@
-//! Flake-check exposure for workspace Rust compile coverage.
+//! Workspace compile coverage split between fast flake checks and the full test app.
 //!
-//! The `loom-clippy` and `loom-nextest` checks must be aliases of the
-//! workspace derivations built in `nix/workspace.nix`; those derivations
-//! share the `cargoArtifacts` dependency build so `nix flake check` does
-//! not compile the dependency graph twice.
+//! `nix flake check` stays on the fast derivation tier. Full workspace
+//! clippy and nextest remain shared cargo-artifact derivations, but the
+//! required user-facing surface for running them is `nix run .#test`.
 
 use super::util::{read_to_string, verdict_from, workspace_root};
 use super::{Verdict, WalkInput};
 
-const RULE: &str = "workspace_compile_checks_exposed_as_flake_checks — nix flake checks must expose loom-clippy and loom-nextest from shared cargoArtifacts workspace derivations";
+const RULE: &str = "workspace_compile_checks_are_full_test_app_only — nix flake checks omit workspace clippy/nextest; nix run .#test runs clippy, nextest, and system verifiers";
 
+const APPS_REL: &str = "nix/flake/apps.nix";
 const CHECKS_REL: &str = "nix/flake/checks.nix";
 const WORKSPACE_REL: &str = "nix/workspace.nix";
 
-struct RequiredCheck {
-    check_attr: &'static str,
-    workspace_attr: &'static str,
+const FORBIDDEN_CHECK_TOKENS: &[&str] = &["loom-clippy", "loom-nextest", "clippy", "nextest"];
+
+struct RequiredAppSnippet {
+    label: &'static str,
+    needle: &'static str,
 }
 
-const REQUIRED_CHECKS: &[RequiredCheck] = &[
-    RequiredCheck {
-        check_attr: "loom-clippy",
-        workspace_attr: "clippy",
+const REQUIRED_APP_SNIPPETS: &[RequiredAppSnippet] = &[
+    RequiredAppSnippet {
+        label: "test app",
+        needle: "name = \"test\";",
     },
-    RequiredCheck {
-        check_attr: "loom-nextest",
-        workspace_attr: "nextest",
+    RequiredAppSnippet {
+        label: "fast flake tier",
+        needle: "nix flake check --no-warn-dirty",
+    },
+    RequiredAppSnippet {
+        label: "workspace clippy",
+        needle: "cargo clippy --workspace --all-targets -- -D warnings",
+    },
+    RequiredAppSnippet {
+        label: "full nextest",
+        needle: "cargo nextest run --workspace",
+    },
+    RequiredAppSnippet {
+        label: "system verifiers",
+        needle: "loom gate system --tree",
     },
 ];
 
@@ -61,35 +75,56 @@ pub fn run(_input: &WalkInput) -> Verdict {
             evidence: format!("{WORKSPACE_REL}: file not readable\n{RULE}"),
         };
     };
+    let apps_path = root.join(APPS_REL);
+    let Some(apps_body) = read_to_string(&apps_path) else {
+        return Verdict {
+            pass: false,
+            evidence: format!("{APPS_REL}: file not readable\n{RULE}"),
+        };
+    };
 
     let mut violations = Vec::new();
-    for required in REQUIRED_CHECKS {
-        check_flake_binding(&checks_body, required, &mut violations);
-    }
+    check_flake_checks_omit_compile_surfaces(&checks_body, &mut violations);
     check_cargo_artifacts_source(&workspace_body, &mut violations);
     for required in REQUIRED_DERIVATIONS {
         check_workspace_derivation(&workspace_body, required, &mut violations);
     }
+    check_full_test_app(&apps_body, &mut violations);
     verdict_from(RULE, violations)
 }
 
-fn check_flake_binding(body: &str, required: &RequiredCheck, violations: &mut Vec<String>) {
-    let compact = compact_without_comments(body);
-    let local_binding = format!("{}={};", required.check_attr, required.workspace_attr,);
-    let dotted_binding = format!("{}=loom.{};", required.check_attr, required.workspace_attr,);
-    if compact.contains(&local_binding) || compact.contains(&dotted_binding) {
-        return;
+fn check_flake_checks_omit_compile_surfaces(body: &str, violations: &mut Vec<String>) {
+    for (idx, raw) in body.lines().enumerate() {
+        let code = code_before_comment(raw);
+        for token in code_tokens(code) {
+            if FORBIDDEN_CHECK_TOKENS.contains(&token) {
+                violations.push(format!(
+                    "{CHECKS_REL}:{} flake checks must not expose workspace compile surface `{token}`; run it via `nix run .#test`",
+                    idx + 1,
+                ));
+            }
+        }
     }
+}
 
-    match first_non_comment_line_containing(body, required.check_attr) {
-        Some(line) => violations.push(format!(
-            "{CHECKS_REL}:{line} checks.{} is not wired to the shared loom.{} derivation",
-            required.check_attr, required.workspace_attr,
-        )),
-        None => violations.push(format!(
-            "{CHECKS_REL}: checks.{} is missing from flake checks",
-            required.check_attr,
-        )),
+fn check_full_test_app(body: &str, violations: &mut Vec<String>) {
+    for required in REQUIRED_APP_SNIPPETS {
+        if body.contains(required.needle) {
+            continue;
+        }
+        violations.push(format!(
+            "{APPS_REL}: missing {} command `{}` in the `nix run .#test` full-suite app",
+            required.label, required.needle,
+        ));
+    }
+    for (idx, raw) in body.lines().enumerate() {
+        let code = code_before_comment(raw);
+        if code_tokens(code).any(|token| token == "test-ci") {
+            violations.push(format!(
+                "{APPS_REL}:{} `test-ci` app surface is obsolete; use `nix run .#test`",
+                idx + 1,
+            ));
+        }
     }
 }
 
@@ -178,21 +213,11 @@ fn first_assignment_line(body: &str, attr: &str) -> Option<usize> {
     })
 }
 
-fn first_non_comment_line_containing(body: &str, needle: &str) -> Option<usize> {
-    body.lines().enumerate().find_map(|(idx, raw)| {
-        let code = code_before_comment(raw);
-        code.contains(needle).then_some(idx + 1)
+fn code_tokens(code: &str) -> impl Iterator<Item = &str> {
+    code.split(|character: char| {
+        !(character.is_ascii_alphanumeric() || character == '_' || character == '-')
     })
-}
-
-fn compact_without_comments(body: &str) -> String {
-    let mut out = String::new();
-    for raw in body.lines() {
-        for part in code_before_comment(raw).split_whitespace() {
-            out.push_str(part);
-        }
-    }
-    out
+    .filter(|token| !token.is_empty())
 }
 
 fn code_before_comment(raw: &str) -> &str {
