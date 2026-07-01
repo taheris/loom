@@ -70,20 +70,16 @@ pub fn six_tools(ctx: ToolContext) -> Vec<Box<dyn Tool>> {
 }
 
 /// Construct the Conversation `loom-direct-runner` drives. The model is
-/// resolved from [`SpawnConfig::model`] via [`ModelId::from_str`]; when
-/// the field is absent the runner falls back to [`DEFAULT_MODEL`]. The
-/// six sandbox-aware tools are registered in the canonical order, and
-/// both default observers stay enabled.
+/// resolved from [`SpawnConfig::model_id`] via [`ModelId::from_str`]; when
+/// absent the runner falls back to [`DEFAULT_MODEL`]. The six sandbox-aware
+/// tools are registered in the canonical order, and both default observers
+/// stay enabled.
 pub fn build_conversation(config: &SpawnConfig) -> Conversation {
     build_conversation_with_context(config, tool_context(config))
 }
 
 fn build_conversation_with_context(config: &SpawnConfig, ctx: ToolContext) -> Conversation {
-    let model = config
-        .model
-        .as_ref()
-        .map_or(DEFAULT_MODEL, |sel| ModelId::from_str(&sel.model_id));
-    let mut conv = Conversation::new(model);
+    let mut conv = Conversation::new(configured_model(config));
     for tool in six_tools(ctx) {
         conv = conv.register_boxed(tool);
     }
@@ -97,6 +93,18 @@ fn tool_context(config: &SpawnConfig) -> ToolContext {
     ToolContext::new(config.scratch_dir.join("offload"), max_inline_bytes)
 }
 
+fn configured_model(config: &SpawnConfig) -> ModelId {
+    config.model_id.as_deref().map_or_else(
+        || {
+            config
+                .model
+                .as_ref()
+                .map_or(DEFAULT_MODEL, |sel| ModelId::from_str(&sel.model_id))
+        },
+        ModelId::from_str,
+    )
+}
+
 /// Resolve the configured model's schema, read the matching credential
 /// from the per-schema environment variable, and construct the typed
 /// per-schema [`LlmClient`] the runner drives. Returned boxed so the
@@ -104,10 +112,7 @@ fn tool_context(config: &SpawnConfig) -> ToolContext {
 pub fn build_client_for_config(
     config: &SpawnConfig,
 ) -> Result<Box<dyn LlmClient + Send + Sync>, RunnerError> {
-    let model = config
-        .model
-        .as_ref()
-        .map_or(DEFAULT_MODEL, |sel| ModelId::from_str(&sel.model_id));
+    let model = configured_model(config);
     match model.schema() {
         SchemaKind::Anthropic => {
             let api_key = read_api_key("ANTHROPIC_API_KEY")?;
@@ -126,7 +131,10 @@ pub fn build_client_for_config(
 }
 
 fn read_api_key(var: &str) -> Result<ApiKey, RunnerError> {
-    let raw = std::env::var(var).unwrap_or_default();
+    let raw = std::env::var(var).map_err(|source| RunnerError::ApiKeyEnv {
+        var: var.to_string(),
+        source,
+    })?;
     ApiKey::new(raw).map_err(|err| RunnerError::ApiKey {
         var: var.to_string(),
         source: err,
@@ -447,6 +455,14 @@ pub enum RunnerError {
     Llm(String),
     /// Direct tool context failure
     ToolContext(#[source] ToolContextError),
+    /// failed to read API key env var {var}
+    ApiKeyEnv {
+        /// Name of the env var the runner read.
+        var: String,
+        /// Underlying environment lookup error.
+        #[source]
+        source: std::env::VarError,
+    },
     /// invalid API key sourced from {var}: {source}
     ApiKey {
         /// Name of the env var the runner read.
@@ -466,7 +482,8 @@ pub enum RunnerError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loom_driver::agent::{ModelSelection, OutputLimits, RePinContent};
+    use loom_driver::agent::{OutputLimits, RePinContent};
+    use loom_driver::config::{LoomConfig, Phase};
     use loom_events::identifier::BeadId;
     use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
     use loom_llm::client::{
@@ -501,13 +518,12 @@ mod tests {
             },
             skills: None,
             scratch_dir: PathBuf::new(),
-            model: model_id.map(|m| ModelSelection {
-                provider: "anthropic".into(),
-                model_id: m.into(),
-            }),
+            model_id: model_id.map(str::to_string),
+            model: None,
             thinking_level: None,
             output_limits: None,
             shutdown_grace: None,
+            denied_tools: Vec::new(),
             handshake_timeout: None,
             stall_warn_interval: None,
             launcher_env: Vec::new(),
@@ -606,13 +622,33 @@ mod tests {
         );
     }
 
-    /// Per-phase `agent.model_id` from `SpawnConfig` resolves through
+    /// Per-phase direct config is installed on `SpawnConfig::model_id` before
+    /// the runner constructs its `Conversation`, so the live config seam drives
+    /// `ModelId::from_str` rather than a test-populated model field.
+    #[test]
+    fn direct_model_id_respects_phase_config() {
+        let cfg = LoomConfig::from_toml_str(
+            "[phase.gate.review]\nagent.backend = \"direct\"\nagent.model_id = \"claude-sonnet-4-6\"\n",
+        )
+        .expect("parse config");
+        let selection = cfg.agent_for(Phase::Review).expect("resolve review agent");
+        let mut spawn = sample_config(None);
+        selection.apply_to_spawn_config(&mut spawn, cfg.direct_output_limits());
+
+        let conv = build_conversation(&spawn);
+        assert_eq!(
+            *conv.model(),
+            ModelId::Anthropic(AnthropicModel::ClaudeSonnet46),
+        );
+    }
+
+    /// The `model_id` field from `SpawnConfig` resolves through
     /// `ModelId::from_str` so a known string like `claude-sonnet-4-6`
     /// produces the typed variant rather than falling through to
     /// `Other`. Unknown strings round-trip via `Other` so external
     /// consumers can name not-yet-supported models without a minor bump.
     #[test]
-    fn direct_model_id_respects_phase_config() {
+    fn direct_runner_uses_spawn_config_model_id() {
         let conv = build_conversation(&sample_config(Some("claude-sonnet-4-6")));
         assert_eq!(
             *conv.model(),

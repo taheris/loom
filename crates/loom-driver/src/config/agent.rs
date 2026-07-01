@@ -4,7 +4,7 @@ use displaydoc::Display;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::agent::{AgentKind, ThinkingLevel};
+use crate::agent::{AgentKind, ModelSelection, OutputLimits, SpawnConfig, ThinkingLevel};
 use crate::identifier::ProfileName;
 
 /// `[phase.<name>]` table from `<workspace>/loom.toml`. Each per-phase
@@ -118,6 +118,42 @@ pub struct AgentSelection {
     /// later switches backends still has the typed value at hand.
     pub thinking_level: Option<ThinkingLevel>,
     pub claude_settings: Option<ClaudeSettings>,
+}
+
+impl AgentSelection {
+    /// Install resolved per-phase agent settings onto a spawn config.
+    pub fn apply_to_spawn_config(
+        &self,
+        spawn: &mut SpawnConfig,
+        direct_output_limits: OutputLimits,
+    ) {
+        spawn.model_id = None;
+        spawn.model = None;
+        spawn.thinking_level = None;
+        spawn.output_limits = None;
+        spawn.denied_tools.clear();
+
+        match self.kind {
+            AgentKind::Pi => {
+                if let (Some(provider), Some(model_id)) = (&self.provider, &self.model_id) {
+                    spawn.model = Some(ModelSelection {
+                        provider: provider.clone(),
+                        model_id: model_id.clone(),
+                    });
+                }
+                spawn.thinking_level = self.thinking_level;
+            }
+            AgentKind::Claude => {
+                if let Some(settings) = &self.claude_settings {
+                    spawn.denied_tools = settings.denied_tools.clone();
+                }
+            }
+            AgentKind::Direct => {
+                spawn.model_id = self.model_id.clone();
+                spawn.output_limits = Some(direct_output_limits);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Display, Error, PartialEq, Eq)]

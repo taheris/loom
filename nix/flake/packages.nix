@@ -1,4 +1,4 @@
-{ inputs, ... }:
+_:
 
 {
   perSystem =
@@ -8,6 +8,7 @@
       debugSandbox,
       loom,
       loomBin,
+      patchedWrixSrc,
       profileManifest,
       ...
     }:
@@ -31,7 +32,7 @@
         # `nix build --no-link --print-out-paths .#wrixSrc` (see
         # `specs/agent.md` § Container integration).
         wrixSrc = pkgs.runCommand "wrix-src" { } ''
-          cp -r ${inputs.wrix} $out
+          cp -r ${patchedWrixSrc} $out
         '';
       };
     };

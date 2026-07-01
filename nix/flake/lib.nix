@@ -68,12 +68,45 @@ in
 
   perSystem =
     {
+      config,
       inputs',
       pkgs,
+      system,
       ...
     }:
     let
-      wrixLib = inputs'.wrix.legacyPackages.lib;
+      inherit (inputs) nixpkgs;
+
+      linuxSystem =
+        if system == "aarch64-darwin" then
+          "aarch64-linux"
+        else if system == "x86_64-darwin" then
+          "x86_64-linux"
+        else
+          system;
+
+      wrixPkgs = import nixpkgs {
+        inherit system;
+        config.allowUnfree = true;
+      };
+
+      wrixLinuxPkgs = import nixpkgs {
+        system = linuxSystem;
+        config.allowUnfree = true;
+      };
+
+      patchedWrixSrc = pkgs.applyPatches {
+        name = "wrix-src-loom-agent";
+        src = inputs.wrix;
+        patches = [ ../patches/wrix-claude-permission-prompt.patch ];
+      };
+      wrixLib = import "${patchedWrixSrc}/lib" {
+        inherit system;
+        inherit (inputs) crane fenix;
+        pkgs = wrixPkgs;
+        linuxPkgs = wrixLinuxPkgs;
+        treefmt = config.treefmt.build.wrapper;
+      };
       piCodingAgent = pkgs.pi-coding-agent;
 
       # The same file + hash pin the toolchain for the wrix sandbox
@@ -133,6 +166,7 @@ in
           debugSandbox
           loom
           loomBin
+          patchedWrixSrc
           profileManifest
           rustProfile
           rustToolchain

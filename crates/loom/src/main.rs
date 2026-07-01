@@ -2119,6 +2119,7 @@ fn run_gate_mint(
             let phase_default = selection.profile.clone();
             let kind = selection.kind;
             let shutdown_grace = resolve_shutdown_grace(&selection);
+            let direct_output_limits = config.direct_output_limits();
             let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
             let style_rules = config.style_rules.clone();
             let workspace_buf = workspace.to_path_buf();
@@ -2145,6 +2146,7 @@ fn run_gate_mint(
                     let state_for_walker = Arc::clone(&state);
                     let manifest_for_walker = Arc::clone(&manifest);
                     let phase_default_for_walker = phase_default.clone();
+                    let selection_for_walker = selection.clone();
                     let style_rules_for_walker = style_rules.clone();
                     let mut walker = loom_workflow::mint::ProductionMintWalker::new(
                         BdClient::new(),
@@ -2156,6 +2158,7 @@ fn run_gate_mint(
                         move |spawn_cfg: SpawnConfig| {
                             let logs_root = logs_root_for_spawn.clone();
                             let label = label_for_sink.clone();
+                            let selection = selection_for_walker.clone();
                             async move {
                                 let sink = LogSink::open_phase_at(
                                     &logs_root, &label, "mint", None, phase_when,
@@ -2164,6 +2167,9 @@ fn run_gate_mint(
                                     ProtocolError::Io(std::io::Error::other(e.to_string()))
                                 })?;
                                 let mut output = String::new();
+                                let mut spawn_cfg = spawn_cfg;
+                                selection
+                                    .apply_to_spawn_config(&mut spawn_cfg, direct_output_limits);
                                 let outcome = dispatch(
                                     kind,
                                     spawn_cfg,
@@ -2510,6 +2516,7 @@ fn run_loop_cmd(
     let cli_profile = profile.map(ProfileName::new);
     let loom_bin = current_loom_bin()?;
     let shutdown_grace = resolve_shutdown_grace(&selection);
+    let direct_output_limits = config.direct_output_limits();
 
     let mut aggregate = LoopOutcomeAccumulator::default();
     if !parallel.is_one() {
@@ -2529,6 +2536,8 @@ fn run_loop_cmd(
                 root,
                 parallel_n,
                 selection.kind,
+                selection.clone(),
+                direct_output_limits,
                 shutdown_grace,
                 Arc::clone(&manifest),
                 cli_profile.clone(),
@@ -2562,6 +2571,8 @@ fn run_loop_cmd(
             cli_profile.clone(),
             phase_default.clone(),
             selection.kind,
+            selection.clone(),
+            direct_output_limits,
             shutdown_grace,
             &config,
             loom_bin.clone(),
@@ -2652,6 +2663,8 @@ fn run_parallel_loop_root(
     root: &LoopWorkRoot,
     parallel_n: u32,
     kind: AgentKind,
+    selection: loom_driver::config::AgentSelection,
+    direct_output_limits: loom_driver::agent::OutputLimits,
     shutdown_grace: Option<Duration>,
     manifest: Arc<ProfileImageManifest>,
     cli_profile: Option<ProfileName>,
@@ -2682,6 +2695,8 @@ fn run_parallel_loop_root(
             ready_parent_for_async,
             parallel_n,
             kind,
+            selection,
+            direct_output_limits,
             shutdown_grace,
             manifest,
             cli_profile,
@@ -2706,6 +2721,8 @@ fn run_sequential_loop_root(
     cli_profile: Option<ProfileName>,
     phase_default: ProfileName,
     kind: AgentKind,
+    selection: loom_driver::config::AgentSelection,
+    direct_output_limits: loom_driver::agent::OutputLimits,
     shutdown_grace: Option<Duration>,
     config: &LoomConfig,
     loom_bin: PathBuf,
@@ -2754,6 +2771,7 @@ fn run_sequential_loop_root(
                 let label = label_for_sink.clone();
                 let workspace = workspace_for_renderer.clone();
                 let observer_config = observer_config.clone();
+                let selection = selection.clone();
                 async move {
                     // A sink-open failure is pre-spawn — the bead's
                     // JSONL log location is part of the workflow's
@@ -2779,6 +2797,8 @@ fn run_sequential_loop_root(
                         }
                     };
                     let mut output = String::new();
+                    let mut spawn_cfg = spawn_cfg;
+                    selection.apply_to_spawn_config(&mut spawn_cfg, direct_output_limits);
                     let envelope_builder = build_envelope_builder(bead_id.clone());
                     let session = dispatch_classified(
                         kind,
@@ -2974,6 +2994,8 @@ async fn run_parallel_loop(
     ready_parent: Option<BeadId>,
     parallel_n: u32,
     kind: AgentKind,
+    selection: loom_driver::config::AgentSelection,
+    direct_output_limits: loom_driver::agent::OutputLimits,
     shutdown_grace: Option<Duration>,
     manifest: Arc<ProfileImageManifest>,
     cli_profile: Option<ProfileName>,
@@ -3055,6 +3077,7 @@ async fn run_parallel_loop(
         let loom_cfg_for_batch = loom_cfg.clone();
         let skills_cfg_for_batch = skills_cfg.clone();
         let observer_config_for_batch = observer_config.clone();
+        let selection_for_batch = selection.clone();
         let launcher_env_for_batch = launcher_env.clone();
         let outcome = loom_workflow::r#loop::run_parallel_batch_with_logs(
             &git,
@@ -3072,6 +3095,7 @@ async fn run_parallel_loop(
                 let loom_cfg_inner = loom_cfg_for_batch.clone();
                 let skills_cfg_inner = skills_cfg_for_batch.clone();
                 let observer_config_inner = observer_config_for_batch.clone();
+                let selection_inner = selection_for_batch.clone();
                 let launcher_env_inner = launcher_env_for_batch.clone();
                 async move {
                     match dispatch_for_slot(
@@ -3088,6 +3112,8 @@ async fn run_parallel_loop(
                         &loom_cfg_inner,
                         &skills_cfg_inner,
                         &observer_config_inner,
+                        &selection_inner,
+                        direct_output_limits,
                         launcher_env_inner,
                         render_mode,
                     )
@@ -3408,6 +3434,8 @@ async fn dispatch_for_slot(
     loom_cfg: &loom_driver::config::LoomTopConfig,
     skills_cfg: &loom_driver::config::SkillsConfig,
     observer_config: &AgentObserversConfig,
+    selection: &loom_driver::config::AgentSelection,
+    direct_output_limits: loom_driver::agent::OutputLimits,
     launcher_env: Vec<(String, String)>,
     render_mode: loom_render::RenderMode,
 ) -> anyhow::Result<loom_workflow::r#loop::AgentOutcome> {
@@ -3533,6 +3561,7 @@ async fn dispatch_for_slot(
         }
     };
     let mut output = String::new();
+    selection.apply_to_spawn_config(&mut spawn_config, direct_output_limits);
     let envelope_builder = build_envelope_builder(slot.bead.id.clone());
     let result = dispatch_classified(
         kind,
@@ -3842,6 +3871,7 @@ fn run_review(
     let phase_default = selection.profile.clone();
     let kind = selection.kind;
     let shutdown_grace = resolve_shutdown_grace(&selection);
+    let direct_output_limits = config.direct_output_limits();
 
     let loom_bin = current_loom_bin()?;
     let state = std::sync::Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
@@ -3884,11 +3914,14 @@ fn run_review(
                 let logs_root = logs_root_for_spawn.clone();
                 let label = label_for_sink.clone();
                 let stdout_capture = Arc::clone(&stdout_capture_for_spawn);
+                let selection = selection.clone();
                 async move {
                     let sink =
                         LogSink::open_phase_at(&logs_root, &label, "review", None, phase_when)
                             .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))?;
                     let mut output = String::new();
+                    let mut spawn_cfg = spawn_cfg;
+                    selection.apply_to_spawn_config(&mut spawn_cfg, direct_output_limits);
                     let outcome = dispatch(
                         kind,
                         spawn_cfg,
@@ -4334,6 +4367,7 @@ fn run_todo(workspace: &Path, agent_override: Option<AgentKind>) -> anyhow::Resu
     let phase_default = selection.profile.clone();
     let kind = selection.kind;
     let shutdown_grace = resolve_shutdown_grace(&selection);
+    let direct_output_limits = config.direct_output_limits();
 
     let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db"))?);
     let git = Arc::new(GitClient::open_with_integration_branch(
@@ -4359,34 +4393,42 @@ fn run_todo(workspace: &Path, agent_override: Option<AgentKind>) -> anyhow::Resu
         .with_loom_config(loom_cfg_for_todo)
         .with_agent_runtime(kind)
         .with_skills_config(skills_cfg_for_todo);
-        run_todo_workflow(&mut controller, |spawn_cfg: SpawnConfig| async move {
-            let sink = LogSink::open_phase_at(
-                &logs_root,
-                &label_for_sink,
-                "todo",
-                None,
-                SystemClock::new().wall_now(),
-            )
-            .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))?;
-            let mut output = String::new();
-            let outcome = dispatch(
-                kind,
-                spawn_cfg,
-                shutdown_grace,
-                Some(sink),
-                Some(&mut output),
-            )
-            .await?;
-            let final_line = output.lines().rev().find(|line| !line.trim().is_empty());
-            let todo_success = match final_line {
-                Some(line) if line.starts_with(loom_protocol::todo::TODO_SUCCESS_PREFIX) => Some(
-                    parse_todo_success(line)
-                        .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))?,
-                ),
-                _ => None,
-            };
-            let marker = parse_exit_signal(&output);
-            Ok((outcome, marker, todo_success))
+        run_todo_workflow(&mut controller, |spawn_cfg: SpawnConfig| {
+            let selection = selection.clone();
+            async move {
+                let sink = LogSink::open_phase_at(
+                    &logs_root,
+                    &label_for_sink,
+                    "todo",
+                    None,
+                    SystemClock::new().wall_now(),
+                )
+                .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))?;
+                let mut output = String::new();
+                let mut spawn_cfg = spawn_cfg;
+                selection.apply_to_spawn_config(&mut spawn_cfg, direct_output_limits);
+                let outcome = dispatch(
+                    kind,
+                    spawn_cfg,
+                    shutdown_grace,
+                    Some(sink),
+                    Some(&mut output),
+                )
+                .await?;
+                let final_line = output.lines().rev().find(|line| !line.trim().is_empty());
+                let todo_success = match final_line {
+                    Some(line) if line.starts_with(loom_protocol::todo::TODO_SUCCESS_PREFIX) => {
+                        Some(
+                            parse_todo_success(line).map_err(|e| {
+                                ProtocolError::Io(std::io::Error::other(e.to_string()))
+                            })?,
+                        )
+                    }
+                    _ => None,
+                };
+                let marker = parse_exit_signal(&output);
+                Ok((outcome, marker, todo_success))
+            }
         })
         .await
     });

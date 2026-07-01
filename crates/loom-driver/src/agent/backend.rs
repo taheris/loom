@@ -81,10 +81,16 @@ pub struct SpawnConfig {
     /// [`ScratchSession`]: crate::scratch::ScratchSession
     #[serde(default)]
     pub scratch_dir: PathBuf,
-    /// Optional post-spawn model override consumed by the host-side backend
-    /// (currently only [`PiBackend`](crate::agent::AgentBackend) — claude
-    /// receives its model via CLI flags). When present, the pi backend sends
-    /// a `set_model` RPC after the startup probe; failure is hard-fail.
+    /// Optional model identifier consumed by the in-container Direct runner.
+    /// Resolved from per-phase `agent.model_id`; when absent, Direct uses its
+    /// runner default. Pi uses [`SpawnConfig::model`] because its RPC requires
+    /// provider + model as separate fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    /// Optional post-spawn model override consumed by the host-side Pi backend.
+    /// When present, the pi backend sends a `set_model` RPC after the startup
+    /// probe; failure is hard-fail. Direct reads [`SpawnConfig::model_id`]
+    /// instead because `loom-llm::ModelId` resolves from a single model token.
     /// Skipped during serialization when `None` so the wrapper's input JSON
     /// remains identical to existing fixtures.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,6 +128,12 @@ pub struct SpawnConfig {
         with = "duration_secs_opt"
     )]
     pub shutdown_grace: Option<Duration>,
+    /// Host-side Claude permission deny-list resolved from
+    /// `[security].denied_tools`. The parser uses it to answer
+    /// `control_request` frames; the container wrapper does not need it, so it
+    /// is skipped from the spawn-config JSON.
+    #[serde(skip)]
+    pub denied_tools: Vec<String>,
     /// Maximum time the pi handshake (probe + optional `set_model`) is
     /// allowed to take before returning [`ProtocolError::HandshakeTimeout`].
     /// Claude has no host-side handshake, so this field is unused there.
@@ -375,10 +387,12 @@ mod tests {
             },
             skills: None,
             scratch_dir: PathBuf::from("/workspace/.loom/scratch/test"),
+            model_id: None,
             model,
             thinking_level: None,
             output_limits: None,
             shutdown_grace: None,
+            denied_tools: Vec::new(),
             handshake_timeout: None,
             stall_warn_interval: None,
             launcher_env: Vec::new(),
@@ -566,6 +580,7 @@ mod tests {
             "repin": {"orientation":"o","pinned_context":"p","partial_bodies":[]}
         }"#;
         let cfg: SpawnConfig = serde_json::from_str(legacy).expect("legacy fixture parses");
+        assert!(cfg.model_id.is_none());
         assert!(cfg.model.is_none());
         assert_eq!(cfg.image_ref, "localhost/img:tag");
         assert_eq!(cfg.image_source, PathBuf::from("/nix/store/zzz-img.tar"));
@@ -640,6 +655,7 @@ mod tests {
             "\"image_source\":",
             "\"image_source_kind\":",
             "\"mounts\":",
+            "\"model_id\":",
             "\"model\":",
             "\"thinking_level\":",
             "\"output_limits\":",
@@ -668,6 +684,18 @@ mod tests {
             });
             cursor += rel + key.len();
         }
+    }
+
+    /// `model_id: Some(_)` round-trips as the Direct runner's model token.
+    #[test]
+    fn spawn_config_with_model_id_some_round_trips() {
+        let mut cfg = sample_config(None);
+        cfg.model_id = Some("claude-sonnet-4-6".to_string());
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["model_id"], "claude-sonnet-4-6");
+        let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.model_id.as_deref(), Some("claude-sonnet-4-6"));
     }
 
     /// `output_limits: None` (the Pi/Claude steady state) is omitted from the
@@ -763,6 +791,21 @@ mod tests {
             !obj.contains_key("mounts"),
             "mounts: empty must be omitted, got JSON: {json}",
         );
+    }
+
+    /// `denied_tools` is host-only Claude parser state and must never reach
+    /// the spawn-config JSON.
+    #[test]
+    fn denied_tools_are_host_only_and_never_serialized() {
+        let mut cfg = sample_config(None);
+        cfg.denied_tools = vec!["WebFetch".to_string()];
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        assert!(
+            !json.contains("denied_tools"),
+            "denied_tools key must be absent from JSON: {json}",
+        );
+        let back: SpawnConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.denied_tools.is_empty());
     }
 
     /// `launcher_env` is host-only state (deploy/signing key paths handed to

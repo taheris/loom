@@ -796,81 +796,27 @@ same discipline against their own layouts.
 
 ### Review Emit Shape
 
-`review.md` is the LLM-rubric walk's prompt template. The reviewing
-agent emits findings as streaming `LOOM_FINDING:` records on stdout —
-one record per finding, identified as the walk proceeds, with a JSON
-payload after the prefix:
+`review.md` is the LLM-rubric walk's prompt template. It includes
+`partial/findings_walk.md`, which is the sole agent-facing textual
+definition of the review finding stream, terminal pairing rule, target
+shapes, routing fields, and clarify Options requirements. The typed Rust
+contract and minting lifecycle are owned by
+[gate.md § Findings and Minting](gate.md#findings-and-minting); this spec
+owns only the template include relationship and the prompt-side mutation
+boundary.
 
-```
-LOOM_FINDING: {"token": "...", "route": "blocking|deferred|clarify", "bonds": ["..."], "target": {"kind": "...", ...}, "evidence": "..."}
-```
+**The review template makes no bd writes.** The reviewing agent identifies
+findings through the included review-walk partial, while the driver
+(`loom gate mint`) is the sole chokepoint that mints fix-up beads from the
+typed finding records, applying fingerprint dedup and per-spec molecule
+resolution. A review run that mutates bd state from inside the prompt is a
+protocol violation.
 
-Emit compact one-line JSON when possible. Long evidence and
-`route="clarify"` Options blocks may include raw line breaks inside JSON
-string values; the driver normalizes those breaks to `\n` escapes before
-`serde_json` deserialization and typed validation. Newlines outside strings
-are accepted only as JSON whitespace within the same object.
-
-Followed by exactly one terminal marker:
-`LOOM_COMPLETE` (zero findings emitted),
-`LOOM_CONCERN: {"summary": "<one sentence>"}` (≥1 findings emitted —
-JSON-shaped payload, parsed by the same `serde_json` pipeline
-consuming the `LOOM_FINDING:` records),
-`LOOM_RETRY` (the walk could not complete for environmental reasons
-— logs corrupt, workspace inaccessible, transient IO — and a fresh
-dispatch should retry it; per [harness.md § Verdict
-Gate](harness.md#verdict-gate) this consumes one
-`[loop] max_retries` slot), or `LOOM_BLOCKED` (the walk cannot complete,
-the reviewer has no candidate resolution to enumerate, and the reason says
-why options cannot be safely surfaced).
-Direct `LOOM_CLARIFY` is not a review terminal: if the reviewer can
-frame options, it emits a `route="clarify"` finding with the canonical
-Options block in `evidence` and terminates with `LOOM_CONCERN`; if it
-cannot articulate options, it emits `LOOM_BLOCKED` with that no-options
-rationale.
-The terminator must satisfy the **pairing rule**: `LOOM_CONCERN`
-iff ≥1 findings streamed, `LOOM_COMPLETE` iff zero — a mismatch
-routes to `RecoveryCause::BadWalk(BadWalk)` per [harness.md §
-Verdict Gate](harness.md#verdict-gate). All review-walk
-wire-format text lives in the `findings_walk.md` partial; the
-review template `{% include %}`s it rather than restating, and a
-`[check]`-tier anti-drift verifier enforces this mechanically per
-[gate.md § Findings and Minting](gate.md#findings-and-minting).
-
-The `route` field on each `LOOM_FINDING:` drives per-finding
-workflow (`blocking`, `deferred`, or `clarify`). The `bonds` array
-names the spec(s) the fix-up should bond to (bonding info); the
-`target` carries identity-bearing fields specific to the variant.
-JSON was chosen over pipe-delimited shapes because LLM emit is more
-reliable on JSON, and the tagged-union encoding of `target` is
-naturally JSON-shaped. The terminator's `summary` is a verdict-log
-entry only — per-finding routing is decided from the streamed record's
-`route`, not from the terminal token.
-
-**The review template makes no bd writes.** Earlier revisions of
-this spec authorized `bd create` / `bd update` / `bd mol bond` from
-inside the review prompt — those instructions are removed. The
-agent's job is to identify findings and emit them; the driver
-(`loom gate mint`) is the sole chokepoint that mints fix-up beads
-from the typed `LOOM_FINDING:` records, applying fingerprint dedup
-and per-spec molecule resolution. A review run that mutates bd
-state from inside the prompt is a protocol violation.
-
-**Clarify-bound findings embed Options in evidence.** Any finding
-whose mint would label the resulting bead `loom:clarify` —
-`invariant-clash` and any other clarify-bound token enumerated by
-[gate.md § Concern tokens and target variants](gate.md#concern-tokens-and-target-variants)
-— MUST embed the canonical `## Options — <summary>` block inside
-its `evidence` payload (with at least one `### Option <N> — <title>`
-subsection). The driver-side `loom gate mint` parses the evidence,
-extracts the block, and renders it into the minted clarify bead's
-description per the *Options Format Contract*. A clarify-bound
-finding whose evidence lacks a well-formed options block is refused
-at mint time and falls back to `loom:blocked` with cause
-`clarify-without-options`; the agent should emit `LOOM_BLOCKED`
-directly when it cannot articulate options, with a reason explaining why
-no options can be safely surfaced, rather than emitting a clarify-bound
-finding without them.
+**Clarify-bound findings embed Options in evidence.** Clarify routing and
+canonical Options-block parsing are defined in the included partial and in
+[gate.md § Findings and Minting](gate.md#findings-and-minting). The review
+template must not restate that wire format; it carries the partial so prompt
+text and gate routing cannot drift.
 
 ### Mint Default-Profile
 

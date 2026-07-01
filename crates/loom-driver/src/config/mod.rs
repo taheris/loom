@@ -233,9 +233,9 @@ impl LoomConfig {
     /// so call sites receive everything in one struct.
     ///
     /// Returns [`AgentSelectionError::UnknownBackend`] when the backend name
-    /// (per-phase or default) does not match `claude` or `pi` — surfacing
-    /// the validation lazily lets the TOML parser stay schema-free for
-    /// unknown `[phase.<phase>]` keys.
+    /// (per-phase or default) does not match `claude`, `pi`, or `direct` —
+    /// surfacing the validation lazily lets the TOML parser stay schema-free
+    /// for unknown `[phase.<phase>]` keys.
     pub fn agent_for(&self, phase: Phase) -> Result<AgentSelection, AgentSelectionError> {
         let key = phase.as_str();
         let profile_str = lookup_phase_field(&self.phase, key, |p| &p.profile)
@@ -691,9 +691,9 @@ agent.backend = "claude"
     /// § Direct Output Bounding — Configuration.
     #[test]
     fn direct_max_inline_bytes_resolves_from_config_default_16384() -> Result<()> {
-        use crate::agent::{ImageSourceKind, OutputLimits, RePinContent, SpawnConfig};
+        use crate::agent::{ImageSourceKind, RePinContent, SpawnConfig};
 
-        fn spawn_config_carrying(limits: OutputLimits) -> SpawnConfig {
+        fn bare_spawn_config() -> SpawnConfig {
             SpawnConfig {
                 image_ref: "localhost/wrix:tag".into(),
                 image_source: PathBuf::from("/nix/store/zzz-wrix.tar"),
@@ -711,20 +711,23 @@ agent.backend = "claude"
                 },
                 skills: None,
                 scratch_dir: PathBuf::from("/workspace/.loom/scratch/k"),
+                model_id: None,
                 model: None,
                 thinking_level: None,
-                output_limits: Some(limits),
+                output_limits: None,
                 shutdown_grace: None,
+                denied_tools: Vec::new(),
                 handshake_timeout: None,
                 stall_warn_interval: None,
                 launcher_env: Vec::new(),
             }
         }
 
-        // Absent [direct] block → default 16384 reaches SpawnConfig.
-        let absent = LoomConfig::from_toml_str("")?;
-        assert_eq!(absent.direct.max_inline_bytes, 16384);
-        let spawn = spawn_config_carrying(absent.direct_output_limits());
+        let absent =
+            LoomConfig::from_toml_str("[phase.gate.review]\nagent.backend = \"direct\"\n")?;
+        let selection = absent.agent_for(Phase::Review)?;
+        let mut spawn = bare_spawn_config();
+        selection.apply_to_spawn_config(&mut spawn, absent.direct_output_limits());
         assert_eq!(
             spawn
                 .output_limits
@@ -733,10 +736,12 @@ agent.backend = "claude"
             16384,
         );
 
-        // Explicit override resolves through to SpawnConfig verbatim.
-        let cfg = LoomConfig::from_toml_str("[direct]\nmax_inline_bytes = 32768\n")?;
-        assert_eq!(cfg.direct.max_inline_bytes, 32768);
-        let spawn = spawn_config_carrying(cfg.direct_output_limits());
+        let cfg = LoomConfig::from_toml_str(
+            "[phase.gate.review]\nagent.backend = \"direct\"\n\n[direct]\nmax_inline_bytes = 32768\n",
+        )?;
+        let selection = cfg.agent_for(Phase::Review)?;
+        let mut spawn = bare_spawn_config();
+        selection.apply_to_spawn_config(&mut spawn, cfg.direct_output_limits());
         assert_eq!(
             spawn
                 .output_limits

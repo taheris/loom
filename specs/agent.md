@@ -976,7 +976,7 @@ and the six sandbox-aware tool impls).
 The container entrypoint branches on `WRIX_AGENT`:
 
 - `claude` (default): existing Claude config merging, hooks,
-  launching the claude binary.
+  launching the claude binary with the stdio permission prompt tool.
 - `pi`: skips Claude-specific config merging and the Claude
   permission flag; starts pi in RPC mode listening on
   stdin/stdout.
@@ -1213,8 +1213,8 @@ the entrypoint run the wrong runtime.
   [test](child_stdin_is_a_pipe_not_a_tty)
 - Entrypoint starts pi in RPC mode when `WRIX_AGENT=pi`
   [check](bash -c "grep -q 'pi --mode rpc' $(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
-- Entrypoint starts claude normally when `WRIX_AGENT=claude`
-  [check](bash -c "grep -q 'dangerously-skip-permissions' $(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
+- Entrypoint starts claude normally when `WRIX_AGENT=claude`, retaining non-interactive bypass mode and enabling the stdio permission prompt tool
+  [check](bash -c 'entrypoint="$(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh"; grep -q -- "dangerously-skip-permissions" "$entrypoint" && grep -q -- "permission-prompt-tool stdio" "$entrypoint"')
 - Entrypoint starts the Direct runner when `WRIX_AGENT=direct`
   [check](bash -c "grep -q 'loom-direct-runner' $(nix build --no-link --print-out-paths .#wrixSrc 2>/dev/null)/lib/sandbox/linux/entrypoint.sh")
 - Entrypoint preserves git SSH, beads, network filtering for all runtime branches
@@ -1309,7 +1309,7 @@ the entrypoint run the wrong runtime.
    agent binaries selected from one undifferentiated image.
 10. **Entrypoint agent selection** — `entrypoint.sh` checks `WRIX_AGENT` and:
    - `claude` (default): existing behavior (Claude config merging, hooks,
-     `claude --dangerously-skip-permissions`)
+     `claude --dangerously-skip-permissions --permission-prompt-tool stdio`)
    - `pi`: skips Claude-specific config, starts `pi --mode rpc` listening on
      stdin/stdout
    - `direct`: skips Claude-specific config, exec's `loom-direct-runner`

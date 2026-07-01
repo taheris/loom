@@ -77,7 +77,7 @@ impl AgentBackend for ClaudeBackend {
         );
         apply_launcher_env(&mut cmd, &config.launcher_env);
 
-        spawn_session(cmd, Vec::new()).await
+        spawn_session(cmd, config.denied_tools.clone()).await
     }
 
     async fn after_session_complete(
@@ -380,10 +380,12 @@ mod tests {
             repin: sample_repin(),
             skills: None,
             scratch_dir: scratch.path().to_path_buf(),
+            model_id: None,
             model: None,
             thinking_level: None,
             output_limits: None,
             shutdown_grace: None,
+            denied_tools: Vec::new(),
             handshake_timeout: None,
             stall_warn_interval: None,
             launcher_env: Vec::new(),

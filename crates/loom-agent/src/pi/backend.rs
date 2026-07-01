@@ -661,8 +661,10 @@ fn write_spawn_config_to(path: &Path, config: &SpawnConfig) -> Result<(), Protoc
 mod tests {
     use super::*;
     use loom_driver::agent::RePinContent;
+    use loom_driver::config::{LoomConfig, Phase};
     use loom_events::ParsedAgentEvent;
-    use std::path::PathBuf;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
 
     fn mock_pi_path() -> PathBuf {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -683,6 +685,59 @@ mod tests {
         let mut cmd = Command::new("bash");
         cmd.arg(mock_pi_path()).arg(mode);
         cmd
+    }
+
+    fn bash_path() -> PathBuf {
+        let path_var = std::env::var_os("PATH").expect("PATH set");
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join("bash");
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+        panic!("bash not found in PATH");
+    }
+
+    fn install_wrix_pi_shim(dir: &Path) -> PathBuf {
+        let shim = dir.join("wrix");
+        let bash = bash_path();
+        let body = format!(
+            "#!{bash}\n\
+             set -euo pipefail\n\
+             : \"${{MOCK_PI:?}}\"\n\
+             : \"${{MOCK_PI_MODE:?}}\"\n\
+             printf '[wrix] Starting container (mock)...\\n' >&2\n\
+             exec '{bash}' \"$MOCK_PI\" \"$MOCK_PI_MODE\"\n",
+            bash = bash.display(),
+        );
+        std::fs::write(&shim, body).expect("write wrix shim");
+        let mut perm = std::fs::metadata(&shim).expect("stat shim").permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&shim, perm).expect("chmod shim");
+        shim
+    }
+
+    async fn spawn_from_phase_config(config_toml: &str, mock_mode: &str) -> AgentSession<Idle> {
+        let wrix_dir = tempfile::tempdir().expect("tempdir");
+        let wrix = install_wrix_pi_shim(wrix_dir.path());
+        let cfg = LoomConfig::from_toml_str(config_toml).expect("parse config");
+        let selection = cfg.agent_for(Phase::Loop).expect("resolve loop agent");
+        let mut spawn = sample_config(None);
+        spawn.handshake_timeout = Some(TEST_HANDSHAKE_BUDGET);
+        spawn.launcher_env = vec![
+            (
+                "MOCK_PI".to_string(),
+                mock_pi_path().to_string_lossy().into_owned(),
+            ),
+            ("MOCK_PI_MODE".to_string(), mock_mode.to_string()),
+        ];
+        selection.apply_to_spawn_config(&mut spawn, cfg.direct_output_limits());
+
+        let session = PiBackend::spawn_with_wrix_bin(&spawn, wrix.as_os_str())
+            .await
+            .expect("spawn through wrix shim");
+        drop(wrix_dir);
+        session
     }
 
     fn sample_repin() -> RePinContent {
@@ -727,10 +782,12 @@ mod tests {
             repin: sample_repin(),
             skills: None,
             scratch_dir: PathBuf::from("/workspace/.loom/scratch/test"),
+            model_id: None,
             model,
             thinking_level: None,
             output_limits: None,
             shutdown_grace: None,
+            denied_tools: Vec::new(),
             handshake_timeout: None,
             stall_warn_interval: None,
             launcher_env: Vec::new(),
@@ -1087,19 +1144,11 @@ mod tests {
 
     #[tokio::test]
     async fn set_model_from_phase_config_reaches_mock_pi() {
-        let model = ModelSelection {
-            provider: "deepseek".into(),
-            model_id: "deepseek-v3".into(),
-        };
-        let session = spawn_with_handshake(
-            mock_command("set-model"),
-            Some(&model),
-            None,
-            TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
+        let session = spawn_from_phase_config(
+            "[phase.loop]\nagent.backend = \"pi\"\nagent.provider = \"deepseek\"\nagent.model_id = \"deepseek-v3\"\n",
+            "set-model",
         )
-        .await
-        .expect("spawn with model");
+        .await;
 
         // The mock echoes provider/modelId via a MessageDelta on the first
         // prompt so the test can assert the values reached pi.
@@ -1148,21 +1197,18 @@ mod tests {
 
     // -- test_pi_set_thinking_level_from_phase_config ---------------------
 
-    /// Driver-sends-when-config-set: with `thinking_level: Some(_)` the
-    /// driver issues `set_thinking_level` after the probe. The mock acks
-    /// the command and echoes the level back via a `message_delta`, so
-    /// the test verifies the wire token (`high`) reached pi.
+    /// Driver-sends-when-config-set: the resolved phase config installs
+    /// `thinking_level: Some(_)` on the spawn config before `PiBackend` issues
+    /// `set_thinking_level` after the probe. The mock acks the command and
+    /// echoes the level back via a `message_delta`, so the test verifies the
+    /// wire token (`high`) reached pi.
     #[tokio::test]
     async fn set_thinking_level_from_phase_config_reaches_mock_pi() {
-        let session = spawn_with_handshake(
-            mock_command("set-thinking-level"),
-            None,
-            Some(ThinkingLevel::High),
-            TEST_HANDSHAKE_BUDGET,
-            &SystemClock::new(),
+        let session = spawn_from_phase_config(
+            "[phase.loop]\nagent.backend = \"pi\"\nagent.thinking_level = \"high\"\n",
+            "set-thinking-level",
         )
-        .await
-        .expect("spawn with thinking_level");
+        .await;
 
         let mut session = session.prompt("hi").await.expect("prompt ok");
         let mut saw_level = false;

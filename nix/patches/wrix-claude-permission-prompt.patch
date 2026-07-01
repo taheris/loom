@@ -1,0 +1,10 @@
+--- a/lib/sandbox/linux/entrypoint.sh
++++ b/lib/sandbox/linux/entrypoint.sh
+@@ -756,6 +756,7 @@ elif [[ "$WRIX_AGENT" = "claude" ]] && [[ "${WRIX_STDIO:-}" = "1" ]]; then
+   # (single source of truth) so workflow code doesn't have to thread them.
+   run_without_net_admin claude \
+     --dangerously-skip-permissions \
++    --permission-prompt-tool stdio \
+     --print \
+     --verbose \
+     --input-format stream-json \
