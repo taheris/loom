@@ -17,8 +17,8 @@ use loom_driver::agent::{
     AgentBackend, AgentSession, Idle, JsonlReader, LineParse, ParsedLine, ProtocolError,
     SpawnConfig,
 };
-use loom_events::ParsedAgentEvent;
 use loom_events::identifier::ToolCallId;
+use loom_events::{DriverEventPayload, DriverKind, ParsedAgentEvent};
 
 use crate::apply_launcher_env;
 use crate::skill::{NoNativeRegistrar, register_native_skills};
@@ -234,21 +234,12 @@ pub enum DirectEvent {
     Error {
         message: String,
     },
-    /// Per-completion token accounting the runner emits after every
-    /// `LlmClient::complete*` call. Host-side parser lifts this into a
-    /// `DriverKind::TokenUsage` `AgentEvent::DriverEvent`.
-    TokenUsage {
-        model: String,
-        input: u32,
-        output: u32,
-        cache_read: u32,
-        cache_write: u32,
-    },
-    /// Successful Direct tool output offload. Host-side parser lifts
-    /// this into a `DriverKind::Offload` `AgentEvent::DriverEvent`.
-    Offload {
-        tool: String,
-        total_bytes: usize,
+    /// Driver-origin payload emitted by the Direct runner and stamped by
+    /// the host-side session envelope.
+    DriverEvent {
+        driver_kind: DriverKind,
+        summary: String,
+        payload: serde_json::Value,
     },
 }
 
@@ -289,20 +280,15 @@ impl DirectEvent {
                 cost_usd,
             },
             Self::Error { message } => ParsedAgentEvent::Error { message },
-            Self::TokenUsage {
-                model,
-                input,
-                output,
-                cache_read,
-                cache_write,
-            } => ParsedAgentEvent::TokenUsage {
-                model,
-                input,
-                output,
-                cache_read,
-                cache_write,
-            },
-            Self::Offload { tool, total_bytes } => ParsedAgentEvent::Offload { tool, total_bytes },
+            Self::DriverEvent {
+                driver_kind,
+                summary,
+                payload,
+            } => ParsedAgentEvent::DriverEvent(DriverEventPayload::new(
+                driver_kind,
+                summary,
+                payload,
+            )),
         }
     }
 }
@@ -491,42 +477,54 @@ mod tests {
     }
 
     #[test]
-    fn parser_decodes_token_usage_into_parsed_event() {
-        let line = r#"{"type":"token_usage","model":"claude-sonnet-4-6","input":500,"output":120,"cache_read":200,"cache_write":50}"#;
+    fn parser_decodes_driver_event_into_parsed_event() {
+        let line = r#"{"type":"driver_event","driver_kind":"token_usage","summary":"claude-sonnet-4-6 input=500 output=120 cache_read=200 cache_write=50","payload":{"model":"claude-sonnet-4-6","input":500,"output":120,"cache_read":200,"cache_write":50}}"#;
         let parsed = DirectParser.parse_line(line).expect("parse");
         assert_eq!(parsed.events.len(), 1);
         match &parsed.events[0] {
-            ParsedAgentEvent::TokenUsage {
-                model,
-                input,
-                output,
-                cache_read,
-                cache_write,
-            } => {
-                assert_eq!(model, "claude-sonnet-4-6");
-                assert_eq!(*input, 500);
-                assert_eq!(*output, 120);
-                assert_eq!(*cache_read, 200);
-                assert_eq!(*cache_write, 50);
+            ParsedAgentEvent::DriverEvent(payload) => {
+                assert_eq!(payload.driver_kind, DriverKind::TokenUsage);
+                assert_eq!(payload.payload["model"], "claude-sonnet-4-6");
+                assert_eq!(payload.payload["input"], 500);
+                assert_eq!(payload.payload["output"], 120);
+                assert_eq!(payload.payload["cache_read"], 200);
+                assert_eq!(payload.payload["cache_write"], 50);
             }
-            other => panic!("expected TokenUsage, got {other:?}"),
+            other => panic!("expected DriverEvent, got {other:?}"),
         }
         assert!(parsed.response.is_none());
     }
 
     #[test]
-    fn parser_decodes_offload_into_parsed_event() {
-        let line = r#"{"type":"offload","tool":"Read","total_bytes":42}"#;
+    fn parser_lifts_driver_event_with_driver_source() {
+        let line = r#"{"type":"driver_event","driver_kind":"offload","summary":"Read offloaded 42 bytes","payload":{"tool":"Read","total_bytes":42}}"#;
         let parsed = DirectParser.parse_line(line).expect("parse");
-        assert_eq!(parsed.events.len(), 1);
-        match &parsed.events[0] {
-            ParsedAgentEvent::Offload { tool, total_bytes } => {
-                assert_eq!(tool, "Read");
-                assert_eq!(*total_bytes, 42);
+        let mut builder = loom_events::EnvelopeBuilder::new(
+            loom_events::SessionScope::phase(
+                loom_events::identifier::SessionId::new("direct-test"),
+                None,
+            ),
+            loom_events::Source::Agent,
+            || 0,
+        );
+        let event = loom_events::AgentEvent::from_parsed(
+            parsed.events.into_iter().next().expect("event"),
+            builder.build(),
+        );
+        match event {
+            loom_events::AgentEvent::DriverEvent {
+                envelope,
+                driver_kind,
+                payload,
+                ..
+            } => {
+                assert_eq!(envelope.source, loom_events::Source::Driver);
+                assert_eq!(driver_kind, DriverKind::Offload);
+                assert_eq!(payload["tool"], "Read");
+                assert_eq!(payload["total_bytes"], 42);
             }
-            other => panic!("expected Offload, got {other:?}"),
+            other => panic!("expected DriverEvent, got {other:?}"),
         }
-        assert!(parsed.response.is_none());
     }
 
     #[test]

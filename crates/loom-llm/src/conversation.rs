@@ -15,10 +15,12 @@
 //! short mpsc-backed `EventSink` impl.
 
 use displaydoc::Display;
+#[cfg(test)]
+use loom_events::DriverKind;
 use loom_events::event::Source;
 use loom_events::identifier::{SessionId, ToolCallId as EventToolCallId};
 use loom_events::{
-    AgentEvent, DriverKind, EnvelopeBuilder, EventSink, SessionCommand, SessionScope,
+    AgentEvent, DriverEventPayload, EnvelopeBuilder, EventSink, SessionCommand, SessionScope,
 };
 use thiserror::Error;
 
@@ -419,69 +421,40 @@ impl Conversation {
         if let Some(observer) = self.doom_loop.as_mut() {
             let tripped = observer.take_pending();
             for trip in tripped {
-                if let Some(event) = self.doom_loop_driver_event(trip) {
-                    client.emit_event(&event);
-                }
+                let event = self.doom_loop_driver_event(trip);
+                client.emit_driver_event(event);
             }
         }
         if let Some(observer) = self.duplicate_result.as_mut() {
             let detections = observer.take_pending();
             for detection in detections {
-                if let Some(event) = self.duplicate_result_driver_event(detection) {
-                    client.emit_event(&event);
-                }
+                let event = self.duplicate_result_driver_event(detection);
+                client.emit_driver_event(event);
             }
         }
     }
 
     fn doom_loop_driver_event(
-        &mut self,
+        &self,
         trip: crate::observer::doom_loop::DoomLoopTripped,
-    ) -> Option<AgentEvent> {
-        let envelope = self.next_driver_envelope()?;
-        let stage = trip.stage.as_u8();
-        let summary = format!(
-            "doom-loop stage {stage} for tool `{}` on call {}",
-            trip.tool, trip.call_id,
-        );
-        Some(AgentEvent::DriverEvent {
-            envelope,
-            driver_kind: DriverKind::DoomLoopTripped,
-            summary,
-            payload: serde_json::json!({
-                "stage": stage,
-                "tool": trip.tool,
-                "params": trip.params,
-                "call_id": trip.call_id.as_str(),
-            }),
-        })
+    ) -> DriverEventPayload {
+        DriverEventPayload::doom_loop_tripped(
+            trip.stage.as_u8(),
+            trip.tool,
+            trip.params,
+            trip.call_id.as_str(),
+        )
     }
 
     fn duplicate_result_driver_event(
-        &mut self,
+        &self,
         detection: crate::observer::duplicate_result::DuplicateDetection,
-    ) -> Option<AgentEvent> {
-        let envelope = self.next_driver_envelope()?;
-        let summary = format!(
-            "duplicate tool result: {} repeated {}; {} bytes wasted",
-            detection.original_call_id, detection.repeated_call_id, detection.bytes_wasted,
-        );
-        Some(AgentEvent::DriverEvent {
-            envelope,
-            driver_kind: DriverKind::DuplicateToolResult,
-            summary,
-            payload: serde_json::json!({
-                "original_call_id": detection.original_call_id.as_str(),
-                "repeated_call_id": detection.repeated_call_id.as_str(),
-                "bytes_wasted": detection.bytes_wasted,
-            }),
-        })
-    }
-
-    fn next_driver_envelope(&mut self) -> Option<loom_events::EventEnvelope> {
-        self.envelope_builder
-            .as_mut()
-            .map(|builder| builder.build_with_source(Source::Driver))
+    ) -> DriverEventPayload {
+        DriverEventPayload::duplicate_tool_result(
+            detection.original_call_id.as_str(),
+            detection.repeated_call_id.as_str(),
+            detection.bytes_wasted,
+        )
     }
 
     /// Drain composed observers' `react()` queues in registration order.
@@ -804,6 +777,20 @@ mod tests {
 
         fn supports(&self, _model: &ModelId) -> bool {
             true
+        }
+
+        fn emit_driver_event(&self, event: DriverEventPayload) {
+            let mut guard = self.events.lock().unwrap_or_else(|p| p.into_inner());
+            let envelope = loom_events::EventEnvelope {
+                session_id: SessionId::new("scripted-client"),
+                bead_id: None,
+                molecule_id: None,
+                iteration: None,
+                source: Source::Driver,
+                ts_ms: 0,
+                seq: guard.len() as u64,
+            };
+            guard.push(AgentEvent::from_driver_event(event, envelope));
         }
 
         fn emit_event(&self, event: &AgentEvent) {

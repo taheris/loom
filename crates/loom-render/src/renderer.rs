@@ -7,8 +7,8 @@ use serde_json::Value;
 use crate::clock::{Clock, SystemClock};
 use crate::in_place::CLEAR_TO_EOL;
 use crate::tool_body;
-use loom_events::AgentEvent;
 use loom_events::identifier::{BeadId, ProfileName, ToolCallId};
+use loom_events::{AgentEvent, InputKind};
 
 /// Final outcome of a bead spawn — drives the closing line color and glyph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +163,15 @@ fn driver_event_is_warning(payload: &Value) -> bool {
         .get("severity")
         .and_then(Value::as_str)
         .is_some_and(|severity| severity == "warning")
+}
+
+fn input_kind_label(kind: InputKind) -> &'static str {
+    match kind {
+        InputKind::InitialPrompt => "initial_prompt",
+        InputKind::FollowUp => "follow_up",
+        InputKind::Steer => "steer",
+        InputKind::Repin => "repin",
+    }
 }
 
 /// State captured at `ToolCall` time so the matching `ToolResult` can
@@ -524,6 +533,41 @@ impl TerminalRenderer {
     /// bounded tool bodies.
     pub fn render_event(&mut self, event: &AgentEvent) -> io::Result<()> {
         match event {
+            AgentEvent::AgentInput {
+                input_kind,
+                text,
+                redactions,
+                ..
+            } => {
+                self.close_stream_lines()?;
+                self.close_in_flight("…")?;
+                let prefix = self.prefix_str();
+                let label = input_kind_label(*input_kind);
+                self.out
+                    .write_all(format!("{prefix}⇢ agent_input {label}\n").as_bytes())?;
+                if text.is_empty() {
+                    self.out
+                        .write_all(format!("{prefix}  (empty)\n").as_bytes())?;
+                } else {
+                    for line in text.lines() {
+                        self.out
+                            .write_all(format!("{prefix}  {line}\n").as_bytes())?;
+                    }
+                }
+                if let Some(redactions) = redactions {
+                    for redaction in redactions {
+                        self.out.write_all(
+                            format!(
+                                "{prefix}  redaction {} ({})\n",
+                                redaction.marker,
+                                redaction.class.as_wire(),
+                            )
+                            .as_bytes(),
+                        )?;
+                    }
+                }
+                self.out.flush()?;
+            }
             AgentEvent::ToolCall {
                 envelope,
                 id,

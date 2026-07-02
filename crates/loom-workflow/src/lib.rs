@@ -11,6 +11,7 @@
 //! depending on `loom-driver` directly each time.
 
 pub mod agent;
+mod agent_input;
 pub mod gate_clarify;
 pub mod inbox;
 pub mod init;

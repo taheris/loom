@@ -260,6 +260,105 @@ pub struct InputRedaction {
     pub class: RedactionClass,
 }
 
+/// Driver-origin payload before the session stamper adds envelope fields.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DriverEventPayload {
+    pub driver_kind: DriverKind,
+    pub summary: String,
+    pub payload: serde_json::Value,
+}
+
+impl DriverEventPayload {
+    pub fn new(
+        driver_kind: DriverKind,
+        summary: impl Into<String>,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            driver_kind,
+            summary: summary.into(),
+            payload,
+        }
+    }
+
+    pub fn token_usage(
+        model: impl Into<String>,
+        input: u32,
+        output: u32,
+        cache_read: u32,
+        cache_write: u32,
+    ) -> Self {
+        let model = model.into();
+        Self::new(
+            DriverKind::TokenUsage,
+            format!(
+                "{model} input={input} output={output} cache_read={cache_read} \
+                 cache_write={cache_write}",
+            ),
+            serde_json::json!({
+                "model": model,
+                "input": input,
+                "output": output,
+                "cache_read": cache_read,
+                "cache_write": cache_write,
+            }),
+        )
+    }
+
+    pub fn offload(tool: impl Into<String>, total_bytes: usize) -> Self {
+        let tool = tool.into();
+        Self::new(
+            DriverKind::Offload,
+            format!("{tool} offloaded {total_bytes} bytes"),
+            serde_json::json!({
+                "tool": tool,
+                "total_bytes": total_bytes,
+            }),
+        )
+    }
+
+    pub fn doom_loop_tripped(
+        stage: u8,
+        tool: impl Into<String>,
+        params: serde_json::Value,
+        call_id: impl Into<String>,
+    ) -> Self {
+        let tool = tool.into();
+        let call_id = call_id.into();
+        Self::new(
+            DriverKind::DoomLoopTripped,
+            format!("doom-loop stage {stage} for tool `{tool}` on call {call_id}"),
+            serde_json::json!({
+                "stage": stage,
+                "tool": tool,
+                "params": params,
+                "call_id": call_id,
+            }),
+        )
+    }
+
+    pub fn duplicate_tool_result(
+        original_call_id: impl Into<String>,
+        repeated_call_id: impl Into<String>,
+        bytes_wasted: u64,
+    ) -> Self {
+        let original_call_id = original_call_id.into();
+        let repeated_call_id = repeated_call_id.into();
+        Self::new(
+            DriverKind::DuplicateToolResult,
+            format!(
+                "duplicate tool result: {original_call_id} repeated {repeated_call_id}; \
+                 {bytes_wasted} bytes wasted",
+            ),
+            serde_json::json!({
+                "original_call_id": original_call_id,
+                "repeated_call_id": repeated_call_id,
+                "bytes_wasted": bytes_wasted,
+            }),
+        )
+    }
+}
+
 /// Work-routing scope stamped onto every event in one event session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionScope {
@@ -629,48 +728,17 @@ impl AgentEvent {
                 error_message,
             },
             ParsedAgentEvent::Error { message } => AgentEvent::Error { envelope, message },
-            ParsedAgentEvent::TokenUsage {
-                model,
-                input,
-                output,
-                cache_read,
-                cache_write,
-            } => {
-                let mut env = envelope;
-                env.source = Source::Driver;
-                let summary = format!(
-                    "{model} input={input} output={output} cache_read={cache_read} \
-                     cache_write={cache_write}",
-                );
-                let payload = serde_json::json!({
-                    "model": model,
-                    "input": input,
-                    "output": output,
-                    "cache_read": cache_read,
-                    "cache_write": cache_write,
-                });
-                AgentEvent::DriverEvent {
-                    envelope: env,
-                    driver_kind: DriverKind::TokenUsage,
-                    summary,
-                    payload,
-                }
-            }
-            ParsedAgentEvent::Offload { tool, total_bytes } => {
-                let mut env = envelope;
-                env.source = Source::Driver;
-                let summary = format!("{tool} offloaded {total_bytes} bytes");
-                let payload = serde_json::json!({
-                    "tool": tool,
-                    "total_bytes": total_bytes,
-                });
-                AgentEvent::DriverEvent {
-                    envelope: env,
-                    driver_kind: DriverKind::Offload,
-                    summary,
-                    payload,
-                }
-            }
+            ParsedAgentEvent::DriverEvent(payload) => Self::from_driver_event(payload, envelope),
+        }
+    }
+
+    pub fn from_driver_event(payload: DriverEventPayload, mut envelope: EventEnvelope) -> Self {
+        envelope.source = Source::Driver;
+        AgentEvent::DriverEvent {
+            envelope,
+            driver_kind: payload.driver_kind,
+            summary: payload.summary,
+            payload: payload.payload,
         }
     }
 }
@@ -680,12 +748,10 @@ impl AgentEvent {
 /// seq context — the session layer joins this payload with the
 /// per-spawn [`EventEnvelope`] via [`AgentEvent::from_parsed`].
 ///
-/// `AgentStart` is driver-emitted and never appears here. The Direct
-/// backend's runner is uniquely positioned to surface driver facts such
-/// as [`DriverKind::TokenUsage`] alongside agent-emitted events, so the
-/// parser carries driver-event-equivalent variants; `from_parsed` lifts
-/// them into [`AgentEvent::DriverEvent`] with `Source::Driver` regardless
-/// of the envelope's configured source.
+/// `AgentStart` is driver-emitted and never appears here. Driver-side
+/// producers hand typed payloads to this enum; `from_parsed` lifts them
+/// into [`AgentEvent::DriverEvent`] with `Source::Driver` regardless of
+/// the envelope's configured source.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedAgentEvent {
     AgentEnd,
@@ -737,24 +803,7 @@ pub enum ParsedAgentEvent {
     Error {
         message: String,
     },
-    /// Per-call token accounting emitted by the Direct backend's runner
-    /// after every `complete*`. Lifted to `AgentEvent::DriverEvent` with
-    /// `driver_kind: DriverKind::TokenUsage` and `source: Source::Driver`
-    /// by [`AgentEvent::from_parsed`].
-    TokenUsage {
-        model: String,
-        input: u32,
-        output: u32,
-        cache_read: u32,
-        cache_write: u32,
-    },
-    /// Successful Direct tool output offload emitted by the runner.
-    /// Lifted to `AgentEvent::DriverEvent` with
-    /// `driver_kind: DriverKind::Offload` and `source: Source::Driver`.
-    Offload {
-        tool: String,
-        total_bytes: usize,
-    },
+    DriverEvent(DriverEventPayload),
 }
 
 /// Per-session monotonic envelope factory. Threads session/work scope
@@ -1680,23 +1729,21 @@ mod tests {
         }
     }
 
-    /// `ParsedAgentEvent::TokenUsage` lifts into `AgentEvent::DriverEvent`
-    /// with `driver_kind: TokenUsage` and overrides the envelope's
-    /// `source` to `Source::Driver` regardless of the configured source.
-    /// SaaS billing pipelines tail the live event stream and rely on this
-    /// per-call accounting frame having driver provenance.
+    /// `ParsedAgentEvent::DriverEvent` lifts typed driver payloads into
+    /// `AgentEvent::DriverEvent` and overrides the envelope's `source` to
+    /// `Source::Driver` regardless of the configured source.
     #[test]
-    fn from_parsed_token_usage_emits_driver_event_with_driver_source() {
+    fn from_parsed_driver_event_emits_driver_event_with_driver_source() {
         let mut b = builder();
         let mut env = b.build();
         env.source = Source::Agent;
-        let parsed = ParsedAgentEvent::TokenUsage {
-            model: "claude-sonnet-4-6".to_string(),
-            input: 1_000,
-            output: 250,
-            cache_read: 600,
-            cache_write: 400,
-        };
+        let parsed = ParsedAgentEvent::DriverEvent(DriverEventPayload::token_usage(
+            "claude-sonnet-4-6",
+            1_000,
+            250,
+            600,
+            400,
+        ));
         match AgentEvent::from_parsed(parsed, env) {
             AgentEvent::DriverEvent {
                 envelope,
@@ -1721,18 +1768,14 @@ mod tests {
         }
     }
 
-    /// `ParsedAgentEvent::Offload` lifts into `AgentEvent::DriverEvent`
-    /// with `driver_kind: Offload`, preserving the tool name and byte
-    /// count the Direct tool context recorded at the offload point.
+    /// Offload payload factories preserve the tool name and byte count
+    /// the Direct tool context recorded at the offload point.
     #[test]
-    fn from_parsed_offload_emits_driver_event_with_tool_and_byte_count() {
+    fn driver_event_payload_offload_emits_tool_and_byte_count() {
         let mut b = builder();
         let mut env = b.build();
         env.source = Source::Agent;
-        let parsed = ParsedAgentEvent::Offload {
-            tool: "Read".to_string(),
-            total_bytes: 42,
-        };
+        let parsed = ParsedAgentEvent::DriverEvent(DriverEventPayload::offload("Read", 42));
         match AgentEvent::from_parsed(parsed, env) {
             AgentEvent::DriverEvent {
                 envelope,

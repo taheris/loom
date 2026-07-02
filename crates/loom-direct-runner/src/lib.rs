@@ -24,6 +24,7 @@ use loom_agent::direct::tools::{
     Bash, Edit, Glob, Grep, OffloadRecord, Read, ToolContext, ToolContextError, Write,
 };
 use loom_driver::agent::SpawnConfig;
+use loom_events::DriverEventPayload;
 use loom_events::identifier::ToolCallId;
 use loom_llm::api_key::ApiKey;
 use loom_llm::cache::{CacheControl, CacheTtl};
@@ -34,7 +35,6 @@ use loom_llm::conversation::{ContextBudget, Conversation};
 use loom_llm::model_id::{AnthropicModel, ModelId, SchemaKind};
 use loom_llm::request::{CompletionRequest, Message, Role};
 use loom_llm::tool::Tool;
-use loom_llm::usage::TokenUsage;
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, info, warn};
@@ -180,10 +180,10 @@ where
     let ctx = tool_context(&config);
     let mut conv =
         build_conversation_with_context(&config, ctx.clone()).context_budget(context_budget);
-    let usages = Arc::new(Mutex::new(Vec::<UsageRecord>::new()));
+    let driver_events = Arc::new(Mutex::new(Vec::<DriverEventPayload>::new()));
     let recording = UsageRecordingClient {
         inner: client,
-        usages: usages.clone(),
+        driver_events: driver_events.clone(),
     };
     let mut emitter = Emitter::new(stdout);
     let mut lines = stdin.lines();
@@ -203,7 +203,7 @@ where
                 if let Err(err) = run_prompt(
                     &mut conv,
                     &recording,
-                    &usages,
+                    &driver_events,
                     &ctx,
                     &mut emitter,
                     message,
@@ -252,7 +252,7 @@ where
 async fn run_prompt<C, W>(
     conv: &mut Conversation,
     client: &UsageRecordingClient<C>,
-    usages: &Mutex<Vec<UsageRecord>>,
+    driver_events: &Mutex<Vec<DriverEventPayload>>,
     ctx: &ToolContext,
     emitter: &mut Emitter<W>,
     message: String,
@@ -271,6 +271,9 @@ where
     let response = match conv.run(client).await {
         Ok(response) => response,
         Err(err) => {
+            for event in drain_driver_events(driver_events) {
+                emitter.emit(&driver_event(&event)).await?;
+            }
             for record in ctx.drain_offloads().map_err(RunnerError::ToolContext)? {
                 emitter.emit(&offload_event(&record)).await?;
             }
@@ -296,62 +299,47 @@ where
             .await?;
         emitter.emit(&DirectEvent::TextEnd).await?;
     }
-    for record in drain_usages(usages) {
-        emitter.emit(&token_usage_event(&record)).await?;
+    for event in drain_driver_events(driver_events) {
+        emitter.emit(&driver_event(&event)).await?;
     }
     emitter.emit(&DirectEvent::TurnEnd).await?;
     Ok(())
 }
 
-fn drain_usages(usages: &Mutex<Vec<UsageRecord>>) -> Vec<UsageRecord> {
-    let mut guard = usages.lock().unwrap_or_else(|poison| poison.into_inner());
+fn drain_driver_events(events: &Mutex<Vec<DriverEventPayload>>) -> Vec<DriverEventPayload> {
+    let mut guard = events.lock().unwrap_or_else(|poison| poison.into_inner());
     std::mem::take(&mut *guard)
 }
 
-fn token_usage_event(record: &UsageRecord) -> DirectEvent {
-    DirectEvent::TokenUsage {
-        model: record.model.clone(),
-        input: record.usage.input,
-        output: record.usage.output,
-        cache_read: record.usage.cache_read,
-        cache_write: record.usage.cache_write,
+fn driver_event(event: &DriverEventPayload) -> DirectEvent {
+    DirectEvent::DriverEvent {
+        driver_kind: event.driver_kind.clone(),
+        summary: event.summary.clone(),
+        payload: event.payload.clone(),
     }
 }
 
 fn offload_event(record: &OffloadRecord) -> DirectEvent {
-    DirectEvent::Offload {
-        tool: record.tool.clone(),
-        total_bytes: record.total_bytes,
-    }
+    driver_event(&DriverEventPayload::offload(
+        record.tool.clone(),
+        record.total_bytes,
+    ))
 }
 
-/// One captured (model, usage) pair recorded by [`UsageRecordingClient`]
-/// after a successful `complete*` call.
-#[derive(Debug, Clone)]
-struct UsageRecord {
-    model: String,
-    usage: TokenUsage,
-}
-
-/// Decorator around an inner [`LlmClient`] that captures every
-/// completion's [`TokenUsage`] into a shared queue. The runner drains
-/// the queue between turns to emit one [`DirectEvent::TokenUsage`] frame
-/// per completion so the host's parser surfaces a
-/// [`loom_events::DriverKind::TokenUsage`] event per call.
+/// Decorator around an inner [`LlmClient`] that captures driver-origin
+/// payloads so the host-side session stamper owns final `AgentEvent`
+/// construction.
 struct UsageRecordingClient<C> {
     inner: C,
-    usages: Arc<Mutex<Vec<UsageRecord>>>,
+    driver_events: Arc<Mutex<Vec<DriverEventPayload>>>,
 }
 
 impl<C> UsageRecordingClient<C> {
-    fn record(&self, model: &ModelId, usage: TokenUsage) {
-        self.usages
+    fn record(&self, event: DriverEventPayload) {
+        self.driver_events
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .push(UsageRecord {
-                model: model.as_wire(),
-                usage,
-            });
+            .push(event);
     }
 }
 
@@ -364,6 +352,10 @@ impl<C: LlmClient + Sync> LlmClient for UsageRecordingClient<C> {
         self.inner.supports(model)
     }
 
+    fn emit_driver_event(&self, event: DriverEventPayload) {
+        self.record(event);
+    }
+
     fn complete<'a>(
         &'a self,
         req: CompletionRequest,
@@ -371,7 +363,13 @@ impl<C: LlmClient + Sync> LlmClient for UsageRecordingClient<C> {
         Box::pin(async move {
             let model = req.model.clone();
             let resp = self.inner.complete(req).await?;
-            self.record(&model, resp.usage);
+            self.record(DriverEventPayload::token_usage(
+                model.as_wire(),
+                resp.usage.input,
+                resp.usage.output,
+                resp.usage.cache_read,
+                resp.usage.cache_write,
+            ));
             Ok(resp)
         })
     }
@@ -705,7 +703,7 @@ mod tests {
                     .map_or("<missing>", |s| match s {
                         "text_delta" => "text_delta",
                         "text_end" => "text_end",
-                        "token_usage" => "token_usage",
+                        "driver_event" => "driver_event",
                         "turn_end" => "turn_end",
                         "session_complete" => "session_complete",
                         other => panic!("unexpected event type {other}"),
@@ -717,7 +715,7 @@ mod tests {
             vec![
                 "text_delta",
                 "text_end",
-                "token_usage",
+                "driver_event",
                 "turn_end",
                 "session_complete",
             ],
@@ -806,7 +804,7 @@ mod tests {
             .map(|e| match e {
                 DirectEvent::TextDelta { .. } => "text_delta",
                 DirectEvent::TextEnd => "text_end",
-                DirectEvent::TokenUsage { .. } => "token_usage",
+                DirectEvent::DriverEvent { .. } => "driver_event",
                 DirectEvent::TurnEnd => "turn_end",
                 DirectEvent::SessionComplete { .. } => "session_complete",
                 other => panic!("unexpected trailing event {other:?}"),
@@ -817,8 +815,8 @@ mod tests {
             vec![
                 "text_delta",
                 "text_end",
-                "token_usage",
-                "token_usage",
+                "driver_event",
+                "driver_event",
                 "turn_end",
                 "session_complete",
             ],
@@ -1099,9 +1097,8 @@ mod tests {
     /// Spec contract (`specs/agent.md` § Direct Backend):
     /// `DriverKind::TokenUsage` event emits on every completion within
     /// Direct sessions. The runner wraps the LLM client so each
-    /// `complete*` call records its `TokenUsage`; the wire frame
-    /// (`DirectEvent::TokenUsage`) reaches stdout in turn-completion
-    /// order and the host's parser lifts it into an
+    /// `complete*` call records its `TokenUsage`; the typed driver frame
+    /// reaches stdout in turn-completion order and the host's parser lifts it into an
     /// `AgentEvent::DriverEvent { driver_kind: TokenUsage, .. }` with
     /// `source: Source::Driver`.
     #[test]
@@ -1155,52 +1152,106 @@ mod tests {
 
         let usages: Vec<&DirectEvent> = events
             .iter()
-            .filter(|e| matches!(e, DirectEvent::TokenUsage { .. }))
+            .filter(|e| {
+                matches!(
+                    e,
+                    DirectEvent::DriverEvent {
+                        driver_kind: DriverKind::TokenUsage,
+                        ..
+                    }
+                )
+            })
             .collect();
         assert_eq!(
             usages.len(),
             2,
-            "one TokenUsage frame per completion (two completions for a tool-using turn): {events:?}",
+            "one token-usage driver frame per completion (two completions for a tool-using turn): {events:?}",
         );
 
         match usages[0] {
-            DirectEvent::TokenUsage {
-                model,
-                input,
-                output,
-                cache_read,
-                cache_write,
-            } => {
-                assert_eq!(model, "claude-sonnet-4-6");
-                assert_eq!(*input, 500);
-                assert_eq!(*output, 120);
-                assert_eq!(*cache_read, 200);
-                assert_eq!(*cache_write, 50);
+            DirectEvent::DriverEvent { payload, .. } => {
+                assert_eq!(payload["model"], "claude-sonnet-4-6");
+                assert_eq!(payload["input"], 500);
+                assert_eq!(payload["output"], 120);
+                assert_eq!(payload["cache_read"], 200);
+                assert_eq!(payload["cache_write"], 50);
             }
-            other => panic!("expected TokenUsage, got {other:?}"),
+            other => panic!("expected token usage DriverEvent, got {other:?}"),
         }
         match usages[1] {
-            DirectEvent::TokenUsage {
-                model,
-                input,
-                output,
-                cache_read,
-                cache_write,
-            } => {
-                assert_eq!(model, "claude-sonnet-4-6");
-                assert_eq!(*input, 800);
-                assert_eq!(*output, 60);
-                assert_eq!(*cache_read, 600);
-                assert_eq!(*cache_write, 0);
+            DirectEvent::DriverEvent { payload, .. } => {
+                assert_eq!(payload["model"], "claude-sonnet-4-6");
+                assert_eq!(payload["input"], 800);
+                assert_eq!(payload["output"], 60);
+                assert_eq!(payload["cache_read"], 600);
+                assert_eq!(payload["cache_write"], 0);
             }
-            other => panic!("expected TokenUsage, got {other:?}"),
+            other => panic!("expected token usage DriverEvent, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn direct_runner_emits_observer_driver_events() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("large.txt");
+        std::fs::write(&target, "x".repeat(300)).expect("write fixture");
+        let repeated_read = || CompletionResponse {
+            text: String::new(),
+            usage: TokenUsage::default(),
+            tool_calls: vec![ToolUseRequest {
+                call_id: LlmToolCallId::parse("call-read").expect("test tool call id parses"),
+                name: "Read".into(),
+                args: json!({ "file_path": target.clone() }),
+            }],
+        };
+        let client = ScriptedClient::new(vec![
+            repeated_read(),
+            repeated_read(),
+            repeated_read(),
+            final_text("done"),
+        ]);
+        let stdin = b"{\"type\":\"prompt\",\"message\":\"please read\"}\n".to_vec();
+        let mut stdout: Vec<u8> = Vec::new();
+
+        tokio_test::block_on(run_session(
+            client,
+            sample_config(Some("claude-sonnet-4-6")),
+            tokio::io::BufReader::new(&stdin[..]),
+            &mut stdout,
+        ))
+        .expect("run_session completes");
+
+        let events: Vec<DirectEvent> = std::str::from_utf8(&stdout)
+            .expect("utf-8")
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("parse"))
+            .collect();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                DirectEvent::DriverEvent {
+                    driver_kind: DriverKind::DoomLoopTripped,
+                    ..
+                }
+            )),
+            "doom-loop observer payload must reach the Direct wire: {events:?}",
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                DirectEvent::DriverEvent {
+                    driver_kind: DriverKind::DuplicateToolResult,
+                    ..
+                }
+            )),
+            "duplicate-result observer payload must reach the Direct wire: {events:?}",
+        );
     }
 
     /// Spec contract (`specs/agent.md` § Direct output bounding): every
     /// successful offload emits a driver event carrying the tool name and
     /// offloaded byte count. The test drives a real `Read` tool call over
-    /// the cap, observes the runner's `DirectEvent::Offload` frame, and
+    /// the cap, observes the runner's offload driver frame, and
     /// verifies the host-side lift produces a `driver_event` with
     /// `DriverKind::Offload`.
     #[test]
@@ -1243,17 +1294,25 @@ mod tests {
             .collect();
         let offloads: Vec<&DirectEvent> = events
             .iter()
-            .filter(|event| matches!(event, DirectEvent::Offload { .. }))
+            .filter(|event| {
+                matches!(
+                    event,
+                    DirectEvent::DriverEvent {
+                        driver_kind: DriverKind::Offload,
+                        ..
+                    }
+                )
+            })
             .collect();
         assert_eq!(offloads.len(), 1, "one offload event: {events:?}");
 
         let offload = offloads[0];
         match offload {
-            DirectEvent::Offload { tool, total_bytes } => {
-                assert_eq!(tool, "Read");
-                assert_eq!(*total_bytes, body.len());
+            DirectEvent::DriverEvent { payload, .. } => {
+                assert_eq!(payload["tool"], "Read");
+                assert_eq!(payload["total_bytes"], body.len());
             }
-            other => panic!("expected Offload, got {other:?}"),
+            other => panic!("expected offload DriverEvent, got {other:?}"),
         }
 
         let mut builder = EnvelopeBuilder::new(

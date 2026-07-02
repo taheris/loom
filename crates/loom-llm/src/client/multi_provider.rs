@@ -23,9 +23,11 @@ use genai::chat::{
 use genai::resolver::AuthData;
 #[cfg(test)]
 use genai::resolver::Endpoint;
+#[cfg(test)]
+use loom_events::DriverKind;
 use loom_events::event::Source;
 use loom_events::identifier::SessionId;
-use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, EventSink, SessionScope};
+use loom_events::{AgentEvent, DriverEventPayload, EnvelopeBuilder, EventSink, SessionScope};
 #[cfg(test)]
 use schemars::{JsonSchema, SchemaGenerator};
 
@@ -144,6 +146,10 @@ impl std::fmt::Debug for AnthropicClient {
 impl LlmClient for AnthropicClient {
     fn schema(&self) -> SchemaKind {
         Self::SCHEMA
+    }
+
+    fn emit_driver_event(&self, event: DriverEventPayload) {
+        emit_driver_event_to_chain(&self.envelope_builder, &self.sinks, event);
     }
 
     fn emit_event(&self, event: &AgentEvent) {
@@ -279,6 +285,10 @@ impl LlmClient for OpenAiClient {
         Self::SCHEMA
     }
 
+    fn emit_driver_event(&self, event: DriverEventPayload) {
+        emit_driver_event_to_chain(&self.envelope_builder, &self.sinks, event);
+    }
+
     fn emit_event(&self, event: &AgentEvent) {
         emit_event_to_chain(&self.sinks, event);
     }
@@ -412,6 +422,10 @@ impl LlmClient for GeminiClient {
         Self::SCHEMA
     }
 
+    fn emit_driver_event(&self, event: DriverEventPayload) {
+        emit_driver_event_to_chain(&self.envelope_builder, &self.sinks, event);
+    }
+
     fn emit_event(&self, event: &AgentEvent) {
         emit_event_to_chain(&self.sinks, event);
     }
@@ -505,11 +519,10 @@ pub(super) fn emit_event_to_chain(sinks: &Mutex<Vec<Box<dyn EventSink>>>, event:
     }
 }
 
-pub(super) fn emit_usage_to_chain(
+pub(super) fn emit_driver_event_to_chain(
     envelope_builder: &Mutex<Option<EnvelopeBuilder>>,
     sinks: &Mutex<Vec<Box<dyn EventSink>>>,
-    model: &ModelId,
-    usage: &TokenUsage,
+    payload: DriverEventPayload,
 ) {
     let envelope = {
         let mut guard = envelope_builder.lock().unwrap_or_else(|p| p.into_inner());
@@ -518,26 +531,27 @@ pub(super) fn emit_usage_to_chain(
             None => return,
         }
     };
-    let event = AgentEvent::DriverEvent {
-        envelope,
-        driver_kind: DriverKind::TokenUsage,
-        summary: format!(
-            "{} input={} output={} cache_read={} cache_write={}",
+    let event = AgentEvent::from_driver_event(payload, envelope);
+    emit_event_to_chain(sinks, &event);
+}
+
+pub(super) fn emit_usage_to_chain(
+    envelope_builder: &Mutex<Option<EnvelopeBuilder>>,
+    sinks: &Mutex<Vec<Box<dyn EventSink>>>,
+    model: &ModelId,
+    usage: &TokenUsage,
+) {
+    emit_driver_event_to_chain(
+        envelope_builder,
+        sinks,
+        DriverEventPayload::token_usage(
             model_id_to_provider_name(model),
             usage.input,
             usage.output,
             usage.cache_read,
             usage.cache_write,
         ),
-        payload: serde_json::json!({
-            "model": model_id_to_provider_name(model),
-            "input": usage.input,
-            "output": usage.output,
-            "cache_read": usage.cache_read,
-            "cache_write": usage.cache_write,
-        }),
-    };
-    emit_event_to_chain(sinks, &event);
+    );
 }
 
 pub(super) fn debug_per_schema_client(

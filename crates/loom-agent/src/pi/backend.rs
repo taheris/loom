@@ -26,8 +26,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use loom_driver::agent::{
-    Active, AgentBackend, AgentSession, DEFAULT_HANDSHAKE_TIMEOUT_SECS, Idle, JsonlReader,
-    ModelSelection, ProtocolError, SpawnConfig, ThinkingLevel,
+    AgentBackend, AgentSession, DEFAULT_HANDSHAKE_TIMEOUT_SECS, Idle, JsonlReader, ModelSelection,
+    ProtocolError, SpawnConfig, ThinkingLevel,
 };
 use loom_driver::clock::{Clock, SystemClock};
 use serde::{Deserialize, Serialize};
@@ -158,16 +158,12 @@ impl AgentBackend for PiBackend {
         Self::spawn_with_wrix_bin(config, &wrix_bin).await
     }
 
-    async fn on_compaction_start(
-        session: &mut AgentSession<Active>,
-        config: &SpawnConfig,
-    ) -> Result<(), ProtocolError> {
+    fn compaction_repin(config: &SpawnConfig) -> Result<Option<String>, ProtocolError> {
         debug!(
             scratch_dir = %config.scratch_dir.display(),
             "pi compaction_start observed; reading scratch dir for re-pin payload",
         );
-        let payload = build_repin_payload(&config.scratch_dir)?;
-        session.steer(&payload).await
+        build_repin_payload(&config.scratch_dir).map(Some)
     }
 }
 

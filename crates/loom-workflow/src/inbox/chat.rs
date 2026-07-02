@@ -26,10 +26,11 @@ use loom_driver::profile_manifest::{ImageEntry, ProfileError, ProfileImageManife
 use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
 use loom_driver::state::CacheDb;
 use loom_events::identifier::SessionId;
-use loom_events::{EnvelopeBuilder, SessionScope, Source};
+use loom_events::{EnvelopeBuilder, InputKind, SessionScope, Source};
 use thiserror::Error;
 use tracing::{info, warn};
 
+use crate::agent_input::redact_agent_input;
 use crate::r#loop::{dolt_socket_mount, sccache_mount};
 use crate::pi_tui;
 use crate::skill::{SkillError, SkillPlan};
@@ -348,9 +349,16 @@ fn build_pi_bridge_spawn_config(
 
 async fn run_pi_bridge(config: SpawnConfig, wrix_bin: &Path) -> Result<String, ChatError> {
     let session = PiBackend::spawn_bridge_with_wrix_bin(&config, wrix_bin.as_os_str()).await?;
-    let mut session = session.prompt(&config.initial_prompt).await?;
     let mut output = String::new();
     let mut envelope_builder = pi_bridge_envelope_builder();
+    emit_pi_bridge_agent_input(
+        &mut envelope_builder,
+        &config,
+        InputKind::InitialPrompt,
+        &config.initial_prompt,
+        &mut output,
+    )?;
+    let mut session = session.prompt(&config.initial_prompt).await?;
     loop {
         let parsed = session
             .next_event()
@@ -358,8 +366,17 @@ async fn run_pi_bridge(config: SpawnConfig, wrix_bin: &Path) -> Result<String, C
             .ok_or(ProtocolError::UnexpectedEof)?;
         let event = AgentEvent::from_parsed(parsed, envelope_builder.build());
         render_pi_bridge_event(&event, &mut output)?;
-        if matches!(event, AgentEvent::CompactionStart { .. }) {
-            PiBackend::on_compaction_start(&mut session, &config).await?;
+        if matches!(event, AgentEvent::CompactionStart { .. })
+            && let Some(payload) = PiBackend::compaction_repin(&config)?
+        {
+            emit_pi_bridge_agent_input(
+                &mut envelope_builder,
+                &config,
+                InputKind::Repin,
+                &payload,
+                &mut output,
+            )?;
+            session.steer(&payload).await?;
         }
         match event {
             AgentEvent::AgentEnd { .. } => match parse_terminal_marker(&output) {
@@ -368,7 +385,14 @@ async fn run_pi_bridge(config: SpawnConfig, wrix_bin: &Path) -> Result<String, C
                     return Ok(output);
                 }
                 Err(TerminalMarkerError::Missing) => {
-                    if !read_pi_bridge_follow_up(&mut session).await? {
+                    if !read_pi_bridge_follow_up(
+                        &mut session,
+                        &config,
+                        &mut envelope_builder,
+                        &mut output,
+                    )
+                    .await?
+                    {
                         return Ok(output);
                     }
                 }
@@ -427,8 +451,43 @@ fn unix_timestamp_millis(clock: &SystemClock) -> i64 {
     }
 }
 
+fn emit_pi_bridge_agent_input(
+    envelope_builder: &mut EnvelopeBuilder,
+    config: &SpawnConfig,
+    input_kind: InputKind,
+    text: &str,
+    output: &mut String,
+) -> Result<(), std::io::Error> {
+    let redacted = redact_agent_input(text, config);
+    let event = AgentEvent::AgentInput {
+        envelope: envelope_builder.build_with_source(Source::Driver),
+        input_kind,
+        text: redacted.text,
+        redactions: redacted.redactions,
+    };
+    render_pi_bridge_event(&event, output)
+}
+
 fn render_pi_bridge_event(event: &AgentEvent, output: &mut String) -> Result<(), std::io::Error> {
     match event {
+        AgentEvent::AgentInput {
+            input_kind,
+            text,
+            redactions,
+            ..
+        } => {
+            println!("\n[agent input: {input_kind:?}]\n{text}");
+            if let Some(redactions) = redactions {
+                for redaction in redactions {
+                    println!(
+                        "[redaction] {} ({})",
+                        redaction.marker,
+                        redaction.class.as_wire(),
+                    );
+                }
+            }
+            std::io::stdout().flush()?;
+        }
         AgentEvent::TextDelta { text, .. } => {
             output.push_str(text);
             print!("{text}");
@@ -480,7 +539,12 @@ fn renderable_tool_body(body: &str, is_error: bool) -> Option<&str> {
     Some(trimmed)
 }
 
-async fn read_pi_bridge_follow_up(session: &mut AgentSession<Active>) -> Result<bool, ChatError> {
+async fn read_pi_bridge_follow_up(
+    session: &mut AgentSession<Active>,
+    config: &SpawnConfig,
+    envelope_builder: &mut EnvelopeBuilder,
+    output: &mut String,
+) -> Result<bool, ChatError> {
     print!("\nloom inbox pi> ");
     std::io::stdout().flush()?;
     let mut line = String::new();
@@ -491,6 +555,7 @@ async fn read_pi_bridge_follow_up(session: &mut AgentSession<Active>) -> Result<
     while line.ends_with('\n') || line.ends_with('\r') {
         line.pop();
     }
+    emit_pi_bridge_agent_input(envelope_builder, config, InputKind::FollowUp, &line, output)?;
     session.follow_up(&line).await?;
     Ok(true)
 }

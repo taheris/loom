@@ -327,19 +327,30 @@ pub trait AgentBackend: Send + Sync {
         config: &SpawnConfig,
     ) -> impl std::future::Future<Output = Result<AgentSession<Idle>, ProtocolError>> + Send;
 
+    /// Build the backend-specific re-pin payload for `CompactionStart`.
+    ///
+    /// Pi overrides this to read `prompt.txt` + `scratch.md`; the workflow
+    /// emits the `agent_input` event before sending the returned payload via
+    /// `steer`. Claude's default `None` stands because its compaction hook
+    /// re-pins inside the agent process.
+    fn compaction_repin(_config: &SpawnConfig) -> Result<Option<String>, ProtocolError> {
+        Ok(None)
+    }
+
     /// Per-backend handler for `AgentEvent::CompactionStart`.
     ///
-    /// Pi overrides this to read `prompt.txt` + `scratch.md` and send the
-    /// bytes via `steer` — the spec requires the driver to re-pin context as
-    /// soon as compaction begins so the next turn after `compaction_end`
-    /// reaches the agent with orientation restored. Claude's default no-op
-    /// stands: claude installs a `SessionStart` hook pre-spawn that re-pins
-    /// inside the agent process, so the workflow driver has nothing to do here.
+    /// The default sends [`Self::compaction_repin`] through `steer` for
+    /// compatibility with direct tests that exercise the backend hook.
     fn on_compaction_start<'a>(
-        _session: &'a mut AgentSession<Active>,
-        _config: &'a SpawnConfig,
+        session: &'a mut AgentSession<Active>,
+        config: &'a SpawnConfig,
     ) -> impl std::future::Future<Output = Result<(), ProtocolError>> + Send + 'a {
-        async { Ok(()) }
+        async move {
+            if let Some(payload) = Self::compaction_repin(config)? {
+                session.steer(&payload).await?;
+            }
+            Ok(())
+        }
     }
 
     /// Per-backend hook invoked once after the workflow observes

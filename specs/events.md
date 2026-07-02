@@ -326,9 +326,9 @@ not abort the run.
 - `AgentEvent` payload fields match this spec's variant payload table, including `agent_input`
   [test](agent_event_payload_fields_match_spec)
 - `agent_input` events are emitted before initial prompt, follow-up, steer, and re-pin text is sent to the backend, carrying the full rendered text after required redaction
-  [test?](agent_input_events_precede_backend_send)
+  [test](agent_input_events_precede_backend_send)
 - Agent input rendering and persisted logs apply required secret redaction with explicit transcript markers rather than silent omission
-  [test?](agent_input_redaction_is_explicit)
+  [test](agent_input_redaction_is_explicit)
 - Unknown `driver_kind` wire values deserialize as forward-compatible driver events
   [test](driver_event_accepts_unknown_driver_kind)
 - Core driver event kinds deserialize as `source: "driver"` events, including

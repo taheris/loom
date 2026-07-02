@@ -26,10 +26,12 @@ use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::logging::{BeadOutcome, LogSink};
 use loom_events::identifier::SessionId;
 use loom_events::{
-    DriverKind, EnvelopeBuilder, EventSink, ParsedAgentEvent, SessionCommand, SessionScope, Source,
+    DriverEventPayload, DriverKind, EnvelopeBuilder, EventSink, InputKind, ParsedAgentEvent,
+    SessionCommand, SessionScope, Source,
 };
 use tracing::{info, trace, warn};
 
+use crate::agent_input::redact_agent_input;
 use crate::r#loop::{MISSING_AGENT_BINARY_CAUSE, SessionResult};
 use crate::observer::DefaultObserverChain;
 
@@ -139,6 +141,24 @@ pub async fn run_agent_classified<B: AgentBackend>(
         stall_warn_secs = stall_window.as_secs(),
         "agent spawned; sending initial prompt",
     );
+    if let Err(err) = emit_agent_input_event(
+        &mut sink,
+        &mut envelope_builder,
+        InputKind::InitialPrompt,
+        &config.initial_prompt,
+        config,
+    ) {
+        let error_str = err.to_string();
+        emit_protocol_failure_event(
+            sink.as_mut(),
+            envelope_builder.as_mut(),
+            first_event_seen,
+            &err,
+            &error_str,
+        );
+        finish_sink(sink, BeadOutcome::Failed);
+        return protocol_error_session_result(first_event_seen, &err, error_str);
+    }
     let mut session = match prompt_with_stall_warn(
         session,
         &config.initial_prompt,
@@ -261,6 +281,25 @@ pub async fn run_agent_classified<B: AgentBackend>(
             match classify_react_commands(commands) {
                 ReactAction::Continue { steers } => {
                     for msg in steers {
+                        if let Err(e) = emit_agent_input_event(
+                            &mut sink,
+                            &mut envelope_builder,
+                            InputKind::Steer,
+                            &msg,
+                            config,
+                        ) {
+                            warn!(error = %e, "agent input event emit failed before steer");
+                            let error_str = format!("agent input event emit failed: {e}");
+                            emit_protocol_failure_event(
+                                sink.as_mut(),
+                                envelope_builder.as_mut(),
+                                first_event_seen,
+                                &e,
+                                &error_str,
+                            );
+                            finish_sink(sink, BeadOutcome::Failed);
+                            return protocol_error_session_result(first_event_seen, &e, error_str);
+                        }
                         if let Err(e) = session.steer(&msg).await {
                             warn!(error = %e, "session steer failed");
                             let error_str = format!("session steer failed: {e}");
@@ -293,20 +332,57 @@ pub async fn run_agent_classified<B: AgentBackend>(
                 }
             }
         }
-        if matches!(event, AgentEvent::CompactionStart { .. })
-            && let Err(e) = B::on_compaction_start(&mut session, config).await
-        {
-            warn!(error = %e, "backend compaction handler failed");
-            let error_str = e.to_string();
-            emit_protocol_failure_event(
-                sink.as_mut(),
-                envelope_builder.as_mut(),
-                first_event_seen,
-                &e,
-                &error_str,
-            );
-            finish_sink(sink, BeadOutcome::Failed);
-            return protocol_error_session_result(first_event_seen, &e, error_str);
+        if matches!(event, AgentEvent::CompactionStart { .. }) {
+            match B::compaction_repin(config) {
+                Ok(Some(payload)) => {
+                    if let Err(e) = emit_agent_input_event(
+                        &mut sink,
+                        &mut envelope_builder,
+                        InputKind::Repin,
+                        &payload,
+                        config,
+                    ) {
+                        warn!(error = %e, "agent input event emit failed before re-pin");
+                        let error_str = format!("agent input event emit failed: {e}");
+                        emit_protocol_failure_event(
+                            sink.as_mut(),
+                            envelope_builder.as_mut(),
+                            first_event_seen,
+                            &e,
+                            &error_str,
+                        );
+                        finish_sink(sink, BeadOutcome::Failed);
+                        return protocol_error_session_result(first_event_seen, &e, error_str);
+                    }
+                    if let Err(e) = session.steer(&payload).await {
+                        warn!(error = %e, "backend compaction re-pin failed");
+                        let error_str = e.to_string();
+                        emit_protocol_failure_event(
+                            sink.as_mut(),
+                            envelope_builder.as_mut(),
+                            first_event_seen,
+                            &e,
+                            &error_str,
+                        );
+                        finish_sink(sink, BeadOutcome::Failed);
+                        return protocol_error_session_result(first_event_seen, &e, error_str);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!(error = %e, "backend compaction handler failed");
+                    let error_str = e.to_string();
+                    emit_protocol_failure_event(
+                        sink.as_mut(),
+                        envelope_builder.as_mut(),
+                        first_event_seen,
+                        &e,
+                        &error_str,
+                    );
+                    finish_sink(sink, BeadOutcome::Failed);
+                    return protocol_error_session_result(first_event_seen, &e, error_str);
+                }
+            }
         }
         if let AgentEvent::SessionComplete {
             exit_code,
@@ -525,6 +601,34 @@ fn finish_sink(sink: Option<LogSink>, outcome: BeadOutcome) {
     }
 }
 
+fn emit_agent_input_event(
+    sink: &mut Option<LogSink>,
+    builder: &mut Option<EnvelopeBuilder>,
+    input_kind: InputKind,
+    text: &str,
+    config: &SpawnConfig,
+) -> Result<(), ProtocolError> {
+    let Some(sink) = sink.as_mut() else {
+        return Ok(());
+    };
+    if builder.is_none() {
+        *builder = Some(phase_envelope_builder());
+    }
+    let Some(builder) = builder.as_mut() else {
+        return Ok(());
+    };
+    let envelope = builder.build_with_source(Source::Driver);
+    let redacted = redact_agent_input(text, config);
+    let event = AgentEvent::AgentInput {
+        envelope,
+        input_kind,
+        text: redacted.text,
+        redactions: redacted.redactions,
+    };
+    sink.emit(&event)
+        .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))
+}
+
 /// Emit a single `driver_event` into `sink` carrying `source: driver`.
 ///
 /// Pulled out so driver-authored events in `run_agent_classified` share one
@@ -544,12 +648,10 @@ fn emit_driver_event(
     };
     let envelope = builder.build_with_source(Source::Driver);
     let wire = kind.as_wire().to_string();
-    let event = AgentEvent::DriverEvent {
+    let event = AgentEvent::from_driver_event(
+        DriverEventPayload::new(kind, summary.to_string(), payload),
         envelope,
-        driver_kind: kind,
-        summary: summary.to_string(),
-        payload,
-    };
+    );
     if let Err(e) = sink.emit(&event) {
         warn!(error = %e, kind = %wire, "driver event emit failed");
     }
@@ -909,6 +1011,53 @@ mod tests {
         inner: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     }
 
+    #[derive(Debug, Default)]
+    struct InputOrderState {
+        seen: std::sync::Mutex<Vec<InputKind>>,
+    }
+
+    impl InputOrderState {
+        fn record_render_chunk(&self, chunk: &str) {
+            let mut seen = self.seen.lock().expect("input-order mutex");
+            for (label, kind) in [
+                ("initial_prompt", InputKind::InitialPrompt),
+                ("follow_up", InputKind::FollowUp),
+                ("steer", InputKind::Steer),
+                ("repin", InputKind::Repin),
+            ] {
+                if chunk.contains(&format!("agent_input {label}")) && !seen.contains(&kind) {
+                    seen.push(kind);
+                }
+            }
+        }
+
+        fn has_seen(&self, kind: InputKind) -> bool {
+            self.seen.lock().expect("input-order mutex").contains(&kind)
+        }
+    }
+
+    #[derive(Clone)]
+    struct InputRecordingWriter {
+        inner: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        state: std::sync::Arc<InputOrderState>,
+    }
+
+    impl std::io::Write for InputRecordingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.state
+                .record_render_chunk(&String::from_utf8_lossy(buf));
+            self.inner
+                .lock()
+                .map_err(|_| std::io::Error::other("poisoned"))?
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     impl std::io::Write for SharedBufferWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             self.inner
@@ -988,6 +1137,18 @@ mod tests {
         (sink, path)
     }
 
+    fn open_test_sink_with_renderer(
+        dir: &std::path::Path,
+        renderer: Box<dyn loom_render::Renderer>,
+    ) -> (LogSink, std::path::PathBuf) {
+        let label = SpecLabel::new("emit-test");
+        let bead = BeadId::new("lm-emit").expect("bead id");
+        let sink = LogSink::open_in_at(dir, &label, &bead, Some(renderer), SystemTime::UNIX_EPOCH)
+            .expect("open sink");
+        let path = sink.log_path().to_path_buf();
+        (sink, path)
+    }
+
     fn sample_spawn_config(scratch: &Path) -> SpawnConfig {
         SpawnConfig {
             image_ref: "localhost/img:tag".into(),
@@ -1018,7 +1179,55 @@ mod tests {
         }
     }
 
+    const ORDERING_REPIN_PAYLOAD: &str = "repin payload";
+
     struct TestParser;
+
+    struct OrderingParser {
+        state: std::sync::Arc<InputOrderState>,
+    }
+
+    impl OrderingParser {
+        fn require_seen(&self, kind: InputKind, op: &str) -> Result<(), ProtocolError> {
+            if self.state.has_seen(kind) {
+                Ok(())
+            } else {
+                Err(ProtocolError::Io(std::io::Error::other(format!(
+                    "agent_input {kind:?} was not emitted before {op}",
+                ))))
+            }
+        }
+    }
+
+    impl LineParse for OrderingParser {
+        fn parse_line(&self, line: &str) -> Result<ParsedLine, ProtocolError> {
+            TestParser.parse_line(line)
+        }
+
+        fn encode_prompt(&self, _msg: &str) -> Result<String, ProtocolError> {
+            self.require_seen(InputKind::InitialPrompt, "prompt encode")?;
+            Ok("prompt\n".to_string())
+        }
+
+        fn encode_steer(&self, msg: &str) -> Result<String, ProtocolError> {
+            let kind = if msg == ORDERING_REPIN_PAYLOAD {
+                InputKind::Repin
+            } else {
+                InputKind::Steer
+            };
+            self.require_seen(kind, "steer encode")?;
+            TestParser.encode_steer(msg)
+        }
+
+        fn encode_follow_up(&self, msg: &str) -> Result<String, ProtocolError> {
+            self.require_seen(InputKind::FollowUp, "follow-up encode")?;
+            TestParser.encode_follow_up(msg)
+        }
+
+        fn encode_abort(&self) -> Result<Option<String>, ProtocolError> {
+            Ok(None)
+        }
+    }
 
     impl LineParse for TestParser {
         fn parse_line(&self, line: &str) -> Result<ParsedLine, ProtocolError> {
@@ -1033,6 +1242,12 @@ mod tests {
                     events: vec![ParsedAgentEvent::SessionComplete {
                         exit_code: 0,
                         cost_usd: None,
+                    }],
+                    response: None,
+                }),
+                "compaction" => Ok(ParsedLine {
+                    events: vec![ParsedAgentEvent::CompactionStart {
+                        reason: loom_events::event::CompactionReason::ContextLimit,
                     }],
                     response: None,
                 }),
@@ -1091,6 +1306,13 @@ mod tests {
     }
 
     fn spawn_script(script: &str) -> Result<AgentSession<Idle>, ProtocolError> {
+        spawn_script_with_parser(script, Box::new(TestParser))
+    }
+
+    fn spawn_script_with_parser(
+        script: &str,
+        parser: Box<dyn LineParse + Send>,
+    ) -> Result<AgentSession<Idle>, ProtocolError> {
         let mut child = tokio::process::Command::new("sh")
             .arg("-c")
             .arg(script)
@@ -1110,7 +1332,7 @@ mod tests {
             child,
             BufWriter::new(stdin),
             JsonlReader::new(stdout),
-            Box::new(TestParser),
+            parser,
         ))
     }
 
@@ -1219,6 +1441,226 @@ mod tests {
             0,
             "seq counter must not advance on suppressed emissions",
         );
+    }
+
+    #[tokio::test]
+    async fn agent_input_events_precede_backend_send() {
+        static ORDERING_STATE: std::sync::Mutex<Option<std::sync::Arc<InputOrderState>>> =
+            std::sync::Mutex::new(None);
+
+        fn ordering_state() -> std::sync::Arc<InputOrderState> {
+            ORDERING_STATE
+                .lock()
+                .expect("ordering state mutex")
+                .as_ref()
+                .expect("ordering state set")
+                .clone()
+        }
+
+        fn install_ordering_renderer(
+            dir: &std::path::Path,
+        ) -> (std::sync::Arc<InputOrderState>, LogSink, std::path::PathBuf) {
+            let state = std::sync::Arc::new(InputOrderState::default());
+            *ORDERING_STATE.lock().expect("ordering state mutex") = Some(state.clone());
+            let render_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let renderer = Box::new(loom_driver::logging::TerminalRenderer::new(
+                Box::new(InputRecordingWriter {
+                    inner: render_buffer,
+                    state: state.clone(),
+                }),
+                loom_driver::logging::RenderMode::Default,
+                BeadId::new("lm-emit").expect("bead id"),
+                false,
+                false,
+            ));
+            let (sink, path) = open_test_sink_with_renderer(dir, renderer);
+            (state, sink, path)
+        }
+
+        fn clear_ordering_state() {
+            *ORDERING_STATE.lock().expect("ordering state mutex") = None;
+        }
+
+        fn assert_input_before(events: &[serde_json::Value], input_kind: &str, later_kind: &str) {
+            let input_index = events
+                .iter()
+                .position(|event| {
+                    event["kind"] == "agent_input" && event["input_kind"] == input_kind
+                })
+                .unwrap_or_else(|| panic!("missing agent_input {input_kind}: {events:?}"));
+            let later_index = events
+                .iter()
+                .position(|event| event["kind"] == later_kind)
+                .unwrap_or_else(|| panic!("missing {later_kind}: {events:?}"));
+            assert!(
+                input_index < later_index,
+                "agent_input {input_kind} must precede {later_kind}: {events:?}",
+            );
+            assert_eq!(events[input_index]["source"], "driver");
+        }
+
+        struct InitialBackend;
+        impl AgentBackend for InitialBackend {
+            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+                spawn_script_with_parser(
+                    "IFS= read -r _; printf '%s\n' text complete",
+                    Box::new(OrderingParser {
+                        state: ordering_state(),
+                    }),
+                )
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_state, sink, path) = install_ordering_renderer(dir.path());
+        let cfg = sample_spawn_config(dir.path());
+        let result =
+            run_agent_classified::<InitialBackend>(&cfg, Some(sink), None, None, Some(builder()))
+                .await;
+        clear_ordering_state();
+        assert!(
+            matches!(result, SessionResult::Complete { .. }),
+            "expected complete session, got {result:?}",
+        );
+        let events = read_jsonl(&path);
+        assert_input_before(&events, "initial_prompt", "text_delta");
+
+        struct ObserverSteerBackend;
+        impl AgentBackend for ObserverSteerBackend {
+            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+                spawn_script_with_parser(
+                    "IFS= read -r _; printf 'call1\nresult1\n'; IFS= read -r _; printf 'complete\n'",
+                    Box::new(OrderingParser {
+                        state: ordering_state(),
+                    }),
+                )
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_state, sink, path) = install_ordering_renderer(dir.path());
+        let cfg = sample_spawn_config(dir.path());
+        let observer_config = loom_driver::config::AgentObserversConfig {
+            doom_loop: loom_driver::config::DoomLoopConfig {
+                enabled: true,
+                window: 1,
+                threshold: 1,
+                stage_2_after_stage_1: 3,
+            },
+            duplicate_result: loom_driver::config::DuplicateResultConfig {
+                enabled: false,
+                min_bytes: 256,
+            },
+        };
+        let mut observer =
+            DefaultObserverChain::from_config(&observer_config).expect("observer enabled");
+        let result = run_agent_classified::<ObserverSteerBackend>(
+            &cfg,
+            Some(sink),
+            Some(&mut observer),
+            None,
+            Some(builder()),
+        )
+        .await;
+        clear_ordering_state();
+        assert!(
+            matches!(result, SessionResult::Complete { .. }),
+            "expected complete session, got {result:?}",
+        );
+        let events = read_jsonl(&path);
+        assert_input_before(&events, "initial_prompt", "tool_call");
+        assert_input_before(&events, "steer", "session_complete");
+
+        struct RepinBackend;
+        impl AgentBackend for RepinBackend {
+            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+                spawn_script_with_parser(
+                    "IFS= read -r _; printf 'compaction\n'; IFS= read -r _; printf 'complete\n'",
+                    Box::new(OrderingParser {
+                        state: ordering_state(),
+                    }),
+                )
+            }
+
+            fn compaction_repin(_config: &SpawnConfig) -> Result<Option<String>, ProtocolError> {
+                Ok(Some(ORDERING_REPIN_PAYLOAD.to_string()))
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_state, sink, path) = install_ordering_renderer(dir.path());
+        let cfg = sample_spawn_config(dir.path());
+        let result =
+            run_agent_classified::<RepinBackend>(&cfg, Some(sink), None, None, Some(builder()))
+                .await;
+        clear_ordering_state();
+        assert!(
+            matches!(result, SessionResult::Complete { .. }),
+            "expected complete session, got {result:?}",
+        );
+        let events = read_jsonl(&path);
+        assert_input_before(&events, "initial_prompt", "compaction_start");
+        assert_input_before(&events, "repin", "session_complete");
+    }
+
+    #[tokio::test]
+    async fn agent_input_redaction_is_explicit() {
+        struct CompleteBackend;
+        impl AgentBackend for CompleteBackend {
+            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+                spawn_script("IFS= read -r _; printf '%s\n' complete")
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let render_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let renderer = Box::new(loom_driver::logging::TerminalRenderer::new(
+            Box::new(SharedBufferWriter {
+                inner: render_buffer.clone(),
+            }),
+            loom_driver::logging::RenderMode::Default,
+            BeadId::new("lm-emit").expect("bead id"),
+            false,
+            false,
+        ));
+        let (sink, path) = open_test_sink_with_renderer(dir.path(), renderer);
+        let mut cfg = sample_spawn_config(dir.path());
+        cfg.initial_prompt = "send key sk-redact to backend".to_string();
+        cfg.env
+            .push(("ANTHROPIC_API_KEY".into(), "sk-redact".into()));
+
+        let result =
+            run_agent_classified::<CompleteBackend>(&cfg, Some(sink), None, None, Some(builder()))
+                .await;
+        assert!(
+            matches!(result, SessionResult::Complete { .. }),
+            "expected complete session, got {result:?}",
+        );
+
+        let events = read_jsonl(&path);
+        let input = events
+            .iter()
+            .find(|event| event["kind"] == "agent_input")
+            .expect("agent_input event");
+        let marker = "[REDACTED:api_key:ANTHROPIC_API_KEY]";
+        assert_eq!(input["text"], format!("send key {marker} to backend"));
+        assert_eq!(input["redactions"][0]["marker"], marker);
+        assert_eq!(input["redactions"][0]["class"], "api_key");
+        assert!(
+            !serde_json::to_string(input)
+                .expect("json")
+                .contains("sk-redact"),
+            "persisted event must not contain the secret: {input:?}",
+        );
+
+        let render = String::from_utf8(render_buffer.lock().expect("not poisoned").clone())
+            .expect("utf-8 render");
+        assert!(
+            render.contains(&format!("send key {marker} to backend")),
+            "{render:?}",
+        );
+        assert!(render.contains("api_key"), "{render:?}");
+        assert!(!render.contains("sk-redact"), "{render:?}");
     }
 
     fn sample_envelope() -> loom_events::EventEnvelope {

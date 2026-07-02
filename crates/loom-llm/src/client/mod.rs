@@ -28,7 +28,7 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 
-use loom_events::AgentEvent;
+use loom_events::{AgentEvent, DriverEventPayload};
 
 use crate::model_id::{ModelId, SchemaKind};
 use crate::request::{CompletionRequest, MimeType};
@@ -528,10 +528,13 @@ pub trait LlmClient: Send + Sync {
         model.schema() == self.schema()
     }
 
-    /// Fan a driver/observer event into this Client's active sink chain.
+    /// Fan a driver/observer payload into this Client's active sink chain.
+    /// Built-in Clients stamp it with their configured event-session envelope.
+    fn emit_driver_event(&self, _event: DriverEventPayload) {}
+
+    /// Fan a pre-stamped event into this Client's active sink chain.
     /// Custom Clients may ignore events by using this default no-op;
-    /// built-in Clients override it so `Conversation` observer signals
-    /// reach the same chain as token-usage events.
+    /// built-in Clients override it for callers that already own a full event.
     fn emit_event(&self, _event: &AgentEvent) {}
 
     /// Run a completion against the request's `ModelId`. Returns the
@@ -564,6 +567,10 @@ impl<C: LlmClient + ?Sized> LlmClient for Box<C> {
 
     fn supports(&self, model: &ModelId) -> bool {
         (**self).supports(model)
+    }
+
+    fn emit_driver_event(&self, event: DriverEventPayload) {
+        (**self).emit_driver_event(event);
     }
 
     fn emit_event(&self, event: &AgentEvent) {

@@ -17,13 +17,13 @@
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use loom_events::{AgentEvent, EnvelopeBuilder, EventSink};
+use loom_events::{AgentEvent, DriverEventPayload, EnvelopeBuilder, EventSink};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::multi_provider::{
-    debug_per_schema_client, emit_event_to_chain, emit_usage_to_chain, push_sink,
-    set_envelope_builder,
+    debug_per_schema_client, emit_driver_event_to_chain, emit_event_to_chain, emit_usage_to_chain,
+    push_sink, set_envelope_builder,
 };
 use crate::api_key::ApiKey;
 use crate::client::{
@@ -120,6 +120,10 @@ impl std::fmt::Debug for OpenAiCompatClient {
 impl LlmClient for OpenAiCompatClient {
     fn schema(&self) -> SchemaKind {
         Self::SCHEMA
+    }
+
+    fn emit_driver_event(&self, event: DriverEventPayload) {
+        emit_driver_event_to_chain(&self.envelope_builder, &self.sinks, event);
     }
 
     fn emit_event(&self, event: &AgentEvent) {
