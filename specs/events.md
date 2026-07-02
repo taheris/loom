@@ -347,9 +347,9 @@ not abort the run.
 - Formatted `loom logs` replay and live rendering for every non-interactive LLM-bearing command share the same renderer pipeline
   [test?](live_llm_commands_use_shared_renderer_pipeline)
 - Normal Pretty/Plain output renders transcript text without requiring `--verbose`: agent inputs, assistant text, exposed thinking, and inline tool-result text up to the Loom-controlled LLM inline budget
-  [test?](normal_rendering_shows_llm_visible_transcript)
+  [test](normal_rendering_shows_llm_visible_transcript)
 - Verbose Pretty/Plain output adds diagnostic event metadata without changing transcript visibility or tool-body caps
-  [test?](verbose_adds_event_metadata_without_changing_transcript)
+  [test](verbose_adds_event_metadata_without_changing_transcript)
 - Pretty/Plain mode renders each tool call as one pending/success/error block keyed by `ToolCallId` (`id` on the wire)
   [test](pretty_tool_block_updates_from_pending_to_success_or_error)
 - Tool body rendering uses a byte-only cap aligned with Direct `[direct].max_inline_bytes` when Loom controls the LLM inline budget, and applies no additional line cap

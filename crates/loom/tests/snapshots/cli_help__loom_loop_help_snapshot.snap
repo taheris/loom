@@ -17,6 +17,6 @@ Options:
       --plain                ASCII output, no color, no OSC 8. Pipe-safe. Implied when stdout is not a TTY or `NO_COLOR` is set. Mutually exclusive with `--json` and `--raw`
       --json                 Emit one pretty-printed JSON object per line on stdout. Mutually exclusive with `--plain` and `--raw`
       --raw                  Emit one compact JSON line per event on stdout — same as the on-disk JSONL shape. Mutually exclusive with `--plain`, `--json`, and `-v/--verbose`
-  -v, --verbose              Widen the rendered text: streams `TextDelta` verbatim and renders each `ToolResult` body capped at 10 lines with a recovery hint. Mutually exclusive with `--raw`
+  -v, --verbose              Add diagnostic event metadata to human rendering
       --trace                Mirror raw Rust tracing diagnostics to stderr
   -h, --help                 Print help

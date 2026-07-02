@@ -973,7 +973,7 @@ fn run_finish_finalizes_dangling_running_indicator() -> Result<()> {
 }
 
 #[test]
-fn run_verbose_caps_tool_result_body_with_safety_hint() -> Result<()> {
+fn run_verbose_uses_normal_tool_result_body_cap() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (mut sink, buf) = open_sink(
         dir.path(),
@@ -991,7 +991,7 @@ fn run_verbose_caps_tool_result_body_with_safety_hint() -> Result<()> {
         params: json!({"command": "ls -la"}),
         parent_tool_call_id: None,
     })?;
-    let big_output: String = (1..=90)
+    let big_output: String = (1..=15)
         .map(|i| format!("file-{i:03}"))
         .collect::<Vec<_>>()
         .join("\n");
@@ -1004,14 +1004,14 @@ fn run_verbose_caps_tool_result_body_with_safety_hint() -> Result<()> {
     sink.finish(BeadOutcome::Done)?;
 
     let term = captured_str(&buf);
-    if !term.contains("file-001") || !term.contains("file-080") {
-        return Err(anyhow!("verbose body cap dropped early lines: {term:?}"));
+    if !term.contains("file-001") || !term.contains("file-010") {
+        return Err(anyhow!("verbose body cap dropped kept lines: {term:?}"));
     }
-    if term.contains("file-081") {
-        return Err(anyhow!("verbose body cap should drop line 81+: {term:?}"));
+    if term.contains("file-011") {
+        return Err(anyhow!("verbose body cap must match normal cap: {term:?}"));
     }
-    if !term.contains("10 more lines") || !term.contains("safety cap") {
-        return Err(anyhow!("missing verbose safety recovery hint: {term:?}"));
+    if !term.contains("5 more lines") || !term.contains("loom logs -b lm-2 --raw") {
+        return Err(anyhow!("missing raw replay recovery hint: {term:?}"));
     }
     if !term.contains("tool b1") {
         return Err(anyhow!(

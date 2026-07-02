@@ -455,8 +455,7 @@ enum Command {
         /// `--path`.
         #[arg(long, conflicts_with_all = ["verbose", "path"])]
         raw: bool,
-        /// Stream assistant text deltas during render — equivalent to
-        /// `loom loop -v`. Mutually exclusive with `--raw` and `--path`.
+        /// Add diagnostic event metadata to human replay rendering.
         #[arg(long, short = 'v', conflicts_with_all = ["raw", "path"])]
         verbose: bool,
         /// Print the resolved log file path and exit. Mutually
@@ -509,9 +508,7 @@ enum Command {
         /// `--json`, and `-v/--verbose`.
         #[arg(long, conflicts_with_all = ["plain", "json", "verbose"])]
         raw: bool,
-        /// Widen the rendered text: streams `TextDelta` verbatim and
-        /// renders each `ToolResult` body capped at 10 lines with a
-        /// recovery hint. Mutually exclusive with `--raw`.
+        /// Add diagnostic event metadata to human rendering.
         #[arg(long, short = 'v', conflicts_with = "raw")]
         verbose: bool,
         /// Mirror raw Rust tracing diagnostics to stderr.
@@ -2421,16 +2418,16 @@ fn resolve_replay_mode(raw: bool, verbose: bool) -> logs_cmd::ReplayMode {
     let tty = loom_render::in_place::stdout_supports_indicator();
     let no_color = std::env::var_os("NO_COLOR").is_some();
     let base = loom_render::RenderMode::select(tty, no_color, false, false, false);
-    if verbose
-        && matches!(
-            base,
-            loom_render::RenderMode::Pretty | loom_render::RenderMode::Plain
-        )
-    {
-        logs_cmd::ReplayMode::Render(loom_render::RenderMode::Verbose)
+    let mode = if verbose {
+        match base {
+            loom_render::RenderMode::Pretty => loom_render::RenderMode::Verbose,
+            loom_render::RenderMode::Plain => loom_render::RenderMode::VerbosePlain,
+            other => other,
+        }
     } else {
-        logs_cmd::ReplayMode::Render(base)
-    }
+        base
+    };
+    logs_cmd::ReplayMode::Render(mode)
 }
 
 fn run_plan(
@@ -3767,13 +3764,12 @@ fn resolve_render_mode(flags: RenderFlags) -> loom_render::RenderMode {
     let tty = loom_render::in_place::stdout_supports_indicator();
     let no_color = std::env::var_os("NO_COLOR").is_some();
     let base = loom_render::RenderMode::select(tty, no_color, flags.plain, flags.json, flags.raw);
-    if flags.verbose
-        && matches!(
-            base,
-            loom_render::RenderMode::Pretty | loom_render::RenderMode::Plain
-        )
-    {
-        loom_render::RenderMode::Verbose
+    if flags.verbose {
+        match base {
+            loom_render::RenderMode::Pretty => loom_render::RenderMode::Verbose,
+            loom_render::RenderMode::Plain => loom_render::RenderMode::VerbosePlain,
+            other => other,
+        }
     } else {
         base
     }
@@ -3799,16 +3795,19 @@ fn build_stdout_renderer(
         loom_render::tool_body::Osc8Context::disabled().with_cwd(workspace.to_path_buf())
     };
     match mode {
-        loom_render::RenderMode::Verbose => Box::new(
-            loom_render::TerminalRenderer::new(
-                std::io::stdout(),
-                loom_render::RenderMode::Verbose,
-                bead_id.clone(),
-                parallel,
-                !parallel,
+        loom_render::RenderMode::Verbose | loom_render::RenderMode::VerbosePlain => {
+            let color = matches!(mode, loom_render::RenderMode::Verbose) && !parallel;
+            Box::new(
+                loom_render::TerminalRenderer::new(
+                    std::io::stdout(),
+                    mode,
+                    bead_id.clone(),
+                    parallel,
+                    color,
+                )
+                .with_osc8(osc8),
             )
-            .with_osc8(osc8),
-        ),
+        }
         loom_render::RenderMode::Pretty | loom_render::RenderMode::Default => Box::new(
             loom_render::TerminalRenderer::new(
                 std::io::stdout(),

@@ -22,8 +22,8 @@ pub enum BeadOutcome {
 }
 
 /// Output mode for the renderer trait. Drives the per-impl selection
-/// in [`select_renderer`] and the CLI flag wiring in `loom loop` /
-/// `loom logs`. Mode is the format dimension; verbosity is orthogonal.
+/// in [`build_renderer`] and the CLI flag wiring in `loom loop` /
+/// `loom logs`.
 ///
 /// Selection logic:
 /// - TTY + no `--plain`/`--json`/`--raw` + no `NO_COLOR` → `Pretty`
@@ -31,17 +31,16 @@ pub enum BeadOutcome {
 /// - `--json` → `Json`
 /// - `--raw` → `Raw`
 ///
-/// `--json` and `--raw` are mutually exclusive; `--raw` is mutually
-/// exclusive with `-v/--verbose`. The CLI surface enforces these via
-/// clap `conflicts_with`.
+/// `Verbose` and `VerbosePlain` are diagnostic human-rendering overlays
+/// selected only after the Pretty/Plain format decision has been made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
-    /// Internal "verbose pretty" — kept so the existing per-bead
-    /// `TerminalRenderer` path stays compatible. New code should
-    /// consume the [`Renderer`] trait, not match on this.
+    /// Legacy terminal path for normal human transcript rendering.
     Default,
-    /// Internal "verbose pretty" — same caveat.
+    /// Pretty diagnostic human rendering with event metadata.
     Verbose,
+    /// Plain diagnostic human rendering with event metadata.
+    VerbosePlain,
     /// Colored, glyph-decorated output for an interactive terminal.
     Pretty,
     /// ASCII glyphs, no color, no OSC 8 — pipe-safe.
@@ -174,6 +173,286 @@ fn input_kind_label(kind: InputKind) -> &'static str {
     }
 }
 
+const DIAGNOSTIC_JSON_MAX_CHARS: usize = 240;
+const DIAGNOSTIC_STRING_MAX_CHARS: usize = 80;
+
+fn source_label(source: loom_events::Source) -> &'static str {
+    match source {
+        loom_events::Source::Agent => "agent",
+        loom_events::Source::Driver => "driver",
+    }
+}
+
+fn event_kind(event: &AgentEvent) -> &'static str {
+    match event {
+        AgentEvent::AgentStart { .. } => "agent_start",
+        AgentEvent::AgentInput { .. } => "agent_input",
+        AgentEvent::AgentEnd { .. } => "agent_end",
+        AgentEvent::TurnStart { .. } => "turn_start",
+        AgentEvent::TextDelta { .. } => "text_delta",
+        AgentEvent::TextEnd { .. } => "text_end",
+        AgentEvent::ThinkingDelta { .. } => "thinking_delta",
+        AgentEvent::ThinkingEnd { .. } => "thinking_end",
+        AgentEvent::ToolcallDelta { .. } => "toolcall_delta",
+        AgentEvent::ToolCall { .. } => "tool_call",
+        AgentEvent::ToolResult { .. } => "tool_result",
+        AgentEvent::ToolProgress { .. } => "tool_progress",
+        AgentEvent::TurnEnd { .. } => "turn_end",
+        AgentEvent::SessionComplete { .. } => "session_complete",
+        AgentEvent::CompactionStart { .. } => "compaction_start",
+        AgentEvent::CompactionEnd { .. } => "compaction_end",
+        AgentEvent::AutoRetry { .. } => "auto_retry",
+        AgentEvent::Error { .. } => "error",
+        AgentEvent::DriverEvent { .. } => "driver_event",
+    }
+}
+
+fn event_is_streaming_delta(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::TextDelta { .. }
+            | AgentEvent::ThinkingDelta { .. }
+            | AgentEvent::ToolcallDelta { .. }
+    )
+}
+
+fn diagnostic_metadata_line(event: &AgentEvent) -> String {
+    let envelope = event.envelope();
+    let mut parts = vec![
+        format!("kind={}", event_kind(event)),
+        format!("seq={}", envelope.seq),
+        format!("ts_ms={}", envelope.ts_ms),
+        format!("source={}", source_label(envelope.source)),
+        format!("session={}", envelope.session_id.as_str()),
+    ];
+    if let Some(bead_id) = &envelope.bead_id {
+        parts.push(format!("bead={}", bead_id.as_str()));
+    }
+    if let Some(molecule_id) = &envelope.molecule_id {
+        parts.push(format!("molecule={}", molecule_id.as_str()));
+    }
+    if let Some(iteration) = envelope.iteration {
+        parts.push(format!("iteration={iteration}"));
+    }
+    match event {
+        AgentEvent::AgentStart {
+            schema_version,
+            title,
+            profile,
+            spec_label,
+            started_at_ms,
+            parent_tool_call_id,
+            ..
+        } => {
+            parts.push(format!("schema={schema_version}"));
+            parts.push(format!("title={}", quoted_summary(title)));
+            parts.push(format!("profile={}", profile.as_str()));
+            parts.push(format!("spec={}", spec_label.as_str()));
+            parts.push(format!("started_at_ms={started_at_ms}"));
+            if let Some(parent) = parent_tool_call_id {
+                parts.push(format!("parent_tool_call_id={}", parent.as_str()));
+            }
+        }
+        AgentEvent::AgentInput {
+            input_kind,
+            text,
+            redactions,
+            ..
+        } => {
+            parts.push(format!("input_kind={}", input_kind_label(*input_kind)));
+            parts.push(format!("bytes={}", text.len()));
+            if let Some(redactions) = redactions {
+                parts.push(format!("redactions={}", redactions.len()));
+            }
+        }
+        AgentEvent::ToolcallDelta { id, delta, .. } => {
+            parts.push(format!("id={}", id.as_str()));
+            parts.push(format!("bytes={}", delta.len()));
+        }
+        AgentEvent::ToolCall {
+            id,
+            tool,
+            params,
+            parent_tool_call_id,
+            ..
+        } => {
+            parts.push(format!("id={}", id.as_str()));
+            parts.push(format!("tool={}", quoted_summary(tool)));
+            if let Some(parent) = parent_tool_call_id {
+                parts.push(format!("parent_tool_call_id={}", parent.as_str()));
+            }
+            parts.push(format!("params={}", safe_json_summary(params)));
+        }
+        AgentEvent::ToolResult {
+            id,
+            output,
+            is_error,
+            ..
+        } => {
+            parts.push(format!("id={}", id.as_str()));
+            parts.push(format!("is_error={is_error}"));
+            parts.push(format!("bytes={}", output.len()));
+        }
+        AgentEvent::ToolProgress { id, text, .. } => {
+            parts.push(format!("id={}", id.as_str()));
+            parts.push(format!("bytes={}", text.len()));
+        }
+        AgentEvent::TextDelta { text, .. } | AgentEvent::ThinkingDelta { text, .. } => {
+            parts.push(format!("bytes={}", text.len()));
+        }
+        AgentEvent::SessionComplete {
+            exit_code,
+            cost_usd,
+            ..
+        } => {
+            parts.push(format!("exit_code={exit_code}"));
+            if let Some(cost_usd) = cost_usd {
+                parts.push(format!("cost_usd={cost_usd}"));
+            }
+        }
+        AgentEvent::CompactionStart { reason, .. } => {
+            parts.push(format!("reason={}", compaction_reason_label(*reason)));
+        }
+        AgentEvent::CompactionEnd { aborted, .. } => {
+            parts.push(format!("aborted={aborted}"));
+        }
+        AgentEvent::AutoRetry {
+            attempt,
+            max_attempts,
+            delay_ms,
+            error_message,
+            ..
+        } => {
+            parts.push(format!("attempt={attempt}"));
+            parts.push(format!("max_attempts={max_attempts}"));
+            parts.push(format!("delay_ms={delay_ms}"));
+            parts.push(format!("error={}", quoted_summary(error_message)));
+        }
+        AgentEvent::Error { message, .. } => {
+            parts.push(format!("message={}", quoted_summary(message)));
+        }
+        AgentEvent::DriverEvent {
+            driver_kind,
+            summary,
+            payload,
+            ..
+        } => {
+            parts.push(format!("driver_kind={}", driver_kind.as_wire()));
+            parts.push(format!("summary={}", quoted_summary(summary)));
+            parts.push(format!("payload={}", safe_json_summary(payload)));
+        }
+        AgentEvent::AgentEnd { .. }
+        | AgentEvent::TurnStart { .. }
+        | AgentEvent::TextEnd { .. }
+        | AgentEvent::ThinkingEnd { .. }
+        | AgentEvent::TurnEnd { .. } => {}
+    }
+    format!("[event {}]", parts.join(" "))
+}
+
+fn compaction_reason_label(reason: loom_events::event::CompactionReason) -> &'static str {
+    match reason {
+        loom_events::event::CompactionReason::ContextLimit => "context_limit",
+        loom_events::event::CompactionReason::UserRequested => "user_requested",
+        loom_events::event::CompactionReason::Unknown => "unknown",
+    }
+}
+
+fn quoted_summary(value: &str) -> String {
+    match serde_json::to_string(&truncate_chars(value, DIAGNOSTIC_STRING_MAX_CHARS)) {
+        Ok(encoded) => encoded,
+        Err(error) => format!("<json-error:{error}>"),
+    }
+}
+
+fn safe_json_summary(value: &Value) -> String {
+    let summarized = summarize_json_value(value);
+    match serde_json::to_string(&summarized) {
+        Ok(encoded) => truncate_chars(&encoded, DIAGNOSTIC_JSON_MAX_CHARS),
+        Err(error) => format!("<json-error:{error}>"),
+    }
+}
+
+fn summarize_json_value(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut summarized = serde_json::Map::new();
+            for (key, item) in map {
+                let value = if sensitive_json_key(key) {
+                    Value::String("[REDACTED]".to_string())
+                } else if bulky_json_key(key) {
+                    summarize_bulky_json_value(item)
+                } else {
+                    summarize_json_value(item)
+                };
+                summarized.insert(key.clone(), value);
+            }
+            Value::Object(summarized)
+        }
+        Value::Array(items) => {
+            let mut summarized: Vec<Value> =
+                items.iter().take(4).map(summarize_json_value).collect();
+            if items.len() > summarized.len() {
+                summarized.push(Value::String(format!(
+                    "... {} more",
+                    items.len() - summarized.len()
+                )));
+            }
+            Value::Array(summarized)
+        }
+        Value::String(text) => Value::String(truncate_chars(text, DIAGNOSTIC_STRING_MAX_CHARS)),
+        other => other.clone(),
+    }
+}
+
+fn summarize_bulky_json_value(value: &Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(format!("<{} bytes>", text.len())),
+        Value::Array(items) => Value::String(format!("<{} items>", items.len())),
+        Value::Object(map) => Value::String(format!("<{} fields>", map.len())),
+        other => summarize_json_value(other),
+    }
+}
+
+fn sensitive_json_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("credential")
+        || lower.contains("oauth")
+        || lower.contains("password")
+        || lower.contains("secret")
+        || lower.contains("token")
+}
+
+fn bulky_json_key(key: &str) -> bool {
+    matches!(
+        key,
+        "content"
+            | "delta"
+            | "message"
+            | "new_string"
+            | "old_string"
+            | "output"
+            | "prompt"
+            | "stderr"
+            | "stdout"
+            | "text"
+    )
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx == max_chars {
+            out.push('…');
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// State captured at `ToolCall` time so the matching `ToolResult` can
 /// finalize the pair with the same context. The spec calls this out
 /// explicitly as the `HashMap<ToolCallId, PendingToolCall>` that lets a
@@ -186,8 +465,6 @@ struct PendingToolCall {
     /// content-returning successes render bounded excerpts, and concise
     /// edit/write successes stay summary-only.
     tool: String,
-    #[expect(dead_code, reason = "reserved for per-tool verbose body formatting")]
-    params: Value,
     /// `envelope.ts_ms` of the originating `ToolCall`. Used to compute
     /// the pair's duration on `ToolResult` without consulting the wall
     /// clock — same code path for live and replay.
@@ -218,10 +495,9 @@ pub struct TerminalRenderer {
     /// the corresponding tool is in flight.
     indent_by_tool: std::collections::HashMap<loom_events::identifier::ToolCallId, usize>,
     /// Per-tool-call state captured at `ToolCall` time so the matching
-    /// `ToolResult` can finalize the pair. Stores `(tool, params,
-    /// ts_ms)` — params drives `cap_body` formatting in verbose mode,
-    /// `ts_ms` lets the result line render its duration from the event
-    /// envelope rather than wall clock.
+    /// `ToolResult` can finalize the pair. Stores tool name plus
+    /// `ts_ms`, letting the result line render its duration from the
+    /// event envelope rather than wall clock.
     pending_calls: std::collections::HashMap<loom_events::identifier::ToolCallId, PendingToolCall>,
     /// In-place "running indicator" state for the top-level tool call
     /// currently in-flight. When `Some((id, started, summary, indent))`,
@@ -366,6 +642,22 @@ impl TerminalRenderer {
     /// 80-column fallback for non-TTY paths.
     fn term_width(&self) -> usize {
         self.term_width_override.unwrap_or_else(detect_term_width)
+    }
+
+    fn diagnostic_metadata_enabled(&self) -> bool {
+        matches!(self.mode, RenderMode::Verbose | RenderMode::VerbosePlain)
+    }
+
+    fn render_diagnostic_metadata(&mut self, event: &AgentEvent) -> io::Result<()> {
+        if !self.diagnostic_metadata_enabled() || event_is_streaming_delta(event) {
+            return Ok(());
+        }
+        self.close_stream_lines()?;
+        self.close_in_flight("…")?;
+        let prefix = self.prefix_str();
+        let line = diagnostic_metadata_line(event);
+        self.out.write_all(format!("{prefix}{line}\n").as_bytes())?;
+        self.out.flush()
     }
 
     /// Line prefix shared by every tool-summary line. `Parallel` mode
@@ -525,13 +817,12 @@ impl TerminalRenderer {
 
     /// Render one [`AgentEvent`].
     ///
-    /// In `Default` mode: streams assistant prose, prints a one-line
-    /// summary for `ToolCall`, and renders bounded tool output excerpts.
-    /// Thinking prose stays hidden.
-    ///
-    /// In `Verbose` mode: also streams thinking prose and uses wider
-    /// bounded tool bodies.
+    /// Normal human modes render the faithful transcript: Loom inputs,
+    /// assistant prose, exposed thinking, tool blocks, and driver rows.
+    /// Diagnostic modes add event metadata without widening transcript
+    /// visibility or tool-output caps.
     pub fn render_event(&mut self, event: &AgentEvent) -> io::Result<()> {
+        self.render_diagnostic_metadata(event)?;
         match event {
             AgentEvent::AgentInput {
                 input_kind,
@@ -590,7 +881,6 @@ impl TerminalRenderer {
                     id.clone(),
                     PendingToolCall {
                         tool: tool.clone(),
-                        params: params.clone(),
                         ts_ms: envelope.ts_ms,
                     },
                 );
@@ -598,7 +888,7 @@ impl TerminalRenderer {
                 let indent: String = "  ".repeat(depth);
                 let use_indicator = self.indicator_enabled
                     && parent_tool_call_id.is_none()
-                    && !matches!(self.mode, RenderMode::Verbose);
+                    && !self.diagnostic_metadata_enabled();
                 if use_indicator {
                     // Decide between the single-line indicator (summary
                     // shares its row with the right-edge column) and the
@@ -668,15 +958,13 @@ impl TerminalRenderer {
                     self.close_in_flight("…")?;
                     self.write_tool_status_line(id, glyph, pair_duration)?;
                 }
-                let body = if matches!(self.mode, RenderMode::Verbose) && !output.is_empty() {
-                    Some(tool_body::cap_body_verbose(
-                        output,
-                        self.bead_id.as_str(),
-                        id.as_str(),
-                    ))
-                } else if matches!(
+                let body = if matches!(
                     self.mode,
-                    RenderMode::Default | RenderMode::Pretty | RenderMode::Plain
+                    RenderMode::Default
+                        | RenderMode::Pretty
+                        | RenderMode::Plain
+                        | RenderMode::Verbose
+                        | RenderMode::VerbosePlain
                 ) && Self::should_render_default_body(tool_name, *is_error, output)
                 {
                     Some(tool_body::cap_body(
@@ -689,9 +977,6 @@ impl TerminalRenderer {
                 };
                 if let Some(body) = body {
                     self.write_body_lines(id, &body)?;
-                    if *is_error && matches!(self.mode, RenderMode::Verbose) {
-                        self.write_body_lines(id, "[tool error]")?;
-                    }
                 }
             }
             AgentEvent::ToolProgress { id, text, .. } => {
@@ -718,6 +1003,7 @@ impl TerminalRenderer {
                     self.mode,
                     RenderMode::Default
                         | RenderMode::Verbose
+                        | RenderMode::VerbosePlain
                         | RenderMode::Pretty
                         | RenderMode::Plain
                 ) =>
@@ -727,10 +1013,28 @@ impl TerminalRenderer {
             AgentEvent::TextEnd { .. } => {
                 self.close_text_line()?;
             }
-            AgentEvent::ThinkingDelta { text, .. } if matches!(self.mode, RenderMode::Verbose) => {
+            AgentEvent::ThinkingDelta { text, .. }
+                if matches!(
+                    self.mode,
+                    RenderMode::Default
+                        | RenderMode::Verbose
+                        | RenderMode::VerbosePlain
+                        | RenderMode::Pretty
+                        | RenderMode::Plain
+                ) =>
+            {
                 self.render_thinking_delta(text)?;
             }
-            AgentEvent::ThinkingEnd { .. } if matches!(self.mode, RenderMode::Verbose) => {
+            AgentEvent::ThinkingEnd { .. }
+                if matches!(
+                    self.mode,
+                    RenderMode::Default
+                        | RenderMode::Verbose
+                        | RenderMode::VerbosePlain
+                        | RenderMode::Pretty
+                        | RenderMode::Plain
+                ) =>
+            {
                 self.close_thinking_line()?;
             }
             AgentEvent::Error { message, .. } => {
@@ -893,9 +1197,7 @@ impl TerminalRenderer {
         let right_w = display_width(&right_col);
         let pad_w = self.term_width().saturating_sub(prefix_w + right_w);
         let pad = " ".repeat(pad_w);
-        // Continuation indent matches the body indent used for tool
-        // bodies in verbose mode — one extra level deeper than the
-        // summary's depth indent.
+        // Continuation indent is one extra level deeper than the summary.
         let body_indent = format!("{indent}  ");
         let line1 = format!("{prefix}{pad}{right_col}\n");
         let line2 = format!("{prefix}{body_indent}{summary}\n");
@@ -1161,17 +1463,12 @@ pub fn build_renderer(
         RenderMode::Plain | RenderMode::Default => {
             Box::new(PlainRenderer::new(out, bead_id, parallel, live))
         }
-        // `Verbose` is a real mode at the TerminalRenderer level — it
-        // streams `TextDelta` verbatim and renders capped tool bodies.
-        // Construct the underlying renderer with `RenderMode::Verbose`
-        // directly so the verbose dispatch in `render_event` triggers;
-        // `color=true` is safe because the writer is opaque (TTY-vs-pipe
-        // is the caller's concern via `RenderMode::select`).
-        RenderMode::Verbose => {
+        RenderMode::Verbose | RenderMode::VerbosePlain => {
+            let color = matches!(mode, RenderMode::Verbose);
             let inner = if live {
-                TerminalRenderer::new(out, RenderMode::Verbose, bead_id, parallel, true)
+                TerminalRenderer::new(out, mode, bead_id, parallel, color)
             } else {
-                TerminalRenderer::new_replay(out, RenderMode::Verbose, bead_id, parallel, true)
+                TerminalRenderer::new_replay(out, mode, bead_id, parallel, color)
             };
             Box::new(inner)
         }
@@ -1412,11 +1709,9 @@ mod tests {
         assert!(out.contains("diff"), "{out:?}");
     }
 
-    /// Verbose mode emits a wider `ToolResult` body excerpt with a
-    /// safety hint when that wider cap is reached.
     #[test]
-    fn verbose_mode_renders_wider_tool_result_body_with_safety_hint() {
-        let big_body: String = (1..=90)
+    fn verbose_mode_uses_normal_tool_result_body_cap() {
+        let big_body: String = (1..=15)
             .map(|i| format!("output-line-{i}"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -1438,16 +1733,11 @@ mod tests {
             .expect("render result");
         });
         assert!(out.contains("output-line-1"), "{out:?}");
-        assert!(out.contains("output-line-80"), "{out:?}");
-        assert!(
-            !out.contains("output-line-81"),
-            "verbose safety cap should drop line 81: {out:?}",
-        );
-        assert!(out.contains("safety cap"), "missing safety hint: {out:?}",);
-        assert!(
-            out.contains("tool b1"),
-            "recovery hint must reference the tool call id: {out:?}",
-        );
+        assert!(out.contains("output-line-10"), "{out:?}");
+        assert!(!out.contains("output-line-11"), "{out:?}");
+        assert!(out.contains("display cap"), "missing cap hint: {out:?}");
+        assert!(out.contains("loom logs -b lm-1 --raw"), "{out:?}");
+        assert!(out.contains("tool b1"), "{out:?}");
     }
 
     /// Default mode renders a bounded Bash success excerpt.
@@ -1508,8 +1798,8 @@ mod tests {
         );
         assert!(out.contains("more lines"), "missing cap line: {out:?}");
         assert!(
-            out.contains("loom logs -b lm-1 -v") && out.contains("tool b1"),
-            "cap line must reference verbose replay and the tool call id: {out:?}",
+            out.contains("loom logs -b lm-1 --raw") && out.contains("tool b1"),
+            "cap line must reference raw replay and the tool call id: {out:?}",
         );
     }
 
@@ -1651,10 +1941,8 @@ mod tests {
         );
     }
 
-    /// Verbose mode marks tool-error results with a `[tool error]` line
-    /// after the body. Used by the renderer-driven failure UI.
     #[test]
-    fn verbose_mode_flags_tool_errors_after_body() {
+    fn verbose_mode_keeps_tool_error_body_without_extra_detail_gate() {
         let out = capture(RenderMode::Verbose, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
@@ -1672,7 +1960,8 @@ mod tests {
             })
             .expect("render result");
         });
-        assert!(out.contains("[tool error]"), "{out:?}");
+        assert!(out.contains("exit 1"), "{out:?}");
+        assert!(!out.contains("[tool error]"), "{out:?}");
     }
 
     // -- H2 tests ----------------------------------------------------------
@@ -2038,39 +2327,65 @@ mod tests {
     }
 
     #[test]
-    fn pretty_hides_thinking_by_default_verbose_shows_it() {
-        let default = capture(RenderMode::Default, false, false, |r| {
+    fn normal_rendering_shows_llm_visible_transcript() {
+        let out = capture(RenderMode::Default, false, false, |r| {
+            r.render_event(&AgentEvent::AgentInput {
+                envelope: EventEnvelope {
+                    source: loom_events::Source::Driver,
+                    ..sample_envelope()
+                },
+                input_kind: InputKind::InitialPrompt,
+                text: "system prompt visible to the model".into(),
+                redactions: None,
+            })
+            .expect("agent input");
             r.render_event(&AgentEvent::TextDelta {
                 envelope: sample_envelope(),
-                text: "visible reply".into(),
+                text: "visible assistant reply\n".into(),
             })
             .expect("text");
             r.render_event(&AgentEvent::ThinkingDelta {
                 envelope: sample_envelope(),
-                text: "private chain".into(),
+                text: "exposed reasoning\n".into(),
             })
             .expect("thinking");
             r.render_event(&AgentEvent::ThinkingEnd {
                 envelope: sample_envelope(),
             })
             .expect("thinking end");
-        });
-        assert!(default.contains("visible reply"), "{default:?}");
-        assert!(!default.contains("private chain"), "{default:?}");
-
-        let verbose = capture(RenderMode::Verbose, false, false, |r| {
-            r.render_event(&AgentEvent::ThinkingDelta {
+            r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
-                text: "private chain".into(),
+                id: ToolCallId::new("b1"),
+                tool: "Bash".into(),
+                params: json!({"command": "printf transcript"}),
+                parent_tool_call_id: None,
             })
-            .expect("thinking");
-            r.render_event(&AgentEvent::ThinkingEnd {
+            .expect("tool call");
+            r.render_event(&AgentEvent::ToolResult {
                 envelope: sample_envelope(),
+                id: ToolCallId::new("b1"),
+                output: "inline tool output".into(),
+                is_error: false,
             })
-            .expect("thinking end");
+            .expect("tool result");
+            r.render_event(&driver_event(
+                "push_gate_walk",
+                "driver progress row",
+                json!({"lane": "verify"}),
+            ))
+            .expect("driver");
         });
-        assert!(verbose.contains("thinking:"), "{verbose:?}");
-        assert!(verbose.contains("private chain"), "{verbose:?}");
+        for expected in [
+            "agent_input initial_prompt",
+            "system prompt visible to the model",
+            "visible assistant reply",
+            "thinking: exposed reasoning",
+            "Bash",
+            "inline tool output",
+            "driver progress row",
+        ] {
+            assert!(out.contains(expected), "missing {expected:?}: {out:?}");
+        }
     }
 
     #[test]
@@ -2115,53 +2430,83 @@ mod tests {
         assert!(out.contains("1.0s"), "{out:?}");
     }
 
+    fn strip_metadata_lines(output: &str) -> String {
+        let mut stripped = output
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("[event "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if output.ends_with('\n') && !stripped.is_empty() {
+            stripped.push('\n');
+        }
+        stripped
+    }
+
     #[test]
-    fn default_tool_rendering_is_useful_and_bounded_verbose_expands() {
+    fn verbose_adds_event_metadata_without_changing_transcript() {
         let body: String = (1..=15)
             .map(|i| format!("file-line-{i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let default = capture(RenderMode::Default, false, false, |r| {
-            r.render_event(&AgentEvent::ToolCall {
-                envelope: sample_envelope(),
+        let events = vec![
+            AgentEvent::ToolCall {
+                envelope: EventEnvelope {
+                    seq: 7,
+                    ts_ms: 1234,
+                    ..sample_envelope()
+                },
                 id: ToolCallId::new("r1"),
                 tool: "Read".into(),
-                params: json!({"file_path": "src/lib.rs"}),
+                params: json!({"file_path": "src/lib.rs", "api_key": "secret"}),
                 parent_tool_call_id: None,
-            })
-            .expect("call");
-            r.render_event(&AgentEvent::ToolResult {
-                envelope: sample_envelope(),
-                id: ToolCallId::new("r1"),
-                output: body.clone(),
-                is_error: false,
-            })
-            .expect("result");
-        });
-        assert!(default.contains("Read"), "{default:?}");
-        assert!(default.contains("file-line-1"), "{default:?}");
-        assert!(default.contains("file-line-10"), "{default:?}");
-        assert!(!default.contains("file-line-11"), "{default:?}");
-        assert!(default.contains("loom logs -b lm-1 -v"), "{default:?}");
-
-        let verbose = capture(RenderMode::Verbose, false, false, |r| {
-            r.render_event(&AgentEvent::ToolCall {
-                envelope: sample_envelope(),
-                id: ToolCallId::new("r1"),
-                tool: "Read".into(),
-                params: json!({"file_path": "src/lib.rs"}),
-                parent_tool_call_id: None,
-            })
-            .expect("call");
-            r.render_event(&AgentEvent::ToolResult {
-                envelope: sample_envelope(),
+            },
+            AgentEvent::ToolResult {
+                envelope: EventEnvelope {
+                    seq: 8,
+                    ts_ms: 2234,
+                    ..sample_envelope()
+                },
                 id: ToolCallId::new("r1"),
                 output: body,
                 is_error: false,
-            })
-            .expect("result");
+            },
+            driver_event(
+                "push_gate_walk",
+                "driver detail",
+                json!({"lane": "verify", "token": "secret"}),
+            ),
+        ];
+        let normal = capture(RenderMode::Default, false, false, |r| {
+            for event in &events {
+                r.render_event(event).expect("normal render");
+            }
         });
-        assert!(verbose.contains("file-line-15"), "{verbose:?}");
+        let verbose = capture(RenderMode::VerbosePlain, false, false, |r| {
+            for event in &events {
+                r.render_event(event).expect("verbose render");
+            }
+        });
+
+        assert_eq!(strip_metadata_lines(&verbose), normal);
+        for expected in [
+            "[event kind=tool_call seq=7 ts_ms=1234",
+            "id=r1",
+            "params={\"api_key\":\"[REDACTED]\",\"file_path\":\"src/lib.rs\"}",
+            "[event kind=tool_result seq=8 ts_ms=2234",
+            "bytes=185",
+            "[event kind=driver_event",
+            "payload={\"lane\":\"verify\",\"token\":\"[REDACTED]\"}",
+        ] {
+            assert!(
+                verbose.contains(expected),
+                "missing {expected:?}: {verbose:?}"
+            );
+        }
+        assert!(normal.contains("file-line-10"), "{normal:?}");
+        assert!(!normal.contains("file-line-11"), "{normal:?}");
+        assert!(verbose.contains("file-line-10"), "{verbose:?}");
+        assert!(!verbose.contains("file-line-11"), "{verbose:?}");
+        assert!(verbose.contains("loom logs -b lm-1 --raw"), "{verbose:?}");
     }
 
     #[test]

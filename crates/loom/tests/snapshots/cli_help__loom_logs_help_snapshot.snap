@@ -13,6 +13,6 @@ Options:
   -A, --agent <BACKEND>   Override the agent backend for this invocation [possible values: claude, pi, direct]
   -f, --follow            Tail the selected log: block on EOF until the file grows or the user interrupts
       --raw               Emit raw JSONL bytes verbatim (no parsing). Composes with `-f` to tail raw JSONL. Mutually exclusive with `-v` and `--path`
-  -v, --verbose           Stream assistant text deltas during render — equivalent to `loom loop -v`. Mutually exclusive with `--raw` and `--path`
+  -v, --verbose           Add diagnostic event metadata to human replay rendering
       --path              Print the resolved log file path and exit. Mutually exclusive with `-f`, `-v`, `--raw`
   -h, --help              Print help
