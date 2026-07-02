@@ -307,7 +307,7 @@ mod tests {
     use anyhow::Result;
     use loom_events::EventEnvelope;
     use loom_events::Source;
-    use loom_events::identifier::ToolCallId;
+    use loom_events::identifier::{SessionId, ToolCallId};
     use serde_json::json;
     use std::io;
     use std::sync::{Arc, Mutex};
@@ -317,9 +317,10 @@ mod tests {
     /// the expected on-disk shape.
     fn sample_envelope() -> EventEnvelope {
         EventEnvelope {
-            bead_id: BeadId::new("lm-1").expect("valid bead id"),
+            session_id: SessionId::new("sess-logs"),
+            bead_id: Some(BeadId::new("lm-1").expect("valid bead id")),
             molecule_id: None,
-            iteration: 0,
+            iteration: Some(0),
             source: Source::Agent,
             ts_ms: 0,
             seq: 0,
@@ -506,7 +507,7 @@ mod tests {
     async fn replay_raw_copies_bytes_verbatim() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("alpha/lm-1-x.jsonl");
-        let body = "{\"kind\":\"turn_end\",\"bead_id\":\"lm-1\",\"molecule_id\":null,\"iteration\":0,\"source\":\"agent\",\"ts_ms\":0,\"seq\":0}\n";
+        let body = "{\"kind\":\"turn_end\",\"session_id\":\"sess-logs\",\"bead_id\":\"lm-1\",\"molecule_id\":null,\"iteration\":0,\"source\":\"agent\",\"ts_ms\":0,\"seq\":0}\n";
         std::fs::create_dir_all(path.parent().ok_or_else(|| anyhow::anyhow!("parent"))?)?;
         std::fs::write(&path, body.as_bytes())?;
         let (buf, sink) = shared_buf();

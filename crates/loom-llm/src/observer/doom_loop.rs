@@ -361,14 +361,15 @@ mod tests {
     use super::*;
 
     use loom_events::event::{CompactionReason, EventEnvelope, Source};
-    use loom_events::identifier::BeadId;
+    use loom_events::identifier::{BeadId, SessionId};
     use serde_json::json;
 
     fn envelope(seq: u64) -> EventEnvelope {
         EventEnvelope {
-            bead_id: BeadId::new("lm-test").expect("valid bead id"),
+            session_id: SessionId::new("sess-doom"),
+            bead_id: Some(BeadId::new("lm-test").expect("valid bead id")),
             molecule_id: None,
-            iteration: 0,
+            iteration: Some(0),
             source: Source::Agent,
             ts_ms: seq as i64,
             seq,

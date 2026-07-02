@@ -22,7 +22,10 @@ use futures_core::Stream;
 pub mod event;
 pub mod identifier;
 
-pub use event::{AgentEvent, DriverKind, EnvelopeBuilder, EventEnvelope, ParsedAgentEvent, Source};
+pub use event::{
+    AgentEvent, DriverKind, EnvelopeBuilder, EventEnvelope, InputKind, InputRedaction,
+    ParsedAgentEvent, RedactionClass, SessionScope, Source,
+};
 
 /// Boxed event stream returned by [`Session::prompt`].
 ///
@@ -158,7 +161,7 @@ impl<T: EventSink + Sized> EventSinkExt for T {}
 mod tests {
     use super::*;
     use crate::event::Source;
-    use crate::identifier::BeadId;
+    use crate::identifier::{BeadId, SessionId};
 
     /// Sink that counts events seen and emits a fixed command list on
     /// `react()`. Drives the composition tests without dragging in a
@@ -187,9 +190,10 @@ mod tests {
     fn sample_event() -> AgentEvent {
         AgentEvent::TextDelta {
             envelope: EventEnvelope {
-                bead_id: BeadId::new("sample-1").expect("valid bead id"),
+                session_id: SessionId::new("sess-sample"),
+                bead_id: Some(BeadId::new("sample-1").expect("valid bead id")),
                 molecule_id: None,
-                iteration: 1,
+                iteration: Some(1),
                 source: Source::Agent,
                 ts_ms: 0,
                 seq: 0,

@@ -3691,20 +3691,32 @@ async fn dispatch_classified(
 }
 
 /// Build a per-spawn [`loom_events::EnvelopeBuilder`] so every event the
-/// session emits carries the live bead id, monotonic `seq`, and real
-/// wall-clock `ts_ms`. The workflow layer joins each `ParsedAgentEvent`
-/// with the builder's output via `AgentEvent::from_parsed` (RS-12).
-/// `molecule_id` and `iteration` are zero until the driver threads them
-/// through.
+/// session emits carries a stable session id, the live bead id,
+/// monotonic `seq`, and real wall-clock `ts_ms`. The workflow layer
+/// joins each `ParsedAgentEvent` with the builder's output via
+/// `AgentEvent::from_parsed` (RS-12). `molecule_id` is omitted and
+/// `iteration` starts at 0 until the driver threads them through.
 fn build_envelope_builder(bead_id: BeadId) -> loom_events::EnvelopeBuilder {
     let clock = SystemClock::new();
-    loom_events::EnvelopeBuilder::new(bead_id, None, 0, loom_events::Source::Agent, move || {
-        clock
-            .wall_now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64
-    })
+    let started_ms = clock
+        .wall_now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis());
+    let session_id = loom_events::identifier::SessionId::new(format!(
+        "{}-{}-{started_ms}",
+        bead_id.as_str().replace('.', "-"),
+        std::process::id(),
+    ));
+    loom_events::EnvelopeBuilder::new(
+        loom_events::SessionScope::bead(session_id, bead_id, None, 0),
+        loom_events::Source::Agent,
+        move || {
+            clock
+                .wall_now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_millis() as i64)
+        },
+    )
 }
 
 /// Test seam: read a millisecond budget from `name` if set. Production

@@ -14,6 +14,7 @@ use loom_driver::identifier::{BeadId, SpecLabel, ToolCallId};
 use loom_driver::logging::{
     BeadOutcome, LogSink, RenderMode, TerminalRenderer, sweep_retention_at,
 };
+use loom_events::identifier::SessionId;
 use loom_events::{EventEnvelope, Source};
 use serde_json::{Value, json};
 
@@ -23,9 +24,10 @@ use serde_json::{Value, json};
 /// the JSONL writer.
 fn sample_envelope() -> EventEnvelope {
     EventEnvelope {
-        bead_id: BeadId::new("lm-test").expect("valid bead id"),
+        session_id: SessionId::new("sess-driver-log"),
+        bead_id: Some(BeadId::new("lm-test").expect("valid bead id")),
         molecule_id: None,
-        iteration: 0,
+        iteration: Some(0),
         source: Source::Agent,
         ts_ms: 0,
         seq: 0,

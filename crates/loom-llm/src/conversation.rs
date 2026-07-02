@@ -16,8 +16,10 @@
 
 use displaydoc::Display;
 use loom_events::event::Source;
-use loom_events::identifier::{BeadId, ToolCallId as EventToolCallId};
-use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, EventSink, SessionCommand};
+use loom_events::identifier::{SessionId, ToolCallId as EventToolCallId};
+use loom_events::{
+    AgentEvent, DriverKind, EnvelopeBuilder, EventSink, SessionCommand, SessionScope,
+};
 use thiserror::Error;
 
 use crate::cache::CacheControl;
@@ -156,7 +158,7 @@ impl Conversation {
             context_budget: None,
             doom_loop: build_doom_loop_observer(&doom_loop),
             duplicate_result: build_duplicate_result_observer(&duplicate_result),
-            envelope_builder: default_envelope_builder(),
+            envelope_builder: Some(default_envelope_builder()),
             pending_steers: Vec::new(),
         }
     }
@@ -241,13 +243,12 @@ impl Conversation {
     }
 
     /// Replace the conversation's `EnvelopeBuilder`. External consumers
-    /// thread their own bead / molecule / iteration identity through this
-    /// hook so the synthetic `AgentEvent::ToolCall` / `AgentEvent::ToolResult`
-    /// events the loop emits into composed observers carry the right
-    /// per-spawn metadata. Without an override the conversation uses a
-    /// synthetic `lm-conv` bead id with a constant `ts_ms = 0`;
-    /// observers key on `(CallKey, ResultHash)` rather than the
-    /// timestamp, so the default is observationally inert.
+    /// thread their own event-session scope through this hook so the
+    /// observer `AgentEvent::ToolCall` / `AgentEvent::ToolResult` events
+    /// carry the right metadata. Without an override the conversation
+    /// uses a standalone session id with a constant `ts_ms = 0`; observers
+    /// key on `(CallKey, ResultHash)` rather than the timestamp, so the
+    /// default is observationally inert.
     pub fn with_envelope_builder(mut self, envelope_builder: EnvelopeBuilder) -> Self {
         self.envelope_builder = Some(envelope_builder);
         self
@@ -687,20 +688,19 @@ fn estimate_tool_def_bytes(tool: &ToolDef) -> usize {
         .saturating_add(tool.input_schema.to_string().len())
 }
 
-/// Synthetic `EnvelopeBuilder` for consumers that don't thread their own
-/// bead identity through [`Conversation::with_envelope_builder`]. Uses
-/// the constant `lm-conv` bead id (replay tools see it as a distinct
-/// stream) and a constant `ts_ms = 0`. The composed observers key on
-/// `(CallKey, ResultHash)`, not `ts_ms`, so the constant clock is
-/// observationally inert; consumers that need wall-clock timestamps on
-/// the synthesised events supply their own builder via
-/// [`Conversation::with_envelope_builder`] (the only path that draws on
-/// the dedicated `SystemClock` impls in `loom-driver` / `loom-render`).
-fn default_envelope_builder() -> Option<EnvelopeBuilder> {
-    match BeadId::new("lm-conv") {
-        Ok(bead) => Some(EnvelopeBuilder::new(bead, None, 0, Source::Agent, || 0)),
-        Err(_err) => None,
-    }
+/// Default `EnvelopeBuilder` for consumers that don't thread their own
+/// event session through [`Conversation::with_envelope_builder`]. Uses a
+/// standalone session scope and a constant `ts_ms = 0`. The composed
+/// observers key on `(CallKey, ResultHash)`, not `ts_ms`, so the
+/// constant clock is observationally inert; consumers that need
+/// wall-clock timestamps on the synthesised events supply their own
+/// builder via [`Conversation::with_envelope_builder`].
+fn default_envelope_builder() -> EnvelopeBuilder {
+    EnvelopeBuilder::new(
+        SessionScope::phase(SessionId::new("conv-default"), None),
+        Source::Agent,
+        || 0,
+    )
 }
 
 fn build_doom_loop_observer(config: &DoomLoopConfig) -> Option<DoomLoopObserver> {

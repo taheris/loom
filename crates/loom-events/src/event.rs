@@ -1,6 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::identifier::{BeadId, MoleculeId, ProfileName, SpecLabel, ToolCallId};
+use crate::identifier::{BeadId, MoleculeId, ProfileName, SessionId, SpecLabel, ToolCallId};
 
 /// Driver-side event subtype carried on [`AgentEvent::DriverEvent`].
 ///
@@ -198,6 +198,102 @@ impl<'de> Deserialize<'de> for DriverKind {
     }
 }
 
+/// Loom-authored input category for [`AgentEvent::AgentInput`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputKind {
+    InitialPrompt,
+    FollowUp,
+    Steer,
+    Repin,
+}
+
+/// Redaction class recorded for an agent-input transcript marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RedactionClass {
+    Secret,
+    Token,
+    ApiKey,
+    EnvVar,
+    Other(String),
+}
+
+impl RedactionClass {
+    pub fn as_wire(&self) -> &str {
+        match self {
+            RedactionClass::Secret => "secret",
+            RedactionClass::Token => "token",
+            RedactionClass::ApiKey => "api_key",
+            RedactionClass::EnvVar => "env_var",
+            RedactionClass::Other(s) => s.as_str(),
+        }
+    }
+
+    pub fn from_wire(s: &str) -> Self {
+        match s {
+            "secret" => RedactionClass::Secret,
+            "token" => RedactionClass::Token,
+            "api_key" => RedactionClass::ApiKey,
+            "env_var" => RedactionClass::EnvVar,
+            other => RedactionClass::Other(other.to_string()),
+        }
+    }
+}
+
+impl Serialize for RedactionClass {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_wire())
+    }
+}
+
+impl<'de> Deserialize<'de> for RedactionClass {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = std::borrow::Cow::<'_, str>::deserialize(d)?;
+        Ok(RedactionClass::from_wire(&s))
+    }
+}
+
+/// One explicit redaction recorded for text sent to an agent backend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputRedaction {
+    pub marker: String,
+    pub class: RedactionClass,
+}
+
+/// Work-routing scope stamped onto every event in one event session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionScope {
+    session_id: SessionId,
+    bead_id: Option<BeadId>,
+    molecule_id: Option<MoleculeId>,
+    iteration: Option<u32>,
+}
+
+impl SessionScope {
+    pub fn bead(
+        session_id: SessionId,
+        bead_id: BeadId,
+        molecule_id: Option<MoleculeId>,
+        iteration: u32,
+    ) -> Self {
+        Self {
+            session_id,
+            bead_id: Some(bead_id),
+            molecule_id,
+            iteration: Some(iteration),
+        }
+    }
+
+    pub fn phase(session_id: SessionId, molecule_id: Option<MoleculeId>) -> Self {
+        Self {
+            session_id,
+            bead_id: None,
+            molecule_id,
+            iteration: None,
+        }
+    }
+}
+
 /// Common envelope every [`AgentEvent`] carries. Serialized flat at the
 /// top level via `#[serde(flatten)]` — consumers see one discriminator
 /// (`kind`) plus the envelope fields plus variant-specific payload, all
@@ -205,23 +301,20 @@ impl<'de> Deserialize<'de> for DriverKind {
 /// wrappers — every consumer dispatches with one `match` (Rust) or one
 /// `switch (event.kind)` (TypeScript).
 ///
-/// `seq` is monotonic per `(bead_id, spawn)` pair: the producer side
-/// (parser or driver-event emitter) maintains a per-session counter and
-/// stamps each emitted event with the next value. Replay code groups
-/// events into runs by sorting on `(bead_id, seq)`.
+/// `seq` is monotonic within `session_id`: the producer side (parser or
+/// driver-event emitter) maintains a per-session counter and stamps each
+/// emitted event with the next value. Bead-backed sessions also carry
+/// `bead_id`; standalone phase sessions leave work-routing fields absent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventEnvelope {
-    pub bead_id: BeadId,
-    /// Optional because driver-emitted events tied to a molecule that has
-    /// no bead-level scope may omit it.
+    pub session_id: SessionId,
+    pub bead_id: Option<BeadId>,
     pub molecule_id: Option<MoleculeId>,
-    /// Iteration counter for the bead's molecule — bumped each time
-    /// `loom review` enters another `loom loop` round.
-    pub iteration: u32,
+    pub iteration: Option<u32>,
     pub source: Source,
     /// Unix-epoch milliseconds when the event was produced.
     pub ts_ms: i64,
-    /// Monotonic per-bead-spawn counter. `0` at session start.
+    /// Monotonic per event-session counter. `0` at session start.
     pub seq: u64,
 }
 
@@ -276,6 +369,15 @@ pub enum AgentEvent {
         started_at_ms: i64,
         /// `Task` parent for subagent sessions; `None` for top-level.
         parent_tool_call_id: Option<ToolCallId>,
+    },
+
+    /// Loom-authored text sent into the backend session.
+    AgentInput {
+        #[serde(flatten)]
+        envelope: EventEnvelope,
+        input_kind: InputKind,
+        text: String,
+        redactions: Option<Vec<InputRedaction>>,
     },
 
     /// Agent session ended — paired with [`AgentEvent::AgentStart`].
@@ -433,6 +535,7 @@ impl AgentEvent {
     pub fn envelope(&self) -> &EventEnvelope {
         match self {
             AgentEvent::AgentStart { envelope, .. }
+            | AgentEvent::AgentInput { envelope, .. }
             | AgentEvent::AgentEnd { envelope }
             | AgentEvent::TurnStart { envelope }
             | AgentEvent::TurnEnd { envelope }
@@ -573,8 +676,8 @@ impl AgentEvent {
 }
 
 /// Parser-emitted event prior to envelope stamping. The parser layer has
-/// no visibility into the live bead / molecule / iteration / source /
-/// ts_ms / seq context — the session layer joins this payload with the
+/// no visibility into the live session/work scope / source / ts_ms /
+/// seq context — the session layer joins this payload with the
 /// per-spawn [`EventEnvelope`] via [`AgentEvent::from_parsed`].
 ///
 /// `AgentStart` is driver-emitted and never appears here. The Direct
@@ -654,9 +757,9 @@ pub enum ParsedAgentEvent {
     },
 }
 
-/// Per-session monotonic envelope factory. Threads bead/molecule
-/// identity, iteration count, and source through every event the
-/// session emits, and stamps each one with the next `seq` value.
+/// Per-session monotonic envelope factory. Threads session/work scope
+/// and source through every event the session emits, and stamps each one
+/// with the next `seq` value.
 ///
 /// The `ts_ms` clock is injected so tests can pin time. Production
 /// callers pass a closure that returns the current `SystemTime` as unix
@@ -664,9 +767,7 @@ pub enum ParsedAgentEvent {
 /// function (not a trait) avoids pulling tokio/chrono into the leaf
 /// `loom-events` crate.
 pub struct EnvelopeBuilder {
-    bead_id: BeadId,
-    molecule_id: Option<MoleculeId>,
-    iteration: u32,
+    scope: SessionScope,
     source: Source,
     seq: u64,
     now_ms: Box<dyn FnMut() -> i64 + Send>,
@@ -674,41 +775,24 @@ pub struct EnvelopeBuilder {
 
 impl EnvelopeBuilder {
     /// New builder with `seq` starting at 0. `now` returns unix-epoch
-    /// milliseconds — typically `|| { SystemTime::now().duration_since(UNIX_EPOCH).as_millis() as i64 }`
-    /// at the driver boundary; tests pass a closure over a counter.
-    pub fn new<F>(
-        bead_id: BeadId,
-        molecule_id: Option<MoleculeId>,
-        iteration: u32,
-        source: Source,
-        now_ms: F,
-    ) -> Self
+    /// milliseconds at the driver boundary; tests pass a closure over a
+    /// counter.
+    pub fn new<F>(scope: SessionScope, source: Source, now_ms: F) -> Self
     where
         F: FnMut() -> i64 + Send + 'static,
     {
-        Self::with_seq_start(bead_id, molecule_id, iteration, source, 0, now_ms)
+        Self::with_seq_start(scope, source, 0, now_ms)
     }
 
     /// New builder that resumes from an explicit `seq_start` rather
-    /// than restarting at zero. Used by the run-phase verdict gate
-    /// when it picks up the seq counter from the spawn closure's
-    /// last-emitted event so the per-spawn stream stays
-    /// strictly-increasing across the closure-controller boundary.
-    pub fn with_seq_start<F>(
-        bead_id: BeadId,
-        molecule_id: Option<MoleculeId>,
-        iteration: u32,
-        source: Source,
-        seq_start: u64,
-        now_ms: F,
-    ) -> Self
+    /// than restarting at zero. Used by log appenders that continue a
+    /// session's event stream after a prior sink closed.
+    pub fn with_seq_start<F>(scope: SessionScope, source: Source, seq_start: u64, now_ms: F) -> Self
     where
         F: FnMut() -> i64 + Send + 'static,
     {
         Self {
-            bead_id,
-            molecule_id,
-            iteration,
+            scope,
             source,
             seq: seq_start,
             now_ms: Box::new(now_ms),
@@ -732,9 +816,10 @@ impl EnvelopeBuilder {
     pub fn build_with_source(&mut self, source: Source) -> EventEnvelope {
         let ts_ms = (self.now_ms)();
         let envelope = EventEnvelope {
-            bead_id: self.bead_id.clone(),
-            molecule_id: self.molecule_id.clone(),
-            iteration: self.iteration,
+            session_id: self.scope.session_id.clone(),
+            bead_id: self.scope.bead_id.clone(),
+            molecule_id: self.scope.molecule_id.clone(),
+            iteration: self.scope.iteration,
             source,
             ts_ms,
             seq: self.seq,
@@ -757,9 +842,12 @@ mod tests {
     fn builder() -> EnvelopeBuilder {
         let mut clock = 0_i64;
         EnvelopeBuilder::new(
-            BeadId::new("lm-test").expect("valid id"),
-            None,
-            0,
+            SessionScope::bead(
+                SessionId::new("sess-test"),
+                BeadId::new("lm-test").expect("valid id"),
+                None,
+                0,
+            ),
             Source::Agent,
             move || {
                 clock += 1;
@@ -770,14 +858,50 @@ mod tests {
 
     /// Every `AgentEvent` variant carries the same envelope fields. Test
     /// the schema by serializing one of each and asserting the top-level
-    /// JSON keys include the six envelope fields (plus `kind`).
+    /// JSON keys include the common envelope fields (plus `kind`).
     #[test]
     fn common_envelope_fields_present_on_every_variant() {
         let mut b = builder();
         let samples: Vec<AgentEvent> = vec![
+            AgentEvent::AgentStart {
+                envelope: b.build(),
+                schema_version: 1,
+                title: "smoke".into(),
+                profile: ProfileName::new("base"),
+                spec_label: SpecLabel::new("harness"),
+                started_at_ms: 1_700_000_000_000,
+                parent_tool_call_id: None,
+            },
+            AgentEvent::AgentInput {
+                envelope: b.build_with_source(Source::Driver),
+                input_kind: InputKind::InitialPrompt,
+                text: "prompt".into(),
+                redactions: None,
+            },
+            AgentEvent::AgentEnd {
+                envelope: b.build(),
+            },
+            AgentEvent::TurnStart {
+                envelope: b.build(),
+            },
             AgentEvent::TextDelta {
                 envelope: b.build(),
                 text: "x".into(),
+            },
+            AgentEvent::TextEnd {
+                envelope: b.build(),
+            },
+            AgentEvent::ThinkingDelta {
+                envelope: b.build(),
+                text: "thinking".into(),
+            },
+            AgentEvent::ThinkingEnd {
+                envelope: b.build(),
+            },
+            AgentEvent::ToolcallDelta {
+                envelope: b.build(),
+                id: ToolCallId::new("tc-1"),
+                delta: "{".into(),
             },
             AgentEvent::ToolCall {
                 envelope: b.build(),
@@ -791,6 +915,11 @@ mod tests {
                 id: ToolCallId::new("t1"),
                 output: String::new(),
                 is_error: false,
+            },
+            AgentEvent::ToolProgress {
+                envelope: b.build(),
+                id: ToolCallId::new("t1"),
+                text: "running".into(),
             },
             AgentEvent::TurnEnd {
                 envelope: b.build(),
@@ -808,27 +937,66 @@ mod tests {
                 envelope: b.build(),
                 aborted: false,
             },
+            AgentEvent::AutoRetry {
+                envelope: b.build(),
+                attempt: 1,
+                max_attempts: 3,
+                delay_ms: 100,
+                error_message: "retry".into(),
+            },
             AgentEvent::Error {
                 envelope: b.build(),
                 message: "boom".into(),
+            },
+            AgentEvent::DriverEvent {
+                envelope: b.build_with_source(Source::Driver),
+                driver_kind: DriverKind::VerdictGate,
+                summary: "summary".into(),
+                payload: serde_json::Value::Null,
             },
         ];
         for event in &samples {
             let v = serde_json::to_value(event).expect("serialize");
             let obj = v.as_object().expect("event serializes as object");
-            for key in ["kind", "bead_id", "iteration", "source", "ts_ms", "seq"] {
+            for key in [
+                "kind",
+                "session_id",
+                "bead_id",
+                "molecule_id",
+                "iteration",
+                "source",
+                "ts_ms",
+                "seq",
+            ] {
                 assert!(
                     obj.contains_key(key),
                     "event missing envelope key `{key}`: {event:?}\nserialized: {v}",
                 );
             }
-            // molecule_id is `Option`; it's serialized as `null` when None
-            // but the key is still present.
-            assert!(
-                obj.contains_key("molecule_id"),
-                "event missing envelope key `molecule_id`: {event:?}",
-            );
+            assert_eq!(obj["session_id"], "sess-test");
         }
+    }
+
+    #[test]
+    fn non_bead_session_serializes_without_synthetic_bead_id() {
+        let mut builder = EnvelopeBuilder::new(
+            SessionScope::phase(SessionId::new("phase-todo-1"), None),
+            Source::Agent,
+            || 0,
+        );
+        let event = AgentEvent::TurnEnd {
+            envelope: builder.build(),
+        };
+        let value = serde_json::to_value(&event).expect("serialize");
+        assert_eq!(value["session_id"], "phase-todo-1");
+        assert!(value["bead_id"].is_null(), "no synthetic bead id: {value}");
+        assert!(
+            value["iteration"].is_null(),
+            "no synthetic iteration: {value}"
+        );
+        let parsed: AgentEvent = serde_json::from_value(value).expect("deserialize");
+        assert!(parsed.envelope().bead_id.is_none());
+        assert!(parsed.envelope().iteration.is_none());
     }
 
     /// `agent_start` carries the extras spec calls out: schema_version,
@@ -880,6 +1048,15 @@ mod tests {
             AgentEvent::TextDelta {
                 envelope: b.build(),
                 text: "hello\nworld".into(),
+            },
+            AgentEvent::AgentInput {
+                envelope: b.build_with_source(Source::Driver),
+                input_kind: InputKind::Steer,
+                text: "course correct".into(),
+                redactions: Some(vec![InputRedaction {
+                    marker: "[REDACTED_SECRET]".into(),
+                    class: RedactionClass::Secret,
+                }]),
             },
             AgentEvent::ToolCall {
                 envelope: b.build(),
@@ -943,7 +1120,9 @@ mod tests {
         // Top-level must have envelope fields directly — no nesting.
         for key in [
             "kind",
+            "session_id",
             "bead_id",
+            "molecule_id",
             "iteration",
             "source",
             "ts_ms",
@@ -990,6 +1169,19 @@ mod tests {
                     "started_at_ms",
                     "parent_tool_call_id",
                 ],
+            ),
+            (
+                "agent_input",
+                AgentEvent::AgentInput {
+                    envelope: b.build_with_source(Source::Driver),
+                    input_kind: InputKind::Repin,
+                    text: "re-pin".into(),
+                    redactions: Some(vec![InputRedaction {
+                        marker: "[REDACTED_API_KEY]".into(),
+                        class: RedactionClass::ApiKey,
+                    }]),
+                },
+                &["input_kind", "text", "redactions"],
             ),
             (
                 "agent_end",
@@ -1138,6 +1330,7 @@ mod tests {
         ];
         let common = [
             "kind",
+            "session_id",
             "bead_id",
             "molecule_id",
             "iteration",
@@ -1213,6 +1406,7 @@ mod tests {
     fn unknown_variants_fail_with_a_loud_error() {
         let bogus = serde_json::json!({
             "kind": "this_kind_does_not_exist_yet",
+            "session_id": "sess-test",
             "bead_id": "lm-test",
             "molecule_id": null,
             "iteration": 0,
@@ -1236,6 +1430,7 @@ mod tests {
     fn every_spec_variant_present() {
         let kinds = [
             "agent_start",
+            "agent_input",
             "agent_end",
             "turn_start",
             "turn_end",
@@ -1254,7 +1449,7 @@ mod tests {
             "error",
             "driver_event",
         ];
-        assert_eq!(kinds.len(), 18, "spec mandates exactly 18 variants");
+        assert_eq!(kinds.len(), 19, "spec mandates exactly 19 variants");
     }
 
     /// G3 — `driver_event` accepts arbitrary `driver_kind` strings;
@@ -1265,6 +1460,7 @@ mod tests {
         for kind in ["push_gate_walk", "completely_made_up_kind"] {
             let json = serde_json::json!({
                 "kind": "driver_event",
+                "session_id": "sess-test",
                 "bead_id": "lm-test",
                 "molecule_id": null,
                 "iteration": 0,
@@ -1327,6 +1523,7 @@ mod tests {
         for kind in kinds {
             let json = serde_json::json!({
                 "kind": "driver_event",
+                "session_id": "sess-test",
                 "bead_id": "lm-test",
                 "molecule_id": null,
                 "iteration": 0,
@@ -1363,7 +1560,7 @@ mod tests {
     }
 
     /// `EnvelopeBuilder::build` advances `seq` by exactly 1 each call.
-    /// Replay code reorders events by `(bead_id, seq)`; off-by-one or
+    /// Replay code reorders events by `(session_id, seq)`; off-by-one or
     /// reset bugs in the producer would break replay silently.
     #[test]
     fn seq_advances_monotonically() {

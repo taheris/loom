@@ -385,8 +385,9 @@ mod tests {
     use super::*;
     use crate::client::RetryAdvice;
     use crate::model_id::AnthropicModel;
+    use loom_events::SessionScope;
     use loom_events::event::Source;
-    use loom_events::identifier::BeadId;
+    use loom_events::identifier::{BeadId, SessionId};
     use std::sync::Arc;
     use std::time::Duration;
     use wiremock::matchers::{header, header_exists, method, path};
@@ -404,9 +405,12 @@ mod tests {
     fn test_envelope_builder() -> EnvelopeBuilder {
         let mut clock = 0_i64;
         EnvelopeBuilder::new(
-            BeadId::new("lm-test").expect("valid bead id"),
-            None,
-            0,
+            SessionScope::bead(
+                SessionId::new("sess-test"),
+                BeadId::new("lm-test").expect("valid bead id"),
+                None,
+                0,
+            ),
             Source::Agent,
             move || {
                 clock += 1;

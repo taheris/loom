@@ -1,12 +1,10 @@
 //! Every `AgentEvent` emitted by `loom loop` carries a per-spawn
-//! envelope (real `bead_id`, monotonic `seq`, real `ts_ms`).
+//! envelope (stable `session_id`, real `bead_id`, monotonic `seq`, real `ts_ms`).
 //!
 //! Drives `loom loop <bead-id>` against the mock pi agent in
 //! `complete-marker` mode, locates the per-bead JSONL log, and asserts
-//! that every recorded event carries the seeded bead id and that `seq`
-//! advances by exactly one per event starting at zero. Guards against
-//! regression to `EventEnvelope::placeholder()` (sentinel `wx-pending`,
-//! `seq=0` everywhere).
+//! that every recorded event carries one session id plus the seeded bead
+//! id and that `seq` advances by exactly one per event starting at zero.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -154,7 +152,7 @@ fn find_bead_log(workspace: &Path, spec_label: &str, bead_id: &str) -> PathBuf {
 }
 
 #[test]
-fn loom_loop_stamps_real_bead_id_and_monotonic_seq_on_every_event() {
+fn loom_loop_stamps_session_id_real_bead_id_and_monotonic_seq_on_every_event() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
     init_workspace_repo(workspace);
@@ -199,12 +197,21 @@ fn loom_loop_stamps_real_bead_id_and_monotonic_seq_on_every_event() {
         log_path.display(),
     );
 
+    let mut session_id: Option<String> = None;
     for (i, line) in lines.iter().enumerate() {
         let value: serde_json::Value = serde_json::from_str(line)
             .unwrap_or_else(|e| panic!("line {i} parse failed: {e}\nline={line}"));
         let obj = value
             .as_object()
             .unwrap_or_else(|| panic!("line {i} not an object: {line}"));
+        let actual_session = obj
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("line {i} missing session_id: {line}"));
+        match &session_id {
+            Some(first) => assert_eq!(actual_session, first, "session_id drift at line {i}"),
+            None => session_id = Some(actual_session.to_owned()),
+        }
         let actual_bead = obj
             .get("bead_id")
             .and_then(|v| v.as_str())

@@ -24,8 +24,9 @@ use loom_driver::agent::{
 };
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::logging::{BeadOutcome, LogSink};
+use loom_events::identifier::SessionId;
 use loom_events::{
-    DriverKind, EnvelopeBuilder, EventSink, ParsedAgentEvent, SessionCommand, Source,
+    DriverKind, EnvelopeBuilder, EventSink, ParsedAgentEvent, SessionCommand, SessionScope, Source,
 };
 use tracing::{info, trace, warn};
 
@@ -88,13 +89,13 @@ pub async fn run_agent<B: AgentBackend>(
 /// land in the log alongside the events that caused them.
 ///
 /// `envelope_builder` joins each `ParsedAgentEvent` the session yields
-/// with the next per-spawn envelope (monotonic `seq`, real `bead_id`,
-/// real wall-clock `ts_ms`) via `AgentEvent::from_parsed`. The session
-/// layer is the sole constructor of `AgentEvent`; parsers cannot reach
-/// a stamped event by any other path. When `None`, the loop falls back
-/// to `phase_envelope_builder` so phase spawns (todo / plan / inbox)
-/// without a bead context still produce fully-valid envelopes (bead id
-/// `lm-phase`).
+/// with the next per-spawn envelope (monotonic `seq`, stable
+/// `session_id`, real wall-clock `ts_ms`) via `AgentEvent::from_parsed`.
+/// The session layer is the sole constructor of `AgentEvent`; parsers
+/// cannot reach a stamped event by any other path. When `None`, the loop
+/// falls back to `phase_envelope_builder` so phase spawns (todo / plan /
+/// inbox) without a bead context still produce fully-valid envelopes
+/// without a synthetic `bead_id`.
 pub async fn run_agent_classified<B: AgentBackend>(
     config: &SpawnConfig,
     mut sink: Option<LogSink>,
@@ -205,23 +206,7 @@ pub async fn run_agent_classified<B: AgentBackend>(
         // produce the consumer-visible `AgentEvent`.
         let envelope = match envelope_builder.as_mut() {
             Some(b) => b.build(),
-            None => match phase_envelope_builder() {
-                Ok(b) => envelope_builder.insert(b).build(),
-                Err(err) => {
-                    let error_str = format!("phase envelope builder construction failed: {err}");
-                    emit_infra_failure_event(
-                        sink.as_mut(),
-                        envelope_builder.as_mut(),
-                        stream_infra_phase(first_event_seen),
-                        InfraCause::DriverEnvelope,
-                        &error_str,
-                        None,
-                        None,
-                    );
-                    finish_sink(sink, BeadOutcome::Failed);
-                    return infra_session_result(first_event_seen, error_str);
-                }
-            },
+            None => envelope_builder.insert(phase_envelope_builder()).build(),
         };
         let event = AgentEvent::from_parsed(parsed, envelope);
         if event.envelope().source == Source::Agent {
@@ -508,29 +493,28 @@ fn emit_stall_watchdog_event(
 }
 
 /// Fallback `EnvelopeBuilder` for phase-level spawns (todo/check/inbox)
-/// that do not own a per-bead context yet. Stamps events with the
-/// synthetic but fully-valid `lm-phase` bead id; replay tools that key
-/// on `bead_id` see it as a distinct stream rather than an invalid
-/// sentinel. The `ts_ms` closure samples the wall clock so events stay
-/// monotonic. Returns the parser error if BeadId rules drift to reject
-/// `lm-phase`; the [`phase_bead_id_parses`] test catches that drift
-/// before it can reach a live session.
-fn phase_envelope_builder() -> Result<EnvelopeBuilder, loom_events::identifier::ParseBeadIdError> {
-    let bead = loom_events::identifier::BeadId::new("lm-phase")?;
+/// that do not own a per-bead context yet. Stamps events with a session
+/// id and leaves work-routing fields absent. The `ts_ms` closure samples
+/// the wall clock so events stay monotonic.
+fn phase_envelope_builder() -> EnvelopeBuilder {
     let clock = SystemClock::new();
-    Ok(EnvelopeBuilder::new(
-        bead,
-        None,
-        0,
+    let started_ms = clock
+        .wall_now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis());
+    EnvelopeBuilder::new(
+        SessionScope::phase(
+            SessionId::new(format!("phase-{}-{started_ms}", std::process::id())),
+            None,
+        ),
         Source::Agent,
         move || {
             clock
                 .wall_now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as i64
+                .map_or(0, |duration| duration.as_millis() as i64)
         },
-    ))
+    )
 }
 
 fn finish_sink(sink: Option<LogSink>, outcome: BeadOutcome) {
@@ -624,7 +608,6 @@ enum InfraCause {
     ContainerOom,
     Io,
     SinkFailure,
-    DriverEnvelope,
     BackendHandler,
 }
 
@@ -639,7 +622,6 @@ impl InfraCause {
             InfraCause::ContainerOom => "container_oom",
             InfraCause::Io => "io",
             InfraCause::SinkFailure => "sink_failure",
-            InfraCause::DriverEnvelope => "driver_envelope",
             InfraCause::BackendHandler => "backend_handler",
         }
     }
@@ -855,6 +837,12 @@ fn summarize_event(event: &AgentEvent) -> String {
         AgentEvent::TextDelta { text, .. } => {
             format!("message_delta ({} chars)", text.chars().count())
         }
+        AgentEvent::AgentInput {
+            input_kind, text, ..
+        } => format!(
+            "agent_input {input_kind:?} ({} chars)",
+            text.chars().count()
+        ),
         AgentEvent::ToolCall { id, tool, .. } => format!("tool_call {tool} (id={id})"),
         AgentEvent::ToolResult {
             id,
@@ -910,7 +898,7 @@ mod tests {
     use super::*;
     use loom_driver::agent::{JsonlReader, LineParse, ParsedLine, RePinContent};
     use loom_driver::logging::LogSink;
-    use loom_events::identifier::{BeadId, SpecLabel};
+    use loom_events::identifier::{BeadId, SessionId, SpecLabel};
     use std::path::{Path, PathBuf};
     use std::process::Stdio;
     use std::time::SystemTime;
@@ -936,9 +924,12 @@ mod tests {
     }
 
     #[test]
-    fn phase_bead_id_parses() {
-        loom_events::identifier::BeadId::new("lm-phase")
-            .expect("`lm-phase` must parse as a BeadId — phase_envelope_builder depends on it");
+    fn phase_envelope_builder_omits_work_routing_fields() {
+        let mut builder = phase_envelope_builder();
+        let envelope = builder.build();
+        assert!(envelope.session_id.as_str().starts_with("phase-"));
+        assert!(envelope.bead_id.is_none());
+        assert!(envelope.iteration.is_none());
     }
 
     #[test]
@@ -971,10 +962,14 @@ mod tests {
     fn builder() -> EnvelopeBuilder {
         let bead = BeadId::new("lm-emit").expect("bead id");
         let mut clock = 0_i64;
-        EnvelopeBuilder::new(bead, None, 0, Source::Agent, move || {
-            clock += 1;
-            clock
-        })
+        EnvelopeBuilder::new(
+            SessionScope::bead(SessionId::new("sess-emit"), bead, None, 0),
+            Source::Agent,
+            move || {
+                clock += 1;
+                clock
+            },
+        )
     }
 
     fn read_jsonl(path: &std::path::Path) -> Vec<serde_json::Value> {
@@ -1228,9 +1223,10 @@ mod tests {
 
     fn sample_envelope() -> loom_events::EventEnvelope {
         loom_events::EventEnvelope {
-            bead_id: BeadId::new("lm-react").expect("bead id"),
+            session_id: SessionId::new("sess-react"),
+            bead_id: Some(BeadId::new("lm-react").expect("bead id")),
             molecule_id: None,
-            iteration: 1,
+            iteration: Some(1),
             source: Source::Agent,
             ts_ms: 0,
             seq: 0,

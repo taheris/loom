@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use loom_driver::clock::{Clock, SystemClock};
-use loom_events::identifier::BeadId;
-use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
+use loom_events::identifier::{BeadId, SessionId};
+use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, SessionScope, Source};
 use loom_protocol::gate::ExitSignal;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -535,7 +535,7 @@ fn gate_run_lifecycle_events(
     run: &GateRun,
     seq_start: u64,
 ) -> Result<Vec<AgentEvent>, std::io::Error> {
-    let mut builder = gate_log_envelope_builder(path, seq_start)?;
+    let mut builder = gate_log_envelope_builder(path, seq_start);
     let phase = gate_phase_wire(run.phase);
     let payload = gate_run_payload(path, run);
     let mut events = vec![
@@ -636,44 +636,52 @@ fn gate_lane_payload(
     payload
 }
 
-fn gate_log_envelope_builder(
-    path: &Path,
-    seq_start: u64,
-) -> Result<EnvelopeBuilder, std::io::Error> {
-    let bead_id = gate_log_bead_id(path)?;
+fn gate_log_envelope_builder(path: &Path, seq_start: u64) -> EnvelopeBuilder {
+    let scope = gate_log_scope(path);
     let clock = SystemClock::new();
-    Ok(EnvelopeBuilder::with_seq_start(
-        bead_id,
-        None,
-        0,
-        Source::Driver,
-        seq_start,
-        move || {
-            clock
-                .wall_now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_millis() as i64)
-        },
-    ))
+    EnvelopeBuilder::with_seq_start(scope, Source::Driver, seq_start, move || {
+        clock
+            .wall_now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis() as i64)
+    })
 }
 
-fn gate_log_bead_id(path: &Path) -> Result<BeadId, std::io::Error> {
+fn gate_log_scope(path: &Path) -> SessionScope {
     if let Ok(contents) = std::fs::read_to_string(path) {
         for line in contents.lines() {
-            let value = match serde_json::from_str::<serde_json::Value>(line) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            let Some(raw) = value.get("bead_id").and_then(serde_json::Value::as_str) else {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
-            if let Ok(bead_id) = BeadId::new(raw) {
-                return Ok(bead_id);
+            let Some(raw_session) = value.get("session_id").and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Ok(session_id) = raw_session.parse::<SessionId>() else {
+                continue;
+            };
+            let raw_bead = value.get("bead_id").and_then(serde_json::Value::as_str);
+            if let Some(raw_bead) = raw_bead
+                && let Ok(bead_id) = BeadId::new(raw_bead)
+            {
+                return SessionScope::bead(session_id, bead_id, None, 0);
             }
+            return SessionScope::phase(session_id, None);
         }
     }
-    BeadId::new("gate-log")
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string()))
+    SessionScope::phase(gate_log_session_id(path), None)
+}
+
+fn gate_log_session_id(path: &Path) -> SessionId {
+    let raw = path.to_string_lossy();
+    let mut id = String::from("gate");
+    for byte in raw.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            id.push('-');
+            id.push(char::from(byte).to_ascii_lowercase());
+        }
+    }
+    SessionId::new(id)
 }
 
 fn next_seq_in_log(path: &Path) -> u64 {

@@ -318,7 +318,7 @@ mod tests {
     use loom_events::EventEnvelope;
     use loom_events::Source;
     use loom_events::event::CompactionReason;
-    use loom_events::identifier::ToolCallId;
+    use loom_events::identifier::{SessionId, ToolCallId};
     use serde_json::{Value, json};
 
     /// Fixture envelope shared by the sink emission tests. Bead id is
@@ -326,9 +326,10 @@ mod tests {
     /// trivially comparable.
     fn sample_envelope() -> EventEnvelope {
         EventEnvelope {
-            bead_id: BeadId::new("lm-test").expect("valid bead id"),
+            session_id: SessionId::new("sess-render-sink"),
+            bead_id: Some(BeadId::new("lm-test").expect("valid bead id")),
             molecule_id: None,
-            iteration: 0,
+            iteration: Some(0),
             source: Source::Agent,
             ts_ms: 0,
             seq: 0,

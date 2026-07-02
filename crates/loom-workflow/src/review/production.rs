@@ -34,7 +34,8 @@ use loom_driver::logging::{BeadOutcome, LogSink};
 use loom_driver::profile_manifest::ProfileImageManifest;
 use loom_driver::scratch::resolve_scratch_key;
 use loom_driver::state::CacheDb;
-use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
+use loom_events::identifier::SessionId;
+use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, SessionScope, Source};
 use loom_gate::{
     DispatchOptions, DispatchPendingExecutor, FsCommandResolver, GateRun, GateSuccess,
     HandoffEvidence, InputResolver, IntegrityFinding, MarkerProof, TierCwds, annotation,
@@ -129,8 +130,8 @@ where
     phase_log_root: Option<PathBuf>,
     phase_log_when: SystemTime,
     /// Per-phase envelope builder. The review phase isn't bead-scoped,
-    /// so the envelope carries the synthetic `lm-review` bead id; the
-    /// builder tracks `seq` across every `emit_driver_event` call so
+    /// so the envelope carries a session id without work-routing fields;
+    /// the builder tracks `seq` across every `emit_driver_event` call so
     /// replay code can reorder events deterministically. Wrapped in
     /// `Mutex` because `EnvelopeBuilder`'s clock closure is `Send`
     /// but not `Sync` — the trait's `Send`-future bound requires the
@@ -1139,25 +1140,19 @@ where
             }
         };
         if guard.is_none() {
-            let synthetic_bead = match BeadId::new("lm-review") {
-                Ok(id) => id,
-                Err(e) => {
-                    warn!(error = %e, "review controller: synthetic bead id invalid");
-                    return;
-                }
-            };
+            let session_ms = self
+                .phase_log_when
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_millis());
             let clock = SystemClock::new();
             *guard = Some(EnvelopeBuilder::new(
-                synthetic_bead,
-                None,
-                0,
+                SessionScope::phase(SessionId::new(format!("review-{session_ms}")), None),
                 Source::Driver,
                 move || {
                     clock
                         .wall_now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as i64
+                        .map_or(0, |duration| duration.as_millis() as i64)
                 },
             ));
         }

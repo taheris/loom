@@ -25,7 +25,8 @@ use loom_driver::identifier::{BeadId, ProfileName, SpecLabel};
 use loom_driver::profile_manifest::{ImageEntry, ProfileError, ProfileImageManifest};
 use loom_driver::scratch::{ScratchSession, resolve_scratch_key};
 use loom_driver::state::CacheDb;
-use loom_events::{EnvelopeBuilder, Source};
+use loom_events::identifier::SessionId;
+use loom_events::{EnvelopeBuilder, SessionScope, Source};
 use thiserror::Error;
 use tracing::{info, warn};
 
@@ -349,7 +350,7 @@ async fn run_pi_bridge(config: SpawnConfig, wrix_bin: &Path) -> Result<String, C
     let session = PiBackend::spawn_bridge_with_wrix_bin(&config, wrix_bin.as_os_str()).await?;
     let mut session = session.prompt(&config.initial_prompt).await?;
     let mut output = String::new();
-    let mut envelope_builder = pi_bridge_envelope_builder()?;
+    let mut envelope_builder = pi_bridge_envelope_builder();
     loop {
         let parsed = session
             .next_event()
@@ -391,16 +392,17 @@ async fn run_pi_bridge(config: SpawnConfig, wrix_bin: &Path) -> Result<String, C
     }
 }
 
-fn pi_bridge_envelope_builder() -> Result<EnvelopeBuilder, ChatError> {
-    let bead = BeadId::new("lm-phase").map_err(|e| ChatError::Config(e.to_string()))?;
+fn pi_bridge_envelope_builder() -> EnvelopeBuilder {
     let clock = SystemClock::new();
-    Ok(EnvelopeBuilder::new(
-        bead,
-        None,
-        0,
+    let started_ms = unix_timestamp_millis(&clock);
+    EnvelopeBuilder::new(
+        SessionScope::phase(
+            SessionId::new(format!("inbox-pi-{}-{started_ms}", std::process::id())),
+            None,
+        ),
         Source::Agent,
         move || unix_timestamp_millis(&clock),
-    ))
+    )
 }
 
 fn unix_timestamp_millis(clock: &SystemClock) -> i64 {

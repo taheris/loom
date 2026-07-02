@@ -484,8 +484,8 @@ mod tests {
     use super::*;
     use loom_driver::agent::{OutputLimits, RePinContent};
     use loom_driver::config::{LoomConfig, Phase};
-    use loom_events::identifier::BeadId;
-    use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
+    use loom_events::identifier::{BeadId, SessionId};
+    use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, SessionScope, Source};
     use loom_llm::client::{
         CompletionResponse, LlmError, ToolCallId as LlmToolCallId, ToolUseRequest,
     };
@@ -1257,9 +1257,12 @@ mod tests {
         }
 
         let mut builder = EnvelopeBuilder::new(
-            BeadId::new("lm-test").expect("valid id"),
-            None,
-            0,
+            SessionScope::bead(
+                SessionId::new("sess-test"),
+                BeadId::new("lm-test").expect("valid id"),
+                None,
+                0,
+            ),
             Source::Agent,
             || 1,
         );

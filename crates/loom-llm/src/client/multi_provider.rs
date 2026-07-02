@@ -24,8 +24,8 @@ use genai::resolver::AuthData;
 #[cfg(test)]
 use genai::resolver::Endpoint;
 use loom_events::event::Source;
-use loom_events::identifier::BeadId;
-use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, EventSink};
+use loom_events::identifier::SessionId;
+use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, EventSink, SessionScope};
 #[cfg(test)]
 use schemars::{JsonSchema, SchemaGenerator};
 
@@ -94,7 +94,7 @@ impl AnthropicClient {
             inner,
             api_key,
             sinks: Mutex::new(Vec::new()),
-            envelope_builder: Mutex::new(default_envelope_builder()),
+            envelope_builder: Mutex::new(Some(default_envelope_builder())),
         }
     }
 
@@ -116,9 +116,8 @@ impl AnthropicClient {
         self
     }
 
-    /// Replace the synthetic [`EnvelopeBuilder`] with one that stamps
-    /// the caller's bead / molecule / iteration identity onto every
-    /// emitted event.
+    /// Replace the default [`EnvelopeBuilder`] with one that stamps the
+    /// caller's event-session scope onto every emitted event.
     pub fn with_envelope_builder(self, envelope_builder: EnvelopeBuilder) -> Self {
         set_envelope_builder(&self.envelope_builder, envelope_builder);
         self
@@ -233,7 +232,7 @@ impl OpenAiClient {
             inner,
             api_key,
             sinks: Mutex::new(Vec::new()),
-            envelope_builder: Mutex::new(default_envelope_builder()),
+            envelope_builder: Mutex::new(Some(default_envelope_builder())),
         }
     }
 
@@ -252,8 +251,8 @@ impl OpenAiClient {
         self
     }
 
-    /// Replace the synthetic [`EnvelopeBuilder`] with one that stamps
-    /// the caller's identity onto every emitted event.
+    /// Replace the default [`EnvelopeBuilder`] with one that stamps the
+    /// caller's event-session scope onto every emitted event.
     pub fn with_envelope_builder(self, envelope_builder: EnvelopeBuilder) -> Self {
         set_envelope_builder(&self.envelope_builder, envelope_builder);
         self
@@ -366,7 +365,7 @@ impl GeminiClient {
             inner,
             api_key,
             sinks: Mutex::new(Vec::new()),
-            envelope_builder: Mutex::new(default_envelope_builder()),
+            envelope_builder: Mutex::new(Some(default_envelope_builder())),
         }
     }
 
@@ -385,8 +384,8 @@ impl GeminiClient {
         self
     }
 
-    /// Replace the synthetic [`EnvelopeBuilder`] with one that stamps
-    /// the caller's identity onto every emitted event.
+    /// Replace the default [`EnvelopeBuilder`] with one that stamps the
+    /// caller's event-session scope onto every emitted event.
     pub fn with_envelope_builder(self, envelope_builder: EnvelopeBuilder) -> Self {
         set_envelope_builder(&self.envelope_builder, envelope_builder);
         self
@@ -480,11 +479,12 @@ impl LlmClient for GeminiClient {
     }
 }
 
-pub(super) fn default_envelope_builder() -> Option<EnvelopeBuilder> {
-    match BeadId::new("lm-llm") {
-        Ok(bead) => Some(EnvelopeBuilder::new(bead, None, 0, Source::Driver, || 0)),
-        Err(_err) => None,
-    }
+pub(super) fn default_envelope_builder() -> EnvelopeBuilder {
+    EnvelopeBuilder::new(
+        SessionScope::phase(SessionId::new("llm-client-default"), None),
+        Source::Driver,
+        || 0,
+    )
 }
 
 pub(super) fn push_sink(sinks: &Mutex<Vec<Box<dyn EventSink>>>, sink: Box<dyn EventSink>) {

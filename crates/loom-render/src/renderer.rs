@@ -1142,7 +1142,7 @@ mod tests {
     use loom_events::DriverKind;
     use loom_events::EventEnvelope;
     use loom_events::Source;
-    use loom_events::identifier::ToolCallId;
+    use loom_events::identifier::{SessionId, ToolCallId};
     use serde_json::json;
 
     /// Fixture envelope for renderer tests. Carries a fully-valid
@@ -1151,9 +1151,10 @@ mod tests {
     /// across every test that does not need to vary the envelope.
     fn sample_envelope() -> EventEnvelope {
         EventEnvelope {
-            bead_id: BeadId::new("lm-test").expect("valid bead id"),
+            session_id: SessionId::new("sess-render"),
+            bead_id: Some(BeadId::new("lm-test").expect("valid bead id")),
             molecule_id: None,
-            iteration: 0,
+            iteration: Some(0),
             source: Source::Agent,
             ts_ms: 0,
             seq: 0,

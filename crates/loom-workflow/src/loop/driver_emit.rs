@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 
 use loom_driver::clock::{Clock, SystemClock};
 use loom_driver::logging::{BeadOutcome, LogSink};
-use loom_events::identifier::{BeadId, SpecLabel};
-use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, Source};
+use loom_events::identifier::{BeadId, SessionId, SpecLabel};
+use loom_events::{AgentEvent, DriverKind, EnvelopeBuilder, SessionScope, Source};
 use tracing::warn;
 
 /// Per-bead emit target: the resolved log path plus a `Source::Driver`
@@ -35,7 +35,7 @@ impl BeadEmit {
     /// tail.
     ///
     /// The envelope builder's `seq` counter resumes from the spawn
-    /// closure's last event so SSE consumers tracking `(bead_id,
+    /// closure's last event so SSE consumers tracking `(session_id,
     /// seq)` see one strictly-increasing per-spawn stream rather
     /// than two overlapping ones — the read-then-seed costs one
     /// short file read at the closure-controller boundary in
@@ -43,19 +43,19 @@ impl BeadEmit {
     pub fn for_bead(logs_root: &Path, label: &SpecLabel, bead_id: &BeadId) -> Option<Self> {
         let log_path = find_latest_bead_log(logs_root, label, bead_id)?;
         let resume_seq = max_seq_in_log(&log_path).map_or(0, |s| s + 1);
+        let session_id = session_id_in_log(&log_path).unwrap_or_else(|| {
+            SessionId::new(format!("{}-append", bead_id.as_str().replace('.', "-")))
+        });
         let clock = SystemClock::new();
         let builder = EnvelopeBuilder::with_seq_start(
-            bead_id.clone(),
-            None,
-            0,
+            SessionScope::bead(session_id, bead_id.clone(), None, 0),
             Source::Driver,
             resume_seq,
             move || {
                 clock
                     .wall_now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as i64
+                    .map_or(0, |duration| duration.as_millis() as i64)
             },
         );
         Some(Self { log_path, builder })
@@ -112,6 +112,31 @@ fn max_seq_in_log(log_path: &Path) -> Option<u64> {
             value.get("seq").and_then(|v| v.as_u64())
         })
         .max()
+}
+
+fn session_id_in_log(log_path: &Path) -> Option<SessionId> {
+    let body = match std::fs::read_to_string(log_path) {
+        Ok(body) => body,
+        Err(e) => {
+            warn!(
+                error = %e,
+                path = %log_path.display(),
+                "driver event session id scan failed",
+            );
+            return None;
+        }
+    };
+    body.lines().find_map(|line| {
+        let value = match serde_json::from_str::<serde_json::Value>(line.trim()) {
+            Ok(value) => value,
+            Err(_) => return None,
+        };
+        let raw = value.get("session_id")?.as_str()?;
+        let Ok(session_id) = raw.parse::<SessionId>() else {
+            return None;
+        };
+        Some(session_id)
+    })
 }
 
 fn find_latest_bead_log(logs_root: &Path, label: &SpecLabel, bead_id: &BeadId) -> Option<PathBuf> {
