@@ -1,4 +1,4 @@
-//! Live-path tests for inspection-only gate finding output.
+//! Live-path tests for gate finding output and mint progress.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -56,22 +56,27 @@ fn write_specs(workspace: &Path, labels: &[&str]) {
         let title = label.replace('-', " ");
         std::fs::write(
             specs_dir.join(format!("{label}.md")),
-            format!("# {title}\n"),
+            format!("# {title}\n\n## Success Criteria\n\n- Finding status output\n"),
         )
         .expect("write spec");
     }
 }
 
-fn run_gate_command_with_agent(
+fn run_gate_command_with_agent_and_setup<F>(
     workspace: &Path,
     args: &[&str],
     labels: &[&str],
     agent_mode: &str,
-) -> (std::process::Output, String) {
+    setup: F,
+) -> (std::process::Output, String, PathBuf)
+where
+    F: FnOnce(&Path),
+{
     write_specs(workspace, labels);
     let bin_dir = install_bd_shim(workspace);
     let state_dir = workspace.join("bd-state");
     std::fs::create_dir_all(&state_dir).expect("mkdir bd-state");
+    setup(&state_dir);
     let manifest = write_profile_manifest(workspace);
     let loom_bin = env!("CARGO_BIN_EXE_loom");
     let mock_agent = env!("CARGO_BIN_EXE_mock-loom-agent");
@@ -93,6 +98,17 @@ fn run_gate_command_with_agent(
         .output()
         .expect("spawn loom");
     let log = std::fs::read_to_string(state_dir.join(".invocations.log")).unwrap_or_default();
+    (output, log, state_dir)
+}
+
+fn run_gate_command_with_agent(
+    workspace: &Path,
+    args: &[&str],
+    labels: &[&str],
+    agent_mode: &str,
+) -> (std::process::Output, String) {
+    let (output, log, _) =
+        run_gate_command_with_agent_and_setup(workspace, args, labels, agent_mode, |_| {});
     (output, log)
 }
 
@@ -111,6 +127,52 @@ fn expected_finding() -> Finding {
         },
         evidence: "status output fixture".to_owned(),
     }
+}
+
+fn write_bead(state_dir: &Path, id: &str, status: &str, issue_type: &str, labels: &[&str]) {
+    let dir = state_dir.join(id);
+    std::fs::create_dir_all(&dir).expect("mkdir bead");
+    std::fs::write(dir.join("title"), id).expect("title");
+    std::fs::write(dir.join("description"), "fixture").expect("description");
+    std::fs::write(dir.join("status"), status).expect("status");
+    std::fs::write(dir.join("priority"), "2").expect("priority");
+    std::fs::write(dir.join("issue_type"), issue_type).expect("issue_type");
+    std::fs::write(dir.join("labels"), labels.join("\n")).expect("labels");
+}
+
+fn latest_gate_mint_log(workspace: &Path) -> PathBuf {
+    let gate_dir = workspace.join(".loom/logs/gate");
+    let mut entries = std::fs::read_dir(&gate_dir)
+        .unwrap_or_else(|err| panic!("read gate log dir {}: {err}", gate_dir.display()))
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("mint-") && name.ends_with(".jsonl"))
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries
+        .pop()
+        .unwrap_or_else(|| panic!("missing gate mint log in {}", gate_dir.display()))
+}
+
+fn read_jsonl(path: &Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|err| panic!("read jsonl {}: {err}", path.display()))
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("event json"))
+        .collect()
+}
+
+fn state_contains_label(state_dir: &Path, label: &str) -> bool {
+    std::fs::read_dir(state_dir)
+        .expect("read state dir")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("labels"))
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .any(|labels| labels.lines().any(|candidate| candidate == label))
 }
 
 fn status_payload(stdout: &str) -> serde_json::Value {
@@ -173,6 +235,80 @@ fn mint_tree_without_spec_filter_walks_every_workspace_spec() {
             "mint --tree must build a rubric prompt for {label}. bd log:\n{log}",
         );
     }
+}
+
+#[test]
+fn gate_mint_tree_streams_progress_events() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let workspace = dir.path();
+    let finding = expected_finding();
+    let finding_label = format!("finding:{}", finding.hash());
+    let (output, bd_log, state_dir) = run_gate_command_with_agent_and_setup(
+        workspace,
+        &["gate", "mint", "--tree"],
+        &[SPEC_LABEL],
+        FINDING_AGENT_MODE,
+        |state_dir| {
+            write_bead(
+                state_dir,
+                "lm-specmeta",
+                "closed",
+                "epic",
+                &["loom:spec", "spec:acme"],
+            )
+        },
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "loom gate mint --tree must mint from parsed findings while streaming progress. status={:?}\nstdout={stdout}\nstderr={stderr}\nbd log:\n{bd_log}",
+        output.status,
+    );
+    for needle in [
+        "gate_run_start: mint tree run started",
+        "gate_run_lane: verifier run started",
+        "gate_run_lane: rubric walk started for spec:acme",
+        "gate_run_lane: minting decision minted",
+        "gate_run_end: mint tree run finished",
+    ] {
+        assert!(
+            stdout.contains(needle),
+            "stdout missing {needle:?}:\n{stdout}"
+        );
+    }
+    assert!(
+        stdout.contains("minted 1 batches"),
+        "final mint summary must still report minted findings: {stdout}",
+    );
+    assert!(
+        state_contains_label(&state_dir, &finding_label),
+        "mint must materialize the parsed finding label {finding_label}; bd log:\n{bd_log}",
+    );
+
+    let events = read_jsonl(&latest_gate_mint_log(workspace));
+    assert!(
+        events.iter().all(|event| event["kind"] == "driver_event"),
+        "gate mint progress log must use driver_event rows only: {events:#?}",
+    );
+    assert!(events.iter().any(|event| {
+        event["driver_kind"] == "gate_run_lane"
+            && event["payload"]["stage"] == "rubric"
+            && event["payload"]["action"] == "end"
+            && event["payload"]["parsed_findings"] == 1
+    }));
+    assert!(events.iter().any(|event| {
+        event["driver_kind"] == "gate_run_lane"
+            && event["payload"]["action"] == "finding-status"
+            && event["payload"]["status"]["action"] == "minted"
+            && event["payload"]["status"]["label"] == finding_label
+    }));
+    assert!(events.iter().any(|event| {
+        event["driver_kind"] == "gate_run_end"
+            && event["payload"]["counts"]["minted"] == 1
+            && event["payload"]["counts"]["exit_code"] == 0
+    }));
 }
 
 #[test]

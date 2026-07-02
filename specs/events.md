@@ -361,7 +361,7 @@ not abort the run.
 - `loom todo` renders live agent progress through the shared event renderer before final validation/summary output
   [test](todo_agent_events_render_live_progress)
 - `loom gate mint --tree` streams verifier, rubric, and minting progress through event logs and the shared live renderer while it walks
-  [test?](gate_mint_tree_streams_progress_events)
+  [test](gate_mint_tree_streams_progress_events)
 - Parallel Pretty/Plain rendering prefixes each line with the bead id and disables in-place spinners
   [test](parallel_rendering_prefixes_lines_and_disables_spinners)
 - Cancellation finalizes any in-place running row before the closing output

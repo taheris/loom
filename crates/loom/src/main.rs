@@ -44,7 +44,7 @@ use loom_workflow::r#loop::{
     format_unknown_profile_error, format_unknown_runtime_for_profile_error,
     run_loop_with_infra_policy,
 };
-use loom_workflow::mint::{FindingStatusAction, FindingStatusRecord, MintWalker};
+use loom_workflow::mint::{BatchOutcome, FindingStatusAction, FindingStatusRecord, MintWalker};
 use loom_workflow::review::{
     AcceptAllFindingValidator, DispatchScope, IterationCap, ProductionReviewController, ReviewLane,
     WalkOutput, WorkspaceFindingValidator, review_loop as run_review_loop,
@@ -2122,16 +2122,54 @@ fn run_gate_mint(
             let workspace_buf = workspace.to_path_buf();
             let logs_root = workspace.join(".loom/logs");
             let phase_when = phase_when_from_env().unwrap_or_else(|| SystemClock::new().wall_now());
+            let render_mode = default_live_render_mode();
+            let renderer_id = BeadId::new("lm-gate")?;
 
             runtime.block_on(async move {
                 let bd = BdClient::new();
                 let scope = loom_workflow::mint::MintScope::Tree;
-                let validator = WorkspaceFindingValidator::new(workspace);
+                let validator = WorkspaceFindingValidator::new(&workspace_buf);
                 if labels.is_empty() {
                     return Err(anyhow::anyhow!(
                         "loom gate mint --tree found no specs to walk"
                     ));
                 }
+
+                let label_names = labels
+                    .iter()
+                    .map(|label| label.as_str().to_owned())
+                    .collect::<Vec<_>>();
+                let spec_count = label_names.len();
+                let mut progress = GateMintProgress::open(
+                    &logs_root,
+                    &workspace_buf,
+                    render_mode,
+                    &renderer_id,
+                    phase_when,
+                )?;
+                let progress_log_path = progress.log_path().to_string_lossy().to_string();
+                progress.emit(
+                    loom_events::DriverKind::GateRunStart,
+                    "mint tree run started",
+                    serde_json::json!({
+                        "gate_phase": "mint",
+                        "scope": "tree",
+                        "stage": "start",
+                        "dry_run": args.dry_run,
+                        "spec_count": spec_count,
+                        "log_path": progress_log_path,
+                    }),
+                )?;
+                progress.emit(
+                    loom_events::DriverKind::GateRunScope,
+                    format!("mint tree scope resolved: {spec_count} specs"),
+                    serde_json::json!({
+                        "gate_phase": "mint",
+                        "scope": "tree",
+                        "stage": "scope",
+                        "spec_labels": label_names,
+                    }),
+                )?;
 
                 let mut findings = Vec::new();
                 let mut walk_errors: Vec<(String, String)> = Vec::new();
@@ -2140,11 +2178,13 @@ fn run_gate_mint(
                     let label_for_sink = label.clone();
                     let logs_root_for_spawn = logs_root.clone();
                     let workspace_for_walker = workspace_buf.clone();
+                    let workspace_for_renderer = workspace_buf.clone();
                     let state_for_walker = Arc::clone(&state);
                     let manifest_for_walker = Arc::clone(&manifest);
                     let phase_default_for_walker = phase_default.clone();
                     let selection_for_walker = selection.clone();
                     let style_rules_for_walker = style_rules.clone();
+                    let renderer_id_for_walker = renderer_id.clone();
                     let mut walker = loom_workflow::mint::ProductionMintWalker::new(
                         BdClient::new(),
                         label,
@@ -2156,9 +2196,21 @@ fn run_gate_mint(
                             let logs_root = logs_root_for_spawn.clone();
                             let label = label_for_sink.clone();
                             let selection = selection_for_walker.clone();
+                            let renderer_id = renderer_id_for_walker.clone();
+                            let workspace = workspace_for_renderer.clone();
                             async move {
+                                let renderer = build_stdout_renderer(
+                                    render_mode,
+                                    &renderer_id,
+                                    &workspace,
+                                    false,
+                                );
                                 let sink = LogSink::open_phase_at(
-                                    &logs_root, &label, "mint", None, phase_when,
+                                    &logs_root,
+                                    &label,
+                                    "mint",
+                                    Some(renderer),
+                                    phase_when,
                                 )
                                 .map_err(|e| {
                                     ProtocolError::Io(std::io::Error::other(e.to_string()))
@@ -2183,45 +2235,179 @@ fn run_gate_mint(
                     .with_style_rules(style_rules_for_walker)
                     .with_agent_runtime(kind);
                     if index == 0 {
+                        progress.emit(
+                            loom_events::DriverKind::GateRunLane,
+                            "verifier run started",
+                            serde_json::json!({
+                                "stage": "verifier",
+                                "action": "start",
+                                "scope": "tree",
+                            }),
+                        )?;
                         match walker.run_verifiers(&scope).await {
                             Ok(failures) => {
+                                let failure_count = failures.len();
+                                let mut normalized_count = 0_usize;
                                 for failure in failures {
                                     match loom_workflow::mint::walk::verifier_failure_to_finding(
                                         failure,
                                     ) {
-                                        Ok(finding) => findings.push(finding),
-                                        Err(err) => walk_errors.push((
-                                            "walk:verifier-normalize".to_owned(),
-                                            err.to_string(),
-                                        )),
+                                        Ok(finding) => {
+                                            normalized_count += 1;
+                                            findings.push(finding);
+                                        }
+                                        Err(err) => {
+                                            let message = err.to_string();
+                                            progress.emit(
+                                                loom_events::DriverKind::GateRunLane,
+                                                format!(
+                                                    "verifier finding normalization failed: {message}"
+                                                ),
+                                                serde_json::json!({
+                                                    "stage": "verifier",
+                                                    "action": "normalize-failed",
+                                                    "error": message,
+                                                    "severity": "warning",
+                                                }),
+                                            )?;
+                                            walk_errors.push((
+                                                "walk:verifier-normalize".to_owned(),
+                                                message,
+                                            ));
+                                        }
                                     }
                                 }
+                                progress.emit(
+                                    loom_events::DriverKind::GateRunLane,
+                                    format!(
+                                        "verifier run finished: {normalized_count}/{failure_count} failures normalized"
+                                    ),
+                                    serde_json::json!({
+                                        "stage": "verifier",
+                                        "action": "end",
+                                        "failure_count": failure_count,
+                                        "normalized_count": normalized_count,
+                                    }),
+                                )?;
                             }
                             Err(err) => {
-                                walk_errors.push(("walk:verifiers".to_owned(), err.to_string()))
+                                let message = err.to_string();
+                                progress.emit(
+                                    loom_events::DriverKind::GateRunLane,
+                                    format!("verifier run failed: {message}"),
+                                    serde_json::json!({
+                                        "stage": "verifier",
+                                        "action": "failed",
+                                        "error": message,
+                                        "severity": "warning",
+                                    }),
+                                )?;
+                                walk_errors.push(("walk:verifiers".to_owned(), message));
                             }
                         }
                     }
+                    progress.emit(
+                        loom_events::DriverKind::GateRunLane,
+                        format!("rubric walk started for spec:{label_name}"),
+                        serde_json::json!({
+                            "stage": "rubric",
+                            "action": "start",
+                            "spec_label": label_name,
+                            "spec_index": index,
+                            "spec_count": spec_count,
+                        }),
+                    )?;
                     match walker.run_rubric(&scope).await {
-                        Ok(stdout) => match loom_workflow::review::parse_walk_output(
-                            &stdout,
-                            scope.dispatch_scope(),
-                            &validator,
-                        ) {
-                            Ok(parsed) => findings.extend(parsed),
-                            Err(err) => walk_errors
-                                .push((format!("walk:parse:{label_name}"), err.to_string())),
-                        },
+                        Ok(stdout) => {
+                            let output_bytes = stdout.len();
+                            match loom_workflow::review::parse_walk_output(
+                                &stdout,
+                                scope.dispatch_scope(),
+                                &validator,
+                            ) {
+                                Ok(parsed) => {
+                                    let parsed_findings = parsed.len();
+                                    findings.extend(parsed);
+                                    progress.emit(
+                                        loom_events::DriverKind::GateRunLane,
+                                        format!(
+                                            "rubric walk finished for spec:{label_name}: {parsed_findings} findings"
+                                        ),
+                                        serde_json::json!({
+                                            "stage": "rubric",
+                                            "action": "end",
+                                            "spec_label": label_name,
+                                            "parsed_findings": parsed_findings,
+                                            "output_bytes": output_bytes,
+                                        }),
+                                    )?;
+                                }
+                                Err(err) => {
+                                    let message = err.to_string();
+                                    progress.emit(
+                                        loom_events::DriverKind::GateRunLane,
+                                        format!(
+                                            "rubric parse failed for spec:{label_name}: {message}"
+                                        ),
+                                        serde_json::json!({
+                                            "stage": "rubric",
+                                            "action": "parse-failed",
+                                            "spec_label": label_name,
+                                            "output_bytes": output_bytes,
+                                            "error": message,
+                                            "severity": "warning",
+                                        }),
+                                    )?;
+                                    walk_errors.push((
+                                        format!("walk:parse:{label_name}"),
+                                        message,
+                                    ));
+                                }
+                            }
+                        }
                         Err(err) => {
-                            walk_errors.push((format!("walk:rubric:{label_name}"), err.to_string()))
+                            let message = err.to_string();
+                            progress.emit(
+                                loom_events::DriverKind::GateRunLane,
+                                format!("rubric walk failed for spec:{label_name}: {message}"),
+                                serde_json::json!({
+                                    "stage": "rubric",
+                                    "action": "failed",
+                                    "spec_label": label_name,
+                                    "error": message,
+                                    "severity": "warning",
+                                }),
+                            )?;
+                            walk_errors.push((format!("walk:rubric:{label_name}"), message));
                         }
                     }
                 }
                 let mut mint_opts = opts;
                 if !walk_errors.is_empty() {
-                    // Disable stale reporting when the tree walk missed any spec slice.
                     mint_opts.report_stale = false;
+                    progress.emit(
+                        loom_events::DriverKind::GateRunLane,
+                        "stale-candidate reporting suppressed after incomplete tree walk",
+                        serde_json::json!({
+                            "stage": "stale-reporting",
+                            "action": "suppressed-incomplete-walk",
+                            "walk_error_count": walk_errors.len(),
+                            "report_stale": false,
+                        }),
+                    )?;
                 }
+                progress.emit(
+                    loom_events::DriverKind::GateRunLane,
+                    format!("minting started for {} findings", findings.len()),
+                    serde_json::json!({
+                        "stage": "mint",
+                        "action": "start",
+                        "findings_count": findings.len(),
+                        "walk_error_count": walk_errors.len(),
+                        "report_stale": mint_opts.report_stale,
+                        "dry_run": mint_opts.dry_run,
+                    }),
+                )?;
                 let mut summary = loom_workflow::mint::mint_tree_findings_with_options(
                     &bd,
                     &findings,
@@ -2232,6 +2418,8 @@ fn run_gate_mint(
                 for (fingerprint, message) in walk_errors {
                     summary.record_error(fingerprint, message);
                 }
+                emit_mint_summary_events(&mut progress, &summary)?;
+                progress.finish(&summary)?;
                 Ok(summary)
             })?
         }
@@ -3784,6 +3972,326 @@ fn build_phase_envelope_builder(phase: Phase) -> loom_events::EnvelopeBuilder {
                 .map_or(0, |duration| duration.as_millis() as i64)
         },
     )
+}
+
+struct GateMintProgress {
+    sink: LogSink,
+    builder: loom_events::EnvelopeBuilder,
+}
+
+impl GateMintProgress {
+    fn open(
+        logs_root: &Path,
+        workspace: &Path,
+        render_mode: loom_render::RenderMode,
+        renderer_id: &BeadId,
+        when: std::time::SystemTime,
+    ) -> anyhow::Result<Self> {
+        let renderer = build_stdout_renderer(render_mode, renderer_id, workspace, false);
+        let sink = LogSink::open_phase_at(
+            logs_root,
+            &SpecLabel::new("gate"),
+            "mint",
+            Some(renderer),
+            when,
+        )?;
+        Ok(Self {
+            sink,
+            builder: build_gate_mint_envelope_builder(when),
+        })
+    }
+
+    fn emit(
+        &mut self,
+        driver_kind: loom_events::DriverKind,
+        summary: impl Into<String>,
+        payload: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let event = loom_events::AgentEvent::from_driver_event(
+            loom_events::DriverEventPayload::new(driver_kind, summary.into(), payload),
+            self.builder.build_with_source(loom_events::Source::Driver),
+        );
+        self.sink.emit(&event)?;
+        Ok(())
+    }
+
+    fn log_path(&self) -> &Path {
+        self.sink.log_path()
+    }
+
+    fn finish(&mut self, summary: &loom_workflow::mint::MintSummary) -> anyhow::Result<()> {
+        let outcome = if mint_summary_exit_code(summary) == 0 {
+            loom_driver::logging::BeadOutcome::Done
+        } else {
+            loom_driver::logging::BeadOutcome::Failed
+        };
+        self.sink.finish(outcome)?;
+        Ok(())
+    }
+}
+
+fn build_gate_mint_envelope_builder(when: std::time::SystemTime) -> loom_events::EnvelopeBuilder {
+    let clock = SystemClock::new();
+    let started_ms = when
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis());
+    let session_id = loom_events::identifier::SessionId::new(format!(
+        "gate-mint-{}-{started_ms}",
+        std::process::id(),
+    ));
+    loom_events::EnvelopeBuilder::new(
+        loom_events::SessionScope::phase(session_id, None),
+        loom_events::Source::Driver,
+        move || {
+            clock
+                .wall_now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_millis() as i64)
+        },
+    )
+}
+
+fn default_live_render_mode() -> loom_render::RenderMode {
+    let tty = loom_render::in_place::stdout_supports_indicator();
+    let no_color = std::env::var_os("NO_COLOR").is_some();
+    loom_render::RenderMode::select(tty, no_color, false, false, false)
+}
+
+fn finding_status_action_wire(action: FindingStatusAction) -> &'static str {
+    match action {
+        FindingStatusAction::Reported => "reported",
+        FindingStatusAction::Minted => "minted",
+        FindingStatusAction::SkippedLive => "skipped-live",
+        FindingStatusAction::Suppressed => "suppressed",
+        FindingStatusAction::StaleCandidate => "stale-candidate",
+        FindingStatusAction::PartialStaleCandidate => "partial-stale-candidate",
+        FindingStatusAction::Refused => "refused",
+    }
+}
+
+fn mint_summary_counts(summary: &loom_workflow::mint::MintSummary) -> serde_json::Value {
+    serde_json::json!({
+        "minted": summary.minted,
+        "planned": summary.planned,
+        "would_mint": summary.would_mint,
+        "promoted_deferred": summary.promoted_deferred,
+        "would_promote_deferred": summary.would_promote_deferred,
+        "skipped": summary.skipped,
+        "skipped_filter": summary.skipped_filter,
+        "suppressed": summary.suppressed,
+        "ineffective_suppressions": summary.ineffective_suppressions,
+        "stale_candidates": summary.stale_candidates,
+        "partial_stale_candidates": summary.partial_stale_candidates,
+        "refused": summary.refused,
+        "errors": summary.errors,
+        "findings_across_minted": summary.findings_across_minted,
+        "specs_across_minted": summary.specs_across_minted,
+        "active_epic": summary.active_epic.as_ref().map(ToString::to_string),
+        "exit_code": mint_summary_exit_code(summary),
+    })
+}
+
+fn mint_batch_payload(outcome: &BatchOutcome) -> serde_json::Value {
+    match outcome {
+        BatchOutcome::Minted {
+            fingerprint,
+            bead_id,
+            lead_spec,
+            findings_count,
+        } => serde_json::json!({
+            "stage": "mint",
+            "action": outcome.kind(),
+            "fingerprint": fingerprint,
+            "bead_id": bead_id,
+            "lead_spec": lead_spec,
+            "findings_count": findings_count,
+        }),
+        BatchOutcome::Planned {
+            fingerprint,
+            lead_spec,
+            findings_count,
+        }
+        | BatchOutcome::WouldMint {
+            fingerprint,
+            lead_spec,
+            findings_count,
+        } => serde_json::json!({
+            "stage": "mint",
+            "action": outcome.kind(),
+            "fingerprint": fingerprint,
+            "lead_spec": lead_spec,
+            "findings_count": findings_count,
+        }),
+        BatchOutcome::SkippedDedup {
+            fingerprint,
+            existing_bead,
+            findings_count,
+        }
+        | BatchOutcome::SkippedClosed {
+            fingerprint,
+            existing_bead,
+            findings_count,
+        } => serde_json::json!({
+            "stage": "mint",
+            "action": outcome.kind(),
+            "fingerprint": fingerprint,
+            "existing_bead": existing_bead,
+            "findings_count": findings_count,
+        }),
+        BatchOutcome::SkippedFilter {
+            fingerprint,
+            lead_spec,
+            requested,
+            findings_count,
+        } => serde_json::json!({
+            "stage": "mint",
+            "action": outcome.kind(),
+            "fingerprint": fingerprint,
+            "lead_spec": lead_spec,
+            "requested_spec": requested,
+            "findings_count": findings_count,
+        }),
+        BatchOutcome::Refused {
+            fingerprint,
+            reason,
+        } => serde_json::json!({
+            "stage": "mint",
+            "action": outcome.kind(),
+            "fingerprint": fingerprint,
+            "reason": reason,
+        }),
+        BatchOutcome::PromotedDeferred {
+            bead_id,
+            findings_count,
+        }
+        | BatchOutcome::WouldPromoteDeferred {
+            bead_id,
+            findings_count,
+        } => serde_json::json!({
+            "stage": "mint",
+            "action": outcome.kind(),
+            "bead_id": bead_id,
+            "findings_count": findings_count,
+        }),
+        BatchOutcome::StaleCandidate {
+            bead_id,
+            absent_hashes,
+        } => serde_json::json!({
+            "stage": "stale-reporting",
+            "action": outcome.kind(),
+            "bead_id": bead_id,
+            "absent_hashes": absent_hashes,
+        }),
+        BatchOutcome::PartialStaleCandidate {
+            bead_id,
+            current_hashes,
+            absent_hashes,
+        } => serde_json::json!({
+            "stage": "stale-reporting",
+            "action": outcome.kind(),
+            "bead_id": bead_id,
+            "current_hashes": current_hashes,
+            "absent_hashes": absent_hashes,
+        }),
+        BatchOutcome::Errored {
+            fingerprint,
+            message,
+        } => serde_json::json!({
+            "stage": "mint",
+            "action": outcome.kind(),
+            "fingerprint": fingerprint,
+            "message": message,
+            "severity": "warning",
+        }),
+    }
+}
+
+fn mint_batch_summary(outcome: &BatchOutcome) -> String {
+    match outcome {
+        BatchOutcome::Minted {
+            fingerprint,
+            bead_id,
+            ..
+        } => format!("minting decision minted {fingerprint} → {bead_id}"),
+        BatchOutcome::Planned { fingerprint, .. } => {
+            format!("minting decision planned {fingerprint}")
+        }
+        BatchOutcome::WouldMint { fingerprint, .. } => {
+            format!("minting decision would mint {fingerprint}")
+        }
+        BatchOutcome::SkippedDedup {
+            fingerprint,
+            existing_bead,
+            ..
+        } => format!("minting decision skipped {fingerprint}; live {existing_bead}"),
+        BatchOutcome::SkippedFilter {
+            fingerprint,
+            requested,
+            ..
+        } => format!("minting decision skipped {fingerprint}; outside spec:{requested}"),
+        BatchOutcome::Refused { fingerprint, .. } => {
+            format!("minting decision refused {fingerprint}")
+        }
+        BatchOutcome::PromotedDeferred { bead_id, .. } => {
+            format!("minting decision promoted deferred {bead_id}")
+        }
+        BatchOutcome::WouldPromoteDeferred { bead_id, .. } => {
+            format!("minting decision would promote deferred {bead_id}")
+        }
+        BatchOutcome::SkippedClosed {
+            fingerprint,
+            existing_bead,
+            ..
+        } => format!("minting decision skipped {fingerprint}; closed {existing_bead}"),
+        BatchOutcome::StaleCandidate { bead_id, .. } => {
+            format!("stale candidate reported {bead_id}")
+        }
+        BatchOutcome::PartialStaleCandidate { bead_id, .. } => {
+            format!("partial stale candidate reported {bead_id}")
+        }
+        BatchOutcome::Errored { fingerprint, .. } => {
+            format!("minting decision errored {fingerprint}")
+        }
+    }
+}
+
+fn emit_mint_summary_events(
+    progress: &mut GateMintProgress,
+    summary: &loom_workflow::mint::MintSummary,
+) -> anyhow::Result<()> {
+    for status in &summary.statuses {
+        let action = finding_status_action_wire(status.action);
+        progress.emit(
+            loom_events::DriverKind::GateRunLane,
+            format!("finding status {action}: {}", status.hash),
+            serde_json::json!({
+                "stage": "mint",
+                "action": "finding-status",
+                "status": status,
+            }),
+        )?;
+    }
+    for outcome in &summary.batches {
+        progress.emit(
+            loom_events::DriverKind::GateRunLane,
+            mint_batch_summary(outcome),
+            mint_batch_payload(outcome),
+        )?;
+    }
+    progress.emit(
+        loom_events::DriverKind::GateRunEnd,
+        format!(
+            "mint tree run finished: minted {} batches, skipped {}, refused {}, errors {}",
+            summary.minted, summary.skipped, summary.refused, summary.errors,
+        ),
+        serde_json::json!({
+            "gate_phase": "mint",
+            "scope": "tree",
+            "stage": "summary",
+            "counts": mint_summary_counts(summary),
+        }),
+    )?;
+    Ok(())
 }
 
 /// Test seam: read a millisecond budget from `name` if set. Production
