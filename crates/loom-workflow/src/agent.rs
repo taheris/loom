@@ -1081,6 +1081,57 @@ mod tests {
         assert!(envelope.iteration.is_none());
     }
 
+    #[tokio::test]
+    async fn non_bead_event_logs_use_session_id_routing_key() {
+        struct CompleteBackend;
+        impl AgentBackend for CompleteBackend {
+            async fn spawn(_config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+                spawn_script("IFS= read -r _; printf '%s\n' complete")
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sink = LogSink::open_phase_at(
+            dir.path(),
+            &SpecLabel::new("todo"),
+            "todo",
+            None,
+            SystemTime::UNIX_EPOCH,
+        )
+        .expect("open phase sink");
+        let path = sink.log_path().to_path_buf();
+        let cfg = sample_spawn_config(dir.path());
+
+        let outcome = run_agent::<CompleteBackend>(&cfg, Some(sink), None)
+            .await
+            .expect("phase run completes");
+        assert_eq!(outcome.exit_code, 0);
+
+        let events = read_jsonl(&path);
+        assert!(!events.is_empty(), "phase log must contain events");
+        let session_id = events[0]["session_id"]
+            .as_str()
+            .expect("session_id string")
+            .to_string();
+        assert!(
+            session_id.starts_with("phase-"),
+            "fallback phase session id is the routing key: {session_id}",
+        );
+        for event in events {
+            assert_eq!(event["session_id"].as_str(), Some(session_id.as_str()));
+            assert!(
+                event.get("bead_id").is_none_or(serde_json::Value::is_null),
+                "phase events must not synthesize bead_id: {event:?}",
+            );
+            assert!(
+                event
+                    .get("iteration")
+                    .is_none_or(serde_json::Value::is_null),
+                "phase events must not synthesize iteration: {event:?}",
+            );
+        }
+    }
+
     #[test]
     fn is_oom_error_matches_exit_137_and_killed_phrasings() {
         assert!(is_oom_error("agent process exited with code 137"));

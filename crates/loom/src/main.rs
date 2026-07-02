@@ -49,11 +49,11 @@ use loom_workflow::review::{
     AcceptAllFindingValidator, DispatchScope, IterationCap, ProductionReviewController, ReviewLane,
     WalkOutput, WorkspaceFindingValidator, review_loop as run_review_loop,
 };
+use loom_workflow::run_agent_classified;
 use loom_workflow::todo::{
     ProductionTodoController, TodoError, parse_exit_signal, run as run_todo_workflow,
 };
 use loom_workflow::{DefaultObserverChain, init, logs_cmd, plan, spec, status, use_spec};
-use loom_workflow::{run_agent, run_agent_classified};
 
 /// Top-level CLI surface.
 #[derive(Debug, Parser)]
@@ -3576,10 +3576,10 @@ async fn dispatch_for_slot(
 }
 
 /// Backend-agnostic dispatcher. The match is the only place in the binary
-/// that knows the concrete backend types — `run_agent` is monomorphized once
-/// per arm at compile time, so the workflow modules never see them.
+/// that knows the concrete backend types — the agent driver is monomorphized
+/// once per arm at compile time, so the workflow modules never see them.
 ///
-/// `sink` is consumed: ownership crosses into [`run_agent`], which finishes
+/// `sink` is consumed: ownership crosses into the agent driver, which finishes
 /// it before returning. Phase entry points open the sink before invoking
 /// dispatch so the on-disk JSONL and the workflow outcome share one code
 /// path. Pass `None` from sites that have not yet been wired.
@@ -3592,10 +3592,21 @@ async fn dispatch_for_slot(
 /// overrides) are honored as-is.
 async fn dispatch(
     kind: AgentKind,
+    spawn: SpawnConfig,
+    shutdown_grace: Option<Duration>,
+    sink: Option<LogSink>,
+    text_capture: Option<&mut String>,
+) -> Result<SessionOutcome, ProtocolError> {
+    dispatch_with_envelope(kind, spawn, shutdown_grace, sink, text_capture, None).await
+}
+
+async fn dispatch_with_envelope(
+    kind: AgentKind,
     mut spawn: SpawnConfig,
     shutdown_grace: Option<Duration>,
     sink: Option<LogSink>,
     text_capture: Option<&mut String>,
+    envelope_builder: Option<loom_events::EnvelopeBuilder>,
 ) -> Result<SessionOutcome, ProtocolError> {
     if matches!(kind, AgentKind::Claude) && spawn.shutdown_grace.is_none() {
         spawn.shutdown_grace = shutdown_grace;
@@ -3610,10 +3621,46 @@ async fn dispatch(
     {
         spawn.stall_warn_interval = Some(d);
     }
-    match kind {
-        AgentKind::Pi => run_agent::<PiBackend>(&spawn, sink, text_capture).await,
-        AgentKind::Claude => run_agent::<ClaudeBackend>(&spawn, sink, text_capture).await,
-        AgentKind::Direct => run_agent::<DirectBackend>(&spawn, sink, text_capture).await,
+    let result = match kind {
+        AgentKind::Pi => {
+            run_agent_classified::<PiBackend>(&spawn, sink, None, text_capture, envelope_builder)
+                .await
+        }
+        AgentKind::Claude => {
+            run_agent_classified::<ClaudeBackend>(
+                &spawn,
+                sink,
+                None,
+                text_capture,
+                envelope_builder,
+            )
+            .await
+        }
+        AgentKind::Direct => {
+            run_agent_classified::<DirectBackend>(
+                &spawn,
+                sink,
+                None,
+                text_capture,
+                envelope_builder,
+            )
+            .await
+        }
+    };
+    session_result_to_legacy_result(result)
+}
+
+fn session_result_to_legacy_result(result: SessionResult) -> Result<SessionOutcome, ProtocolError> {
+    match result {
+        SessionResult::Complete(outcome) => Ok(outcome),
+        SessionResult::PreflightFailed { error }
+        | SessionResult::MidSessionFailed { error }
+        | SessionResult::StaticInfra { error, .. } => {
+            Err(ProtocolError::Io(std::io::Error::other(error)))
+        }
+        SessionResult::ObserverAbort { reason } => Err(ProtocolError::Io(std::io::Error::other(
+            format!("Session aborted by observer: {reason}"),
+        ))),
     }
 }
 
@@ -3716,6 +3763,29 @@ fn build_envelope_builder(bead_id: BeadId) -> loom_events::EnvelopeBuilder {
     )
 }
 
+fn build_phase_envelope_builder(phase: Phase) -> loom_events::EnvelopeBuilder {
+    let clock = SystemClock::new();
+    let started_ms = clock
+        .wall_now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis());
+    let phase_name = phase.as_str();
+    let session_id = loom_events::identifier::SessionId::new(format!(
+        "{phase_name}-{}-{started_ms}",
+        std::process::id(),
+    ));
+    loom_events::EnvelopeBuilder::new(
+        loom_events::SessionScope::phase(session_id, None),
+        loom_events::Source::Agent,
+        move || {
+            clock
+                .wall_now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_millis() as i64)
+        },
+    )
+}
+
 /// Test seam: read a millisecond budget from `name` if set. Production
 /// runs leave the env vars unset and SpawnConfig falls back to the
 /// constants in `loom_driver::agent` (30s handshake / 60s stall warn).
@@ -3757,6 +3827,54 @@ fn open_bead_sink_with_renderer(
     .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))
 }
 
+fn open_todo_sink_with_renderer(
+    logs_root: &Path,
+    workspace: &Path,
+    render_mode: loom_render::RenderMode,
+    renderer_id: &BeadId,
+) -> Result<LogSink, ProtocolError> {
+    open_todo_sink_with_writer(
+        logs_root,
+        workspace,
+        render_mode,
+        renderer_id,
+        SystemClock::new().wall_now(),
+        Box::new(std::io::stdout()),
+    )
+}
+
+fn open_todo_sink_with_writer(
+    logs_root: &Path,
+    workspace: &Path,
+    render_mode: loom_render::RenderMode,
+    renderer_id: &BeadId,
+    when: std::time::SystemTime,
+    out: Box<dyn std::io::Write + Send>,
+) -> Result<LogSink, ProtocolError> {
+    let renderer = build_renderer_with_writer(render_mode, renderer_id, workspace, false, out);
+    LogSink::open_phase_at(
+        logs_root,
+        &SpecLabel::new("todo"),
+        "todo",
+        Some(renderer),
+        when,
+    )
+    .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))
+}
+
+fn todo_renderer_id(spawn_cfg: &SpawnConfig) -> Result<BeadId, ProtocolError> {
+    let name = spawn_cfg
+        .scratch_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            ProtocolError::Io(std::io::Error::other(
+                "todo scratch directory has no valid file name",
+            ))
+        })?;
+    BeadId::new(name).map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))
+}
+
 /// Resolve a [`loom_render::RenderMode`] from the CLI flag tuple and
 /// the runtime TTY / `NO_COLOR` environment. Spec table:
 /// `--raw` > `--json` > `--plain` or non-TTY or `NO_COLOR` > Pretty.
@@ -3785,6 +3903,22 @@ fn build_stdout_renderer(
     workspace: &Path,
     parallel: bool,
 ) -> Box<dyn loom_render::Renderer> {
+    build_renderer_with_writer(
+        mode,
+        bead_id,
+        workspace,
+        parallel,
+        Box::new(std::io::stdout()),
+    )
+}
+
+fn build_renderer_with_writer(
+    mode: loom_render::RenderMode,
+    bead_id: &BeadId,
+    workspace: &Path,
+    parallel: bool,
+    out: Box<dyn std::io::Write + Send>,
+) -> Box<dyn loom_render::Renderer> {
     let osc8_supported = loom_render::osc8::supports_osc8(
         std::env::var("TERM_PROGRAM").ok().as_deref(),
         std::env::var("TERM").ok().as_deref(),
@@ -3798,19 +3932,13 @@ fn build_stdout_renderer(
         loom_render::RenderMode::Verbose | loom_render::RenderMode::VerbosePlain => {
             let color = matches!(mode, loom_render::RenderMode::Verbose) && !parallel;
             Box::new(
-                loom_render::TerminalRenderer::new(
-                    std::io::stdout(),
-                    mode,
-                    bead_id.clone(),
-                    parallel,
-                    color,
-                )
-                .with_osc8(osc8),
+                loom_render::TerminalRenderer::new(out, mode, bead_id.clone(), parallel, color)
+                    .with_osc8(osc8),
             )
         }
         loom_render::RenderMode::Pretty | loom_render::RenderMode::Default => Box::new(
             loom_render::TerminalRenderer::new(
-                std::io::stdout(),
+                out,
                 loom_render::RenderMode::Default,
                 bead_id.clone(),
                 parallel,
@@ -3819,16 +3947,14 @@ fn build_stdout_renderer(
             .with_osc8(osc8),
         ),
         loom_render::RenderMode::Plain => Box::new(loom_render::TerminalRenderer::new(
-            std::io::stdout(),
+            out,
             loom_render::RenderMode::Default,
             bead_id.clone(),
             parallel,
             false,
         )),
-        loom_render::RenderMode::Json => {
-            Box::new(loom_render::JsonRenderer::new(std::io::stdout()))
-        }
-        loom_render::RenderMode::Raw => Box::new(loom_render::RawRenderer::new(std::io::stdout())),
+        loom_render::RenderMode::Json => Box::new(loom_render::JsonRenderer::new(out)),
+        loom_render::RenderMode::Raw => Box::new(loom_render::RawRenderer::new(out)),
     }
 }
 
@@ -4389,7 +4515,13 @@ fn run_todo(workspace: &Path, agent_override: Option<AgentKind>) -> anyhow::Resu
     let runtime = tokio::runtime::Runtime::new()?;
     let workspace_buf = workspace.to_path_buf();
     let logs_root = workspace.join(".loom/logs");
-    let label_for_sink = SpecLabel::new("todo");
+    let workspace_for_renderer = workspace.to_path_buf();
+    let render_mode = resolve_render_mode(RenderFlags {
+        plain: false,
+        json: false,
+        raw: false,
+        verbose: false,
+    });
     let loom_cfg_for_todo = config.loom.clone();
     let skills_cfg_for_todo = config.skills.clone();
     let result = runtime.block_on(async move {
@@ -4407,23 +4539,23 @@ fn run_todo(workspace: &Path, agent_override: Option<AgentKind>) -> anyhow::Resu
         run_todo_workflow(&mut controller, |spawn_cfg: SpawnConfig| {
             let selection = selection.clone();
             async move {
-                let sink = LogSink::open_phase_at(
-                    &logs_root,
-                    &label_for_sink,
-                    "todo",
-                    None,
-                    SystemClock::new().wall_now(),
-                )
-                .map_err(|e| ProtocolError::Io(std::io::Error::other(e.to_string())))?;
                 let mut output = String::new();
                 let mut spawn_cfg = spawn_cfg;
                 selection.apply_to_spawn_config(&mut spawn_cfg, direct_output_limits);
-                let outcome = dispatch(
+                let renderer_id = todo_renderer_id(&spawn_cfg)?;
+                let sink = open_todo_sink_with_renderer(
+                    &logs_root,
+                    &workspace_for_renderer,
+                    render_mode,
+                    &renderer_id,
+                )?;
+                let outcome = dispatch_with_envelope(
                     kind,
                     spawn_cfg,
                     shutdown_grace,
                     Some(sink),
                     Some(&mut output),
+                    Some(build_phase_envelope_builder(Phase::Todo)),
                 )
                 .await?;
                 let final_line = output.lines().rev().find(|line| !line.trim().is_empty());
@@ -4733,6 +4865,95 @@ mod tests {
                 stderr: Vec::new(),
             })
         }
+    }
+
+    #[derive(Clone)]
+    struct SharedOutputWriter {
+        inner: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl std::io::Write for SharedOutputWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.inner
+                .lock()
+                .map_err(|_| std::io::Error::other("shared writer poisoned"))?
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn todo_agent_events_render_live_progress() -> anyhow::Result<()> {
+        for render_mode in [
+            loom_render::RenderMode::Plain,
+            loom_render::RenderMode::Pretty,
+        ] {
+            let tmp = tempfile::tempdir()?;
+            let logs_root = tmp.path().join(".loom/logs");
+            let output = Arc::new(Mutex::new(Vec::new()));
+            let writer = SharedOutputWriter {
+                inner: Arc::clone(&output),
+            };
+            let renderer_id = BeadId::new("lm-todo")?;
+            let mut sink = open_todo_sink_with_writer(
+                &logs_root,
+                tmp.path(),
+                render_mode,
+                &renderer_id,
+                std::time::SystemTime::UNIX_EPOCH,
+                Box::new(writer.clone()),
+            )?;
+
+            let mut envelope_builder = build_phase_envelope_builder(Phase::Todo);
+            let envelope = envelope_builder.build();
+            let session_id = envelope.session_id.as_str().to_string();
+            assert!(envelope.bead_id.is_none());
+            assert!(envelope.iteration.is_none());
+            sink.emit(&loom_events::AgentEvent::TextDelta {
+                envelope,
+                text: "agent progress before summary\n".to_string(),
+            })?;
+            let path = sink.log_path().to_path_buf();
+            sink.finish(loom_driver::logging::BeadOutcome::Done)?;
+            let mut summary_writer = writer;
+            std::io::Write::write_all(
+                &mut summary_writer,
+                b"loom todo: agent exited 0, cost_usd=None\n",
+            )?;
+
+            let rendered = String::from_utf8(output.lock().expect("output lock").clone())?;
+            let progress = rendered
+                .find("agent progress before summary")
+                .ok_or_else(|| anyhow::anyhow!("missing live progress in {rendered:?}"))?;
+            let summary = rendered
+                .find("loom todo: agent exited")
+                .ok_or_else(|| anyhow::anyhow!("missing final summary in {rendered:?}"))?;
+            assert!(
+                progress < summary,
+                "{render_mode:?} live progress must precede final summary: {rendered:?}",
+            );
+
+            let body = std::fs::read_to_string(path)?;
+            assert!(
+                body.contains("agent progress before summary"),
+                "phase JSONL log must persist the same event: {body}",
+            );
+            let first_event: serde_json::Value = serde_json::from_str(
+                body.lines()
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("empty phase log"))?,
+            )?;
+            assert_eq!(
+                first_event["session_id"].as_str(),
+                Some(session_id.as_str())
+            );
+            assert!(first_event["bead_id"].is_null());
+        }
+        Ok(())
     }
 
     #[tokio::test]

@@ -592,4 +592,29 @@ mod tests {
         let lines = std::fs::read_to_string(&path).expect("read");
         assert!(lines.contains("\"kind\":\"turn_end\""), "{lines:?}");
     }
+
+    #[test]
+    fn non_bead_agent_sessions_write_phase_jsonl_logs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let logs = dir.path().join(".loom/logs");
+        let mut sink = LogSink::open_phase_at(
+            &logs,
+            &SpecLabel::new("todo"),
+            "todo",
+            None,
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+        )
+        .expect("open todo phase sink");
+        sink.emit(&AgentEvent::TurnEnd {
+            envelope: sample_envelope(),
+        })
+        .expect("emit");
+        let path = sink.log_path().to_path_buf();
+        sink.finish(BeadOutcome::Done).expect("finish");
+
+        assert_eq!(path.parent(), Some(logs.join("todo").as_path()));
+        assert_eq!(path.extension().and_then(|s| s.to_str()), Some("jsonl"));
+        let body = std::fs::read_to_string(&path).expect("read");
+        assert!(body.contains("\"kind\":\"turn_end\""), "{body:?}");
+    }
 }

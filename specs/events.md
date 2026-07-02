@@ -359,7 +359,7 @@ not abort the run.
 - Driver events render interleaved with agent events in chronological order
   [test](driver_events_render_interleaved_with_agent_events)
 - `loom todo` renders live agent progress through the shared event renderer before final validation/summary output
-  [test?](todo_agent_events_render_live_progress)
+  [test](todo_agent_events_render_live_progress)
 - `loom gate mint --tree` streams verifier, rubric, and minting progress through event logs and the shared live renderer while it walks
   [test?](gate_mint_tree_streams_progress_events)
 - Parallel Pretty/Plain rendering prefixes each line with the bead id and disables in-place spinners
@@ -383,9 +383,9 @@ not abort the run.
 - Every bead spawn writes a raw JSONL log under `.loom/logs/<spec-label>/`
   [test](run_writes_per_bead_jsonl_log)
 - Every non-bead LLM session writes a raw JSONL log under its `.loom/logs/<phase>/` root
-  [test?](non_bead_agent_sessions_write_phase_jsonl_logs)
+  [test](non_bead_agent_sessions_write_phase_jsonl_logs)
 - Non-bead phase event logs carry a `session_id` routing key without requiring a synthetic `bead_id`
-  [test?](non_bead_event_logs_use_session_id_routing_key)
+  [test](non_bead_event_logs_use_session_id_routing_key)
 - Log writes flush every event so followers observe events at emit time
   [test](log_sink_per_event_flush)
 - Parallel bead spawns write independent log files with no cross-bead interleaving
