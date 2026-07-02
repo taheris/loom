@@ -3806,26 +3806,21 @@ mod tests {
     /// only real subprocess against `loom_bin`.
     #[tokio::test]
     async fn exec_per_bead_gate_invokes_post_integration_verify_only() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
         let manifest = write_manifest(dir.path());
         let stub = dir.path().join("loom-stub.sh");
-        std::fs::write(
+        loom_test_support::write_executable_bash_script(
             &stub,
-            loom_test_support::bash_script(
-                "set -euo pipefail\n\
+            "set -euo pipefail\n\
              echo \"$*\" >> \"$PWD/argv.log\"\n\
              case \"$2\" in\n\
                  review|mint) echo \"$2 must not run in the per-bead hot path\" >&2; exit 99 ;;\n\
              esac\n\
              exit 0\n",
-            ),
         )
         .expect("write stub");
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod stub");
 
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
@@ -3873,8 +3868,6 @@ mod tests {
 
     #[tokio::test]
     async fn exec_per_bead_gate_releases_lock_before_spawning_children() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
@@ -3890,9 +3883,9 @@ mod tests {
             .expect("first acquire");
         let lock_path = mgr.locks_dir().join("lm-gate.lock");
         let stub = dir.path().join("loom-stub.sh");
-        std::fs::write(
+        loom_test_support::write_executable_bash_script(
             &stub,
-            loom_test_support::bash_script(&format!(
+            &format!(
                 "set -euo pipefail\n\
                  exec 9>\"{}\"\n\
                  flock -n 9\n\
@@ -3901,11 +3894,9 @@ mod tests {
                  fi\n\
                  exit 0\n",
                 lock_path.display(),
-            )),
+            ),
         )
         .expect("write stub");
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod stub");
 
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
@@ -3937,7 +3928,6 @@ mod tests {
     /// bead routes to recovery (specs/harness.md § Verdict Gate).
     #[tokio::test]
     async fn post_integrate_verify_failure_writes_durable_gate_log() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
@@ -3957,20 +3947,16 @@ mod tests {
         );
 
         let stub = dir.path().join("loom-stub.sh");
-        std::fs::write(
+        loom_test_support::write_executable_bash_script(
             &stub,
-            loom_test_support::bash_script(
-                "set -euo pipefail\n\
+            "set -euo pipefail\n\
              case \"$2\" in\n\
                  verify) echo 'verifier failed: cargo test' >&2; exit 1 ;;\n\
                  review|mint) echo \"$2 must not run after verify-fail\" ; exit 99 ;;\n\
              esac\n\
              exit 0\n",
-            ),
         )
         .expect("write stub");
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod stub");
 
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
@@ -4073,8 +4059,6 @@ mod tests {
 
     #[tokio::test]
     async fn gate_invocations_write_separate_jsonl_logs_with_parent_breadcrumb() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
@@ -4095,19 +4079,15 @@ mod tests {
             .expect("finish bead log");
 
         let stub = dir.path().join("loom-stub.sh");
-        std::fs::write(
+        loom_test_support::write_executable_bash_script(
             &stub,
-            loom_test_support::bash_script(
-                "set -euo pipefail\n\
+            "set -euo pipefail\n\
              case \"$2\" in\n\
                  verify) echo 'verify stdout'; echo 'verify stderr' >&2; exit 2 ;;\n\
              esac\n\
              exit 0\n",
-            ),
         )
         .expect("write stub");
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod stub");
 
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
@@ -4200,7 +4180,6 @@ mod tests {
     /// `PostIntegrateFail` and routes to recovery.
     #[tokio::test]
     async fn exec_per_bead_gate_verify_fail_skips_rollback_when_integration_did_not_advance() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let workspace = dir.path().join("ws");
         let git = git_workspace(&workspace);
@@ -4211,19 +4190,15 @@ mod tests {
             .to_string();
 
         let stub = dir.path().join("loom-stub.sh");
-        std::fs::write(
+        loom_test_support::write_executable_bash_script(
             &stub,
-            loom_test_support::bash_script(
-                "set -euo pipefail\n\
+            "set -euo pipefail\n\
              case \"$2\" in\n\
                  verify) echo 'verifier failed' >&2; exit 1 ;;\n\
              esac\n\
              exit 0\n",
-            ),
         )
         .expect("write stub");
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod stub");
 
         let mut controller = ProductionAgentLoopController::new(
             BdClient::new(),
