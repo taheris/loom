@@ -113,6 +113,54 @@ _:
         esac
       '';
 
+      fakePodmanCreatesReadOnlyStorage = pkgs.writeShellScript "podman" ''
+        set -euo pipefail
+        root=""
+        cmd=""
+        while [[ "$#" -gt 0 ]]; do
+          case "$1" in
+            --root)
+              root="$2"
+              shift 2
+              ;;
+            --runroot)
+              shift 2
+              ;;
+            info | load | run)
+              cmd="$1"
+              shift
+              break
+              ;;
+            *)
+              shift
+              ;;
+          esac
+        done
+        case "$cmd" in
+          info)
+            exit 0
+            ;;
+          load)
+            cat >/dev/null
+            printf 'Loaded image: localhost/fake:latest\n'
+            ;;
+          run)
+            if [[ -z "$root" ]]; then
+              printf 'expected --root argument\n' >&2
+              exit 2
+            fi
+            readonly_dir="$root/overlay/fake/diff/nix/store/fake-lib/lib"
+            mkdir -p "$readonly_dir"
+            touch "$readonly_dir/libfake.so"
+            chmod -R a-w "$root/overlay/fake/diff/nix/store/fake-lib"
+            ;;
+          *)
+            printf 'unexpected podman args: %s\n' "$*" >&2
+            exit 2
+            ;;
+        esac
+      '';
+
       test-sandbox-skips-unsupported-runtime =
         pkgs.runCommand "test-sandbox-skips-unsupported-runtime" { }
           ''
@@ -179,6 +227,32 @@ _:
             touch "$out"
           '';
 
+      test-sandbox-ignores-read-only-podman-storage-cleanup =
+        pkgs.runCommand "test-sandbox-ignores-read-only-podman-storage-cleanup" { }
+          ''
+            set -euo pipefail
+            fakebin=$(mktemp -d)
+            ln -s ${fakePodmanCreatesReadOnlyStorage} "$fakebin/podman"
+            export PATH="$fakebin:${
+              pkgs.lib.makeBinPath [
+                pkgs.coreutils
+                pkgs.gnused
+                pkgs.bash
+              ]
+            }"
+            export LOOM_SANDBOX_IMAGE=${fakeSandboxImage}
+            export LOOM_TEST_SANDBOX_SKIP_DEVICE_CHECKS=1
+            set +e
+            script_output=$(bash ${../../scripts/test-sandbox.sh} 2>&1)
+            rc=$?
+            set -e
+            if [[ "$rc" -ne 0 ]]; then
+              printf 'expected test-sandbox success despite read-only podman storage cleanup, got %s\n%s\n' "$rc" "$script_output" >&2
+              exit 1
+            fi
+            touch "$out"
+          '';
+
       profileManifestEntries = concatLists (
         attrValues (mapAttrs (_profile: attrValues) profileManifest.passthru.manifest)
       );
@@ -199,6 +273,7 @@ _:
           loom-gate-check
           profile-manifest-keeps-runtime-path-context
           sandbox-profile-env-has-wrix
+          test-sandbox-ignores-read-only-podman-storage-cleanup
           test-sandbox-skips-oci-permission-denied
           test-sandbox-skips-unsupported-runtime
           ;

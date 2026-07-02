@@ -41,8 +41,17 @@ if ! command -v podman >/dev/null 2>&1; then
     skip_unsupported_container_runtime "podman is not available on PATH."
 fi
 
+cleanup_tmpdir() {
+    local status=$?
+    if [[ -n "${tmpdir:-}" && -d "$tmpdir" ]]; then
+        chmod -R u+rwX "$tmpdir" 2>/dev/null || true
+        rm -rf "$tmpdir" 2>/dev/null || true
+    fi
+    exit "$status"
+}
+
 tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
+trap cleanup_tmpdir EXIT
 export HOME="$tmpdir"
 mkdir -p "$HOME/.config/containers"
 printf '%s\n' '{"default":[{"type":"insecureAcceptAnything"}]}' > "$HOME/.config/containers/policy.json"

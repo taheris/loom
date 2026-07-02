@@ -48,10 +48,10 @@
         ]
       },
       "locked": {
-        "lastModified": 1778716662,
-        "narHash": "sha256-m1Yf0wZ8j1OHjTc2UwHwyQRSnNeSgLJOd7q5Y45hzi4=",
+        "lastModified": 1782949081,
+        "narHash": "sha256-vp6Y/Grm98ESt6ceOkWiHWyZRDV3J1RID4w+6NWK9yA=",
         "ref": "main",
-        "rev": "f7c1a2d347e4c52d5fb8d10cb4d94b5884e546fb",
+        "rev": "17c9d6cdfc60c64f4ee8d306f9bc0b4ccb51481e",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/hercules-ci/flake-parts.git"
@@ -171,10 +171,10 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1782928160,
-        "narHash": "sha256-t8hEyroclHWeX7zfPKXmhb6/k+ZNXo3LujxxJpSkiSM=",
+        "lastModified": 1782955171,
+        "narHash": "sha256-LVKJeF9ft7I5UG6YEQQutYe8Z6uI7kieAtdrF3HldoU=",
         "ref": "main",
-        "rev": "c9bc8ebaac2104b6032ed8c352af6e9375b40234",
+        "rev": "8bc49c599467468b85ebfb19a506b3cdef047d58",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/taheris/wrix.git"
