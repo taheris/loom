@@ -574,6 +574,29 @@ impl<R: CommandRunner> ProductionTodoController<R> {
         Ok(())
     }
 
+    async fn record_missing_exit_signal(
+        &self,
+        outcome: &SessionOutcome,
+        marker: Option<&ExitSignal>,
+    ) -> Result<(), TodoError> {
+        let Some(preflight) = self.preflight.as_ref() else {
+            return Ok(());
+        };
+        self.bd
+            .update(
+                &preflight.work_epic,
+                UpdateOpts {
+                    notes: Some(format!(
+                        "loom todo agent supplied no terminal signal: exit_code={}, marker={:?}; expected final LOOM_TODO success payload or worker self-report marker",
+                        outcome.exit_code, marker
+                    )),
+                    ..UpdateOpts::default()
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn render_notes_into_beads(&self, success: &TodoSuccess) -> Result<(), TodoError> {
         for spec in success.specs.as_slice() {
             let TodoSpecOutcome::Decomposed { beads } = &spec.outcome else {
@@ -785,10 +808,12 @@ impl<R: CommandRunner> TodoController for ProductionTodoController<R> {
         }
         if outcome.exit_code != 0 {
             debug!(exit_code = outcome.exit_code, marker = ?marker, "loom todo: agent exited before finalizing success");
+            self.record_missing_exit_signal(outcome, marker).await?;
             return Err(TodoError::MissingExitSignal);
         }
         let Some(success) = todo_success else {
             debug!(exit_code = outcome.exit_code, marker = ?marker, "loom todo: no success payload to finalize");
+            self.record_missing_exit_signal(outcome, marker).await?;
             return Err(TodoError::MissingExitSignal);
         };
         if let Err(err) = self.validate_success(success).await {

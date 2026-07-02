@@ -750,9 +750,12 @@ A successful `loom todo` session has exactly one success outcome: emit
 final work-epic title and report every changed spec exactly once, with
 `Decomposed { beads }` for specs that produced non-empty work and
 `NoWork { reason }` for specs audited as requiring no implementation
-change (for example typo-only spec wording). The agent may not omit
-changed specs, report a pending state as success, or use `LOOM_COMPLETE` /
-`LOOM_NOOP` as todo success.
+change (for example typo-only spec wording). Audit beads count as
+`Decomposed` work when broad missing or stale evidence needs a focused
+implementation-session investigation; the bead description names the
+unresolved evidence rows and concrete audit/implementation boundary. The
+agent may not omit changed specs, report a pending state as success, or use
+`LOOM_COMPLETE` / `LOOM_NOOP` as todo success.
 
 Decision-needed or dead-end outcomes use worker self-report markers:
 

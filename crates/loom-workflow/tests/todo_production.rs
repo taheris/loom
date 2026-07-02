@@ -559,6 +559,12 @@ async fn missing_todo_success_marker_fails_without_advancing() -> Result<()> {
             .all(|argv| !argv.iter().any(|arg| arg == "loom:active")),
         "active state unchanged on missing marker: {updates:?}",
     );
+    assert!(
+        updates
+            .iter()
+            .any(|argv| argv.iter().any(|arg| arg.contains("no terminal signal"))),
+        "missing marker diagnostic is recorded on the work epic: {updates:?}",
+    );
     Ok(())
 }
 
