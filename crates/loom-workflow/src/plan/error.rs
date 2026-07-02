@@ -37,9 +37,6 @@ pub enum PlanError {
     /// agent-selection failed for `[phase.plan]`
     AgentSelection(#[from] loom_driver::config::AgentSelectionError),
 
-    /// pi backend cannot run interactive `loom plan` without a controlled compaction re-pin bridge
-    PiInteractiveUnsupported,
-
     /// direct backend cannot run interactive `loom plan`
     DirectInteractive,
 

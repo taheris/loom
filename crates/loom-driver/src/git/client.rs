@@ -732,12 +732,20 @@ impl GitClient {
         .await
     }
 
-    /// Validate the loom integration workspace's local `core.hooksPath`.
+    /// Reconcile and validate the loom integration workspace's local
+    /// `core.hooksPath`.
     pub async fn validate_loom_hooks_path_configured(&self) -> Result<(), GitError> {
         let expected = self.resolve_prek_hooks_path()?;
         let workdir = self.loom_workspace();
-        let actual = read_config_value(&workdir, self.clock.as_ref(), "core.hooksPath").await?;
         let expected_value = expected.to_string_lossy().into_owned();
+        run_git(
+            &workdir,
+            self.clock.as_ref(),
+            ["config", "core.hooksPath", &expected_value],
+            None,
+        )
+        .await?;
+        let actual = read_config_value(&workdir, self.clock.as_ref(), "core.hooksPath").await?;
         if actual.as_deref() == Some(expected_value.as_str()) {
             return Ok(());
         }

@@ -122,7 +122,7 @@ async fn bead_workspace_configures_and_repairs_hooks_path() -> Result<()> {
 }
 
 #[tokio::test]
-async fn push_gate_requires_integration_hooks_path_configured() -> Result<()> {
+async fn push_gate_repairs_stale_integration_hooks_path() -> Result<()> {
     let repo = init_repo()?;
     let hooks = fake_prek_hooks(repo.path())?;
     let mut client = GitClient::open(repo.path())?;
@@ -132,28 +132,31 @@ async fn push_gate_requires_integration_hooks_path_configured() -> Result<()> {
         &["config", "--unset", "core.hooksPath"],
     )?;
 
-    let err = client
-        .validate_loom_hooks_path_configured()
-        .await
-        .expect_err("missing hooksPath must fail");
-    assert!(matches!(err, GitError::HooksPathInvalid { actual, .. } if actual == "<unset>"));
+    client.validate_loom_hooks_path_configured().await?;
+    assert_eq!(
+        git_config_get(&loom_path(repo.path()), "core.hooksPath")?,
+        hooks.display().to_string()
+    );
 
     let drifted = repo.path().join("drifted-hooks").display().to_string();
     git(
         &loom_path(repo.path()),
         &["config", "core.hooksPath", &drifted],
     )?;
-    let err = client
-        .push()
-        .await
-        .expect_err("push gate must fail before pre-push when hooksPath drifts");
-    assert!(matches!(err, GitError::HooksPathInvalid { actual, .. } if actual == drifted));
-
-    git(
-        &loom_path(repo.path()),
-        &["config", "core.hooksPath", &hooks.display().to_string()],
-    )?;
     client.validate_loom_hooks_path_configured().await?;
+    assert_eq!(
+        git_config_get(&loom_path(repo.path()), "core.hooksPath")?,
+        hooks.display().to_string()
+    );
+
+    let missing_hooks = repo.path().join("missing-hooks");
+    let mut unresolved_client = GitClient::open(repo.path())?;
+    unresolved_client.set_prek_hooks_path_override(missing_hooks.clone());
+    let err = unresolved_client
+        .validate_loom_hooks_path_configured()
+        .await
+        .expect_err("missing canonical hooks path must fail");
+    assert!(matches!(err, GitError::PrekHooksMissing { path } if path == missing_hooks));
     Ok(())
 }
 

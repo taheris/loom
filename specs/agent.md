@@ -747,20 +747,19 @@ interactive session whose compaction path would be summary-only.
   directory and re-pins again — the scratchpad may have grown between
   compactions.
 
-**Pi interactive chat:**
-- When `loom inbox chat` has a real terminal, it launches the native `pi` TUI
-  with inherited stdio so the user gets Pi's normal editor, message queue,
-  footer, and tool rendering. Loom passes `--session-dir` under the scratch
-  directory so it can parse the final assistant marker after the user exits
-  Pi, and passes `-e <loom-pi-repin-extension.js>` so post-compaction context
-  rebuilds include the full `prompt.txt` plus live `scratch.md` whenever the
-  original prompt has fallen out of Pi's retained messages.
+**Pi interactive sessions:**
+- `loom plan` launches the native `pi` TUI with inherited stdio, a
+  scratch-local `--session-dir`, and `-e <loom-pi-repin-extension.js>` so
+  post-compaction context rebuilds include the full `prompt.txt` plus live
+  `scratch.md` whenever the original prompt has fallen out of Pi's retained
+  messages.
+- When `loom inbox chat` has a real terminal, it uses the same native-TUI
+  session-directory and re-pin extension path so the user gets Pi's normal
+  editor, message queue, footer, and tool rendering.
 - When `loom inbox chat` is not attached to a TTY, it uses the Pi RPC bridge.
   The bridge observes `compaction_start`, sends the same full-prompt re-pin
   from the scratch directory, and treats overflow auto-retry output with the
   non-interactive Pi policy before continuing the chat.
-- `loom plan` remains unsupported for Pi until it has either the native-TUI
-  extension/session parsing path or an equivalent controlled bridge.
 
 **Direct backend:**
 - Compaction is not a provider-driven event in Direct — `loom-llm`
@@ -1196,9 +1195,9 @@ the entrypoint run the wrong runtime.
 - Pi-backed `loom inbox chat` sends the scratch-dir re-pin when the RPC
       bridge observes `compaction_start`
   [test](inbox_chat_pi_bridge_repins_on_compaction_start)
-- Pi-backed `loom plan` still fails phase selection before launching because
-      raw summary-only REPL compaction is not an allowed state there
-  [test](interactive_pi_shell_out_has_repin_or_fails_fast)
+- Pi-backed `loom plan` uses native `wrix run ... pi` plus a scratch-dir
+      session and re-pin extension before accepting the prompt
+  [test](interactive_pi_shell_out_installs_repin_extension)
 
 ### Container integration
 

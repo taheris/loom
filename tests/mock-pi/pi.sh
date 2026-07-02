@@ -44,8 +44,8 @@
 #                               and any test that wants the full
 #                               single-turn lifecycle.
 #   interactive-compaction-canary
-#                             — verify a controlled interactive Pi bridge
-#                               delivered full re-pin context before output.
+#                             — verify an interactive Pi launch path delivered
+#                               full re-pin context before output.
 #   interactive-bridge-canary — probe ok; prompt emits compaction_start,
 #                               validates the re-pin steer payload, then
 #                               emits LOOM_COMPLETE.

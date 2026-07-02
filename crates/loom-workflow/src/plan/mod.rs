@@ -7,7 +7,7 @@
 //!
 //! `[phase.plan]` selects both the profile image and agent command used for
 //! the interactive shell-out. Claude runs with its per-session compact hook;
-//! Pi fails fast until a controlled interactive re-pin bridge exists.
+//! Pi runs through the native TUI with a scratch-local re-pin extension.
 //!
 //! Flow per `specs/harness.md`:
 //!

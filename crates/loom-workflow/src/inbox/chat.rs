@@ -30,6 +30,7 @@ use thiserror::Error;
 use tracing::{info, warn};
 
 use crate::r#loop::{dolt_socket_mount, sccache_mount};
+use crate::pi_tui;
 use crate::skill::{SkillError, SkillPlan};
 use crate::spawn::{container_workspace_path, launcher_key_env_for_checkout};
 
@@ -522,10 +523,7 @@ fn verbose_pi_bridge_tools() -> bool {
     truthy_env(LOOM_INBOX_PI_VERBOSE_TOOLS)
 }
 
-struct PiTuiLaunch {
-    argv: Vec<String>,
-    session_dir: PathBuf,
-}
+type PiTuiLaunch = pi_tui::Launch;
 
 fn prepare_pi_tui_launch(
     workspace: &Path,
@@ -533,103 +531,8 @@ fn prepare_pi_tui_launch(
     prompt_body: &str,
     scratch_dir: &Path,
 ) -> Result<PiTuiLaunch, ChatError> {
-    let session_dir = scratch_dir.join("pi-sessions");
-    fs::create_dir_all(&session_dir)?;
-
-    let extension_path = scratch_dir.join("loom-pi-repin-extension.js");
-    let prompt_path = container_workspace_path(workspace, &scratch_dir.join("prompt.txt"));
-    let scratchpad_path = container_workspace_path(workspace, &scratch_dir.join("scratch.md"));
-    fs::write(
-        &extension_path,
-        pi_repin_extension_source(&prompt_path, &scratchpad_path)?,
-    )?;
-
-    let container_session_dir = container_workspace_path(workspace, &session_dir);
-    let container_extension_path = container_workspace_path(workspace, &extension_path);
-    let argv = build_pi_tui_wrix_argv(
-        workspace,
-        prompt_body,
-        selection,
-        &container_session_dir,
-        &container_extension_path,
-    );
-    Ok(PiTuiLaunch { argv, session_dir })
-}
-
-fn pi_repin_extension_source(
-    prompt_path: &Path,
-    scratchpad_path: &Path,
-) -> Result<String, ChatError> {
-    let prompt_path = serde_json::to_string(&prompt_path.to_string_lossy())
-        .map_err(|e| ChatError::Config(format!("quote pi prompt path: {e}")))?;
-    let scratchpad_path = serde_json::to_string(&scratchpad_path.to_string_lossy())
-        .map_err(|e| ChatError::Config(format!("quote pi scratchpad path: {e}")))?;
-    Ok(format!(
-        r###"import {{ readFileSync }} from "node:fs";
-
-export default function(pi) {{
-  const promptPath = {prompt_path};
-  const scratchpadPath = {scratchpad_path};
-
-  function readRequiredText(path, label) {{
-    try {{
-      return readFileSync(path, "utf8");
-    }} catch (err) {{
-      const message = err instanceof Error ? err.message : String(err);
-      const detail = "Loom compaction recovery could not read " + label + " at " + path + ": " + message;
-      throw new Error(detail);
-    }}
-  }}
-
-  function contentText(content) {{
-    if (typeof content === "string") return content;
-    if (!Array.isArray(content)) return "";
-    return content.map((block) => {{
-      if (!block || typeof block !== "object") return "";
-      if (block.type === "text") return block.text ?? block.content ?? "";
-      if (block.type === "thinking") return block.thinking ?? "";
-      if (block.type === "toolCall") return `${{block.name ?? "tool"}} ${{JSON.stringify(block.arguments ?? {{}})}}`;
-      return "";
-    }}).join("");
-  }}
-
-  function messageText(message) {{
-    if (!message || typeof message !== "object") return "";
-    return contentText(message.content);
-  }}
-
-  pi.on("context", async (event) => {{
-    const prompt = readRequiredText(promptPath, "prompt");
-    if (!prompt) {{
-      throw new Error("Loom compaction recovery prompt is empty at " + promptPath);
-    }}
-    if (!Array.isArray(event.messages)) return;
-    if (event.messages.some((message) => messageText(message).includes(prompt))) return;
-
-    const scratchpad = readRequiredText(scratchpadPath, "scratchpad").trimEnd();
-    const pinned = [
-      "Loom post-compaction pinned context. Continue following this phase prompt and scratchpad exactly.",
-      "",
-      "## Original Loom prompt",
-      prompt,
-      "",
-      "## Loom scratchpad",
-      scratchpad || "(empty)",
-    ].join("\n");
-
-    return {{
-      messages: [{{
-        role: "custom",
-        customType: "loom-repin",
-        content: pinned,
-        display: false,
-        timestamp: Date.now(),
-      }}, ...event.messages],
-    }};
-  }});
-}}
-"###
-    ))
+    pi_tui::prepare_launch(workspace, selection, prompt_body, scratch_dir)
+        .map_err(ChatError::Scratch)
 }
 
 fn run_pi_tui_shell_out(mut command: Command, session_dir: &Path) -> Result<String, ChatError> {
@@ -792,38 +695,6 @@ pub fn build_wrix_argv(
             argv.push(settings.to_string_lossy().into_owned());
         }
         argv.push("--dangerously-skip-permissions".to_string());
-    }
-    argv.push(prompt_body.to_string());
-    argv
-}
-
-fn build_pi_tui_wrix_argv(
-    workspace: &Path,
-    prompt_body: &str,
-    selection: &AgentSelection,
-    session_dir: &Path,
-    extension_path: &Path,
-) -> Vec<String> {
-    let mut argv = vec![
-        "run".to_string(),
-        workspace.to_string_lossy().into_owned(),
-        "pi".to_string(),
-        "--session-dir".to_string(),
-        session_dir.to_string_lossy().into_owned(),
-        "-e".to_string(),
-        extension_path.to_string_lossy().into_owned(),
-    ];
-    if let Some(provider) = &selection.provider {
-        argv.push("--provider".to_string());
-        argv.push(provider.clone());
-    }
-    if let Some(model_id) = &selection.model_id {
-        argv.push("--model".to_string());
-        argv.push(model_id.clone());
-    }
-    if let Some(level) = selection.thinking_level {
-        argv.push("--thinking".to_string());
-        argv.push(level.as_str().to_string());
     }
     argv.push(prompt_body.to_string());
     argv
@@ -994,7 +865,7 @@ mod tests {
             thinking_level: Some(loom_driver::agent::ThinkingLevel::High),
             claude_settings: None,
         };
-        let argv = build_pi_tui_wrix_argv(
+        let argv = pi_tui::build_wrix_argv(
             &PathBuf::from("/work"),
             "PROMPT BODY",
             &selection,
@@ -1025,11 +896,10 @@ mod tests {
 
     #[test]
     fn pi_repin_extension_raises_errors_when_repin_files_cannot_be_read() {
-        let source = pi_repin_extension_source(
+        let source = pi_tui::repin_extension_source(
             &PathBuf::from("/workspace/.loom/scratch/inbox/prompt.txt"),
             &PathBuf::from("/workspace/.loom/scratch/inbox/scratch.md"),
-        )
-        .expect("extension source renders");
+        );
 
         assert!(source.contains("readRequiredText(promptPath, \"prompt\")"));
         assert!(source.contains("readRequiredText(scratchpadPath, \"scratchpad\")"));

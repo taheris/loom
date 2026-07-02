@@ -13,12 +13,14 @@ pub const WRIX_BIN: &str = "wrix";
 ///
 /// ```text
 /// wrix run <workspace> claude --settings <claude-settings.json> --dangerously-skip-permissions <prompt>
-/// wrix run <workspace> pi <prompt>
+/// wrix run <workspace> <non-claude-agent> <prompt>
 /// ```
 ///
 /// `wrix run` (NOT `spawn`) keeps the TTY attached and inherits the
 /// user's terminal — there is no `--spawn-config` and no `--stdio` flag,
 /// matching the spec's "exception" carve-out for the interactive interview.
+/// Pi's native-TUI production path adds session and extension flags in the
+/// shared `pi_tui` launcher helper rather than through this Claude helper.
 /// Profile selection on this path flows through the `WRIX_DEFAULT_IMAGE_REF`
 /// and `WRIX_DEFAULT_IMAGE_SOURCE` env vars exported by
 /// [`super::runner::run`] — `wrix run` does not parse `--profile`; any

@@ -3158,11 +3158,11 @@ Owned by [events.md](events.md); see that spec's Success Criteria.
   [test](resolve_profile_reads_label)
 - `loom loop` retries failed beads with previous error context
   [test](default_policy_is_two_retries)
-- Before molecule push verification, the driver verifies that
-      `.loom/integration` has the canonical `wrix.prekHooks`
-      `core.hooksPath` configured and fails loudly if the expected path
-      cannot be resolved
-  [test](push_gate_requires_integration_hooks_path_configured)
+- Before molecule push verification, the driver reconciles
+      `.loom/integration` to the canonical `wrix.prekHooks`
+      `core.hooksPath`, repairing stale store paths and failing loudly if
+      the expected path cannot be resolved
+  [test](push_gate_repairs_stale_integration_hooks_path)
 - On molecule completion, after stabilization has drained promoted
       remediation, `loom loop` fetches/rebases against
       `origin/<integration-branch>`, computes the actual push range
@@ -3843,11 +3843,11 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
       protocol, and mode sections verbatim and removes ordinary history
       before pinned instruction text
   [test](hard_limit_fallback_preserves_pinned_instruction_sections)
-- Interactive `loom plan` and Claude-backed `loom inbox chat` shell-outs
-      install the backend-specific compaction re-pin delivery surface before
-      the prompt is accepted; an integration test may use a mock launcher, but
-      merely writing an unused scratch file or hook fragment does not satisfy
-      this criterion
+- Interactive `loom plan` shell-outs for Claude and Pi, plus Claude-backed
+      `loom inbox chat`, install the backend-specific compaction re-pin
+      delivery surface before the prompt is accepted; an integration test may
+      use a mock launcher, but merely writing an unused scratch file or hook
+      fragment does not satisfy this criterion
   [test](interactive_shell_out_installs_compaction_repin_delivery)
 - The Pi-backed `loom inbox chat` native-TUI path launches `wrix run ... pi`
       with inherited stdio, a scratch-local session directory, and re-pin

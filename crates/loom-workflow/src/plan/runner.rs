@@ -6,7 +6,7 @@ use std::time::Duration;
 use tracing::info;
 
 use loom_driver::agent::AgentKind;
-use loom_driver::config::{LoomConfig, Phase};
+use loom_driver::config::{AgentSelection, LoomConfig, Phase};
 use loom_driver::identifier::{ProfileName, SpecLabel};
 use loom_driver::lock::LockManager;
 use loom_driver::profile_manifest::{ImageEntry, ProfileImageManifest};
@@ -85,9 +85,8 @@ pub fn run_with_timeout(
     let cfg = LoomConfig::load(LoomConfig::resolve_path(workspace))
         .unwrap_or_else(|_| LoomConfig::default());
 
-    let (profile, agent_kind) =
-        resolve_plan_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
-    let image: &ImageEntry = opts.manifest.lookup(&profile, agent_kind)?;
+    let selection = resolve_plan_selection(opts.cli_profile.as_ref(), opts.agent_override, &cfg)?;
+    let image: &ImageEntry = opts.manifest.lookup(&selection.profile, selection.kind)?;
 
     let pinned_context = read_pinned_context(workspace, &cfg.pinned_context)?;
     let spec_index = read_pinned_context(workspace, "docs/README.md")?;
@@ -101,8 +100,8 @@ pub fn run_with_timeout(
     let skill_plan = SkillPlan::resolve_from_workspace_sync(
         workspace,
         Phase::Plan.as_str(),
-        &profile,
-        agent_kind,
+        &selection.profile,
+        selection.kind,
         &cfg.skills,
     )?;
     let skill_session = skill_plan.materialize(scratch_dir, workspace)?;
@@ -122,29 +121,52 @@ pub fn run_with_timeout(
         .map_err(|source| PlanError::Spawn { source })?;
     let _restored_skills = skill_plan.materialize(scratch.path(), workspace)?;
 
-    let claude_settings_path = container_workspace_path(workspace, &scratch.claude_settings());
-    let argv = build_wrix_argv(
-        workspace,
-        &prompt_body,
-        agent_kind,
-        Some(&claude_settings_path),
-    );
     let bin: PathBuf = opts.wrix_bin.unwrap_or_else(|| PathBuf::from(WRIX_BIN));
-    info!(
-        anchors = %key,
-        profile = %profile,
-        agent = ?agent_kind,
-        image_ref = %image.r#ref,
-        image_source = %image.source.display(),
-        wrix_bin = %bin.display(),
-        scratch_dir = %scratch.path().display(),
-        "loom plan: shelling out to interactive wrix run",
-    );
+    let argv = match selection.kind {
+        AgentKind::Claude => {
+            let claude_settings_path =
+                container_workspace_path(workspace, &scratch.claude_settings());
+            info!(
+                anchors = %key,
+                profile = %selection.profile,
+                agent = ?selection.kind,
+                image_ref = %image.r#ref,
+                image_source = %image.source.display(),
+                wrix_bin = %bin.display(),
+                scratch_dir = %scratch.path().display(),
+                "loom plan: shelling out to interactive wrix run",
+            );
+            build_wrix_argv(
+                workspace,
+                &prompt_body,
+                selection.kind,
+                Some(&claude_settings_path),
+            )
+        }
+        AgentKind::Pi => {
+            let launch =
+                crate::pi_tui::prepare_launch(workspace, &selection, &prompt_body, scratch.path())
+                    .map_err(|source| PlanError::Spawn { source })?;
+            info!(
+                anchors = %key,
+                profile = %selection.profile,
+                agent = ?selection.kind,
+                image_ref = %image.r#ref,
+                image_source = %image.source.display(),
+                wrix_bin = %bin.display(),
+                scratch_dir = %scratch.path().display(),
+                session_dir = %launch.session_dir.display(),
+                "loom plan: shelling out to native pi TUI",
+            );
+            launch.argv
+        }
+        AgentKind::Direct => return Err(PlanError::DirectInteractive),
+    };
     let status = Command::new(&bin)
         .args(&argv)
         .env(WRIX_DEFAULT_IMAGE_REF, &image.r#ref)
         .env(WRIX_DEFAULT_IMAGE_SOURCE, &image.source)
-        .env("WRIX_AGENT", agent_kind.as_str())
+        .env("WRIX_AGENT", selection.kind.as_str())
         .status()
         .map_err(|source| PlanError::Spawn { source })?;
     drop(scratch);
@@ -176,7 +198,7 @@ fn resolve_plan_selection(
     cli_profile: Option<&ProfileName>,
     agent_override: Option<AgentKind>,
     config: &LoomConfig,
-) -> Result<(ProfileName, AgentKind), PlanError> {
+) -> Result<AgentSelection, PlanError> {
     let mut selection = config.agent_for(Phase::Plan)?;
     if let Some(p) = cli_profile {
         selection.profile = p.clone();
@@ -184,12 +206,10 @@ fn resolve_plan_selection(
     if let Some(kind) = agent_override {
         selection.kind = kind;
     }
-    match selection.kind {
-        AgentKind::Pi => return Err(PlanError::PiInteractiveUnsupported),
-        AgentKind::Direct => return Err(PlanError::DirectInteractive),
-        AgentKind::Claude => {}
+    if matches!(selection.kind, AgentKind::Direct) {
+        return Err(PlanError::DirectInteractive);
     }
-    Ok((selection.profile, selection.kind))
+    Ok(selection)
 }
 
 fn anchor_companions(db: &CacheDb, anchor_labels: &[SpecLabel]) -> Result<Vec<String>, PlanError> {
@@ -368,6 +388,28 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
         )?;
 
         Ok(std::fs::read_to_string(dir.path().join("argv.log"))?)
+    }
+
+    fn run_plan_pi_launch() -> Result<(String, String)> {
+        let dir = tempfile::tempdir()?;
+        seed_workspace_with_canary(dir.path())?;
+        std::fs::write(
+            dir.path().join("loom.toml"),
+            "[phase.plan]\nagent.backend = \"pi\"\n",
+        )?;
+        let manifest = three_profile_manifest(dir.path())?;
+        let bin = stub_wrix(dir.path())?;
+
+        run_with_timeout(
+            dir.path(),
+            plan_opts(vec![SpecLabel::new("harness")], bin, manifest),
+            Duration::from_secs(1),
+        )?;
+
+        Ok((
+            std::fs::read_to_string(dir.path().join("argv.log"))?,
+            std::fs::read_to_string(dir.path().join("env.log"))?,
+        ))
     }
 
     #[test]
@@ -563,11 +605,29 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
 
     #[test]
     fn interactive_shell_out_installs_compaction_repin_delivery() -> Result<()> {
-        let argv_log = run_plan_compaction_canary()?;
-        assert!(
-            argv_log.lines().any(|arg| arg == "--settings"),
-            "delivery surface must be passed to child claude before prompt: {argv_log}",
-        );
+        let claude_argv_log = run_plan_compaction_canary()?;
+        let claude_args: Vec<&str> = claude_argv_log.lines().collect();
+        let claude_delivery = claude_args
+            .iter()
+            .position(|arg| *arg == "--settings")
+            .ok_or_else(|| anyhow::anyhow!("claude settings missing: {claude_argv_log}"))?;
+        let claude_prompt = claude_args
+            .iter()
+            .position(|arg| *arg == "# Specification Interview")
+            .ok_or_else(|| anyhow::anyhow!("claude prompt missing: {claude_argv_log}"))?;
+        assert!(claude_delivery < claude_prompt);
+
+        let (pi_argv_log, _) = run_plan_pi_launch()?;
+        let pi_args: Vec<&str> = pi_argv_log.lines().collect();
+        let pi_delivery = pi_args
+            .iter()
+            .position(|arg| *arg == "-e")
+            .ok_or_else(|| anyhow::anyhow!("pi extension missing: {pi_argv_log}"))?;
+        let pi_prompt = pi_args
+            .iter()
+            .position(|arg| *arg == "# Specification Interview")
+            .ok_or_else(|| anyhow::anyhow!("pi prompt missing: {pi_argv_log}"))?;
+        assert!(pi_delivery < pi_prompt);
         Ok(())
     }
 
@@ -604,25 +664,31 @@ exec bash "$mock_claude" interactive-compaction-canary "${{mapped[@]}}" > "$cana
     }
 
     #[test]
-    fn interactive_pi_shell_out_has_repin_or_fails_fast() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        seed_workspace(dir.path())?;
-        std::fs::write(
-            dir.path().join("loom.toml"),
-            "[phase.plan]\nagent.backend = \"pi\"\n",
-        )?;
-        let manifest = three_profile_manifest(dir.path())?;
-        let bin = stub_wrix(dir.path())?;
-
-        let err = run_with_timeout(
-            dir.path(),
-            plan_opts(vec![SpecLabel::new("harness")], bin, manifest),
-            Duration::from_secs(1),
-        )
-        .unwrap_err();
-
-        assert!(matches!(err, PlanError::PiInteractiveUnsupported));
-        assert!(!dir.path().join("argv.log").exists());
+    fn interactive_pi_shell_out_installs_repin_extension() -> Result<()> {
+        let (argv_log, env_log) = run_plan_pi_launch()?;
+        let argv: Vec<&str> = argv_log.lines().collect();
+        assert_eq!(argv.first().copied(), Some("run"));
+        assert!(argv.contains(&"pi"), "expected pi argv: {argv_log}");
+        assert!(
+            argv.contains(&"--session-dir"),
+            "session dir missing: {argv_log}"
+        );
+        assert!(argv.contains(&"-e"), "extension flag missing: {argv_log}");
+        assert!(
+            argv.iter()
+                .any(|arg| arg.ends_with("loom-pi-repin-extension.js")),
+            "extension path missing: {argv_log}"
+        );
+        assert!(
+            !argv.contains(&"--settings"),
+            "pi run must not receive claude settings: {argv_log}"
+        );
+        assert!(
+            !argv.contains(&"--dangerously-skip-permissions"),
+            "pi run must not receive claude flags: {argv_log}"
+        );
+        assert!(env_log.contains("ref=localhost/wrix-base-pi:abc"));
+        assert!(env_log.contains("agent=pi"));
         Ok(())
     }
 

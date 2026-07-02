@@ -192,10 +192,11 @@ workers do not rely on `git push` for final self-verification. The
 downstream project maintains its repo-local marker wrapper, but does not
 maintain hook shims, lock scripts, or installation logic. Loom consumes
 the canonical installed path:
-`loom init` writes it into `.loom/integration`, and bead workspace
-creation writes or repairs it in each `.loom/beads/<id>` clone before
-an agent is spawned. The operator checkout's current git config is not
-the source of truth.
+`loom init` writes it into `.loom/integration`, the molecule push gate
+repairs stale `.loom/integration` store paths before verification, and
+bead workspace creation writes or repairs it in each `.loom/beads/<id>`
+clone before an agent is spawned. The operator checkout's current git
+config is not the source of truth.
 
 `pre-push-checks` and `push-verified` are **complementary**, not
 successor and predecessor: the SHA stamp short-circuits the entire

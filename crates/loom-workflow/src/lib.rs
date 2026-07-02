@@ -18,6 +18,7 @@ pub mod logs_cmd;
 pub mod r#loop;
 pub mod mint;
 pub mod observer;
+mod pi_tui;
 pub mod plan;
 pub mod resolve;
 pub mod review;

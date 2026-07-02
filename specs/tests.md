@@ -477,7 +477,7 @@ Modes (selected via `argv[1]`):
 | `echo-prompt` | wire-shape assertion test | Probe ok, then echoes the prompt payload as a `message_delta` |
 | `steering` | mid-session steer test | Probe ok, prompt → first turn, then echoes the steer payload on the next turn |
 | `compaction` | re-pin-via-steer test | Probe ok, emits `compaction_start`, expects the re-pin steer, echoes it back, emits `compaction_end` |
-| `interactive-compaction-canary` | conditional plan/inbox re-pin behavioral canary | Required only if Pi interactive compaction is supported; after forced compaction, answers the `do a polish` probe correctly only when the delivered re-pin contains the full interview-mode definition and a test-only nonce. If Pi interactive is unsupported, the verifier is the fail-fast phase-selection test instead. |
+| `interactive-compaction-canary` | interactive re-pin behavioral canary | After forced compaction, answers the `do a polish` probe correctly only when the delivered re-pin contains the full interview-mode definition and a test-only nonce. Pi plan uses the native-TUI extension path; Pi inbox non-TTY coverage uses the controlled bridge. |
 | `set-model` | per-phase model override test | Probe ok, expects `set_model { provider, modelId }`, echoes the pair into a later `message_delta` |
 | `set-model-reject` | model override failure test | Probe ok, rejects `set_model` so the backend hard-fails the handshake |
 | `happy-path` | container smoke | Probe ok, prompt → `message_delta` → `agent_end` |
@@ -505,7 +505,7 @@ Code's stream-json framing (also JSONL) on stdin/stdout.
 |------|---------|---------------|
 | `steering` | mid-session steer test | Emits one assistant turn, waits for a stream-json user message on stdin, emits a second assistant turn echoing the steer payload, then `result/success` |
 | `ignore-stdin` | shutdown watchdog test | Emits `result/success`, ignores SIGTERM and stdin close so the test exercises the SIGTERM → SIGKILL escalation |
-| `interactive-compaction-canary` / `interactive-bridge-canary` | plan/inbox re-pin behavioral canary | Simulates the launched interactive Claude process or controlled Pi inbox bridge: verifies the compact hook/config or re-pin steer is loaded through the production launch path, triggers compaction, then answers a post-compaction probe correctly only when the delivered context contains the full interview-mode definition and a test-only nonce |
+| `interactive-compaction-canary` / `interactive-bridge-canary` | plan/inbox re-pin behavioral canary | Simulates the launched interactive Claude process, native Pi extension hand-off, or controlled Pi inbox bridge: verifies the compact hook/config, extension, or re-pin steer is loaded through the production launch path, triggers compaction, then answers a post-compaction probe correctly only when the delivered context contains the full interview-mode definition and a test-only nonce |
 | `happy-path` | container smoke | system → assistant → `result/success` |
 
 ### Nix Integration
