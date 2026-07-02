@@ -61,7 +61,7 @@ impl OpenAiCompatClient {
             base_url,
             api_key,
             sinks: Mutex::new(Vec::new()),
-            envelope_builder: Mutex::new(super::multi_provider::default_envelope_builder()),
+            envelope_builder: Mutex::new(Some(super::multi_provider::default_envelope_builder())),
         }
     }
 

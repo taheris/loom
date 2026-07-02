@@ -3890,8 +3890,8 @@ The `loom logs` inspection surface is owned by [events.md](events.md).
 
 - Loom binary builds via `nix build`
   [system](nix build .#loom)
-- Loom binary is available in the devShell
-  [system](nix develop -c loom --version)
+- Loom binary is available in the hook-free CI devShell
+  [system](nix develop .#ci -c loom --version)
 - `cargo clippy --workspace` and full workspace nextest are covered by
       `nix run .#test`, while fast flake checks omit those workspace
       compile surfaces and the workspace derivations retain a shared
