@@ -16,6 +16,7 @@ use loom_driver::logging::{
 };
 use loom_events::identifier::SessionId;
 use loom_events::{EventEnvelope, Source};
+use loom_render::tool_body::BODY_CAP_BYTES;
 use serde_json::{Value, json};
 
 /// Fixture envelope shared by every emission test. Bead id `lm-test`
@@ -973,7 +974,7 @@ fn run_finish_finalizes_dangling_running_indicator() -> Result<()> {
 }
 
 #[test]
-fn run_verbose_uses_normal_tool_result_body_cap() -> Result<()> {
+fn run_verbose_uses_normal_tool_result_body_byte_cap() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (mut sink, buf) = open_sink(
         dir.path(),
@@ -991,10 +992,7 @@ fn run_verbose_uses_normal_tool_result_body_cap() -> Result<()> {
         params: json!({"command": "ls -la"}),
         parent_tool_call_id: None,
     })?;
-    let big_output: String = (1..=15)
-        .map(|i| format!("file-{i:03}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let big_output = "v".repeat(BODY_CAP_BYTES + 7);
     sink.emit(&AgentEvent::ToolResult {
         envelope: sample_envelope(),
         id: ToolCallId::new("b1"),
@@ -1004,13 +1002,10 @@ fn run_verbose_uses_normal_tool_result_body_cap() -> Result<()> {
     sink.finish(BeadOutcome::Done)?;
 
     let term = captured_str(&buf);
-    if !term.contains("file-001") || !term.contains("file-010") {
-        return Err(anyhow!("verbose body cap dropped kept lines: {term:?}"));
-    }
-    if term.contains("file-011") {
+    if !term.contains("display-only cap") || !term.contains("7 bytes omitted") {
         return Err(anyhow!("verbose body cap must match normal cap: {term:?}"));
     }
-    if !term.contains("5 more lines") || !term.contains("loom logs -b lm-2 --raw") {
+    if !term.contains("loom logs --raw -b lm-2") {
         return Err(anyhow!("missing raw replay recovery hint: {term:?}"));
     }
     if !term.contains("tool b1") {

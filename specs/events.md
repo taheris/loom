@@ -353,9 +353,9 @@ not abort the run.
 - Pretty/Plain mode renders each tool call as one pending/success/error block keyed by `ToolCallId` (`id` on the wire)
   [test](pretty_tool_block_updates_from_pending_to_success_or_error)
 - Tool body rendering uses a byte-only cap aligned with Direct `[direct].max_inline_bytes` when Loom controls the LLM inline budget, and applies no additional line cap
-  [test?](tool_body_rendering_uses_byte_only_inline_budget)
+  [test](tool_body_rendering_uses_byte_only_inline_budget)
 - Cumulative tool progress/result snapshots are coalesced so previously rendered output is not printed again
-  [test?](cumulative_tool_output_snapshots_render_only_new_content)
+  [test](cumulative_tool_output_snapshots_render_only_new_content)
 - Driver events render interleaved with agent events in chronological order
   [test](driver_events_render_interleaved_with_agent_events)
 - `loom todo` renders live agent progress through the shared event renderer before final validation/summary output

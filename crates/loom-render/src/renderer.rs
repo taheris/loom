@@ -106,6 +106,14 @@ fn ts_ms_delta(start: i64, end: i64) -> Duration {
     Duration::from_millis(u64::try_from(delta).unwrap_or(0))
 }
 
+fn renderable_snapshot_suffix<'a>(previous: &str, suffix: &'a str) -> &'a str {
+    if previous.is_empty() || previous.ends_with('\n') {
+        suffix
+    } else {
+        suffix.strip_prefix('\n').unwrap_or(suffix)
+    }
+}
+
 /// Detect terminal width via crossterm. Returns the column count of the
 /// underlying tty or [`FALLBACK_TERM_WIDTH`] when no real width is
 /// available.
@@ -499,6 +507,10 @@ pub struct TerminalRenderer {
     /// `ts_ms`, letting the result line render its duration from the
     /// event envelope rather than wall clock.
     pending_calls: std::collections::HashMap<loom_events::identifier::ToolCallId, PendingToolCall>,
+    /// Last complete tool-output snapshot observed for each tool call.
+    /// Backends may send progress/result as cumulative snapshots; this
+    /// state lets the renderer append only the newly observed suffix.
+    observed_tool_output: std::collections::HashMap<loom_events::identifier::ToolCallId, String>,
     /// In-place "running indicator" state for the top-level tool call
     /// currently in-flight. When `Some((id, started, summary, indent))`,
     /// a `\r`-overwritable line has been written for that call and the
@@ -607,6 +619,7 @@ impl TerminalRenderer {
             tool_count: 0,
             indent_by_tool: std::collections::HashMap::new(),
             pending_calls: std::collections::HashMap::new(),
+            observed_tool_output: std::collections::HashMap::new(),
             running: None,
             buffered_overflow: None,
             // Indicator is enabled by default when color is on, we're
@@ -967,11 +980,8 @@ impl TerminalRenderer {
                         | RenderMode::VerbosePlain
                 ) && Self::should_render_default_body(tool_name, *is_error, output)
                 {
-                    Some(tool_body::cap_body(
-                        output,
-                        self.bead_id.as_str(),
-                        id.as_str(),
-                    ))
+                    let body = self.new_tool_output_body(id, output);
+                    if body.is_empty() { None } else { Some(body) }
                 } else {
                     None
                 };
@@ -996,7 +1006,10 @@ impl TerminalRenderer {
                 } else {
                     self.close_in_flight("…")?;
                 }
-                self.write_progress_lines(id, text)?;
+                let body = self.new_tool_output_body(id, text);
+                if !body.is_empty() {
+                    self.write_progress_lines(id, &body)?;
+                }
             }
             AgentEvent::TextDelta { text, .. }
                 if matches!(
@@ -1152,17 +1165,77 @@ impl TerminalRenderer {
     }
 
     fn write_progress_lines(&mut self, id: &ToolCallId, text: &str) -> io::Result<()> {
-        let capped = tool_body::cap_body(text, self.bead_id.as_str(), id.as_str());
-        let body = if capped.is_empty() {
+        let body = if text.is_empty() {
             "…".to_string()
         } else {
-            capped
-                .lines()
+            text.lines()
                 .map(|line| format!("… {line}"))
                 .collect::<Vec<_>>()
                 .join("\n")
         };
         self.write_body_lines(id, &body)
+    }
+
+    fn new_tool_output_body(&mut self, id: &ToolCallId, snapshot: &str) -> String {
+        let body = match self.observed_tool_output.get(id) {
+            Some(previous) if snapshot == previous => String::new(),
+            Some(previous) if snapshot.starts_with(previous) => {
+                self.cumulative_tool_output_body(id, previous, snapshot)
+            }
+            Some(previous) if previous.starts_with(snapshot) => String::new(),
+            Some(_) | None => tool_body::cap_body(snapshot, self.bead_id.as_str(), id.as_str()),
+        };
+        if self.should_store_tool_snapshot(id, snapshot) {
+            self.observed_tool_output
+                .insert(id.clone(), snapshot.to_string());
+        }
+        body
+    }
+
+    fn cumulative_tool_output_body(
+        &self,
+        id: &ToolCallId,
+        previous: &str,
+        snapshot: &str,
+    ) -> String {
+        let cap = tool_body::BODY_CAP_BYTES;
+        let start = previous.len();
+        if start > cap {
+            return String::new();
+        }
+        if start == cap {
+            if snapshot.len() > cap {
+                return tool_body::truncation_hint(
+                    snapshot.len() - cap,
+                    cap,
+                    self.bead_id.as_str(),
+                    id.as_str(),
+                );
+            }
+            return String::new();
+        }
+        if snapshot.len() <= cap {
+            return renderable_snapshot_suffix(previous, &snapshot[start..]).to_string();
+        }
+        let visible_end = tool_body::utf8_prefix_at_byte_limit(snapshot, cap).len();
+        let mut body =
+            renderable_snapshot_suffix(previous, &snapshot[start..visible_end]).to_string();
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str(&tool_body::truncation_hint(
+            snapshot.len() - visible_end,
+            cap,
+            self.bead_id.as_str(),
+            id.as_str(),
+        ));
+        body
+    }
+
+    fn should_store_tool_snapshot(&self, id: &ToolCallId, snapshot: &str) -> bool {
+        self.observed_tool_output.get(id).is_none_or(|previous| {
+            snapshot.len() >= previous.len() || !previous.starts_with(snapshot)
+        })
     }
 
     fn should_render_default_body(tool_name: &str, is_error: bool, output: &str) -> bool {
@@ -1710,11 +1783,8 @@ mod tests {
     }
 
     #[test]
-    fn verbose_mode_uses_normal_tool_result_body_cap() {
-        let big_body: String = (1..=15)
-            .map(|i| format!("output-line-{i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+    fn verbose_mode_uses_normal_tool_result_body_byte_cap() {
+        let big_body = "x".repeat(tool_body::BODY_CAP_BYTES + 32);
         let out = capture(RenderMode::Verbose, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
@@ -1732,11 +1802,13 @@ mod tests {
             })
             .expect("render result");
         });
-        assert!(out.contains("output-line-1"), "{out:?}");
-        assert!(out.contains("output-line-10"), "{out:?}");
-        assert!(!out.contains("output-line-11"), "{out:?}");
-        assert!(out.contains("display cap"), "missing cap hint: {out:?}");
-        assert!(out.contains("loom logs -b lm-1 --raw"), "{out:?}");
+        assert!(out.contains("Bash"), "{out:?}");
+        assert!(
+            out.contains("display-only cap"),
+            "missing cap hint: {out:?}"
+        );
+        assert!(out.contains("32 bytes omitted"), "{out:?}");
+        assert!(out.contains("loom logs --raw -b lm-1"), "{out:?}");
         assert!(out.contains("tool b1"), "{out:?}");
     }
 
@@ -1765,14 +1837,11 @@ mod tests {
     }
 
     /// Default mode renders the Bash body when `exit != 0` (is_error=true),
-    /// capped at 10 lines with the standard recovery hint when the output
-    /// exceeds the cap. Pin both the kept-line set and the cap line.
+    /// capped with the standard recovery hint when the output exceeds
+    /// the byte budget.
     #[test]
-    fn default_mode_renders_bash_body_on_error_capped_at_ten_lines() {
-        let big_body: String = (1..=15)
-            .map(|i| format!("output-line-{i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+    fn default_mode_renders_bash_body_on_error_capped_by_bytes() {
+        let big_body = "e".repeat(tool_body::BODY_CAP_BYTES + 12);
         let out = capture(RenderMode::Default, false, false, |r| {
             r.render_event(&AgentEvent::ToolCall {
                 envelope: sample_envelope(),
@@ -1790,21 +1859,20 @@ mod tests {
             })
             .expect("render result");
         });
-        assert!(out.contains("output-line-1"), "{out:?}");
-        assert!(out.contains("output-line-10"), "{out:?}");
+        assert!(out.contains('✗'), "{out:?}");
         assert!(
-            !out.contains("output-line-11"),
-            "default Bash error body must cap at 10 lines: {out:?}",
+            out.contains("display-only cap"),
+            "missing cap line: {out:?}"
         );
-        assert!(out.contains("more lines"), "missing cap line: {out:?}");
+        assert!(out.contains("12 bytes omitted"), "{out:?}");
         assert!(
-            out.contains("loom logs -b lm-1 --raw") && out.contains("tool b1"),
+            out.contains("loom logs --raw -b lm-1") && out.contains("tool b1"),
             "cap line must reference raw replay and the tool call id: {out:?}",
         );
     }
 
     /// Default mode renders the full Bash body when `exit != 0` and the
-    /// output is at or under the 10-line cap — no cap line is emitted.
+    /// output is at or under the byte cap — no cap line is emitted.
     #[test]
     fn default_mode_renders_bash_body_on_error_short_output_no_cap_line() {
         let body = "line1\nline2\nline3";
@@ -1828,8 +1896,8 @@ mod tests {
         assert!(out.contains("line1"), "{out:?}");
         assert!(out.contains("line3"), "{out:?}");
         assert!(
-            !out.contains("more lines"),
-            "no cap line when body is at or below the 10-line cap: {out:?}",
+            !out.contains("display-only cap"),
+            "no cap line when body is at or below the byte cap: {out:?}",
         );
     }
 
@@ -2430,6 +2498,85 @@ mod tests {
         assert!(out.contains("1.0s"), "{out:?}");
     }
 
+    #[test]
+    fn cumulative_tool_output_snapshots_render_only_new_content() {
+        let first = "fetch dep alpha\ncompile crate beta";
+        let second = format!("{first}\ncompile crate gamma");
+        let final_output = format!("{second}\nlink final binary");
+        let out = capture(RenderMode::Default, false, true, |r| {
+            r.render_event(&AgentEvent::ToolCall {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("b1"),
+                tool: "Bash".into(),
+                params: json!({"command": "nix build"}),
+                parent_tool_call_id: None,
+            })
+            .expect("tool call");
+            r.render_event(&AgentEvent::ToolProgress {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("b1"),
+                text: first.into(),
+            })
+            .expect("first progress");
+            r.render_event(&AgentEvent::ToolProgress {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("b1"),
+                text: second,
+            })
+            .expect("second progress");
+            r.render_event(&AgentEvent::ToolResult {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("b1"),
+                output: final_output,
+                is_error: false,
+            })
+            .expect("result");
+        });
+
+        for expected in [
+            "fetch dep alpha",
+            "compile crate beta",
+            "compile crate gamma",
+            "link final binary",
+        ] {
+            assert_eq!(out.match_indices(expected).count(), 1, "{out:?}");
+        }
+        assert!(out.contains('✓'), "{out:?}");
+    }
+
+    #[test]
+    fn cumulative_tool_output_snapshots_share_one_byte_budget() {
+        let first = "a".repeat(tool_body::BODY_CAP_BYTES - 4);
+        let second = format!("{first}bbbbcccc");
+        let out = capture(RenderMode::Default, false, true, |r| {
+            r.render_event(&AgentEvent::ToolCall {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("b1"),
+                tool: "Bash".into(),
+                params: json!({"command": "nix build"}),
+                parent_tool_call_id: None,
+            })
+            .expect("tool call");
+            r.render_event(&AgentEvent::ToolProgress {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("b1"),
+                text: first,
+            })
+            .expect("first progress");
+            r.render_event(&AgentEvent::ToolProgress {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("b1"),
+                text: second,
+            })
+            .expect("second progress");
+        });
+
+        assert!(out.contains("bbbb"), "{out:?}");
+        assert!(!out.contains("cccc"), "{out:?}");
+        assert!(out.contains("4 bytes omitted"), "{out:?}");
+        assert_eq!(out.match_indices("display-only cap").count(), 1, "{out:?}");
+    }
+
     fn strip_metadata_lines(output: &str) -> String {
         let mut stripped = output
             .lines()
@@ -2502,11 +2649,10 @@ mod tests {
                 "missing {expected:?}: {verbose:?}"
             );
         }
-        assert!(normal.contains("file-line-10"), "{normal:?}");
-        assert!(!normal.contains("file-line-11"), "{normal:?}");
-        assert!(verbose.contains("file-line-10"), "{verbose:?}");
-        assert!(!verbose.contains("file-line-11"), "{verbose:?}");
-        assert!(verbose.contains("loom logs -b lm-1 --raw"), "{verbose:?}");
+        assert!(normal.contains("file-line-15"), "{normal:?}");
+        assert!(verbose.contains("file-line-15"), "{verbose:?}");
+        assert!(!normal.contains("display-only cap"), "{normal:?}");
+        assert!(!verbose.contains("display-only cap"), "{verbose:?}");
     }
 
     #[test]

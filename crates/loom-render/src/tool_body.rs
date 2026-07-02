@@ -1,8 +1,8 @@
 //! Per-tool summary cells + body formatters.
 //!
-//! Each builtin tool gets a tailored one-line summary cell. Human
-//! modes cap body at **10 lines or 2 KB whichever first** with a raw-log
-//! recovery hint line.
+//! Each builtin tool gets a tailored one-line summary cell. Human modes
+//! cap body at the Direct inline byte budget (16 KiB by default) with a
+//! raw-log recovery hint line.
 //!
 //! ## Summary cells (per spec table)
 //!
@@ -26,9 +26,8 @@ use serde_json::Value;
 
 use crate::osc8;
 
-/// Body cap policy for the default render mode.
-pub const BODY_CAP_LINES: usize = 10;
-pub const BODY_CAP_BYTES: usize = 2048;
+/// Default renderer byte budget for inline tool bodies.
+pub const BODY_CAP_BYTES: usize = 16 * 1024;
 
 /// OSC 8 wrapping context for summary cells. When `supported = true`,
 /// path-bearing tools (Read/Edit/Write/Grep/WebFetch) wrap the path or
@@ -253,42 +252,78 @@ pub fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Cap a body to 10 lines or 2 KB (whichever first). When the cap
-/// trims content, appends a recovery hint pointing at raw replay.
+/// Cap a body to the default byte budget. When the cap trims content,
+/// appends a recovery hint pointing at raw replay.
 pub fn cap_body(body: &str, bead_id: &str, tool_call_id: &str) -> String {
-    cap_body_with_limits(body, bead_id, tool_call_id, BODY_CAP_LINES, BODY_CAP_BYTES)
+    cap_body_with_limit(body, bead_id, tool_call_id, BODY_CAP_BYTES)
 }
 
-fn cap_body_with_limits(
+pub(crate) fn cap_body_with_limit(
     body: &str,
     bead_id: &str,
     tool_call_id: &str,
-    max_lines: usize,
     max_bytes: usize,
 ) -> String {
-    let mut total_bytes = 0;
-    let mut kept: Vec<String> = Vec::new();
-    let mut truncated = false;
-    for (i, line) in body.lines().enumerate() {
-        let next_bytes = total_bytes + line.len() + 1;
-        if i >= max_lines || next_bytes > max_bytes {
-            truncated = true;
-            break;
-        }
-        kept.push(line.to_string());
-        total_bytes = next_bytes;
+    if let Some(offload_body) = offload_reference_body(body) {
+        return offload_body;
     }
-    if truncated {
-        let remaining = body.lines().count() - kept.len();
-        kept.push(String::new());
-        kept.push(truncation_hint(remaining, bead_id, tool_call_id));
+    if body.len() <= max_bytes {
+        return body.to_string();
     }
-    kept.join("\n")
+    let prefix = utf8_prefix_at_byte_limit(body, max_bytes);
+    let remaining = body.len() - prefix.len();
+    let mut capped = prefix.to_string();
+    if !capped.is_empty() && !capped.ends_with('\n') {
+        capped.push('\n');
+    }
+    capped.push_str(&truncation_hint(
+        remaining,
+        max_bytes,
+        bead_id,
+        tool_call_id,
+    ));
+    capped
 }
 
-fn truncation_hint(remaining: usize, bead_id: &str, tool_call_id: &str) -> String {
+pub(crate) fn utf8_prefix_at_byte_limit(body: &str, max_bytes: usize) -> &str {
+    let mut end = max_bytes.min(body.len());
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    &body[..end]
+}
+
+fn offload_reference_body(body: &str) -> Option<String> {
+    let trimmed = body.trim_start();
+    if !trimmed.starts_with('{') || !trimmed.contains("\"offloaded\"") {
+        return None;
+    }
+    let value: Value = serde_json::from_str(trimmed).ok()?;
+    let object = value.as_object()?;
+    if object.get("offloaded").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    if let Some(head) = object.get("head").and_then(Value::as_str)
+        && !head.is_empty()
+    {
+        return Some(head.to_string());
+    }
+    let path = object.get("path").and_then(Value::as_str)?;
+    let total = object.get("total_bytes").and_then(Value::as_u64);
+    Some(match total {
+        Some(bytes) => format!("[offloaded: {bytes} bytes; full output at {path}]"),
+        None => format!("[offloaded: full output at {path}]"),
+    })
+}
+
+pub(crate) fn truncation_hint(
+    remaining_bytes: usize,
+    max_bytes: usize,
+    bead_id: &str,
+    tool_call_id: &str,
+) -> String {
     format!(
-        "  [{remaining} more lines — display cap; run `loom logs -b {bead_id} --raw` for observed event bytes; tool {tool_call_id}]"
+        "  [display-only cap at {max_bytes} bytes; {remaining_bytes} bytes omitted; run `loom logs --raw -b {bead_id}` for observed event bytes; tool {tool_call_id}]"
     )
 }
 
@@ -548,33 +583,51 @@ mod tests {
     }
 
     #[test]
-    fn cap_body_truncates_long_bodies_with_recovery_hint() {
-        let body: String = (1..=20)
+    fn tool_body_rendering_uses_byte_only_inline_budget() {
+        let body: String = (1..=200)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
         let out = cap_body(&body, "lm-1", "tc-1");
-        // 10 lines kept + blank + hint = 12 lines
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 12, "{out}");
-        assert!(lines[0].starts_with("line 1"));
-        assert!(lines[9].starts_with("line 10"));
-        assert!(lines[10].is_empty(), "{out}");
-        assert!(lines[11].contains("10 more lines"), "{out}");
-        assert!(lines[11].contains("loom logs -b lm-1 --raw"), "{out}");
-        assert!(lines[11].contains("tool tc-1"), "{out}");
+        assert_eq!(out, body);
+        assert!(out.contains("line 200"), "{out}");
+        assert!(!out.contains("display-only cap"), "{out}");
     }
 
     #[test]
-    fn cap_body_respects_byte_cap() {
-        // 5 lines of 600 bytes each = 3000 bytes > 2048 cap.
-        let body: String = (1..=5)
-            .map(|_| "x".repeat(600))
-            .collect::<Vec<_>>()
-            .join("\n");
+    fn cap_body_preserves_offload_recovery_path() {
+        let path = "/workspace/.loom/scratch/key/offload/payload.txt";
+        let head = format!(
+            "{}\n[truncated: full output at {path}; Read with offset 42 to continue]",
+            "x".repeat(BODY_CAP_BYTES),
+        );
+        let body = json!({
+            "offloaded": true,
+            "path": path,
+            "total_bytes": BODY_CAP_BYTES + 1,
+            "total_lines": 99,
+            "head_lines": 41,
+            "head": head,
+        })
+        .to_string();
+
         let out = cap_body(&body, "lm-1", "tc-1");
-        // Only ~3 lines fit before the byte cap trips.
-        assert!(out.contains("more lines"), "{out}");
-        assert!(out.len() < body.len(), "{out}");
+
+        assert!(out.contains(path), "{out}");
+        assert!(out.contains("Read with offset 42"), "{out}");
+        assert!(!out.contains("display-only cap"), "{out}");
+        assert!(!out.contains("\"offloaded\""), "{out}");
+    }
+
+    #[test]
+    fn cap_body_truncates_over_byte_budget_with_recovery_hint() {
+        let body = "x".repeat(BODY_CAP_BYTES + 20);
+        let out = cap_body(&body, "lm-1", "tc-1");
+        let (head, hint) = out.split_once('\n').expect("hint line");
+        assert_eq!(head.len(), BODY_CAP_BYTES);
+        assert!(hint.contains("display-only cap"), "{out}");
+        assert!(hint.contains("20 bytes omitted"), "{out}");
+        assert!(hint.contains("loom logs --raw -b lm-1"), "{out}");
+        assert!(hint.contains("tool tc-1"), "{out}");
     }
 }
