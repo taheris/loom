@@ -152,7 +152,7 @@ are relevant to this issue's work.
   non-zero on failure, uses `set -euo pipefail`, and exits 77 to skip
   (e.g. platform not available).
 - **`[system]` annotations**: The target is a system-level command
-  (`nix run .#test-loom`, container build). Same rules as `[check]` —
+  (`nix run .#smoke`, container build). Same rules as `[check]` —
   it's a command string, not a file to create. Make sure the system
   invocation actually exists.
 - **`[judge]` annotations**: Create the referenced judge rubric file if

@@ -2,9 +2,10 @@
 #
 # Builds the two test entry points consumed by the flake:
 #
-#   loomTests — `loom gate verify` driven by `craneLib.mkCargoDerivation`
-#               with LOOM_VERIFY_TIERS=check,test so the deterministic
-#               tiers run inside the Nix build sandbox. The `[system]`
+#   loomTests — deterministic `loom gate` tiers driven by
+#               `craneLib.mkCargoDerivation`. It runs explicit
+#               `loom gate check --tree` and `loom gate test --tree`
+#               commands inside the Nix build sandbox. The `[system]`
 #               tier is excluded because its verifiers shell out to
 #               `nix run` / `podman`, neither of which is available
 #               inside the Nix build sandbox.
@@ -53,13 +54,14 @@ let
       export GIT_CONFIG_SYSTEM=/dev/null
       export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
     '';
-    # `--tree` (every verifier, no file filter) is the explicit scope for a
+    # `--tree` is the explicit scope for each deterministic tier in a
     # git-less build sandbox: the source artifact has no `.git`, so a
-    # `--diff`-based scope can't resolve and `loom gate` now fails loudly
-    # rather than silently degrading. `--tree` matches the prior whole-tree
-    # behavior exactly (an empty file filter ran every verifier).
+    # `--diff`-based scope can't resolve and `loom gate` fails loudly
+    # rather than silently degrading. Running `check` and `test` separately
+    # excludes `[system]` without an environment override.
     checkPhaseCargoCommand = ''
-      LOOM_VERIFY_TIERS=check,test loom gate verify --tree
+      loom gate check --tree
+      loom gate test --tree
     '';
   };
 
