@@ -18,7 +18,7 @@ sessions.
 | Spec | Code | Epic | Purpose |
 |------|------|------|---------|
 | [agent.md](../specs/agent.md) | [`crates/loom-agent/`](../crates/loom-agent/) | `lm-4y0q` | Agent backend abstraction: pi-mono RPC, Claude Code stream-json, Direct (`loom-llm` + sandbox-aware tools via `loom-direct-runner`) |
-| [events.md](../specs/events.md) | [`crates/loom-events/`](../crates/loom-events/) and [`crates/loom-render/`](../crates/loom-render/) | — | Typed event stream, Pi-inspired live/replay rendering, persisted JSONL event logs, and diagnostic tracing boundary |
+| [events.md](../specs/events.md) | [`crates/loom-events/`](../crates/loom-events/) and [`crates/loom-render/`](../crates/loom-render/) | — | Typed event stream, command-wide live/replay rendering, LLM-visible transcript surface, persisted JSONL event logs, and diagnostic tracing boundary |
 | [gate.md](../specs/gate.md) | [`crates/loom-gate/`](../crates/loom-gate/) | `lm-fbst` | Quality gate: conformance + style + test-quality dimensions, plan/per-diff/standing stages, `loom gate verify` (deterministic) + `loom gate review` (LLM judge) |
 | [harness.md](../specs/harness.md) | [`crates/`](../crates/) | `lm-9ehh` | Platform: crate structure, workspace lints, process architecture, cache store, command set |
 | [llm.md](../specs/llm.md) | [`crates/loom-llm/`](../crates/loom-llm/) | `lm-ywph` | Public-contract LLM primitives: `LlmClient`, typed `CacheControl`, `Conversation` with built-in tool-use loop, agent-loop observers (doom-loop, duplicate-result) |
@@ -33,9 +33,11 @@ sessions.
 |------|------------|
 | **bd** | CLI for the beads issue tracker |
 | **Beads** | Persistent issue tracker used by Loom and the `bd` CLI |
-| **AgentEvent** | Canonical typed event emitted by agent backends and the Loom driver; source of truth for live rendering, persisted JSONL logs, and replay |
+| **AgentEvent** | Canonical typed event emitted by agent backends and the Loom driver; source of truth for command-wide live rendering, persisted JSONL logs, and replay |
+| **agent_input** | `AgentEvent` variant emitted by the driver before Loom sends initial prompts, follow-up, steering, or re-pin text to an LLM-backed backend |
 | **Event log** | Persisted JSONL copy of an `AgentEvent` stream under `.loom/logs/`, used by `loom logs` and external consumers |
 | **JSONL** | JSON Lines — one complete JSON object per `\n`-terminated line; protocol framing for pi-mono RPC, Claude stream-json, Direct runner streams, and Loom event logs |
+| **LLM-bearing command** | Non-interactive command path that spawns an agent backend, Direct conversation, LLM rubric, or tuning evaluator whose conversation is driven by Loom rather than an inherited interactive UI |
 | **Loom** | Rust workflow orchestrator: spec-to-implementation pipeline with pi-mono, Claude Code, and Direct (loom-llm) backends |
 | **loom:clarify** | Bead label for items awaiting human response via `loom inbox` |
 | **loom:blocked** | Bead label for semantic worker/gate dead ends that need human resolution via `loom inbox`; distinct from generic `status=blocked` and from `loom:infra` diagnostics |
@@ -45,6 +47,7 @@ sessions.
 | **pi** | Pi-mono stdio-RPC agent runtime; one backend Loom drives |
 | **Profile** | Workspace toolchain axis (`base`, `rust`, `python`, …) paired with an agent runtime to select a sandbox image |
 | **Scratchpad** | Per-session note file under `.loom/scratch/<key>/`, used for compaction recovery |
+| **SessionId** | Stable event-session routing key carried on every `AgentEvent`; bead-backed sessions also carry `bead_id` |
 | **Spec epic** | Durable per-spec Beads epic labelled `loom:spec` + `spec:<label>`; carries metadata such as `loom.todo_cursor` |
 | **Skill** | Markdown agent capability package or loose skill file, identified by frontmatter `name` and progressively disclosed to agent backends |
 | **Skill registry** | Effective per-session set of built-in, repo, configured, and override skills after profile/phase filtering and duplicate-name validation |

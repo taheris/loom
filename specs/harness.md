@@ -16,8 +16,8 @@ compile-time variable validation.
 This spec covers the platform: crate structure, Rust conventions,
 Nix integration, SQLite cache store, beads CLI wrapper, process
 architecture, recovery mechanics, and workflow command semantics. The
-typed event stream, renderer, persisted JSONL event logs, `EventSink`
-contract, and diagnostic tracing boundary live in
+typed event stream, command-wide live/replay renderer, persisted JSONL event
+logs, `EventSink` contract, and diagnostic tracing boundary live in
 [events.md](events.md). The Askama template engine, partials inventory,
 per-phase pinning policy, the typed context structs Loom exposes for
 consumer template composition, and the snapshot-test contract live in
@@ -714,11 +714,10 @@ entry, before any subcommand dispatch.
 
 ### Events and Rendering
 
-The typed event stream, live `loom loop` renderer, persisted JSONL event
-logs, `loom logs` replay surface, `EventSink` composition contract, and
-diagnostic tracing boundary are owned by [events.md](events.md). This
-spec references those surfaces only where they affect platform workflow
-semantics.
+The typed event stream, command-wide live/replay renderer, persisted JSONL
+event logs, `loom logs` replay surface, `EventSink` composition contract, and
+diagnostic tracing boundary are owned by [events.md](events.md). This spec
+references those surfaces only where they affect platform workflow semantics.
 
 ### Logs UX
 
@@ -728,10 +727,10 @@ binary's `loom logs` flags against documented command surface.
 
 | Flag | Behavior |
 |------|----------|
-| default | Render the most recent log and exit at EOF. |
+| default | Render the most recent log across bead and phase log roots and exit at EOF. |
 | `-f` / `--follow` | Continue rendering the selected log as it grows; no automatic switch to newer files. |
 | `-b` / `--bead <id>` | Select the latest log for a bead. |
-| `-v` / `--verbose` | Use verbose human rendering. |
+| `-v` / `--verbose` | Use diagnostic human rendering with event metadata. |
 | `--raw` | Emit raw JSONL bytes; composes with `--follow`. |
 | `--path` | Print the selected log path and exit. |
 
