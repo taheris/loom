@@ -82,30 +82,77 @@ impl Default for Osc8Context {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolKind {
+    Read,
+    Edit,
+    Write,
+    Grep,
+    Glob,
+    Bash,
+    WebFetch,
+    WebSearch,
+    Task,
+}
+
+pub(crate) fn tool_kind(tool: &str) -> Option<ToolKind> {
+    let normalized = tool.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+    match normalized.as_str() {
+        "read" | "read_file" => Some(ToolKind::Read),
+        "edit" => Some(ToolKind::Edit),
+        "write" => Some(ToolKind::Write),
+        "grep" => Some(ToolKind::Grep),
+        "glob" => Some(ToolKind::Glob),
+        "bash" | "shell" | "run_shell" | "run_shell_command" => Some(ToolKind::Bash),
+        "webfetch" | "web_fetch" => Some(ToolKind::WebFetch),
+        "websearch" | "web_search" => Some(ToolKind::WebSearch),
+        "task" => Some(ToolKind::Task),
+        _ => None,
+    }
+}
+
+pub(crate) fn renders_body_by_default(tool: &str) -> bool {
+    matches!(
+        tool_kind(tool),
+        Some(
+            ToolKind::Read
+                | ToolKind::Bash
+                | ToolKind::Grep
+                | ToolKind::Glob
+                | ToolKind::WebFetch
+                | ToolKind::WebSearch
+                | ToolKind::Task
+        )
+    )
+}
+
 /// Build the one-line summary cell for a tool call. `tool` is the
 /// builtin name; `params` is the call's argument JSON; `osc8` controls
 /// hyperlink wrapping for path-bearing cells. Pure function so tests
 /// can pin per-tool shape without the renderer state.
 pub fn summary_cell(tool: &str, params: &Value, osc8: &Osc8Context) -> String {
-    match tool {
-        "Read" => read_summary(params, osc8),
-        "Edit" => edit_summary(params, osc8),
-        "Write" => write_summary(params, osc8),
-        "Grep" => grep_or_glob_summary(tool, params, osc8),
-        "Glob" => grep_or_glob_summary(tool, params, osc8),
-        "Bash" => bash_summary(params),
-        "WebFetch" => webfetch_summary(params, osc8),
-        "WebSearch" => websearch_summary(params),
-        "Task" => task_summary(params),
-        other => other.to_string(),
+    match tool_kind(tool) {
+        Some(ToolKind::Read) => read_summary(params, osc8),
+        Some(ToolKind::Edit) => edit_summary(params, osc8),
+        Some(ToolKind::Write) => write_summary(params, osc8),
+        Some(ToolKind::Grep) => grep_or_glob_summary("Grep", params, osc8),
+        Some(ToolKind::Glob) => grep_or_glob_summary("Glob", params, osc8),
+        Some(ToolKind::Bash) => bash_summary(params),
+        Some(ToolKind::WebFetch) => webfetch_summary(params, osc8),
+        Some(ToolKind::WebSearch) => websearch_summary(params),
+        Some(ToolKind::Task) => task_summary(params),
+        None => tool.to_string(),
     }
 }
 
+fn string_param<'a>(params: &'a Value, keys: &[&str]) -> &'a str {
+    keys.iter()
+        .find_map(|key| params.get(key).and_then(Value::as_str))
+        .unwrap_or("")
+}
+
 fn read_summary(params: &Value, osc8: &Osc8Context) -> String {
-    let path = params
-        .get("file_path")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let path = string_param(params, &["file_path", "path"]);
     let offset = params.get("offset").and_then(Value::as_i64);
     let limit = params.get("limit").and_then(Value::as_i64);
     let range = match (offset, limit) {
@@ -121,18 +168,9 @@ fn read_summary(params: &Value, osc8: &Osc8Context) -> String {
 }
 
 fn edit_summary(params: &Value, osc8: &Osc8Context) -> String {
-    let path = params
-        .get("file_path")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let old = params
-        .get("old_string")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let new = params
-        .get("new_string")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let path = string_param(params, &["file_path", "path"]);
+    let old = string_param(params, &["old_string", "old"]);
+    let new = string_param(params, &["new_string", "new"]);
     let (add, del) = diff_counts(old, new);
     let display = normalize_for_display(&osc8.cwd, path);
     let wrapped = wrap_path(osc8, path, None, &display);
@@ -140,11 +178,8 @@ fn edit_summary(params: &Value, osc8: &Osc8Context) -> String {
 }
 
 fn write_summary(params: &Value, osc8: &Osc8Context) -> String {
-    let path = params
-        .get("file_path")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let content = params.get("content").and_then(Value::as_str).unwrap_or("");
+    let path = string_param(params, &["file_path", "path"]);
+    let content = string_param(params, &["content"]);
     let lines = content.lines().count();
     let display = normalize_for_display(&osc8.cwd, path);
     let wrapped = wrap_path(osc8, path, None, &display);
@@ -152,21 +187,21 @@ fn write_summary(params: &Value, osc8: &Osc8Context) -> String {
 }
 
 fn grep_or_glob_summary(tool: &str, params: &Value, osc8: &Osc8Context) -> String {
-    let pattern = params.get("pattern").and_then(Value::as_str).unwrap_or("");
-    let path = params.get("path").and_then(Value::as_str).unwrap_or("");
+    let pattern = string_param(params, &["pattern", "query"]);
+    let path = string_param(params, &["path", "file_path"]);
     let display = normalize_for_display(&osc8.cwd, path);
     let wrapped = wrap_path(osc8, path, None, &display);
     format!("{tool}   \"{pattern}\" in {wrapped}")
 }
 
 fn bash_summary(params: &Value) -> String {
-    let cmd = params.get("command").and_then(Value::as_str).unwrap_or("");
+    let cmd = string_param(params, &["command", "cmd"]);
     let truncated = truncate(cmd, 60);
     format!("Bash   {truncated}")
 }
 
 fn webfetch_summary(params: &Value, osc8: &Osc8Context) -> String {
-    let url = params.get("url").and_then(Value::as_str).unwrap_or("");
+    let url = string_param(params, &["url"]);
     let wrapped = if osc8.supported && !url.is_empty() {
         osc8::wrap(url, url, true)
     } else {
@@ -209,19 +244,13 @@ pub fn normalize_for_display(cwd: &Path, path: &str) -> String {
 }
 
 fn websearch_summary(params: &Value) -> String {
-    let query = params.get("query").and_then(Value::as_str).unwrap_or("");
+    let query = string_param(params, &["query"]);
     format!("WebSearch   \"{query}\"")
 }
 
 fn task_summary(params: &Value) -> String {
-    let description = params
-        .get("description")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let subagent = params
-        .get("subagent_type")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let description = string_param(params, &["description", "prompt"]);
+    let subagent = string_param(params, &["subagent_type", "agent", "agent_type"]);
     format!("Task   {description}   [agent:{subagent}]")
 }
 
@@ -384,6 +413,17 @@ mod tests {
         // 60-char cap leaves room for the leading "Bash   "
         let body_part = cell.trim_start_matches("Bash").trim();
         assert!(body_part.ends_with('…'), "{cell}");
+    }
+
+    #[test]
+    fn lowercase_tool_aliases_use_summary_cells() {
+        let read = summary_cell("read", &json!({"path": "src/lib.rs"}), &disabled());
+        assert!(read.contains("Read"), "{read}");
+        assert!(read.contains("src/lib.rs"), "{read}");
+
+        let bash = summary_cell("bash", &json!({"cmd": "cargo test"}), &disabled());
+        assert!(bash.contains("Bash"), "{bash}");
+        assert!(bash.contains("cargo test"), "{bash}");
     }
 
     #[test]

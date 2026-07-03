@@ -473,6 +473,15 @@ struct PendingToolCall {
     /// content-returning successes render bounded excerpts, and concise
     /// edit/write successes stay summary-only.
     tool: String,
+    /// Rendered one-line summary captured at `ToolCall` time. If progress
+    /// output forces the pending line to close before `ToolResult`, the final
+    /// status row repeats this summary instead of degrading to a detached
+    /// `✓ 0.0s` line.
+    summary: String,
+    /// Nesting indent paired with `summary`; stored as rendered spaces so the
+    /// result path can reproduce the same row even after pending state moved
+    /// through progress/output rendering.
+    indent: String,
     /// `envelope.ts_ms` of the originating `ToolCall`. Used to compute
     /// the pair's duration on `ToolResult` without consulting the wall
     /// clock — same code path for live and replay.
@@ -890,15 +899,17 @@ impl TerminalRenderer {
                     None => 0,
                 };
                 self.indent_by_tool.insert(id.clone(), depth);
+                let summary = tool_body::summary_cell(tool, params, &self.osc8);
+                let indent: String = "  ".repeat(depth);
                 self.pending_calls.insert(
                     id.clone(),
                     PendingToolCall {
                         tool: tool.clone(),
+                        summary: summary.clone(),
+                        indent: indent.clone(),
                         ts_ms: envelope.ts_ms,
                     },
                 );
-                let summary = tool_body::summary_cell(tool, params, &self.osc8);
-                let indent: String = "  ".repeat(depth);
                 let use_indicator = self.indicator_enabled
                     && parent_tool_call_id.is_none()
                     && !self.diagnostic_metadata_enabled();
@@ -969,7 +980,7 @@ impl TerminalRenderer {
                     self.finalize_buffered_with_glyph_dur(glyph, pair_duration)?;
                 } else {
                     self.close_in_flight("…")?;
-                    self.write_tool_status_line(id, glyph, pair_duration)?;
+                    self.write_tool_status_line(id, glyph, pair_duration, pending.as_ref())?;
                 }
                 let body = if matches!(
                     self.mode,
@@ -1137,14 +1148,23 @@ impl TerminalRenderer {
         id: &ToolCallId,
         glyph: &str,
         pair_duration: Option<Duration>,
+        pending: Option<&PendingToolCall>,
     ) -> io::Result<()> {
-        let depth = self.indent_by_tool.get(id).copied().unwrap_or(0);
-        let indent: String = "  ".repeat(depth + 1);
         let secs = pair_duration.unwrap_or(Duration::ZERO).as_secs_f64();
-        let line = if self.parallel {
-            format!("  [{}] {indent}{glyph} {secs:.1}s\n", self.bead_id.as_str())
+        let line = if let Some(pending) = pending {
+            let prefix = self.prefix_str();
+            format!(
+                "{prefix}{}{}{}{} {secs:.1}s\n",
+                pending.indent, pending.summary, SUMMARY_SEPARATOR, glyph,
+            )
         } else {
-            format!("  {indent}{glyph} {secs:.1}s\n")
+            let depth = self.indent_by_tool.get(id).copied().unwrap_or(0);
+            let indent: String = "  ".repeat(depth + 1);
+            if self.parallel {
+                format!("  [{}] {indent}{glyph} {secs:.1}s\n", self.bead_id.as_str())
+            } else {
+                format!("  {indent}{glyph} {secs:.1}s\n")
+            }
         };
         self.out.write_all(line.as_bytes())?;
         self.out.flush()
@@ -1239,12 +1259,7 @@ impl TerminalRenderer {
     }
 
     fn should_render_default_body(tool_name: &str, is_error: bool, output: &str) -> bool {
-        !output.is_empty()
-            && (is_error
-                || matches!(
-                    tool_name,
-                    "Bash" | "Read" | "Grep" | "Glob" | "WebFetch" | "WebSearch" | "Task"
-                ))
+        !output.is_empty() && (is_error || tool_body::renders_body_by_default(tool_name))
     }
 
     /// Emit the two-line summary cell for a buffered (overflow) top-level
@@ -2496,6 +2511,61 @@ mod tests {
         assert!(out.contains('✗'), "{out:?}");
         assert!(out.contains("2.0s"), "{out:?}");
         assert!(out.contains("1.0s"), "{out:?}");
+    }
+
+    #[test]
+    fn tool_progress_result_keeps_status_attached_to_summary() {
+        let out = capture(RenderMode::Default, false, true, |r| {
+            let (call, result) =
+                tool_pair_with_ts("t1", "Bash", json!({"command": "cargo test"}), 0, 2_000);
+            r.render_event(&call).expect("call");
+            r.render_event(&AgentEvent::ToolProgress {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("t1"),
+                text: "running unit tests".into(),
+            })
+            .expect("progress");
+            r.render_event(&result).expect("result");
+        });
+
+        let success_lines: Vec<&str> = out.lines().filter(|line| line.contains('✓')).collect();
+        assert!(
+            success_lines
+                .iter()
+                .any(|line| line.contains("Bash") && line.contains("cargo test")),
+            "final success row must repeat the tool summary after progress: {out:?}",
+        );
+        assert!(
+            success_lines
+                .iter()
+                .all(|line| !line.trim_start().starts_with('✓')),
+            "success must not degrade to a detached status-only row: {out:?}",
+        );
+    }
+
+    #[test]
+    fn lowercase_read_result_renders_summary_and_body() {
+        let out = capture(RenderMode::Default, false, false, |r| {
+            r.render_event(&AgentEvent::ToolCall {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("r1"),
+                tool: "read".into(),
+                params: json!({"path": "crates/wrix-sandbox/Cargo.toml"}),
+                parent_tool_call_id: None,
+            })
+            .expect("call");
+            r.render_event(&AgentEvent::ToolResult {
+                envelope: sample_envelope(),
+                id: ToolCallId::new("r1"),
+                output: "[package]\nname = \"wrix-sandbox\"".into(),
+                is_error: false,
+            })
+            .expect("result");
+        });
+
+        assert!(out.contains("Read"), "{out:?}");
+        assert!(out.contains("crates/wrix-sandbox/Cargo.toml"), "{out:?}");
+        assert!(out.contains("wrix-sandbox"), "{out:?}");
     }
 
     #[test]
