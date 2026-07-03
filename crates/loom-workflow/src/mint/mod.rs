@@ -157,14 +157,6 @@ pub enum BatchOutcome {
         existing_bead: BeadId,
         findings_count: usize,
     },
-    /// `--spec <X>` filter dropped this batch because its bonding lead
-    /// resolved to a different spec.
-    SkippedFilter {
-        fingerprint: String,
-        lead_spec: SpecLabel,
-        requested: SpecLabel,
-        findings_count: usize,
-    },
     /// Structural violation — either multiple live beads share the
     /// finding label, or the lead spec has more than one open epic.
     /// `reason` carries the conflicting ids so the operator can resolve
@@ -215,7 +207,6 @@ impl BatchOutcome {
             Self::Planned { .. } => "planned",
             Self::WouldMint { .. } => "would-mint",
             Self::SkippedDedup { .. } => "skipped-dedup",
-            Self::SkippedFilter { .. } => "skipped-filter",
             Self::Refused { .. } => "refused",
             Self::PromotedDeferred { .. } => "promoted-deferred",
             Self::WouldPromoteDeferred { .. } => "would-promote-deferred",
@@ -269,20 +260,16 @@ impl FindingStatusRecord {
     }
 }
 
-/// Options that gate writes and filter scope on a [`mint_findings`] run.
+/// Options that gate writes on a [`mint_findings`] run.
 ///
-/// Defaults match the production `loom gate mint` invocation with no
-/// flags: write to bd, no spec filter.
+/// Defaults write to bd, apply no suppressions, and skip stale reporting;
+/// production callers fill config-derived suppressions and tree-sweep flags.
 #[derive(Debug, Clone, Default)]
 pub struct MintOptions {
     /// When `true`, the pipeline runs every read-side query (dedup,
     /// lead resolution) but skips `bd create`. The resulting outcome is
     /// [`BatchOutcome::WouldMint`] instead of [`BatchOutcome::Minted`].
     pub dry_run: bool,
-    /// When `Some(label)`, batches whose bonding lead resolves to a
-    /// different spec are reported as [`BatchOutcome::SkippedFilter`]
-    /// and no fix-up is minted. `None` admits every batch.
-    pub spec_filter: Option<SpecLabel>,
     /// Top-level `[[suppress]]` entries from `loom.toml`. Matching
     /// rubric-origin findings are reported and removed before dedup.
     pub suppressions: Vec<SuppressionConfig>,
@@ -299,9 +286,8 @@ pub struct MintOptions {
 /// Tallies match `specs/gate.md` § *Per-batch processing* end-of-run
 /// shape: `minted M batches (F findings across S specs), skipped K
 /// (dedup), suppressed S, ineffective suppressions I, refused R, errors E`.
-/// The `--dry-run` and `--spec` filter
-/// pseudo-outcomes carry their own tallies so summaries from those
-/// modes remain self-describing.
+/// The `--dry-run` pseudo-outcome carries its own tally so summaries from
+/// that mode remain self-describing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MintSummary {
     pub batches: Vec<BatchOutcome>,
@@ -313,7 +299,6 @@ pub struct MintSummary {
     pub promoted_deferred: usize,
     pub would_promote_deferred: usize,
     pub skipped: usize,
-    pub skipped_filter: usize,
     pub suppressed: usize,
     pub ineffective_suppressions: usize,
     pub stale_candidates: usize,
@@ -359,7 +344,6 @@ impl MintSummary {
             BatchOutcome::PromotedDeferred { .. } => self.promoted_deferred += 1,
             BatchOutcome::WouldPromoteDeferred { .. } => self.would_promote_deferred += 1,
             BatchOutcome::SkippedDedup { .. } => self.skipped += 1,
-            BatchOutcome::SkippedFilter { .. } => self.skipped_filter += 1,
             BatchOutcome::Refused { .. } => self.refused += 1,
             BatchOutcome::Errored { .. } => self.errors += 1,
             BatchOutcome::StaleCandidate { .. } => self.stale_candidates += 1,
@@ -391,12 +375,6 @@ impl MintSummary {
         }
         if self.would_mint > 0 {
             out.push_str(&format!(", would-mint {} (dry-run)", self.would_mint));
-        }
-        if self.skipped_filter > 0 {
-            out.push_str(&format!(
-                ", skipped {} (--spec filter)",
-                self.skipped_filter
-            ));
         }
         if self.would_promote_deferred > 0 {
             out.push_str(&format!(
@@ -468,16 +446,6 @@ impl MintSummary {
                         "  skipped {fingerprint} (existing {existing_bead}, {findings_count} findings)\n",
                     ));
                 }
-                BatchOutcome::SkippedFilter {
-                    fingerprint,
-                    lead_spec,
-                    requested,
-                    findings_count,
-                } => {
-                    out.push_str(&format!(
-                        "  skipped {fingerprint} (lead spec:{lead_spec} ≠ requested spec:{requested}, {findings_count} findings)\n",
-                    ));
-                }
                 BatchOutcome::Refused {
                     fingerprint,
                     reason,
@@ -542,7 +510,7 @@ impl MintSummary {
 }
 
 /// Walk a sequence of findings through the mint pipeline with default
-/// options (write to bd, no spec filter). Convenience wrapper over
+/// options (write to bd, no suppressions). Convenience wrapper over
 /// [`mint_findings_with_options`].
 pub async fn mint_findings<R: CommandRunner>(
     bd: &BdClient<R>,
@@ -901,8 +869,7 @@ pub async fn plan_tree_mint_with_options<R: CommandRunner>(
 
     if survivors.is_empty() {
         if opts.report_stale {
-            report_stale_candidates(bd, &mut summary, &current_hashes, opts.spec_filter.as_ref())
-                .await;
+            report_stale_candidates(bd, &mut summary, &current_hashes).await;
         }
         return (TreeMintPlan::default(), summary);
     }
@@ -910,16 +877,14 @@ pub async fn plan_tree_mint_with_options<R: CommandRunner>(
     if let Err(outcome) = ensure_tree_spec_metadata(bd, &survivors, opts.dry_run).await {
         summary.record(outcome);
         if opts.report_stale {
-            report_stale_candidates(bd, &mut summary, &current_hashes, opts.spec_filter.as_ref())
-                .await;
+            report_stale_candidates(bd, &mut summary, &current_hashes).await;
         }
         return (TreeMintPlan::default(), summary);
     }
 
-    let filtered = apply_tree_spec_filter(&mut summary, survivors, opts.spec_filter.as_ref());
-    let batches = tree_plan_batches(filtered);
+    let batches = tree_plan_batches(survivors);
     if opts.report_stale {
-        report_stale_candidates(bd, &mut summary, &current_hashes, opts.spec_filter.as_ref()).await;
+        report_stale_candidates(bd, &mut summary, &current_hashes).await;
     }
     (TreeMintPlan { batches }, summary)
 }
@@ -959,40 +924,6 @@ async fn ensure_tree_spec_metadata<R: CommandRunner>(
         }
     }
     Ok(())
-}
-
-fn apply_tree_spec_filter(
-    summary: &mut MintSummary,
-    findings: Vec<Finding>,
-    spec_filter: Option<&SpecLabel>,
-) -> Vec<Finding> {
-    let mut filtered = Vec::new();
-    for finding in findings {
-        let Some(lead_spec) = finding.bonds.first().cloned() else {
-            let fingerprint = batch_fingerprint(std::slice::from_ref(&finding));
-            summary.record_status(&finding, FindingStatusAction::Refused);
-            summary.record(BatchOutcome::Errored {
-                fingerprint,
-                message: mint_error_message(&MintError::EmptyBonds),
-            });
-            continue;
-        };
-        if let Some(requested) = spec_filter
-            && &lead_spec != requested
-        {
-            let fingerprint = batch_fingerprint(std::slice::from_ref(&finding));
-            summary.record_status(&finding, FindingStatusAction::Reported);
-            summary.record(BatchOutcome::SkippedFilter {
-                fingerprint,
-                lead_spec,
-                requested: requested.clone(),
-                findings_count: 1,
-            });
-            continue;
-        }
-        filtered.push(finding);
-    }
-    filtered
 }
 
 fn tree_plan_batches(findings: Vec<Finding>) -> Vec<TreeMintBatch> {
@@ -1250,19 +1181,6 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
                 continue;
             }
         };
-        if let Some(requested) = &opts.spec_filter
-            && &lead_spec != requested
-        {
-            let fingerprint = batch_fingerprint(std::slice::from_ref(finding));
-            summary.record_status(finding, FindingStatusAction::Reported);
-            summary.record(BatchOutcome::SkippedFilter {
-                fingerprint,
-                lead_spec,
-                requested: requested.clone(),
-                findings_count: 1,
-            });
-            continue;
-        }
         if opts.suppress_closed_same_molecule
             && let Some(epic) = lead_epic.as_ref()
         {
@@ -1335,7 +1253,7 @@ pub async fn mint_findings_with_options<R: CommandRunner>(
     }
     summary.specs_across_minted = minted_specs.len();
     if opts.report_stale {
-        report_stale_candidates(bd, &mut summary, &current_hashes, opts.spec_filter.as_ref()).await;
+        report_stale_candidates(bd, &mut summary, &current_hashes).await;
     }
     summary
 }
@@ -1360,23 +1278,19 @@ async fn report_stale_candidates<R: CommandRunner>(
     bd: &BdClient<R>,
     summary: &mut MintSummary,
     current_hashes: &HashSet<String>,
-    spec_filter: Option<&SpecLabel>,
 ) {
     let beads = match bd
         .list(ListOpts {
             status: Some(DEDUP_STATUSES.to_string()),
-            label: spec_filter.map(|spec| format!("spec:{spec}")),
             ..ListOpts::default()
         })
         .await
     {
         Ok(beads) => beads,
         Err(err) => {
-            let fingerprint =
-                spec_filter.map_or_else(|| "stale:tree".to_owned(), |spec| format!("stale:{spec}"));
             let err = MintError::from(err);
             summary.record(BatchOutcome::Errored {
-                fingerprint,
+                fingerprint: "stale:tree".to_owned(),
                 message: mint_error_message(&err),
             });
             return;
@@ -1431,9 +1345,9 @@ fn track_minted(
 fn record_batch_status(summary: &mut MintSummary, findings: &[Finding], outcome: &BatchOutcome) {
     let action = match outcome {
         BatchOutcome::Minted { .. } => FindingStatusAction::Minted,
-        BatchOutcome::Planned { .. }
-        | BatchOutcome::WouldMint { .. }
-        | BatchOutcome::SkippedFilter { .. } => FindingStatusAction::Reported,
+        BatchOutcome::Planned { .. } | BatchOutcome::WouldMint { .. } => {
+            FindingStatusAction::Reported
+        }
         BatchOutcome::Refused { .. } | BatchOutcome::Errored { .. } => FindingStatusAction::Refused,
         BatchOutcome::SkippedDedup { .. } => FindingStatusAction::SkippedLive,
         BatchOutcome::SkippedClosed { .. }
@@ -2389,7 +2303,6 @@ mod tests {
         let bd = BdClient::with_runner(runner);
         let opts = MintOptions {
             dry_run: false,
-            spec_filter: None,
             suppressions: Vec::new(),
             suppress_closed_same_molecule: true,
             report_stale: false,
@@ -2534,7 +2447,6 @@ reason = "false positive"
         let bd = BdClient::with_runner(runner);
         let opts = MintOptions {
             dry_run: false,
-            spec_filter: None,
             suppressions: config.suppress,
             suppress_closed_same_molecule: false,
             report_stale: false,
@@ -2566,7 +2478,6 @@ reason = "false positive"
         let bd = BdClient::with_runner(runner);
         let opts = MintOptions {
             dry_run: false,
-            spec_filter: None,
             suppressions: vec![SuppressionConfig {
                 id: Some(finding.id()),
                 hash: None,
@@ -2617,7 +2528,6 @@ reason = "false positive"
         let bd = BdClient::with_runner(runner);
         let opts = MintOptions {
             dry_run: false,
-            spec_filter: Some(spec("gate")),
             suppressions: Vec::new(),
             suppress_closed_same_molecule: false,
             report_stale: true,
@@ -2628,13 +2538,18 @@ reason = "false positive"
         assert!(summary.render().contains("stale-candidate lm-stale.1"));
         let calls = rendered_calls(&invocations);
         assert!(
-            calls
+            calls.iter().any(|call| call
                 .iter()
-                .any(|call| call.iter().any(|arg| arg == "--label=spec:gate")
-                    && call
-                        .iter()
-                        .any(|arg| arg == &format!("--status={DEDUP_STATUSES}"))),
-            "stale reporting must list live remediation beads for the spec: {calls:?}",
+                .any(|arg| arg == &format!("--status={DEDUP_STATUSES}"))),
+            "stale reporting must list live remediation beads tree-wide: {calls:?}",
+        );
+        assert!(
+            calls.iter().any(|call| {
+                call.iter()
+                    .any(|arg| arg == &format!("--status={DEDUP_STATUSES}"))
+                    && !call.iter().any(|arg| arg.starts_with("--label=spec:"))
+            }),
+            "tree stale-reporting list must not narrow by spec label: {calls:?}",
         );
         assert!(
             calls
@@ -2671,7 +2586,6 @@ reason = "false positive"
         let bd = BdClient::with_runner(runner);
         let opts = MintOptions {
             dry_run: false,
-            spec_filter: Some(spec("gate")),
             suppressions: Vec::new(),
             suppress_closed_same_molecule: false,
             report_stale: true,
@@ -2711,7 +2625,6 @@ reason = "false positive"
         let bd = BdClient::with_runner(runner);
         let opts = MintOptions {
             dry_run: false,
-            spec_filter: None,
             suppressions: Vec::new(),
             suppress_closed_same_molecule: false,
             report_stale: true,
@@ -2741,7 +2654,6 @@ reason = "false positive"
         let bd = BdClient::with_runner(runner);
         let opts = MintOptions {
             dry_run: false,
-            spec_filter: None,
             suppressions: Vec::new(),
             suppress_closed_same_molecule: false,
             report_stale: false,
@@ -3819,7 +3731,6 @@ reason = "false positive"
         let bd = BdClient::with_runner(runner);
         let opts = MintOptions {
             dry_run: true,
-            spec_filter: None,
             suppressions: Vec::new(),
             suppress_closed_same_molecule: false,
             report_stale: false,
@@ -3847,61 +3758,5 @@ reason = "false positive"
                 "dry-run MUST only invoke read-side bd list calls: {call:?}",
             );
         }
-    }
-
-    /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
-    /// `mint_spec_filter_drops_findings_routing_to_other_specs`):
-    /// `--spec <X>` filters findings to those whose bonding lead
-    /// resolves to `<X>`. Findings routing elsewhere are reported as
-    /// `SkippedFilter` and no `bd create` fires for them.
-    #[tokio::test]
-    async fn mint_spec_filter_drops_findings_routing_to_other_specs() {
-        let f_kept = coherence_finding(vec![spec("gate")], "verifier-honesty", "evidence-a");
-        let f_dropped = contract_finding(vec![spec("harness")], "molecule-lifecycle", "evidence-b");
-        let runner = ScriptedRunner::new(vec![
-            ok_stdout("[]"),
-            ok_stdout(&epic_list("lm-gateepic", "gate")),
-            ok_stdout("[]"),
-            ok_stdout(&epic_list("lm-harn", "harness")),
-            ok_stdout("lm-fix.1\n"),
-        ]);
-        let invocations = runner.invocations_handle();
-        let bd = BdClient::with_runner(runner);
-        let opts = MintOptions {
-            dry_run: false,
-            spec_filter: Some(spec("gate")),
-            suppressions: Vec::new(),
-            suppress_closed_same_molecule: false,
-            report_stale: false,
-        };
-        let summary =
-            mint_findings_with_options(&bd, &[f_kept, f_dropped], "head-sha", &opts).await;
-        assert_eq!(summary.minted, 1, "kept finding mints");
-        assert_eq!(
-            summary.skipped_filter, 1,
-            "dropped finding reported as skipped-filter",
-        );
-        let dropped_outcome = summary
-            .batches
-            .iter()
-            .find(|o| matches!(o, BatchOutcome::SkippedFilter { .. }))
-            .expect("one SkippedFilter outcome recorded");
-        match dropped_outcome {
-            BatchOutcome::SkippedFilter {
-                lead_spec,
-                requested,
-                ..
-            } => {
-                assert_eq!(lead_spec.as_str(), "harness");
-                assert_eq!(requested.as_str(), "gate");
-            }
-            other => panic!("expected SkippedFilter, got {other:?}"),
-        }
-        let calls = rendered_calls(&invocations);
-        let create_calls = calls
-            .iter()
-            .filter(|c| c.iter().any(|a| a == "create"))
-            .count();
-        assert_eq!(create_calls, 1, "exactly one bd create — the kept finding");
     }
 }

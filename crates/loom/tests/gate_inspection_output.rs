@@ -212,7 +212,7 @@ fn audit_tree_scope_makes_no_bd_writes() {
 }
 
 #[test]
-fn mint_tree_without_spec_filter_walks_every_workspace_spec() {
+fn mint_tree_walks_every_workspace_spec() {
     let dir = tempfile::tempdir().expect("tempdir");
     let workspace = dir.path();
     let (output, log) = run_gate_command_with_agent(

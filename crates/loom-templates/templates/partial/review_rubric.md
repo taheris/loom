@@ -194,13 +194,15 @@ contradicts in `evidence`. Terminate the walk with `LOOM_CONCERN`
 carrying a one-sentence summary per the wire-format contract in
 *Findings — Streaming Wire Format*.
 
-## Spec-Conventions Walk (for spec edits)
+## Spec-Conventions Walk (`--tree` scope, and spec edits)
 
-When the diff edits spec markdown under `specs/` (not just code), the
-touched spec sections **must** comply with `docs/spec-conventions.md`.
-Walk the convention's *In scope* / *Out of scope* / *Section structure*
-/ *Trust tiers* / *Single source of truth* / *Length guidance* sections
-against each edited spec section:
+When this review runs at `--tree` scope, walk every spec under `specs/`
+against `docs/spec-conventions.md`; the standing safety net must catch
+spec-convention drift even when no diff edited the spec. At `--diff` /
+`--bead` scope, run this walk only when the diff edits spec markdown and
+limit it to the touched spec sections. In both cases, walk the
+convention's *In scope* / *Out of scope* / *Section structure* /
+*Trust tiers* / *Single source of truth* / *Length guidance* sections:
 
 - Status checkboxes (`[ ]` / `[x]`) inside Success Criteria → flag.
 - `## Affected Files` listing an in-flight change → flag (the
@@ -214,7 +216,8 @@ against each edited spec section:
   judgement (mock discipline, scope, prose style rule) — tier-skip → flag.
 - A criterion bullet with no annotation, or whose annotation points at
   a missing or stubbed verifier → already a `loom gate verify` flag;
-  surface it here too if the edit introduces it.
+  surface it here too when introduced by the diff or visible in the
+  tree-scope sweep.
 
 For each violation, emit a finding line with
 `token = "spec-conventions-violation"`, a `Criterion` target naming the

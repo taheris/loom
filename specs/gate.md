@@ -2907,7 +2907,7 @@ and conservative fall-through for unowned queries.
   [test](mint_dry_run_makes_no_bd_writes)
 - `mint` rejects `--spec`; lead-spec routing comes only from each
   finding's typed `bonds` and target after multi-spec lead selection
-  [test?](mint_rejects_spec_filter)
+  [test](mint_rejects_spec_filter)
 - Bare `loom gate mint` prints subcommand help and runs nothing; callers
   choose `--tree` or `-m/--molecule` explicitly
   [test?](mint_bare_invocation_prints_help_and_runs_nothing)

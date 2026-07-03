@@ -2107,7 +2107,6 @@ fn run_gate_mint(
             let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
             let opts = loom_workflow::mint::MintOptions {
                 dry_run: args.dry_run,
-                spec_filter: None,
                 suppressions: config.suppress.clone(),
                 suppress_closed_same_molecule: true,
                 report_stale: true,
@@ -4077,7 +4076,6 @@ fn mint_summary_counts(summary: &loom_workflow::mint::MintSummary) -> serde_json
         "promoted_deferred": summary.promoted_deferred,
         "would_promote_deferred": summary.would_promote_deferred,
         "skipped": summary.skipped,
-        "skipped_filter": summary.skipped_filter,
         "suppressed": summary.suppressed,
         "ineffective_suppressions": summary.ineffective_suppressions,
         "stale_candidates": summary.stale_candidates,
@@ -4136,19 +4134,6 @@ fn mint_batch_payload(outcome: &BatchOutcome) -> serde_json::Value {
             "action": outcome.kind(),
             "fingerprint": fingerprint,
             "existing_bead": existing_bead,
-            "findings_count": findings_count,
-        }),
-        BatchOutcome::SkippedFilter {
-            fingerprint,
-            lead_spec,
-            requested,
-            findings_count,
-        } => serde_json::json!({
-            "stage": "mint",
-            "action": outcome.kind(),
-            "fingerprint": fingerprint,
-            "lead_spec": lead_spec,
-            "requested_spec": requested,
             "findings_count": findings_count,
         }),
         BatchOutcome::Refused {
@@ -4224,11 +4209,6 @@ fn mint_batch_summary(outcome: &BatchOutcome) -> String {
             existing_bead,
             ..
         } => format!("minting decision skipped {fingerprint}; live {existing_bead}"),
-        BatchOutcome::SkippedFilter {
-            fingerprint,
-            requested,
-            ..
-        } => format!("minting decision skipped {fingerprint}; outside spec:{requested}"),
         BatchOutcome::Refused { fingerprint, .. } => {
             format!("minting decision refused {fingerprint}")
         }
@@ -4506,10 +4486,13 @@ fn run_review(
     opts: ReviewOpts,
 ) -> anyhow::Result<()> {
     let manifest = Arc::new(ProfileImageManifest::from_env()?);
-    let label = resolve_spec_label(workspace, spec)?;
+    let label = resolve_review_label(workspace, spec, opts.tree)?;
     let runtime = tokio::runtime::Runtime::new()?;
-    let work_root_guard =
-        acquire_review_work_root_lock(workspace, &label, opts.bead.as_deref(), &runtime)?;
+    let work_root_guard = if opts.tree {
+        None
+    } else {
+        acquire_review_work_root_lock(workspace, &label, opts.bead.as_deref(), &runtime)?
+    };
 
     let config = LoomConfig::load(LoomConfig::resolve_path(workspace))?;
     let selection = resolved_agent_for(&config, agent_override, Phase::Review)?;
@@ -5239,7 +5222,11 @@ fn primary_spec_label_from_work_root(root: &Bead) -> anyhow::Result<SpecLabel> {
         .ok_or_else(|| anyhow::anyhow!("work root {} has no spec:<label> label", root.id))
 }
 
-fn resolve_spec_label(workspace: &Path, spec: Option<String>) -> anyhow::Result<SpecLabel> {
+fn resolve_review_label(
+    workspace: &Path,
+    spec: Option<String>,
+    tree: bool,
+) -> anyhow::Result<SpecLabel> {
     if let Some(s) = spec {
         return Ok(SpecLabel::new(s));
     }
@@ -5250,7 +5237,17 @@ fn resolve_spec_label(workspace: &Path, spec: Option<String>) -> anyhow::Result<
             anyhow::bail!("{REVIEW_SPEC_LABEL_ENV} must be valid UTF-8, got {:?}", raw,);
         }
     }
+    if tree {
+        return resolve_tree_review_label(workspace);
+    }
     resolve_spec_label_from_tree(workspace)
+}
+
+fn resolve_tree_review_label(workspace: &Path) -> anyhow::Result<SpecLabel> {
+    resolve_tree_mint_labels(workspace, None)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no spec files found under specs/"))
 }
 
 fn resolve_spec_label_from_tree(workspace: &Path) -> anyhow::Result<SpecLabel> {
@@ -5673,7 +5670,7 @@ mod tests {
     /// bare `mint --tree` walks the full spec tree rather than resolving
     /// a single active spec label.
     #[test]
-    fn mint_tree_without_spec_filter_resolves_every_workspace_spec() {
+    fn mint_tree_resolves_every_workspace_spec() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let specs_dir = tmp.path().join("specs");
         std::fs::create_dir_all(&specs_dir).expect("mkdir specs");
@@ -5686,6 +5683,27 @@ mod tests {
             labels,
             vec![SpecLabel::new("gate"), SpecLabel::new("harness")],
             "tree-scope mint must enumerate every markdown spec in lexical order",
+        );
+    }
+
+    /// Spec contract `specs/gate.md` § *Commands*: `review --tree` and
+    /// `audit --tree` are full-tree inspection commands, so a workspace with
+    /// multiple specs must still resolve a prompt/log anchor instead of
+    /// erroring as an ambiguous single-spec review.
+    #[test]
+    fn review_tree_resolves_anchor_when_workspace_has_multiple_specs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let specs_dir = tmp.path().join("specs");
+        std::fs::create_dir_all(&specs_dir).expect("mkdir specs");
+        std::fs::write(specs_dir.join("harness.md"), "# Harness\n").expect("write harness");
+        std::fs::write(specs_dir.join("gate.md"), "# Gate\n").expect("write gate");
+
+        let label = resolve_tree_review_label(tmp.path()).expect("resolve tree review anchor");
+
+        assert_eq!(label, SpecLabel::new("gate"));
+        assert!(
+            resolve_spec_label_from_tree(tmp.path()).is_err(),
+            "finite review still rejects an ambiguous workspace without explicit context",
         );
     }
 
@@ -5706,7 +5724,6 @@ mod tests {
             promoted_deferred,
             would_promote_deferred: 0,
             skipped,
-            skipped_filter: 0,
             suppressed: 0,
             ineffective_suppressions: 0,
             stale_candidates: 0,
@@ -5754,7 +5771,6 @@ mod tests {
             promoted_deferred: 0,
             would_promote_deferred: 0,
             skipped: 0,
-            skipped_filter: 0,
             suppressed: 0,
             ineffective_suppressions: 0,
             stale_candidates: 0,
@@ -6147,9 +6163,19 @@ mod tests {
     }
 
     #[test]
+    fn mint_rejects_spec_filter() {
+        let parsed = Cli::try_parse_from(["loom", "gate", "mint", "--tree", "--spec", "gate"]);
+
+        assert!(
+            parsed.is_err(),
+            "mint has no --spec filter; finding bonds select lead specs",
+        );
+    }
+
+    #[test]
     fn mint_bare_invocation_requires_explicit_scope() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        for rejected in ["-b", "--diff", "--files", "--spec", "--target"] {
+        for rejected in ["-b", "--diff", "--files", "--target"] {
             let parsed = Cli::try_parse_from(["loom", "gate", "mint", rejected, "value"]);
             assert!(
                 parsed.is_err(),

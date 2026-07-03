@@ -911,19 +911,61 @@ mod tests {
 
     /// Spec contract `specs/gate.md` § *Findings and Minting* (criterion
     /// `mint_walk_emits_loom_finding_json_lines_streamed_per_finding`):
-    /// the walk's stdout emits `LOOM_FINDING: <json>`
-    /// lines one-per-finding as findings are identified (not batched at
-    /// end-of-walk). The parser side is unit-tested in
+    /// the production mint rubric prompt tells the reviewer to emit each
+    /// `LOOM_FINDING: <json>` record as soon as the finding is identified,
+    /// and the walk consumes those one-record lines without collapsing them
+    /// into an end-of-walk batch. The parser side is unit-tested in
     /// [`crate::review::finding::tests`]; this is the integration side
-    /// that drives a real walk through the orchestration and asserts the
-    /// stream-shape semantics — every line in the stdout buffer becomes
-    /// one typed Finding, in stdout order.
+    /// that drives the production prompt seam plus the orchestration parser.
     #[tokio::test]
     async fn mint_walk_emits_loom_finding_json_lines_streamed_per_finding() {
-        // Three findings interleaved with prose so the test pins
-        // "one line per finding, stdout-order" rather than "batched at
-        // end-of-walk". A batched emit would either lose interleaved
-        // ordering or collapse adjacent payloads.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = dir.path();
+        std::fs::create_dir_all(workspace.join("specs")).expect("specs dir");
+        std::fs::write(
+            workspace.join("specs/gate.md"),
+            "# Gate\n\n## Success Criteria\n\n- Review stream [test](mint_walk_emits_loom_finding_json_lines_streamed_per_finding)\n",
+        )
+        .expect("spec");
+        let manifest_path = workspace.join("profile-images.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{"base":{"pi":{"ref":"localhost/base-pi:test","source":"/nix/store/base-pi-image", "source_kind": "nix-descriptor"},"claude":{"ref":"localhost/base-claude:test","source":"/nix/store/base-claude-image", "source_kind": "nix-descriptor"},"direct":{"ref":"localhost/base-direct:test","source":"/nix/store/base-direct-image", "source_kind": "nix-descriptor"}}}"#,
+        )
+        .expect("manifest");
+        let manifest = Arc::new(
+            ProfileImageManifest::from_path(&manifest_path).expect("profile manifest parses"),
+        );
+        let state = Arc::new(CacheDb::open(workspace.join(".loom/cache.db")).expect("cache db"));
+        let bd = BdClient::with_runner(ScriptedRunner::new(vec![ok_stdout("[]"), ok_stdout("[]")]));
+        let walker = ProductionMintWalker::new(
+            bd,
+            spec("gate"),
+            workspace.to_path_buf(),
+            state,
+            manifest,
+            ProfileName::new("base"),
+            |_cfg: SpawnConfig| async move {
+                Ok((
+                    SessionOutcome {
+                        exit_code: 0,
+                        cost_usd: None,
+                    },
+                    Some(ExitSignal::Complete),
+                    String::new(),
+                ))
+            },
+        );
+        let prompt = walker
+            .build_rubric_prompt()
+            .await
+            .expect("rubric prompt renders");
+        assert!(
+            prompt.contains("streamed as findings are identified")
+                && prompt.contains("not batched at end-of-walk"),
+            "production mint prompt must instruct streamed per-finding emission: {prompt}",
+        );
+
         let rubric = format!(
             "preamble before any findings\n\
              {a}\n\
