@@ -546,10 +546,10 @@ pub trait LlmClient: Send + Sync {
 
     /// Schema-aware completion that returns the raw assistant-text JSON
     /// payload. Implementers select the right provider mechanism
-    /// (synthetic forced-tool for Anthropic, `response_format` for
-    /// OpenAI, `response_schema` for Gemini) using the supplied schema
-    /// and type name, run the call, and return the raw text the model
-    /// produced. Consumers should prefer the typed
+    /// (Anthropic `output_config.format = json_schema` when available,
+    /// OpenAI `response_format`, Gemini response schema) using the
+    /// supplied schema and type name, run the call, and return the raw
+    /// text the model produced. Consumers should prefer the typed
     /// [`LlmClientExt::complete_structured`] wrapper which generates
     /// the schema from `T` and parses the returned text.
     fn complete_structured_raw<'a>(

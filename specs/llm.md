@@ -345,9 +345,10 @@ cache markers (e.g. OpenAI today) no-op the marker without error.
 
 `LlmClientExt::complete_structured::<T>(req)` is **one generic
 consumer method** that hides the provider-specific
-structured-output mechanism. Internally `llm` picks the right path
-per provider — synthetic forced-tool for Anthropic,
-`response_format` for OpenAI, `response_schema` for Gemini — via
+structured-output mechanism. Internally `llm` passes `T`'s JSON
+schema through the provider's native structured-output surface —
+Anthropic's `output_config.format = json_schema` when available,
+OpenAI's `response_format`, and Gemini's response schema — via
 `LlmClient::complete_structured_raw`, then deserializes into `T`.
 The bound `T: DeserializeOwned + JsonSchema` means the type
 carries its own schema via `schemars`. Consumers never write
@@ -655,7 +656,7 @@ and `--no-default-features` to catch feature-gating regressions.
   [test](modelid_outer_variants_match_schema_kind_one_to_one)
 - `SchemaKind` is `#[non_exhaustive]` with one variant per `ModelId` outer variant; `ModelId::schema(&self) -> SchemaKind` returns the matching tag for every variant
   [test](modelid_schema_method_returns_matching_schema_kind)
-- `LlmClientExt::complete_structured::<T>` hides provider mechanism: same call shape works for Anthropic (synthetic forced-tool), OpenAI (`response_format`), Gemini (`response_schema`); returned `T: DeserializeOwned + JsonSchema` is deserialized regardless of provider
+- `LlmClientExt::complete_structured::<T>` hides provider mechanism: same call shape works for Anthropic native JSON schema (`output_config.format = json_schema`), OpenAI (`response_format`), and Gemini response schema; returned `T: DeserializeOwned + JsonSchema` is deserialized regardless of provider
   [test](complete_structured_returns_typed_t_across_providers)
 - `CompletionResponse` carries `usage: TokenUsage { input, output, cache_read, cache_write }` (raw token counts only — no `cost_cents`) on every successful call
   [test](completion_response_carries_token_usage_without_cost)
@@ -847,8 +848,9 @@ and `--no-default-features` to catch feature-gating regressions.
    `LlmClientExt::complete_structured::<T: DeserializeOwned + JsonSchema>(req)`
    is one generic consumer method; internally it passes `T`'s
    schema to the object-safe `LlmClient::complete_structured_raw`,
-   which picks the right underlying mechanism per provider
-   (synthetic forced-tool / `response_format` / `response_schema`).
+   which picks the right native structured-output mechanism per
+   provider (Anthropic `output_config.format = json_schema` when
+   available / OpenAI `response_format` / Gemini response schema).
    The extension method deserializes into `T`. Multimodal content
    parts remain compatible with this call shape. Schema-violation
    failures surface as `LlmError::SchemaViolation`; malformed JSON
