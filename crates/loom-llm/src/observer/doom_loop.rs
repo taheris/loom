@@ -14,7 +14,7 @@ use loom_events::identifier::ToolCallId;
 use loom_events::{AgentEvent, EventSink, SessionCommand};
 use serde_json::Value;
 
-use super::result_hasher::{CallKey, ResultHash, ResultHasher};
+use super::result_hasher::{CallKey, ResultFingerprint, ResultHash, ResultHasher};
 
 /// Per-observer configuration. Mirrors the `[agent.doom_loop]` TOML block
 /// the binary's `LoomConfig` exposes — consumers driving
@@ -212,13 +212,17 @@ impl DoomLoopObserver {
         );
     }
 
-    fn process_result(&mut self, id: &ToolCallId, output: &str) {
+    /// Observe a tool result whose canonical fingerprint was computed
+    /// by the conversation loop's shared hashing pass.
+    pub fn observe_tool_result(&mut self, id: &ToolCallId, fingerprint: ResultFingerprint) {
+        self.process_result(id, fingerprint.hash());
+    }
+
+    fn process_result(&mut self, id: &ToolCallId, hash: ResultHash) {
         let Some(call) = self.pending_calls.get(id).cloned() else {
             return;
         };
-        let result_value = parse_output(output);
         let call_key = ResultHasher::call_key(&call.tool, &call.params);
-        let hash = ResultHasher::result_hash(&result_value);
         let window_cap = self.window as usize;
 
         let window = self.windows.entry(call_key.clone()).or_default();
@@ -321,7 +325,8 @@ impl EventSink for DoomLoopObserver {
                 self.record_call(id, tool, params);
             }
             AgentEvent::ToolResult { id, output, .. } => {
-                self.process_result(id, output);
+                let fingerprint = ResultHasher::output_fingerprint(output);
+                self.observe_tool_result(id, fingerprint);
             }
             _ => {}
         }
@@ -330,10 +335,6 @@ impl EventSink for DoomLoopObserver {
     fn react(&mut self) -> Vec<SessionCommand> {
         std::mem::take(&mut self.pending_commands)
     }
-}
-
-fn parse_output(output: &str) -> Value {
-    serde_json::from_str::<Value>(output).unwrap_or_else(|_| Value::String(output.to_owned()))
 }
 
 /// Return the `ResultHash` that occurs at least `threshold` times in
@@ -468,7 +469,7 @@ mod tests {
     /// abort, and invites `LOOM_BLOCKED` escalation.
     #[test]
     fn doom_loop_stage_1_steer_names_tool_budget_and_escalation_path() {
-        let mut obs = DoomLoopObserver::new();
+        let mut obs = DoomLoopObserver::new().with_stage_2_after_stage_1(7);
         let mut seq = 0u64;
         let params = json!({"path": "/etc/hosts"});
         let same = r#"{"content":"x"}"#;
@@ -488,8 +489,8 @@ mod tests {
             "steer must invite LOOM_BLOCKED escalation: {message:?}",
         );
         assert!(
-            message.contains('3'),
-            "steer must declare the configured budget number: {message:?}",
+            message.contains("if 7 more identical calls land"),
+            "steer must declare the configured remaining budget before abort: {message:?}",
         );
         assert!(
             message.to_lowercase().contains("identical"),

@@ -34,6 +34,7 @@ url = { workspace = true, optional = true }
 [dev-dependencies]
 anyhow = { workspace = true }
 tokio = { workspace = true }
+tempfile = { workspace = true }
 tokio-test = { workspace = true }
 wiremock = { workspace = true }
 

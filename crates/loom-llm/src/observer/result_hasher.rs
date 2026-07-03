@@ -1,8 +1,8 @@
 //! Shared canonicalization + BLAKE3-16 hashing pipeline both observers
-//! consume. Per `specs/llm.md` the utility lives in exactly one
-//! place; [`super::doom_loop`] and [`super::duplicate_result`] are the
-//! only call sites and the `result_hasher_single_call_site` walk pins
-//! that invariant.
+//! consume. Per `specs/llm.md` the utility lives in exactly one place;
+//! [`crate::Conversation`] fingerprints each live tool result once and
+//! fans that value into [`super::doom_loop`] and
+//! [`super::duplicate_result`].
 
 use serde_json::Value;
 
@@ -30,10 +30,29 @@ impl ResultHash {
     }
 }
 
-/// Shared canonicalization + BLAKE3-16 utility. Stateless — both
-/// observers call the associated functions on the type directly so each
-/// `tool_result` event is canonicalised once per session, not once per
-/// observer.
+/// Hash plus canonical-payload byte length computed from one canonical
+/// byte buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResultFingerprint {
+    hash: ResultHash,
+    canonical_len: usize,
+}
+
+impl ResultFingerprint {
+    /// 16-byte BLAKE3 prefix of the canonical result payload.
+    pub fn hash(self) -> ResultHash {
+        self.hash
+    }
+
+    /// Byte length of the canonical result payload.
+    pub fn canonical_len(self) -> usize {
+        self.canonical_len
+    }
+}
+
+/// Shared canonicalization + BLAKE3-16 utility. Stateless — the live
+/// conversation loop computes a [`ResultFingerprint`] once per tool
+/// result and passes it to both built-in observers.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ResultHasher;
 
@@ -56,13 +75,29 @@ impl ResultHasher {
         CallKey(buf)
     }
 
-    /// BLAKE3-16 of the canonical JSON serialisation of `result`.
-    pub fn result_hash(result: &Value) -> ResultHash {
+    /// Hash and byte length of the canonical JSON serialisation of
+    /// `result`, computed from one canonical byte buffer.
+    pub fn result_fingerprint(result: &Value) -> ResultFingerprint {
         let bytes = canonical_bytes(result);
         let full = blake3::hash(&bytes);
         let mut prefix = [0u8; 16];
         prefix.copy_from_slice(&full.as_bytes()[..16]);
-        ResultHash(prefix)
+        ResultFingerprint {
+            hash: ResultHash(prefix),
+            canonical_len: bytes.len(),
+        }
+    }
+
+    /// Parse a tool-result output string and fingerprint the resulting
+    /// JSON value, treating non-JSON output as a JSON string payload.
+    pub fn output_fingerprint(output: &str) -> ResultFingerprint {
+        let value = parse_output(output);
+        Self::result_fingerprint(&value)
+    }
+
+    /// BLAKE3-16 of the canonical JSON serialisation of `result`.
+    pub fn result_hash(result: &Value) -> ResultHash {
+        Self::result_fingerprint(result).hash()
     }
 
     /// Byte length of the canonical JSON serialisation of `result`.
@@ -70,8 +105,12 @@ impl ResultHasher {
     /// `bytes_wasted` event payload use the exact same notion of size
     /// the hashing pipeline does.
     pub fn canonical_len(result: &Value) -> usize {
-        canonical_bytes(result).len()
+        Self::result_fingerprint(result).canonical_len()
     }
+}
+
+fn parse_output(output: &str) -> Value {
+    serde_json::from_str::<Value>(output).unwrap_or_else(|_| Value::String(output.to_owned()))
 }
 
 fn canonical_bytes(value: &Value) -> Vec<u8> {

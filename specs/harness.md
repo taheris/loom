@@ -2410,11 +2410,10 @@ the `Tool` trait, and the two agent-loop observers
 [llm.md](llm.md) is the spec.
 
 The observers are configured CLI-side via the
-`[agent.doom_loop]` and `[agent.duplicate_result]` blocks under
-*Configuration* below; their behaviour and the `observer-abort`
-recovery-cause flow into the verdict gate are owned by
-[llm.md](llm.md) and [Verdict Gate](#verdict-gate)
-respectively.
+`[agent.doom_loop]` and `[agent.duplicate_result]` blocks described in
+[llm.md § Configuration](llm.md#configuration); their behaviour and the
+`observer-abort` recovery-cause flow into the verdict gate are owned by
+[llm.md](llm.md) and [Verdict Gate](#verdict-gate) respectively.
 
 ## Configuration
 
@@ -2556,26 +2555,9 @@ post_result_grace_secs = 5
 # the trust boundary.
 # denied_tools = ["SomeNewHostTool"]
 
-[agent.doom_loop]
-# Detects same-(call, result) repetition. Enabled by default — safety
-# net for a known agent failure mode, not an experimental feature.
-# Consumer-driven `Conversation` runs can override via the builder.
-enabled = true
-# Sliding-window size for trip detection.
-window = 5
-# Identical pairs in the window required to trigger stage 1.
-threshold = 3
-# Additional identical pairs (same CallKey) after stage 1 before stage 2
-# emits Abort. Provides the structural escape hatch — the agent has a
-# chance to reconsider, escalate, or demonstrate intent.
-stage_2_after_stage_1 = 3
-
-[agent.duplicate_result]
-# Pure-observability dedup signal. Enabled by default.
-enabled = true
-# Skip result payloads smaller than this — short outputs ("ok",
-# single-line booleans) would dominate the map with noise.
-min_bytes = 256
+# Observer blocks `[agent.doom_loop]` and `[agent.duplicate_result]`
+# are part of the LoomConfig schema; their fields and defaults are owned
+# by specs/llm.md § Configuration.
 
 # Gate runners — per-tier batched dispatch with per-runner cwd. Full
 # schema (match patterns, target templates, parsers) is owned by

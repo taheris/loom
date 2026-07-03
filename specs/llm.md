@@ -687,15 +687,15 @@ and `--no-default-features` to catch feature-gating regressions.
 - `AnthropicClient` serializes supported image binary parts to native Anthropic `image` content blocks with `source: { type: "base64", media_type, data }`, not prompt text
   [test?](anthropic_multimodal_serializes_image_block)
 - `OpenAiClient` serializes PDF binary parts to OpenAI Responses `input_file` content with `filename` and `file_data` data URI, not prompt text
-  [test?](openai_multimodal_serializes_pdf_input_file)
+  [test](openai_multimodal_serializes_pdf_input_file)
 - `OpenAiClient` serializes supported image binary parts to OpenAI-native image content with a data URL, not prompt text
   [test?](openai_multimodal_serializes_image_data_url)
 - Providers that require a filename synthesize a safe generic filename from `MimeType` when `BinaryContent::name` is absent
-  [test?](provider_filename_synthesized_when_binary_name_absent)
+  [test](provider_filename_synthesized_when_binary_name_absent)
 - `OpenAiCompatClient` rejects binary parts with `LlmError::UnsupportedCapability` before network I/O while preserving text-only Chat-Completions compatibility
   [test](openai_compat_multimodal_returns_unsupported_without_network)
 - Unsupported multimodal MIME/provider combinations return typed `LlmError::UnsupportedCapability` and never panic
-  [test?](unsupported_multimodal_request_returns_typed_error_not_panic)
+  [test](unsupported_multimodal_request_returns_typed_error_not_panic)
 - Empty binary payloads return `LlmError::IncompatibleRequest` before network I/O
   [test](empty_binary_payload_returns_incompatible_request)
 - `LlmClientExt::complete_structured::<T>` accepts requests containing multimodal content parts using the same call shape as text-only structured output

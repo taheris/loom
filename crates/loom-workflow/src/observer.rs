@@ -7,16 +7,18 @@
 //! `LoomConfig`'s `[agent.doom_loop]` / `[agent.duplicate_result]`
 //! blocks (`specs/llm.md` § Agent-Loop Observers).
 //!
-//! The chain is a thin `EventSink` that fans `emit` / `react` into each
-//! enabled observer in registration order — doom-loop first, then
-//! duplicate-result — matching the `react()`-priority rule the workflow
-//! enforces (`SessionCommand::Abort` short-circuits the batch).
+//! The chain fans calls into each enabled observer in registration
+//! order — doom-loop first, then duplicate-result — and fingerprints
+//! each `ToolResult` once before fan-out, matching the `react()`-
+//! priority rule the workflow enforces (`SessionCommand::Abort`
+//! short-circuits the batch).
 
 use loom_driver::config::{
     AgentObserversConfig, DoomLoopConfig as DriverDoomLoopConfig,
     DuplicateResultConfig as DriverDuplicateResultConfig,
 };
 use loom_events::{AgentEvent, DriverKind, EventSink, SessionCommand};
+use loom_llm::observer::result_hasher::ResultHasher;
 use loom_llm::observer::{
     DoomLoopConfig as LlmDoomLoopConfig, DoomLoopObserver,
     DuplicateResultConfig as LlmDuplicateResultConfig, DuplicateResultObserver,
@@ -129,6 +131,16 @@ impl DefaultObserverChain {
 
 impl EventSink for DefaultObserverChain {
     fn emit(&mut self, event: &AgentEvent) {
+        if let AgentEvent::ToolResult { id, output, .. } = event {
+            let fingerprint = ResultHasher::output_fingerprint(output);
+            if let Some(observer) = self.doom_loop.as_mut() {
+                observer.observe_tool_result(id, fingerprint);
+            }
+            if let Some(observer) = self.duplicate_result.as_mut() {
+                observer.observe_tool_result(id, fingerprint);
+            }
+            return;
+        }
         if let Some(observer) = self.doom_loop.as_mut() {
             observer.emit(event);
         }

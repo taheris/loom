@@ -29,6 +29,7 @@ use crate::client::{CompletionResponse, LlmClient, LlmError, ToolCallId as LlmTo
 use crate::model_id::ModelId;
 #[cfg(test)]
 use crate::model_id::SchemaKind;
+use crate::observer::result_hasher::{ResultFingerprint, ResultHasher};
 use crate::observer::{
     DoomLoopConfig, DoomLoopObserver, DuplicateResultConfig, DuplicateResultObserver,
 };
@@ -246,11 +247,11 @@ impl Conversation {
 
     /// Replace the conversation's `EnvelopeBuilder`. External consumers
     /// thread their own event-session scope through this hook so the
-    /// observer `AgentEvent::ToolCall` / `AgentEvent::ToolResult` events
-    /// carry the right metadata. Without an override the conversation
-    /// uses a standalone session id with a constant `ts_ms = 0`; observers
-    /// key on `(CallKey, ResultHash)` rather than the timestamp, so the
-    /// default is observationally inert.
+    /// observer `AgentEvent::ToolCall` events carry the right metadata.
+    /// Without an override the conversation uses a standalone session id
+    /// with a constant `ts_ms = 0`; observers key on `(CallKey,
+    /// ResultHash)` rather than the timestamp, so the default is
+    /// observationally inert.
     pub fn with_envelope_builder(mut self, envelope_builder: EnvelopeBuilder) -> Self {
         self.envelope_builder = Some(envelope_builder);
         self
@@ -282,13 +283,13 @@ impl Conversation {
     /// the final `CompletionResponse` (the assistant turn that did not
     /// emit further tool calls).
     ///
-    /// Each dispatched tool call synthesises an `AgentEvent::ToolCall` /
-    /// `AgentEvent::ToolResult` pair that is fanned into the composed
-    /// `DoomLoopObserver` / `DuplicateResultObserver`. After every
-    /// non-streaming event the loop drains `react()` on each composed
-    /// observer: `SessionCommand::Steer` payloads are queued as user
-    /// messages on the next iteration; the first `SessionCommand::Abort`
-    /// short-circuits the loop and returns
+    /// Each dispatched tool call is recorded by the composed observers;
+    /// each tool result is fingerprinted once and the shared fingerprint
+    /// is fanned into `DoomLoopObserver` / `DuplicateResultObserver`.
+    /// After every non-streaming observation the loop drains `react()` on
+    /// each composed observer: `SessionCommand::Steer` payloads are
+    /// queued as user messages on the next iteration; the first
+    /// `SessionCommand::Abort` short-circuits the loop and returns
     /// [`ConversationError::ObserverAbort`].
     pub async fn run<C: LlmClient + Sync + ?Sized>(
         &mut self,
@@ -333,14 +334,15 @@ impl Conversation {
                         name: call.name.clone(),
                     })?;
                 let output = tool.invoke(call.args.clone()).await?;
+                let fingerprint = ResultHasher::result_fingerprint(&output.content);
                 let content = serde_json::to_string(&output.content)?;
                 self.history.push(Message::tool_result(
                     call.call_id.clone(),
-                    content.clone(),
+                    content,
                     output.is_error,
                 ));
 
-                self.observe_tool_result(&call.call_id, &content, output.is_error);
+                self.observe_tool_result(&call.call_id, fingerprint);
                 if let Some(reason) = self.process_observer_updates(client) {
                     return Err(ConversationError::ObserverAbort { reason });
                 }
@@ -385,21 +387,16 @@ impl Conversation {
         }
     }
 
-    fn observe_tool_result(&mut self, call_id: &LlmToolCallId, output: &str, is_error: bool) {
-        let Some(envelope) = self.next_observer_envelope() else {
+    fn observe_tool_result(&mut self, call_id: &LlmToolCallId, fingerprint: ResultFingerprint) {
+        if self.doom_loop.is_none() && self.duplicate_result.is_none() {
             return;
-        };
-        let event = AgentEvent::ToolResult {
-            envelope,
-            id: EventToolCallId::new(call_id.as_str()),
-            output: output.to_owned(),
-            is_error,
-        };
+        }
+        let event_id = EventToolCallId::new(call_id.as_str());
         if let Some(observer) = self.doom_loop.as_mut() {
-            observer.emit(&event);
+            observer.observe_tool_result(&event_id, fingerprint);
         }
         if let Some(observer) = self.duplicate_result.as_mut() {
-            observer.emit(&event);
+            observer.observe_tool_result(&event_id, fingerprint);
         }
     }
 
@@ -1147,15 +1144,90 @@ mod tests {
         assert!(conv.duplicate_result_enabled());
     }
 
-    /// Dropping the loop future before it resolves cancels any work
-    /// awaiting inside the loop — this is the standard tokio
-    /// drop-cancels-future semantics, but the conversation must not
-    /// install any guards that fight it. Pinning a future that awaits a
-    /// pending tool dispatch and dropping it after one poll proves the
-    /// invariant.
+    /// Dropping the loop future before it resolves cancels work at both
+    /// await points the loop owns: an in-flight LLM completion and an
+    /// in-flight tool invocation. Drop sentinels on the pending futures
+    /// prove the child futures are actually dropped rather than merely
+    /// left unreachable.
     #[test]
     fn conversation_loop_cancellation_aborts_in_flight_work() {
-        struct PendingTool;
+        struct PendingOnDrop<T> {
+            dropped: Arc<std::sync::atomic::AtomicBool>,
+            _output: std::marker::PhantomData<T>,
+        }
+
+        impl<T> PendingOnDrop<T> {
+            fn new(dropped: Arc<std::sync::atomic::AtomicBool>) -> Self {
+                Self {
+                    dropped,
+                    _output: std::marker::PhantomData,
+                }
+            }
+        }
+
+        impl<T> std::future::Future for PendingOnDrop<T> {
+            type Output = T;
+
+            fn poll(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Self::Output> {
+                std::task::Poll::Pending
+            }
+        }
+
+        impl<T> Drop for PendingOnDrop<T> {
+            fn drop(&mut self) {
+                self.dropped
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        struct PendingClient {
+            dropped: Arc<std::sync::atomic::AtomicBool>,
+        }
+
+        impl LlmClient for PendingClient {
+            fn schema(&self) -> SchemaKind {
+                SchemaKind::Anthropic
+            }
+
+            fn complete<'a>(
+                &'a self,
+                _req: CompletionRequest,
+            ) -> crate::client::BoxFuture<'a, Result<CompletionResponse, LlmError>> {
+                Box::pin(PendingOnDrop::new(self.dropped.clone()))
+            }
+
+            fn complete_structured_raw<'a>(
+                &'a self,
+                _req: CompletionRequest,
+                _schema: serde_json::Value,
+                _type_name: String,
+            ) -> crate::client::BoxFuture<'a, Result<String, LlmError>> {
+                Box::pin(async move {
+                    Err(LlmError::Provider {
+                        message: "structured path not exercised".into(),
+                    })
+                })
+            }
+        }
+
+        let llm_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let llm_client = PendingClient {
+            dropped: llm_dropped.clone(),
+        };
+        let mut llm_conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46));
+        llm_conv.user("hang in LLM");
+        poll_once_then_drop(llm_conv.run(&llm_client));
+        assert!(
+            llm_dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "dropping Conversation::run must drop the in-flight LLM future",
+        );
+
+        struct PendingTool {
+            dropped: Arc<std::sync::atomic::AtomicBool>,
+        }
         impl Tool for PendingTool {
             fn name(&self) -> &str {
                 "pending"
@@ -1167,23 +1239,36 @@ mod tests {
                 json!({ "type": "object" })
             }
             fn invoke<'a>(&'a self, _args: Value) -> InvokeFuture<'a> {
-                Box::pin(std::future::pending())
+                Box::pin(PendingOnDrop::new(self.dropped.clone()))
             }
         }
 
+        let tool_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (client, calls) = ScriptedClient::new(vec![with_call("pending", "call-1", json!({}))]);
+        let mut tool_conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+            .register(PendingTool {
+                dropped: tool_dropped.clone(),
+            });
+        tool_conv.user("hang in tool");
 
-        let mut conv = Conversation::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
-            .register(PendingTool);
-        conv.user("hang");
+        poll_once_then_drop(tool_conv.run(&client));
+        assert_eq!(*calls.lock().unwrap_or_else(|p| p.into_inner()), 1);
+        assert!(
+            tool_dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "dropping Conversation::run must drop the in-flight tool future",
+        );
+    }
 
-        let mut fut = Box::pin(conv.run(&client));
+    fn poll_once_then_drop<F>(future: F)
+    where
+        F: std::future::Future,
+    {
+        let mut fut = Box::pin(future);
         let waker = std::task::Waker::noop();
         let mut cx = std::task::Context::from_waker(waker);
         let poll = fut.as_mut().poll(&mut cx);
         assert!(matches!(poll, std::task::Poll::Pending));
         drop(fut);
-        assert_eq!(*calls.lock().unwrap_or_else(|p| p.into_inner()), 1);
     }
 
     /// A doom-loop scenario driven through `run` short-circuits with

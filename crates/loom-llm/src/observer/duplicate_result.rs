@@ -8,9 +8,8 @@ use std::collections::HashMap;
 
 use loom_events::identifier::ToolCallId;
 use loom_events::{AgentEvent, EventSink, SessionCommand};
-use serde_json::Value;
 
-use super::result_hasher::{ResultHash, ResultHasher};
+use super::result_hasher::{ResultFingerprint, ResultHash, ResultHasher};
 
 /// Default `min_bytes` threshold below which short results are skipped
 /// — keeps the dedup map from being dominated by trivially-short
@@ -123,6 +122,25 @@ impl DuplicateResultObserver {
     pub fn seen_len(&self) -> usize {
         self.seen.len()
     }
+
+    /// Observe a tool result whose canonical fingerprint was computed
+    /// by the conversation loop's shared hashing pass.
+    pub fn observe_tool_result(&mut self, id: &ToolCallId, fingerprint: ResultFingerprint) {
+        let bytes = fingerprint.canonical_len();
+        if (bytes as u32) < self.min_bytes {
+            return;
+        }
+        let hash = fingerprint.hash();
+        if let Some(original) = self.seen.get(&hash) {
+            self.pending.push(DuplicateDetection {
+                original_call_id: original.clone(),
+                repeated_call_id: id.clone(),
+                bytes_wasted: bytes as u64,
+            });
+        } else {
+            self.seen.insert(hash, id.clone());
+        }
+    }
 }
 
 impl Default for DuplicateResultObserver {
@@ -138,21 +156,8 @@ impl EventSink for DuplicateResultObserver {
                 self.seen.clear();
             }
             AgentEvent::ToolResult { id, output, .. } => {
-                let value = parse_output(output);
-                let bytes = ResultHasher::canonical_len(&value);
-                if (bytes as u32) < self.min_bytes {
-                    return;
-                }
-                let hash = ResultHasher::result_hash(&value);
-                if let Some(original) = self.seen.get(&hash) {
-                    self.pending.push(DuplicateDetection {
-                        original_call_id: original.clone(),
-                        repeated_call_id: id.clone(),
-                        bytes_wasted: bytes as u64,
-                    });
-                } else {
-                    self.seen.insert(hash, id.clone());
-                }
+                let fingerprint = ResultHasher::output_fingerprint(output);
+                self.observe_tool_result(id, fingerprint);
             }
             _ => {}
         }
@@ -163,16 +168,13 @@ impl EventSink for DuplicateResultObserver {
     }
 }
 
-fn parse_output(output: &str) -> Value {
-    serde_json::from_str::<Value>(output).unwrap_or_else(|_| Value::String(output.to_owned()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use loom_events::event::{EventEnvelope, Source};
     use loom_events::identifier::{BeadId, SessionId};
+    use serde_json::Value;
 
     fn envelope(seq: u64) -> EventEnvelope {
         EventEnvelope {

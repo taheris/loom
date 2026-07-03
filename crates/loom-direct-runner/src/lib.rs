@@ -211,7 +211,7 @@ where
                 )
                 .await
                 {
-                    warn!(error = %err, "prompt failed");
+                    warn!(error = ?err, "prompt failed");
                     emitter
                         .emit(&DirectEvent::Error {
                             message: err.to_string(),
@@ -229,7 +229,7 @@ where
                 break;
             }
             Err(err) => {
-                warn!(error = %err, line = %trimmed, "malformed command frame");
+                warn!(error = ?err, line = %trimmed, "malformed command frame");
                 emitter
                     .emit(&DirectEvent::Error {
                         message: format!("invalid command frame: {err}"),

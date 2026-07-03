@@ -2937,64 +2937,90 @@ fn loom_llm_no_public_genai_types_fail_when_pub_struct_pub_field_holds_genai() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn result_hasher_single_call_site_pass_when_two_observer_files_reference() {
+fn result_hasher_single_call_site_pass_when_live_path_fans_out_fingerprint() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-llm/src/hasher.rs",
-        "pub struct ResultHasher;\nimpl ResultHasher { pub fn hash(_b: &[u8]) -> [u8;16] { [0;16] } }\n",
+        "crates/loom-llm/src/observer/result_hasher.rs",
+        "pub struct ResultHasher;\npub struct ResultFingerprint;\nimpl ResultHasher { pub fn result_fingerprint(_v: &()) -> ResultFingerprint { ResultFingerprint } }\n",
     );
     seed(
         ws.path(),
         "crates/loom-llm/src/observer/doom_loop.rs",
-        "use crate::hasher::ResultHasher;\nfn x() { let _ = ResultHasher::hash(b\"x\"); }\n",
+        "use crate::observer::result_hasher::{ResultFingerprint, ResultHasher};\nfn x() { let _ = ResultHasher; }\n",
     );
     seed(
         ws.path(),
         "crates/loom-llm/src/observer/duplicate_result.rs",
-        "use crate::hasher::ResultHasher;\nfn y() { let _ = ResultHasher::hash(b\"y\"); }\n",
+        "use crate::observer::result_hasher::{ResultFingerprint, ResultHasher};\nfn y() { let _ = ResultHasher; }\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/conversation.rs",
+        "fn run() { let output = (); let fingerprint = ResultHasher::result_fingerprint(&output.content); }\nfn observe_tool_result() { doom.observe_tool_result(&event_id, fingerprint); dup.observe_tool_result(&event_id, fingerprint); }\nfn next_observer_envelope() {}\n",
     );
     let out = invoke(&["result_hasher_single_call_site"], Some(ws.path()), None);
     assert_pass(&out);
 }
 
 #[test]
-fn result_hasher_single_call_site_fail_when_a_third_caller_appears() {
+fn result_hasher_single_call_site_fail_when_a_third_observer_caller_appears() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-llm/src/hasher.rs",
+        "crates/loom-llm/src/observer/result_hasher.rs",
         "pub struct ResultHasher;\n",
     );
     seed(
         ws.path(),
         "crates/loom-llm/src/observer/doom_loop.rs",
-        "use crate::hasher::ResultHasher; fn x() { let _ = ResultHasher; }\n",
+        "use crate::observer::result_hasher::ResultHasher; fn x() { let _ = ResultHasher; }\n",
     );
     seed(
         ws.path(),
         "crates/loom-llm/src/observer/duplicate_result.rs",
-        "use crate::hasher::ResultHasher; fn y() { let _ = ResultHasher; }\n",
+        "use crate::observer::result_hasher::ResultHasher; fn y() { let _ = ResultHasher; }\n",
     );
     seed(
         ws.path(),
         "crates/loom-llm/src/extra.rs",
-        "use crate::hasher::ResultHasher; fn z() { let _ = ResultHasher; }\n",
+        "use crate::observer::result_hasher::ResultHasher; fn z() { let _ = ResultHasher; }\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/conversation.rs",
+        "fn run() { let output = (); let fingerprint = ResultHasher::result_fingerprint(&output.content); }\nfn observe_tool_result() { doom.observe_tool_result(&event_id, fingerprint); dup.observe_tool_result(&event_id, fingerprint); }\nfn next_observer_envelope() {}\n",
     );
     let out = invoke(&["result_hasher_single_call_site"], Some(ws.path()), None);
-    assert_fail(&out, "expected exactly 2");
+    assert_fail(&out, "expected exactly 2 observer files");
 }
 
 #[test]
-fn result_hasher_single_call_site_fail_when_no_callers() {
+fn result_hasher_single_call_site_fail_when_conversation_rehashes_per_observer() {
     let ws = make_workspace();
     seed(
         ws.path(),
-        "crates/loom-llm/src/hasher.rs",
+        "crates/loom-llm/src/observer/result_hasher.rs",
         "pub struct ResultHasher;\n",
     );
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/observer/doom_loop.rs",
+        "use crate::observer::result_hasher::ResultHasher; fn x() { let _ = ResultHasher; }\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/observer/duplicate_result.rs",
+        "use crate::observer::result_hasher::ResultHasher; fn y() { let _ = ResultHasher; }\n",
+    );
+    seed(
+        ws.path(),
+        "crates/loom-llm/src/conversation.rs",
+        "fn observe_tool_result() { doom.emit(&event); dup.emit(&event); }\nfn next_observer_envelope() {}\n",
+    );
     let out = invoke(&["result_hasher_single_call_site"], Some(ws.path()), None);
-    assert_fail(&out, "expected exactly 2");
+    assert_fail(&out, "expected exactly one live-path");
+    assert_fail(&out, "must not re-emit ToolResult events");
 }
 
 // ---------------------------------------------------------------------------

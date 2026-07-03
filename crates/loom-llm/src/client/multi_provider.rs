@@ -34,8 +34,8 @@ use schemars::{JsonSchema, SchemaGenerator};
 use crate::api_key::ApiKey;
 use crate::cache::{CacheControl, CacheTtl};
 use crate::client::{
-    BoxFuture, CompletionResponse, DEFAULT_RETRY_AFTER, LlmClient, LlmError, ToolCallId,
-    ToolUseRequest, parse_retry_after,
+    BoxFuture, CompletionResponse, DEFAULT_RETRY_AFTER, LlmCapability, LlmClient, LlmError,
+    ToolCallId, ToolUseRequest, parse_retry_after,
 };
 use crate::model_id::{ModelId, SchemaKind};
 use crate::request::{CompletionRequest, Message, MessageContent, Role};
@@ -43,7 +43,7 @@ use crate::tool::ToolDef;
 use crate::usage::TokenUsage;
 
 const ANTHROPIC_ADAPTER: AdapterKind = AdapterKind::Anthropic;
-const OPENAI_ADAPTER: AdapterKind = AdapterKind::OpenAI;
+const OPENAI_ADAPTER: AdapterKind = AdapterKind::OpenAIResp;
 const GEMINI_ADAPTER: AdapterKind = AdapterKind::Gemini;
 
 fn genai_client_for_schema(adapter_kind: AdapterKind, api_key: &ApiKey) -> Arc<genai::Client> {
@@ -169,7 +169,7 @@ impl LlmClient for AnthropicClient {
                 })
             });
         }
-        if let Err(err) = validate_binary_payloads(&req) {
+        if let Err(err) = validate_binary_payloads_for_schema(Self::SCHEMA, &req) {
             return Box::pin(async move { Err(err) });
         }
         Box::pin(async move {
@@ -201,7 +201,7 @@ impl LlmClient for AnthropicClient {
                 })
             });
         }
-        if let Err(err) = validate_binary_payloads(&req) {
+        if let Err(err) = validate_binary_payloads_for_schema(Self::SCHEMA, &req) {
             return Box::pin(async move { Err(err) });
         }
         Box::pin(async move {
@@ -306,7 +306,7 @@ impl LlmClient for OpenAiClient {
                 })
             });
         }
-        if let Err(err) = validate_binary_payloads(&req) {
+        if let Err(err) = validate_binary_payloads_for_schema(Self::SCHEMA, &req) {
             return Box::pin(async move { Err(err) });
         }
         Box::pin(async move {
@@ -338,7 +338,7 @@ impl LlmClient for OpenAiClient {
                 })
             });
         }
-        if let Err(err) = validate_binary_payloads(&req) {
+        if let Err(err) = validate_binary_payloads_for_schema(Self::SCHEMA, &req) {
             return Box::pin(async move { Err(err) });
         }
         Box::pin(async move {
@@ -443,7 +443,7 @@ impl LlmClient for GeminiClient {
                 })
             });
         }
-        if let Err(err) = validate_binary_payloads(&req) {
+        if let Err(err) = validate_binary_payloads_for_schema(Self::SCHEMA, &req) {
             return Box::pin(async move { Err(err) });
         }
         Box::pin(async move {
@@ -475,7 +475,7 @@ impl LlmClient for GeminiClient {
                 })
             });
         }
-        if let Err(err) = validate_binary_payloads(&req) {
+        if let Err(err) = validate_binary_payloads_for_schema(Self::SCHEMA, &req) {
             return Box::pin(async move { Err(err) });
         }
         Box::pin(async move {
@@ -855,8 +855,73 @@ fn to_genai_content_part(part: &MessageContent) -> ContentPart {
         MessageContent::Text { text, .. } => ContentPart::Text(text.clone()),
         MessageContent::Binary { binary, .. } => {
             let encoded = base64::engine::general_purpose::STANDARD.encode(binary.bytes.as_ref());
-            ContentPart::from_binary_base64(binary.mime_type.as_str(), encoded, binary.name.clone())
+            ContentPart::from_binary_base64(
+                binary.mime_type.as_str(),
+                encoded,
+                Some(
+                    binary.name.clone().unwrap_or_else(|| {
+                        synthesized_filename_for_mime(binary.mime_type.as_str())
+                    }),
+                ),
+            )
         }
+    }
+}
+
+fn synthesized_filename_for_mime(mime_type: &str) -> String {
+    match mime_type {
+        "application/pdf" => "document.pdf".to_string(),
+        "image/png" => "image.png".to_string(),
+        "image/jpeg" => "image.jpg".to_string(),
+        "image/webp" => "image.webp".to_string(),
+        other => {
+            let sanitized = other
+                .split_once('/')
+                .map_or("bin", |(_, subtype)| subtype)
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect::<String>();
+            let extension = sanitized.trim_matches('-');
+            if extension.is_empty() {
+                "attachment.bin".to_string()
+            } else {
+                format!("attachment.{extension}")
+            }
+        }
+    }
+}
+
+fn validate_binary_payloads_for_schema(
+    schema: SchemaKind,
+    req: &CompletionRequest,
+) -> Result<(), LlmError> {
+    validate_binary_payloads(req)?;
+    for message in &req.messages {
+        for part in &message.content {
+            if let MessageContent::Binary { binary, .. } = part
+                && !schema_supports_binary_mime(schema, binary.mime_type.as_str())
+            {
+                return Err(LlmError::UnsupportedCapability {
+                    provider: schema,
+                    capability: LlmCapability::MultimodalBinary {
+                        mime_type: binary.mime_type.clone(),
+                    },
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn schema_supports_binary_mime(schema: SchemaKind, mime_type: &str) -> bool {
+    match schema {
+        SchemaKind::Anthropic => matches!(
+            mime_type,
+            "application/pdf" | "image/png" | "image/jpeg" | "image/webp"
+        ),
+        SchemaKind::OpenAi | SchemaKind::Gemini => true,
+        #[cfg(feature = "openai-compat")]
+        SchemaKind::OpenAiCompat => false,
     }
 }
 
@@ -1054,23 +1119,34 @@ mod tests {
         }
     }
 
-    fn openai_completion_payload(input: u32, output: u32, text: &str) -> serde_json::Value {
+    fn openai_responses_payload(input: u32, output: u32, text: &str) -> serde_json::Value {
         serde_json::json!({
-            "id": "chatcmpl-test",
-            "object": "chat.completion",
-            "created": 0,
+            "id": "resp-test",
+            "status": "completed",
             "model": "gpt-5.5",
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": text},
-                "finish_reason": "stop"
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": text,
+                }]
             }],
             "usage": {
-                "prompt_tokens": input,
-                "completion_tokens": output,
+                "input_tokens": input,
+                "output_tokens": output,
                 "total_tokens": input + output
             }
         })
+    }
+
+    async fn single_received_json(server: &MockServer) -> serde_json::Value {
+        let requests = server
+            .received_requests()
+            .await
+            .expect("request recording enabled");
+        assert_eq!(requests.len(), 1, "expected exactly one provider request");
+        serde_json::from_slice(&requests[0].body).expect("request body is JSON")
     }
 
     /// Attaching two sinks via repeated `.with_event_sink(...)` builder
@@ -1081,9 +1157,9 @@ mod tests {
     async fn client_with_event_sink_attaches_chain_and_receives_usage_events() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .and(path("/responses"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(openai_completion_payload(10, 5, "ok")),
+                ResponseTemplate::new(200).set_body_json(openai_responses_payload(10, 5, "ok")),
             )
             .expect(1)
             .mount(&server)
@@ -1262,41 +1338,208 @@ mod tests {
         assert_eq!(options.max_tokens, Some(512));
     }
 
-    /// Lowering a cache-marked request when the request targets an
-    /// OpenAI model is a no-op error path: the marker is carried into
-    /// the lowered representation (the underlying adapter is free to
-    /// drop it), and the conversion never fails. The wrapper does not
-    /// silently strip the marker either — the per-provider decision
-    /// lives in the underlying adapter, not in this crate.
-    #[test]
-    fn cache_marker_no_ops_on_openai_provider() {
+    /// A cache-marked OpenAI request exercises the live provider
+    /// serialization path and succeeds while omitting the unsupported
+    /// per-message cache marker from the Responses API payload.
+    #[tokio::test]
+    async fn cache_marker_no_ops_on_openai_provider() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(openai_responses_payload(2, 1, "ok")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client =
+            OpenAiClient::new(test_api_key()).with_mock_endpoint(format!("{}/", server.uri()));
         let req = CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Gpt55))
             .user("hi")
             .user_cached("doc", CacheControl::Ephemeral(CacheTtl::Minutes5));
 
-        let (chat_req, _) = to_genai_chat_request(req);
-        assert_eq!(chat_req.messages.len(), 2);
-        let cache = chat_req.messages[1]
-            .options
-            .as_ref()
-            .and_then(|o| o.cache_control.as_ref())
-            .expect("cache marker is preserved through lowering");
-        assert_eq!(cache, &GenAiCacheControl::Ephemeral5m);
+        let response = client.complete(req).await.expect("OpenAI request succeeds");
+        assert_eq!(response.text, "ok");
+        let body = single_received_json(&server).await;
+        let body_text = serde_json::to_string(&body).expect("body serializes");
+        assert!(
+            !body_text.contains("cache"),
+            "OpenAI payload must no-op per-message cache markers: {body_text}",
+        );
     }
 
-    #[test]
-    fn empty_binary_payload_returns_incompatible_request() {
-        let req = CompletionRequest::new(ModelId::Gemini(GeminiModel::Gemini31Pro))
-            .user("see attached")
-            .user_binary(crate::request::MimeType::APPLICATION_PDF, Vec::<u8>::new());
+    #[tokio::test]
+    async fn empty_binary_payload_returns_incompatible_request() {
+        let anthropic_server = MockServer::start().await;
+        let anthropic = AnthropicClient::new(test_api_key())
+            .with_mock_endpoint(format!("{}/", anthropic_server.uri()));
+        assert_empty_binary_rejected(
+            &anthropic,
+            CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+                .user("see attached")
+                .user_binary(crate::request::MimeType::APPLICATION_PDF, Vec::<u8>::new()),
+        )
+        .await;
+        assert!(
+            anthropic_server
+                .received_requests()
+                .await
+                .expect("request recording enabled")
+                .is_empty(),
+            "Anthropic validation must happen before network I/O",
+        );
 
-        match validate_binary_payloads(&req) {
+        let openai_server = MockServer::start().await;
+        let openai = OpenAiClient::new(test_api_key())
+            .with_mock_endpoint(format!("{}/", openai_server.uri()));
+        assert_empty_binary_rejected(
+            &openai,
+            CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Gpt55))
+                .user("see attached")
+                .user_binary(crate::request::MimeType::APPLICATION_PDF, Vec::<u8>::new()),
+        )
+        .await;
+        assert!(
+            openai_server
+                .received_requests()
+                .await
+                .expect("request recording enabled")
+                .is_empty(),
+            "OpenAI validation must happen before network I/O",
+        );
+
+        let gemini_server = MockServer::start().await;
+        let gemini = GeminiClient::new(test_api_key())
+            .with_mock_endpoint(format!("{}/", gemini_server.uri()));
+        assert_empty_binary_rejected(
+            &gemini,
+            CompletionRequest::new(ModelId::Gemini(GeminiModel::Gemini31Pro))
+                .user("see attached")
+                .user_binary(crate::request::MimeType::APPLICATION_PDF, Vec::<u8>::new()),
+        )
+        .await;
+        assert!(
+            gemini_server
+                .received_requests()
+                .await
+                .expect("request recording enabled")
+                .is_empty(),
+            "Gemini validation must happen before network I/O",
+        );
+    }
+
+    async fn assert_empty_binary_rejected<C>(client: &C, req: CompletionRequest)
+    where
+        C: LlmClient,
+    {
+        match client.complete(req).await {
             Err(LlmError::IncompatibleRequest { reason }) => {
                 assert!(reason.contains("empty binary payload"));
                 assert!(reason.contains("application/pdf"));
             }
             other => panic!("expected IncompatibleRequest, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn openai_multimodal_serializes_pdf_input_file() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(header("authorization", "Bearer test-key"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(openai_responses_payload(12, 4, "ok")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client =
+            OpenAiClient::new(test_api_key()).with_mock_endpoint(format!("{}/", server.uri()));
+        let req = CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Gpt55))
+            .user("summarize")
+            .user_binary_named(
+                crate::request::MimeType::APPLICATION_PDF,
+                vec![0x25_u8, 0x50, 0x44, 0x46],
+                "report.pdf",
+            );
+
+        let response = client.complete(req).await.expect("OpenAI request succeeds");
+        assert_eq!(response.text, "ok");
+        let body = single_received_json(&server).await;
+        assert_eq!(body["model"], "gpt-5.5");
+        let content = body["input"][0]["content"]
+            .as_array()
+            .expect("multipart user content array");
+        assert!(
+            content
+                .iter()
+                .any(|part| { part["type"] == "input_text" && part["text"] == "summarize" })
+        );
+        let file = content
+            .iter()
+            .find(|part| part["type"] == "input_file")
+            .expect("PDF is serialized as input_file");
+        assert_eq!(file["filename"], "report.pdf");
+        assert_eq!(file["file_data"], "data:application/pdf;base64,JVBERg==");
+    }
+
+    #[tokio::test]
+    async fn provider_filename_synthesized_when_binary_name_absent() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(openai_responses_payload(6, 2, "ok")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client =
+            OpenAiClient::new(test_api_key()).with_mock_endpoint(format!("{}/", server.uri()));
+        let req = CompletionRequest::new(ModelId::OpenAi(OpenAiModel::Gpt55))
+            .user("summarize")
+            .user_binary(crate::request::MimeType::APPLICATION_PDF, vec![1_u8, 2, 3]);
+
+        client.complete(req).await.expect("OpenAI request succeeds");
+        let body = single_received_json(&server).await;
+        let content = body["input"][0]["content"]
+            .as_array()
+            .expect("multipart user content array");
+        let file = content
+            .iter()
+            .find(|part| part["type"] == "input_file")
+            .expect("unnamed PDF is serialized as input_file");
+        assert_eq!(file["filename"], "document.pdf");
+    }
+
+    #[tokio::test]
+    async fn unsupported_multimodal_request_returns_typed_error_not_panic() {
+        let server = MockServer::start().await;
+        let client =
+            AnthropicClient::new(test_api_key()).with_mock_endpoint(format!("{}/", server.uri()));
+        let unsupported = crate::request::MimeType::parse("text/plain").expect("valid MIME type");
+        let req = CompletionRequest::new(ModelId::Anthropic(AnthropicModel::ClaudeSonnet46))
+            .user("read this")
+            .user_binary(unsupported.clone(), b"hello".to_vec());
+
+        match client.complete(req).await {
+            Err(LlmError::UnsupportedCapability {
+                provider,
+                capability: LlmCapability::MultimodalBinary { mime_type },
+            }) => {
+                assert_eq!(provider, SchemaKind::Anthropic);
+                assert_eq!(mime_type, unsupported);
+            }
+            other => panic!("expected UnsupportedCapability, got {other:?}"),
+        }
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("request recording enabled")
+                .is_empty(),
+            "unsupported MIME must fail before network I/O",
+        );
     }
 
     #[test]
@@ -1481,14 +1724,14 @@ mod tests {
 
         let openai_server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .and(path("/responses"))
             .and(header("authorization", "Bearer test-key"))
             .and(body_partial_json(serde_json::json!({
-                "response_format": { "type": "json_schema" }
+                "text": { "format": { "type": "json_schema" } }
             })))
             .and(body_string_contains("\"title\""))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(openai_completion_payload(
+                ResponseTemplate::new(200).set_body_json(openai_responses_payload(
                     9,
                     5,
                     "{\"title\":\"openai\",\"count\":22}",
@@ -1570,9 +1813,9 @@ mod tests {
     async fn complete_emits_token_usage_driver_event() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .and(path("/responses"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(openai_completion_payload(
+                ResponseTemplate::new(200).set_body_json(openai_responses_payload(
                     1_000,
                     250,
                     "the answer",
@@ -1651,19 +1894,19 @@ mod tests {
     async fn per_client_api_key_reaches_provider_auth_header() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .and(path("/responses"))
             .and(header("authorization", "Bearer tenant-a"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(openai_completion_payload(1, 1, "a")),
+                ResponseTemplate::new(200).set_body_json(openai_responses_payload(1, 1, "a")),
             )
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/chat/completions"))
+            .and(path("/responses"))
             .and(header("authorization", "Bearer tenant-b"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(openai_completion_payload(1, 1, "b")),
+                ResponseTemplate::new(200).set_body_json(openai_responses_payload(1, 1, "b")),
             )
             .expect(1)
             .mount(&server)
