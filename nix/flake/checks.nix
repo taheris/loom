@@ -53,21 +53,31 @@ _:
       };
 
       wrixProfilePackages = filter (pkg: (pkg.meta.mainProgram or "") == "wrix") sandbox.profile.packages;
-      sandboxProfileEnv =
-        assert length wrixProfilePackages == 1;
-        pkgs.buildEnv {
-          name = "loom-sandbox-profile-env-check";
-          paths = wrixProfilePackages;
-          pathsToLink = [ "/bin" ];
-        };
+      sandboxProfileEnv = pkgs.buildEnv {
+        name = "loom-sandbox-profile-env-check";
+        paths = sandbox.profile.packages;
+        pathsToLink = [ "/bin" ];
+      };
 
-      sandbox-profile-env-has-wrix = pkgs.runCommand "sandbox-profile-env-has-wrix" { } ''
+      sandbox-profile-env-has-wrix =
+        assert length wrixProfilePackages == 1;
+        pkgs.runCommand "sandbox-profile-env-has-wrix" { } ''
+          set -euo pipefail
+          if [[ ! -x ${sandboxProfileEnv}/bin/wrix ]]; then
+            printf 'expected sandbox profile PATH to include real wrix at %s/bin/wrix\n' ${sandboxProfileEnv} >&2
+            exit 1
+          fi
+          ${sandboxProfileEnv}/bin/wrix beads --help | grep -q 'push'
+          touch "$out"
+        '';
+
+      sandbox-profile-env-has-loom = pkgs.runCommand "sandbox-profile-env-has-loom" { } ''
         set -euo pipefail
-        if [[ ! -x ${sandboxProfileEnv}/bin/wrix ]]; then
-          printf 'expected sandbox profile PATH to include real wrix at %s/bin/wrix\n' ${sandboxProfileEnv} >&2
+        if [[ ! -x ${sandboxProfileEnv}/bin/loom ]]; then
+          printf 'expected worker sandbox profile PATH to include loom at %s/bin/loom\n' ${sandboxProfileEnv} >&2
           exit 1
         fi
-        ${sandboxProfileEnv}/bin/wrix beads --help | grep -q 'push'
+        ${sandboxProfileEnv}/bin/loom --version >/dev/null
         touch "$out"
       '';
 
@@ -272,6 +282,7 @@ _:
         inherit
           loom-gate-check
           profile-manifest-keeps-runtime-path-context
+          sandbox-profile-env-has-loom
           sandbox-profile-env-has-wrix
           test-sandbox-ignores-read-only-podman-storage-cleanup
           test-sandbox-skips-oci-permission-denied

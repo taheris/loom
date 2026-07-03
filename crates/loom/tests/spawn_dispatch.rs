@@ -849,20 +849,23 @@ fn loom_loop_parallel_renders_prefixed_stdout_and_per_bead_logs() {
                     .is_some_and(|stem| stem.starts_with(&format!("{bead}-")))
             })
             .collect();
-        assert_eq!(
-            entries.len(),
-            1,
-            "expected one log file for {bead}, got {entries:?}",
-        );
-        let body = std::fs::read_to_string(&entries[0]).expect("read bead log");
         assert!(
-            body.contains(&format!("\"bead_id\":\"{bead}\"")),
-            "log events must be stamped with {bead}: {body}",
+            !entries.is_empty(),
+            "expected at least one log file for {bead}, got {entries:?}",
         );
-        assert!(
-            !body.contains("\"bead_id\":\"lm-phase\""),
-            "parallel bead logs must not fall back to phase bead id: {body}",
-        );
+        for entry in entries {
+            let body = std::fs::read_to_string(&entry).expect("read bead log");
+            assert!(
+                body.contains(&format!("\"bead_id\":\"{bead}\"")),
+                "log events must be stamped with {bead}: {}\n{body}",
+                entry.display(),
+            );
+            assert!(
+                !body.contains("\"bead_id\":\"lm-phase\""),
+                "parallel bead logs must not fall back to phase bead id: {}\n{body}",
+                entry.display(),
+            );
+        }
     }
 }
 

@@ -8,6 +8,8 @@ use loom_driver::profile_manifest::ImageEntry;
 use tracing::info;
 
 const WRIX_AGENT_ENV: &str = "WRIX_AGENT";
+const LOOM_BIN_ENV: &str = "LOOM_BIN";
+const CONTAINER_LOOM_BIN: &str = "loom";
 const CONTAINER_WORKSPACE: &str = "/workspace";
 
 /// Structured spawn diagnostics emitted for every non-interactive Wrix spawn.
@@ -69,6 +71,7 @@ pub fn build_spawn_config(
 
 fn spawn_env(mut extra_env: Vec<(String, String)>, runtime_name: &str) -> Vec<(String, String)> {
     set_runtime_env(&mut extra_env, runtime_name);
+    set_default_loom_bin(&mut extra_env);
     set_loom_inside(&mut extra_env);
     extra_env
 }
@@ -84,6 +87,13 @@ fn spawn_launcher_env(
 fn set_runtime_env(env: &mut Vec<(String, String)>, runtime_name: &str) {
     env.retain(|(key, _)| key != WRIX_AGENT_ENV);
     env.push((WRIX_AGENT_ENV.to_string(), runtime_name.to_string()));
+}
+
+fn set_default_loom_bin(env: &mut Vec<(String, String)>) {
+    if env.iter().any(|(key, _)| key == LOOM_BIN_ENV) {
+        return;
+    }
+    env.push((LOOM_BIN_ENV.to_string(), CONTAINER_LOOM_BIN.to_string()));
 }
 
 pub fn container_workspace_path(host_workspace: &Path, host_path: &Path) -> PathBuf {
@@ -210,6 +220,13 @@ mod tests {
                 .filter(|(key, _)| key == "WRIX_AGENT")
                 .collect::<Vec<_>>(),
             vec![&("WRIX_AGENT".to_string(), "pi".to_string())],
+        );
+        assert_eq!(
+            cfg.env
+                .iter()
+                .filter(|(key, _)| key == "LOOM_BIN")
+                .collect::<Vec<_>>(),
+            vec![&("LOOM_BIN".to_string(), "loom".to_string())],
         );
         assert_eq!(
             cfg.profile_config,
