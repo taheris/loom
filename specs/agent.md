@@ -357,11 +357,12 @@ Additionally, `output_limits` (optional, Direct-only) carries
 Direct tools offload to the scratch offload directory. See [Direct Output
 Bounding](#direct-output-bounding).
 
-`image_ref`, `image_source`, and `image_source_kind` come from the
-profile-image manifest at dispatch time — see [harness.md — Profile-Image
-Manifest](harness.md#profile-image-manifest). The matching ProfileConfig path
-comes from the same manifest and is passed to `wrix --profile-config` as
-host-only backend state. Image digests live in that ProfileConfig, not in the
+`image_ref`, `image_source`, `image_source_kind`, `wrix_launcher`, and
+`profile_config` come from the profile-image manifest at dispatch time — see
+[harness.md — Profile-Image Manifest](harness.md#profile-image-manifest). The
+matching raw launcher and ProfileConfig path are host-only backend state;
+backends exec the raw launcher and pass the ProfileConfig as
+`wrix --profile-config`. Image digests live in that ProfileConfig, not in the
 per-launch `SpawnConfig` JSON.
 
 `SpawnConfig` also carries a host-only `launcher_env` map that is
@@ -1006,7 +1007,7 @@ the entrypoint run the wrong runtime.
   [test](all_backends_dispatch_through_run_agent)
 - Agent backends emit only canonical `AgentEvent` variants owned by [events.md](events.md)
   [check](cargo test -p loom-events --lib every_spec_variant_present)
-- `SpawnConfig` struct captures image_ref, image_source, image_source_kind, workspace, env, initial_prompt, agent_args, scratch_dir, and omits ProfileConfig-only host fields from JSON
+- `SpawnConfig` struct captures image_ref, image_source, image_source_kind, workspace, env, initial_prompt, agent_args, scratch_dir, and omits launcher/ProfileConfig-only host fields from JSON
   [check](cargo test -p loom-workflow --lib spawn_config_omits_profile_manifest_host_only_fields_from_wrix_json)
 - `SpawnConfig.launcher_env` exists as host-only state and is skipped from spawn-config JSON serialization
   [test](launcher_env_is_never_serialized)

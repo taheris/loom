@@ -88,6 +88,7 @@ mod tests {
             image_ref: "localhost/test".into(),
             image_source: PathBuf::from("/nix/store/test"),
             image_source_kind: Some(ImageSourceKind::NixDescriptor),
+            wrix_launcher: None,
             profile_config: None,
             workspace: PathBuf::from("/workspace"),
             env,

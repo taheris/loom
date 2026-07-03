@@ -270,6 +270,7 @@ _:
       profileManifestKeepsRuntimePathContext = all (
         entry:
         builtins.hasContext entry.source
+        && (!(entry ? launcher) || builtins.hasContext entry.launcher)
         && (!(entry ? profile_config) || builtins.hasContext entry.profile_config)
       ) profileManifestEntries;
       profile-manifest-keeps-runtime-path-context =

@@ -148,6 +148,7 @@ mod tests {
                     image_ref: "wrix-base:latest".into(),
                     image_source: PathBuf::from("/nix/store/zzz-wrix-base.tar"),
                     image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
+                    wrix_launcher: None,
                     profile_config: None,
                     workspace: self.workspace.path().to_path_buf(),
                     env: vec![],

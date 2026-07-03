@@ -1205,6 +1205,7 @@ mod tests {
             image_ref: "localhost/img:tag".into(),
             image_source: PathBuf::from("/nix/store/none.tar"),
             image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
+            wrix_launcher: None,
             profile_config: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![],

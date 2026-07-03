@@ -54,7 +54,7 @@ impl AgentBackend for DirectBackend {
         register_native_skills::<NoNativeRegistrar>(config)?;
         let spawn_config_path = prepare_runtime(config)?;
 
-        let wrix_bin = resolve_wrix_spawn_bin();
+        let wrix_bin = resolve_wrix_spawn_bin(config);
         info!(
             wrix = %wrix_bin.to_string_lossy(),
             spawn_config = %spawn_config_path.display(),
@@ -308,6 +308,7 @@ mod tests {
             image_ref: "localhost/wrix-test:direct".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-direct.tar"),
             image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
+            wrix_launcher: None,
             profile_config: Some(PathBuf::from(
                 "/nix/store/wrix-test-direct-profile-config.json",
             )),

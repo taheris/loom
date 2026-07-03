@@ -31,6 +31,14 @@ pub struct SpawnConfig {
     /// infer the install path from filenames or platform defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_source_kind: Option<ImageSourceKind>,
+    /// Raw, profile-agnostic wrix launcher selected from the same manifest
+    /// entry as [`SpawnConfig::image_ref`]. Host-side backends prefer this
+    /// over `LOOM_WRIX_BIN` so they can pass Loom's per-bead ProfileConfig to
+    /// a launcher that does not already inject a different `--profile-config`.
+    /// Skipped because it is host process state, not part of wrix's
+    /// per-launch JSON contract.
+    #[serde(skip)]
+    pub wrix_launcher: Option<PathBuf>,
     /// Wrix ProfileConfig path selected from the same manifest entry as
     /// [`SpawnConfig::image_ref`]. Host-side backends pass it as a launcher
     /// flag rather than serializing it into the spawn-config JSON; the
@@ -385,6 +393,7 @@ mod tests {
             image_ref: "localhost/wrix-test:tag".into(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test.tar"),
             image_source_kind: Some(ImageSourceKind::NixDescriptor),
+            wrix_launcher: None,
             profile_config: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "pi".into())],

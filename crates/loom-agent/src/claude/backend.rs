@@ -2,8 +2,8 @@
 //!
 //! [`ClaudeBackend::spawn`] writes the re-pin files into the workspace
 //! runtime dir, serializes the [`SpawnConfig`] to JSON, and execs `wrix
-//! --profile-config <file> spawn --spawn-config <file> --stdio` with
-//! stdin/stdout piped. The
+//! --profile-config <file> spawn --spawn-config <file> --stdio` through the
+//! raw launcher with stdin/stdout piped. The
 //! watchdog ([`ClaudeBackend::shutdown_after_result`]) handles the
 //! post-`result` cleanup: drop the writer, wait `grace`, escalate
 //! SIGTERM → SIGKILL.
@@ -59,7 +59,7 @@ impl AgentBackend for ClaudeBackend {
         register_native_skills::<NoNativeRegistrar>(config)?;
         let spawn_config_path = prepare_runtime(config)?;
 
-        let wrix_bin = resolve_wrix_spawn_bin();
+        let wrix_bin = resolve_wrix_spawn_bin(config);
         info!(
             wrix = %wrix_bin.to_string_lossy(),
             spawn_config = %spawn_config_path.display(),
@@ -365,6 +365,7 @@ mod tests {
             image_ref: "localhost/wrix-test:claude".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-claude.tar"),
             image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
+            wrix_launcher: None,
             profile_config: Some(PathBuf::from(
                 "/nix/store/wrix-test-claude-profile-config.json",
             )),

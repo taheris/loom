@@ -44,6 +44,7 @@ pub fn build_spawn_config(
         image_ref: diagnostics.image_ref,
         image_source: entry.source.clone(),
         image_source_kind,
+        wrix_launcher: entry.launcher.clone(),
         profile_config: entry.profile_config.clone(),
         workspace,
         env,
@@ -167,6 +168,7 @@ mod tests {
             r#ref: "localhost/wrix-rust-pi:test".into(),
             source: PathBuf::from("/nix/store/image-rust-pi"),
             source_kind: ImageSourceKind::NixDescriptor,
+            launcher: Some(PathBuf::from("/nix/store/raw-wrix/bin/wrix")),
             profile_config: Some(PathBuf::from("/nix/store/wrix-rust-pi-profile-config.json")),
             digest: Some(PathBuf::from("/nix/store/image-rust-pi-digest")),
             runtime: Some(AgentRuntime::Pi),
@@ -227,6 +229,10 @@ mod tests {
                 .filter(|(key, _)| key == "LOOM_BIN")
                 .collect::<Vec<_>>(),
             vec![&("LOOM_BIN".to_string(), "loom".to_string())],
+        );
+        assert_eq!(
+            cfg.wrix_launcher,
+            Some(PathBuf::from("/nix/store/raw-wrix/bin/wrix")),
         );
         assert_eq!(
             cfg.profile_config,
@@ -311,6 +317,10 @@ mod tests {
         assert_eq!(
             raw["image_source_kind"], "nix-descriptor",
             "SpawnConfig must carry the manifest source_kind when image_source is emitted: {json}",
+        );
+        assert!(
+            !json.contains("wrix_launcher") && !json.contains("launcher"),
+            "wrix launcher selection is host-only and must stay out of SpawnConfig JSON: {json}",
         );
         assert!(
             !json.contains("profile_config"),

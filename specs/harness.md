@@ -503,21 +503,23 @@ accumulated wouldn't transfer to the loom workspace.
 
 The *profile-image manifest* is a JSON file produced by Nix at flake-build
 time that maps each workspace profile and agent runtime to the podman ref,
-Nix store path, source kind, optional wrix ProfileConfig path, and optional
-content-digest path needed to spawn its image. Loom reads it at startup and,
-for each container spawn, looks up the resolved profile/runtime pair to
-populate `SpawnConfig.image_ref` (the podman ref), `SpawnConfig.image_source`
-(the store path handed to the launcher install step),
-`SpawnConfig.image_source_kind` (the explicit wrix install-path selector), and
-the host-only `SpawnConfig.profile_config` path passed as
+Nix store path, source kind, optional raw wrix launcher path, optional wrix
+ProfileConfig path, and optional content-digest path needed to spawn its image.
+Loom reads it at startup and, for each container spawn, looks up the resolved
+profile/runtime pair to populate `SpawnConfig.image_ref` (the podman ref),
+`SpawnConfig.image_source` (the store path handed to the launcher install
+step), `SpawnConfig.image_source_kind` (the explicit wrix install-path
+selector), the host-only `SpawnConfig.wrix_launcher` path used as the raw
+spawn executable, and the host-only `SpawnConfig.profile_config` path passed as
 `wrix --profile-config`. The image digest is not a `SpawnConfig` field; wrix
 reads it from the matching ProfileConfig image and rejects per-launch digest
 overrides.
 
 The file is a JSON object keyed first by profile name and then by agent
 runtime. Each runtime entry has three required string fields (`ref`, `source`,
-`source_kind`), a `profile_config` string in current wrix manifests, and an
-optional `digest` string. An abbreviated example:
+`source_kind`), a `launcher` string in current Loom-built manifests pointing at
+`mkSandbox { ... }.launcher/bin/wrix`, a `profile_config` string in current wrix
+manifests, and an optional `digest` string. An abbreviated example:
 
 ```json
 {
@@ -526,6 +528,7 @@ optional `digest` string. An abbreviated example:
       "ref": "localhost/wrix-base-claude:abc123",
       "source": "/nix/store/...-image-base-claude",
       "source_kind": "nix-descriptor",
+      "launcher": "/nix/store/...-wrix/bin/wrix",
       "profile_config": "/nix/store/...-wrix-base-claude-profile-config.json",
       "digest": "/nix/store/...-image-base-claude-digest"
     },
@@ -533,6 +536,7 @@ optional `digest` string. An abbreviated example:
       "ref": "localhost/wrix-base-pi:def456",
       "source": "/nix/store/...-image-base-pi",
       "source_kind": "nix-descriptor",
+      "launcher": "/nix/store/...-wrix/bin/wrix",
       "profile_config": "/nix/store/...-wrix-base-pi-profile-config.json",
       "digest": "/nix/store/...-image-base-pi-digest"
     },
@@ -540,6 +544,7 @@ optional `digest` string. An abbreviated example:
       "ref": "localhost/wrix-base-direct:ghi789",
       "source": "/nix/store/...-image-base-direct",
       "source_kind": "nix-descriptor",
+      "launcher": "/nix/store/...-wrix/bin/wrix",
       "profile_config": "/nix/store/...-wrix-base-direct-profile-config.json",
       "digest": "/nix/store/...-image-base-direct-digest"
     }
@@ -549,6 +554,7 @@ optional `digest` string. An abbreviated example:
       "ref": "localhost/wrix-rust-pi:jkl012",
       "source": "/nix/store/...-image-rust-pi",
       "source_kind": "nix-descriptor",
+      "launcher": "/nix/store/...-wrix/bin/wrix",
       "profile_config": "/nix/store/...-wrix-rust-pi-profile-config.json",
       "digest": "/nix/store/...-image-rust-pi-digest"
     }
@@ -556,10 +562,11 @@ optional `digest` string. An abbreviated example:
 }
 ```
 
-Built by the wrix `mkProfileImages` helper; the bundled flake output is
-`packages.profile-images`. External flakes that add custom profiles call
-`mkProfileImages` themselves to produce a manifest covering their full
-profile/runtime set.
+Built by Loom's `lib.mkProfileManifest` around wrix `mkSandbox` /
+`mkProfileImages`; the bundled flake output is `packages.profile-images`.
+External flakes that add custom profiles call `lib.mkProfileManifest` (or emit
+the same JSON shape) to produce a manifest covering their full profile/runtime
+set.
 
 Loom reads the manifest path from the `LOOM_PROFILES_MANIFEST` environment
 variable. The bundled devshell sets it to `${self'.packages.profile-images}`;
@@ -585,11 +592,12 @@ Per-bead dispatch is:
    manifest. Same routing as static infra diagnostics in
    [Verdict Gate](#verdict-gate).
 4. Build `SpawnConfig` with `image_ref = entry.ref`, `image_source =
-   entry.source`, `image_source_kind = entry.source_kind`, and host-only
+   entry.source`, `image_source_kind = entry.source_kind`, host-only
+   `wrix_launcher = entry.launcher` when present, and host-only
    `profile_config = entry.profile_config` when present. Hand it to
-   `wrix spawn`; `entry.digest` is not serialized into
-   the per-launch JSON because the matching ProfileConfig supplies the image
-   digest.
+   `wrix spawn`; `entry.launcher`, `entry.profile_config`, and `entry.digest`
+   are not serialized into the per-launch JSON because launcher selection is
+   host-only and the matching ProfileConfig supplies the image digest.
 
 Loom derives `WRIX_AGENT` from the same `AgentRuntime` and places it in
 both `SpawnConfig.launcher_env` for the host-side `wrix spawn` child
@@ -1908,8 +1916,8 @@ everywhere downstream. No internal function re-checks or re-parses.
    No intermediate untyped step.
 6. **CLI output parsing** — `bd --json` output deserializes into typed structs
    (`Bead`, `Molecule`).
-7. **Profile-image manifest** — the JSON produced by `mkProfileImages`
-   deserializes into `BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry { ref, source, source_kind, profile_config?, digest? }>>`
+7. **Profile-image manifest** — the JSON produced by `mkProfileManifest`
+   deserializes into `BTreeMap<ProfileName, BTreeMap<AgentRuntime, ImageEntry { ref, source, source_kind, launcher?, profile_config?, digest? }>>`
    once at loom startup. Downstream code receives typed profile/runtime keys
    and `&ImageEntry`, never raw JSON.
 

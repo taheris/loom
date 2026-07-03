@@ -128,6 +128,23 @@ fn install_failing_wrix_shim(dir: &Path, marker: &Path) -> PathBuf {
     shim
 }
 
+fn install_profiled_wrix_wrapper(dir: &Path, raw_launcher: &Path) -> PathBuf {
+    let wrapper = dir.join("profiled-wrapper-wrix");
+    let bash = find_bash();
+    let body = format!(
+        "#!{bash}\n\
+         set -euo pipefail\n\
+         exec {raw} --profile-config /nix/store/default-profile-config.json \"$@\"\n",
+        bash = bash.display(),
+        raw = raw_launcher.display(),
+    );
+    std::fs::write(&wrapper, body).unwrap();
+    let mut perm = std::fs::metadata(&wrapper).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&wrapper, perm).unwrap();
+    wrapper
+}
+
 /// Install a wrix shim that commits one file in the bead workspace named by
 /// `SpawnConfig.workspace`, then delegates to mock-pi `happy-path` so the
 /// run-phase marker is `LOOM_COMPLETE`. The test review shim is deliberately
@@ -224,6 +241,22 @@ fn drive_loom_todo_pi_with_spawn_bin(
     wrix_spawn_bin: Option<&Path>,
     loom_bin: &str,
 ) -> std::process::Output {
+    drive_loom_todo_pi_with_spawn_bin_and_manifest_launcher(
+        workspace,
+        wrix_bin,
+        wrix_spawn_bin,
+        None,
+        loom_bin,
+    )
+}
+
+fn drive_loom_todo_pi_with_spawn_bin_and_manifest_launcher(
+    workspace: &Path,
+    wrix_bin: &Path,
+    wrix_spawn_bin: Option<&Path>,
+    manifest_launcher: Option<&Path>,
+    loom_bin: &str,
+) -> std::process::Output {
     // Spawn-bound subcommands (`todo` is one) read LOOM_PROFILES_MANIFEST at
     // startup. The production todo controller resolves the configured `rust`
     // profile through this manifest, so it must contain a real entry — an
@@ -248,12 +281,16 @@ fn drive_loom_todo_pi_with_spawn_bin(
             file.write_all(b"\n[phase.todo]\nprofile = \"rust\"\n")
         })
         .expect("write loom config");
+    let launcher_field = manifest_launcher
+        .map(|path| format!(r#", "launcher": {:?}"#, path.display().to_string()))
+        .unwrap_or_default();
     let manifest_body = format!(
         r#"{{
-          "rust": {{ "pi": {{ "ref": "localhost/wrix-rust-pi:test", "source": {source:?}, "source_kind": "nix-descriptor", "profile_config": {pi_profile_config:?}, "digest": {digest:?} }}, "direct": {{ "ref": "localhost/wrix-rust-direct:test", "source": {source:?}, "source_kind": "nix-descriptor", "profile_config": {direct_profile_config:?}, "digest": {digest:?} }} }}
+          "rust": {{ "pi": {{ "ref": "localhost/wrix-rust-pi:test", "source": {source:?}, "source_kind": "nix-descriptor"{launcher_field}, "profile_config": {pi_profile_config:?}, "digest": {digest:?} }}, "direct": {{ "ref": "localhost/wrix-rust-direct:test", "source": {source:?}, "source_kind": "nix-descriptor", "profile_config": {direct_profile_config:?}, "digest": {digest:?} }} }}
         }}"#,
         source = image_source.display().to_string(),
         digest = image_digest.display().to_string(),
+        launcher_field = launcher_field,
         pi_profile_config = pi_profile_config.display().to_string(),
         direct_profile_config = direct_profile_config.display().to_string(),
     );
@@ -562,6 +599,97 @@ fn wrix_spawn_prefers_unprofiled_spawn_launcher_env() {
     assert!(
         argv.lines().any(|arg| arg == "--profile-config"),
         "spawn shim must still receive Loom's selected profile config. argv={argv}",
+    );
+}
+
+#[test]
+fn wrix_spawn_deprofiles_configured_wrapper_when_spawn_env_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+
+    let shim_dir = dir.path().join("shim");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    let argv_file = shim_dir.join("argv.txt");
+    let stdin_info = shim_dir.join("stdin-info.txt");
+    let spawn_copy = shim_dir.join("spawn-config.json");
+    let raw_spawn_shim = install_wrix_shim(
+        &shim_dir,
+        &argv_file,
+        &stdin_info,
+        &spawn_copy,
+        &mock_pi_path(),
+        "happy-path",
+    );
+    let profiled_wrapper = install_profiled_wrix_wrapper(&shim_dir, &raw_spawn_shim);
+
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let output = drive_loom_todo_pi_with_spawn_bin(workspace, &profiled_wrapper, None, loom_bin);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "loom todo must unwrap the wrix configured wrapper for spawn. stdout={stdout} stderr={stderr}",
+    );
+    let argv = std::fs::read_to_string(&argv_file).expect("spawn shim should record argv");
+    let profile_config_count = argv
+        .lines()
+        .filter(|arg| *arg == "--profile-config")
+        .count();
+    assert_eq!(
+        profile_config_count, 1,
+        "deprofiled raw launcher must receive exactly Loom's profile config. argv={argv}",
+    );
+}
+
+#[test]
+fn wrix_spawn_prefers_manifest_raw_launcher_over_profiled_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+
+    let shim_dir = dir.path().join("shim");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    let argv_file = shim_dir.join("argv.txt");
+    let stdin_info = shim_dir.join("stdin-info.txt");
+    let spawn_copy = shim_dir.join("spawn-config.json");
+    let raw_spawn_shim = install_wrix_shim(
+        &shim_dir,
+        &argv_file,
+        &stdin_info,
+        &spawn_copy,
+        &mock_pi_path(),
+        "happy-path",
+    );
+    let profiled_marker = shim_dir.join("profiled-invoked.txt");
+    let profiled_shim = install_failing_wrix_shim(&shim_dir, &profiled_marker);
+
+    let loom_bin = env!("CARGO_BIN_EXE_loom");
+    let output = drive_loom_todo_pi_with_spawn_bin_and_manifest_launcher(
+        workspace,
+        &profiled_shim,
+        None,
+        Some(&raw_spawn_shim),
+        loom_bin,
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "loom todo must use the manifest launcher for spawn. stdout={stdout} stderr={stderr}",
+    );
+    assert!(
+        !profiled_marker.exists(),
+        "spawn path invoked profiled LOOM_WRIX_BIN instead of manifest raw launcher",
+    );
+    let argv = std::fs::read_to_string(&argv_file).expect("spawn shim should record argv");
+    let profile_config_count = argv
+        .lines()
+        .filter(|arg| *arg == "--profile-config")
+        .count();
+    assert_eq!(
+        profile_config_count, 1,
+        "raw launcher must receive exactly Loom's selected profile config. argv={argv}",
     );
 }
 

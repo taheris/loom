@@ -9,12 +9,14 @@ use crate::identifier::ProfileName;
 use super::error::ProfileError;
 
 /// Environment variable that points at the profile-image manifest produced by
-/// `wrix.lib.${system}.mkProfileImages` at flake-build time.
+/// Loom's Nix glue around `wrix.lib.${system}.mkProfileImages` at flake-build
+/// time.
 pub const ENV_VAR: &str = "LOOM_PROFILES_MANIFEST";
 
 /// One manifest entry: the podman ref to spawn, the Nix store path of the
 /// image source that materializes it, the source kind selecting the wrix
-/// install path, the wrix ProfileConfig path matching that image variant,
+/// install path, the raw wrix launcher that accepts a per-spawn
+/// ProfileConfig, the wrix ProfileConfig path matching that image variant,
 /// and (when produced by the flake glue) the image content-digest file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageEntry {
@@ -25,6 +27,12 @@ pub struct ImageEntry {
     pub source: PathBuf,
     /// Explicit source kind selecting the wrix launcher install path.
     pub source_kind: ImageSourceKind,
+    /// Optional path to the raw, profile-agnostic wrix launcher. Newer Nix
+    /// glue emits this from `mkSandbox { ... }.launcher` so spawn paths never
+    /// accidentally invoke the configured `sandbox.package` wrapper (which
+    /// already injects its own `--profile-config`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launcher: Option<PathBuf>,
     /// Optional Nix store path of the wrix ProfileConfig matching this image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_config: Option<PathBuf>,
@@ -192,11 +200,34 @@ mod tests {
             PathBuf::from("/nix/store/bbb-image-base-pi")
         );
         assert_eq!(base_pi.source_kind, ImageSourceKind::NixDescriptor);
+        assert_eq!(base_pi.launcher, None);
         assert_eq!(base_pi.digest, None);
         assert_eq!(base_pi.runtime, None);
         let rust_direct = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Direct)?;
         assert_eq!(rust_direct.r#ref, "localhost/wrix-rust-direct:ghi");
         assert_eq!(rust_direct.profile_config, None);
+        Ok(())
+    }
+
+    #[test]
+    fn from_path_parses_optional_launcher_path() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let body = r#"{
+          "rust": {
+            "pi": {
+              "ref": "localhost/wrix-rust-pi:def",
+              "source": "/nix/store/bbb-image-rust-pi", "source_kind": "nix-descriptor",
+              "launcher": "/nix/store/lll-wrix/bin/wrix"
+            }
+          }
+        }"#;
+        let path = write_manifest(dir.path(), body)?;
+        let manifest = ProfileImageManifest::from_path(&path)?;
+        let rust = manifest.lookup(&ProfileName::new("rust"), AgentRuntime::Pi)?;
+        assert_eq!(
+            rust.launcher,
+            Some(PathBuf::from("/nix/store/lll-wrix/bin/wrix"))
+        );
         Ok(())
     }
 

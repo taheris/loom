@@ -355,8 +355,8 @@ fn build_pi_bridge_spawn_config(
     Ok(spawn_config)
 }
 
-async fn run_pi_bridge(config: SpawnConfig, wrix_bin: &Path) -> Result<String, ChatError> {
-    let session = PiBackend::spawn_bridge_with_wrix_bin(&config, wrix_bin.as_os_str()).await?;
+async fn run_pi_bridge(config: SpawnConfig, _wrix_bin: &Path) -> Result<String, ChatError> {
+    let session = PiBackend::spawn_bridge(&config).await?;
     let mut output = String::new();
     let mut envelope_builder = pi_bridge_envelope_builder();
     emit_pi_bridge_agent_input(

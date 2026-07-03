@@ -63,6 +63,7 @@ mod tests {
             image_ref: "localhost/wrix-test:pi".into(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test.tar"),
             image_source_kind: Some(ImageSourceKind::NixDescriptor),
+            wrix_launcher: None,
             profile_config: None,
             workspace: PathBuf::from("/workspace"),
             env: vec![],

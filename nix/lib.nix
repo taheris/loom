@@ -88,6 +88,13 @@ in
             # alive in the store after GC / on fresh machines.
             source = "${image.source or image}";
           }
+          // optionalAttrs (sandboxes.${profileName}.${runtime} ? launcher) {
+            # The raw launcher accepts Loom's per-bead ProfileConfig. Do not
+            # use `sandbox.package` here: that configured wrapper already
+            # injects its own `--profile-config`, which would collide with the
+            # runtime-selected one below.
+            launcher = "${sandboxes.${profileName}.${runtime}.launcher}/bin/wrix";
+          }
           // optionalAttrs (image ? profileConfig) {
             # `wrix spawn` now requires the immutable ProfileConfig path; keep
             # it as a real Nix reference, not just inert JSON text.

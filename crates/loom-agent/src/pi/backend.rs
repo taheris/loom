@@ -1,7 +1,8 @@
 //! Pi-mono RPC backend: spawn + startup probe + optional `set_model`.
 //!
 //! [`PiBackend::spawn`] serializes the [`SpawnConfig`] to a JSON file,
-//! execs `wrix --profile-config <file> spawn --spawn-config <file> --stdio`
+//! execs the raw wrix launcher as
+//! `wrix --profile-config <file> spawn --spawn-config <file> --stdio`
 //! when the manifest provides a ProfileConfig, and drives the pi RPC
 //! handshake before handing back an [`AgentSession`] in the [`Idle`] state:
 //!
@@ -101,6 +102,11 @@ impl PiBackend {
         .await
     }
 
+    pub async fn spawn_bridge(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
+        let wrix_bin = resolve_wrix_spawn_bin(config);
+        Self::spawn_bridge_with_wrix_bin(config, &wrix_bin).await
+    }
+
     pub async fn spawn_bridge_with_wrix_bin(
         config: &SpawnConfig,
         wrix_bin: &OsStr,
@@ -150,7 +156,7 @@ impl PiBackend {
 
 impl AgentBackend for PiBackend {
     async fn spawn(config: &SpawnConfig) -> Result<AgentSession<Idle>, ProtocolError> {
-        let wrix_bin = resolve_wrix_spawn_bin();
+        let wrix_bin = resolve_wrix_spawn_bin(config);
         Self::spawn_with_wrix_bin(config, &wrix_bin).await
     }
 
@@ -779,6 +785,7 @@ mod tests {
             image_ref: "localhost/wrix-test:pi".to_string(),
             image_source: PathBuf::from("/nix/store/zzz-wrix-test-pi.tar"),
             image_source_kind: Some(loom_driver::agent::ImageSourceKind::NixDescriptor),
+            wrix_launcher: None,
             profile_config: Some(PathBuf::from("/nix/store/wrix-test-pi-profile-config.json")),
             workspace: PathBuf::from("/workspace"),
             env: vec![("WRIX_AGENT".into(), "pi".into())],
