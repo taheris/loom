@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -56,13 +56,42 @@ fn loom_path(repo: &Path) -> std::path::PathBuf {
     repo.join(".loom/integration")
 }
 
-fn fake_prek_hooks(repo: &Path) -> Result<std::path::PathBuf> {
+fn fake_prek_hooks(repo: &Path) -> Result<PathBuf> {
     let hooks = repo.join("fake-prek-hooks");
     std::fs::create_dir_all(&hooks)?;
     for hook in ["pre-commit", "pre-push"] {
         std::fs::write(hooks.join(hook), "#!/bin/sh\n")?;
     }
     Ok(hooks)
+}
+
+fn retrying_disconnect_prek_hooks(repo: &Path) -> Result<(PathBuf, PathBuf)> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let hooks = repo.join("retry-prek-hooks");
+    let attempts = repo.join("retry-prek-attempts");
+    let first_failure = repo.join("retry-prek-first-failure");
+    std::fs::create_dir_all(&hooks)?;
+    let pre_commit = hooks.join("pre-commit");
+    std::fs::write(&pre_commit, "#!/bin/sh\nexit 0\n")?;
+    std::fs::set_permissions(&pre_commit, std::fs::Permissions::from_mode(0o755))?;
+    let pre_push = hooks.join("pre-push");
+    std::fs::write(
+        &pre_push,
+        format!(
+            "#!/bin/sh\nprintf 'attempt\\n' >> {}\nif [ ! -f {} ]; then\n  : > {}\n  printf 'nix flake check.............................................................Passed\\n'\n  printf 'Connection to github.com closed by remote host.\\n' >&2\n  exit 141\nfi\nexit 0\n",
+            shell_quote(&attempts),
+            shell_quote(&first_failure),
+            shell_quote(&first_failure),
+        ),
+    )?;
+    std::fs::set_permissions(&pre_push, std::fs::Permissions::from_mode(0o755))?;
+    Ok((hooks, attempts))
+}
+
+fn shell_quote(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\'', "'\\''");
+    format!("'{path}'")
 }
 
 fn git_config_get(repo: &Path, key: &str) -> Result<String> {
@@ -1857,6 +1886,86 @@ async fn integration_branch_setting_honored_by_loop() -> Result<()> {
     assert_eq!(
         origin_trunk, local_trunk,
         "push must advance origin/<integration_branch>, not origin/main",
+    );
+
+    Ok(())
+}
+
+/// The pre-review dry-run push uses the same retry path: if the remote
+/// transport drops after the hook chain passes, the driver should retry
+/// instead of stopping before review/mint/final-push.
+#[tokio::test]
+async fn pre_push_chain_retries_remote_disconnect_after_checks() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let loom = loom_path(path);
+    let (hooks, attempts) = retrying_disconnect_prek_hooks(path)?;
+    let mut client = GitClient::open(path)?;
+    client.set_prek_hooks_path_override(hooks);
+
+    std::fs::write(loom.join("retry-dry-run.txt"), "retry\n")?;
+    git(&loom, &["add", "retry-dry-run.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "retry dry run"])?;
+
+    client.run_pre_push_chain().await?;
+
+    assert_eq!(
+        std::fs::read_to_string(attempts)?.lines().count(),
+        2,
+        "dry-run push must retry once after the first transport disconnect",
+    );
+    let origin = loom_driver::git::bare_origin_path(path);
+    let origin_tree = String::from_utf8(
+        git_command()
+            .arg("-C")
+            .arg(&origin)
+            .args(["ls-tree", "--name-only", "main"])
+            .output()?
+            .stdout,
+    )?;
+    assert!(
+        !origin_tree.contains("retry-dry-run.txt"),
+        "dry-run retry must not update origin: {origin_tree}",
+    );
+
+    Ok(())
+}
+
+/// A transient transport drop after the pre-push hook chain should retry
+/// immediately so the next push can use the push-verified stamp for the
+/// same commit instead of making the operator run the command manually.
+#[tokio::test]
+async fn origin_push_retries_remote_disconnect_after_pre_push() -> Result<()> {
+    let repo = init_repo()?;
+    let path = repo.path();
+    let loom = loom_path(path);
+    let (hooks, attempts) = retrying_disconnect_prek_hooks(path)?;
+    let mut client = GitClient::open(path)?;
+    client.set_prek_hooks_path_override(hooks);
+
+    std::fs::write(loom.join("retry-push.txt"), "retry\n")?;
+    git(&loom, &["add", "retry-push.txt"])?;
+    git(&loom, &["commit", "-q", "-m", "retry push"])?;
+
+    client.push().await?;
+
+    assert_eq!(
+        std::fs::read_to_string(attempts)?.lines().count(),
+        2,
+        "push must retry once after the first transport disconnect",
+    );
+    let origin = loom_driver::git::bare_origin_path(path);
+    let origin_tree = String::from_utf8(
+        git_command()
+            .arg("-C")
+            .arg(&origin)
+            .args(["ls-tree", "--name-only", "main"])
+            .output()?
+            .stdout,
+    )?;
+    assert!(
+        origin_tree.contains("retry-push.txt"),
+        "retry must advance origin after the transient disconnect: {origin_tree}",
     );
 
     Ok(())

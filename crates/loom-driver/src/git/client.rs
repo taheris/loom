@@ -49,6 +49,11 @@ const INDEX_LOCK_RETRIES: u32 = 100;
 /// (`RETRIES * BACKOFF` ≈ 2s) is the worst-case wait before a stale lock is
 /// reported.
 const INDEX_LOCK_BACKOFF: Duration = Duration::from_millis(20);
+/// Retry budget for a push whose remote transport drops after the
+/// pre-push hook chain has already run. The second `git push` is expected
+/// to hit wrix's push-verified stamp and skip already-passed checks for
+/// the same commit.
+const PUSH_TRANSPORT_RETRIES: u32 = 1;
 /// Fallback integration branch when the caller opens a `GitClient` via
 /// [`GitClient::open`] / [`GitClient::open_with_clock`] without naming
 /// one. Production paths thread `[loom] integration_branch` from
@@ -1018,12 +1023,12 @@ impl GitClient {
     /// pushed ref name is unambiguous regardless of how the workspace
     /// was set up.
     ///
-    /// On a non-fast-forward rejection (operator pushed first, or another
-    /// loom landed cross-spec work) the push fetches
-    /// `origin/<integration_branch>`, rebases the local integration
-    /// branch onto it, and re-pushes — up to [`PUSH_NON_FF_RETRIES`]
-    /// times. Other push failures (auth, pre-push hook, network) are
-    /// surfaced as [`GitError::GitCli`] without retry.
+    /// On a transient transport drop (for example SSH closing the
+    /// connection after long pre-push checks) the push retries once; wrix's
+    /// push-verified stamp lets that second push reuse the already-passed
+    /// hook result for the same commit. Other push failures, including
+    /// non-fast-forward races and hook failures, surface as
+    /// [`GitError::GitCli`] for the verdict gate to classify.
     ///
     /// Refreshes the loom-workspace signing config before invoking git so
     /// stale host-key paths are replaced by the current repo signing key.
@@ -1032,7 +1037,12 @@ impl GitClient {
     /// because the remote's pre-push hook (or loom's own pre-push hook on
     /// the GitHub publish) runs the workspace's pre-push CI stage.
     pub async fn push(&self) -> Result<(), GitError> {
-        self.push_once().await
+        self.run_push_command_with_transport_retry([
+            "push",
+            "origin",
+            self.integration_branch.as_str(),
+        ])
+        .await
     }
 
     pub async fn prepare_actual_push_range(&self) -> Result<ActualPushRange, GitError> {
@@ -1063,40 +1073,46 @@ impl GitClient {
     }
 
     pub async fn run_pre_push_chain(&self) -> Result<(), GitError> {
-        self.validate_loom_hooks_path_configured().await?;
-        self.refresh_loom_signing_config()?;
-        let workdir = self.loom_workspace();
-        let output = run_git_raw_with_timeout(
-            &workdir,
-            self.clock.as_ref(),
-            self.hook_timeout,
-            [
-                "push",
-                "--dry-run",
-                "origin",
-                self.integration_branch.as_str(),
-            ],
-            None,
-        )
-        .await?;
-        if output.status.success() {
-            return Ok(());
-        }
-        Err(cli_error(&output))
+        self.run_push_command_with_transport_retry([
+            "push",
+            "--dry-run",
+            "origin",
+            self.integration_branch.as_str(),
+        ])
+        .await
     }
 
     pub async fn push_once(&self) -> Result<(), GitError> {
+        self.run_push_command(["push", "origin", self.integration_branch.as_str()])
+            .await
+    }
+
+    async fn run_push_command_with_transport_retry<const N: usize>(
+        &self,
+        args: [&str; N],
+    ) -> Result<(), GitError> {
+        let mut result = self.run_push_command(args).await;
+        for attempt in 0..PUSH_TRANSPORT_RETRIES {
+            if !is_retryable_push_transport_failure(&result) {
+                return result;
+            }
+            warn!(
+                attempt = attempt + 1,
+                args = %args.join(" "),
+                "git push transport dropped after pre-push; retrying"
+            );
+            result = self.run_push_command(args).await;
+        }
+        result
+    }
+
+    async fn run_push_command<const N: usize>(&self, args: [&str; N]) -> Result<(), GitError> {
         self.validate_loom_hooks_path_configured().await?;
         self.refresh_loom_signing_config()?;
         let workdir = self.loom_workspace();
-        let output = run_git_raw_with_timeout(
-            &workdir,
-            self.clock.as_ref(),
-            self.hook_timeout,
-            ["push", "origin", self.integration_branch.as_str()],
-            None,
-        )
-        .await?;
+        let output =
+            run_git_raw_with_timeout(&workdir, self.clock.as_ref(), self.hook_timeout, args, None)
+                .await?;
         if output.status.success() {
             return Ok(());
         }
@@ -2446,6 +2462,20 @@ where
     Err(GitError::IndexLocked {
         workdir: workdir.to_path_buf(),
     })
+}
+
+fn is_retryable_push_transport_failure(result: &Result<(), GitError>) -> bool {
+    let Err(GitError::GitCli { status, stderr }) = result else {
+        return false;
+    };
+    *status == 141 || push_transport_disconnect(stderr)
+}
+
+fn push_transport_disconnect(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("closed by remote host")
+        || detail.contains("remote end hung up unexpectedly")
+        || detail.contains("unexpected disconnect")
 }
 
 fn cli_error(output: &std::process::Output) -> GitError {
