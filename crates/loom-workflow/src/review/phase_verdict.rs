@@ -1,4 +1,4 @@
-//! Per-phase verdict gate (`specs/harness.md` lines 444-470).
+//! Per-phase verdict gate (`specs/harness.md` § Verdict Gate).
 //!
 //! After every agent phase ends, `loom review` evaluates the result through
 //! this deterministic gate before the bead's state can advance. The gate
